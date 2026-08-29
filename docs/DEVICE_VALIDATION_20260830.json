@@ -1,0 +1,73 @@
+{
+  "validated_at_local": "2026-08-30T02:12:00+08:00",
+  "status": "PASS_WITH_MANUAL_BROWSER_EXTENSION_STEP",
+  "version": "0.5.1",
+  "workspace": "E:\\memeTrader",
+  "mode": "paper",
+  "live_enabled": false,
+  "agent_enabled": false,
+  "runtime_database_from_config": "data/memetrader_forward_20260830_r3.sqlite3",
+  "release_gate": {
+    "powershell_scripts_parsed": 9,
+    "pytest_passed": 41,
+    "compileall": "PASS",
+    "git_diff_check": "PASS",
+    "wheel": "memetrader-0.5.1-py3-none-any.whl",
+    "wheel_sha256": "377152b0f9d2145e83c2116f39a467cfe224d80160fad36be894bc6d6c6e191b",
+    "fresh_venv": "PASS",
+    "fresh_install": "PASS",
+    "pip_check": "PASS",
+    "fresh_import_version": "0.5.1",
+    "cli_help": "PASS",
+    "temporal_replay": "PASS",
+    "sqlite_integrity": "ok"
+  },
+  "online_http_200": [
+    "dexscreener",
+    "geckoterminal",
+    "honeypot",
+    "rugcheck",
+    "rss:coindesk",
+    "rss:cointelegraph",
+    "rss:google-news-viral",
+    "rss:google-news-memecoin"
+  ],
+  "disabled_runtime_source": {
+    "name": "reddit-memecoins-new",
+    "reason": "official RSS returned 403/429 during resident polling; use logged-in browser public page instead"
+  },
+  "scheduled_task": {
+    "name": "memeTrader Paper Bot",
+    "state_at_validation": "Running",
+    "multiple_instances": "IgnoreNew",
+    "allow_start_on_battery": true,
+    "continue_on_battery": true,
+    "health_endpoint": "http://127.0.0.1:8765/health",
+    "health_at_validation": true,
+    "forced_child_restart": "PASS",
+    "restart_observed_within_seconds": 18
+  },
+  "forward_runtime": {
+    "observations": 67,
+    "events": 62,
+    "tokens": 773,
+    "token_snapshots": 398,
+    "decisions": 0,
+    "positions": 0,
+    "trades": 0,
+    "active_source_errors": 0,
+    "browser_source_count": 0
+  },
+  "agent_review": {
+    "attempted": true,
+    "executed": false,
+    "reason": "monthly Agent quota exhausted until the account reset; deterministic local fallback remained active"
+  },
+  "manual_remaining": [
+    "Load E:\\memeTrader\\browser-extension as an unpacked Chrome/Edge extension",
+    "Copy the ignored local bridge.token from config.json into extension options",
+    "Keep selected public social pages open and verify browser source heartbeats"
+  ],
+  "secrets_committed": false,
+  "github_sync": "PENDING_AT_VALIDATION_FILE_CREATION"
+}

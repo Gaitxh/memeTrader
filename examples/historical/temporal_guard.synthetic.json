@@ -1,0 +1,70 @@
+{
+  "case_id": "synthetic_temporal_guard",
+  "description": "Synthetic fixture. Validates availability boundaries; it is not a profitability backtest.",
+  "observations": [
+    {
+      "source": "live-origin",
+      "source_kind": "official_social",
+      "title": "Official post names Example and publishes CA 0x1111111111111111111111111111111111111111",
+      "text": "Example CA: 0x1111111111111111111111111111111111111111",
+      "published_at": "2026-01-01T00:01:00Z",
+      "observed_at": "2026-01-01T00:01:20Z",
+      "availability_proof": "fixture_arrival",
+      "role": "feature",
+      "raw": {"source_snapshot": "fixture"}
+    },
+    {
+      "source": "future-listing",
+      "source_kind": "news",
+      "title": "Example is listed later",
+      "text": "This is an outcome and cannot be used at 00:05.",
+      "published_at": "2026-01-01T00:30:00Z",
+      "observed_at": "2026-01-01T00:31:00Z",
+      "availability_proof": "fixture_arrival",
+      "role": "outcome",
+      "raw": {"exchange_listing_after_signal": true}
+    }
+  ],
+  "tokens": [
+    {
+      "token_key": "bsc:0x1111111111111111111111111111111111111111",
+      "chain": "bsc",
+      "address": "0x1111111111111111111111111111111111111111",
+      "created_at": "2026-01-01T00:02:00Z",
+      "first_seen_at": "2026-01-01T00:02:20Z",
+      "raw": {"identity": "fixture"}
+    },
+    {
+      "token_key": "bsc:0x2222222222222222222222222222222222222222",
+      "chain": "bsc",
+      "address": "0x2222222222222222222222222222222222222222",
+      "created_at": "2026-01-01T00:12:00Z",
+      "first_seen_at": "2026-01-01T00:12:10Z",
+      "raw": {"winner_token": true}
+    }
+  ],
+  "snapshots": [
+    {
+      "snapshot_id": "official-at-entry",
+      "token_key": "bsc:0x1111111111111111111111111111111111111111",
+      "observed_at": "2026-01-01T00:04:30Z",
+      "price_usd": 0.001,
+      "liquidity_usd": 20000,
+      "raw": {"source_snapshot": "fixture"}
+    },
+    {
+      "snapshot_id": "official-future-ath",
+      "token_key": "bsc:0x1111111111111111111111111111111111111111",
+      "observed_at": "2026-01-01T00:30:00Z",
+      "price_usd": 1.0,
+      "raw": {"ath_after_signal": true}
+    },
+    {
+      "snapshot_id": "future-clone-snapshot",
+      "token_key": "bsc:0x2222222222222222222222222222222222222222",
+      "observed_at": "2026-01-01T00:12:20Z",
+      "price_usd": 0.0001,
+      "raw": {"source_snapshot": "fixture"}
+    }
+  ]
+}

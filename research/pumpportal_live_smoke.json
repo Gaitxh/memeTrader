@@ -1,0 +1,15 @@
+{
+  "generated_at": "2026-08-29T09:08:59.994961+00:00",
+  "purpose": "Live transport smoke test only; not historical decision evidence.",
+  "historical_decision_eligible": false,
+  "endpoint": "wss://pumpportal.fun/api/data",
+  "received": true,
+  "message_observed_at": "2026-08-29T09:09:02.314398+00:00",
+  "sample": {
+    "mint": "4bWunyrZYFMPAsVFoKBkqLxs12xqV8gYeA531Di8pump",
+    "name": "You've Lost It Bro",
+    "symbol": "dawg",
+    "trader_public_key": "9aztChMYbsF5HRFG2ECkjfEdHHZChB1b3tRHQ2TPgKjv",
+    "tx_type": "create"
+  }
+}

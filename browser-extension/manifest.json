@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "memeTrader Public Feed Bridge",
+  "version": "0.5.1",
+  "description": "Passively forwards newly rendered public social posts to a loopback-only memeTrader instance.",
+  "permissions": ["storage", "alarms"],
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
+  "background": {"service_worker": "background.js"},
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://x.com/*", "https://twitter.com/*", "https://truthsocial.com/*",
+        "https://bsky.app/*", "https://www.reddit.com/*", "https://old.reddit.com/*",
+        "https://www.threads.net/*", "https://www.instagram.com/*", "https://www.tiktok.com/*",
+        "https://www.youtube.com/*", "https://t.me/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

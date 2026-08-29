@@ -1,0 +1,178 @@
+{
+  "schema_version": 1,
+  "purpose": "Historical identity, timing and no-lookahead tests only. Never load as production aliases, thresholds or winner priors.",
+  "globally_forbidden_decision_fields": [
+    "future_return", "ath_after_signal", "exchange_listing_after_signal", "winner_token", "winner_ca",
+    "final_market_cap", "final_holders", "posthoc_smart_money", "future_rug_label"
+  ],
+  "cases": [
+    {
+      "case_id": "pnut_peanut_squirrel",
+      "display_name": "Peanut the Squirrel / PNUT",
+      "archetype": "community_tokenization",
+      "event_trigger": "A real-world animal-welfare controversy became a viral political and community narrative.",
+      "chains": ["solana"],
+      "token_symbols": ["PNUT"],
+      "verified_token_addresses": ["2qEHjDLDLbuBgRYvsxhc5D6uDWAivNFZGan56P1tpump"],
+      "identity_status": "verified_for_identity_only",
+      "research_queries": ["Peanut the Squirrel seizure euthanasia", "PNUT Solana earliest CA post"],
+      "test_questions": ["event-first versus token-first timing", "earliest CA-bearing post", "political amplification is later evidence"]
+    },
+    {
+      "case_id": "official_trump",
+      "display_name": "Official Trump / TRUMP",
+      "archetype": "official_direct",
+      "event_trigger": "Official social channels directly announced a token and linked an exact contract identity.",
+      "chains": ["solana"],
+      "token_symbols": ["TRUMP"],
+      "verified_token_addresses": ["6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN"],
+      "identity_status": "verified_for_identity_only",
+      "research_queries": ["official Trump meme token January 2025 announcement", "GetTrumpMemes official contract"],
+      "test_questions": ["exact official CA beats immediate clones", "extreme launch volatility", "later exchange listing is excluded"]
+    },
+    {
+      "case_id": "melania",
+      "display_name": "Melania / MELANIA",
+      "archetype": "official_direct",
+      "event_trigger": "An official celebrity account announced a second political meme token.",
+      "chains": ["solana"],
+      "token_symbols": ["MELANIA"],
+      "verified_token_addresses": ["FUAfBo2jgks6gB4Z4LfZkqSZgzNucisEHqnNebaRxM1P"],
+      "identity_status": "verified_for_identity_only",
+      "research_queries": ["official Melania meme token January 2025"],
+      "test_questions": ["official identity", "interaction with TRUMP attention", "later tokenomics analysis is excluded"]
+    },
+    {
+      "case_id": "moodeng",
+      "display_name": "Moo Deng",
+      "archetype": "community_tokenization",
+      "event_trigger": "A pygmy hippo became a multilingual global visual meme before and during token creation.",
+      "chains": ["solana", "ethereum"],
+      "token_symbols": ["MOODENG"],
+      "verified_token_addresses": [],
+      "identity_status": "ambiguous_same_name_tokens",
+      "research_queries": ["Moo Deng first viral posts Thailand", "MOODENG earliest token candidates"],
+      "test_questions": ["Thai and English aliases", "retain all same-name contracts", "do not insert current winner"]
+    },
+    {
+      "case_id": "luce_vatican",
+      "display_name": "Luce",
+      "archetype": "community_tokenization",
+      "event_trigger": "A newly announced Vatican mascot immediately generated visual memes and unofficial tokens.",
+      "chains": ["solana", "ethereum"],
+      "token_symbols": ["LUCE"],
+      "verified_token_addresses": [],
+      "identity_status": "unofficial_and_ambiguous",
+      "research_queries": ["Vatican Luce mascot announcement October 2024", "Luce same-name tokens first hour"],
+      "test_questions": ["official mascot is not official token", "image and name relation", "canonical margin"]
+    },
+    {
+      "case_id": "neiro",
+      "display_name": "Neiro",
+      "archetype": "canonical_competition",
+      "event_trigger": "A famous dog owner's announcement of a new dog triggered many same-name tokens.",
+      "chains": ["ethereum", "solana"],
+      "token_symbols": ["NEIRO"],
+      "verified_token_addresses": [],
+      "identity_status": "ambiguous_same_name_tokens",
+      "research_queries": ["Kabosu owner Neiro announcement", "NEIRO first token candidates"],
+      "test_questions": ["same-name competition", "owner disavowal as later evidence", "WAIT when candidates are tied"]
+    },
+    {
+      "case_id": "broccoli_cz_dog",
+      "display_name": "Broccoli",
+      "archetype": "canonical_competition",
+      "event_trigger": "A high-profile crypto founder revealed a pet name and image, producing many unofficial BNB Chain tokens.",
+      "chains": ["bsc"],
+      "token_symbols": ["BROCCOLI"],
+      "verified_token_addresses": [],
+      "identity_status": "no_official_token_many_clones",
+      "research_queries": ["CZ Broccoli dog name reveal February 2025", "Broccoli Four.meme candidates"],
+      "test_questions": ["exact event time", "no official token endorsement", "all clones must be retained"]
+    },
+    {
+      "case_id": "tst_tutorial",
+      "display_name": "TST",
+      "archetype": "crypto_native_event",
+      "event_trigger": "A tutorial exposed a test token name/address and community attention monetized it.",
+      "chains": ["bsc"],
+      "token_symbols": ["TST"],
+      "verified_token_addresses": [],
+      "identity_status": "requires_original_tutorial_capture",
+      "research_queries": ["BNB Chain TST tutorial original video", "TST Four.meme first contract"],
+      "test_questions": ["incidental appearance is not official issuance", "deletion/reupload timing", "later exchange listing excluded"]
+    },
+    {
+      "case_id": "goat_truth_terminal",
+      "display_name": "GOAT / Truth Terminal",
+      "archetype": "ai_native_community",
+      "event_trigger": "An AI-agent social narrative and community token promotion formed a fast feedback loop.",
+      "chains": ["solana"],
+      "token_symbols": ["GOAT"],
+      "verified_token_addresses": [],
+      "identity_status": "requires_primary_social_archive",
+      "research_queries": ["Truth Terminal Goatseus Maximus first posts", "GOAT first CA posts"],
+      "test_questions": ["AI output versus human deployer", "first endorsement time", "token-led versus narrative-led growth"]
+    },
+    {
+      "case_id": "fartcoin_ai_meme",
+      "display_name": "FARTCOIN",
+      "archetype": "ai_native_community",
+      "event_trigger": "AI-generated meme ideation was adopted and amplified by a human community and token market.",
+      "chains": ["solana"],
+      "token_symbols": ["FARTCOIN"],
+      "verified_token_addresses": [],
+      "identity_status": "requires_primary_thread_and_CA_archive",
+      "research_queries": ["Fartcoin first Infinite Backrooms or Truth Terminal references", "FARTCOIN first CA post"],
+      "test_questions": ["narrative origin", "community deployment", "do not backfill later AI popularity"]
+    },
+    {
+      "case_id": "kekius_maximus",
+      "display_name": "Kekius Maximus",
+      "archetype": "preexisting_token_reactivation",
+      "event_trigger": "A major public figure changed a profile name/avatar, repricing pre-existing and newly created matching tokens.",
+      "chains": ["ethereum", "solana"],
+      "token_symbols": ["KEKIUS"],
+      "verified_token_addresses": [],
+      "identity_status": "ambiguous_same_name_tokens",
+      "research_queries": ["Kekius Maximus profile name change timestamp", "KEKIUS contracts existing before change"],
+      "test_questions": ["profile state can precede news", "old token reactivation", "profile reversion only after observed"]
+    },
+    {
+      "case_id": "libra_argentina",
+      "display_name": "LIBRA",
+      "archetype": "official_amplification_negative",
+      "event_trigger": "A political leader promoted a token-like project and later deleted or retracted the post.",
+      "chains": ["solana"],
+      "token_symbols": ["LIBRA"],
+      "verified_token_addresses": [],
+      "identity_status": "requires_deleted_post_archive_and_chain_verification",
+      "research_queries": ["Milei LIBRA original post February 2025", "LIBRA first liquidity block"],
+      "test_questions": ["promotion versus issuance", "deletion as new exit evidence", "post-collapse forensics excluded at entry"]
+    },
+    {
+      "case_id": "hawk_tuah_hawk",
+      "display_name": "HAWK",
+      "archetype": "celebrity_launch_negative",
+      "event_trigger": "A viral personality's brand launched a token after the original meme had already matured.",
+      "chains": ["solana"],
+      "token_symbols": ["HAWK"],
+      "verified_token_addresses": [],
+      "identity_status": "requires_official_CA_and_point_in_time_holder_graph",
+      "research_queries": ["HAWK token launch official announcement December 2024", "HAWK point-in-time distribution"],
+      "test_questions": ["mature attention at launch", "bundled supply visible at entry", "later lawsuits excluded"]
+    },
+    {
+      "case_id": "mira_charity",
+      "display_name": "MIRA",
+      "archetype": "community_charity_tokenization",
+      "event_trigger": "A rare-disease fundraising story became connected to a community token and on-chain donations.",
+      "chains": ["solana"],
+      "token_symbols": ["MIRA"],
+      "verified_token_addresses": [],
+      "identity_status": "requires_primary_family_thread_and_transfer_proof",
+      "research_queries": ["MIRA rare disease Siqi Chen original thread", "MIRA token donation transactions"],
+      "test_questions": ["beneficiary identity", "donations as contemporaneous evidence", "later totals excluded"]
+    }
+  ]
+}
