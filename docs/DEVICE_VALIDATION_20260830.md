@@ -110,6 +110,16 @@ ingested_at <= decision_time
 
 一次只读 Medium Codex 审查尝试因当前账户本月 Agent 额度已耗尽而未执行。机器人按设计继续使用本地规则，这不影响常驻采集和 Paper 流程。Agent 仍默认关闭。
 
+## GitHub 同步
+
+代码已推送到 `https://github.com/Gaitxh/memeTrader` 的 `main` 分支。首次代码提交：
+
+```text
+0c9afb56e3542b12c593104f0a96d150bfccec3c
+```
+
+推送后使用 `git ls-remote` 核对，本地与远端 SHA 相同。私有 `config.json`、数据库、日志、虚拟环境、Session 和 bridge token 均未进入提交。
+
 ## 唯一人工步骤
 
 当前数据库中浏览器来源数量为 0，说明扩展尚未由用户在 Chrome/Edge 中加载。需要人工完成一次：

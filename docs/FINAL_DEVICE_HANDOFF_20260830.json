@@ -1,0 +1,53 @@
+{
+  "authority": [
+    "AGENTS.md",
+    "docs/FINAL_DEVICE_HANDOFF_20260830.md",
+    "docs/DEVICE_VALIDATION_20260830.md",
+    "ignored private config.json",
+    "SQLite path resolved from config.json"
+  ],
+  "version": "0.5.1",
+  "repository": "https://github.com/Gaitxh/memeTrader",
+  "branch": "main",
+  "verified_code_commit": "0c9afb56e3542b12c593104f0a96d150bfccec3c",
+  "workspace": "E:\\memeTrader",
+  "mode": "paper",
+  "live_enabled": false,
+  "agent_enabled": false,
+  "database": "data/memetrader_forward_20260830_r3.sqlite3",
+  "browser_bridge": "http://127.0.0.1:8765",
+  "scheduled_task": "memeTrader Paper Bot",
+  "validation": {
+    "pytest_passed": 41,
+    "powershell_scripts_parsed": 9,
+    "compileall": "PASS",
+    "wheel_fresh_install": "PASS",
+    "pip_check": "PASS",
+    "cli": "PASS",
+    "temporal_replay": "PASS",
+    "online_doctor": "PASS",
+    "sqlite_integrity": "ok",
+    "forced_listener_restart": "PASS",
+    "github_sha_match": true
+  },
+  "runtime_snapshot": {
+    "observations": 67,
+    "events": 62,
+    "tokens": 773,
+    "token_snapshots": 398,
+    "decisions": 0,
+    "positions": 0,
+    "trades": 0,
+    "active_source_errors": 0,
+    "browser_source_count": 0
+  },
+  "manual_remaining": "Load browser-extension in Chrome/Edge, copy ignored bridge.token into options, and verify browser heartbeats",
+  "next_phase": "Forward Shadow/Paper observation only; do not expand architecture or unlock Live",
+  "known_limits": [
+    "Reddit official RSS disabled after runtime 403/429",
+    "Bluesky public endpoint may return 403 and is not enabled in current device config",
+    "Codex Medium review was skipped because the monthly Agent quota was exhausted",
+    "remote MCP sessions may clean up background processes; verify across a normal Windows login",
+    "historical cases are tests, not profitability evidence"
+  ]
+}
