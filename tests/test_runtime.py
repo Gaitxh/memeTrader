@@ -27,6 +27,22 @@ def test_initial_config_has_private_token_and_live_locked():
     assert config["safety"]["require_solana_report"] is True
 
 
+def test_followup_tick_finalizes_event_and_token_context_without_agent_or_quote(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        runtime = Runtime(config, tmp_path)
+        calls = []
+        runtime.store.finalize_shadow_event_outcomes = lambda: calls.append("event")
+        runtime.store.finalize_token_context_outcomes = lambda: calls.append("token_context")
+        await runtime.shadow_event_followup_once()
+        assert calls == ["event", "token_context"]
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
 def test_dexscreener_discovery_persists_provenance_and_hydrates_bounded_token(tmp_path):
     async def scenario():
         config = initial_config()

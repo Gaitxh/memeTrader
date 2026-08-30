@@ -27,6 +27,8 @@ class Store:
     CANDIDATE_RANKING_KEY_PREFIX = "candidate_ranking:"
     SHADOW_EVENT_COHORT_VERSION = "shadow-event-followup/v1"
     SHADOW_EVENT_HORIZONS_MINUTES = (15, 60, 240)
+    TOKEN_CONTEXT_OUTCOME_VERSION = "token-context-outcome/v1"
+    TOKEN_CONTEXT_OUTCOME_HORIZONS_MINUTES = (15, 60, 240)
     WATCH_ATTENTION_POLICY_VERSION = "watch-attention/v1"
     TREND_ATTENTION_POLICY_VERSION = "trend-attention/v1"
 
@@ -167,6 +169,51 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS token_context_assessments_lookup_idx
                     ON token_context_assessments(token_id, assessed_at DESC, id DESC);
+                CREATE TABLE IF NOT EXISTS token_context_outcome_cohorts (
+                    id INTEGER PRIMARY KEY,
+                    cohort_key TEXT NOT NULL UNIQUE,
+                    version TEXT NOT NULL,
+                    assessment_id INTEGER NOT NULL UNIQUE,
+                    token_id TEXT NOT NULL,
+                    assessed_at TEXT NOT NULL,
+                    entry_snapshot_id INTEGER NOT NULL,
+                    entry_snapshot_at TEXT NOT NULL,
+                    entry_price REAL NOT NULL,
+                    trigger_kind TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS token_context_outcome_cohorts_status_idx
+                    ON token_context_outcome_cohorts(status, assessed_at);
+                CREATE INDEX IF NOT EXISTS token_context_outcome_cohorts_token_idx
+                    ON token_context_outcome_cohorts(token_id, assessed_at);
+                CREATE TABLE IF NOT EXISTS token_context_outcome_labels (
+                    cohort_id INTEGER NOT NULL,
+                    dimension TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'frozen_assessment',
+                    PRIMARY KEY(cohort_id,dimension,value)
+                );
+                CREATE INDEX IF NOT EXISTS token_context_outcome_labels_dimension_idx
+                    ON token_context_outcome_labels(dimension,value,cohort_id);
+                CREATE TABLE IF NOT EXISTS token_context_outcomes (
+                    id INTEGER PRIMARY KEY,
+                    cohort_id INTEGER NOT NULL,
+                    horizon_minutes INTEGER NOT NULL,
+                    target_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    outcome_snapshot_id INTEGER,
+                    outcome_observed_at TEXT,
+                    outcome_price REAL,
+                    raw_return REAL,
+                    maximum_return REAL,
+                    minimum_return REAL,
+                    snapshot_count INTEGER NOT NULL DEFAULT 0,
+                    evaluated_at TEXT NOT NULL,
+                    UNIQUE(cohort_id,horizon_minutes)
+                );
+                CREATE INDEX IF NOT EXISTS token_context_outcomes_horizon_idx
+                    ON token_context_outcomes(horizon_minutes,status,evaluated_at);
 
                 CREATE TABLE IF NOT EXISTS decisions (
                     id INTEGER PRIMARY KEY,
@@ -796,6 +843,7 @@ class Store:
         audit: Iterable[Mapping[str, Any]] = (),
         assessed_at=None,
     ) -> int:
+        assessment_time = parse_time(assessed_at or utcnow())
         with self._lock, self.db:
             cursor = self.db.execute(
                 """
@@ -806,13 +854,164 @@ class Store:
                 """,
                 (
                     str(token_id), str(trigger)[:120], str(status)[:80],
-                    iso(parse_time(assessed_at or utcnow())), iso(parse_time(snapshot_observed_at)),
+                    iso(assessment_time), iso(parse_time(snapshot_observed_at)),
                     float(momentum_score), self._bounded_json(dict(assessment)),
                     self._bounded_json(dict(agent_metadata or {})),
                     self._bounded_json([dict(item) for item in audit]),
                 ),
             )
-            return int(cursor.lastrowid)
+            assessment_id = int(cursor.lastrowid)
+            self._create_token_context_outcome_cohort_locked(
+                assessment_id,
+                token_id=str(token_id),
+                assessed_at=assessment_time,
+                status=str(status),
+                trigger=str(trigger),
+                assessment=dict(assessment),
+            )
+            return assessment_id
+
+    @staticmethod
+    def _token_context_outcome_labels(
+        assessment: Mapping[str, Any], *, status: str
+    ) -> list[tuple[str, str]]:
+        def safe(value: Any, *, domain: bool = False) -> str:
+            text = str(value or "").strip().lower()
+            pattern = r"[^a-z0-9._-]" if domain else r"[^a-z0-9_-]"
+            return re.sub(pattern, "", text)[:160]
+
+        trigger = assessment.get("investigation_trigger")
+        trigger = trigger if isinstance(trigger, Mapping) else {}
+        project = assessment.get("project_claims")
+        project = project if isinstance(project, Mapping) else {}
+        community = assessment.get("community_amplification")
+        community = community if isinstance(community, Mapping) else {}
+        figures = assessment.get("public_figure_linkage")
+        figures = figures if isinstance(figures, Mapping) else {}
+        reporting = assessment.get("independent_reporting")
+        reporting = reporting if isinstance(reporting, Mapping) else {}
+        momentum = assessment.get("onchain_momentum")
+        momentum = momentum if isinstance(momentum, Mapping) else {}
+
+        labels: list[tuple[str, str]] = []
+        for dimension, value in (
+            ("assessment_status", status),
+            ("trigger_kind", trigger.get("kind")),
+            ("project_claim_status", project.get("status")),
+            ("community_status", community.get("status")),
+            ("public_figure_linkage_status", figures.get("status")),
+            ("independent_reporting_status", reporting.get("status")),
+        ):
+            normalized = safe(value)
+            if normalized:
+                labels.append((dimension, normalized))
+
+        for value in community.get("platforms") or []:
+            normalized = safe(value)
+            if normalized:
+                labels.append(("community_platform", normalized))
+        for item in figures.get("items") or []:
+            if not isinstance(item, Mapping):
+                continue
+            normalized = safe(item.get("platform"))
+            if normalized:
+                labels.append(("public_figure_candidate_platform", normalized))
+        verified_domains = reporting.get("domains") if reporting.get("status") == "verified" else []
+        verified_domains = verified_domains if isinstance(verified_domains, list) else []
+        for value in verified_domains:
+            normalized = safe(value, domain=True)
+            if normalized:
+                labels.append(("independent_reporting_domain", normalized))
+        domain_count = len({value for dimension, value in labels if dimension == "independent_reporting_domain"})
+        labels.append(
+            ("independent_reporting_domain_count", "0" if domain_count == 0 else "1" if domain_count == 1 else "2_plus")
+        )
+
+        try:
+            score = float(momentum.get("momentum_score") or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+        labels.append(("onchain_momentum_band", "high" if score >= 80 else "medium" if score >= 60 else "low"))
+
+        if (
+            trigger.get("kind") == "high_impact_account_post"
+            and trigger.get("verification_status") == "browser_exact_entity_observation"
+        ):
+            labels.append(("verified_original_public_figure_post", "present"))
+            entity_id = safe(trigger.get("entity_id"))
+            platform = safe(trigger.get("platform"))
+            if entity_id and re.fullmatch(r"[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?", entity_id):
+                labels.append(("verified_public_figure_entity", entity_id))
+            if platform:
+                labels.append(("trigger_platform", platform))
+        return list(dict.fromkeys(labels))
+
+    def _create_token_context_outcome_cohort_locked(
+        self,
+        assessment_id: int,
+        *,
+        token_id: str,
+        assessed_at: Any,
+        status: str,
+        trigger: str,
+        assessment: Mapping[str, Any],
+    ) -> int | None:
+        assessed = parse_time(assessed_at)
+        snapshot = self.db.execute(
+            """
+            SELECT id,observed_at,price_usd FROM token_snapshots
+            WHERE token_id=? AND observed_at<=? AND price_usd>0
+            ORDER BY observed_at DESC,id DESC LIMIT 1
+            """,
+            (str(token_id), iso(assessed)),
+        ).fetchone()
+        if snapshot is None:
+            return None
+        investigation_trigger = assessment.get("investigation_trigger")
+        investigation_trigger = (
+            investigation_trigger if isinstance(investigation_trigger, Mapping) else {}
+        )
+        trigger_kind = re.sub(
+            r"[^a-z0-9_-]", "",
+            str(investigation_trigger.get("kind") or trigger or "unknown").strip().lower(),
+        )[:120] or "unknown"
+        cohort_key = hashlib.sha256(
+            f"{self.TOKEN_CONTEXT_OUTCOME_VERSION}\n{int(assessment_id)}".encode("utf-8")
+        ).hexdigest()
+        cursor = self.db.execute(
+            """
+            INSERT OR IGNORE INTO token_context_outcome_cohorts(
+                cohort_key,version,assessment_id,token_id,assessed_at,entry_snapshot_id,
+                entry_snapshot_at,entry_price,trigger_kind,status,created_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,'pending',?)
+            """,
+            (
+                cohort_key, self.TOKEN_CONTEXT_OUTCOME_VERSION, int(assessment_id), str(token_id),
+                iso(assessed), int(snapshot["id"]), str(snapshot["observed_at"]),
+                float(snapshot["price_usd"]), trigger_kind, iso(),
+            ),
+        )
+        if cursor.rowcount != 1:
+            row = self.db.execute(
+                "SELECT id FROM token_context_outcome_cohorts WHERE assessment_id=?",
+                (int(assessment_id),),
+            ).fetchone()
+            return int(row["id"]) if row else None
+        cohort_id = int(cursor.lastrowid)
+        label_assessment = dict(assessment)
+        if not isinstance(label_assessment.get("investigation_trigger"), Mapping):
+            label_assessment["investigation_trigger"] = {"kind": trigger_kind}
+        for dimension, value in self._token_context_outcome_labels(
+            label_assessment, status=status
+        ):
+            self.db.execute(
+                """
+                INSERT INTO token_context_outcome_labels(cohort_id,dimension,value,source)
+                VALUES(?,?,?,'frozen_assessment')
+                """,
+                (cohort_id, dimension, value),
+            )
+        return cohort_id
 
     def token_context_assessments(self, token_id: str, *, limit: int = 20) -> list[sqlite3.Row]:
         return list(
@@ -824,6 +1023,366 @@ class Store:
                 (str(token_id), max(1, min(100, int(limit)))),
             )
         )
+
+    def token_context_outcome_tracking(self, assessment_id: int) -> dict[str, Any]:
+        cohort = self.db.execute(
+            "SELECT * FROM token_context_outcome_cohorts WHERE assessment_id=?",
+            (int(assessment_id),),
+        ).fetchone()
+        if cohort is None:
+            return {
+                "status": "not_tracked",
+                "version": self.TOKEN_CONTEXT_OUTCOME_VERSION,
+                "mode": "descriptive_observation_only",
+                "reason": "no_eligible_entry_snapshot_or_pre_tracking_assessment",
+                "horizons": [],
+                "decision_eligible": False,
+                "affects": "none",
+            }
+        outcomes = {
+            int(row["horizon_minutes"]): row
+            for row in self.db.execute(
+                "SELECT * FROM token_context_outcomes WHERE cohort_id=?",
+                (int(cohort["id"]),),
+            )
+        }
+        assessed = parse_time(cohort["assessed_at"])
+        horizons = []
+        for horizon in self.TOKEN_CONTEXT_OUTCOME_HORIZONS_MINUTES:
+            row = outcomes.get(horizon)
+            horizons.append(
+                {
+                    "horizon_minutes": horizon,
+                    "target_at": iso(assessed + timedelta(minutes=horizon)),
+                    "status": str(row["status"]) if row else "pending",
+                    "outcome_observed_at": row["outcome_observed_at"] if row else None,
+                    "outcome_price": row["outcome_price"] if row else None,
+                    "raw_return": row["raw_return"] if row else None,
+                    "maximum_return": row["maximum_return"] if row else None,
+                    "minimum_return": row["minimum_return"] if row else None,
+                    "snapshot_count": int(row["snapshot_count"] or 0) if row else 0,
+                }
+            )
+        return {
+            "status": str(cohort["status"]),
+            "version": str(cohort["version"]),
+            "mode": "descriptive_observation_only",
+            "entry_snapshot_at": str(cohort["entry_snapshot_at"]),
+            "entry_price": float(cohort["entry_price"]),
+            "trigger_kind": str(cohort["trigger_kind"]),
+            "horizons": horizons,
+            "decision_eligible": False,
+            "endorsement_inferred": False,
+            "affects": "none",
+        }
+
+    def finalize_token_context_outcomes(
+        self,
+        *,
+        now: Any = None,
+        horizons_minutes: Iterable[int] | None = None,
+        max_lateness_minutes: int = 30,
+    ) -> dict[str, int]:
+        """Append immutable context follow-through using only locally observed snapshots."""
+        evaluated_at = parse_time(now or utcnow())
+        horizons = tuple(
+            sorted(
+                {
+                    max(1, int(value))
+                    for value in (
+                        horizons_minutes or self.TOKEN_CONTEXT_OUTCOME_HORIZONS_MINUTES
+                    )
+                }
+            )
+        )
+        observed_count = 0
+        missing_count = 0
+        completed_count = 0
+        with self._lock, self.db:
+            cohorts = list(
+                self.db.execute(
+                    "SELECT * FROM token_context_outcome_cohorts "
+                    "WHERE status='pending' ORDER BY assessed_at,id"
+                )
+            )
+            for cohort in cohorts:
+                existing = {
+                    int(row["horizon_minutes"])
+                    for row in self.db.execute(
+                        "SELECT horizon_minutes FROM token_context_outcomes WHERE cohort_id=?",
+                        (int(cohort["id"]),),
+                    )
+                }
+                for horizon in horizons:
+                    if horizon in existing:
+                        continue
+                    target = parse_time(cohort["assessed_at"]) + timedelta(minutes=horizon)
+                    if evaluated_at < target:
+                        continue
+                    deadline = target + timedelta(minutes=max(1, int(max_lateness_minutes)))
+                    upper = min(evaluated_at, deadline)
+                    snapshot = self.db.execute(
+                        """
+                        SELECT id,observed_at,price_usd FROM token_snapshots
+                        WHERE token_id=? AND observed_at>=? AND observed_at<=? AND price_usd>0
+                        ORDER BY observed_at,id LIMIT 1
+                        """,
+                        (str(cohort["token_id"]), iso(target), iso(upper)),
+                    ).fetchone()
+                    if snapshot is not None:
+                        path = list(
+                            self.db.execute(
+                                """
+                                SELECT price_usd FROM token_snapshots
+                                WHERE token_id=? AND observed_at>=? AND observed_at<=? AND price_usd>0
+                                ORDER BY observed_at,id
+                                """,
+                                (
+                                    str(cohort["token_id"]), str(cohort["entry_snapshot_at"]),
+                                    str(snapshot["observed_at"]),
+                                ),
+                            )
+                        )
+                        entry_price = float(cohort["entry_price"])
+                        returns = [float(row["price_usd"]) / entry_price - 1.0 for row in path]
+                        raw_return = float(snapshot["price_usd"]) / entry_price - 1.0
+                        self.db.execute(
+                            """
+                            INSERT INTO token_context_outcomes(
+                                cohort_id,horizon_minutes,target_at,status,outcome_snapshot_id,
+                                outcome_observed_at,outcome_price,raw_return,maximum_return,minimum_return,
+                                snapshot_count,evaluated_at
+                            ) VALUES(?,?,?,'observed',?,?,?,?,?,?,?,?)
+                            """,
+                            (
+                                int(cohort["id"]), horizon, iso(target), int(snapshot["id"]),
+                                str(snapshot["observed_at"]), float(snapshot["price_usd"]), raw_return,
+                                max(returns) if returns else raw_return,
+                                min(returns) if returns else raw_return,
+                                len(path), iso(evaluated_at),
+                            ),
+                        )
+                        observed_count += 1
+                    elif evaluated_at >= deadline:
+                        self.db.execute(
+                            """
+                            INSERT INTO token_context_outcomes(
+                                cohort_id,horizon_minutes,target_at,status,snapshot_count,evaluated_at
+                            ) VALUES(?,?,?,'missing',0,?)
+                            """,
+                            (int(cohort["id"]), horizon, iso(target), iso(evaluated_at)),
+                        )
+                        missing_count += 1
+                outcome_total = int(
+                    self.db.execute(
+                        "SELECT COUNT(*) FROM token_context_outcomes WHERE cohort_id=?",
+                        (int(cohort["id"]),),
+                    ).fetchone()[0]
+                )
+                if outcome_total >= len(horizons):
+                    self.db.execute(
+                        "UPDATE token_context_outcome_cohorts SET status='complete' WHERE id=?",
+                        (int(cohort["id"]),),
+                    )
+                    completed_count += 1
+        return {
+            "cohorts_checked": len(cohorts),
+            "outcomes_observed": observed_count,
+            "outcomes_missing": missing_count,
+            "cohorts_completed": completed_count,
+        }
+
+    @staticmethod
+    def token_context_outcome_learning_summary_from_connection(
+        connection: sqlite3.Connection,
+        *,
+        lookback_days: int = 90,
+    ) -> dict[str, Any]:
+        required = {
+            "token_context_assessments", "token_context_outcome_cohorts",
+            "token_context_outcome_labels", "token_context_outcomes",
+        }
+        tables = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        empty = {
+            "status": "not_observed",
+            "version": Store.TOKEN_CONTEXT_OUTCOME_VERSION,
+            "mode": "descriptive_observation_only",
+            "horizons_minutes": list(Store.TOKEN_CONTEXT_OUTCOME_HORIZONS_MINUTES),
+            "items": [],
+            "summary": {
+                "assessments": 0, "tracked_cohorts": 0, "pending_cohorts": 0,
+                "complete_cohorts": 0, "observed_outcomes": 0, "missing_outcomes": 0,
+                "untracked_assessments": 0, "descriptive_mature_labels": 0,
+            },
+            "maturity_policy": {
+                "minimum_observed_cohorts": 30, "minimum_assessment_days": 15,
+                "minimum_positive_outcomes": 5, "minimum_nonpositive_outcomes": 5,
+                "verified_entity_minimum_cohorts": 50,
+                "verified_entity_minimum_days": 20,
+            },
+            "activation": False,
+            "actual_schedule_changed_by_learning": False,
+            "decision_eligible": False,
+            "endorsement_inferred": False,
+            "affects": "none",
+        }
+        if not required.issubset(tables):
+            return empty
+        now = utcnow()
+        start = iso(now - timedelta(days=max(1, min(3650, int(lookback_days)))))
+        assessment_count = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM token_context_assessments WHERE assessed_at>=?", (start,)
+            ).fetchone()[0]
+        )
+        cohorts = list(
+            connection.execute(
+                "SELECT * FROM token_context_outcome_cohorts WHERE assessed_at>=?", (start,)
+            )
+        )
+        if not cohorts and assessment_count == 0:
+            return empty
+        cohort_ids = [int(row["id"]) for row in cohorts]
+        labels_by_cohort: dict[int, list[tuple[str, str]]] = {value: [] for value in cohort_ids}
+        outcomes_by_cohort: dict[int, list[sqlite3.Row]] = {value: [] for value in cohort_ids}
+        if cohort_ids:
+            placeholders = ",".join("?" for _ in cohort_ids)
+            for row in connection.execute(
+                f"SELECT cohort_id,dimension,value FROM token_context_outcome_labels "
+                f"WHERE cohort_id IN ({placeholders})",
+                cohort_ids,
+            ):
+                labels_by_cohort[int(row["cohort_id"])].append(
+                    (str(row["dimension"]), str(row["value"]))
+                )
+            for row in connection.execute(
+                f"SELECT * FROM token_context_outcomes WHERE cohort_id IN ({placeholders})",
+                cohort_ids,
+            ):
+                outcomes_by_cohort[int(row["cohort_id"])].append(row)
+
+        grouped: dict[tuple[int, str, str], dict[str, Any]] = {}
+        for cohort in cohorts:
+            cohort_id = int(cohort["id"])
+            day = parse_time(cohort["assessed_at"]).date().isoformat()
+            for outcome in outcomes_by_cohort.get(cohort_id, []):
+                horizon = int(outcome["horizon_minutes"])
+                for dimension, value in labels_by_cohort.get(cohort_id, []):
+                    item = grouped.setdefault(
+                        (horizon, dimension, value),
+                        {
+                            "horizon_minutes": horizon, "dimension": dimension, "value": value,
+                            "cohort_ids": set(), "token_ids": set(), "assessment_days": set(),
+                            "returns": [], "maximum_returns": [], "minimum_returns": [],
+                            "missing_outcomes": 0, "last_assessed_at": None,
+                            "last_outcome_observed_at": None,
+                        },
+                    )
+                    item["cohort_ids"].add(cohort_id)
+                    item["token_ids"].add(str(cohort["token_id"]))
+                    item["assessment_days"].add(day)
+                    if not item["last_assessed_at"] or str(cohort["assessed_at"]) > item["last_assessed_at"]:
+                        item["last_assessed_at"] = str(cohort["assessed_at"])
+                    if str(outcome["status"]) == "observed" and outcome["raw_return"] is not None:
+                        item["returns"].append(float(outcome["raw_return"]))
+                        if outcome["maximum_return"] is not None:
+                            item["maximum_returns"].append(float(outcome["maximum_return"]))
+                        if outcome["minimum_return"] is not None:
+                            item["minimum_returns"].append(float(outcome["minimum_return"]))
+                        observed_at = outcome["outcome_observed_at"]
+                        if observed_at and (
+                            not item["last_outcome_observed_at"]
+                            or str(observed_at) > item["last_outcome_observed_at"]
+                        ):
+                            item["last_outcome_observed_at"] = str(observed_at)
+                    elif str(outcome["status"]) == "missing":
+                        item["missing_outcomes"] += 1
+
+        items = []
+        for item in grouped.values():
+            returns = sorted(item.pop("returns"))
+            maximum_returns = item.pop("maximum_returns")
+            minimum_returns = item.pop("minimum_returns")
+            cohort_count = len(item.pop("cohort_ids"))
+            token_count = len(item.pop("token_ids"))
+            day_count = len(item.pop("assessment_days"))
+            observed = len(returns)
+            positive = sum(value > 0 for value in returns)
+            nonpositive = observed - positive
+            minimum_cohorts = 50 if item["dimension"] == "verified_public_figure_entity" else 30
+            minimum_days = 20 if item["dimension"] == "verified_public_figure_entity" else 15
+            mature = (
+                observed >= minimum_cohorts and day_count >= minimum_days
+                and positive >= 5 and nonpositive >= 5
+            )
+            median = None
+            if returns:
+                middle = len(returns) // 2
+                median = returns[middle] if len(returns) % 2 else (returns[middle - 1] + returns[middle]) / 2
+            total_finalized = observed + int(item["missing_outcomes"])
+            items.append(
+                {
+                    **item,
+                    "tracked_cohorts": cohort_count,
+                    "distinct_tokens": token_count,
+                    "assessment_days": day_count,
+                    "observed_outcomes": observed,
+                    "missing_rate": (
+                        int(item["missing_outcomes"]) / total_finalized if total_finalized else None
+                    ),
+                    "positive_outcomes": positive,
+                    "nonpositive_outcomes": nonpositive,
+                    "mean_raw_return": sum(returns) / observed if observed else None,
+                    "median_raw_return": median,
+                    "mean_maximum_return": (
+                        sum(maximum_returns) / len(maximum_returns) if maximum_returns else None
+                    ),
+                    "mean_minimum_return": (
+                        sum(minimum_returns) / len(minimum_returns) if minimum_returns else None
+                    ),
+                    "descriptive_mature": mature,
+                    "activation": False,
+                    "decision_eligible": False,
+                    "affects": "none",
+                }
+            )
+        items.sort(
+            key=lambda item: (
+                not bool(item["descriptive_mature"]),
+                0 if int(item["horizon_minutes"]) == 60 else int(item["horizon_minutes"]),
+                -int(item["observed_outcomes"]), str(item["dimension"]), str(item["value"]),
+            )
+        )
+        observed_outcomes = sum(
+            1 for rows in outcomes_by_cohort.values() for row in rows if str(row["status"]) == "observed"
+        )
+        missing_outcomes = sum(
+            1 for rows in outcomes_by_cohort.values() for row in rows if str(row["status"]) == "missing"
+        )
+        mature_count = sum(1 for item in items if item["descriptive_mature"])
+        return {
+            **empty,
+            "status": (
+                "descriptive_review_available" if mature_count else
+                "collecting_followup" if cohorts else "not_observed"
+            ),
+            "lookback_days": int(lookback_days),
+            "items": items[:500],
+            "summary": {
+                "assessments": assessment_count,
+                "tracked_cohorts": len(cohorts),
+                "pending_cohorts": sum(str(row["status"]) == "pending" for row in cohorts),
+                "complete_cohorts": sum(str(row["status"]) == "complete" for row in cohorts),
+                "observed_outcomes": observed_outcomes,
+                "missing_outcomes": missing_outcomes,
+                "untracked_assessments": max(0, assessment_count - len(cohorts)),
+                "descriptive_mature_labels": mature_count,
+            },
+            "as_of": iso(now),
+        }
 
     @staticmethod
     def _token_source_fingerprint(link: Mapping[str, Any]) -> str:

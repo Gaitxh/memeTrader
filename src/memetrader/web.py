@@ -101,6 +101,9 @@ EXPECTED_TABLES = {
     "shadow_event_cohorts",
     "shadow_event_outcomes",
     "token_source_links",
+    "token_context_outcome_cohorts",
+    "token_context_outcome_labels",
+    "token_context_outcomes",
     "token_snapshots",
     "tokens",
     "trades",
@@ -2240,10 +2243,70 @@ class WebData:
                 "assessment": assessment if isinstance(assessment, dict) else {},
                 "agent": metadata if isinstance(metadata, dict) else {},
                 "audit": audit if isinstance(audit, list) else [],
+                "outcome_tracking": self._token_context_outcome_tracking(
+                    connection, int(row["id"])
+                ),
                 "decision_eligible": False,
                 "context_only": True,
             }
         return result
+
+    def _token_context_outcome_tracking(
+        self, connection: sqlite3.Connection, assessment_id: int
+    ) -> dict[str, Any]:
+        required = {"token_context_outcome_cohorts", "token_context_outcomes"}
+        if not all(self._table_exists(connection, table) for table in required):
+            return {
+                "status": "not_tracked", "horizons": [],
+                "mode": "descriptive_observation_only", "affects": "none",
+                "decision_eligible": False,
+            }
+        cohort = connection.execute(
+            "SELECT * FROM token_context_outcome_cohorts WHERE assessment_id=?",
+            (int(assessment_id),),
+        ).fetchone()
+        if cohort is None:
+            return {
+                "status": "not_tracked", "horizons": [],
+                "reason": "no_eligible_entry_snapshot_or_pre_tracking_assessment",
+                "mode": "descriptive_observation_only", "affects": "none",
+                "decision_eligible": False,
+            }
+        outcomes = {
+            int(row["horizon_minutes"]): row
+            for row in connection.execute(
+                "SELECT * FROM token_context_outcomes WHERE cohort_id=?",
+                (int(cohort["id"]),),
+            )
+        }
+        assessed_at = parse_time(cohort["assessed_at"])
+        horizons = []
+        for horizon in Store.TOKEN_CONTEXT_OUTCOME_HORIZONS_MINUTES:
+            row = outcomes.get(horizon)
+            horizons.append(
+                {
+                    "horizon_minutes": int(horizon),
+                    "target_at": iso(assessed_at + timedelta(minutes=horizon)),
+                    "status": str(row["status"]) if row else "pending",
+                    "outcome_observed_at": row["outcome_observed_at"] if row else None,
+                    "raw_return": row["raw_return"] if row else None,
+                    "maximum_return": row["maximum_return"] if row else None,
+                    "minimum_return": row["minimum_return"] if row else None,
+                    "snapshot_count": int(row["snapshot_count"] or 0) if row else 0,
+                }
+            )
+        return {
+            "status": str(cohort["status"]),
+            "version": str(cohort["version"]),
+            "mode": "descriptive_observation_only",
+            "entry_snapshot_at": str(cohort["entry_snapshot_at"]),
+            "entry_price": float(cohort["entry_price"]),
+            "trigger_kind": str(cohort["trigger_kind"]),
+            "horizons": horizons,
+            "decision_eligible": False,
+            "endorsement_inferred": False,
+            "affects": "none",
+        }
 
     def _token_detail_coverage(
         self,
@@ -3230,6 +3293,24 @@ class WebData:
             "items": [],
             "summary": {"cohorts": 0, "pending_cohorts": 0, "complete_cohorts": 0},
         }
+        token_context_followup: dict[str, Any] = {
+            "status": "not_observed",
+            "version": Store.TOKEN_CONTEXT_OUTCOME_VERSION,
+            "mode": "descriptive_observation_only",
+            "horizons_minutes": list(Store.TOKEN_CONTEXT_OUTCOME_HORIZONS_MINUTES),
+            "items": [],
+            "summary": {
+                "assessments": 0, "tracked_cohorts": 0, "pending_cohorts": 0,
+                "complete_cohorts": 0, "observed_outcomes": 0,
+                "missing_outcomes": 0, "untracked_assessments": 0,
+                "descriptive_mature_labels": 0,
+            },
+            "activation": False,
+            "actual_schedule_changed_by_learning": False,
+            "decision_eligible": False,
+            "endorsement_inferred": False,
+            "affects": "none",
+        }
         watch_account_learning: dict[str, Any] = {
             "status": "not_observed", "items": [],
             "summary": {"runs": 0, "completed_runs": 0, "account_exposures": 0},
@@ -3415,6 +3496,17 @@ class WebData:
                     )
                 except (sqlite3.Error, TypeError, ValueError):
                     shadow_followup["status"] = "unavailable"
+                try:
+                    token_context_followup = (
+                        Store.token_context_outcome_learning_summary_from_connection(
+                            connection,
+                            lookback_days=int(
+                                autonomous_cfg.get("source_learning_lookback_days", 90)
+                            ),
+                        )
+                    )
+                except (sqlite3.Error, TypeError, ValueError):
+                    token_context_followup["status"] = "unavailable"
                 try:
                     lookback_days = int(autonomous_cfg.get("source_learning_lookback_days", 90))
                     start = iso(utcnow() - timedelta(days=max(1, min(3650, lookback_days))))
@@ -3668,6 +3760,7 @@ class WebData:
             "watch_account_learning": watch_account_learning,
             "watch_attention_policy": watch_attention,
             "shadow_followup": shadow_followup,
+            "token_context_followup": token_context_followup,
             "learning_closure": learning_closure,
             "as_of": iso(),
         }

@@ -428,6 +428,10 @@ def test_web_api_empty_database_is_safe_and_live_is_locked(tmp_path: Path):
     assert empty_sources["shadow_followup"]["status"] == "not_observed"
     assert empty_sources["shadow_followup"]["summary"]["cohorts"] == 0
     assert empty_sources["shadow_followup"]["horizons_minutes"] == [15, 60, 240]
+    assert empty_sources["token_context_followup"]["status"] == "not_observed"
+    assert empty_sources["token_context_followup"]["summary"]["assessments"] == 0
+    assert empty_sources["token_context_followup"]["activation"] is False
+    assert empty_sources["token_context_followup"]["affects"] == "none"
     assert empty_sources["watch_account_learning"]["status"] == "not_observed"
     assert empty_sources["watch_account_learning"]["summary"]["account_exposures"] == 0
     assert empty_sources["learning_closure"]["status"] == "not_observed"
@@ -729,6 +733,14 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
     assert token["context_assessment"]["assessment"]["decision_eligible"] is False
     assert token["context_assessment"]["assessment"]["public_figure_linkage"]["endorsement_inferred"] is False
     assert token["context_assessment"]["agent"]["model"] == "gpt-5.6-luna"
+    context_tracking = token["context_assessment"]["outcome_tracking"]
+    assert context_tracking["status"] == "pending"
+    assert [item["status"] for item in context_tracking["horizons"]] == [
+        "pending", "pending", "pending"
+    ]
+    assert context_tracking["decision_eligible"] is False
+    assert context_tracking["endorsement_inferred"] is False
+    assert context_tracking["affects"] == "none"
     token_list = web.tokens({})
     coverage = token_list["detail_coverage"]
     assert coverage.pop("tracking_started_at") is not None
@@ -882,6 +894,14 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
     assert source_payload["shadow_followup"]["summary"]["cohorts"] == 1
     assert source_payload["shadow_followup"]["summary"]["pending_cohorts"] == 1
     assert source_payload["shadow_followup"]["items"] == []
+    assert source_payload["token_context_followup"]["status"] == "collecting_followup"
+    assert source_payload["token_context_followup"]["summary"]["assessments"] == 1
+    assert source_payload["token_context_followup"]["summary"]["tracked_cohorts"] == 1
+    assert source_payload["token_context_followup"]["summary"]["pending_cohorts"] == 1
+    assert source_payload["token_context_followup"]["activation"] is False
+    assert source_payload["token_context_followup"]["actual_schedule_changed_by_learning"] is False
+    assert source_payload["token_context_followup"]["decision_eligible"] is False
+    assert source_payload["token_context_followup"]["affects"] == "none"
     assert len(source_payload["platforms"]) == 9
     x_status = next(item for item in source_payload["platforms"] if item["platform"] == "x")
     assert x_status["access_state"] == "authenticated"
@@ -1048,6 +1068,8 @@ def test_candidate_ranking_api_is_persisted_bounded_sanitized_and_wait_is_truthf
     assert "data-testid='source-learning'" in app
     assert "data-testid='watch-account-exposure'" in app
     assert "data-testid='trend-attention-policy'" in app
+    assert "data-testid='token-context-followup'" in app
+    assert "Token-context forward follow-through: learn what merits more research" in app
     assert "Trend attention learning: exploration first, never trading" in app
     assert "Watch rotation changes only after both check efficiency and non-buy-only market follow-up mature" in app
     assert "Closed Paper outcomes are secondary validation and cannot change watch rotation alone" in app

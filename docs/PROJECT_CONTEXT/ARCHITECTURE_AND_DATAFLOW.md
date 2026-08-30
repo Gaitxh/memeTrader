@@ -85,6 +85,16 @@ Trend Scout 主题通道基线 round-robin / 受限选择性分配
 15 / 60 / 240 分钟本机真实快照随访
           │
           └─ 仅作选择偏差和市场延续研究；不回填、不参与策略
+
+每次新 Token Context assessment（含空结果与错误）
+          │
+          ▼
+冻结触发 / 项目声明 / 社区 / 人物候选 / 独立报道 + 当时价格
+          │
+          ▼
+15 / 60 / 240 分钟本机真实快照随访
+          │
+          └─ 只描述哪些调查语境值得继续研究；不改 Agent 调度、证据或交易
 ```
 
 `Web` 不重新算交易策略、不生成演示数据，也不因页面刷新触发采集或决策。
@@ -124,6 +134,7 @@ Trend Scout 主题通道基线 round-robin / 受限选择性分配
 - `browser_watch_account_exposures`：浏览器桥精确匹配配置公开账号页后形成的 30 分钟前向暴露窗口；主页、搜索页、登录页和 Telegram 不写入。
 - `browser_watch_observation_links`：把本机收到的精确原帖 Observation 与暴露窗口、event ID 和当时的决策证据资格关联；只用于同源学习审计，不改变事件或交易规则。
 - `shadow_event_cohorts` / `shadow_event_cohort_labels` / `shadow_event_outcomes`：首次 WAIT/CANDIDATE 的冻结价格、来源标签和固定时点市场随访；结果角色与交易策略完全隔离。
+- `token_context_outcome_cohorts` / `token_context_outcome_labels` / `token_context_outcomes`：新 Token Context assessment 的冻结价格、安全语境标签与 15/60/240 分钟结果；历史不回填、missing 不改写，仅作描述性研究。
 - `source_health`：来源最后成功、最后产出、最后错误。
 - `agent_attempts`：按任务/模型/推理强度记录安全的 token 用量账本。
 - `kv`：调度、退避、Agent 结果、浏览器平台心跳等小型运行状态。

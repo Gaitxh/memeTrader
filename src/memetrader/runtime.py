@@ -2052,6 +2052,7 @@ class Runtime:
 
     async def shadow_event_followup_once(self) -> None:
         self.store.finalize_shadow_event_outcomes()
+        self.store.finalize_token_context_outcomes()
 
     async def pump_loop(self) -> None:
         cfg = self.config["sources"].get("pumpportal") or {}

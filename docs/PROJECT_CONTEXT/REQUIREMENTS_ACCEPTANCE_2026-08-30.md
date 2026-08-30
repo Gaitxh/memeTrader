@@ -52,15 +52,15 @@
 - **Agent 难度自适应**：任务级模型/推理分层和失败回退已实现；当前强模型升级主要处理模型/额度不可用。基于语义冲突、低质量输出或证据复杂度自动升级，同时避免对有效空结果浪费额度，尚未形成完整质量策略。
 - **公开 URL**：受口令保护的 Cloudflare Quick Tunnel 架构已实现并在本机配置；Quick Tunnel 地址是临时的，不是稳定域名。
 - **Devnet 真链验证**：钱包连接、集群核验、余额和受限人工操作已实现；faucet 未取得测试 SOL，因此没有成功链上 signature。
-- **长期学习**：机制已实现但样本不成熟。当前 watch-account exposure 为 0，Trend lane 只有极少暴露，shadow cohort 全部仍在随访，Paper 成交/闭仓结果为 0；不能声称已经学出最优平台、人物或信息类型。
-- **Token Context 学习闭环**：五轨评估可审计展示，但尚未把决策时冻结的 assessment 标签接入独立 shadow/Paper 描述性结果标签。
+- **长期学习**：机制已实现但样本不成熟。2026-08-31 当前运行证据为 watch-account exposure 0、Trend lane 1 个完成 run/3 个 lane exposure/0 个接受事件、5 个 shadow cohort（1 complete）、2 笔 Paper 成交形成 1 个闭仓结果；不能声称已经学出最优平台、人物或信息类型。
+- **Token Context 学习闭环**：五轨 assessment 已接入独立的 15/60/240 分钟前向描述性结果账本。它包含 `no_context`、Agent 错误、未核验候选和 missing，历史数据不回填；只有浏览器精确原帖可产生人物实体标签。当前仍须等待新版本真实 cohort 和固定时点结果，且该账本不改变调度或交易。
 
 ## 4. 未实现
 
 - 可审查的 Mainnet Broker、签名边界、小额真实成交和实盘自动策略没有实现。
 - 固定自有域名/长期 Cloudflare Tunnel 没有配置；当前只有临时受保护入口。
 - 社交桥的“页面心跳 → 账号暴露 → 精确原帖命中 → 事件归因 → 60m 随访 → Paper 结果”已具备同源持久化与 Web 分阶段展示；真实运行仍需在扩展打开精确配置账号页后产生第一批样本，后半段必须等待同事件的未来观察，不能回填。
-- 学习可视化仍缺少更完整的样本不确定性、remaining gates、baseline 与实际选择差异，以及 Agent 产出到学习标签的解释。
+- 学习可视化已覆盖 Token Context 冻结标签、observed/missing、正/非正结果和成熟状态；账号/主题策略仍可继续补充更完整的统计不确定性与 baseline 对照，但不能用尚无真实样本的估计填充界面。
 - 按结果质量动态提升模型/推理强度的通用路由尚未实现；任何未来实现都必须把“没有热点”视为可能的正确答案，不能为追求非空结果反复升级。
 
 ## 5. 已明确跳过、禁止或不应照做
@@ -128,7 +128,7 @@
 1. 完成当前低动量直接调查入口的发布门禁、单实例重启和 Web 验收。
 2. 让浏览器扩展真正连接一个已登录 X 公开页面，产生第一条真实 platform heartbeat 和 watch-account exposure；这是人物/平台学习链当前最前端的断点。
 3. 继续 Paper 前向运行，收集 WAIT/CANDIDATE 的 15/60/240 分钟随访及真实闭仓样本；样本未成熟前不调学习倍率。
-4. 设计只作描述性研究的 Token Context assessment→shadow outcome 标签闭环，并补足学习数据质量可视化；不得进入交易链。
+4. 等待新的 Token Context cohort 形成 15/60/240 分钟真实结果，审查 missing 比例、各 assessment 状态覆盖和是否存在选择偏差；不得在成熟前启用任何优化。
 5. 在实际失败样本出现后，再实现质量驱动的 Agent 升级策略；避免为正确空结果无意义地反复调用强模型。
 6. Devnet 有可用测试 SOL 时完成最小人工链上签名验证；Mainnet Live 继续锁定。
 7. OKX Meme Pump 仅列为待明确授权的可选研究源：核心详情/开发者/bundle/同车钱包接口需要官方签名凭据并属于 Premium，当前不得逆向抓取页面。若未来接入，social 仍是 `provider_metadata` 身份线索，聪明钱标签只进入前向 shadow 研究，不进入确定性交易。

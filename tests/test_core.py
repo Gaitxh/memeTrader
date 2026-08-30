@@ -603,6 +603,160 @@ def test_shadow_event_followup_is_forward_only_fixed_horizon_and_non_activating(
     store.close()
 
 
+def test_token_context_outcomes_are_forward_only_safe_labeled_and_non_activating(tmp_path: Path):
+    path = tmp_path / "token-context-followup.sqlite3"
+    store = Store(path)
+    now = datetime.now(timezone.utc)
+    token = TokenCandidate(chain="solana", address="C" * 32, name="Context", symbol="CTX")
+    store.upsert_token(token, seen_at=now)
+    store.add_snapshot(
+        TokenSnapshot(
+            chain="solana", address=token.address, price_usd=1.0, liquidity_usd=50_000,
+            market_cap_usd=500_000, volume_5m_usd=10_000, buys_5m=20, sells_5m=10,
+            observed_at=now, provider="fixture",
+        )
+    )
+    assessment = {
+        "version": "token-context-assessment/v1",
+        "decision_eligible": False,
+        "investigation_trigger": {
+            "kind": "high_impact_account_post",
+            "verification_status": "browser_exact_entity_observation",
+            "entity_id": "elon_musk",
+            "platform": "x",
+            "endorsement_inferred": False,
+        },
+        "project_claims": {"status": "project_attached_unverified"},
+        "community_amplification": {
+            "status": "project_channels_only", "platforms": ["x", "telegram"],
+        },
+        "public_figure_linkage": {
+            "status": "unverified_candidates",
+            "items": [{"person": "Elon Musk", "platform": "x", "endorsement_inferred": False}],
+        },
+        "independent_reporting": {
+            "status": "not_decision_eligible", "domains": ["unverified.example"],
+        },
+        "onchain_momentum": {"momentum_score": 84},
+    }
+    assessment_id = store.add_token_context_assessment(
+        token.token_id,
+        trigger="high_impact_account_post",
+        status="insufficient_verified_sources",
+        snapshot_observed_at=now,
+        momentum_score=84,
+        assessment=assessment,
+        assessed_at=now,
+    )
+    cohort = store.db.execute(
+        "SELECT * FROM token_context_outcome_cohorts WHERE assessment_id=?", (assessment_id,)
+    ).fetchone()
+    assert cohort is not None
+    assert cohort["entry_snapshot_at"] <= cohort["assessed_at"]
+    assert cohort["trigger_kind"] == "high_impact_account_post"
+    labels = {
+        (row["dimension"], row["value"])
+        for row in store.db.execute(
+            "SELECT dimension,value FROM token_context_outcome_labels WHERE cohort_id=?",
+            (int(cohort["id"]),),
+        )
+    }
+    assert ("verified_public_figure_entity", "elon_musk") in labels
+    assert ("verified_original_public_figure_post", "present") in labels
+    assert ("community_platform", "telegram") in labels
+    assert ("independent_reporting_domain_count", "0") in labels
+    assert all("elon musk" not in value and "unverified.example" not in value for _, value in labels)
+
+    untracked = TokenCandidate(chain="solana", address="N" * 32, name="No Entry", symbol="NONE")
+    store.upsert_token(untracked, seen_at=now)
+    untracked_assessment_id = store.add_token_context_assessment(
+        untracked.token_id,
+        trigger="high_momentum_reverse_context",
+        status="no_context",
+        snapshot_observed_at=now,
+        momentum_score=81,
+        assessment={
+            "investigation_trigger": {"kind": "high_momentum_reverse_context"},
+            "onchain_momentum": {"momentum_score": 81},
+        },
+        assessed_at=now,
+    )
+    assert store.token_context_outcome_tracking(untracked_assessment_id)["status"] == "not_tracked"
+    store.add_snapshot(
+        TokenSnapshot(
+            chain="solana", address=untracked.address, price_usd=1.0, liquidity_usd=20_000,
+            market_cap_usd=None, volume_5m_usd=None, buys_5m=0, sells_5m=0,
+            observed_at=now + timedelta(minutes=1), provider="future-only-fixture",
+        )
+    )
+
+    for minutes, price in ((10, 0.5), (16, 2.0), (61, 1.5)):
+        store.add_snapshot(
+            TokenSnapshot(
+                chain="solana", address=token.address, price_usd=price, liquidity_usd=50_000,
+                market_cap_usd=500_000, volume_5m_usd=10_000, buys_5m=20, sells_5m=10,
+                observed_at=now + timedelta(minutes=minutes), provider="fixture",
+            )
+        )
+    assert store.finalize_token_context_outcomes(now=now + timedelta(minutes=14))["outcomes_observed"] == 0
+    assert store.finalize_token_context_outcomes(now=now + timedelta(minutes=17))["outcomes_observed"] == 1
+    store.finalize_token_context_outcomes(now=now + timedelta(minutes=62))
+    final = store.finalize_token_context_outcomes(now=now + timedelta(minutes=271))
+    assert final["outcomes_missing"] == 1 and final["cohorts_completed"] == 1
+    outcomes = list(
+        store.db.execute(
+            "SELECT * FROM token_context_outcomes WHERE cohort_id=? ORDER BY horizon_minutes",
+            (int(cohort["id"]),),
+        )
+    )
+    assert [(row["horizon_minutes"], row["status"]) for row in outcomes] == [
+        (15, "observed"), (60, "observed"), (240, "missing")
+    ]
+    assert outcomes[0]["raw_return"] == pytest.approx(1.0)
+    assert outcomes[0]["maximum_return"] == pytest.approx(1.0)
+    assert outcomes[0]["minimum_return"] == pytest.approx(-0.5)
+    assert outcomes[1]["raw_return"] == pytest.approx(0.5)
+
+    store.add_snapshot(
+        TokenSnapshot(
+            chain="solana", address=token.address, price_usd=0.75, liquidity_usd=50_000,
+            market_cap_usd=None, volume_5m_usd=None, buys_5m=0, sells_5m=0,
+            observed_at=now + timedelta(minutes=241), provider="late-fixture",
+        )
+    )
+    store.finalize_token_context_outcomes(now=now + timedelta(minutes=272))
+    frozen = store.db.execute(
+        "SELECT status,raw_return FROM token_context_outcomes WHERE cohort_id=? AND horizon_minutes=240",
+        (int(cohort["id"]),),
+    ).fetchone()
+    assert frozen["status"] == "missing" and frozen["raw_return"] is None
+    tracking = store.token_context_outcome_tracking(assessment_id)
+    assert tracking["status"] == "complete"
+    assert [item["status"] for item in tracking["horizons"]] == ["observed", "observed", "missing"]
+    assert tracking["decision_eligible"] is False and tracking["affects"] == "none"
+    summary = store.token_context_outcome_learning_summary_from_connection(store.db)
+    entity_60m = next(
+        item for item in summary["items"]
+        if item["dimension"] == "verified_public_figure_entity"
+        and item["value"] == "elon_musk"
+        and item["horizon_minutes"] == 60
+    )
+    assert entity_60m["mean_raw_return"] == pytest.approx(0.5)
+    assert entity_60m["descriptive_mature"] is False
+    assert summary["summary"]["untracked_assessments"] == 1
+    assert summary["activation"] is False
+    assert summary["actual_schedule_changed_by_learning"] is False
+    assert summary["decision_eligible"] is False and summary["affects"] == "none"
+
+    store.close()
+    reopened = Store(path)
+    assert reopened.db.execute(
+        "SELECT COUNT(*) FROM token_context_outcome_cohorts WHERE assessment_id=?",
+        (untracked_assessment_id,),
+    ).fetchone()[0] == 0
+    reopened.close()
+
+
 def test_dexscreener_attached_links_are_typed_and_promotions_stay_context_only(tmp_path: Path):
     assert DexScreenerClient._classify_link("https://x.com/search?q=mascot")[:2] == ("search", "x")
     assert DexScreenerClient._classify_link("https://truthsocial.com/@realDonaldTrump/123")[:2] == (
