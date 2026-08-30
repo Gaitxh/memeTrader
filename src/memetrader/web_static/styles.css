@@ -604,6 +604,14 @@ select.control { padding-right: 28px; }
 .usage-summary > div:last-child { border-right: 0; }
 .usage-summary span { display: block; color: var(--dim); font: 650 11px/1.2 var(--mono); letter-spacing: .06em; }
 .usage-summary strong { display: block; margin-top: 7px; font: 700 14px/1 var(--mono); }
+.logical-role-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); }
+.logical-role-card { min-width: 0; padding: 14px; border-right: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); }
+.logical-role-card:nth-child(3n) { border-right: 0; }
+.logical-role-card:nth-last-child(-n+3) { border-bottom: 0; }
+.logical-role-card span { color: var(--dim); font: 650 9px/1.2 var(--mono); letter-spacing: .12em; }
+.logical-role-card h3 { margin: 5px 0 10px; font-size: 14px; }
+.logical-role-card > strong { color: var(--purple); font: 650 10px/1.35 var(--mono); }
+.logical-role-card p { margin: 7px 0 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
 .usage-table { min-width: 1120px; }
 
 .source-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
@@ -801,6 +809,9 @@ select.control { padding-right: 28px; }
   .wallet-address-block { align-items: flex-start; }
   .wallet-address-block strong { white-space: normal; overflow-wrap: anywhere; }
   .usage-summary { grid-template-columns: repeat(2,1fr); }
+  .logical-role-grid { grid-template-columns: 1fr; }
+  .logical-role-card,.logical-role-card:nth-child(3n),.logical-role-card:nth-last-child(-n+3) { border-right: 0; border-bottom: 1px solid var(--line-soft); }
+  .logical-role-card:last-child { border-bottom: 0; }
   .usage-summary > div:nth-child(2n) { border-right: 0; }
   .usage-summary > div:nth-child(-n+6) { border-bottom: 1px solid var(--line-soft); }
   .metric-card { min-height: 84px; padding: 11px; }
