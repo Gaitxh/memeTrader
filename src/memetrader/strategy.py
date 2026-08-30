@@ -74,10 +74,10 @@ PROMOTIONAL_MARKET_PATTERNS = (
 
 EVENT_TOPIC_PATTERNS = (
     ("crypto_native", re.compile(r"\b(?:crypto|bitcoin|ethereum|solana|blockchain|token|memecoin|meme coin|defi|nft|binance|coinbase|wallet)\b|(?:加密|比特币|以太坊|索拉纳|区块链|代币|迷因币|meme币|交易所|币安)", re.I)),
-    ("sports", re.compile(r"\b(?:football|soccer|basketball|cricket|baseball|tennis|nba|nfl|fifa|olympic|world cup|athlete|tournament)\b|(?:体育|足球|篮球|板球|棒球|网球|奥运|世界杯|运动员|锦标赛)", re.I)),
+    ("sports", re.compile(r"\b(?:football|soccer|basketball|cricket|baseball|tennis|rugby|hockey|golf|boxing|ufc|formula 1|f1|nba|nfl|fifa|olympic|world cup|premier league|champions league|psg|athlete|coach|player|tournament|stadium)\b|(?:体育|足球|篮球|板球|棒球|网球|橄榄球|曲棍球|高尔夫|拳击|奥运|世界杯|运动员|教练|球员|锦标赛|体育场)", re.I)),
     ("ai_tech_gaming", re.compile(r"\b(?:artificial intelligence|ai|robot|technology|tech|software|startup|chip|gaming|gamer|video game|openai|nvidia|spacex|tesla)\b|(?:人工智能|机器人|科技|软件|初创|芯片|游戏|特斯拉)", re.I)),
     ("celebrity_entertainment", re.compile(r"\b(?:celebrity|actor|actress|singer|musician|rapper|film|movie|television|netflix|hollywood|album|concert|influencer)\b|(?:名人|明星|演员|歌手|音乐人|说唱|电影|电视|专辑|演唱会|网红|娱乐)", re.I)),
-    ("animals_internet_culture", re.compile(r"\b(?:animal|dog|cat|otter|panda|zoo|internet culture|mascot|emoji)\b|(?:动物|小狗|猫咪|水獭|熊猫|动物园|互联网文化|吉祥物|表情包)", re.I)),
+    ("animals_internet_culture", re.compile(r"\b(?:animal|dog|cat|otter|panda|zoo|internet culture|internet meme|mascot|emoji|meme)\b|\b(?:goes|went|going)\s+viral\b|\bviral\s+(?:clip|video|post|joke|trend|challenge|moment)\b|(?:动物|小狗|猫咪|水獭|熊猫|动物园|互联网文化|网络热梗|吉祥物|表情包|走红|爆红)", re.I)),
     ("political_public_figure", re.compile(r"\b(?:president|prime minister|election|congress|senate|parliament|government|white house|politics|political|sanction)\b|(?:总统|首相|总理|选举|国会|议会|政府|白宫|政治|制裁)", re.I)),
 )
 

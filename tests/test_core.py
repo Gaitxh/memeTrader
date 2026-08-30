@@ -226,7 +226,9 @@ def test_source_learning_records_only_closed_paper_lead_evidence(tmp_path: Path)
 
 def test_event_topic_is_deterministic_forward_only_and_immutable(tmp_path: Path):
     assert classify_event_topic("Otter mascot becomes a viral emoji") == "animals_internet_culture"
+    assert classify_event_topic("Atlanta teacher's classroom joke goes viral") == "animals_internet_culture"
     assert classify_event_topic("World Cup football final") == "sports"
+    assert classify_event_topic("Luis Enrique exchange during PSG match goes viral") == "sports"
     assert classify_event_topic("New AI gaming chip launches") == "ai_tech_gaming"
     assert classify_event_topic("Singer announces a concert") == "celebrity_entertainment"
     assert classify_event_topic("President calls an election") == "political_public_figure"

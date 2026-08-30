@@ -20,7 +20,7 @@
 - `feature / confirmation / identity / promotion`、独立来源、首次本机观察时间、future/stale 拒绝和 r5/r6 审计规则已经实现。
 - Event→Token 与 Token→Event 双向关联、候选排名、canonical margin、安全门、`WAIT / REJECT / CANDIDATE` 和 Paper 仓位/退出由现有 Runtime/Strategy 决定，Web 不复制策略。
 - 每个新观察到的 Solana Token 进入持久化 Dex 详情补全队列；项目附带链接只作 identity/promotion 调查种子。
-- Token Context 不再只有动量入口：本机浏览器桥实际接收、精确归因且与 Token 种子 URL 对应的高影响力账号原帖，或新鲜高热事件与 Token 的高匹配 WAIT/CANDIDATE 持久化关系，也可在低动量时触发调查。项目方元数据中的帖子 URL 只能作调查种子，不能单独触发；名称、头像、主页、蓝勾和项目自报也不能绕过门槛。未来时间与 REJECT 关系会被排除，Agent 结果仍须通过两个独立可访问域名的本地验证。
+- Token Context 不再只有动量入口：本机浏览器桥实际接收、精确归因且与 Token 种子 URL 对应的高影响力账号原帖，或新鲜高热事件与 Token 的高匹配 WAIT/CANDIDATE 持久化关系，也可在低动量时触发调查。Dex 详情补全后会立即检查精确原帖关系，每轮最多调查一个最高优先级候选，且不绕过任何 Agent 预算或冷却。项目方元数据中的帖子 URL 只能作调查种子，不能单独触发；名称、头像、主页、蓝勾和项目自报也不能绕过门槛。未来时间与 REJECT 关系会被排除，Agent 结果仍须通过两个独立可访问域名的本地验证。
 
 ### Web 与可视化
 
@@ -47,6 +47,7 @@
 - 来源、账号、实体、平台、主题通道的追加式学习账本、15/60/240 分钟 shadow follow-up 和前向成熟门已实现；学习只允许小幅改变观察轮换，绝不进入证据、候选、风控、仓位、退出或 Live。
 - `shadow-event-followup/v2-event-action` 修复了首个 WAIT 永久吞掉后续 CANDIDATE 的选择偏差：WAIT 与首次真实升级的 CANDIDATE 分别冻结当时价格和来源，同动作不重复、CANDIDATE 后不倒退、旧样本不回填。
 - Mastodon 新 Observation 现在冻结显式 `platform=mastodon`，使平台学习不再把真实采集降为无平台的泛化 `social`；修复只作用于未来新记录，旧 Observation 不追改。
+- 事件 topic 分类补充了明确体育语境和有限的互联网文化传播标记；只影响以后第一次被接受的新事件，历史 `other/unknown` 保持原值。
 
 ## 3. 部分实现或依赖当前设备状态
 

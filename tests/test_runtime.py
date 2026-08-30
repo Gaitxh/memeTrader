@@ -93,6 +93,90 @@ def test_dexscreener_discovery_persists_provenance_and_hydrates_bounded_token(tm
     asyncio.run(scenario())
 
 
+def test_dex_hydration_immediately_investigates_exact_high_impact_post_only(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        config["candidate"]["chains"] = ["solana"]
+        settings_path = tmp_path / "data" / "web_console" / "console_settings.json"
+        settings_path.parent.mkdir(parents=True)
+        settings_path.write_text(
+            json.dumps(
+                {
+                    "watch_accounts": [
+                        {
+                            "platform": "x", "handle": "@elonmusk",
+                            "url": "https://x.com/elonmusk", "entity_id": "elon_musk",
+                            "priority": 4, "watch_cadence": "critical", "enabled": True,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        runtime = Runtime(config, tmp_path)
+        token = TokenCandidate(chain="solana", address="H" * 32, name="Rocket Otter", symbol="ROT")
+        snapshot = TokenSnapshot("solana", token.address, 0.01, 100, 1000, 10, 1, 1)
+        runtime.store.add_observation(
+            Observation(
+                source="browser:x:elonmusk",
+                source_kind="social",
+                title="Exact locally received post",
+                url="https://x.com/elonmusk/status/12345",
+                author="@elonmusk",
+                availability_proof="local_receive",
+                role="feature",
+                source_item_id="https://x.com/elonmusk/status/12345",
+                raw={
+                    "source_entity_id": "elon_musk",
+                    "browser": {"platform": "x", "source_entity_id": "elon_musk"},
+                },
+            )
+        )
+
+        class Dex:
+            DISCOVERY_SURFACES = {"token_profiles": ("/token-profiles/latest/v1", "identity")}
+
+            async def discover_surface(self, surface, allowed_chains, limit=40):
+                return [
+                    {
+                        "token_id": token.token_id,
+                        "chain": token.chain,
+                        "address": token.address,
+                        "provider": "dexscreener",
+                        "discovery_surface": surface,
+                        "role": "identity",
+                        "original_url": "https://x.com/elonmusk/status/12345?utm_source=project",
+                        "normalized_url": "https://x.com/elonmusk/status/12345?utm_source=project",
+                        "link_kind": "social_post",
+                        "platform": "x",
+                        "verification_status": "provider_metadata",
+                    }
+                ]
+
+            async def quote(self, chain, address):
+                return token, snapshot
+
+        investigations = []
+
+        async def search_context(candidate, observed, *, momentum_score, event_relation=None):
+            investigations.append((candidate.token_id, momentum_score, event_relation))
+            return []
+
+        runtime.dex = Dex()
+        runtime.autonomous_search.search_token_context = search_context
+        await runtime.poll_dexscreener_discovery_once()
+        assert len(investigations) == 1
+        assert investigations[0][0] == token.token_id
+        assert investigations[0][1] < config["autonomous_search"]["context_min_momentum_score"]
+        assert investigations[0][2]["kind"] == "high_impact_account_post"
+        assert investigations[0][2]["endorsement_inferred"] is False
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
 def test_new_solana_tokens_enter_durable_batch_hydration_and_missing_pair_retries(tmp_path):
     async def scenario():
         config = initial_config()

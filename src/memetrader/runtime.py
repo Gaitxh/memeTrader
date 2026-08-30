@@ -1318,6 +1318,7 @@ class Runtime:
         allowed_chains = {str(chain).lower() for chain in self.config["candidate"].get("chains", [])}
         max_items = int(cfg.get("max_items_per_surface", 40))
         max_hydrations = int(cfg.get("max_hydrations_per_cycle", 180))
+        direct_context_candidates: list[tuple[int, TokenCandidate, TokenSnapshot, float, dict[str, Any]]] = []
         for surface in self.dex.DISCOVERY_SURFACES:
             source = f"dexscreener:{surface}"
             try:
@@ -1376,6 +1377,27 @@ class Runtime:
                     self.store.upsert_token(token, seen_at=snapshot.observed_at)
                     self.store.add_snapshot(snapshot)
                     self.store.mark_token_detail_hydration(token_id, "hydrated")
+                    momentum = CandidateEvaluator._momentum_score(snapshot)
+                    trigger = self.autonomous_search.resolve_token_context_trigger(
+                        token,
+                        momentum_score=momentum,
+                    )
+                    if trigger and str(trigger.get("kind") or "") != "onchain_momentum":
+                        direct_context_candidates.append(
+                            (int(trigger.get("priority") or 0), token, snapshot, momentum, trigger)
+                        )
+
+        if direct_context_candidates:
+            _, token, snapshot, momentum, trigger = max(
+                direct_context_candidates,
+                key=lambda item: (item[0], item[2].observed_at),
+            )
+            await self._investigate_token_context(
+                token,
+                snapshot,
+                momentum_score=momentum,
+                event_relation=trigger,
+            )
 
     async def poll_external_once(self) -> None:
         collectors = [*self._rss_collectors(), *self._bluesky_collectors(), *self._mastodon_collectors()]
