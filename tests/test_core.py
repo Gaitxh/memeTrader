@@ -210,6 +210,162 @@ def test_event_topic_is_deterministic_forward_only_and_immutable(tmp_path: Path)
     store.close()
 
 
+def test_shadow_event_followup_is_forward_only_fixed_horizon_and_non_activating(tmp_path: Path):
+    store = Store(tmp_path / "shadow-followup.sqlite3")
+    now = datetime.now(timezone.utc)
+    event_id = store.create_event(
+        "Viral rescue mascot",
+        ["rescue", "mascot"],
+        82,
+        now - timedelta(minutes=2),
+        topic="animals_internet_culture",
+    )
+    observations = [
+        Observation(
+            source="browser:x:alpha",
+            source_kind="social",
+            title="Original mascot post",
+            observed_at=now - timedelta(minutes=2),
+            ingested_at=now - timedelta(minutes=2),
+            role="feature",
+            source_item_id="shadow-lead-a",
+            raw={
+                "browser": {"platform": "x"},
+                "source_entity_id": "alpha",
+                "trend_lane_id": "culture_entertainment",
+            },
+        ),
+        Observation(
+            source="news-confirmation",
+            source_kind="news",
+            title="Independent confirmation",
+            observed_at=now - timedelta(minutes=1, seconds=30),
+            ingested_at=now - timedelta(minutes=1, seconds=30),
+            role="confirmation",
+            source_item_id="shadow-lead-b",
+        ),
+        Observation(
+            source="future-ingestion",
+            source_kind="news",
+            title="Not locally available at the decision",
+            observed_at=now - timedelta(minutes=1, seconds=50),
+            ingested_at=now + timedelta(minutes=1),
+            role="feature",
+            source_item_id="shadow-future",
+        ),
+        Observation(
+            source="late-confirmation",
+            source_kind="news",
+            title="Outside the frozen lead window",
+            observed_at=now,
+            ingested_at=now,
+            role="confirmation",
+            source_item_id="shadow-late",
+        ),
+    ]
+    observation_ids = []
+    for observation in observations:
+        observation_id, _ = store.add_observation(observation)
+        store.link_event_observation(event_id, observation_id)
+        observation_ids.append(observation_id)
+    token = TokenCandidate(chain="solana", address="S" * 32, name="Rescue", symbol="RSC")
+    store.upsert_token(token, seen_at=now - timedelta(minutes=1))
+    store.add_snapshot(
+        TokenSnapshot(
+            chain="solana", address=token.address, price_usd=1.0, liquidity_usd=50_000,
+            market_cap_usd=500_000, volume_5m_usd=10_000, buys_5m=20, sells_5m=10,
+            observed_at=now - timedelta(seconds=10), provider="fixture",
+        )
+    )
+    decision = CandidateDecision(
+        event_id, token.token_id, "WAIT", 70, 90, 2, ["match=90"], ["canonical_token_ambiguous"],
+        created_at=now,
+    )
+    decision_id = store.add_decision(decision)
+    cohort_id = store.create_shadow_event_cohort(
+        decision,
+        decision_id=decision_id,
+        source_observation_ids=observation_ids,
+    )
+    assert cohort_id is not None
+    cohort = store.db.execute("SELECT * FROM shadow_event_cohorts WHERE id=?", (cohort_id,)).fetchone()
+    assert cohort["action"] == "WAIT"
+    assert cohort["eligible_source_count"] == 2
+    labels = list(store.db.execute("SELECT * FROM shadow_event_cohort_labels WHERE cohort_id=?", (cohort_id,)))
+    assert {row["source_observation_id"] for row in labels} == set(observation_ids[:2])
+    assert any(row["dimension"] == "entity" and row["value"] == "alpha" for row in labels)
+    assert any(
+        row["dimension"] == "trend_lane" and row["value"] == "culture_entertainment"
+        for row in labels
+    )
+    assert abs(sum(row["attribution_weight"] for row in labels if row["dimension"] == "source_kind") - 1.0) < 1e-9
+
+    repeated = CandidateDecision(event_id, token.token_id, "CANDIDATE", 80, 92, 8, ["later"], created_at=now)
+    repeated_id = store.add_decision(repeated)
+    assert store.create_shadow_event_cohort(
+        repeated,
+        decision_id=repeated_id,
+        source_observation_ids=observation_ids,
+    ) == cohort_id
+    assert store.db.execute("SELECT COUNT(*) FROM shadow_event_cohorts").fetchone()[0] == 1
+
+    for minutes, price in ((10, 0.5), (16, 2.0), (61, 1.5)):
+        store.add_snapshot(
+            TokenSnapshot(
+                chain="solana", address=token.address, price_usd=price, liquidity_usd=50_000,
+                market_cap_usd=500_000, volume_5m_usd=10_000, buys_5m=20, sells_5m=10,
+                observed_at=now + timedelta(minutes=minutes), provider="fixture",
+            )
+        )
+    first = store.finalize_shadow_event_outcomes(now=now + timedelta(minutes=17))
+    assert first["outcomes_observed"] == 1
+    store.finalize_shadow_event_outcomes(now=now + timedelta(minutes=62))
+    final = store.finalize_shadow_event_outcomes(now=now + timedelta(minutes=271))
+    assert final["outcomes_missing"] == 1 and final["cohorts_completed"] == 1
+    outcomes = list(
+        store.db.execute(
+            "SELECT * FROM shadow_event_outcomes WHERE cohort_id=? ORDER BY horizon_minutes",
+            (cohort_id,),
+        )
+    )
+    assert [(row["horizon_minutes"], row["status"]) for row in outcomes] == [
+        (15, "observed"), (60, "observed"), (240, "missing")
+    ]
+    assert outcomes[0]["raw_return"] == pytest.approx(1.0)
+    assert outcomes[0]["maximum_return"] == pytest.approx(1.0)
+    assert outcomes[0]["minimum_return"] == pytest.approx(-0.5)
+    assert outcomes[1]["raw_return"] == pytest.approx(0.5)
+    assert outcomes[2]["raw_return"] is None
+    store.add_snapshot(
+        TokenSnapshot(
+            chain="solana", address=token.address, price_usd=0.75, liquidity_usd=50_000,
+            market_cap_usd=500_000, volume_5m_usd=10_000, buys_5m=20, sells_5m=10,
+            observed_at=now + timedelta(minutes=241), provider="late-fixture",
+        )
+    )
+    store.finalize_shadow_event_outcomes(now=now + timedelta(minutes=272))
+    frozen = store.db.execute(
+        "SELECT status,raw_return FROM shadow_event_outcomes WHERE cohort_id=? AND horizon_minutes=240",
+        (cohort_id,),
+    ).fetchone()
+    assert frozen["status"] == "missing" and frozen["raw_return"] is None
+
+    summary = store.shadow_event_learning_summary_from_connection(store.db)
+    assert summary["status"] == "collecting_followup"
+    assert summary["summary"]["cohorts"] == 1
+    assert summary["summary"]["complete_cohorts"] == 1
+    entity_60m = next(
+        item for item in summary["items"]
+        if item["dimension"] == "entity" and item["value"] == "alpha" and item["horizon_minutes"] == 60
+    )
+    assert entity_60m["mean_raw_return"] == pytest.approx(0.5)
+    assert entity_60m["wait_cohort_count"] == 1
+    assert entity_60m["candidate_cohort_count"] == 0
+    assert entity_60m["shadow_review_eligible"] is False
+    assert entity_60m["rotation_active"] is False
+    store.close()
+
+
 def test_dexscreener_attached_links_are_typed_and_promotions_stay_context_only(tmp_path: Path):
     assert DexScreenerClient._classify_link("https://x.com/search?q=mascot")[:2] == ("search", "x")
     assert DexScreenerClient._classify_link("https://truthsocial.com/@realDonaldTrump/123")[:2] == (

@@ -119,9 +119,11 @@ def _seed(path: Path) -> tuple[int, str]:
             raw={"original_role": "feature", "published_time_in_future": True},
         ),
     ]
+    observation_ids = []
     for observation in observations:
         observation_id, _ = store.add_observation(observation)
         store.link_event_observation(event_id, observation_id)
+        observation_ids.append(observation_id)
 
     token = TokenCandidate(
         chain="solana",
@@ -167,18 +169,22 @@ def _seed(path: Path) -> tuple[int, str]:
                 "raw": {"must_not_be_returned": "raw-provider-payload"},
             }
         )
-    store.add_decision(
-        CandidateDecision(
-            event_id=event_id,
-            token_id=token.token_id,
-            action="WAIT",
-            score=65,
-            match_score=88,
-            canonical_margin=2,
-            reasons=["match=88.0"],
-            rejected_reasons=["canonical_token_ambiguous"],
-            created_at=now,
-        )
+    decision = CandidateDecision(
+        event_id=event_id,
+        token_id=token.token_id,
+        action="WAIT",
+        score=65,
+        match_score=88,
+        canonical_margin=2,
+        reasons=["match=88.0"],
+        rejected_reasons=["canonical_token_ambiguous"],
+        created_at=now,
+    )
+    decision_id = store.add_decision(decision)
+    store.create_shadow_event_cohort(
+        decision,
+        decision_id=decision_id,
+        source_observation_ids=observation_ids,
     )
     store.paper_buy(
         event_id=event_id,
@@ -340,6 +346,10 @@ def test_web_api_empty_database_is_safe_and_live_is_locked(tmp_path: Path):
     assert web.events({})["items"] == []
     assert web.tokens({})["items"] == []
     assert web.decisions({})["items"] == []
+    empty_sources = web.sources()
+    assert empty_sources["shadow_followup"]["status"] == "not_observed"
+    assert empty_sources["shadow_followup"]["summary"]["cohorts"] == 0
+    assert empty_sources["shadow_followup"]["horizons_minutes"] == [15, 60, 240]
     audit = web.audit()
     assert audit["status"] == "policy_only"
     assert audit["policy_enforced"] is True
@@ -584,6 +594,12 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
     assert culture_lane["accepted_events"] == 1
     assert culture_lane["accepted_events_per_completed_run"] == 1.0
     assert culture_lane["shadow_mature"] is False
+    assert source_payload["shadow_followup"]["status"] == "collecting_followup"
+    assert source_payload["shadow_followup"]["version"] == "shadow-event-followup/v1"
+    assert source_payload["shadow_followup"]["horizons_minutes"] == [15, 60, 240]
+    assert source_payload["shadow_followup"]["summary"]["cohorts"] == 1
+    assert source_payload["shadow_followup"]["summary"]["pending_cohorts"] == 1
+    assert source_payload["shadow_followup"]["items"] == []
     assert len(source_payload["platforms"]) == 9
     x_status = next(item for item in source_payload["platforms"] if item["platform"] == "x")
     assert x_status["access_state"] == "authenticated"

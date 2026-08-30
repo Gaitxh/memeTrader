@@ -287,6 +287,11 @@ def test_candidate_decision_persists_computed_position_size(tmp_path):
         assert ranking["final_outcome"]["decision_id"] == row["id"]
         assert ranking["final_outcome"]["position_usd"] == row["position_usd"]
         assert ranking["candidates"][0]["position_usd"] == row["position_usd"]
+        cohort = runtime.store.db.execute("SELECT * FROM shadow_event_cohorts").fetchone()
+        assert cohort is not None
+        assert cohort["event_id"] == event_id
+        assert cohort["token_id"] == token.token_id
+        assert cohort["action"] == "CANDIDATE"
 
         runtime.store.set_kv(f"event_decision_next:{event_id}", "1970-01-01T00:00:00Z")
         await runtime.evaluate_events_once()
@@ -299,6 +304,7 @@ def test_candidate_decision_persists_computed_position_size(tmp_path):
         assert adjusted_ranking["final_outcome"]["position_usd"] == 0
         assert adjusted_ranking["candidates"][0]["action"] == "WAIT"
         assert adjusted_ranking["candidates"][0]["rejected_reasons"] == ["position_already_open"]
+        assert runtime.store.db.execute("SELECT COUNT(*) FROM shadow_event_cohorts").fetchone()[0] == 1
         await runtime.close()
 
     asyncio.run(scenario())

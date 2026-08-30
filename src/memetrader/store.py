@@ -25,6 +25,8 @@ from .models import (
 
 class Store:
     CANDIDATE_RANKING_KEY_PREFIX = "candidate_ranking:"
+    SHADOW_EVENT_COHORT_VERSION = "shadow-event-followup/v1"
+    SHADOW_EVENT_HORIZONS_MINUTES = (15, 60, 240)
 
     def __init__(self, path: str | Path, initial_cash_usd: float = 10000):
         self.path = Path(path)
@@ -273,6 +275,56 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS trend_lane_run_lanes_lane_idx
                     ON trend_lane_run_lanes(lane_id,run_id);
+
+                CREATE TABLE IF NOT EXISTS shadow_event_cohorts (
+                    id INTEGER PRIMARY KEY,
+                    cohort_key TEXT NOT NULL UNIQUE,
+                    version TEXT NOT NULL,
+                    event_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    decision_id INTEGER NOT NULL,
+                    action TEXT NOT NULL,
+                    decision_at TEXT NOT NULL,
+                    entry_snapshot_id INTEGER NOT NULL,
+                    entry_snapshot_at TEXT NOT NULL,
+                    entry_price REAL NOT NULL,
+                    eligible_source_count INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS shadow_event_cohorts_status_idx
+                    ON shadow_event_cohorts(status,decision_at);
+                CREATE INDEX IF NOT EXISTS shadow_event_cohorts_event_idx
+                    ON shadow_event_cohorts(event_id,token_id);
+                CREATE TABLE IF NOT EXISTS shadow_event_cohort_labels (
+                    cohort_id INTEGER NOT NULL,
+                    source_observation_id INTEGER NOT NULL,
+                    dimension TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    origin_platform TEXT NOT NULL,
+                    attribution_weight REAL NOT NULL,
+                    PRIMARY KEY(cohort_id,source_observation_id,dimension,value)
+                );
+                CREATE INDEX IF NOT EXISTS shadow_event_cohort_labels_dimension_idx
+                    ON shadow_event_cohort_labels(dimension,value,cohort_id);
+                CREATE TABLE IF NOT EXISTS shadow_event_outcomes (
+                    id INTEGER PRIMARY KEY,
+                    cohort_id INTEGER NOT NULL,
+                    horizon_minutes INTEGER NOT NULL,
+                    target_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    outcome_snapshot_id INTEGER,
+                    outcome_observed_at TEXT,
+                    outcome_price REAL,
+                    raw_return REAL,
+                    maximum_return REAL,
+                    minimum_return REAL,
+                    snapshot_count INTEGER NOT NULL DEFAULT 0,
+                    evaluated_at TEXT NOT NULL,
+                    UNIQUE(cohort_id,horizon_minutes)
+                );
+                CREATE INDEX IF NOT EXISTS shadow_event_outcomes_horizon_idx
+                    ON shadow_event_outcomes(horizon_minutes,status,evaluated_at);
                 """
             )
             columns = {row["name"] for row in self.db.execute("PRAGMA table_info(observations)")}
@@ -1084,6 +1136,369 @@ class Store:
                 "affects": "agent_watch_rotation_only",
             },
             "as_of": iso(now),
+        }
+
+    def create_shadow_event_cohort(
+        self,
+        decision: CandidateDecision,
+        *,
+        decision_id: int,
+        source_observation_ids: Iterable[int],
+    ) -> int | None:
+        """Freeze the first WAIT/CANDIDATE token follow-up for an event without changing strategy."""
+        if str(decision.action).upper() not in {"WAIT", "CANDIDATE"} or not decision.token_id:
+            return None
+        cohort_key = hashlib.sha256(
+            f"{self.SHADOW_EVENT_COHORT_VERSION}\n{int(decision.event_id)}".encode("utf-8")
+        ).hexdigest()
+        decision_at = iso(decision.created_at)
+        observation_ids = sorted({int(value) for value in source_observation_ids if int(value) > 0})
+        with self._lock, self.db:
+            existing = self.db.execute(
+                "SELECT id FROM shadow_event_cohorts WHERE cohort_key=?",
+                (cohort_key,),
+            ).fetchone()
+            if existing:
+                return int(existing["id"])
+            snapshot = self.db.execute(
+                """
+                SELECT id,observed_at,price_usd FROM token_snapshots
+                WHERE token_id=? AND observed_at<=? AND price_usd>0
+                ORDER BY observed_at DESC,id DESC LIMIT 1
+                """,
+                (decision.token_id, decision_at),
+            ).fetchone()
+            if snapshot is None or not observation_ids:
+                return None
+            placeholders = ",".join("?" for _ in observation_ids)
+            eligible = list(
+                self.db.execute(
+                    f"""
+                    SELECT o.id,o.source,o.source_kind,o.observed_at,o.raw_json,e.topic AS event_topic
+                    FROM observations o
+                    JOIN event_observations eo ON eo.observation_id=o.id
+                    JOIN events e ON e.id=eo.event_id
+                    WHERE eo.event_id=? AND o.id IN ({placeholders})
+                      AND o.capture_phase='live' AND o.role IN ('feature','confirmation')
+                      AND o.observed_at<=? AND o.ingested_at<=?
+                      AND (o.published_at IS NULL OR o.published_at<=?)
+                    ORDER BY o.observed_at,o.id
+                    """,
+                    (int(decision.event_id), *observation_ids, decision_at, decision_at, decision_at),
+                )
+            )
+            if not eligible:
+                return None
+            first_at = parse_time(eligible[0]["observed_at"])
+            leads = [
+                row for row in eligible
+                if (parse_time(row["observed_at"]) - first_at).total_seconds() <= 60
+            ]
+            if not leads:
+                return None
+            cursor = self.db.execute(
+                """
+                INSERT INTO shadow_event_cohorts(
+                    cohort_key,version,event_id,token_id,decision_id,action,decision_at,
+                    entry_snapshot_id,entry_snapshot_at,entry_price,eligible_source_count,status,created_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,'pending',?)
+                """,
+                (
+                    cohort_key, self.SHADOW_EVENT_COHORT_VERSION, int(decision.event_id), decision.token_id,
+                    int(decision_id), str(decision.action).upper(), decision_at, int(snapshot["id"]),
+                    str(snapshot["observed_at"]), float(snapshot["price_usd"]), len(leads), iso(),
+                ),
+            )
+            cohort_id = int(cursor.lastrowid)
+            weight = 1.0 / len(leads)
+            for row in leads:
+                labels = self._source_learning_labels(row)
+                platform = next((value for dimension, value in labels if dimension == "platform"), "")
+                for dimension, value in labels:
+                    self.db.execute(
+                        """
+                        INSERT INTO shadow_event_cohort_labels(
+                            cohort_id,source_observation_id,dimension,value,origin_platform,attribution_weight
+                        ) VALUES(?,?,?,?,?,?)
+                        """,
+                        (cohort_id, int(row["id"]), dimension, value, platform, weight),
+                    )
+            return cohort_id
+
+    def finalize_shadow_event_outcomes(
+        self,
+        *,
+        now: Any = None,
+        horizons_minutes: Iterable[int] | None = None,
+        max_lateness_minutes: int = 30,
+    ) -> dict[str, int]:
+        """Append fixed-horizon market follow-through using only snapshots already observed locally."""
+        evaluated_at = parse_time(now or utcnow())
+        horizons = tuple(
+            sorted({max(1, int(value)) for value in (horizons_minutes or self.SHADOW_EVENT_HORIZONS_MINUTES)})
+        )
+        observed_count = 0
+        missing_count = 0
+        completed_count = 0
+        with self._lock, self.db:
+            cohorts = list(
+                self.db.execute(
+                    "SELECT * FROM shadow_event_cohorts WHERE status='pending' ORDER BY decision_at,id"
+                )
+            )
+            for cohort in cohorts:
+                existing = {
+                    int(row["horizon_minutes"])
+                    for row in self.db.execute(
+                        "SELECT horizon_minutes FROM shadow_event_outcomes WHERE cohort_id=?",
+                        (int(cohort["id"]),),
+                    )
+                }
+                for horizon in horizons:
+                    if horizon in existing:
+                        continue
+                    target = parse_time(cohort["decision_at"]) + timedelta(minutes=horizon)
+                    if evaluated_at < target:
+                        continue
+                    deadline = target + timedelta(minutes=max(1, int(max_lateness_minutes)))
+                    upper = min(evaluated_at, deadline)
+                    snapshot = self.db.execute(
+                        """
+                        SELECT id,observed_at,price_usd FROM token_snapshots
+                        WHERE token_id=? AND observed_at>=? AND observed_at<=? AND price_usd>0
+                        ORDER BY observed_at,id LIMIT 1
+                        """,
+                        (str(cohort["token_id"]), iso(target), iso(upper)),
+                    ).fetchone()
+                    if snapshot is not None:
+                        path = list(
+                            self.db.execute(
+                                """
+                                SELECT price_usd FROM token_snapshots
+                                WHERE token_id=? AND observed_at>=? AND observed_at<=? AND price_usd>0
+                                ORDER BY observed_at,id
+                                """,
+                                (
+                                    str(cohort["token_id"]), str(cohort["entry_snapshot_at"]),
+                                    str(snapshot["observed_at"]),
+                                ),
+                            )
+                        )
+                        entry_price = float(cohort["entry_price"])
+                        returns = [float(row["price_usd"]) / entry_price - 1.0 for row in path]
+                        raw_return = float(snapshot["price_usd"]) / entry_price - 1.0
+                        self.db.execute(
+                            """
+                            INSERT INTO shadow_event_outcomes(
+                                cohort_id,horizon_minutes,target_at,status,outcome_snapshot_id,
+                                outcome_observed_at,outcome_price,raw_return,maximum_return,minimum_return,
+                                snapshot_count,evaluated_at
+                            ) VALUES(?,?,?,'observed',?,?,?,?,?,?,?,?)
+                            """,
+                            (
+                                int(cohort["id"]), horizon, iso(target), int(snapshot["id"]),
+                                str(snapshot["observed_at"]), float(snapshot["price_usd"]), raw_return,
+                                max(returns) if returns else raw_return, min(returns) if returns else raw_return,
+                                len(path), iso(evaluated_at),
+                            ),
+                        )
+                        observed_count += 1
+                    elif evaluated_at >= deadline:
+                        self.db.execute(
+                            """
+                            INSERT INTO shadow_event_outcomes(
+                                cohort_id,horizon_minutes,target_at,status,snapshot_count,evaluated_at
+                            ) VALUES(?,?,?,'missing',0,?)
+                            """,
+                            (int(cohort["id"]), horizon, iso(target), iso(evaluated_at)),
+                        )
+                        missing_count += 1
+                outcome_total = int(
+                    self.db.execute(
+                        "SELECT COUNT(*) FROM shadow_event_outcomes WHERE cohort_id=?",
+                        (int(cohort["id"]),),
+                    ).fetchone()[0]
+                )
+                if outcome_total >= len(horizons):
+                    self.db.execute(
+                        "UPDATE shadow_event_cohorts SET status='complete' WHERE id=?",
+                        (int(cohort["id"]),),
+                    )
+                    completed_count += 1
+        return {
+            "cohorts_checked": len(cohorts),
+            "outcomes_observed": observed_count,
+            "outcomes_missing": missing_count,
+            "cohorts_completed": completed_count,
+        }
+
+    @staticmethod
+    def shadow_event_learning_summary_from_connection(
+        connection: sqlite3.Connection,
+        *,
+        lookback_days: int = 90,
+    ) -> dict[str, Any]:
+        required_tables = {
+            "shadow_event_cohorts", "shadow_event_cohort_labels", "shadow_event_outcomes"
+        }
+        tables = {
+            str(row["name"])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+            if str(row["name"]) in required_tables
+        }
+        policy = {
+            "minimum_distinct_events": 30,
+            "minimum_event_days": 15,
+            "minimum_weighted_negative_outcomes": 8,
+            "entity_minimum_distinct_events": 50,
+            "entity_minimum_event_days": 20,
+            "entity_minimum_platforms": 2,
+            "affects": "nothing_shadow_observation_only",
+        }
+        if tables != required_tables:
+            return {
+                "status": "not_observed", "items": [],
+                "summary": {"cohorts": 0, "pending_cohorts": 0, "complete_cohorts": 0},
+                "review_policy": policy,
+            }
+        start = iso(utcnow() - timedelta(days=max(1, min(3650, int(lookback_days)))))
+        cohorts = list(
+            connection.execute(
+                "SELECT id,event_id,action,decision_at,status FROM shadow_event_cohorts WHERE decision_at>=?",
+                (start,),
+            )
+        )
+        rows = list(
+            connection.execute(
+                """
+                SELECT c.id AS cohort_id,c.event_id,c.action,c.decision_at,l.dimension,l.value,
+                       l.origin_platform,l.attribution_weight,o.horizon_minutes,o.raw_return,
+                       o.maximum_return,o.minimum_return
+                FROM shadow_event_cohorts c
+                JOIN shadow_event_cohort_labels l ON l.cohort_id=c.id
+                JOIN shadow_event_outcomes o ON o.cohort_id=c.id
+                WHERE c.decision_at>=? AND o.status='observed'
+                ORDER BY o.horizon_minutes,l.dimension,l.value,c.id
+                """,
+                (start,),
+            )
+        )
+        metrics: dict[tuple[int, str, str], dict[str, Any]] = {}
+        for row in rows:
+            key = (int(row["horizon_minutes"]), str(row["dimension"]), str(row["value"]))
+            metric = metrics.setdefault(
+                key,
+                {
+                    "weight": 0.0, "weighted_return": 0.0, "weighted_positive": 0.0,
+                    "weighted_negative": 0.0, "weighted_downside": 0.0,
+                    "weighted_maximum": 0.0, "weighted_minimum": 0.0,
+                    "cohorts": set(), "events": set(), "event_days": set(), "platforms": set(),
+                    "wait_cohorts": set(), "candidate_cohorts": set(),
+                },
+            )
+            weight = max(0.0, float(row["attribution_weight"] or 0))
+            raw_return = float(row["raw_return"] or 0)
+            metric["weight"] += weight
+            metric["weighted_return"] += weight * raw_return
+            metric["weighted_positive"] += weight if raw_return > 0 else 0.0
+            metric["weighted_negative"] += weight if raw_return <= 0 else 0.0
+            metric["weighted_downside"] += weight if raw_return <= -0.25 else 0.0
+            metric["weighted_maximum"] += weight * float(row["maximum_return"] or 0)
+            metric["weighted_minimum"] += weight * float(row["minimum_return"] or 0)
+            metric["cohorts"].add(int(row["cohort_id"]))
+            metric["events"].add(int(row["event_id"]))
+            metric["event_days"].add(str(row["decision_at"])[:10])
+            if row["origin_platform"]:
+                metric["platforms"].add(str(row["origin_platform"]))
+            metric[f"{str(row['action']).lower()}_cohorts"].add(int(row["cohort_id"]))
+        items = []
+        for (horizon, dimension, value), metric in metrics.items():
+            weight = float(metric["weight"])
+            event_count = len(metric["events"])
+            event_days = len(metric["event_days"])
+            platform_count = len(metric["platforms"])
+            required_events = 50 if dimension == "entity" else 30
+            required_days = 20 if dimension == "entity" else 15
+            review_eligible = (
+                event_count >= required_events
+                and event_days >= required_days
+                and float(metric["weighted_negative"]) >= policy["minimum_weighted_negative_outcomes"]
+                and (dimension != "entity" or platform_count >= policy["entity_minimum_platforms"])
+            )
+            mean_return = float(metric["weighted_return"]) / weight if weight else None
+            descriptive_score = None
+            if review_eligible and mean_return is not None:
+                descriptive_score = weight / (weight + 30.0) * mean_return
+            items.append(
+                {
+                    "horizon_minutes": horizon,
+                    "dimension": dimension,
+                    "value": value,
+                    "weighted_outcomes": round(weight, 4),
+                    "distinct_cohort_count": len(metric["cohorts"]),
+                    "distinct_event_count": event_count,
+                    "event_day_count": event_days,
+                    "platform_count": platform_count,
+                    "wait_cohort_count": len(metric["wait_cohorts"]),
+                    "candidate_cohort_count": len(metric["candidate_cohorts"]),
+                    "positive_rate": round(float(metric["weighted_positive"]) / weight, 4) if weight else None,
+                    "mean_raw_return": round(mean_return, 6) if mean_return is not None else None,
+                    "downside_rate": round(float(metric["weighted_downside"]) / weight, 4) if weight else None,
+                    "mean_maximum_return": round(float(metric["weighted_maximum"]) / weight, 6) if weight else None,
+                    "mean_minimum_return": round(float(metric["weighted_minimum"]) / weight, 6) if weight else None,
+                    "weighted_negative_outcomes": round(float(metric["weighted_negative"]), 4),
+                    "shadow_review_eligible": review_eligible,
+                    "shadow_descriptive_score": round(descriptive_score, 6) if descriptive_score is not None else None,
+                    "rotation_active": False,
+                }
+            )
+        items.sort(
+            key=lambda item: (
+                not bool(item["shadow_review_eligible"]), int(item["horizon_minutes"]) != 60,
+                -int(item["distinct_event_count"]), str(item["dimension"]), str(item["value"]).casefold(),
+            )
+        )
+        outcome_counts = {
+            int(row["horizon_minutes"]): {"observed": 0, "missing": 0}
+            for row in connection.execute(
+                "SELECT DISTINCT horizon_minutes FROM shadow_event_outcomes"
+            )
+        }
+        for row in connection.execute(
+            """
+            SELECT o.horizon_minutes,o.status,COUNT(*) AS value
+            FROM shadow_event_outcomes o JOIN shadow_event_cohorts c ON c.id=o.cohort_id
+            WHERE c.decision_at>=? GROUP BY o.horizon_minutes,o.status
+            """,
+            (start,),
+        ):
+            outcome_counts.setdefault(int(row["horizon_minutes"]), {"observed": 0, "missing": 0})[
+                str(row["status"])
+            ] = int(row["value"])
+        return {
+            "status": (
+                "shadow_review_available"
+                if any(item["shadow_review_eligible"] for item in items)
+                else "collecting_followup"
+                if cohorts
+                else "not_observed"
+            ),
+            "version": Store.SHADOW_EVENT_COHORT_VERSION,
+            "horizons_minutes": list(Store.SHADOW_EVENT_HORIZONS_MINUTES),
+            "items": items[:500],
+            "summary": {
+                "cohorts": len(cohorts),
+                "pending_cohorts": sum(str(row["status"]) == "pending" for row in cohorts),
+                "complete_cohorts": sum(str(row["status"]) == "complete" for row in cohorts),
+                "wait_cohorts": sum(str(row["action"]) == "WAIT" for row in cohorts),
+                "candidate_cohorts": sum(str(row["action"]) == "CANDIDATE" for row in cohorts),
+                "outcomes_by_horizon": outcome_counts,
+                "review_eligible_labels": sum(item["shadow_review_eligible"] for item in items),
+            },
+            "review_policy": policy,
+            "as_of": iso(),
         }
 
     def has_bought_token(self, token_id: str) -> bool:

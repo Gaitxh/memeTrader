@@ -84,6 +84,7 @@ DEFAULT_CONSOLE_SETTINGS = {
     "topics": [],
 }
 EXPECTED_TABLES = {
+    "agent_attempts",
     "decisions",
     "event_observations",
     "events",
@@ -93,10 +94,15 @@ EXPECTED_TABLES = {
     "positions",
     "source_health",
     "source_utility_outcomes",
+    "shadow_event_cohort_labels",
+    "shadow_event_cohorts",
+    "shadow_event_outcomes",
     "token_source_links",
     "token_snapshots",
     "tokens",
     "trades",
+    "trend_lane_run_lanes",
+    "trend_lane_runs",
 }
 SAFE_OBSERVATION_RAW_FIELDS = {
     "account_type",
@@ -2855,6 +2861,13 @@ class WebData:
             "summary": {"runs": 0, "completed_runs": 0, "mature_lanes": 0},
             "last_selection": {},
         }
+        shadow_followup: dict[str, Any] = {
+            "status": "not_observed",
+            "version": Store.SHADOW_EVENT_COHORT_VERSION,
+            "horizons_minutes": list(Store.SHADOW_EVENT_HORIZONS_MINUTES),
+            "items": [],
+            "summary": {"cohorts": 0, "pending_cohorts": 0, "complete_cohorts": 0},
+        }
         with self.connect() as connection:
             if connection is not None and self._table_exists(connection, "source_health"):
                 health = {str(row["source"]): row for row in connection.execute("SELECT * FROM source_health")}
@@ -3010,6 +3023,13 @@ class WebData:
                     }
                 except (sqlite3.Error, TypeError, ValueError, json.JSONDecodeError):
                     trend_lanes["status"] = "unavailable"
+                try:
+                    shadow_followup = Store.shadow_event_learning_summary_from_connection(
+                        connection,
+                        lookback_days=int(autonomous_cfg.get("source_learning_lookback_days", 90)),
+                    )
+                except (sqlite3.Error, TypeError, ValueError):
+                    shadow_followup["status"] = "unavailable"
         limits = self.config.get("source_stale_minutes") or {}
         items = []
         known_names: set[str] = set()
@@ -3131,6 +3151,7 @@ class WebData:
             "browser_bridge": self._bridge_health(),
             "learning": learning,
             "trend_lanes": trend_lanes,
+            "shadow_followup": shadow_followup,
             "as_of": iso(),
         }
 

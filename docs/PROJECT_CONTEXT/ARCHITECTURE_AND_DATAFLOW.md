@@ -75,6 +75,16 @@ Trend Scout 固定主题 round-robin
 每轮通道暴露 / 完成 / 失败 / 空结果账本
           │
           └─ 主题表现仅作影子审查；不改变实际调度、策略或仓位
+
+首次有效 Event→Token WAIT/CANDIDATE
+          │
+          ▼
+冻结决策时价格 + 最早合格来源
+          │
+          ▼
+15 / 60 / 240 分钟本机真实快照随访
+          │
+          └─ 仅作选择偏差和市场延续研究；不回填、不参与策略
 ```
 
 `Web` 不重新算交易策略、不生成演示数据，也不因页面刷新触发采集或决策。
@@ -108,6 +118,7 @@ Trend Scout 固定主题 round-robin
 - `paper_account` / `positions` / `trades`：Paper 现金、持仓、退出和历史成交。
 - `source_utility_outcomes`：完全平仓后对最早合格来源的追加式、费后 Paper 结果归因；只供观察轮换。
 - `trend_lane_runs` / `trend_lane_run_lanes`：每次 Trend Scout 的版本化通道选择、运行状态、空结果、事件与 Observation 产出；不含凭据。
+- `shadow_event_cohorts` / `shadow_event_cohort_labels` / `shadow_event_outcomes`：首次 WAIT/CANDIDATE 的冻结价格、来源标签和固定时点市场随访；结果角色与交易策略完全隔离。
 - `source_health`：来源最后成功、最后产出、最后错误。
 - `agent_attempts`：按任务/模型/推理强度记录安全的 token 用量账本。
 - `kv`：调度、退避、Agent 结果、浏览器平台心跳等小型运行状态。

@@ -1499,6 +1499,11 @@ class Runtime:
                     decision.rejected_reasons.append("position_size_zero")
 
             decision_id = self.store.add_decision(decision)
+            self.store.create_shadow_event_cohort(
+                decision,
+                decision_id=decision_id,
+                source_observation_ids=[int(row["id"]) for row in accepted],
+            )
             self.store.finalize_candidate_ranking(event.id, decision, decision_id=decision_id)
             signature = json.dumps(
                 {
@@ -1702,6 +1707,9 @@ class Runtime:
                 },
             )
 
+    async def shadow_event_followup_once(self) -> None:
+        self.store.finalize_shadow_event_outcomes()
+
     async def pump_loop(self) -> None:
         cfg = self.config["sources"].get("pumpportal") or {}
         if not cfg.get("enabled", True):
@@ -1717,6 +1725,7 @@ class Runtime:
         await self.poll_dexscreener_discovery_once()
         await self.reverse_news_once()
         await self.evaluate_events_once()
+        await self.shadow_event_followup_once()
         await self.monitor_positions_once()
         await self.check_source_health_once(include_streams=False)
 
@@ -1783,6 +1792,10 @@ class Runtime:
             asyncio.create_task(
                 self._periodic("event_evaluation", self.config.get("event_scan_seconds", 10), self.evaluate_events_once),
                 name="event_evaluation",
+            ),
+            asyncio.create_task(
+                self._periodic("shadow_event_followup", 30, self.shadow_event_followup_once),
+                name="shadow_event_followup",
             ),
             asyncio.create_task(
                 self._periodic("position_monitor", self.config.get("position_scan_seconds", 15), self.monitor_positions_once),
