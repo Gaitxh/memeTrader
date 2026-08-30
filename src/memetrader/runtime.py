@@ -1907,6 +1907,7 @@ class Runtime:
             amount = 0.0
             execution_requested_at = None
             execution_received_at = decision.created_at
+            pending_entry_attempt: dict[str, Any] | None = None
 
             if decision.action == "CANDIDATE" and decision.token_id:
                 if self.store.position(decision.token_id):
@@ -1930,11 +1931,11 @@ class Runtime:
                     decision.action = "WAIT"
                     decision.rejected_reasons.append("entry_quote_unavailable")
                     if self.config["mode"] == "paper":
-                        self.store.record_paper_execution_attempt(
-                            event_id=event.id, token_id=token.token_id, side="BUY",
-                            status="rejected", reason=execution_error,
-                            requested_at=execution_requested_at,
-                        )
+                        pending_entry_attempt = {
+                            "event_id": event.id, "token_id": token.token_id, "side": "BUY",
+                            "status": "rejected", "reason": execution_error,
+                            "requested_at": execution_requested_at,
+                        }
                 else:
                     execution_token, execution_snapshot = execution_quote
                     quote_rejections = self._paper_quote_rejections(
@@ -1944,14 +1945,14 @@ class Runtime:
                         decision.action = "WAIT"
                         decision.rejected_reasons.extend(quote_rejections)
                         if self.config["mode"] == "paper":
-                            self.store.record_paper_execution_attempt(
-                                event_id=event.id, token_id=token.token_id, side="BUY",
-                                status="rejected", reason=",".join(quote_rejections),
-                                requested_at=execution_requested_at,
-                                quote_observed_at=execution_snapshot.observed_at,
-                                quote_provider=execution_snapshot.provider,
-                                quote_price=execution_snapshot.price_usd,
-                            )
+                            pending_entry_attempt = {
+                                "event_id": event.id, "token_id": token.token_id, "side": "BUY",
+                                "status": "rejected", "reason": ",".join(quote_rejections),
+                                "requested_at": execution_requested_at,
+                                "quote_observed_at": execution_snapshot.observed_at,
+                                "quote_provider": execution_snapshot.provider,
+                                "quote_price": execution_snapshot.price_usd,
+                            }
                     else:
                         token, snap = execution_token, execution_snapshot
                         self.store.upsert_token(token, seen_at=snap.observed_at)
@@ -1987,6 +1988,10 @@ class Runtime:
                 decision_id=decision_id,
                 source_observation_ids=[int(row["id"]) for row in accepted],
             )
+            if pending_entry_attempt is not None:
+                self.store.record_paper_execution_attempt(
+                    **pending_entry_attempt, decision_id=decision_id, cohort_id=cohort_id
+                )
             self.store.finalize_candidate_ranking(event.id, decision, decision_id=decision_id)
             signature = json.dumps(
                 {
@@ -2067,6 +2072,7 @@ class Runtime:
             except ValueError as exc:
                 self.store.record_paper_execution_attempt(
                     event_id=event.id, token_id=token.token_id, side="BUY",
+                    decision_id=decision_id, cohort_id=cohort_id,
                     status="rejected", reason=str(exc),
                     requested_at=execution_requested_at or utcnow(),
                     quote_observed_at=snap.observed_at, quote_provider=snap.provider,
@@ -2080,6 +2086,7 @@ class Runtime:
                 continue
             self.store.record_paper_execution_attempt(
                 event_id=event.id, token_id=token.token_id, side="BUY",
+                decision_id=decision_id, cohort_id=cohort_id,
                 status="filled", reason="event_candidate",
                 requested_at=execution_requested_at or utcnow(),
                 quote_observed_at=snap.observed_at, quote_provider=snap.provider,
@@ -2238,6 +2245,7 @@ class Runtime:
             if execution_quote is None:
                 self.store.record_paper_execution_attempt(
                     event_id=position.event_id, token_id=position.token_id, side="SELL",
+                    decision_id=position.decision_id, cohort_id=position.cohort_id,
                     status="rejected", reason=execution_error,
                     requested_at=execution_requested_at,
                 )
@@ -2249,6 +2257,7 @@ class Runtime:
             if quote_rejections:
                 self.store.record_paper_execution_attempt(
                     event_id=position.event_id, token_id=position.token_id, side="SELL",
+                    decision_id=position.decision_id, cohort_id=position.cohort_id,
                     status="rejected", reason=",".join(quote_rejections),
                     requested_at=execution_requested_at,
                     quote_observed_at=execution_snapshot.observed_at,
@@ -2276,6 +2285,7 @@ class Runtime:
             )
             self.store.record_paper_execution_attempt(
                 event_id=position.event_id, token_id=position.token_id, side="SELL",
+                decision_id=position.decision_id, cohort_id=position.cohort_id,
                 status="filled", reason=reason, requested_at=execution_requested_at,
                 quote_observed_at=snap.observed_at, quote_provider=snap.provider,
                 quote_price=snap.price_usd, execution_price=execution_price,

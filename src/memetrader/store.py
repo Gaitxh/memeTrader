@@ -25,8 +25,8 @@ from .models import (
 
 class Store:
     CANDIDATE_RANKING_KEY_PREFIX = "candidate_ranking:"
-    SHADOW_EVENT_COHORT_VERSION = "shadow-event-followup/v2-event-action"
-    SHADOW_EVENT_ADMISSION_VERSION = "shadow-event-admission/v1"
+    SHADOW_EVENT_COHORT_VERSION = "shadow-event-followup/v3-strategy-labels"
+    SHADOW_EVENT_ADMISSION_VERSION = "shadow-event-admission/v2-all-actions"
     SHADOW_EVENT_HORIZONS_MINUTES = (15, 60, 240)
     TOKEN_CONTEXT_ADMISSION_VERSION = "token-context-admission/v1"
     TOKEN_CONTEXT_OUTCOME_VERSION = "token-context-outcome/v1"
@@ -105,6 +105,7 @@ class Store:
                     id INTEGER PRIMARY KEY,
                     token_id TEXT NOT NULL,
                     observed_at TEXT NOT NULL,
+                    ingested_at TEXT,
                     provider TEXT NOT NULL,
                     price_usd REAL,
                     liquidity_usd REAL,
@@ -312,6 +313,8 @@ class Store:
                     id INTEGER PRIMARY KEY,
                     event_id INTEGER NOT NULL,
                     token_id TEXT NOT NULL,
+                    decision_id INTEGER,
+                    cohort_id INTEGER,
                     side TEXT NOT NULL,
                     status TEXT NOT NULL,
                     reason TEXT NOT NULL,
@@ -644,6 +647,11 @@ class Store:
                 self.db.execute("ALTER TABLE observations ADD COLUMN source_item_id TEXT NOT NULL DEFAULT ''")
             if "capture_phase" not in columns:
                 self.db.execute("ALTER TABLE observations ADD COLUMN capture_phase TEXT NOT NULL DEFAULT 'live'")
+            snapshot_columns = {
+                row["name"] for row in self.db.execute("PRAGMA table_info(token_snapshots)")
+            }
+            if "ingested_at" not in snapshot_columns:
+                self.db.execute("ALTER TABLE token_snapshots ADD COLUMN ingested_at TEXT")
             event_columns = {row["name"] for row in self.db.execute("PRAGMA table_info(events)")}
             if "topic" not in event_columns:
                 self.db.execute("ALTER TABLE events ADD COLUMN topic TEXT NOT NULL DEFAULT 'unknown'")
@@ -672,6 +680,14 @@ class Store:
             for name in ("decision_id", "cohort_id"):
                 if name not in position_columns:
                     self.db.execute(f"ALTER TABLE positions ADD COLUMN {name} INTEGER")
+            execution_attempt_columns = {
+                row["name"] for row in self.db.execute("PRAGMA table_info(paper_execution_attempts)")
+            }
+            for name in ("decision_id", "cohort_id"):
+                if name not in execution_attempt_columns:
+                    self.db.execute(
+                        f"ALTER TABLE paper_execution_attempts ADD COLUMN {name} INTEGER"
+                    )
             source_outcome_columns = {
                 row["name"] for row in self.db.execute("PRAGMA table_info(source_utility_outcomes)")
             }
@@ -1291,10 +1307,11 @@ class Store:
         snapshot = self.db.execute(
             """
             SELECT id,observed_at,price_usd FROM token_snapshots
-            WHERE token_id=? AND observed_at<=? AND price_usd>0
+            WHERE token_id=? AND observed_at<=? AND ingested_at<=?
+              AND ingested_at>=observed_at AND price_usd>0
             ORDER BY observed_at DESC,id DESC LIMIT 1
             """,
-            (str(token_id), iso(assessed)),
+            (str(token_id), iso(assessed), iso(assessed)),
         ).fetchone()
         if snapshot is None:
             return None
@@ -1454,23 +1471,30 @@ class Store:
                     upper = min(evaluated_at, deadline)
                     snapshot = self.db.execute(
                         """
-                        SELECT id,observed_at,price_usd FROM token_snapshots
-                        WHERE token_id=? AND observed_at>=? AND observed_at<=? AND price_usd>0
-                        ORDER BY observed_at,id LIMIT 1
+                        SELECT id,observed_at,ingested_at,price_usd FROM token_snapshots
+                        WHERE token_id=? AND observed_at>=? AND observed_at<=?
+                          AND ingested_at>=? AND ingested_at<=?
+                          AND ingested_at>=observed_at AND price_usd>0
+                        ORDER BY ingested_at,observed_at,id LIMIT 1
                         """,
-                        (str(cohort["token_id"]), iso(target), iso(upper)),
+                        (
+                            str(cohort["token_id"]), iso(target), iso(upper),
+                            iso(target), iso(upper),
+                        ),
                     ).fetchone()
                     if snapshot is not None:
                         path = list(
                             self.db.execute(
                                 """
                                 SELECT price_usd FROM token_snapshots
-                                WHERE token_id=? AND observed_at>=? AND observed_at<=? AND price_usd>0
+                                WHERE token_id=? AND observed_at>=? AND observed_at<=?
+                                  AND ingested_at IS NOT NULL AND ingested_at<=?
+                                  AND ingested_at>=observed_at AND price_usd>0
                                 ORDER BY observed_at,id
                                 """,
                                 (
                                     str(cohort["token_id"]), str(cohort["entry_snapshot_at"]),
-                                    str(snapshot["observed_at"]),
+                                    str(snapshot["observed_at"]), str(snapshot["ingested_at"]),
                                 ),
                             )
                         )
@@ -1831,16 +1855,18 @@ class Store:
 
     def add_snapshot(self, snap: TokenSnapshot) -> None:
         token_id = f"{snap.chain.lower()}:{snap.address}"
+        ingested_at = snap.ingested_at or utcnow()
         with self._lock, self.db:
             self.db.execute(
                 """
                 INSERT INTO token_snapshots(
-                    token_id,observed_at,provider,price_usd,liquidity_usd,market_cap_usd,volume_5m_usd,
+                    token_id,observed_at,ingested_at,provider,price_usd,liquidity_usd,market_cap_usd,volume_5m_usd,
                     buys_5m,sells_5m,buyers_5m,holders,buy_tax_pct,sell_tax_pct,honeypot,sellable,raw_json
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
-                    token_id, iso(snap.observed_at), snap.provider, snap.price_usd, snap.liquidity_usd,
+                    token_id, iso(snap.observed_at), iso(ingested_at), snap.provider,
+                    snap.price_usd, snap.liquidity_usd,
                     snap.market_cap_usd, snap.volume_5m_usd, snap.buys_5m, snap.sells_5m,
                     snap.buyers_5m, snap.holders, snap.buy_tax_pct, snap.sell_tax_pct,
                     None if snap.honeypot is None else int(snap.honeypot),
@@ -1865,7 +1891,9 @@ class Store:
             holders=row["holders"], buy_tax_pct=row["buy_tax_pct"], sell_tax_pct=row["sell_tax_pct"],
             honeypot=None if row["honeypot"] is None else bool(row["honeypot"]),
             sellable=None if row["sellable"] is None else bool(row["sellable"]),
-            observed_at=parse_time(row["observed_at"]), provider=row["provider"], raw=json.loads(row["raw_json"]),
+            observed_at=parse_time(row["observed_at"]),
+            ingested_at=parse_time(row["ingested_at"]) if row["ingested_at"] else None,
+            provider=row["provider"], raw=json.loads(row["raw_json"]),
         )
 
     def add_decision(self, decision: CandidateDecision) -> int:
@@ -1944,6 +1972,8 @@ class Store:
         *,
         event_id: int,
         token_id: str,
+        decision_id: int | None = None,
+        cohort_id: int | None = None,
         side: str,
         status: str,
         reason: str,
@@ -1958,12 +1988,13 @@ class Store:
             cursor = self.db.execute(
                 """
                 INSERT INTO paper_execution_attempts(
-                    event_id,token_id,side,status,reason,requested_at,quote_observed_at,
-                    quote_provider,quote_price,execution_price,gross_usd
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                    event_id,token_id,decision_id,cohort_id,side,status,reason,requested_at,
+                    quote_observed_at,quote_provider,quote_price,execution_price,gross_usd
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
-                    int(event_id), str(token_id), str(side).upper(), str(status), str(reason),
+                    int(event_id), str(token_id), decision_id, cohort_id,
+                    str(side).upper(), str(status), str(reason),
                     iso(parse_time(requested_at)),
                     iso(parse_time(quote_observed_at)) if quote_observed_at else None,
                     str(quote_provider or ""), quote_price, execution_price, gross_usd,
@@ -2695,6 +2726,115 @@ class Store:
             "as_of": iso(now),
         }
 
+    @classmethod
+    def _shadow_strategy_labels(
+        cls,
+        decision: CandidateDecision,
+        *,
+        event: Mapping[str, Any],
+        token: Mapping[str, Any],
+        snapshot: Mapping[str, Any],
+        leads: Iterable[Mapping[str, Any]],
+    ) -> list[tuple[str, str]]:
+        """Freeze coarse decision-time research strata; none of them changes strategy."""
+
+        def number(row: Mapping[str, Any], name: str) -> float | None:
+            try:
+                value = row[name]
+            except (KeyError, IndexError, TypeError):
+                return None
+            try:
+                return float(value) if value is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        def bucket(value: float | None, cuts: tuple[float, ...], names: tuple[str, ...]) -> str:
+            if value is None:
+                return "unknown"
+            for index, cut in enumerate(cuts):
+                if value < cut:
+                    return names[index]
+            return names[-1]
+
+        decision_at = parse_time(decision.created_at)
+        first_seen = parse_time(event["first_seen_at"])
+        token_created = parse_time(token["created_at"]) if token["created_at"] else None
+        lead_rows = list(leads)
+        origins: set[str] = set()
+        feature_count = 0
+        confirmation_count = 0
+        public_figure_context = "none_observed"
+        for row in lead_rows:
+            labels = dict(cls._source_learning_labels(row))
+            origin = labels.get("entity") or labels.get("source") or labels.get("source_kind")
+            if origin:
+                origins.add(origin)
+            role = str(row["role"] or "").lower()
+            feature_count += int(role == "feature")
+            confirmation_count += int(role == "confirmation")
+            account_type = labels.get("account_type", "")
+            if account_type in {
+                "public_figure", "politician", "celebrity", "executive", "institution",
+                "official", "government",
+            }:
+                public_figure_context = "context_candidate"
+            try:
+                raw = json.loads(str(row["raw_json"] or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                raw = {}
+            if isinstance(raw, dict) and str(raw.get("verification_status") or "") == "browser_exact_entity_observation":
+                public_figure_context = "verified_original_observation"
+
+        buys = number(snapshot, "buys_5m") or 0.0
+        sells = number(snapshot, "sells_5m") or 0.0
+        transactions = buys + sells
+        buy_ratio = buys / transactions if transactions > 0 else None
+        safety = "unknown"
+        if snapshot["honeypot"] is not None and bool(snapshot["honeypot"]):
+            safety = "honeypot"
+        elif snapshot["sellable"] is not None and not bool(snapshot["sellable"]):
+            safety = "not_sellable"
+        elif snapshot["honeypot"] is False and snapshot["sellable"] is True:
+            safety = "checked_clear"
+        elif snapshot["honeypot"] is False or snapshot["sellable"] is True:
+            safety = "partially_checked"
+
+        evidence_mix = (
+            "feature_and_confirmation" if feature_count and confirmation_count
+            else "feature_only" if feature_count
+            else "confirmation_only" if confirmation_count
+            else "none"
+        )
+        event_age_minutes = max(0.0, (decision_at - first_seen).total_seconds() / 60.0)
+        token_age_minutes = (
+            max(0.0, (decision_at - token_created).total_seconds() / 60.0)
+            if token_created is not None else None
+        )
+        labels = [
+            ("event_topic", str(event["topic"] or "unknown")),
+            ("attention_bucket", bucket(number(event, "attention"), (50, 70, 85), ("lt50", "50_69", "70_84", "85_plus"))),
+            ("event_age_bucket", bucket(event_age_minutes, (5, 30, 120), ("lt5m", "5_29m", "30_119m", "120m_plus"))),
+            ("eligible_origin_bucket", bucket(float(len(origins)), (2, 3, 5), ("one", "two", "three_four", "five_plus"))),
+            ("evidence_mix", evidence_mix),
+            ("public_figure_context", public_figure_context),
+            ("chain", str(token["chain"] or "unknown").lower()),
+            ("token_age_bucket", bucket(token_age_minutes, (5, 30, 120), ("lt5m", "5_29m", "30_119m", "120m_plus"))),
+            ("liquidity_bucket", bucket(number(snapshot, "liquidity_usd"), (5_000, 25_000, 100_000), ("lt5k", "5k_25k", "25k_100k", "100k_plus"))),
+            ("market_cap_bucket", bucket(number(snapshot, "market_cap_usd"), (50_000, 250_000, 1_000_000), ("lt50k", "50k_250k", "250k_1m", "1m_plus"))),
+            ("volume_5m_bucket", bucket(number(snapshot, "volume_5m_usd"), (1_000, 10_000, 50_000), ("lt1k", "1k_10k", "10k_50k", "50k_plus"))),
+            ("buy_pressure_bucket", bucket(buy_ratio, (0.45, 0.55, 0.70), ("sell_dominant", "balanced", "buy_leaning", "buy_dominant"))),
+            ("safety_state", safety),
+            ("candidate_score_bucket", bucket(float(decision.score), (60, 75, 90), ("lt60", "60_74", "75_89", "90_plus"))),
+            ("match_score_bucket", bucket(float(decision.match_score), (60, 80, 95), ("lt60", "60_79", "80_94", "95_plus"))),
+            ("canonical_margin_bucket", bucket(float(decision.canonical_margin), (3, 8, 15), ("lt3", "3_7", "8_14", "15_plus"))),
+            ("requested_position_bucket", bucket(float(decision.position_usd), (1, 10, 25), ("zero", "lt10", "10_24", "25_plus"))),
+        ]
+        labels.extend(
+            ("decision_reason", re.sub(r"[^a-z0-9_-]", "_", str(reason).lower())[:120] or "unknown")
+            for reason in decision.rejected_reasons
+        )
+        return list(dict.fromkeys(labels))
+
     def create_shadow_event_cohort(
         self,
         decision: CandidateDecision,
@@ -2702,7 +2842,7 @@ class Store:
         decision_id: int,
         source_observation_ids: Iterable[int],
     ) -> int | None:
-        """Freeze the first WAIT and later first CANDIDATE follow-up without changing strategy."""
+        """Freeze the first WAIT/REJECT/CANDIDATE per event without changing strategy."""
         action = str(decision.action).upper()
         admission_key = f"{self.SHADOW_EVENT_ADMISSION_VERSION}:{int(decision_id)}"
         cohort_key = hashlib.sha256(
@@ -2749,7 +2889,7 @@ class Store:
                     ),
                 )
 
-            if action not in {"WAIT", "CANDIDATE"}:
+            if action not in {"WAIT", "REJECT", "CANDIDATE"}:
                 record_admission("skipped", "unsupported_action")
                 return None
             if not decision.token_id:
@@ -2785,11 +2925,12 @@ class Store:
                     return cohort_id
             snapshot = self.db.execute(
                 """
-                SELECT id,observed_at,price_usd FROM token_snapshots
-                WHERE token_id=? AND observed_at<=? AND price_usd>0
+                SELECT * FROM token_snapshots
+                WHERE token_id=? AND observed_at<=? AND ingested_at<=?
+                  AND ingested_at>=observed_at AND price_usd>0
                 ORDER BY observed_at DESC,id DESC LIMIT 1
                 """,
-                (decision.token_id, decision_at),
+                (decision.token_id, decision_at, decision_at),
             ).fetchone()
             if snapshot is None:
                 record_admission("skipped", "missing_entry_snapshot")
@@ -2826,6 +2967,15 @@ class Store:
             if not leads:
                 record_admission("skipped", "no_eligible_leads")
                 return None
+            event_row = self.db.execute(
+                "SELECT * FROM events WHERE id=?", (int(decision.event_id),)
+            ).fetchone()
+            token_row = self.db.execute(
+                "SELECT * FROM tokens WHERE token_id=?", (decision.token_id,)
+            ).fetchone()
+            if event_row is None or token_row is None:
+                record_admission("skipped", "missing_event_or_token")
+                return None
             cursor = self.db.execute(
                 """
                 INSERT INTO shadow_event_cohorts(
@@ -2853,6 +3003,17 @@ class Store:
                         """,
                         (cohort_id, int(row["id"]), dimension, value, platform, weight),
                     )
+            for dimension, value in self._shadow_strategy_labels(
+                decision, event=event_row, token=token_row, snapshot=snapshot, leads=leads
+            ):
+                self.db.execute(
+                    """
+                    INSERT INTO shadow_event_cohort_labels(
+                        cohort_id,source_observation_id,dimension,value,origin_platform,attribution_weight
+                    ) VALUES(?,0,?,?,?,1)
+                    """,
+                    (cohort_id, dimension, value, ""),
+                )
             record_admission(
                 "created", "created", cohort_id=cohort_id,
                 eligible_source_count=len(leads),
@@ -2898,23 +3059,30 @@ class Store:
                     upper = min(evaluated_at, deadline)
                     snapshot = self.db.execute(
                         """
-                        SELECT id,observed_at,price_usd FROM token_snapshots
-                        WHERE token_id=? AND observed_at>=? AND observed_at<=? AND price_usd>0
-                        ORDER BY observed_at,id LIMIT 1
+                        SELECT id,observed_at,ingested_at,price_usd FROM token_snapshots
+                        WHERE token_id=? AND observed_at>=? AND observed_at<=?
+                          AND ingested_at>=? AND ingested_at<=?
+                          AND ingested_at>=observed_at AND price_usd>0
+                        ORDER BY ingested_at,observed_at,id LIMIT 1
                         """,
-                        (str(cohort["token_id"]), iso(target), iso(upper)),
+                        (
+                            str(cohort["token_id"]), iso(target), iso(upper),
+                            iso(target), iso(upper),
+                        ),
                     ).fetchone()
                     if snapshot is not None:
                         path = list(
                             self.db.execute(
                                 """
                                 SELECT price_usd FROM token_snapshots
-                                WHERE token_id=? AND observed_at>=? AND observed_at<=? AND price_usd>0
+                                WHERE token_id=? AND observed_at>=? AND observed_at<=?
+                                  AND ingested_at IS NOT NULL AND ingested_at<=?
+                                  AND ingested_at>=observed_at AND price_usd>0
                                 ORDER BY observed_at,id
                                 """,
                                 (
                                     str(cohort["token_id"]), str(cohort["entry_snapshot_at"]),
-                                    str(snapshot["observed_at"]),
+                                    str(snapshot["observed_at"]), str(snapshot["ingested_at"]),
                                 ),
                             )
                         )
@@ -2990,6 +3158,9 @@ class Store:
                 "candidate_legacy_or_uninstrumented": 0,
                 "forward_candidate_coverage_rate": None,
                 "overall_candidate_coverage_rate": None,
+                "wait_decisions": 0,
+                "reject_decisions": 0,
+                "reject_covered": 0,
             },
             "mode": "forward_append_only_observation",
             "affects": "none",
@@ -3019,7 +3190,7 @@ class Store:
                 connection.execute(
                     """
                     SELECT id,action FROM decisions
-                    WHERE created_at>=? AND action IN ('WAIT','CANDIDATE')
+                    WHERE created_at>=? AND action IN ('WAIT','REJECT','CANDIDATE')
                     """,
                     (start,),
                 )
@@ -3028,6 +3199,12 @@ class Store:
         candidate_ids = {
             int(row["id"]) for row in decisions if str(row["action"]).upper() == "CANDIDATE"
         }
+        wait_ids = {
+            int(row["id"]) for row in decisions if str(row["action"]).upper() == "WAIT"
+        }
+        reject_ids = {
+            int(row["id"]) for row in decisions if str(row["action"]).upper() == "REJECT"
+        }
         instrumented_ids = {int(row["decision_id"]) for row in attempts}
         candidate_attempts = [
             row for row in attempts if str(row["requested_action"]).upper() == "CANDIDATE"
@@ -3035,6 +3212,13 @@ class Store:
         candidate_covered = sum(
             str(row["status"]) in {"created", "already_admitted"} and row["cohort_id"] is not None
             for row in candidate_attempts
+        )
+        reject_attempts = [
+            row for row in attempts if str(row["requested_action"]).upper() == "REJECT"
+        ]
+        reject_covered = sum(
+            str(row["status"]) in {"created", "already_admitted"} and row["cohort_id"] is not None
+            for row in reject_attempts
         )
         reason_counts: dict[str, int] = {}
         for row in attempts:
@@ -3063,6 +3247,13 @@ class Store:
             "overall_candidate_coverage_rate": round(
                 candidate_covered / len(candidate_ids), 4
             ) if candidate_ids else None,
+            "wait_decisions": len(wait_ids),
+            "reject_decisions": len(reject_ids),
+            "reject_instrumented": len(reject_attempts),
+            "reject_covered": reject_covered,
+            "reject_skipped": sum(
+                str(row["status"]) == "skipped" for row in reject_attempts
+            ),
             "tracking_started_at": min(
                 (str(row["attempted_at"]) for row in attempts), default=None
             ),
@@ -3167,7 +3358,7 @@ class Store:
                     "weighted_negative": 0.0, "weighted_downside": 0.0,
                     "weighted_maximum": 0.0, "weighted_minimum": 0.0,
                     "cohorts": set(), "events": set(), "event_days": set(), "platforms": set(),
-                    "wait_cohorts": set(), "candidate_cohorts": set(),
+                    "wait_cohorts": set(), "reject_cohorts": set(), "candidate_cohorts": set(),
                 },
             )
             weight = max(0.0, float(row["attribution_weight"] or 0))
@@ -3214,6 +3405,7 @@ class Store:
                     "event_day_count": event_days,
                     "platform_count": platform_count,
                     "wait_cohort_count": len(metric["wait_cohorts"]),
+                    "reject_cohort_count": len(metric["reject_cohorts"]),
                     "candidate_cohort_count": len(metric["candidate_cohorts"]),
                     "positive_rate": round(float(metric["weighted_positive"]) / weight, 4) if weight else None,
                     "mean_raw_return": round(mean_return, 6) if mean_return is not None else None,
@@ -3249,6 +3441,35 @@ class Store:
             outcome_counts.setdefault(int(row["horizon_minutes"]), {"observed": 0, "missing": 0})[
                 str(row["status"])
             ] = int(row["value"])
+        entry_execution = {
+            "attempts": 0,
+            "filled": 0,
+            "rejected": 0,
+            "cohort_linked": 0,
+            "unlinked": 0,
+        }
+        execution_columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(paper_execution_attempts)")
+        }
+        if {"decision_id", "cohort_id"}.issubset(execution_columns):
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS attempts,
+                       SUM(CASE WHEN status='filled' THEN 1 ELSE 0 END) AS filled,
+                       SUM(CASE WHEN status='rejected' THEN 1 ELSE 0 END) AS rejected,
+                       SUM(CASE WHEN decision_id IS NOT NULL AND cohort_id IS NOT NULL THEN 1 ELSE 0 END)
+                           AS cohort_linked,
+                       SUM(CASE WHEN decision_id IS NULL OR cohort_id IS NULL THEN 1 ELSE 0 END)
+                           AS unlinked
+                FROM paper_execution_attempts
+                WHERE side='BUY' AND requested_at>=?
+                """,
+                (start,),
+            ).fetchone()
+            entry_execution = {
+                key: int(row[key] or 0) for key in entry_execution
+            }
         return {
             "status": (
                 "shadow_review_available"
@@ -3266,9 +3487,11 @@ class Store:
                 "pending_cohorts": sum(str(row["status"]) == "pending" for row in cohorts),
                 "complete_cohorts": sum(str(row["status"]) == "complete" for row in cohorts),
                 "wait_cohorts": sum(str(row["action"]) == "WAIT" for row in cohorts),
+                "reject_cohorts": sum(str(row["action"]) == "REJECT" for row in cohorts),
                 "candidate_cohorts": sum(str(row["action"]) == "CANDIDATE" for row in cohorts),
                 "outcomes_by_horizon": outcome_counts,
                 "review_eligible_labels": sum(item["shadow_review_eligible"] for item in items),
+                "entry_execution": entry_execution,
             },
             "admission": admission,
             "review_policy": policy,

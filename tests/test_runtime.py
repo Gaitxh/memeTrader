@@ -1225,6 +1225,10 @@ def test_end_to_end_event_buy_partial_profit_and_liquidity_exit(tmp_path):
         assert all(row["quote_observed_at"] is not None for row in runtime.store.trades(10))
         attempts = list(runtime.store.db.execute("SELECT * FROM paper_execution_attempts ORDER BY id"))
         assert [row["status"] for row in attempts] == ["filled", "filled", "filled"]
+        assert all(row["decision_id"] is not None for row in attempts)
+        assert all(row["cohort_id"] is not None for row in attempts)
+        assert len({row["decision_id"] for row in attempts}) == 1
+        assert len({row["cohort_id"] for row in attempts}) == 1
         await runtime.close()
 
     asyncio.run(scenario())

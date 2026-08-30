@@ -149,6 +149,7 @@ def _seed(path: Path) -> tuple[int, str]:
             buys_5m=30,
             sells_5m=10,
             observed_at=now,
+            ingested_at=now,
             provider="dexscreener",
         )
     )
@@ -1003,10 +1004,14 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
         "risk", "position_size", "exits", "live_trading",
     ]
     assert source_payload["shadow_followup"]["status"] == "collecting_followup"
-    assert source_payload["shadow_followup"]["version"] == "shadow-event-followup/v2-event-action"
+    assert source_payload["shadow_followup"]["version"] == "shadow-event-followup/v3-strategy-labels"
     assert source_payload["shadow_followup"]["horizons_minutes"] == [15, 60, 240]
     assert source_payload["shadow_followup"]["summary"]["cohorts"] == 1
     assert source_payload["shadow_followup"]["summary"]["pending_cohorts"] == 1
+    assert source_payload["shadow_followup"]["summary"]["reject_cohorts"] == 0
+    assert source_payload["shadow_followup"]["summary"]["entry_execution"] == {
+        "attempts": 0, "filled": 0, "rejected": 0, "cohort_linked": 0, "unlinked": 0,
+    }
     assert source_payload["shadow_followup"]["items"] == []
     assert source_payload["token_context_followup"]["status"] == "collecting_followup"
     assert source_payload["token_context_followup"]["summary"]["assessments"] == 1

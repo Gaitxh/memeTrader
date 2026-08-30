@@ -111,11 +111,14 @@ class TokenSnapshot:
     honeypot: bool | None = None
     sellable: bool | None = None
     observed_at: datetime = field(default_factory=utcnow)
+    ingested_at: datetime | None = None
     provider: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.observed_at = parse_time(self.observed_at)
+        if self.ingested_at is not None:
+            self.ingested_at = parse_time(self.ingested_at)
 
     @property
     def token_id(self) -> str:

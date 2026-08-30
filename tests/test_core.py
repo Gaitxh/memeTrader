@@ -352,7 +352,7 @@ def test_source_learning_records_only_closed_paper_lead_evidence(tmp_path: Path)
     store.add_snapshot(
         TokenSnapshot(
             "solana", token.address, 1.0, 100_000, 100_000, 10_000, 20, 5,
-            observed_at=now,
+            observed_at=now, ingested_at=now,
         )
     )
     decision = CandidateDecision(
@@ -450,7 +450,10 @@ def test_paper_source_attribution_is_exact_tax_aware_and_never_backfills_legacy(
     token = TokenCandidate(chain="solana", address="T" * 32, name="Exact", symbol="EXACT")
     store.upsert_token(token, seen_at=now)
     store.add_snapshot(
-        TokenSnapshot("solana", token.address, 1.0, 100_000, 100_000, 10_000, 20, 5, observed_at=now)
+        TokenSnapshot(
+            "solana", token.address, 1.0, 100_000, 100_000, 10_000, 20, 5,
+            observed_at=now, ingested_at=now,
+        )
     )
     decision = CandidateDecision(
         event_id, token.token_id, "CANDIDATE", 90, 90, 20, ["test"], created_at=now,
@@ -891,7 +894,8 @@ def test_shadow_event_followup_is_forward_only_fixed_horizon_and_non_activating(
         TokenSnapshot(
             chain="solana", address=token.address, price_usd=1.0, liquidity_usd=50_000,
             market_cap_usd=500_000, volume_5m_usd=10_000, buys_5m=20, sells_5m=10,
-            observed_at=now - timedelta(seconds=10), provider="fixture",
+            observed_at=now - timedelta(seconds=10),
+            ingested_at=now - timedelta(seconds=9), provider="fixture",
         )
     )
     decision = CandidateDecision(
@@ -916,10 +920,24 @@ def test_shadow_event_followup_is_forward_only_fixed_horizon_and_non_activating(
     assert cohort["action"] == "WAIT"
     assert cohort["eligible_source_count"] == 2
     labels = list(store.db.execute("SELECT * FROM shadow_event_cohort_labels WHERE cohort_id=?", (cohort_id,)))
-    assert {row["source_observation_id"] for row in labels} == set(observation_ids[:2])
+    assert {
+        row["source_observation_id"] for row in labels if row["source_observation_id"] > 0
+    } == set(observation_ids[:2])
     assert any(row["dimension"] == "entity" and row["value"] == "alpha" for row in labels)
     assert any(
         row["dimension"] == "trend_lane" and row["value"] == "culture_entertainment"
+        for row in labels
+    )
+    assert any(
+        row["source_observation_id"] == 0
+        and row["dimension"] == "attention_bucket"
+        and row["value"] == "70_84"
+        for row in labels
+    )
+    assert any(
+        row["source_observation_id"] == 0
+        and row["dimension"] == "decision_reason"
+        and row["value"] == "canonical_token_ambiguous"
         for row in labels
     )
     assert abs(sum(row["attribution_weight"] for row in labels if row["dimension"] == "source_kind") - 1.0) < 1e-9
@@ -957,7 +975,8 @@ def test_shadow_event_followup_is_forward_only_fixed_horizon_and_non_activating(
             TokenSnapshot(
                 chain="solana", address=token.address, price_usd=price, liquidity_usd=50_000,
                 market_cap_usd=500_000, volume_5m_usd=10_000, buys_5m=20, sells_5m=10,
-                observed_at=now + timedelta(minutes=minutes), provider="fixture",
+                observed_at=now + timedelta(minutes=minutes),
+                ingested_at=now + timedelta(minutes=minutes), provider="fixture",
             )
         )
     first = store.finalize_shadow_event_outcomes(now=now + timedelta(minutes=17))
@@ -983,7 +1002,8 @@ def test_shadow_event_followup_is_forward_only_fixed_horizon_and_non_activating(
         TokenSnapshot(
             chain="solana", address=token.address, price_usd=0.75, liquidity_usd=50_000,
             market_cap_usd=500_000, volume_5m_usd=10_000, buys_5m=20, sells_5m=10,
-            observed_at=now + timedelta(minutes=241), provider="late-fixture",
+            observed_at=now + timedelta(minutes=241),
+            ingested_at=now + timedelta(minutes=241), provider="late-fixture",
         )
     )
     store.finalize_shadow_event_outcomes(now=now + timedelta(minutes=272))
@@ -998,7 +1018,7 @@ def test_shadow_event_followup_is_forward_only_fixed_horizon_and_non_activating(
     assert summary["summary"]["cohorts"] == 2
     assert summary["summary"]["complete_cohorts"] == 2
     assert summary["observed_versions"] == [
-        "shadow-event-followup/v1", "shadow-event-followup/v2-event-action"
+        "shadow-event-followup/v1", "shadow-event-followup/v3-strategy-labels"
     ]
     entity_60m = next(
         item for item in summary["items"]
@@ -1039,7 +1059,7 @@ def test_shadow_event_admission_ledger_records_forward_skip_reasons_and_coverage
         TokenSnapshot(
             chain="solana", address=token.address, price_usd=1.0, liquidity_usd=50_000,
             market_cap_usd=500_000, volume_5m_usd=10_000, buys_5m=20, sells_5m=10,
-            observed_at=now, provider="fixture",
+            observed_at=now, ingested_at=now, provider="fixture",
         )
     )
     candidate_event = store.create_event("Candidate first", ["candidate first"], 80, now)
@@ -1098,6 +1118,102 @@ def test_shadow_event_admission_ledger_records_forward_skip_reasons_and_coverage
     store.close()
 
 
+def test_shadow_reject_cohort_freezes_strategy_labels_and_rejects_preloaded_future(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "shadow-reject.sqlite3")
+    now = datetime.now(timezone.utc)
+    event_id = store.create_event(
+        "Public figure narrative",
+        ["public figure"],
+        91,
+        now - timedelta(minutes=2),
+        topic="political_public_figure",
+    )
+    observation_id, _ = store.add_observation(
+        Observation(
+            source="browser:x:verified",
+            source_kind="official_social",
+            title="Exact original observation",
+            observed_at=now - timedelta(minutes=2),
+            ingested_at=now - timedelta(minutes=2),
+            role="feature",
+            source_item_id="reject-public-figure",
+            raw={
+                "platform": "x",
+                "source_entity_id": "verified_figure",
+                "account_type": "public_figure",
+                "verification_status": "browser_exact_entity_observation",
+            },
+        )
+    )
+    store.link_event_observation(event_id, observation_id)
+    token = TokenCandidate(
+        chain="solana", address="R" * 32, name="Rejected",
+        created_at=now - timedelta(minutes=3),
+    )
+    store.upsert_token(token, seen_at=now - timedelta(minutes=2))
+    store.add_snapshot(
+        TokenSnapshot(
+            chain="solana", address=token.address, price_usd=1.0, liquidity_usd=4_000,
+            market_cap_usd=40_000, volume_5m_usd=800, buys_5m=3, sells_5m=12,
+            honeypot=True, sellable=False, observed_at=now - timedelta(seconds=5),
+            ingested_at=now - timedelta(seconds=4), provider="fixture",
+        )
+    )
+    decision = CandidateDecision(
+        event_id, token.token_id, "REJECT", 58, 86, 4, ["test"], ["honeypot"],
+        created_at=now,
+    )
+    decision_id = store.add_decision(decision)
+    cohort_id = store.create_shadow_event_cohort(
+        decision, decision_id=decision_id, source_observation_ids=[observation_id]
+    )
+    assert cohort_id is not None
+    labels = {
+        (row["dimension"], row["value"])
+        for row in store.db.execute(
+            "SELECT dimension,value FROM shadow_event_cohort_labels WHERE cohort_id=?",
+            (cohort_id,),
+        )
+    }
+    assert ("public_figure_context", "verified_original_observation") in labels
+    assert ("safety_state", "honeypot") in labels
+    assert ("attention_bucket", "85_plus") in labels
+    assert ("decision_reason", "honeypot") in labels
+
+    store.add_snapshot(
+        TokenSnapshot(
+            chain="solana", address=token.address, price_usd=99.0, liquidity_usd=4_000,
+            market_cap_usd=40_000, volume_5m_usd=800, buys_5m=3, sells_5m=12,
+            observed_at=now + timedelta(minutes=16),
+            ingested_at=now + timedelta(minutes=1), provider="preloaded-future",
+        )
+    )
+    store.add_snapshot(
+        TokenSnapshot(
+            chain="solana", address=token.address, price_usd=0.8, liquidity_usd=4_000,
+            market_cap_usd=32_000, volume_5m_usd=600, buys_5m=2, sells_5m=10,
+            observed_at=now + timedelta(minutes=17),
+            ingested_at=now + timedelta(minutes=17), provider="valid-forward",
+        )
+    )
+    result = store.finalize_shadow_event_outcomes(now=now + timedelta(minutes=18))
+    assert result["outcomes_observed"] == 1
+    outcome = store.db.execute(
+        "SELECT * FROM shadow_event_outcomes WHERE cohort_id=? AND horizon_minutes=15",
+        (cohort_id,),
+    ).fetchone()
+    assert outcome["outcome_price"] == pytest.approx(0.8)
+    assert outcome["raw_return"] == pytest.approx(-0.2)
+    assert outcome["maximum_return"] == pytest.approx(0.0)
+    assert outcome["minimum_return"] == pytest.approx(-0.2)
+    summary = store.shadow_event_learning_summary_from_connection(store.db)
+    assert summary["summary"]["reject_cohorts"] == 1
+    assert summary["admission"]["summary"]["reject_covered"] == 1
+    store.close()
+
+
 def test_shadow_admission_summary_marks_pre_schema_candidate_uninstrumented():
     connection = sqlite3.connect(":memory:")
     connection.row_factory = sqlite3.Row
@@ -1126,7 +1242,7 @@ def test_token_context_outcomes_are_forward_only_safe_labeled_and_non_activating
         TokenSnapshot(
             chain="solana", address=token.address, price_usd=1.0, liquidity_usd=50_000,
             market_cap_usd=500_000, volume_5m_usd=10_000, buys_5m=20, sells_5m=10,
-            observed_at=now, provider="fixture",
+            observed_at=now, ingested_at=now, provider="fixture",
         )
     )
     assessment = {
@@ -1199,7 +1315,8 @@ def test_token_context_outcomes_are_forward_only_safe_labeled_and_non_activating
         TokenSnapshot(
             chain="solana", address=untracked.address, price_usd=1.0, liquidity_usd=20_000,
             market_cap_usd=None, volume_5m_usd=None, buys_5m=0, sells_5m=0,
-            observed_at=now + timedelta(minutes=1), provider="future-only-fixture",
+            observed_at=now + timedelta(minutes=1),
+            ingested_at=now + timedelta(minutes=1), provider="future-only-fixture",
         )
     )
 
@@ -1208,7 +1325,8 @@ def test_token_context_outcomes_are_forward_only_safe_labeled_and_non_activating
             TokenSnapshot(
                 chain="solana", address=token.address, price_usd=price, liquidity_usd=50_000,
                 market_cap_usd=500_000, volume_5m_usd=10_000, buys_5m=20, sells_5m=10,
-                observed_at=now + timedelta(minutes=minutes), provider="fixture",
+                observed_at=now + timedelta(minutes=minutes),
+                ingested_at=now + timedelta(minutes=minutes), provider="fixture",
             )
         )
     assert store.finalize_token_context_outcomes(now=now + timedelta(minutes=14))["outcomes_observed"] == 0
@@ -1234,7 +1352,8 @@ def test_token_context_outcomes_are_forward_only_safe_labeled_and_non_activating
         TokenSnapshot(
             chain="solana", address=token.address, price_usd=0.75, liquidity_usd=50_000,
             market_cap_usd=None, volume_5m_usd=None, buys_5m=0, sells_5m=0,
-            observed_at=now + timedelta(minutes=241), provider="late-fixture",
+            observed_at=now + timedelta(minutes=241),
+            ingested_at=now + timedelta(minutes=241), provider="late-fixture",
         )
     )
     store.finalize_token_context_outcomes(now=now + timedelta(minutes=272))

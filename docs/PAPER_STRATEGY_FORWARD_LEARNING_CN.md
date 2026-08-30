@@ -53,4 +53,11 @@ Phase 2 每个实验 arm 至少要求：50 个真实完成平仓、20 个决策�
 
 ## 6. 当前实现状态
 
-现有 Shadow、Token Context、Paper trades/account curve 和 decision/cohort 精确归因已提供部分基础数据，但上述完整策略 cohort、预注册 assignment 和 challenger 执行器尚未实现。它是后续持续学习的独立阶段；在此之前，现有确定性 Paper 基线继续运行，不因这个设计文档自动改变策略。
+Phase 1 已复用现有 `shadow_event_*` 账本前向运行，没有另建一套脱离 Runtime 的模拟链：
+
+- 每个独立事件的首次 `WAIT / REJECT / CANDIDATE` 分别形成一个 event-action cohort；每一次最终决策无论是否建成 cohort 都进入 admission 分母并保存明确跳过原因，避免用高频重试伪造独立样本。
+- cohort 冻结当时平台、信息类型、人物/实体、事件主题、热度、新鲜度、合格来源组合、公众人物关联状态、链、Token 年龄、流动性、市值、5 分钟量、买卖压力、安全状态、评分层、canonical margin、请求仓位和拒绝原因。
+- `token_snapshots` 从本版本起额外保存本机 `ingested_at`。entry 必须在决策时已经入库；15/60/240 分钟 outcome 必须在对应 target 之后才入库。升级前没有入库时间证明的旧快照不会被回填成新 cohort 或 outcome。
+- Paper 买卖执行尝试同时保存 `decision_id/cohort_id`；成功成交、报价拒绝和执行拒绝可沿同一链审计。旧的无链接尝试继续标为 unlinked，不能借用后来 cohort。
+
+仍未实现的是 Phase 2 的预注册 assignment、challenger 执行器和完整闭仓策略对照实验；也不会因为 Phase 1 某个分层短期上涨就自动改变金额、入场次数或退出。现有确定性 Paper 基线继续运行。

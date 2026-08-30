@@ -45,7 +45,7 @@
 - 公开账号目录覆盖 X、Truth、YouTube、Instagram、TikTok、Threads、Bluesky、Reddit 和 Telegram 目录；Trump、Musk、CZ 的 critical 只保留观察轮换，不提高证据权重。
 - GitHub 开源采集、Telegram 频道/机器人、Dex model1/model3 方案均已有审查文档；没有照搬多池混合、伪 Token 年龄或推广榜单逻辑。
 - 来源、账号、实体、平台、主题通道的追加式学习账本、15/60/240 分钟 shadow follow-up 和前向成熟门已实现；学习只允许小幅改变观察轮换，绝不进入证据、候选、风控、仓位、退出或 Live。
-- `shadow-event-followup/v2-event-action` 修复了首个 WAIT 永久吞掉后续 CANDIDATE 的选择偏差：WAIT 与首次真实升级的 CANDIDATE 分别冻结当时价格和来源，同动作不重复、CANDIDATE 后不倒退、旧样本不回填。
+- `shadow-event-followup/v3-strategy-labels` 继续使用 event-action cohort：首次 WAIT、REJECT、CANDIDATE 分别冻结当时价格、来源和策略研究分层，同动作不重复、CANDIDATE 后不倒退、旧样本不回填；结果快照还必须具有 target 后的本机 `ingested_at`。
 - Mastodon 新 Observation 现在冻结显式 `platform=mastodon`，使平台学习不再把真实采集降为无平台的泛化 `social`；修复只作用于未来新记录，旧 Observation 不追改。
 - 事件 topic 分类补充了明确体育语境和有限的互联网文化传播标记；只影响以后第一次被接受的新事件，历史 `other/unknown` 保持原值。
 
@@ -146,7 +146,7 @@
 | 已实现但样本不足 | 来源/平台/人物/主题选择性学习、Shadow、Token Context 与 Paper 精确 cohort 归因 | 机制和可视化已存在，但当前样本不足以证明哪个来源、人物或题材更优，更不能据此声称盈利能力 |
 | 部分完成/设备步骤 | X 等精确账号页面采集、固定公网域名、Devnet 真链签名 | 登录不等于桥采集；需专用浏览器扩展真实 heartbeat；Quick Tunnel 非固定；Devnet 钱包缺可核验 signature |
 | 尚未实现 | 基于事实冲突/证据复杂度的通用模型升级、可审查 Mainnet Broker 与真实成交发布线 | 现有任务级路由与结构无效回退可用，但通用复杂度升级和 Mainnet 交易闭环不存在 |
-| 已完成设计、待前向实现 | 按热度/舆论/人物/社区/链上质量研究金额、入场次数、分批止盈、runner 和持仓期 | 已冻结为不可回填的策略 cohort + 预注册 Paper challenger 方案；当前样本太少，不能直接改仓位或退出基线 |
+| Phase 1 已运行；Phase 2 待实现 | 按热度/舆论/人物/社区/链上质量研究金额、入场次数、分批止盈、runner 和持仓期 | 首次 WAIT/REJECT/CANDIDATE 已冻结多维标签、独立入库时间和固定时点结果；预注册 Paper challenger 尚未执行，当前样本不能直接改仓位或退出基线 |
 | 明确跳过/禁止 | Telegram 自动正文采集与 Agent 摄取、自动注册/关注/发帖/私信、读取密码/Cookie/验证码、使用聊天中暴露的私钥、网页解锁 Live、逆向抓取 OKX Premium 接口 | 与平台、秘密管理、证据质量或当前 Paper 安全边界冲突；只保留人工目录、公开原文和允许的机器 feed |
 
 关于用户提出的“取消每日 Token 预算”：当前工程不采用真正无限值。每日调用上限、有限 Token 上限、冷却、退避和最多两个并发槽位仍是防失控边界；本机预算可以提高到远高于当前日用量，并由日常巡检在出现 `daily_token_reserve_exceeded` 时继续复核和提高有限上限。这样避免合格任务被旧小预算跳过，同时仍保留可审计的故障上限。
