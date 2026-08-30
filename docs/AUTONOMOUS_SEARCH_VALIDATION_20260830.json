@@ -1,0 +1,84 @@
+{
+  "status": "PASS",
+  "validated_at": "2026-08-30",
+  "version": "0.6.0",
+  "mode": "paper",
+  "live_enabled": false,
+  "max_concurrent_agents": 2,
+  "routing": {
+    "trend_scout": {
+      "primary": "gpt-5.3-codex-spark",
+      "primary_reasoning": "low",
+      "fallback": "gpt-5.6-luna",
+      "fallback_reasoning": "low"
+    },
+    "source_discovery": {
+      "primary": "gpt-5.3-codex-spark",
+      "primary_reasoning": "low",
+      "fallback": "gpt-5.6-luna",
+      "fallback_reasoning": "low"
+    },
+    "token_context": {
+      "primary": "gpt-5.6-luna",
+      "primary_reasoning": "low",
+      "fallbacks": [
+        "gpt-5.6-terra",
+        "gpt-5.6-sol"
+      ],
+      "fallback_reasoning": "medium"
+    }
+  },
+  "cadence": {
+    "trend_base_minutes": 12,
+    "trend_surge_minutes": 3,
+    "trend_quiet_minutes": 30,
+    "trend_fallback_minimum_minutes": 30,
+    "trend_surge_duration_minutes": 30,
+    "source_discovery_interval_hours": 24,
+    "token_context_cooldown_minutes": 240
+  },
+  "daily_limits": {
+    "trend_scout": 64,
+    "source_discovery": 2,
+    "token_context": 8
+  },
+  "daily_token_budgets": {
+    "trend_scout": 500000,
+    "source_discovery": 100000,
+    "token_context": 250000
+  },
+  "lane_routing": {
+    "normal_lanes_per_run": 3,
+    "surge_lanes_per_run": 5,
+    "total_lanes": 5
+  },
+  "tests": {
+    "pytest_passed": 59,
+    "compileall": "PASS",
+    "wheel_build": "PASS",
+    "fresh_install": "PASS",
+    "pip_check": "PASS",
+    "doctor_online": "PASS",
+    "unicode_roundtrip": "PASS"
+  },
+  "real_source_discovery": {
+    "status": "PASS",
+    "accepted": [
+      "https://www.aljazeera.com/xml/rss/all.xml",
+      "https://www.france24.com/en/rss",
+      "https://www.theguardian.com/world/rss",
+      "https://www.lemonde.fr/en/international/rss_full.xml"
+    ],
+    "rejected_count": 2,
+    "resident_polling_confirmed": true
+  },
+  "real_trend_scout": {
+    "status": "completed",
+    "events": 0,
+    "fabricated_event": false,
+    "used_model": "gpt-5.6-luna",
+    "reasoning_effort": "low",
+    "tokens_used": 31583,
+    "next_interval_minutes": 30
+  }
+}

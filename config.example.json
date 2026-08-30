@@ -23,6 +23,18 @@
         "enabled": true
       },
       {
+        "name": "bbc-world",
+        "url": "https://feeds.bbci.co.uk/news/world/rss.xml",
+        "kind": "news",
+        "enabled": true
+      },
+      {
+        "name": "bbc-entertainment",
+        "url": "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
+        "kind": "news",
+        "enabled": true
+      },
+      {
         "name": "google-news-viral",
         "url": "https://news.google.com/rss/search?q=%28%22goes+viral%22+OR+%22internet+reacts%22+OR+%22social+media+erupts%22+OR+%22viral+animal%22+OR+%22viral+meme%22%29+when%3A1h&hl=en-US&gl=US&ceid=US%3Aen",
         "kind": "news",
@@ -35,9 +47,28 @@
         "enabled": true
       }
     ],
-    "bluesky_queries": ["memecoin", "pump.fun", "viral animal"],
-    "mastodon": [],
-    "gecko_networks": ["solana", "bsc"],
+    "bluesky_queries": [
+      "memecoin",
+      "pump.fun",
+      "viral animal",
+      "viral"
+    ],
+    "mastodon": [
+      {
+        "name": "mastodon-memecoin",
+        "url": "https://mastodon.social/api/v1/timelines/tag/memecoin?limit=40",
+        "enabled": true
+      },
+      {
+        "name": "mastodon-viral",
+        "url": "https://mastodon.social/api/v1/timelines/tag/viral?limit=40",
+        "enabled": true
+      }
+    ],
+    "gecko_networks": [
+      "solana",
+      "bsc"
+    ],
     "pumpportal": {
       "enabled": true,
       "url": "wss://pumpportal.fun/api/data"
@@ -45,7 +76,14 @@
     "reverse_google_news": {
       "enabled": true,
       "queries_per_cycle": 3,
+      "max_tokens_scanned_per_cycle": 10,
+      "candidate_pool_limit": 300,
+      "probe_cooldown_seconds": 120,
       "cooldown_minutes": 15,
+      "min_liquidity_usd": 5000,
+      "min_volume_5m_usd": 1000,
+      "min_5m_transactions": 12,
+      "min_buy_ratio": 0.55,
       "max_results_per_query": 8,
       "max_result_age_minutes": 180,
       "min_independent_sources": 2
@@ -55,7 +93,7 @@
     "enabled": true,
     "host": "127.0.0.1",
     "port": 8765,
-    "token": "RUN_INIT_TO_GENERATE_A_PRIVATE_TOKEN",
+    "token": "CHANGE_ME",
     "max_body_bytes": 262144
   },
   "events": {
@@ -64,7 +102,11 @@
     "similarity": 0.28
   },
   "candidate": {
-    "chains": ["solana", "bsc", "base"],
+    "chains": [
+      "solana",
+      "bsc",
+      "base"
+    ],
     "max_alias_queries": 4,
     "token_watch_minutes": 360,
     "min_candidate_score": 67,
@@ -72,7 +114,12 @@
     "min_canonical_margin": 5,
     "agent_tie_threshold": 3,
     "decision_cooldown_seconds": 180,
-    "retry_seconds": [25, 60, 150, 300],
+    "retry_seconds": [
+      25,
+      60,
+      150,
+      300
+    ],
     "max_events_per_cycle": 8,
     "max_source_age_minutes": 30,
     "allow_reentry": false,
@@ -106,22 +153,141 @@
     "trailing_activate_pct": 0.6,
     "trailing_drawdown_pct": 0.28,
     "emergency_liquidity_usd": 3000,
+    "narrative_stale_minutes": 120,
+    "narrative_min_holding_minutes": 20,
+    "narrative_exit_buy_ratio": 0.45,
     "max_holding_hours": 24,
     "take_profit_tiers": [
-      {"return_pct": 0.8, "sell_fraction": 0.2},
-      {"return_pct": 1.8, "sell_fraction": 0.25},
-      {"return_pct": 3.5, "sell_fraction": 0.35},
-      {"return_pct": 7.0, "sell_fraction": 1.0}
+      {
+        "return_pct": 0.8,
+        "sell_fraction": 0.2
+      },
+      {
+        "return_pct": 1.8,
+        "sell_fraction": 0.25
+      },
+      {
+        "return_pct": 3.5,
+        "sell_fraction": 0.35
+      },
+      {
+        "return_pct": 7,
+        "sell_fraction": 1
+      }
     ]
   },
   "agent": {
     "enabled": false,
     "provider": "codex",
     "codex_path": "codex",
-    "daily_limits": {"low": 8, "medium": 3, "high": 0},
-    "models": {"low": "", "medium": ""},
-    "reasoning_effort": {"low": "low", "medium": "medium"},
+    "daily_limits": {
+      "low": 8,
+      "medium": 3,
+      "high": 0
+    },
+    "models": {
+      "low": "",
+      "medium": ""
+    },
+    "reasoning_effort": {
+      "low": "low",
+      "medium": "medium"
+    },
     "timeout_seconds": 90
+  },
+  "autonomous_search": {
+    "enabled": true,
+    "codex_path": "codex",
+    "model": "gpt-5.3-codex-spark",
+    "fallback_models": [
+      "gpt-5.6-luna",
+      "gpt-5.6-sol"
+    ],
+    "reasoning_effort": "low",
+    "timeout_seconds": 180,
+    "max_concurrent_agents": 2,
+    "profiles": {
+      "trend_scout": {
+        "model": "gpt-5.3-codex-spark",
+        "reasoning_effort": "low",
+        "fallback_models": [
+          "gpt-5.6-luna"
+        ],
+        "fallback_reasoning_effort": "low"
+      },
+      "token_context": {
+        "model": "gpt-5.6-luna",
+        "reasoning_effort": "low",
+        "fallback_models": [
+          "gpt-5.6-terra",
+          "gpt-5.6-sol"
+        ],
+        "fallback_reasoning_effort": "medium"
+      },
+      "source_discovery": {
+        "model": "gpt-5.3-codex-spark",
+        "reasoning_effort": "low",
+        "fallback_models": [
+          "gpt-5.6-luna"
+        ],
+        "fallback_reasoning_effort": "low"
+      }
+    },
+    "trend_scout_enabled": true,
+    "trend_scout_startup_delay_seconds": 45,
+    "trend_scout_check_seconds": 30,
+    "trend_scout_base_interval_minutes": 12,
+    "trend_scout_surge_interval_minutes": 3,
+    "trend_scout_quiet_interval_minutes": 30,
+    "trend_scout_fallback_min_interval_minutes": 30,
+    "trend_scout_fallback_surge_interval_minutes": 10,
+    "trend_scout_high_token_threshold": 18000,
+    "trend_scout_high_token_min_interval_minutes": 30,
+    "trend_scout_high_token_surge_interval_minutes": 10,
+    "trend_scout_surge_duration_minutes": 30,
+    "trend_scout_empty_streak_for_quiet": 3,
+    "trend_scout_daily_limit": 64,
+    "trend_scout_daily_token_budget": 500000,
+    "trend_scout_lookback_minutes": 120,
+    "trend_scout_lanes_per_run": 3,
+    "trend_scout_surge_lanes_per_run": 5,
+    "trend_scout_min_confidence": 0.78,
+    "trend_scout_min_memeability": 0.65,
+    "trend_scout_min_relevance": 0.72,
+    "trend_scout_min_independent_sources": 2,
+    "trend_scout_max_events": 3,
+    "trend_scout_max_sources_per_event": 3,
+    "trend_scout_max_web_searches": 4,
+    "trend_scout_surge_attention": 70,
+    "startup_delay_seconds": 120,
+    "source_discovery_check_minutes": 60,
+    "source_discovery_interval_hours": 24,
+    "source_empty_retry_hours": 12,
+    "source_error_retry_hours": 4,
+    "source_discovery_daily_limit": 2,
+    "source_discovery_daily_token_budget": 100000,
+    "max_source_candidates": 6,
+    "max_active_rss_sources": 16,
+    "max_feed_item_age_hours": 72,
+    "source_auto_pause_failures": 3,
+    "verify_public_dns": true,
+    "context_search_enabled": true,
+    "context_search_daily_limit": 8,
+    "token_context_daily_token_budget": 250000,
+    "context_min_momentum_score": 75,
+    "context_token_cooldown_minutes": 240,
+    "context_lookback_minutes": 180,
+    "context_min_confidence": 0.78,
+    "context_min_relevance": 0.72,
+    "context_min_independent_sources": 2,
+    "context_max_results": 5,
+    "topics": [
+      "breaking global news, politics and public figures",
+      "viral animals, internet culture, celebrities and entertainment",
+      "sports moments with strong meme potential",
+      "AI, gaming and technology memes",
+      "crypto-native community events"
+    ]
   },
   "notifications": {
     "jsonl": "data/notifications.jsonl",
@@ -129,6 +295,11 @@
     "telegram_bot_token": "",
     "telegram_chat_id": ""
   },
-  "source_stale_minutes": {"browser": 3, "other": 20},
-  "live": {"enabled": false}
+  "source_stale_minutes": {
+    "browser": 3,
+    "other": 20
+  },
+  "live": {
+    "enabled": false
+  }
 }

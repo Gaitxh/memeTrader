@@ -12,6 +12,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from .autonomous_search import AutonomousSearchAgent
 from .collectors import (
     BlueskySearchCollector,
     DexScreenerClient,
@@ -30,6 +31,7 @@ from .strategy import (
     PaperPolicy,
     SafetyChecker,
     clean_text,
+    evidence_origin,
     extract_addresses,
     is_distinctive_token_name,
     terms,
@@ -47,15 +49,63 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "source_health_seconds": 30,
     "event_min_attention": 35.0,
     "sources": {
-        "rss": [],
-        "bluesky_queries": [],
-        "mastodon": [],
+        "rss": [
+            {
+                "name": "coindesk",
+                "url": "https://www.coindesk.com/arc/outboundfeeds/rss/",
+                "kind": "news",
+                "enabled": True,
+            },
+            {
+                "name": "cointelegraph",
+                "url": "https://cointelegraph.com/rss",
+                "kind": "news",
+                "enabled": True,
+            },
+            {
+                "name": "bbc-world",
+                "url": "https://feeds.bbci.co.uk/news/world/rss.xml",
+                "kind": "news",
+                "enabled": True,
+            },
+            {
+                "name": "bbc-entertainment",
+                "url": "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
+                "kind": "news",
+                "enabled": True,
+            },
+            {
+                "name": "google-news-viral",
+                "url": "https://news.google.com/rss/search?q=%28%22goes+viral%22+OR+%22internet+reacts%22+OR+%22social+media+erupts%22+OR+%22viral+animal%22+OR+%22viral+meme%22%29+when%3A1h&hl=en-US&gl=US&ceid=US%3Aen",
+                "kind": "news",
+                "enabled": True,
+            },
+            {
+                "name": "google-news-memecoin",
+                "url": "https://news.google.com/rss/search?q=%28memecoin+OR+%22meme+coin%22+OR+pump.fun%29+when%3A1h&hl=en-US&gl=US&ceid=US%3Aen",
+                "kind": "news",
+                "enabled": True,
+            },
+        ],
+        "bluesky_queries": ["memecoin", "pump.fun", "viral animal", "viral"],
+        "mastodon": [
+            {
+                "name": "mastodon-memecoin",
+                "url": "https://mastodon.social/api/v1/timelines/tag/memecoin?limit=40",
+                "enabled": True,
+            },
+            {
+                "name": "mastodon-viral",
+                "url": "https://mastodon.social/api/v1/timelines/tag/viral?limit=40",
+                "enabled": True,
+            },
+        ],
         "gecko_networks": ["solana", "bsc"],
         "pumpportal": {"enabled": True, "url": "wss://pumpportal.fun/api/data"},
         "reverse_google_news": {
             "enabled": True,
             "queries_per_cycle": 3,
-            "max_tokens_scanned_per_cycle": 20,
+            "max_tokens_scanned_per_cycle": 10,
             "candidate_pool_limit": 300,
             "probe_cooldown_seconds": 120,
             "cooldown_minutes": 15,
@@ -142,6 +192,90 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "daily_limits": {"low": 8, "medium": 2, "high": 0},
         "models": {"low": "", "medium": ""},
         "reasoning_effort": {"low": "low", "medium": "medium"}
+    },
+    "autonomous_search": {
+        "enabled": True,
+        "codex_path": "codex",
+        "model": "gpt-5.3-codex-spark",
+        "fallback_models": ["gpt-5.6-luna", "gpt-5.6-sol"],
+        "reasoning_effort": "low",
+        "timeout_seconds": 180,
+        "max_concurrent_agents": 2,
+        "profiles": {
+            "trend_scout": {
+                "model": "gpt-5.3-codex-spark",
+                "reasoning_effort": "low",
+                "fallback_models": ["gpt-5.6-luna"],
+                "fallback_reasoning_effort": "low"
+            },
+            "token_context": {
+                "model": "gpt-5.6-luna",
+                "reasoning_effort": "low",
+                "fallback_models": ["gpt-5.6-terra", "gpt-5.6-sol"],
+                "fallback_reasoning_effort": "medium"
+            },
+            "source_discovery": {
+                "model": "gpt-5.3-codex-spark",
+                "reasoning_effort": "low",
+                "fallback_models": ["gpt-5.6-luna"],
+                "fallback_reasoning_effort": "low"
+            }
+        },
+        "trend_scout_enabled": True,
+        "trend_scout_startup_delay_seconds": 45,
+        "trend_scout_check_seconds": 30,
+        "trend_scout_base_interval_minutes": 12,
+        "trend_scout_surge_interval_minutes": 3,
+        "trend_scout_quiet_interval_minutes": 30,
+        "trend_scout_fallback_min_interval_minutes": 30,
+        "trend_scout_fallback_surge_interval_minutes": 10,
+        "trend_scout_high_token_threshold": 18_000,
+        "trend_scout_high_token_min_interval_minutes": 30,
+        "trend_scout_high_token_surge_interval_minutes": 10,
+        "trend_scout_surge_duration_minutes": 30,
+        "trend_scout_empty_streak_for_quiet": 3,
+        "trend_scout_daily_limit": 64,
+        "trend_scout_daily_token_budget": 500_000,
+        "trend_scout_lookback_minutes": 120,
+        "trend_scout_lanes_per_run": 3,
+        "trend_scout_surge_lanes_per_run": 5,
+        "trend_scout_min_confidence": 0.78,
+        "trend_scout_min_memeability": 0.65,
+        "trend_scout_min_relevance": 0.72,
+        "trend_scout_min_independent_sources": 2,
+        "trend_scout_max_events": 3,
+        "trend_scout_max_sources_per_event": 3,
+        "trend_scout_max_web_searches": 4,
+        "trend_scout_surge_attention": 70,
+        "startup_delay_seconds": 120,
+        "source_discovery_check_minutes": 60,
+        "source_discovery_interval_hours": 24,
+        "source_empty_retry_hours": 12,
+        "source_error_retry_hours": 4,
+        "source_discovery_daily_limit": 2,
+        "source_discovery_daily_token_budget": 100_000,
+        "max_source_candidates": 6,
+        "max_active_rss_sources": 16,
+        "max_feed_item_age_hours": 72,
+        "source_auto_pause_failures": 3,
+        "verify_public_dns": True,
+        "context_search_enabled": True,
+        "context_search_daily_limit": 8,
+        "token_context_daily_token_budget": 250_000,
+        "context_min_momentum_score": 75,
+        "context_token_cooldown_minutes": 240,
+        "context_lookback_minutes": 180,
+        "context_min_confidence": 0.78,
+        "context_min_relevance": 0.72,
+        "context_min_independent_sources": 2,
+        "context_max_results": 5,
+        "topics": [
+            "breaking global news, politics and public figures",
+            "viral animals, internet culture, celebrities and entertainment",
+            "sports moments with strong meme potential",
+            "AI, gaming and technology memes",
+            "crypto-native community events"
+        ]
     },
     "notifications": {
         "jsonl": "data/notifications.jsonl",
@@ -263,6 +397,50 @@ def load_config(path: str | Path) -> tuple[dict[str, Any], Path]:
     for name in ("poll_seconds", "reverse_news_seconds", "event_scan_seconds", "position_scan_seconds", "source_health_seconds"):
         if float(config.get(name, 0)) <= 0:
             raise ValueError(f"{name} must be positive")
+
+    autonomous = config["autonomous_search"]
+    if autonomous.get("enabled", False):
+        for name in (
+            "source_discovery_check_minutes",
+            "source_discovery_interval_hours",
+            "source_empty_retry_hours",
+            "source_error_retry_hours",
+            "trend_scout_check_seconds",
+            "trend_scout_base_interval_minutes",
+            "trend_scout_surge_interval_minutes",
+            "trend_scout_quiet_interval_minutes",
+            "trend_scout_fallback_min_interval_minutes",
+            "trend_scout_fallback_surge_interval_minutes",
+            "trend_scout_high_token_min_interval_minutes",
+            "trend_scout_high_token_surge_interval_minutes",
+            "trend_scout_surge_duration_minutes",
+        ):
+            if float(autonomous.get(name, 0)) <= 0:
+                raise ValueError(f"autonomous_search.{name} must be positive")
+        for name in (
+            "trend_scout_daily_limit",
+            "trend_scout_daily_token_budget",
+            "source_discovery_daily_limit",
+            "source_discovery_daily_token_budget",
+            "context_search_daily_limit",
+            "token_context_daily_token_budget",
+            "trend_scout_high_token_threshold",
+        ):
+            if int(autonomous.get(name, 0)) < 0:
+                raise ValueError(f"autonomous_search.{name} must be non-negative")
+        if not 1 <= int(autonomous.get("max_concurrent_agents", 2)) <= 4:
+            raise ValueError("autonomous_search.max_concurrent_agents must be between 1 and 4")
+        if int(autonomous.get("trend_scout_lanes_per_run", 1)) < 1:
+            raise ValueError("autonomous_search.trend_scout_lanes_per_run must be positive")
+        if int(autonomous.get("trend_scout_surge_lanes_per_run", 1)) < 1:
+            raise ValueError("autonomous_search.trend_scout_surge_lanes_per_run must be positive")
+        if int(autonomous.get("source_auto_pause_failures", 3)) < 1:
+            raise ValueError("autonomous_search.source_auto_pause_failures must be positive")
+        if not 30 <= int(autonomous.get("timeout_seconds", 180)) <= 300:
+            raise ValueError("autonomous_search.timeout_seconds must be between 30 and 300")
+        for task, profile in (autonomous.get("profiles") or {}).items():
+            if not isinstance(profile, dict) or not str(profile.get("model") or "").strip():
+                raise ValueError(f"autonomous_search.profiles.{task}.model is required")
 
     paper = config["paper"]
     if not -0.95 < float(paper["stop_loss_pct"]) < 0:
@@ -518,6 +696,17 @@ class Runtime:
         )
         self.safety = SafetyChecker(self.http, config["safety"])
         self.agent = AgentRouter(self.store, config["agent"])
+        known_source_urls = {
+            str(item.get("url") or "").rstrip("/")
+            for item in config["sources"].get("rss", [])
+            if item.get("url")
+        }
+        self.autonomous_search = AutonomousSearchAgent(
+            self.store,
+            self.http,
+            config["autonomous_search"],
+            known_source_urls=known_source_urls,
+        )
         self.evaluator = CandidateEvaluator(self.store, self.dex, self.safety, config["candidate"], self.agent)
         self.policy = PaperPolicy(config["paper"])
         self.notifier = Notifier(root, config["notifications"])
@@ -530,7 +719,25 @@ class Runtime:
         await self.http.close()
         self.store.close()
 
+    def _classify_observation(self, obs: Observation) -> Observation:
+        if obs.published_at is None or obs.role.lower() != "feature":
+            return obs
+        max_age = float((self.config.get("events") or {}).get("max_source_age_minutes", 30))
+        source_age = obs.observed_at - obs.published_at
+        if obs.availability_proof in {"local_poll", "local_receive"} and source_age > timedelta(minutes=max_age):
+            obs.role = "identity"
+            obs.raw = {
+                **obs.raw,
+                "stale_first_observation": True,
+                "source_age_minutes": round(source_age.total_seconds() / 60.0, 2),
+            }
+        elif source_age < timedelta(minutes=-5):
+            obs.role = "identity"
+            obs.raw = {**obs.raw, "published_time_in_future": True}
+        return obs
+
     async def ingest_observation(self, obs: Observation) -> None:
+        obs = self._classify_observation(obs)
         event_id, event_created, observation_created = self.events.ingest(obs)
         self.store.heartbeat(obs.source, item=observation_created)
         if not observation_created:
@@ -539,6 +746,11 @@ class Runtime:
         notify_cfg = self.config["notifications"]
         threshold = float(notify_cfg.get("minimum_event_attention", self.config.get("event_min_attention", 40)))
         is_official = obs.source_kind.lower() == "official_social"
+        search_cfg = self.config["autonomous_search"]
+        if search_cfg.get("enabled", False) and (
+            is_official or event.attention >= float(search_cfg.get("trend_scout_surge_attention", 70))
+        ):
+            self.autonomous_search.mark_trend_surge()
         should_notify = bool(notify_cfg.get("notify_raw_events", False)) or is_official or event.attention >= threshold
         if not should_notify:
             return
@@ -574,10 +786,26 @@ class Runtime:
             )
 
     def _rss_collectors(self) -> list[RSSCollector]:
-        result = []
-        for item in self.config["sources"].get("rss", []):
-            if item.get("enabled", True) and item.get("url"):
-                result.append(RSSCollector(self.http, str(item.get("name") or item["url"]), str(item["url"]), str(item.get("kind") or "news")))
+        result: list[RSSCollector] = []
+        seen_urls: set[str] = set()
+        items = [
+            *self.config["sources"].get("rss", []),
+            *self.autonomous_search.active_rss_sources(),
+        ]
+        for item in items:
+            url = str(item.get("url") or "").strip()
+            normalized = url.rstrip("/")
+            if not item.get("enabled", True) or not url or normalized in seen_urls:
+                continue
+            seen_urls.add(normalized)
+            result.append(
+                RSSCollector(
+                    self.http,
+                    str(item.get("name") or url),
+                    url,
+                    str(item.get("source_kind") or ("news" if item.get("kind") == "rss" else item.get("kind")) or "news"),
+                )
+            )
         return result
 
     def _bluesky_collectors(self) -> list[BlueskySearchCollector]:
@@ -606,12 +834,26 @@ class Runtime:
 
     async def _poll_observation_collector(self, collector: Any) -> None:
         name = str(getattr(collector, "name", getattr(collector, "query", type(collector).__name__)))
+        url = str(getattr(collector, "url", "") or "")
         try:
             observations = await collector.poll()
             self.store.heartbeat(name, item=bool(observations))
+            if url:
+                self.autonomous_search.record_rss_poll(url, ok=True)
             for obs in observations:
                 await self.ingest_observation(obs)
         except Exception as exc:
+            paused = self.autonomous_search.record_rss_poll(
+                url,
+                ok=False,
+                error=f"{type(exc).__name__}: {exc}",
+            ) if url else False
+            if paused:
+                self.notifier.send(
+                    "autonomous_source_paused",
+                    name,
+                    {"url": url, "reason": "consecutive_poll_failures"},
+                )
             self._notify_source_error(name, exc)
 
     async def _poll_gecko_network(self, network: str) -> None:
@@ -634,12 +876,85 @@ class Runtime:
         if tasks:
             await asyncio.gather(*tasks)
 
+    async def discover_sources_once(self, *, force: bool = False) -> dict[str, Any]:
+        result = await self.autonomous_search.discover_sources(force=force)
+        accepted = result.get("accepted") or []
+        if result.get("status") == "completed":
+            self.store.heartbeat("autonomous-source-discovery", item=bool(accepted))
+        if accepted:
+            self.notifier.send(
+                "autonomous_sources_added",
+                f"added {len(accepted)} public feeds",
+                {
+                    "sources": [
+                        {"name": row.get("name"), "url": row.get("url"), "topic": row.get("topic")}
+                        for row in accepted
+                    ],
+                    "usage": self.autonomous_search.usage(),
+                },
+            )
+        elif result.get("status") == "agent_error":
+            self._notify_source_error("autonomous-source-discovery", RuntimeError(str(result.get("error") or "agent error")))
+        return result
+
+    async def _autonomous_source_loop(self) -> None:
+        cfg = self.config["autonomous_search"]
+        if not cfg.get("enabled", False):
+            return
+        delay = max(0.0, float(cfg.get("startup_delay_seconds", 120)))
+        if delay:
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=delay)
+                return
+            except TimeoutError:
+                pass
+        interval = max(300.0, float(cfg.get("source_discovery_check_minutes", 60)) * 60.0)
+        await self._periodic("autonomous_source_discovery", interval, self.discover_sources_once)
+
+    async def scout_trends_once(self, *, force: bool = False) -> dict[str, Any]:
+        result, observations = await self.autonomous_search.scout_trends(force=force)
+        if result.get("status") == "completed":
+            self.store.heartbeat("autonomous-trend-scout", item=bool(observations))
+        for observation in observations:
+            await self.ingest_observation(observation)
+        if observations:
+            self.notifier.send(
+                "autonomous_trends_found",
+                f"verified {len(result.get('events') or [])} current meme-capable events",
+                {
+                    "events": result.get("events") or [],
+                    "observation_count": len(observations),
+                    "usage": self.autonomous_search.usage(),
+                    "next_interval_minutes": result.get("next_interval_minutes"),
+                },
+            )
+        elif result.get("status") == "agent_error":
+            self._notify_source_error(
+                "autonomous-trend-scout",
+                RuntimeError(str(result.get("error") or "agent error")),
+            )
+        return result
+
+    async def _autonomous_trend_loop(self) -> None:
+        cfg = self.config["autonomous_search"]
+        if not cfg.get("enabled", False) or not cfg.get("trend_scout_enabled", True):
+            return
+        delay = max(0.0, float(cfg.get("trend_scout_startup_delay_seconds", 45)))
+        if delay:
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=delay)
+                return
+            except TimeoutError:
+                pass
+        interval = max(10.0, float(cfg.get("trend_scout_check_seconds", 30)))
+        await self._periodic("autonomous_trend_scout", interval, self.scout_trends_once)
+
     async def reverse_news_once(self) -> None:
         cfg = self.config["sources"].get("reverse_google_news") or {}
         if not cfg.get("enabled", True):
             return
         max_queries = int(cfg.get("queries_per_cycle", 3))
-        max_scanned = int(cfg.get("max_tokens_scanned_per_cycle", 20))
+        max_scanned = int(cfg.get("max_tokens_scanned_per_cycle", 10))
         candidate_pool_limit = int(cfg.get("candidate_pool_limit", 300))
         probe_cooldown = int(cfg.get("probe_cooldown_seconds", 120))
         cooldown = int(cfg.get("cooldown_minutes", 15))
@@ -708,9 +1023,10 @@ class Runtime:
                 {"q": query, "hl": "en-US", "gl": "US", "ceid": "US:en"}
             )
             source = "google-news-reverse"
+            accepted = 0
+            accepted_origins: set[str] = set()
             try:
                 observations = await RSSCollector(self.http, source, url, "news").poll()
-                accepted = 0
                 for obs in observations:
                     if obs.published_at and now - obs.published_at > max_result_age:
                         continue
@@ -723,11 +1039,35 @@ class Runtime:
                     obs.raw["reverse_name_only"] = True
                     await self.ingest_observation(obs)
                     accepted += 1
+                    accepted_origins.add(evidence_origin(obs))
                     if accepted >= max_results:
                         break
                 self.store.heartbeat(source, item=accepted > 0)
             except Exception as exc:
                 self._notify_source_error(source, exc)
+
+            minimum_sources = int(cfg.get("min_independent_sources", 2))
+            if len(accepted_origins) < minimum_sources:
+                snapshot = self.store.latest_snapshot(token.token_id)
+                if snapshot is not None:
+                    agent_observations = await self.autonomous_search.search_token_context(
+                        token,
+                        snapshot,
+                        momentum_score=momentum,
+                    )
+                    for observation in agent_observations:
+                        await self.ingest_observation(observation)
+                    if agent_observations:
+                        self.store.heartbeat("autonomous-context-search", item=True)
+                        self.notifier.send(
+                            "autonomous_context_found",
+                            token.name or token.symbol or token.token_id,
+                            {
+                                "token_id": token.token_id,
+                                "sources": [row.url for row in agent_observations],
+                                "usage": self.autonomous_search.usage(),
+                            },
+                        )
 
     def _event_has_official_direct_ca(self, event_id: int) -> bool:
         for row in self.store.event_observations(event_id):
@@ -862,17 +1202,58 @@ class Runtime:
                 {**asdict(position), "quote_price": snap.price_usd, "slippage_rate": slippage},
             )
 
-    async def check_source_health_once(self) -> None:
-        limits = self.config.get("source_stale_minutes") or {}
-        disabled_sources = {
+    def _configured_health_sources(self) -> set[str]:
+        sources = self.config["sources"]
+        configured = {
             str(item.get("name") or item.get("url") or "")
-            for item in self.config["sources"].get("rss", [])
-            if not item.get("enabled", True)
+            for item in sources.get("rss", [])
+            if item.get("enabled", True) and item.get("url")
         }
+        configured.update(
+            str(item.get("name") or item.get("url") or "")
+            for item in sources.get("mastodon", [])
+            if item.get("enabled", True) and item.get("url")
+        )
+        configured.update(
+            f"geckoterminal:{network}"
+            for network in sources.get("gecko_networks", [])
+        )
+        for query in sources.get("bluesky_queries", []):
+            if str(query).strip():
+                configured.add(str(query))
+                configured.add(f"bluesky:{query}")
+        if (sources.get("pumpportal") or {}).get("enabled", True):
+            configured.update({"pumpportal:create", "pumpportal:migration"})
+        if (sources.get("reverse_google_news") or {}).get("enabled", True):
+            configured.add("google-news-reverse")
+        configured.update(
+            str(item.get("name") or item.get("url") or "")
+            for item in self.autonomous_search.active_rss_sources()
+            if item.get("url")
+        )
+        if self.config["autonomous_search"].get("enabled", False):
+            configured.update(
+                {
+                    "autonomous-source-discovery",
+                    "autonomous-trend-scout",
+                    "autonomous-context-search",
+                }
+            )
+        return configured
+
+    async def check_source_health_once(self, *, include_streams: bool = True) -> None:
+        limits = self.config.get("source_stale_minutes") or {}
+        configured_sources = self._configured_health_sources()
+        bridge_enabled = bool((self.config.get("bridge") or {}).get("enabled", True))
         now = utcnow()
         for row in self.store.source_health():
             source = str(row["source"])
-            if source in disabled_sources:
+            if source.startswith("browser:"):
+                if not bridge_enabled:
+                    continue
+            elif source not in configured_sources:
+                continue
+            if not include_streams and source.startswith("pumpportal"):
                 continue
             last_ok = row["last_ok_at"]
             if not last_ok:
@@ -970,7 +1351,7 @@ class Runtime:
         await self.reverse_news_once()
         await self.evaluate_events_once()
         await self.monitor_positions_once()
-        await self.check_source_health_once()
+        await self.check_source_health_once(include_streams=False)
 
     async def _periodic(
         self,
@@ -1011,6 +1392,8 @@ class Runtime:
 
         tasks = [
             asyncio.create_task(self.pump_loop(), name="pumpportal"),
+            asyncio.create_task(self._autonomous_source_loop(), name="autonomous_source_discovery"),
+            asyncio.create_task(self._autonomous_trend_loop(), name="autonomous_trend_scout"),
             asyncio.create_task(
                 self._periodic("external_sources", self.config.get("poll_seconds", 60), self.poll_external_once),
                 name="external_sources",

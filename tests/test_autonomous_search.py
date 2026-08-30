@@ -1,0 +1,509 @@
+from __future__ import annotations
+
+import asyncio
+import subprocess
+from email.utils import format_datetime
+from pathlib import Path
+
+import httpx
+
+from memetrader.autonomous_search import (
+    REGISTRY_KEY,
+    TREND_EMPTY_STREAK_KEY,
+    TREND_RESULT_KEY,
+    AutonomousSearchAgent,
+    _public_http_url,
+)
+from memetrader.models import Observation, TokenCandidate, TokenSnapshot, iso, utcnow
+from memetrader.runtime import Runtime, initial_config
+from memetrader.store import Store
+
+
+class FakeHttp:
+    def __init__(self, feed: bytes | None = None):
+        self.feed = feed
+        self.urls: list[str] = []
+
+    async def get(self, url, **kwargs):
+        self.urls.append(str(url))
+        request = httpx.Request("GET", str(url))
+        if self.feed is not None and str(url).endswith("feed.xml"):
+            return httpx.Response(200, content=self.feed, request=request)
+        return httpx.Response(200, text="reachable source", request=request)
+
+
+
+def config(**overrides):
+    value = {
+        "enabled": True,
+        "codex_path": "codex",
+        "model": "gpt-5.3-codex-spark",
+        "reasoning_effort": "low",
+        "timeout_seconds": 180,
+        "source_discovery_interval_hours": 24,
+        "source_discovery_daily_limit": 1,
+        "max_source_candidates": 6,
+        "max_active_rss_sources": 12,
+        "max_feed_item_age_hours": 72,
+        "context_search_enabled": True,
+        "context_search_daily_limit": 2,
+        "context_min_momentum_score": 75,
+        "context_token_cooldown_minutes": 360,
+        "context_lookback_minutes": 180,
+        "context_min_confidence": 0.78,
+        "context_min_relevance": 0.72,
+        "context_min_independent_sources": 2,
+        "context_max_results": 5,
+        "verify_public_dns": False,
+    }
+    value.update(overrides)
+    return value
+
+
+
+def test_public_url_filter_rejects_local_networks():
+    assert _public_http_url("https://example.com/feed.xml") == "https://example.com/feed.xml"
+    assert _public_http_url("http://127.0.0.1/feed") is None
+    assert _public_http_url("http://192.168.1.20/feed") is None
+    assert _public_http_url("file:///tmp/feed") is None
+
+
+
+def test_codex_search_command_is_ephemeral_read_only_and_web_enabled(tmp_path: Path):
+    store = Store(tmp_path / "db.sqlite3")
+    agent = AutonomousSearchAgent(store, FakeHttp(), config())
+    args = agent._codex_args(tmp_path / "answer.json")
+    assert args[1:3] == ["--search", "exec"]
+    assert "--ignore-user-config" in args
+    assert "--ephemeral" in args
+    assert "read-only" in args
+    assert "gpt-5.3-codex-spark" in args
+    store.close()
+
+
+
+def test_search_falls_back_when_primary_model_quota_is_exhausted(tmp_path: Path, monkeypatch):
+    store = Store(tmp_path / "db.sqlite3")
+    agent = AutonomousSearchAgent(store, FakeHttp(), config(fallback_models=["gpt-5.6-sol"]))
+    models = []
+
+    def fake_run(args, **kwargs):
+        model = args[args.index("--model") + 1]
+        models.append(model)
+        if model == "gpt-5.3-codex-spark":
+            return subprocess.CompletedProcess(args, 1, "", "usage limit; try again")
+        output = Path(args[args.index("--output-last-message") + 1])
+        output.write_text('{"sources": []}', encoding="utf-8")
+        return subprocess.CompletedProcess(args, 0, "tokens used\n123\n", "")
+
+    monkeypatch.setattr("memetrader.autonomous_search.subprocess.run", fake_run)
+    payload, metadata = agent._run_codex_search("test")
+    assert payload == {"sources": []}
+    assert models == ["gpt-5.3-codex-spark", "gpt-5.6-sol"]
+    assert metadata["model"] == "gpt-5.6-sol"
+    store.close()
+
+
+
+def test_task_profile_routes_token_context_from_luna_low_to_terra_medium(tmp_path: Path, monkeypatch):
+    store = Store(tmp_path / "db.sqlite3")
+    agent = AutonomousSearchAgent(
+        store,
+        FakeHttp(),
+        config(
+            profiles={
+                "token_context": {
+                    "model": "gpt-5.6-luna",
+                    "reasoning_effort": "low",
+                    "fallback_models": ["gpt-5.6-terra"],
+                    "fallback_reasoning_effort": "medium",
+                }
+            }
+        ),
+    )
+    attempts = []
+
+    def fake_run(args, **kwargs):
+        model = args[args.index("--model") + 1]
+        effort_arg = next(value for value in args if value.startswith("model_reasoning_effort="))
+        attempts.append((model, effort_arg))
+        if model == "gpt-5.6-luna":
+            return subprocess.CompletedProcess(args, 1, "", "usage limit; try again")
+        output = Path(args[args.index("--output-last-message") + 1])
+        output.write_text('{"event_found": false, "sources": []}', encoding="utf-8")
+        return subprocess.CompletedProcess(args, 0, "tokens used\n321\n", "")
+
+    monkeypatch.setattr("memetrader.autonomous_search.subprocess.run", fake_run)
+    payload, metadata = agent._run_codex_search("test", "token_context")
+    assert payload["event_found"] is False
+    assert attempts == [
+        ("gpt-5.6-luna", 'model_reasoning_effort="low"'),
+        ("gpt-5.6-terra", 'model_reasoning_effort="medium"'),
+    ]
+    assert metadata["model"] == "gpt-5.6-terra"
+    assert metadata["reasoning_effort"] == "medium"
+    store.close()
+
+
+
+def test_failed_search_refunds_internal_daily_quota(tmp_path: Path):
+    async def scenario():
+        store = Store(tmp_path / "db.sqlite3")
+        agent = AutonomousSearchAgent(store, FakeHttp(), config())
+
+        def fail(prompt, task="source_discovery"):
+            raise RuntimeError("model unavailable")
+
+        agent._run_codex_search = fail
+        result = await agent.discover_sources(force=True)
+        assert result["status"] == "agent_error"
+        assert agent.usage()["source_discovery"] == 0
+        store.close()
+
+    asyncio.run(scenario())
+
+
+
+def test_source_discovery_verifies_and_persists_only_real_public_rss(tmp_path: Path):
+    async def scenario():
+        published = format_datetime(utcnow())
+        feed = (
+            "<?xml version='1.0'?><rss version='2.0'><channel><title>Feed</title>"
+            f"<item><title>Fresh viral story</title><link>https://example.com/story</link><pubDate>{published}</pubDate></item>"
+            "</channel></rss>"
+        ).encode()
+        store = Store(tmp_path / "db.sqlite3")
+        agent = AutonomousSearchAgent(store, FakeHttp(feed), config())
+        agent._run_codex_search = lambda prompt, task="source_discovery": (
+            {
+                "sources": [
+                    {"name": "Example Viral", "url": "https://example.com/feed.xml", "kind": "rss", "topic": "viral"},
+                    {"name": "Private", "url": "http://127.0.0.1/private.xml", "kind": "rss"},
+                    {"name": "Unsupported", "url": "https://example.org/api", "kind": "json_api"},
+                ]
+            },
+            {"tokens_used": 123},
+        )
+        result = await agent.discover_sources(force=True)
+        assert result["status"] == "completed"
+        assert [row["name"] for row in result["accepted"]] == ["Example Viral"]
+        assert agent.active_rss_sources()[0]["url"] == "https://example.com/feed.xml"
+        assert agent.usage()["source_discovery_tokens"] == 123
+        reasons = {row.get("reason") for row in result["rejected"]}
+        assert "non_public_url" in reasons and "unsupported_kind" in reasons
+        second = await agent.discover_sources(force=True)
+        assert second["status"] == "quota_exhausted"
+        store.close()
+
+    asyncio.run(scenario())
+
+
+
+def test_token_context_search_requires_two_recent_reachable_sources(tmp_path: Path):
+    async def scenario():
+        store = Store(tmp_path / "db.sqlite3")
+        agent = AutonomousSearchAgent(store, FakeHttp(), config())
+        published = iso(utcnow())
+        agent._run_codex_search = lambda prompt, task="token_context": (
+            {
+                "event_found": True,
+                "event_title": "A celebrity pet becomes a viral meme",
+                "confidence": 0.91,
+                "sources": [
+                    {
+                        "title": "Pet story spreads online",
+                        "url": "https://publisher-a.example/story",
+                        "publisher": "Publisher A",
+                        "published_at": published,
+                        "summary": "The pet story is spreading across social media.",
+                        "relevance": 0.94,
+                    },
+                    {
+                        "title": "Second outlet confirms viral pet story",
+                        "url": "https://publisher-b.example/story",
+                        "publisher": "Publisher B",
+                        "published_at": published,
+                        "summary": "A separate outlet confirms the same event.",
+                        "relevance": 0.89,
+                    },
+                ],
+            },
+            {"tokens_used": 456},
+        )
+        token = TokenCandidate(chain="solana", address="A" * 32, name="Viral Pet", symbol="PET")
+        snapshot = TokenSnapshot("solana", token.address, 0.01, 50000, 500000, 20000, 100, 20)
+        observations = await agent.search_token_context(token, snapshot, momentum_score=90)
+        assert len(observations) == 2
+        assert all(row.availability_proof == "agent_search_verified" for row in observations)
+        assert all(row.role == "confirmation" for row in observations)
+        assert {row.source for row in observations} == {
+            "agent-search:publisher-a.example",
+            "agent-search:publisher-b.example",
+        }
+        assert agent.usage()["token_context_tokens"] == 456
+        store.close()
+
+    asyncio.run(scenario())
+
+
+
+def test_token_context_search_does_not_promote_one_source(tmp_path: Path):
+    async def scenario():
+        store = Store(tmp_path / "db.sqlite3")
+        agent = AutonomousSearchAgent(store, FakeHttp(), config())
+        agent._run_codex_search = lambda prompt, task="token_context": (
+            {
+                "event_found": True,
+                "event_title": "Unconfirmed rumor",
+                "confidence": 0.95,
+                "sources": [
+                    {
+                        "title": "Only one source",
+                        "url": "https://single.example/story",
+                        "publisher": "Single",
+                        "published_at": iso(utcnow()),
+                        "summary": "One source only.",
+                        "relevance": 0.99,
+                    }
+                ],
+            },
+            {"tokens_used": 1},
+        )
+        token = TokenCandidate(chain="bsc", address="0x" + "1" * 40, name="Rumor", symbol="RUMOR")
+        snapshot = TokenSnapshot("bsc", token.address, 0.01, 50000, 500000, 20000, 100, 20)
+        assert await agent.search_token_context(token, snapshot, momentum_score=90) == []
+        store.close()
+
+    asyncio.run(scenario())
+
+
+
+def test_runtime_automatically_polls_agent_discovered_feed(tmp_path: Path):
+    async def scenario():
+        cfg = initial_config()
+        cfg["database"] = "db.sqlite3"
+        cfg["bridge"]["enabled"] = False
+        cfg["sources"]["rss"] = []
+        cfg["sources"]["gecko_networks"] = []
+        cfg["sources"]["pumpportal"]["enabled"] = False
+        cfg["autonomous_search"]["enabled"] = False
+        runtime = Runtime(cfg, tmp_path)
+        runtime.store.set_kv(
+            REGISTRY_KEY,
+            [
+                {
+                    "name": "Discovered Feed",
+                    "url": "https://discovered.example/feed.xml",
+                    "kind": "rss",
+                    "status": "active",
+                }
+            ],
+        )
+        collectors = runtime._rss_collectors()
+        assert len(collectors) == 1
+        assert collectors[0].name == "Discovered Feed"
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+
+def test_trend_scout_verifies_two_sources_and_enters_surge_mode(tmp_path: Path):
+    async def scenario():
+        store = Store(tmp_path / "db.sqlite3")
+        agent = AutonomousSearchAgent(
+            store,
+            FakeHttp(),
+            config(
+                trend_scout_daily_limit=4,
+                trend_scout_min_independent_sources=2,
+                trend_scout_base_interval_minutes=15,
+                trend_scout_surge_interval_minutes=3,
+                trend_scout_surge_duration_minutes=30,
+            ),
+        )
+        published = iso(utcnow())
+        agent._run_codex_search = lambda prompt, task="trend_scout": (
+            {
+                "events": [
+                    {
+                        "event_title": "A rescue otter becomes a global viral meme",
+                        "summary": "Independent outlets report rapid international spread.",
+                        "category": "viral animal",
+                        "confidence": 0.91,
+                        "memeability": 0.94,
+                        "keywords": ["otter", "rescue"],
+                        "sources": [
+                            {
+                                "title": "Rescue otter video goes viral",
+                                "url": "https://publisher-a.example/otter",
+                                "publisher": "Publisher A",
+                                "published_at": published,
+                                "relevance": 0.96,
+                            },
+                            {
+                                "title": "Second outlet confirms the otter trend",
+                                "url": "https://publisher-b.example/otter",
+                                "publisher": "Publisher B",
+                                "published_at": published,
+                                "relevance": 0.91,
+                            },
+                        ],
+                    }
+                ]
+            },
+            {"model": "gpt-5.3-codex-spark", "reasoning_effort": "low", "tokens_used": 100},
+        )
+        result, observations = await agent.scout_trends(force=True)
+        assert result["status"] == "completed"
+        assert len(result["events"]) == 1
+        assert len(observations) == 2
+        assert all(row.availability_proof == "agent_search_verified" for row in observations)
+        assert all(row.role == "feature" for row in observations)
+        assert agent.usage()["trend_scout"] == 1
+        assert agent.usage()["trend_scout_tokens"] == 100
+        assert agent.trend_interval_minutes() == 3
+        store.close()
+
+    asyncio.run(scenario())
+
+
+
+def test_trend_scout_quiet_backoff_after_empty_runs(tmp_path: Path):
+    store = Store(tmp_path / "db.sqlite3")
+    agent = AutonomousSearchAgent(
+        store,
+        FakeHttp(),
+        config(
+            trend_scout_base_interval_minutes=12,
+            trend_scout_quiet_interval_minutes=30,
+            trend_scout_fallback_min_interval_minutes=30,
+            trend_scout_empty_streak_for_quiet=3,
+        ),
+    )
+    assert agent.trend_interval_minutes() == 12
+    store.set_kv(TREND_EMPTY_STREAK_KEY, 3)
+    assert agent.trend_interval_minutes() == 30
+    store.set_kv(TREND_EMPTY_STREAK_KEY, 0)
+    agent.mark_trend_surge()
+    store.set_kv(TREND_RESULT_KEY, {"metadata": {"model": "gpt-5.6-luna"}})
+    assert agent.trend_interval_minutes() == 10
+    store.close()
+
+
+
+def test_trend_lanes_rotate_and_surge_covers_all_topics(tmp_path: Path):
+    store = Store(tmp_path / "db.sqlite3")
+    topics = ["lane-a", "lane-b", "lane-c", "lane-d", "lane-e"]
+    agent = AutonomousSearchAgent(
+        store,
+        FakeHttp(),
+        config(topics=topics, trend_scout_lanes_per_run=2, trend_scout_surge_lanes_per_run=5),
+    )
+    first, cursor = agent._trend_topic_selection(utcnow())
+    store.set_kv("autonomous_trend_scout:lane_cursor", cursor)
+    second, _ = agent._trend_topic_selection(utcnow())
+    assert first == ["lane-a", "lane-b"]
+    assert second == ["lane-c", "lane-d"]
+    agent.mark_trend_surge()
+    surged, _ = agent._trend_topic_selection(utcnow())
+    assert len(surged) == 5 and set(surged) == set(topics)
+    store.close()
+
+
+
+def test_high_token_or_fallback_scout_is_automatically_slower(tmp_path: Path):
+    store = Store(tmp_path / "db.sqlite3")
+    agent = AutonomousSearchAgent(
+        store,
+        FakeHttp(),
+        config(
+            trend_scout_base_interval_minutes=12,
+            trend_scout_fallback_min_interval_minutes=30,
+            trend_scout_fallback_surge_interval_minutes=10,
+            trend_scout_high_token_threshold=18000,
+            trend_scout_high_token_min_interval_minutes=30,
+            trend_scout_high_token_surge_interval_minutes=10,
+        ),
+    )
+    store.set_kv(TREND_RESULT_KEY, {"metadata": {"model": "gpt-5.6-luna", "tokens_used": 30000}})
+    assert agent.trend_interval_minutes() == 30
+    agent.mark_trend_surge()
+    assert agent.trend_interval_minutes() == 10
+    store.close()
+
+
+
+def test_daily_token_budget_stops_more_agent_calls(tmp_path: Path):
+    store = Store(tmp_path / "db.sqlite3")
+    agent = AutonomousSearchAgent(
+        store,
+        FakeHttp(),
+        config(trend_scout_daily_limit=10, trend_scout_daily_token_budget=100),
+    )
+    agent._record_tokens("trend_scout", {"tokens_used": 100})
+    assert agent.usage()["trend_scout_tokens"] == 100
+    assert agent._consume_quota("trend_scout", 10) is False
+    store.close()
+
+
+
+def test_discovered_rss_is_paused_after_repeated_failures(tmp_path: Path):
+    store = Store(tmp_path / "db.sqlite3")
+    agent = AutonomousSearchAgent(store, FakeHttp(), config(source_auto_pause_failures=2))
+    store.set_kv(
+        REGISTRY_KEY,
+        [{"name": "Dynamic", "url": "https://dynamic.example/feed.xml", "kind": "rss", "status": "active"}],
+    )
+    assert agent.record_rss_poll("https://dynamic.example/feed.xml", ok=False, error="timeout") is False
+    assert agent.record_rss_poll("https://dynamic.example/feed.xml", ok=True) is False
+    assert agent.registry()[0]["consecutive_failures"] == 0
+    assert agent.record_rss_poll("https://dynamic.example/feed.xml", ok=False, error="timeout") is False
+    assert agent.record_rss_poll("https://dynamic.example/feed.xml", ok=False, error="timeout") is True
+    assert agent.registry()[0]["status"] == "paused"
+    assert agent.active_rss_sources() == []
+    store.close()
+
+
+
+def test_runtime_ingests_autonomous_trend_observations(tmp_path: Path):
+    async def scenario():
+        cfg = initial_config()
+        cfg["database"] = "db.sqlite3"
+        cfg["bridge"]["enabled"] = False
+        cfg["sources"]["rss"] = []
+        cfg["sources"]["gecko_networks"] = []
+        cfg["sources"]["pumpportal"]["enabled"] = False
+        cfg["sources"]["reverse_google_news"]["enabled"] = False
+        cfg["notifications"]["jsonl"] = "notifications.jsonl"
+        runtime = Runtime(cfg, tmp_path)
+        observations = [
+            Observation(
+                source="agent-scout:one.example",
+                source_kind="news",
+                title="A new animal meme spreads globally",
+                text="Independent source one.",
+                url="https://one.example/story",
+                availability_proof="agent_search_verified",
+            ),
+            Observation(
+                source="agent-scout:two.example",
+                source_kind="news",
+                title="A new animal meme spreads globally",
+                text="Independent source two.",
+                url="https://two.example/story",
+                availability_proof="agent_search_verified",
+            ),
+        ]
+
+        async def fake_scout(*, force=False):
+            return {"status": "completed", "events": [{"event_title": observations[0].title}]}, observations
+
+        runtime.autonomous_search.scout_trends = fake_scout
+        result = await runtime.scout_trends_once(force=True)
+        assert result["status"] == "completed"
+        assert runtime.store.db.execute("SELECT COUNT(*) FROM observations").fetchone()[0] == 2
+        assert runtime.store.db.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
+        await runtime.close()
+
+    asyncio.run(scenario())

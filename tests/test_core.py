@@ -81,9 +81,20 @@ def test_initial_page_and_old_polled_news_are_not_entry_evidence():
         ingested_at="2026-01-01T03:00:00Z",
         availability_proof="local_poll",
     )
+    received = Observation(
+        source="browser:x",
+        source_kind="social",
+        title="old post inserted into a live page",
+        published_at="2026-01-01T00:00:00Z",
+        observed_at="2026-01-01T03:00:00Z",
+        ingested_at="2026-01-01T03:00:00Z",
+        availability_proof="local_receive",
+        capture_phase="live",
+    )
     decision_at = datetime(2026, 1, 1, 3, tzinfo=timezone.utc)
     assert "stale_initial_page" in temporal_rejection_reasons(initial, decision_at, 30)
     assert "stale_polled_item" in temporal_rejection_reasons(polled, decision_at, 30)
+    assert "stale_received_item" in temporal_rejection_reasons(received, decision_at, 30)
 
 
 def test_reverse_name_distinctiveness_blocks_generic_short_terms():
@@ -410,6 +421,84 @@ def test_official_contract_filters_higher_liquidity_name_clone(tmp_path: Path):
         store.close()
 
     asyncio.run(scenario())
+
+
+def test_verified_token_context_link_excludes_unlinked_name_clone(tmp_path: Path):
+    async def scenario():
+        store = Store(tmp_path / "db.sqlite3")
+        linked = TokenCandidate(chain="solana", address="A" * 32, name="Otter Community", symbol="OTTR")
+        clone = TokenCandidate(chain="solana", address="B" * 32, name="Viral Rescue Otter", symbol="OTTER")
+        engine = EventEngine(store)
+        event_id = None
+        for domain in ("publisher-a.example", "publisher-b.example"):
+            current_id, _, _ = engine.ingest(
+                Observation(
+                    source=f"agent-search:{domain}",
+                    source_kind="news",
+                    title="A viral rescue otter story spreads globally",
+                    text="Independent reporting confirms the same current event.",
+                    url=f"https://{domain}/story",
+                    availability_proof="agent_search_verified",
+                    role="confirmation",
+                    source_item_id=f"https://{domain}/story",
+                    raw={
+                        "agent_web_search": True,
+                        "agent_task": "token_context",
+                        "reverse_token_id": linked.token_id,
+                        "token_id": linked.token_id,
+                        "confidence": 0.91,
+                    },
+                )
+            )
+            event_id = current_id
+        event = store.get_event(int(event_id))
+        linked_snap = TokenSnapshot("solana", linked.address, 0.001, 50000, 500000, 30000, 80, 20)
+        clone_snap = TokenSnapshot("solana", clone.address, 0.001, 50000, 500000, 30000, 80, 20)
+
+        class FakeDex:
+            async def quote(self, chain, address):
+                if chain == "solana" and address == linked.address:
+                    return linked, linked_snap
+                return None
+
+            async def search(self, query, limit=25):
+                return [(clone, clone_snap)]
+
+        class FakeSafety:
+            async def check(self, snapshot):
+                return True, []
+
+        class FakeAgent:
+            def ask(self, payload, tier="low"):
+                return None
+
+        evaluator = CandidateEvaluator(
+            store,
+            FakeDex(),
+            FakeSafety(),
+            {
+                "chains": ["solana"],
+                "min_match_score": 1,
+                "min_candidate_score": 1,
+                "min_canonical_margin": 1,
+                "agent_tie_threshold": 0,
+                "max_alias_queries": 2,
+                "token_watch_minutes": 240,
+                "max_source_age_minutes": 30,
+                "min_reverse_independent_sources": 2,
+            },
+            FakeAgent(),
+        )
+        decision = await evaluator.discover_and_decide(event)
+        assert decision is not None
+        assert decision.action == "CANDIDATE"
+        assert decision.token_id == linked.token_id
+        assert "agent_context_exact_token_link" in decision.reasons
+        assert store.token(clone.token_id) is None
+        store.close()
+
+    asyncio.run(scenario())
+
 
 
 def test_budgeted_agent_can_resolve_only_a_close_semantic_tie(tmp_path: Path):

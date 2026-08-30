@@ -47,7 +47,7 @@ def _published(value: Any) -> datetime | None:
 class HttpClient:
     """Small host-aware client for free public endpoints."""
 
-    def __init__(self, *, timeout: float = 12.0, min_host_interval: float = 0.6, user_agent: str = "memeTrader/0.5"):
+    def __init__(self, *, timeout: float = 12.0, min_host_interval: float = 0.6, user_agent: str = "memeTrader/0.6"):
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(timeout),
             follow_redirects=True,

@@ -32,7 +32,14 @@ FORBIDDEN_HINDSIGHT_FIELDS = {
     "final_market_cap", "final_holders", "posthoc_smart_money", "future_rug_label",
 }
 FEATURE_ROLES = {"feature", "identity", "confirmation"}
-FEATURE_PROOFS = {"local_receive", "local_poll", "live_stream", "on_chain_observed", "fixture_arrival"}
+FEATURE_PROOFS = {
+    "local_receive",
+    "local_poll",
+    "live_stream",
+    "on_chain_observed",
+    "fixture_arrival",
+    "agent_search_verified",
+}
 STOPWORDS = {
     "this", "that", "with", "from", "have", "will", "just", "into", "about", "after", "before", "more", "news",
     "breaking", "official", "token", "coin", "meme", "crypto", "the", "and", "for", "you", "your", "they",
@@ -179,6 +186,10 @@ def temporal_rejection_reasons(row: Any, decision_at, max_initial_age_minutes: f
             reasons.append("stale_initial_page")
         elif proof == "local_poll" and source_age > timedelta(minutes=max_initial_age_minutes):
             reasons.append("stale_polled_item")
+        elif proof == "local_receive" and source_age > timedelta(minutes=max_initial_age_minutes):
+            reasons.append("stale_received_item")
+        elif proof == "agent_search_verified" and source_age > timedelta(minutes=max_initial_age_minutes):
+            reasons.append("stale_agent_search_item")
     return reasons
 
 
@@ -312,6 +323,13 @@ class EventEngine:
 
     @staticmethod
     def _attention(rows: list[Any]) -> float:
+        rows = [
+            row
+            for row in rows
+            if str(row["role"]).lower() in {"feature", "confirmation"}
+        ]
+        if not rows:
+            return 0.0
         source_kinds = {str(row["source_kind"]).lower() for row in rows}
         sources = {evidence_origin(row) for row in rows}
         external = {evidence_origin(row) for row in rows if str(row["source_kind"]).lower() != "onchain"}
@@ -483,7 +501,8 @@ class AgentRouter:
             raise ValueError("agent.command must be an argv list")
         cp = subprocess.run(
             [str(part) for part in command], input=json.dumps({"tier": tier, "payload": payload}, ensure_ascii=False),
-            capture_output=True, text=True, timeout=int(self.config.get("timeout_seconds", 60)), shell=False,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=int(self.config.get("timeout_seconds", 60)), shell=False,
         )
         if cp.returncode != 0:
             raise RuntimeError(cp.stderr[-500:])
@@ -510,6 +529,7 @@ class AgentRouter:
             args.append("-")
             cp = subprocess.run(
                 args, input=prompt, cwd=temp_dir, capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
                 timeout=int(self.config.get("timeout_seconds", 90)), shell=False,
             )
             if cp.returncode != 0:
@@ -633,6 +653,7 @@ class CandidateEvaluator:
             official_direct_addresses.update(groups["solana"])
         normalized_official_addresses = {address.lower() for address in official_direct_addresses}
         reverse_token_ids: set[str] = set()
+        agent_linked_token_ids: set[str] = set()
         reverse_only = True
         for row in external:
             try:
@@ -642,6 +663,12 @@ class CandidateEvaluator:
             reverse_token_id = str(row_raw.get("reverse_token_id") or "")
             if reverse_token_id:
                 reverse_token_ids.add(reverse_token_id)
+                if (
+                    str(row["availability_proof"]).lower() == "agent_search_verified"
+                    and str(row["role"]).lower() == "confirmation"
+                    and str(row_raw.get("agent_task") or "") == "token_context"
+                ):
+                    agent_linked_token_ids.add(reverse_token_id)
             else:
                 reverse_only = False
         official_chain_hints = extract_chain_hints(
@@ -658,6 +685,22 @@ class CandidateEvaluator:
             str(chain).lower()
             for chain in self.config.get("chains", ["solana", "bsc", "base"])
         }
+
+        # A token-context Agent result is usable only after the Agent supplied two
+        # independently reachable, recent sources. Quote that exact linked token
+        # before broad name search so same-name clones cannot replace it silently.
+        for token_id in list(agent_linked_token_ids)[:8]:
+            if ":" not in token_id:
+                continue
+            chain, address = token_id.split(":", 1)
+            if chain.lower() not in allowed_chains or not address:
+                continue
+            try:
+                quoted = await self.dex.quote(chain.lower(), address)
+            except Exception:
+                quoted = None
+            if quoted and quoted[0].token_id == token_id:
+                found[token_id] = quoted
 
         # Exact CA evidence is queried first, only on address-compatible chains.
         exact_queries: list[tuple[str, str]] = []
@@ -732,9 +775,14 @@ class CandidateEvaluator:
                 continue
             self.store.add_snapshot(snap)
             match = self._match(event_text, aliases, token, direct_addresses)
+            agent_linked = token.token_id in agent_linked_token_ids
+            if agent_linked:
+                match = max(match, 96.0)
             if match < float(self.config.get("min_match_score", 28.0)):
                 continue
             score, reasons = self._quality(event, token, snap, match, source_count)
+            if agent_linked:
+                reasons = [*reasons, "agent_context_exact_token_link"]
             if reverse_only:
                 penalty = max(0.0, float(self.config.get("reverse_only_penalty", 8.0)))
                 score = max(0.0, score - penalty)

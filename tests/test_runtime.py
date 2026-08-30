@@ -134,6 +134,34 @@ def test_raw_items_are_stored_without_notification_spam(tmp_path):
     asyncio.run(scenario())
 
 
+def test_stale_first_polled_item_is_identity_only_and_has_zero_attention(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        config["sources"]["rss"] = []
+        config["sources"]["gecko_networks"] = []
+        config["sources"]["pumpportal"]["enabled"] = False
+        config["sources"]["reverse_google_news"]["enabled"] = False
+        runtime = Runtime(config, tmp_path)
+        observation = Observation(
+            source="rss:archive",
+            source_kind="news",
+            title="An old article first discovered today",
+            published_at="2026-01-01T00:00:00Z",
+            observed_at="2026-01-01T03:00:00Z",
+            ingested_at="2026-01-01T03:00:00Z",
+            availability_proof="local_poll",
+        )
+        classified = runtime._classify_observation(observation)
+        assert classified.role == "identity"
+        event_id, _, _ = runtime.events.ingest(classified)
+        assert runtime.store.get_event(event_id).attention == 0
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
 def test_source_error_notifications_are_rate_limited(tmp_path):
     async def scenario():
         config = initial_config()
@@ -177,6 +205,7 @@ def test_reverse_news_only_runs_for_tokens_with_real_momentum(tmp_path, monkeypa
         config["sources"]["rss"] = []
         config["sources"]["gecko_networks"] = []
         config["sources"]["pumpportal"]["enabled"] = False
+        config["autonomous_search"]["enabled"] = False
         config["sources"]["reverse_google_news"].update(
             {
                 "queries_per_cycle": 3,

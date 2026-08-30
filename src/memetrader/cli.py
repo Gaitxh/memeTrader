@@ -9,10 +9,12 @@ import sys
 import tempfile
 import traceback
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
 
+from .autonomous_search import CONTEXT_RESULT_KEY, REGISTRY_KEY, SOURCE_RESULT_KEY, TREND_RESULT_KEY
 from .models import Observation, parse_time
 from .runtime import Runtime, SingleInstance, initial_config, load_config
 from .store import Store
@@ -31,6 +33,12 @@ def _parser() -> argparse.ArgumentParser:
             cmd.add_argument("--limit", type=int, default=30)
         if name == "doctor":
             cmd.add_argument("--online", action="store_true")
+    discover = sub.add_parser("discover-sources", help="let the budgeted Agent find and verify public feeds")
+    discover.add_argument("--config", default="config.json")
+    discover.add_argument("--force", action="store_true")
+    scout = sub.add_parser("scout-trends", help="run the proactive global meme-event search Agent")
+    scout.add_argument("--config", default="config.json")
+    scout.add_argument("--force", action="store_true")
     replay = sub.add_parser("replay")
     replay.add_argument("fixture")
     replay.add_argument("--decision-at", required=True)
@@ -102,6 +110,7 @@ def cmd_status(config_path: str, limit: int) -> int:
             for item in config["sources"].get("rss", [])
             if not item.get("enabled", True)
         }
+        day = datetime.now(timezone.utc).date().isoformat()
         payload = {
             "mode": config["mode"],
             "account": account,
@@ -113,6 +122,18 @@ def cmd_status(config_path: str, limit: int) -> int:
                 for row in store.source_health()
                 if str(row["source"]) not in disabled_sources
             ],
+            "autonomous_sources": store.get_kv(REGISTRY_KEY, []),
+            "autonomous_search_usage": {
+                "trend_scout": int(store.get_kv(f"autonomous_search_quota:{day}:trend_scout", 0)),
+                "trend_scout_tokens": int(store.get_kv(f"autonomous_search_tokens:{day}:trend_scout", 0)),
+                "source_discovery": int(store.get_kv(f"autonomous_search_quota:{day}:source_discovery", 0)),
+                "source_discovery_tokens": int(store.get_kv(f"autonomous_search_tokens:{day}:source_discovery", 0)),
+                "token_context": int(store.get_kv(f"autonomous_search_quota:{day}:token_context", 0)),
+                "token_context_tokens": int(store.get_kv(f"autonomous_search_tokens:{day}:token_context", 0)),
+            },
+            "autonomous_trend_last_result": store.get_kv(TREND_RESULT_KEY),
+            "autonomous_source_last_result": store.get_kv(SOURCE_RESULT_KEY),
+            "autonomous_context_last_result": store.get_kv(CONTEXT_RESULT_KEY),
         }
         print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
         return 0
@@ -141,6 +162,15 @@ def cmd_doctor(config_path: str, online: bool) -> int:
         checks.append({"name": "bridge_private_token", "ok": len(str(bridge["token"])) >= 24 and bridge["token"] != "CHANGE_ME"})
         codex_path = shutil.which(str(config["agent"].get("codex_path", "codex")))
         checks.append({"name": "codex_optional", "ok": bool(codex_path) or not config["agent"].get("enabled"), "path": codex_path})
+        search_cfg = config["autonomous_search"]
+        search_codex_path = shutil.which(str(search_cfg.get("codex_path", "codex")))
+        checks.append(
+            {
+                "name": "autonomous_search_codex",
+                "ok": bool(search_codex_path) or not search_cfg.get("enabled", False),
+                "path": search_codex_path,
+            }
+        )
         if online:
             targets = {
                 "dexscreener": "https://api.dexscreener.com/latest/dex/search?q=PNUT",
@@ -153,7 +183,7 @@ def cmd_doctor(config_path: str, online: bool) -> int:
             for item in config["sources"].get("rss", []):
                 if item.get("enabled", True) and item.get("url"):
                     targets[f"rss:{item.get('name') or item['url']}"] = str(item["url"])
-            with httpx.Client(timeout=15, follow_redirects=True, headers={"User-Agent": "memeTrader-doctor/0.5"}) as client:
+            with httpx.Client(timeout=15, follow_redirects=True, headers={"User-Agent": "memeTrader-doctor/0.6"}) as client:
                 for name, url in targets.items():
                     try:
                         response = client.get(url)
@@ -168,6 +198,28 @@ def cmd_doctor(config_path: str, online: bool) -> int:
             errors.append(check["name"])
     print(json.dumps({"ok": not errors, "checks": checks, "errors": errors}, ensure_ascii=False, indent=2))
     return 0 if not errors else 4
+
+
+async def cmd_discover_sources(config_path: str, force: bool) -> int:
+    config, root = load_config(config_path)
+    runtime = Runtime(config, root)
+    try:
+        result = await runtime.discover_sources_once(force=force)
+        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        return 5 if result.get("status") == "agent_error" else 0
+    finally:
+        await runtime.close()
+
+
+async def cmd_scout_trends(config_path: str, force: bool) -> int:
+    config, root = load_config(config_path)
+    runtime = Runtime(config, root)
+    try:
+        result = await runtime.scout_trends_once(force=force)
+        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        return 5 if result.get("status") == "agent_error" else 0
+    finally:
+        await runtime.close()
 
 
 def cmd_replay(fixture_path: str, decision_at: str) -> int:
@@ -248,6 +300,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_status(args.config, args.limit)
     if args.command == "doctor":
         return cmd_doctor(args.config, args.online)
+    if args.command == "discover-sources":
+        return asyncio.run(cmd_discover_sources(args.config, args.force))
+    if args.command == "scout-trends":
+        return asyncio.run(cmd_scout_trends(args.config, args.force))
     if args.command == "replay":
         return cmd_replay(args.fixture, args.decision_at)
     return 2

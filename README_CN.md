@@ -1,4 +1,4 @@
-# memeTrader 0.5：个人电脑上的事件驱动 Meme 机器人
+# memeTrader 0.6.0：个人电脑上的自主信息源 Meme 机器人
 
 `memeTrader` 常驻运行在普通 Windows 电脑上，目标不是全网毫秒级抢跑，而是以现实可行的**几十秒到几分钟**速度完成：
 
@@ -15,12 +15,13 @@
           持续报价 → 止损 / 分批止盈 / 移动止盈 / 到期退出
 ```
 
-项目刻意保持简单：**一个 Python 进程、一个 SQLite 数据库、一个 JSON 配置、一个可选浏览器扩展**。默认不调用付费 API、不使用 Agent、不接触真实资金。
+项目刻意保持简单：**一个 Python 进程、一个 SQLite 数据库、一个 JSON 配置、一个可选浏览器扩展**。默认不调用付费 API；会启用有严格频率和额度上限的自主搜索 Agent，但交易语义平局 Agent 默认关闭，系统不接触真实资金。
 
 ## 关键规则
 
 - 生产运行只使用本机从现在开始记录的 `observed_at`。
 - 网页声称的 `published_at` 不能倒推为“机器人当时已经看到”。
+- 首次轮询或首次打开页面时发现的旧内容会保留为 `identity` 资料，但注意力记为 0，不能触发买入。
 - PNUT、TRUMP、MOODENG、LUCE、Broccoli、TST 等历史案例只测试匹配、主盘选择、等待和未来信息隔离；不会加载为生产别名、阈值或赢家先验。
 - 只有 Token/价格拉升、还没有独立新闻、社交或官方触发时，机器人只观察，不买入。
 - 当前 Live 模式在代码层锁死，只支持 Shadow/Paper。
@@ -37,7 +38,11 @@
 
 - DexScreener：关键词找币、按 CA 报价、流动性、成交和买卖方向。
 - Honeypot.is：EVM/BSC 候选的可卖性、税率和 honeypot 模拟。
-- Bluesky 公共搜索、Mastodon 公共接口、RSS/Google News：补足事件证据与 Token 反向新闻搜索。
+- RugCheck：Solana 候选的免费风险摘要。
+- CoinDesk、Cointelegraph、BBC、Google News 专题 RSS 与 Mastodon 公共时间线：补足国际事件证据。
+- Token→新闻反查只处理名称足够独特且已有真实流动性/成交动量的 Token；名称命中后仍要求独立来源确认，避免把 `Gang`、`Bees` 之类通用名称连接到无关新闻。
+
+Bluesky 公共搜索接口在部分网络会返回 403。本机配置遇到这种情况时应关闭 API 轮询，继续通过已登录浏览器页面采集，不让常驻进程反复报错。
 
 浏览器扩展不读取 Cookie、密码、私信或浏览器历史，不自动滚动、点赞、发帖或登录。它只能看到实际打开并加载的公开页面。因此实际使用时，建议常驻少量高价值页面：名人/项目官方账号、X Lists、Truth Social 账号页、Reddit/Bluesky 重点社区、公共 Telegram 频道页。
 
@@ -126,15 +131,38 @@ powershell -ExecutionPolicy Bypass -File .\scripts\status.ps1
 - 硬止损；
 - 四档分批止盈；
 - 从峰值回撤后的移动退出；
+- 流动性快速恶化或安全状态恶化时退出；
+- 叙事长期没有新增证据且链上买盘转弱时退出；
 - 最大持仓时间退出。
 
 买入侧限额不会阻止已有仓位卖出。
 
-## Codex / GPT
+## Codex / GPT 自主搜索
 
-默认 `agent.enabled=false`。常规计算、去重、时间判断、评分、仓位和卖出全部由本地代码完成。
+`autonomous_search.enabled=true` 时，机器人会自己完成三类工作，不要求用户事先列完信息源：
 
-只有前两名主叙事币接近、文化梗/谐音难以判断时，才允许低额度调用已登录的 Codex CLI。调用使用 ephemeral 会话、read-only sandbox、Low/Medium 日额度；没有钱包、Broker 或私钥访问。失败时自动退回本地规则。
+1. 主动搜索近两小时内正在加速的国际热点、名人、动物、网络文化、体育、AI、游戏和 Crypto 社区事件；
+2. 定期寻找并实际验证新的免费 RSS/Atom 信息源，通过后自动加入动态源注册表；
+3. 对链上动量足够强的新 Token 反向搜索现实事件，并要求至少两个独立可访问来源。
+
+默认最多同时运行 2 个搜索 Agent 槽位。全球快搜和搜源优先使用 Spark/low，额度不可用时回退 Luna/low；复杂 Token 身份核验使用 Luna/low，必要时才升级 Terra/medium，Sol/medium 仅作为最后回退。普通状态每 12 分钟快搜一次，并轮换覆盖 5 个主题中的 3 个；重大信号期间每 3 分钟覆盖全部主题，连续三次空结果退到 30 分钟。Spark 不可用或单次调用超过 18,000 tokens 时，普通状态最短间隔自动拉长到 30 分钟，重大信号仍保留 10 分钟级回退。调用次数和 token 用量都有每日硬上限；自动发现的 RSS 连续 3 次失败后会暂停并由后续搜源补充。全部频率、并发、模型、推理强度和上限都可在 `config.json -> autonomous_search` 修改。
+
+常规计算、去重、时间判断、评分、仓位和卖出仍全部由本地代码完成。语义平局 Agent 的 `agent.enabled` 继续默认关闭；证据不足时返回 `WAIT`，不会硬选。
+
+查看自主搜索状态：
+
+```powershell
+.\.venv\Scripts\python.exe -m memetrader status --config config.json --limit 10
+```
+
+手工诊断命令（常驻运行无需手工执行）：
+
+```powershell
+.\.venv\Scripts\python.exe -m memetrader scout-trends --config config.json --force
+.\.venv\Scripts\python.exe -m memetrader discover-sources --config config.json --force
+```
+
+完整说明见 [docs/AUTONOMOUS_SEARCH_CN.md](docs/AUTONOMOUS_SEARCH_CN.md)。所有搜索 Agent 使用 ephemeral、只读沙箱，不接触钱包、Broker、私钥或项目写权限。
 
 ## 历史测试与未来信息隔离
 

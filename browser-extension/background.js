@@ -9,6 +9,13 @@ const DEFAULTS = {
 };
 
 let flushInProgress = false;
+let queueMutation = Promise.resolve();
+
+function withQueueLock(action) {
+  const pending = queueMutation.then(action, action);
+  queueMutation = pending.catch(() => undefined);
+  return pending;
+}
 
 async function settings() {
   const state = await chrome.storage.local.get({...DEFAULTS, queue: []});
@@ -31,22 +38,24 @@ function queueId(item) {
   return `${Date.now()}-${(value >>> 0).toString(16)}`;
 }
 
-async function appendQueue(item) {
-  const state = await settings();
-  const pendingObservations = Array.isArray(state.pendingObservations) ? state.pendingObservations : [];
-  const stored = {...item, _queue_id: queueId(item)};
-  if (!pendingObservations.some((row) => row._queue_id === stored._queue_id)) {
-    pendingObservations.push(stored);
-  }
-  while (pendingObservations.length > 5000) pendingObservations.shift();
-  await chrome.storage.local.set({pendingObservations});
+function appendQueue(item) {
+  return withQueueLock(async () => {
+    const state = await settings();
+    const pendingObservations = Array.isArray(state.pendingObservations) ? state.pendingObservations : [];
+    const stored = {...item, _queue_id: queueId(item)};
+    if (!pendingObservations.some((row) => row._queue_id === stored._queue_id)) {
+      pendingObservations.push(stored);
+    }
+    while (pendingObservations.length > 5000) pendingObservations.shift();
+    await chrome.storage.local.set({pendingObservations});
+  });
 }
 
 async function flushQueue() {
   if (flushInProgress) return;
   flushInProgress = true;
   try {
-    const state = await settings();
+    const state = await withQueueLock(settings);
     if (!state.token || !Array.isArray(state.pendingObservations) || state.pendingObservations.length === 0) return;
     const batch = state.pendingObservations.slice(0, 100);
     const sentIds = new Set(batch.map((item) => item._queue_id));
@@ -61,12 +70,14 @@ async function flushQueue() {
       await chrome.storage.local.set({lastError: `HTTP ${response.status}`, lastErrorAt: new Date().toISOString()});
       return;
     }
-    const latest = await settings();
-    const remaining = (latest.pendingObservations || []).filter((item) => !sentIds.has(item._queue_id));
-    await chrome.storage.local.set({
-      pendingObservations: remaining,
-      lastSuccessAt: new Date().toISOString(),
-      lastError: ""
+    await withQueueLock(async () => {
+      const latest = await settings();
+      const remaining = (latest.pendingObservations || []).filter((item) => !sentIds.has(item._queue_id));
+      await chrome.storage.local.set({
+        pendingObservations: remaining,
+        lastSuccessAt: new Date().toISOString(),
+        lastError: ""
+      });
     });
   } catch (error) {
     await chrome.storage.local.set({lastError: String(error), lastErrorAt: new Date().toISOString()});
