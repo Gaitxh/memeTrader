@@ -1,6 +1,6 @@
 # START HERE — memeTrader 项目上下文
 
-最后更新：2026-08-30（Asia/Shanghai）
+最后更新：2026-08-31（Asia/Shanghai）
 
 这个目录是给后续开发者和 Agent 使用的**版本控制内项目记忆**。它保存产品意图、架构、安全边界、已实现状态、未完成事项和运行手册，但绝不保存密码、Cookie、Session、验证码、私钥、钱包材料、Bridge Token、公开入口口令、数据库内容或日志。
 
@@ -26,6 +26,8 @@
 - [OPERATIONS_AND_VALIDATION.md](OPERATIONS_AND_VALIDATION.md)：Windows 常驻、Web、浏览器采集、验证与发布检查。
 - [UPDATE_PROTOCOL.md](UPDATE_PROTOCOL.md)：以后怎样维护这份项目记忆。
 - [../DEXSCREENER_PROVENANCE_AND_SOURCE_LEARNING_CN.md](../DEXSCREENER_PROVENANCE_AND_SOURCE_LEARNING_CN.md)：旧 model1/model3 修正、Dex 附带链接角色、Token→来源溯源和只影响观察轮换的前向 Paper 学习。
+- [../OKX_MEME_PUMP_AND_SMART_MONEY_ASSESSMENT_CN.md](../OKX_MEME_PUMP_AND_SMART_MONEY_ASSESSMENT_CN.md)：OKX Meme Pump 的签名/Premium 边界、与现有免费来源的差异，以及聪明钱只能进入前向 shadow 研究的安全结论。
+- [../PAPER_FORWARD_EXECUTION_CN.md](../PAPER_FORWARD_EXECUTION_CN.md)：Paper 禁止未来数据/回填、追加式账户曲线、模拟执行成本和未来 Live 的独立发布门。
 
 ## 一句话产品定义
 

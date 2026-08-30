@@ -41,6 +41,7 @@ from .strategy import (
     replay_guard,
     sanitize_source_entity_id,
     terms,
+    token_snapshot_temporal_rejections,
 )
 
 
@@ -206,6 +207,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "starting_cash_usd": 1_000,
         "fee_bps": 60,
         "slippage_rate": 0.02,
+        "max_quote_age_seconds": 45,
         "risk_per_trade_pct": 0.005,
         "max_cash_fraction": 0.08,
         "max_position_usd": 35,
@@ -587,6 +589,8 @@ def load_config(path: str | Path) -> tuple[dict[str, Any], Path]:
         raise ValueError("paper.slippage_rate must be between 0 and 0.5")
     if not 0 <= float(paper["fee_bps"]) <= 5000:
         raise ValueError("paper.fee_bps must be between 0 and 5000")
+    if not 1 <= float(paper.get("max_quote_age_seconds", 45)) <= 600:
+        raise ValueError("paper.max_quote_age_seconds must be between 1 and 600")
     if int(paper["max_open_positions"]) < 1:
         raise ValueError("paper.max_open_positions must be positive")
     tiers = paper.get("take_profit_tiers") or []
@@ -699,29 +703,96 @@ class Notifier:
             ).start()
 
 
-def resolve_watchlist_source_entity_id(item: dict[str, Any], settings_path: Path) -> str:
-    """Resolve only an explicitly configured exact platform/handle entity mapping."""
+def _watchlist_accounts(settings_path: Path) -> list[dict[str, Any]]:
+    try:
+        payload = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    rows = payload.get("watch_accounts") if isinstance(payload, dict) else None
+    return [row for row in rows[:500] if isinstance(row, dict)] if isinstance(rows, list) else []
+
+
+def resolve_watchlist_account(item: dict[str, Any], settings_path: Path) -> dict[str, Any] | None:
+    """Resolve only an explicitly configured exact platform/handle/entity mapping."""
     supplied = sanitize_source_entity_id(item.get("source_entity_id"))
     platform = str(item.get("platform") or "").strip().lower()
     author = str(item.get("author") or "").strip().casefold().lstrip("@")
     if not supplied or not platform or not author or platform == "telegram":
-        return ""
-    try:
-        payload = json.loads(settings_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return ""
-    accounts = payload.get("watch_accounts") if isinstance(payload, dict) else None
-    if not isinstance(accounts, list):
-        return ""
-    for account in accounts[:500]:
-        if not isinstance(account, dict) or account.get("enabled", True) is False:
+        return None
+    for account in _watchlist_accounts(settings_path):
+        if account.get("enabled", True) is False:
             continue
         account_platform = str(account.get("platform") or "").strip().lower()
         account_handle = str(account.get("handle") or "").strip().casefold().lstrip("@")
         configured = sanitize_source_entity_id(account.get("entity_id"))
         if account_platform == platform and account_handle == author:
-            return configured if configured == supplied else ""
-    return ""
+            if configured != supplied:
+                return None
+            try:
+                priority = max(1, min(5, int(account.get("priority", 3))))
+            except (TypeError, ValueError):
+                priority = 3
+            return {
+                "platform": platform,
+                "handle": str(account.get("handle") or "").strip()[:120],
+                "entity_id": configured,
+                "priority": priority,
+                "watch_cadence": "critical"
+                if str(account.get("watch_cadence") or "").lower() == "critical" else "normal",
+            }
+    return None
+
+
+def resolve_watchlist_source_entity_id(item: dict[str, Any], settings_path: Path) -> str:
+    account = resolve_watchlist_account(item, settings_path)
+    return str((account or {}).get("entity_id") or "")
+
+
+def _watch_page_key(value: Any) -> tuple[str, str] | None:
+    try:
+        parsed = urllib.parse.urlsplit(str(value or "").strip())
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+        return None
+    host = parsed.hostname.lower().removeprefix("www.")
+    if host == "twitter.com":
+        host = "x.com"
+    path = urllib.parse.unquote(parsed.path).rstrip("/").casefold()
+    return (host, path) if path else None
+
+
+def resolve_watchlist_heartbeat_account(
+    detail: dict[str, Any], settings_path: Path,
+) -> dict[str, Any] | None:
+    platform = str(detail.get("platform") or "").strip().lower()
+    page_key = _watch_page_key(detail.get("page_url"))
+    if not platform or platform == "telegram" or page_key is None:
+        return None
+    for account in _watchlist_accounts(settings_path):
+        if account.get("enabled", True) is False:
+            continue
+        if str(account.get("platform") or "").strip().lower() != platform:
+            continue
+        if _watch_page_key(account.get("url")) != page_key:
+            continue
+        handle = str(account.get("handle") or "").strip()[:120]
+        entity_id = sanitize_source_entity_id(account.get("entity_id"))
+        if not handle or not entity_id:
+            continue
+        try:
+            priority = max(1, min(5, int(account.get("priority", 3))))
+        except (TypeError, ValueError):
+            priority = 3
+        return {
+            "platform": platform,
+            "handle": handle,
+            "entity_id": entity_id,
+            "priority": priority,
+            "watch_cadence": "critical"
+            if str(account.get("watch_cadence") or "").lower() == "critical" else "normal",
+        }
+    return None
 
 
 TELEGRAM_MANUAL_ONLY_HOSTS = {"t.me", "telegram.me"}
@@ -956,12 +1027,59 @@ class Runtime:
         self.notifier = Notifier(root, config["notifications"])
         self.bridge: BrowserBridge | None = None
         self._stop = asyncio.Event()
+        self._record_paper_account_snapshot()
 
     async def close(self) -> None:
         if self.bridge:
             await self.bridge.close()
         await self.http.close()
         self.store.close()
+
+    def _record_paper_account_snapshot(self, *, force: bool = False) -> None:
+        as_of = utcnow()
+        latest_mark = self.store.latest_paper_account_snapshot_at()
+        if not force and latest_mark and as_of - latest_mark < timedelta(minutes=5):
+            return
+        account = self.store.account()
+        positions = self.store.open_positions()
+        max_quote_age = float(self.config["paper"].get("max_quote_age_seconds", 45))
+        marked_value = 0.0
+        priced = 0
+        quote_times = []
+        for position in positions:
+            snapshot = self.store.latest_snapshot(position.token_id, at_or_before=as_of)
+            if (
+                snapshot is None
+                or snapshot.price_usd is None
+                or (as_of - snapshot.observed_at).total_seconds() > max_quote_age
+            ):
+                continue
+            marked_value += float(snapshot.price_usd) * position.quantity
+            priced += 1
+            quote_times.append(snapshot.observed_at)
+        equity = account["cash_usd"] + marked_value if priced == len(positions) else None
+        self.store.record_paper_account_snapshot(
+            cash_usd=account["cash_usd"],
+            marked_value_usd=marked_value,
+            equity_usd=equity,
+            daily_exposure_usd=self.store.daily_buy_gross_usd(),
+            open_position_count=len(positions),
+            priced_position_count=priced,
+            quote_as_of=min(quote_times) if quote_times and priced == len(positions) else None,
+        )
+
+    def _paper_quote_rejections(self, expected_token_id: str, token, snapshot, received_at) -> list[str]:
+        reasons = token_snapshot_temporal_rejections(
+            token, snapshot, received_at, require_first_seen=False
+        )
+        if token.token_id != expected_token_id:
+            reasons.append("quote_token_mismatch")
+        if snapshot.price_usd is None or float(snapshot.price_usd) <= 0:
+            reasons.append("quote_price_unavailable")
+        age_seconds = (parse_time(received_at) - parse_time(snapshot.observed_at)).total_seconds()
+        if age_seconds > float(self.config["paper"].get("max_quote_age_seconds", 45)):
+            reasons.append("quote_stale_at_execution")
+        return list(dict.fromkeys(reasons))
 
     def _classify_observation(self, obs: Observation) -> Observation:
         if obs.role.lower() == "feature" and is_promotional_market_content(obs.title, obs.text):
@@ -992,6 +1110,20 @@ class Runtime:
         self.store.heartbeat(obs.source, item=observation_created)
         if not observation_created:
             return
+        browser_item = obs.raw.get("browser") if isinstance(obs.raw, dict) else None
+        if obs.availability_proof == "local_receive" and isinstance(browser_item, dict):
+            account = resolve_watchlist_account(
+                browser_item, self.root / "data" / "web_console" / "console_settings.json"
+            )
+            observation_id = self.store.observation_id_for(obs)
+            if account is not None and observation_id is not None:
+                self.store.record_browser_watch_observation(
+                    account,
+                    observation_id=observation_id,
+                    event_id=event_id,
+                    observed_at=obs.observed_at,
+                    decision_eligible=obs.role.lower() in {"feature", "confirmation"},
+                )
         event = self.store.get_event(event_id)
         self.store.set_kv(f"event_decision_next:{event_id}", None)
         self.store.set_kv(f"event_decision_attempt:{event_id}", 0)
@@ -1068,6 +1200,17 @@ class Runtime:
                 "contains_credentials": False,
             },
         )
+        account = resolve_watchlist_heartbeat_account(
+            {**detail, "platform": platform, "page_url": page_url},
+            self.root / "data" / "web_console" / "console_settings.json",
+        )
+        if account is not None:
+            self.store.record_browser_watch_heartbeat(
+                account,
+                access_state=access_state,
+                visible=visible,
+                selector_count=selector_count,
+            )
 
     async def ingest_token(self, token: TokenCandidate) -> None:
         token_created = self.store.upsert_token(token)
@@ -1511,8 +1654,13 @@ class Runtime:
                 continue
 
             token = self.store.token(decision.token_id) if decision.token_id else None
-            snap = self.store.latest_snapshot(decision.token_id) if decision.token_id else None
+            snap = (
+                self.store.latest_snapshot(decision.token_id, at_or_before=decision.created_at)
+                if decision.token_id else None
+            )
             amount = 0.0
+            execution_requested_at = None
+            execution_received_at = decision.created_at
 
             if decision.action == "CANDIDATE" and decision.token_id:
                 if self.store.position(decision.token_id):
@@ -1522,12 +1670,53 @@ class Runtime:
                     decision.action = "WAIT"
                     decision.rejected_reasons.append("token_already_traded")
 
+            if decision.action == "CANDIDATE" and token and snap:
+                execution_requested_at = utcnow()
+                try:
+                    execution_quote = await self.dex.quote(token.chain, token.address)
+                except Exception as exc:
+                    execution_quote = None
+                    execution_error = type(exc).__name__
+                else:
+                    execution_error = "quote_unavailable"
+                execution_received_at = utcnow()
+                if execution_quote is None:
+                    decision.action = "WAIT"
+                    decision.rejected_reasons.append("entry_quote_unavailable")
+                    if self.config["mode"] == "paper":
+                        self.store.record_paper_execution_attempt(
+                            event_id=event.id, token_id=token.token_id, side="BUY",
+                            status="rejected", reason=execution_error,
+                            requested_at=execution_requested_at,
+                        )
+                else:
+                    execution_token, execution_snapshot = execution_quote
+                    quote_rejections = self._paper_quote_rejections(
+                        token.token_id, execution_token, execution_snapshot, execution_received_at
+                    )
+                    if quote_rejections:
+                        decision.action = "WAIT"
+                        decision.rejected_reasons.extend(quote_rejections)
+                        if self.config["mode"] == "paper":
+                            self.store.record_paper_execution_attempt(
+                                event_id=event.id, token_id=token.token_id, side="BUY",
+                                status="rejected", reason=",".join(quote_rejections),
+                                requested_at=execution_requested_at,
+                                quote_observed_at=execution_snapshot.observed_at,
+                                quote_provider=execution_snapshot.provider,
+                                quote_price=execution_snapshot.price_usd,
+                            )
+                    else:
+                        token, snap = execution_token, execution_snapshot
+                        self.store.upsert_token(token, seen_at=snap.observed_at)
+                        self.store.add_snapshot(snap)
+
             if decision.action == "CANDIDATE" and token and snap and snap.price_usd:
                 account = self.store.account()
                 positions = self.store.open_positions()
                 marked_values = []
                 for pos in positions:
-                    mark = self.store.latest_snapshot(pos.token_id)
+                    mark = self.store.latest_snapshot(pos.token_id, at_or_before=execution_received_at)
                     marked_values.append((mark.price_usd if mark and mark.price_usd else pos.entry_price) * pos.quantity)
                 equity = account["cash_usd"] + sum(marked_values)
                 amount = self.policy.size(
@@ -1538,10 +1727,12 @@ class Runtime:
                     score=decision.score,
                     daily_exposure_usd=self.store.daily_buy_gross_usd(),
                 )
+                fee_rate = float(self.config["paper"].get("fee_bps", 60)) / 10_000
+                amount = min(amount, account["cash_usd"] / (1 + fee_rate))
                 decision.position_usd = amount
-                if amount <= 0:
+                if amount < float(self.config["paper"].get("min_position_usd", 0)):
                     decision.action = "WAIT"
-                    decision.rejected_reasons.append("position_size_zero")
+                    decision.rejected_reasons.append("position_size_below_all_in_cash_limit")
 
             decision_id = self.store.add_decision(decision)
             self.store.create_shadow_event_cohort(
@@ -1610,14 +1801,43 @@ class Runtime:
                     event_relation={"decision_id": decision_id},
                 )
                 continue
-            position = self.store.paper_buy(
-                event_id=event.id,
-                token=token,
-                price=execution_price,
+            try:
+                position = self.store.paper_buy(
+                    event_id=event.id,
+                    token=token,
+                    price=execution_price,
+                    gross_usd=amount,
+                    fee_bps=float(self.config["paper"].get("fee_bps", 60)),
+                    reason="event_candidate",
+                    quote_price=float(snap.price_usd),
+                    tax_pct=snap.buy_tax_pct,
+                    quote_observed_at=snap.observed_at,
+                    quote_provider=snap.provider,
+                    execution_attempted_at=execution_requested_at,
+                )
+            except ValueError as exc:
+                self.store.record_paper_execution_attempt(
+                    event_id=event.id, token_id=token.token_id, side="BUY",
+                    status="rejected", reason=str(exc),
+                    requested_at=execution_requested_at or utcnow(),
+                    quote_observed_at=snap.observed_at, quote_provider=snap.provider,
+                    quote_price=snap.price_usd, execution_price=execution_price,
+                    gross_usd=amount,
+                )
+                self.notifier.send(
+                    "quote_error", token.token_id,
+                    {"error": "paper_buy_rejected", "reason": str(exc)},
+                )
+                continue
+            self.store.record_paper_execution_attempt(
+                event_id=event.id, token_id=token.token_id, side="BUY",
+                status="filled", reason="event_candidate",
+                requested_at=execution_requested_at or utcnow(),
+                quote_observed_at=snap.observed_at, quote_provider=snap.provider,
+                quote_price=snap.price_usd, execution_price=execution_price,
                 gross_usd=amount,
-                fee_bps=float(self.config["paper"].get("fee_bps", 60)),
-                reason="event_candidate",
             )
+            self._record_paper_account_snapshot(force=True)
             self.notifier.send(
                 "paper_buy",
                 token.token_id,
@@ -1720,6 +1940,7 @@ class Runtime:
 
     async def monitor_positions_once(self) -> None:
         fee = float(self.config["paper"].get("fee_bps", 80))
+        executed = False
         for position in list(self.store.open_positions()):
             try:
                 quoted = await self.dex.quote(position.chain, position.address)
@@ -1731,6 +1952,17 @@ class Runtime:
             token, snap = quoted
             snap = await self.safety.enrich_evm(snap)
             snap = await self.safety.enrich_solana(snap)
+            quote_received_at = utcnow()
+            temporal_rejections = self._paper_quote_rejections(
+                position.token_id, token, snap, quote_received_at
+            )
+            if temporal_rejections:
+                self.notifier.send(
+                    "quote_error",
+                    position.token_id,
+                    {"error": "temporal_snapshot_rejected", "reasons": temporal_rejections},
+                )
+                continue
             self.store.upsert_token(token)
             self.store.add_snapshot(snap)
             if snap.price_usd:
@@ -1746,6 +1978,39 @@ class Runtime:
             if not action:
                 continue
             fraction, reason = action
+            execution_requested_at = utcnow()
+            try:
+                execution_quote = await self.dex.quote(position.chain, position.address)
+            except Exception as exc:
+                execution_quote = None
+                execution_error = type(exc).__name__
+            else:
+                execution_error = "quote_unavailable"
+            execution_received_at = utcnow()
+            if execution_quote is None:
+                self.store.record_paper_execution_attempt(
+                    event_id=position.event_id, token_id=position.token_id, side="SELL",
+                    status="rejected", reason=execution_error,
+                    requested_at=execution_requested_at,
+                )
+                continue
+            execution_token, execution_snapshot = execution_quote
+            quote_rejections = self._paper_quote_rejections(
+                position.token_id, execution_token, execution_snapshot, execution_received_at
+            )
+            if quote_rejections:
+                self.store.record_paper_execution_attempt(
+                    event_id=position.event_id, token_id=position.token_id, side="SELL",
+                    status="rejected", reason=",".join(quote_rejections),
+                    requested_at=execution_requested_at,
+                    quote_observed_at=execution_snapshot.observed_at,
+                    quote_provider=execution_snapshot.provider,
+                    quote_price=execution_snapshot.price_usd,
+                )
+                continue
+            token, snap = execution_token, execution_snapshot
+            self.store.upsert_token(token, seen_at=snap.observed_at)
+            self.store.add_snapshot(snap)
             slippage = float(self.config["paper"].get("slippage_rate", 0.0))
             execution_price = float(snap.price_usd) * (1.0 - slippage)
             result = self.store.paper_sell(
@@ -1754,7 +2019,20 @@ class Runtime:
                 fraction=fraction,
                 fee_bps=fee,
                 reason=reason,
+                quote_price=float(snap.price_usd),
+                tax_pct=snap.sell_tax_pct,
+                quote_observed_at=snap.observed_at,
+                quote_provider=snap.provider,
+                execution_attempted_at=execution_requested_at,
             )
+            self.store.record_paper_execution_attempt(
+                event_id=position.event_id, token_id=position.token_id, side="SELL",
+                status="filled", reason=reason, requested_at=execution_requested_at,
+                quote_observed_at=snap.observed_at, quote_provider=snap.provider,
+                quote_price=snap.price_usd, execution_price=execution_price,
+                gross_usd=result["gross_usd"],
+            )
+            executed = True
             remaining = self.store.position(position.token_id)
             if remaining and reason.startswith("take_profit_"):
                 self.store.set_take_profit_index(position.token_id, remaining.take_profit_index + 1)
@@ -1770,6 +2048,7 @@ class Runtime:
                     **result,
                 },
             )
+        self._record_paper_account_snapshot(force=executed)
 
     async def shadow_event_followup_once(self) -> None:
         self.store.finalize_shadow_event_outcomes()

@@ -210,12 +210,50 @@ class Store:
                     side TEXT NOT NULL,
                     quantity REAL NOT NULL,
                     price REAL NOT NULL,
+                    quote_price REAL,
                     gross_usd REAL NOT NULL,
                     fee_usd REAL NOT NULL,
+                    fee_bps REAL,
+                    slippage_rate REAL,
+                    slippage_usd REAL,
+                    tax_pct REAL,
+                    tax_usd REAL,
+                    quote_observed_at TEXT,
+                    quote_provider TEXT,
+                    execution_attempted_at TEXT,
                     reason TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS trades_created_idx ON trades(created_at);
+                CREATE TABLE IF NOT EXISTS paper_execution_attempts (
+                    id INTEGER PRIMARY KEY,
+                    event_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    quote_observed_at TEXT,
+                    quote_provider TEXT,
+                    quote_price REAL,
+                    execution_price REAL,
+                    gross_usd REAL
+                );
+                CREATE INDEX IF NOT EXISTS paper_execution_attempts_created_idx
+                    ON paper_execution_attempts(requested_at DESC);
+                CREATE TABLE IF NOT EXISTS paper_account_snapshots (
+                    id INTEGER PRIMARY KEY,
+                    recorded_at TEXT NOT NULL,
+                    cash_usd REAL NOT NULL,
+                    marked_value_usd REAL NOT NULL,
+                    equity_usd REAL,
+                    daily_exposure_usd REAL NOT NULL,
+                    open_position_count INTEGER NOT NULL,
+                    priced_position_count INTEGER NOT NULL,
+                    quote_as_of TEXT
+                );
+                CREATE INDEX IF NOT EXISTS paper_account_snapshots_recorded_idx
+                    ON paper_account_snapshots(recorded_at DESC);
 
                 CREATE TABLE IF NOT EXISTS source_utility_outcomes (
                     id INTEGER PRIMARY KEY,
@@ -328,6 +366,39 @@ class Store:
                     ON trend_watch_account_exposures(platform,handle_key,run_id);
                 CREATE INDEX IF NOT EXISTS trend_watch_account_exposures_entity_idx
                     ON trend_watch_account_exposures(entity_id,run_id);
+                CREATE TABLE IF NOT EXISTS browser_watch_account_exposures (
+                    exposure_id TEXT PRIMARY KEY,
+                    window_started_at TEXT NOT NULL,
+                    last_heartbeat_at TEXT NOT NULL,
+                    platform TEXT NOT NULL,
+                    handle TEXT NOT NULL,
+                    handle_key TEXT NOT NULL,
+                    entity_id TEXT NOT NULL,
+                    configured_priority INTEGER NOT NULL,
+                    watch_cadence TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    access_state TEXT NOT NULL,
+                    visible INTEGER,
+                    selector_count INTEGER NOT NULL DEFAULT 0,
+                    exact_source_hits INTEGER NOT NULL DEFAULT 0,
+                    accepted_event_count INTEGER NOT NULL DEFAULT 0,
+                    observation_count INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS browser_watch_account_exposures_account_idx
+                    ON browser_watch_account_exposures(platform,handle_key,window_started_at);
+                CREATE INDEX IF NOT EXISTS browser_watch_account_exposures_entity_idx
+                    ON browser_watch_account_exposures(entity_id,window_started_at);
+                CREATE TABLE IF NOT EXISTS browser_watch_observation_links (
+                    observation_id INTEGER PRIMARY KEY,
+                    exposure_id TEXT NOT NULL,
+                    event_id INTEGER NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0,
+                    FOREIGN KEY(exposure_id) REFERENCES browser_watch_account_exposures(exposure_id),
+                    FOREIGN KEY(event_id) REFERENCES events(id)
+                );
+                CREATE INDEX IF NOT EXISTS browser_watch_observation_links_event_idx
+                    ON browser_watch_observation_links(event_id,observed_at);
 
                 CREATE TABLE IF NOT EXISTS shadow_event_cohorts (
                     id INTEGER PRIMARY KEY,
@@ -396,6 +467,16 @@ class Store:
                     "ALTER TABLE trend_lane_run_lanes "
                     "ADD COLUMN attention_multiplier REAL NOT NULL DEFAULT 1"
                 )
+            trade_columns = {row["name"] for row in self.db.execute("PRAGMA table_info(trades)")}
+            for name, definition in (
+                ("quote_price", "REAL"), ("fee_bps", "REAL"),
+                ("slippage_rate", "REAL"), ("slippage_usd", "REAL"),
+                ("tax_pct", "REAL"), ("tax_usd", "REAL"),
+                ("quote_observed_at", "TEXT"), ("quote_provider", "TEXT"),
+                ("execution_attempted_at", "TEXT"),
+            ):
+                if name not in trade_columns:
+                    self.db.execute(f"ALTER TABLE trades ADD COLUMN {name} {definition}")
             self.db.execute(
                 "INSERT OR IGNORE INTO paper_account(singleton,cash_usd,realized_pnl_usd,updated_at) VALUES(?,?,0,?)",
                 (1, float(initial_cash_usd), iso()),
@@ -471,6 +552,14 @@ class Store:
         if row is None:
             raise KeyError(observation_id)
         return row
+
+    def observation_id_for(self, obs: Observation) -> int | None:
+        with self._lock:
+            row = self.db.execute(
+                "SELECT id FROM observations WHERE fingerprint=?",
+                (self._fingerprint(obs),),
+            ).fetchone()
+        return int(row["id"]) if row is not None else None
 
     def recent_observations(self, minutes: int = 120, limit: int = 1000) -> list[sqlite3.Row]:
         since = iso(utcnow() - timedelta(minutes=minutes))
@@ -869,9 +958,12 @@ class Store:
                 ),
             )
 
-    def latest_snapshot(self, token_id: str) -> TokenSnapshot | None:
+    def latest_snapshot(self, token_id: str, *, at_or_before: Any = None) -> TokenSnapshot | None:
+        cutoff = iso(parse_time(at_or_before)) if at_or_before is not None else iso()
         row = self.db.execute(
-            "SELECT * FROM token_snapshots WHERE token_id=? ORDER BY observed_at DESC,id DESC LIMIT 1", (token_id,)
+            "SELECT * FROM token_snapshots WHERE token_id=? AND observed_at<=? "
+            "ORDER BY observed_at DESC,id DESC LIMIT 1",
+            (token_id, cutoff),
         ).fetchone()
         if not row:
             return None
@@ -921,12 +1013,97 @@ class Store:
         row = self.db.execute("SELECT cash_usd,realized_pnl_usd FROM paper_account WHERE singleton=1").fetchone()
         return {"cash_usd": float(row["cash_usd"]), "realized_pnl_usd": float(row["realized_pnl_usd"])}
 
-    def paper_buy(self, *, event_id: int, token: TokenCandidate, price: float, gross_usd: float, fee_bps: float, reason: str) -> Position:
+    def record_paper_account_snapshot(
+        self,
+        *,
+        cash_usd: float,
+        marked_value_usd: float,
+        equity_usd: float | None,
+        daily_exposure_usd: float,
+        open_position_count: int,
+        priced_position_count: int,
+        quote_as_of: Any = None,
+        observed_at: Any = None,
+    ) -> int:
+        observed = parse_time(observed_at) if observed_at is not None else utcnow()
+        with self._lock, self.db:
+            cursor = self.db.execute(
+                """
+                INSERT INTO paper_account_snapshots(
+                    recorded_at,cash_usd,marked_value_usd,equity_usd,
+                    daily_exposure_usd,open_position_count,priced_position_count,quote_as_of
+                ) VALUES(?,?,?,?,?,?,?,?)
+                """,
+                (
+                    iso(observed), float(cash_usd), float(marked_value_usd),
+                    None if equity_usd is None else float(equity_usd), float(daily_exposure_usd),
+                    max(0, int(open_position_count)), max(0, int(priced_position_count)),
+                    iso(parse_time(quote_as_of)) if quote_as_of else None,
+                ),
+            )
+        return int(cursor.lastrowid)
+
+    def latest_paper_account_snapshot_at(self):
+        row = self.db.execute(
+            "SELECT recorded_at FROM paper_account_snapshots ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return parse_time(row["recorded_at"]) if row else None
+
+    def record_paper_execution_attempt(
+        self,
+        *,
+        event_id: int,
+        token_id: str,
+        side: str,
+        status: str,
+        reason: str,
+        requested_at: Any,
+        quote_observed_at: Any = None,
+        quote_provider: str = "",
+        quote_price: float | None = None,
+        execution_price: float | None = None,
+        gross_usd: float | None = None,
+    ) -> int:
+        with self._lock, self.db:
+            cursor = self.db.execute(
+                """
+                INSERT INTO paper_execution_attempts(
+                    event_id,token_id,side,status,reason,requested_at,quote_observed_at,
+                    quote_provider,quote_price,execution_price,gross_usd
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    int(event_id), str(token_id), str(side).upper(), str(status), str(reason),
+                    iso(parse_time(requested_at)),
+                    iso(parse_time(quote_observed_at)) if quote_observed_at else None,
+                    str(quote_provider or ""), quote_price, execution_price, gross_usd,
+                ),
+            )
+        return int(cursor.lastrowid)
+
+    def paper_buy(
+        self, *, event_id: int, token: TokenCandidate, price: float, gross_usd: float,
+        fee_bps: float, reason: str, quote_price: float | None = None,
+        tax_pct: float | None = None, quote_observed_at: Any = None,
+        quote_provider: str = "", execution_attempted_at: Any = None,
+    ) -> Position:
         if price <= 0 or gross_usd <= 0:
             raise ValueError("price and gross_usd must be positive")
         fee = gross_usd * fee_bps / 10_000
         debit = gross_usd + fee
-        quantity = gross_usd / price
+        normalized_tax_pct = (
+            min(100.0, max(0.0, float(tax_pct))) if tax_pct is not None else None
+        )
+        tax = gross_usd * normalized_tax_pct / 100 if normalized_tax_pct is not None else 0.0
+        pre_tax_quantity = gross_usd / price
+        quantity = (gross_usd - tax) / price
+        if quantity <= 0:
+            raise ValueError("paper buy tax leaves no quantity")
+        slippage_rate = (
+            max(0.0, (price - float(quote_price)) / float(quote_price))
+            if quote_price is not None and float(quote_price) > 0 else None
+        )
+        slippage_usd = pre_tax_quantity * (price - float(quote_price)) if slippage_rate is not None else None
         with self._lock, self.db:
             account = self.account()
             if account["cash_usd"] + 1e-9 < debit:
@@ -944,8 +1121,20 @@ class Store:
                 (token.token_id,event_id,token.chain,token.address,token.symbol,quantity,price,debit,debit,price,now,0.0),
             )
             self.db.execute(
-                "INSERT INTO trades(token_id,event_id,side,quantity,price,gross_usd,fee_usd,reason,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
-                (token.token_id,event_id,"BUY",quantity,price,gross_usd,fee,reason,now),
+                """
+                INSERT INTO trades(
+                    token_id,event_id,side,quantity,price,quote_price,gross_usd,fee_usd,
+                    fee_bps,slippage_rate,slippage_usd,tax_pct,tax_usd,quote_observed_at,
+                    quote_provider,execution_attempted_at,reason,created_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (token.token_id,event_id,"BUY",quantity,price,quote_price,gross_usd,fee,
+                 fee_bps,slippage_rate,slippage_usd,normalized_tax_pct,
+                 tax if normalized_tax_pct is not None else None,
+                 iso(parse_time(quote_observed_at)) if quote_observed_at else None,
+                 str(quote_provider or ""),
+                 iso(parse_time(execution_attempted_at)) if execution_attempted_at else now,
+                 reason,now),
             )
         return self.position(token.token_id)
 
@@ -973,7 +1162,12 @@ class Store:
         with self._lock, self.db:
             self.db.execute("UPDATE positions SET take_profit_index=? WHERE token_id=?", (index, token_id))
 
-    def paper_sell(self, token_id: str, *, price: float, fraction: float, fee_bps: float, reason: str) -> dict[str, float]:
+    def paper_sell(
+        self, token_id: str, *, price: float, fraction: float, fee_bps: float,
+        reason: str, quote_price: float | None = None, tax_pct: float | None = None,
+        quote_observed_at: Any = None, quote_provider: str = "",
+        execution_attempted_at: Any = None,
+    ) -> dict[str, float]:
         position = self.position(token_id)
         if not position:
             raise KeyError(token_id)
@@ -983,7 +1177,16 @@ class Store:
         quantity = position.quantity * fraction
         gross = quantity * price
         fee = gross * fee_bps / 10_000
-        net = gross - fee
+        normalized_tax_pct = (
+            min(100.0, max(0.0, float(tax_pct))) if tax_pct is not None else None
+        )
+        tax = gross * normalized_tax_pct / 100 if normalized_tax_pct is not None else 0.0
+        slippage_rate = (
+            max(0.0, (float(quote_price) - price) / float(quote_price))
+            if quote_price is not None and float(quote_price) > 0 else None
+        )
+        slippage_usd = quantity * (float(quote_price) - price) if slippage_rate is not None else None
+        net = gross - fee - tax
         cost_released = position.remaining_cost_usd * fraction
         pnl = net - cost_released
         remaining_quantity = position.quantity - quantity
@@ -995,8 +1198,20 @@ class Store:
                 (net, pnl, now),
             )
             self.db.execute(
-                "INSERT INTO trades(token_id,event_id,side,quantity,price,gross_usd,fee_usd,reason,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
-                (token_id,position.event_id,"SELL",quantity,price,gross,fee,reason,now),
+                """
+                INSERT INTO trades(
+                    token_id,event_id,side,quantity,price,quote_price,gross_usd,fee_usd,
+                    fee_bps,slippage_rate,slippage_usd,tax_pct,tax_usd,quote_observed_at,
+                    quote_provider,execution_attempted_at,reason,created_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (token_id,position.event_id,"SELL",quantity,price,quote_price,gross,fee,
+                 fee_bps,slippage_rate,slippage_usd,normalized_tax_pct,
+                 tax if normalized_tax_pct is not None else None,
+                 iso(parse_time(quote_observed_at)) if quote_observed_at else None,
+                 str(quote_provider or ""),
+                 iso(parse_time(execution_attempted_at)) if execution_attempted_at else now,
+                 reason,now),
             )
             if remaining_quantity <= max(1e-12, position.quantity * 1e-8):
                 self._record_source_utility_outcome_locked(position, closed_at=now)
@@ -1006,7 +1221,13 @@ class Store:
                     "UPDATE positions SET quantity=?,remaining_cost_usd=?,realized_pnl_usd=realized_pnl_usd+? WHERE token_id=?",
                     (remaining_quantity,remaining_cost,pnl,token_id),
                 )
-        return {"quantity": quantity, "gross_usd": gross, "fee_usd": fee, "net_usd": net, "pnl_usd": pnl}
+        return {
+            "quantity": quantity, "gross_usd": gross, "fee_usd": fee, "net_usd": net,
+            "pnl_usd": pnl, "quote_price": quote_price, "execution_price": price,
+            "slippage_rate": slippage_rate, "slippage_usd": slippage_usd,
+            "tax_pct": normalized_tax_pct,
+            "tax_usd": tax if normalized_tax_pct is not None else None,
+        }
 
     def trades(self, limit: int = 50) -> list[sqlite3.Row]:
         return list(self.db.execute("SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,)))
@@ -1312,6 +1533,7 @@ class Store:
                     "event_day_count": len(outcome.get("event_days", set())),
                     "platform_count": platform_count,
                     "confidence": round(confidence, 4),
+                    "maturity_progress": round(confidence, 4),
                     "rotation_active": active,
                     "rotation_multiplier": round(multiplier, 4),
                     "last_observed_at": observed.get("last_observed_at"),
@@ -1960,6 +2182,102 @@ class Store:
             )
 
     @staticmethod
+    def _browser_exposure_window(value: Any, minutes: int = 30) -> tuple[str, str]:
+        observed = parse_time(value)
+        bucket_minute = observed.minute - (observed.minute % max(1, int(minutes)))
+        started = observed.replace(minute=bucket_minute, second=0, microsecond=0)
+        return iso(started), started.strftime("%Y%m%dT%H%MZ")
+
+    def record_browser_watch_heartbeat(
+        self,
+        account: Mapping[str, Any],
+        *,
+        access_state: str,
+        visible: bool | None,
+        selector_count: int,
+        observed_at: Any = None,
+    ) -> str:
+        observed = parse_time(observed_at) if observed_at is not None else utcnow()
+        window_started_at, window_key = self._browser_exposure_window(observed)
+        platform = str(account.get("platform") or "").strip().lower()[:32]
+        handle = str(account.get("handle") or "").strip()[:120]
+        handle_key = handle.casefold()
+        entity_id = str(account.get("entity_id") or "").strip().lower()[:64]
+        if not platform or not handle_key or not entity_id:
+            raise ValueError("browser watch exposure requires platform, handle and entity_id")
+        state = str(access_state or "unknown").strip().lower()
+        status = (
+            "completed" if state in {"accessible", "authenticated"}
+            else "access_error" if state in {"login_required", "blocked"}
+            else "observed"
+        )
+        exposure_id = f"{window_key}:{platform}:{handle_key}"
+        with self._lock, self.db:
+            self.db.execute(
+                """
+                INSERT INTO browser_watch_account_exposures(
+                    exposure_id,window_started_at,last_heartbeat_at,platform,handle,handle_key,
+                    entity_id,configured_priority,watch_cadence,status,access_state,visible,selector_count
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(exposure_id) DO UPDATE SET
+                    last_heartbeat_at=excluded.last_heartbeat_at,
+                    status=CASE
+                        WHEN browser_watch_account_exposures.status='completed' THEN 'completed'
+                        ELSE excluded.status
+                    END,
+                    access_state=excluded.access_state,
+                    visible=excluded.visible,
+                    selector_count=MAX(browser_watch_account_exposures.selector_count,excluded.selector_count)
+                """,
+                (
+                    exposure_id, window_started_at, iso(observed), platform, handle, handle_key,
+                    entity_id, max(1, min(5, int(account.get("priority") or 3))),
+                    str(account.get("watch_cadence") or "normal")[:32], status, state,
+                    None if visible is None else int(visible), max(0, int(selector_count)),
+                ),
+            )
+        return exposure_id
+
+    def record_browser_watch_observation(
+        self,
+        account: Mapping[str, Any],
+        *,
+        observation_id: int,
+        event_id: int,
+        observed_at: Any,
+        decision_eligible: bool,
+    ) -> str:
+        exposure_id = self.record_browser_watch_heartbeat(
+            account,
+            access_state="authenticated",
+            visible=None,
+            selector_count=0,
+            observed_at=observed_at,
+        )
+        with self._lock, self.db:
+            inserted = self.db.execute(
+                """
+                INSERT OR IGNORE INTO browser_watch_observation_links(
+                    observation_id,exposure_id,event_id,observed_at,decision_eligible
+                ) VALUES(?,?,?,?,?)
+                """,
+                (int(observation_id), exposure_id, int(event_id), iso(parse_time(observed_at)),
+                 int(bool(decision_eligible))),
+            ).rowcount
+            if inserted:
+                self.db.execute(
+                """
+                UPDATE browser_watch_account_exposures
+                SET exact_source_hits=exact_source_hits+1,
+                    observation_count=observation_count+1,
+                    accepted_event_count=accepted_event_count+?
+                WHERE exposure_id=?
+                """,
+                    (int(bool(decision_eligible)), exposure_id),
+                )
+        return exposure_id
+
+    @staticmethod
     def trend_lane_exposure_summary_from_connection(
         connection: sqlite3.Connection,
         *,
@@ -2251,7 +2569,8 @@ class Store:
             str(row["name"])
             for row in connection.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' "
-                "AND name IN ('trend_lane_runs','trend_watch_account_exposures')"
+                "AND name IN ('trend_lane_runs','trend_watch_account_exposures',"
+                "'browser_watch_account_exposures')"
             )
         }
         policy = {
@@ -2263,19 +2582,21 @@ class Store:
             "minimum_review_multiplier": 0.85,
             "affects": "review_only_no_schedule_or_trading_effect",
         }
-        if tables != {"trend_lane_runs", "trend_watch_account_exposures"}:
+        if not {"trend_lane_runs", "trend_watch_account_exposures"}.issubset(tables):
             return {
                 "status": "not_observed", "items": [],
                 "summary": {"runs": 0, "completed_runs": 0, "account_exposures": 0},
                 "review_policy": policy,
             }
         start = iso(utcnow() - timedelta(days=max(1, min(3650, int(lookback_days)))))
-        rows = list(
-            connection.execute(
+        rows = [
+            dict(row)
+            for row in connection.execute(
                 """
                 SELECT r.run_id,r.started_at,r.status,a.platform,a.handle,a.handle_key,a.entity_id,
                        a.configured_priority,a.watch_cadence,a.selection_role,a.learning_basis,
-                       a.learning_multiplier,a.exact_source_hits,a.accepted_event_count,a.observation_count
+                       a.learning_multiplier,a.exact_source_hits,a.accepted_event_count,a.observation_count,
+                       r.started_at AS last_observed_at,'trend_agent' AS exposure_origin
                 FROM trend_lane_runs r
                 JOIN trend_watch_account_exposures a ON a.run_id=r.run_id
                 WHERE r.started_at>=?
@@ -2283,20 +2604,59 @@ class Store:
                 """,
                 (start,),
             )
+        ]
+        if "browser_watch_account_exposures" in tables:
+            rows.extend(
+                dict(row)
+                for row in connection.execute(
+                    """
+                    SELECT exposure_id AS run_id,window_started_at AS started_at,status,
+                           platform,handle,handle_key,entity_id,configured_priority,watch_cadence,
+                           'browser_page' AS selection_role,'browser_heartbeat' AS learning_basis,
+                           1.0 AS learning_multiplier,exact_source_hits,accepted_event_count,
+                           observation_count,last_heartbeat_at AS last_observed_at,
+                           'browser_bridge' AS exposure_origin
+                    FROM browser_watch_account_exposures
+                    WHERE window_started_at>=?
+                    ORDER BY window_started_at,exposure_id
+                    """,
+                    (start,),
+                )
+            )
+        rows.sort(
+            key=lambda row: (
+                str(row["started_at"]), str(row["run_id"]),
+                str(row["platform"]), str(row["handle_key"]),
+            )
         )
         metrics: dict[tuple[str, str], dict[str, Any]] = {}
         run_ids: set[str] = set()
         completed_run_ids: set[str] = set()
+        browser_window_ids: set[str] = set()
         global_completed = 0
         global_hits = 0
+        global_accepted_events = 0
+        browser_completed = 0
+        trend_account_exposures = 0
+        trend_completed_account_exposures = 0
         for row in rows:
             run_id = str(row["run_id"])
-            run_ids.add(run_id)
+            origin = str(row["exposure_origin"])
+            if origin == "trend_agent":
+                run_ids.add(run_id)
+                trend_account_exposures += 1
+            else:
+                browser_window_ids.add(run_id)
             completed = str(row["status"]) == "completed"
             if completed:
-                completed_run_ids.add(run_id)
+                if origin == "trend_agent":
+                    completed_run_ids.add(run_id)
+                    trend_completed_account_exposures += 1
+                else:
+                    browser_completed += 1
                 global_completed += 1
                 global_hits += int(row["exact_source_hits"] or 0)
+                global_accepted_events += int(row["accepted_event_count"] or 0)
             key = (str(row["platform"]), str(row["handle_key"]))
             metric = metrics.setdefault(
                 key,
@@ -2311,15 +2671,24 @@ class Store:
                     "last_selection_role": str(row["selection_role"]),
                     "last_learning_basis": str(row["learning_basis"]),
                     "last_learning_multiplier": float(row["learning_multiplier"]),
+                    "trend_agent_exposures": 0, "browser_bridge_exposures": 0,
+                    "last_browser_heartbeat_at": None,
                 },
             )
             metric["exposures"] += 1
+            if origin == "browser_bridge":
+                metric["browser_bridge_exposures"] += 1
+                metric["last_browser_heartbeat_at"] = max(
+                    str(metric["last_browser_heartbeat_at"] or ""), str(row["last_observed_at"])
+                )
+            else:
+                metric["trend_agent_exposures"] += 1
             if completed:
                 metric["completed_exposures"] += 1
                 metric["run_days"].add(str(row["started_at"])[:10])
                 if int(row["exact_source_hits"] or 0) == 0:
                     metric["zero_yield_completed_exposures"] += 1
-            elif str(row["status"]) == "agent_error":
+            elif str(row["status"]) in {"agent_error", "access_error"}:
                 metric["error_exposures"] += 1
             metric["exact_source_hits"] += int(row["exact_source_hits"] or 0)
             metric["accepted_events"] += int(row["accepted_event_count"] or 0)
@@ -2382,8 +2751,13 @@ class Store:
             "items": items,
             "summary": {
                 "runs": len(run_ids), "completed_runs": len(completed_run_ids),
+                "trend_agent_account_exposures": trend_account_exposures,
+                "trend_agent_completed_account_exposures": trend_completed_account_exposures,
+                "browser_exposure_windows": len(browser_window_ids),
+                "browser_completed_account_exposures": browser_completed,
                 "account_exposures": len(rows), "completed_account_exposures": global_completed,
                 "exact_source_hits": global_hits,
+                "accepted_events": global_accepted_events,
                 "global_exact_source_hits_per_completed_exposure": round(global_rate, 4)
                 if global_completed else None,
                 "review_eligible_accounts": sum(

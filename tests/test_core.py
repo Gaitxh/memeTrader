@@ -1014,6 +1014,65 @@ def test_paper_position_sizing_daily_limit_and_partial_exit(tmp_path: Path):
     store.close()
 
 
+def test_paper_cost_ledger_is_explicit_and_account_marks_are_append_only(tmp_path: Path):
+    store = Store(tmp_path / "paper-ledger.sqlite3", initial_cash_usd=1000)
+    now = datetime.now(timezone.utc)
+    token = TokenCandidate(chain="solana", address="C" * 32, name="Costed Paper")
+    store.upsert_token(token, seen_at=now)
+    store.add_snapshot(
+        TokenSnapshot(
+            chain="solana", address=token.address, price_usd=100, liquidity_usd=50_000,
+            market_cap_usd=500_000, volume_5m_usd=10_000, buys_5m=20, sells_5m=5,
+            observed_at=now - timedelta(seconds=1), provider="test-dex",
+        )
+    )
+    store.add_snapshot(
+        TokenSnapshot(
+            chain="solana", address=token.address, price_usd=999, liquidity_usd=50_000,
+            market_cap_usd=500_000, volume_5m_usd=10_000, buys_5m=20, sells_5m=5,
+            observed_at=now + timedelta(hours=1), provider="future-test",
+        )
+    )
+    assert store.latest_snapshot(token.token_id).price_usd == pytest.approx(100)
+
+    store.record_paper_account_snapshot(
+        cash_usd=1000, marked_value_usd=0, equity_usd=1000, daily_exposure_usd=0,
+        open_position_count=0, priced_position_count=0, observed_at=now,
+    )
+    store.record_paper_account_snapshot(
+        cash_usd=900, marked_value_usd=95, equity_usd=995, daily_exposure_usd=100,
+        open_position_count=1, priced_position_count=1, quote_as_of=now,
+        observed_at=now + timedelta(seconds=20),
+    )
+    marks = list(store.db.execute("SELECT * FROM paper_account_snapshots ORDER BY id"))
+    assert len(marks) == 2
+    assert marks[0]["cash_usd"] == pytest.approx(1000)
+    assert marks[1]["cash_usd"] == pytest.approx(900)
+
+    position = store.paper_buy(
+        event_id=1, token=token, price=102, quote_price=100, gross_usd=100,
+        fee_bps=60, tax_pct=3, reason="cost-test", quote_observed_at=now,
+        quote_provider="test-dex", execution_attempted_at=now + timedelta(seconds=1),
+    )
+    assert position.quantity == pytest.approx(97 / 102)
+    assert store.account()["cash_usd"] == pytest.approx(899.4)
+    sale = store.paper_sell(
+        token.token_id, price=117.6, quote_price=120, fraction=1, fee_bps=60,
+        tax_pct=4, reason="cost-test-close", quote_observed_at=now + timedelta(minutes=1),
+        quote_provider="test-dex", execution_attempted_at=now + timedelta(minutes=1, seconds=1),
+    )
+    assert sale["tax_usd"] == pytest.approx(sale["gross_usd"] * 0.04)
+    trades = list(reversed(store.trades(10)))
+    assert [(row["side"], row["quote_price"], row["price"]) for row in trades] == [
+        ("BUY", 100, 102), ("SELL", 120, 117.6)
+    ]
+    assert trades[0]["fee_usd"] == pytest.approx(0.6)
+    assert trades[0]["slippage_rate"] == pytest.approx(0.02)
+    assert trades[0]["tax_usd"] == pytest.approx(3)
+    assert trades[0]["quote_provider"] == "test-dex"
+    store.close()
+
+
 def test_live_mode_is_locked(tmp_path: Path):
     config = tmp_path / "config.json"
     config.write_text(json.dumps({"mode": "live"}), encoding="utf-8")

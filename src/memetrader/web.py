@@ -92,6 +92,8 @@ EXPECTED_TABLES = {
     "kv",
     "observations",
     "paper_account",
+    "paper_account_snapshots",
+    "paper_execution_attempts",
     "positions",
     "source_health",
     "source_utility_outcomes",
@@ -251,6 +253,9 @@ SETTING_SPECS: dict[str, tuple[str, float, float]] = {
     "paper.min_position_usd": ("float", 0, 1_000_000),
     "paper.max_cash_fraction": ("float", 0, 1),
     "paper.max_liquidity_impact_pct": ("float", 0, 0.1),
+    "paper.fee_bps": ("float", 0, 5000),
+    "paper.slippage_rate": ("float", 0, 0.4999),
+    "paper.max_quote_age_seconds": ("float", 1, 600),
     "paper.max_daily_new_exposure_usd": ("float", 0, 10_000_000),
     "paper.max_open_positions": ("int", 1, 100),
     "paper.stop_loss_pct": ("float", -0.95, -0.0001),
@@ -1278,10 +1283,11 @@ class WebData:
               AND ts.id=(
                   SELECT newer.id FROM token_snapshots newer
                   WHERE newer.token_id=ts.token_id
+                    AND newer.observed_at<=?
                   ORDER BY newer.observed_at DESC,newer.id DESC LIMIT 1
               )
             """,
-            token_ids,
+            [*token_ids, iso()],
         )
         return {str(row["token_id"]): row for row in rows}
 
@@ -1464,15 +1470,25 @@ class WebData:
                 for row in connection.execute(f"SELECT * FROM events WHERE id IN ({placeholders})", event_ids)
             }
         paper = self.config.get("paper") or {}
+        max_quote_age_seconds = float(paper.get("max_quote_age_seconds", 45))
+        valuation_at = utcnow()
         tiers = list(paper.get("take_profit_tiers") or [])
         output: list[dict[str, Any]] = []
         for row in rows:
             snapshot_row = snapshots.get(str(row["token_id"]))
             snapshot = self._snapshot_payload(snapshot_row)
             current_price = snapshot.get("price_usd") if snapshot else None
+            quote_age_seconds = (
+                max(0.0, (valuation_at - parse_time(snapshot["observed_at"])).total_seconds())
+                if snapshot and snapshot.get("observed_at") else None
+            )
+            quote_stale = quote_age_seconds is None or quote_age_seconds > max_quote_age_seconds
             quantity = float(row["quantity"])
             remaining_cost = float(row["remaining_cost_usd"])
-            market_value = quantity * float(current_price) if current_price is not None else None
+            market_value = (
+                quantity * float(current_price)
+                if current_price is not None and not quote_stale else None
+            )
             unrealized = market_value - remaining_cost if market_value is not None else None
             unrealized_pct = unrealized / remaining_cost if unrealized is not None and remaining_cost else None
             entry_price = float(row["entry_price"])
@@ -1497,6 +1513,8 @@ class WebData:
                     "entry_price": entry_price,
                     "current_price": current_price,
                     "quote_as_of": snapshot.get("observed_at") if snapshot else None,
+                    "quote_age_seconds": quote_age_seconds,
+                    "quote_stale": quote_stale,
                     "highest_price": highest_price,
                     "cost_usd": float(row["cost_usd"]),
                     "remaining_cost_usd": remaining_cost,
@@ -1524,11 +1542,104 @@ class WebData:
             )
         return output
 
+    def _paper_account_curve(
+        self, connection: sqlite3.Connection, *, limit: int = 288,
+    ) -> list[dict[str, Any]]:
+        if not self._table_exists(connection, "paper_account_snapshots"):
+            return []
+        rows = list(
+            connection.execute(
+                "SELECT * FROM paper_account_snapshots ORDER BY recorded_at DESC LIMIT ?",
+                (max(2, min(2016, int(limit))),),
+            )
+        )
+        return [
+            {
+                "recorded_at": row["recorded_at"],
+                "cash_usd": float(row["cash_usd"]),
+                "marked_value_usd": float(row["marked_value_usd"]),
+                "equity_usd": float(row["equity_usd"]) if row["equity_usd"] is not None else None,
+                "daily_exposure_usd": float(row["daily_exposure_usd"]),
+                "open_position_count": int(row["open_position_count"]),
+                "priced_position_count": int(row["priced_position_count"]),
+                "quote_as_of": row["quote_as_of"],
+                "persisted": True,
+            }
+            for row in reversed(rows)
+        ]
+
+    def _paper_execution_costs(self, connection: sqlite3.Connection) -> dict[str, Any]:
+        paper = self.config.get("paper") or {}
+        output = {
+            "model": "fixed_adverse_quote_adjustment_plus_fee_and_observed_tax",
+            "configured_slippage_rate": float(paper.get("slippage_rate", 0)),
+            "configured_fee_bps": float(paper.get("fee_bps", 0)),
+            "max_quote_age_seconds": float(paper.get("max_quote_age_seconds", 45)),
+            "total_fee_usd": 0.0,
+            "total_recorded_slippage_usd": 0.0,
+            "total_recorded_tax_usd": 0.0,
+            "recorded_cost_trade_count": 0,
+            "legacy_cost_unknown_trade_count": 0,
+            "route_and_chain_fees_modeled": False,
+        }
+        if not self._table_exists(connection, "trades"):
+            return output
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(trades)")}
+        if "slippage_usd" not in columns:
+            output["legacy_cost_unknown_trade_count"] = int(
+                connection.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
+            )
+            output["total_fee_usd"] = float(
+                connection.execute("SELECT COALESCE(SUM(fee_usd),0) FROM trades").fetchone()[0]
+            )
+            return output
+        row = connection.execute(
+            """
+            SELECT COALESCE(SUM(fee_usd),0) AS fee,
+                   COALESCE(SUM(slippage_usd),0) AS slippage,
+                   COALESCE(SUM(tax_usd),0) AS tax,
+                   SUM(CASE WHEN slippage_usd IS NOT NULL THEN 1 ELSE 0 END) AS recorded,
+                   SUM(CASE WHEN slippage_usd IS NULL THEN 1 ELSE 0 END) AS legacy
+            FROM trades
+            """
+        ).fetchone()
+        output.update(
+            {
+                "total_fee_usd": float(row["fee"] or 0),
+                "total_recorded_slippage_usd": float(row["slippage"] or 0),
+                "total_recorded_tax_usd": float(row["tax"] or 0),
+                "recorded_cost_trade_count": int(row["recorded"] or 0),
+                "legacy_cost_unknown_trade_count": int(row["legacy"] or 0),
+            }
+        )
+        return output
+
+    @staticmethod
+    def _append_current_paper_point(
+        curve: list[dict[str, Any]], account: Mapping[str, Any], *, open_position_count: int,
+    ) -> list[dict[str, Any]]:
+        current = {
+            "recorded_at": iso(),
+            "cash_usd": account.get("cash_usd"),
+            "marked_value_usd": account.get("known_marked_value_usd"),
+            "equity_usd": account.get("equity_usd"),
+            "daily_exposure_usd": account.get("daily_exposure_usd"),
+            "open_position_count": int(open_position_count),
+            "priced_position_count": max(
+                0, int(open_position_count) - int(account.get("unpriced_position_count") or 0)
+            ),
+            "quote_as_of": account.get("quote_as_of"),
+            "persisted": False,
+        }
+        return [*curve, current][-289:]
+
     def overview(self) -> dict[str, Any]:
         counts = {"observations": 0, "events": 0, "tokens": 0, "decisions": 0, "trades": 0}
         account = {"cash_usd": None, "realized_pnl_usd": None}
         positions: list[dict[str, Any]] = []
         daily_exposure: float | None = None
+        account_curve: list[dict[str, Any]] = []
+        execution_costs: dict[str, Any] = {}
         ingestion_activity: dict[str, Any]
         with self.connect() as connection:
             ingestion_activity = self.ingestion_activity(connection)
@@ -1554,6 +1665,8 @@ class WebData:
                         (iso(start),),
                     ).fetchone()
                     daily_exposure = float(row["value"] or 0)
+                account_curve = self._paper_account_curve(connection)
+                execution_costs = self._paper_execution_costs(connection)
         missing_quotes = sum(1 for row in positions if row["market_value_usd"] is None)
         known_marks = sum(float(row["market_value_usd"] or 0) for row in positions if row["market_value_usd"] is not None)
         equity = None
@@ -1579,7 +1692,24 @@ class WebData:
             "daily_exposure_usd": daily_exposure,
             "exposure_usd": daily_exposure,
             "quote_as_of": min(quote_times) if quote_times and not missing_quotes else None,
+            "equity_is_fully_marked": missing_quotes == 0,
+            "valuation_status": "cash_only" if not positions else ("complete" if not missing_quotes else "incomplete"),
+            "activity_status": "no_trades" if counts["trades"] == 0 else "observed",
+            "performance_status": "not_observed" if counts["trades"] == 0 else "observed",
         }
+        account_curve = self._append_current_paper_point(
+            account_curve, account_payload, open_position_count=len(positions)
+        )
+        account_payload.update(
+            {
+                "equity_curve": account_curve,
+                "cash_history": [row["cash_usd"] for row in account_curve if row["cash_usd"] is not None],
+                "equity_history": [
+                    row["equity_usd"] for row in account_curve if row["equity_usd"] is not None
+                ],
+                "execution_costs": execution_costs,
+            }
+        )
         recent_events = self.events({"limit": ["7"], "hours": ["48"]})["items"]
         return {
             "time": iso(),
@@ -2604,7 +2734,10 @@ class WebData:
         account = {"cash_usd": None, "realized_pnl_usd": None, "updated_at": None}
         positions: list[dict[str, Any]] = []
         trades: list[dict[str, Any]] = []
+        execution_attempts: list[dict[str, Any]] = []
         daily_exposure: float | None = None
+        account_curve: list[dict[str, Any]] = []
+        execution_costs: dict[str, Any] = {}
         with self.connect() as connection:
             if connection is not None:
                 if self._table_exists(connection, "paper_account"):
@@ -2631,14 +2764,72 @@ class WebData:
                             "side": row["side"],
                             "quantity": float(row["quantity"]),
                             "price": float(row["price"]),
+                            "quote_price": (
+                                float(row["quote_price"])
+                                if "quote_price" in row.keys() and row["quote_price"] is not None else None
+                            ),
+                            "execution_price": float(row["price"]),
                             "gross_usd": float(row["gross_usd"]),
                             "fee_usd": float(row["fee_usd"]),
+                            "fee_bps": (
+                                float(row["fee_bps"])
+                                if "fee_bps" in row.keys() and row["fee_bps"] is not None else None
+                            ),
+                            "slippage_rate": (
+                                float(row["slippage_rate"])
+                                if "slippage_rate" in row.keys() and row["slippage_rate"] is not None else None
+                            ),
+                            "slippage_usd": (
+                                float(row["slippage_usd"])
+                                if "slippage_usd" in row.keys() and row["slippage_usd"] is not None else None
+                            ),
+                            "tax_pct": (
+                                float(row["tax_pct"])
+                                if "tax_pct" in row.keys() and row["tax_pct"] is not None else None
+                            ),
+                            "tax_usd": (
+                                float(row["tax_usd"])
+                                if "tax_usd" in row.keys() and row["tax_usd"] is not None else None
+                            ),
+                            "quote_observed_at": (
+                                row["quote_observed_at"] if "quote_observed_at" in row.keys() else None
+                            ),
+                            "quote_provider": (
+                                row["quote_provider"] if "quote_provider" in row.keys() else None
+                            ),
+                            "execution_attempted_at": (
+                                row["execution_attempted_at"]
+                                if "execution_attempted_at" in row.keys() else None
+                            ),
                             "reason": row["reason"],
                             "created_at": row["created_at"],
                             "simulated": True,
                         }
                         for row in connection.execute("SELECT * FROM trades ORDER BY id DESC LIMIT ?", (trade_limit,))
                     ]
+                if self._table_exists(connection, "paper_execution_attempts"):
+                    execution_attempts = [
+                        {
+                            "id": int(row["id"]),
+                            "event_id": int(row["event_id"]),
+                            "token_id": row["token_id"],
+                            "side": row["side"],
+                            "status": row["status"],
+                            "reason": row["reason"],
+                            "requested_at": row["requested_at"],
+                            "quote_observed_at": row["quote_observed_at"],
+                            "quote_provider": row["quote_provider"],
+                            "quote_price": row["quote_price"],
+                            "execution_price": row["execution_price"],
+                            "gross_usd": row["gross_usd"],
+                            "simulated": True,
+                        }
+                        for row in connection.execute(
+                            "SELECT * FROM paper_execution_attempts ORDER BY id DESC LIMIT 100"
+                        )
+                    ]
+                account_curve = self._paper_account_curve(connection)
+                execution_costs = self._paper_execution_costs(connection)
         missing = sum(1 for row in positions if row["market_value_usd"] is None)
         known_marks = sum(float(row["market_value_usd"] or 0) for row in positions if row["market_value_usd"] is not None)
         account["known_marked_value_usd"] = known_marks
@@ -2651,6 +2842,21 @@ class WebData:
         )
         account["daily_exposure_usd"] = daily_exposure
         account["exposure_usd"] = daily_exposure
+        quote_times = [row["quote_as_of"] for row in positions if row["quote_as_of"]]
+        account["quote_as_of"] = min(quote_times) if quote_times and not missing else None
+        account["equity_is_fully_marked"] = missing == 0
+        account["valuation_status"] = "cash_only" if not positions else ("complete" if not missing else "incomplete")
+        account["activity_status"] = "no_trades" if not trades else "observed"
+        account["performance_status"] = "not_observed" if not trades else "observed"
+        account_curve = self._append_current_paper_point(
+            account_curve, account, open_position_count=len(positions)
+        )
+        account["equity_curve"] = account_curve
+        account["cash_history"] = [row["cash_usd"] for row in account_curve if row["cash_usd"] is not None]
+        account["equity_history"] = [
+            row["equity_usd"] for row in account_curve if row["equity_usd"] is not None
+        ]
+        account["execution_costs"] = execution_costs
         return {
             "mode": "paper",
             "simulated": True,
@@ -2659,6 +2865,7 @@ class WebData:
             "summary": account,
             "positions": positions,
             "trades": trades,
+            "execution_attempts": execution_attempts,
             "as_of": iso(),
         }
 
@@ -3027,6 +3234,14 @@ class WebData:
             "status": "not_observed", "items": [],
             "summary": {"runs": 0, "completed_runs": 0, "account_exposures": 0},
         }
+        learning_closure: dict[str, Any] = {
+            "version": "browser-watch-closure/v1",
+            "status": "not_observed",
+            "breakpoint": "browser_exposure",
+            "stages": [],
+            "cohort_definition": "forward_exact_configured_public_account_pages_only",
+            "conversion_rates_available": False,
+        }
         watch_selection: dict[str, Any] = {}
         with self.connect() as connection:
             if connection is not None and self._table_exists(connection, "source_health"):
@@ -3200,6 +3415,82 @@ class WebData:
                     )
                 except (sqlite3.Error, TypeError, ValueError):
                     shadow_followup["status"] = "unavailable"
+                try:
+                    lookback_days = int(autonomous_cfg.get("source_learning_lookback_days", 90))
+                    start = iso(utcnow() - timedelta(days=max(1, min(3650, lookback_days))))
+                    exact_observations = 0
+                    eligible_events = 0
+                    observed_60m_events = 0
+                    closed_paper_events = 0
+                    if self._table_exists(connection, "browser_watch_observation_links"):
+                        row = connection.execute(
+                            """
+                            SELECT COUNT(*) AS exact_observations,
+                                   COUNT(DISTINCT CASE WHEN decision_eligible=1 THEN event_id END)
+                                       AS eligible_events
+                            FROM browser_watch_observation_links WHERE observed_at>=?
+                            """,
+                            (start,),
+                        ).fetchone()
+                        exact_observations = int(row["exact_observations"] or 0)
+                        eligible_events = int(row["eligible_events"] or 0)
+                        if self._table_exists(connection, "shadow_event_outcomes"):
+                            row = connection.execute(
+                                """
+                                SELECT COUNT(DISTINCT c.event_id) AS value
+                                FROM browser_watch_observation_links b
+                                JOIN shadow_event_cohort_labels l
+                                  ON l.source_observation_id=b.observation_id
+                                JOIN shadow_event_cohorts c ON c.id=l.cohort_id
+                                JOIN shadow_event_outcomes o ON o.cohort_id=c.id
+                                WHERE b.decision_eligible=1 AND b.observed_at>=?
+                                  AND o.horizon_minutes=60 AND o.status='observed'
+                                """,
+                                (start,),
+                            ).fetchone()
+                            observed_60m_events = int(row["value"] or 0)
+                        if self._table_exists(connection, "source_utility_outcomes"):
+                            row = connection.execute(
+                                """
+                                SELECT COUNT(DISTINCT p.event_id) AS value
+                                FROM browser_watch_observation_links b
+                                JOIN source_utility_outcomes p
+                                  ON p.source_observation_id=b.observation_id
+                                WHERE b.decision_eligible=1 AND b.observed_at>=?
+                                """,
+                                (start,),
+                            ).fetchone()
+                            closed_paper_events = int(row["value"] or 0)
+                    completed_exposures = int(
+                        watch_account_learning.get("summary", {}).get(
+                            "browser_completed_account_exposures", 0
+                        ) or 0
+                    )
+                    stages = [
+                        {"id": "browser_exposure", "count": completed_exposures,
+                         "unit": "account_page_windows"},
+                        {"id": "exact_hit", "count": exact_observations,
+                         "unit": "observations"},
+                        {"id": "eligible_event", "count": eligible_events,
+                         "unit": "distinct_events"},
+                        {"id": "observed_60m", "count": observed_60m_events,
+                         "unit": "distinct_events"},
+                        {"id": "closed_paper", "count": closed_paper_events,
+                         "unit": "distinct_events"},
+                    ]
+                    breakpoint = next((item["id"] for item in stages if item["count"] == 0), None)
+                    learning_closure = {
+                        "version": "browser-watch-closure/v1",
+                        "status": "closure_observed" if closed_paper_events else (
+                            "collecting" if completed_exposures else "not_observed"
+                        ),
+                        "breakpoint": breakpoint,
+                        "stages": stages,
+                        "cohort_definition": "forward_exact_configured_public_account_pages_only",
+                        "conversion_rates_available": False,
+                    }
+                except (sqlite3.Error, TypeError, ValueError):
+                    learning_closure["status"] = "unavailable"
         try:
             trend_attention_policy = Store.build_trend_attention_policy(
                 TREND_TOPIC_LANES, exposure=exposure, shadow=shadow_followup, paper=learning
@@ -3377,6 +3668,7 @@ class WebData:
             "watch_account_learning": watch_account_learning,
             "watch_attention_policy": watch_attention,
             "shadow_followup": shadow_followup,
+            "learning_closure": learning_closure,
             "as_of": iso(),
         }
 

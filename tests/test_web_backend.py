@@ -407,6 +407,13 @@ def test_web_api_empty_database_is_safe_and_live_is_locked(tmp_path: Path):
     assert overview["counts"]["open_positions"] == 0
     assert overview["account"]["equity_usd"] == 1000
     assert overview["account"]["quote_as_of"] is None
+    assert overview["account"]["activity_status"] == "no_trades"
+    assert overview["account"]["performance_status"] == "not_observed"
+    assert overview["account"]["valuation_status"] == "cash_only"
+    assert overview["account"]["equity_curve"][-1]["equity_usd"] == 1000
+    assert overview["account"]["equity_curve"][-1]["persisted"] is False
+    assert overview["account"]["execution_costs"]["configured_slippage_rate"] == pytest.approx(0.02)
+    assert overview["account"]["execution_costs"]["configured_fee_bps"] == pytest.approx(60)
     activity = overview["ingestion_activity"]
     assert activity["truth_source"] == "persisted_sqlite_activity"
     assert activity["status"] == "waiting"
@@ -423,6 +430,10 @@ def test_web_api_empty_database_is_safe_and_live_is_locked(tmp_path: Path):
     assert empty_sources["shadow_followup"]["horizons_minutes"] == [15, 60, 240]
     assert empty_sources["watch_account_learning"]["status"] == "not_observed"
     assert empty_sources["watch_account_learning"]["summary"]["account_exposures"] == 0
+    assert empty_sources["learning_closure"]["status"] == "not_observed"
+    assert empty_sources["learning_closure"]["breakpoint"] == "browser_exposure"
+    assert [item["count"] for item in empty_sources["learning_closure"]["stages"]] == [0, 0, 0, 0, 0]
+    assert empty_sources["learning_closure"]["conversion_rates_available"] is False
     assert empty_sources["watch_attention_policy"]["version"] == "watch-attention/v1"
     assert empty_sources["watch_attention_policy"]["status"] == "not_configured"
     assert empty_sources["watch_attention_policy"]["items"] == []
@@ -431,6 +442,132 @@ def test_web_api_empty_database_is_safe_and_live_is_locked(tmp_path: Path):
     assert audit["policy_enforced"] is True
     assert audit["future_data_rejected"] is None
     assert all(item["status"] != "pass" for item in audit["cases"])
+
+
+def test_web_paper_curve_costs_attempts_and_stale_valuation_are_truthful(tmp_path: Path):
+    config_path, config = _config(tmp_path)
+    config["paper"]["max_quote_age_seconds"] = 1
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    now = utcnow()
+    token = TokenCandidate(chain="solana", address="P" * 32, name="Paper Cost")
+    store.upsert_token(token, seen_at=now - timedelta(seconds=3))
+    store.add_snapshot(
+        TokenSnapshot(
+            chain="solana", address=token.address, price_usd=10, liquidity_usd=50_000,
+            market_cap_usd=500_000, volume_5m_usd=10_000, buys_5m=20, sells_5m=5,
+            observed_at=now - timedelta(seconds=3), provider="test-dex",
+        )
+    )
+    store.record_paper_account_snapshot(
+        cash_usd=1000, marked_value_usd=0, equity_usd=1000, daily_exposure_usd=0,
+        open_position_count=0, priced_position_count=0,
+        observed_at=now - timedelta(seconds=4),
+    )
+    store.paper_buy(
+        event_id=1, token=token, price=10.2, quote_price=10, gross_usd=100,
+        fee_bps=60, tax_pct=2, reason="web-cost-test",
+        quote_observed_at=now - timedelta(seconds=3), quote_provider="test-dex",
+        execution_attempted_at=now - timedelta(seconds=2),
+    )
+    store.record_paper_execution_attempt(
+        event_id=1, token_id=token.token_id, side="BUY", status="filled",
+        reason="web-cost-test", requested_at=now - timedelta(seconds=2),
+        quote_observed_at=now - timedelta(seconds=3), quote_provider="test-dex",
+        quote_price=10, execution_price=10.2, gross_usd=100,
+    )
+    store.record_paper_account_snapshot(
+        cash_usd=899.4, marked_value_usd=98, equity_usd=997.4,
+        daily_exposure_usd=100, open_position_count=1, priced_position_count=1,
+        quote_as_of=now - timedelta(seconds=3), observed_at=now - timedelta(seconds=2),
+    )
+    store.close()
+
+    portfolio = WebData(config_path).portfolio({})
+    assert len(portfolio["account"]["equity_curve"]) == 3
+    assert portfolio["account"]["equity_usd"] is None
+    assert portfolio["account"]["valuation_status"] == "incomplete"
+    assert portfolio["positions"][0]["quote_stale"] is True
+    trade = portfolio["trades"][0]
+    assert trade["quote_price"] == pytest.approx(10)
+    assert trade["execution_price"] == pytest.approx(10.2)
+    assert trade["fee_usd"] == pytest.approx(0.6)
+    assert trade["slippage_rate"] == pytest.approx(0.02)
+    assert trade["tax_usd"] == pytest.approx(2)
+    costs = portfolio["account"]["execution_costs"]
+    assert costs["total_fee_usd"] == pytest.approx(0.6)
+    assert costs["total_recorded_tax_usd"] == pytest.approx(2)
+    assert costs["route_and_chain_fees_modeled"] is False
+    assert portfolio["execution_attempts"][0]["status"] == "filled"
+
+
+def test_learning_closure_does_not_borrow_same_event_outcomes_from_other_source(tmp_path: Path):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    decision_at = utcnow() - timedelta(hours=2)
+    event_id = store.create_event("Shared event with independent sources", ["shared event"], 70, decision_at)
+    browser = Observation(
+        source="browser:x:example", source_kind="social", title="Exact public account post",
+        url="https://x.com/example/status/1", author="@example", observed_at=decision_at,
+        ingested_at=decision_at, availability_proof="local_receive", role="feature",
+        source_item_id="x:example:1", raw={"source_entity_id": "example_media"},
+    )
+    other = Observation(
+        source="independent-news", source_kind="news", title="Independent report of shared event",
+        url="https://news.example/shared", observed_at=decision_at, ingested_at=decision_at,
+        role="feature", source_item_id="news:shared:1",
+    )
+    browser_id, _ = store.add_observation(browser)
+    other_id, _ = store.add_observation(other)
+    store.link_event_observation(event_id, browser_id)
+    store.link_event_observation(event_id, other_id)
+    token = TokenCandidate(chain="solana", address="Z" * 32, name="Shared Event Token")
+    store.upsert_token(token, seen_at=decision_at)
+    store.add_snapshot(
+        TokenSnapshot(
+            chain="solana", address=token.address, price_usd=1.0, liquidity_usd=50000,
+            market_cap_usd=100000, volume_5m_usd=10000, buys_5m=20, sells_5m=5,
+            observed_at=decision_at, provider="test",
+        )
+    )
+    decision = CandidateDecision(
+        event_id=event_id, token_id=token.token_id, action="WAIT", score=60,
+        match_score=80, canonical_margin=2, reasons=["test"], created_at=decision_at,
+    )
+    decision_id = store.add_decision(decision)
+    store.create_shadow_event_cohort(
+        decision, decision_id=decision_id, source_observation_ids=[other_id]
+    )
+    store.add_snapshot(
+        TokenSnapshot(
+            chain="solana", address=token.address, price_usd=1.1, liquidity_usd=50000,
+            market_cap_usd=110000, volume_5m_usd=12000, buys_5m=22, sells_5m=6,
+            observed_at=decision_at + timedelta(minutes=61), provider="test",
+        )
+    )
+    store.finalize_shadow_event_outcomes(now=decision_at + timedelta(minutes=65))
+    store.db.execute(
+        """
+        INSERT INTO source_utility_outcomes(
+            outcome_key,event_id,token_id,source_observation_id,dimension,value,origin_platform,
+            attribution_weight,net_return,opened_at,closed_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            "other-source-only", event_id, token.token_id, other_id, "source",
+            "independent-news", "web", 1.0, 0.1, iso(decision_at), iso(decision_at + timedelta(minutes=65)),
+        ),
+    )
+    store.record_browser_watch_observation(
+        {"platform": "x", "handle": "@example", "entity_id": "example_media", "priority": 3},
+        observation_id=browser_id, event_id=event_id, observed_at=decision_at,
+        decision_eligible=True,
+    )
+    store.close()
+
+    closure = WebData(config_path).sources()["learning_closure"]
+    assert [item["count"] for item in closure["stages"]] == [1, 1, 1, 0, 0]
+    assert closure["breakpoint"] == "observed_60m"
 
 
 def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_path: Path):
@@ -448,6 +585,19 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
             "observed_at": iso(),
             "contains_credentials": False,
         },
+    )
+    browser_observation = store.db.execute(
+        "SELECT id FROM observations WHERE source='browser:x:otter'"
+    ).fetchone()
+    store.record_browser_watch_observation(
+        {
+            "platform": "x", "handle": "otter", "entity_id": "otter_daily",
+            "priority": 2, "watch_cadence": "normal",
+        },
+        observation_id=browser_observation["id"],
+        event_id=event_id,
+        observed_at=iso(),
+        decision_eligible=False,
     )
     store.close()
     console_dir = tmp_path / "data" / "web_console"
@@ -697,12 +847,16 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
     assert culture_lane["accepted_events_per_completed_run"] == 1.0
     assert culture_lane["shadow_mature"] is False
     assert source_payload["watch_account_learning"]["status"] == "collecting_exposure"
-    assert source_payload["watch_account_learning"]["summary"]["account_exposures"] == 1
-    assert source_payload["watch_account_learning"]["summary"]["exact_source_hits"] == 1
+    assert source_payload["watch_account_learning"]["summary"]["account_exposures"] == 2
+    assert source_payload["watch_account_learning"]["summary"]["exact_source_hits"] == 2
     account_exposure = source_payload["watch_account_learning"]["items"][0]
     assert account_exposure["platform"] == "x" and account_exposure["handle"] == "otter"
-    assert account_exposure["completed_exposures"] == 1
+    assert account_exposure["completed_exposures"] == 2
+    assert account_exposure["browser_bridge_exposures"] == 1
+    assert account_exposure["trend_agent_exposures"] == 1
     assert account_exposure["rotation_active"] is False
+    assert [item["count"] for item in source_payload["learning_closure"]["stages"]] == [1, 1, 0, 0, 0]
+    assert source_payload["learning_closure"]["breakpoint"] == "eligible_event"
     assert source_payload["watch_attention_policy"]["version"] == "watch-attention/v1"
     assert source_payload["watch_attention_policy"]["status"] == "collecting_evidence"
     assert source_payload["watch_attention_policy"]["summary"][
@@ -900,6 +1054,10 @@ def test_candidate_ranking_api_is_persisted_bounded_sanitized_and_wait_is_truthf
     assert "event_topic" in app and "observe only" in app
     assert "Linked narrative / event observation timeline" in app
     assert "Verified narrative / event evidence timeline" not in app
+    assert "data-testid='paper-account-curve'" in app
+    assert "data-testid='paper-execution-attempts'" in app
+    assert "no future price was filled in" in app
+    assert "no fake fills are generated" in app
 
 
 def test_settings_are_allowlisted_atomic_and_never_expose_secrets(tmp_path: Path):

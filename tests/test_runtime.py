@@ -198,6 +198,89 @@ def test_browser_platform_heartbeat_persists_only_sanitized_access_state(tmp_pat
     asyncio.run(scenario())
 
 
+def test_browser_watch_learning_records_only_exact_configured_account_pages(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        settings_path = tmp_path / "data" / "web_console" / "console_settings.json"
+        settings_path.parent.mkdir(parents=True)
+        settings_path.write_text(
+            json.dumps(
+                {
+                    "watch_accounts": [
+                        {
+                            "platform": "x", "handle": "@elonmusk",
+                            "url": "https://x.com/elonmusk", "entity_id": "elon_musk",
+                            "priority": 5, "watch_cadence": "critical", "enabled": True,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        runtime = Runtime(config, tmp_path)
+
+        await runtime.browser_heartbeat(
+            "browser:x",
+            {"platform": "x", "page_url": "https://x.com/home",
+             "access_state": "content_visible", "visible": True, "selector_count": 10},
+        )
+        empty = runtime.store.watch_account_exposure_summary_from_connection(runtime.store.db)
+        assert empty["summary"]["browser_exposure_windows"] == 0
+
+        await runtime.browser_heartbeat(
+            "browser:x",
+            {"platform": "x", "page_url": "https://twitter.com/elonmusk?private=value#fragment",
+             "access_state": "content_visible", "visible": True, "selector_count": 12},
+        )
+        exposed = runtime.store.watch_account_exposure_summary_from_connection(runtime.store.db)
+        assert exposed["summary"]["browser_exposure_windows"] == 1
+        assert exposed["summary"]["browser_completed_account_exposures"] == 1
+        assert exposed["summary"]["exact_source_hits"] == 0
+
+        observation = Observation(
+            source="browser:x:elonmusk",
+            source_kind="social",
+            title="A newly observed exact public post",
+            text="A newly observed exact public post with enough detail for event clustering.",
+            url="https://x.com/elonmusk/status/12345",
+            author="@elonmusk",
+            availability_proof="local_receive",
+            role="feature",
+            raw={
+                "source_entity_id": "elon_musk",
+                "browser": {
+                    "platform": "x", "author": "@elonmusk",
+                    "source_entity_id": "elon_musk",
+                    "url": "https://x.com/elonmusk/status/12345",
+                },
+            },
+        )
+        await runtime.ingest_observation(observation)
+        learned = runtime.store.watch_account_exposure_summary_from_connection(runtime.store.db)
+        assert learned["summary"]["exact_source_hits"] == 1
+        assert learned["summary"]["accepted_events"] == 1
+        assert learned["items"][0]["browser_bridge_exposures"] == 1
+        link = runtime.store.db.execute(
+            "SELECT * FROM browser_watch_observation_links"
+        ).fetchone()
+        assert link is not None and link["decision_eligible"] == 1
+
+        await runtime.browser_heartbeat(
+            "browser:x",
+            {"platform": "x", "page_url": "https://x.com/elonmusk",
+             "access_state": "login_required", "visible": True, "selector_count": 1},
+        )
+        preserved = runtime.store.db.execute(
+            "SELECT status FROM browser_watch_account_exposures"
+        ).fetchone()
+        assert preserved["status"] == "completed"
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
 def test_doctor_treats_unrequired_security_endpoint_failure_as_warning(tmp_path, monkeypatch, capsys):
     config = initial_config()
     config["database"] = "db.sqlite3"
@@ -343,7 +426,14 @@ def test_candidate_decision_persists_computed_position_size(tmp_path):
         )
         token = TokenCandidate(chain="solana", address="A" * 32, name="Example", symbol="EX")
         runtime.store.upsert_token(token)
-        runtime.store.add_snapshot(TokenSnapshot("solana", token.address, 1.0, 100000, 1000000, 50000, 30, 10))
+        snapshot = TokenSnapshot("solana", token.address, 1.0, 100000, 1000000, 50000, 30, 10)
+        runtime.store.add_snapshot(snapshot)
+
+        class FakeDex:
+            async def quote(self, chain, address):
+                return token, snapshot
+
+        runtime.dex = FakeDex()
 
         class FakeEvaluator:
             async def discover_and_decide(self, event):
@@ -858,6 +948,48 @@ def test_end_to_end_event_buy_partial_profit_and_liquidity_exit(tmp_path):
         sides = [row["side"] for row in runtime.store.trades(10)]
         assert sides.count("BUY") == 1 and sides.count("SELL") == 2
         assert any(row["reason"] == "liquidity_emergency" for row in runtime.store.trades(10))
+        assert all(row["quote_price"] is not None for row in runtime.store.trades(10))
+        assert all(row["quote_observed_at"] is not None for row in runtime.store.trades(10))
+        attempts = list(runtime.store.db.execute("SELECT * FROM paper_execution_attempts ORDER BY id"))
+        assert [row["status"] for row in attempts] == ["filled", "filled", "filled"]
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_paper_quote_gate_rejects_future_stale_and_wrong_token(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        config["sources"]["gecko_networks"] = []
+        config["sources"]["pumpportal"]["enabled"] = False
+        config["paper"]["max_quote_age_seconds"] = 30
+        runtime = Runtime(config, tmp_path)
+        received = utcnow()
+        token = TokenCandidate(chain="solana", address="T" * 32, name="Temporal")
+        future = TokenSnapshot(
+            "solana", token.address, 1, 50_000, 500_000, 10_000, 20, 5,
+            observed_at=received + timedelta(seconds=1), provider="test",
+        )
+        stale = TokenSnapshot(
+            "solana", token.address, 1, 50_000, 500_000, 10_000, 20, 5,
+            observed_at=received - timedelta(seconds=31), provider="test",
+        )
+        wrong = TokenCandidate(chain="solana", address="W" * 32, name="Wrong")
+        current = TokenSnapshot(
+            "solana", wrong.address, 1, 50_000, 500_000, 10_000, 20, 5,
+            observed_at=received, provider="test",
+        )
+        assert "snapshot_observed_after_decision" in runtime._paper_quote_rejections(
+            token.token_id, token, future, received
+        )
+        assert "quote_stale_at_execution" in runtime._paper_quote_rejections(
+            token.token_id, token, stale, received
+        )
+        assert "quote_token_mismatch" in runtime._paper_quote_rejections(
+            token.token_id, wrong, current, received
+        )
         await runtime.close()
 
     asyncio.run(scenario())
