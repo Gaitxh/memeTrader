@@ -113,34 +113,45 @@ Agent 返回的来源不会直接进入生产。动态 RSS 必须通过：
 data/memetrader_forward_20260830_r6.sqlite3
 ```
 
-截至 `2026-08-30T04:51:13.340795Z`：
+截至 `2026-08-30T05:07:54.604505Z`：
 
 | 指标 | 数量 |
 |---|---:|
-| observations | 552 |
-| events | 373 |
-| tokens | 1920 |
-| token_snapshots | 865 |
+| observations | 555 |
+| events | 375 |
+| tokens | 2314 |
+| token_snapshots | 1085 |
 | decisions | 0 |
 | positions | 0 |
 | trades | 0 |
 
 没有为了展示成交而降低阈值。`r5` 中由推广榜单与通用 Token 名造成的两次错误 Paper 入场已被永久排除于绩效统计，详见 `FORWARD_FALSE_POSITIVE_AUDIT_20260830.md`。
 
+### 过期反查证据实机回归
+
+r6 的 `event 360 / Starlink` 只有首次看到时已超过 30 分钟的反查报道。旧版本虽然没有下单，却把事件注意力保留为 37，并重复尝试 15 次。0.6.3 将过期 `feature/confirmation` 降级为 `identity`，并对没有任何当前合格外部证据的事件停止周期性 DEX/API 重试。
+
+实机重载后：
+
+- 尝试次数保持在 `15`；
+- 下一检查时间延至 `2026-08-30T12:00:36.720831Z`；
+- 任意新观察会清除延迟并立即恢复判断；
+- decisions / positions / trades 仍为 `0 / 0 / 0`。
+
 ## 测试与打包
 
-- `76/76` 自动测试通过；
+- `77/77` 自动测试通过；
 - `compileall` 通过；
-- Wheel：`dist/memetrader-0.6.2-py3-none-any.whl`；
-- 已验证源码 revision：`d30b9d752b697cd2801954f3968679786f41d6c4`；
-- Wheel SHA-256：`bf7cc1872f4fc24b2d0ff1e67f78b4c6ce49c26f9343fb7dd1e7593e3b82db98`；
+- Wheel：`dist/memetrader-0.6.3-py3-none-any.whl`；
+- 已验证源码 revision：`e4e6979d440c3748daa18c2a4a1647be44807f40`；
+- Wheel SHA-256：`bdd1c2e0f56f1ba33d13ae9279cb079ca4f5c8fd4a27f1b141077dc364ea0a7f`；
 - 全新虚拟环境安装通过；
 - `pip check` 通过；
 - 安装后导入、CLI 帮助和未来数据隔离回放通过；
 - Windows 计划任务 `memeTrader Paper Bot` 为 `Running`；
 - `127.0.0.1:8765/health` 为 `ok=true`。
 
-覆盖测试包括主题轮换、模型回退、调用和 token 双预算、动态源暂停、低质量内容暂停、Agent 结果本地验证、未来数据隔离、中英文推广榜单过滤、通用名称劫持、官方精确 CA、Paper 仓位和退出。
+覆盖测试包括主题轮换、模型回退、调用和 token 双预算、动态源暂停、低质量内容暂停、Agent 结果本地验证、未来数据隔离、中英文推广榜单过滤、通用名称劫持、官方精确 CA、过期反查证据降级、幽灵事件停止重试、新证据即时解锁、Paper 仓位和退出。
 
 ## 在线安全源状态
 
