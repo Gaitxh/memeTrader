@@ -123,6 +123,7 @@ def test_promotional_market_listicles_are_not_event_evidence():
     assert is_promotional_market_content(
         "Top 100x Cryptos Before the Next Breakout: Coins to Watch"
     )
+    assert is_promotional_market_content("2026年十大百倍币：这些预售代币值得关注")
     assert not is_promotional_market_content(
         "Rescued otter video goes viral after a mayor shares it"
     )

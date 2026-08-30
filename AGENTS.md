@@ -15,9 +15,11 @@ Run a simple personal-PC bot that discovers real-world/social events and related
 ## Agent-cost routing
 
 - Use deterministic local code for polling, parsing, scoring, arithmetic, position sizing, risk limits, and exits.
-- Use an Agent only for a small number of genuine semantic ambiguities: cultural jokes, aliases, identity conflicts, or near-tied canonical tokens.
-- Use Low first; Medium only for high-attention near ties. High stays disabled by default.
-- Agents never receive wallet, broker, private key, or permission to bypass local risk rules.
+- Autonomous Agents are allowed for three bounded jobs: global trend scouting, free-source discovery, and high-momentum Token context investigation.
+- Keep at most two Agent subprocesses concurrent. Trend/source search uses Spark/low first and Luna/low only as fallback; Token context uses Luna/low, then Terra/medium, with Sol/medium only as the final fallback.
+- Enforce daily call budgets, daily token budgets, per-call token reserves, adaptive quiet/surge intervals, a global Token-context cooldown, and a shorter error retry delay. A manual `--force` may bypass time due checks but never daily budgets.
+- The separate semantic tie-breaker remains disabled by default; uncertain canonical rankings return `WAIT` instead of forcing a winner.
+- Agents never receive wallet, broker, private key, project-write access, or permission to bypass local risk rules.
 
 ## Required checks for an in-scope change
 

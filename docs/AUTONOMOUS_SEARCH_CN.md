@@ -41,7 +41,7 @@ Agent 定期寻找无需付费 API Key 的公开 RSS/Atom 源。候选源不会�
 
 只有新 Token 已出现真实流动性、成交量、买卖笔数和买盘优势时，系统才调用 Agent 反查名称背后的现实事件。结果同样要求两个独立、近期、可访问来源。
 
-验证成功后，Agent 返回的 `token_id` 会直接进入主叙事候选排序。它不会仅靠名称相似度把同名仿盘替换成被验证的 Token；最终仍要通过报价、流动性、税率、可卖性、RugCheck/Honeypot 和仓位限制。
+验证成功后，Agent 返回的 `token_id` 会直接进入主叙事候选排序。四字母名称（例如人物姓氏或短昵称）允许进入 Token Context 搜证，但不能仅凭文本重合直接连接新闻；必须有精确 CA 或 Agent 的双来源绑定。最终仍要通过报价、流动性、税率、可卖性、RugCheck/Honeypot 和仓位限制。当前 Paper 默认要求对应外部安全报告可用，缺失时失败关闭而不是当作安全。
 
 ## 默认 Agent 数量与模型路由
 
@@ -83,7 +83,7 @@ Agent 全部使用：
 | Spark 不可用并回退到 Luna | 普通最短 30 分钟；重大信号最短 10 分钟 |
 | 上一次调用超过 18,000 tokens | 普通最短 30 分钟；重大信号最短 10 分钟 |
 | 新信息源发现 | 24 小时 |
-| Token 专项 Agent | 事件触发；全局最短 5 分钟；同 Token 240 分钟冷却；动量分≥80 |
+| Token 专项 Agent | 事件触发；全局最短 5 分钟；同 Token 240 分钟冷却；失败仅退避 10 分钟；动量分≥80 |
 
 全球侦察线程每 30 秒只检查“是否到期”，不会每 30 秒调用 Agent。
 
@@ -96,14 +96,17 @@ Agent 全部使用：
   "max_concurrent_agents": 2,
   "trend_scout_daily_limit": 64,
   "trend_scout_daily_token_budget": 500000,
+  "trend_scout_token_reserve_per_call": 40000,
   "source_discovery_daily_limit": 2,
   "source_discovery_daily_token_budget": 100000,
+  "source_discovery_token_reserve_per_call": 30000,
   "context_search_daily_limit": 8,
-  "token_context_daily_token_budget": 250000
+  "token_context_daily_token_budget": 250000,
+  "token_context_token_reserve_per_call": 30000
 }
 ```
 
-这些是硬上限而不是目标用量。调用次数和解析到的 `tokens used` 会分别持久化；任一上限到达后，当天不再启动该类 Agent。时间间隔、主题轮换、无结果退避、同 Token 冷却和动量门槛通常会使实际调用明显少于上限。失败或模型不可用的调用会退还项目内部“调用次数”，CLI 平台自身已经消耗的额度无法由程序退回。
+调用次数是硬上限；token 预算使用“已记录用量 + 下一次保留额度”的保守门槛。这样不会在只剩少量预算时再启动一次大搜索，但单次 Codex 调用的实际内部 token 数无法事先精确控制，因此最终一次仍可能高于保留估计。所有用量会持久化；`--force` 只绕过时间到期检查，不能绕过调用或 token 预算。失败调用退还项目内部“调用次数”，但会触发 10 分钟错误退避；CLI 平台已经消耗的额度无法由程序退回。
 
 自动发现的 RSS 源连续 3 次真实轮询失败后会自动暂停；即使技术上可访问，若近期样本中至少一半是 Daily Market Wrap、BTC/ETH 价格更新、技术分析、Presale、Top/Best/100x 榜单等低价值市场摘要，也会自动暂停。下一轮信息源发现会补充或重新验证来源。静态配置源不会被这一机制擅自改写。
 
@@ -116,7 +119,8 @@ Agent 全部使用：
 - `trend_scout_*`：主动热点侦察的频率、主题轮换、阈值、搜索数、调用上限和 token 上限；
 - `source_discovery_*`：自动发现新源的周期、上限与失败自动暂停阈值；
 - `source_quality_*` / `source_max_market_digest_ratio`：动态 RSS 的内容质量门；
-- `context_*`：Token 反向检索的动量门槛、全局冷却、同 Token 冷却、置信度与每日上限；
+- `context_*`：Token 反向检索的动量门槛、全局冷却、失败退避、同 Token 冷却、置信度与每日上限；
+- `*_token_reserve_per_call`：在启动下一次调用前预留的 token 预算；
 - `topics`：搜索覆盖面，不是固定关键词清单。
 
 手工触发仅用于诊断：

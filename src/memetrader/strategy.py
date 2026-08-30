@@ -64,6 +64,10 @@ PROMOTIONAL_MARKET_PATTERNS = (
     re.compile(r"\binvestors?\s+(?:seek|eye|target)\s+the\s+next\b", re.I),
     re.compile(r"\bwhich\s+crypto\s+could\b", re.I),
     re.compile(r"\bsponsored\s+(?:content|post|article)\b", re.I),
+    re.compile(r"(?:预售|认购).{0,20}(?:代币|币|项目)"),
+    re.compile(r"(?:价格|走势)(?:预测|展望)"),
+    re.compile(r"(?:十大|前\s*\d+).{0,20}(?:币|代币|加密货币)"),
+    re.compile(r"(?:百倍币|千倍币|值得买入|值得关注)"),
 )
 
 TERM_ALIASES = {

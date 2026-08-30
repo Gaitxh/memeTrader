@@ -113,14 +113,14 @@ Agent 返回的来源不会直接进入生产。动态 RSS 必须通过：
 data/memetrader_forward_20260830_r6.sqlite3
 ```
 
-截至 `2026-08-30T04:13:51Z`：
+截至 `2026-08-30T04:24:00Z`：
 
 | 指标 | 数量 |
 |---|---:|
-| observations | 537 |
-| events | 362 |
-| tokens | 966 |
-| token_snapshots | 372 |
+| observations | 542 |
+| events | 366 |
+| tokens | 1170 |
+| token_snapshots | 470 |
 | decisions | 0 |
 | positions | 0 |
 | trades | 0 |
@@ -129,17 +129,17 @@ data/memetrader_forward_20260830_r6.sqlite3
 
 ## 测试与打包
 
-- `67/67` 自动测试通过；
+- `72/72` 自动测试通过；
 - `compileall` 通过；
-- Wheel：`dist/memetrader-0.6.0-py3-none-any.whl`；
-- Wheel SHA-256：`d1b3aa346b6efbc49b4ff64a246a2507756651d199c639fe848a6997c14c1d18`；
+- Wheel：`dist/memetrader-0.6.1-py3-none-any.whl`；
+- Wheel SHA-256：`5a86154a93d47ad730657c8fbb36d8a7bf18a749b813a0da0c9f6de60e5235e2`；
 - 全新虚拟环境安装通过；
 - `pip check` 通过；
 - 安装后导入、CLI 帮助和未来数据隔离回放通过；
 - Windows 计划任务 `memeTrader Paper Bot` 为 `Running`；
 - `127.0.0.1:8765/health` 为 `ok=true`。
 
-覆盖测试包括主题轮换、模型回退、调用和 token 双预算、动态源暂停、低质量内容暂停、Agent 结果本地验证、未来数据隔离、通用名称劫持、官方精确 CA、Paper 仓位和退出。
+覆盖测试包括主题轮换、模型回退、调用和 token 双预算、动态源暂停、低质量内容暂停、Agent 结果本地验证、未来数据隔离、中英文推广榜单过滤、通用名称劫持、官方精确 CA、Paper 仓位和退出。
 
 ## 当前外部阻塞：Honeypot.is
 

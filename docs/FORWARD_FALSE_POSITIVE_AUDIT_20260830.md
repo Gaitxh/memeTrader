@@ -29,6 +29,8 @@
    - Token Context Agent 已用至少两个独立、近期、可访问来源核验并绑定该 Token。
 5. 通用 `google-news-memecoin` 榜单源在设备配置中默认关闭；Token→事件反查和主动 Agent 搜索仍保留。
 6. 新的干净前向数据库为 `data/memetrader_forward_20260830_r6.sqlite3`。
+7. BSC Honeypot 模拟和 Solana RugCheck 报告改为 Paper 默认必需；外部结论缺失时拒绝入场。
+8. Agent 搜索增加每日 token 预算预留、强制调用不得越过预算、Token 搜索失败仅短退避而不是锁死完整冷却期。
 
 ## 验证
 
@@ -37,7 +39,7 @@
 - 推广榜单会存档但不能产生热点分；
 - `Coins` 与 `Attention` 被判为通用名称；
 - 通用名称不能劫持无关新闻事件；
-- `Luce`、`Neiro` 等短而有辨识度的名称仍可进入核验；
+- `Neiro` 等五字母名称仍可直接进入名称核验；`Luce`、`Musk` 等四字母名称只能进入 Agent 搜证，不能仅凭文本重合直接绑定；
 - 官方精确 CA 可以让 `Test/TST` 这类通用名称进入后续安全门，而不是被名称过滤器误杀。
 
 这次失败被当作前向实验结果，而不是通过调低门槛或删除亏损样本来掩盖。

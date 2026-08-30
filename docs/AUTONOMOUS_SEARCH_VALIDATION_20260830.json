@@ -1,14 +1,14 @@
 {
   "status": "PASS_WITH_FAIL_CLOSED_EXTERNAL_PROVIDER_OUTAGE",
-  "checked_at_utc": "2026-08-30T04:14:05Z",
-  "version": "0.6.0",
+  "checked_at_utc": "2026-08-30T04:24:00Z",
+  "version": "0.6.1",
   "tests": {
-    "collected": 67,
-    "passed": 67,
+    "collected": 72,
+    "passed": 72,
     "failed": 0,
     "compileall": "PASS",
-    "wheel": "dist/memetrader-0.6.0-py3-none-any.whl",
-    "wheel_sha256": "d1b3aa346b6efbc49b4ff64a246a2507756651d199c639fe848a6997c14c1d18",
+    "wheel": "dist/memetrader-0.6.1-py3-none-any.whl",
+    "wheel_sha256": "5a86154a93d47ad730657c8fbb36d8a7bf18a749b813a0da0c9f6de60e5235e2",
     "fresh_venv_install": "PASS",
     "pip_check": "PASS",
     "installed_cli": "PASS",
@@ -25,10 +25,10 @@
     "mode": "paper",
     "live_enabled": false,
     "counts_at_check": {
-      "observations": 537,
-      "events": 362,
-      "tokens": 966,
-      "token_snapshots": 372,
+      "observations": 542,
+      "events": 366,
+      "tokens": 1170,
+      "token_snapshots": 470,
       "decisions": 0,
       "positions": 0,
       "trades": 0
@@ -51,6 +51,7 @@
       "high_token_threshold": 18000,
       "daily_call_limit": 64,
       "daily_token_budget": 500000,
+      "token_reserve_per_call": 40000,
       "max_web_searches_per_run": 4,
       "max_events_per_run": 3
     },
@@ -61,6 +62,7 @@
       "normal_interval_hours": 24,
       "daily_call_limit": 2,
       "daily_token_budget": 100000,
+      "token_reserve_per_call": 30000,
       "consecutive_poll_failures_before_pause": 3
     },
     "token_context": {
@@ -74,8 +76,10 @@
       "minimum_momentum_score": 80,
       "global_cooldown_minutes": 5,
       "same_token_cooldown_minutes": 240,
+      "error_retry_minutes": 10,
       "daily_call_limit": 8,
-      "daily_token_budget": 250000
+      "daily_token_budget": 250000,
+      "token_reserve_per_call": 30000
     }
   },
   "real_agent_runs": {
