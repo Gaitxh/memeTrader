@@ -1,6 +1,6 @@
 {
-  "status": "PASS_WITH_OPTIONAL_PROVIDER_WARNING",
-  "checked_at_utc": "2026-08-30T04:36:29Z",
+  "status": "PASS",
+  "checked_at_utc": "2026-08-30T04:41:35Z",
   "version": "0.6.2",
   "tests": {
     "collected": 76,
@@ -27,8 +27,8 @@
     "counts_at_check": {
       "observations": 548,
       "events": 370,
-      "tokens": 1574,
-      "token_snapshots": 675,
+      "tokens": 1708,
+      "token_snapshots": 735,
       "decisions": 0,
       "positions": 0,
       "trades": 0
@@ -155,11 +155,12 @@
     "clean_database": "data/memetrader_forward_20260830_r6.sqlite3"
   },
   "online_diagnostic": {
-    "doctor_result": "PASS_WITH_WARNING",
+    "doctor_result": "PASS",
     "passing": [
       "DexScreener",
       "GeckoTerminal",
       "GoPlus EVM",
+      "Honeypot.is",
       "GoPlus Solana",
       "RugCheck",
       "Codex CLI",
@@ -167,11 +168,7 @@
       "EVM security provider aggregate",
       "Solana security provider aggregate"
     ],
-    "warning": {
-      "source": "Honeypot.is",
-      "observed_state": "ReadTimeout during final check",
-      "required_by_current_config": false,
-      "runtime_behavior": "GoPlus EVM supplies the required external EVM report. If both GoPlus and Honeypot.is are unavailable, BSC fails closed; if require_evm_simulation=true, Honeypot.is becomes mandatory."
-    }
+    "warnings": [],
+    "runtime_behavior": "At least one external report is required for each chain family. Temporary failure of one provider does not stop the resident bot, while loss of every provider for that chain fails closed."
   }
 }

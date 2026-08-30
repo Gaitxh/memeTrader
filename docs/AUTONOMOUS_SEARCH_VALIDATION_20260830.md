@@ -2,7 +2,7 @@
 
 ## 结论
 
-**PASS_WITH_OPTIONAL_PROVIDER_WARNING**
+**PASS**
 
 机器人已经能够在用户不维护热点关键词和信息源列表的情况下，自主执行：
 
@@ -113,14 +113,14 @@ Agent 返回的来源不会直接进入生产。动态 RSS 必须通过：
 data/memetrader_forward_20260830_r6.sqlite3
 ```
 
-截至 `2026-08-30T04:36:29Z`：
+截至 `2026-08-30T04:41:35Z`：
 
 | 指标 | 数量 |
 |---|---:|
 | observations | 548 |
 | events | 370 |
-| tokens | 1574 |
-| token_snapshots | 675 |
+| tokens | 1708 |
+| token_snapshots | 735 |
 | decisions | 0 |
 | positions | 0 |
 | trades | 0 |
@@ -143,16 +143,16 @@ data/memetrader_forward_20260830_r6.sqlite3
 
 ## 在线安全源状态
 
-最终 `doctor --online` 返回成功，并单独保留可选供应商警告：
+最终 `doctor --online` 全部通过：
 
 - DexScreener：PASS；
 - GeckoTerminal：PASS；
 - GoPlus EVM：PASS；
+- Honeypot.is：PASS；
 - GoPlus Solana：PASS；
 - RugCheck：PASS；
 - Codex CLI：PASS；
-- 已启用 RSS：PASS；
-- Honeypot.is：本轮 `ReadTimeout`，记为 WARN。
+- 已启用 RSS：PASS。
 
 实际 `config.json` 设定：
 
@@ -164,4 +164,4 @@ data/memetrader_forward_20260830_r6.sqlite3
 }
 ```
 
-因此 Honeypot.is 单独不可用时，GoPlus EVM 仍能提供必需的外部 EVM 报告；GoPlus 与 Honeypot.is 都不可用时，BSC 候选失败关闭。若以后显式设置 `require_evm_simulation=true`，Honeypot.is 会重新成为硬门。Solana 同理要求 GoPlus 或 RugCheck 至少一个报告可用。
+因此单个安全源临时不可用时，另一个安全源仍可维持该链族的基础风险门；GoPlus 与 Honeypot.is 都不可用时，BSC 候选失败关闭。若以后显式设置 `require_evm_simulation=true`，Honeypot.is 会成为额外硬门。Solana 同理要求 GoPlus 或 RugCheck 至少一个报告可用。
