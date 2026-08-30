@@ -25,7 +25,7 @@ Runtime 默认每 90 秒读取官方公开端点：
 | Latest Boosts | `promotion` | 最近购买的可见度 Boost |
 | Top Boosts | `promotion` | 当前 Boost 排名 |
 
-只使用 DexScreener 官方 API 文档中的端点，不使用旧 model1 的未文档化 `recent-updates` 路径。官方端点频率上限较高，但个人电脑默认仍采用 90 秒、每面最多 40 条、每轮最多 8 个 CA 报价补全，避免重复请求。配置位于 `sources.dexscreener_discovery`，Web Settings 只允许安全范围。
+只使用 DexScreener 官方 API 文档中的端点，不使用旧 model1 的未文档化 `recent-updates` 路径。个人电脑默认每 90 秒轮询一次发现面；每面最多 40 条，每轮最多处理 180 个待补全地址，并由客户端拆成官方 `/tokens/v1/{chainId}/{tokenAddresses}` 的不超过 30 CA 批次（最多 6 个请求）。`max_hydrations_per_cycle` 限制的是地址数，不是 HTTP 请求数；这个吞吐只用于便宜的确定性 Dex 详情补全，不提高 Agent 调用频率。配置位于 `sources.dexscreener_discovery`，Web Settings 只允许安全范围。
 
 官方依据：
 
@@ -64,6 +64,24 @@ Token Context 仅把非 Telegram 种子作为不可信搜索提示
 
 项目 URL 不再参与 Token 与事件的词法重叠评分，防止链接路径中的词造成假匹配。多 pair 报价只选择同 chain、同 base token address 且流动性最深的 pair。
 
+### 3.1 新 Token 详情补全队列
+
+每个新写入 SQLite 的 Solana Token 都会进入 `token_detail_hydration` 持久化队列；PumpPortal、GeckoTerminal 与 Dex 发现面共享同一补全路径。队列状态为 `pending / hydrated / no_pair / error`，进程重启后仍保留。Dex 尚未形成可查询 pair 时不会丢弃 Token，而是按 5 分钟、30 分钟、2 小时、6 小时退避重试；网络错误 5 分钟后重试。
+
+`hydrated` 只说明 Dex 返回了同链、同 base CA 的详情，不说明一定存在社交链接，更不说明 Token 安全或叙事真实。Web Token 页分别显示详情补全覆盖率和真正发现社交主页/原帖的 Token 数，不能把 `no_pair` 或空社交资料写成已完成调查。
+
+### 3.2 Agent Token Context 的审计分栏
+
+通过本地流动性、5 分钟成交量、交易数、买卖比和动量门槛的 Token，才可能进入受预算 Token Context Agent。Agent 使用 pair info 中的 `social_profile / social_post` 作为不可信调查入口；项目网站、Dex 页面、搜索页、Telegram 和推广面不会作为社交原帖送入 Agent。调查结果追加到 `token_context_assessments`，固定分为：
+
+- 项目附带社交声明：永远是 `project_attached_unverified`；
+- 社区扩散观察：描述可复核的跨平台传播，不主观评价“社区好坏”；
+- 公众人物关联：Agent 结果只能是 `unverified_candidate`，不能自动写成支持、背书或因果影响；
+- 独立报道：仍需本地重新请求、时间检查、相关性阈值和至少两个独立域名；只有这一路可沿原有 confirmation 链进入事件系统；
+- 链上动量触发快照：只解释为什么启动调查，不能替代新闻或社交证据。
+
+评估记录包含本机时间、触发快照、模型、推理强度、token 用量和逐 URL 核验审计。除通过旧有独立报道门的 Observation 外，整个评估保持 `decision_eligible=false`，不进入候选排名、仓位、退出或 Live。
+
 ## 4. 不是“全面关注”，而是受控学习
 
 关注清单分三部分：
@@ -89,6 +107,8 @@ Trend Scout 的检索机会另由 `trend-lanes/v1` 五个稳定通道记录。`t
 `trend_watch_account_exposures` 同时保存本轮实际选中的平台/账号、人物映射、critical/策展/学习/探索角色，以及完成、失败、精确原帖命中和零产出。原帖归因要求最终公开 URL 的平台和账号路径与本轮账号精确匹配；新闻转述、显示名相同、同平台其他帖子或登录拦截不能产生人物归因。旧轮次不回填。普通账号至少需要 20 次完成暴露、10 个运行日和 5 次零产出，且全局累计 20 个精确原帖命中后，发现效率才成熟。
 
 `watch-attention/v1` 再要求同一人物（不足时回退到平台）具有成熟的 60 分钟 WAIT/CANDIDATE 影子随访；两道门同时通过后，普通账号才可在 `0.80×–1.20×` 内改变 Agent 观察轮换。已平仓 Paper 标签只作可选的次级验证，不能单独激活。critical 账号保持固定，至少 40% 候选槽位继续轮换探索。
+
+跨平台人物使用显式持久化的 `entity_id` 合并市场随访，无实体映射时才使用平台随访。发现效率始终保持在具体的平台 + handle 账号路径上：一个账号即使与已成熟账号属于同一人物，也不能继承它的暴露样本或倍率。策略可启用和上轮实际选择是两个独立状态；只有与不使用倍率的基线排名比较后选中顺序真实改变，Web 才显示“上轮选择已因学习改变”。
 
 主题通道的每轮暴露、空结果和错误/失败结果已经记录。`trend-attention/v1` 仅在每个候选通道均已达到至少 20 次完成暴露、10 个运行日、5 次零产出，并有成熟的 60 分钟 WAIT/CANDIDATE 市场随访，且全局至少已有 20 个已接受事件时评估；必须至少两个可比较的成熟通道同时存在，才可在 `0.80×–1.20×` 内选择性调整 Trend Scout 通道分配。普通运行仍保留至少一个基线 round-robin 探索通道，surge 仍覆盖全部五类。已平仓 Paper 结果可作次级验证，但不是激活条件。当前运行预计仍在收集样本，选择性分配尚未启用。这里的结果只说明“事件通过哪个检索路径被发现后的条件历史”，不证明题材导致收益；即使启用，它也只影响 Trend Scout 通道分配，不改变频率、Agent 数、证据权重、策略、决策、风险、仓位、退出或 Live。
 
@@ -122,7 +142,7 @@ Trend Scout 的检索机会另由 `trend-lanes/v1` 五个稳定通道记录。`t
 
 ## 6. Web 表现
 
-Token 详情把附带链接放在独立的“发现种子”面板，逐条显示发现面、角色、平台、验证状态和首次/最后观察；所有项均标记 `CONTEXT ONLY`。真正关联到 Event 的 Observation 在下方单独显示，标题为“已关联叙事 / 事件观察”，不能写成“已验证”。
+Token 页顶部显示近期 Solana Token 的详情补全、等待/无 pair、错误、社交链接发现数和真实覆盖率。详情抽屉把附带链接放在独立的“发现种子”面板，并新增五路 Agent 语境评估；所有项目声明、社区扩散和公众人物候选均标记 `CONTEXT ONLY`。真正关联到 Event 的 Observation 在下方单独显示，标题为“已关联叙事 / 事件观察”，不能写成“已验证”。
 
 Sources 页显示：
 

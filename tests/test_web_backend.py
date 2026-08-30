@@ -14,6 +14,7 @@ from memetrader.autonomous_search import (
     TREND_LANE_SELECTION_KEY,
     TREND_RESULT_KEY,
     TREND_RUN_KEY,
+    TREND_WATCH_SELECTION_KEY,
 )
 from memetrader.models import CandidateDecision, Observation, TokenCandidate, TokenSnapshot, iso, utcnow
 from memetrader.runtime import initial_config
@@ -169,6 +170,45 @@ def _seed(path: Path) -> tuple[int, str]:
                 "raw": {"must_not_be_returned": "raw-provider-payload"},
             }
         )
+    store.add_token_context_assessment(
+        token.token_id,
+        trigger="high_momentum_reverse_context",
+        status="insufficient_verified_sources",
+        snapshot_observed_at=now,
+        momentum_score=84,
+        assessment={
+            "version": "token-context-assessment/v1",
+            "decision_eligible": False,
+            "affects": "context_display_and_verified_reporting_only",
+            "project_claims": {
+                "status": "project_attached_unverified",
+                "items": [{"url": "https://x.com/otter", "platform": "x", "decision_eligible": False}],
+            },
+            "community_amplification": {
+                "status": "project_channels_only", "platforms": ["x"],
+                "summary": "Project-attached channel only.", "decision_eligible": False,
+            },
+            "public_figure_linkage": {
+                "status": "unverified_candidates", "endorsement_inferred": False,
+                "decision_eligible": False, "items": [],
+            },
+            "independent_reporting": {
+                "status": "not_decision_eligible", "domains": ["news-a.example"],
+                "confirmation_ingested": False, "items": [],
+            },
+            "onchain_momentum": {
+                "snapshot_observed_at": iso(now), "momentum_score": 84,
+                "liquidity_usd": 50000, "volume_5m_usd": 12000,
+                "buys_5m": 30, "sells_5m": 10, "decision_eligible": False,
+            },
+        },
+        agent_metadata={
+            "task": "token_context", "model": "gpt-5.6-luna", "reasoning_effort": "low",
+            "tokens_used": 321, "contains_credentials": False,
+        },
+        audit=[{"url": "https://news-a.example/story", "verified": True, "domain": "news-a.example"}],
+        assessed_at=now,
+    )
     decision = CandidateDecision(
         event_id=event_id,
         token_id=token.token_id,
@@ -254,6 +294,25 @@ def _seed(path: Path) -> tuple[int, str]:
             "mode": "baseline_round_robin",
             "actual_schedule_changed_by_learning": False,
             "selected_lanes": [{"lane_id": "culture_entertainment"}],
+        },
+    )
+    store.set_kv(
+        TREND_WATCH_SELECTION_KEY,
+        {
+            "selected_at": iso(now - timedelta(minutes=3)),
+            "policy": {
+                "mode": "curated_plus_exploration",
+                "attention_activation_available": False,
+                "actual_rotation_changed_by_learning": False,
+            },
+            "accounts": [
+                {
+                    "platform": "x", "handle": "otter", "entity_id": "otter_daily",
+                    "selection_role": "exploration", "learning_basis": "baseline",
+                    "learning_multiplier": 1.0,
+                }
+            ],
+            "contains_credentials": False,
         },
     )
     store.set_kv(
@@ -514,6 +573,24 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
     assert {item["role"] for item in token["attached_links"]} == {"identity", "promotion"}
     assert all(item["decision_eligible"] is False for item in token["attached_links"])
     assert all(item["verification_status"] == "provider_metadata" for item in token["attached_links"])
+    assert token["detail_hydration"]["status"] == "pending"
+    assert token["context_assessment"]["status"] == "insufficient_verified_sources"
+    assert token["context_assessment"]["context_only"] is True
+    assert token["context_assessment"]["assessment"]["decision_eligible"] is False
+    assert token["context_assessment"]["assessment"]["public_figure_linkage"]["endorsement_inferred"] is False
+    assert token["context_assessment"]["agent"]["model"] == "gpt-5.6-luna"
+    token_list = web.tokens({})
+    coverage = token_list["detail_coverage"]
+    assert coverage.pop("tracking_started_at") is not None
+    assert coverage == {
+        "eligible_solana_tokens": 1,
+        "hydrated": 0,
+        "pending": 1,
+        "no_pair": 0,
+        "error": 0,
+        "social_links_found": 1,
+        "coverage_ratio": 0.0,
+    }
     serialized_token = json.dumps(token)
     assert "raw_json" not in serialized_token
     assert "must_not_be_returned" not in serialized_token
@@ -628,11 +705,19 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
     assert account_exposure["rotation_active"] is False
     assert source_payload["watch_attention_policy"]["version"] == "watch-attention/v1"
     assert source_payload["watch_attention_policy"]["status"] == "collecting_evidence"
+    assert source_payload["watch_attention_policy"]["summary"][
+        "rotation_activation_available"
+    ] is False
+    assert source_payload["watch_attention_policy"]["summary"][
+        "actual_rotation_changed_by_learning"
+    ] is False
     attention_item = source_payload["watch_attention_policy"]["items"][0]
     assert attention_item["platform"] == "x" and attention_item["handle"] == "otter"
     assert attention_item["state"] == "collecting_account_exposure"
     assert attention_item["applied_rotation_multiplier"] == 1.0
     assert attention_item["rotation_active"] is False
+    assert attention_item["selected_in_last_run"] is True
+    assert attention_item["last_selection_role"] == "exploration"
     assert source_payload["watch_attention_policy"]["activation_policy"]["never_affects"] == [
         "evidence_weight", "candidate_ranking", "decision_eligibility",
         "risk", "position_size", "exits", "live_trading",
@@ -850,7 +935,7 @@ def test_settings_are_allowlisted_atomic_and_never_expose_secrets(tmp_path: Path
         if item["path"] == "sources.dexscreener_discovery.max_hydrations_per_cycle"
     )
     assert (dex_interval["min"], dex_interval["max"]) == (30, 3600)
-    assert (dex_hydration["min"], dex_hydration["max"]) == (0, 30)
+    assert (dex_hydration["min"], dex_hydration["max"]) == (0, 300)
     learning_fraction = next(
         item for item in settings["schema"]["fields"]
         if item["path"] == "autonomous_search.source_learning_exploration_fraction"

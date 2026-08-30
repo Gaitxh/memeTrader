@@ -138,6 +138,36 @@ class Store:
                 CREATE INDEX IF NOT EXISTS token_source_links_url_idx
                     ON token_source_links(normalized_url);
 
+                CREATE TABLE IF NOT EXISTS token_detail_hydration (
+                    token_id TEXT PRIMARY KEY,
+                    chain TEXT NOT NULL,
+                    address TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    enqueued_at TEXT NOT NULL,
+                    last_attempt_at TEXT,
+                    next_attempt_at TEXT,
+                    hydrated_at TEXT,
+                    last_error TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS token_detail_hydration_due_idx
+                    ON token_detail_hydration(status, next_attempt_at, enqueued_at);
+
+                CREATE TABLE IF NOT EXISTS token_context_assessments (
+                    id INTEGER PRIMARY KEY,
+                    token_id TEXT NOT NULL,
+                    trigger TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    assessed_at TEXT NOT NULL,
+                    snapshot_observed_at TEXT NOT NULL,
+                    momentum_score REAL NOT NULL,
+                    assessment_json TEXT NOT NULL,
+                    agent_metadata_json TEXT NOT NULL,
+                    audit_json TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS token_context_assessments_lookup_idx
+                    ON token_context_assessments(token_id, assessed_at DESC, id DESC);
+
                 CREATE TABLE IF NOT EXISTS decisions (
                     id INTEGER PRIMARY KEY,
                     event_id INTEGER NOT NULL,
@@ -564,7 +594,132 @@ class Store:
                 for link in raw_links[:100]:
                     if isinstance(link, Mapping) and str(link.get("token_id") or "") == token.token_id:
                         self._upsert_token_source_link_locked(link, observed_at=now)
+            if token.chain.lower() == "solana":
+                self._enqueue_token_detail_hydration_locked(token.chain, token.address, enqueued_at=now)
             return not existed
+
+    def _enqueue_token_detail_hydration_locked(self, chain: str, address: str, *, enqueued_at=None) -> None:
+        normalized_chain = str(chain).strip().lower()
+        normalized_address = str(address).strip()
+        if not normalized_chain or not normalized_address:
+            return
+        self.db.execute(
+            """
+            INSERT INTO token_detail_hydration(
+                token_id,chain,address,status,attempts,enqueued_at,next_attempt_at,last_error
+            ) VALUES(?,?,?,'pending',0,?,?, '')
+            ON CONFLICT(token_id) DO UPDATE SET
+                chain=excluded.chain,address=excluded.address
+            """,
+            (
+                f"{normalized_chain}:{normalized_address}", normalized_chain, normalized_address,
+                iso(parse_time(enqueued_at or utcnow())), iso(parse_time(enqueued_at or utcnow())),
+            ),
+        )
+
+    def enqueue_token_detail_hydration(self, chain: str, address: str, *, enqueued_at=None) -> None:
+        with self._lock, self.db:
+            self._enqueue_token_detail_hydration_locked(chain, address, enqueued_at=enqueued_at)
+
+    def due_token_detail_hydrations(self, *, limit: int = 30, now=None) -> list[sqlite3.Row]:
+        due_at = iso(parse_time(now or utcnow()))
+        with self._lock:
+            return list(
+                self.db.execute(
+                    """
+                    SELECT * FROM token_detail_hydration
+                    WHERE status IN ('pending','no_pair','error')
+                      AND (next_attempt_at IS NULL OR next_attempt_at<=?)
+                    ORDER BY enqueued_at,attempts,token_id LIMIT ?
+                    """,
+                    (due_at, max(0, min(300, int(limit)))),
+                )
+            )
+
+    def mark_token_detail_hydration(
+        self,
+        token_id: str,
+        status: str,
+        *,
+        error: str = "",
+        now=None,
+    ) -> None:
+        if status not in {"hydrated", "no_pair", "error"}:
+            raise ValueError("invalid token detail hydration status")
+        attempted_at = parse_time(now or utcnow())
+        with self._lock, self.db:
+            row = self.db.execute(
+                "SELECT attempts FROM token_detail_hydration WHERE token_id=?", (str(token_id),)
+            ).fetchone()
+            if row is None:
+                return
+            attempts = int(row["attempts"] or 0) + 1
+            if status == "hydrated":
+                next_attempt_at = None
+            elif status == "error":
+                next_attempt_at = iso(attempted_at + timedelta(minutes=5))
+            else:
+                retry_minutes = (5, 30, 120, 360)[min(attempts - 1, 3)]
+                next_attempt_at = iso(attempted_at + timedelta(minutes=retry_minutes))
+            self.db.execute(
+                """
+                UPDATE token_detail_hydration
+                SET status=?,attempts=?,last_attempt_at=?,next_attempt_at=?,
+                    hydrated_at=CASE WHEN ?='hydrated' THEN ? ELSE hydrated_at END,last_error=?
+                WHERE token_id=?
+                """,
+                (
+                    status, attempts, iso(attempted_at), next_attempt_at,
+                    status, iso(attempted_at), str(error or "")[:500], str(token_id),
+                ),
+            )
+
+    def token_detail_hydration(self, token_id: str) -> sqlite3.Row | None:
+        return self.db.execute(
+            "SELECT * FROM token_detail_hydration WHERE token_id=?", (str(token_id),)
+        ).fetchone()
+
+    def add_token_context_assessment(
+        self,
+        token_id: str,
+        *,
+        trigger: str,
+        status: str,
+        snapshot_observed_at: Any,
+        momentum_score: float,
+        assessment: Mapping[str, Any],
+        agent_metadata: Mapping[str, Any] | None = None,
+        audit: Iterable[Mapping[str, Any]] = (),
+        assessed_at=None,
+    ) -> int:
+        with self._lock, self.db:
+            cursor = self.db.execute(
+                """
+                INSERT INTO token_context_assessments(
+                    token_id,trigger,status,assessed_at,snapshot_observed_at,momentum_score,
+                    assessment_json,agent_metadata_json,audit_json
+                ) VALUES(?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    str(token_id), str(trigger)[:120], str(status)[:80],
+                    iso(parse_time(assessed_at or utcnow())), iso(parse_time(snapshot_observed_at)),
+                    float(momentum_score), self._bounded_json(dict(assessment)),
+                    self._bounded_json(dict(agent_metadata or {})),
+                    self._bounded_json([dict(item) for item in audit]),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def token_context_assessments(self, token_id: str, *, limit: int = 20) -> list[sqlite3.Row]:
+        return list(
+            self.db.execute(
+                """
+                SELECT * FROM token_context_assessments
+                WHERE token_id=? ORDER BY assessed_at DESC,id DESC LIMIT ?
+                """,
+                (str(token_id), max(1, min(100, int(limit)))),
+            )
+        )
 
     @staticmethod
     def _token_source_fingerprint(link: Mapping[str, Any]) -> str:
@@ -2343,7 +2498,8 @@ class Store:
                 "market_mature_accounts": sum(1 for item in items if item["market_followup_mature"]),
                 "attention_mature_accounts": sum(1 for item in items if item["attention_active"]),
                 "rotation_active_accounts": sum(1 for item in items if item["rotation_active"]),
-                "actual_rotation_changed_by_learning": any(item["rotation_active"] for item in items),
+                "rotation_activation_available": any(item["rotation_active"] for item in items),
+                "actual_rotation_changed_by_learning": False,
             },
             "activation_policy": {
                 "requires_account_exposure_review_eligible": True,

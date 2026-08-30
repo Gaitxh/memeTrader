@@ -16,6 +16,7 @@ from memetrader.autonomous_search import (
     TREND_EMPTY_STREAK_KEY,
     TREND_RESULT_KEY,
     AutonomousSearchAgent,
+    _exact_watch_account_for_url,
     _public_http_url,
 )
 from memetrader.collectors import HttpClient, UnsafeFeedURL
@@ -77,6 +78,25 @@ def test_public_url_filter_rejects_local_networks():
     assert _public_http_url("https://t.me/public-channel") is None
     assert _public_http_url("https://updates.telegram.me/public-channel") is None
     assert _public_http_url("https://user:pass@t.me/public-channel") is None
+
+
+def test_exact_watch_account_match_never_inherits_same_platform_or_other_handle():
+    account = {
+        "platform": "x", "handle": "elonmusk", "url": "https://x.com/elonmusk",
+        "entity_id": "elon_musk",
+    }
+    assert _exact_watch_account_for_url(
+        [account], "https://x.com/elonmusk/status/12345"
+    ) == account
+    assert _exact_watch_account_for_url(
+        [account], "https://x.com/%65lonmusk/status/12345"
+    ) == account
+    assert _exact_watch_account_for_url(
+        [account], "https://x.com/other/status/12345"
+    ) is None
+    assert _exact_watch_account_for_url(
+        [account], "https://example.com/elonmusk/status/12345"
+    ) is None
 
 
 def test_agent_http_guard_blocks_redirect_before_telegram_request(tmp_path: Path):
@@ -202,6 +222,49 @@ def test_console_watch_rotation_uses_only_joint_attention_policy(tmp_path: Path)
     assert preferences["watch_selection"]["mode"] == "mature_forward_attention_learning_plus_exploration"
     assert preferences["watch_selection"]["attention_policy_version"] == "watch-attention/v1"
     assert preferences["watch_selection"]["active_attention_accounts"] == 1
+    assert preferences["watch_selection"]["attention_activation_available"] is True
+    assert preferences["watch_selection"]["learned_multiplier_applied_to_selected"] is True
+    assert preferences["watch_selection"]["actual_rotation_changed_by_learning"] is True
+    assert preferences["watch_selection"]["exploration_slots"] >= 5
+    store.close()
+
+
+def test_console_watch_rotation_reports_available_learning_without_claiming_selection_changed(
+    tmp_path: Path,
+):
+    settings_path = tmp_path / "console_settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "platforms": [{"platform": "x", "enabled": True}],
+                "watch_accounts": [
+                    {
+                        "platform": "x", "handle": f"account_{index}",
+                        "url": f"https://x.com/account_{index}", "priority": 3,
+                    }
+                    for index in range(20)
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = Store(tmp_path / "db.sqlite3")
+    store.watch_attention_policy = lambda accounts, **kwargs: {
+        "version": "watch-attention/v1",
+        "items": [
+            {
+                "platform": "x", "handle": "account_0", "rotation_active": True,
+                "applied_rotation_multiplier": 1.20,
+            }
+        ],
+    }
+    agent = AutonomousSearchAgent(store, FakeHttp(), config(), console_settings_path=settings_path)
+    preferences = agent._console_search_preferences("trend_scout")
+    learned = next(item for item in preferences["watch_accounts"] if item["handle"] == "account_0")
+    assert learned["selection_role"] == "learned"
+    assert preferences["watch_selection"]["attention_activation_available"] is True
+    assert preferences["watch_selection"]["learned_multiplier_applied_to_selected"] is True
+    assert preferences["watch_selection"]["actual_rotation_changed_by_learning"] is False
     assert preferences["watch_selection"]["exploration_slots"] >= 5
     store.close()
 
@@ -709,6 +772,18 @@ def test_token_context_search_requires_two_recent_reachable_sources(tmp_path: Pa
                 "event_found": True,
                 "event_title": "A celebrity pet becomes a viral meme",
                 "confidence": 0.91,
+                "community_spread": {
+                    "status": "independent_amplification_observed",
+                    "summary": "Separate communities are discussing the same pet story.",
+                    "platforms": ["x", "reddit"],
+                },
+                "public_figure_links": [
+                    {
+                        "person": "Public figure",
+                        "url": "https://x.com/publicfigure/status/123",
+                        "claim": "A possibly related post requires exact verification.",
+                    }
+                ],
                 "sources": [
                     {
                         "title": "Pet story spreads online",
@@ -731,6 +806,19 @@ def test_token_context_search_requires_two_recent_reachable_sources(tmp_path: Pa
             {"tokens_used": 456},
         )
         token = TokenCandidate(chain="solana", address="A" * 32, name="Viral Pet", symbol="PET")
+        store.upsert_token_source_link(
+            {
+                "token_id": token.token_id,
+                "provider": "dexscreener",
+                "discovery_surface": "pair_info",
+                "role": "identity",
+                "original_url": "https://x.com/viralpet",
+                "normalized_url": "https://x.com/viralpet",
+                "link_kind": "social_profile",
+                "platform": "x",
+                "verification_status": "provider_metadata",
+            }
+        )
         snapshot = TokenSnapshot("solana", token.address, 0.01, 50000, 500000, 20000, 100, 20)
         observations = await agent.search_token_context(token, snapshot, momentum_score=90)
         assert len(observations) == 2
@@ -741,6 +829,15 @@ def test_token_context_search_requires_two_recent_reachable_sources(tmp_path: Pa
             "agent-search:publisher-b.example",
         }
         assert agent.usage()["token_context_tokens"] == 456
+        run = store.token_context_assessments(token.token_id)[0]
+        assessment = json.loads(run["assessment_json"])
+        assert run["status"] == "verified_reporting"
+        assert assessment["project_claims"]["status"] == "project_attached_unverified"
+        assert assessment["community_amplification"]["status"] == "independent_amplification_observed"
+        assert assessment["public_figure_linkage"]["status"] == "unverified_candidates"
+        assert assessment["public_figure_linkage"]["items"][0]["endorsement_inferred"] is False
+        assert assessment["independent_reporting"]["confirmation_ingested"] is True
+        assert assessment["decision_eligible"] is False
         store.close()
 
     asyncio.run(scenario())
@@ -772,6 +869,65 @@ def test_token_context_search_does_not_promote_one_source(tmp_path: Path):
         token = TokenCandidate(chain="bsc", address="0x" + "1" * 40, name="Rumor", symbol="RUMOR")
         snapshot = TokenSnapshot("bsc", token.address, 0.01, 50000, 500000, 20000, 100, 20)
         assert await agent.search_token_context(token, snapshot, momentum_score=90) == []
+        run = store.token_context_assessments(token.token_id)[0]
+        assessment = json.loads(run["assessment_json"])
+        assert run["status"] == "insufficient_verified_sources"
+        assert assessment["independent_reporting"]["confirmation_ingested"] is False
+        assert assessment["decision_eligible"] is False
+        store.close()
+
+    asyncio.run(scenario())
+
+
+def test_token_context_public_figure_post_stays_context_without_two_independent_reports(tmp_path: Path):
+    async def scenario():
+        store = Store(tmp_path / "db.sqlite3")
+        agent = AutonomousSearchAgent(store, FakeHttp(), config())
+        published = iso(utcnow())
+        agent._run_codex_search = lambda prompt, task="token_context": (
+            {
+                "event_found": True,
+                "event_title": "Possible public-figure reference",
+                "confidence": 0.95,
+                "public_figure_links": [
+                    {
+                        "person": "Public figure",
+                        "url": "https://x.com/publicfigure/status/456",
+                        "claim": "The post appears related but is not an endorsement.",
+                    }
+                ],
+                "sources": [
+                    {
+                        "title": "Original social post",
+                        "url": "https://x.com/publicfigure/status/456",
+                        "publisher": "Public figure",
+                        "published_at": published,
+                        "summary": "A social post.",
+                        "relevance": 0.99,
+                    },
+                    {
+                        "title": "One independent report",
+                        "url": "https://publisher-a.example/story",
+                        "publisher": "Publisher A",
+                        "published_at": published,
+                        "summary": "One outlet reports on the post.",
+                        "relevance": 0.93,
+                    },
+                ],
+            },
+            {"tokens_used": 12},
+        )
+        token = TokenCandidate(chain="solana", address="P" * 32, name="Figure Link", symbol="FIG")
+        snapshot = TokenSnapshot("solana", token.address, 0.01, 50000, 500000, 20000, 100, 20)
+        assert await agent.search_token_context(token, snapshot, momentum_score=90) == []
+        run = store.token_context_assessments(token.token_id)[0]
+        assessment = json.loads(run["assessment_json"])
+        audit = json.loads(run["audit_json"])
+        assert run["status"] == "insufficient_verified_sources"
+        assert assessment["public_figure_linkage"]["status"] == "unverified_candidates"
+        assert assessment["public_figure_linkage"]["items"][0]["endorsement_inferred"] is False
+        assert any(item.get("error") == "social_source_context_only" for item in audit)
+        assert assessment["independent_reporting"]["domains"] == ["publisher-a.example"]
         store.close()
 
     asyncio.run(scenario())

@@ -383,6 +383,70 @@ def test_trend_attention_policy_requires_joint_maturity_and_bounds_lane_allocati
     assert "live_trading" in policy["activation_policy"]["never_affects"]
 
 
+def test_watch_attention_reuses_entity_then_platform_but_never_pools_account_exposure():
+    accounts = [
+        {"platform": "x", "handle": "alpha_x", "entity_id": "alpha", "priority": 4},
+        {
+            "platform": "bluesky", "handle": "alpha.bsky.social",
+            "entity_id": "alpha", "priority": 4,
+        },
+        {"platform": "x", "handle": "route_only", "priority": 3},
+        {"platform": "reddit", "handle": "untested_route", "priority": 3},
+    ]
+    exposure = {
+        "items": [
+            {
+                "platform": platform, "handle": handle,
+                "discovery_review_eligible": eligible,
+                "discovery_review_multiplier": multiplier,
+                "completed_exposures": completed,
+            }
+            for platform, handle, eligible, multiplier, completed in (
+                ("x", "alpha_x", True, 1.10, 20),
+                ("bluesky", "alpha.bsky.social", False, 1.0, 5),
+                ("x", "route_only", True, 0.95, 20),
+                ("reddit", "untested_route", True, 1.0, 20),
+            )
+        ]
+    }
+    shadow = {
+        "items": [
+            {
+                "horizon_minutes": 60, "dimension": "entity", "value": "alpha",
+                "shadow_review_eligible": True, "shadow_descriptive_score": 0.10,
+                "distinct_event_count": 50, "event_day_count": 20,
+                "weighted_negative_outcomes": 8, "platform_count": 2,
+            },
+            {
+                "horizon_minutes": 60, "dimension": "platform", "value": "x",
+                "shadow_review_eligible": True, "shadow_descriptive_score": -0.05,
+                "distinct_event_count": 30, "event_day_count": 15,
+                "weighted_negative_outcomes": 8, "platform_count": 1,
+            },
+        ]
+    }
+    policy = Store.build_watch_attention_policy(
+        accounts, exposure=exposure, shadow=shadow, paper={"items": []},
+    )
+    alpha_x = next(item for item in policy["items"] if item["handle"] == "alpha_x")
+    alpha_bluesky = next(
+        item for item in policy["items"] if item["handle"] == "alpha.bsky.social"
+    )
+    route_only = next(item for item in policy["items"] if item["handle"] == "route_only")
+    untested_route = next(
+        item for item in policy["items"] if item["handle"] == "untested_route"
+    )
+    assert alpha_x["rotation_active"] is True and alpha_x["market_basis"] == "entity"
+    assert alpha_bluesky["market_basis"] == "entity"
+    assert alpha_bluesky["rotation_active"] is False
+    assert alpha_bluesky["state"] == "collecting_account_exposure"
+    assert route_only["rotation_active"] is True and route_only["market_basis"] == "platform"
+    assert untested_route["rotation_active"] is False
+    assert untested_route["state"] == "collecting_market_followup"
+    assert policy["summary"]["rotation_activation_available"] is True
+    assert policy["summary"]["actual_rotation_changed_by_learning"] is False
+
+
 def test_shadow_event_followup_is_forward_only_fixed_horizon_and_non_activating(tmp_path: Path):
     store = Store(tmp_path / "shadow-followup.sqlite3")
     now = datetime.now(timezone.utc)
@@ -581,6 +645,54 @@ def test_dexscreener_attached_links_are_typed_and_promotions_stay_context_only(t
     assert all(row["first_observed_at"] == "2026-08-30T00:00:00Z" for row in persisted)
     assert all(row["last_observed_at"] == "2026-08-30T00:01:00Z" for row in persisted)
     store.close()
+
+
+def test_dexscreener_batch_quote_chunks_30_and_keeps_highest_liquidity_pair():
+    addresses = [f"TOKEN{index:02d}" for index in range(31)]
+
+    def pair(address: str, liquidity: float, social: str = "") -> dict:
+        info = {"socials": [{"type": "twitter", "url": social}]} if social else {}
+        return {
+            "chainId": "solana",
+            "baseToken": {"address": address, "name": address, "symbol": address[-2:]},
+            "priceUsd": "0.01",
+            "liquidity": {"usd": liquidity},
+            "volume": {"m5": 1000},
+            "txns": {"m5": {"buys": 12, "sells": 3}},
+            "url": f"https://dexscreener.com/solana/{address}",
+            "info": info,
+        }
+
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    class Http:
+        def __init__(self):
+            self.urls = []
+
+        async def get(self, url, **kwargs):
+            self.urls.append(url)
+            requested = url.rsplit("/", 1)[-1].split(",")
+            payload = [pair(address, 1000) for address in requested]
+            if addresses[0] in requested:
+                payload.append(pair(addresses[0], 50000, "https://x.com/example/status/1"))
+            return Response(payload if len(self.urls) == 1 else {"pairs": payload})
+
+    http = Http()
+    result = asyncio.run(DexScreenerClient(http).batch_quote("solana", addresses))
+    assert len(http.urls) == 2
+    assert len(result) == 31
+    first, snapshot = result[f"solana:{addresses[0]}"]
+    assert snapshot.liquidity_usd == 50000
+    assert "https://x.com/example/status/1" in first.social_urls
+    assert any(
+        row["link_kind"] == "social_post" and row["role"] == "identity"
+        for row in first.raw["token_source_links"]
+    )
 
 
 def test_initial_page_and_old_polled_news_are_not_entry_evidence():

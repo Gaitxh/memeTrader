@@ -114,7 +114,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "enabled": True,
             "interval_seconds": 90,
             "max_items_per_surface": 40,
-            "max_hydrations_per_cycle": 8,
+            "max_hydrations_per_cycle": 180,
             "active_token_minutes": 180,
         },
         "pumpportal": {"enabled": True, "url": "wss://pumpportal.fun/api/data"},
@@ -485,9 +485,9 @@ def load_config(path: str | Path) -> tuple[dict[str, Any], Path]:
         max_items = int(dex_discovery.get("max_items_per_surface", 40))
         if not 1 <= max_items <= 100:
             raise ValueError("sources.dexscreener_discovery.max_items_per_surface must be between 1 and 100")
-        max_hydrations = int(dex_discovery.get("max_hydrations_per_cycle", 8))
-        if not 0 <= max_hydrations <= 30:
-            raise ValueError("sources.dexscreener_discovery.max_hydrations_per_cycle must be between 0 and 30")
+        max_hydrations = int(dex_discovery.get("max_hydrations_per_cycle", 180))
+        if not 0 <= max_hydrations <= 300:
+            raise ValueError("sources.dexscreener_discovery.max_hydrations_per_cycle must be between 0 and 300")
         active_minutes = int(dex_discovery.get("active_token_minutes", 180))
         if not 1 <= active_minutes <= 1440:
             raise ValueError("sources.dexscreener_discovery.active_token_minutes must be between 1 and 1440")
@@ -1165,13 +1165,7 @@ class Runtime:
             return
         allowed_chains = {str(chain).lower() for chain in self.config["candidate"].get("chains", [])}
         max_items = int(cfg.get("max_items_per_surface", 40))
-        max_hydrations = int(cfg.get("max_hydrations_per_cycle", 8))
-        active_minutes = int(cfg.get("active_token_minutes", 180))
-        active_ids = {
-            token.token_id
-            for token in self.store.recent_tokens(minutes=active_minutes, limit=1000)
-        }
-        hydrate: dict[str, tuple[int, str, str]] = {}
+        max_hydrations = int(cfg.get("max_hydrations_per_cycle", 180))
         for surface in self.dex.DISCOVERY_SURFACES:
             source = f"dexscreener:{surface}"
             try:
@@ -1186,31 +1180,48 @@ class Runtime:
                 address = str(link.get("address") or "")
                 if not token_id or chain not in allowed_chains or not address:
                     continue
-                first_seen = self.store.token(token_id) is None
                 self.store.upsert_token_source_link(link)
-                if first_seen or token_id in active_ids:
-                    priority = 0 if first_seen else 1
-                    current = hydrate.get(token_id)
-                    if current is None or priority < current[0]:
-                        hydrate[token_id] = (priority, chain, address)
+                self.store.enqueue_token_detail_hydration(chain, address)
 
-        ordered = sorted(hydrate.items(), key=lambda item: item[1][0])
-        attempted = 0
-        for token_id, (_, chain, address) in ordered:
-            if attempted >= max_hydrations:
-                break
-            attempted += 1
+        due = self.store.due_token_detail_hydrations(limit=max_hydrations)
+        if not due:
+            return
+        by_chain: dict[str, list[Any]] = {}
+        for row in due:
+            by_chain.setdefault(str(row["chain"]), []).append(row)
+        for chain, rows in by_chain.items():
             try:
-                quoted = await self.dex.quote(chain, address)
+                if hasattr(self.dex, "batch_quote"):
+                    quoted_by_token = await self.dex.batch_quote(
+                        chain, [str(row["address"]) for row in rows]
+                    )
+                else:
+                    quoted_by_token = {}
+                    for row in rows:
+                        quoted = await self.dex.quote(chain, str(row["address"]))
+                        if quoted:
+                            quoted_by_token[quoted[0].token_id] = quoted
             except Exception as exc:
                 self._notify_source_error("dexscreener:hydration", exc)
+                for row in rows:
+                    self.store.mark_token_detail_hydration(
+                        str(row["token_id"]), "error", error=f"{type(exc).__name__}: {exc}"
+                    )
                 continue
-            if not quoted or quoted[0].token_id != token_id:
-                continue
-            token, snapshot = quoted
-            self.store.upsert_token(token, seen_at=snapshot.observed_at)
-            self.store.add_snapshot(snapshot)
-            self.store.heartbeat("dexscreener:hydration", item=True)
+            self.store.heartbeat("dexscreener:hydration", item=bool(quoted_by_token))
+            for row in rows:
+                token_id = str(row["token_id"])
+                quoted = quoted_by_token.get(token_id)
+                if not quoted:
+                    self.store.mark_token_detail_hydration(token_id, "no_pair")
+                    continue
+                token, snapshot = quoted
+                if token.token_id != token_id:
+                    self.store.mark_token_detail_hydration(token_id, "no_pair")
+                    continue
+                self.store.upsert_token(token, seen_at=snapshot.observed_at)
+                self.store.add_snapshot(snapshot)
+                self.store.mark_token_detail_hydration(token_id, "hydrated")
 
     async def poll_external_once(self) -> None:
         collectors = [*self._rss_collectors(), *self._bluesky_collectors(), *self._mastodon_collectors()]

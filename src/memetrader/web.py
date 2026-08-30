@@ -33,6 +33,7 @@ from .autonomous_search import (
     SOURCE_RUN_KEY,
     TREND_LANE_SELECTION_KEY,
     TREND_TOPIC_LANES,
+    TREND_WATCH_SELECTION_KEY,
     TREND_RESULT_KEY,
     TREND_RUN_KEY,
 )
@@ -224,7 +225,7 @@ SETTING_SPECS: dict[str, tuple[str, float, float]] = {
     "source_health_seconds": ("float", 10, 3600),
     "sources.dexscreener_discovery.enabled": ("bool", 0, 1),
     "sources.dexscreener_discovery.interval_seconds": ("int", 30, 3600),
-    "sources.dexscreener_discovery.max_hydrations_per_cycle": ("int", 0, 30),
+    "sources.dexscreener_discovery.max_hydrations_per_cycle": ("int", 0, 300),
     "event_min_attention": ("float", 0, 100),
     "events.max_source_age_minutes": ("float", 1, 1440),
     "events.cluster_hours": ("float", 1, 72),
@@ -2040,11 +2041,126 @@ class WebData:
     def _token_source_link_counts(links: list[dict[str, Any]]) -> dict[str, int]:
         return {
             "attached_link_count": len(links),
+            "social_seed_count": sum(
+                1 for item in links if item.get("link_kind") in {"social_profile", "social_post"}
+            ),
             "promotion_seed_count": sum(1 for item in links if item.get("role") == "promotion"),
             "identity_seed_count": sum(1 for item in links if item.get("role") == "identity"),
             "verified_source_count": sum(
                 1 for item in links if str(item.get("verification_status") or "").lower() == "verified"
             ),
+        }
+
+    def _token_hydration_states(
+        self, connection: sqlite3.Connection, token_ids: list[str]
+    ) -> dict[str, dict[str, Any] | None]:
+        result: dict[str, dict[str, Any] | None] = {token_id: None for token_id in token_ids}
+        if not token_ids or not self._table_exists(connection, "token_detail_hydration"):
+            return result
+        placeholders = ",".join("?" for _ in token_ids)
+        for row in connection.execute(
+            f"""
+            SELECT token_id,status,attempts,enqueued_at,last_attempt_at,next_attempt_at,hydrated_at,last_error
+            FROM token_detail_hydration WHERE token_id IN ({placeholders})
+            """,
+            token_ids,
+        ):
+            result[str(row["token_id"])] = {
+                "status": str(row["status"] or "pending")[:40],
+                "attempts": int(row["attempts"] or 0),
+                "enqueued_at": row["enqueued_at"],
+                "last_attempt_at": row["last_attempt_at"],
+                "next_attempt_at": row["next_attempt_at"],
+                "hydrated_at": row["hydrated_at"],
+                "last_error_type": str(row["last_error"] or "").split(":", 1)[0][:80] or None,
+            }
+        return result
+
+    def _token_context_assessments(
+        self, connection: sqlite3.Connection, token_ids: list[str]
+    ) -> dict[str, dict[str, Any] | None]:
+        result: dict[str, dict[str, Any] | None] = {token_id: None for token_id in token_ids}
+        if not token_ids or not self._table_exists(connection, "token_context_assessments"):
+            return result
+        placeholders = ",".join("?" for _ in token_ids)
+        for row in connection.execute(
+            f"""
+            SELECT * FROM token_context_assessments
+            WHERE id IN (
+                SELECT MAX(id) FROM token_context_assessments
+                WHERE token_id IN ({placeholders}) GROUP BY token_id
+            )
+            """,
+            token_ids,
+        ):
+            assessment = _json_load(row["assessment_json"], {})
+            metadata = _json_load(row["agent_metadata_json"], {})
+            audit = _json_load(row["audit_json"], [])
+            result[str(row["token_id"])] = {
+                "id": int(row["id"]),
+                "status": str(row["status"] or "unknown")[:80],
+                "trigger": str(row["trigger"] or "")[:120],
+                "assessed_at": row["assessed_at"],
+                "snapshot_observed_at": row["snapshot_observed_at"],
+                "momentum_score": float(row["momentum_score"] or 0.0),
+                "assessment": assessment if isinstance(assessment, dict) else {},
+                "agent": metadata if isinstance(metadata, dict) else {},
+                "audit": audit if isinstance(audit, list) else [],
+                "decision_eligible": False,
+                "context_only": True,
+            }
+        return result
+
+    def _token_detail_coverage(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        since: str,
+        chain: str,
+    ) -> dict[str, Any]:
+        where = ["h.enqueued_at>=?", "h.chain='solana'"]
+        params: list[Any] = [since]
+        if chain and chain != "solana":
+            return {
+                "eligible_solana_tokens": 0, "hydrated": 0, "pending": 0,
+                "no_pair": 0, "error": 0, "social_links_found": 0, "coverage_ratio": None,
+                "tracking_started_at": None,
+            }
+        counts = {"hydrated": 0, "pending": 0, "no_pair": 0, "error": 0}
+        eligible = 0
+        tracking_started_at = None
+        if self._table_exists(connection, "token_detail_hydration"):
+            eligible_row = connection.execute(
+                f"SELECT COUNT(*) AS count,MIN(h.enqueued_at) AS started FROM token_detail_hydration h WHERE {' AND '.join(where)}",
+                params,
+            ).fetchone()
+            eligible = int(eligible_row["count"] or 0)
+            tracking_started_at = eligible_row["started"]
+            for row in connection.execute(
+                f"""
+                SELECT h.status,COUNT(*) AS count FROM token_detail_hydration h
+                WHERE {' AND '.join(where)} GROUP BY h.status
+                """,
+                params,
+            ):
+                if str(row["status"]) in counts:
+                    counts[str(row["status"])] = int(row["count"] or 0)
+        social_links = 0
+        if self._table_exists(connection, "token_source_links"):
+            social_links = int(connection.execute(
+                f"""
+                SELECT COUNT(DISTINCT h.token_id) FROM token_detail_hydration h
+                JOIN token_source_links l ON l.token_id=h.token_id
+                WHERE {' AND '.join(where)} AND l.link_kind IN ('social_profile','social_post')
+                """,
+                params,
+            ).fetchone()[0])
+        return {
+            "eligible_solana_tokens": eligible,
+            **counts,
+            "social_links_found": social_links,
+            "coverage_ratio": round(counts["hydrated"] / eligible, 4) if eligible else None,
+            "tracking_started_at": tracking_started_at,
         }
 
     def tokens(self, query: dict[str, list[str]]) -> dict[str, Any]:
@@ -2053,7 +2169,8 @@ class WebData:
         hours = _query_int(query, "hours", 24, 1, 8760)
         chain = str((query.get("chain") or [""])[0]).strip().lower()
         where = ["last_seen_at>=?"]
-        params: list[Any] = [iso(utcnow() - timedelta(hours=hours))]
+        since = iso(utcnow() - timedelta(hours=hours))
+        params: list[Any] = [since]
         if chain:
             where.append("chain=?")
             params.append(chain)
@@ -2071,16 +2188,24 @@ class WebData:
             snapshots = self._latest_snapshots(connection, token_ids)
             links = self._token_links(connection, token_ids)
             source_links = self._token_source_links(connection, token_ids)
+            hydrations = self._token_hydration_states(connection, token_ids)
+            assessments = self._token_context_assessments(connection, token_ids)
             items = [
                 self._token_payload(
                     row,
                     snapshots.get(str(row["token_id"])),
                     links[str(row["token_id"])],
                     source_links[str(row["token_id"])],
+                    hydrations[str(row["token_id"])],
+                    assessments[str(row["token_id"])],
                 )
                 for row in rows
             ]
-        return {"items": items, "total": total, "limit": limit, "offset": offset, "as_of": iso()}
+            detail_coverage = self._token_detail_coverage(connection, since=since, chain=chain)
+        return {
+            "items": items, "total": total, "limit": limit, "offset": offset,
+            "detail_coverage": detail_coverage, "as_of": iso(),
+        }
 
     def _token_payload(
         self,
@@ -2088,6 +2213,8 @@ class WebData:
         snapshot_row: sqlite3.Row | None,
         links: list[dict[str, Any]],
         source_links: list[dict[str, Any]],
+        hydration: dict[str, Any] | None = None,
+        context_assessment: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         social = _json_load(row["social_urls_json"], [])
         snapshot = self._snapshot_payload(snapshot_row)
@@ -2114,6 +2241,8 @@ class WebData:
             "token_to_event": "verified reverse-context observation" if reverse_links else None,
             "evidence_role": "confirmation" if reverse_links else ("decision_record" if decision_links else None),
             "linked_event_ids": sorted({int(item["event_id"]) for item in links}),
+            "detail_hydration": hydration,
+            "context_assessment": context_assessment,
             **self._token_source_link_counts(source_links),
         }
 
@@ -2127,8 +2256,20 @@ class WebData:
             snapshot = self._latest_snapshots(connection, [token_id]).get(token_id)
             links = self._token_links(connection, [token_id])[token_id]
             source_links = self._token_source_links(connection, [token_id])[token_id]
-            payload = self._token_payload(row, snapshot, links, source_links)
+            hydration = self._token_hydration_states(connection, [token_id])[token_id]
+            context_assessment = self._token_context_assessments(connection, [token_id])[token_id]
+            payload = self._token_payload(
+                row, snapshot, links, source_links, hydration, context_assessment
+            )
             payload["attached_links"] = source_links
+            if self._table_exists(connection, "token_context_assessments"):
+                payload["context_assessment_count"] = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM token_context_assessments WHERE token_id=?", (token_id,)
+                    ).fetchone()[0]
+                )
+            else:
+                payload["context_assessment_count"] = 0
             linked_event_ids = payload["linked_event_ids"]
             evidence: list[dict[str, Any]] = []
             if linked_event_ids and self._table_exists(connection, "event_observations"):
@@ -2882,10 +3023,14 @@ class WebData:
             "status": "not_observed", "items": [],
             "summary": {"runs": 0, "completed_runs": 0, "account_exposures": 0},
         }
+        watch_selection: dict[str, Any] = {}
         with self.connect() as connection:
             if connection is not None and self._table_exists(connection, "source_health"):
                 health = {str(row["source"]): row for row in connection.execute("SELECT * FROM source_health")}
             registry = self._kv(connection, REGISTRY_KEY, [])
+            value = self._kv(connection, TREND_WATCH_SELECTION_KEY, {})
+            if isinstance(value, dict):
+                watch_selection = value
             for platform in PLATFORMS:
                 value = self._kv(connection, f"browser_platform_heartbeat:{platform}", {})
                 if isinstance(value, dict):
@@ -3146,6 +3291,27 @@ class WebData:
             shadow=shadow_followup,
             paper=learning,
         )
+        selected_accounts = {
+            (str(item.get("platform") or ""), str(item.get("handle") or "").casefold()): item
+            for item in watch_selection.get("accounts", [])
+            if isinstance(item, dict)
+        }
+        for item in watch_attention.get("items", []):
+            selected = selected_accounts.get(
+                (str(item.get("platform") or ""), str(item.get("handle") or "").casefold())
+            )
+            item["selected_in_last_run"] = bool(selected)
+            if selected:
+                item["last_selection_role"] = selected.get("selection_role")
+                item["last_learning_basis"] = selected.get("learning_basis")
+                item["last_learning_multiplier"] = selected.get("learning_multiplier")
+        selection_policy = watch_selection.get("policy")
+        if not isinstance(selection_policy, dict):
+            selection_policy = {}
+        watch_attention.setdefault("summary", {})[
+            "actual_rotation_changed_by_learning"
+        ] = bool(selection_policy.get("actual_rotation_changed_by_learning"))
+        watch_attention["last_selection"] = watch_selection
         configured_platforms = {
             str(item.get("platform") or ""): bool(item.get("enabled", True))
             for item in watchlist["platforms"]

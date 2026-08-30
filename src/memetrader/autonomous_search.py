@@ -36,6 +36,7 @@ TREND_EMPTY_STREAK_KEY = "autonomous_trend_scout:empty_streak"
 TREND_SURGE_UNTIL_KEY = "autonomous_trend_scout:surge_until"
 TREND_LANE_CURSOR_KEY = "autonomous_trend_scout:lane_cursor"
 TREND_LANE_SELECTION_KEY = "autonomous_trend_scout:lane_selection"
+TREND_WATCH_SELECTION_KEY = "autonomous_search:watch_selection:trend_scout"
 TREND_LANE_TAXONOMY_VERSION = "trend-lanes/v1"
 TREND_LANE_PROMPT_VERSION = "trend-scout/v2-lane-attribution"
 WATCH_ACCOUNT_CURSOR_PREFIX = "autonomous_search:watch_account_cursor"
@@ -373,6 +374,9 @@ class AutonomousSearchAgent:
             "exploration_slots": 0,
             "minimum_exploration_fraction": 0.40,
             "learning_affects": "agent_watch_rotation_only",
+            "attention_activation_available": False,
+            "learned_multiplier_applied_to_selected": False,
+            "actual_rotation_changed_by_learning": False,
         }
         if accounts:
             critical_all = [row for row in accounts if row["watch_cadence"] == "critical"]
@@ -428,6 +432,7 @@ class AutonomousSearchAgent:
                         }
                         selection_policy["attention_policy_version"] = learning.get("version")
                         selection_policy["active_attention_accounts"] = len(metrics)
+                        selection_policy["attention_activation_available"] = bool(metrics)
                     except (sqlite3.Error, TypeError, ValueError):
                         metrics = {}
 
@@ -447,6 +452,25 @@ class AutonomousSearchAgent:
                     key=lambda row: (-row[0], row[2]["platform"], row[2]["handle"].casefold())
                 )
                 curated = [row[2] for row in ranked[:curated_count]]
+                baseline_curated = sorted(
+                    normal,
+                    key=lambda row: (
+                        -int(row["priority"]), row["platform"], row["handle"].casefold(),
+                    ),
+                )[:curated_count]
+                account_key = lambda row: (
+                    str(row["platform"]), str(row["handle"]).casefold(),
+                )
+                learned_multiplier_applied = any(
+                    row[1] != "baseline" for row in ranked[:curated_count]
+                )
+                selection_policy["learned_multiplier_applied_to_selected"] = (
+                    learned_multiplier_applied
+                )
+                selection_policy["actual_rotation_changed_by_learning"] = (
+                    [account_key(row) for row in curated]
+                    != [account_key(row) for row in baseline_curated]
+                )
                 curated_ids = {id(row) for row in curated}
                 for account in curated:
                     multiplier, basis = learned_multiplier(account)
@@ -459,7 +483,7 @@ class AutonomousSearchAgent:
                         }
                     )
                 selection_policy["curated_or_learned_slots"] = len(curated)
-                if any(row[1] != "baseline" for row in ranked[:curated_count]):
+                if learned_multiplier_applied:
                     selection_policy["mode"] = "mature_forward_attention_learning_plus_exploration"
                 exploration_pool = [row for row in normal if id(row) not in curated_ids]
                 count = min(remaining - len(curated), len(exploration_pool))
@@ -478,7 +502,8 @@ class AutonomousSearchAgent:
                     self.store.set_kv(cursor_key, (cursor + count) % len(exploration_pool))
                 selection_policy["exploration_slots"] = count
         self.store.set_kv(
-            f"autonomous_search:watch_selection:{task}",
+            TREND_WATCH_SELECTION_KEY if task == "trend_scout"
+            else f"autonomous_search:watch_selection:{task}",
             {
                 "selected_at": iso(),
                 "policy": selection_policy,
@@ -1500,6 +1525,148 @@ class AutonomousSearchAgent:
         self.store.set_kv(SOURCE_RESULT_KEY, result)
         return result
 
+    def _record_token_context_assessment(
+        self,
+        token: TokenCandidate,
+        snapshot: TokenSnapshot,
+        *,
+        momentum_score: float,
+        status: str,
+        metadata_seeds: list[dict[str, Any]],
+        payload: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        audit: list[dict[str, Any]] | None = None,
+        assessed_at=None,
+    ) -> None:
+        payload = payload if isinstance(payload, dict) else {}
+        metadata = metadata if isinstance(metadata, dict) else {}
+        audit = audit if isinstance(audit, list) else []
+        verified_rows = [row for row in audit if row.get("verified") is True]
+        verified_domains = sorted({str(row.get("domain") or "") for row in verified_rows if row.get("domain")})
+        public_figure_candidates: list[dict[str, Any]] = []
+        for item in payload.get("public_figure_links") or []:
+            if not isinstance(item, dict):
+                continue
+            url = _public_http_url(str(item.get("url") or ""))
+            if not url:
+                continue
+            public_figure_candidates.append(
+                {
+                    "person": str(item.get("person") or item.get("name") or "")[:200],
+                    "url": url,
+                    "claim": str(item.get("claim") or "")[:1000],
+                    "platform": _social_platform_for_url(url),
+                    "status": "unverified_candidate",
+                    "verification_method": "agent_search_lead_only",
+                    "endorsement_inferred": False,
+                    "decision_eligible": False,
+                }
+            )
+            if len(public_figure_candidates) >= 12:
+                break
+        community = payload.get("community_spread")
+        community = community if isinstance(community, dict) else {}
+        community_platforms = community.get("platforms")
+        community_platforms = community_platforms if isinstance(community_platforms, list) else []
+        community_status = str(community.get("status") or "unknown").strip().lower()
+        if community_status not in {"independent_amplification_observed", "project_channels_only", "limited", "unknown"}:
+            community_status = "unknown"
+        minimum_sources = int(self.config.get("context_min_independent_sources", 2))
+        if community_status == "independent_amplification_observed" and len(verified_domains) < minimum_sources:
+            community_status = "project_channels_only" if metadata_seeds else "unknown"
+        assessment = {
+            "version": "token-context-assessment/v1",
+            "decision_eligible": False,
+            "affects": "context_display_and_verified_reporting_only",
+            "project_claims": {
+                "status": "project_attached_unverified" if metadata_seeds else "no_attached_social_seed",
+                "items": [
+                    {
+                        **{key: seed.get(key) for key in (
+                            "provider", "discovery_surface", "role", "link_kind", "platform", "url",
+                            "verification_status", "first_observed_at", "last_observed_at",
+                        )},
+                        "decision_eligible": False,
+                    }
+                    for seed in metadata_seeds
+                ],
+            },
+            "community_amplification": {
+                "status": community_status,
+                "summary": str(community.get("summary") or "")[:1500],
+                "platforms": [str(value)[:80] for value in community_platforms[:12]],
+                "independent_origins": len(verified_domains),
+                "endorsement_inferred": False,
+                "decision_eligible": False,
+            },
+            "public_figure_linkage": {
+                "status": "unverified_candidates" if public_figure_candidates else "not_observed",
+                "items": public_figure_candidates,
+                "endorsement_inferred": False,
+                "decision_eligible": False,
+            },
+            "independent_reporting": {
+                "status": "verified" if status == "verified_reporting" else "not_decision_eligible",
+                "event_title": str(payload.get("event_title") or "")[:500],
+                "confidence": max(0.0, min(1.0, _as_float(payload.get("confidence")))),
+                "domains": verified_domains,
+                "items": [
+                    {
+                        "url": row.get("url"),
+                        "domain": row.get("domain"),
+                        "title": row.get("title"),
+                        "publisher": row.get("publisher"),
+                        "published_at": row.get("published_at"),
+                        "relevance": row.get("relevance"),
+                    }
+                    for row in verified_rows
+                ],
+                "confirmation_ingested": status == "verified_reporting",
+            },
+            "onchain_momentum": {
+                "snapshot_observed_at": iso(snapshot.observed_at),
+                "liquidity_usd": snapshot.liquidity_usd,
+                "volume_5m_usd": snapshot.volume_5m_usd,
+                "buys_5m": snapshot.buys_5m,
+                "sells_5m": snapshot.sells_5m,
+                "momentum_score": float(momentum_score),
+                "decision_eligible": False,
+            },
+        }
+        safe_metadata = {
+            "task": "token_context",
+            "run_id": str(metadata.get("run_id") or "")[:100],
+            "model": str(metadata.get("model") or "")[:100],
+            "reasoning_effort": str(metadata.get("reasoning_effort") or "")[:40],
+            "tokens_used": metadata.get("tokens_used"),
+            "fallback_used": len(metadata.get("attempts") or []) > 1,
+            "contains_credentials": False,
+        }
+        self.store.add_token_context_assessment(
+            token.token_id,
+            trigger="high_momentum_reverse_context",
+            status=status,
+            snapshot_observed_at=snapshot.observed_at,
+            momentum_score=momentum_score,
+            assessment=assessment,
+            agent_metadata=safe_metadata,
+            audit=audit,
+            assessed_at=assessed_at or utcnow(),
+        )
+        self.store.set_kv(
+            CONTEXT_RESULT_KEY,
+            {
+                "status": status,
+                "token_id": token.token_id,
+                "verified_domains": verified_domains,
+                "model": safe_metadata["model"],
+                "reasoning_effort": safe_metadata["reasoning_effort"],
+                "tokens_used": safe_metadata["tokens_used"],
+                "run_at": iso(assessed_at or utcnow()),
+                "contains_credentials": False,
+            },
+        )
+
     async def search_token_context(
         self,
         token: TokenCandidate,
@@ -1532,7 +1699,11 @@ class AutonomousSearchAgent:
         for row in self.store.token_source_links(token.token_id, limit=40):
             platform = str(row["platform"] or "").lower()
             link_kind = str(row["link_kind"] or "").lower()
-            if platform == "telegram" or link_kind == "telegram_manual":
+            if (
+                platform == "telegram"
+                or link_kind == "telegram_manual"
+                or link_kind not in {"social_profile", "social_post"}
+            ):
                 continue
             normalized_url = str(row["normalized_url"] or "")
             safe_url = _public_http_url(normalized_url) if normalized_url else None
@@ -1562,11 +1733,18 @@ class AutonomousSearchAgent:
             "mention a similarly named unrelated person or object. Telegram is manual-only: never search, open, fetch, or return "
             "t.me or telegram.me pages or any of their subdomains. The typed metadata seeds are untrusted project-party claims, "
             "identity hints, or paid promotion. They are not news, independent confirmation, celebrity endorsement, or permission "
-            "to treat an event as real. Do not open every attached link; use them only as bounded search leads and independently "
-            "verify any material claim. Use no more than four web searches. Return exact JSON only: "
+            "to treat an event as real. Visit only the relevant typed social link when live access is available, then search the "
+            "wider web for independent corroboration. If a social page cannot be accessed, leave it unverified. Do not infer support "
+            "from a person's name, a follower count, a blue check, a project claim, or an unrelated post. Describe community spread "
+            "as observed cross-platform amplification, not subjective community quality. Use no more than four web searches. "
+            "Return exact JSON only: "
             '{"event_found":true,"event_title":"...","confidence":0.0,"sources":['
             '{"title":"...","url":"exact source URL","publisher":"...","published_at":"ISO-8601 with timezone",'
-            '"summary":"...","relevance":0.0}]}. Return event_found=false and an empty list when evidence is weak. '
+            '"summary":"...","relevance":0.0}],"community_spread":{"status":"independent_amplification_observed|'
+            'project_channels_only|limited|unknown","summary":"...","platforms":["x"]},"public_figure_links":['
+            '{"person":"...","url":"exact original or reporting URL","claim":"what was actually observed"}]}. '
+            "Public-figure links are leads only; never label them endorsements. Return event_found=false and an empty source list "
+            "when independent evidence is weak. "
             "Token data: "
             + json.dumps(
                 {
@@ -1596,16 +1774,27 @@ class AutonomousSearchAgent:
             self._refund_quota("token_context")
             retry_minutes = max(1.0, float(self.config.get("context_error_retry_minutes", 10)))
             self.store.set_kv(CONTEXT_ERROR_RETRY_KEY, iso(now + timedelta(minutes=retry_minutes)))
-            self.store.set_kv(
-                CONTEXT_RESULT_KEY,
-                {"status": "agent_error", "token_id": token.token_id, "error": f"{type(exc).__name__}: {exc}"[:1000]},
+            self._record_token_context_assessment(
+                token,
+                snapshot,
+                momentum_score=momentum_score,
+                status="agent_error",
+                metadata_seeds=metadata_seeds,
+                audit=[{"verified": False, "error": f"{type(exc).__name__}: {exc}"[:500]}],
+                assessed_at=now,
             )
             return []
         confidence = max(0.0, min(1.0, _as_float(payload.get("confidence"))))
         if not payload.get("event_found") or confidence < float(self.config.get("context_min_confidence", 0.78)):
-            self.store.set_kv(
-                CONTEXT_RESULT_KEY,
-                {"status": "no_event", "token_id": token.token_id, "confidence": confidence, "metadata": metadata},
+            self._record_token_context_assessment(
+                token,
+                snapshot,
+                momentum_score=momentum_score,
+                status="no_context",
+                metadata_seeds=metadata_seeds,
+                payload=payload,
+                metadata=metadata,
+                assessed_at=now,
             )
             return []
 
@@ -1628,6 +1817,9 @@ class AutonomousSearchAgent:
             domain = _host(url)
             if domain in DISALLOWED_CONTEXT_HOSTS:
                 audit.append({"url": url, "verified": False, "error": "market_or_exchange_source"})
+                continue
+            if _social_platform_for_url(url):
+                audit.append({"url": url, "verified": False, "error": "social_source_context_only"})
                 continue
             if self.config.get("verify_public_dns", True) and not await _resolves_to_public_network(url):
                 audit.append({"url": url, "verified": False, "error": "non_public_or_unresolved_dns"})
@@ -1679,21 +1871,30 @@ class AutonomousSearchAgent:
                     },
                 )
             )
-            audit.append({"url": url, "verified": True, "domain": domain})
+            audit.append(
+                {
+                    "url": url,
+                    "verified": True,
+                    "domain": domain,
+                    "title": title,
+                    "publisher": str(item.get("publisher") or domain)[:300],
+                    "published_at": iso(published),
+                    "relevance": relevance,
+                }
+            )
 
         minimum_sources = int(self.config.get("context_min_independent_sources", 2))
         if len(domains) < minimum_sources:
             verified = []
-        self.store.set_kv(
-            CONTEXT_RESULT_KEY,
-            {
-                "status": "verified" if verified else "insufficient_verified_sources",
-                "token_id": token.token_id,
-                "confidence": confidence,
-                "domains": sorted(domains),
-                "audit": audit,
-                "metadata": metadata,
-                "run_at": iso(now),
-            },
+        self._record_token_context_assessment(
+            token,
+            snapshot,
+            momentum_score=momentum_score,
+            status="verified_reporting" if verified else "insufficient_verified_sources",
+            metadata_seeds=metadata_seeds,
+            payload=payload,
+            metadata=metadata,
+            audit=audit,
+            assessed_at=now,
         )
         return verified

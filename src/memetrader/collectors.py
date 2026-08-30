@@ -944,6 +944,37 @@ class DexScreenerClient:
         _, candidate, snap = max(ranked, key=lambda row: row[0])
         return candidate, snap
 
+    async def batch_quote(
+        self,
+        chain: str,
+        addresses: list[str] | tuple[str, ...],
+    ) -> dict[str, tuple[TokenCandidate, TokenSnapshot]]:
+        """Hydrate up to many token details through DexScreener's documented 30-address endpoint."""
+        normalized_chain = self._chain(str(chain)).lower()
+        unique = list(dict.fromkeys(str(value).strip() for value in addresses if str(value).strip()))
+        by_token: dict[str, tuple[TokenCandidate, TokenSnapshot]] = {}
+        for offset in range(0, len(unique), 30):
+            chunk = unique[offset : offset + 30]
+            requested = {value.lower() for value in chunk}
+            joined = urllib.parse.quote(",".join(chunk), safe=",")
+            response = await self.http.get(
+                f"{self.BASE}/tokens/v1/{normalized_chain}/{joined}",
+                ttl=8,
+            )
+            payload = response.json()
+            if isinstance(payload, dict):
+                payload = payload.get("pairs") or []
+            for pair in payload if isinstance(payload, list) else []:
+                candidate, snap = self._candidate(pair), self._snapshot(pair)
+                if not candidate or not snap or candidate.chain.lower() != normalized_chain:
+                    continue
+                if candidate.address.lower() not in requested:
+                    continue
+                current = by_token.get(candidate.token_id)
+                if current is None or (snap.liquidity_usd or 0.0) > (current[1].liquidity_usd or 0.0):
+                    by_token[candidate.token_id] = (candidate, snap)
+        return by_token
+
     async def discover_surface(
         self,
         surface: str,

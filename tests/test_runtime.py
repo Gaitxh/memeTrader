@@ -77,6 +77,49 @@ def test_dexscreener_discovery_persists_provenance_and_hydrates_bounded_token(tm
     asyncio.run(scenario())
 
 
+def test_new_solana_tokens_enter_durable_batch_hydration_and_missing_pair_retries(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        config["candidate"]["chains"] = ["solana"]
+        config["sources"]["dexscreener_discovery"]["max_hydrations_per_cycle"] = 30
+        runtime = Runtime(config, tmp_path)
+        found = TokenCandidate(chain="solana", address="A" * 32, name="Found", symbol="FOUND", source="pumpportal")
+        missing = TokenCandidate(chain="solana", address="B" * 32, name="Missing", symbol="MISS", source="geckoterminal:solana")
+        await runtime.ingest_token(found)
+        await runtime.ingest_token(missing)
+        snapshot = TokenSnapshot("solana", found.address, 0.01, 30000, 200000, 5000, 20, 5)
+
+        class Dex:
+            DISCOVERY_SURFACES = {}
+
+            def __init__(self):
+                self.calls = []
+
+            async def batch_quote(self, chain, addresses):
+                self.calls.append((chain, list(addresses)))
+                return {found.token_id: (found, snapshot)}
+
+        dex = Dex()
+        runtime.dex = dex
+        await runtime.poll_dexscreener_discovery_once()
+        assert dex.calls == [("solana", [found.address, missing.address])]
+        hydrated = runtime.store.token_detail_hydration(found.token_id)
+        no_pair = runtime.store.token_detail_hydration(missing.token_id)
+        assert hydrated["status"] == "hydrated" and hydrated["attempts"] == 1
+        assert no_pair["status"] == "no_pair" and no_pair["attempts"] == 1
+        assert no_pair["next_attempt_at"] is not None
+        assert runtime.store.token(missing.token_id) is not None
+        due_later = runtime.store.due_token_detail_hydrations(
+            limit=30, now=utcnow() + timedelta(minutes=6)
+        )
+        assert [row["token_id"] for row in due_later] == [missing.token_id]
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
 def test_browser_platform_heartbeat_persists_only_sanitized_access_state(tmp_path):
     async def scenario():
         config = initial_config()
