@@ -118,9 +118,10 @@ Trend Scout 的检索机会另由 `trend-lanes/v1` 五个稳定通道记录。`t
 
 ### 4.1 WAIT/CANDIDATE 固定时点影子随访
 
-完全平仓 Paper 结果只覆盖真正开过仓的事件，单独使用会造成明显选择偏差。`shadow-event-followup/v1` 因此在某个事件首次形成有效 Token 和决策时价格后，为 WAIT 与 CANDIDATE 一并建立一次不可重复的事件 cohort：
+完全平仓 Paper 结果只覆盖真正开过仓的事件，单独使用会造成明显选择偏差。`shadow-event-followup/v2-event-action` 因此按事件的真实决策阶段建立前向 cohort：
 
-- 每个事件只冻结第一次合格 cohort，后来改名、换 Token 或看到结果后不能重选；
+- 首次带有效 Token/价格的 WAIT 冻结一次；同一事件后来首次真实升级为 CANDIDATE 时再冻结一次升级时状态；每种动作最多一个 cohort；
+- CANDIDATE 之后因已有持仓、禁止重入或执行门产生的 WAIT 不会倒退建立新样本；旧 v1 cohort 保留原样且不回填；
 - 只保存决策时已观察、已摄入、角色为 `feature/confirmation` 的最早 60 秒来源，未来摄入、未来发布时间、identity、promotion 和后来确认不进入标签；
 - 固定观察 15、60、240 分钟，只使用目标时点后 30 分钟内本机实际写入的第一条价格快照；
 - 同时记录从入场快照到结果快照之间的最大/最小原始价格回报；

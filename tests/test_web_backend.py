@@ -896,7 +896,7 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
         "risk", "position_size", "exits", "live_trading",
     ]
     assert source_payload["shadow_followup"]["status"] == "collecting_followup"
-    assert source_payload["shadow_followup"]["version"] == "shadow-event-followup/v1"
+    assert source_payload["shadow_followup"]["version"] == "shadow-event-followup/v2-event-action"
     assert source_payload["shadow_followup"]["horizons_minutes"] == [15, 60, 240]
     assert source_payload["shadow_followup"]["summary"]["cohorts"] == 1
     assert source_payload["shadow_followup"]["summary"]["pending_cohorts"] == 1

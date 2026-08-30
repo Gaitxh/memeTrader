@@ -536,15 +536,31 @@ def test_shadow_event_followup_is_forward_only_fixed_horizon_and_non_activating(
         for row in labels
     )
     assert abs(sum(row["attribution_weight"] for row in labels if row["dimension"] == "source_kind") - 1.0) < 1e-9
+    with store.db:
+        store.db.execute(
+            "UPDATE shadow_event_cohorts SET version=?,cohort_key=? WHERE id=?",
+            ("shadow-event-followup/v1", "legacy-wait-cohort", cohort_id),
+        )
 
     repeated = CandidateDecision(event_id, token.token_id, "CANDIDATE", 80, 92, 8, ["later"], created_at=now)
     repeated_id = store.add_decision(repeated)
+    candidate_cohort_id = store.create_shadow_event_cohort(
+        repeated,
+        decision_id=repeated_id,
+        source_observation_ids=observation_ids,
+    )
+    assert candidate_cohort_id is not None and candidate_cohort_id != cohort_id
     assert store.create_shadow_event_cohort(
         repeated,
         decision_id=repeated_id,
         source_observation_ids=observation_ids,
+    ) == candidate_cohort_id
+    assert store.create_shadow_event_cohort(
+        decision,
+        decision_id=decision_id,
+        source_observation_ids=observation_ids,
     ) == cohort_id
-    assert store.db.execute("SELECT COUNT(*) FROM shadow_event_cohorts").fetchone()[0] == 1
+    assert store.db.execute("SELECT COUNT(*) FROM shadow_event_cohorts").fetchone()[0] == 2
 
     for minutes, price in ((10, 0.5), (16, 2.0), (61, 1.5)):
         store.add_snapshot(
@@ -555,10 +571,10 @@ def test_shadow_event_followup_is_forward_only_fixed_horizon_and_non_activating(
             )
         )
     first = store.finalize_shadow_event_outcomes(now=now + timedelta(minutes=17))
-    assert first["outcomes_observed"] == 1
+    assert first["outcomes_observed"] == 2
     store.finalize_shadow_event_outcomes(now=now + timedelta(minutes=62))
     final = store.finalize_shadow_event_outcomes(now=now + timedelta(minutes=271))
-    assert final["outcomes_missing"] == 1 and final["cohorts_completed"] == 1
+    assert final["outcomes_missing"] == 2 and final["cohorts_completed"] == 2
     outcomes = list(
         store.db.execute(
             "SELECT * FROM shadow_event_outcomes WHERE cohort_id=? ORDER BY horizon_minutes",
@@ -589,15 +605,18 @@ def test_shadow_event_followup_is_forward_only_fixed_horizon_and_non_activating(
 
     summary = store.shadow_event_learning_summary_from_connection(store.db)
     assert summary["status"] == "collecting_followup"
-    assert summary["summary"]["cohorts"] == 1
-    assert summary["summary"]["complete_cohorts"] == 1
+    assert summary["summary"]["cohorts"] == 2
+    assert summary["summary"]["complete_cohorts"] == 2
+    assert summary["observed_versions"] == [
+        "shadow-event-followup/v1", "shadow-event-followup/v2-event-action"
+    ]
     entity_60m = next(
         item for item in summary["items"]
         if item["dimension"] == "entity" and item["value"] == "alpha" and item["horizon_minutes"] == 60
     )
     assert entity_60m["mean_raw_return"] == pytest.approx(0.5)
     assert entity_60m["wait_cohort_count"] == 1
-    assert entity_60m["candidate_cohort_count"] == 0
+    assert entity_60m["candidate_cohort_count"] == 1
     assert entity_60m["shadow_review_eligible"] is False
     assert entity_60m["rotation_active"] is False
     store.close()

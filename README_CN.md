@@ -161,7 +161,7 @@ Sources 页另有“主题通道覆盖与影子学习”和“来源学习与观
 
 OKX Web3 Meme Pump 可提供 launchpad 阶段、社交、开发者、bundle 和同车钱包等补充字段，但核心接口需要官方签名凭据且属于 Premium；当前不抓取网页内部请求，也不把 `SMART_MONEY` / `INFLUENCER` 标签当交易信号。评估与未来接入边界见 [OKX Meme Pump 与聪明钱来源评估](docs/OKX_MEME_PUMP_AND_SMART_MONEY_ASSESSMENT_CN.md)。
 
-为避免只从“实际买入并完全平仓”的事件学习，Runtime 还会为首次形成有效 Token/价格关联的 WAIT 或 CANDIDATE 建立 `shadow-event-followup/v1` 前向随访。它冻结首次决策、入场时点价格和当时最早合格来源，再用本机之后真实观察到的 15/60/240 分钟快照计算原始价格延续与区间最高/最低回报。缺失窗口永久记为 missing，不用后来补录的旧时间戳回填。该数据不含手续费、滑点或可成交性，不是 Paper PNL；只有成熟的 60 分钟人物/平台随访可与成熟账号暴露共同进入观察轮换，15/240 分钟、热点类型和主题通道仍只供研究，所有随访永不进入交易。
+为避免只从“实际买入并完全平仓”的事件学习，Runtime 使用 `shadow-event-followup/v2-event-action` 建立前向随访：首次带有效 Token/价格的 WAIT 冻结一个样本；若同一事件后来真实升级为 CANDIDATE，再冻结升级时的价格和当时合格来源。同一事件每种动作最多一个 cohort，CANDIDATE 后因已有持仓或执行门产生的 WAIT 不会重复采样，旧 v1 记录也不会回填。随后只用本机之后真实观察到的 15/60/240 分钟快照计算原始价格延续与区间最高/最低回报。缺失窗口永久记为 missing，不用后来补录的旧时间戳回填。该数据不含手续费、滑点或可成交性，不是 Paper PNL；只有成熟的 60 分钟人物/平台随访可与成熟账号暴露共同进入观察轮换，15/240 分钟、热点类型和主题通道仍只供研究，所有随访永不进入交易。
 
 详细说明见 [docs/WEB_CONSOLE_CN.md](docs/WEB_CONSOLE_CN.md)。
 

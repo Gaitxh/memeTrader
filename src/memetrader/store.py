@@ -25,7 +25,7 @@ from .models import (
 
 class Store:
     CANDIDATE_RANKING_KEY_PREFIX = "candidate_ranking:"
-    SHADOW_EVENT_COHORT_VERSION = "shadow-event-followup/v1"
+    SHADOW_EVENT_COHORT_VERSION = "shadow-event-followup/v2-event-action"
     SHADOW_EVENT_HORIZONS_MINUTES = (15, 60, 240)
     TOKEN_CONTEXT_OUTCOME_VERSION = "token-context-outcome/v1"
     TOKEN_CONTEXT_OUTCOME_HORIZONS_MINUTES = (15, 60, 240)
@@ -2140,21 +2140,33 @@ class Store:
         decision_id: int,
         source_observation_ids: Iterable[int],
     ) -> int | None:
-        """Freeze the first WAIT/CANDIDATE token follow-up for an event without changing strategy."""
-        if str(decision.action).upper() not in {"WAIT", "CANDIDATE"} or not decision.token_id:
+        """Freeze the first WAIT and later first CANDIDATE follow-up without changing strategy."""
+        action = str(decision.action).upper()
+        if action not in {"WAIT", "CANDIDATE"} or not decision.token_id:
             return None
         cohort_key = hashlib.sha256(
-            f"{self.SHADOW_EVENT_COHORT_VERSION}\n{int(decision.event_id)}".encode("utf-8")
+            f"{self.SHADOW_EVENT_COHORT_VERSION}\n{int(decision.event_id)}\n{action}".encode("utf-8")
         ).hexdigest()
         decision_at = iso(decision.created_at)
         observation_ids = sorted({int(value) for value in source_observation_ids if int(value) > 0})
         with self._lock, self.db:
-            existing = self.db.execute(
-                "SELECT id FROM shadow_event_cohorts WHERE cohort_key=?",
-                (cohort_key,),
-            ).fetchone()
-            if existing:
-                return int(existing["id"])
+            existing = list(
+                self.db.execute(
+                    "SELECT id,action FROM shadow_event_cohorts WHERE event_id=? ORDER BY id",
+                    (int(decision.event_id),),
+                )
+            )
+            same_action = next(
+                (row for row in existing if str(row["action"]).upper() == action), None
+            )
+            if same_action:
+                return int(same_action["id"])
+            if action == "WAIT":
+                candidate = next(
+                    (row for row in existing if str(row["action"]).upper() == "CANDIDATE"), None
+                )
+                if candidate:
+                    return int(candidate["id"])
             snapshot = self.db.execute(
                 """
                 SELECT id,observed_at,price_usd FROM token_snapshots
@@ -2200,7 +2212,7 @@ class Store:
                 """,
                 (
                     cohort_key, self.SHADOW_EVENT_COHORT_VERSION, int(decision.event_id), decision.token_id,
-                    int(decision_id), str(decision.action).upper(), decision_at, int(snapshot["id"]),
+                    int(decision_id), action, decision_at, int(snapshot["id"]),
                     str(snapshot["observed_at"]), float(snapshot["price_usd"]), len(leads), iso(),
                 ),
             )
@@ -2361,7 +2373,7 @@ class Store:
         start = iso(utcnow() - timedelta(days=max(1, min(3650, int(lookback_days)))))
         cohorts = list(
             connection.execute(
-                "SELECT id,event_id,action,decision_at,status FROM shadow_event_cohorts WHERE decision_at>=?",
+                "SELECT id,version,event_id,action,decision_at,status FROM shadow_event_cohorts WHERE decision_at>=?",
                 (start,),
             )
         )
@@ -2481,6 +2493,7 @@ class Store:
                 else "not_observed"
             ),
             "version": Store.SHADOW_EVENT_COHORT_VERSION,
+            "observed_versions": sorted({str(row["version"]) for row in cohorts}),
             "horizons_minutes": list(Store.SHADOW_EVENT_HORIZONS_MINUTES),
             "items": items[:500],
             "summary": {
