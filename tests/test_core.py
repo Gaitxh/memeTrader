@@ -85,7 +85,11 @@ def test_source_learning_records_only_closed_paper_lead_evidence(tmp_path: Path)
             ingested_at=now - timedelta(minutes=3),
             role="feature",
             source_item_id="lead-a",
-            raw={"browser": {"platform": "x"}, "source_entity_id": "alpha"},
+            raw={
+                "browser": {"platform": "x"},
+                "source_entity_id": "alpha",
+                "trend_lane_id": "culture_entertainment",
+            },
         ),
         Observation(
             source="news-b",
@@ -104,6 +108,26 @@ def test_source_learning_records_only_closed_paper_lead_evidence(tmp_path: Path)
             ingested_at=now - timedelta(minutes=2, seconds=50),
             role="promotion",
             source_item_id="promo",
+        ),
+        Observation(
+            source="delayed-ingestion",
+            source_kind="news",
+            title="Observed early but ingested after the position opened",
+            published_at=now - timedelta(minutes=3),
+            observed_at=now - timedelta(minutes=3),
+            ingested_at=now + timedelta(minutes=1),
+            role="feature",
+            source_item_id="delayed-ingestion",
+        ),
+        Observation(
+            source="future-published",
+            source_kind="news",
+            title="Future publication timestamp",
+            published_at=now + timedelta(minutes=1),
+            observed_at=now - timedelta(minutes=3),
+            ingested_at=now - timedelta(minutes=3),
+            role="feature",
+            source_item_id="future-published",
         ),
         Observation(
             source="late-d",
@@ -134,7 +158,10 @@ def test_source_learning_records_only_closed_paper_lead_evidence(tmp_path: Path)
         row["dimension"] == "event_topic" and row["value"] == "animals_internet_culture"
         for row in outcome_rows
     )
-    assert not any(row["value"] in {"promotion-c", "late-d"} for row in outcome_rows)
+    assert not any(
+        row["value"] in {"promotion-c", "delayed-ingestion", "future-published", "late-d"}
+        for row in outcome_rows
+    )
 
     conservative = store.source_learning_summary()
     assert conservative["status"] == "collecting_samples"
@@ -156,6 +183,13 @@ def test_source_learning_records_only_closed_paper_lead_evidence(tmp_path: Path)
     )
     assert topic_item["rotation_active"] is False
     assert topic_item["rotation_multiplier"] == 1.0
+    lane_item = next(
+        item
+        for item in relaxed["items"]
+        if item["dimension"] == "trend_lane" and item["value"] == "culture_entertainment"
+    )
+    assert lane_item["rotation_active"] is False
+    assert lane_item["rotation_multiplier"] == 1.0
     store.close()
 
 

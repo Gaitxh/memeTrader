@@ -85,7 +85,7 @@ Quick Tunnel 地址在隧道重建后会变化，适合个人临时远程查看�
 - **Decisions**：事件、候选结果、match/candidate score、canonical margin、WAIT/CANDIDATE/REJECT、仓位金额与拒绝原因。
 - **Paper Portfolio**：所有金额和 PNL 均明确为 Paper/模拟；展示止损、分批止盈、移动退出和叙事衰减状态。
 - **Agent Operations**：本机 Codex CLI 的模型、推理强度、回退、调用次数、tokens、预算、上次结果和下一次到期时间。
-- **Sources**：静态/动态 RSS、浏览器、PumpPortal、新池、Dex Profile/CTO/Ads/Boost、报价和安全来源的健康、产出时间、暂停原因；同时显示只影响观察轮换的前向来源学习。
+- **Sources**：静态/动态 RSS、浏览器、PumpPortal、新池、Dex Profile/CTO/Ads/Boost、报价和安全来源的健康、产出时间、暂停原因；同时显示主题通道真实暴露/空结果的影子学习，以及只影响账号观察轮换的前向来源学习。
 - **Audit**：r5 false-positive 排除、r6 Starlink 过期反查证据、future-data rejection 和决策时刻证据资格。
 - **Settings**：仅编辑安全白名单参数、平台观察偏好、公开账号/名人清单和主题；Live 永久不可用。
 - **Wallet**：本机查看 Devnet 地址、SOL/SPL 余额、近期交易与回执，人工申请测试币或发送限额 Devnet 测试交易；不连接常驻策略。
@@ -106,6 +106,8 @@ Overview 的采集脉冲完全由已持久化数据计算。信息通道统计�
 Token 详情把 DexScreener Profile、Community Takeover、Ads、Boost 和 pair info 的链接显示为“发现种子”。每条保留发现面、`identity/promotion`、平台、链接类型、提供方状态及本机首次/最后观察。`provider_metadata` 不等于 verified；Ads/Boost 永久是 promotion。下方事件时间线的准确标题是“已关联观察”，不是“已验证证据”。
 
 Sources 的学习表按平台、信息类型、具体来源、已持久化人物实体和事件/热点类型显示前向统计。事件类型只在首次接受时冻结，旧数据保持 `unknown`，且当前永远只观察。早期证据、合格证据和候选关联只作描述；没有已平仓 Paper 时胜率/回报显示 `—`。只有满足多结果、多天和亏损多样性门槛的平台/来源/实体标签才会在 `0.75×–1.25×` 内改变 Agent 观察轮换。12 个候选观察槽位中至少 40% 保留探索，critical 最多 4 个。学习不改变证据权重、WAIT/CANDIDATE、canonical margin、安全门或仓位。
+
+同页的“主题通道覆盖与影子学习”固定展示五个版本化通道。完成轮、失败轮、空结果、事件产出和最近选择来自追加式 SQLite 暴露账本；没有运行时显示“尚未观察”，不会把它画成 0% 表现。Paper 结果只有在完全平仓后才显示为条件历史。主题学习不改变实际 round-robin；即使样本成熟，也只产生人工审查用影子候选。
 
 `WAIT` 的固定含义是“未形成交易信号”，不能被渲染成机会、买入或看涨提示。`CANDIDATE` 只表示通过候选门槛，后续仍受安全、仓位和 Paper 执行约束。
 

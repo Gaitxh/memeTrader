@@ -31,6 +31,8 @@ from .autonomous_search import (
     REGISTRY_KEY,
     SOURCE_RESULT_KEY,
     SOURCE_RUN_KEY,
+    TREND_LANE_SELECTION_KEY,
+    TREND_TOPIC_LANES,
     TREND_RESULT_KEY,
     TREND_RUN_KEY,
 )
@@ -123,6 +125,9 @@ SAFE_OBSERVATION_RAW_FIELDS = {
     "source_age_minutes",
     "stale_first_observation",
     "token_momentum_score",
+    "trend_lane_id",
+    "trend_lane_run_id",
+    "trend_lane_taxonomy",
     "view_count",
     "volume_usd",
 }
@@ -2842,6 +2847,14 @@ class WebData:
             "summary": {"observations": 0, "closed_paper_outcomes": 0, "active_labels": 0},
             "as_of": iso(),
         }
+        trend_lanes: dict[str, Any] = {
+            "status": "not_observed",
+            "mode": "shadow_observation_only",
+            "actual_schedule_changed_by_learning": False,
+            "items": [],
+            "summary": {"runs": 0, "completed_runs": 0, "mature_lanes": 0},
+            "last_selection": {},
+        }
         with self.connect() as connection:
             if connection is not None and self._table_exists(connection, "source_health"):
                 health = {str(row["source"]): row for row in connection.execute("SELECT * FROM source_health")}
@@ -2888,6 +2901,115 @@ class WebData:
                     )
                 except (sqlite3.Error, TypeError, ValueError):
                     learning["status"] = "unavailable"
+                try:
+                    exposure = Store.trend_lane_exposure_summary_from_connection(
+                        connection,
+                        lookback_days=int(autonomous_cfg.get("source_learning_lookback_days", 90)),
+                    )
+                    exposure_by_lane = {
+                        str(item.get("lane_id") or ""): item
+                        for item in exposure.get("items", [])
+                        if isinstance(item, dict)
+                    }
+                    outcome_by_lane = {
+                        str(item.get("value") or ""): item
+                        for item in learning.get("items", [])
+                        if isinstance(item, dict) and item.get("dimension") == "trend_lane"
+                    }
+                    last_selection = self._kv(connection, TREND_LANE_SELECTION_KEY, {})
+                    if not isinstance(last_selection, dict):
+                        last_selection = {}
+                    selected_ids = {
+                        str(item.get("lane_id") or "")
+                        for item in last_selection.get("selected_lanes", [])
+                        if isinstance(item, dict)
+                    }
+                    policy = {
+                        "minimum_completed_exposures": 20,
+                        "minimum_distinct_closed_events": 30,
+                        "minimum_event_days": 15,
+                        "minimum_weighted_losing_outcomes": 8,
+                        "minimum_mature_lanes_for_shadow_review": 2,
+                    }
+                    lane_items = []
+                    for lane in TREND_TOPIC_LANES:
+                        lane_id = str(lane["id"])
+                        item = dict(exposure_by_lane.get(lane_id) or {})
+                        outcome = dict(outcome_by_lane.get(lane_id) or {})
+                        completed = int(item.get("completed_exposures") or 0)
+                        distinct_events = int(outcome.get("distinct_closed_event_count") or 0)
+                        event_days = int(outcome.get("event_day_count") or 0)
+                        weighted_losses = float(outcome.get("weighted_losing_paper_outcomes") or 0)
+                        mature = (
+                            completed >= policy["minimum_completed_exposures"]
+                            and distinct_events >= policy["minimum_distinct_closed_events"]
+                            and event_days >= policy["minimum_event_days"]
+                            and weighted_losses >= policy["minimum_weighted_losing_outcomes"]
+                        )
+                        mean_return = outcome.get("paper_mean_net_return")
+                        weighted_closed = float(outcome.get("weighted_closed_paper_outcomes") or 0)
+                        shadow_score = None
+                        if mature and mean_return is not None:
+                            shadow_score = round(
+                                weighted_closed / (weighted_closed + 30.0) * float(mean_return),
+                                6,
+                            )
+                        lane_items.append(
+                            {
+                                "lane_id": lane_id,
+                                "lane_prompt": str(lane["prompt"]),
+                                "event_topics": list(lane["event_topics"]),
+                                "selected_in_last_run": lane_id in selected_ids,
+                                "selection_role": item.get("selection_role"),
+                                "exposures": int(item.get("exposures") or 0),
+                                "completed_exposures": completed,
+                                "error_exposures": int(item.get("error_exposures") or 0),
+                                "accepted_events": int(item.get("accepted_events") or 0),
+                                "observations": int(item.get("observations") or 0),
+                                "accepted_events_per_completed_run": item.get("accepted_events_per_completed_run"),
+                                "last_selected_at": item.get("last_selected_at"),
+                                "distinct_closed_event_count": distinct_events,
+                                "weighted_closed_paper_outcomes": weighted_closed,
+                                "weighted_losing_paper_outcomes": weighted_losses,
+                                "event_day_count": event_days,
+                                "paper_win_rate": outcome.get("paper_win_rate"),
+                                "paper_mean_net_return": mean_return,
+                                "paper_downside_rate": outcome.get("paper_downside_rate"),
+                                "shadow_mature": mature,
+                                "shadow_descriptive_score": shadow_score,
+                            }
+                        )
+                    mature_items = [item for item in lane_items if item["shadow_mature"]]
+                    review_candidate = None
+                    if len(mature_items) >= policy["minimum_mature_lanes_for_shadow_review"]:
+                        ranked = [item for item in mature_items if item["shadow_descriptive_score"] is not None]
+                        if ranked:
+                            review_candidate = max(
+                                ranked,
+                                key=lambda item: (float(item["shadow_descriptive_score"]), item["lane_id"]),
+                            )["lane_id"]
+                    trend_lanes = {
+                        "status": (
+                            "shadow_review_available"
+                            if review_candidate
+                            else "collecting_exposure"
+                            if int(exposure.get("summary", {}).get("runs") or 0) > 0
+                            else "not_observed"
+                        ),
+                        "mode": "shadow_observation_only",
+                        "actual_schedule_changed_by_learning": False,
+                        "taxonomy_version": "trend-lanes/v1",
+                        "items": lane_items,
+                        "summary": {
+                            **dict(exposure.get("summary") or {}),
+                            "mature_lanes": len(mature_items),
+                            "shadow_review_candidate_lane_id": review_candidate,
+                        },
+                        "last_selection": last_selection,
+                        "shadow_policy": policy,
+                    }
+                except (sqlite3.Error, TypeError, ValueError, json.JSONDecodeError):
+                    trend_lanes["status"] = "unavailable"
         limits = self.config.get("source_stale_minutes") or {}
         items = []
         known_names: set[str] = set()
@@ -3008,6 +3130,7 @@ class WebData:
             },
             "browser_bridge": self._bridge_health(),
             "learning": learning,
+            "trend_lanes": trend_lanes,
             "as_of": iso(),
         }
 

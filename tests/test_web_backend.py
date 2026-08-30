@@ -9,7 +9,12 @@ from pathlib import Path
 import httpx
 import pytest
 
-from memetrader.autonomous_search import REGISTRY_KEY, TREND_RESULT_KEY, TREND_RUN_KEY
+from memetrader.autonomous_search import (
+    REGISTRY_KEY,
+    TREND_LANE_SELECTION_KEY,
+    TREND_RESULT_KEY,
+    TREND_RUN_KEY,
+)
 from memetrader.models import CandidateDecision, Observation, TokenCandidate, TokenSnapshot, iso, utcnow
 from memetrader.runtime import initial_config
 from memetrader.store import Store
@@ -64,6 +69,9 @@ def _seed(path: Path) -> tuple[int, str]:
                 "account_type": "publisher",
                 "authority_tier": "established",
                 "is_verified": True,
+                "trend_lane_id": "culture_entertainment",
+                "trend_lane_run_id": "seed-lane-run",
+                "trend_lane_taxonomy": "trend-lanes/v1",
                 "view_count": 125_000,
                 "like_count": 8_500,
             },
@@ -192,6 +200,42 @@ def _seed(path: Path) -> tuple[int, str]:
             "run_at": iso(now - timedelta(minutes=3)),
             "events": [],
             "metadata": {"model": "fallback-model", "reasoning_effort": "low", "tokens_used": 12345},
+        },
+    )
+    store.start_trend_lane_run(
+        run_id="seed-lane-run",
+        taxonomy_version="trend-lanes/v1",
+        prompt_version="trend-scout/v2-lane-attribution",
+        selection_mode="baseline_round_robin",
+        surge=False,
+        max_web_searches=4,
+        started_at=now - timedelta(minutes=3),
+        lanes=[
+            {
+                "id": "culture_entertainment",
+                "prompt": "viral animals, internet culture, celebrities and entertainment",
+                "event_topics": ["animals_internet_culture", "celebrity_entertainment"],
+                "selection_role": "baseline_round_robin",
+                "total_lane_count": 5,
+            }
+        ],
+    )
+    store.finish_trend_lane_run(
+        "seed-lane-run",
+        status="completed",
+        model="gpt-5.3-codex-spark",
+        reasoning_effort="low",
+        accepted_by_lane={"culture_entertainment": 1},
+        observations_by_lane={"culture_entertainment": 2},
+        finished_at=now - timedelta(minutes=2),
+    )
+    store.set_kv(
+        TREND_LANE_SELECTION_KEY,
+        {
+            "run_id": "seed-lane-run",
+            "mode": "baseline_round_robin",
+            "actual_schedule_changed_by_learning": False,
+            "selected_lanes": [{"lane_id": "culture_entertainment"}],
         },
     )
     store.set_kv(
@@ -379,6 +423,9 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
     assert feature["influence"]["verified"] is True
     assert feature["influence"]["follower_count"] is None
     assert feature["influence"]["visible_engagement"] == {"view_count": 125000, "like_count": 8500}
+    assert feature["metadata"]["trend_lane_id"] == "culture_entertainment"
+    assert feature["metadata"]["trend_lane_run_id"] == "seed-lane-run"
+    assert feature["metadata"]["trend_lane_taxonomy"] == "trend-lanes/v1"
     assert feature["source_group"] == "original_feature"
     assert event["lead_source"]["id"] == feature["id"]
     assert identity["platform"]["id"] == "x" and identity["author"] == "otter"
@@ -525,6 +572,18 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
     assert source_payload["learning"]["summary"]["observations"] >= 4
     assert source_payload["learning"]["summary"]["closed_paper_outcomes"] == 0
     assert source_payload["learning"]["summary"]["active_labels"] == 0
+    assert source_payload["trend_lanes"]["status"] == "collecting_exposure"
+    assert source_payload["trend_lanes"]["actual_schedule_changed_by_learning"] is False
+    assert len(source_payload["trend_lanes"]["items"]) == 5
+    culture_lane = next(
+        item for item in source_payload["trend_lanes"]["items"]
+        if item["lane_id"] == "culture_entertainment"
+    )
+    assert culture_lane["selected_in_last_run"] is True
+    assert culture_lane["completed_exposures"] == 1
+    assert culture_lane["accepted_events"] == 1
+    assert culture_lane["accepted_events_per_completed_run"] == 1.0
+    assert culture_lane["shadow_mature"] is False
     assert len(source_payload["platforms"]) == 9
     x_status = next(item for item in source_payload["platforms"] if item["platform"] == "x")
     assert x_status["access_state"] == "authenticated"

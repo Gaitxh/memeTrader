@@ -240,6 +240,39 @@ class Store:
                     ON agent_attempts(task, finished_at DESC);
                 CREATE INDEX IF NOT EXISTS agent_attempts_model_time_idx
                     ON agent_attempts(model, reasoning_effort, finished_at DESC);
+
+                CREATE TABLE IF NOT EXISTS trend_lane_runs (
+                    run_id TEXT PRIMARY KEY,
+                    taxonomy_version TEXT NOT NULL,
+                    prompt_version TEXT NOT NULL,
+                    selection_mode TEXT NOT NULL,
+                    surge INTEGER NOT NULL,
+                    max_web_searches INTEGER NOT NULL,
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    status TEXT NOT NULL,
+                    model TEXT NOT NULL DEFAULT '',
+                    reasoning_effort TEXT NOT NULL DEFAULT '',
+                    accepted_event_count INTEGER NOT NULL DEFAULT 0,
+                    rejected_event_count INTEGER NOT NULL DEFAULT 0,
+                    observation_count INTEGER NOT NULL DEFAULT 0,
+                    error_type TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS trend_lane_runs_time_idx
+                    ON trend_lane_runs(started_at DESC);
+                CREATE TABLE IF NOT EXISTS trend_lane_run_lanes (
+                    run_id TEXT NOT NULL,
+                    lane_id TEXT NOT NULL,
+                    lane_prompt TEXT NOT NULL,
+                    event_topics_json TEXT NOT NULL,
+                    selection_role TEXT NOT NULL,
+                    scheduled_coverage_fraction REAL NOT NULL,
+                    accepted_event_count INTEGER NOT NULL DEFAULT 0,
+                    observation_count INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(run_id,lane_id)
+                );
+                CREATE INDEX IF NOT EXISTS trend_lane_run_lanes_lane_idx
+                    ON trend_lane_run_lanes(lane_id,run_id);
                 """
             )
             columns = {row["name"] for row in self.db.execute("PRAGMA table_info(observations)")}
@@ -746,6 +779,9 @@ class Store:
             entity_id = ""
         account_type = str(raw.get("account_type") or browser.get("account_type") or "").strip().lower()
         account_type = re.sub(r"[^a-z0-9_-]", "", account_type)[:80]
+        trend_lane = str(raw.get("trend_lane_id") or "").strip().lower()
+        if not re.fullmatch(r"[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?", trend_lane):
+            trend_lane = ""
         event_topic = str(value("event_topic") or "").strip().lower()
         if event_topic not in {
             "political_public_figure", "celebrity_entertainment", "animals_internet_culture",
@@ -761,6 +797,8 @@ class Store:
             labels.append(("entity", entity_id))
         if account_type:
             labels.append(("account_type", account_type))
+        if trend_lane:
+            labels.append(("trend_lane", trend_lane))
         if event_topic:
             labels.append(("event_topic", event_topic))
         return list(dict.fromkeys(labels))
@@ -794,10 +832,12 @@ class Store:
                 JOIN event_observations eo ON eo.observation_id=o.id
                 JOIN events e ON e.id=eo.event_id
                 WHERE eo.event_id=? AND o.capture_phase='live'
-                  AND o.role IN ('feature','confirmation') AND o.observed_at<=?
+                  AND o.role IN ('feature','confirmation')
+                  AND o.observed_at<=? AND o.ingested_at<=?
+                  AND (o.published_at IS NULL OR o.published_at<=?)
                 ORDER BY o.observed_at,o.id
                 """,
-                (position.event_id, iso(position.opened_at)),
+                (position.event_id, iso(position.opened_at), iso(position.opened_at), iso(position.opened_at)),
             )
         )
         if not eligible:
@@ -930,7 +970,8 @@ class Store:
                 {
                     "weighted_closed": 0.0, "weighted_wins": 0.0, "weighted_losses": 0.0,
                     "weighted_downside": 0.0, "weighted_return": 0.0,
-                    "outcome_keys": set(), "event_days": set(), "platforms": set(), "last_closed_at": None,
+                    "outcome_keys": set(), "event_ids": set(), "event_days": set(),
+                    "platforms": set(), "last_closed_at": None,
                 },
             )
             weight = max(0.0, float(row["attribution_weight"] or 0))
@@ -941,7 +982,8 @@ class Store:
             metric["weighted_downside"] += weight if net_return <= -0.25 else 0.0
             metric["weighted_return"] += weight * net_return
             metric["outcome_keys"].add(str(row["outcome_key"]))
-            metric["event_days"].add(str(row["closed_at"])[:10])
+            metric["event_ids"].add(int(row["event_id"]))
+            metric["event_days"].add(str(row["opened_at"])[:10])
             if row["origin_platform"]:
                 metric["platforms"].add(str(row["origin_platform"]))
             metric["last_closed_at"] = max(str(metric["last_closed_at"] or ""), str(row["closed_at"]))
@@ -974,7 +1016,7 @@ class Store:
                 and len(outcome.get("event_days", set())) >= required_days
                 and float(outcome.get("weighted_losses", 0.0)) >= min_losing_outcomes
                 and (dimension != "entity" or platform_count >= entity_min_platforms)
-                and dimension != "event_topic"
+                and dimension in {"platform", "source_kind", "entity", "source"}
             )
             shrunk_utility = 0.0
             if mean_return is not None:
@@ -995,7 +1037,9 @@ class Store:
                     "candidate_event_count": candidate_count if decision_rows else None,
                     "candidate_event_rate": round(candidate_count / event_count, 4) if event_count and decision_rows else None,
                     "weighted_closed_paper_outcomes": round(weighted_closed, 4),
+                    "weighted_losing_paper_outcomes": round(float(outcome.get("weighted_losses", 0.0)), 4),
                     "distinct_closed_paper_outcomes": len(outcome.get("outcome_keys", set())),
+                    "distinct_closed_event_count": len(outcome.get("event_ids", set())),
                     "paper_win_rate": round(win_rate, 4) if win_rate is not None else None,
                     "paper_mean_net_return": round(mean_return, 6) if mean_return is not None else None,
                     "paper_downside_rate": round(downside_rate, 4) if downside_rate is not None else None,
@@ -1161,6 +1205,174 @@ class Store:
                 tuple(attempt.get(field) for field in fields),
             )
             return cursor.rowcount == 1
+
+    def start_trend_lane_run(
+        self,
+        *,
+        run_id: str,
+        taxonomy_version: str,
+        prompt_version: str,
+        selection_mode: str,
+        surge: bool,
+        max_web_searches: int,
+        started_at: Any,
+        lanes: Iterable[Mapping[str, Any]],
+    ) -> None:
+        lane_rows = list(lanes)
+        coverage = len(lane_rows) / max(1, int(lane_rows[0].get("total_lane_count", len(lane_rows)))) if lane_rows else 0.0
+        with self._lock, self.db:
+            self.db.execute(
+                """
+                INSERT INTO trend_lane_runs(
+                    run_id,taxonomy_version,prompt_version,selection_mode,surge,max_web_searches,
+                    started_at,status
+                ) VALUES(?,?,?,?,?,?,?,'running')
+                """,
+                (
+                    str(run_id), str(taxonomy_version), str(prompt_version), str(selection_mode),
+                    int(bool(surge)), int(max_web_searches), iso(started_at),
+                ),
+            )
+            for lane in lane_rows:
+                self.db.execute(
+                    """
+                    INSERT INTO trend_lane_run_lanes(
+                        run_id,lane_id,lane_prompt,event_topics_json,selection_role,scheduled_coverage_fraction
+                    ) VALUES(?,?,?,?,?,?)
+                    """,
+                    (
+                        str(run_id), str(lane.get("id") or "")[:64], str(lane.get("prompt") or "")[:500],
+                        self._json(list(lane.get("event_topics") or [])),
+                        str(lane.get("selection_role") or "baseline")[:32], float(coverage),
+                    ),
+                )
+
+    def finish_trend_lane_run(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        model: str = "",
+        reasoning_effort: str = "",
+        accepted_by_lane: Mapping[str, int] | None = None,
+        observations_by_lane: Mapping[str, int] | None = None,
+        rejected_event_count: int = 0,
+        error_type: str = "",
+        finished_at: Any = None,
+    ) -> None:
+        accepted = {str(key): max(0, int(value)) for key, value in (accepted_by_lane or {}).items()}
+        observations = {str(key): max(0, int(value)) for key, value in (observations_by_lane or {}).items()}
+        with self._lock, self.db:
+            for lane_id in set(accepted) | set(observations):
+                self.db.execute(
+                    """
+                    UPDATE trend_lane_run_lanes
+                    SET accepted_event_count=?,observation_count=?
+                    WHERE run_id=? AND lane_id=?
+                    """,
+                    (accepted.get(lane_id, 0), observations.get(lane_id, 0), str(run_id), lane_id),
+                )
+            self.db.execute(
+                """
+                UPDATE trend_lane_runs
+                SET finished_at=?,status=?,model=?,reasoning_effort=?,accepted_event_count=?,
+                    rejected_event_count=?,observation_count=?,error_type=?
+                WHERE run_id=?
+                """,
+                (
+                    iso(finished_at or utcnow()), str(status)[:32], str(model)[:120], str(reasoning_effort)[:32],
+                    sum(accepted.values()), max(0, int(rejected_event_count)), sum(observations.values()),
+                    str(error_type)[:160], str(run_id),
+                ),
+            )
+
+    @staticmethod
+    def trend_lane_exposure_summary_from_connection(
+        connection: sqlite3.Connection,
+        *,
+        lookback_days: int = 90,
+    ) -> dict[str, Any]:
+        tables = {
+            str(row["name"])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('trend_lane_runs','trend_lane_run_lanes')"
+            )
+        }
+        if tables != {"trend_lane_runs", "trend_lane_run_lanes"}:
+            return {"status": "not_observed", "items": [], "summary": {"runs": 0, "completed_runs": 0}}
+        start = iso(utcnow() - timedelta(days=max(1, min(3650, int(lookback_days)))))
+        rows = list(
+            connection.execute(
+                """
+                SELECT r.run_id,r.taxonomy_version,r.prompt_version,r.selection_mode,r.surge,r.status,
+                       r.started_at,r.finished_at,r.model,r.reasoning_effort,r.max_web_searches,
+                       l.lane_id,l.lane_prompt,l.event_topics_json,l.selection_role,
+                       l.scheduled_coverage_fraction,l.accepted_event_count,l.observation_count
+                FROM trend_lane_runs r
+                JOIN trend_lane_run_lanes l ON l.run_id=r.run_id
+                WHERE r.started_at>=?
+                ORDER BY r.started_at,r.run_id,l.lane_id
+                """,
+                (start,),
+            )
+        )
+        lane_metrics: dict[str, dict[str, Any]] = {}
+        run_ids: set[str] = set()
+        completed_run_ids: set[str] = set()
+        for row in rows:
+            run_id = str(row["run_id"])
+            run_ids.add(run_id)
+            if str(row["status"]) == "completed":
+                completed_run_ids.add(run_id)
+            lane_id = str(row["lane_id"])
+            metric = lane_metrics.setdefault(
+                lane_id,
+                {
+                    "lane_id": lane_id,
+                    "lane_prompt": str(row["lane_prompt"]),
+                    "event_topics": json.loads(str(row["event_topics_json"] or "[]")),
+                    "exposures": 0,
+                    "completed_exposures": 0,
+                    "error_exposures": 0,
+                    "accepted_events": 0,
+                    "observations": 0,
+                    "last_selected_at": None,
+                    "selection_role": str(row["selection_role"]),
+                    "taxonomy_version": str(row["taxonomy_version"]),
+                    "prompt_version": str(row["prompt_version"]),
+                },
+            )
+            metric["exposures"] += 1
+            if str(row["status"]) == "completed":
+                metric["completed_exposures"] += 1
+            elif str(row["status"]) == "agent_error":
+                metric["error_exposures"] += 1
+            metric["accepted_events"] += int(row["accepted_event_count"] or 0)
+            metric["observations"] += int(row["observation_count"] or 0)
+            metric["last_selected_at"] = max(str(metric["last_selected_at"] or ""), str(row["started_at"]))
+            metric["selection_role"] = str(row["selection_role"])
+            metric["taxonomy_version"] = str(row["taxonomy_version"])
+            metric["prompt_version"] = str(row["prompt_version"])
+        items = []
+        for metric in lane_metrics.values():
+            completed = int(metric["completed_exposures"])
+            metric["accepted_events_per_completed_run"] = (
+                round(int(metric["accepted_events"]) / completed, 4) if completed else None
+            )
+            items.append(metric)
+        items.sort(key=lambda item: (-int(item["exposures"]), str(item["lane_id"])))
+        return {
+            "status": "observed" if rows else "not_observed",
+            "items": items,
+            "summary": {
+                "runs": len(run_ids),
+                "completed_runs": len(completed_run_ids),
+                "lane_exposures": len(rows),
+                "accepted_events": sum(int(item["accepted_events"]) for item in items),
+                "observations": sum(int(item["observations"]) for item in items),
+            },
+            "lookback_days": int(lookback_days),
+        }
 
     def agent_attempts(self, *, limit: int = 100) -> list[sqlite3.Row]:
         return list(
