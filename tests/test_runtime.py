@@ -574,6 +574,14 @@ def test_candidate_decision_persists_computed_position_size(tmp_path):
         assert cohort["event_id"] == event_id
         assert cohort["token_id"] == token.token_id
         assert cohort["action"] == "CANDIDATE"
+        position = runtime.store.position(token.token_id)
+        assert position.decision_id == row["id"]
+        assert position.cohort_id == cohort["id"]
+        buy = runtime.store.db.execute(
+            "SELECT decision_id,cohort_id FROM trades WHERE side='BUY'"
+        ).fetchone()
+        assert buy["decision_id"] == row["id"]
+        assert buy["cohort_id"] == cohort["id"]
 
         runtime.store.set_kv(f"event_decision_next:{event_id}", "1970-01-01T00:00:00Z")
         await runtime.evaluate_events_once()

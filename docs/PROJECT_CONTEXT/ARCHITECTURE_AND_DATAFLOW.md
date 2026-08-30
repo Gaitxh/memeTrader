@@ -64,11 +64,10 @@ Dex Profile/CTO/Ads/Boost           │
 
 完全平仓的 Paper 结果
           │
-          ├─ 最早 60 秒合格 Observation：discovery_lead
-          │      └─ 仅在成熟样本后作为观察轮换的 Paper 次级验证
-          │
-          └─ 开仓前每个独立实体/来源最近一条合格 Observation：decision_support
-                 └─ 仅描述入场时证据，不进入轮换、策略评分或仓位
+          ├─ BUY 时冻结最终 decision_id + admitted cohort_id
+          ├─ SELL 时扣除记录的手续费与已知 Token 税
+          └─ 只归因 cohort 决策时冻结的最早合格 Observation：discovery_lead
+                 └─ 精确链成熟后才可作为观察轮换的 Paper 次级验证
 
 Trend Scout 主题通道基线 round-robin / 受限选择性分配
           │
@@ -126,10 +125,11 @@ Trend Scout 主题通道基线 round-robin / 受限选择性分配
 - `tokens` / `token_snapshots`：Token 身份和随时间变化的价格、流动性、成交与安全字段。
 - `token_source_links`：Dex/pair 附带 URL 的发现面、identity/promotion 角色、类型、平台及本机首次/最后观察。
 - `decisions`：action、score、match、canonical margin、理由、拒绝理由和 Paper 仓位金额。
-- `paper_account` / `positions` / `trades`：Paper 现金、持仓、退出和历史成交；新成交保存报价、执行价、报价/请求时间、滑点、手续费和已知 Token 税。
+- `paper_account` / `positions` / `trades`：Paper 现金、持仓、退出和历史成交；新持仓/成交冻结最终 `decision_id/cohort_id`，并保存报价、执行价、报价/请求时间、滑点、手续费和已知 Token 税。
 - `paper_account_snapshots`：append-only 账户曲线；普通运行最多五分钟追加一次，买卖后强制追加，缺少新鲜报价时权益为 `null`。
 - `paper_execution_attempts`：CANDIDATE 入场或退出触发后的模拟执行尝试；过期/缺失/错 Token 报价和执行失败不得伪造成交。
-- `source_utility_outcomes`：完全平仓后的追加式、费后 Paper 结果归因；`discovery_lead` 奖励最早发现，`decision_support` 描述入场时已知合格证据。只有前者可作观察轮换的次级验证，历史不回填后者。
+- `source_utility_outcomes`：完全平仓后的追加式、费后 Paper 结果归因；新版本只接受 `decision_id → admitted cohort_id → position/trades → close` 的精确链，并仅归因 cohort 冻结的 `discovery_lead`。旧事件时间窗行保留但不进入学习。
+- `paper_source_attribution_attempts`：每个完全平仓 round 的归因覆盖账本；精确归因或缺 decision/cohort、主键不匹配、无合格来源等跳过原因都会保存，避免只看到成功归因样本。
 - `trend_lane_runs` / `trend_lane_run_lanes`：每次 Trend Scout 的版本化通道选择、运行状态、空结果、事件与 Observation 产出；不含凭据。
 - `trend_watch_account_exposures`：每轮实际账号选择、选择角色、完成/失败、精确原帖命中与零产出；不回填旧轮次，不含凭据。
 - `browser_watch_account_exposures`：浏览器桥精确匹配配置公开账号页后形成的 30 分钟前向暴露窗口；主页、搜索页、登录页和 Telegram 不写入。

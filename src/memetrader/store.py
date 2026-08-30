@@ -33,6 +33,7 @@ class Store:
     TOKEN_CONTEXT_OUTCOME_HORIZONS_MINUTES = (15, 60, 240)
     WATCH_ATTENTION_POLICY_VERSION = "watch-attention/v1"
     TREND_ATTENTION_POLICY_VERSION = "trend-attention/v1"
+    PAPER_SOURCE_ATTRIBUTION_VERSION = "paper-source-attribution/v2-decision-cohort"
 
     def __init__(self, path: str | Path, initial_cash_usd: float = 10000):
         self.path = Path(path)
@@ -267,6 +268,8 @@ class Store:
                 CREATE TABLE IF NOT EXISTS positions (
                     token_id TEXT PRIMARY KEY,
                     event_id INTEGER NOT NULL,
+                    decision_id INTEGER,
+                    cohort_id INTEGER,
                     chain TEXT NOT NULL,
                     address TEXT NOT NULL,
                     symbol TEXT NOT NULL,
@@ -283,6 +286,8 @@ class Store:
                     id INTEGER PRIMARY KEY,
                     token_id TEXT NOT NULL,
                     event_id INTEGER NOT NULL,
+                    decision_id INTEGER,
+                    cohort_id INTEGER,
                     side TEXT NOT NULL,
                     quantity REAL NOT NULL,
                     price REAL NOT NULL,
@@ -336,6 +341,9 @@ class Store:
                     outcome_key TEXT NOT NULL,
                     event_id INTEGER NOT NULL,
                     token_id TEXT NOT NULL,
+                    decision_id INTEGER,
+                    cohort_id INTEGER,
+                    attribution_version TEXT NOT NULL DEFAULT 'legacy-event-window/v1',
                     source_observation_id INTEGER NOT NULL,
                     dimension TEXT NOT NULL,
                     value TEXT NOT NULL,
@@ -351,6 +359,24 @@ class Store:
                     ON source_utility_outcomes(dimension,value,closed_at DESC);
                 CREATE INDEX IF NOT EXISTS source_utility_outcomes_event_idx
                     ON source_utility_outcomes(event_id,token_id);
+                CREATE TABLE IF NOT EXISTS paper_source_attribution_attempts (
+                    outcome_key TEXT PRIMARY KEY,
+                    version TEXT NOT NULL,
+                    event_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    decision_id INTEGER,
+                    cohort_id INTEGER,
+                    status TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    eligible_source_count INTEGER NOT NULL DEFAULT 0,
+                    buy_cost_usd REAL,
+                    sell_net_usd REAL,
+                    net_return REAL,
+                    opened_at TEXT NOT NULL,
+                    closed_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS paper_source_attribution_attempts_closed_idx
+                    ON paper_source_attribution_attempts(closed_at DESC);
                 CREATE TABLE IF NOT EXISTS source_health (
                     source TEXT PRIMARY KEY,
                     last_ok_at TEXT,
@@ -564,6 +590,7 @@ class Store:
                 )
             trade_columns = {row["name"] for row in self.db.execute("PRAGMA table_info(trades)")}
             for name, definition in (
+                ("decision_id", "INTEGER"), ("cohort_id", "INTEGER"),
                 ("quote_price", "REAL"), ("fee_bps", "REAL"),
                 ("slippage_rate", "REAL"), ("slippage_usd", "REAL"),
                 ("tax_pct", "REAL"), ("tax_usd", "REAL"),
@@ -572,6 +599,12 @@ class Store:
             ):
                 if name not in trade_columns:
                     self.db.execute(f"ALTER TABLE trades ADD COLUMN {name} {definition}")
+            position_columns = {
+                row["name"] for row in self.db.execute("PRAGMA table_info(positions)")
+            }
+            for name in ("decision_id", "cohort_id"):
+                if name not in position_columns:
+                    self.db.execute(f"ALTER TABLE positions ADD COLUMN {name} INTEGER")
             source_outcome_columns = {
                 row["name"] for row in self.db.execute("PRAGMA table_info(source_utility_outcomes)")
             }
@@ -580,6 +613,15 @@ class Store:
                     "ALTER TABLE source_utility_outcomes "
                     "ADD COLUMN attribution_basis TEXT NOT NULL DEFAULT 'discovery_lead'"
                 )
+            for name, definition in (
+                ("decision_id", "INTEGER"),
+                ("cohort_id", "INTEGER"),
+                ("attribution_version", "TEXT NOT NULL DEFAULT 'legacy-event-window/v1'"),
+            ):
+                if name not in source_outcome_columns:
+                    self.db.execute(
+                        f"ALTER TABLE source_utility_outcomes ADD COLUMN {name} {definition}"
+                    )
             self.db.execute(
                 "CREATE INDEX IF NOT EXISTS source_utility_outcomes_basis_idx "
                 "ON source_utility_outcomes(attribution_basis,closed_at DESC)"
@@ -1867,6 +1909,7 @@ class Store:
         fee_bps: float, reason: str, quote_price: float | None = None,
         tax_pct: float | None = None, quote_observed_at: Any = None,
         quote_provider: str = "", execution_attempted_at: Any = None,
+        decision_id: int | None = None, cohort_id: int | None = None,
     ) -> Position:
         if price <= 0 or gross_usd <= 0:
             raise ValueError("price and gross_usd must be positive")
@@ -1895,21 +1938,24 @@ class Store:
             self.db.execute("UPDATE paper_account SET cash_usd=cash_usd-?,updated_at=? WHERE singleton=1", (debit, now))
             self.db.execute(
                 """
-                INSERT INTO positions(token_id,event_id,chain,address,symbol,quantity,entry_price,cost_usd,
+                INSERT INTO positions(token_id,event_id,decision_id,cohort_id,chain,address,symbol,quantity,entry_price,cost_usd,
                     remaining_cost_usd,highest_price,opened_at,realized_pnl_usd,take_profit_index)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)
                 """,
-                (token.token_id,event_id,token.chain,token.address,token.symbol,quantity,price,debit,debit,price,now,0.0),
+                (
+                    token.token_id,event_id,decision_id,cohort_id,token.chain,token.address,
+                    token.symbol,quantity,price,debit,debit,price,now,0.0,
+                ),
             )
             self.db.execute(
                 """
                 INSERT INTO trades(
-                    token_id,event_id,side,quantity,price,quote_price,gross_usd,fee_usd,
+                    token_id,event_id,decision_id,cohort_id,side,quantity,price,quote_price,gross_usd,fee_usd,
                     fee_bps,slippage_rate,slippage_usd,tax_pct,tax_usd,quote_observed_at,
                     quote_provider,execution_attempted_at,reason,created_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
-                (token.token_id,event_id,"BUY",quantity,price,quote_price,gross_usd,fee,
+                (token.token_id,event_id,decision_id,cohort_id,"BUY",quantity,price,quote_price,gross_usd,fee,
                  fee_bps,slippage_rate,slippage_usd,normalized_tax_pct,
                  tax if normalized_tax_pct is not None else None,
                  iso(parse_time(quote_observed_at)) if quote_observed_at else None,
@@ -1929,6 +1975,8 @@ class Store:
             cost_usd=float(row["cost_usd"]), remaining_cost_usd=float(row["remaining_cost_usd"]),
             highest_price=float(row["highest_price"]), opened_at=parse_time(row["opened_at"]),
             realized_pnl_usd=float(row["realized_pnl_usd"]), take_profit_index=int(row["take_profit_index"]),
+            decision_id=int(row["decision_id"]) if row["decision_id"] is not None else None,
+            cohort_id=int(row["cohort_id"]) if row["cohort_id"] is not None else None,
         )
 
     def open_positions(self) -> list[Position]:
@@ -1981,12 +2029,14 @@ class Store:
             self.db.execute(
                 """
                 INSERT INTO trades(
-                    token_id,event_id,side,quantity,price,quote_price,gross_usd,fee_usd,
+                    token_id,event_id,decision_id,cohort_id,side,quantity,price,quote_price,gross_usd,fee_usd,
                     fee_bps,slippage_rate,slippage_usd,tax_pct,tax_usd,quote_observed_at,
                     quote_provider,execution_attempted_at,reason,created_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
-                (token_id,position.event_id,"SELL",quantity,price,quote_price,gross,fee,
+                (
+                 token_id,position.event_id,position.decision_id,position.cohort_id,
+                 "SELL",quantity,price,quote_price,gross,fee,
                  fee_bps,slippage_rate,slippage_usd,normalized_tax_pct,
                  tax if normalized_tax_pct is not None else None,
                  iso(parse_time(quote_observed_at)) if quote_observed_at else None,
@@ -2056,6 +2106,9 @@ class Store:
             "sports", "ai_tech_gaming", "crypto_native", "other",
         }:
             event_topic = ""
+        evidence_role = str(value("role") or "").strip().lower()
+        if evidence_role not in {"feature", "confirmation", "identity", "promotion"}:
+            evidence_role = ""
         labels = [("source_kind", source_kind)]
         if source:
             labels.append(("source", source))
@@ -2069,89 +2122,175 @@ class Store:
             labels.append(("trend_lane", trend_lane))
         if event_topic:
             labels.append(("event_topic", event_topic))
+        if evidence_role:
+            labels.append(("evidence_role", evidence_role))
         return list(dict.fromkeys(labels))
 
     def _record_source_utility_outcome_locked(self, position: Position, *, closed_at: str) -> None:
-        trade_rows = list(
-            self.db.execute(
-                """
-                SELECT side,gross_usd,fee_usd FROM trades
-                WHERE event_id=? AND token_id=? AND created_at>=?
-                ORDER BY id
-                """,
-                (position.event_id, position.token_id, iso(position.opened_at)),
+        opened_at = iso(position.opened_at)
+        if position.decision_id is not None:
+            trade_rows = list(
+                self.db.execute(
+                    """
+                    SELECT side,gross_usd,fee_usd,tax_usd FROM trades
+                    WHERE decision_id=? AND event_id=? AND token_id=? AND created_at>=?
+                    ORDER BY id
+                    """,
+                    (
+                        int(position.decision_id), int(position.event_id),
+                        str(position.token_id), opened_at,
+                    ),
+                )
             )
+            outcome_key = hashlib.sha256(
+                f"{self.PAPER_SOURCE_ATTRIBUTION_VERSION}\n{int(position.decision_id)}\n{opened_at}".encode(
+                    "utf-8"
+                )
+            ).hexdigest()
+        else:
+            trade_rows = list(
+                self.db.execute(
+                    """
+                    SELECT side,gross_usd,fee_usd,tax_usd FROM trades
+                    WHERE event_id=? AND token_id=? AND created_at>=?
+                    ORDER BY id
+                    """,
+                    (position.event_id, position.token_id, opened_at),
+                )
+            )
+            outcome_key = hashlib.sha256(
+                f"legacy\n{position.event_id}\n{position.token_id}\n{opened_at}".encode("utf-8")
+            ).hexdigest()
+
+        trade_rows = list(
+            trade_rows
         )
         buy_cost = sum(
             float(row["gross_usd"] or 0) + float(row["fee_usd"] or 0)
             for row in trade_rows if str(row["side"]).upper() == "BUY"
         )
         sell_net = sum(
-            float(row["gross_usd"] or 0) - float(row["fee_usd"] or 0)
+            float(row["gross_usd"] or 0)
+            - float(row["fee_usd"] or 0)
+            - float(row["tax_usd"] or 0)
             for row in trade_rows if str(row["side"]).upper() == "SELL"
         )
-        if buy_cost <= 0 or sell_net < 0:
-            return
-        eligible = list(
+
+        def record_attempt(
+            status: str,
+            reason: str,
+            *,
+            eligible_source_count: int = 0,
+            net_return: float | None = None,
+        ) -> None:
             self.db.execute(
                 """
-                SELECT o.id,o.source,o.source_kind,o.observed_at,o.raw_json,e.topic AS event_topic
+                INSERT OR IGNORE INTO paper_source_attribution_attempts(
+                    outcome_key,version,event_id,token_id,decision_id,cohort_id,status,reason,
+                    eligible_source_count,buy_cost_usd,sell_net_usd,net_return,opened_at,closed_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    outcome_key,
+                    self.PAPER_SOURCE_ATTRIBUTION_VERSION,
+                    int(position.event_id),
+                    str(position.token_id),
+                    position.decision_id,
+                    position.cohort_id,
+                    str(status),
+                    str(reason),
+                    max(0, int(eligible_source_count)),
+                    buy_cost if buy_cost > 0 else None,
+                    sell_net if sell_net >= 0 else None,
+                    net_return,
+                    opened_at,
+                    closed_at,
+                ),
+            )
+
+        if buy_cost <= 0 or sell_net < 0:
+            record_attempt("skipped", "invalid_cashflows")
+            return
+        net_return = (sell_net - buy_cost) / buy_cost
+        if position.decision_id is None:
+            record_attempt("skipped", "legacy_missing_decision", net_return=net_return)
+            return
+        if position.cohort_id is None:
+            record_attempt("skipped", "missing_admitted_cohort", net_return=net_return)
+            return
+        cohort = self.db.execute(
+            """
+            SELECT id,decision_at FROM shadow_event_cohorts
+            WHERE id=? AND decision_id=? AND event_id=? AND token_id=?
+            """,
+            (
+                int(position.cohort_id),
+                int(position.decision_id),
+                int(position.event_id),
+                str(position.token_id),
+            ),
+        ).fetchone()
+        if cohort is None:
+            record_attempt("skipped", "cohort_link_mismatch", net_return=net_return)
+            return
+        decision_at = str(cohort["decision_at"])
+        leads = list(
+            self.db.execute(
+                """
+                SELECT DISTINCT o.id,o.source,o.source_kind,o.role,o.observed_at,o.raw_json,
+                       e.topic AS event_topic
                 FROM observations o
-                JOIN event_observations eo ON eo.observation_id=o.id
-                JOIN events e ON e.id=eo.event_id
-                WHERE eo.event_id=? AND o.capture_phase='live'
+                JOIN shadow_event_cohort_labels l ON l.source_observation_id=o.id
+                JOIN events e ON e.id=?
+                WHERE l.cohort_id=? AND o.capture_phase='live'
                   AND o.role IN ('feature','confirmation')
                   AND o.observed_at<=? AND o.ingested_at<=?
                   AND (o.published_at IS NULL OR o.published_at<=?)
                 ORDER BY o.observed_at,o.id
                 """,
-                (position.event_id, iso(position.opened_at), iso(position.opened_at), iso(position.opened_at)),
+                (int(position.event_id), int(position.cohort_id), decision_at, decision_at, decision_at),
             )
         )
-        if not eligible:
-            return
-        first_at = parse_time(eligible[0]["observed_at"])
-        leads = [
-            row for row in eligible
-            if (parse_time(row["observed_at"]) - first_at).total_seconds() <= 60
-        ]
         if not leads:
+            record_attempt("skipped", "no_eligible_cohort_sources", net_return=net_return)
             return
-        decision_support_by_source: dict[tuple[str, str], sqlite3.Row] = {}
-        for row in eligible:
+        weight = 1.0 / len(leads)
+        for row in leads:
             labels = self._source_learning_labels(row)
-            entity = next((value for dimension, value in labels if dimension == "entity"), "")
-            source = next((value for dimension, value in labels if dimension == "source"), "")
-            decision_support_by_source[("entity", entity) if entity else ("source", source)] = row
-        decision_support_rows = list(decision_support_by_source.values())
-        net_return = (sell_net - buy_cost) / buy_cost
-        discovery_outcome_key = hashlib.sha256(
-            f"{position.event_id}\n{position.token_id}\n{iso(position.opened_at)}".encode("utf-8")
-        ).hexdigest()
-        decision_support_outcome_key = hashlib.sha256(
-            f"decision_support\n{position.event_id}\n{position.token_id}\n{iso(position.opened_at)}".encode("utf-8")
-        ).hexdigest()
-        for attribution_basis, outcome_key, rows in (
-            ("discovery_lead", discovery_outcome_key, leads),
-            ("decision_support", decision_support_outcome_key, decision_support_rows),
-        ):
-            weight = 1.0 / len(rows)
-            for row in rows:
-                labels = self._source_learning_labels(row)
-                platform = next((value for dimension, value in labels if dimension == "platform"), "")
-                for dimension, value in labels:
-                    self.db.execute(
-                        """
-                        INSERT OR IGNORE INTO source_utility_outcomes(
-                            outcome_key,event_id,token_id,source_observation_id,dimension,value,origin_platform,
-                            attribution_basis,attribution_weight,net_return,opened_at,closed_at
-                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-                        """,
-                        (
-                            outcome_key, position.event_id, position.token_id, int(row["id"]), dimension, value,
-                            platform, attribution_basis, weight, net_return, iso(position.opened_at), closed_at,
-                        ),
-                    )
+            platform = next((value for dimension, value in labels if dimension == "platform"), "")
+            for dimension, value in labels:
+                self.db.execute(
+                    """
+                    INSERT OR IGNORE INTO source_utility_outcomes(
+                        outcome_key,event_id,token_id,decision_id,cohort_id,attribution_version,
+                        source_observation_id,dimension,value,origin_platform,attribution_basis,
+                        attribution_weight,net_return,opened_at,closed_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        outcome_key,
+                        int(position.event_id),
+                        str(position.token_id),
+                        int(position.decision_id),
+                        int(position.cohort_id),
+                        self.PAPER_SOURCE_ATTRIBUTION_VERSION,
+                        int(row["id"]),
+                        dimension,
+                        value,
+                        platform,
+                        "discovery_lead",
+                        weight,
+                        net_return,
+                        opened_at,
+                        closed_at,
+                    ),
+                )
+        record_attempt(
+            "attributed",
+            "attributed_admitted_cohort",
+            eligible_source_count=len(leads),
+            net_return=net_return,
+        )
 
     def source_learning_summary(self, **kwargs: Any) -> dict[str, Any]:
         with self._lock:
@@ -2176,7 +2315,8 @@ class Store:
         observation_rows = list(
                 connection.execute(
                     """
-                    SELECT o.id,o.source,o.source_kind,o.role,o.observed_at,o.raw_json,eo.event_id,
+                    SELECT o.id,o.source,o.source_kind,o.role,o.published_at,o.observed_at,
+                           o.ingested_at,o.raw_json,eo.event_id,
                            e.topic AS event_topic
                     FROM observations o
                     LEFT JOIN event_observations eo ON eo.observation_id=o.id
@@ -2189,7 +2329,7 @@ class Store:
             )
         decision_rows = list(
                 connection.execute(
-                    "SELECT event_id,action FROM decisions WHERE created_at>=?",
+                    "SELECT id,event_id,action,created_at FROM decisions WHERE created_at>=?",
                     (start,),
                 )
             )
@@ -2205,17 +2345,58 @@ class Store:
             )
             if has_outcomes else []
         )
+        exact_outcome_rows = [
+            row for row in outcome_rows
+            if str(row["attribution_version"] or "") == cls.PAPER_SOURCE_ATTRIBUTION_VERSION
+        ]
+        legacy_outcome_rows = [
+            row for row in outcome_rows
+            if str(row["attribution_version"] or "") != cls.PAPER_SOURCE_ATTRIBUTION_VERSION
+        ]
+        has_attribution_attempts = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='paper_source_attribution_attempts'"
+        ).fetchone() is not None
+        attribution_attempts = (
+            list(
+                connection.execute(
+                    "SELECT * FROM paper_source_attribution_attempts "
+                    "WHERE closed_at>=? ORDER BY closed_at,outcome_key",
+                    (start,),
+                )
+            )
+            if has_attribution_attempts else []
+        )
 
         candidate_events = {
             int(row["event_id"]) for row in decision_rows
             if str(row["action"] or "").upper() == "CANDIDATE"
         }
+        candidate_times: dict[int, Any] = {}
+        for row in decision_rows:
+            if str(row["action"] or "").upper() != "CANDIDATE":
+                continue
+            event_id = int(row["event_id"])
+            created_at = parse_time(row["created_at"])
+            previous = candidate_times.get(event_id)
+            if previous is None or created_at < previous:
+                candidate_times[event_id] = created_at
         event_first_eligible: dict[int, Any] = {}
         records: list[tuple[sqlite3.Row, list[tuple[str, str]], int | None, bool]] = []
         for row in observation_rows:
             event_id = int(row["event_id"]) if row["event_id"] is not None else None
-            eligible = str(row["role"] or "").lower() in {"feature", "confirmation"}
             observed = parse_time(row["observed_at"])
+            candidate_at = candidate_times.get(event_id) if event_id is not None else None
+            eligible = bool(
+                candidate_at is not None
+                and str(row["role"] or "").lower() in {"feature", "confirmation"}
+                and observed <= candidate_at
+                and parse_time(row["ingested_at"]) <= candidate_at
+                and (
+                    row["published_at"] is None
+                    or parse_time(row["published_at"]) <= candidate_at
+                )
+            )
             if event_id is not None and eligible:
                 previous = event_first_eligible.get(event_id)
                 if previous is None or observed < previous:
@@ -2225,20 +2406,26 @@ class Store:
         diagnostic: dict[tuple[str, str], dict[str, Any]] = {}
         for row, labels, event_id, eligible in records:
             observed = parse_time(row["observed_at"])
+            role = str(row["role"] or "").lower()
             for key in labels:
                 metric = diagnostic.setdefault(
                     key,
                     {
                         "observations": 0, "eligible_observations": 0, "context_observations": 0,
+                        "feature_observations": 0, "confirmation_observations": 0,
+                        "identity_observations": 0, "promotion_observations": 0,
                         "events": set(), "early_events": set(), "candidate_events": set(), "last_observed_at": None,
                     },
                 )
                 metric["observations"] += 1
                 metric["eligible_observations" if eligible else "context_observations"] += 1
+                role_key = f"{role}_observations"
+                if role_key in metric:
+                    metric[role_key] += 1
                 metric["last_observed_at"] = max(str(metric["last_observed_at"] or ""), str(row["observed_at"]))
                 if event_id is not None:
                     metric["events"].add(event_id)
-                    if event_id in candidate_events:
+                    if eligible and event_id in candidate_events:
                         metric["candidate_events"].add(event_id)
                     first = event_first_eligible.get(event_id)
                     if eligible and first is not None and (observed - first).total_seconds() <= 60:
@@ -2246,7 +2433,7 @@ class Store:
 
         outcomes: dict[tuple[str, str], dict[str, Any]] = {}
         decision_support_outcomes: dict[tuple[str, str], dict[str, Any]] = {}
-        for row in outcome_rows:
+        for row in exact_outcome_rows:
             key = (str(row["dimension"]), str(row["value"]))
             basis = str(row["attribution_basis"] or "discovery_lead")
             target = decision_support_outcomes if basis == "decision_support" else outcomes
@@ -2324,7 +2511,12 @@ class Store:
                     "value": value,
                     "observations": observations,
                     "eligible_observations": eligible_observations,
+                    "decision_eligible_observations": eligible_observations,
                     "context_observations": int(observed.get("context_observations", 0)),
+                    "feature_observations": int(observed.get("feature_observations", 0)),
+                    "confirmation_observations": int(observed.get("confirmation_observations", 0)),
+                    "identity_observations": int(observed.get("identity_observations", 0)),
+                    "promotion_observations": int(observed.get("promotion_observations", 0)),
                     "event_count": event_count,
                     "early_event_count": early_count,
                     "early_event_rate": round(early_count / event_count, 4) if event_count else None,
@@ -2376,13 +2568,45 @@ class Store:
                 "observations": len(observation_rows),
                 "decisions": len(decision_rows),
                 "closed_paper_outcomes": len({
-                    str(row["outcome_key"]) for row in outcome_rows
+                    str(row["outcome_key"]) for row in exact_outcome_rows
                     if str(row["attribution_basis"] or "discovery_lead") != "decision_support"
                 }),
                 "decision_support_outcomes": len({
-                    str(row["outcome_key"]) for row in outcome_rows
+                    str(row["outcome_key"]) for row in exact_outcome_rows
                     if str(row["attribution_basis"] or "discovery_lead") == "decision_support"
                 }),
+                "legacy_event_window_outcomes": len({
+                    str(row["outcome_key"]) for row in legacy_outcome_rows
+                }),
+                "closed_attribution_attempts": len(attribution_attempts),
+                "attributed_closed_outcomes": sum(
+                    1 for row in attribution_attempts if str(row["status"]) == "attributed"
+                ),
+                "unattributed_closed_outcomes": sum(
+                    1 for row in attribution_attempts if str(row["status"]) != "attributed"
+                ),
+                "closed_attribution_coverage_rate": (
+                    round(
+                        sum(1 for row in attribution_attempts if str(row["status"]) == "attributed")
+                        / len(attribution_attempts),
+                        4,
+                    )
+                    if attribution_attempts else None
+                ),
+                "attribution_skip_reasons": [
+                    {"reason": reason, "count": count}
+                    for reason, count in sorted(
+                        {
+                            str(row["reason"]): sum(
+                                1 for item in attribution_attempts
+                                if str(item["status"]) != "attributed"
+                                and str(item["reason"]) == str(row["reason"])
+                            )
+                            for row in attribution_attempts
+                            if str(row["status"]) != "attributed"
+                        }.items()
+                    )
+                ],
                 "active_labels": sum(1 for item in items if item["rotation_active"]),
             },
             "activation_policy": {
@@ -2396,6 +2620,9 @@ class Store:
                 "minimum_exploration_fraction": 0.40,
                 "affects": "agent_watch_rotation_only",
                 "rotation_basis": "discovery_lead",
+                "paper_attribution_version": cls.PAPER_SOURCE_ATTRIBUTION_VERSION,
+                "paper_attribution_scope": "selected_closed_paper_decision_cohort_only",
+                "legacy_outcomes_affect_learning": False,
                 "decision_support_affects": "descriptive_only",
             },
             "as_of": iso(now),
@@ -2507,7 +2734,8 @@ class Store:
             eligible = list(
                 self.db.execute(
                     f"""
-                    SELECT o.id,o.source,o.source_kind,o.observed_at,o.raw_json,e.topic AS event_topic
+                    SELECT o.id,o.source,o.source_kind,o.role,o.observed_at,o.raw_json,
+                           e.topic AS event_topic
                     FROM observations o
                     JOIN event_observations eo ON eo.observation_id=o.id
                     JOIN events e ON e.id=eo.event_id

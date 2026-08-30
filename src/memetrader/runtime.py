@@ -1757,7 +1757,7 @@ class Runtime:
                     decision.rejected_reasons.append("position_size_below_all_in_cash_limit")
 
             decision_id = self.store.add_decision(decision)
-            self.store.create_shadow_event_cohort(
+            cohort_id = self.store.create_shadow_event_cohort(
                 decision,
                 decision_id=decision_id,
                 source_observation_ids=[int(row["id"]) for row in accepted],
@@ -1836,6 +1836,8 @@ class Runtime:
                     quote_observed_at=snap.observed_at,
                     quote_provider=snap.provider,
                     execution_attempted_at=execution_requested_at,
+                    decision_id=decision_id,
+                    cohort_id=cohort_id,
                 )
             except ValueError as exc:
                 self.store.record_paper_execution_attempt(

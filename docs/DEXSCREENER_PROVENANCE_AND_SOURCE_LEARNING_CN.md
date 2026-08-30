@@ -92,12 +92,19 @@ Token Context 仅把非 Telegram 种子作为不可信搜索提示
 2. 策展槽位：按人工 P5–P1 优先级选择高信噪比账号；P5 不再与 P1 获得相同长期频率。
 3. 探索槽位：12 个候选观察槽位中至少 40%（当前即至少 5 个）用稳定 round-robin 覆盖尚未证明价值的来源，避免系统只关注既有偏好。
 
-`source_utility_outcomes` 是追加式 Paper 学习账本。只有仓位完全平仓时才记录；WAIT、REJECT、开放仓位和部分平仓不产生结果。新闭仓会保存两个明确分开的归因口径：
+`source_utility_outcomes` 是追加式 Paper 学习账本。只有仓位完全平仓时才记录；WAIT、REJECT、开放仓位和部分平仓不产生结果。`paper-source-attribution/v2-decision-cohort` 从最终 CANDIDATE 开始冻结完整主键链：
 
-- `discovery_lead`：只给开仓前最早 60 秒窗口内、当时已在本机看到且角色为 `feature/confirmation` 的 Observation；并列来源平分权重。只有这个口径可作为观察轮换的 Paper 次级验证。
-- `decision_support`：描述开仓前本机已经看到的全部合格 `feature/confirmation`；同一实体或来源只保留其最近一条，避免重复发稿获得额外权重。它用于审计“入场时实际有哪些独立来源支持”，永远不进入观察轮换、证据权重或交易策略。
+```text
+decision_id
+  → admitted shadow_event cohort_id
+  → Paper position
+  → BUY / partial SELL / final SELL
+  → closed source outcome
+```
 
-两个口径分别归一化，不能相加成两笔交易。`identity/promotion`、未来发布时间、开仓后摄入或观察的证据在两个口径中都不获归因。迁移前已闭仓的历史结果保持 `discovery_lead`，不事后回填 `decision_support`。
+平仓时只读取这个 cohort 在决策时已经冻结的最早合格 `feature/confirmation` Observation，并列来源平分权重，写成 `discovery_lead`。收益按买入 gross+fee 与卖出 gross-fee-known_tax 计算；滑点已经体现在成交价和数量中。`identity/promotion`、决策后观察/摄入/发布的数据以及其他事件或其他 Token 的来源都不能获归因。
+
+每个完全平仓 round 都会在 `paper_source_attribution_attempts` 记录一次结果。缺少 `decision_id`、缺少 admitted cohort、主键不匹配或 cohort 没有当时合格来源时明确标为 skipped，而不是沉默丢失。升级前的 `legacy-event-window/v1` 行保留供审计，但不进入新学习，不根据当前数据库反推或回填 decision/cohort。该结果只是“被系统选择、成交并平仓”条件下的相关历史，不证明来源、平台、人物或题材导致收益。
 
 网页同时显示早期命中、合格证据率和候选关联率，但它们只是描述性研究统计。Paper 标签的成熟门槛为：
 

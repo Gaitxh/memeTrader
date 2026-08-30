@@ -62,8 +62,13 @@ def test_store_migrates_legacy_source_outcomes_without_backfill(tmp_path: Path):
     store = Store(database, initial_cash_usd=1000)
     row = store.db.execute("SELECT * FROM source_utility_outcomes").fetchone()
     assert row["attribution_basis"] == "discovery_lead"
+    assert row["attribution_version"] == "legacy-event-window/v1"
+    assert row["decision_id"] is None and row["cohort_id"] is None
     assert store.db.execute(
         "SELECT COUNT(*) FROM source_utility_outcomes WHERE attribution_basis='decision_support'"
+    ).fetchone()[0] == 0
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM paper_source_attribution_attempts"
     ).fetchone()[0] == 0
     store.close()
 
@@ -216,7 +221,24 @@ def test_source_learning_records_only_closed_paper_lead_evidence(tmp_path: Path)
         ids.append(observation_id)
     token = TokenCandidate(chain="solana", address="L" * 32, name="Mascot", symbol="MASC")
     store.upsert_token(token, seen_at=now)
-    store.paper_buy(event_id=event_id, token=token, price=1.0, gross_usd=100, fee_bps=0, reason="test")
+    store.add_snapshot(
+        TokenSnapshot(
+            "solana", token.address, 1.0, 100_000, 100_000, 10_000, 20, 5,
+            observed_at=now,
+        )
+    )
+    decision = CandidateDecision(
+        event_id, token.token_id, "CANDIDATE", 90, 90, 20, ["test"], created_at=now,
+    )
+    decision_id = store.add_decision(decision)
+    cohort_id = store.create_shadow_event_cohort(
+        decision, decision_id=decision_id, source_observation_ids=ids,
+    )
+    assert cohort_id is not None
+    store.paper_buy(
+        event_id=event_id, token=token, price=1.0, gross_usd=100, fee_bps=0,
+        reason="test", decision_id=decision_id, cohort_id=cohort_id,
+    )
     store.paper_sell(token.token_id, price=1.1, fraction=0.5, fee_bps=0, reason="partial")
     assert store.db.execute("SELECT COUNT(*) FROM source_utility_outcomes").fetchone()[0] == 0
     store.paper_sell(token.token_id, price=1.2, fraction=1.0, fee_bps=0, reason="close")
@@ -224,9 +246,14 @@ def test_source_learning_records_only_closed_paper_lead_evidence(tmp_path: Path)
     discovery_rows = [row for row in outcome_rows if row["attribution_basis"] == "discovery_lead"]
     support_rows = [row for row in outcome_rows if row["attribution_basis"] == "decision_support"]
     assert {int(row["source_observation_id"]) for row in discovery_rows} == set(ids[:2])
-    assert {int(row["source_observation_id"]) for row in support_rows} == {ids[0], ids[5]}
+    assert support_rows == []
     assert all(abs(float(row["attribution_weight"]) - 0.5) < 1e-9 for row in discovery_rows)
-    assert all(abs(float(row["attribution_weight"]) - 0.5) < 1e-9 for row in support_rows)
+    assert all(int(row["decision_id"]) == decision_id for row in outcome_rows)
+    assert all(int(row["cohort_id"]) == cohort_id for row in outcome_rows)
+    assert all(
+        row["attribution_version"] == Store.PAPER_SOURCE_ATTRIBUTION_VERSION
+        for row in outcome_rows
+    )
     assert all(row["dimension"] != "entity" or row["value"] == "alpha" for row in outcome_rows)
     assert any(
         row["dimension"] == "event_topic" and row["value"] == "animals_internet_culture"
@@ -236,17 +263,17 @@ def test_source_learning_records_only_closed_paper_lead_evidence(tmp_path: Path)
         row["value"] in {"promotion-c", "delayed-ingestion", "future-published", "late-d"}
         for row in discovery_rows
     )
-    assert not any(
-        row["value"] in {"promotion-c", "delayed-ingestion", "future-published"}
-        for row in support_rows
-    )
-    assert any(int(row["source_observation_id"]) == ids[5] for row in support_rows)
-    assert not any(int(row["source_observation_id"]) == ids[1] for row in support_rows)
+    attempt = store.db.execute("SELECT * FROM paper_source_attribution_attempts").fetchone()
+    assert attempt["status"] == "attributed"
+    assert attempt["reason"] == "attributed_admitted_cohort"
+    assert int(attempt["eligible_source_count"]) == 2
 
     conservative = store.source_learning_summary()
     assert conservative["status"] == "collecting_samples"
     assert conservative["summary"]["closed_paper_outcomes"] == 1
-    assert conservative["summary"]["decision_support_outcomes"] == 1
+    assert conservative["summary"]["decision_support_outcomes"] == 0
+    assert conservative["summary"]["attributed_closed_outcomes"] == 1
+    assert conservative["summary"]["closed_attribution_coverage_rate"] == 1.0
     assert conservative["activation_policy"]["rotation_basis"] == "discovery_lead"
     assert conservative["activation_policy"]["decision_support_affects"] == "descriptive_only"
     relaxed = store.source_learning_summary(
@@ -273,6 +300,146 @@ def test_source_learning_records_only_closed_paper_lead_evidence(tmp_path: Path)
     )
     assert lane_item["rotation_active"] is False
     assert lane_item["rotation_multiplier"] == 1.0
+    store.close()
+
+
+def test_paper_source_attribution_is_exact_tax_aware_and_never_backfills_legacy(tmp_path: Path):
+    now = datetime.now(timezone.utc)
+    store = Store(tmp_path / "exact-paper-attribution.sqlite3", initial_cash_usd=1000)
+    event_id = store.create_event("Exact forward event", ["exact"], 80, now - timedelta(minutes=1))
+    observation_id, _ = store.add_observation(
+        Observation(
+            source="x:exact",
+            source_kind="social",
+            title="Exact forward feature",
+            observed_at=now - timedelta(minutes=1),
+            ingested_at=now - timedelta(minutes=1),
+            role="feature",
+            raw={"platform": "x", "source_entity_id": "exact_person"},
+        )
+    )
+    store.link_event_observation(event_id, observation_id)
+    token = TokenCandidate(chain="solana", address="T" * 32, name="Exact", symbol="EXACT")
+    store.upsert_token(token, seen_at=now)
+    store.add_snapshot(
+        TokenSnapshot("solana", token.address, 1.0, 100_000, 100_000, 10_000, 20, 5, observed_at=now)
+    )
+    decision = CandidateDecision(
+        event_id, token.token_id, "CANDIDATE", 90, 90, 20, ["test"], created_at=now,
+    )
+    decision_id = store.add_decision(decision)
+    cohort_id = store.create_shadow_event_cohort(
+        decision, decision_id=decision_id, source_observation_ids=[observation_id],
+    )
+    assert cohort_id is not None
+    position = store.paper_buy(
+        event_id=event_id, token=token, price=1.0, gross_usd=100, fee_bps=0,
+        reason="test", tax_pct=10, decision_id=decision_id, cohort_id=cohort_id,
+    )
+    assert position.decision_id == decision_id and position.cohort_id == cohort_id
+    store.paper_sell(
+        token.token_id, price=1.0, fraction=1.0, fee_bps=0, reason="close", tax_pct=10,
+    )
+    outcome = store.db.execute("SELECT * FROM source_utility_outcomes LIMIT 1").fetchone()
+    attempt = store.db.execute("SELECT * FROM paper_source_attribution_attempts").fetchone()
+    # BUY tax is already inside gross_usd and reduces acquired quantity; adding it
+    # again to buy_cost would double-count it. The later 10% SELL tax reduces 90 to 81.
+    assert float(outcome["net_return"]) == pytest.approx(-0.19)
+    assert float(attempt["buy_cost_usd"]) == pytest.approx(100.0)
+    assert float(attempt["sell_net_usd"]) == pytest.approx(81.0)
+    assert float(attempt["net_return"]) == pytest.approx(-0.19)
+    trade_links = {
+        (int(row["decision_id"]), int(row["cohort_id"]))
+        for row in store.db.execute("SELECT decision_id,cohort_id FROM trades")
+    }
+    assert trade_links == {(decision_id, cohort_id)}
+
+    legacy_token = TokenCandidate(
+        chain="solana", address="U" * 32, name="Legacy", symbol="LEGACY",
+    )
+    store.upsert_token(legacy_token, seen_at=now)
+    store.paper_buy(
+        event_id=event_id, token=legacy_token, price=1.0, gross_usd=50,
+        fee_bps=0, reason="legacy-test",
+    )
+    store.paper_sell(
+        legacy_token.token_id, price=1.1, fraction=1.0, fee_bps=0, reason="legacy-close",
+    )
+    attempts = list(store.db.execute("SELECT * FROM paper_source_attribution_attempts ORDER BY closed_at"))
+    assert len(attempts) == 2
+    assert attempts[-1]["status"] == "skipped"
+    assert attempts[-1]["reason"] == "legacy_missing_decision"
+    assert store.db.execute(
+        "SELECT COUNT(DISTINCT outcome_key) FROM source_utility_outcomes"
+    ).fetchone()[0] == 1
+    store.close()
+
+
+def test_source_diagnostics_separate_roles_and_require_pre_candidate_timestamps(tmp_path: Path):
+    now = datetime.now(timezone.utc)
+    candidate_at = now - timedelta(minutes=2)
+    store = Store(tmp_path / "source-role-timing.sqlite3")
+    event_id = store.create_event("Timed source event", ["timed"], 80, now - timedelta(minutes=5))
+    observations = [
+        Observation(
+            source="mixed-source", source_kind="news", title="Timely feature",
+            observed_at=now - timedelta(minutes=4), ingested_at=now - timedelta(minutes=4),
+            role="feature",
+        ),
+        Observation(
+            source="mixed-source", source_kind="news", title="Timely confirmation",
+            observed_at=now - timedelta(minutes=3, seconds=30),
+            ingested_at=now - timedelta(minutes=3, seconds=30), role="confirmation",
+        ),
+        Observation(
+            source="mixed-source", source_kind="news", title="Identity only",
+            observed_at=now - timedelta(minutes=4), ingested_at=now - timedelta(minutes=4),
+            role="identity",
+        ),
+        Observation(
+            source="mixed-source", source_kind="news", title="Promotion only",
+            observed_at=now - timedelta(minutes=4), ingested_at=now - timedelta(minutes=4),
+            role="promotion",
+        ),
+        Observation(
+            source="mixed-source", source_kind="news", title="Observed after decision",
+            observed_at=now - timedelta(minutes=1), ingested_at=now - timedelta(minutes=1),
+            role="feature",
+        ),
+        Observation(
+            source="mixed-source", source_kind="news", title="Ingested after decision",
+            observed_at=now - timedelta(minutes=4), ingested_at=now - timedelta(minutes=1),
+            role="feature",
+        ),
+        Observation(
+            source="mixed-source", source_kind="news", title="Published after decision",
+            published_at=now - timedelta(minutes=1), observed_at=now - timedelta(minutes=4),
+            ingested_at=now - timedelta(minutes=4), role="feature",
+        ),
+    ]
+    for observation in observations:
+        observation_id, _ = store.add_observation(observation)
+        store.link_event_observation(event_id, observation_id)
+    store.add_decision(
+        CandidateDecision(
+            event_id, "solana:timed", "CANDIDATE", 90, 90, 20, ["test"],
+            created_at=candidate_at,
+        )
+    )
+    summary = store.source_learning_summary()
+    item = next(
+        row for row in summary["items"]
+        if row["dimension"] == "source" and row["value"] == "mixed-source"
+    )
+    assert item["observations"] == 7
+    assert item["feature_observations"] == 4
+    assert item["confirmation_observations"] == 1
+    assert item["identity_observations"] == 1
+    assert item["promotion_observations"] == 1
+    assert item["decision_eligible_observations"] == 2
+    assert item["eligible_observation_rate"] == pytest.approx(2 / 7, abs=0.0001)
+    assert item["candidate_event_count"] == 1
+    assert item["early_event_count"] == 1
     store.close()
 
 

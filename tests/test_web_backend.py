@@ -1129,7 +1129,8 @@ def test_candidate_ranking_api_is_persisted_bounded_sanitized_and_wait_is_truthf
     assert "Token-context forward follow-through: learn what merits more research" in app
     assert "Trend attention learning: exploration first, never trading" in app
     assert "Watch rotation changes only after both check efficiency and non-buy-only market follow-up mature" in app
-    assert "Closed Paper outcomes separate discovery lead from decision-time evidence without double-counting trades" in app
+    assert "Paper source outcomes require an exact final-decision → admitted-cohort → fill → close chain" in app
+    assert "Evidence roles F / C / I / P" in app
     assert "event_topic" in app and "observe only" in app
     assert "Linked narrative / event observation timeline" in app
     assert "Verified narrative / event evidence timeline" not in app

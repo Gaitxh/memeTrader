@@ -64,6 +64,8 @@ RSS 默认不继承系统代理。若电脑只能通过本机 SOCKS5 出网，�
 
 这些暴露记录用于纠正“只统计找到的事件、不统计搜过但没找到”的选择偏差。当前主题学习是 `shadow_observation_only`：无论统计表现如何，实际调度仍为基线 round-robin，surge 仍为全覆盖。Web 只在至少两个通道分别满足 20 次完成暴露、30 个不同已平仓事件、15 个事件日和 8 个加权亏损样本后，显示仅供人工审查的影子候选；它不会自动改变检索、决策或仓位。
 
+Paper 来源效果采用 `paper-source-attribution/v2-decision-cohort`：最终 CANDIDATE 的 `decision_id` 与 admitted shadow cohort 会在模拟买入时写入持仓和成交，完全平仓只归因给该 cohort 决策时冻结的最早合格来源。每次平仓无论成功归因还是缺少 decision/cohort 都写入覆盖账本；旧事件时间窗结果保留但排除出学习。Sources 的角色和候选关联统计也要求 observed、ingested、published 三个时间都不晚于首个最终候选决策。该结果仍是已选择/已平仓条件样本，不是来源、人物或主题的因果收益证明。
+
 | 任务 | 首选模型与推理 | 回退 | 原因 |
 |---|---|---|---|
 | 全球热点侦察 | `gpt-5.3-codex-spark`, low | `gpt-5.6-luna`, low | 高频、广覆盖、结构化筛选 |

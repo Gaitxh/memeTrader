@@ -94,6 +94,7 @@ EXPECTED_TABLES = {
     "paper_account",
     "paper_account_snapshots",
     "paper_execution_attempts",
+    "paper_source_attribution_attempts",
     "positions",
     "source_health",
     "source_utility_outcomes",

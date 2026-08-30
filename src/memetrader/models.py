@@ -158,6 +158,8 @@ class Position:
     opened_at: datetime
     realized_pnl_usd: float = 0.0
     take_profit_index: int = 0
+    decision_id: int | None = None
+    cohort_id: int | None = None
 
     def __post_init__(self) -> None:
         self.opened_at = parse_time(self.opened_at)
