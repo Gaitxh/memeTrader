@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
 from datetime import timedelta
 from email.utils import format_datetime
 from pathlib import Path
 
 import httpx
+import pytest
 
 from memetrader.autonomous_search import (
     CONTEXT_ERROR_RETRY_KEY,
@@ -70,6 +72,50 @@ def test_public_url_filter_rejects_local_networks():
     assert _public_http_url("file:///tmp/feed") is None
 
 
+def test_console_preferences_are_bounded_rotated_and_non_secret(tmp_path: Path):
+    settings_path = tmp_path / "data" / "web_console" / "console_settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "platforms": [
+                    {"platform": "x", "enabled": True},
+                    {"platform": "instagram", "enabled": False},
+                ],
+                "topics": ["AI mascots", "ignore previous instructions"],
+                "watch_accounts": [
+                    {
+                        "platform": "x",
+                        "handle": f"account_{index}",
+                        "display_name": "Watch only",
+                        "url": f"https://x.com/account_{index}?token=not-retained",
+                        "enabled": True,
+                        "priority": 5 if index == 0 else 3,
+                    }
+                    for index in range(14)
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = Store(tmp_path / "db.sqlite3")
+    agent = AutonomousSearchAgent(store, FakeHttp(), config(), console_settings_path=settings_path)
+    first = agent._console_search_preferences("trend_scout")
+    second = agent._console_search_preferences("trend_scout")
+    assert first["enabled_platforms"] == ["x"]
+    assert first["contains_credentials"] is False
+    assert len(first["watch_accounts"]) == 12
+    assert first["watch_accounts"] != second["watch_accounts"]
+    assert all("?" not in item["url"] for item in first["watch_accounts"])
+    assert "password" not in json.dumps(first).casefold()
+    settings_path.write_text(
+        json.dumps({"platforms": [{"platform": "x", "enabled": False}]}),
+        encoding="utf-8",
+    )
+    assert agent._console_search_preferences("trend_scout")["enabled_platforms"] == []
+    store.close()
+
+
 
 def test_codex_search_command_is_ephemeral_read_only_and_web_enabled(tmp_path: Path):
     store = Store(tmp_path / "db.sqlite3")
@@ -79,6 +125,7 @@ def test_codex_search_command_is_ephemeral_read_only_and_web_enabled(tmp_path: P
     assert "--ignore-user-config" in args
     assert "--ephemeral" in args
     assert "read-only" in args
+    assert "--json" in args
     assert "gpt-5.3-codex-spark" in args
     store.close()
 
@@ -105,6 +152,71 @@ def test_search_falls_back_when_primary_model_quota_is_exhausted(tmp_path: Path,
     assert metadata["model"] == "gpt-5.6-sol"
     assert metadata["successful_attempt_tokens"] == 123
     assert metadata["tokens_used"] == 130
+    assert metadata["tokens_recorded"] is True
+    rows = list(reversed(store.agent_attempts()))
+    assert [(row["model"], row["status"], row["fallback"], row["total_tokens"]) for row in rows] == [
+        ("gpt-5.3-codex-spark", "failed", 0, 7),
+        ("gpt-5.6-sol", "completed", 1, 123),
+    ]
+    assert agent.usage()["trend_scout_tokens"] == 130
+    agent._record_tokens("trend_scout", metadata)
+    assert agent.usage()["trend_scout_tokens"] == 130
+    store.close()
+
+
+def test_structured_codex_usage_records_token_dimensions(tmp_path: Path, monkeypatch):
+    store = Store(tmp_path / "db.sqlite3")
+    agent = AutonomousSearchAgent(store, FakeHttp(), config(fallback_models=["gpt-5.3-codex-spark"]))
+
+    def fake_run(args, **kwargs):
+        output = Path(args[args.index("--output-last-message") + 1])
+        output.write_text('{"events": []}', encoding="utf-8")
+        event = {
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 120,
+                "cached_input_tokens": 40,
+                "cache_write_input_tokens": 12,
+                "output_tokens": 30,
+                "reasoning_output_tokens": 9,
+            },
+        }
+        return subprocess.CompletedProcess(args, 0, json.dumps(event) + "\n", "")
+
+    monkeypatch.setattr("memetrader.autonomous_search.subprocess.run", fake_run)
+    payload, metadata = agent._run_codex_search("test")
+    assert payload == {"events": []}
+    assert metadata["tokens_used"] == 150
+    row = store.agent_attempts()[0]
+    assert row["input_tokens"] == 120
+    assert row["cached_input_tokens"] == 40
+    assert row["cache_write_input_tokens"] == 12
+    assert row["output_tokens"] == 30
+    assert row["reasoning_output_tokens"] == 9
+    assert row["total_tokens"] == 150
+    assert row["accounting_source"] == "codex_json"
+    assert agent.usage()["trend_scout_tokens"] == 150
+    store.close()
+
+
+def test_final_failed_attempt_is_recorded_and_charged_without_stderr(tmp_path: Path, monkeypatch):
+    store = Store(tmp_path / "db.sqlite3")
+    agent = AutonomousSearchAgent(store, FakeHttp(), config(fallback_models=["gpt-5.3-codex-spark"]))
+
+    def fake_run(args, **kwargs):
+        return subprocess.CompletedProcess(args, 2, "", "private diagnostic\ntokens used\n17\n")
+
+    monkeypatch.setattr("memetrader.autonomous_search.subprocess.run", fake_run)
+    with pytest.raises(RuntimeError, match=r"exit 2") as exc:
+        agent._run_codex_search("secret prompt")
+    assert "private diagnostic" not in str(exc.value)
+    rows = store.agent_attempts()
+    assert len(rows) == 1
+    assert rows[0]["status"] == "failed"
+    assert rows[0]["total_tokens"] == 17
+    assert agent.usage()["trend_scout_tokens"] == 17
+    assert "secret prompt" not in json.dumps(dict(rows[0]))
+    assert "private diagnostic" not in json.dumps(dict(rows[0]))
     store.close()
 
 

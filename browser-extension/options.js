@@ -8,9 +8,12 @@ async function load() {
     token: "",
     watchTerms: [],
     watchAccounts: [],
+    platformStates: {},
     officialAccounts: [],
     maxPostAgeMinutes: 30,
-    pendingObservations: []
+    pendingObservations: [],
+    watchlistLastSyncAt: "",
+    watchlistLastSyncError: ""
   });
   document.getElementById("bridgeUrl").value = state.bridgeUrl;
   document.getElementById("token").value = state.token;
@@ -19,6 +22,14 @@ async function load() {
   document.getElementById("watchAccounts").value = (state.watchAccounts || []).join("\n");
   document.getElementById("officialAccounts").value = (state.officialAccounts || []).join("\n");
   document.getElementById("queueStatus").textContent = `待发送：${(state.pendingObservations || []).length} 条`;
+  const syncStatus = document.getElementById("watchlistSyncStatus");
+  syncStatus.textContent = state.watchlistLastSyncAt
+    ? `网页关注清单：最后同步 ${new Date(state.watchlistLastSyncAt).toLocaleString()}${state.watchlistLastSyncError ? `；最近错误 ${state.watchlistLastSyncError}` : ""}`
+    : `网页关注清单：尚未同步${state.watchlistLastSyncError ? `；${state.watchlistLastSyncError}` : ""}`;
+  const entries = Object.entries(state.platformStates || {});
+  document.getElementById("platformStatus").textContent = entries.length
+    ? `平台开关：${entries.map(([name, enabled]) => `${name} ${enabled ? "开" : "关"}`).join(" · ")}`
+    : "平台开关：等待网页控制台同步";
 }
 
 document.getElementById("save").addEventListener("click", async () => {
@@ -30,8 +41,6 @@ document.getElementById("save").addEventListener("click", async () => {
     bridgeUrl: document.getElementById("bridgeUrl").value.trim().replace(/\/$/, ""),
     token: document.getElementById("token").value.trim(),
     maxPostAgeMinutes,
-    watchTerms: lines(document.getElementById("watchTerms").value),
-    watchAccounts: lines(document.getElementById("watchAccounts").value),
     officialAccounts: lines(document.getElementById("officialAccounts").value)
   });
   const status = document.getElementById("status");

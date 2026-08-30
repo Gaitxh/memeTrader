@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "memeTrader Public Feed Bridge",
-  "version": "0.6.3",
-  "description": "Passively forwards newly rendered public social posts to a loopback-only memeTrader instance.",
+  "version": "0.6.4",
+  "description": "Passively forwards newly rendered public social posts and syncs a credential-free local watchlist.",
   "permissions": ["storage", "alarms"],
   "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
   "background": {"service_worker": "background.js"},

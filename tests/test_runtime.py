@@ -27,6 +27,35 @@ def test_initial_config_has_private_token_and_live_locked():
     assert config["safety"]["require_solana_report"] is True
 
 
+def test_browser_platform_heartbeat_persists_only_sanitized_access_state(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        runtime = Runtime(config, tmp_path)
+        await runtime.browser_heartbeat(
+            "https://x.com/i/lists/1",
+            {
+                "platform": "x",
+                "visible": True,
+                "selector_count": "8",
+                "page_url": "https://x.com/i/lists/1?token=must-not-persist#private",
+                "access_state": "content_visible",
+                "password": "must-not-persist",
+                "cookie": "must-not-persist",
+            },
+        )
+        saved = runtime.store.get_kv("browser_platform_heartbeat:x")
+        assert saved["access_state"] == "accessible"
+        assert saved["selector_count"] == 8
+        assert saved["page_url"] == "https://x.com/i/lists/1"
+        assert saved["contains_credentials"] is False
+        assert "must-not-persist" not in json.dumps(saved)
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
 def test_doctor_treats_unrequired_security_endpoint_failure_as_warning(tmp_path, monkeypatch, capsys):
     config = initial_config()
     config["database"] = "db.sqlite3"

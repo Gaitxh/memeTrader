@@ -37,6 +37,7 @@ from .autonomous_search import (
 from .models import TokenSnapshot, iso, parse_time, utcnow
 from .runtime import DEFAULT_CONFIG, load_config
 from .strategy import CandidateEvaluator, evidence_origin, evidence_rejection
+from .wallet import SolanaDevnetWallet, WalletError
 
 
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -51,6 +52,17 @@ PLATFORMS = (
     "youtube",
     "telegram",
 )
+PLATFORM_ACCESS = {
+    "x": ("browser_public_or_signed_in", True),
+    "truth": ("browser_public_or_signed_in", True),
+    "bluesky": ("public_web", False),
+    "reddit": ("browser_public_or_signed_in", True),
+    "threads": ("browser_public_or_signed_in", True),
+    "instagram": ("browser_signed_in_recommended", True),
+    "tiktok": ("browser_public_or_signed_in", True),
+    "youtube": ("public_web", False),
+    "telegram": ("public_web_preview", False),
+}
 DEFAULT_CONSOLE_SETTINGS = {
     "platforms": [{"platform": name, "enabled": True} for name in PLATFORMS],
     "watch_accounts": [],
@@ -397,12 +409,50 @@ class WebData:
     def __init__(self, config_path: str | Path):
         self.config_path = Path(config_path).resolve()
         self.console_settings_path = self.config_path.parent / "data" / "web_console" / "console_settings.json"
+        self.wallet_service = SolanaDevnetWallet(self.console_settings_path.parent)
         self.auth_info = {"required": False, "mode": "loopback", "token_file": None}
         self._settings_lock = threading.Lock()
         self._system_lock = threading.Lock()
         self._system_cache_at = None
         self._system_cache: dict[str, Any] | None = None
         self._reload_config()
+
+    def wallet_state(self, *, public_view: bool = False, refresh: bool = False) -> dict[str, Any]:
+        return self.wallet_service.snapshot(public_view=public_view, refresh=refresh)
+
+    def connect_wallet(self, payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise APIError(400, "wallet connection must be a JSON object")
+        unknown = set(payload) - {"private_key", "alias"}
+        if unknown:
+            raise APIError(400, "unsupported wallet connection fields")
+        if "private_key" not in payload:
+            raise APIError(400, "private_key is required")
+        try:
+            return self.wallet_service.connect(payload.get("private_key"), payload.get("alias"))
+        except WalletError as exc:
+            raise APIError(400, str(exc)) from None
+
+    def wallet_airdrop(self, payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, dict) or set(payload) - {"sol"}:
+            raise APIError(400, "unsupported Devnet faucet fields")
+        try:
+            return self.wallet_service.request_airdrop(payload.get("sol", 0.1))
+        except WalletError as exc:
+            raise APIError(400, str(exc)) from None
+
+    def wallet_transfer(self, payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, dict) or set(payload) - {"recipient", "sol", "confirm_phrase"}:
+            raise APIError(400, "unsupported Devnet transfer fields")
+        try:
+            return self.wallet_service.transfer(
+                payload.get("recipient"), payload.get("sol"), payload.get("confirm_phrase")
+            )
+        except WalletError as exc:
+            raise APIError(400, str(exc)) from None
+
+    def disconnect_wallet(self) -> dict[str, Any]:
+        return self.wallet_service.disconnect()
 
     def console_settings(self) -> dict[str, Any]:
         if not self.console_settings_path.exists():
@@ -877,6 +927,17 @@ class WebData:
         freshness = "unknown"
         if source_age is not None:
             freshness = "future" if source_age < -5 else ("fresh" if source_age <= max_age else "stale")
+        engagement_values = {
+            key: max(0.0, _safe_float(safe_raw.get(key)) or 0.0)
+            for key in ("view_count", "like_count", "repost_count", "reply_count")
+        }
+        engagement_total = (
+            engagement_values["view_count"]
+            + engagement_values["like_count"] * 20
+            + engagement_values["repost_count"] * 40
+            + engagement_values["reply_count"] * 10
+        )
+        engagement_heat = round(min(10.0, math.log10(engagement_total + 1) * 2.0), 2) if engagement_total else 0.0
         return {
             "id": int(row["id"]),
             "source": row["source"],
@@ -897,8 +958,63 @@ class WebData:
             "source_age_minutes": source_age,
             "freshness": freshness,
             "origin": evidence_origin(row),
+            "engagement_heat": engagement_heat,
+            "engagement_observed": any(engagement_values.values()),
             "metadata": safe_raw,
         }
+
+    @staticmethod
+    def _rank_evidence(observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        origin_counts: dict[str, int] = {}
+        for item in observations:
+            origin = str(item.get("origin") or "")
+            if origin:
+                origin_counts[origin] = origin_counts.get(origin, 0) + 1
+        ranked: list[dict[str, Any]] = []
+        role_scores = {"feature": 25.0, "confirmation": 20.0, "identity": 5.0, "promotion": 0.0}
+        for item in observations:
+            value = copy.deepcopy(item)
+            role = str(value.get("role") or "identity")
+            eligible = bool(value.get("decision_eligible"))
+            freshness = str(value.get("freshness") or "unknown")
+            origin = str(value.get("origin") or "")
+            score = 45.0 if eligible else 0.0
+            reasons = ["decision_eligible"] if eligible else ["context_only"]
+            score += role_scores.get(role, 0.0)
+            reasons.append(f"role:{role}")
+            if freshness == "fresh":
+                score += 15.0
+                reasons.append("fresh")
+            elif freshness == "unknown":
+                score += 4.0
+                reasons.append("freshness_unknown")
+            else:
+                reasons.append(freshness)
+            if origin and origin_counts.get(origin) == 1:
+                score += 5.0
+                reasons.append("independent_origin")
+            if value.get("url"):
+                score += 3.0
+                reasons.append("direct_source_link")
+            heat = max(0.0, min(10.0, _safe_float(value.get("engagement_heat")) or 0.0))
+            score += heat
+            if heat:
+                reasons.append("observed_engagement")
+            value["priority_score"] = round(max(0.0, min(100.0, score)), 2)
+            value["priority_reasons"] = reasons
+            value["ranking_method"] = "evidence_priority_not_authority"
+            ranked.append(value)
+        ranked.sort(
+            key=lambda item: (
+                bool(item.get("decision_eligible")),
+                float(item.get("priority_score") or 0),
+                parse_time(item.get("observed_at") or "1970-01-01T00:00:00Z"),
+            ),
+            reverse=True,
+        )
+        for index, item in enumerate(ranked, 1):
+            item["priority_rank"] = index
+        return ranked
 
     def _events_payload(
         self, connection: sqlite3.Connection, rows: list[sqlite3.Row], *, include_observations: bool
@@ -922,6 +1038,7 @@ class WebData:
         for row in rows:
             event_id = int(row["id"])
             observations = grouped.get(event_id, [])
+            ranked_observations = self._rank_evidence(observations)
             origins = {item["origin"] for item in observations if item["origin"]}
             eligible_observations = [item for item in observations if item["decision_eligible"]]
             eligible_origins = {
@@ -949,9 +1066,14 @@ class WebData:
                 "observation_count": len(observations),
                 "roles": roles,
                 "decision_eligible": bool(eligible_origins),
+                "event_url": f"#/events/{event_id}",
+                "evidence_ranking": {
+                    "method": "evidence_priority_not_authority",
+                    "order": ["decision_eligibility", "role", "freshness", "independent_origin", "observed_engagement"],
+                },
             }
             if include_observations:
-                payload["observations"] = observations
+                payload["observations"] = ranked_observations
             output.append(payload)
         return output
 
@@ -993,7 +1115,11 @@ class WebData:
             token_ids = list(dict.fromkeys(str(item["token_id"]) for item in decisions if item.get("token_id")))
             event["decisions"] = decisions
             event["related_token_ids"] = token_ids
-            event["evidence_timeline"] = event["observations"]
+            event["ranked_sources"] = event["observations"]
+            event["evidence_timeline"] = sorted(
+                event["observations"],
+                key=lambda item: parse_time(item.get("observed_at") or "1970-01-01T00:00:00Z"),
+            )
             return event
 
     def _token_links(self, connection: sqlite3.Connection, token_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
@@ -1307,6 +1433,63 @@ class WebData:
             "next_interval_minutes": value.get("next_interval_minutes"),
         }
 
+    @staticmethod
+    def _agent_usage_rows(
+        connection: sqlite3.Connection | None,
+        since: str,
+        group_columns: tuple[str, ...] = (),
+    ) -> list[dict[str, Any]]:
+        if connection is None or not WebData._table_exists(connection, "agent_attempts"):
+            return []
+        allowed = {"task", "model", "reasoning_effort"}
+        if any(column not in allowed for column in group_columns):
+            raise ValueError("unsupported usage grouping")
+        prefix = ",".join(group_columns)
+        select_prefix = f"{prefix}," if prefix else ""
+        group = f" GROUP BY {prefix}" if prefix else ""
+        rows = connection.execute(
+            f"""
+            SELECT {select_prefix}
+                   COUNT(DISTINCT run_id) AS calls,
+                   COUNT(*) AS attempts,
+                   SUM(CASE WHEN fallback=1 THEN 1 ELSE 0 END) AS fallback_attempts,
+                   SUM(input_tokens) AS input_tokens,
+                   SUM(cached_input_tokens) AS cached_input_tokens,
+                   SUM(cache_write_input_tokens) AS cache_write_input_tokens,
+                   SUM(output_tokens) AS output_tokens,
+                   SUM(reasoning_output_tokens) AS reasoning_output_tokens,
+                   SUM(total_tokens) AS total_tokens,
+                   SUM(CASE WHEN total_tokens IS NOT NULL THEN 1 ELSE 0 END) AS known_usage_attempts,
+                   SUM(CASE WHEN total_tokens IS NULL THEN 1 ELSE 0 END) AS unknown_usage_attempts
+            FROM agent_attempts WHERE finished_at>=?{group}
+            ORDER BY total_tokens DESC,attempts DESC
+            """,
+            (since,),
+        )
+        output: list[dict[str, Any]] = []
+        for row in rows:
+            attempts = int(row["attempts"] or 0)
+            known = int(row["known_usage_attempts"] or 0)
+            item = {column: row[column] for column in group_columns}
+            item.update(
+                {
+                    "calls": int(row["calls"] or 0),
+                    "attempts": attempts,
+                    "fallback_attempts": int(row["fallback_attempts"] or 0),
+                    "input_tokens": row["input_tokens"],
+                    "cached_input_tokens": row["cached_input_tokens"],
+                    "cache_write_input_tokens": row["cache_write_input_tokens"],
+                    "output_tokens": row["output_tokens"],
+                    "reasoning_output_tokens": row["reasoning_output_tokens"],
+                    "total_tokens": row["total_tokens"],
+                    "known_usage_attempts": known,
+                    "unknown_usage_attempts": int(row["unknown_usage_attempts"] or 0),
+                    "coverage_pct": round(known / attempts * 100, 2) if attempts else None,
+                }
+            )
+            output.append(item)
+        return output
+
     def agents(self) -> dict[str, Any]:
         cfg = self.config.get("autonomous_search") or {}
         codex_path = str(cfg.get("codex_path") or "codex")
@@ -1339,6 +1522,9 @@ class WebData:
             },
         }
         output = []
+        usage_summary: dict[str, Any] = {}
+        usage_breakdown: dict[str, Any] = {}
+        recent_attempts: list[dict[str, Any]] = []
         with self.connect() as connection:
             for kind, item in specs.items():
                 profile = dict((cfg.get("profiles") or {}).get(item["profile"]) or {})
@@ -1415,6 +1601,57 @@ class WebData:
                         "last_result_detail": last_result,
                     }
                 )
+            today_since = f"{day}T00:00:00Z"
+            seven_day_since = iso(utcnow() - timedelta(days=7))
+            today_rows = self._agent_usage_rows(connection, today_since)
+            seven_day_rows = self._agent_usage_rows(connection, seven_day_since)
+            usage_summary = {
+                "today": today_rows[0] if today_rows else {
+                    "calls": 0, "attempts": 0, "fallback_attempts": 0,
+                    "input_tokens": None, "cached_input_tokens": None,
+                    "cache_write_input_tokens": None, "output_tokens": None,
+                    "reasoning_output_tokens": None, "total_tokens": None,
+                    "known_usage_attempts": 0, "unknown_usage_attempts": 0, "coverage_pct": None,
+                },
+                "seven_days": seven_day_rows[0] if seven_day_rows else {
+                    "calls": 0, "attempts": 0, "fallback_attempts": 0,
+                    "input_tokens": None, "cached_input_tokens": None,
+                    "cache_write_input_tokens": None, "output_tokens": None,
+                    "reasoning_output_tokens": None, "total_tokens": None,
+                    "known_usage_attempts": 0, "unknown_usage_attempts": 0, "coverage_pct": None,
+                },
+            }
+            legacy_today = sum(int(item.get("tokens_today") or 0) for item in output)
+            ledger_today = int(usage_summary["today"].get("total_tokens") or 0)
+            usage_summary["today"]["legacy_unattributed_total_tokens"] = max(0, legacy_today - ledger_today)
+            usage_breakdown = {
+                "today": self._agent_usage_rows(connection, today_since, ("task", "model", "reasoning_effort")),
+                "seven_days": self._agent_usage_rows(connection, seven_day_since, ("task", "model", "reasoning_effort")),
+            }
+            if connection is not None and self._table_exists(connection, "agent_attempts"):
+                recent_attempts = [
+                    {
+                        "run_id": str(row["run_id"])[:12],
+                        "attempt_index": int(row["attempt_index"]),
+                        "task": row["task"],
+                        "model": row["model"],
+                        "reasoning_effort": row["reasoning_effort"],
+                        "started_at": row["started_at"],
+                        "finished_at": row["finished_at"],
+                        "status": row["status"],
+                        "fallback": bool(row["fallback"]),
+                        "input_tokens": row["input_tokens"],
+                        "cached_input_tokens": row["cached_input_tokens"],
+                        "cache_write_input_tokens": row["cache_write_input_tokens"],
+                        "output_tokens": row["output_tokens"],
+                        "reasoning_output_tokens": row["reasoning_output_tokens"],
+                        "total_tokens": row["total_tokens"],
+                        "accounting_source": row["accounting_source"],
+                    }
+                    for row in connection.execute(
+                        "SELECT * FROM agent_attempts ORDER BY finished_at DESC,id DESC LIMIT 50"
+                    )
+                ]
         return {
             "enabled": bool(cfg.get("enabled", False)),
             "max_concurrent_agents": int(cfg.get("max_concurrent_agents", 2)),
@@ -1424,6 +1661,9 @@ class WebData:
             "codex_available": codex_available,
             "date": day,
             "operations": output,
+            "usage_summary": usage_summary,
+            "usage_breakdown": usage_breakdown,
+            "recent_attempts": recent_attempts,
             "as_of": iso(),
         }
 
@@ -1487,10 +1727,15 @@ class WebData:
             )
         health: dict[str, sqlite3.Row] = {}
         dynamic: list[dict[str, Any]] = []
+        platform_heartbeats: dict[str, dict[str, Any]] = {}
         with self.connect() as connection:
             if connection is not None and self._table_exists(connection, "source_health"):
                 health = {str(row["source"]): row for row in connection.execute("SELECT * FROM source_health")}
             registry = self._kv(connection, REGISTRY_KEY, [])
+            for platform in PLATFORMS:
+                value = self._kv(connection, f"browser_platform_heartbeat:{platform}", {})
+                if isinstance(value, dict):
+                    platform_heartbeats[platform] = value
             if isinstance(registry, list):
                 for item in registry:
                     if not isinstance(item, dict):
@@ -1574,6 +1819,38 @@ class WebData:
             )
         items.sort(key=lambda item: (item["status"] not in {"error", "stale"}, str(item["name"]).lower()))
         watchlist = self.console_settings()
+        configured_platforms = {
+            str(item.get("platform") or ""): bool(item.get("enabled", True))
+            for item in watchlist["platforms"]
+            if isinstance(item, dict)
+        }
+        platform_status = []
+        for platform in PLATFORMS:
+            access_mode, login_recommended = PLATFORM_ACCESS[platform]
+            enabled = configured_platforms.get(platform, False)
+            heartbeat = platform_heartbeats.get(platform, {})
+            last_heartbeat_at = heartbeat.get("observed_at")
+            heartbeat_age = _minutes_since(last_heartbeat_at)
+            access_state = str(heartbeat.get("access_state") or "not_observed")
+            if not enabled:
+                access_state = "disabled"
+            elif heartbeat_age is not None and heartbeat_age > float(limits.get("browser", 3)):
+                access_state = "stale"
+            platform_status.append(
+                {
+                    "platform": platform,
+                    "enabled": enabled,
+                    "access_mode": access_mode,
+                    "login_recommended": login_recommended,
+                    "access_state": access_state,
+                    "last_heartbeat_at": last_heartbeat_at,
+                    "minutes_since_heartbeat": heartbeat_age,
+                    "visible": heartbeat.get("visible"),
+                    "selector_count": int(heartbeat.get("selector_count") or 0),
+                    "page_url": _safe_url(heartbeat.get("page_url")),
+                    "contains_credentials": False,
+                }
+            )
         return {
             "items": items,
             "summary": {
@@ -1586,6 +1863,15 @@ class WebData:
                 "platforms": watchlist["platforms"],
                 "accounts": watchlist["watch_accounts"],
                 "topics": watchlist["topics"],
+                "contains_credentials": False,
+                "credential_submission_supported": False,
+            },
+            "platforms": platform_status,
+            "credentials_policy": {
+                "contains_credentials": False,
+                "accepts_passwords": False,
+                "accepts_cookies": False,
+                "accepts_sessions": False,
             },
             "browser_bridge": self._bridge_health(),
             "as_of": iso(),
@@ -1793,7 +2079,7 @@ class WebData:
                 "live.available": False,
                 "bridge": "secret_and_binding_not_exposed",
                 "notifications": "secrets_not_exposed",
-                "wallet": "not_supported",
+                "wallet": "solana_devnet_signer_local_only_mainnet_locked",
             },
             "agent_runtime": {
                 "provider": "Local Codex CLI",
@@ -1973,6 +2259,54 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 return False
         return str(self.headers.get("Sec-Fetch-Site") or "").lower() != "cross-site"
 
+    def _request_host_is_loopback(self) -> bool:
+        host_header = str(self.headers.get("Host") or "").strip()
+        try:
+            host = urlparse(f"//{host_header}").hostname
+        except ValueError:
+            return False
+        return bool(host and _is_loopback(host))
+
+    def _local_wallet_origin_allowed(self) -> bool:
+        if not self._request_host_is_loopback():
+            return False
+        host_header = str(self.headers.get("Host") or "").strip().lower()
+        origin = str(self.headers.get("Origin") or "").strip()
+        if origin:
+            try:
+                parsed = urlparse(origin)
+            except ValueError:
+                return False
+            if not parsed.hostname or not _is_loopback(parsed.hostname) or parsed.netloc.lower() != host_header:
+                return False
+        return str(self.headers.get("Sec-Fetch-Site") or "").lower() != "cross-site"
+
+    def _read_json_body(self, *, maximum: int = 65_536) -> Any:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            raise APIError(400, "invalid request body size") from None
+        if length <= 0 or length > maximum:
+            raise APIError(400, "invalid request body size")
+        content_type = str(self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if content_type != "application/json":
+            raise APIError(415, "Content-Type must be application/json")
+        try:
+            return json.loads(self.rfile.read(length).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise APIError(400, "request body must be valid JSON") from None
+
+    def _discard_request_body(self, *, maximum: int) -> None:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self.close_connection = True
+            return
+        if 0 < length <= maximum:
+            self.rfile.read(length)
+        elif length > maximum:
+            self.close_connection = True
+
     def _unauthorized(self) -> None:
         body = b'{"error":"authentication required"}'
         self.send_response(401)
@@ -2013,7 +2347,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 "routes": [
                     "/api/overview", "/api/events", "/api/tokens", "/api/decisions",
                     "/api/portfolio", "/api/agents", "/api/sources", "/api/audit", "/api/settings",
-                    "/api/watchlist",
+                    "/api/watchlist", "/api/wallet",
                 ],
                 "live": {"enabled": False, "locked": True, "available": False},
             }
@@ -2044,6 +2378,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             return self.data.settings()
         if path == "/api/watchlist":
             return self.data.watchlist()
+        if path == "/api/wallet":
+            return self.data.wallet_state(public_view=not self._request_host_is_loopback())
         raise APIError(404, "API route not found")
 
     def do_GET(self) -> None:
@@ -2091,7 +2427,25 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._unauthorized()
             return
-        self._error(APIError(405, "method not allowed"))
+        path = urlparse(self.path).path.rstrip("/")
+        wallet_routes = {
+            "/api/wallet/connect": self.data.connect_wallet,
+            "/api/wallet/faucet": self.data.wallet_airdrop,
+            "/api/wallet/transfer": self.data.wallet_transfer,
+        }
+        action = wallet_routes.get(path)
+        if action is None:
+            self._error(APIError(405, "method not allowed"))
+            return
+        if not self._local_wallet_origin_allowed():
+            self._discard_request_body(maximum=4096)
+            self._error(APIError(403, "wallet actions are available only on the local loopback console"))
+            return
+        try:
+            payload = self._read_json_body(maximum=4096)
+            self._json(200, action(payload))
+        except APIError as exc:
+            self._error(exc)
 
     def do_PUT(self) -> None:
         if not self._authorized():
@@ -2103,7 +2457,13 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._unauthorized()
             return
-        self._error(APIError(405, "method not allowed"))
+        if urlparse(self.path).path.rstrip("/") != "/api/wallet":
+            self._error(APIError(405, "method not allowed"))
+            return
+        if not self._local_wallet_origin_allowed():
+            self._error(APIError(403, "wallet actions are available only on the local loopback console"))
+            return
+        self._json(200, self.data.disconnect_wallet())
 
     def _serve_static(self, requested: str) -> None:
         index = self.static_dir / "index.html"

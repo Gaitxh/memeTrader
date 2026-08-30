@@ -610,7 +610,7 @@ class BrowserBridge:
     def __init__(
         self, host: str, port: int, token: str,
         on_observation: Callable[[Observation], Awaitable[None]],
-        on_heartbeat: Callable[[str], Awaitable[None]],
+        on_heartbeat: Callable[[str, dict[str, Any]], Awaitable[None]],
         *,
         max_body_bytes: int = 262_144,
     ):
@@ -671,7 +671,9 @@ class BrowserBridge:
             path = urllib.parse.urlparse(target).path
             if method == "POST" and path in {"/heartbeat", "/v1/heartbeat"}:
                 source = str(payload.get("source") or payload.get("url") or "browser")[:300]
-                await self.on_heartbeat(source)
+                raw_detail = payload.get("detail") if isinstance(payload.get("detail"), dict) else payload
+                detail = raw_detail if isinstance(raw_detail, dict) else {}
+                await self.on_heartbeat(source, detail)
                 await self._respond(writer, "200 OK", {"ok": True})
                 return
             if method == "POST" and path in {"/observe", "/v1/observe"}:
@@ -753,6 +755,7 @@ class Runtime:
             self.http,
             config["autonomous_search"],
             known_source_urls=known_source_urls,
+            console_settings_path=root / "data" / "web_console" / "console_settings.json",
         )
         self.evaluator = CandidateEvaluator(self.store, self.dex, self.safety, config["candidate"], self.agent)
         self.policy = PaperPolicy(config["paper"])
@@ -827,8 +830,48 @@ class Runtime:
             },
         )
 
-    async def browser_heartbeat(self, source: str) -> None:
+    async def browser_heartbeat(self, source: str, detail: dict[str, Any] | None = None) -> None:
         self.store.heartbeat(f"browser:{source}")
+        detail = detail if isinstance(detail, dict) else {}
+        platform = str(detail.get("platform") or "").strip().lower()
+        allowed_platforms = {
+            "x", "truth", "bluesky", "reddit", "threads", "instagram", "tiktok", "youtube", "telegram"
+        }
+        if platform not in allowed_platforms:
+            return
+        access_state = str(detail.get("access_state") or "unknown").strip().lower()
+        access_state = {
+            "content_visible": "accessible",
+            "login_prompt": "login_required",
+            "no_recent_items": "accessible",
+        }.get(access_state, access_state)
+        if access_state not in {"accessible", "authenticated", "login_required", "blocked", "unknown"}:
+            access_state = "unknown"
+        visible = detail.get("visible")
+        visible = visible if isinstance(visible, bool) else None
+        try:
+            selector_count = max(0, min(100_000, int(detail.get("selector_count", 0))))
+        except (TypeError, ValueError):
+            selector_count = 0
+        page_url = ""
+        try:
+            parsed = urllib.parse.urlsplit(str(detail.get("page_url") or ""))
+            if parsed.scheme in {"http", "https"} and parsed.hostname and not parsed.username and not parsed.password:
+                page_url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path[:1500], "", ""))
+        except ValueError:
+            pass
+        self.store.set_kv(
+            f"browser_platform_heartbeat:{platform}",
+            {
+                "platform": platform,
+                "visible": visible,
+                "selector_count": selector_count,
+                "page_url": page_url,
+                "access_state": access_state,
+                "observed_at": iso(),
+                "contains_credentials": False,
+            },
+        )
 
     async def ingest_token(self, token: TokenCandidate) -> None:
         token_created = self.store.upsert_token(token)

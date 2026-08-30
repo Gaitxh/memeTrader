@@ -16,9 +16,13 @@
   const seen = new Set();
   let scheduled = false;
   let firstScan = true;
+  let lastSelectorCount = 0;
+  let lastRecentCount = 0;
   let settings = {
     watchTerms: [],
     watchAccounts: [],
+    watchAccountEntries: [],
+    platformStates: {},
     officialAccounts: [],
     maxPostAgeMinutes: 30
   };
@@ -38,15 +42,24 @@
 
   function platform() {
     if (host === "x.com" || host === "twitter.com") return "x";
-    if (host === "truthsocial.com") return "truth_social";
+    if (host === "truthsocial.com") return "truth";
     if (host === "bsky.app") return "bluesky";
     if (host.includes("reddit.com")) return "reddit";
     if (host === "www.threads.net" || host === "threads.net") return "threads";
     if (host === "www.instagram.com" || host === "instagram.com") return "instagram";
     if (host === "www.tiktok.com" || host === "tiktok.com") return "tiktok";
     if (host === "www.youtube.com" || host === "youtube.com") return "youtube";
-    if (host === "t.me") return "telegram_public";
+    if (host === "t.me") return "telegram";
     return host;
+  }
+
+  function platformEnabled() {
+    const states = settings.platformStates || {};
+    return !Object.prototype.hasOwnProperty.call(states, platform()) || states[platform()] !== false;
+  }
+
+  function safePageUrl() {
+    return `${location.origin}${location.pathname}`.slice(0, 2048);
   }
 
   function candidateNodes() {
@@ -128,7 +141,13 @@
     const authorLower = accountKey(author);
     let value = 0;
     if ((settings.watchTerms || []).some((term) => lower.includes(String(term).toLowerCase()))) value += 1;
-    if ((settings.watchAccounts || []).some((name) => authorLower === accountKey(name))) value += 2;
+    const platformAccounts = (settings.watchAccountEntries || []).filter(
+      (item) => item && item.platform === platform()
+    );
+    const watchedAccount = (settings.watchAccountEntries || []).length
+      ? platformAccounts.some((item) => authorLower === accountKey(item.handle))
+      : (settings.watchAccounts || []).some((name) => authorLower === accountKey(name));
+    if (watchedAccount) value += 2;
     if ((settings.officialAccounts || []).some((name) => authorLower === accountKey(name))) value += 3;
     return value;
   }
@@ -142,15 +161,23 @@
 
   function scan() {
     scheduled = false;
+    if (!platformEnabled()) {
+      lastSelectorCount = 0;
+      lastRecentCount = 0;
+      return;
+    }
     const capturePhase = firstScan ? "initial" : "live";
     const observedAt = new Date().toISOString();
     const nodes = candidateNodes();
+    lastSelectorCount = nodes.length;
+    lastRecentCount = 0;
 
     for (const node of nodes) {
       const text = normalize(node.innerText || node.textContent || "");
       if (text.length < 8 || text.length > 20000) continue;
       const publishedAt = findPublishedAt(node);
       if (!isRecent(publishedAt, observedAt)) continue;
+      lastRecentCount += 1;
       const url = findPermalink(node);
       const author = findAuthor(node, url);
       const fingerprint = hash(`${platform()}\n${url}\n${author}\n${text}`);
@@ -175,7 +202,7 @@
           observed_at: observedAt,
           capture_phase: capturePhase,
           priority: priority(text, author),
-          page_url: location.href,
+          page_url: safePageUrl(),
           platform: platform()
         }
       });
@@ -196,21 +223,27 @@
   });
 
   chrome.storage.onChanged.addListener((changes) => {
-    for (const key of ["watchTerms", "watchAccounts", "officialAccounts", "maxPostAgeMinutes"]) {
+    for (const key of ["watchTerms", "watchAccounts", "watchAccountEntries", "platformStates", "officialAccounts", "maxPostAgeMinutes"]) {
       if (changes[key]) settings[key] = changes[key].newValue ?? settings[key];
     }
   });
 
   new MutationObserver(scheduleScan).observe(document.documentElement, {subtree: true, childList: true});
   setInterval(() => {
+    const pageText = normalize(document.body?.innerText || "").slice(0, 5000).toLowerCase();
+    const loginPrompt = /\b(log in|sign in)\b|登入|登录|登錄/.test(pageText);
+    const accessState = lastRecentCount > 0
+      ? "content_visible"
+      : (lastSelectorCount > 0 ? "no_recent_items" : (loginPrompt ? "login_prompt" : "no_recent_items"));
     chrome.runtime.sendMessage({
       type: "MEMETRADER_HEARTBEAT",
-      source: location.href,
+      source: platform(),
       detail: {
         platform: platform(),
         visible: document.visibilityState === "visible",
-        selector_count: candidateNodes().length,
-        page_url: location.href
+        selector_count: platformEnabled() ? candidateNodes().length : 0,
+        page_url: safePageUrl(),
+        access_state: accessState
       }
     });
   }, 30000);

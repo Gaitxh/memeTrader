@@ -169,6 +169,31 @@ class Store:
                     value_json TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS agent_attempts (
+                    id INTEGER PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    attempt_index INTEGER NOT NULL,
+                    task TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    reasoning_effort TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    returncode INTEGER NOT NULL,
+                    fallback INTEGER NOT NULL,
+                    input_tokens INTEGER,
+                    cached_input_tokens INTEGER,
+                    cache_write_input_tokens INTEGER,
+                    output_tokens INTEGER,
+                    reasoning_output_tokens INTEGER,
+                    total_tokens INTEGER,
+                    accounting_source TEXT NOT NULL,
+                    UNIQUE(run_id, attempt_index)
+                );
+                CREATE INDEX IF NOT EXISTS agent_attempts_task_time_idx
+                    ON agent_attempts(task, finished_at DESC);
+                CREATE INDEX IF NOT EXISTS agent_attempts_model_time_idx
+                    ON agent_attempts(model, reasoning_effort, finished_at DESC);
                 """
             )
             columns = {row["name"] for row in self.db.execute("PRAGMA table_info(observations)")}
@@ -552,3 +577,38 @@ class Store:
                 "INSERT INTO kv(key,value_json,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at",
                 (key,self._json(value),iso()),
             )
+
+    def increment_kv(self, key: str, amount: int) -> int:
+        """Atomically increment an integer KV value and return the new value."""
+        with self._lock, self.db:
+            row = self.db.execute("SELECT value_json FROM kv WHERE key=?", (key,)).fetchone()
+            current = int(json.loads(row["value_json"])) if row else 0
+            value = current + int(amount)
+            self.db.execute(
+                "INSERT INTO kv(key,value_json,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at",
+                (key, self._json(value), iso()),
+            )
+            return value
+
+    def add_agent_attempt(self, attempt: dict[str, Any]) -> bool:
+        """Persist one sanitized Codex attempt; returns False for an existing attempt."""
+        fields = (
+            "run_id", "attempt_index", "task", "model", "reasoning_effort",
+            "started_at", "finished_at", "status", "returncode", "fallback",
+            "input_tokens", "cached_input_tokens", "cache_write_input_tokens",
+            "output_tokens", "reasoning_output_tokens", "total_tokens", "accounting_source",
+        )
+        with self._lock, self.db:
+            cursor = self.db.execute(
+                f"INSERT OR IGNORE INTO agent_attempts({','.join(fields)}) VALUES({','.join('?' for _ in fields)})",
+                tuple(attempt.get(field) for field in fields),
+            )
+            return cursor.rowcount == 1
+
+    def agent_attempts(self, *, limit: int = 100) -> list[sqlite3.Row]:
+        return list(
+            self.db.execute(
+                "SELECT * FROM agent_attempts ORDER BY id DESC LIMIT ?",
+                (max(1, int(limit)),),
+            )
+        )

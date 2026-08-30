@@ -10,14 +10,16 @@
 <body>
   <h1>memeTrader Public Feed Bridge</h1>
   <p class="hint">只读取实际打开页面中新渲染的公开内容；不读取 Cookie、密码、私信、历史，不自动滚动、点赞或发帖。</p>
+  <p class="hint">平台开关、重点账号和主题词约每 2 分钟从本机 Web 控制台同步；此扩展不会从控制台读取任何登录凭证。人工核验的官方账号仅保存在此扩展中，不会被同步覆盖。</p>
+  <p id="watchlistSyncStatus" class="hint">网页关注清单：等待同步</p>
+  <p id="platformStatus" class="hint"></p>
   <label>本地桥地址<input id="bridgeUrl" value="http://127.0.0.1:8765"></label>
   <label>本地桥令牌<input id="token" type="password" autocomplete="off"></label>
   <label>最大帖子年龄（分钟）<input id="maxPostAgeMinutes" type="number" min="1" max="240" value="30"></label>
   <p class="hint">首次打开页面和后续新增内容都只转发这个时间窗口内的帖子，避免旧页面污染实时信号。</p>
-  <label>重点词（每行一个，仅提高优先级）<textarea id="watchTerms"></textarea></label>
-  <label>重点账号（每行一个）<textarea id="watchAccounts"></textarea></label>
+  <label>同步的主题词（只读）<textarea id="watchTerms" readonly></textarea></label>
+  <label>同步的重点账号（只读）<textarea id="watchAccounts" readonly></textarea></label>
   <label>你已人工核验的官方账号（每行一个）<textarea id="officialAccounts"></textarea></label>
-  <label>只采集最近多少分钟的帖子<input id="maxPostAgeMinutes" type="number" min="1" max="1440" value="30"></label>
   <button id="save">保存</button><span id="status"></span>
   <p id="queueStatus" class="hint"></p>
   <p class="hint">令牌位于 E:\memeTrader\config.json 的 bridge.token。账号名不要包含平台 URL；可带或不带 @。</p>

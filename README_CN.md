@@ -24,7 +24,7 @@
 - 首次轮询或首次打开页面时发现的旧内容会保留为 `identity` 资料，但注意力记为 0，不能触发买入。
 - PNUT、TRUMP、MOODENG、LUCE、Broccoli、TST 等历史案例只测试匹配、主盘选择、等待和未来信息隔离；不会加载为生产别名、阈值或赢家先验。
 - 只有 Token/价格拉升、还没有独立新闻、社交或官方触发时，机器人只观察，不买入。
-- 当前 Live 模式在代码层锁死，只支持 Shadow/Paper。
+- 常驻策略只支持 Shadow/Paper；另有与策略隔离的 Solana Devnet 真链测试页。Mainnet Live 在代码和网页层永久锁定，Devnet 私钥存在也不会解锁 Mainnet 或自动交易。
 
 ## 免费信息源
 
@@ -103,7 +103,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\status.ps1
 
 ## 本机 Web 控制台
 
-Web 控制台直接读取当前 `config.json` 指向的 SQLite，不复制策略、不生成演示成交。它提供 Overview、实时事件、Token 发现、候选/决策、Paper Portfolio、Agent Operations、Sources、Audit 和安全 Settings 九个工作区。
+Web 控制台直接读取当前 `config.json` 指向的 SQLite，不复制策略、不生成演示成交。它提供 Overview、实时事件、Token 发现、候选/决策、Paper Portfolio、Agent Operations、Sources、Audit、安全 Settings 和 Wallet 十个工作区。
+
+顶部可在“中文 / English”之间即时切换；选择只保存在当前浏览器本地，刷新后仍会保留。事件标题、Token 名称和来源原文不会被自动翻译。
 
 双击：
 
@@ -123,9 +125,15 @@ powershell -ExecutionPolicy Bypass -File .\scripts\open_web_console.ps1
 http://127.0.0.1:8787/
 ```
 
-需要临时远程查看时，可双击 `SHARE_WEB_CONSOLE.cmd`。它通过本机已安装的 Cloudflare Quick Tunnel 创建带随机访问口令的临时 HTTPS 地址；后端仍只监听 loopback，不开放路由器端口。地址和登录提示只写入 Git 忽略的 `data\web_console\PUBLIC_ACCESS.txt`。公开入口不会返回 bridge token、平台登录、Codex 会话或任何 secret。
+需要临时远程查看时，可双击 `SHARE_WEB_CONSOLE.cmd`。它通过本机已安装的 Cloudflare Quick Tunnel 创建带随机访问口令的临时 HTTPS 地址；后端仍只监听 loopback，不开放路由器端口。地址和登录提示只写入 Git 忽略的 `data\web_console\PUBLIC_ACCESS.txt`。公开入口通过随机口令保护，只能读取数据并修改后端白名单内的安全设置；钱包区域始终脱敏只读，不能录入私钥、申请测试币或发送交易。它也不会返回 bridge token、平台登录、Codex 会话或任何 secret。
 
 Settings 只允许修改轮询频率、Agent 周期/预算、事件与候选阈值，以及本地平台、公开名人/账号和主题观察清单。Agent 并发仍遵守项目规则，只允许 `1–2`、默认 `2`；Live 页面只有 `LOCKED / Unavailable`，没有启用接口。自主搜索继续使用本机已登录的 Codex/ChatGPT agentic 额度，不要求 OpenAI API Key。
+
+Wallet 只在 `127.0.0.1` 接受私钥录入和 Devnet 操作。私钥不会回显，通过当前 Windows 用户的 DPAPI 加密后保存在 Git 忽略的本机文件中；公开 URL 只能看到脱敏账户状态。该页只允许人工执行 Solana Devnet 测试，不能驱动常驻策略，也没有 Mainnet 开关。
+
+最新真链验证记录见 [docs/WALLET_DEVNET_VALIDATION_20260830.md](docs/WALLET_DEVNET_VALIDATION_20260830.md)。当前钱包连接与 Devnet 集群校验已通过，但官方 faucet 返回 RPC unavailable，因此尚无可声称成功的公开 Devnet 交易签名。
+
+事件详情把全部来源按“决策资格 → `feature/confirmation/identity/promotion` 角色 → 新鲜度 → 可观察热度”排列。这是审计用的**证据优先级**，不是对媒体权威性或事实真假的自动裁决；每项仍显示原始链接、观察时间和是否可用于当时决策。
 
 详细说明见 [docs/WEB_CONSOLE_CN.md](docs/WEB_CONSOLE_CN.md)。
 
@@ -167,13 +175,17 @@ Settings 只允许修改轮询频率、Agent 周期/预算、事件与候选阈�
 
 ## Codex / GPT 自主搜索
 
-`autonomous_search.enabled=true` 时，机器人会自己完成三类工作，不要求用户事先列完信息源：
+`autonomous_search.enabled=true` 时，机器人会自己完成三类 Agent 工作，不要求用户事先列完信息源：
 
 1. 主动搜索近两小时内正在加速的国际热点、名人、动物、网络文化、体育、AI、游戏和 Crypto 社区事件；
 2. 定期寻找并实际验证新的免费 RSS/Atom 信息源，通过后自动加入动态源注册表；
 3. 对链上动量足够强的新 Token 反向搜索现实事件，并要求至少两个独立可访问来源。
 
 默认最多同时运行 2 个搜索 Agent 槽位。全球快搜和搜源优先使用 Spark/low，额度不可用时回退 Luna/low；复杂 Token 身份核验使用 Luna/low，必要时才升级 Terra/medium，Sol/medium 仅作为最后回退。普通状态每 12 分钟快搜一次，并轮换覆盖 5 个主题中的 3 个；重大信号期间每 3 分钟覆盖全部主题，连续三次空结果退到 30 分钟。Spark 不可用或单次调用超过 18,000 tokens 时，普通状态最短间隔自动拉长到 30 分钟，重大信号仍保留 10 分钟级回退。Token 专项 Agent 受 5 分钟全局冷却、240 分钟同 Token 冷却和动量分≥80 的限制；失败时仅进入 10 分钟短退避。调用次数、已使用 token 和下一次调用预留量共同限制预算，`--force` 也不能越过预算。自动发现的 RSS 连续 3 次失败，或近期内容至少一半是 Market Wrap、价格更新、Presale、Top/Best/100x 榜单时，会自动暂停并由后续搜源补充。全部频率、并发、模型、推理强度和上限都可在 `config.json -> autonomous_search` 修改。
+
+界面把采集与分析职责呈现为 6 个逻辑角色：News Radar、Social Pulse、Named Account Watch、Evidence Verifier、Token Context 和 Source Discovery。它们是共享队列中的职责，不是 6 个永久并发进程；仍共同遵守最多 2 个 Agent 子进程的硬上限。Agent Operations 会按任务、模型和推理强度分别累计调用次数、输入/缓存/输出/推理 token、回退与预算，不把不同智能程度的消耗混成一个数字。
+
+需要登录的平台必须由用户在专用的本机 Chrome/Edge 配置中手工登录并保持目标公开页面打开。项目不会索要、接收或保存账号密码、Cookie、Session、验证码；登录缺失或页面未打开时，Sources 会显示对应状态。
 
 常规计算、去重、时间判断、评分、仓位和卖出仍全部由本地代码完成。四字母短名称可以触发 Agent 搜证，但不能只靠文字重合直接连接新闻；证据不足时返回 `WAIT`。EVM 使用 GoPlus/Honeypot.is、Solana 使用 GoPlus/RugCheck：每个链族默认至少要有一个外部安全报告，两者都不可用时失败关闭；缺失结果不会被当作安全。语义平局 Agent 的 `agent.enabled` 继续默认关闭。
 

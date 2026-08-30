@@ -1,11 +1,16 @@
 const DEFAULTS = {
   bridgeUrl: "http://127.0.0.1:8765",
+  watchlistUrl: "http://127.0.0.1:8787/api/watchlist",
   token: "",
   watchTerms: [],
   watchAccounts: [],
+  watchAccountEntries: [],
+  platformStates: {},
   officialAccounts: [],
   maxPostAgeMinutes: 30,
-  pendingObservations: []
+  pendingObservations: [],
+  watchlistLastSyncAt: "",
+  watchlistLastSyncError: ""
 };
 
 let flushInProgress = false;
@@ -89,15 +94,72 @@ async function flushQueue() {
 async function heartbeat(source, detail = {}) {
   const state = await settings();
   if (!state.token) return;
+  const platform = String(detail.platform || source || "browser").slice(0, 64);
+  const accessStates = new Set(["content_visible", "login_prompt", "no_recent_items"]);
+  const safeDetail = {
+    platform,
+    visible: typeof detail.visible === "boolean" ? detail.visible : null,
+    selector_count: Math.max(0, Number(detail.selector_count) || 0),
+    page_url: String(detail.page_url || "").slice(0, 2048),
+    access_state: accessStates.has(detail.access_state) ? detail.access_state : "no_recent_items"
+  };
   try {
     await fetch(`${state.bridgeUrl.replace(/\/$/, "")}/v1/heartbeat`, {
       method: "POST",
       headers: {"Content-Type": "application/json", "X-MemeTrader-Token": state.token},
-      body: JSON.stringify({source, url: source, time: new Date().toISOString(), ...detail}),
+      body: JSON.stringify({source: platform, url: safeDetail.page_url, time: new Date().toISOString(), ...safeDetail}),
       cache: "no-store",
       credentials: "omit"
     });
   } catch (_) {}
+}
+
+function platformName(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+async function syncWatchlist() {
+  const state = await settings();
+  try {
+    const response = await fetch(state.watchlistUrl, {
+      method: "GET",
+      cache: "no-store",
+      credentials: "omit",
+      headers: {"Accept": "application/json"}
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    const platformStates = {};
+    for (const item of Array.isArray(payload.platforms) ? payload.platforms.slice(0, 32) : []) {
+      if (!item || typeof item !== "object") continue;
+      const name = platformName(item.platform);
+      if (name) platformStates[name] = item.enabled !== false;
+    }
+    const watchAccountEntries = [];
+    for (const item of Array.isArray(payload.watch_accounts) ? payload.watch_accounts.slice(0, 500) : []) {
+      if (!item || typeof item !== "object" || item.enabled === false) continue;
+      const handle = String(item.handle || "").trim().replace(/^@/, "").slice(0, 120);
+      const platform = platformName(item.platform);
+      if (handle && platform) watchAccountEntries.push({platform, handle});
+    }
+    const watchTerms = (Array.isArray(payload.topics) ? payload.topics : [])
+      .map((item) => String(item || "").trim().slice(0, 160))
+      .filter(Boolean)
+      .slice(0, 100);
+    await chrome.storage.local.set({
+      platformStates,
+      watchAccountEntries,
+      watchAccounts: [...new Set(watchAccountEntries.map((item) => item.handle))],
+      watchTerms,
+      watchlistLastSyncAt: new Date().toISOString(),
+      watchlistLastSyncError: ""
+    });
+  } catch (error) {
+    await chrome.storage.local.set({
+      watchlistLastSyncError: String(error),
+      watchlistLastSyncErrorAt: new Date().toISOString()
+    });
+  }
 }
 
 async function initialize() {
@@ -108,6 +170,8 @@ async function initialize() {
   await chrome.storage.local.set({...DEFAULTS, ...current, pendingObservations});
   await chrome.storage.local.remove("queue");
   chrome.alarms.create("memetrader-flush", {periodInMinutes: 0.5});
+  chrome.alarms.create("memetrader-watchlist-sync", {periodInMinutes: 2});
+  await syncWatchlist();
 }
 
 chrome.runtime.onInstalled.addListener(initialize);
@@ -117,6 +181,7 @@ chrome.runtime.onStartup.addListener(() => {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "memetrader-flush") flushQueue();
+  if (alarm.name === "memetrader-watchlist-sync") syncWatchlist();
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

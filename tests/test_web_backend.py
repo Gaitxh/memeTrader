@@ -172,6 +172,48 @@ def _seed(path: Path) -> tuple[int, str]:
             }
         ],
     )
+    store.add_agent_attempt(
+        {
+            "run_id": "safe-ledger-run",
+            "attempt_index": 0,
+            "task": "trend_scout",
+            "model": "gpt-5.3-codex-spark",
+            "reasoning_effort": "low",
+            "started_at": iso(now - timedelta(minutes=4)),
+            "finished_at": iso(now - timedelta(minutes=3)),
+            "status": "failed",
+            "returncode": 1,
+            "fallback": 0,
+            "input_tokens": 600,
+            "cached_input_tokens": 100,
+            "cache_write_input_tokens": 20,
+            "output_tokens": 200,
+            "reasoning_output_tokens": 80,
+            "total_tokens": 1000,
+            "accounting_source": "codex_json",
+        }
+    )
+    store.add_agent_attempt(
+        {
+            "run_id": "safe-ledger-run",
+            "attempt_index": 1,
+            "task": "trend_scout",
+            "model": "gpt-5.6-luna",
+            "reasoning_effort": "medium",
+            "started_at": iso(now - timedelta(minutes=3)),
+            "finished_at": iso(now - timedelta(minutes=2)),
+            "status": "completed",
+            "returncode": 0,
+            "fallback": 1,
+            "input_tokens": 300,
+            "cached_input_tokens": 50,
+            "cache_write_input_tokens": 10,
+            "output_tokens": 100,
+            "reasoning_output_tokens": 40,
+            "total_tokens": 500,
+            "accounting_source": "codex_json",
+        }
+    )
     store.close()
     return event_id, token.token_id
 
@@ -218,11 +260,30 @@ def test_web_api_empty_database_is_safe_and_live_is_locked(tmp_path: Path):
 def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_path: Path):
     config_path, _ = _config(tmp_path)
     event_id, token_id = _seed(tmp_path / "db.sqlite3")
+    store = Store(tmp_path / "db.sqlite3")
+    store.set_kv(
+        "browser_platform_heartbeat:x",
+        {
+            "platform": "x",
+            "visible": True,
+            "selector_count": 7,
+            "page_url": "https://x.com/i/lists/1",
+            "access_state": "authenticated",
+            "observed_at": iso(),
+            "contains_credentials": False,
+        },
+    )
+    store.close()
     web = WebData(config_path)
 
     events = web.events({"limit": ["10"]})["items"]
     event = next(item for item in events if item["id"] == event_id)
     roles = {item["role"]: item for item in event["observations"]}
+    assert event["event_url"] == f"#/events/{event_id}"
+    assert event["evidence_ranking"]["method"] == "evidence_priority_not_authority"
+    assert [item["priority_rank"] for item in event["observations"]] == [1, 2, 3, 4]
+    assert all(0 <= item["priority_score"] <= 100 for item in event["observations"])
+    assert all(item["ranking_method"] == "evidence_priority_not_authority" for item in event["observations"])
     assert event["source_count"] == 4
     assert event["total_source_count"] == 4
     assert event["eligible_source_count"] == 1
@@ -236,6 +297,14 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
     assert future["freshness"] == "future"
     assert future["decision_eligible"] is False
     assert {"published_at", "observed_at", "ingested_at"}.issubset(future)
+    detail = web.event_detail(event_id)
+    assert detail["ranked_sources"] == event["observations"]
+    assert [item["observed_at"] for item in detail["evidence_timeline"]] == sorted(
+        item["observed_at"] for item in detail["evidence_timeline"]
+    )
+    assert {item["source"] for item in detail["evidence_timeline"]} == {
+        "news-a", "browser:x:otter", "promotion-list", "future-clock"
+    }
 
     token = web.token_detail(token_id)
     assert token["snapshot"]["momentum"] > 0
@@ -259,6 +328,30 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
     assert agents["uses_api_key"] is False
     assert scout["calls"] == 3 and scout["tokens"] == 12345
     assert scout["next_run_at"] is not None and scout["fallback_used"] is True
+    assert agents["usage_summary"]["today"] == {
+        "calls": 1,
+        "attempts": 2,
+        "fallback_attempts": 1,
+        "input_tokens": 900,
+        "cached_input_tokens": 150,
+        "cache_write_input_tokens": 30,
+        "output_tokens": 300,
+        "reasoning_output_tokens": 120,
+        "total_tokens": 1500,
+        "known_usage_attempts": 2,
+        "unknown_usage_attempts": 0,
+        "coverage_pct": 100.0,
+        "legacy_unattributed_total_tokens": 10845,
+    }
+    breakdown = agents["usage_breakdown"]["today"]
+    assert {(item["model"], item["reasoning_effort"], item["total_tokens"]) for item in breakdown} == {
+        ("gpt-5.3-codex-spark", "low", 1000),
+        ("gpt-5.6-luna", "medium", 500),
+    }
+    assert [(item["attempt_index"], item["fallback"]) for item in agents["recent_attempts"]] == [
+        (1, True), (0, False)
+    ]
+    assert "prompt" not in json.dumps(agents["recent_attempts"])
 
     sources = web.sources()["items"]
     static = next(item for item in sources if item["name"] == "example-news")
@@ -266,6 +359,18 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
     assert static["last_ok_at"] is not None and static["last_item_at"] is not None
     assert paused["status"] == "paused"
     assert paused["pause_reason"] == "consecutive_poll_failures"
+    source_payload = web.sources()
+    assert len(source_payload["platforms"]) == 9
+    x_status = next(item for item in source_payload["platforms"] if item["platform"] == "x")
+    assert x_status["access_state"] == "authenticated"
+    assert x_status["login_recommended"] is True
+    assert x_status["contains_credentials"] is False
+    assert source_payload["credentials_policy"] == {
+        "contains_credentials": False,
+        "accepts_passwords": False,
+        "accepts_cookies": False,
+        "accepts_sessions": False,
+    }
 
     audit_evidence = web.audit()["recent_decision_evidence"][0]["evidence"]
     stale_identity = next(item for item in audit_evidence if item["source"] == "browser:x:otter")
@@ -342,9 +447,10 @@ def test_settings_are_allowlisted_atomic_and_never_expose_secrets(tmp_path: Path
     assert watchlist["contains_credentials"] is False
 
     before = config_path.read_bytes()
-    with pytest.raises(Exception, match="locked or unsupported"):
-        web.patch_settings({"updates": {"live": {"enabled": True}}})
-    assert config_path.read_bytes() == before
+    for unsafe_update in ({"live": {"enabled": True}}, {"mode": "live"}):
+        with pytest.raises(Exception, match="locked or unsupported"):
+            web.patch_settings({"updates": unsafe_update})
+        assert config_path.read_bytes() == before
     with pytest.raises(Exception, match="between 1 and 2"):
         web.patch_settings({"updates": {"autonomous_search": {"max_concurrent_agents": 3}}})
     with pytest.raises(Exception, match="unsupported fields"):
@@ -400,6 +506,111 @@ def test_http_routes_require_optional_file_token_and_serve_api(tmp_path: Path):
                 json={"updates": {"poll_seconds": 90}},
             )
             assert cross_origin.status_code == 403
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_wallet_http_is_local_only_public_view_is_masked_and_secret_is_never_persisted(tmp_path: Path):
+    config_path, _ = _config(tmp_path)
+    Store(tmp_path / "db.sqlite3").close()
+    static = tmp_path / "static"
+    static.mkdir()
+    (static / "index.html").write_text("console", encoding="utf-8")
+
+    class FakeWallet:
+        def __init__(self):
+            self.calls: list[tuple[str, object]] = []
+
+        def snapshot(self, *, public_view: bool = False, refresh: bool = False):
+            self.calls.append(("snapshot", public_view))
+            return {
+                "connected": True,
+                "network": "solana-devnet",
+                "address": "Abcd1234…Wxyz5678" if public_view else "Abcd1234FullWalletAddressWxyz5678",
+                "balance_sol": 0.25,
+                "signing": {"available": not public_view, "local_only": True},
+                "public_view": public_view,
+            }
+
+        def connect(self, private_key, alias):
+            self.calls.append(("connect", (private_key, alias)))
+            return {"connected": True, "address": "Abcd1234FullWalletAddressWxyz5678"}
+
+        def request_airdrop(self, sol):
+            self.calls.append(("faucet", sol))
+            return {"status": "confirmed", "sol": sol, "signature": "airdrop-signature"}
+
+        def transfer(self, recipient, sol, confirm_phrase):
+            self.calls.append(("transfer", (recipient, sol, confirm_phrase)))
+            return {"status": "confirmed", "sol": sol, "signature": "transfer-signature"}
+
+        def disconnect(self):
+            self.calls.append(("disconnect", None))
+            return {"connected": False}
+
+    fake_wallet = FakeWallet()
+    server, thread, base = _start_server(config_path, static)
+    server.web_data.wallet_service = fake_wallet
+    private_key = "do-not-" + "persist-private-key"
+    try:
+        with httpx.Client(timeout=5) as client:
+            local = client.get(f"{base}/api/wallet")
+            assert local.status_code == 200
+            assert local.json()["address"] == "Abcd1234FullWalletAddressWxyz5678"
+            assert local.json()["signing"]["available"] is True
+
+            public = client.get(f"{base}/api/wallet", headers={"Host": "console.example"})
+            assert public.status_code == 200
+            assert public.json()["address"] == "Abcd1234…Wxyz5678"
+            assert public.json()["signing"]["available"] is False
+
+            connect = client.post(
+                f"{base}/api/wallet/connect",
+                headers={"Origin": base},
+                json={"private_key": private_key, "alias": "test only"},
+            )
+            faucet = client.post(
+                f"{base}/api/wallet/faucet",
+                headers={"Origin": base},
+                json={"sol": 0.1},
+            )
+            transfer = client.post(
+                f"{base}/api/wallet/transfer",
+                headers={"Origin": base},
+                json={"recipient": "recipient", "sol": 0.001, "confirm_phrase": "DEVNET ONLY"},
+            )
+            disconnected = client.delete(f"{base}/api/wallet", headers={"Origin": base})
+            assert [response.status_code for response in (connect, faucet, transfer, disconnected)] == [200] * 4
+            assert private_key not in "".join(
+                response.text for response in (connect, faucet, transfer, disconnected)
+            )
+
+            post_payloads = {
+                "/api/wallet/connect": {"private_key": private_key, "alias": "test only"},
+                "/api/wallet/faucet": {"sol": 0.1},
+                "/api/wallet/transfer": {
+                    "recipient": "recipient", "sol": 0.001, "confirm_phrase": "DEVNET ONLY"
+                },
+            }
+            for route, payload in post_payloads.items():
+                assert client.post(
+                    f"{base}{route}", headers={"Host": "console.example", "Connection": "close"}, json=payload
+                ).status_code == 403
+                assert client.post(
+                    f"{base}{route}",
+                    headers={"Origin": "https://malicious.example", "Connection": "close"},
+                    json=payload,
+                ).status_code == 403
+            assert client.delete(f"{base}/api/wallet", headers={"Host": "console.example"}).status_code == 403
+            assert client.delete(
+                f"{base}/api/wallet", headers={"Origin": "https://malicious.example"}
+            ).status_code == 403
+
+        assert ("connect", (private_key, "test only")) in fake_wallet.calls
+        secret = private_key.encode("utf-8")
+        assert all(secret not in path.read_bytes() for path in tmp_path.rglob("*") if path.is_file())
     finally:
         server.shutdown()
         server.server_close()

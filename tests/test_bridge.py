@@ -21,13 +21,13 @@ def free_port() -> int:
 def test_browser_bridge_uses_local_receive_time_and_versioned_routes(tmp_path: Path):
     async def scenario() -> None:
         observations: list[Observation] = []
-        heartbeats: list[str] = []
+        heartbeats: list[tuple[str, dict]] = []
 
         async def on_observation(obs: Observation) -> None:
             observations.append(obs)
 
-        async def on_heartbeat(source: str) -> None:
-            heartbeats.append(source)
+        async def on_heartbeat(source: str, detail: dict) -> None:
+            heartbeats.append((source, detail))
 
         port = free_port()
         bridge = BrowserBridge(
@@ -84,10 +84,20 @@ def test_browser_bridge_uses_local_receive_time_and_versioned_routes(tmp_path: P
                 heartbeat = await client.post(
                     f"{base}/v1/heartbeat",
                     headers={"X-MemeTrader-Token": "secret-token-that-is-long-enough"},
-                    json={"source": "https://x.com/i/lists/1"},
+                    json={
+                        "source": "https://x.com/i/lists/1",
+                        "detail": {
+                            "platform": "x",
+                            "visible": True,
+                            "selector_count": 4,
+                            "page_url": "https://x.com/i/lists/1?secret=never-store",
+                            "access_state": "authenticated",
+                        },
+                    },
                 )
                 assert heartbeat.status_code == 200
-                assert heartbeats == ["https://x.com/i/lists/1"]
+                assert heartbeats[0][0] == "https://x.com/i/lists/1"
+                assert heartbeats[0][1]["platform"] == "x"
         finally:
             await bridge.close()
 
@@ -98,7 +108,7 @@ def test_browser_bridge_rejects_non_loopback():
     async def noop_observation(_: Observation) -> None:
         return None
 
-    async def noop_heartbeat(_: str) -> None:
+    async def noop_heartbeat(_: str, __: dict) -> None:
         return None
 
     with pytest.raises(ValueError, match="loopback"):

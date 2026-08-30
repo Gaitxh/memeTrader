@@ -361,6 +361,7 @@ def test_browser_extension_persists_queue_filters_old_posts_and_heartbeats():
     root = Path(__file__).resolve().parents[1] / "browser-extension"
     background = (root / "background.js").read_text(encoding="utf-8")
     content = (root / "content.js").read_text(encoding="utf-8")
+    options = (root / "options.html").read_text(encoding="utf-8")
     manifest = (root / "manifest.json").read_text(encoding="utf-8")
     assert "chrome.storage.local" in background
     assert "pendingObservations" in background
@@ -368,7 +369,17 @@ def test_browser_extension_persists_queue_filters_old_posts_and_heartbeats():
     assert "MutationObserver" in content
     assert "PRIVATE_PATH" in content
     assert "maxPostAgeMinutes" in content
+    assert "http://127.0.0.1:8787/api/watchlist" in background
+    assert "memetrader-watchlist-sync" in background
+    assert 'credentials: "omit"' in background
+    assert "watchAccountEntries" in background
+    assert "platformStates" in content and "platformEnabled()" in content
+    assert all(state in content for state in ("content_visible", "login_prompt", "no_recent_items"))
+    assert "selector_count" in content and "page_url" in content
+    assert options.count('id="maxPostAgeMinutes"') == 1
+    assert "watchlistLastSyncAt" in (root / "options.js").read_text(encoding="utf-8")
     assert '"cookies"' not in manifest.lower()
+    assert '"tabs"' not in manifest.lower()
 
 
 def test_exact_contract_address_dominates_name_similarity():
