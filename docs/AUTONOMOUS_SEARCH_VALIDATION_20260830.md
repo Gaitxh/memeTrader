@@ -113,14 +113,14 @@ Agent 返回的来源不会直接进入生产。动态 RSS 必须通过：
 data/memetrader_forward_20260830_r6.sqlite3
 ```
 
-截至 `2026-08-30T04:41:35Z`：
+截至 `2026-08-30T04:51:13.340795Z`：
 
 | 指标 | 数量 |
 |---|---:|
-| observations | 548 |
-| events | 370 |
-| tokens | 1708 |
-| token_snapshots | 735 |
+| observations | 552 |
+| events | 373 |
+| tokens | 1920 |
+| token_snapshots | 865 |
 | decisions | 0 |
 | positions | 0 |
 | trades | 0 |
@@ -132,7 +132,8 @@ data/memetrader_forward_20260830_r6.sqlite3
 - `76/76` 自动测试通过；
 - `compileall` 通过；
 - Wheel：`dist/memetrader-0.6.2-py3-none-any.whl`；
-- Wheel SHA-256：`49b3fcac9b47a4948db2c52ac36a35cdafe3dc0a4af8519ba90e50c7d0a3a968`；
+- 已验证源码 revision：`d30b9d752b697cd2801954f3968679786f41d6c4`；
+- Wheel SHA-256：`bf7cc1872f4fc24b2d0ff1e67f78b4c6ce49c26f9343fb7dd1e7593e3b82db98`；
 - 全新虚拟环境安装通过；
 - `pip check` 通过；
 - 安装后导入、CLI 帮助和未来数据隔离回放通过；
