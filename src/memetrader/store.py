@@ -481,6 +481,21 @@ class Store:
             )
         )
 
+    def recent_browser_observations(self, minutes: int = 180, limit: int = 5000) -> list[sqlite3.Row]:
+        now = utcnow()
+        return list(
+            self.db.execute(
+                """
+                SELECT * FROM observations
+                WHERE availability_proof='local_receive'
+                  AND source LIKE 'browser:%'
+                  AND observed_at>=? AND observed_at<=?
+                ORDER BY observed_at DESC LIMIT ?
+                """,
+                (iso(now - timedelta(minutes=minutes)), iso(now), limit),
+            )
+        )
+
     def create_event(
         self,
         title: str,
@@ -888,6 +903,19 @@ class Store:
 
     def decisions(self, limit: int = 30) -> list[sqlite3.Row]:
         return list(self.db.execute("SELECT * FROM decisions ORDER BY id DESC LIMIT ?", (limit,)))
+
+    def token_context_decision_relation(
+        self, token_id: str, decision_id: int
+    ) -> sqlite3.Row | None:
+        return self.db.execute(
+            """
+            SELECT d.id AS decision_id,d.event_id,d.token_id,d.action,d.match_score,d.score,d.created_at,
+                   e.title AS event_title,e.attention AS event_attention,e.last_seen_at,e.status AS event_status
+            FROM decisions d JOIN events e ON e.id=d.event_id
+            WHERE d.id=? AND d.token_id=?
+            """,
+            (int(decision_id), str(token_id)),
+        ).fetchone()
 
     def account(self) -> dict[str, float]:
         row = self.db.execute("SELECT cash_usd,realized_pnl_usd FROM paper_account WHERE singleton=1").fetchone()

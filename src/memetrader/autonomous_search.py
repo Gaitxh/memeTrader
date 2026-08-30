@@ -233,6 +233,40 @@ def _social_platform_for_url(value: str) -> str:
     return SOCIAL_PLATFORM_HOSTS.get(_host(value), "")
 
 
+def _canonical_social_url(value: str) -> str | None:
+    try:
+        parsed_input = urllib.parse.urlsplit(str(value or "").strip())
+        without_query = urllib.parse.urlunsplit(
+            (parsed_input.scheme, parsed_input.netloc, parsed_input.path, "", "")
+        )
+    except ValueError:
+        return None
+    normalized = _public_http_url(without_query)
+    if not normalized or not _social_platform_for_url(normalized):
+        return None
+    parsed = urllib.parse.urlsplit(normalized)
+    host = (parsed.hostname or "").lower().removeprefix("www.")
+    if host == "twitter.com":
+        host = "x.com"
+    path = urllib.parse.unquote(parsed.path).rstrip("/")
+    if not host or not path:
+        return None
+    return urllib.parse.urlunsplit(("https", host, path, "", ""))
+
+
+def _same_social_url(left: str, right: str) -> bool:
+    canonical_left = _canonical_social_url(left)
+    canonical_right = _canonical_social_url(right)
+    if not canonical_left or not canonical_right:
+        return False
+    left_parts = urllib.parse.urlsplit(canonical_left)
+    right_parts = urllib.parse.urlsplit(canonical_right)
+    return (
+        _social_platform_for_url(canonical_left) == _social_platform_for_url(canonical_right)
+        and left_parts.path.casefold() == right_parts.path.casefold()
+    )
+
+
 def _exact_watch_account_for_url(
     accounts: list[dict[str, Any]], value: str,
 ) -> dict[str, Any] | None:
@@ -530,6 +564,157 @@ class AutonomousSearchAgent:
             "watch_selection": selection_policy,
             "contains_credentials": False,
         }
+
+    def _configured_high_impact_accounts(self) -> list[dict[str, Any]]:
+        value: Any = {}
+        try:
+            if self.console_settings_path and self.console_settings_path.exists():
+                value = json.loads(self.console_settings_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            value = {}
+        rows = value.get("watch_accounts") if isinstance(value, dict) else None
+        if not isinstance(rows, list):
+            return []
+        minimum_priority = max(1, min(5, int(self.config.get("context_high_impact_min_priority", 4))))
+        accounts: list[dict[str, Any]] = []
+        for row in rows[:500]:
+            if not isinstance(row, dict) or row.get("enabled", True) is not True:
+                continue
+            platform = str(row.get("platform") or "").strip().lower()
+            handle = str(row.get("handle") or "").strip()[:120]
+            entity_id = str(row.get("entity_id") or "").strip().lower()
+            try:
+                priority = max(1, min(5, int(row.get("priority", 3))))
+            except (TypeError, ValueError):
+                priority = 3
+            cadence = str(row.get("watch_cadence") or "normal").strip().lower()
+            account_url = _public_http_url(str(row.get("url") or "")) or ""
+            if (
+                platform not in CONSOLE_PLATFORMS
+                or not handle
+                or not account_url
+                or not re.fullmatch(r"[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?", entity_id)
+                or (priority < minimum_priority and cadence != "critical")
+            ):
+                continue
+            accounts.append(
+                {
+                    "platform": platform,
+                    "handle": handle,
+                    "url": account_url,
+                    "entity_id": entity_id,
+                    "priority": priority,
+                    "watch_cadence": "critical" if cadence == "critical" else "normal",
+                }
+            )
+        return accounts
+
+    def resolve_token_context_trigger(
+        self,
+        token: TokenCandidate,
+        *,
+        momentum_score: float,
+        event_relation: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        if not self.config.get("context_direct_trigger_enabled", True):
+            return (
+                {
+                    "kind": "onchain_momentum",
+                    "priority": 1,
+                    "momentum_score": float(momentum_score),
+                    "decision_eligible": False,
+                }
+                if momentum_score >= float(self.config.get("context_min_momentum_score", 75))
+                else None
+            )
+
+        accounts = self._configured_high_impact_accounts()
+        if accounts:
+            for row in self.store.token_source_links(token.token_id, limit=40):
+                if str(row["link_kind"] or "").lower() != "social_post":
+                    continue
+                url = _canonical_social_url(str(row["normalized_url"] or ""))
+                account = _exact_watch_account_for_url(accounts, url or "") if url else None
+                if not account:
+                    continue
+                for observation in self.store.recent_browser_observations(
+                    minutes=int(self.config.get("context_lookback_minutes", 180))
+                ):
+                    if str(observation["role"] or "").lower() not in {"feature", "confirmation"}:
+                        continue
+                    try:
+                        raw = json.loads(observation["raw_json"] or "{}")
+                    except (TypeError, json.JSONDecodeError):
+                        continue
+                    browser = raw.get("browser") if isinstance(raw, dict) else None
+                    if not isinstance(browser, dict):
+                        continue
+                    if (
+                        str(raw.get("source_entity_id") or "").lower() != str(account["entity_id"])
+                        or str(browser.get("platform") or "").lower() != str(account["platform"])
+                    ):
+                        continue
+                    observed_url = str(observation["url"] or observation["source_item_id"] or "")
+                    if not _same_social_url(url, observed_url):
+                        continue
+                    return {
+                        "kind": "high_impact_account_post",
+                        "priority": 3,
+                        "source_link_id": int(row["id"]),
+                        "observation_id": int(observation["id"]),
+                        "platform": str(account["platform"]),
+                        "entity_id": str(account["entity_id"]),
+                        "account_priority": int(account["priority"]),
+                        "watch_cadence": str(account["watch_cadence"]),
+                        "url": url,
+                        "verification_status": "browser_exact_entity_observation",
+                        "decision_eligible": False,
+                        "endorsement_inferred": False,
+                    }
+
+        relation = event_relation if isinstance(event_relation, dict) else {}
+        try:
+            decision_id = int(relation.get("decision_id") or 0)
+        except (TypeError, ValueError):
+            decision_id = 0
+        if decision_id > 0:
+            row = self.store.token_context_decision_relation(token.token_id, decision_id)
+            if row is not None:
+                now = utcnow()
+                fresh_after = now - timedelta(minutes=int(self.config.get("context_lookback_minutes", 180)))
+                match_score = float(row["match_score"] or 0.0)
+                attention = float(row["event_attention"] or 0.0)
+                created_at = parse_time(row["created_at"])
+                last_seen_at = parse_time(row["last_seen_at"])
+                if (
+                    str(row["action"] or "").upper() in {"WAIT", "CANDIDATE"}
+                    and str(row["event_status"] or "") == "active"
+                    and fresh_after <= created_at <= now
+                    and fresh_after <= last_seen_at <= now
+                    and match_score >= float(self.config.get("context_direct_event_min_match_score", 70))
+                    and attention >= float(self.config.get("context_direct_event_min_attention", 55))
+                ):
+                    return {
+                        "kind": "fresh_high_attention_event_relation",
+                        "priority": 2,
+                        "decision_id": int(row["decision_id"]),
+                        "event_id": int(row["event_id"]),
+                        "event_title": str(row["event_title"] or "")[:500],
+                        "event_attention": attention,
+                        "match_score": match_score,
+                        "relation_status": "persisted_decision_relation",
+                        "decision_eligible": False,
+                        "endorsement_inferred": False,
+                    }
+
+        if momentum_score >= float(self.config.get("context_min_momentum_score", 75)):
+            return {
+                "kind": "onchain_momentum",
+                "priority": 1,
+                "momentum_score": float(momentum_score),
+                "decision_eligible": False,
+            }
+        return None
 
     @property
     def enabled(self) -> bool:
@@ -1532,6 +1717,7 @@ class AutonomousSearchAgent:
         *,
         momentum_score: float,
         status: str,
+        trigger: dict[str, Any],
         metadata_seeds: list[dict[str, Any]],
         payload: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
@@ -1574,10 +1760,21 @@ class AutonomousSearchAgent:
         minimum_sources = int(self.config.get("context_min_independent_sources", 2))
         if community_status == "independent_amplification_observed" and len(verified_domains) < minimum_sources:
             community_status = "project_channels_only" if metadata_seeds else "unknown"
+        safe_trigger = {
+            key: trigger.get(key)
+            for key in (
+                "kind", "priority", "source_link_id", "observation_id", "platform", "entity_id", "account_priority",
+                "watch_cadence", "url", "verification_status", "decision_id", "event_id", "event_title",
+                "event_attention", "match_score", "relation_status", "momentum_score",
+                "decision_eligible", "endorsement_inferred",
+            )
+            if trigger.get(key) is not None
+        }
         assessment = {
             "version": "token-context-assessment/v1",
             "decision_eligible": False,
             "affects": "context_display_and_verified_reporting_only",
+            "investigation_trigger": safe_trigger,
             "project_claims": {
                 "status": "project_attached_unverified" if metadata_seeds else "no_attached_social_seed",
                 "items": [
@@ -1644,7 +1841,7 @@ class AutonomousSearchAgent:
         }
         self.store.add_token_context_assessment(
             token.token_id,
-            trigger="high_momentum_reverse_context",
+            trigger=str(safe_trigger.get("kind") or "unknown")[:120],
             status=status,
             snapshot_observed_at=snapshot.observed_at,
             momentum_score=momentum_score,
@@ -1658,6 +1855,7 @@ class AutonomousSearchAgent:
             {
                 "status": status,
                 "token_id": token.token_id,
+                "trigger": str(safe_trigger.get("kind") or "unknown")[:120],
                 "verified_domains": verified_domains,
                 "model": safe_metadata["model"],
                 "reasoning_effort": safe_metadata["reasoning_effort"],
@@ -1673,10 +1871,16 @@ class AutonomousSearchAgent:
         snapshot: TokenSnapshot,
         *,
         momentum_score: float,
+        event_relation: dict[str, Any] | None = None,
     ) -> list[Observation]:
         if not self.enabled or not self.config.get("context_search_enabled", True):
             return []
-        if momentum_score < float(self.config.get("context_min_momentum_score", 75)):
+        trigger = self.resolve_token_context_trigger(
+            token,
+            momentum_score=momentum_score,
+            event_relation=event_relation,
+        )
+        if trigger is None:
             return []
         now = utcnow()
         error_retry_after = self.store.get_kv(CONTEXT_ERROR_RETRY_KEY)
@@ -1737,6 +1941,9 @@ class AutonomousSearchAgent:
             "wider web for independent corroboration. If a social page cannot be accessed, leave it unverified. Do not infer support "
             "from a person's name, a follower count, a blue check, a project claim, or an unrelated post. Describe community spread "
             "as observed cross-platform amplification, not subjective community quality. Use no more than four web searches. "
+            "The investigation trigger below only prioritizes research; it is not proof, endorsement, or decision evidence. A direct "
+            "high-impact-account post or fresh high-attention event relation may trigger this investigation before on-chain momentum, "
+            "but its content and relevance must still be verified. "
             "Return exact JSON only: "
             '{"event_found":true,"event_title":"...","confidence":0.0,"sources":['
             '{"title":"...","url":"exact source URL","publisher":"...","published_at":"ISO-8601 with timezone",'
@@ -1756,6 +1963,7 @@ class AutonomousSearchAgent:
                         token.raw.get("description") if isinstance(token.raw, dict) else ""
                     ),
                     "metadata_seeds": metadata_seeds,
+                    "investigation_trigger": trigger,
                     "liquidity_usd": snapshot.liquidity_usd,
                     "volume_5m_usd": snapshot.volume_5m_usd,
                     "buys_5m": snapshot.buys_5m,
@@ -1779,6 +1987,7 @@ class AutonomousSearchAgent:
                 snapshot,
                 momentum_score=momentum_score,
                 status="agent_error",
+                trigger=trigger,
                 metadata_seeds=metadata_seeds,
                 audit=[{"verified": False, "error": f"{type(exc).__name__}: {exc}"[:500]}],
                 assessed_at=now,
@@ -1791,6 +2000,7 @@ class AutonomousSearchAgent:
                 snapshot,
                 momentum_score=momentum_score,
                 status="no_context",
+                trigger=trigger,
                 metadata_seeds=metadata_seeds,
                 payload=payload,
                 metadata=metadata,
@@ -1891,6 +2101,7 @@ class AutonomousSearchAgent:
             snapshot,
             momentum_score=momentum_score,
             status="verified_reporting" if verified else "insufficient_verified_sources",
+            trigger=trigger,
             metadata_seeds=metadata_seeds,
             payload=payload,
             metadata=metadata,

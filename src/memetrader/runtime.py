@@ -323,6 +323,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "context_global_cooldown_minutes": 5,
         "context_error_retry_minutes": 10,
         "context_min_momentum_score": 80,
+        "context_direct_trigger_enabled": True,
+        "context_high_impact_min_priority": 4,
+        "context_direct_event_min_attention": 55,
+        "context_direct_event_min_match_score": 70,
         "context_token_cooldown_minutes": 240,
         "context_lookback_minutes": 180,
         "context_min_confidence": 0.78,
@@ -547,6 +551,11 @@ def load_config(path: str | Path) -> tuple[dict[str, Any], Path]:
             raise ValueError("autonomous_search.trend_scout_surge_lanes_per_run must be positive")
         if int(autonomous.get("source_auto_pause_failures", 3)) < 1:
             raise ValueError("autonomous_search.source_auto_pause_failures must be positive")
+        if not 1 <= int(autonomous.get("context_high_impact_min_priority", 4)) <= 5:
+            raise ValueError("autonomous_search.context_high_impact_min_priority must be between 1 and 5")
+        for name in ("context_min_momentum_score", "context_direct_event_min_attention", "context_direct_event_min_match_score"):
+            if not 0 <= float(autonomous.get(name, 0)) <= 100:
+                raise ValueError(f"autonomous_search.{name} must be between 0 and 100")
         market_ratio = float(autonomous.get("source_max_market_digest_ratio", 0.5))
         if not 0 <= market_ratio <= 1:
             raise ValueError("autonomous_search.source_max_market_digest_ratio must be between 0 and 1")
@@ -1308,6 +1317,34 @@ class Runtime:
         interval = max(10.0, float(cfg.get("trend_scout_check_seconds", 30)))
         await self._periodic("autonomous_trend_scout", interval, self.scout_trends_once)
 
+    async def _investigate_token_context(
+        self,
+        token: TokenCandidate,
+        snapshot: TokenSnapshot,
+        *,
+        momentum_score: float,
+        event_relation: dict[str, Any] | None = None,
+    ) -> None:
+        observations = await self.autonomous_search.search_token_context(
+            token,
+            snapshot,
+            momentum_score=momentum_score,
+            event_relation=event_relation,
+        )
+        for observation in observations:
+            await self.ingest_observation(observation)
+        if observations:
+            self.store.heartbeat("autonomous-context-search", item=True)
+            self.notifier.send(
+                "autonomous_context_found",
+                token.name or token.symbol or token.token_id,
+                {
+                    "token_id": token.token_id,
+                    "sources": [row.url for row in observations],
+                    "usage": self.autonomous_search.usage(),
+                },
+            )
+
     async def reverse_news_once(self) -> None:
         cfg = self.config["sources"].get("reverse_google_news") or {}
         if not cfg.get("enabled", True):
@@ -1324,7 +1361,7 @@ class Runtime:
         max_results = max(1, int(cfg.get("max_results_per_query", 8)))
         max_result_age = timedelta(minutes=float(cfg.get("max_result_age_minutes", 180)))
         now = utcnow()
-        ranked: list[tuple[float, TokenCandidate]] = []
+        ranked: list[tuple[int, float, TokenCandidate, dict[str, Any] | None]] = []
         source_priority = {"pumpportal:migration": 4, "geckoterminal": 3, "dexscreener": 2, "pumpportal": 1}
         tokens = self.store.recent_tokens(minutes=180, limit=candidate_pool_limit)
         tokens.sort(
@@ -1364,16 +1401,23 @@ class Runtime:
             self.store.add_snapshot(snap)
             transactions = (snap.buys_5m or 0) + (snap.sells_5m or 0)
             buy_ratio = (snap.buys_5m or 0) / transactions if transactions else 0.0
-            if (snap.liquidity_usd or 0) < min_liquidity:
+            momentum = CandidateEvaluator._momentum_score(snap)
+            trigger = self.autonomous_search.resolve_token_context_trigger(
+                quoted_token,
+                momentum_score=momentum,
+            )
+            market_gate = (
+                (snap.liquidity_usd or 0) >= min_liquidity
+                and (snap.volume_5m_usd or 0) >= min_volume
+                and transactions >= min_transactions
+                and buy_ratio >= min_buy_ratio
+            )
+            if not market_gate and trigger is None:
                 continue
-            if (snap.volume_5m_usd or 0) < min_volume:
-                continue
-            if transactions < min_transactions or buy_ratio < min_buy_ratio:
-                continue
-            ranked.append((CandidateEvaluator._momentum_score(snap), quoted_token))
+            ranked.append((int((trigger or {}).get("priority") or 0), momentum, quoted_token, trigger))
 
-        ranked.sort(key=lambda item: item[0], reverse=True)
-        for momentum, token in ranked[:max_queries]:
+        ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        for _, momentum, token, trigger in ranked[:max_queries]:
             key = f"reverse_news:{token.token_id}"
             self.store.set_kv(key, iso(now))
             name = token.name.strip() or token.symbol.strip()
@@ -1409,24 +1453,12 @@ class Runtime:
             if len(accepted_origins) < minimum_sources:
                 snapshot = self.store.latest_snapshot(token.token_id)
                 if snapshot is not None:
-                    agent_observations = await self.autonomous_search.search_token_context(
+                    await self._investigate_token_context(
                         token,
                         snapshot,
                         momentum_score=momentum,
+                        event_relation=trigger,
                     )
-                    for observation in agent_observations:
-                        await self.ingest_observation(observation)
-                    if agent_observations:
-                        self.store.heartbeat("autonomous-context-search", item=True)
-                        self.notifier.send(
-                            "autonomous_context_found",
-                            token.name or token.symbol or token.token_id,
-                            {
-                                "token_id": token.token_id,
-                                "sources": [row.url for row in agent_observations],
-                                "usage": self.autonomous_search.usage(),
-                            },
-                        )
 
     def _event_has_official_direct_ca(self, event_id: int) -> bool:
         for row in self.store.event_observations(event_id):
@@ -1550,6 +1582,13 @@ class Runtime:
             self.store.set_kv(next_key, iso(now + timedelta(seconds=delay)))
 
             if decision.action != "CANDIDATE" or not token or not snap or not snap.price_usd or amount <= 0:
+                if token and snap:
+                    await self._investigate_token_context(
+                        token,
+                        snap,
+                        momentum_score=CandidateEvaluator._momentum_score(snap),
+                        event_relation={"decision_id": decision_id},
+                    )
                 continue
             slippage = float(self.config["paper"].get("slippage_rate", 0.0))
             execution_price = float(snap.price_usd) * (1.0 + slippage)
@@ -1564,6 +1603,12 @@ class Runtime:
                         "score": decision.score,
                     },
                 )
+                await self._investigate_token_context(
+                    token,
+                    snap,
+                    momentum_score=CandidateEvaluator._momentum_score(snap),
+                    event_relation={"decision_id": decision_id},
+                )
                 continue
             position = self.store.paper_buy(
                 event_id=event.id,
@@ -1577,6 +1622,12 @@ class Runtime:
                 "paper_buy",
                 token.token_id,
                 {**asdict(position), "quote_price": snap.price_usd, "slippage_rate": slippage},
+            )
+            await self._investigate_token_context(
+                token,
+                snap,
+                momentum_score=CandidateEvaluator._momentum_score(snap),
+                event_relation={"decision_id": decision_id},
             )
 
     def _configured_health_sources(self) -> set[str]:

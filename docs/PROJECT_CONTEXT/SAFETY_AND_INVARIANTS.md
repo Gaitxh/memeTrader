@@ -35,7 +35,7 @@ ingested_at <= decision_time
 ## 4. Agent 边界
 
 - 最多两个 Agent 子进程并发。
-- 仅允许三类调用：全球热点侦察、免费来源发现、高动量 Token 上下文。
+- 仅允许三类调用：全球热点侦察、免费来源发现、受控 Token 上下文。Token 上下文可以由链上动量、精确高影响力账号原帖，或新鲜高热事件与 Token 的高匹配持久化关系触发；触发只决定调查优先级，不构成背书、证据或买入信号。
 - News Radar、Social Pulse、Named Account Watch、Evidence Verifier、Token Context、Source Discovery 是六个逻辑职责，不是六个并发 Agent。
 - Agent 不能访问 Broker、钱包、私钥、仓位修改、项目写权限或风控绕过。
 - 本地代码负责轮询、解析、去重、时间、评分、数学、仓位、风险限额和退出。

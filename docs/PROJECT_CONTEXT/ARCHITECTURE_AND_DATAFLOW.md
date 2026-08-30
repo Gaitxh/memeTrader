@@ -47,7 +47,7 @@ Dex Profile/CTO/Ads/Boost           │
                            │
              DexScreener 报价与 5m 动量
                            │
-        Token Context（仅高动量且受预算限制）
+        Token Context（动量 / 浏览器桥实收精确名人原帖 / 高热事件关系触发，且受预算限制）
                            │
                            ▼
               CandidateEvaluator 排名
@@ -145,7 +145,7 @@ docs/PROJECT_CONTEXT/               无 secret 的版本控制内项目记忆
 | 工作 | 默认 |
 |---|---:|
 | 外部 RSS/新池 | 60 秒 |
-| DexScreener Profile/CTO/Ads/Boost | 90 秒；每面最多 40 条，每轮最多补全 8 个 CA |
+| DexScreener Profile/CTO/Ads/Boost | 90 秒；每面最多 40 条，每轮最多补全 180 个 CA，并按官方端点每批最多 30 个地址 |
 | Token→Google News 调度 | 45 秒；单 Token 另有冷却 |
 | 事件重新判断 | 10 秒 |
 | Paper 持仓监督 | 15 秒 |
@@ -153,9 +153,9 @@ docs/PROJECT_CONTEXT/               无 secret 的版本控制内项目记忆
 | 浏览器扩展 | DOM 触发；30 秒心跳 |
 | Trend Scout 普通/surge/quiet | 12 / 3 / 30 分钟 |
 | Source Discovery | 24 小时 |
-| Token Context | 动量触发；全局 5 分钟、同 Token 240 分钟 |
+| Token Context | 动量、浏览器桥本机实收且精确归因的高影响力账号原帖，或新鲜高热事件高匹配 WAIT/CANDIDATE 关系触发；全局 5 分钟、同 Token 240 分钟 |
 
-Trend Scout 与 Source Discovery 首选 Spark/low，额度不可用时 Luna/low；Token Context 首选 Luna/low，回退 Terra/medium，Sol/medium 仅最后回退。所有本地计算不消耗 Agent。
+Trend Scout 与 Source Discovery 首选 Spark/low，额度不可用时 Luna/low；Token Context 首选 Luna/low，回退 Terra/medium，Sol/medium 仅最后回退。该分级已经按任务复杂度配置并逐次记账，但当前自动升级主要处理模型/额度不可用，并不能声称已根据语义冲突或输出质量动态选择推理强度。所有本地计算不消耗 Agent。
 
 账号选择不是“全目录每轮扫描”：`critical` 账号最多保留 4 个槽位；其余先按人工 P5–P1 策展，并在 12 个候选观察槽位中始终保留至少 40%（5 个）做轮换探索。账号暴露账本记录每次被检查却无产出的情况；精确原帖命中必须匹配平台和账号 URL 路径。`watch-attention/v1` 只有在发现效率门和 60 分钟 WAIT/CANDIDATE 人物/平台随访门同时成熟时，才允许普通账号在 `0.80×–1.20×` 内改变观察轮换；已平仓 Paper 标签只是次级验证，不能单独激活。Trend Scout 的 `trend-attention/v1` 已记录每轮通道暴露、空结果和错误/失败结果；只有全局至少 20 个已接受事件，且至少两个可比较通道各自达到 20 次完成暴露、10 个运行日、5 次零产出并具有成熟的 60 分钟 WAIT/CANDIDATE 市场随访时，才可在 `0.80×–1.20×` 内调整通道分配。已平仓 Paper 结果只作可选次级验证；普通运行始终保留至少一个 round-robin 探索通道，surge 全覆盖。当前运行预计仍在收集样本，尚未启用该分配。以上值不传给 CandidateEvaluator、SafetyChecker 或 PaperPolicy，也不影响退出或 Live。
 

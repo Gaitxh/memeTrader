@@ -19,6 +19,7 @@
 ## 必读地图
 
 - [PRODUCT_AND_REQUIREMENTS.md](PRODUCT_AND_REQUIREMENTS.md)：产品目的、非目标、完整需求和界面语义。
+- [REQUIREMENTS_ACCEPTANCE_2026-08-30.md](REQUIREMENTS_ACCEPTANCE_2026-08-30.md)：本轮对整段需求的逐项验收，区分已实现、部分实现、未实现、明确跳过和人工步骤。
 - [ARCHITECTURE_AND_DATAFLOW.md](ARCHITECTURE_AND_DATAFLOW.md)：组件、数据流、关键代码路径、SQLite 表和实时更新方式。
 - [SAFETY_AND_INVARIANTS.md](SAFETY_AND_INVARIANTS.md)：Paper/Live、时间门、账号、Agent、钱包和公开 URL 的硬边界。
 - [SNAPSHOT_2026-08-30.md](SNAPSHOT_2026-08-30.md)：本次上下文归档时的实现、运行和未完成状态。

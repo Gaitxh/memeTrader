@@ -44,7 +44,9 @@ RSS 默认不继承系统代理。若电脑只能通过本机 SOCKS5 出网，�
 
 ### 3. Token 反向事件搜索（Token Context）
 
-只有新 Token 已出现真实流动性、成交量、买卖笔数和买盘优势时，系统才调用 Agent 反查名称背后的现实事件。Dex pair info 中的社交主页/原帖可作为调查入口，但仍属于项目方元数据。Agent 最多做四次网页搜索，并把社区扩散、公众人物关联候选、独立报道和链上触发快照分开返回；不能根据姓名、粉丝数、认证标志或项目声明推断“名人背书”。
+调查不是单一动量门。当前有三类确定性入口：链上动量达到配置门槛；Token 详情附带的 `social_post` URL 与本机浏览器桥在回看窗口内实际接收、精确归因到已启用稳定 `entity_id` 高影响力账号的同一原帖完全一致；或策略已经把该 Token 与新鲜高热事件形成高匹配的持久化 WAIT/CANDIDATE decision 关系。后两者只表示“值得优先调查”，不表示人物背书、事件真实或 Token 合法。人物名字、头像、同名 Token、社交主页、蓝标、项目方声明以及仅由项目方填写的帖子链接都不能触发这个绕行动量的入口。
+
+普通名称反查只有在新 Token 已出现真实流动性、成交量、买卖笔数和买盘优势时才调用 Agent；上述浏览器实收原帖或高热事件关系可以提前触发。Dex pair info 中的社交主页/原帖仍只是项目方元数据与调查种子，不能自行触发，URL 查询参数和片段会先移除。Agent 最多做四次网页搜索，并把社区扩散、公众人物关联候选、独立报道和链上触发快照分开返回；不能根据姓名、粉丝数、认证标志或项目声明推断“名人背书”。
 
 完整调查追加到 `token_context_assessments` 供 Web 审计，默认 `decision_eligible=false`。只有独立报道同时通过本机 URL/DNS、可访问性、发布时间、相关性和至少两个独立域名检查时，才生成 confirmation Observation 并沿原有 Token→Event 链进入事件系统；Agent 自报的社区状态或公众人物候选不会直接进入主叙事候选排序。四字母名称（例如人物姓氏或短昵称）允许进入搜证，但不能仅凭文本重合连接新闻。最终仍要通过报价、流动性、税率、可卖性、GoPlus/Honeypot、GoPlus/RugCheck 和仓位限制。当前 Paper 对 EVM 与 Solana 均默认要求至少一个外部安全报告；同一链族的报告全部不可用时失败关闭，而不是当作安全。
 
@@ -92,7 +94,7 @@ Agent 全部使用：
 | Spark 不可用并回退到 Luna | 普通最短 30 分钟；重大信号最短 10 分钟 |
 | 上一次调用超过 18,000 tokens | 普通最短 30 分钟；重大信号最短 10 分钟 |
 | 新信息源发现 | 24 小时 |
-| Token 专项 Agent | 事件触发；全局最短 5 分钟；同 Token 240 分钟冷却；失败仅退避 10 分钟；动量分≥80 |
+| Token 专项 Agent | 动量或严格语境关系触发；全局最短 5 分钟；同 Token 240 分钟冷却；失败仅退避 10 分钟；普通动量门≥80 |
 
 全球侦察线程每 30 秒只检查“是否到期”，不会每 30 秒调用 Agent。
 
@@ -111,7 +113,11 @@ Agent 全部使用：
   "source_discovery_token_reserve_per_call": 30000,
   "context_search_daily_limit": 8,
   "token_context_daily_token_budget": 250000,
-  "token_context_token_reserve_per_call": 30000
+  "token_context_token_reserve_per_call": 30000,
+  "context_direct_trigger_enabled": true,
+  "context_high_impact_min_priority": 4,
+  "context_direct_event_min_attention": 55,
+  "context_direct_event_min_match_score": 70
 }
 ```
 
@@ -123,12 +129,12 @@ Agent 全部使用：
 
 全部位于 `config.json -> autonomous_search`：
 
-- `max_concurrent_agents`：最大并行 Agent，范围 1–4；
+- `max_concurrent_agents`：最大并行 Agent，当前安全范围 1–2；
 - `profiles`：每类任务的模型、回退模型和推理强度；
 - `trend_scout_*`：主动热点侦察的频率、主题轮换、阈值、搜索数、调用上限和 token 上限；
 - `source_discovery_*`：自动发现新源的周期、上限与失败自动暂停阈值；
 - `source_quality_*` / `source_max_market_digest_ratio`：动态 RSS 的内容质量门；
-- `context_*`：Token 反向检索的动量门槛、全局冷却、失败退避、同 Token 冷却、置信度与每日上限；
+- `context_*`：Token 反向检索的动量门槛、人物原帖/高热事件直接调查门、全局冷却、失败退避、同 Token 冷却、置信度与每日上限；
 - `*_token_reserve_per_call`：在启动下一次调用前预留的 token 预算；
 - `topics`：当前结构化通道内的补充提示，不是固定关键词清单，也不能新建或扩展通道。
 

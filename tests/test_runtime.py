@@ -659,6 +659,100 @@ def test_reverse_news_only_runs_for_tokens_with_real_momentum(tmp_path, monkeypa
     asyncio.run(scenario())
 
 
+def test_reverse_context_prioritizes_exact_high_impact_post_without_momentum(tmp_path, monkeypatch):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        config["sources"]["rss"] = []
+        config["sources"]["gecko_networks"] = []
+        config["sources"]["pumpportal"]["enabled"] = False
+        config["sources"]["reverse_google_news"].update(
+            {"queries_per_cycle": 1, "max_tokens_scanned_per_cycle": 5}
+        )
+        settings_path = tmp_path / "data" / "web_console" / "console_settings.json"
+        settings_path.parent.mkdir(parents=True)
+        settings_path.write_text(
+            json.dumps(
+                {
+                    "watch_accounts": [
+                        {
+                            "platform": "x", "handle": "@elonmusk",
+                            "url": "https://x.com/elonmusk", "entity_id": "elon_musk",
+                            "priority": 4, "watch_cadence": "critical", "enabled": True,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        runtime = Runtime(config, tmp_path)
+        token = TokenCandidate(
+            chain="solana", address="P" * 32, name="Rocket Otter", symbol="ROT"
+        )
+        runtime.store.upsert_token(token)
+        runtime.store.upsert_token_source_link(
+            {
+                "token_id": token.token_id,
+                "provider": "dexscreener",
+                "discovery_surface": "pair_info",
+                "role": "identity",
+                "original_url": "https://x.com/elonmusk/status/12345",
+                "normalized_url": "https://x.com/elonmusk/status/12345",
+                "link_kind": "social_post",
+                "platform": "x",
+                "verification_status": "provider_metadata",
+            }
+        )
+        runtime.store.add_observation(
+            Observation(
+                source="browser:x:elonmusk",
+                source_kind="social",
+                title="Exact locally received post",
+                url="https://x.com/elonmusk/status/12345",
+                author="@elonmusk",
+                availability_proof="local_receive",
+                role="feature",
+                source_item_id="https://x.com/elonmusk/status/12345",
+                raw={
+                    "source_entity_id": "elon_musk",
+                    "browser": {"platform": "x", "source_entity_id": "elon_musk"},
+                },
+            )
+        )
+
+        class FakeDex:
+            async def quote(self, chain, address):
+                return token, TokenSnapshot(chain, address, 1, 100, 1000, 10, 1, 1)
+
+        queried = []
+
+        class FakeRSS:
+            def __init__(self, http, name, url, kind):
+                queried.append(name)
+
+            async def poll(self):
+                return []
+
+        investigations = []
+
+        async def search_context(candidate, snapshot, *, momentum_score, event_relation=None):
+            investigations.append((candidate.token_id, momentum_score, event_relation))
+            return []
+
+        runtime.dex = FakeDex()
+        runtime.autonomous_search.search_token_context = search_context
+        monkeypatch.setattr("memetrader.runtime.RSSCollector", FakeRSS)
+        await runtime.reverse_news_once()
+        assert queried == ["google-news-reverse"]
+        assert len(investigations) == 1
+        assert investigations[0][0] == token.token_id
+        assert investigations[0][2]["kind"] == "high_impact_account_post"
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
 def test_end_to_end_event_buy_partial_profit_and_liquidity_exit(tmp_path):
     async def scenario():
         from memetrader.strategy import CandidateEvaluator

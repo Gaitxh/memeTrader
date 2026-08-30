@@ -940,7 +940,17 @@ def test_settings_are_allowlisted_atomic_and_never_expose_secrets(tmp_path: Path
         item for item in settings["schema"]["fields"]
         if item["path"] == "autonomous_search.source_learning_exploration_fraction"
     )
+    direct_context = next(
+        item for item in settings["schema"]["fields"]
+        if item["path"] == "autonomous_search.context_direct_trigger_enabled"
+    )
+    direct_attention = next(
+        item for item in settings["schema"]["fields"]
+        if item["path"] == "autonomous_search.context_direct_event_min_attention"
+    )
     assert learning_fraction["min"] == 0.4
+    assert direct_context["type"] == "boolean"
+    assert (direct_attention["min"], direct_attention["max"]) == (0, 100)
     assert settings["live_locked"] is True
     telegram_option = next(
         item

@@ -20,7 +20,7 @@ from memetrader.autonomous_search import (
     _public_http_url,
 )
 from memetrader.collectors import HttpClient, UnsafeFeedURL
-from memetrader.models import Observation, TokenCandidate, TokenSnapshot, iso, utcnow
+from memetrader.models import CandidateDecision, Observation, TokenCandidate, TokenSnapshot, iso, utcnow
 from memetrader.runtime import Runtime, initial_config
 from memetrader.store import Store
 
@@ -760,6 +760,196 @@ def test_token_context_global_cooldown_prevents_bursts(tmp_path: Path):
         store.close()
 
     asyncio.run(scenario())
+
+
+def test_browser_verified_high_impact_post_triggers_context_without_momentum(tmp_path: Path):
+    async def scenario():
+        settings_path = tmp_path / "console_settings.json"
+        settings_path.write_text(
+            json.dumps(
+                {
+                    "watch_accounts": [
+                        {
+                            "platform": "x",
+                            "handle": "@elonmusk",
+                            "url": "https://x.com/elonmusk",
+                            "entity_id": "elon_musk",
+                            "priority": 4,
+                            "watch_cadence": "critical",
+                            "enabled": True,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        store = Store(tmp_path / "db.sqlite3")
+        agent = AutonomousSearchAgent(
+            store,
+            FakeHttp(),
+            config(context_min_momentum_score=80),
+            console_settings_path=settings_path,
+        )
+        prompts = []
+        agent._run_codex_search = lambda prompt, task="token_context": (
+            prompts.append(prompt) or {"event_found": False, "sources": []},
+            {"tokens_used": 10},
+        )
+        token = TokenCandidate(chain="solana", address="H" * 32, name="Unrelated name", symbol="UNR")
+        store.upsert_token_source_link(
+            {
+                "token_id": token.token_id,
+                "provider": "dexscreener",
+                "discovery_surface": "pair_info",
+                "role": "identity",
+                "original_url": "https://x.com/elonmusk/status/12345?utm_source=project#reply",
+                "normalized_url": "https://x.com/elonmusk/status/12345?utm_source=project#reply",
+                "link_kind": "social_post",
+                "platform": "x",
+                "verification_status": "provider_metadata",
+            }
+        )
+        snapshot = TokenSnapshot("solana", token.address, 0.01, 100, 1000, 10, 1, 1)
+        assert agent.resolve_token_context_trigger(token, momentum_score=5) is None
+        assert prompts == []
+        store.add_observation(
+            Observation(
+                source="browser:x:elonmusk",
+                source_kind="social",
+                title="Exact locally received post",
+                url="https://twitter.com/elonmusk/status/12345?ref_src=twsrc",
+                author="@elonmusk",
+                availability_proof="local_receive",
+                role="feature",
+                source_item_id="https://twitter.com/elonmusk/status/12345?ref_src=twsrc",
+                raw={
+                    "source_entity_id": "elon_musk",
+                    "browser": {"platform": "x", "source_entity_id": "elon_musk"},
+                },
+            )
+        )
+        assert await agent.search_token_context(token, snapshot, momentum_score=5) == []
+        assert len(prompts) == 1 and "high_impact_account_post" in prompts[0]
+        run = store.token_context_assessments(token.token_id)[0]
+        assessment = json.loads(run["assessment_json"])
+        assert run["trigger"] == "high_impact_account_post"
+        assert assessment["investigation_trigger"]["entity_id"] == "elon_musk"
+        assert assessment["investigation_trigger"]["observation_id"] > 0
+        assert assessment["investigation_trigger"]["verification_status"] == "browser_exact_entity_observation"
+        assert assessment["investigation_trigger"]["url"] == "https://x.com/elonmusk/status/12345"
+        assert assessment["investigation_trigger"]["endorsement_inferred"] is False
+        assert assessment["decision_eligible"] is False
+        store.close()
+
+    asyncio.run(scenario())
+
+
+def test_name_or_profile_imitation_cannot_bypass_context_momentum_gate(tmp_path: Path):
+    async def scenario():
+        settings_path = tmp_path / "console_settings.json"
+        settings_path.write_text(
+            json.dumps(
+                {
+                    "watch_accounts": [
+                        {
+                            "platform": "x", "handle": "@elonmusk",
+                            "url": "https://x.com/elonmusk", "entity_id": "elon_musk",
+                            "priority": 4, "enabled": True,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        store = Store(tmp_path / "db.sqlite3")
+        agent = AutonomousSearchAgent(
+            store,
+            FakeHttp(),
+            config(context_min_momentum_score=80),
+            console_settings_path=settings_path,
+        )
+        calls = []
+        agent._run_codex_search = lambda prompt, task="token_context": (
+            calls.append(task) or {"event_found": False, "sources": []},
+            {"tokens_used": 1},
+        )
+        token = TokenCandidate(chain="solana", address="I" * 32, name="Elon Musk", symbol="ELON")
+        store.upsert_token_source_link(
+            {
+                "token_id": token.token_id,
+                "provider": "dexscreener",
+                "discovery_surface": "pair_info",
+                "role": "identity",
+                "original_url": "https://x.com/elonmusk",
+                "normalized_url": "https://x.com/elonmusk",
+                "link_kind": "social_profile",
+                "platform": "x",
+                "verification_status": "provider_metadata",
+            }
+        )
+        snapshot = TokenSnapshot("solana", token.address, 0.01, 100, 1000, 10, 1, 1)
+        assert await agent.search_token_context(token, snapshot, momentum_score=5) == []
+        assert calls == []
+        assert store.token_context_assessments(token.token_id) == []
+        store.close()
+
+    asyncio.run(scenario())
+
+
+def test_fresh_high_attention_event_relation_triggers_context_without_momentum(tmp_path: Path):
+    async def scenario():
+        store = Store(tmp_path / "db.sqlite3")
+        agent = AutonomousSearchAgent(store, FakeHttp(), config(context_min_momentum_score=80))
+        prompts = []
+        agent._run_codex_search = lambda prompt, task="token_context": (
+            prompts.append(prompt) or {"event_found": False, "sources": []},
+            {"tokens_used": 11},
+        )
+        token = TokenCandidate(chain="solana", address="E" * 32, name="Current Event", symbol="EVENT")
+        event_id = store.create_event("Current high-attention event", ["current event"], 82)
+        decision_id = store.add_decision(
+            CandidateDecision(event_id, token.token_id, "WAIT", 81, 91, 20, ["test relation"])
+        )
+        snapshot = TokenSnapshot("solana", token.address, 0.01, 100, 1000, 10, 1, 1)
+        assert await agent.search_token_context(
+            token,
+            snapshot,
+            momentum_score=5,
+            event_relation={"decision_id": decision_id},
+        ) == []
+        assert len(prompts) == 1 and "fresh_high_attention_event_relation" in prompts[0]
+        run = store.token_context_assessments(token.token_id)[0]
+        assessment = json.loads(run["assessment_json"])
+        assert run["trigger"] == "fresh_high_attention_event_relation"
+        assert assessment["investigation_trigger"]["event_id"] == event_id
+        assert assessment["investigation_trigger"]["decision_eligible"] is False
+        store.close()
+
+    asyncio.run(scenario())
+
+
+def test_rejected_or_future_event_relation_cannot_bypass_context_momentum_gate(tmp_path: Path):
+    store = Store(tmp_path / "db.sqlite3")
+    agent = AutonomousSearchAgent(store, FakeHttp(), config(context_min_momentum_score=80))
+    token = TokenCandidate(chain="solana", address="F" * 32, name="Future Event", symbol="FUT")
+    event_id = store.create_event("Future event", ["future event"], 90)
+    rejected_id = store.add_decision(
+        CandidateDecision(event_id, token.token_id, "REJECT", 90, 95, 20, ["test relation"])
+    )
+    assert agent.resolve_token_context_trigger(
+        token, momentum_score=5, event_relation={"decision_id": rejected_id}
+    ) is None
+    wait_id = store.add_decision(
+        CandidateDecision(event_id, token.token_id, "WAIT", 90, 95, 20, ["test relation"])
+    )
+    future = iso(utcnow() + timedelta(minutes=5))
+    with store.db:
+        store.db.execute("UPDATE decisions SET created_at=? WHERE id=?", (future, wait_id))
+        store.db.execute("UPDATE events SET last_seen_at=? WHERE id=?", (future, event_id))
+    assert agent.resolve_token_context_trigger(
+        token, momentum_score=5, event_relation={"decision_id": wait_id}
+    ) is None
+    store.close()
 
 
 def test_token_context_search_requires_two_recent_reachable_sources(tmp_path: Path):

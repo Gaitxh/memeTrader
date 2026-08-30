@@ -124,6 +124,8 @@ Telegram 来源应和其他平台使用同一证据模型：
 | [@DegenerateNews](https://t.me/DegenerateNews) / [预览](https://t.me/s/DegenerateNews) | Meme 原生文化和突发舆论 | C/D；适合热点发现，不进入确定性证据。 |
 | [@solananewshub](https://t.me/solananewshub) / [预览](https://t.me/s/solananewshub) | Solana 生态新闻，页面称由 Solflare 支持，常链接原始 X 帖 | C；不是 Solana Foundation 官方。 |
 | [@PumpFunNewPools](https://t.me/PumpFunNewPools) / [预览](https://t.me/s/PumpFunNewPools) | 第三方新池转发 | 默认禁用；与 PumpPortal 重复，噪声、推广和操纵风险高。 |
+| [@birdeye_alert_bot](https://t.me/birdeye_alert_bot) | Birdeye 官方文档列出的提醒投递机器人；需要用户在 Birdeye 先配置价格、成交量等条件 | C/discovery-only；它是通知通道，不是独立来源，不提供全网新币语境核验，也不应连接 memeTrader 钱包。 |
+| [Birdeye 文档列出的 Telegram New Pairs bot](https://docs.birdeye.so/docs/birdeye-bots) | Birdeye 合作方 Waterfall 提供的新交易对提醒 | D/discovery-only；属于合作方而非 Birdeye 自有机器人，与 PumpPortal/DexScreener/GeckoTerminal 直接链上发现重复，默认不加入自动链路。 |
 | [@solana_dailyann](https://t.me/solana_dailyann) | Solana 社区和项目推广 | 默认禁用；历史内容包含营销套餐、Giveaway 和付费曝光，独立性弱。 |
 
 不要默认接入任何带 `caller`、`100x`、`sniper`、`trending volume`、`volumize` 或钱包连接功能的频道/机器人。运营者可能持仓、收广告费或直接制造成交量。
@@ -139,6 +141,8 @@ Telegram 来源应和其他平台使用同一证据模型：
 | [@TGAlertsBot](https://t.me/TGAlertsBot) | 关键词/提及监控；TGStat 宣称覆盖大量来源并提供较低延迟 | 第三方付费服务；会知道完整监控词和目标。不要提交内部策略、敏感 CA 或钱包标识；结果必须回到原始帖子。 |
 | [@TheFeedReaderBot](https://t.me/TheFeedReaderBot) / [官网](https://elite.thefeedreaderbot.com/) | 把 RSS、X、YouTube、Facebook、TikTok、Instagram 和网页变化投递到 Telegram；官网调研时称刷新约 10–30 分钟 | 它是投递工具，不是权威来源；运营者可看到全部订阅列表和社交账号。memeTrader 已有本地 RSS/浏览器采集，不需要把源清单交给它。 |
 | [@junction_bot](https://t.me/junction_bot) / [文档](https://www.junctionbot.io/documentation/forwarding) | 聚合/转发公共频道、按名称搜索、相似频道发现；高级模式可连接用户账号和私密来源 | 不连接 memeTrader 专用账号、不授予管理员、不允许访问私密群或内部策略。查询和来源列表会交给第三方。 |
+| [@junction_bot AI Digests](https://www.junctionbot.io/documentation/digests) | 可从多源定时生成摘要，并按关键词、重复、广告或自定义 prompt 过滤 | 功能已由官方文档核验，但免费模式使用第三方默认模型，私有源要求连接个人 Telegram 账号；不使用本机 Codex agentic 额度。仅作人工备用，不进入 memeTrader 自动证据链。 |
+| [@theSummaryBot](https://t.me/theSummaryBot) | 人工提交网页、文章或视频后生成摘要/翻译 | 阅读辅助，不是信息源；摘要不能替代原文、发布时间和本机首次观察时间，也不向其提交内部策略或敏感链接。 |
 | [@pumptrendingofficial_bot](https://t.me/pumptrendingofficial_bot) | Pump.fun 品牌频道链接的 `volumize` / trending 推广工具 | 高操纵和利益冲突风险；禁止连接钱包、禁止作为热度或成交证据。 |
 | [TG.ME](https://tg.me/) | 非 Telegram 官方的公共频道搜索、阅读和统计网站；调研时自称无需账号并索引约 1,240 万频道 | 仅人工发现；需单独审查其隐私、条款、数据许可、索引新鲜度和运营者。 |
 | [Telegram 原生全局搜索](https://core.telegram.org/api/search) | MTProto `messages.searchGlobal` | 需要登录账号和 API 凭据；查询发送给 Telegram，仍受 API/内容条款和账号限制。 |

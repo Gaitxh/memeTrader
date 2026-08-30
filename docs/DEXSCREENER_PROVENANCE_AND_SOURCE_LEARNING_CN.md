@@ -74,13 +74,13 @@ Token Context 仅把非 Telegram 种子作为不可信搜索提示
 
 ### 3.2 Agent Token Context 的审计分栏
 
-通过本地流动性、5 分钟成交量、交易数、买卖比和动量门槛的 Token，才可能进入受预算 Token Context Agent。Agent 使用 pair info 中的 `social_profile / social_post` 作为不可信调查入口；项目网站、Dex 页面、搜索页、Telegram 和推广面不会作为社交原帖送入 Agent。调查结果追加到 `token_context_assessments`，固定分为：
+普通名称反查通过本地流动性、5 分钟成交量、交易数、买卖比和动量门槛后进入受预算 Token Context Agent。另有两个优先调查入口：pair info 的 `social_post` 精确匹配已配置高影响力账号，或该 Token 已与新鲜高热事件形成高匹配持久化 decision 关系。`social_profile`、同名、头像、蓝标和项目方自报均不能绕过动量门；优先入口本身也只是调查理由。Agent 使用 pair info 中的 `social_profile / social_post` 作为不可信调查入口；项目网站、Dex 页面、搜索页、Telegram 和推广面不会作为社交原帖送入 Agent。调查结果追加到 `token_context_assessments`，固定分为：
 
 - 项目附带社交声明：永远是 `project_attached_unverified`；
 - 社区扩散观察：描述可复核的跨平台传播，不主观评价“社区好坏”；
 - 公众人物关联：Agent 结果只能是 `unverified_candidate`，不能自动写成支持、背书或因果影响；
 - 独立报道：仍需本地重新请求、时间检查、相关性阈值和至少两个独立域名；只有这一路可沿原有 confirmation 链进入事件系统；
-- 链上动量触发快照：只解释为什么启动调查，不能替代新闻或社交证据。
+- 调查触发与链上快照：明确记录是动量、人物原帖还是高热事件关系触发；任何一种都不能替代新闻或社交证据。
 
 评估记录包含本机时间、触发快照、模型、推理强度、token 用量和逐 URL 核验审计。除通过旧有独立报道门的 Observation 外，整个评估保持 `decision_eligible=false`，不进入候选排名、仓位、退出或 Live。
 

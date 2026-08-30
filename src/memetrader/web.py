@@ -284,6 +284,10 @@ SETTING_SPECS: dict[str, tuple[str, float, float]] = {
     "autonomous_search.context_token_cooldown_minutes": ("float", 1, 10080),
     "autonomous_search.context_search_daily_limit": ("int", 0, 1000),
     "autonomous_search.context_min_momentum_score": ("float", 0, 100),
+    "autonomous_search.context_direct_trigger_enabled": ("bool", 0, 1),
+    "autonomous_search.context_high_impact_min_priority": ("int", 1, 5),
+    "autonomous_search.context_direct_event_min_attention": ("float", 0, 100),
+    "autonomous_search.context_direct_event_min_match_score": ("float", 0, 100),
     "autonomous_search.token_context_daily_token_budget": ("int", 0, 100_000_000),
     "autonomous_search.token_context_token_reserve_per_call": ("int", 0, 10_000_000),
 }
