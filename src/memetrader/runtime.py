@@ -110,6 +110,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
             },
         ],
         "gecko_networks": ["solana", "bsc"],
+        "dexscreener_discovery": {
+            "enabled": True,
+            "interval_seconds": 90,
+            "max_items_per_surface": 40,
+            "max_hydrations_per_cycle": 8,
+            "active_token_minutes": 180,
+        },
         "pumpportal": {"enabled": True, "url": "wss://pumpportal.fun/api/data"},
         "reverse_google_news": {
             "enabled": True,
@@ -285,6 +292,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "trend_scout_max_sources_per_event": 3,
         "trend_scout_max_web_searches": 4,
         "trend_scout_surge_attention": 70,
+        "source_learning_enabled": True,
+        "source_learning_lookback_days": 90,
+        "source_learning_min_closed_outcomes": 20,
+        "source_learning_min_event_days": 10,
+        "source_learning_min_losing_outcomes": 5,
+        "source_learning_entity_min_closed_outcomes": 30,
+        "source_learning_entity_min_event_days": 15,
+        "source_learning_entity_min_platforms": 2,
+        "source_learning_exploration_fraction": 0.40,
         "startup_delay_seconds": 120,
         "source_discovery_check_minutes": 60,
         "source_discovery_interval_hours": 24,
@@ -459,6 +475,23 @@ def load_config(path: str | Path) -> tuple[dict[str, Any], Path]:
         except ValueError as exc:
             raise ValueError("sources.rss URLs must be credential-free public http/https URLs") from exc
 
+    dex_discovery = sources.get("dexscreener_discovery") or {}
+    if not isinstance(dex_discovery, dict):
+        raise ValueError("sources.dexscreener_discovery must be an object")
+    if dex_discovery.get("enabled", True):
+        interval = float(dex_discovery.get("interval_seconds", 90))
+        if not 30 <= interval <= 3600:
+            raise ValueError("sources.dexscreener_discovery.interval_seconds must be between 30 and 3600")
+        max_items = int(dex_discovery.get("max_items_per_surface", 40))
+        if not 1 <= max_items <= 100:
+            raise ValueError("sources.dexscreener_discovery.max_items_per_surface must be between 1 and 100")
+        max_hydrations = int(dex_discovery.get("max_hydrations_per_cycle", 8))
+        if not 0 <= max_hydrations <= 30:
+            raise ValueError("sources.dexscreener_discovery.max_hydrations_per_cycle must be between 0 and 30")
+        active_minutes = int(dex_discovery.get("active_token_minutes", 180))
+        if not 1 <= active_minutes <= 1440:
+            raise ValueError("sources.dexscreener_discovery.active_token_minutes must be between 1 and 1440")
+
     for name in ("poll_seconds", "reverse_news_seconds", "event_scan_seconds", "position_scan_seconds", "source_health_seconds"):
         if float(config.get(name, 0)) <= 0:
             raise ValueError(f"{name} must be positive")
@@ -482,6 +515,13 @@ def load_config(path: str | Path) -> tuple[dict[str, Any], Path]:
             "context_global_cooldown_minutes",
             "context_error_retry_minutes",
             "source_quality_min_recent_items",
+            "source_learning_lookback_days",
+            "source_learning_min_closed_outcomes",
+            "source_learning_min_event_days",
+            "source_learning_min_losing_outcomes",
+            "source_learning_entity_min_closed_outcomes",
+            "source_learning_entity_min_event_days",
+            "source_learning_entity_min_platforms",
         ):
             if float(autonomous.get(name, 0)) <= 0:
                 raise ValueError(f"autonomous_search.{name} must be positive")
@@ -512,6 +552,17 @@ def load_config(path: str | Path) -> tuple[dict[str, Any], Path]:
             raise ValueError("autonomous_search.source_max_market_digest_ratio must be between 0 and 1")
         if not 30 <= int(autonomous.get("timeout_seconds", 180)) <= 300:
             raise ValueError("autonomous_search.timeout_seconds must be between 30 and 300")
+        exploration_fraction = float(autonomous.get("source_learning_exploration_fraction", 0.4))
+        if not 0.4 <= exploration_fraction < 1:
+            raise ValueError("autonomous_search.source_learning_exploration_fraction must be between 0.4 and 1")
+        if int(autonomous.get("source_learning_min_losing_outcomes", 5)) > int(
+            autonomous.get("source_learning_min_closed_outcomes", 20)
+        ):
+            raise ValueError("source learning losing-outcome minimum cannot exceed its closed-outcome minimum")
+        if int(autonomous.get("source_learning_entity_min_closed_outcomes", 30)) < int(
+            autonomous.get("source_learning_min_closed_outcomes", 20)
+        ):
+            raise ValueError("entity source learning requires at least the general closed-outcome minimum")
         for task, profile in (autonomous.get("profiles") or {}).items():
             if not isinstance(profile, dict) or not str(profile.get("model") or "").strip():
                 raise ValueError(f"autonomous_search.profiles.{task}.model is required")
@@ -538,7 +589,13 @@ def load_config(path: str | Path) -> tuple[dict[str, Any], Path]:
             raise ValueError("paper.take_profit_tiers must be increasing with fractions in (0,1]")
         previous_return = return_pct
 
-    config["candidate"]["chains"] = [str(chain).lower() for chain in config["candidate"].get("chains", [])]
+    raw_chains = config["candidate"].get("chains", [])
+    if not isinstance(raw_chains, list):
+        raise ValueError("candidate.chains must be a non-empty list")
+    chains = list(dict.fromkeys(str(chain).strip().lower() for chain in raw_chains if str(chain).strip()))
+    if not 1 <= len(chains) <= 16 or any(len(chain) > 40 for chain in chains):
+        raise ValueError("candidate.chains must contain between 1 and 16 bounded chain identifiers")
+    config["candidate"]["chains"] = chains
     return config, root
 
 
@@ -1102,6 +1159,59 @@ class Runtime:
         except Exception as exc:
             self._notify_source_error(name, exc)
 
+    async def poll_dexscreener_discovery_once(self) -> None:
+        cfg = self.config["sources"].get("dexscreener_discovery") or {}
+        if not cfg.get("enabled", True):
+            return
+        allowed_chains = {str(chain).lower() for chain in self.config["candidate"].get("chains", [])}
+        max_items = int(cfg.get("max_items_per_surface", 40))
+        max_hydrations = int(cfg.get("max_hydrations_per_cycle", 8))
+        active_minutes = int(cfg.get("active_token_minutes", 180))
+        active_ids = {
+            token.token_id
+            for token in self.store.recent_tokens(minutes=active_minutes, limit=1000)
+        }
+        hydrate: dict[str, tuple[int, str, str]] = {}
+        for surface in self.dex.DISCOVERY_SURFACES:
+            source = f"dexscreener:{surface}"
+            try:
+                links = await self.dex.discover_surface(surface, allowed_chains, limit=max_items)
+            except Exception as exc:
+                self._notify_source_error(source, exc)
+                continue
+            self.store.heartbeat(source, item=bool(links))
+            for link in links:
+                token_id = str(link.get("token_id") or "")
+                chain = str(link.get("chain") or "").lower()
+                address = str(link.get("address") or "")
+                if not token_id or chain not in allowed_chains or not address:
+                    continue
+                first_seen = self.store.token(token_id) is None
+                self.store.upsert_token_source_link(link)
+                if first_seen or token_id in active_ids:
+                    priority = 0 if first_seen else 1
+                    current = hydrate.get(token_id)
+                    if current is None or priority < current[0]:
+                        hydrate[token_id] = (priority, chain, address)
+
+        ordered = sorted(hydrate.items(), key=lambda item: item[1][0])
+        attempted = 0
+        for token_id, (_, chain, address) in ordered:
+            if attempted >= max_hydrations:
+                break
+            attempted += 1
+            try:
+                quoted = await self.dex.quote(chain, address)
+            except Exception as exc:
+                self._notify_source_error("dexscreener:hydration", exc)
+                continue
+            if not quoted or quoted[0].token_id != token_id:
+                continue
+            token, snapshot = quoted
+            self.store.upsert_token(token, seen_at=snapshot.observed_at)
+            self.store.add_snapshot(snapshot)
+            self.store.heartbeat("dexscreener:hydration", item=True)
+
     async def poll_external_once(self) -> None:
         collectors = [*self._rss_collectors(), *self._bluesky_collectors(), *self._mastodon_collectors()]
         tasks = [self._poll_observation_collector(collector) for collector in collectors]
@@ -1475,6 +1585,13 @@ class Runtime:
             configured.update({"pumpportal:create", "pumpportal:migration"})
         if (sources.get("reverse_google_news") or {}).get("enabled", True):
             configured.add("google-news-reverse")
+        if (sources.get("dexscreener_discovery") or {}).get("enabled", True):
+            configured.update(
+                {
+                    *(f"dexscreener:{surface}" for surface in DexScreenerClient.DISCOVERY_SURFACES),
+                    "dexscreener:hydration",
+                }
+            )
         configured.update(
             str(item.get("name") or item.get("url") or "")
             for item in self.autonomous_search.active_rss_sources()
@@ -1597,6 +1714,7 @@ class Runtime:
 
     async def run_once(self) -> None:
         await self.poll_external_once()
+        await self.poll_dexscreener_discovery_once()
         await self.reverse_news_once()
         await self.evaluate_events_once()
         await self.monitor_positions_once()
@@ -1649,6 +1767,14 @@ class Runtime:
             asyncio.create_task(
                 self._periodic("external_sources", self.config.get("poll_seconds", 60), self.poll_external_once),
                 name="external_sources",
+            ),
+            asyncio.create_task(
+                self._periodic(
+                    "dexscreener_discovery",
+                    (self.config["sources"].get("dexscreener_discovery") or {}).get("interval_seconds", 90),
+                    self.poll_dexscreener_discovery_once,
+                ),
+                name="dexscreener_discovery",
             ),
             asyncio.create_task(
                 self._periodic("reverse_news", self.config.get("reverse_news_seconds", 45), self.reverse_news_once),

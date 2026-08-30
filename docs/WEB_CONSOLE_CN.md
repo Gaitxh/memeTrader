@@ -81,11 +81,11 @@ Quick Tunnel 地址在隧道重建后会变化，适合个人临时远程查看�
 
 - **Overview**：Paper/Live 锁、机器人/计划任务、SQLite、浏览器桥、资金、权益、当日 exposure、开放仓位和数据总量；顶部另有由 SQLite 真实写入驱动的信息/Token 双通道采集脉冲。
 - **Live Events**：attention、独立来源数、freshness、来源角色、资格状态和原始链接，并显示平台、发布者和可验证的影响力维度。
-- **Token Discovery**：chain、CA、创建/首次观察、流动性、5m 量、买卖笔数、momentum 和双向证据链。
+- **Token Discovery**：chain、CA、创建/首次观察、流动性、5m 量、买卖笔数、momentum、双向证据链，以及 Dex/Profile 项目附带链接的独立发现种子面板。
 - **Decisions**：事件、候选结果、match/candidate score、canonical margin、WAIT/CANDIDATE/REJECT、仓位金额与拒绝原因。
 - **Paper Portfolio**：所有金额和 PNL 均明确为 Paper/模拟；展示止损、分批止盈、移动退出和叙事衰减状态。
 - **Agent Operations**：本机 Codex CLI 的模型、推理强度、回退、调用次数、tokens、预算、上次结果和下一次到期时间。
-- **Sources**：静态/动态 RSS、浏览器、PumpPortal、新池、报价和安全来源的健康、产出时间、暂停原因。
+- **Sources**：静态/动态 RSS、浏览器、PumpPortal、新池、Dex Profile/CTO/Ads/Boost、报价和安全来源的健康、产出时间、暂停原因；同时显示只影响观察轮换的前向来源学习。
 - **Audit**：r5 false-positive 排除、r6 Starlink 过期反查证据、future-data rejection 和决策时刻证据资格。
 - **Settings**：仅编辑安全白名单参数、平台观察偏好、公开账号/名人清单和主题；Live 永久不可用。
 - **Wallet**：本机查看 Devnet 地址、SOL/SPL 余额、近期交易与回执，人工申请测试币或发送限额 Devnet 测试交易；不连接常驻策略。
@@ -103,11 +103,15 @@ Overview 的采集脉冲完全由已持久化数据计算。信息通道统计�
 
 事件详情中的“来源排名”依次考虑：当时决策用途、已知权威层级、来源角色、新鲜度、是否有可访问原始链接以及页面上可观察到的热度。每条来源独立展示平台、发布者、账号类型、官方/认证状态、已知关注者或覆盖、可见互动和本地策展优先级；没有证据的字段显示为“未知”，不能根据显示名或平台猜测。这个顺序只表示**证据优先级**，方便先审查最相关材料；它不是“权威真值排名”，也不会自动证明来源内容真实。`feature/confirmation` 与 `identity/promotion` 分组展示，后者明确为仅上下文；高影响力账号也不能让 identity/promotion 单独成为交易依据。全部来源仍可展开查看原始链接、发布时间、本机观察/入库时间、角色与时间线。
 
+Token 详情把 DexScreener Profile、Community Takeover、Ads、Boost 和 pair info 的链接显示为“发现种子”。每条保留发现面、`identity/promotion`、平台、链接类型、提供方状态及本机首次/最后观察。`provider_metadata` 不等于 verified；Ads/Boost 永久是 promotion。下方事件时间线的准确标题是“已关联观察”，不是“已验证证据”。
+
+Sources 的学习表按平台、信息类型、具体来源、已持久化人物实体和事件/热点类型显示前向统计。事件类型只在首次接受时冻结，旧数据保持 `unknown`，且当前永远只观察。早期证据、合格证据和候选关联只作描述；没有已平仓 Paper 时胜率/回报显示 `—`。只有满足多结果、多天和亏损多样性门槛的平台/来源/实体标签才会在 `0.75×–1.25×` 内改变 Agent 观察轮换。12 个候选观察槽位中至少 40% 保留探索，critical 最多 4 个。学习不改变证据权重、WAIT/CANDIDATE、canonical margin、安全门或仓位。
+
 `WAIT` 的固定含义是“未形成交易信号”，不能被渲染成机会、买入或看涨提示。`CANDIDATE` 只表示通过候选门槛，后续仍受安全、仓位和 Paper 执行约束。
 
 ## 平台与公开账号观察清单
 
-版本控制内的 [SOCIAL_SOURCE_CATALOG.json](SOCIAL_SOURCE_CATALOG.json) 提供 80 条经过人工复核的公开候选种子，覆盖 X、YouTube、Instagram、TikTok、Threads、Bluesky、Telegram 和 Reddit；分类、优先级、权威语义和跨平台实体去重见 [SOCIAL_SOURCE_CATALOG_CN.md](SOCIAL_SOURCE_CATALOG_CN.md)。目录不包含任何登录身份，也不会自动等于“当前正在采集”。用户导入或选择后，当前观察清单保存在 Git 忽略的 `data/web_console/console_settings.json`，可以按本机需要增删、停用并与目录版本保持不同。每轮 Agent 只从启用清单中轮换有限数量，不会同时扫描全部 80 条。
+版本控制内的 [SOCIAL_SOURCE_CATALOG.json](SOCIAL_SOURCE_CATALOG.json) 提供 82 条经过人工复核的公开候选种子，覆盖 X、Truth Social、YouTube、Instagram、TikTok、Threads、Bluesky、Telegram 和 Reddit；分类、优先级、权威语义和跨平台实体去重见 [SOCIAL_SOURCE_CATALOG_CN.md](SOCIAL_SOURCE_CATALOG_CN.md)。目录不包含任何登录身份，也不会自动等于“当前正在采集”。用户导入或选择后，当前观察清单保存在 Git 忽略的 `data/web_console/console_settings.json`，可以按本机需要增删、停用并与目录版本保持不同。每轮 Agent 只从启用清单中选择少量 critical、策展和探索账号，不会同时扫描全部 82 条。
 
 控制台保存的账号清单只允许：
 
@@ -116,7 +120,8 @@ Overview 的采集脉冲完全由已持久化数据计算。信息通道统计�
 - 可选的稳定 `entity_id`（仅允许 1–64 位小写字母、数字、`_`、`-`；空值表示未知）；
 - 公开主页 URL；
 - 优先级；
-- 是否启用。
+- 是否启用；
+- `normal/critical` 观察轮换标签；critical 最多 4 个，只保留观察槽位。
 
 它绝不保存平台用户名、密码、Cookie、Session、验证码或私信。X、Truth Social、Bluesky、Reddit、Threads、Instagram、TikTok 与 YouTube 的登录只发生在专用的本机 Chrome/Edge 配置中；扩展只读取已经加载的公开页面。Telegram 在设置页固定为 `manual_directory_only`，其页面正文不由扩展读取、入库或送入 Agent。项目和 Agent 不读取、导出或持久化浏览器凭据。登录失败、要求人工验证或不值得继续的平台直接跳过，Sources 如实标记降级，并继续使用公开页面、RSS、Agent 搜索及其他可访问来源，不让单个平台阻塞整套系统。
 
@@ -131,6 +136,8 @@ Overview 的采集脉冲完全由已持久化数据计算。信息通道统计�
 界面将工作分为 6 个逻辑角色：News Radar（新闻热点）、Social Pulse（舆论热度）、Named Account Watch（名人/指定账号）、Evidence Verifier（独立证据核验）、Token Context（Token 反查事件）和 Source Discovery（新来源发现）。这些是共享队列中的职责，不是 6 个永久进程。
 
 项目默认最多两个并发 Agent 槽位；6 个逻辑角色共同共享该上限。Settings 只允许 `1–2`，默认 `2`。调用次数与 token 预算的修改不会重置当日已使用量。
+
+不同复杂度采用固定路由：高频整理与普通热点侦察优先 Spark/low，失败时 Luna/low；Token Context 优先 Luna/low，复杂核验再回退 Terra/medium，Sol/medium 只作最后回退。来源学习、URL 分类、去重、时间判断、轮换、评分和 Paper 风控全部在本地确定性执行，不为这些工作调用 Agent。
 
 每次 Agent 尝试都会记录安全的用量账本；Agent Operations 按任务、模型与推理强度分别汇总调用次数、输入 token、缓存输入 token、输出 token、推理 token、回退结果和当日/七日预算。账本不保存 prompt、stderr、Codex 登录材料或任何 secret。
 

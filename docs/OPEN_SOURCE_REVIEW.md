@@ -12,8 +12,11 @@
 - 候选重新报价；
 - 选择更深流动性池；
 - 价格、流动性、成交量、5 分钟买卖数、社交链接。
+- 低频读取官方 Token Profile、Community Takeover、Ads、Latest Boost、Top Boost，保存展示面和附带链接。
 
-使用方式：只查询晋级事件和短期新币，不扫全网所有地址；主机限速、TTL 缓存、429 退避。
+使用方式：报价只查询晋级事件、活动 Token 和每轮有上限的展示面 CA；不扫全网所有地址。展示面的“首次看到”不等于链上首次创建，Boost/Ads 是付费 promotion，Profile/Takeover/pair info 是 identity 种子。所有附带 URL 都需要回到独立原文验证；Telegram URL 只作人工目录。主机限速、TTL 缓存、429 退避。
+
+旧 `D:\P5_completeSystem` model1/model3 只作为设计输入：model1 的展示面发现不等于全量新币，model3 也不是发现器；旧脚本的扁平 pair 误解析、多池混写、伪造币龄和丢失链接来源均未采用。详细记录见 [DexScreener 链接溯源与前向来源学习](DEXSCREENER_PROVENANCE_AND_SOURCE_LEARNING_CN.md)。
 
 ### GeckoTerminal
 

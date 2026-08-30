@@ -141,6 +141,24 @@ def _seed(path: Path) -> tuple[int, str]:
             provider="dexscreener",
         )
     )
+    for role, url, kind, platform, surface in (
+        ("identity", "https://x.com/otter", "social_profile", "x", "pair_info"),
+        ("promotion", "https://dexscreener.com/solana/example", "dex_page", "dexscreener", "boosts_top"),
+    ):
+        store.upsert_token_source_link(
+            {
+                "token_id": token.token_id,
+                "provider": "dexscreener",
+                "discovery_surface": surface,
+                "role": role,
+                "original_url": url,
+                "normalized_url": url,
+                "link_kind": kind,
+                "platform": platform,
+                "verification_status": "provider_metadata",
+                "raw": {"must_not_be_returned": "raw-provider-payload"},
+            }
+        )
     store.add_decision(
         CandidateDecision(
             event_id=event_id,
@@ -419,6 +437,12 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
     assert token["linked_event_ids"] == [event_id]
     assert token["evidence_record_count"] == token["evidence_count"] == 1
     assert max(len(item["text"]) for item in token["evidence"]) <= 600
+    assert {item["role"] for item in token["attached_links"]} == {"identity", "promotion"}
+    assert all(item["decision_eligible"] is False for item in token["attached_links"])
+    assert all(item["verification_status"] == "provider_metadata" for item in token["attached_links"])
+    serialized_token = json.dumps(token)
+    assert "raw_json" not in serialized_token
+    assert "must_not_be_returned" not in serialized_token
     decision_payload = web.decisions({})
     assert decision_payload["ranking_available"] is False
     assert decision_payload["ranking_coverage"] == {"available": 0, "unavailable": 1}
@@ -494,6 +518,13 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
     assert paused["status"] == "paused"
     assert paused["pause_reason"] == "consecutive_poll_failures"
     source_payload = web.sources()
+    source_names = {item["name"] for item in source_payload["items"]}
+    assert "dexscreener-discovery" not in source_names
+    assert "dexscreener:token_profiles" in source_names
+    assert source_payload["learning"]["status"] == "collecting_samples"
+    assert source_payload["learning"]["summary"]["observations"] >= 4
+    assert source_payload["learning"]["summary"]["closed_paper_outcomes"] == 0
+    assert source_payload["learning"]["summary"]["active_labels"] == 0
     assert len(source_payload["platforms"]) == 9
     x_status = next(item for item in source_payload["platforms"] if item["platform"] == "x")
     assert x_status["access_state"] == "authenticated"
@@ -657,6 +688,11 @@ def test_candidate_ranking_api_is_persisted_bounded_sanitized_and_wait_is_truthf
     assert "WAIT｜未形成交易信号" in app
     assert "未选中" in app and "NOT SELECTED" in app
     assert "WAIT is never decorated as an opportunity" in app
+    assert "data-testid='source-learning'" in app
+    assert "Learning changes watch rotation only" in app
+    assert "event_topic" in app and "observe only" in app
+    assert "Linked narrative / event observation timeline" in app
+    assert "Verified narrative / event evidence timeline" not in app
 
 
 def test_settings_are_allowlisted_atomic_and_never_expose_secrets(tmp_path: Path):
@@ -683,6 +719,21 @@ def test_settings_are_allowlisted_atomic_and_never_expose_secrets(tmp_path: Path
     assert poll_schema["default"] is not None
     assert poll_schema["unit"] == "seconds"
     assert poll_schema["restart_required"] is True
+    dex_interval = next(
+        item for item in settings["schema"]["fields"]
+        if item["path"] == "sources.dexscreener_discovery.interval_seconds"
+    )
+    dex_hydration = next(
+        item for item in settings["schema"]["fields"]
+        if item["path"] == "sources.dexscreener_discovery.max_hydrations_per_cycle"
+    )
+    assert (dex_interval["min"], dex_interval["max"]) == (30, 3600)
+    assert (dex_hydration["min"], dex_hydration["max"]) == (0, 30)
+    learning_fraction = next(
+        item for item in settings["schema"]["fields"]
+        if item["path"] == "autonomous_search.source_learning_exploration_fraction"
+    )
+    assert learning_fraction["min"] == 0.4
     assert settings["live_locked"] is True
     telegram_option = next(
         item
@@ -770,6 +821,22 @@ def test_settings_are_allowlisted_atomic_and_never_expose_secrets(tmp_path: Path
                     }
                 }
             )
+    with pytest.raises(Exception, match="at most 4"):
+        web.patch_settings(
+            {
+                "console": {
+                    "watch_accounts": [
+                        {
+                            "platform": "x",
+                            "handle": f"critical_{index}",
+                            "watch_cadence": "critical",
+                            "enabled": True,
+                        }
+                        for index in range(5)
+                    ]
+                }
+            }
+        )
     assert "must-not-save" not in (tmp_path / "data" / "web_console" / "console_settings.json").read_text(encoding="utf-8")
 
 

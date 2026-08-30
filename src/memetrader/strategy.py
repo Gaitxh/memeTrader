@@ -72,6 +72,15 @@ PROMOTIONAL_MARKET_PATTERNS = (
     re.compile(r"(?:百倍币|千倍币|值得买入|值得关注)"),
 )
 
+EVENT_TOPIC_PATTERNS = (
+    ("crypto_native", re.compile(r"\b(?:crypto|bitcoin|ethereum|solana|blockchain|token|memecoin|meme coin|defi|nft|binance|coinbase|wallet)\b|(?:加密|比特币|以太坊|索拉纳|区块链|代币|迷因币|meme币|交易所|币安)", re.I)),
+    ("sports", re.compile(r"\b(?:football|soccer|basketball|cricket|baseball|tennis|nba|nfl|fifa|olympic|world cup|athlete|tournament)\b|(?:体育|足球|篮球|板球|棒球|网球|奥运|世界杯|运动员|锦标赛)", re.I)),
+    ("ai_tech_gaming", re.compile(r"\b(?:artificial intelligence|ai|robot|technology|tech|software|startup|chip|gaming|gamer|video game|openai|nvidia|spacex|tesla)\b|(?:人工智能|机器人|科技|软件|初创|芯片|游戏|特斯拉)", re.I)),
+    ("celebrity_entertainment", re.compile(r"\b(?:celebrity|actor|actress|singer|musician|rapper|film|movie|television|netflix|hollywood|album|concert|influencer)\b|(?:名人|明星|演员|歌手|音乐人|说唱|电影|电视|专辑|演唱会|网红|娱乐)", re.I)),
+    ("animals_internet_culture", re.compile(r"\b(?:animal|dog|cat|otter|panda|zoo|internet culture|mascot|emoji)\b|(?:动物|小狗|猫咪|水獭|熊猫|动物园|互联网文化|吉祥物|表情包)", re.I)),
+    ("political_public_figure", re.compile(r"\b(?:president|prime minister|election|congress|senate|parliament|government|white house|politics|political|sanction)\b|(?:总统|首相|总理|选举|国会|议会|政府|白宫|政治|制裁)", re.I)),
+)
+
 TERM_ALIASES = {
     "usdc": "stablecoin",
     "usdt": "stablecoin",
@@ -100,6 +109,15 @@ def clean_text(value: str) -> str:
     value = strip_markup(value)
     value = unicodedata.normalize("NFKC", value).lower()
     return re.sub(r"\s+", " ", value).strip()
+
+
+def classify_event_topic(title: str, text: str = "") -> str:
+    """Freeze a small deterministic topic label from the first locally accepted observation."""
+    content = clean_text(f"{title}\n{text}")
+    for topic, pattern in EVENT_TOPIC_PATTERNS:
+        if pattern.search(content):
+            return topic
+    return "other"
 
 
 def terms(value: str) -> set[str]:
@@ -422,7 +440,13 @@ class EventEngine:
             title = best[1].title if len(best[1].title) <= len(obs.title) else obs.title
             self.store.update_event(event_id, title=title, aliases=aliases, attention=self._attention(rows), seen_at=obs.observed_at)
             return event_id, False, observation_created
-        event_id = self.store.create_event(obs.title, alias_list, 0.0, obs.observed_at)
+        event_id = self.store.create_event(
+            obs.title,
+            alias_list,
+            0.0,
+            obs.observed_at,
+            topic=classify_event_topic(obs.title, obs.text),
+        )
         self.store.link_event_observation(event_id, observation_id)
         rows = self.store.event_observations(event_id)
         self.store.update_event(event_id, title=obs.title, aliases=alias_list, attention=self._attention(rows), seen_at=obs.observed_at)
@@ -851,7 +875,9 @@ class CandidateEvaluator:
     def _match(event_text: str, aliases: list[str], token: TokenCandidate, direct_addresses: set[str]) -> float:
         address_match = token.address.lower() in {a.lower() for a in direct_addresses}
         event_terms = terms(" ".join([event_text, *aliases]))
-        token_terms = terms(" ".join([token.name, token.symbol, *token.social_urls]))
+        # Provider/profile URLs are identity or promotional metadata, not lexical
+        # evidence that an external event refers to this token.
+        token_terms = terms(" ".join([token.name, token.symbol]))
         overlap = len(event_terms & token_terms)
         union = len(event_terms | token_terms) or 1
         if address_match:

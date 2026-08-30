@@ -38,9 +38,10 @@ RSS / Mastodon / 浏览器 DOM / Trend Scout
                     ├──────────────┐
                     ▼              │
 PumpPortal / Gecko 新 Token/池      │
+Dex Profile/CTO/Ads/Boost           │
                     │              │
                     ▼              ▼
-              TokenCandidate   Event aliases / CA
+       TokenCandidate + 附带链接   Event aliases / CA
                     │              │
                     └──── 双向匹配 ┘
                            │
@@ -60,6 +61,13 @@ PumpPortal / Gecko 新 Token/池      │
                     SQLite / 通知
                            │
                     Web 只读可视化
+
+完全平仓的 Paper 结果
+          │
+          ▼
+最早合格 Observation 的追加式来源效用账本
+          │
+          └─ 仅在成熟样本后小幅调整 Agent 观察轮换；不进入策略评分/仓位
 ```
 
 `Web` 不重新算交易策略、不生成演示数据，也不因页面刷新触发采集或决策。
@@ -86,10 +94,12 @@ PumpPortal / Gecko 新 Token/池      │
 数据库由本机私有 `config.json -> database` 指定。主要表：
 
 - `observations`：来源、平台文本、作者、URL、角色、发布时间、本机观察/摄入时间、原始 JSON。
-- `events` / `event_observations`：聚类事件及其全部证据。
+- `events` / `event_observations`：聚类事件、首次接受时冻结的前向 topic 及其全部证据；迁移前记录保持 `unknown`。
 - `tokens` / `token_snapshots`：Token 身份和随时间变化的价格、流动性、成交与安全字段。
+- `token_source_links`：Dex/pair 附带 URL 的发现面、identity/promotion 角色、类型、平台及本机首次/最后观察。
 - `decisions`：action、score、match、canonical margin、理由、拒绝理由和 Paper 仓位金额。
 - `paper_account` / `positions` / `trades`：Paper 现金、持仓、退出和历史成交。
+- `source_utility_outcomes`：完全平仓后对最早合格来源的追加式、费后 Paper 结果归因；只供观察轮换。
 - `source_health`：来源最后成功、最后产出、最后错误。
 - `agent_attempts`：按任务/模型/推理强度记录安全的 token 用量账本。
 - `kv`：调度、退避、Agent 结果、浏览器平台心跳等小型运行状态。
@@ -115,6 +125,7 @@ docs/PROJECT_CONTEXT/               无 secret 的版本控制内项目记忆
 | 工作 | 默认 |
 |---|---:|
 | 外部 RSS/新池 | 60 秒 |
+| DexScreener Profile/CTO/Ads/Boost | 90 秒；每面最多 40 条，每轮最多补全 8 个 CA |
 | Token→Google News 调度 | 45 秒；单 Token 另有冷却 |
 | 事件重新判断 | 10 秒 |
 | Paper 持仓监督 | 15 秒 |
@@ -125,6 +136,8 @@ docs/PROJECT_CONTEXT/               无 secret 的版本控制内项目记忆
 | Token Context | 动量触发；全局 5 分钟、同 Token 240 分钟 |
 
 Trend Scout 与 Source Discovery 首选 Spark/low，额度不可用时 Luna/low；Token Context 首选 Luna/low，回退 Terra/medium，Sol/medium 仅最后回退。所有本地计算不消耗 Agent。
+
+账号选择不是“全目录每轮扫描”：`critical` 账号最多保留 4 个槽位；其余先按人工 P5–P1 策展，并在 12 个候选观察槽位中始终保留至少 40%（5 个）做轮换探索。只有达到 20 个已平仓 Paper / 10 个结果日 / 5 个亏损结果（人物要求 30 / 15 / 两个平台）的平台、来源或实体标签才允许在 `0.75×–1.25×` 内改变观察轮换。事件/热点 topic 只做前向描述，永不激活轮换。该值不传给 CandidateEvaluator、SafetyChecker 或 PaperPolicy。
 
 注意：`runtime.py` 的通用配置校验仍允许 `max_concurrent_agents` 到 4，但根目录 `AGENTS.md` 和 Web 安全接口把当前发布运行上限限定为 2。继续工作时必须遵守更严格的 2，不能借通用校验提高并发。
 

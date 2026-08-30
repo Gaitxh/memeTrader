@@ -1,12 +1,24 @@
 {
-  "catalog_version": 2,
-  "catalog_schema": "social-source-catalog/v2",
+  "catalog_version": 3,
+  "catalog_schema": "social-source-catalog/v3",
   "verified_at": "2026-08-30",
   "entity_id_policy": {
     "purpose": "independent_origin_deduplication",
     "authority_signal": false,
     "cross_platform_same_owner_must_match": true,
     "platform_communities_are_distinct": true
+  },
+  "watch_cadence_policy": {
+    "purpose": "observation_rotation_priority_only",
+    "allowed_values": ["normal", "critical"],
+    "max_critical_accounts": 4,
+    "minimum_exploration_fraction": 0.4,
+    "minimum_exploration_slots_per_12": 5,
+    "authority_signal": false,
+    "role_signal": false,
+    "freshness_override": false,
+    "independence_signal": false,
+    "decision_eligibility_override": false
   },
   "platform_automation_defaults": {
     "telegram": {
@@ -17,8 +29,9 @@
     }
   },
   "counts": {
-    "total": 80,
-    "x": 45,
+    "total": 82,
+    "x": 46,
+    "truth": 1,
     "youtube": 8,
     "instagram": 8,
     "tiktok": 5,
@@ -34,6 +47,8 @@
     {"platform":"x","entity_id":"bloomberg","handle":"@Bloomberg","display_name":"Bloomberg","url":"https://x.com/Bloomberg","category":"news","priority":5},
     {"platform":"x","entity_id":"cnn","handle":"@CNNbrk","display_name":"CNN Breaking News","url":"https://x.com/CNNbrk","category":"news","priority":5},
     {"platform":"x","entity_id":"white_house","handle":"@WhiteHouse","display_name":"The White House","url":"https://x.com/WhiteHouse","category":"government_official","priority":5},
+    {"platform":"x","entity_id":"donald_trump","handle":"@realDonaldTrump","display_name":"Donald J. Trump","url":"https://x.com/realDonaldTrump","category":"political_public_figure","priority":4,"watch_cadence":"critical"},
+    {"platform":"truth","entity_id":"donald_trump","handle":"@realDonaldTrump","display_name":"Donald J. Trump","url":"https://truthsocial.com/@realDonaldTrump","category":"political_public_figure","priority":4,"watch_cadence":"critical"},
     {"platform":"x","entity_id":"united_nations","handle":"@UN","display_name":"United Nations","url":"https://x.com/UN","category":"global_official","priority":5},
     {"platform":"x","entity_id":"us_national_weather_service","handle":"@NWS","display_name":"National Weather Service","url":"https://x.com/NWS","category":"weather_disaster","priority":5},
     {"platform":"x","entity_id":"nasa","handle":"@NASA","display_name":"NASA","url":"https://x.com/NASA","category":"science_space","priority":5},
@@ -44,7 +59,7 @@
     {"platform":"x","entity_id":"xai","handle":"@xai","display_name":"xAI","url":"https://x.com/xai","category":"ai_tech","priority":5},
     {"platform":"x","entity_id":"nvidia","handle":"@nvidia","display_name":"NVIDIA","url":"https://x.com/nvidia","category":"ai_tech","priority":5},
     {"platform":"x","entity_id":"microsoft","handle":"@Microsoft","display_name":"Microsoft","url":"https://x.com/Microsoft","category":"ai_tech","priority":5},
-    {"platform":"x","entity_id":"elon_musk","handle":"@elonmusk","display_name":"Elon Musk","url":"https://x.com/elonmusk","category":"tech_public_figure","priority":4},
+    {"platform":"x","entity_id":"elon_musk","handle":"@elonmusk","display_name":"Elon Musk","url":"https://x.com/elonmusk","category":"tech_public_figure","priority":4,"watch_cadence":"critical"},
     {"platform":"x","entity_id":"sam_altman","handle":"@sama","display_name":"Sam Altman","url":"https://x.com/sama","category":"ai_public_figure","priority":4},
     {"platform":"x","entity_id":"solana","handle":"@solana","display_name":"Solana","url":"https://x.com/solana","category":"crypto_ecosystem","priority":5},
     {"platform":"x","entity_id":"ethereum","handle":"@ethereum","display_name":"Ethereum","url":"https://x.com/ethereum","category":"crypto_ecosystem","priority":5},
@@ -56,7 +71,7 @@
     {"platform":"x","entity_id":"uniswap","handle":"@Uniswap","display_name":"Uniswap","url":"https://x.com/Uniswap","category":"defi","priority":5},
     {"platform":"x","entity_id":"vitalik_buterin","handle":"@VitalikButerin","display_name":"Vitalik Buterin","url":"https://x.com/VitalikButerin","category":"crypto_public_figure","priority":4},
     {"platform":"x","entity_id":"brian_armstrong","handle":"@brian_armstrong","display_name":"Brian Armstrong","url":"https://x.com/brian_armstrong","category":"crypto_public_figure","priority":4},
-    {"platform":"x","entity_id":"changpeng_zhao","handle":"@cz_binance","display_name":"CZ","url":"https://x.com/cz_binance","category":"crypto_public_figure","priority":4},
+    {"platform":"x","entity_id":"changpeng_zhao","handle":"@cz_binance","display_name":"CZ","url":"https://x.com/cz_binance","category":"crypto_public_figure","priority":4,"watch_cadence":"critical"},
     {"platform":"x","entity_id":"anatoly_yakovenko","handle":"@aeyakovenko","display_name":"Anatoly Yakovenko","url":"https://x.com/aeyakovenko","category":"crypto_public_figure","priority":4},
     {"platform":"x","entity_id":"nba","handle":"@NBA","display_name":"NBA","url":"https://x.com/NBA","category":"sports","priority":5},
     {"platform":"x","entity_id":"nfl","handle":"@NFL","display_name":"NFL","url":"https://x.com/NFL","category":"sports","priority":5},

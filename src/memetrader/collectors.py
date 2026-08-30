@@ -678,6 +678,29 @@ class GeckoNewPoolsCollector:
 
 class DexScreenerClient:
     BASE = "https://api.dexscreener.com"
+    DISCOVERY_SURFACES = {
+        "token_profiles": ("/token-profiles/latest/v1", "identity"),
+        "community_takeovers": ("/community-takeovers/latest/v1", "identity"),
+        "ads": ("/ads/latest/v1", "promotion"),
+        "boosts_latest": ("/token-boosts/latest/v1", "promotion"),
+        "boosts_top": ("/token-boosts/top/v1", "promotion"),
+    }
+    SOCIAL_HOSTS = {
+        "bsky.app": "bluesky",
+        "facebook.com": "facebook",
+        "instagram.com": "instagram",
+        "linkedin.com": "linkedin",
+        "reddit.com": "reddit",
+        "threads.com": "threads",
+        "threads.net": "threads",
+        "tiktok.com": "tiktok",
+        "truthsocial.com": "truth",
+        "twitter.com": "x",
+        "x.com": "x",
+        "youtube.com": "youtube",
+        "youtu.be": "youtube",
+    }
+    TELEGRAM_HOSTS = {"t.me", "telegram.me"}
 
     def __init__(self, http: HttpClient):
         self.http = http
@@ -687,6 +710,168 @@ class DexScreenerClient:
         return {"bsc": "bsc", "solana": "solana", "base": "base", "ethereum": "ethereum"}.get(chain_id, chain_id)
 
     @staticmethod
+    def _normalized_link_url(value: Any) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        try:
+            parsed = urllib.parse.urlsplit(raw)
+            without_fragment = urllib.parse.urlunsplit(
+                (parsed.scheme, parsed.netloc, parsed.path, parsed.query, "")
+            )
+            return normalize_public_http_url(without_fragment)
+        except (TypeError, ValueError):
+            return ""
+
+    @classmethod
+    def _classify_link(cls, value: Any, *, label: str = "", platform: str = "") -> tuple[str, str, str]:
+        normalized = cls._normalized_link_url(value)
+        if not normalized:
+            return "invalid", "", ""
+        parsed = urllib.parse.urlsplit(normalized)
+        host = (parsed.hostname or "").lower().removeprefix("www.")
+        path = parsed.path.rstrip("/") or "/"
+        if any(host == root or host.endswith(f".{root}") for root in cls.TELEGRAM_HOSTS):
+            return "telegram_manual", "telegram", normalized
+        if host == "dexscreener.com" or host.endswith(".dexscreener.com"):
+            return "dex_page", "dexscreener", normalized
+        label_hint = f"{label} {platform}".casefold()
+        if host in {"twitter.com", "x.com"} and path.casefold().startswith("/search"):
+            return "search", "x", normalized
+        if "search" in label_hint or (
+            host in {"bing.com", "google.com"} and path.casefold().startswith("/search")
+        ):
+            return "search", "", normalized
+        detected_platform = str(platform or "").strip().lower()
+        detected_platform = {
+            "twitter": "x",
+            "truthsocial": "truth",
+            "telegram": "telegram",
+        }.get(detected_platform, detected_platform)
+        if not detected_platform:
+            detected_platform = next(
+                (
+                    name
+                    for root, name in cls.SOCIAL_HOSTS.items()
+                    if host == root or host.endswith(f".{root}")
+                ),
+                "",
+            )
+        lowered_path = path.casefold()
+        post_markers = {
+            "x": "/status/",
+            "truth": "/posts/",
+            "bluesky": "/post/",
+            "reddit": "/comments/",
+            "threads": "/post/",
+            "tiktok": "/video/",
+        }
+        marker = post_markers.get(detected_platform)
+        is_post = bool(marker and marker in lowered_path)
+        if detected_platform == "truth":
+            segments = [part for part in path.split("/") if part]
+            is_post = "/statuses/" in lowered_path or (
+                len(segments) >= 2 and segments[0].startswith("@") and segments[-1].isdigit()
+            )
+        if detected_platform == "instagram":
+            is_post = lowered_path.startswith(("/p/", "/reel/", "/reels/"))
+        elif detected_platform == "youtube":
+            is_post = host == "youtu.be" or lowered_path.startswith(("/watch", "/shorts/", "/live/"))
+        if detected_platform:
+            return ("social_post" if is_post else "social_profile"), detected_platform, normalized
+        return "website", "", normalized
+
+    @classmethod
+    def _source_link_rows(
+        cls,
+        *,
+        chain: str,
+        address: str,
+        surface: str,
+        role: str,
+        raw: dict[str, Any],
+        primary_url: Any = "",
+        links: list[Any] | tuple[Any, ...] = (),
+    ) -> list[dict[str, Any]]:
+        token_id = f"{chain.lower()}:{address}"
+        candidates: list[tuple[Any, str, str]] = [(primary_url, surface, "")]
+        for item in links:
+            if isinstance(item, dict):
+                candidates.append(
+                    (
+                        item.get("url"),
+                        str(item.get("label") or item.get("type") or item.get("platform") or ""),
+                        str(item.get("platform") or item.get("type") or ""),
+                    )
+                )
+            elif item:
+                candidates.append((item, "", ""))
+        rows: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for original_url, label, platform in candidates:
+            link_kind, detected_platform, normalized_url = cls._classify_link(
+                original_url,
+                label=label,
+                platform=platform,
+            )
+            if not normalized_url:
+                continue
+            key = (normalized_url, link_kind, detected_platform)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(
+                {
+                    "token_id": token_id,
+                    "chain": chain.lower(),
+                    "address": address,
+                    "provider": "dexscreener",
+                    "discovery_surface": surface,
+                    "role": role,
+                    "original_url": str(original_url or "")[:4000],
+                    "normalized_url": normalized_url[:4000],
+                    "link_kind": link_kind,
+                    "label": str(label or "")[:200],
+                    "platform": detected_platform[:80],
+                    "verification_status": "manual_only" if link_kind == "telegram_manual" else "provider_metadata",
+                    "raw": raw,
+                }
+            )
+        if not rows:
+            rows.append(
+                {
+                    "token_id": token_id,
+                    "chain": chain.lower(),
+                    "address": address,
+                    "provider": "dexscreener",
+                    "discovery_surface": surface,
+                    "role": role,
+                    "original_url": "",
+                    "normalized_url": "",
+                    "link_kind": "metadata",
+                    "label": surface,
+                    "platform": "",
+                    "verification_status": "provider_metadata",
+                    "raw": raw,
+                }
+            )
+        return rows
+
+    @classmethod
+    def _pair_source_links(cls, pair: dict[str, Any], chain: str, address: str) -> list[dict[str, Any]]:
+        info = pair.get("info") if isinstance(pair.get("info"), dict) else {}
+        links = [*(info.get("websites") or []), *(info.get("socials") or [])]
+        return cls._source_link_rows(
+            chain=chain,
+            address=address,
+            surface="pair_info",
+            role="identity",
+            raw={"pair": pair},
+            primary_url=pair.get("url"),
+            links=links,
+        )
+
+    @staticmethod
     def _candidate(pair: dict[str, Any]) -> TokenCandidate | None:
         base = pair.get("baseToken") or {}
         address = str(base.get("address") or "")
@@ -694,8 +879,12 @@ class DexScreenerClient:
         if not address or not chain:
             return None
         info = pair.get("info") or {}
-        socials = [str(x.get("url")) for x in info.get("socials", []) if x.get("url")]
-        websites = [str(x.get("url")) for x in info.get("websites", []) if x.get("url")]
+        source_links = DexScreenerClient._pair_source_links(pair, chain, address)
+        social_urls = [
+            str(row["normalized_url"])
+            for row in source_links
+            if row["normalized_url"] and row["link_kind"] not in {"dex_page", "metadata"}
+        ]
         created = pair.get("pairCreatedAt")
         created_at = None
         if created:
@@ -706,7 +895,7 @@ class DexScreenerClient:
         return TokenCandidate(
             chain=chain, address=address, name=str(base.get("name") or ""), symbol=str(base.get("symbol") or ""),
             created_at=created_at, source="dexscreener", url=str(pair.get("url") or ""),
-            social_urls=list(dict.fromkeys(websites + socials)), raw={"pair": pair},
+            social_urls=list(dict.fromkeys(social_urls)), raw={"pair": pair, "token_source_links": source_links},
         )
 
     @staticmethod
@@ -726,12 +915,14 @@ class DexScreenerClient:
 
     async def search(self, query: str, limit: int = 30) -> list[tuple[TokenCandidate, TokenSnapshot]]:
         response = await self.http.get(f"{self.BASE}/latest/dex/search", params={"q": query}, ttl=12)
-        out: list[tuple[TokenCandidate, TokenSnapshot]] = []
+        by_token: dict[str, tuple[TokenCandidate, TokenSnapshot]] = {}
         for pair in response.json().get("pairs", [])[:limit]:
             candidate, snap = self._candidate(pair), self._snapshot(pair)
             if candidate and snap:
-                out.append((candidate, snap))
-        return out
+                current = by_token.get(candidate.token_id)
+                if current is None or (snap.liquidity_usd or 0.0) > (current[1].liquidity_usd or 0.0):
+                    by_token[candidate.token_id] = (candidate, snap)
+        return list(by_token.values())
 
     async def quote(self, chain: str, address: str) -> tuple[TokenCandidate, TokenSnapshot] | None:
         response = await self.http.get(f"{self.BASE}/token-pairs/v1/{chain}/{address}", ttl=8)
@@ -741,12 +932,60 @@ class DexScreenerClient:
         ranked: list[tuple[float, TokenCandidate, TokenSnapshot]] = []
         for pair in payload if isinstance(payload, list) else []:
             candidate, snap = self._candidate(pair), self._snapshot(pair)
-            if candidate and snap:
+            if (
+                candidate
+                and snap
+                and candidate.chain.lower() == self._chain(chain).lower()
+                and candidate.address.lower() == str(address).lower()
+            ):
                 ranked.append(((snap.liquidity_usd or 0.0), candidate, snap))
         if not ranked:
             return None
         _, candidate, snap = max(ranked, key=lambda row: row[0])
         return candidate, snap
+
+    async def discover_surface(
+        self,
+        surface: str,
+        allowed_chains: set[str] | list[str] | tuple[str, ...],
+        *,
+        limit: int = 40,
+    ) -> list[dict[str, Any]]:
+        if surface not in self.DISCOVERY_SURFACES:
+            raise ValueError(f"unknown DexScreener discovery surface: {surface}")
+        path, role = self.DISCOVERY_SURFACES[surface]
+        response = await self.http.get(f"{self.BASE}{path}", ttl=45)
+        payload = response.json()
+        if isinstance(payload, dict):
+            payload = payload.get("items") if isinstance(payload.get("items"), list) else [payload]
+        if not isinstance(payload, list):
+            raise ValueError("DexScreener discovery response must be a list or object")
+        allowed = {self._chain(str(chain).lower()) for chain in allowed_chains}
+        rows: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for item in payload[: max(1, int(limit))]:
+            if not isinstance(item, dict):
+                continue
+            chain = self._chain(str(item.get("chainId") or "").lower())
+            address = str(item.get("tokenAddress") or "").strip()
+            if not chain or chain not in allowed or not address:
+                continue
+            item_rows = self._source_link_rows(
+                chain=chain,
+                address=address,
+                surface=surface,
+                role=role,
+                raw={"item": item},
+                primary_url=item.get("url"),
+                links=item.get("links") or [],
+            )
+            for row in item_rows:
+                key = (row["token_id"], row["normalized_url"], row["link_kind"], row["role"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append(row)
+        return rows
 
 
 class PumpPortalCollector:

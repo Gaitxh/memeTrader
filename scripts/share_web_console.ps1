@@ -71,6 +71,15 @@ $existingTunnel = Get-CimInstance Win32_Process -Filter "Name='cloudflared.exe'"
   Where-Object { $_.CommandLine -match "127\.0\.0\.1:$port" } |
   Select-Object -First 1
 
+$urlPattern = 'https://[a-z0-9-]+\.trycloudflare\.com'
+$previousUrlCount = 0
+if (Test-Path -LiteralPath $tunnelLog) {
+  $previousUrlCount = [regex]::Matches(
+    [string](Get-Content -LiteralPath $tunnelLog -Raw),
+    $urlPattern
+  ).Count
+}
+$startedTunnel = $false
 if (-not $existingTunnel) {
   Start-Process `
     -FilePath $cloudflared.Source `
@@ -82,15 +91,19 @@ if (-not $existingTunnel) {
     ) `
     -WorkingDirectory $root `
     -WindowStyle Hidden
+  $startedTunnel = $true
 }
 
 $publicUrl = ""
 for ($attempt = 0; $attempt -lt 30; $attempt++) {
   Start-Sleep -Milliseconds 500
   if (Test-Path -LiteralPath $tunnelLog) {
-    $matches = Select-String -LiteralPath $tunnelLog -Pattern 'https://[a-z0-9-]+\.trycloudflare\.com' -AllMatches
-    if ($matches) {
-      $publicUrl = $matches[-1].Matches[-1].Value
+    $matches = [regex]::Matches(
+      [string](Get-Content -LiteralPath $tunnelLog -Raw),
+      $urlPattern
+    )
+    if ($matches.Count -gt 0 -and (-not $startedTunnel -or $matches.Count -gt $previousUrlCount)) {
+      $publicUrl = $matches[$matches.Count - 1].Value
       break
     }
   }

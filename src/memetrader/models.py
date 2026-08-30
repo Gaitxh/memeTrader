@@ -63,6 +63,7 @@ class EventView:
     first_seen_at: datetime
     last_seen_at: datetime
     status: str = "active"
+    topic: str = "unknown"
 
 
 @dataclass(slots=True)

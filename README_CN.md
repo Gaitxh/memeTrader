@@ -35,10 +35,11 @@
 1. **登录态浏览器扩展**：被动读取你已打开页面中新渲染的公开帖子，支持 X、Truth Social、Bluesky、Reddit、Threads、Instagram、TikTok 和 YouTube。Telegram 只保留人工目录链接，不自动读取、入库或送入 Agent。
 2. **PumpPortal 免费 WebSocket**：只订阅新 Token 和迁移事件，不使用付费交易流。
 3. **GeckoTerminal 新池**：分钟级发现 Solana、BSC 新池。
+4. **DexScreener 展示面发现**：每 90 秒读取官方 Token Profile、Community Takeover、Ads、Latest Boost 与 Top Boost 页面，保存 CA、发现面和项目附带链接；它补充项目方主动展示的 Token，不等于全量新币或新池流。
 
 ### 候选确认
 
-- DexScreener：关键词找币、按 CA 报价、流动性、成交和买卖方向。
+- DexScreener：关键词找币、按 CA 报价、流动性、成交和买卖方向；项目网站、社交主页、帖子、搜索页、Telegram 人工入口和 Dex 页面按类型保存。Profile/Takeover 只作 `identity`，Ads/Boost 只作 `promotion`，均不是已验证新闻、独立确认或名人背书。
 - GoPlus + Honeypot.is：EVM/BSC 候选的合约权限、可卖性、税率和 honeypot 交叉检查。默认至少要求一个 EVM 安全报告；显式要求交易模拟时 Honeypot.is 仍是硬门。
 - GoPlus + RugCheck：Solana 候选的权限和风险交叉检查，默认至少要求一个报告可用。
 - CoinDesk、Cointelegraph、BBC、Google News 专题 RSS 与 Mastodon 公共时间线：补足国际事件证据。
@@ -48,7 +49,7 @@ Bluesky 公共搜索接口在部分网络会返回 403。本机配置遇到这�
 
 浏览器扩展不读取 Cookie、密码、私信或浏览器历史，不自动滚动、点赞、发帖或登录。它只能看到实际打开并加载的公开页面。因此实际使用时，建议常驻少量高价值页面：名人/项目官方账号、X Lists、Truth Social 账号页、Reddit/Bluesky 重点社区。Telegram 链接只能由用户按需人工打开。
 
-项目同时维护一份可审查、可版本控制的 [80 条公开社交信息源目录](docs/SOCIAL_SOURCE_CATALOG.json)，覆盖 X、YouTube、Instagram、TikTok、Threads、Bluesky、Telegram 和 Reddit；分类、优先级与跨平台去重原则见 [目录说明](docs/SOCIAL_SOURCE_CATALOG_CN.md)。这只是候选种子，不是每轮扫描全部账号，也不使账号内容自动具备决策资格。实际启用的当前观察清单由用户导入/选择后保存在 Git 忽略的 `data/web_console/console_settings.json`，可以与目录版本不同。
+项目同时维护一份可审查、可版本控制的 [82 条公开社交信息源目录](docs/SOCIAL_SOURCE_CATALOG.json)，覆盖 X、Truth Social、YouTube、Instagram、TikTok、Threads、Bluesky、Telegram 和 Reddit；分类、优先级与跨平台去重原则见 [目录说明](docs/SOCIAL_SOURCE_CATALOG_CN.md)。这只是候选种子，不是每轮扫描全部账号，也不使账号内容自动具备决策资格。Trump、Elon Musk、CZ 等少量高影响实体使用 `critical` 观察轮换标签；最多保留 4 个 critical 账号槽位，且该标签不提高权威、证据角色、热度或决策资格。实际启用的当前观察清单由用户导入/选择后保存在 Git 忽略的 `data/web_console/console_settings.json`，可以与目录版本不同。
 
 ## Windows 安装
 
@@ -142,6 +143,8 @@ Wallet 只在 `127.0.0.1` 接受私钥录入和 Devnet 操作。私钥不会回�
 最新真链验证记录见 [docs/WALLET_DEVNET_VALIDATION_20260830.md](docs/WALLET_DEVNET_VALIDATION_20260830.md)。当前钱包连接与 Devnet 集群校验已通过，但官方 faucet 返回 RPC unavailable，因此尚无可声称成功的公开 Devnet 交易签名。
 
 事件详情把全部来源按决策用途、已知权威层级、新鲜度、原始链接和可观察热度排列，并逐条显示**平台、发布者、账号类型、官方/认证状态、已知关注者/覆盖与可见互动、本地观察优先级**。未知字段明确显示为未知，绝不根据平台或显示名猜测影响力。`feature/confirmation` 与 `identity/promotion` 分组展示；后两者始终是仅上下文，影响力再高也不能单独触发决策。这是审计用的**证据优先级**，不是对媒体权威性或事实真假的自动裁决；每项仍显示原始链接、发布时间、本机观察/入库时间和当时决策资格。
+
+Sources 页另有“来源学习与观察优先级”。它先展示平台、信息类型、具体来源、已持久化实体以及事件/热点类型在前向样本中提供合格/最早证据的描述性统计。事件类型只在事件第一次被本机接受时冻结；旧事件保持 `unknown`，不按后来结果回填。只有已完全平仓的 Paper 结果累计到至少 20 个、跨 10 个交易日且包含至少 5 个亏损结果后，才允许平台/来源/实体对 Agent 观察轮换做最多 `0.75×–1.25×` 的小幅调整；事件类型仍只观察，不参与轮换。人物实体要求更严格：至少 30 个已平仓结果、15 天并覆盖两个平台。总共 12 个候选观察槽位中至少 40% 始终轮换探索，critical 最多占 4 个。学习不进入 `CandidateEvaluator`、证据权重、canonical margin、安全检查、仓位公式或退出规则；样本不足时网页明确显示“收集样本”，不能宣称已学会。详见 [DexScreener 溯源与前向来源学习](docs/DEXSCREENER_PROVENANCE_AND_SOURCE_LEARNING_CN.md)。
 
 详细说明见 [docs/WEB_CONSOLE_CN.md](docs/WEB_CONSOLE_CN.md)。
 

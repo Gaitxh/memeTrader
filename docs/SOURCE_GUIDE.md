@@ -84,7 +84,7 @@ D 类只作为 outcome/label，用于评价当时判断，不能参与旧时点�
 
 ### Telegram
 
-当前零配置方式是打开 `t.me` 公共频道页面。它只用于公共频道，不读取私聊。需要更稳定的登录态频道监听时，可后续启用 Telethon，但 Telegram 的 `api_id/api_hash` 需要用户自己申请，且 Session 文件必须留在本机并排除 Git。
+当前只提供经过官网核验的 `t.me` 人工目录，由用户在浏览器或已登录 Telegram 客户端中查看。扩展、Runtime 和 Agent 都不读取 Telegram 页面正文，不保存私聊、Session、验证码或 API 凭据，也不使用 Telethon/RSSHub/网页转 RSS 自动采集。人工线索必须回到发布者官网、RSS、原始文章或链上证据后，才能进入自动证据链。详细边界见 [Telegram 信息源调研](TELEGRAM_SOURCE_RESEARCH_20260830_CN.md)。
 
 ### Reddit
 

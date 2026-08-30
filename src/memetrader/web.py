@@ -36,6 +36,7 @@ from .autonomous_search import (
 )
 from .models import TokenSnapshot, iso, parse_time, utcnow
 from .runtime import DEFAULT_CONFIG, load_config
+from .store import Store
 from .strategy import CandidateEvaluator, evidence_origin, evidence_rejection, sanitize_source_entity_id
 from .wallet import SolanaDevnetWallet, WalletError
 
@@ -64,6 +65,14 @@ PLATFORM_ACCESS = {
     "telegram": ("manual_directory_only", False),
 }
 PLATFORM_AUTOMATION_DISABLED = {"telegram"}
+DEX_DISCOVERY_SOURCES = (
+    ("dexscreener:token_profiles", "Token profiles"),
+    ("dexscreener:community_takeovers", "Community takeovers"),
+    ("dexscreener:ads", "Paid ads"),
+    ("dexscreener:boosts_latest", "Latest boosts"),
+    ("dexscreener:boosts_top", "Top boosts"),
+    ("dexscreener:hydration", "Token/pair hydration"),
+)
 DEFAULT_CONSOLE_SETTINGS = {
     "platforms": [
         {"platform": name, "enabled": name not in PLATFORM_AUTOMATION_DISABLED}
@@ -81,6 +90,8 @@ EXPECTED_TABLES = {
     "paper_account",
     "positions",
     "source_health",
+    "source_utility_outcomes",
+    "token_source_links",
     "token_snapshots",
     "tokens",
     "trades",
@@ -120,7 +131,7 @@ PLATFORM_HOSTS = {
     "truth": {"truthsocial.com"},
     "bluesky": {"bsky.app"},
     "reddit": {"reddit.com", "www.reddit.com", "old.reddit.com"},
-    "threads": {"threads.net", "www.threads.net"},
+    "threads": {"threads.com", "www.threads.com", "threads.net", "www.threads.net"},
     "instagram": {"instagram.com", "www.instagram.com"},
     "tiktok": {"tiktok.com", "www.tiktok.com"},
     "youtube": {"youtube.com", "www.youtube.com", "youtu.be"},
@@ -199,6 +210,9 @@ SETTING_SPECS: dict[str, tuple[str, float, float]] = {
     "event_scan_seconds": ("float", 1, 600),
     "position_scan_seconds": ("float", 5, 600),
     "source_health_seconds": ("float", 10, 3600),
+    "sources.dexscreener_discovery.enabled": ("bool", 0, 1),
+    "sources.dexscreener_discovery.interval_seconds": ("int", 30, 3600),
+    "sources.dexscreener_discovery.max_hydrations_per_cycle": ("int", 0, 30),
     "event_min_attention": ("float", 0, 100),
     "events.max_source_age_minutes": ("float", 1, 1440),
     "events.cluster_hours": ("float", 1, 72),
@@ -240,6 +254,15 @@ SETTING_SPECS: dict[str, tuple[str, float, float]] = {
     "autonomous_search.trend_scout_daily_limit": ("int", 0, 1000),
     "autonomous_search.trend_scout_daily_token_budget": ("int", 0, 100_000_000),
     "autonomous_search.trend_scout_token_reserve_per_call": ("int", 0, 10_000_000),
+    "autonomous_search.source_learning_enabled": ("bool", 0, 1),
+    "autonomous_search.source_learning_lookback_days": ("int", 1, 3650),
+    "autonomous_search.source_learning_min_closed_outcomes": ("int", 1, 1000),
+    "autonomous_search.source_learning_min_event_days": ("int", 1, 3650),
+    "autonomous_search.source_learning_min_losing_outcomes": ("int", 1, 1000),
+    "autonomous_search.source_learning_entity_min_closed_outcomes": ("int", 1, 1000),
+    "autonomous_search.source_learning_entity_min_event_days": ("int", 1, 3650),
+    "autonomous_search.source_learning_entity_min_platforms": ("int", 1, 20),
+    "autonomous_search.source_learning_exploration_fraction": ("float", 0.4, 0.95),
     "autonomous_search.source_discovery_interval_hours": ("float", 1, 720),
     "autonomous_search.source_discovery_daily_limit": ("int", 0, 100),
     "autonomous_search.source_discovery_daily_token_budget": ("int", 0, 10_000_000),
@@ -287,6 +310,29 @@ def _safe_url(value: Any) -> str | None:
         else:
             safe_query.append((key, item))
     return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, urlencode(safe_query), ""))
+
+
+def _safe_attached_link_url(value: Any) -> str | None:
+    """Return only a credential-free URL that cannot target a literal local address."""
+    safe = _safe_url(value)
+    if not safe:
+        return None
+    host = (urlparse(safe).hostname or "").lower().rstrip(".")
+    if not host or host in {"localhost", "localhost.localdomain"} or host.endswith(".local"):
+        return None
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if address and (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_unspecified
+    ):
+        return None
+    return safe
 
 
 def _safe_float(value: Any) -> float | None:
@@ -424,8 +470,12 @@ def _flatten_updates(value: Any, prefix: str = "") -> dict[str, Any]:
     return output
 
 
-def _coerce_setting(path: str, value: Any) -> int | float:
+def _coerce_setting(path: str, value: Any) -> int | float | bool:
     kind, minimum, maximum = SETTING_SPECS[path]
+    if kind == "bool":
+        if not isinstance(value, bool):
+            raise APIError(400, f"{path} must be boolean")
+        return value
     if isinstance(value, bool):
         raise APIError(400, f"{path} must be numeric")
     try:
@@ -482,7 +532,10 @@ def _validate_console_settings(value: Any) -> dict[str, Any]:
         raise APIError(400, "watch_accounts must be a bounded list")
     accounts: list[dict[str, Any]] = []
     seen_accounts: set[tuple[str, str]] = set()
-    allowed_account_fields = {"platform", "handle", "display_name", "url", "enabled", "priority", "entity_id"}
+    critical_accounts = 0
+    allowed_account_fields = {
+        "platform", "handle", "display_name", "url", "enabled", "priority", "entity_id", "watch_cadence"
+    }
     for item in accounts_value:
         if not isinstance(item, dict) or set(item) - allowed_account_fields:
             raise APIError(400, "watch account contains unsupported fields")
@@ -529,6 +582,13 @@ def _validate_console_settings(value: Any) -> dict[str, Any]:
             raise APIError(400, "watch account priority must be an integer between 1 and 5") from None
         if not 1 <= priority <= 5:
             raise APIError(400, "watch account priority must be an integer between 1 and 5")
+        watch_cadence = _plain_text(item.get("watch_cadence") or "normal", "watch account cadence", 16).lower()
+        if watch_cadence not in {"normal", "critical"}:
+            raise APIError(400, "watch account cadence must be normal or critical")
+        if watch_cadence == "critical":
+            critical_accounts += 1
+            if critical_accounts > 4:
+                raise APIError(400, "at most 4 watch accounts may use critical cadence")
         seen_accounts.add(key)
         accounts.append(
             {
@@ -539,6 +599,7 @@ def _validate_console_settings(value: Any) -> dict[str, Any]:
                 "url": url or "",
                 "enabled": enabled,
                 "priority": priority,
+                "watch_cadence": watch_cadence,
             }
         )
 
@@ -1919,6 +1980,61 @@ class WebData:
             links[token_id].sort(key=lambda item: str(item.get("observed_at") or ""), reverse=True)
         return links
 
+    def _token_source_links(
+        self, connection: sqlite3.Connection, token_ids: list[str]
+    ) -> dict[str, list[dict[str, Any]]]:
+        links: dict[str, list[dict[str, Any]]] = {token_id: [] for token_id in token_ids}
+        if not token_ids or not self._table_exists(connection, "token_source_links"):
+            return links
+        placeholders = ",".join("?" for _ in token_ids)
+        for row in connection.execute(
+            f"""
+            SELECT id,token_id,provider,discovery_surface,role,original_url,normalized_url,
+                   link_kind,label,platform,verification_status,first_observed_at,last_observed_at
+            FROM token_source_links
+            WHERE token_id IN ({placeholders})
+            ORDER BY last_observed_at DESC,id DESC
+            """,
+            token_ids,
+        ):
+            token_id = str(row["token_id"])
+            role = str(row["role"] or "identity").strip().lower()
+            if role not in {"identity", "promotion"}:
+                role = "identity"
+            original_url = _safe_attached_link_url(row["original_url"])
+            normalized_url = _safe_attached_link_url(row["normalized_url"])
+            links[token_id].append(
+                {
+                    "id": int(row["id"]),
+                    "provider": str(row["provider"] or "")[:120],
+                    "discovery_surface": str(row["discovery_surface"] or "")[:120],
+                    "role": role,
+                    "original_url": original_url,
+                    "normalized_url": normalized_url,
+                    "url": normalized_url or original_url,
+                    "link_kind": str(row["link_kind"] or "other")[:120],
+                    "label": str(row["label"] or "")[:300],
+                    "platform": str(row["platform"] or "")[:80],
+                    "verification_status": str(row["verification_status"] or "unverified")[:80],
+                    "first_observed_at": row["first_observed_at"],
+                    "last_observed_at": row["last_observed_at"],
+                    "decision_eligible": False,
+                    "context_only": True,
+                }
+            )
+        return links
+
+    @staticmethod
+    def _token_source_link_counts(links: list[dict[str, Any]]) -> dict[str, int]:
+        return {
+            "attached_link_count": len(links),
+            "promotion_seed_count": sum(1 for item in links if item.get("role") == "promotion"),
+            "identity_seed_count": sum(1 for item in links if item.get("role") == "identity"),
+            "verified_source_count": sum(
+                1 for item in links if str(item.get("verification_status") or "").lower() == "verified"
+            ),
+        }
+
     def tokens(self, query: dict[str, list[str]]) -> dict[str, Any]:
         limit = _query_int(query, "limit", 100, 1, 300)
         offset = _query_int(query, "offset", 0, 0, 1_000_000)
@@ -1942,11 +2058,24 @@ class WebData:
             token_ids = [str(row["token_id"]) for row in rows]
             snapshots = self._latest_snapshots(connection, token_ids)
             links = self._token_links(connection, token_ids)
-            items = [self._token_payload(row, snapshots.get(str(row["token_id"])), links[str(row["token_id"])]) for row in rows]
+            source_links = self._token_source_links(connection, token_ids)
+            items = [
+                self._token_payload(
+                    row,
+                    snapshots.get(str(row["token_id"])),
+                    links[str(row["token_id"])],
+                    source_links[str(row["token_id"])],
+                )
+                for row in rows
+            ]
         return {"items": items, "total": total, "limit": limit, "offset": offset, "as_of": iso()}
 
     def _token_payload(
-        self, row: sqlite3.Row, snapshot_row: sqlite3.Row | None, links: list[dict[str, Any]]
+        self,
+        row: sqlite3.Row,
+        snapshot_row: sqlite3.Row | None,
+        links: list[dict[str, Any]],
+        source_links: list[dict[str, Any]],
     ) -> dict[str, Any]:
         social = _json_load(row["social_urls_json"], [])
         snapshot = self._snapshot_payload(snapshot_row)
@@ -1973,6 +2102,7 @@ class WebData:
             "token_to_event": "verified reverse-context observation" if reverse_links else None,
             "evidence_role": "confirmation" if reverse_links else ("decision_record" if decision_links else None),
             "linked_event_ids": sorted({int(item["event_id"]) for item in links}),
+            **self._token_source_link_counts(source_links),
         }
 
     def token_detail(self, token_id: str) -> dict[str, Any]:
@@ -1984,7 +2114,9 @@ class WebData:
                 raise APIError(404, "token not found")
             snapshot = self._latest_snapshots(connection, [token_id]).get(token_id)
             links = self._token_links(connection, [token_id])[token_id]
-            payload = self._token_payload(row, snapshot, links)
+            source_links = self._token_source_links(connection, [token_id])[token_id]
+            payload = self._token_payload(row, snapshot, links, source_links)
+            payload["attached_links"] = source_links
             linked_event_ids = payload["linked_event_ids"]
             evidence: list[dict[str, Any]] = []
             if linked_event_ids and self._table_exists(connection, "event_observations"):
@@ -2676,6 +2808,20 @@ class WebData:
                 "dynamic": False,
             }
         )
+        dex_discovery = source_cfg.get("dexscreener_discovery") or {}
+        if isinstance(dex_discovery, dict) and dex_discovery:
+            configured.extend(
+                {
+                    "name": name,
+                    "label": label,
+                    "kind": "token_profile_discovery",
+                    "url": None,
+                    "configured": True,
+                    "enabled": bool(dex_discovery.get("enabled", True)),
+                    "dynamic": False,
+                }
+                for name, label in DEX_DISCOVERY_SOURCES
+            )
         for name in ("dexscreener", "goplus-evm", "honeypot-is", "goplus-solana", "rugcheck"):
             configured.append(
                 {
@@ -2690,6 +2836,12 @@ class WebData:
         health: dict[str, sqlite3.Row] = {}
         dynamic: list[dict[str, Any]] = []
         platform_heartbeats: dict[str, dict[str, Any]] = {}
+        learning: dict[str, Any] = {
+            "status": "unavailable",
+            "items": [],
+            "summary": {"observations": 0, "closed_paper_outcomes": 0, "active_labels": 0},
+            "as_of": iso(),
+        }
         with self.connect() as connection:
             if connection is not None and self._table_exists(connection, "source_health"):
                 health = {str(row["source"]): row for row in connection.execute("SELECT * FROM source_health")}
@@ -2717,6 +2869,25 @@ class WebData:
                             "consecutive_failures": item.get("consecutive_failures"),
                         }
                     )
+            if connection is not None and self._table_exists(connection, "observations"):
+                autonomous_cfg = self.config.get("autonomous_search") or {}
+                try:
+                    learning = Store.source_learning_summary_from_connection(
+                        connection,
+                        lookback_days=int(autonomous_cfg.get("source_learning_lookback_days", 90)),
+                        min_closed_outcomes=int(autonomous_cfg.get("source_learning_min_closed_outcomes", 20)),
+                        min_event_days=int(autonomous_cfg.get("source_learning_min_event_days", 10)),
+                        min_losing_outcomes=int(autonomous_cfg.get("source_learning_min_losing_outcomes", 5)),
+                        entity_min_closed_outcomes=int(
+                            autonomous_cfg.get("source_learning_entity_min_closed_outcomes", 30)
+                        ),
+                        entity_min_event_days=int(
+                            autonomous_cfg.get("source_learning_entity_min_event_days", 15)
+                        ),
+                        entity_min_platforms=int(autonomous_cfg.get("source_learning_entity_min_platforms", 2)),
+                    )
+                except (sqlite3.Error, TypeError, ValueError):
+                    learning["status"] = "unavailable"
         limits = self.config.get("source_stale_minutes") or {}
         items = []
         known_names: set[str] = set()
@@ -2836,6 +3007,7 @@ class WebData:
                 "accepts_sessions": False,
             },
             "browser_bridge": self._bridge_health(),
+            "learning": learning,
             "as_of": iso(),
         }
 
@@ -3046,22 +3218,21 @@ class WebData:
                 unit = "agents"
             elif path.endswith("_pct") or path.endswith("_ratio") or path.endswith("_fraction"):
                 unit = "ratio"
-            schema_fields.append(
-                {
-                    "path": path,
-                    "label": path.rsplit(".", 1)[-1].replace("_", " "),
-                    "group": group.replace("_", " ").title(),
-                    "type": "integer" if kind == "int" else "number",
-                    "current": current,
-                    "default": _nested_get(DEFAULT_CONFIG, path),
-                    "min": minimum,
-                    "max": maximum,
-                    "unit": unit,
-                    "safe": True,
-                    "editable": True,
-                    "restart_required": True,
-                }
-            )
+            field = {
+                "path": path,
+                "label": path.rsplit(".", 1)[-1].replace("_", " "),
+                "group": group.replace("_", " ").title(),
+                "type": "boolean" if kind == "bool" else ("integer" if kind == "int" else "number"),
+                "current": current,
+                "default": _nested_get(DEFAULT_CONFIG, path),
+                "unit": unit,
+                "safe": True,
+                "editable": True,
+                "restart_required": True,
+            }
+            if kind != "bool":
+                field.update({"min": minimum, "max": maximum})
+            schema_fields.append(field)
         console = self.console_settings()
         return {
             "editable": editable,

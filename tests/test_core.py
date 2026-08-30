@@ -7,12 +7,14 @@ from pathlib import Path
 
 import pytest
 
+from memetrader.collectors import DexScreenerClient
 from memetrader.models import CandidateDecision, EventView, Observation, Position, TokenCandidate, TokenSnapshot
 from memetrader.runtime import load_config
 from memetrader.store import Store
 from memetrader.strategy import (
     CandidateEvaluator,
     EventEngine,
+    classify_event_topic,
     evidence_origin,
     PaperPolicy,
     SafetyChecker,
@@ -62,6 +64,160 @@ def test_future_token_and_snapshot_are_rejected():
     assert "snapshot_observed_after_decision" in reasons
     assert "forbidden_hindsight_field:token" in reasons
     assert "forbidden_hindsight_field:snapshot" in reasons
+
+
+def test_source_learning_records_only_closed_paper_lead_evidence(tmp_path: Path):
+    store = Store(tmp_path / "learning.sqlite3", initial_cash_usd=1000)
+    now = datetime.now(timezone.utc)
+    event_id = store.create_event(
+        "Forward mascot event",
+        ["mascot"],
+        80,
+        now - timedelta(minutes=3),
+        topic="animals_internet_culture",
+    )
+    observations = [
+        Observation(
+            source="browser:x:alpha",
+            source_kind="social",
+            title="First local post",
+            observed_at=now - timedelta(minutes=3),
+            ingested_at=now - timedelta(minutes=3),
+            role="feature",
+            source_item_id="lead-a",
+            raw={"browser": {"platform": "x"}, "source_entity_id": "alpha"},
+        ),
+        Observation(
+            source="news-b",
+            source_kind="news",
+            title="Independent report within lead window",
+            observed_at=now - timedelta(minutes=2, seconds=30),
+            ingested_at=now - timedelta(minutes=2, seconds=30),
+            role="confirmation",
+            source_item_id="lead-b",
+        ),
+        Observation(
+            source="promotion-c",
+            source_kind="social",
+            title="Context-only promotion",
+            observed_at=now - timedelta(minutes=2, seconds=50),
+            ingested_at=now - timedelta(minutes=2, seconds=50),
+            role="promotion",
+            source_item_id="promo",
+        ),
+        Observation(
+            source="late-d",
+            source_kind="news",
+            title="Later confirmation",
+            observed_at=now - timedelta(minutes=1),
+            ingested_at=now - timedelta(minutes=1),
+            role="confirmation",
+            source_item_id="late",
+        ),
+    ]
+    ids = []
+    for observation in observations:
+        observation_id, _ = store.add_observation(observation)
+        store.link_event_observation(event_id, observation_id)
+        ids.append(observation_id)
+    token = TokenCandidate(chain="solana", address="L" * 32, name="Mascot", symbol="MASC")
+    store.upsert_token(token, seen_at=now)
+    store.paper_buy(event_id=event_id, token=token, price=1.0, gross_usd=100, fee_bps=0, reason="test")
+    store.paper_sell(token.token_id, price=1.1, fraction=0.5, fee_bps=0, reason="partial")
+    assert store.db.execute("SELECT COUNT(*) FROM source_utility_outcomes").fetchone()[0] == 0
+    store.paper_sell(token.token_id, price=1.2, fraction=1.0, fee_bps=0, reason="close")
+    outcome_rows = list(store.db.execute("SELECT * FROM source_utility_outcomes"))
+    assert {int(row["source_observation_id"]) for row in outcome_rows} == set(ids[:2])
+    assert all(abs(float(row["attribution_weight"]) - 0.5) < 1e-9 for row in outcome_rows)
+    assert all(row["dimension"] != "entity" or row["value"] == "alpha" for row in outcome_rows)
+    assert any(
+        row["dimension"] == "event_topic" and row["value"] == "animals_internet_culture"
+        for row in outcome_rows
+    )
+    assert not any(row["value"] in {"promotion-c", "late-d"} for row in outcome_rows)
+
+    conservative = store.source_learning_summary()
+    assert conservative["status"] == "collecting_samples"
+    assert conservative["summary"]["closed_paper_outcomes"] == 1
+    relaxed = store.source_learning_summary(
+        min_closed_outcomes=0.5,
+        min_event_days=1,
+        min_losing_outcomes=0,
+        entity_min_closed_outcomes=0.5,
+        entity_min_event_days=1,
+        entity_min_platforms=1,
+    )
+    assert relaxed["status"] == "learning_active"
+    assert any(item["dimension"] == "platform" and item["value"] == "x" for item in relaxed["items"])
+    topic_item = next(
+        item
+        for item in relaxed["items"]
+        if item["dimension"] == "event_topic" and item["value"] == "animals_internet_culture"
+    )
+    assert topic_item["rotation_active"] is False
+    assert topic_item["rotation_multiplier"] == 1.0
+    store.close()
+
+
+def test_event_topic_is_deterministic_forward_only_and_immutable(tmp_path: Path):
+    assert classify_event_topic("Otter mascot becomes a viral emoji") == "animals_internet_culture"
+    assert classify_event_topic("World Cup football final") == "sports"
+    assert classify_event_topic("New AI gaming chip launches") == "ai_tech_gaming"
+    assert classify_event_topic("Singer announces a concert") == "celebrity_entertainment"
+    assert classify_event_topic("President calls an election") == "political_public_figure"
+    assert classify_event_topic("Solana memecoin launches") == "crypto_native"
+    assert classify_event_topic("Unclassified local moment") == "other"
+
+    store = Store(tmp_path / "topics.sqlite3")
+    event_id = store.create_event("Older event", [], 0)
+    assert store.get_event(event_id).topic == "unknown"
+    store.update_event(event_id, title="Otter mascot", aliases=["otter"], attention=70)
+    assert store.get_event(event_id).topic == "unknown"
+    store.close()
+
+
+def test_dexscreener_attached_links_are_typed_and_promotions_stay_context_only(tmp_path: Path):
+    assert DexScreenerClient._classify_link("https://x.com/search?q=mascot")[:2] == ("search", "x")
+    assert DexScreenerClient._classify_link("https://truthsocial.com/@realDonaldTrump/123")[:2] == (
+        "social_post", "truth"
+    )
+    assert DexScreenerClient._classify_link("https://www.threads.com/@creator")[:2] == (
+        "social_profile", "threads"
+    )
+    assert DexScreenerClient._classify_link("https://t.me/example")[:2] == ("telegram_manual", "telegram")
+
+    class Response:
+        def json(self):
+            return [
+                {
+                    "chainId": "solana",
+                    "tokenAddress": "D" * 32,
+                    "url": "https://dexscreener.com/solana/pair",
+                    "links": [
+                        {"type": "twitter", "url": "https://x.com/example"},
+                        {"label": "Telegram", "url": "https://t.me/example"},
+                    ],
+                }
+            ]
+
+    class Http:
+        async def get(self, *args, **kwargs):
+            return Response()
+
+    rows = asyncio.run(DexScreenerClient(Http()).discover_surface("boosts_latest", {"solana"}))
+    assert rows
+    assert {row["role"] for row in rows} == {"promotion"}
+    assert any(row["link_kind"] == "telegram_manual" and row["verification_status"] == "manual_only" for row in rows)
+    assert all(row["verification_status"] != "verified" for row in rows)
+    store = Store(tmp_path / "dex-links.sqlite3")
+    for row in rows:
+        store.upsert_token_source_link(row, observed_at="2026-08-30T00:00:00Z")
+        store.upsert_token_source_link(row, observed_at="2026-08-30T00:01:00Z")
+    persisted = store.token_source_links(f"solana:{'D' * 32}")
+    assert {row["role"] for row in persisted} == {"promotion"}
+    assert all(row["first_observed_at"] == "2026-08-30T00:00:00Z" for row in persisted)
+    assert all(row["last_observed_at"] == "2026-08-30T00:01:00Z" for row in persisted)
+    store.close()
 
 
 def test_initial_page_and_old_polled_news_are_not_entry_evidence():

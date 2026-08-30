@@ -121,6 +121,7 @@ def test_console_preferences_are_bounded_rotated_and_non_secret(tmp_path: Path):
                         "url": f"https://x.com/account_{index}?token=not-retained",
                         "enabled": True,
                         "priority": 5 if index == 0 else 3,
+                        "watch_cadence": "critical" if index < 8 else "normal",
                     }
                     for index in range(14)
                 ] + [
@@ -144,9 +145,19 @@ def test_console_preferences_are_bounded_rotated_and_non_secret(tmp_path: Path):
     assert first["contains_credentials"] is False
     assert len(first["watch_accounts"]) == 12
     assert first["watch_accounts"] != second["watch_accounts"]
+    assert any(item["handle"] == "account_0" for item in first["watch_accounts"])
+    assert any(item["handle"] == "account_0" for item in second["watch_accounts"])
+    assert first["watch_selection"]["exploration_slots"] >= 5
+    assert first["watch_selection"]["critical_slots"] == 4
+    assert first["watch_selection"]["critical_slot_cap"] == 4
+    assert first["watch_selection"]["critical_overflow"] == 4
+    assert first["watch_selection"]["learning_affects"] == "agent_watch_rotation_only"
     assert all("?" not in item["url"] for item in first["watch_accounts"])
     assert all(item["platform"] != "telegram" for item in first["watch_accounts"])
     assert "password" not in json.dumps(first).casefold()
+    persisted = store.get_kv("autonomous_search:watch_selection:trend_scout")
+    assert persisted["contains_credentials"] is False
+    assert persisted["policy"]["minimum_exploration_fraction"] == 0.40
     settings_path.write_text(
         json.dumps({"platforms": [{"platform": "x", "enabled": False}]}),
         encoding="utf-8",
@@ -486,6 +497,8 @@ def test_agent_paths_never_fetch_or_persist_telegram_results(tmp_path: Path):
 
         def token_search(prompt, task="token_context"):
             assert private_telegram_url not in prompt
+            assert "https://x.com/public-event" in prompt
+            assert "untrusted project-party claims" in prompt
             return (
                 {
                     "event_found": True,
@@ -509,6 +522,23 @@ def test_agent_paths_never_fetch_or_persist_telegram_results(tmp_path: Path):
             social_urls=[private_telegram_url, "https://x.com/public-event"],
             raw={"description": f"Public description {private_telegram_url}"},
         )
+        for url, kind, platform in (
+            (private_telegram_url, "telegram_manual", "telegram"),
+            ("https://x.com/public-event", "social_profile", "x"),
+        ):
+            context_store.upsert_token_source_link(
+                {
+                    "token_id": token.token_id,
+                    "provider": "dexscreener",
+                    "discovery_surface": "pair_info",
+                    "role": "identity",
+                    "original_url": url,
+                    "normalized_url": url,
+                    "link_kind": kind,
+                    "platform": platform,
+                    "verification_status": "manual_only" if platform == "telegram" else "provider_metadata",
+                }
+            )
         snapshot = TokenSnapshot("solana", token.address, 0.01, 50000, 500000, 20000, 100, 20)
         context_observations = await context_agent.search_token_context(token, snapshot, momentum_score=90)
         assert len(context_observations) == 2

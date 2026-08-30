@@ -70,6 +70,13 @@
       "solana",
       "bsc"
     ],
+    "dexscreener_discovery": {
+      "enabled": true,
+      "interval_seconds": 90,
+      "max_items_per_surface": 40,
+      "max_hydrations_per_cycle": 8,
+      "active_token_minutes": 180
+    },
     "pumpportal": {
       "enabled": true,
       "url": "wss://pumpportal.fun/api/data"
@@ -289,6 +296,15 @@
     "trend_scout_max_sources_per_event": 3,
     "trend_scout_max_web_searches": 4,
     "trend_scout_surge_attention": 70,
+    "source_learning_enabled": true,
+    "source_learning_lookback_days": 90,
+    "source_learning_min_closed_outcomes": 20,
+    "source_learning_min_event_days": 10,
+    "source_learning_min_losing_outcomes": 5,
+    "source_learning_entity_min_closed_outcomes": 30,
+    "source_learning_entity_min_event_days": 15,
+    "source_learning_entity_min_platforms": 2,
+    "source_learning_exploration_fraction": 0.4,
     "startup_delay_seconds": 120,
     "source_discovery_check_minutes": 60,
     "source_discovery_interval_hours": 24,

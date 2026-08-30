@@ -27,6 +27,56 @@ def test_initial_config_has_private_token_and_live_locked():
     assert config["safety"]["require_solana_report"] is True
 
 
+def test_dexscreener_discovery_persists_provenance_and_hydrates_bounded_token(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        config["candidate"]["chains"] = ["solana"]
+        config["sources"]["dexscreener_discovery"]["max_hydrations_per_cycle"] = 1
+        runtime = Runtime(config, tmp_path)
+        token = TokenCandidate(chain="solana", address="Q" * 32, name="Profile token", symbol="PROF")
+        snapshot = TokenSnapshot("solana", token.address, 0.01, 25000, 100000, 5000, 20, 4)
+
+        class Dex:
+            DISCOVERY_SURFACES = {"token_profiles": ("/token-profiles/latest/v1", "identity")}
+
+            async def discover_surface(self, surface, allowed_chains, limit=40):
+                assert surface == "token_profiles"
+                assert allowed_chains == {"solana"}
+                return [
+                    {
+                        "token_id": token.token_id,
+                        "chain": "solana",
+                        "address": token.address,
+                        "provider": "dexscreener",
+                        "discovery_surface": "token_profiles",
+                        "role": "identity",
+                        "original_url": "https://x.com/profile_token",
+                        "normalized_url": "https://x.com/profile_token",
+                        "link_kind": "social_profile",
+                        "platform": "x",
+                        "verification_status": "provider_metadata",
+                    }
+                ]
+
+            async def quote(self, chain, address):
+                assert (chain, address) == ("solana", token.address)
+                return token, snapshot
+
+        runtime.dex = Dex()
+        await runtime.poll_dexscreener_discovery_once()
+        assert runtime.store.token(token.token_id) is not None
+        links = runtime.store.token_source_links(token.token_id)
+        assert len(links) == 1 and links[0]["role"] == "identity"
+        health = {row["source"]: row for row in runtime.store.source_health()}
+        assert health["dexscreener:token_profiles"]["last_ok_at"] is not None
+        assert health["dexscreener:hydration"]["last_item_at"] is not None
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
 def test_browser_platform_heartbeat_persists_only_sanitized_access_state(tmp_path):
     async def scenario():
         config = initial_config()

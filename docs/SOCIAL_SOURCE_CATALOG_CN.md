@@ -1,6 +1,6 @@
 # 社交信息源目录
 
-`SOCIAL_SOURCE_CATALOG.json` 是 memeTrader 的公开社交信息源候选目录。当前 `v2` 版本在 2026-08-30 复核，共 80 条，覆盖 X、YouTube、Instagram、TikTok、Threads、Bluesky、Telegram 和 Reddit。文件只保存公开账号、公开 URL、实体映射、类别、优先级与非敏感自动化策略，不包含登录账号、密码、Cookie、会话、邮箱、API Key、Bot Token 或其他私密信息。
+`SOCIAL_SOURCE_CATALOG.json` 是 memeTrader 的公开社交信息源候选目录。当前 `v3` 版本在 2026-08-30 复核，共 82 条，覆盖 X、Truth Social、YouTube、Instagram、TikTok、Threads、Bluesky、Telegram 和 Reddit。文件只保存公开账号、公开 URL、实体映射、类别、优先级、观察轮换标签与非敏感自动化策略，不包含登录账号、密码、Cookie、会话、邮箱、API Key、Bot Token 或其他私密信息。
 
 此目录是研究和采集入口，不会替代现有的时间门、安全门、候选币排序、`WAIT` 结论或 Paper 风控。账号进入目录也不表示其内容自动具备决策资格。
 
@@ -16,9 +16,15 @@
 
 官方身份不等于 Token 关联。名人发布一句话只能证明该名人发布了内容，不能证明同名 Token 与该内容有关。Event→Token 或 Token→Event 仍需明确名称、CA、时间和独立来源证据。
 
+## 关键观察频率
+
+`watch_cadence = critical` 表示该账号应在浏览器观察清单和账号轮换中获得更短的回访间隔。当前只用于 Donald Trump、Elon Musk 和 CZ 三个高影响人物实体；Donald Trump 的 X 与 Truth Social 是同一实体的两个观察入口，因此共有 4 个 critical 账号。运行时和 Settings 都把 critical 上限固定为 4；更多账号会回到常规候选池。
+
+这个字段只影响**观察轮换优先级**，不是权威度或交易信号。它不会改变 `priority`、帖子角色（`feature`、`confirmation`、`identity`、`promotion`）、新鲜度时间门、来源独立性、Event→Token 关联要求或决策资格，也不能让一条内容绕过 `WAIT`、安全检查和 Paper 风控。JSON 顶层的 `watch_cadence_policy` 以机器可读方式固定这些否定语义。
+
 ## 跨平台去重
 
-同一实体在不同平台上的账号必须归并为一个来源实体。例如 NASA 在 X、YouTube、Instagram、TikTok 和 Threads 上的内容仍然属于同一个 NASA，不能把五个平台计算成五个独立来源。Reuters、AP、OpenAI、NVIDIA、MrBeast 等跨平台账号同理。
+同一实体在不同平台上的账号必须归并为一个来源实体。例如 NASA 在 X、YouTube、Instagram、TikTok 和 Threads 上的内容仍然属于同一个 NASA，不能把五个平台计算成五个独立来源。Donald Trump 的 X 与 Truth Social 均使用 `entity_id = donald_trump`，也只能计算为一个发布实体；个人实体 `donald_trump` 与机构实体 `white_house` 必须保持独立，不能因为任职关系合并。Reuters、AP、OpenAI、NVIDIA、MrBeast 等跨平台账号同理。
 
 每条记录现在都带有稳定的 `entity_id`。同一组织或人物的跨平台账号共用同一个值；平台特有社区保持独立，例如 `r/solana` 使用 `reddit_solana_community`，不能与 Solana 自己的账号合并。计算 `source_count`、独立确认数量和可信度时应按 `entity_id` 去重。跨平台转发、同文案同步发布或媒体自身的二次剪辑也不能增加独立来源数。
 
@@ -26,7 +32,7 @@
 
 目录记录只有在用户导入本机观察清单、浏览器采集时精确匹配平台与 handle、并由 Runtime 用同一清单再次核验后，才会把 `entity_id` 写入该条 observation。旧 observation、没有 `entity_id` 的用户自定义账号、未精确匹配的显示名继续按原始 `platform:handle` 计算来源，系统不会依据新版目录追溯改写历史来源数。
 
-JSON 顶层的 `entity_id_policy` 用机器可读方式固定上述语义。`catalog_version = 2` 表示所有记录都必须具有非空 `entity_id`，后续改名时也应保留原实体标识，除非有证据证明账号所有者已经改变。
+JSON 顶层的 `entity_id_policy` 用机器可读方式固定上述语义。`catalog_version = 3` 表示所有记录都必须具有非空 `entity_id`，并允许用受约束的 `watch_cadence` 字段调整观察轮换。后续改名时也应保留原实体标识，除非有证据证明账号所有者已经改变。
 
 ## Telegram 自动化策略
 
@@ -50,12 +56,14 @@ Telegram 条目还保存 `owner_verification` 和 `preferred_machine_source`。�
 
 ## 使用建议
 
-目录不要求每轮同时扫描全部 80 条。可按平台、类别和优先级轮换：优先观察 `priority = 5`，为 `priority = 4` 保留名人、体育和创作者通道，低频使用 `priority = 1–2` 做趋势发现。账号权威度、帖子实时热度、内容角色和来源独立性应分别保存，不应合成一个模糊的“可信度”数字。
+目录不要求每轮同时扫描全部 82 条。可按平台、类别和优先级轮换：先为 `watch_cadence = critical` 的账号保留更短回访间隔，再优先观察 `priority = 5`，为其他 `priority = 4` 账号保留名人、体育和创作者通道，低频使用 `priority = 1–2` 做趋势发现。账号权威度、帖子实时热度、内容角色和来源独立性应分别保存，不应合成一个模糊的“可信度”数字。
 
 建议事件详情保留原帖永久链接、平台、作者、发布时间、本地首次观察时间、抓取时间和角色，并明确展示该证据是 `feature`、`confirmation`、`identity` 还是 `promotion`。
 
 ## 主要官方复核入口
 
+- [Donald J. Trump 的 X 账号](https://x.com/realDonaldTrump)
+- [Donald J. Trump 的 Truth Social 账号](https://truthsocial.com/@realDonaldTrump)
 - [NASA 官方社交账号目录](https://www.nasa.gov/social-media/)
 - [OpenAI 官方账号验证清单](https://help.openai.com/en/articles/11725090)
 - [AP 官方社交数据](https://www.ap.org/about/annual-report/2025-letter-from-the-chair-and-ceo/2025-ap-by-the-numbers/)
