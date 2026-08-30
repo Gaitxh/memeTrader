@@ -1190,38 +1190,40 @@ class Runtime:
         for row in due:
             by_chain.setdefault(str(row["chain"]), []).append(row)
         for chain, rows in by_chain.items():
-            try:
-                if hasattr(self.dex, "batch_quote"):
-                    quoted_by_token = await self.dex.batch_quote(
-                        chain, [str(row["address"]) for row in rows]
-                    )
-                else:
-                    quoted_by_token = {}
-                    for row in rows:
-                        quoted = await self.dex.quote(chain, str(row["address"]))
-                        if quoted:
-                            quoted_by_token[quoted[0].token_id] = quoted
-            except Exception as exc:
-                self._notify_source_error("dexscreener:hydration", exc)
-                for row in rows:
-                    self.store.mark_token_detail_hydration(
-                        str(row["token_id"]), "error", error=f"{type(exc).__name__}: {exc}"
-                    )
-                continue
-            self.store.heartbeat("dexscreener:hydration", item=bool(quoted_by_token))
-            for row in rows:
-                token_id = str(row["token_id"])
-                quoted = quoted_by_token.get(token_id)
-                if not quoted:
-                    self.store.mark_token_detail_hydration(token_id, "no_pair")
+            for offset in range(0, len(rows), 30):
+                chunk = rows[offset : offset + 30]
+                try:
+                    if hasattr(self.dex, "batch_quote"):
+                        quoted_by_token = await self.dex.batch_quote(
+                            chain, [str(row["address"]) for row in chunk]
+                        )
+                    else:
+                        quoted_by_token = {}
+                        for row in chunk:
+                            quoted = await self.dex.quote(chain, str(row["address"]))
+                            if quoted:
+                                quoted_by_token[quoted[0].token_id] = quoted
+                except Exception as exc:
+                    self._notify_source_error("dexscreener:hydration", exc)
+                    for row in chunk:
+                        self.store.mark_token_detail_hydration(
+                            str(row["token_id"]), "error", error=f"{type(exc).__name__}: {exc}"
+                        )
                     continue
-                token, snapshot = quoted
-                if token.token_id != token_id:
-                    self.store.mark_token_detail_hydration(token_id, "no_pair")
-                    continue
-                self.store.upsert_token(token, seen_at=snapshot.observed_at)
-                self.store.add_snapshot(snapshot)
-                self.store.mark_token_detail_hydration(token_id, "hydrated")
+                self.store.heartbeat("dexscreener:hydration", item=bool(quoted_by_token))
+                for row in chunk:
+                    token_id = str(row["token_id"])
+                    quoted = quoted_by_token.get(token_id)
+                    if not quoted:
+                        self.store.mark_token_detail_hydration(token_id, "no_pair")
+                        continue
+                    token, snapshot = quoted
+                    if token.token_id != token_id:
+                        self.store.mark_token_detail_hydration(token_id, "no_pair")
+                        continue
+                    self.store.upsert_token(token, seen_at=snapshot.observed_at)
+                    self.store.add_snapshot(snapshot)
+                    self.store.mark_token_detail_hydration(token_id, "hydrated")
 
     async def poll_external_once(self) -> None:
         collectors = [*self._rss_collectors(), *self._bluesky_collectors(), *self._mastodon_collectors()]

@@ -120,6 +120,55 @@ def test_new_solana_tokens_enter_durable_batch_hydration_and_missing_pair_retrie
     asyncio.run(scenario())
 
 
+def test_dex_hydration_isolates_a_failed_30_address_chunk(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        config["candidate"]["chains"] = ["solana"]
+        config["sources"]["dexscreener_discovery"]["max_hydrations_per_cycle"] = 31
+        runtime = Runtime(config, tmp_path)
+        tokens = [
+            TokenCandidate(chain="solana", address=f"{index:032d}", name=f"Token {index}")
+            for index in range(31)
+        ]
+        for token in tokens:
+            await runtime.ingest_token(token)
+
+        class Dex:
+            DISCOVERY_SURFACES = {}
+
+            def __init__(self):
+                self.calls = []
+
+            async def batch_quote(self, chain, addresses):
+                self.calls.append(list(addresses))
+                if len(self.calls) == 2:
+                    raise RuntimeError("transient batch failure")
+                return {
+                    token.token_id: (
+                        token,
+                        TokenSnapshot("solana", token.address, 0.01, 30000, 200000, 5000, 20, 5),
+                    )
+                    for token in tokens[:30]
+                }
+
+        dex = Dex()
+        runtime.dex = dex
+        await runtime.poll_dexscreener_discovery_once()
+        assert [len(call) for call in dex.calls] == [30, 1]
+        assert all(
+            runtime.store.token_detail_hydration(token.token_id)["status"] == "hydrated"
+            for token in tokens[:30]
+        )
+        failed = runtime.store.token_detail_hydration(tokens[-1].token_id)
+        assert failed["status"] == "error"
+        assert failed["last_error"] == "RuntimeError: transient batch failure"
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
 def test_browser_platform_heartbeat_persists_only_sanitized_access_state(tmp_path):
     async def scenario():
         config = initial_config()

@@ -27,6 +27,8 @@ Runtime 默认每 90 秒读取官方公开端点：
 
 只使用 DexScreener 官方 API 文档中的端点，不使用旧 model1 的未文档化 `recent-updates` 路径。个人电脑默认每 90 秒轮询一次发现面；每面最多 40 条，每轮最多处理 180 个待补全地址，并由客户端拆成官方 `/tokens/v1/{chainId}/{tokenAddresses}` 的不超过 30 CA 批次（最多 6 个请求）。`max_hydrations_per_cycle` 限制的是地址数，不是 HTTP 请求数；这个吞吐只用于便宜的确定性 Dex 详情补全，不提高 Agent 调用频率。配置位于 `sources.dexscreener_discovery`，Web Settings 只允许安全范围。
 
+各 30 地址批次独立提交结果；某一批发生瞬时网络错误时，只把该批放回退避重试，不丢弃同轮其他成功批次。
+
 官方依据：
 
 - [DexScreener API reference](https://docs.dexscreener.com/api/reference)
