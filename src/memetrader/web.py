@@ -97,6 +97,7 @@ EXPECTED_TABLES = {
     "paper_source_attribution_attempts",
     "positions",
     "source_health",
+    "source_poll_attempts",
     "source_utility_outcomes",
     "shadow_event_cohort_labels",
     "shadow_event_cohorts",
@@ -3337,6 +3338,14 @@ class WebData:
             "summary": {"observations": 0, "closed_paper_outcomes": 0, "active_labels": 0},
             "as_of": iso(),
         }
+        source_poll_learning: dict[str, Any] = {
+            "status": "not_observed",
+            "version": Store.SOURCE_POLL_EXPOSURE_VERSION,
+            "items": [],
+            "summary": {"attempts": 0, "completed": 0, "errors": 0, "completed_zero_yield": 0},
+            "mode": "forward_append_only_observation",
+            "affects": "review_only_no_schedule_or_trading_effect",
+        }
         exposure: dict[str, Any] = {
             "status": "not_observed", "items": [],
             "summary": {"runs": 0, "completed_runs": 0, "lane_exposures": 0, "accepted_events": 0},
@@ -3436,6 +3445,13 @@ class WebData:
                     )
             if connection is not None and self._table_exists(connection, "observations"):
                 autonomous_cfg = self.config.get("autonomous_search") or {}
+                try:
+                    source_poll_learning = Store.source_poll_learning_summary_from_connection(
+                        connection,
+                        lookback_days=int(autonomous_cfg.get("source_learning_lookback_days", 90)),
+                    )
+                except (sqlite3.Error, TypeError, ValueError):
+                    source_poll_learning["status"] = "unavailable"
                 try:
                     learning = Store.source_learning_summary_from_connection(
                         connection,
@@ -3846,6 +3862,7 @@ class WebData:
             },
             "browser_bridge": self._bridge_health(),
             "learning": learning,
+            "source_poll_learning": source_poll_learning,
             "trend_lanes": trend_lanes,
             "trend_attention_policy": trend_attention_policy,
             "watch_account_learning": watch_account_learning,

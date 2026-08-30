@@ -43,6 +43,61 @@ def test_followup_tick_finalizes_event_and_token_context_without_agent_or_quote(
     asyncio.run(scenario())
 
 
+def test_observation_polls_record_completed_duplicate_empty_and_error_exposure(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        runtime = Runtime(config, tmp_path)
+        observation = Observation(
+            source="test-feed",
+            source_kind="news",
+            title="A forward-only test event",
+            url="https://article.example/item/1",
+            role="feature",
+            source_item_id="test-feed:1",
+        )
+
+        class Collector:
+            name = "public-test-feed"
+            url = "https://news.example/feed?token=DO_NOT_STORE"
+
+            def __init__(self):
+                self.items = [[observation], [observation], []]
+
+            async def poll(self):
+                return self.items.pop(0)
+
+        collector = Collector()
+        await runtime._poll_observation_collector(collector)
+        await runtime._poll_observation_collector(collector)
+        await runtime._poll_observation_collector(collector)
+
+        class FailingCollector:
+            name = "failing-feed"
+            url = "https://fail.example/feed?password=DO_NOT_STORE"
+
+            async def poll(self):
+                raise TimeoutError("private diagnostic text")
+
+        await runtime._poll_observation_collector(FailingCollector())
+        rows = runtime.store.db.execute(
+            "SELECT * FROM source_poll_attempts ORDER BY id"
+        ).fetchall()
+        assert [row["status"] for row in rows] == ["completed", "completed", "completed", "error"]
+        assert rows[0]["fetched_count"] == 1 and rows[0]["new_observation_count"] == 1
+        assert rows[0]["decision_eligible_count"] == 1
+        assert rows[1]["duplicate_count"] == 1 and rows[1]["new_observation_count"] == 0
+        assert rows[2]["fetched_count"] == 0
+        assert rows[3]["error_type"] == "TimeoutError"
+        serialized = json.dumps([dict(row) for row in rows])
+        assert "DO_NOT_STORE" not in serialized
+        assert "private diagnostic text" not in serialized
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
 def test_dexscreener_discovery_persists_provenance_and_hydrates_bounded_token(tmp_path):
     async def scenario():
         config = initial_config()

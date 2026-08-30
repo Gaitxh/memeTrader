@@ -30,6 +30,49 @@ from memetrader.strategy import (
 )
 
 
+def test_source_poll_exposure_summary_includes_zero_yield_and_errors_without_raw_queries(tmp_path: Path):
+    store = Store(tmp_path / "poll-exposure.sqlite3", initial_cash_usd=1000)
+    completed = store.start_source_poll_attempt(
+        collector_kind="rss",
+        source_key="rss:news.example:masked",
+        platform="rss_news",
+    )
+    store.finish_source_poll_attempt(
+        completed,
+        status="completed",
+        fetched_count=3,
+        new_observation_count=2,
+        new_event_count=1,
+        decision_eligible_count=1,
+        context_only_count=2,
+        duplicate_count=1,
+    )
+    zero = store.start_source_poll_attempt(
+        collector_kind="rss",
+        source_key="rss:news.example:masked",
+        platform="rss_news",
+    )
+    store.finish_source_poll_attempt(zero, status="completed")
+    failed = store.start_source_poll_attempt(
+        collector_kind="bluesky",
+        source_key="bluesky-query:0123456789abcdef",
+        platform="bluesky",
+    )
+    store.finish_source_poll_attempt(failed, status="error", error_type="TimeoutError")
+
+    summary = store.source_poll_learning_summary_from_connection(store.db)
+    rss = next(item for item in summary["items"] if item["platform"] == "rss_news")
+    assert summary["status"] == "collecting"
+    assert summary["summary"]["attempts"] == 3
+    assert rss["completed"] == 2
+    assert rss["completed_zero_yield"] == 1
+    assert rss["new_observations_per_completed_poll"] == 1.0
+    payload = json.dumps(summary)
+    assert "TimeoutError" in payload
+    assert "q=" not in payload and "token=" not in payload and "https://" not in payload
+    store.close()
+
+
 def test_store_migrates_legacy_source_outcomes_without_backfill(tmp_path: Path):
     database = tmp_path / "legacy-source-outcomes.sqlite3"
     connection = sqlite3.connect(database)

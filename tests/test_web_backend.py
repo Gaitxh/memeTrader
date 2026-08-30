@@ -425,6 +425,8 @@ def test_web_api_empty_database_is_safe_and_live_is_locked(tmp_path: Path):
     assert web.tokens({})["items"] == []
     assert web.decisions({})["items"] == []
     empty_sources = web.sources()
+    assert empty_sources["source_poll_learning"]["status"] == "not_observed"
+    assert empty_sources["source_poll_learning"]["affects"] == "review_only_no_schedule_or_trading_effect"
     assert empty_sources["shadow_followup"]["status"] == "not_observed"
     assert empty_sources["shadow_followup"]["summary"]["cohorts"] == 0
     assert empty_sources["shadow_followup"]["horizons_minutes"] == [15, 60, 240]
@@ -503,6 +505,33 @@ def test_web_paper_curve_costs_attempts_and_stale_valuation_are_truthful(tmp_pat
     assert costs["total_recorded_tax_usd"] == pytest.approx(2)
     assert costs["route_and_chain_fees_modeled"] is False
     assert portfolio["execution_attempts"][0]["status"] == "filled"
+
+
+def test_web_sources_exposes_masked_source_poll_learning(tmp_path: Path):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    attempt_id = store.start_source_poll_attempt(
+        collector_kind="reverse_news",
+        source_key="reverse-news:0123456789abcdef",
+        platform="rss_news",
+    )
+    store.finish_source_poll_attempt(
+        attempt_id,
+        status="completed",
+        fetched_count=4,
+        new_observation_count=1,
+        decision_eligible_count=1,
+        filtered_count=3,
+    )
+    store.close()
+
+    payload = WebData(config_path).sources()["source_poll_learning"]
+    assert payload["status"] == "collecting"
+    assert payload["summary"]["completed"] == 1
+    assert payload["items"][0]["source_key"] == "reverse-news:0123456789abcdef"
+    serialized = json.dumps(payload).lower()
+    assert "password" not in serialized and "private_key" not in serialized
+    assert "https://" not in serialized and "?q=" not in serialized
 
 
 def test_learning_closure_does_not_borrow_same_event_outcomes_from_other_source(tmp_path: Path):

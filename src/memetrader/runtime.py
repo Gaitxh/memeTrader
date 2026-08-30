@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import secrets
@@ -1104,12 +1105,18 @@ class Runtime:
             obs.raw = {**obs.raw, "original_role": original_role, "published_time_in_future": True}
         return obs
 
-    async def ingest_observation(self, obs: Observation) -> None:
+    async def ingest_observation(self, obs: Observation) -> dict[str, Any]:
         obs = self._classify_observation(obs)
         event_id, event_created, observation_created = self.events.ingest(obs)
+        result = {
+            "event_id": event_id,
+            "event_created": event_created,
+            "observation_created": observation_created,
+            "decision_eligible": obs.role.lower() in {"feature", "confirmation"},
+        }
         self.store.heartbeat(obs.source, item=observation_created)
         if not observation_created:
-            return
+            return result
         browser_item = obs.raw.get("browser") if isinstance(obs.raw, dict) else None
         if obs.availability_proof == "local_receive" and isinstance(browser_item, dict):
             account = resolve_watchlist_account(
@@ -1137,12 +1144,12 @@ class Runtime:
             self.autonomous_search.mark_trend_surge()
         should_notify = bool(notify_cfg.get("notify_raw_events", False)) or is_official or event.attention >= threshold
         if not should_notify:
-            return
+            return result
         key = f"event_notification_attention:{event.id}"
         previous = float(self.store.get_kv(key, -1.0))
         step = float(notify_cfg.get("event_attention_step", 15.0))
         if previous >= 0 and event.attention < previous + step:
-            return
+            return result
         self.store.set_kv(key, event.attention)
         self.notifier.send(
             "event_detected" if previous < 0 else "event_attention_up",
@@ -1155,6 +1162,7 @@ class Runtime:
                 "new_cluster": event_created,
             },
         )
+        return result
 
     async def browser_heartbeat(self, source: str, detail: dict[str, Any] | None = None) -> None:
         detail = detail if isinstance(detail, dict) else {}
@@ -1269,9 +1277,34 @@ class Runtime:
             {"error": type(exc).__name__, "detail": str(exc)[:500]},
         )
 
+    @staticmethod
+    def _source_poll_identity(collector: Any) -> tuple[str, str, str]:
+        url = str(getattr(collector, "url", "") or "").strip()
+        query = str(getattr(collector, "query", "") or "").strip()
+        class_name = type(collector).__name__.lower()
+        if query and not url:
+            digest = hashlib.sha256(query.encode("utf-8", errors="ignore")).hexdigest()[:16]
+            return "bluesky", f"bluesky-query:{digest}", "bluesky"
+        kind = "mastodon" if "mastodon" in class_name else "rss"
+        platform = "mastodon" if kind == "mastodon" else "rss_news"
+        if url:
+            parsed = urllib.parse.urlsplit(url)
+            safe_url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+            host = (parsed.hostname or "unknown").lower()
+            digest = hashlib.sha256(safe_url.encode("utf-8", errors="ignore")).hexdigest()[:12]
+            return kind, f"{kind}:{host}:{digest}", platform
+        name = str(getattr(collector, "name", type(collector).__name__)).strip()
+        return kind, f"{kind}:{name}", platform
+
     async def _poll_observation_collector(self, collector: Any) -> None:
         name = str(getattr(collector, "name", getattr(collector, "query", type(collector).__name__)))
         url = str(getattr(collector, "url", "") or "")
+        collector_kind, source_key, platform = self._source_poll_identity(collector)
+        attempt_id = self.store.start_source_poll_attempt(
+            collector_kind=collector_kind,
+            source_key=source_key,
+            platform=platform,
+        )
         try:
             observations = await collector.poll()
             self.store.heartbeat(name, item=bool(observations))
@@ -1284,10 +1317,41 @@ class Runtime:
                         name,
                         {"url": url, "reason": pause_reason},
                     )
+                    self.store.finish_source_poll_attempt(
+                        attempt_id,
+                        status="quality_paused",
+                        fetched_count=len(observations),
+                        filtered_count=len(observations),
+                    )
                     return
+            new_observations = 0
+            new_events = 0
+            eligible = 0
+            context_only = 0
+            duplicates = 0
             for obs in observations:
-                await self.ingest_observation(obs)
+                result = await self.ingest_observation(obs)
+                new_observations += int(bool(result["observation_created"]))
+                new_events += int(bool(result["event_created"]))
+                duplicates += int(not result["observation_created"])
+                eligible += int(bool(result["decision_eligible"]))
+                context_only += int(not result["decision_eligible"])
+            self.store.finish_source_poll_attempt(
+                attempt_id,
+                status="completed",
+                fetched_count=len(observations),
+                new_observation_count=new_observations,
+                new_event_count=new_events,
+                decision_eligible_count=eligible,
+                context_only_count=context_only,
+                duplicate_count=duplicates,
+            )
         except Exception as exc:
+            self.store.finish_source_poll_attempt(
+                attempt_id,
+                status="error",
+                error_type=type(exc).__name__,
+            )
             paused = self.autonomous_search.record_rss_poll(
                 url,
                 ok=False,
@@ -1593,8 +1657,19 @@ class Runtime:
             source = "google-news-reverse"
             accepted = 0
             accepted_origins: set[str] = set()
+            source_key = "reverse-news:" + hashlib.sha256(
+                token.token_id.encode("utf-8", errors="ignore")
+            ).hexdigest()[:16]
+            attempt_id = self.store.start_source_poll_attempt(
+                collector_kind="reverse_news",
+                source_key=source_key,
+                platform="rss_news",
+            )
             try:
                 observations = await RSSCollector(self.http, source, url, "news").poll()
+                new_observations = 0
+                new_events = 0
+                duplicates = 0
                 for obs in observations:
                     if obs.published_at and now - obs.published_at > max_result_age:
                         continue
@@ -1605,13 +1680,31 @@ class Runtime:
                     obs.raw["reverse_query"] = query
                     obs.raw["token_momentum_score"] = momentum
                     obs.raw["reverse_name_only"] = True
-                    await self.ingest_observation(obs)
+                    result = await self.ingest_observation(obs)
+                    new_observations += int(bool(result["observation_created"]))
+                    new_events += int(bool(result["event_created"]))
+                    duplicates += int(not result["observation_created"])
                     accepted += 1
                     accepted_origins.add(evidence_origin(obs))
                     if accepted >= max_results:
                         break
                 self.store.heartbeat(source, item=accepted > 0)
+                self.store.finish_source_poll_attempt(
+                    attempt_id,
+                    status="completed",
+                    fetched_count=len(observations),
+                    new_observation_count=new_observations,
+                    new_event_count=new_events,
+                    decision_eligible_count=accepted,
+                    duplicate_count=duplicates,
+                    filtered_count=max(0, len(observations) - accepted),
+                )
             except Exception as exc:
+                self.store.finish_source_poll_attempt(
+                    attempt_id,
+                    status="error",
+                    error_type=type(exc).__name__,
+                )
                 self._notify_source_error(source, exc)
 
             minimum_sources = int(cfg.get("min_independent_sources", 2))

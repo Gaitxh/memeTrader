@@ -64,6 +64,8 @@ RSS 默认不继承系统代理。若电脑只能通过本机 SOCKS5 出网，�
 
 这些暴露记录用于纠正“只统计找到的事件、不统计搜过但没找到”的选择偏差。当前主题学习是 `shadow_observation_only`：无论统计表现如何，实际调度仍为基线 round-robin，surge 仍为全覆盖。Web 只在至少两个通道分别满足 20 次完成暴露、30 个不同已平仓事件、15 个事件日和 8 个加权亏损样本后，显示仅供人工审查的影子候选；它不会自动改变检索、决策或仓位。
 
+本地确定性采集也使用 `source-poll-exposure/v1` 纠正幸存者偏差。每次真正调用 RSS、Bluesky、Mastodon 或 Token 反向 Google News 都写入 append-only 尝试，区分 completed、error、quality_paused，并保存 fetched、新 Observation、新事件、重复、过滤、决策合格与仅上下文计数。成功但没有新入库同样是零产出样本；关闭、冷却和未到期不是调用，不计数。稳定来源键由移除查询参数的 URL 或搜索词哈希生成，账本不保存原始查询、参数或错误正文。该统计只供 Sources 人工审查覆盖与稳定性，当前不驱动调度或交易；历史请求不回填。
+
 Paper 来源效果采用 `paper-source-attribution/v2-decision-cohort`：最终 CANDIDATE 的 `decision_id` 与 admitted shadow cohort 会在模拟买入时写入持仓和成交，完全平仓只归因给该 cohort 决策时冻结的最早合格来源。每次平仓无论成功归因还是缺少 decision/cohort 都写入覆盖账本；旧事件时间窗结果保留但排除出学习。Sources 的角色和候选关联统计也要求 observed、ingested、published 三个时间都不晚于首个最终候选决策。该结果仍是已选择/已平仓条件样本，不是来源、人物或主题的因果收益证明。
 
 | 任务 | 首选模型与推理 | 回退 | 原因 |

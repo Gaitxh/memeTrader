@@ -34,6 +34,7 @@ class Store:
     WATCH_ATTENTION_POLICY_VERSION = "watch-attention/v1"
     TREND_ATTENTION_POLICY_VERSION = "trend-attention/v1"
     PAPER_SOURCE_ATTRIBUTION_VERSION = "paper-source-attribution/v2-decision-cohort"
+    SOURCE_POLL_EXPOSURE_VERSION = "source-poll-exposure/v1"
 
     def __init__(self, path: str | Path, initial_cash_usd: float = 10000):
         self.path = Path(path)
@@ -384,6 +385,28 @@ class Store:
                     last_error_at TEXT,
                     last_error TEXT NOT NULL DEFAULT ''
                 );
+                CREATE TABLE IF NOT EXISTS source_poll_attempts (
+                    id INTEGER PRIMARY KEY,
+                    version TEXT NOT NULL,
+                    collector_kind TEXT NOT NULL,
+                    source_key TEXT NOT NULL,
+                    platform TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'running',
+                    fetched_count INTEGER NOT NULL DEFAULT 0,
+                    new_observation_count INTEGER NOT NULL DEFAULT 0,
+                    new_event_count INTEGER NOT NULL DEFAULT 0,
+                    decision_eligible_count INTEGER NOT NULL DEFAULT 0,
+                    context_only_count INTEGER NOT NULL DEFAULT 0,
+                    duplicate_count INTEGER NOT NULL DEFAULT 0,
+                    filtered_count INTEGER NOT NULL DEFAULT 0,
+                    error_type TEXT NOT NULL DEFAULT '',
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS source_poll_attempts_source_idx
+                    ON source_poll_attempts(source_key,started_at DESC,id DESC);
+                CREATE INDEX IF NOT EXISTS source_poll_attempts_platform_idx
+                    ON source_poll_attempts(platform,started_at DESC,id DESC);
                 CREATE TABLE IF NOT EXISTS kv (
                     key TEXT PRIMARY KEY,
                     value_json TEXT NOT NULL,
@@ -3243,6 +3266,181 @@ class Store:
 
     def source_health(self) -> list[sqlite3.Row]:
         return list(self.db.execute("SELECT * FROM source_health ORDER BY source"))
+
+    def start_source_poll_attempt(
+        self,
+        *,
+        collector_kind: str,
+        source_key: str,
+        platform: str,
+        started_at: Any = None,
+    ) -> int:
+        clean = lambda value: re.sub(r"[^a-zA-Z0-9:._-]+", "-", str(value).strip())[:160]
+        with self._lock, self.db:
+            cursor = self.db.execute(
+                """
+                INSERT INTO source_poll_attempts(
+                    version,collector_kind,source_key,platform,status,started_at
+                ) VALUES(?,?,?,?,?,?)
+                """,
+                (
+                    self.SOURCE_POLL_EXPOSURE_VERSION,
+                    clean(collector_kind) or "unknown",
+                    clean(source_key) or "unknown",
+                    clean(platform) or "unknown",
+                    "running",
+                    iso(started_at or utcnow()),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def finish_source_poll_attempt(
+        self,
+        attempt_id: int,
+        *,
+        status: str,
+        fetched_count: int = 0,
+        new_observation_count: int = 0,
+        new_event_count: int = 0,
+        decision_eligible_count: int = 0,
+        context_only_count: int = 0,
+        duplicate_count: int = 0,
+        filtered_count: int = 0,
+        error_type: str = "",
+        completed_at: Any = None,
+    ) -> None:
+        status = status if status in {"completed", "error", "quality_paused"} else "error"
+        error_type = re.sub(r"[^a-zA-Z0-9_.-]+", "", str(error_type))[:80]
+        counts = tuple(
+            max(0, int(value or 0))
+            for value in (
+                fetched_count,
+                new_observation_count,
+                new_event_count,
+                decision_eligible_count,
+                context_only_count,
+                duplicate_count,
+                filtered_count,
+            )
+        )
+        with self._lock, self.db:
+            self.db.execute(
+                """
+                UPDATE source_poll_attempts SET
+                    status=?,fetched_count=?,new_observation_count=?,new_event_count=?,
+                    decision_eligible_count=?,context_only_count=?,duplicate_count=?,
+                    filtered_count=?,error_type=?,completed_at=?
+                WHERE id=? AND status='running'
+                """,
+                (status, *counts, error_type, iso(completed_at or utcnow()), int(attempt_id)),
+            )
+
+    @classmethod
+    def source_poll_learning_summary_from_connection(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        lookback_days: int = 90,
+    ) -> dict[str, Any]:
+        exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_poll_attempts'"
+        ).fetchone()
+        if not exists:
+            return {
+                "status": "not_observed",
+                "version": cls.SOURCE_POLL_EXPOSURE_VERSION,
+                "items": [],
+                "summary": {"attempts": 0, "completed": 0, "errors": 0, "completed_zero_yield": 0},
+                "mode": "forward_append_only_observation",
+                "affects": "review_only_no_schedule_or_trading_effect",
+            }
+        start = iso(utcnow() - timedelta(days=max(1, min(3650, int(lookback_days)))))
+        rows = connection.execute(
+            """
+            SELECT collector_kind,source_key,platform,
+                   COUNT(*) AS attempts,
+                   SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,
+                   SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS errors,
+                   SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) AS running,
+                   SUM(CASE WHEN status='quality_paused' THEN 1 ELSE 0 END) AS quality_paused,
+                   SUM(CASE WHEN status='completed' AND new_observation_count=0 THEN 1 ELSE 0 END)
+                       AS completed_zero_yield,
+                   SUM(fetched_count) AS fetched_count,
+                   SUM(new_observation_count) AS new_observation_count,
+                   SUM(new_event_count) AS new_event_count,
+                   SUM(decision_eligible_count) AS decision_eligible_count,
+                   SUM(context_only_count) AS context_only_count,
+                   SUM(duplicate_count) AS duplicate_count,
+                   SUM(filtered_count) AS filtered_count,
+                   COUNT(DISTINCT substr(started_at,1,10)) AS poll_day_count,
+                   MAX(started_at) AS last_started_at
+            FROM source_poll_attempts WHERE started_at>=?
+            GROUP BY collector_kind,source_key,platform
+            ORDER BY completed DESC,attempts DESC,source_key
+            """,
+            (start,),
+        ).fetchall()
+        latest: dict[tuple[str, str, str], sqlite3.Row] = {}
+        for row in connection.execute(
+            """
+            SELECT collector_kind,source_key,platform,status,error_type,started_at,completed_at
+            FROM source_poll_attempts WHERE started_at>=? ORDER BY id DESC
+            """,
+            (start,),
+        ):
+            key = (str(row["collector_kind"]), str(row["source_key"]), str(row["platform"]))
+            latest.setdefault(key, row)
+        items = []
+        for row in rows:
+            key = (str(row["collector_kind"]), str(row["source_key"]), str(row["platform"]))
+            last = latest[key]
+            completed = int(row["completed"] or 0)
+            days = int(row["poll_day_count"] or 0)
+            items.append(
+                {
+                    "collector_kind": key[0],
+                    "source_key": key[1],
+                    "platform": key[2],
+                    "attempts": int(row["attempts"] or 0),
+                    "completed": completed,
+                    "errors": int(row["errors"] or 0),
+                    "running": int(row["running"] or 0),
+                    "quality_paused": int(row["quality_paused"] or 0),
+                    "completed_zero_yield": int(row["completed_zero_yield"] or 0),
+                    "fetched_count": int(row["fetched_count"] or 0),
+                    "new_observation_count": int(row["new_observation_count"] or 0),
+                    "new_event_count": int(row["new_event_count"] or 0),
+                    "decision_eligible_count": int(row["decision_eligible_count"] or 0),
+                    "context_only_count": int(row["context_only_count"] or 0),
+                    "duplicate_count": int(row["duplicate_count"] or 0),
+                    "filtered_count": int(row["filtered_count"] or 0),
+                    "poll_day_count": days,
+                    "new_observations_per_completed_poll": (
+                        round(float(row["new_observation_count"] or 0) / completed, 4)
+                        if completed else None
+                    ),
+                    "review_eligible": completed >= 20 and days >= 5,
+                    "last_status": str(last["status"]),
+                    "last_error_type": str(last["error_type"] or "") or None,
+                    "last_started_at": str(last["started_at"]),
+                    "last_completed_at": last["completed_at"],
+                }
+            )
+        summary = {
+            name: sum(int(item[name] or 0) for item in items)
+            for name in ("attempts", "completed", "errors", "running", "quality_paused", "completed_zero_yield", "fetched_count", "new_observation_count", "new_event_count")
+        }
+        summary["sources"] = len(items)
+        summary["review_eligible_sources"] = sum(bool(item["review_eligible"]) for item in items)
+        return {
+            "status": "collecting" if items else "not_observed",
+            "version": cls.SOURCE_POLL_EXPOSURE_VERSION,
+            "items": items,
+            "summary": summary,
+            "mode": "forward_append_only_observation",
+            "affects": "review_only_no_schedule_or_trading_effect",
+            "as_of": iso(),
+        }
 
     def get_kv(self, key: str, default: Any = None) -> Any:
         row = self.db.execute("SELECT value_json FROM kv WHERE key=?", (key,)).fetchone()
