@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#080b10">
+  <title>memeTrader Research Console</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#page-content">跳到主要内容</a>
+  <div class="paper-watermark" aria-hidden="true">PAPER · SIMULATED</div>
+
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar" aria-label="主导航">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span class="brand-copy">
+          <strong>meme<span>Trader</span></strong>
+          <small>RESEARCH CONSOLE</small>
+        </span>
+      </div>
+
+      <nav class="nav-list" id="primary-nav">
+        <button class="nav-item is-active" data-page="overview" aria-current="page">
+          <span class="nav-icon" aria-hidden="true">⌂</span><span>Overview</span><kbd>1</kbd>
+        </button>
+        <button class="nav-item" data-page="events">
+          <span class="nav-icon nav-pulse" aria-hidden="true">◉</span><span>Live Event Feed</span><kbd>2</kbd>
+        </button>
+        <button class="nav-item" data-page="tokens">
+          <span class="nav-icon" aria-hidden="true">◇</span><span>Token Discovery</span><kbd>3</kbd>
+        </button>
+        <button class="nav-item" data-page="decisions">
+          <span class="nav-icon" aria-hidden="true">⌁</span><span>Candidates / Decisions</span><kbd>4</kbd>
+        </button>
+        <button class="nav-item" data-page="portfolio">
+          <span class="nav-icon" aria-hidden="true">▤</span><span>Paper Portfolio</span><kbd>5</kbd>
+        </button>
+        <div class="nav-label">OPERATIONS</div>
+        <button class="nav-item" data-page="agents">
+          <span class="nav-icon" aria-hidden="true">✣</span><span>Agent Operations</span><kbd>6</kbd>
+        </button>
+        <button class="nav-item" data-page="sources">
+          <span class="nav-icon" aria-hidden="true">⌘</span><span>Sources</span><kbd>7</kbd>
+        </button>
+        <button class="nav-item" data-page="audit">
+          <span class="nav-icon" aria-hidden="true">✓</span><span>Audit</span><kbd>8</kbd>
+        </button>
+        <button class="nav-item" data-page="settings">
+          <span class="nav-icon" aria-hidden="true">⚙</span><span>Settings</span><kbd>9</kbd>
+        </button>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="mode-lock" data-testid="persistent-paper-label">
+          <span class="status-dot status-dot--paper"></span>
+          <div><strong>PAPER MODE</strong><small>SIMULATED EXECUTION</small></div>
+        </div>
+        <div class="live-lock" aria-label="Live trading locked">
+          <span aria-hidden="true">▣</span> LIVE LOCKED
+        </div>
+      </div>
+    </aside>
+
+    <button class="sidebar-scrim" id="sidebar-scrim" aria-label="关闭导航" tabindex="-1"></button>
+
+    <main class="main-area">
+      <header class="topbar">
+        <div class="topbar-leading">
+          <button class="icon-button mobile-menu" id="mobile-menu" aria-label="打开导航" aria-expanded="false">☰</button>
+          <div>
+            <span class="eyebrow">GXH COIN / MEMETRADER</span>
+            <h1 id="page-title">Overview</h1>
+          </div>
+        </div>
+        <div class="topbar-status" aria-label="全局运行状态">
+          <span class="status-pill status-pill--unknown" id="runtime-pill"><i></i><span>读取状态</span></span>
+          <span class="status-pill status-pill--paper" id="mode-pill">PAPER / SIMULATED</span>
+          <span class="status-pill status-pill--locked">LIVE LOCKED</span>
+          <span class="last-sync" id="last-sync">等待首次同步</span>
+          <button class="icon-button refresh-button" id="refresh-button" aria-label="立即刷新" title="立即刷新">↻</button>
+        </div>
+      </header>
+
+      <div class="system-notice" id="system-notice" hidden role="status"></div>
+      <section class="page-content" id="page-content" tabindex="-1" data-testid="page-content">
+        <div class="initial-loader" aria-label="加载中"><i></i><i></i><i></i></div>
+      </section>
+    </main>
+  </div>
+
+  <div class="drawer-scrim" id="drawer-scrim" hidden></div>
+  <aside class="detail-drawer" id="detail-drawer" role="dialog" aria-modal="true" aria-label="详情" aria-hidden="true">
+    <header class="drawer-header">
+      <div><span class="eyebrow" id="drawer-eyebrow">EVIDENCE DETAIL</span><h2 id="drawer-title">详情</h2></div>
+      <button class="icon-button" id="drawer-close" aria-label="关闭详情">×</button>
+    </header>
+    <div class="drawer-content" id="drawer-content"></div>
+  </aside>
+
+  <div class="toast-stack" id="toast-stack" aria-live="polite" aria-atomic="true"></div>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

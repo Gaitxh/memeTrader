@@ -61,6 +61,11 @@ def _parser() -> argparse.ArgumentParser:
     scout = sub.add_parser("scout-trends", help="run the proactive global meme-event search Agent")
     scout.add_argument("--config", default="config.json")
     scout.add_argument("--force", action="store_true")
+    web = sub.add_parser("web", help="run the loopback Web console")
+    web.add_argument("--config", default="config.json")
+    web.add_argument("--host", default="127.0.0.1")
+    web.add_argument("--port", type=int, default=8787)
+    web.add_argument("--access-token-file")
     replay = sub.add_parser("replay")
     replay.add_argument("fixture")
     replay.add_argument("--decision-at", required=True)
@@ -413,6 +418,10 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(cmd_discover_sources(args.config, args.force))
     if args.command == "scout-trends":
         return asyncio.run(cmd_scout_trends(args.config, args.force))
+    if args.command == "web":
+        from .web import serve
+
+        return serve(args.config, args.host, args.port, args.access_token_file)
     if args.command == "replay":
         return cmd_replay(args.fixture, args.decision_at)
     return 2

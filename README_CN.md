@@ -101,6 +101,34 @@ powershell -ExecutionPolicy Bypass -File .\scripts\remove_scheduled_task.ps1
 powershell -ExecutionPolicy Bypass -File .\scripts\status.ps1
 ```
 
+## 本机 Web 控制台
+
+Web 控制台直接读取当前 `config.json` 指向的 SQLite，不复制策略、不生成演示成交。它提供 Overview、实时事件、Token 发现、候选/决策、Paper Portfolio、Agent Operations、Sources、Audit 和安全 Settings 九个工作区。
+
+双击：
+
+```text
+E:\memeTrader\OPEN_WEB_CONSOLE.cmd
+```
+
+或运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\open_web_console.ps1
+```
+
+本机访问地址：
+
+```text
+http://127.0.0.1:8787/
+```
+
+需要临时远程查看时，可双击 `SHARE_WEB_CONSOLE.cmd`。它通过本机已安装的 Cloudflare Quick Tunnel 创建带随机访问口令的临时 HTTPS 地址；后端仍只监听 loopback，不开放路由器端口。地址和登录提示只写入 Git 忽略的 `data\web_console\PUBLIC_ACCESS.txt`。公开入口不会返回 bridge token、平台登录、Codex 会话或任何 secret。
+
+Settings 只允许修改轮询频率、Agent 周期/预算、事件与候选阈值，以及本地平台、公开名人/账号和主题观察清单。Agent 并发仍遵守项目规则，只允许 `1–2`、默认 `2`；Live 页面只有 `LOCKED / Unavailable`，没有启用接口。自主搜索继续使用本机已登录的 Codex/ChatGPT agentic 额度，不要求 OpenAI API Key。
+
+详细说明见 [docs/WEB_CONSOLE_CN.md](docs/WEB_CONSOLE_CN.md)。
+
 ## 浏览器扩展
 
 1. 先启动机器人；
