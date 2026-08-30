@@ -917,6 +917,50 @@ def test_trend_lanes_rotate_and_surge_covers_all_topics(tmp_path: Path):
     store.close()
 
 
+def test_mature_trend_attention_keeps_round_robin_exploration_and_bounded_learning(tmp_path: Path):
+    store = Store(tmp_path / "db.sqlite3")
+    agent = AutonomousSearchAgent(
+        store,
+        FakeHttp(),
+        config(trend_scout_lanes_per_run=3, source_learning_enabled=True),
+    )
+    store.trend_attention_policy = lambda *args, **kwargs: {
+        "version": "trend-attention/v1",
+        "status": "active_lane_schedule",
+        "items": [
+            {
+                "lane_id": lane_id,
+                "completed_exposures": 20,
+                "applied_schedule_multiplier": multiplier,
+            }
+            for lane_id, multiplier in (
+                ("politics_public_figures", 1.0),
+                ("culture_entertainment", 0.8),
+                ("sports", 1.2),
+                ("ai_tech_gaming", 1.0),
+                ("crypto_native", 1.0),
+            )
+        ],
+    }
+    selected, cursor, metadata = agent._trend_topic_selection(utcnow())
+    assert selected[0]["id"] == "politics_public_figures"
+    assert selected[0]["selection_role"] == "exploration_round_robin"
+    assert sum(item["selection_role"] == "exploration_round_robin" for item in selected) == 1
+    assert all(item["selection_role"] == "learned_weighted_fair" for item in selected[1:])
+    assert "sports" in {item["id"] for item in selected[1:]}
+    assert cursor == 1
+    assert metadata["mode"] == "mature_forward_lane_learning_plus_exploration"
+    assert metadata["learning_mode"] == "trend-attention/v1"
+    assert metadata["actual_schedule_changed_by_learning"] is True
+
+    agent.mark_trend_surge()
+    surged, _, surge_metadata = agent._trend_topic_selection(utcnow())
+    assert len(surged) == 5
+    assert all(item["selection_role"] == "surge_full_coverage" for item in surged)
+    assert surge_metadata["actual_schedule_changed_by_learning"] is False
+    store.close()
+
+
 def test_trend_lane_ledger_records_empty_results_and_agent_errors(tmp_path: Path):
     async def scenario():
         store = Store(tmp_path / "db.sqlite3")
@@ -942,6 +986,7 @@ def test_trend_lane_ledger_records_empty_results_and_agent_errors(tmp_path: Path
         assert sum(item["completed_exposures"] for item in summary["items"]) == 3
         assert sum(item["error_exposures"] for item in summary["items"]) == 3
         assert all(item["accepted_events_per_completed_run"] in {0.0, None} for item in summary["items"])
+        assert all(item["last_attention_multiplier"] == 1.0 for item in summary["items"])
         store.close()
 
     asyncio.run(scenario())

@@ -601,6 +601,14 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
     assert source_payload["learning"]["summary"]["active_labels"] == 0
     assert source_payload["trend_lanes"]["status"] == "collecting_exposure"
     assert source_payload["trend_lanes"]["actual_schedule_changed_by_learning"] is False
+    assert source_payload["trend_attention_policy"]["version"] == "trend-attention/v1"
+    assert source_payload["trend_attention_policy"]["summary"]["actual_schedule_changed_by_learning"] is False
+    policy_lane = next(
+        item for item in source_payload["trend_attention_policy"]["items"]
+        if item["lane_id"] == "culture_entertainment"
+    )
+    assert policy_lane["selected_in_last_run"] is True
+    assert "recommended_multiplier" in policy_lane and "applied_schedule_multiplier" in policy_lane
     assert len(source_payload["trend_lanes"]["items"]) == 5
     culture_lane = next(
         item for item in source_payload["trend_lanes"]["items"]
@@ -800,6 +808,8 @@ def test_candidate_ranking_api_is_persisted_bounded_sanitized_and_wait_is_truthf
     assert "WAIT is never decorated as an opportunity" in app
     assert "data-testid='source-learning'" in app
     assert "data-testid='watch-account-exposure'" in app
+    assert "data-testid='trend-attention-policy'" in app
+    assert "Trend attention learning: exploration first, never trading" in app
     assert "Watch rotation changes only after both check efficiency and non-buy-only market follow-up mature" in app
     assert "Closed Paper outcomes are secondary validation and cannot change watch rotation alone" in app
     assert "event_topic" in app and "observe only" in app

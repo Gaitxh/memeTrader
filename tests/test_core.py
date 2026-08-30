@@ -328,6 +328,61 @@ def test_watch_attention_policy_requires_exposure_and_wait_inclusive_market_foll
     assert "decision_eligibility" in policy["activation_policy"]["never_affects"]
 
 
+def test_trend_attention_policy_requires_joint_maturity_and_bounds_lane_allocation():
+    lanes = [
+        {"id": "high", "prompt": "high", "event_topics": ["ai_tech_gaming"]},
+        {"id": "low", "prompt": "low", "event_topics": ["sports"]},
+        {"id": "collecting", "prompt": "collecting", "event_topics": ["crypto_native"]},
+    ]
+    exposure = {
+        "summary": {"lane_exposures": 60, "accepted_events": 40},
+        "items": [
+            {
+                "lane_id": lane_id, "completed_exposures": 20, "run_day_count": 10,
+                "zero_yield_completed_exposures": 5, "accepted_events": accepted,
+            }
+            for lane_id, accepted in (("high", 30), ("low", 5), ("collecting", 5))
+        ],
+    }
+    shadow = {
+        "items": [
+            {
+                "horizon_minutes": 60, "dimension": "trend_lane", "value": lane_id,
+                "shadow_review_eligible": True, "shadow_descriptive_score": score,
+                "distinct_event_count": 30, "event_day_count": 15,
+                "weighted_negative_outcomes": 8, "mean_raw_return": score,
+            }
+            for lane_id, score in (("high", 0.30), ("low", -0.30))
+        ]
+    }
+    paper = {
+        "items": [
+            {
+                "dimension": "trend_lane", "value": "high",
+                "paper_mean_net_return": 0.20, "distinct_closed_paper_outcomes": 30,
+                "event_day_count": 15, "weighted_losing_paper_outcomes": 8,
+            }
+        ]
+    }
+    policy = Store.build_trend_attention_policy(
+        lanes, exposure=exposure, shadow=shadow, paper=paper,
+    )
+    assert policy["version"] == "trend-attention/v1"
+    assert policy["status"] == "active_lane_schedule"
+    assert policy["summary"]["schedule_activation_available"] is True
+    assert policy["summary"]["actual_schedule_changed_by_learning"] is False
+    high = next(item for item in policy["items"] if item["lane_id"] == "high")
+    low = next(item for item in policy["items"] if item["lane_id"] == "low")
+    collecting = next(item for item in policy["items"] if item["lane_id"] == "collecting")
+    assert 1.0 < high["applied_schedule_multiplier"] <= 1.20
+    assert 0.80 <= low["applied_schedule_multiplier"] < 1.0
+    assert high["paper_multiplier"] > 1.0
+    assert collecting["schedule_active"] is False
+    assert collecting["state"] == "collecting_market_followup"
+    assert policy["activation_policy"]["minimum_round_robin_exploration_lanes_per_run"] == 1
+    assert "live_trading" in policy["activation_policy"]["never_affects"]
+
+
 def test_shadow_event_followup_is_forward_only_fixed_horizon_and_non_activating(tmp_path: Path):
     store = Store(tmp_path / "shadow-followup.sqlite3")
     now = datetime.now(timezone.utc)

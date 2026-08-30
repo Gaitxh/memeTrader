@@ -2854,6 +2854,15 @@ class WebData:
             "summary": {"observations": 0, "closed_paper_outcomes": 0, "active_labels": 0},
             "as_of": iso(),
         }
+        exposure: dict[str, Any] = {
+            "status": "not_observed", "items": [],
+            "summary": {"runs": 0, "completed_runs": 0, "lane_exposures": 0, "accepted_events": 0},
+        }
+        trend_attention_policy: dict[str, Any] = {
+            "version": Store.TREND_ATTENTION_POLICY_VERSION,
+            "status": "not_configured", "items": [],
+            "summary": {"actual_schedule_changed_by_learning": False},
+        }
         trend_lanes: dict[str, Any] = {
             "status": "not_observed",
             "mode": "shadow_observation_only",
@@ -2955,7 +2964,7 @@ class WebData:
                         item = dict(exposure_by_lane.get(lane_id) or {})
                         outcome = dict(outcome_by_lane.get(lane_id) or {})
                         completed = int(item.get("completed_exposures") or 0)
-                        distinct_events = int(outcome.get("distinct_closed_event_count") or 0)
+                        distinct_events = int(outcome.get("distinct_closed_paper_outcomes") or 0)
                         event_days = int(outcome.get("event_day_count") or 0)
                         weighted_losses = float(outcome.get("weighted_losing_paper_outcomes") or 0)
                         mature = (
@@ -3042,6 +3051,31 @@ class WebData:
                     )
                 except (sqlite3.Error, TypeError, ValueError):
                     shadow_followup["status"] = "unavailable"
+        try:
+            trend_attention_policy = Store.build_trend_attention_policy(
+                TREND_TOPIC_LANES, exposure=exposure, shadow=shadow_followup, paper=learning
+            )
+            last_selection = trend_lanes.get("last_selection") or {}
+            selected_by_id = {
+                str(item.get("lane_id") or ""): item
+                for item in last_selection.get("selected_lanes", [])
+                if isinstance(item, dict)
+            }
+            for item in trend_attention_policy.get("items", []):
+                selected = selected_by_id.get(str(item.get("lane_id") or ""))
+                item["selected_in_last_run"] = bool(selected)
+                if selected:
+                    item["last_selection_role"] = selected.get("selection_role") or selected.get("role")
+                    item["last_selection_run_id"] = last_selection.get("run_id")
+            actual_schedule_changed = bool(
+                last_selection.get("actual_schedule_changed_by_learning")
+            )
+            trend_attention_policy.setdefault("summary", {})[
+                "actual_schedule_changed_by_learning"
+            ] = actual_schedule_changed
+            trend_lanes["actual_schedule_changed_by_learning"] = actual_schedule_changed
+        except (TypeError, ValueError, KeyError):
+            trend_attention_policy["status"] = "unavailable"
         limits = self.config.get("source_stale_minutes") or {}
         items = []
         known_names: set[str] = set()
@@ -3169,6 +3203,7 @@ class WebData:
             "browser_bridge": self._bridge_health(),
             "learning": learning,
             "trend_lanes": trend_lanes,
+            "trend_attention_policy": trend_attention_policy,
             "watch_account_learning": watch_account_learning,
             "watch_attention_policy": watch_attention,
             "shadow_followup": shadow_followup,

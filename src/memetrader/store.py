@@ -28,6 +28,7 @@ class Store:
     SHADOW_EVENT_COHORT_VERSION = "shadow-event-followup/v1"
     SHADOW_EVENT_HORIZONS_MINUTES = (15, 60, 240)
     WATCH_ATTENTION_POLICY_VERSION = "watch-attention/v1"
+    TREND_ATTENTION_POLICY_VERSION = "trend-attention/v1"
 
     def __init__(self, path: str | Path, initial_cash_usd: float = 10000):
         self.path = Path(path)
@@ -269,6 +270,7 @@ class Store:
                     lane_prompt TEXT NOT NULL,
                     event_topics_json TEXT NOT NULL,
                     selection_role TEXT NOT NULL,
+                    attention_multiplier REAL NOT NULL DEFAULT 1,
                     scheduled_coverage_fraction REAL NOT NULL,
                     accepted_event_count INTEGER NOT NULL DEFAULT 0,
                     observation_count INTEGER NOT NULL DEFAULT 0,
@@ -356,6 +358,14 @@ class Store:
             event_columns = {row["name"] for row in self.db.execute("PRAGMA table_info(events)")}
             if "topic" not in event_columns:
                 self.db.execute("ALTER TABLE events ADD COLUMN topic TEXT NOT NULL DEFAULT 'unknown'")
+            lane_columns = {
+                row["name"] for row in self.db.execute("PRAGMA table_info(trend_lane_run_lanes)")
+            }
+            if "attention_multiplier" not in lane_columns:
+                self.db.execute(
+                    "ALTER TABLE trend_lane_run_lanes "
+                    "ADD COLUMN attention_multiplier REAL NOT NULL DEFAULT 1"
+                )
             self.db.execute(
                 "INSERT OR IGNORE INTO paper_account(singleton,cash_usd,realized_pnl_usd,updated_at) VALUES(?,?,0,?)",
                 (1, float(initial_cash_usd), iso()),
@@ -1675,13 +1685,16 @@ class Store:
                 self.db.execute(
                     """
                     INSERT INTO trend_lane_run_lanes(
-                        run_id,lane_id,lane_prompt,event_topics_json,selection_role,scheduled_coverage_fraction
-                    ) VALUES(?,?,?,?,?,?)
+                        run_id,lane_id,lane_prompt,event_topics_json,selection_role,
+                        attention_multiplier,scheduled_coverage_fraction
+                    ) VALUES(?,?,?,?,?,?,?)
                     """,
                     (
                         str(run_id), str(lane.get("id") or "")[:64], str(lane.get("prompt") or "")[:500],
                         self._json(list(lane.get("event_topics") or [])),
-                        str(lane.get("selection_role") or "baseline")[:32], float(coverage),
+                        str(lane.get("selection_role") or "baseline")[:32],
+                        max(0.80, min(1.20, float(lane.get("attention_multiplier") or 1.0))),
+                        float(coverage),
                     ),
                 )
             for account in account_rows:
@@ -1784,7 +1797,8 @@ class Store:
                 SELECT r.run_id,r.taxonomy_version,r.prompt_version,r.selection_mode,r.surge,r.status,
                        r.started_at,r.finished_at,r.model,r.reasoning_effort,r.max_web_searches,
                        l.lane_id,l.lane_prompt,l.event_topics_json,l.selection_role,
-                       l.scheduled_coverage_fraction,l.accepted_event_count,l.observation_count
+                       l.attention_multiplier,l.scheduled_coverage_fraction,
+                       l.accepted_event_count,l.observation_count
                 FROM trend_lane_runs r
                 JOIN trend_lane_run_lanes l ON l.run_id=r.run_id
                 WHERE r.started_at>=?
@@ -1811,10 +1825,13 @@ class Store:
                     "exposures": 0,
                     "completed_exposures": 0,
                     "error_exposures": 0,
+                    "zero_yield_completed_exposures": 0,
                     "accepted_events": 0,
                     "observations": 0,
+                    "run_days": set(),
                     "last_selected_at": None,
                     "selection_role": str(row["selection_role"]),
+                    "last_attention_multiplier": float(row["attention_multiplier"] or 1.0),
                     "taxonomy_version": str(row["taxonomy_version"]),
                     "prompt_version": str(row["prompt_version"]),
                 },
@@ -1822,12 +1839,16 @@ class Store:
             metric["exposures"] += 1
             if str(row["status"]) == "completed":
                 metric["completed_exposures"] += 1
+                metric["run_days"].add(str(row["started_at"])[:10])
+                if int(row["accepted_event_count"] or 0) == 0:
+                    metric["zero_yield_completed_exposures"] += 1
             elif str(row["status"]) == "agent_error":
                 metric["error_exposures"] += 1
             metric["accepted_events"] += int(row["accepted_event_count"] or 0)
             metric["observations"] += int(row["observation_count"] or 0)
             metric["last_selected_at"] = max(str(metric["last_selected_at"] or ""), str(row["started_at"]))
             metric["selection_role"] = str(row["selection_role"])
+            metric["last_attention_multiplier"] = float(row["attention_multiplier"] or 1.0)
             metric["taxonomy_version"] = str(row["taxonomy_version"])
             metric["prompt_version"] = str(row["prompt_version"])
         items = []
@@ -1835,6 +1856,11 @@ class Store:
             completed = int(metric["completed_exposures"])
             metric["accepted_events_per_completed_run"] = (
                 round(int(metric["accepted_events"]) / completed, 4) if completed else None
+            )
+            metric["run_day_count"] = len(metric.pop("run_days"))
+            metric["zero_yield_rate"] = (
+                round(int(metric["zero_yield_completed_exposures"]) / completed, 4)
+                if completed else None
             )
             items.append(metric)
         items.sort(key=lambda item: (-int(item["exposures"]), str(item["lane_id"])))
@@ -1850,6 +1876,187 @@ class Store:
             },
             "lookback_days": int(lookback_days),
         }
+
+    @classmethod
+    def build_trend_attention_policy(
+        cls,
+        lanes: Iterable[Mapping[str, Any]],
+        *,
+        exposure: Mapping[str, Any],
+        shadow: Mapping[str, Any],
+        paper: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        exposure_items = {
+            str(item.get("lane_id") or ""): item
+            for item in exposure.get("items", []) if isinstance(item, Mapping)
+        }
+        shadow_items = {
+            str(item.get("value") or ""): item
+            for item in shadow.get("items", [])
+            if isinstance(item, Mapping)
+            and item.get("dimension") == "trend_lane"
+            and int(item.get("horizon_minutes") or 0) == 60
+        }
+        paper_items = {
+            str(item.get("value") or ""): item
+            for item in paper.get("items", [])
+            if isinstance(item, Mapping) and item.get("dimension") == "trend_lane"
+        }
+        exposure_summary = dict(exposure.get("summary") or {})
+        global_completed = sum(
+            int(item.get("completed_exposures") or 0) for item in exposure_items.values()
+        )
+        global_events = int(exposure_summary.get("accepted_events") or 0)
+        global_rate = global_events / global_completed if global_completed else 0.0
+        items = []
+        for lane in lanes:
+            lane_id = str(lane.get("id") or "")
+            exposure_item = dict(exposure_items.get(lane_id) or {})
+            completed = int(exposure_item.get("completed_exposures") or 0)
+            zero_yield = int(exposure_item.get("zero_yield_completed_exposures") or 0)
+            exposure_mature = (
+                completed >= 20
+                and int(exposure_item.get("run_day_count") or 0) >= 10
+                and zero_yield >= 5
+                and global_events >= 20
+            )
+            discovery_multiplier = 1.0
+            if exposure_mature and global_rate > 0:
+                prior = 10.0
+                shrunk_rate = (
+                    int(exposure_item.get("accepted_events") or 0) + prior * global_rate
+                ) / (completed + prior)
+                discovery_multiplier = max(
+                    0.85, min(1.15, 1.0 + (shrunk_rate / global_rate - 1.0) * 0.15),
+                )
+            shadow_item = dict(shadow_items.get(lane_id) or {})
+            shadow_score = shadow_item.get("shadow_descriptive_score")
+            market_mature = (
+                shadow_item.get("shadow_review_eligible") is True and shadow_score is not None
+            )
+            market_multiplier = (
+                max(0.90, min(1.10, 1.0 + float(shadow_score) * 0.5))
+                if market_mature else 1.0
+            )
+            paper_item = dict(paper_items.get(lane_id) or {})
+            paper_mean = paper_item.get("paper_mean_net_return")
+            paper_multiplier = (
+                max(0.90, min(1.10, 1.0 + float(paper_mean) * 0.25))
+                if paper_mean is not None
+                and int(paper_item.get("distinct_closed_paper_outcomes") or 0) >= 30
+                and int(paper_item.get("event_day_count") or 0) >= 15
+                and float(paper_item.get("weighted_losing_paper_outcomes") or 0) >= 8
+                else 1.0
+            )
+            attention_mature = exposure_mature and market_mature
+            recommended = 1.0
+            if attention_mature:
+                recommended = max(
+                    0.80,
+                    min(1.20, discovery_multiplier * market_multiplier * (paper_multiplier ** 0.5)),
+                )
+            items.append(
+                {
+                    "lane_id": lane_id,
+                    "lane_prompt": str(lane.get("prompt") or ""),
+                    "event_topics": list(lane.get("event_topics") or []),
+                    **exposure_item,
+                    "exposure_mature": exposure_mature,
+                    "market_followup_mature": market_mature,
+                    "market_distinct_event_count": int(shadow_item.get("distinct_event_count") or 0),
+                    "market_event_day_count": int(shadow_item.get("event_day_count") or 0),
+                    "market_weighted_negative_outcomes": float(
+                        shadow_item.get("weighted_negative_outcomes") or 0
+                    ),
+                    "market_mean_raw_return": shadow_item.get("mean_raw_return"),
+                    "market_descriptive_score": shadow_score,
+                    "paper_distinct_closed_event_count": int(
+                        paper_item.get("distinct_closed_paper_outcomes") or 0
+                    ),
+                    "paper_mean_net_return": paper_mean,
+                    "discovery_multiplier": round(discovery_multiplier, 4),
+                    "market_multiplier": round(market_multiplier, 4),
+                    "paper_multiplier": round(paper_multiplier, 4),
+                    "recommended_multiplier": round(recommended, 4),
+                    "attention_mature": attention_mature,
+                }
+            )
+        mature_count = sum(1 for item in items if item["attention_mature"])
+        schedule_active = mature_count >= 2
+        for item in items:
+            item["schedule_active"] = schedule_active and bool(item["attention_mature"])
+            item["applied_schedule_multiplier"] = (
+                item["recommended_multiplier"] if item["schedule_active"] else 1.0
+            )
+            item["state"] = (
+                "collecting_lane_exposure" if not item["exposure_mature"]
+                else "collecting_market_followup" if not item["market_followup_mature"]
+                else "active_lane_schedule" if schedule_active
+                else "mature_waiting_for_comparison"
+            )
+        items.sort(
+            key=lambda item: (
+                not bool(item["schedule_active"]), -float(item["recommended_multiplier"]),
+                -int(item.get("completed_exposures") or 0), str(item["lane_id"]),
+            )
+        )
+        return {
+            "version": cls.TREND_ATTENTION_POLICY_VERSION,
+            "status": (
+                "active_lane_schedule" if schedule_active
+                else "mature_waiting_for_comparison" if mature_count
+                else "collecting_evidence" if items else "not_configured"
+            ),
+            "items": items,
+            "summary": {
+                **exposure_summary,
+                "exposure_mature_lanes": sum(1 for item in items if item["exposure_mature"]),
+                "market_mature_lanes": sum(1 for item in items if item["market_followup_mature"]),
+                "attention_mature_lanes": mature_count,
+                "schedule_active_lanes": sum(1 for item in items if item["schedule_active"]),
+                "schedule_activation_available": schedule_active,
+                "actual_schedule_changed_by_learning": False,
+            },
+            "activation_policy": {
+                "minimum_completed_exposures": 20,
+                "minimum_run_days": 10,
+                "minimum_zero_yield_exposures": 5,
+                "minimum_global_accepted_events": 20,
+                "requires_60m_shadow_followup_review_eligible": True,
+                "minimum_comparable_mature_lanes": 2,
+                "minimum_applied_multiplier": 0.80,
+                "maximum_applied_multiplier": 1.20,
+                "minimum_round_robin_exploration_lanes_per_run": 1,
+                "surge_always_full_coverage": True,
+                "paper_outcome_role": "optional_secondary_validation",
+                "affects": "trend_scout_lane_allocation_only",
+                "never_affects": [
+                    "evidence_weight", "candidate_ranking", "decision_eligibility",
+                    "risk", "position_size", "exits", "live_trading",
+                ],
+            },
+        }
+
+    def trend_attention_policy(
+        self,
+        lanes: Iterable[Mapping[str, Any]],
+        *,
+        lookback_days: int = 90,
+        source_learning_kwargs: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            exposure = self.trend_lane_exposure_summary_from_connection(
+                self.db, lookback_days=lookback_days,
+            )
+            shadow = self.shadow_event_learning_summary_from_connection(
+                self.db, lookback_days=lookback_days,
+            )
+            paper = self.source_learning_summary_from_connection(
+                self.db, lookback_days=lookback_days, **dict(source_learning_kwargs or {}),
+            )
+            return self.build_trend_attention_policy(
+                lanes, exposure=exposure, shadow=shadow, paper=paper,
+            )
 
     @staticmethod
     def watch_account_exposure_summary_from_connection(

@@ -909,31 +909,104 @@ class AutonomousSearchAgent:
         requested = len(lanes) if surge else int(self.config.get("trend_scout_lanes_per_run", 3))
         count = max(1, min(len(lanes), requested))
         cursor = int(self.store.get_kv(TREND_LANE_CURSOR_KEY, 0)) % len(lanes)
+        rotated = [lanes[(cursor + index) % len(lanes)] for index in range(len(lanes))]
+        attention: dict[str, Any] = {}
+        if not surge and count > 1 and self.config.get("source_learning_enabled", True):
+            try:
+                attention = self.store.trend_attention_policy(
+                    TREND_TOPIC_LANES,
+                    lookback_days=int(self.config.get("source_learning_lookback_days", 90)),
+                    source_learning_kwargs={
+                        "min_closed_outcomes": int(
+                            self.config.get("source_learning_min_closed_outcomes", 20)
+                        ),
+                        "min_event_days": int(self.config.get("source_learning_min_event_days", 10)),
+                        "min_losing_outcomes": int(
+                            self.config.get("source_learning_min_losing_outcomes", 5)
+                        ),
+                        "entity_min_closed_outcomes": int(
+                            self.config.get("source_learning_entity_min_closed_outcomes", 30)
+                        ),
+                        "entity_min_event_days": int(
+                            self.config.get("source_learning_entity_min_event_days", 15)
+                        ),
+                        "entity_min_platforms": int(
+                            self.config.get("source_learning_entity_min_platforms", 2)
+                        ),
+                    },
+                )
+            except (sqlite3.Error, TypeError, ValueError):
+                attention = {}
+        attention_items = {
+            str(item.get("lane_id") or ""): item
+            for item in attention.get("items", [])
+            if isinstance(item, dict)
+        }
+        learned_schedule = attention.get("status") == "active_lane_schedule"
+        if learned_schedule:
+            exploration = rotated[0]
+            rotated_order = {str(lane["id"]): index for index, lane in enumerate(rotated)}
+            ranked = sorted(
+                rotated[1:],
+                key=lambda lane: (
+                    (
+                        int(attention_items.get(str(lane["id"]), {}).get("completed_exposures") or 0)
+                        + 1
+                    )
+                    / max(
+                        0.80,
+                        float(
+                            attention_items.get(str(lane["id"]), {}).get(
+                                "applied_schedule_multiplier", 1.0
+                            )
+                        ),
+                    ),
+                    rotated_order[str(lane["id"])],
+                ),
+            )
+            selected_source = [exploration, *ranked[: count - 1]]
+            next_cursor = (cursor + 1) % len(lanes)
+        else:
+            selected_source = rotated[:count]
+            next_cursor = (cursor + count) % len(lanes)
         selected = []
-        for index in range(count):
-            lane = dict(lanes[(cursor + index) % len(lanes)])
+        for index, source_lane in enumerate(selected_source):
+            lane = dict(source_lane)
             lane["event_topics"] = list(lane["event_topics"])
-            lane["selection_role"] = "surge_full_coverage" if surge else "baseline_round_robin"
+            lane["selection_role"] = (
+                "surge_full_coverage" if surge
+                else "exploration_round_robin" if learned_schedule and index == 0
+                else "learned_weighted_fair" if learned_schedule
+                else "baseline_round_robin"
+            )
+            lane["attention_multiplier"] = float(
+                attention_items.get(str(lane["id"]), {}).get("applied_schedule_multiplier") or 1.0
+            )
             lane["total_lane_count"] = len(lanes)
             selected.append(lane)
         selection = {
             "taxonomy_version": TREND_LANE_TAXONOMY_VERSION,
             "prompt_version": TREND_LANE_PROMPT_VERSION,
-            "mode": "surge_full_coverage" if surge else "baseline_round_robin",
+            "mode": (
+                "surge_full_coverage" if surge
+                else "mature_forward_lane_learning_plus_exploration" if learned_schedule
+                else "baseline_round_robin"
+            ),
             "surge": surge,
             "cursor": cursor,
-            "next_cursor": (cursor + count) % len(lanes),
+            "next_cursor": next_cursor,
             "available_lane_count": len(lanes),
             "selected_lane_count": len(selected),
             "scheduled_coverage_fraction": round(len(selected) / len(lanes), 4),
-            "learning_mode": "shadow_observation_only",
-            "actual_schedule_changed_by_learning": False,
+            "learning_mode": attention.get("version") or Store.TREND_ATTENTION_POLICY_VERSION,
+            "actual_schedule_changed_by_learning": learned_schedule and not surge,
             "selected_lanes": [
                 {
                     "lane_id": lane["id"],
                     "prompt": lane["prompt"],
                     "event_topics": lane["event_topics"],
                     "selection_role": lane["selection_role"],
+                    "attention_multiplier": lane["attention_multiplier"],
                 }
                 for lane in selected
             ],
