@@ -21,7 +21,8 @@ def test_initial_config_has_private_token_and_live_locked():
     assert config["mode"] == "paper"
     assert config["agent"]["enabled"] is False
     assert config["live"]["enabled"] is False
-    assert config["safety"]["require_evm_simulation"] is True
+    assert config["safety"]["require_evm_security_report"] is True
+    assert config["safety"]["require_evm_simulation"] is False
     assert config["safety"]["require_solana_report"] is True
 
 
@@ -64,6 +65,39 @@ def test_doctor_treats_unrequired_security_endpoint_failure_as_warning(tmp_path,
     assert cmd_doctor(str(path), True) == 4
     output = json.loads(capsys.readouterr().out)
     assert output["errors"] == ["online:honeypot"]
+
+
+def test_doctor_requires_at_least_one_provider_per_security_family(tmp_path, monkeypatch, capsys):
+    config = initial_config()
+    config["database"] = "db.sqlite3"
+    config["sources"]["rss"] = []
+    config["sources"]["bluesky_queries"] = []
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+
+    class FakeResponse:
+        status_code = 200
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url):
+            if "gopluslabs.io/api/v1/token_security/56" in url or "honeypot.is" in url:
+                raise TimeoutError("all EVM security providers unavailable")
+            return FakeResponse()
+
+    monkeypatch.setattr("memetrader.cli.httpx.Client", FakeClient)
+    assert cmd_doctor(str(path), True) == 4
+    output = json.loads(capsys.readouterr().out)
+    assert "online:evm_security_provider" in output["errors"]
+    assert "online:solana_security_provider" not in output["errors"]
 
 
 def test_live_cannot_be_enabled(tmp_path):

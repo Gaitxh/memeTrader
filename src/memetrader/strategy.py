@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 import math
@@ -416,17 +417,73 @@ class EventEngine:
         return event_id, True, observation_created
 
 
+def _risk_flag(value: Any) -> bool:
+    if isinstance(value, dict):
+        value = value.get("status")
+    return value is True or str(value).strip().lower() in {"1", "true", "yes"}
+
+
+def _goplus_result(payload: Any, address: str) -> dict[str, Any] | None:
+    if not isinstance(payload, dict) or payload.get("code") not in {1, "1"}:
+        return None
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        return None
+    for key in (address, address.lower(), address.upper()):
+        row = result.get(key)
+        if isinstance(row, dict) and row:
+            return row
+    return None
+
+
+def _goplus_tax_pct(value: Any, default: float | None = None) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(number) or number < 0:
+        return default
+    return number * 100 if number <= 1 else number
+
+
 class SafetyChecker:
     def __init__(self, http: HttpClient, config: dict[str, Any]):
         self.http, self.config = http, config
 
-    async def enrich_evm(self, snap: TokenSnapshot) -> TokenSnapshot:
+    async def _enrich_goplus_evm(self, snap: TokenSnapshot) -> TokenSnapshot:
+        chain_ids = {"ethereum": 1, "eth": 1, "bsc": 56, "base": 8453}
+        chain_id = chain_ids.get(snap.chain.lower())
+        if chain_id is None or not self.config.get("goplus_evm", True):
+            return snap
+        try:
+            response = await self.http.get(
+                f"https://api.gopluslabs.io/api/v1/token_security/{chain_id}",
+                params={"contract_addresses": snap.address},
+                ttl=60,
+            )
+            payload = response.json()
+            report = _goplus_result(payload, snap.address)
+            if report is None:
+                snap.raw["goplus_evm_error"] = "missing_report"
+                return snap
+            snap.raw["goplus_evm"] = report
+            if "is_honeypot" in report:
+                snap.honeypot = _risk_flag(report.get("is_honeypot"))
+                snap.sellable = not snap.honeypot
+            snap.buy_tax_pct = _goplus_tax_pct(report.get("buy_tax"), snap.buy_tax_pct)
+            snap.sell_tax_pct = _goplus_tax_pct(report.get("sell_tax"), snap.sell_tax_pct)
+        except Exception as exc:
+            snap.raw["goplus_evm_error"] = type(exc).__name__
+        return snap
+
+    async def _enrich_honeypot(self, snap: TokenSnapshot) -> TokenSnapshot:
         if snap.chain.lower() != "bsc" or not self.config.get("honeypot_is", True):
             return snap
         try:
             response = await self.http.get(
                 "https://api.honeypot.is/v2/IsHoneypot",
-                params={"address": snap.address, "chainID": 56}, ttl=45,
+                params={"address": snap.address, "chainID": 56},
+                ttl=45,
             )
             payload = response.json()
             result = payload.get("honeypotResult") or {}
@@ -440,7 +497,34 @@ class SafetyChecker:
             snap.raw["honeypot_is_error"] = type(exc).__name__
         return snap
 
-    async def enrich_solana(self, snap: TokenSnapshot) -> TokenSnapshot:
+    async def enrich_evm(self, snap: TokenSnapshot) -> TokenSnapshot:
+        if snap.chain.lower() not in {"ethereum", "eth", "bsc", "base"}:
+            return snap
+        snap = await self._enrich_goplus_evm(snap)
+        if self.config.get("require_evm_simulation", False) or "goplus_evm" not in snap.raw:
+            snap = await self._enrich_honeypot(snap)
+        return snap
+
+    async def _enrich_goplus_solana(self, snap: TokenSnapshot) -> TokenSnapshot:
+        if snap.chain.lower() != "solana" or not self.config.get("goplus_solana", True):
+            return snap
+        try:
+            response = await self.http.get(
+                "https://api.gopluslabs.io/api/v1/solana/token_security",
+                params={"contract_addresses": snap.address},
+                ttl=60,
+            )
+            payload = response.json()
+            report = _goplus_result(payload, snap.address)
+            if report is None:
+                snap.raw["goplus_solana_error"] = "missing_report"
+            else:
+                snap.raw["goplus_solana"] = report
+        except Exception as exc:
+            snap.raw["goplus_solana_error"] = type(exc).__name__
+        return snap
+
+    async def _enrich_rugcheck(self, snap: TokenSnapshot) -> TokenSnapshot:
         if snap.chain.lower() != "solana" or not self.config.get("rugcheck", True):
             return snap
         try:
@@ -448,10 +532,18 @@ class SafetyChecker:
                 f"https://api.rugcheck.xyz/v1/tokens/{snap.address}/report/summary",
                 ttl=60,
             )
-            payload = response.json()
-            snap.raw["rugcheck"] = payload
+            snap.raw["rugcheck"] = response.json()
         except Exception as exc:
             snap.raw["rugcheck_error"] = type(exc).__name__
+        return snap
+
+    async def enrich_solana(self, snap: TokenSnapshot) -> TokenSnapshot:
+        if snap.chain.lower() != "solana":
+            return snap
+        await asyncio.gather(
+            self._enrich_goplus_solana(snap),
+            self._enrich_rugcheck(snap),
+        )
         return snap
 
     async def check(self, snap: TokenSnapshot) -> tuple[bool, list[str]]:
@@ -479,20 +571,49 @@ class SafetyChecker:
             rejected.append("buy_tax_too_high")
         if snap.sell_tax_pct is not None and snap.sell_tax_pct > max_tax:
             rejected.append("sell_tax_too_high")
-        if snap.chain.lower() == "bsc" and cfg.get("require_evm_simulation", False):
-            if "honeypot_is" not in snap.raw:
+        chain = snap.chain.lower()
+        if chain in {"ethereum", "eth", "bsc", "base"}:
+            goplus_report = snap.raw.get("goplus_evm")
+            honeypot_report = snap.raw.get("honeypot_is")
+            if cfg.get("require_evm_security_report", True) and not (
+                isinstance(goplus_report, dict) or isinstance(honeypot_report, dict)
+            ):
+                rejected.append("evm_security_report_unavailable")
+            if cfg.get("require_evm_simulation", False) and not isinstance(honeypot_report, dict):
                 rejected.append("evm_simulation_unavailable")
-        if snap.chain.lower() == "solana" and cfg.get("rugcheck", True):
-            report = snap.raw.get("rugcheck")
-            if not isinstance(report, dict):
-                if cfg.get("require_solana_report", False):
-                    rejected.append("solana_risk_report_unavailable")
-            else:
-                score = _safe_float(report.get("score_normalised"), _safe_float(report.get("score")))
+            if isinstance(goplus_report, dict):
+                for flag in cfg.get("goplus_evm_reject_flags", []):
+                    if _risk_flag(goplus_report.get(str(flag))):
+                        rejected.append(f"goplus_evm_{flag}")
+                open_source = goplus_report.get("is_open_source")
+                if cfg.get("goplus_evm_require_open_source", False):
+                    if open_source is None:
+                        rejected.append("goplus_evm_open_source_unknown")
+                    elif not _risk_flag(open_source):
+                        rejected.append("goplus_evm_not_open_source")
+                elif cfg.get("goplus_evm_reject_closed_source", True):
+                    if open_source is not None and not _risk_flag(open_source):
+                        rejected.append("goplus_evm_not_open_source")
+        if chain == "solana":
+            rugcheck_report = snap.raw.get("rugcheck")
+            goplus_report = snap.raw.get("goplus_solana")
+            if cfg.get("require_solana_report", True) and not (
+                isinstance(rugcheck_report, dict) or isinstance(goplus_report, dict)
+            ):
+                rejected.append("solana_risk_report_unavailable")
+            if isinstance(rugcheck_report, dict):
+                score = _safe_float(
+                    rugcheck_report.get("score_normalised"),
+                    _safe_float(rugcheck_report.get("score")),
+                )
                 if score is not None and score > float(cfg.get("max_solana_risk_score", 79.0)):
                     rejected.append("solana_risk_score_too_high")
-                if report.get("rugged") is True:
+                if rugcheck_report.get("rugged") is True:
                     rejected.append("solana_token_rugged")
+            if isinstance(goplus_report, dict):
+                for flag in cfg.get("goplus_solana_reject_flags", []):
+                    if _risk_flag(goplus_report.get(str(flag))):
+                        rejected.append(f"goplus_solana_{flag}")
         return not rejected, list(dict.fromkeys(rejected))
 
 

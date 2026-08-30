@@ -1,14 +1,14 @@
 {
-  "status": "PASS_WITH_FAIL_CLOSED_EXTERNAL_PROVIDER_OUTAGE",
-  "checked_at_utc": "2026-08-30T04:24:00Z",
-  "version": "0.6.1",
+  "status": "PASS_WITH_OPTIONAL_PROVIDER_WARNING",
+  "checked_at_utc": "2026-08-30T04:36:29Z",
+  "version": "0.6.2",
   "tests": {
-    "collected": 72,
-    "passed": 72,
+    "collected": 76,
+    "passed": 76,
     "failed": 0,
     "compileall": "PASS",
-    "wheel": "dist/memetrader-0.6.1-py3-none-any.whl",
-    "wheel_sha256": "5a86154a93d47ad730657c8fbb36d8a7bf18a749b813a0da0c9f6de60e5235e2",
+    "wheel": "dist/memetrader-0.6.2-py3-none-any.whl",
+    "wheel_sha256": "49b3fcac9b47a4948db2c52ac36a35cdafe3dc0a4af8519ba90e50c7d0a3a968",
     "fresh_venv_install": "PASS",
     "pip_check": "PASS",
     "installed_cli": "PASS",
@@ -25,10 +25,10 @@
     "mode": "paper",
     "live_enabled": false,
     "counts_at_check": {
-      "observations": 542,
-      "events": 366,
-      "tokens": 1170,
-      "token_snapshots": 470,
+      "observations": 548,
+      "events": 370,
+      "tokens": 1574,
+      "token_snapshots": 675,
       "decisions": 0,
       "positions": 0,
       "trades": 0
@@ -155,19 +155,23 @@
     "clean_database": "data/memetrader_forward_20260830_r6.sqlite3"
   },
   "online_diagnostic": {
+    "doctor_result": "PASS_WITH_WARNING",
     "passing": [
       "DexScreener",
       "GeckoTerminal",
+      "GoPlus EVM",
+      "GoPlus Solana",
       "RugCheck",
       "Codex CLI",
-      "configured RSS feeds"
+      "configured RSS feeds",
+      "EVM security provider aggregate",
+      "Solana security provider aggregate"
     ],
-    "failing": {
+    "warning": {
       "source": "Honeypot.is",
-      "observed_state": "HTTP 500 and timeout during repeated checks",
-      "required_by_current_config": true,
-      "doctor_result": "FAIL",
-      "runtime_behavior": "BSC candidates fail closed because require_evm_simulation=true; the rest of the resident collector continues running."
+      "observed_state": "ReadTimeout during final check",
+      "required_by_current_config": false,
+      "runtime_behavior": "GoPlus EVM supplies the required external EVM report. If both GoPlus and Honeypot.is are unavailable, BSC fails closed; if require_evm_simulation=true, Honeypot.is becomes mandatory."
     }
   }
 }

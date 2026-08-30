@@ -33,9 +33,15 @@
 
 不使用其按消息计费的指定 Token/账户交易流；不接 Trade API；不提交私钥。
 
-### Honeypot.is
+### GoPlus + Honeypot.is + RugCheck
 
-用途：EVM/BSC/Base 最终候选的模拟和基础风险交叉检查。当前公开接口无需 Key，但属于外部服务，不把“未返回风险”当作绝对安全。
+用途：只对已经晋级的短名单候选做免费外部安全交叉检查。
+
+- GoPlus：EVM 合约权限、税率、黑名单/暂停/隐藏所有者等标志，以及 Solana authority 风险；
+- Honeypot.is：EVM/BSC 交易模拟、税率和可卖性；
+- RugCheck：Solana 风险摘要。
+
+当前默认要求每个链族至少有一个外部安全报告。Honeypot.is 单独故障时，GoPlus 可继续承担 EVM 基础安全门；若配置显式要求交易模拟，则 Honeypot.is 仍为硬门。所有提供商都不可用时失败关闭，不把“未返回风险”当作绝对安全。
 
 ### Bluesky AppView
 

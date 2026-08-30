@@ -93,7 +93,7 @@ def test_search_falls_back_when_primary_model_quota_is_exhausted(tmp_path: Path,
         model = args[args.index("--model") + 1]
         models.append(model)
         if model == "gpt-5.3-codex-spark":
-            return subprocess.CompletedProcess(args, 1, "", "usage limit; try again")
+            return subprocess.CompletedProcess(args, 1, "", "usage limit; try again\ntokens used\n7\n")
         output = Path(args[args.index("--output-last-message") + 1])
         output.write_text('{"sources": []}', encoding="utf-8")
         return subprocess.CompletedProcess(args, 0, "tokens used\n123\n", "")
@@ -103,6 +103,8 @@ def test_search_falls_back_when_primary_model_quota_is_exhausted(tmp_path: Path,
     assert payload == {"sources": []}
     assert models == ["gpt-5.3-codex-spark", "gpt-5.6-sol"]
     assert metadata["model"] == "gpt-5.6-sol"
+    assert metadata["successful_attempt_tokens"] == 123
+    assert metadata["tokens_used"] == 130
     store.close()
 
 

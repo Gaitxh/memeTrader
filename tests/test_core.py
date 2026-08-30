@@ -818,8 +818,11 @@ def test_required_external_safety_reports_fail_closed():
                 "min_5m_transactions": 1,
                 "min_buy_ratio": 0.4,
                 "max_tax_pct": 12,
+                "goplus_evm": True,
                 "honeypot_is": True,
-                "require_evm_simulation": True,
+                "require_evm_security_report": True,
+                "require_evm_simulation": False,
+                "goplus_solana": True,
                 "rugcheck": True,
                 "require_solana_report": True,
                 "max_solana_risk_score": 79,
@@ -829,7 +832,160 @@ def test_required_external_safety_reports_fail_closed():
         sol = TokenSnapshot("solana", "A" * 32, 1, 10000, 100000, 1000, 10, 2)
         bsc_ok, bsc_reasons = await checker.check(bsc)
         sol_ok, sol_reasons = await checker.check(sol)
-        assert bsc_ok is False and "evm_simulation_unavailable" in bsc_reasons
+        assert bsc_ok is False and "evm_security_report_unavailable" in bsc_reasons
         assert sol_ok is False and "solana_risk_report_unavailable" in sol_reasons
+
+    asyncio.run(scenario())
+
+
+def test_goplus_evm_clean_report_is_accepted_without_honeypot_call():
+    address = "0x" + "1" * 40
+
+    class Response:
+        def json(self):
+            return {
+                "code": 1,
+                "result": {
+                    address.lower(): {
+                        "is_honeypot": "0",
+                        "is_open_source": "1",
+                        "buy_tax": "0.03",
+                        "sell_tax": "0.04",
+                        "hidden_owner": "0",
+                    }
+                },
+            }
+
+    class FakeHttp:
+        def __init__(self):
+            self.urls = []
+
+        async def get(self, url, *args, **kwargs):
+            self.urls.append(str(url))
+            return Response()
+
+    async def scenario():
+        http = FakeHttp()
+        checker = SafetyChecker(
+            http,
+            {
+                "min_liquidity_usd": 100,
+                "min_5m_transactions": 1,
+                "min_buy_ratio": 0.4,
+                "max_tax_pct": 12,
+                "goplus_evm": True,
+                "honeypot_is": True,
+                "require_evm_security_report": True,
+                "require_evm_simulation": False,
+                "goplus_evm_require_open_source": True,
+                "goplus_evm_reject_flags": ["hidden_owner"],
+            },
+        )
+        snap = TokenSnapshot("bsc", address, 1, 10000, 100000, 1000, 10, 2)
+        ok, reasons = await checker.check(snap)
+        assert ok is True and reasons == []
+        assert snap.buy_tax_pct == pytest.approx(3.0)
+        assert snap.sell_tax_pct == pytest.approx(4.0)
+        assert snap.honeypot is False and snap.sellable is True
+        assert any("gopluslabs.io" in url for url in http.urls)
+        assert not any("honeypot.is" in url for url in http.urls)
+
+    asyncio.run(scenario())
+
+
+def test_goplus_evm_dangerous_flag_is_rejected():
+    address = "0x" + "2" * 40
+
+    class Response:
+        def json(self):
+            return {
+                "code": 1,
+                "result": {
+                    address.lower(): {
+                        "is_honeypot": "0",
+                        "is_open_source": "1",
+                        "hidden_owner": "1",
+                    }
+                },
+            }
+
+    class FakeHttp:
+        async def get(self, *args, **kwargs):
+            return Response()
+
+    async def scenario():
+        checker = SafetyChecker(
+            FakeHttp(),
+            {
+                "min_liquidity_usd": 100,
+                "min_5m_transactions": 1,
+                "min_buy_ratio": 0.4,
+                "goplus_evm": True,
+                "honeypot_is": False,
+                "require_evm_security_report": True,
+                "goplus_evm_require_open_source": True,
+                "goplus_evm_reject_flags": ["hidden_owner"],
+            },
+        )
+        ok, reasons = await checker.check(
+            TokenSnapshot("bsc", address, 1, 10000, 100000, 1000, 10, 2)
+        )
+        assert ok is False
+        assert "goplus_evm_hidden_owner" in reasons
+
+    asyncio.run(scenario())
+
+
+def test_goplus_solana_can_cover_rugcheck_outage_and_rejects_risky_authority():
+    address = "A" * 32
+
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    class FakeHttp:
+        def __init__(self, risky=False):
+            self.risky = risky
+
+        async def get(self, url, *args, **kwargs):
+            if "gopluslabs.io" in str(url):
+                return Response(
+                    {
+                        "code": 1,
+                        "result": {
+                            address: {
+                                "mintable": {"status": "1" if self.risky else "0", "authority": []},
+                                "freezable": {"status": "0", "authority": []},
+                            }
+                        },
+                    }
+                )
+            raise TimeoutError("rugcheck unavailable")
+
+    async def scenario():
+        config = {
+            "min_liquidity_usd": 100,
+            "min_5m_transactions": 1,
+            "min_buy_ratio": 0.4,
+            "goplus_solana": True,
+            "rugcheck": True,
+            "require_solana_report": True,
+            "goplus_solana_reject_flags": ["mintable", "freezable"],
+        }
+        clean_checker = SafetyChecker(FakeHttp(False), config)
+        clean_ok, clean_reasons = await clean_checker.check(
+            TokenSnapshot("solana", address, 1, 10000, 100000, 1000, 10, 2)
+        )
+        assert clean_ok is True and clean_reasons == []
+
+        risky_checker = SafetyChecker(FakeHttp(True), config)
+        risky_ok, risky_reasons = await risky_checker.check(
+            TokenSnapshot("solana", address, 1, 10000, 100000, 1000, 10, 2)
+        )
+        assert risky_ok is False
+        assert "goplus_solana_mintable" in risky_reasons
 
     asyncio.run(scenario())

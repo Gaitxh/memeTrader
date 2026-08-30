@@ -9,7 +9,9 @@
 - PumpPortal 免费 `subscribeNewToken` / `subscribeMigration`，不使用付费交易流；
 - GeckoTerminal 公共新池；
 - DexScreener 公共搜索和 Token pair 报价，仅在事件/候选晋级后请求；
-- Honeypot.is 公共 EVM 模拟，仅检查短名单候选。
+- GoPlus 公共 EVM/Solana 安全接口，仅检查短名单候选；
+- Honeypot.is 公共 EVM 模拟，仅检查短名单候选；
+- RugCheck 公共 Solana 风险摘要，仅检查短名单候选。
 
 可选但未内嵌的本地 sidecar：RSSHub、RSS-Bridge、SearXNG、changedetection.io、Huginn。它们有价值，但第一版不强制部署，避免把一个个人电脑机器人做成运维平台。
 
@@ -22,7 +24,9 @@
 - https://docs.pumpportal.fun/websocket-api/data-api/real-time
 - https://docs.dexscreener.com/api/reference
 - https://apiguide.geckoterminal.com/getting-started
+- https://docs.gopluslabs.io/reference/api-overview
 - https://docs.honeypot.is/
+- https://api.rugcheck.xyz/swagger/index.html
 - https://docs.x.com/x-api/getting-started/pricing
 
 X 官方 API 可能产生使用费用，所以默认通过用户已登录浏览器的公开页面观察；不把非官方高风险抓取脚本作为核心依赖。

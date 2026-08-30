@@ -21,6 +21,28 @@ from .store import Store
 from .strategy import EventEngine, replay_guard, token_snapshot_temporal_rejections
 
 
+def _doctor_payload_valid(name: str, response) -> bool:
+    if not 200 <= int(response.status_code) < 400:
+        return False
+    if name not in {"goplus_evm", "goplus_solana", "honeypot", "rugcheck"}:
+        return True
+    try:
+        payload = response.json()
+    except Exception:
+        return False
+    if name.startswith("goplus_"):
+        if not isinstance(payload, dict) or payload.get("code") not in {1, "1"}:
+            return False
+        result = payload.get("result")
+        return isinstance(result, dict) and any(isinstance(row, dict) and row for row in result.values())
+    if name == "honeypot":
+        result = payload.get("honeypotResult") if isinstance(payload, dict) else None
+        return isinstance(result, dict) and "isHoneypot" in result
+    return isinstance(payload, dict) and any(
+        key in payload for key in ("score", "score_normalised", "risks", "rugged")
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="memetrader", description="Forward-only event-driven meme-token paper bot")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -173,18 +195,31 @@ def cmd_doctor(config_path: str, online: bool) -> int:
             }
         )
         if online:
+            safety_cfg = config["safety"]
             targets = {
                 "dexscreener": ("https://api.dexscreener.com/latest/dex/search?q=PNUT", True),
                 "geckoterminal": ("https://api.geckoterminal.com/api/v2/networks/solana/new_pools?page=1", True),
-                "honeypot": (
-                    "https://api.honeypot.is/v2/IsHoneypot?address=0x55d398326f99059fF775485246999027B3197955&chainID=56",
-                    bool(config["safety"].get("require_evm_simulation", False)),
-                ),
-                "rugcheck": (
-                    "https://api.rugcheck.xyz/v1/tokens/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v/report/summary",
-                    bool(config["safety"].get("require_solana_report", False)),
-                ),
             }
+            if safety_cfg.get("goplus_evm", True):
+                targets["goplus_evm"] = (
+                    "https://api.gopluslabs.io/api/v1/token_security/56?contract_addresses=0x55d398326f99059fF775485246999027B3197955",
+                    False,
+                )
+            if safety_cfg.get("honeypot_is", True):
+                targets["honeypot"] = (
+                    "https://api.honeypot.is/v2/IsHoneypot?address=0x55d398326f99059fF775485246999027B3197955&chainID=56",
+                    bool(safety_cfg.get("require_evm_simulation", False)),
+                )
+            if safety_cfg.get("goplus_solana", True):
+                targets["goplus_solana"] = (
+                    "https://api.gopluslabs.io/api/v1/solana/token_security?contract_addresses=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                    False,
+                )
+            if safety_cfg.get("rugcheck", True):
+                targets["rugcheck"] = (
+                    "https://api.rugcheck.xyz/v1/tokens/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v/report/summary",
+                    False,
+                )
             if config["sources"].get("bluesky_queries"):
                 targets["bluesky"] = (
                     "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=memecoin&limit=1",
@@ -193,11 +228,13 @@ def cmd_doctor(config_path: str, online: bool) -> int:
             for item in config["sources"].get("rss", []):
                 if item.get("enabled", True) and item.get("url"):
                     targets[f"rss:{item.get('name') or item['url']}"] = (str(item["url"]), True)
-            with httpx.Client(timeout=15, follow_redirects=True, headers={"User-Agent": "memeTrader-doctor/0.6"}) as client:
+            online_reachable: dict[str, bool] = {}
+            with httpx.Client(timeout=15, follow_redirects=True, headers={"User-Agent": "memeTrader-doctor/0.6.1"}) as client:
                 for name, (url, required) in targets.items():
                     try:
                         response = client.get(url)
-                        reachable = 200 <= response.status_code < 400
+                        reachable = _doctor_payload_valid(name, response)
+                        online_reachable[name] = reachable
                         checks.append(
                             {
                                 "name": f"online:{name}",
@@ -208,6 +245,7 @@ def cmd_doctor(config_path: str, online: bool) -> int:
                             }
                         )
                     except Exception as exc:
+                        online_reachable[name] = False
                         checks.append(
                             {
                                 "name": f"online:{name}",
@@ -217,6 +255,43 @@ def cmd_doctor(config_path: str, online: bool) -> int:
                                 "error": type(exc).__name__,
                             }
                         )
+            if safety_cfg.get("require_evm_security_report", True):
+                configured_evm_chains = {
+                    str(chain).lower()
+                    for chain in config["candidate"].get("chains", [])
+                    if str(chain).lower() in {"ethereum", "eth", "bsc", "base"}
+                }
+                coverage: dict[str, bool] = {}
+                for chain in configured_evm_chains:
+                    if chain == "bsc":
+                        coverage[chain] = bool(
+                            online_reachable.get("goplus_evm", False)
+                            or online_reachable.get("honeypot", False)
+                        )
+                    else:
+                        coverage[chain] = bool(online_reachable.get("goplus_evm", False))
+                reachable = bool(coverage) and all(coverage.values())
+                checks.append(
+                    {
+                        "name": "online:evm_security_provider",
+                        "ok": reachable,
+                        "reachable": reachable,
+                        "required": True,
+                        "coverage": coverage,
+                    }
+                )
+            if safety_cfg.get("require_solana_report", True):
+                providers = [name for name in ("goplus_solana", "rugcheck") if name in targets]
+                reachable = any(online_reachable.get(name, False) for name in providers)
+                checks.append(
+                    {
+                        "name": "online:solana_security_provider",
+                        "ok": reachable,
+                        "reachable": reachable,
+                        "required": True,
+                        "providers": providers,
+                    }
+                )
     except Exception as exc:
         checks.append({"name": "startup", "ok": False, "error": f"{type(exc).__name__}: {exc}"})
     for check in checks:

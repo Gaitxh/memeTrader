@@ -2,7 +2,7 @@
 
 ## 结论
 
-**PASS_WITH_FAIL_CLOSED_EXTERNAL_PROVIDER_OUTAGE**
+**PASS_WITH_OPTIONAL_PROVIDER_WARNING**
 
 机器人已经能够在用户不维护热点关键词和信息源列表的情况下，自主执行：
 
@@ -113,14 +113,14 @@ Agent 返回的来源不会直接进入生产。动态 RSS 必须通过：
 data/memetrader_forward_20260830_r6.sqlite3
 ```
 
-截至 `2026-08-30T04:24:00Z`：
+截至 `2026-08-30T04:36:29Z`：
 
 | 指标 | 数量 |
 |---|---:|
-| observations | 542 |
-| events | 366 |
-| tokens | 1170 |
-| token_snapshots | 470 |
+| observations | 548 |
+| events | 370 |
+| tokens | 1574 |
+| token_snapshots | 675 |
 | decisions | 0 |
 | positions | 0 |
 | trades | 0 |
@@ -129,10 +129,10 @@ data/memetrader_forward_20260830_r6.sqlite3
 
 ## 测试与打包
 
-- `72/72` 自动测试通过；
+- `76/76` 自动测试通过；
 - `compileall` 通过；
-- Wheel：`dist/memetrader-0.6.1-py3-none-any.whl`；
-- Wheel SHA-256：`5a86154a93d47ad730657c8fbb36d8a7bf18a749b813a0da0c9f6de60e5235e2`；
+- Wheel：`dist/memetrader-0.6.2-py3-none-any.whl`；
+- Wheel SHA-256：`49b3fcac9b47a4948db2c52ac36a35cdafe3dc0a4af8519ba90e50c7d0a3a968`；
 - 全新虚拟环境安装通过；
 - `pip check` 通过；
 - 安装后导入、CLI 帮助和未来数据隔离回放通过；
@@ -141,21 +141,27 @@ data/memetrader_forward_20260830_r6.sqlite3
 
 覆盖测试包括主题轮换、模型回退、调用和 token 双预算、动态源暂停、低质量内容暂停、Agent 结果本地验证、未来数据隔离、中英文推广榜单过滤、通用名称劫持、官方精确 CA、Paper 仓位和退出。
 
-## 当前外部阻塞：Honeypot.is
+## 在线安全源状态
 
-最终在线诊断中：
+最终 `doctor --online` 返回成功，并单独保留可选供应商警告：
 
 - DexScreener：PASS；
 - GeckoTerminal：PASS；
+- GoPlus EVM：PASS；
+- GoPlus Solana：PASS；
 - RugCheck：PASS；
 - Codex CLI：PASS；
 - 已启用 RSS：PASS；
-- Honeypot.is：HTTP 500 / 超时。
+- Honeypot.is：本轮 `ReadTimeout`，记为 WARN。
 
 实际 `config.json` 设定：
 
 ```json
-"require_evm_simulation": true
+{
+  "require_evm_security_report": true,
+  "require_evm_simulation": false,
+  "require_solana_report": true
+}
 ```
 
-因此 `doctor --online` 正确返回非零，BSC 候选在 Honeypot.is 不可用时会**失败关闭**，不会把缺失结果伪装成安全。Solana、新闻采集、Agent 搜索、新池观察和常驻 Paper 进程继续运行。这是外部安全供应商故障，不是把代码门禁伪装成通过。
+因此 Honeypot.is 单独不可用时，GoPlus EVM 仍能提供必需的外部 EVM 报告；GoPlus 与 Honeypot.is 都不可用时，BSC 候选失败关闭。若以后显式设置 `require_evm_simulation=true`，Honeypot.is 会重新成为硬门。Solana 同理要求 GoPlus 或 RugCheck 至少一个报告可用。

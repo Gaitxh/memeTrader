@@ -331,12 +331,18 @@ class AutonomousSearchAgent:
                 )
                 if cp.returncode == 0:
                     answer = output.read_text(encoding="utf-8", errors="replace") if output.exists() else cp.stdout
+                    known_tokens = [
+                        int(attempt["tokens_used"])
+                        for attempt in attempts
+                        if attempt.get("tokens_used") is not None
+                    ]
                     return _extract_json(answer), {
                         "task": task,
                         "returncode": 0,
                         "model": model,
                         "reasoning_effort": effort,
-                        "tokens_used": attempts[-1]["tokens_used"],
+                        "tokens_used": sum(known_tokens) if known_tokens else None,
+                        "successful_attempt_tokens": attempts[-1]["tokens_used"],
                         "attempts": attempts,
                         "stderr_tail": (cp.stderr or "")[-1000:],
                     }

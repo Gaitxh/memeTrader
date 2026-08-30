@@ -37,8 +37,8 @@
 ### 候选确认
 
 - DexScreener：关键词找币、按 CA 报价、流动性、成交和买卖方向。
-- Honeypot.is：EVM/BSC 候选的可卖性、税率和 honeypot 模拟。
-- RugCheck：Solana 候选的免费风险摘要。
+- GoPlus + Honeypot.is：EVM/BSC 候选的合约权限、可卖性、税率和 honeypot 交叉检查。默认至少要求一个 EVM 安全报告；显式要求交易模拟时 Honeypot.is 仍是硬门。
+- GoPlus + RugCheck：Solana 候选的权限和风险交叉检查，默认至少要求一个报告可用。
 - CoinDesk、Cointelegraph、BBC、Google News 专题 RSS 与 Mastodon 公共时间线：补足国际事件证据。
 - Token→新闻反查只处理名称足够独特且已有真实流动性/成交动量的 Token；名称命中后仍要求独立来源确认，避免把 `Gang`、`Bees` 之类通用名称连接到无关新闻。
 
@@ -147,7 +147,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\status.ps1
 
 默认最多同时运行 2 个搜索 Agent 槽位。全球快搜和搜源优先使用 Spark/low，额度不可用时回退 Luna/low；复杂 Token 身份核验使用 Luna/low，必要时才升级 Terra/medium，Sol/medium 仅作为最后回退。普通状态每 12 分钟快搜一次，并轮换覆盖 5 个主题中的 3 个；重大信号期间每 3 分钟覆盖全部主题，连续三次空结果退到 30 分钟。Spark 不可用或单次调用超过 18,000 tokens 时，普通状态最短间隔自动拉长到 30 分钟，重大信号仍保留 10 分钟级回退。Token 专项 Agent 受 5 分钟全局冷却、240 分钟同 Token 冷却和动量分≥80 的限制；失败时仅进入 10 分钟短退避。调用次数、已使用 token 和下一次调用预留量共同限制预算，`--force` 也不能越过预算。自动发现的 RSS 连续 3 次失败，或近期内容至少一半是 Market Wrap、价格更新、Presale、Top/Best/100x 榜单时，会自动暂停并由后续搜源补充。全部频率、并发、模型、推理强度和上限都可在 `config.json -> autonomous_search` 修改。
 
-常规计算、去重、时间判断、评分、仓位和卖出仍全部由本地代码完成。四字母短名称可以触发 Agent 搜证，但不能只靠文字重合直接连接新闻；证据不足时返回 `WAIT`。外部 Honeypot/RugCheck 报告在当前 Paper 配置中默认失败关闭，缺失结果不会被当作安全。语义平局 Agent 的 `agent.enabled` 继续默认关闭。
+常规计算、去重、时间判断、评分、仓位和卖出仍全部由本地代码完成。四字母短名称可以触发 Agent 搜证，但不能只靠文字重合直接连接新闻；证据不足时返回 `WAIT`。EVM 使用 GoPlus/Honeypot.is、Solana 使用 GoPlus/RugCheck：每个链族默认至少要有一个外部安全报告，两者都不可用时失败关闭；缺失结果不会被当作安全。语义平局 Agent 的 `agent.enabled` 继续默认关闭。
 
 查看自主搜索状态：
 
