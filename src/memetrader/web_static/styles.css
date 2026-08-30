@@ -745,6 +745,11 @@ select.control { padding-right: 28px; }
 .learning-disclaimer { margin-bottom: 10px; padding: 12px 14px; border: 1px solid rgba(64,199,194,.18); border-radius: var(--radius); background: rgba(64,199,194,.035); }
 .learning-disclaimer strong { color: var(--cyan); font: 700 11px/1.25 var(--mono); letter-spacing: .04em; }
 .learning-disclaimer p { max-width: 1040px; margin: 7px 0 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
+.learning-overview-grid { overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius); background: rgba(9,17,26,.45); }
+.learning-overview-grid .evidence-row { grid-template-columns: minmax(150px,.85fr) minmax(0,1.15fr); gap: 14px; padding: 9px 12px; border-bottom: 1px solid rgba(132,151,174,.09); }
+.learning-overview-grid .evidence-row:last-child { border-bottom: 0; }
+.learning-overview-grid .evidence-row span:first-child { color: var(--muted); font: 600 10px/1.4 var(--mono); letter-spacing: .035em; }
+.learning-overview-grid .evidence-row strong { color: #d8e4f0; font: 650 11px/1.4 var(--mono); text-align: right; text-overflow: clip; white-space: normal; }
 .learning-closure { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
 .closure-stage { min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: rgba(255,255,255,.015); }
 .closure-stage small, .closure-stage span { display: block; overflow: hidden; color: var(--dim); font: 8px/1.35 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
@@ -1098,6 +1103,8 @@ select.control { padding-right: 28px; }
   .coverage-strip { grid-template-columns: 1fr 1fr; }
   .context-link-list > div { grid-template-columns: 1fr; }
   .context-followup-grid { grid-template-columns: 1fr; }
+  .learning-overview-grid .evidence-row { grid-template-columns: 1fr; gap: 4px; }
+  .learning-overview-grid .evidence-row strong { text-align: left; }
   .evidence-item { grid-template-columns: 82px 13px 1fr; }
   .evidence-item:not(:last-child)::after { left: 88px; }
 }

@@ -143,7 +143,7 @@
 |---|---|---|
 | 已真实完成 | Paper 常驻 Runtime、SQLite、双语动态 Web、事件/Token/决策/Paper/Agent/来源/审计/设置页面，Event↔Token、WAIT 语义、未来数据门、成本与账户曲线、受保护临时公开 URL | 当前代码、测试、SQLite 与 API；页面不复制策略，Live 保持锁定 |
 | 已真实完成 | RSS/Bluesky/Mastodon/反向新闻的真实请求分母，以及 PumpPortal/GeckoTerminal/DexScreener 各发现面、hydration 与空窗口的前向暴露分母 | `source-poll-exposure/v1` 与 `token-discovery-exposure/v1`；不回填历史，不自动改变调度或交易 |
-| 已实现但样本不足 | 来源/平台/人物/主题选择性学习、Shadow、Token Context 与 Paper 精确 cohort 归因 | 机制和可视化已存在，但当前样本不足以证明哪个来源、人物或题材更优，更不能据此声称盈利能力 |
+| 已实现但样本不足 | 来源/平台/人物/主题选择性学习、Shadow、Token Context 与 Paper 精确 cohort 归因 | 机制和可视化已存在；同事件多动作、同 Token 重复调查和账号平台回退的伪样本路径已封堵，Overview 明确显示 collecting/not mature。但当前样本仍不足以证明哪个来源、人物或题材更优，更不能据此声称盈利能力 |
 | 部分完成/设备步骤 | X 等精确账号页面采集、固定公网域名、Devnet 真链签名 | 登录不等于桥采集；需专用浏览器扩展真实 heartbeat；Quick Tunnel 非固定；Devnet 钱包缺可核验 signature |
 | 尚未实现 | 基于事实冲突/证据复杂度的通用模型升级、可审查 Mainnet Broker 与真实成交发布线 | 现有任务级路由与结构无效回退可用，但通用复杂度升级和 Mainnet 交易闭环不存在 |
 | Phase 1 已运行；Phase 2 待实现 | 按热度/舆论/人物/社区/链上质量研究金额、入场次数、分批止盈、runner 和持仓期 | 首次 WAIT/REJECT/CANDIDATE 已冻结多维标签、独立入库时间和固定时点结果；预注册 Paper challenger 尚未执行，当前样本不能直接改仓位或退出基线 |

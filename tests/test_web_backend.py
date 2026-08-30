@@ -423,6 +423,11 @@ def test_web_api_empty_database_is_safe_and_live_is_locked(tmp_path: Path):
     assert activity["information"]["observations_60s"] == 0
     assert activity["tokens"]["status"] == "waiting"
     assert activity["tokens"]["snapshot_updates_5m"] == 0
+    assert overview["learning_state"]["status"] == "not_observed"
+    assert overview["learning_state"]["shadow"]["current_version_cohorts"] == 0
+    assert overview["learning_state"]["token_context"]["independent_tokens"] == 0
+    assert overview["learning_state"]["phase_2"]["ready"] is False
+    assert overview["learning_state"]["phase_2"]["automatic_activation"] is False
     assert web.events({})["items"] == []
     assert web.tokens({})["items"] == []
     assert web.decisions({})["items"] == []
@@ -444,7 +449,7 @@ def test_web_api_empty_database_is_safe_and_live_is_locked(tmp_path: Path):
     assert empty_sources["learning_closure"]["breakpoint"] == "browser_exposure"
     assert [item["count"] for item in empty_sources["learning_closure"]["stages"]] == [0, 0, 0, 0, 0]
     assert empty_sources["learning_closure"]["conversion_rates_available"] is False
-    assert empty_sources["watch_attention_policy"]["version"] == "watch-attention/v1"
+    assert empty_sources["watch_attention_policy"]["version"] == "watch-attention/v2-exact-entity"
     assert empty_sources["watch_attention_policy"]["status"] == "not_configured"
     assert empty_sources["watch_attention_policy"]["items"] == []
     audit = web.audit()
@@ -984,7 +989,7 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
     assert account_exposure["rotation_active"] is False
     assert [item["count"] for item in source_payload["learning_closure"]["stages"]] == [1, 1, 0, 0, 0]
     assert source_payload["learning_closure"]["breakpoint"] == "eligible_event"
-    assert source_payload["watch_attention_policy"]["version"] == "watch-attention/v1"
+    assert source_payload["watch_attention_policy"]["version"] == "watch-attention/v2-exact-entity"
     assert source_payload["watch_attention_policy"]["status"] == "collecting_evidence"
     assert source_payload["watch_attention_policy"]["summary"][
         "rotation_activation_available"
@@ -1190,8 +1195,11 @@ def test_candidate_ranking_api_is_persisted_bounded_sanitized_and_wait_is_truthf
     assert "data-testid='token-context-followup'" in app
     assert "Token-context forward follow-through: learn what merits more research" in app
     assert "Trend attention learning: exploration first, never trading" in app
-    assert "Watch rotation changes only after both check efficiency and non-buy-only market follow-up mature" in app
+    assert "Watch rotation requires exact-account efficiency plus same-entity independent-event follow-up" in app
     assert "Paper source outcomes require an exact final-decision → admitted-cohort → fill → close chain" in app
+    assert "Forward learning state" in app
+    assert "COLLECTING · NOTHING MATURE" in app
+    assert "later WAIT / REJECT / CANDIDATE actions from the same event cannot inflate" in app
     assert "Evidence roles F / C / I / P" in app
     assert "event_topic" in app and "observe only" in app
     assert "Linked narrative / event observation timeline" in app

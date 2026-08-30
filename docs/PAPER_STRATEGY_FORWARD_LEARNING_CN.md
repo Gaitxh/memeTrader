@@ -56,8 +56,11 @@ Phase 2 每个实验 arm 至少要求：50 个真实完成平仓、20 个决策�
 Phase 1 已复用现有 `shadow_event_*` 账本前向运行，没有另建一套脱离 Runtime 的模拟链：
 
 - 每个独立事件的首次 `WAIT / REJECT / CANDIDATE` 分别形成一个 event-action cohort；每一次最终决策无论是否建成 cohort 都进入 admission 分母并保存明确跳过原因，避免用高频重试伪造独立样本。
+- event-action cohort 全部保留用于动作审计，但平台、人物、题材和链上分层的成熟度只使用每个事件时间上最早的 cohort；同一事件从 WAIT 演化到 REJECT/CANDIDATE 不会被当成多个独立市场样本。
 - cohort 冻结当时平台、信息类型、人物/实体、事件主题、热度、新鲜度、合格来源组合、公众人物关联状态、链、Token 年龄、流动性、市值、5 分钟量、买卖压力、安全状态、评分层、canonical margin、请求仓位和拒绝原因。
 - `token_snapshots` 从本版本起额外保存本机 `ingested_at`。entry 必须在决策时已经入库；15/60/240 分钟 outcome 必须在对应 target 之后才入库。升级前没有入库时间证明的旧快照不会被回填成新 cohort 或 outcome。
 - Paper 买卖执行尝试同时保存 `decision_id/cohort_id`；成功成交、报价拒绝和执行拒绝可沿同一链审计。旧的无链接尝试继续标为 unlinked，不能借用后来 cohort。
+- Token Context 的重复 assessment 仍完整保存，但描述统计和成熟度每个 Token 只采用最早的前向 cohort，且普通标签至少需要 30 个不同 Token；同一价格路径不能重复抬高样本量。
+- `watch-attention/v2-exact-entity` 只接受具体账号明确映射人物的市场证据，不再用平台总体表现作为账号回退。Overview 直接显示当前版本独立事件、W/R/C、固定时点缺失、独立 Token、精确 Paper 链和 Phase 2 数据门。
 
 仍未实现的是 Phase 2 的预注册 assignment、challenger 执行器和完整闭仓策略对照实验；也不会因为 Phase 1 某个分层短期上涨就自动改变金额、入场次数或退出。现有确定性 Paper 基线继续运行。

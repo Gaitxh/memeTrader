@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from memetrader.collectors import DexScreenerClient, MastodonCollector
-from memetrader.models import CandidateDecision, EventView, Observation, Position, TokenCandidate, TokenSnapshot
+from memetrader.models import CandidateDecision, EventView, Observation, Position, TokenCandidate, TokenSnapshot, iso
 from memetrader.runtime import load_config
 from memetrader.store import Store
 from memetrader.strategy import (
@@ -694,7 +694,7 @@ def test_watch_attention_policy_requires_exposure_and_wait_inclusive_market_foll
     policy = Store.build_watch_attention_policy(
         accounts, exposure=exposure, shadow=shadow, paper=paper,
     )
-    assert policy["version"] == "watch-attention/v1"
+    assert policy["version"] == "watch-attention/v2-exact-entity"
     assert policy["status"] == "active_watch_rotation"
     alpha = next(item for item in policy["items"] if item["handle"] == "alpha")
     beta = next(item for item in policy["items"] if item["handle"] == "beta")
@@ -766,7 +766,7 @@ def test_trend_attention_policy_requires_joint_maturity_and_bounds_lane_allocati
     assert "live_trading" in policy["activation_policy"]["never_affects"]
 
 
-def test_watch_attention_reuses_entity_then_platform_but_never_pools_account_exposure():
+def test_watch_attention_requires_exact_entity_and_never_uses_platform_fallback():
     accounts = [
         {"platform": "x", "handle": "alpha_x", "entity_id": "alpha", "priority": 4},
         {
@@ -823,11 +823,13 @@ def test_watch_attention_reuses_entity_then_platform_but_never_pools_account_exp
     assert alpha_bluesky["market_basis"] == "entity"
     assert alpha_bluesky["rotation_active"] is False
     assert alpha_bluesky["state"] == "collecting_account_exposure"
-    assert route_only["rotation_active"] is True and route_only["market_basis"] == "platform"
+    assert route_only["rotation_active"] is False and route_only["market_basis"] is None
+    assert route_only["state"] == "missing_exact_entity_mapping"
     assert untested_route["rotation_active"] is False
-    assert untested_route["state"] == "collecting_market_followup"
+    assert untested_route["state"] == "missing_exact_entity_mapping"
     assert policy["summary"]["rotation_activation_available"] is True
     assert policy["summary"]["actual_rotation_changed_by_learning"] is False
+    assert policy["activation_policy"]["platform_fallback_for_accounts"] is False
 
 
 def test_shadow_event_followup_is_forward_only_fixed_horizon_and_non_activating(tmp_path: Path):
@@ -1026,9 +1028,11 @@ def test_shadow_event_followup_is_forward_only_fixed_horizon_and_non_activating(
     )
     assert entity_60m["mean_raw_return"] == pytest.approx(0.5)
     assert entity_60m["wait_cohort_count"] == 1
-    assert entity_60m["candidate_cohort_count"] == 1
+    assert entity_60m["candidate_cohort_count"] == 0
+    assert entity_60m["distinct_cohort_count"] == 1
     assert entity_60m["shadow_review_eligible"] is False
     assert entity_60m["rotation_active"] is False
+    assert summary["analysis_unit"] == "earliest_forward_cohort_per_independent_event"
     store.close()
 
 
@@ -1375,6 +1379,8 @@ def test_token_context_outcomes_are_forward_only_safe_labeled_and_non_activating
     )
     assert entity_60m["mean_raw_return"] == pytest.approx(0.5)
     assert entity_60m["descriptive_mature"] is False
+    assert summary["summary"]["independent_tokens"] == 1
+    assert summary["maturity_policy"]["minimum_distinct_tokens"] == 30
     assert summary["summary"]["untracked_assessments"] == 1
     assert summary["activation"] is False
     assert summary["actual_schedule_changed_by_learning"] is False
@@ -1387,6 +1393,66 @@ def test_token_context_outcomes_are_forward_only_safe_labeled_and_non_activating
         (untracked_assessment_id,),
     ).fetchone()[0] == 0
     reopened.close()
+
+
+def test_token_context_maturity_counts_one_forward_sample_per_token(tmp_path: Path):
+    store = Store(tmp_path / "context-independent-tokens.sqlite3")
+    now = datetime.now(timezone.utc)
+    token = TokenCandidate(chain="solana", address="I" * 32, name="Independent")
+    store.upsert_token(token, seen_at=now)
+    store.add_snapshot(
+        TokenSnapshot(
+            chain="solana", address=token.address, price_usd=1.0,
+            liquidity_usd=50_000, market_cap_usd=500_000,
+            volume_5m_usd=10_000, buys_5m=20, sells_5m=10,
+            observed_at=now, ingested_at=now, provider="fixture",
+        )
+    )
+    for index in range(30):
+        assessed_at = now + timedelta(seconds=index)
+        assessment_id = store.add_token_context_assessment(
+            token.token_id,
+            trigger="high_momentum_reverse_context",
+            status="verified_context",
+            snapshot_observed_at=now,
+            momentum_score=85,
+            assessment={
+                "investigation_trigger": {"kind": "high_momentum_reverse_context"},
+                "onchain_momentum": {"momentum_score": 85},
+            },
+            assessed_at=assessed_at,
+        )
+        cohort = store.db.execute(
+            "SELECT id FROM token_context_outcome_cohorts WHERE assessment_id=?",
+            (assessment_id,),
+        ).fetchone()
+        with store.db:
+            store.db.execute(
+                """
+                INSERT INTO token_context_outcomes(
+                    cohort_id,horizon_minutes,target_at,status,outcome_observed_at,
+                    outcome_price,raw_return,maximum_return,minimum_return,snapshot_count,evaluated_at
+                ) VALUES(?,60,?,'observed',?,1.1,0.1,0.1,-0.1,1,?)
+                """,
+                (
+                    int(cohort["id"]), iso(assessed_at + timedelta(minutes=60)),
+                    iso(assessed_at + timedelta(minutes=60)),
+                    iso(assessed_at + timedelta(minutes=60)),
+                ),
+            )
+
+    summary = store.token_context_outcome_learning_summary_from_connection(store.db)
+    assert summary["summary"]["tracked_cohorts"] == 30
+    assert summary["summary"]["independent_tokens"] == 1
+    assert summary["summary"]["observed_outcomes"] == 1
+    momentum = next(
+        item for item in summary["items"]
+        if item["dimension"] == "onchain_momentum_band" and item["horizon_minutes"] == 60
+    )
+    assert momentum["tracked_cohorts"] == 1
+    assert momentum["distinct_tokens"] == 1
+    assert momentum["descriptive_mature"] is False
+    store.close()
 
 
 def test_dexscreener_attached_links_are_typed_and_promotions_stay_context_only(tmp_path: Path):

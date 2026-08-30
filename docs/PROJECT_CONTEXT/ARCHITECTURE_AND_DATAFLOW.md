@@ -174,7 +174,7 @@ docs/PROJECT_CONTEXT/               无 secret 的版本控制内项目记忆
 
 Trend Scout 与 Source Discovery 首选 Spark/low，额度不可用时 Luna/low；Token Context 首选 Luna/low，回退 Terra/medium，Sol/medium 仅最后回退。该分级已经按任务复杂度配置并逐次记账，但当前自动升级主要处理模型/额度不可用，并不能声称已根据语义冲突或输出质量动态选择推理强度。所有本地计算不消耗 Agent。
 
-账号选择不是“全目录每轮扫描”：`critical` 账号最多保留 4 个槽位；其余先按人工 P5–P1 策展，并在 12 个候选观察槽位中始终保留至少 40%（5 个）做轮换探索。账号暴露账本记录每次被检查却无产出的情况；精确原帖命中必须匹配平台和账号 URL 路径。`watch-attention/v1` 只有在发现效率门和 60 分钟 WAIT/CANDIDATE 人物/平台随访门同时成熟时，才允许普通账号在 `0.80×–1.20×` 内改变观察轮换；已平仓 Paper 标签只是次级验证，不能单独激活。Trend Scout 的 `trend-attention/v1` 已记录每轮通道暴露、空结果和错误/失败结果；只有全局至少 20 个已接受事件，且至少两个可比较通道各自达到 20 次完成暴露、10 个运行日、5 次零产出并具有成熟的 60 分钟 WAIT/CANDIDATE 市场随访时，才可在 `0.80×–1.20×` 内调整通道分配。已平仓 Paper 结果只作可选次级验证；普通运行始终保留至少一个 round-robin 探索通道，surge 全覆盖。当前运行预计仍在收集样本，尚未启用该分配。以上值不传给 CandidateEvaluator、SafetyChecker 或 PaperPolicy，也不影响退出或 Live。
+账号选择不是“全目录每轮扫描”：`critical` 账号最多保留 4 个槽位；其余先按人工 P5–P1 策展，并在 12 个候选观察槽位中始终保留至少 40%（5 个）做轮换探索。账号暴露账本记录每次被检查却无产出的情况；精确原帖命中必须匹配平台和账号 URL 路径。`watch-attention/v2-exact-entity` 只有在发现效率门和 60 分钟精确人物随访门同时成熟时，才允许普通账号在 `0.80×–1.20×` 内改变观察轮换；无实体映射、映射冲突或只有平台总体结果时保持基线。同一事件只取时间最早的 cohort 进入人物/平台成熟度，后续 WAIT/REJECT/CANDIDATE 不重复计数。已平仓 Paper 标签只是次级验证，不能单独激活。Trend Scout 的 `trend-attention/v1` 已记录每轮通道暴露、空结果和错误/失败结果；只有全局至少 20 个已接受事件，且至少两个可比较通道各自达到 20 次完成暴露、10 个运行日、5 次零产出并具有成熟的 60 分钟市场随访时，才可在 `0.80×–1.20×` 内调整通道分配。已平仓 Paper 结果只作可选次级验证；普通运行始终保留至少一个 round-robin 探索通道，surge 全覆盖。当前运行预计仍在收集样本，尚未启用该分配。以上值不传给 CandidateEvaluator、SafetyChecker 或 PaperPolicy，也不影响退出或 Live。
 
 注意：`runtime.py` 的通用配置校验仍允许 `max_concurrent_agents` 到 4，但根目录 `AGENTS.md` 和 Web 安全接口把当前发布运行上限限定为 2。继续工作时必须遵守更严格的 2，不能借通用校验提高并发。
 

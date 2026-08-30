@@ -1651,6 +1651,25 @@ class WebData:
         daily_exposure: float | None = None
         account_curve: list[dict[str, Any]] = []
         execution_costs: dict[str, Any] = {}
+        learning_state: dict[str, Any] = {
+            "status": "not_observed",
+            "phase": "phase_1_forward_observation",
+            "current_shadow_version": Store.SHADOW_EVENT_COHORT_VERSION,
+            "shadow": {
+                "current_version_cohorts": 0, "distinct_events": 0,
+                "event_days": 0, "wait": 0, "reject": 0, "candidate": 0,
+                "observed_outcomes": 0, "missing_outcomes": 0,
+                "review_eligible_labels": 0,
+            },
+            "token_context": {
+                "tracked_cohorts": 0, "independent_tokens": 0,
+                "observed_outcomes": 0, "missing_outcomes": 0,
+                "mature_labels": 0,
+            },
+            "paper": {"exact_attributed_closes": 0, "linked_entry_attempts": 0},
+            "phase_2": {"ready": False, "automatic_activation": False},
+            "affects": "observation_and_watch_rotation_only",
+        }
         ingestion_activity: dict[str, Any]
         with self.connect() as connection:
             ingestion_activity = self.ingestion_activity(connection)
@@ -1678,6 +1697,108 @@ class WebData:
                     daily_exposure = float(row["value"] or 0)
                 account_curve = self._paper_account_curve(connection)
                 execution_costs = self._paper_execution_costs(connection)
+                try:
+                    shadow = Store.shadow_event_learning_summary_from_connection(connection)
+                    context = Store.token_context_outcome_learning_summary_from_connection(connection)
+                    shadow_row = connection.execute(
+                        """
+                        SELECT COUNT(*) AS cohorts,COUNT(DISTINCT event_id) AS events,
+                               COUNT(DISTINCT substr(decision_at,1,10)) AS event_days,
+                               SUM(CASE WHEN action='WAIT' THEN 1 ELSE 0 END) AS wait_count,
+                               SUM(CASE WHEN action='REJECT' THEN 1 ELSE 0 END) AS reject_count,
+                               SUM(CASE WHEN action='CANDIDATE' THEN 1 ELSE 0 END) AS candidate_count
+                        FROM shadow_event_cohorts WHERE version=?
+                        """,
+                        (Store.SHADOW_EVENT_COHORT_VERSION,),
+                    ).fetchone()
+                    shadow_outcomes = connection.execute(
+                        """
+                        SELECT SUM(CASE WHEN o.status='observed' THEN 1 ELSE 0 END) AS observed,
+                               SUM(CASE WHEN o.status='missing' THEN 1 ELSE 0 END) AS missing
+                        FROM shadow_event_outcomes o
+                        JOIN shadow_event_cohorts c ON c.id=o.cohort_id WHERE c.version=?
+                        """,
+                        (Store.SHADOW_EVENT_COHORT_VERSION,),
+                    ).fetchone()
+                    linked_entries = connection.execute(
+                        """
+                        SELECT COUNT(*) AS value FROM paper_execution_attempts
+                        WHERE side='BUY' AND decision_id IS NOT NULL AND cohort_id IS NOT NULL
+                        """
+                    ).fetchone()["value"]
+                    attributed = connection.execute(
+                        """
+                        SELECT COUNT(*) AS value FROM paper_source_attribution_attempts
+                        WHERE version=? AND status='attributed'
+                        """,
+                        (Store.PAPER_SOURCE_ATTRIBUTION_VERSION,),
+                    ).fetchone()["value"]
+                    shadow_summary = shadow.get("summary") or {}
+                    context_summary = context.get("summary") or {}
+                    current_cohorts = int(shadow_row["cohorts"] or 0)
+                    observed_count = int(shadow_outcomes["observed"] or 0)
+                    missing_count = int(shadow_outcomes["missing"] or 0)
+                    finalized_count = observed_count + missing_count
+                    missing_rate = missing_count / finalized_count if finalized_count else None
+                    data_gates = {
+                        "minimum_distinct_events": int(shadow_row["events"] or 0) >= 30,
+                        "minimum_event_days": int(shadow_row["event_days"] or 0) >= 10,
+                        "all_actions_observed": all(
+                            int(shadow_row[name] or 0) > 0
+                            for name in ("wait_count", "reject_count", "candidate_count")
+                        ),
+                        "missing_rate_below_20pct": (
+                            missing_rate is not None and missing_rate < 0.20
+                        ),
+                        "linked_paper_entry_observed": int(linked_entries or 0) > 0,
+                    }
+                    learning_state = {
+                        **learning_state,
+                        "status": (
+                            "review_available"
+                            if int(shadow_summary.get("review_eligible_labels") or 0)
+                            or int(context_summary.get("descriptive_mature_labels") or 0)
+                            else "collecting"
+                            if current_cohorts or int(context_summary.get("tracked_cohorts") or 0)
+                            else "not_observed"
+                        ),
+                        "shadow": {
+                            "current_version_cohorts": current_cohorts,
+                            "distinct_events": int(shadow_row["events"] or 0),
+                            "event_days": int(shadow_row["event_days"] or 0),
+                            "wait": int(shadow_row["wait_count"] or 0),
+                            "reject": int(shadow_row["reject_count"] or 0),
+                            "candidate": int(shadow_row["candidate_count"] or 0),
+                            "observed_outcomes": observed_count,
+                            "missing_outcomes": missing_count,
+                            "missing_rate": missing_rate,
+                            "review_eligible_labels": int(
+                                shadow_summary.get("review_eligible_labels") or 0
+                            ),
+                        },
+                        "token_context": {
+                            "tracked_cohorts": int(context_summary.get("tracked_cohorts") or 0),
+                            "independent_tokens": int(context_summary.get("independent_tokens") or 0),
+                            "observed_outcomes": int(context_summary.get("observed_outcomes") or 0),
+                            "missing_outcomes": int(context_summary.get("missing_outcomes") or 0),
+                            "mature_labels": int(
+                                context_summary.get("descriptive_mature_labels") or 0
+                            ),
+                        },
+                        "paper": {
+                            "exact_attributed_closes": int(attributed or 0),
+                            "linked_entry_attempts": int(linked_entries or 0),
+                        },
+                        "phase_2": {
+                            "ready": False,
+                            "data_ready": all(data_gates.values()),
+                            "implementation_status": "not_implemented",
+                            "automatic_activation": False,
+                            "gates": data_gates,
+                        },
+                    }
+                except (sqlite3.Error, TypeError, ValueError, KeyError):
+                    learning_state["status"] = "unavailable"
         missing_quotes = sum(1 for row in positions if row["market_value_usd"] is None)
         known_marks = sum(float(row["market_value_usd"] or 0) for row in positions if row["market_value_usd"] is not None)
         equity = None
@@ -1744,6 +1865,7 @@ class WebData:
             "recent_events": recent_events,
             "counts": counts,
             "ingestion_activity": ingestion_activity,
+            "learning_state": learning_state,
         }
 
     def _observation_payload(self, row: sqlite3.Row, decision_at=None) -> dict[str, Any]:

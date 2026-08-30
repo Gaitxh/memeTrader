@@ -31,7 +31,7 @@ class Store:
     TOKEN_CONTEXT_ADMISSION_VERSION = "token-context-admission/v1"
     TOKEN_CONTEXT_OUTCOME_VERSION = "token-context-outcome/v1"
     TOKEN_CONTEXT_OUTCOME_HORIZONS_MINUTES = (15, 60, 240)
-    WATCH_ATTENTION_POLICY_VERSION = "watch-attention/v1"
+    WATCH_ATTENTION_POLICY_VERSION = "watch-attention/v2-exact-entity"
     TREND_ATTENTION_POLICY_VERSION = "trend-attention/v1"
     PAPER_SOURCE_ATTRIBUTION_VERSION = "paper-source-attribution/v2-decision-cohort"
     SOURCE_POLL_EXPOSURE_VERSION = "source-poll-exposure/v1"
@@ -1568,14 +1568,17 @@ class Store:
             "horizons_minutes": list(Store.TOKEN_CONTEXT_OUTCOME_HORIZONS_MINUTES),
             "items": [],
             "summary": {
-                "assessments": 0, "tracked_cohorts": 0, "pending_cohorts": 0,
+                "assessments": 0, "tracked_cohorts": 0, "independent_tokens": 0,
+                "pending_cohorts": 0,
                 "complete_cohorts": 0, "observed_outcomes": 0, "missing_outcomes": 0,
                 "untracked_assessments": 0, "descriptive_mature_labels": 0,
             },
             "maturity_policy": {
                 "minimum_observed_cohorts": 30, "minimum_assessment_days": 15,
+                "minimum_distinct_tokens": 30,
                 "minimum_positive_outcomes": 5, "minimum_nonpositive_outcomes": 5,
                 "verified_entity_minimum_cohorts": 50,
+                "verified_entity_minimum_distinct_tokens": 50,
                 "verified_entity_minimum_days": 20,
             },
             "activation": False,
@@ -1619,8 +1622,15 @@ class Store:
             ):
                 outcomes_by_cohort[int(row["cohort_id"])].append(row)
 
+        first_cohort_by_token: dict[str, sqlite3.Row] = {}
+        for cohort in sorted(
+            cohorts, key=lambda row: (str(row["assessed_at"]), int(row["id"]))
+        ):
+            first_cohort_by_token.setdefault(str(cohort["token_id"]), cohort)
+        independent_cohorts = list(first_cohort_by_token.values())
+
         grouped: dict[tuple[int, str, str], dict[str, Any]] = {}
-        for cohort in cohorts:
+        for cohort in independent_cohorts:
             cohort_id = int(cohort["id"])
             day = parse_time(cohort["assessed_at"]).date().isoformat()
             for outcome in outcomes_by_cohort.get(cohort_id, []):
@@ -1670,7 +1680,8 @@ class Store:
             minimum_cohorts = 50 if item["dimension"] == "verified_public_figure_entity" else 30
             minimum_days = 20 if item["dimension"] == "verified_public_figure_entity" else 15
             mature = (
-                observed >= minimum_cohorts and day_count >= minimum_days
+                token_count >= minimum_cohorts and observed >= minimum_cohorts
+                and day_count >= minimum_days
                 and positive >= 5 and nonpositive >= 5
             )
             median = None
@@ -1711,11 +1722,14 @@ class Store:
                 -int(item["observed_outcomes"]), str(item["dimension"]), str(item["value"]),
             )
         )
+        independent_ids = {int(row["id"]) for row in independent_cohorts}
         observed_outcomes = sum(
-            1 for rows in outcomes_by_cohort.values() for row in rows if str(row["status"]) == "observed"
+            1 for cohort_id, rows in outcomes_by_cohort.items() for row in rows
+            if cohort_id in independent_ids and str(row["status"]) == "observed"
         )
         missing_outcomes = sum(
-            1 for rows in outcomes_by_cohort.values() for row in rows if str(row["status"]) == "missing"
+            1 for cohort_id, rows in outcomes_by_cohort.items() for row in rows
+            if cohort_id in independent_ids and str(row["status"]) == "missing"
         )
         mature_count = sum(1 for item in items if item["descriptive_mature"])
         return {
@@ -1729,6 +1743,7 @@ class Store:
             "summary": {
                 "assessments": assessment_count,
                 "tracked_cohorts": len(cohorts),
+                "independent_tokens": len(independent_cohorts),
                 "pending_cohorts": sum(str(row["status"]) == "pending" for row in cohorts),
                 "complete_cohorts": sum(str(row["status"]) == "complete" for row in cohorts),
                 "observed_outcomes": observed_outcomes,
@@ -3343,6 +3358,14 @@ class Store:
                 JOIN shadow_event_cohort_labels l ON l.cohort_id=c.id
                 JOIN shadow_event_outcomes o ON o.cohort_id=c.id
                 WHERE c.decision_at>=? AND o.status='observed'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM shadow_event_cohorts earlier
+                    WHERE earlier.event_id=c.event_id
+                      AND (
+                        earlier.decision_at<c.decision_at
+                        OR (earlier.decision_at=c.decision_at AND earlier.id<c.id)
+                      )
+                  )
                 ORDER BY o.horizon_minutes,l.dimension,l.value,c.id
                 """,
                 (start,),
@@ -3495,6 +3518,7 @@ class Store:
             },
             "admission": admission,
             "review_policy": policy,
+            "analysis_unit": "earliest_forward_cohort_per_independent_event",
             "as_of": iso(),
         }
 
@@ -4712,7 +4736,7 @@ class Store:
                 key,
                 {
                     "platform": str(row["platform"]), "handle": str(row["handle"]),
-                    "entity_id": str(row["entity_id"] or ""), "exposures": 0,
+                    "entity_ids": set(), "exposures": 0,
                     "completed_exposures": 0, "error_exposures": 0,
                     "zero_yield_completed_exposures": 0, "exact_source_hits": 0,
                     "accepted_events": 0, "observations": 0, "run_days": set(),
@@ -4725,6 +4749,8 @@ class Store:
                     "last_browser_heartbeat_at": None,
                 },
             )
+            if row["entity_id"]:
+                metric["entity_ids"].add(str(row["entity_id"]).strip().lower())
             metric["exposures"] += 1
             if origin == "browser_bridge":
                 metric["browser_bridge_exposures"] += 1
@@ -4772,7 +4798,14 @@ class Store:
                 )
             items.append(
                 {
-                    **{key: value for key, value in metric.items() if key != "run_days"},
+                    **{
+                        key: value for key, value in metric.items()
+                        if key not in {"run_days", "entity_ids"}
+                    },
+                    "entity_id": (
+                        next(iter(metric["entity_ids"])) if len(metric["entity_ids"]) == 1 else ""
+                    ),
+                    "entity_mapping_conflict": len(metric["entity_ids"]) > 1,
                     "run_day_count": len(metric["run_days"]),
                     "exact_source_hits_per_completed_exposure": round(raw_rate, 4)
                     if raw_rate is not None else None,
@@ -4851,27 +4884,34 @@ class Store:
             handle = str(account.get("handle") or "").strip()
             if not platform or not handle:
                 continue
-            entity_id = str(account.get("entity_id") or "").strip().lower()
             exposure_item = dict(exposure_items.get((platform, handle.casefold())) or {})
+            configured_entity_id = str(account.get("entity_id") or "").strip().lower()
+            observed_entity_id = str(exposure_item.get("entity_id") or "").strip().lower()
+            entity_mapping_conflict = bool(exposure_item.get("entity_mapping_conflict")) or bool(
+                configured_entity_id and observed_entity_id
+                and configured_entity_id != observed_entity_id
+            )
+            entity_id = "" if entity_mapping_conflict else configured_entity_id or observed_entity_id
+            entity_mapping_source = (
+                "conflict" if entity_mapping_conflict else
+                "configured" if configured_entity_id else
+                "exact_exposure" if observed_entity_id else None
+            )
             exposure_mature = exposure_item.get("discovery_review_eligible") is True
             shadow_item: dict[str, Any] = {}
             market_basis = ""
-            for key in (("entity", entity_id), ("platform", platform)):
-                candidate = shadow_items.get(key)
-                if key[1] and candidate and candidate.get("shadow_review_eligible") is True:
-                    shadow_item = dict(candidate)
-                    market_basis = key[0]
-                    break
+            candidate = shadow_items.get(("entity", entity_id)) if entity_id else None
+            if candidate and candidate.get("shadow_review_eligible") is True:
+                shadow_item = dict(candidate)
+                market_basis = "entity"
             shadow_score = shadow_item.get("shadow_descriptive_score")
             market_mature = bool(shadow_item) and shadow_score is not None
             paper_item: dict[str, Any] = {}
             paper_basis = ""
-            for key in (("entity", entity_id), ("platform", platform), ("source_kind", "social")):
-                candidate = paper_items.get(key)
-                if key[1] and candidate:
-                    paper_item = dict(candidate)
-                    paper_basis = key[0]
-                    break
+            candidate = paper_items.get(("entity", entity_id)) if entity_id else None
+            if candidate:
+                paper_item = dict(candidate)
+                paper_basis = "entity"
             discovery_multiplier = float(exposure_item.get("discovery_review_multiplier") or 1.0)
             market_multiplier = (
                 max(0.90, min(1.10, 1.0 + float(shadow_score) * 0.5))
@@ -4887,7 +4927,11 @@ class Store:
                 )
             critical = str(account.get("watch_cadence") or "normal").lower() == "critical"
             rotation_active = evidence_mature and not critical
-            if not exposure_mature:
+            if entity_mapping_conflict:
+                state = "entity_mapping_conflict"
+            elif not entity_id:
+                state = "missing_exact_entity_mapping"
+            elif not exposure_mature:
                 state = "collecting_account_exposure"
             elif not market_mature:
                 state = "collecting_market_followup"
@@ -4899,10 +4943,11 @@ class Store:
                 {
                     "platform": platform,
                     "handle": handle,
-                    "entity_id": entity_id,
                     "configured_priority": int(account.get("priority") or 3),
                     "watch_cadence": "critical" if critical else "normal",
                     **exposure_item,
+                    "entity_id": entity_id,
+                    "entity_mapping_source": entity_mapping_source,
                     "market_basis": market_basis or None,
                     "market_distinct_event_count": int(shadow_item.get("distinct_event_count") or 0),
                     "market_event_day_count": int(shadow_item.get("event_day_count") or 0),
@@ -4956,6 +5001,8 @@ class Store:
             "activation_policy": {
                 "requires_account_exposure_review_eligible": True,
                 "requires_60m_shadow_followup_review_eligible": True,
+                "requires_exact_entity_market_evidence": True,
+                "platform_fallback_for_accounts": False,
                 "paper_outcome_role": "optional_secondary_validation",
                 "minimum_applied_multiplier": 0.80,
                 "maximum_applied_multiplier": 1.20,

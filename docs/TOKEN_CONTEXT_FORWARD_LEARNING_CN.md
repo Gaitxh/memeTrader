@@ -36,9 +36,9 @@ Runtime 的既有低成本随访任务会追加计算 15、60、240 分钟结果
 
 ## 样本与成熟度
 
-Sources 页面按冻结标签和时点展示：tracked cohort、Token 数、日期数、observed/missing、正/非正结果、平均/中位回报和路径区间。
+Sources 页面按冻结标签和时点展示：tracked cohort、独立 Token 数、日期数、observed/missing、正/非正结果、平均/中位回报和路径区间。重复调查同一 Token 仍保留在审计账本，但统计和成熟度只使用该 Token 时间最早的前向 cohort。
 
-普通标签至少需要 30 个已观察 cohort、15 个评估日、5 个正结果和 5 个非正结果；精确公众人物实体至少需要 50 个 cohort 和 20 个评估日。达到门槛只显示 `descriptive_review_available`，仍不会自动生效。
+普通标签至少需要 30 个不同 Token 且这 30 个独立样本均有已观察结果、15 个评估日、5 个正结果和 5 个非正结果；精确公众人物实体至少需要 50 个不同 Token 和 20 个评估日。达到门槛只显示 `descriptive_review_available`，仍不会自动生效。
 
 `no_context`、Agent 错误、未核验候选和 missing 都保留，避免只统计成功故事的幸存者偏差。系统不会把人物帖子后的价格变化解释为因果关系或背书。
 
