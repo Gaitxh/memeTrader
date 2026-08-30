@@ -69,6 +69,8 @@ RSS 默认不继承系统代理。若电脑只能通过本机 SOCKS5 出网，�
 | Token 事件核验 | `gpt-5.6-luna`, low | `gpt-5.6-terra`, medium；最后 `gpt-5.6-sol`, medium | 需要较强的名称、人物、文化梗和身份判断 |
 | 主叙事近似平局 | 原有语义 Agent（默认关闭） | 本地规则返回 `WAIT` | 不允许 Agent 硬选不确定主盘 |
 
+运行时不仅检查子进程退出码，还按任务验证结构化输出：Trend Scout 必须返回事件数组，Source Discovery 必须返回来源数组，Token Context 必须返回布尔型 `event_found` 与来源数组。退出码为 0 但结构无效时，该次尝试记录为 `invalid_output`、token 照常入账，并继续该任务配置的 fallback；通过时记录为 `valid_output`，合法空数组也直接接受。只有启用此门后新增的这两种状态参与结构通过率，旧 `completed` 记录不会冒充已校验样本。这个门只证明 JSON 结构可用，不证明内容真实、热点重要或策略有效，事实与时间仍由后续本地证据门核验。
+
 Agent 全部使用：
 
 ```text

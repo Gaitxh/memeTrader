@@ -136,6 +136,21 @@ def _extract_json(text: str) -> dict[str, Any]:
     return parsed
 
 
+def _valid_agent_payload(task: str, payload: dict[str, Any]) -> bool:
+    """Validate only the task envelope; an honest empty result remains valid."""
+    if task == "trend_scout":
+        rows = payload.get("events")
+    elif task == "source_discovery":
+        rows = payload.get("sources")
+    elif task == "token_context":
+        if not isinstance(payload.get("event_found"), bool):
+            return False
+        rows = payload.get("sources")
+    else:
+        return False
+    return isinstance(rows, list) and all(isinstance(row, dict) for row in rows)
+
+
 def _token_count(value: Any) -> int | None:
     try:
         return max(0, int(value))
@@ -970,26 +985,47 @@ class AutonomousSearchAgent:
                     "error_tail": "",
                 }
                 attempts.append(attempt)
-                self._persist_agent_attempt(
-                    run_id=run_id,
-                    attempt_index=index,
-                    task=task,
-                    model=model,
-                    reasoning_effort=effort,
-                    started_at=started_at,
-                    finished_at=finished_at,
-                    status="completed" if cp.returncode == 0 else "failed",
-                    returncode=cp.returncode,
-                    usage=usage,
-                )
                 if cp.returncode == 0:
                     answer = output.read_text(encoding="utf-8", errors="replace") if output.exists() else stdout
+                    try:
+                        payload = _extract_json(answer)
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        payload = None
+                    if payload is None or not _valid_agent_payload(task, payload):
+                        attempt["semantic_status"] = "invalid_structured_output"
+                        self._persist_agent_attempt(
+                            run_id=run_id,
+                            attempt_index=index,
+                            task=task,
+                            model=model,
+                            reasoning_effort=effort,
+                            started_at=started_at,
+                            finished_at=finished_at,
+                            status="invalid_output",
+                            returncode=cp.returncode,
+                            usage=usage,
+                        )
+                        last_error = "Codex returned invalid structured output"
+                        continue
+                    attempt["semantic_status"] = "valid_structured_output"
+                    self._persist_agent_attempt(
+                        run_id=run_id,
+                        attempt_index=index,
+                        task=task,
+                        model=model,
+                        reasoning_effort=effort,
+                        started_at=started_at,
+                        finished_at=finished_at,
+                        status="valid_output",
+                        returncode=cp.returncode,
+                        usage=usage,
+                    )
                     known_tokens = [
                         int(attempt["tokens_used"])
                         for attempt in attempts
                         if attempt.get("tokens_used") is not None
                     ]
-                    return _extract_json(answer), {
+                    return payload, {
                         "task": task,
                         "run_id": run_id,
                         "returncode": 0,
@@ -1001,6 +1037,18 @@ class AutonomousSearchAgent:
                         "stderr_tail": "",
                         "tokens_recorded": True,
                     }
+                self._persist_agent_attempt(
+                    run_id=run_id,
+                    attempt_index=index,
+                    task=task,
+                    model=model,
+                    reasoning_effort=effort,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    status="failed",
+                    returncode=cp.returncode,
+                    usage=usage,
+                )
                 retryable = any(
                     marker in combined.lower()
                     for marker in ("usage limit", "model is not", "model unavailable", "not supported", "try again")

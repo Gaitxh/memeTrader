@@ -2981,7 +2981,9 @@ class WebData:
                    SUM(reasoning_output_tokens) AS reasoning_output_tokens,
                    SUM(total_tokens) AS total_tokens,
                    SUM(CASE WHEN total_tokens IS NOT NULL THEN 1 ELSE 0 END) AS known_usage_attempts,
-                   SUM(CASE WHEN total_tokens IS NULL THEN 1 ELSE 0 END) AS unknown_usage_attempts
+                   SUM(CASE WHEN total_tokens IS NULL THEN 1 ELSE 0 END) AS unknown_usage_attempts,
+                   SUM(CASE WHEN status='valid_output' THEN 1 ELSE 0 END) AS valid_structured_attempts,
+                   SUM(CASE WHEN status='invalid_output' THEN 1 ELSE 0 END) AS invalid_structured_attempts
             FROM agent_attempts WHERE finished_at>=?{group}
             ORDER BY total_tokens DESC,attempts DESC
             """,
@@ -2991,6 +2993,9 @@ class WebData:
         for row in rows:
             attempts = int(row["attempts"] or 0)
             known = int(row["known_usage_attempts"] or 0)
+            valid_structured = int(row["valid_structured_attempts"] or 0)
+            invalid_structured = int(row["invalid_structured_attempts"] or 0)
+            structured_attempts = valid_structured + invalid_structured
             item = {column: row[column] for column in group_columns}
             item.update(
                 {
@@ -3006,6 +3011,12 @@ class WebData:
                     "known_usage_attempts": known,
                     "unknown_usage_attempts": int(row["unknown_usage_attempts"] or 0),
                     "coverage_pct": round(known / attempts * 100, 2) if attempts else None,
+                    "valid_structured_attempts": valid_structured,
+                    "invalid_structured_attempts": invalid_structured,
+                    "structured_pass_rate_pct": (
+                        round(valid_structured / structured_attempts * 100, 2)
+                        if structured_attempts else None
+                    ),
                 }
             )
             output.append(item)
@@ -3133,6 +3144,8 @@ class WebData:
                     "cache_write_input_tokens": None, "output_tokens": None,
                     "reasoning_output_tokens": None, "total_tokens": None,
                     "known_usage_attempts": 0, "unknown_usage_attempts": 0, "coverage_pct": None,
+                    "valid_structured_attempts": 0, "invalid_structured_attempts": 0,
+                    "structured_pass_rate_pct": None,
                 },
                 "seven_days": seven_day_rows[0] if seven_day_rows else {
                     "calls": 0, "attempts": 0, "fallback_attempts": 0,
@@ -3140,6 +3153,8 @@ class WebData:
                     "cache_write_input_tokens": None, "output_tokens": None,
                     "reasoning_output_tokens": None, "total_tokens": None,
                     "known_usage_attempts": 0, "unknown_usage_attempts": 0, "coverage_pct": None,
+                    "valid_structured_attempts": 0, "invalid_structured_attempts": 0,
+                    "structured_pass_rate_pct": None,
                 },
             }
             legacy_today = sum(int(item.get("tokens_today") or 0) for item in output)

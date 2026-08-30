@@ -357,7 +357,7 @@ def _seed(path: Path) -> tuple[int, str]:
             "reasoning_effort": "medium",
             "started_at": iso(now - timedelta(minutes=3)),
             "finished_at": iso(now - timedelta(minutes=2)),
-            "status": "completed",
+            "status": "valid_output",
             "returncode": 0,
             "fallback": 1,
             "input_tokens": 300,
@@ -812,6 +812,9 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
         "known_usage_attempts": 2,
         "unknown_usage_attempts": 0,
         "coverage_pct": 100.0,
+        "valid_structured_attempts": 1,
+        "invalid_structured_attempts": 0,
+        "structured_pass_rate_pct": 100.0,
         "legacy_unattributed_total_tokens": 10845,
     }
     breakdown = agents["usage_breakdown"]["today"]
@@ -819,6 +822,10 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
         ("gpt-5.3-codex-spark", "low", 1000),
         ("gpt-5.6-luna", "medium", 500),
     }
+    spark_quality = next(item for item in breakdown if item["model"] == "gpt-5.3-codex-spark")
+    luna_quality = next(item for item in breakdown if item["model"] == "gpt-5.6-luna")
+    assert spark_quality["structured_pass_rate_pct"] is None
+    assert luna_quality["structured_pass_rate_pct"] == 100.0
     assert [(item["attempt_index"], item["fallback"]) for item in agents["recent_attempts"]] == [
         (1, True), (0, False)
     ]

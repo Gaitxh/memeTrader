@@ -299,7 +299,7 @@ def test_search_falls_back_when_primary_model_quota_is_exhausted(tmp_path: Path,
         return subprocess.CompletedProcess(args, 0, "tokens used\n123\n", "")
 
     monkeypatch.setattr("memetrader.autonomous_search.subprocess.run", fake_run)
-    payload, metadata = agent._run_codex_search("test")
+    payload, metadata = agent._run_codex_search("test", "source_discovery")
     assert payload == {"sources": []}
     assert models == ["gpt-5.3-codex-spark", "gpt-5.6-sol"]
     assert metadata["model"] == "gpt-5.6-sol"
@@ -309,11 +309,47 @@ def test_search_falls_back_when_primary_model_quota_is_exhausted(tmp_path: Path,
     rows = list(reversed(store.agent_attempts()))
     assert [(row["model"], row["status"], row["fallback"], row["total_tokens"]) for row in rows] == [
         ("gpt-5.3-codex-spark", "failed", 0, 7),
-        ("gpt-5.6-sol", "completed", 1, 123),
+        ("gpt-5.6-sol", "valid_output", 1, 123),
     ]
-    assert agent.usage()["trend_scout_tokens"] == 130
-    agent._record_tokens("trend_scout", metadata)
-    assert agent.usage()["trend_scout_tokens"] == 130
+    assert agent.usage()["source_discovery_tokens"] == 130
+    agent._record_tokens("source_discovery", metadata)
+    assert agent.usage()["source_discovery_tokens"] == 130
+    store.close()
+
+
+def test_invalid_structured_output_uses_task_fallback_but_valid_empty_does_not(tmp_path: Path, monkeypatch):
+    store = Store(tmp_path / "db.sqlite3")
+    agent = AutonomousSearchAgent(
+        store,
+        FakeHttp(),
+        config(fallback_models=["gpt-5.6-luna"]),
+    )
+    models = []
+
+    def fake_run(args, **kwargs):
+        model = args[args.index("--model") + 1]
+        models.append(model)
+        output = Path(args[args.index("--output-last-message") + 1])
+        if model == "gpt-5.3-codex-spark":
+            output.write_text('{"events": "not-a-list"}', encoding="utf-8")
+            return subprocess.CompletedProcess(args, 0, "tokens used\n11\n", "")
+        output.write_text('{"events": []}', encoding="utf-8")
+        return subprocess.CompletedProcess(args, 0, "tokens used\n13\n", "")
+
+    monkeypatch.setattr("memetrader.autonomous_search.subprocess.run", fake_run)
+    payload, metadata = agent._run_codex_search("test", "trend_scout")
+    assert payload == {"events": []}
+    assert models == ["gpt-5.3-codex-spark", "gpt-5.6-luna"]
+    assert metadata["tokens_used"] == 24
+    assert [item["semantic_status"] for item in metadata["attempts"]] == [
+        "invalid_structured_output", "valid_structured_output"
+    ]
+    rows = list(reversed(store.agent_attempts()))
+    assert [(row["model"], row["status"], row["total_tokens"]) for row in rows] == [
+        ("gpt-5.3-codex-spark", "invalid_output", 11),
+        ("gpt-5.6-luna", "valid_output", 13),
+    ]
+    assert agent.usage()["trend_scout_tokens"] == 24
     store.close()
 
 

@@ -213,7 +213,7 @@ OKX Web3 Meme Pump 可提供 launchpad 阶段、社交、开发者、bundle 和�
 
 上段是源码示例配置的默认值；本机 2026-08-30 已应用一个适度加快但仍适合个人电脑的运行配置：主采集轮询 `60→45` 秒、Token 反向新闻 `45→30` 秒、Trend Scout 普通/热点/空结果退避为 `8/3/20` 分钟、Source Discovery 为 `12` 小时、Token Context 全局/同 Token 冷却为 `4/180` 分钟。实际运行以 Git 忽略的本机 `config.json` 为准，和源码默认值可以不同；保存 Runtime 设置后需要安全重启单一常驻任务才会生效。Agent 并发硬上限仍是 2，没有随频率上调而增加。
 
-界面把采集与分析职责呈现为 6 个逻辑角色：News Radar、Social Pulse、Named Account Watch、Evidence Verifier、Token Context 和 Source Discovery。它们是共享队列中的职责，不是 6 个永久并发进程；仍共同遵守最多 2 个 Agent 子进程的硬上限。Agent Operations 会按任务、模型和推理强度分别累计调用次数、输入/缓存/输出/推理 token、回退与预算，不把不同智能程度的消耗混成一个数字。
+界面把采集与分析职责呈现为 6 个逻辑角色：News Radar、Social Pulse、Named Account Watch、Evidence Verifier、Token Context 和 Source Discovery。它们是共享队列中的职责，不是 6 个永久并发进程；仍共同遵守最多 2 个 Agent 子进程的硬上限。Agent Operations 会按任务、模型和推理强度分别累计调用次数、输入/缓存/输出/推理 token、回退与预算，不把不同智能程度的消耗混成一个数字。每个任务还会校验 Agent 返回的 JSON 结构：结构无效时照常计费并记录为 `invalid_output`，随后使用该任务配置的后备模型；通过时记录为 `valid_output`，合法的空事件/空来源仍是有效结果，不会为了制造活动而升级。只有新门生效后的这两类记录参与界面“结构通过率”，旧 `completed` 不冒充已校验样本；结构通过率也不等于事实准确率或投资有效率。
 
 需要登录的平台只在专用的本机 Chrome/Edge 配置中处理，并保持目标公开页面打开。账号密码、Cookie、Session 和验证码只归浏览器/平台所有，memeTrader 不读取、导出或保存；登录不成功的平台直接跳过，并继续使用公开页面、RSS、Agent 搜索和其他可访问来源，不让单个平台阻塞整套采集。登录缺失或页面未打开时，Sources 会显示对应状态。
 
