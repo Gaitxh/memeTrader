@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from memetrader.collectors import DexScreenerClient
+from memetrader.collectors import DexScreenerClient, MastodonCollector
 from memetrader.models import CandidateDecision, EventView, Observation, Position, TokenCandidate, TokenSnapshot
 from memetrader.runtime import load_config
 from memetrader.store import Store
@@ -45,6 +45,37 @@ def test_temporal_guard_rejects_future_and_outcome():
     assert "ingested_after_decision" in reasons
     assert "non_feature_role" in reasons
     assert "forbidden_hindsight_field" in reasons
+
+
+def test_mastodon_collector_freezes_platform_for_forward_learning(tmp_path: Path):
+    class Response:
+        def json(self):
+            return [{
+                "content": "A public viral post",
+                "created_at": "2026-08-31T00:00:00Z",
+                "url": "https://mastodon.social/@example/1",
+                "account": {"acct": "example"},
+                "reblogs_count": 4,
+                "favourites_count": 9,
+            }]
+
+    class Http:
+        async def get(self, *args, **kwargs):
+            return Response()
+
+    observations = asyncio.run(
+        MastodonCollector(Http(), "mastodon-viral", "https://mastodon.social/api/v1/timelines/tag/viral").poll()
+    )
+    assert len(observations) == 1
+    assert observations[0].raw["platform"] == "mastodon"
+    store = Store(tmp_path / "mastodon-learning.sqlite3")
+    store.add_observation(observations[0])
+    summary = store.source_learning_summary()
+    assert any(
+        item["dimension"] == "platform" and item["value"] == "mastodon"
+        for item in summary["items"]
+    )
+    store.close()
 
 
 def test_future_token_and_snapshot_are_rejected():

@@ -157,7 +157,7 @@ Sources 页另有“主题通道覆盖与影子学习”和“来源学习与观
 浏览器桥还会为与配置 URL、平台、handle 和 `entity_id` 完全一致的公开账号页建立 30 分钟前向暴露窗口，并把本机收到的原帖 Observation、事件 ID、同事件 60 分钟随访和同事件 Paper 平仓保存为可回链关系。X 首页、搜索页、登录页、同名账号、Telegram 手工发现和旧数据回填均不计入。Sources 页的“同源前向学习闭环”按不同单位诚实展示每一阶段，不把全库无关总数拼成转化率。
 人物与平台不会被重复建立一套脱节的排名：有稳定 `entity_id` 时优先复用同一人物的跨平台市场随访，否则才回退到平台级随访；但每个具体账号路径仍必须自己达到暴露门槛，未测试的账号不得继承同人物或同平台其他账号的倍率。Web 分开显示“具备启用资格”与“上轮选择实际因学习改变”，避免把成熟建议误报为已发生调度变化。
 
-来源学习同时展示平台、信息类型、具体来源、已持久化实体以及事件/热点类型在前向样本中提供合格/最早证据的描述性统计。事件类型只在事件第一次被本机接受时冻结；旧事件保持 `unknown`，不按后来结果回填。已完全平仓的 Paper 结果即使达到普通标签 20 个/10 天/5 个亏损、人物 30 个/15 天/两个平台，也只作为联合关注策略的次级验证，不能单独改变轮换。实际轮换由 `watch-attention/v1` 要求账号暴露效率和 60 分钟 WAIT/CANDIDATE 市场随访共同成熟后才允许。总共 12 个候选观察槽位中至少 40% 始终轮换探索，critical 最多占 4 个且不应用学习倍率。学习不进入 `CandidateEvaluator`、证据权重、canonical margin、安全检查、仓位公式或退出规则；样本不足时网页明确显示证据缺口，不能宣称已学会。详见 [DexScreener 溯源与前向来源学习](docs/DEXSCREENER_PROVENANCE_AND_SOURCE_LEARNING_CN.md)。
+来源学习同时展示平台、信息类型、具体来源、已持久化实体以及事件/热点类型在前向样本中提供合格/最早证据的描述性统计。事件类型只在事件第一次被本机接受时冻结；旧事件保持 `unknown`，不按后来结果回填。Mastodon Collector 也会从新采集记录开始冻结 `platform=mastodon`；旧的泛化 `social` 记录保持原样，不能因代码升级追改。已完全平仓的 Paper 结果即使达到普通标签 20 个/10 天/5 个亏损、人物 30 个/15 天/两个平台，也只作为联合关注策略的次级验证，不能单独改变轮换。实际轮换由 `watch-attention/v1` 要求账号暴露效率和 60 分钟 WAIT/CANDIDATE 市场随访共同成熟后才允许。总共 12 个候选观察槽位中至少 40% 始终轮换探索，critical 最多占 4 个且不应用学习倍率。学习不进入 `CandidateEvaluator`、证据权重、canonical margin、安全检查、仓位公式或退出规则；样本不足时网页明确显示证据缺口，不能宣称已学会。详见 [DexScreener 溯源与前向来源学习](docs/DEXSCREENER_PROVENANCE_AND_SOURCE_LEARNING_CN.md)。
 
 OKX Web3 Meme Pump 可提供 launchpad 阶段、社交、开发者、bundle 和同车钱包等补充字段，但核心接口需要官方签名凭据且属于 Premium；当前不抓取网页内部请求，也不把 `SMART_MONEY` / `INFLUENCER` 标签当交易信号。评估与未来接入边界见 [OKX Meme Pump 与聪明钱来源评估](docs/OKX_MEME_PUMP_AND_SMART_MONEY_ASSESSMENT_CN.md)。
 

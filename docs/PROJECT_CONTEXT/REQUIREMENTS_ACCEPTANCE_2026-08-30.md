@@ -46,6 +46,7 @@
 - GitHub 开源采集、Telegram 频道/机器人、Dex model1/model3 方案均已有审查文档；没有照搬多池混合、伪 Token 年龄或推广榜单逻辑。
 - 来源、账号、实体、平台、主题通道的追加式学习账本、15/60/240 分钟 shadow follow-up 和前向成熟门已实现；学习只允许小幅改变观察轮换，绝不进入证据、候选、风控、仓位、退出或 Live。
 - `shadow-event-followup/v2-event-action` 修复了首个 WAIT 永久吞掉后续 CANDIDATE 的选择偏差：WAIT 与首次真实升级的 CANDIDATE 分别冻结当时价格和来源，同动作不重复、CANDIDATE 后不倒退、旧样本不回填。
+- Mastodon 新 Observation 现在冻结显式 `platform=mastodon`，使平台学习不再把真实采集降为无平台的泛化 `social`；修复只作用于未来新记录，旧 Observation 不追改。
 
 ## 3. 部分实现或依赖当前设备状态
 

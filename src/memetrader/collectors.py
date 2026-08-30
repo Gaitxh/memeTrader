@@ -638,7 +638,12 @@ class MastodonCollector:
                     Observation(
                         source=self.name, source_kind="social", title=title, text=content, url=url, author=author,
                         published_at=_published(status.get("created_at")), observed_at=utcnow(),
-                        availability_proof="local_poll", raw={"reblogs_count": status.get("reblogs_count"), "favourites_count": status.get("favourites_count")},
+                        availability_proof="local_poll",
+                        raw={
+                            "platform": "mastodon",
+                            "reblogs_count": status.get("reblogs_count"),
+                            "favourites_count": status.get("favourites_count"),
+                        },
                     )
                 )
         return out
