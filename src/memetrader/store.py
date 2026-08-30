@@ -311,6 +311,7 @@ class Store:
                     dimension TEXT NOT NULL,
                     value TEXT NOT NULL,
                     origin_platform TEXT NOT NULL,
+                    attribution_basis TEXT NOT NULL DEFAULT 'discovery_lead',
                     attribution_weight REAL NOT NULL,
                     net_return REAL NOT NULL,
                     opened_at TEXT NOT NULL,
@@ -321,7 +322,6 @@ class Store:
                     ON source_utility_outcomes(dimension,value,closed_at DESC);
                 CREATE INDEX IF NOT EXISTS source_utility_outcomes_event_idx
                     ON source_utility_outcomes(event_id,token_id);
-
                 CREATE TABLE IF NOT EXISTS source_health (
                     source TEXT PRIMARY KEY,
                     last_ok_at TEXT,
@@ -524,6 +524,18 @@ class Store:
             ):
                 if name not in trade_columns:
                     self.db.execute(f"ALTER TABLE trades ADD COLUMN {name} {definition}")
+            source_outcome_columns = {
+                row["name"] for row in self.db.execute("PRAGMA table_info(source_utility_outcomes)")
+            }
+            if "attribution_basis" not in source_outcome_columns:
+                self.db.execute(
+                    "ALTER TABLE source_utility_outcomes "
+                    "ADD COLUMN attribution_basis TEXT NOT NULL DEFAULT 'discovery_lead'"
+                )
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS source_utility_outcomes_basis_idx "
+                "ON source_utility_outcomes(attribution_basis,closed_at DESC)"
+            )
             self.db.execute(
                 "INSERT OR IGNORE INTO paper_account(singleton,cash_usd,realized_pnl_usd,updated_at) VALUES(?,?,0,?)",
                 (1, float(initial_cash_usd), iso()),
@@ -1895,27 +1907,41 @@ class Store:
         ]
         if not leads:
             return
-        weight = 1.0 / len(leads)
+        decision_support_by_source: dict[tuple[str, str], sqlite3.Row] = {}
+        for row in eligible:
+            labels = self._source_learning_labels(row)
+            entity = next((value for dimension, value in labels if dimension == "entity"), "")
+            source = next((value for dimension, value in labels if dimension == "source"), "")
+            decision_support_by_source[("entity", entity) if entity else ("source", source)] = row
+        decision_support_rows = list(decision_support_by_source.values())
         net_return = (sell_net - buy_cost) / buy_cost
-        outcome_key = hashlib.sha256(
+        discovery_outcome_key = hashlib.sha256(
             f"{position.event_id}\n{position.token_id}\n{iso(position.opened_at)}".encode("utf-8")
         ).hexdigest()
-        for row in leads:
-            labels = self._source_learning_labels(row)
-            platform = next((value for dimension, value in labels if dimension == "platform"), "")
-            for dimension, value in labels:
-                self.db.execute(
-                    """
-                    INSERT OR IGNORE INTO source_utility_outcomes(
-                        outcome_key,event_id,token_id,source_observation_id,dimension,value,origin_platform,
-                        attribution_weight,net_return,opened_at,closed_at
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
-                    """,
-                    (
-                        outcome_key, position.event_id, position.token_id, int(row["id"]), dimension, value,
-                        platform, weight, net_return, iso(position.opened_at), closed_at,
-                    ),
-                )
+        decision_support_outcome_key = hashlib.sha256(
+            f"decision_support\n{position.event_id}\n{position.token_id}\n{iso(position.opened_at)}".encode("utf-8")
+        ).hexdigest()
+        for attribution_basis, outcome_key, rows in (
+            ("discovery_lead", discovery_outcome_key, leads),
+            ("decision_support", decision_support_outcome_key, decision_support_rows),
+        ):
+            weight = 1.0 / len(rows)
+            for row in rows:
+                labels = self._source_learning_labels(row)
+                platform = next((value for dimension, value in labels if dimension == "platform"), "")
+                for dimension, value in labels:
+                    self.db.execute(
+                        """
+                        INSERT OR IGNORE INTO source_utility_outcomes(
+                            outcome_key,event_id,token_id,source_observation_id,dimension,value,origin_platform,
+                            attribution_basis,attribution_weight,net_return,opened_at,closed_at
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                        """,
+                        (
+                            outcome_key, position.event_id, position.token_id, int(row["id"]), dimension, value,
+                            platform, attribution_basis, weight, net_return, iso(position.opened_at), closed_at,
+                        ),
+                    )
 
     def source_learning_summary(self, **kwargs: Any) -> dict[str, Any]:
         with self._lock:
@@ -2009,9 +2035,12 @@ class Store:
                         metric["early_events"].add(event_id)
 
         outcomes: dict[tuple[str, str], dict[str, Any]] = {}
+        decision_support_outcomes: dict[tuple[str, str], dict[str, Any]] = {}
         for row in outcome_rows:
             key = (str(row["dimension"]), str(row["value"]))
-            metric = outcomes.setdefault(
+            basis = str(row["attribution_basis"] or "discovery_lead")
+            target = decision_support_outcomes if basis == "decision_support" else outcomes
+            metric = target.setdefault(
                 key,
                 {
                     "weighted_closed": 0.0, "weighted_wins": 0.0, "weighted_losses": 0.0,
@@ -2035,10 +2064,11 @@ class Store:
             metric["last_closed_at"] = max(str(metric["last_closed_at"] or ""), str(row["closed_at"]))
 
         items: list[dict[str, Any]] = []
-        all_keys = set(diagnostic) | set(outcomes)
+        all_keys = set(diagnostic) | set(outcomes) | set(decision_support_outcomes)
         for dimension, value in all_keys:
             observed = diagnostic.get((dimension, value), {})
             outcome = outcomes.get((dimension, value), {})
+            decision_support = decision_support_outcomes.get((dimension, value), {})
             event_count = len(observed.get("events", set()))
             early_count = len(observed.get("early_events", set()))
             candidate_count = len(observed.get("candidate_events", set()))
@@ -2069,6 +2099,15 @@ class Store:
                 shrunk_utility = weighted_closed / (weighted_closed + 20.0) * mean_return
             multiplier = 1.0 if not active else max(0.75, min(1.25, 1.0 + shrunk_utility * 0.5))
             confidence = min(1.0, weighted_closed / max(1.0, float(required_closed)))
+            support_weighted_closed = float(decision_support.get("weighted_closed", 0.0))
+            support_mean_return = (
+                float(decision_support.get("weighted_return", 0.0)) / support_weighted_closed
+                if support_weighted_closed > 0 else None
+            )
+            support_win_rate = (
+                float(decision_support.get("weighted_wins", 0.0)) / support_weighted_closed
+                if support_weighted_closed > 0 else None
+            )
             items.append(
                 {
                     "dimension": dimension,
@@ -2089,6 +2128,16 @@ class Store:
                     "paper_win_rate": round(win_rate, 4) if win_rate is not None else None,
                     "paper_mean_net_return": round(mean_return, 6) if mean_return is not None else None,
                     "paper_downside_rate": round(downside_rate, 4) if downside_rate is not None else None,
+                    "decision_support_weighted_closed_paper_outcomes": round(support_weighted_closed, 4),
+                    "decision_support_distinct_closed_paper_outcomes": len(
+                        decision_support.get("outcome_keys", set())
+                    ),
+                    "decision_support_paper_win_rate": (
+                        round(support_win_rate, 4) if support_win_rate is not None else None
+                    ),
+                    "decision_support_paper_mean_net_return": (
+                        round(support_mean_return, 6) if support_mean_return is not None else None
+                    ),
                     "event_day_count": len(outcome.get("event_days", set())),
                     "platform_count": platform_count,
                     "confidence": round(confidence, 4),
@@ -2116,7 +2165,14 @@ class Store:
             "summary": {
                 "observations": len(observation_rows),
                 "decisions": len(decision_rows),
-                "closed_paper_outcomes": len({str(row["outcome_key"]) for row in outcome_rows}),
+                "closed_paper_outcomes": len({
+                    str(row["outcome_key"]) for row in outcome_rows
+                    if str(row["attribution_basis"] or "discovery_lead") != "decision_support"
+                }),
+                "decision_support_outcomes": len({
+                    str(row["outcome_key"]) for row in outcome_rows
+                    if str(row["attribution_basis"] or "discovery_lead") == "decision_support"
+                }),
                 "active_labels": sum(1 for item in items if item["rotation_active"]),
             },
             "activation_policy": {
@@ -2129,6 +2185,8 @@ class Store:
                 "maximum_rotation_multiplier": 1.25,
                 "minimum_exploration_fraction": 0.40,
                 "affects": "agent_watch_rotation_only",
+                "rotation_basis": "discovery_lead",
+                "decision_support_affects": "descriptive_only",
             },
             "as_of": iso(now),
         }

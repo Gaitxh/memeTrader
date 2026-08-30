@@ -92,7 +92,12 @@ Token Context 仅把非 Telegram 种子作为不可信搜索提示
 2. 策展槽位：按人工 P5–P1 优先级选择高信噪比账号；P5 不再与 P1 获得相同长期频率。
 3. 探索槽位：12 个候选观察槽位中至少 40%（当前即至少 5 个）用稳定 round-robin 覆盖尚未证明价值的来源，避免系统只关注既有偏好。
 
-`source_utility_outcomes` 是追加式 Paper 学习账本。只有仓位完全平仓时才记录；WAIT、REJECT、开放仓位和部分平仓不产生结果。归因只给开仓前最早 60 秒窗口内、当时已在本机看到且角色为 `feature/confirmation` 的 Observation；并列来源平分权重。`identity/promotion`、未来/陈旧证据和后来确认不获收益归因。
+`source_utility_outcomes` 是追加式 Paper 学习账本。只有仓位完全平仓时才记录；WAIT、REJECT、开放仓位和部分平仓不产生结果。新闭仓会保存两个明确分开的归因口径：
+
+- `discovery_lead`：只给开仓前最早 60 秒窗口内、当时已在本机看到且角色为 `feature/confirmation` 的 Observation；并列来源平分权重。只有这个口径可作为观察轮换的 Paper 次级验证。
+- `decision_support`：描述开仓前本机已经看到的全部合格 `feature/confirmation`；同一实体或来源只保留其最近一条，避免重复发稿获得额外权重。它用于审计“入场时实际有哪些独立来源支持”，永远不进入观察轮换、证据权重或交易策略。
+
+两个口径分别归一化，不能相加成两笔交易。`identity/promotion`、未来发布时间、开仓后摄入或观察的证据在两个口径中都不获归因。迁移前已闭仓的历史结果保持 `discovery_lead`，不事后回填 `decision_support`。
 
 网页同时显示早期命中、合格证据率和候选关联率，但它们只是描述性研究统计。Paper 标签的成熟门槛为：
 

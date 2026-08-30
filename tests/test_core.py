@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -27,6 +28,44 @@ from memetrader.strategy import (
     temporal_rejection_reasons,
     token_snapshot_temporal_rejections,
 )
+
+
+def test_store_migrates_legacy_source_outcomes_without_backfill(tmp_path: Path):
+    database = tmp_path / "legacy-source-outcomes.sqlite3"
+    connection = sqlite3.connect(database)
+    connection.executescript(
+        """
+        CREATE TABLE source_utility_outcomes (
+            id INTEGER PRIMARY KEY,
+            outcome_key TEXT NOT NULL,
+            event_id INTEGER NOT NULL,
+            token_id TEXT NOT NULL,
+            source_observation_id INTEGER NOT NULL,
+            dimension TEXT NOT NULL,
+            value TEXT NOT NULL,
+            origin_platform TEXT NOT NULL,
+            attribution_weight REAL NOT NULL,
+            net_return REAL NOT NULL,
+            opened_at TEXT NOT NULL,
+            closed_at TEXT NOT NULL,
+            UNIQUE(outcome_key,source_observation_id,dimension,value)
+        );
+        INSERT INTO source_utility_outcomes(
+            outcome_key,event_id,token_id,source_observation_id,dimension,value,origin_platform,
+            attribution_weight,net_return,opened_at,closed_at
+        ) VALUES('legacy',1,'solana:legacy',1,'source','legacy-news','rss',1,0.1,
+                 '2026-08-30T00:00:00Z','2026-08-30T01:00:00Z');
+        """
+    )
+    connection.close()
+
+    store = Store(database, initial_cash_usd=1000)
+    row = store.db.execute("SELECT * FROM source_utility_outcomes").fetchone()
+    assert row["attribution_basis"] == "discovery_lead"
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM source_utility_outcomes WHERE attribution_basis='decision_support'"
+    ).fetchone()[0] == 0
+    store.close()
 
 
 def test_temporal_guard_rejects_future_and_outcome():
@@ -161,9 +200,9 @@ def test_source_learning_records_only_closed_paper_lead_evidence(tmp_path: Path)
             source_item_id="future-published",
         ),
         Observation(
-            source="late-d",
+            source="news-b",
             source_kind="news",
-            title="Later confirmation",
+            title="A later confirmation from the same source",
             observed_at=now - timedelta(minutes=1),
             ingested_at=now - timedelta(minutes=1),
             role="confirmation",
@@ -182,21 +221,34 @@ def test_source_learning_records_only_closed_paper_lead_evidence(tmp_path: Path)
     assert store.db.execute("SELECT COUNT(*) FROM source_utility_outcomes").fetchone()[0] == 0
     store.paper_sell(token.token_id, price=1.2, fraction=1.0, fee_bps=0, reason="close")
     outcome_rows = list(store.db.execute("SELECT * FROM source_utility_outcomes"))
-    assert {int(row["source_observation_id"]) for row in outcome_rows} == set(ids[:2])
-    assert all(abs(float(row["attribution_weight"]) - 0.5) < 1e-9 for row in outcome_rows)
+    discovery_rows = [row for row in outcome_rows if row["attribution_basis"] == "discovery_lead"]
+    support_rows = [row for row in outcome_rows if row["attribution_basis"] == "decision_support"]
+    assert {int(row["source_observation_id"]) for row in discovery_rows} == set(ids[:2])
+    assert {int(row["source_observation_id"]) for row in support_rows} == {ids[0], ids[5]}
+    assert all(abs(float(row["attribution_weight"]) - 0.5) < 1e-9 for row in discovery_rows)
+    assert all(abs(float(row["attribution_weight"]) - 0.5) < 1e-9 for row in support_rows)
     assert all(row["dimension"] != "entity" or row["value"] == "alpha" for row in outcome_rows)
     assert any(
         row["dimension"] == "event_topic" and row["value"] == "animals_internet_culture"
-        for row in outcome_rows
+        for row in discovery_rows
     )
     assert not any(
         row["value"] in {"promotion-c", "delayed-ingestion", "future-published", "late-d"}
-        for row in outcome_rows
+        for row in discovery_rows
     )
+    assert not any(
+        row["value"] in {"promotion-c", "delayed-ingestion", "future-published"}
+        for row in support_rows
+    )
+    assert any(int(row["source_observation_id"]) == ids[5] for row in support_rows)
+    assert not any(int(row["source_observation_id"]) == ids[1] for row in support_rows)
 
     conservative = store.source_learning_summary()
     assert conservative["status"] == "collecting_samples"
     assert conservative["summary"]["closed_paper_outcomes"] == 1
+    assert conservative["summary"]["decision_support_outcomes"] == 1
+    assert conservative["activation_policy"]["rotation_basis"] == "discovery_lead"
+    assert conservative["activation_policy"]["decision_support_affects"] == "descriptive_only"
     relaxed = store.source_learning_summary(
         min_closed_outcomes=0.5,
         min_event_days=1,

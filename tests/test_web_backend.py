@@ -844,7 +844,10 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
     assert source_payload["learning"]["status"] == "collecting_samples"
     assert source_payload["learning"]["summary"]["observations"] >= 4
     assert source_payload["learning"]["summary"]["closed_paper_outcomes"] == 0
+    assert source_payload["learning"]["summary"]["decision_support_outcomes"] == 0
     assert source_payload["learning"]["summary"]["active_labels"] == 0
+    assert source_payload["learning"]["activation_policy"]["rotation_basis"] == "discovery_lead"
+    assert source_payload["learning"]["activation_policy"]["decision_support_affects"] == "descriptive_only"
     assert source_payload["trend_lanes"]["status"] == "collecting_exposure"
     assert source_payload["trend_lanes"]["actual_schedule_changed_by_learning"] is False
     assert source_payload["trend_attention_policy"]["version"] == "trend-attention/v1"
@@ -1079,7 +1082,7 @@ def test_candidate_ranking_api_is_persisted_bounded_sanitized_and_wait_is_truthf
     assert "Token-context forward follow-through: learn what merits more research" in app
     assert "Trend attention learning: exploration first, never trading" in app
     assert "Watch rotation changes only after both check efficiency and non-buy-only market follow-up mature" in app
-    assert "Closed Paper outcomes are secondary validation and cannot change watch rotation alone" in app
+    assert "Closed Paper outcomes separate discovery lead from decision-time evidence without double-counting trades" in app
     assert "event_topic" in app and "observe only" in app
     assert "Linked narrative / event observation timeline" in app
     assert "Verified narrative / event evidence timeline" not in app
