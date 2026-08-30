@@ -9,6 +9,7 @@
   "source_health_seconds": 30,
   "event_min_attention": 50,
   "sources": {
+    "rss_proxy_url": "",
     "rss": [
       {
         "name": "coindesk",

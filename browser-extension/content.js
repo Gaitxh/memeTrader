@@ -54,6 +54,9 @@
   }
 
   function platformEnabled() {
+    // Telegram is a manual discovery surface only. Do not collect, queue, or
+    // heartbeat t.me content into the automated research pipeline.
+    if (platform() === "telegram") return false;
     const states = settings.platformStates || {};
     return !Object.prototype.hasOwnProperty.call(states, platform()) || states[platform()] !== false;
   }
@@ -76,7 +79,7 @@
     if (host === "www.youtube.com" || host === "youtube.com") {
       return document.querySelectorAll("ytd-rich-item-renderer,ytd-video-renderer,ytd-comment-thread-renderer");
     }
-    if (host === "t.me") return document.querySelectorAll(".tgme_widget_message");
+    if (host === "t.me") return [];
     return [];
   }
 
@@ -113,7 +116,10 @@
     const profile = node.querySelector(
       "a[href^='/@'],a[href*='/profile/'],a[href*='/user/'],a[href*='/channel/'],.tgme_widget_message_author_name"
     );
-    const label = normalize(profile?.textContent || profile?.getAttribute("href") || "");
+    const profileHref = profile?.getAttribute("href") || "";
+    const profileMatch = profileHref.match(/(?:^|\/)@([^/?#]+)|\/(?:profile|user)\/([^/?#]+)/i);
+    if (profileMatch) return (profileMatch[1] || profileMatch[2] || "").replace(/^@/, "");
+    const label = normalize(profile?.textContent || profileHref);
     if (label) return label.replace(/^@/, "");
     const match = permalink.match(
       /(?:x\.com|twitter\.com|bsky\.app\/profile|threads\.net\/@|instagram\.com\/)([^/]+)/i
@@ -136,16 +142,25 @@
     return String(value || "").trim().toLowerCase().replace(/^@/, "");
   }
 
+  function matchedWatchAccount(author) {
+    const authorKey = accountKey(author);
+    return (settings.watchAccountEntries || []).find(
+      (item) => item && item.platform === platform() && authorKey === accountKey(item.handle)
+    ) || null;
+  }
+
+  function sourceEntityId(author) {
+    const value = String(matchedWatchAccount(author)?.entity_id || "").trim();
+    return /^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/.test(value) ? value : "";
+  }
+
   function priority(text, author) {
     const lower = text.toLowerCase();
     const authorLower = accountKey(author);
     let value = 0;
     if ((settings.watchTerms || []).some((term) => lower.includes(String(term).toLowerCase()))) value += 1;
-    const platformAccounts = (settings.watchAccountEntries || []).filter(
-      (item) => item && item.platform === platform()
-    );
     const watchedAccount = (settings.watchAccountEntries || []).length
-      ? platformAccounts.some((item) => authorLower === accountKey(item.handle))
+      ? matchedWatchAccount(author) !== null
       : (settings.watchAccounts || []).some((name) => authorLower === accountKey(name));
     if (watchedAccount) value += 2;
     if ((settings.officialAccounts || []).some((name) => authorLower === accountKey(name))) value += 3;
@@ -180,6 +195,7 @@
       lastRecentCount += 1;
       const url = findPermalink(node);
       const author = findAuthor(node, url);
+      const entityId = sourceEntityId(author);
       const fingerprint = hash(`${platform()}\n${url}\n${author}\n${text}`);
       if (seen.has(fingerprint)) continue;
       seen.add(fingerprint);
@@ -203,7 +219,8 @@
           capture_phase: capturePhase,
           priority: priority(text, author),
           page_url: safePageUrl(),
-          platform: platform()
+          platform: platform(),
+          ...(entityId ? {source_entity_id: entityId} : {})
         }
       });
     }
@@ -230,6 +247,7 @@
 
   new MutationObserver(scheduleScan).observe(document.documentElement, {subtree: true, childList: true});
   setInterval(() => {
+    if (platform() === "telegram") return;
     const pageText = normalize(document.body?.innerText || "").slice(0, 5000).toLowerCase();
     const loginPrompt = /\b(log in|sign in)\b|登入|登录|登錄/.test(pageText);
     const accessState = lastRecentCount > 0

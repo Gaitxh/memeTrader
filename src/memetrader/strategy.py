@@ -27,12 +27,13 @@ QUOTED_RE = re.compile(r"[《\"“']([^》\"”']{2,48})[》\"”']")
 WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{2,31}|[\u3400-\u9fff]{2,12}")
 HTML_RE = re.compile(r"<[^>]+>")
 CSS_HEX_RE = re.compile(r"#[0-9a-fA-F]{3,8}\b")
+SOURCE_ENTITY_ID_RE = re.compile(r"^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$")
 
 FORBIDDEN_HINDSIGHT_FIELDS = {
     "future_return", "ath_after_signal", "exchange_listing_after_signal", "winner_token", "winner_ca",
     "final_market_cap", "final_holders", "posthoc_smart_money", "future_rug_label",
 }
-FEATURE_ROLES = {"feature", "identity", "confirmation"}
+FEATURE_ROLES = {"feature", "confirmation"}
 FEATURE_PROOFS = {
     "local_receive",
     "local_poll",
@@ -216,9 +217,13 @@ def temporal_rejection_reasons(row: Any, decision_at, max_initial_age_minutes: f
     forbidden = sorted(FORBIDDEN_HINDSIGHT_FIELDS.intersection(raw))
     if forbidden:
         reasons.append("forbidden_hindsight_field")
+    if raw.get("published_time_in_future") is True:
+        reasons.append("published_time_in_future")
     published = value("published_at")
     if published:
         source_age = observed - parse_time(published)
+        if source_age < timedelta(minutes=-5) and "published_time_in_future" not in reasons:
+            reasons.append("published_time_in_future")
         capture_phase = str(value("capture_phase", "live")).lower()
         proof = str(value("availability_proof", "")).lower()
         if capture_phase == "initial" and source_age > timedelta(minutes=max_initial_age_minutes):
@@ -245,10 +250,16 @@ def replay_guard(
     for row in observations:
         reasons = evidence_rejection(row, decision_at, max_source_age_minutes)
         if reasons:
-            rejected[str(row["source"])] = reasons
+            source = row.source if isinstance(row, Observation) else row["source"]
+            rejected[str(source)] = reasons
         else:
             accepted.append(row)
     return accepted, rejected
+
+
+def sanitize_source_entity_id(value: Any) -> str:
+    entity_id = str(value or "").strip()
+    return entity_id if SOURCE_ENTITY_ID_RE.fullmatch(entity_id) else ""
 
 
 def evidence_origin(row: Any) -> str:
@@ -262,8 +273,6 @@ def evidence_origin(row: Any) -> str:
 
     source = str(value("source", "")).strip().lower()
     source_kind = str(value("source_kind", "")).strip().lower()
-    if source_kind in {"social", "official_social"}:
-        return source
     raw = value("raw_json", "")
     if not raw:
         raw = value("raw", {})
@@ -274,6 +283,9 @@ def evidence_origin(row: Any) -> str:
             raw = {}
     if not isinstance(raw, dict):
         raw = {}
+    if source_kind in {"social", "official_social"}:
+        entity_id = sanitize_source_entity_id(raw.get("source_entity_id"))
+        return f"entity:{entity_id}" if entity_id else source
     publisher_url = str(raw.get("publisher_url") or "")
     article_url = str(value("url", "") or "")
     for candidate_url in (publisher_url, article_url):
@@ -720,6 +732,122 @@ class CandidateEvaluator:
         self.store, self.dex, self.safety, self.config, self.agent = store, dex, safety, config, agent
 
     @staticmethod
+    def _ranking_snapshot_facts(snap: TokenSnapshot) -> dict[str, Any]:
+        raw = snap.raw if isinstance(snap.raw, dict) else {}
+        rugcheck = raw.get("rugcheck") if isinstance(raw.get("rugcheck"), dict) else {}
+        risk_score = _safe_float(rugcheck.get("score_normalised"), _safe_float(rugcheck.get("score")))
+        buys = snap.buys_5m
+        sells = snap.sells_5m
+        transactions = None if buys is None or sells is None else int(buys) + int(sells)
+        return {
+            "observed_at": iso(snap.observed_at),
+            "provider": str(snap.provider),
+            "price_usd": snap.price_usd,
+            "liquidity_usd": snap.liquidity_usd,
+            "market_cap_usd": snap.market_cap_usd,
+            "volume_5m_usd": snap.volume_5m_usd,
+            "buys_5m": buys,
+            "sells_5m": sells,
+            "transactions_5m": transactions,
+            "buyers_5m": snap.buyers_5m,
+            "holders": snap.holders,
+            "buy_tax_pct": snap.buy_tax_pct,
+            "sell_tax_pct": snap.sell_tax_pct,
+            "honeypot": snap.honeypot,
+            "sellable": snap.sellable,
+            "risk_score": risk_score,
+            "rugged": rugcheck.get("rugged") if isinstance(rugcheck.get("rugged"), bool) else None,
+            "security_reports": [
+                name
+                for name in ("goplus_evm", "honeypot_is", "goplus_solana", "rugcheck")
+                if isinstance(raw.get(name), dict)
+            ],
+        }
+
+    def _persist_ranking(
+        self,
+        event: EventView,
+        *,
+        evaluated_at,
+        ranked: list[tuple[float, float, TokenCandidate, TokenSnapshot, list[str]]],
+        decision: CandidateDecision | None,
+        outcome_reasons: list[str] | None = None,
+        raw_canonical_margin: float | None = None,
+        tie_break: dict[str, Any] | None = None,
+        safety_checked: bool = False,
+    ) -> None:
+        persisted = ranked[:25]
+        selected_score = persisted[0][0] if persisted else None
+        score_leader = max((row[0] for row in persisted), default=None)
+        candidates: list[dict[str, Any]] = []
+        pre_ranks = {
+            str(token_id): int(rank)
+            for token_id, rank in (tie_break or {}).get("pre_agent_ranks", {}).items()
+        }
+        for index, (score, match, token, snap, reasons) in enumerate(persisted):
+            rank = index + 1
+            is_selected = bool(decision and token.token_id == decision.token_id and rank == 1)
+            next_score = persisted[index + 1][0] if index + 1 < len(persisted) else None
+            rejected_reasons = list(decision.rejected_reasons) if is_selected and decision else []
+            candidate_reasons = list(decision.reasons) if is_selected and decision else list(reasons)
+            if is_selected and safety_checked:
+                safety_status = "rejected" if decision and decision.action == "REJECT" else "passed"
+            else:
+                safety_status = "not_checked"
+            candidates.append(
+                {
+                    "rank": rank,
+                    "token_id": token.token_id,
+                    "chain": token.chain.lower(),
+                    "address": token.address,
+                    "name": token.name,
+                    "symbol": token.symbol,
+                    "candidate_score": float(score),
+                    "match_score": float(match),
+                    "canonical_margin": float(decision.canonical_margin) if is_selected and decision else None,
+                    "raw_canonical_margin": float(raw_canonical_margin) if is_selected and raw_canonical_margin is not None else None,
+                    "score_gap_to_selected": None if selected_score is None else float(selected_score - score),
+                    "score_gap_to_score_leader": None if score_leader is None else float(score_leader - score),
+                    "score_gap_to_next_rank": None if next_score is None else float(score - next_score),
+                    "selection_status": "selected_for_runtime_finalization" if is_selected else "not_selected_lower_rank",
+                    "action": "PENDING_RUNTIME" if is_selected else "NOT_SELECTED",
+                    "position_usd": 0.0,
+                    "reasons": candidate_reasons,
+                    "rejected_reasons": rejected_reasons,
+                    "snapshot": self._ranking_snapshot_facts(snap),
+                    "safety": {"status": safety_status, "rejected_reasons": rejected_reasons},
+                    "tie_break": {
+                        "pre_agent_rank": pre_ranks.get(token.token_id, rank),
+                        "rank_changed": pre_ranks.get(token.token_id, rank) != rank,
+                        "preferred": bool((tie_break or {}).get("preferred_token_id") == token.token_id),
+                    },
+                }
+            )
+        safe_tie_break = {
+            "used": bool((tie_break or {}).get("used")),
+            "tier": (tie_break or {}).get("tier"),
+            "confidence": (tie_break or {}).get("confidence"),
+            "preferred_token_id": (tie_break or {}).get("preferred_token_id"),
+        }
+        self.store.set_candidate_ranking(
+            event.id,
+            {
+                "version": 1,
+                "evaluated_at": iso(decision.created_at if decision is not None else evaluated_at),
+                "status": "pending_runtime" if decision is not None else "not_evaluated",
+                "outcome": "UNAVAILABLE",
+                "outcome_reasons": [str(reason) for reason in (outcome_reasons or [])],
+                "ranking_method": "candidate_score_desc_then_bounded_semantic_tiebreak",
+                "candidate_count_total": len(ranked),
+                "candidate_count_persisted": len(persisted),
+                "candidates_truncated": len(ranked) > len(persisted),
+                "tie_break": safe_tie_break,
+                "candidates": candidates,
+                "final_outcome": None,
+            },
+        )
+
+    @staticmethod
     def _match(event_text: str, aliases: list[str], token: TokenCandidate, direct_addresses: set[str]) -> float:
         address_match = token.address.lower() in {a.lower() for a in direct_addresses}
         event_terms = terms(" ".join([event_text, *aliases]))
@@ -790,6 +918,13 @@ class CandidateEvaluator:
         observations = self.store.event_observations(event.id)
         external = [row for row in observations if str(row["source_kind"]).lower() != "onchain"]
         if not external:
+            self._persist_ranking(
+                event,
+                evaluated_at=utcnow(),
+                ranked=[],
+                decision=None,
+                outcome_reasons=["no_external_evidence"],
+            )
             return None
         decision_at = utcnow()
         accepted, rejected = replay_guard(
@@ -799,6 +934,14 @@ class CandidateEvaluator:
         )
         external = [row for row in accepted if str(row["source_kind"]).lower() != "onchain"]
         if not external:
+            evidence_reasons = sorted({reason for values in rejected.values() for reason in values})
+            self._persist_ranking(
+                event,
+                evaluated_at=utcnow(),
+                ranked=[],
+                decision=None,
+                outcome_reasons=["no_current_decision_evidence", *evidence_reasons],
+            )
             return None
         event_text = "\n".join(f"{row['title']} {row['text']}" for row in accepted)
         address_groups = extract_addresses(event_text)
@@ -958,7 +1101,7 @@ class CandidateEvaluator:
                 reason = "reverse_news_confirmation_insufficient"
             else:
                 reason = "no_matching_token"
-            return CandidateDecision(
+            decision = CandidateDecision(
                 event.id,
                 "",
                 "WAIT",
@@ -968,8 +1111,20 @@ class CandidateEvaluator:
                 [reason],
                 sorted(set([*evidence_reasons, *asset_temporal_rejections])),
             )
+            self._persist_ranking(
+                event,
+                evaluated_at=final_decision_at,
+                ranked=[],
+                decision=decision,
+                outcome_reasons=[*decision.reasons, *decision.rejected_reasons],
+            )
+            return decision
 
         agent_resolution: tuple[str, float, str] | None = None
+        tie_break: dict[str, Any] = {
+            "used": False,
+            "pre_agent_ranks": {row[2].token_id: index + 1 for index, row in enumerate(ranked)},
+        }
         raw_gap = ranked[0][0] - ranked[1][0] if len(ranked) > 1 else ranked[0][0]
         if len(ranked) >= 2 and raw_gap < float(self.config.get("agent_tie_threshold", 3.0)):
             tier = "medium" if event.attention >= 75 and raw_gap < 1.5 else "low"
@@ -1003,6 +1158,14 @@ class CandidateEvaluator:
             if preferred in candidate_ids and confidence >= threshold:
                 ranked.sort(key=lambda row: (row[2].token_id == preferred, row[0]), reverse=True)
                 agent_resolution = (preferred, confidence, tier)
+                tie_break.update(
+                    {
+                        "used": True,
+                        "tier": tier,
+                        "confidence": confidence,
+                        "preferred_token_id": preferred,
+                    }
+                )
 
         score, match, token, snap, reasons = ranked[0]
         raw_margin = score - ranked[1][0] if len(ranked) > 1 else score
@@ -1019,16 +1182,54 @@ class CandidateEvaluator:
                 f"raw_canonical_margin={raw_margin:.3f}",
             ]
         if score < min_score:
-            return CandidateDecision(event.id, token.token_id, "WAIT", score, match, margin, reasons, ["candidate_score_too_low"])
+            decision = CandidateDecision(event.id, token.token_id, "WAIT", score, match, margin, reasons, ["candidate_score_too_low"])
+            self._persist_ranking(
+                event,
+                evaluated_at=final_decision_at,
+                ranked=ranked,
+                decision=decision,
+                raw_canonical_margin=raw_margin,
+                tie_break=tie_break,
+            )
+            return decision
         if len(ranked) > 1 and margin < min_margin:
-            return CandidateDecision(event.id, token.token_id, "WAIT", score, match, margin, reasons, ["canonical_token_ambiguous"])
+            decision = CandidateDecision(event.id, token.token_id, "WAIT", score, match, margin, reasons, ["canonical_token_ambiguous"])
+            self._persist_ranking(
+                event,
+                evaluated_at=final_decision_at,
+                ranked=ranked,
+                decision=decision,
+                raw_canonical_margin=raw_margin,
+                tie_break=tie_break,
+            )
+            return decision
         ok, rejected_reasons = await self.safety.check(snap)
         # Persist the post-enrichment snapshot so an audit can see the exact
         # Honeypot/RugCheck information used by this decision.
         self.store.add_snapshot(snap)
         if not ok:
-            return CandidateDecision(event.id, token.token_id, "REJECT", score, match, margin, reasons, rejected_reasons)
-        return CandidateDecision(event.id, token.token_id, "CANDIDATE", score, match, margin, reasons)
+            decision = CandidateDecision(event.id, token.token_id, "REJECT", score, match, margin, reasons, rejected_reasons)
+            self._persist_ranking(
+                event,
+                evaluated_at=final_decision_at,
+                ranked=ranked,
+                decision=decision,
+                raw_canonical_margin=raw_margin,
+                tie_break=tie_break,
+                safety_checked=True,
+            )
+            return decision
+        decision = CandidateDecision(event.id, token.token_id, "CANDIDATE", score, match, margin, reasons)
+        self._persist_ranking(
+            event,
+            evaluated_at=final_decision_at,
+            ranked=ranked,
+            decision=decision,
+            raw_canonical_margin=raw_margin,
+            tie_break=tie_break,
+            safety_checked=True,
+        )
+        return decision
 
 
 class PaperPolicy:

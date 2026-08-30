@@ -1,5 +1,7 @@
 # memeTrader 0.6.3：个人电脑上的自主信息源 Meme 机器人
 
+后续开发者和 Agent 请先阅读 [docs/PROJECT_CONTEXT/START_HERE.md](docs/PROJECT_CONTEXT/START_HERE.md)。这里保存无敏感信息的产品需求、架构、安全边界、当前状态与运行手册，避免关键上下文只存在于聊天窗口。
+
 `memeTrader` 常驻运行在普通 Windows 电脑上，目标不是全网毫秒级抢跑，而是以现实可行的**几十秒到几分钟**速度完成：
 
 ```text
@@ -30,7 +32,7 @@
 
 ### 快车道
 
-1. **登录态浏览器扩展**：被动读取你已打开页面中新渲染的公开帖子，支持 X、Truth Social、Bluesky、Reddit、Threads、Instagram、TikTok、YouTube 和 `t.me` 公开频道页。
+1. **登录态浏览器扩展**：被动读取你已打开页面中新渲染的公开帖子，支持 X、Truth Social、Bluesky、Reddit、Threads、Instagram、TikTok 和 YouTube。Telegram 只保留人工目录链接，不自动读取、入库或送入 Agent。
 2. **PumpPortal 免费 WebSocket**：只订阅新 Token 和迁移事件，不使用付费交易流。
 3. **GeckoTerminal 新池**：分钟级发现 Solana、BSC 新池。
 
@@ -44,7 +46,9 @@
 
 Bluesky 公共搜索接口在部分网络会返回 403。本机配置遇到这种情况时应关闭 API 轮询，继续通过已登录浏览器页面采集，不让常驻进程反复报错。
 
-浏览器扩展不读取 Cookie、密码、私信或浏览器历史，不自动滚动、点赞、发帖或登录。它只能看到实际打开并加载的公开页面。因此实际使用时，建议常驻少量高价值页面：名人/项目官方账号、X Lists、Truth Social 账号页、Reddit/Bluesky 重点社区、公共 Telegram 频道页。
+浏览器扩展不读取 Cookie、密码、私信或浏览器历史，不自动滚动、点赞、发帖或登录。它只能看到实际打开并加载的公开页面。因此实际使用时，建议常驻少量高价值页面：名人/项目官方账号、X Lists、Truth Social 账号页、Reddit/Bluesky 重点社区。Telegram 链接只能由用户按需人工打开。
+
+项目同时维护一份可审查、可版本控制的 [80 条公开社交信息源目录](docs/SOCIAL_SOURCE_CATALOG.json)，覆盖 X、YouTube、Instagram、TikTok、Threads、Bluesky、Telegram 和 Reddit；分类、优先级与跨平台去重原则见 [目录说明](docs/SOCIAL_SOURCE_CATALOG_CN.md)。这只是候选种子，不是每轮扫描全部账号，也不使账号内容自动具备决策资格。实际启用的当前观察清单由用户导入/选择后保存在 Git 忽略的 `data/web_console/console_settings.json`，可以与目录版本不同。
 
 ## Windows 安装
 
@@ -107,6 +111,10 @@ Web 控制台直接读取当前 `config.json` 指向的 SQLite，不复制策略
 
 顶部可在“中文 / English”之间即时切换；选择只保存在当前浏览器本地，刷新后仍会保留。事件标题、Token 名称和来源原文不会被自动翻译。
 
+十个工作区都会在页面可见且没有未保存表单时自动刷新当前页；Overview 约 10 秒、事件约 12 秒、Token/决策/组合/Wallet 约 15 秒、Agent/Sources 约 20 秒、Audit 约 30 秒、Settings 约 60 秒。当前采用低成本轮询，不需要 Redis、消息队列或额外 WebSocket 服务；切回浏览器标签时会立即取一次新快照，打开的事件/Token 详情也随当前页一起更新。
+
+Overview 顶部的动态采集脉冲不是装饰性计时器。它从 SQLite 已持久化时间戳分别计算“新闻/社交/Agent 信息”和“新 Token/池及快照”两条通道的最近 60 秒数量、5 分钟写入速率、最近写入时间与 active/waiting/stale 状态。只有近期确有写入时才播放脉冲动画；没有新数据会如实显示等待或陈旧，不会伪造“实时运行”。
+
 双击：
 
 ```text
@@ -133,7 +141,7 @@ Wallet 只在 `127.0.0.1` 接受私钥录入和 Devnet 操作。私钥不会回�
 
 最新真链验证记录见 [docs/WALLET_DEVNET_VALIDATION_20260830.md](docs/WALLET_DEVNET_VALIDATION_20260830.md)。当前钱包连接与 Devnet 集群校验已通过，但官方 faucet 返回 RPC unavailable，因此尚无可声称成功的公开 Devnet 交易签名。
 
-事件详情把全部来源按“决策资格 → `feature/confirmation/identity/promotion` 角色 → 新鲜度 → 可观察热度”排列。这是审计用的**证据优先级**，不是对媒体权威性或事实真假的自动裁决；每项仍显示原始链接、观察时间和是否可用于当时决策。
+事件详情把全部来源按决策用途、已知权威层级、新鲜度、原始链接和可观察热度排列，并逐条显示**平台、发布者、账号类型、官方/认证状态、已知关注者/覆盖与可见互动、本地观察优先级**。未知字段明确显示为未知，绝不根据平台或显示名猜测影响力。`feature/confirmation` 与 `identity/promotion` 分组展示；后两者始终是仅上下文，影响力再高也不能单独触发决策。这是审计用的**证据优先级**，不是对媒体权威性或事实真假的自动裁决；每项仍显示原始链接、发布时间、本机观察/入库时间和当时决策资格。
 
 详细说明见 [docs/WEB_CONSOLE_CN.md](docs/WEB_CONSOLE_CN.md)。
 
@@ -183,9 +191,11 @@ Wallet 只在 `127.0.0.1` 接受私钥录入和 Devnet 操作。私钥不会回�
 
 默认最多同时运行 2 个搜索 Agent 槽位。全球快搜和搜源优先使用 Spark/low，额度不可用时回退 Luna/low；复杂 Token 身份核验使用 Luna/low，必要时才升级 Terra/medium，Sol/medium 仅作为最后回退。普通状态每 12 分钟快搜一次，并轮换覆盖 5 个主题中的 3 个；重大信号期间每 3 分钟覆盖全部主题，连续三次空结果退到 30 分钟。Spark 不可用或单次调用超过 18,000 tokens 时，普通状态最短间隔自动拉长到 30 分钟，重大信号仍保留 10 分钟级回退。Token 专项 Agent 受 5 分钟全局冷却、240 分钟同 Token 冷却和动量分≥80 的限制；失败时仅进入 10 分钟短退避。调用次数、已使用 token 和下一次调用预留量共同限制预算，`--force` 也不能越过预算。自动发现的 RSS 连续 3 次失败，或近期内容至少一半是 Market Wrap、价格更新、Presale、Top/Best/100x 榜单时，会自动暂停并由后续搜源补充。全部频率、并发、模型、推理强度和上限都可在 `config.json -> autonomous_search` 修改。
 
+上段是源码示例配置的默认值；本机 2026-08-30 已应用一个适度加快但仍适合个人电脑的运行配置：主采集轮询 `60→45` 秒、Token 反向新闻 `45→30` 秒、Trend Scout 普通/热点/空结果退避为 `8/3/20` 分钟、Source Discovery 为 `12` 小时、Token Context 全局/同 Token 冷却为 `4/180` 分钟。实际运行以 Git 忽略的本机 `config.json` 为准，和源码默认值可以不同；保存 Runtime 设置后需要安全重启单一常驻任务才会生效。Agent 并发硬上限仍是 2，没有随频率上调而增加。
+
 界面把采集与分析职责呈现为 6 个逻辑角色：News Radar、Social Pulse、Named Account Watch、Evidence Verifier、Token Context 和 Source Discovery。它们是共享队列中的职责，不是 6 个永久并发进程；仍共同遵守最多 2 个 Agent 子进程的硬上限。Agent Operations 会按任务、模型和推理强度分别累计调用次数、输入/缓存/输出/推理 token、回退与预算，不把不同智能程度的消耗混成一个数字。
 
-需要登录的平台必须由用户在专用的本机 Chrome/Edge 配置中手工登录并保持目标公开页面打开。项目不会索要、接收或保存账号密码、Cookie、Session、验证码；登录缺失或页面未打开时，Sources 会显示对应状态。
+需要登录的平台只在专用的本机 Chrome/Edge 配置中处理，并保持目标公开页面打开。账号密码、Cookie、Session 和验证码只归浏览器/平台所有，memeTrader 不读取、导出或保存；登录不成功的平台直接跳过，并继续使用公开页面、RSS、Agent 搜索和其他可访问来源，不让单个平台阻塞整套采集。登录缺失或页面未打开时，Sources 会显示对应状态。
 
 常规计算、去重、时间判断、评分、仓位和卖出仍全部由本地代码完成。四字母短名称可以触发 Agent 搜证，但不能只靠文字重合直接连接新闻；证据不足时返回 `WAIT`。EVM 使用 GoPlus/Honeypot.is、Solana 使用 GoPlus/RugCheck：每个链族默认至少要有一个外部安全报告，两者都不可用时失败关闭；缺失结果不会被当作安全。语义平局 Agent 的 `agent.enabled` 继续默认关闭。
 

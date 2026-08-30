@@ -21,6 +21,8 @@ from .collectors import (
     MastodonCollector,
     PumpPortalCollector,
     RSSCollector,
+    normalize_loopback_socks5_proxy_url,
+    normalize_public_http_url,
 )
 from .models import CandidateDecision, Observation, TokenCandidate, iso, parse_time, utcnow
 from .store import Store
@@ -37,6 +39,7 @@ from .strategy import (
     is_distinctive_token_name,
     is_promotional_market_content,
     replay_guard,
+    sanitize_source_entity_id,
     terms,
 )
 
@@ -52,6 +55,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "source_health_seconds": 30,
     "event_min_attention": 35.0,
     "sources": {
+        "rss_max_response_bytes": 1_048_576,
+        "rss_max_redirects": 5,
+        "rss_proxy_url": "",
         "rss": [
             {
                 "name": "coindesk",
@@ -432,6 +438,27 @@ def load_config(path: str | Path) -> tuple[dict[str, Any], Path]:
     if not 1 <= int(bridge.get("max_body_bytes", 262_144)) <= 1_000_000:
         raise ValueError("bridge.max_body_bytes must be between 1 and 1000000")
 
+    sources = config.get("sources") or {}
+    if not 16_384 <= int(sources.get("rss_max_response_bytes", 1_048_576)) <= 5_000_000:
+        raise ValueError("sources.rss_max_response_bytes must be between 16384 and 5000000")
+    if not 0 <= int(sources.get("rss_max_redirects", 5)) <= 10:
+        raise ValueError("sources.rss_max_redirects must be between 0 and 10")
+    try:
+        sources["rss_proxy_url"] = normalize_loopback_socks5_proxy_url(
+            str(sources.get("rss_proxy_url") or "")
+        )
+    except ValueError as exc:
+        raise ValueError(
+            "sources.rss_proxy_url must be an unauthenticated socks5 URL at a literal loopback IP"
+        ) from exc
+    for item in sources.get("rss", []):
+        if not isinstance(item, dict) or not item.get("url"):
+            raise ValueError("sources.rss entries require a URL")
+        try:
+            normalize_public_http_url(str(item["url"]))
+        except ValueError as exc:
+            raise ValueError("sources.rss URLs must be credential-free public http/https URLs") from exc
+
     for name in ("poll_seconds", "reverse_news_seconds", "event_scan_seconds", "position_scan_seconds", "source_health_seconds"):
         if float(config.get(name, 0)) <= 0:
             raise ValueError(f"{name} must be positive")
@@ -606,6 +633,79 @@ class Notifier:
             ).start()
 
 
+def resolve_watchlist_source_entity_id(item: dict[str, Any], settings_path: Path) -> str:
+    """Resolve only an explicitly configured exact platform/handle entity mapping."""
+    supplied = sanitize_source_entity_id(item.get("source_entity_id"))
+    platform = str(item.get("platform") or "").strip().lower()
+    author = str(item.get("author") or "").strip().casefold().lstrip("@")
+    if not supplied or not platform or not author or platform == "telegram":
+        return ""
+    try:
+        payload = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    accounts = payload.get("watch_accounts") if isinstance(payload, dict) else None
+    if not isinstance(accounts, list):
+        return ""
+    for account in accounts[:500]:
+        if not isinstance(account, dict) or account.get("enabled", True) is False:
+            continue
+        account_platform = str(account.get("platform") or "").strip().lower()
+        account_handle = str(account.get("handle") or "").strip().casefold().lstrip("@")
+        configured = sanitize_source_entity_id(account.get("entity_id"))
+        if account_platform == platform and account_handle == author:
+            return configured if configured == supplied else ""
+    return ""
+
+
+TELEGRAM_MANUAL_ONLY_HOSTS = {"t.me", "telegram.me"}
+
+
+def _browser_bridge_url_host(value: Any) -> tuple[bool, str]:
+    """Return a conservative final URL host; malformed/credential URLs are invalid."""
+    raw = str(value or "")
+    if not raw:
+        return True, ""
+    if raw != raw.strip() or "\\" in raw or any(ord(char) <= 32 or ord(char) == 127 for char in raw):
+        return False, ""
+    try:
+        parsed = urllib.parse.urlsplit(raw)
+        _ = parsed.port
+    except (TypeError, ValueError):
+        return False, ""
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        return False, ""
+    if parsed.username is not None or parsed.password is not None or "%" in parsed.netloc:
+        return False, ""
+    try:
+        host = parsed.hostname.encode("idna").decode("ascii").lower().rstrip(".")
+    except (UnicodeError, ValueError):
+        return False, ""
+    return bool(host), host
+
+
+def _is_telegram_manual_only_host(host: str) -> bool:
+    value = str(host or "").lower().rstrip(".")
+    return any(value == root or value.endswith(f".{root}") for root in TELEGRAM_MANUAL_ONLY_HOSTS)
+
+
+def _browser_bridge_item_allowed(*, platform: Any, source: Any, url: Any) -> bool:
+    platform_name = str(platform or "").strip().casefold()
+    source_name = str(source or "").strip().casefold()
+    if platform_name == "telegram":
+        return False
+    source_parts = source_name.split(":")
+    if source_parts[0] == "telegram" or (
+        len(source_parts) > 1 and source_parts[0] == "browser" and source_parts[1] == "telegram"
+    ):
+        return False
+    for candidate in (url, source if "://" in str(source or "") else ""):
+        valid, host = _browser_bridge_url_host(candidate)
+        if not valid or _is_telegram_manual_only_host(host):
+            return False
+    return True
+
+
 class BrowserBridge:
     def __init__(
         self, host: str, port: int, token: str,
@@ -613,12 +713,14 @@ class BrowserBridge:
         on_heartbeat: Callable[[str, dict[str, Any]], Awaitable[None]],
         *,
         max_body_bytes: int = 262_144,
+        source_entity_resolver: Callable[[dict[str, Any]], str] | None = None,
     ):
         if host not in {"127.0.0.1", "localhost", "::1"}:
             raise ValueError("browser bridge must bind to loopback")
         self.host, self.port, self.token = host, port, token
         self.max_body_bytes = int(max_body_bytes)
         self.on_observation, self.on_heartbeat = on_observation, on_heartbeat
+        self.source_entity_resolver = source_entity_resolver
         self.server: asyncio.Server | None = None
 
     async def start(self) -> None:
@@ -673,6 +775,13 @@ class BrowserBridge:
                 source = str(payload.get("source") or payload.get("url") or "browser")[:300]
                 raw_detail = payload.get("detail") if isinstance(payload.get("detail"), dict) else payload
                 detail = raw_detail if isinstance(raw_detail, dict) else {}
+                if not _browser_bridge_item_allowed(
+                    platform=detail.get("platform") or payload.get("platform"),
+                    source=source,
+                    url=detail.get("page_url") or payload.get("url"),
+                ):
+                    await self._respond(writer, "200 OK", {"ok": True, "accepted": 0})
+                    return
                 await self.on_heartbeat(source, detail)
                 await self._respond(writer, "200 OK", {"ok": True})
                 return
@@ -681,6 +790,12 @@ class BrowserBridge:
                 accepted = 0
                 for item in items[:200]:
                     if not isinstance(item, dict):
+                        continue
+                    if not _browser_bridge_item_allowed(
+                        platform=item.get("platform"),
+                        source=item.get("source"),
+                        url=item.get("url"),
+                    ):
                         continue
                     title = str(item.get("title") or item.get("text") or "").strip()
                     # Client timestamps are untrusted. Availability starts only when this
@@ -694,6 +809,12 @@ class BrowserBridge:
                             published_at = None
                     if not title:
                         continue
+                    source_entity_id = ""
+                    if self.source_entity_resolver is not None:
+                        source_entity_id = sanitize_source_entity_id(self.source_entity_resolver(item))
+                    browser_item = {key: value for key, value in item.items() if key != "source_entity_id"}
+                    if source_entity_id:
+                        browser_item["source_entity_id"] = source_entity_id
                     await self.on_observation(
                         Observation(
                             source=str(item.get("source") or "browser"),
@@ -705,7 +826,8 @@ class BrowserBridge:
                             source_item_id=str(item.get("source_item_id") or item.get("url") or "")[:2000],
                             capture_phase=str(item.get("capture_phase") or "live")[:20],
                             raw={
-                                "browser": item,
+                                "browser": browser_item,
+                                **({"source_entity_id": source_entity_id} if source_entity_id else {}),
                                 **{
                                     key: item.get(key)
                                     for key in ("like_count", "repost_count", "reply_count", "view_count", "score", "priority")
@@ -737,7 +859,13 @@ class Runtime:
         if not self.store.open_positions() and not self.store.trades():
             with self.store.db:
                 self.store.db.execute("UPDATE paper_account SET cash_usd=?,updated_at=? WHERE singleton=1", (starting_cash, iso()))
-        self.http = HttpClient()
+        source_config = config.get("sources") or {}
+        self.http = HttpClient(
+            feed_max_response_bytes=int(source_config.get("rss_max_response_bytes", 1_048_576)),
+            feed_max_redirects=int(source_config.get("rss_max_redirects", 5)),
+            feed_proxy_url=str(source_config.get("rss_proxy_url") or ""),
+            conditional_store=self.store,
+        )
         self.dex = DexScreenerClient(self.http)
         self.events = EventEngine(
             self.store,
@@ -831,7 +959,6 @@ class Runtime:
         )
 
     async def browser_heartbeat(self, source: str, detail: dict[str, Any] | None = None) -> None:
-        self.store.heartbeat(f"browser:{source}")
         detail = detail if isinstance(detail, dict) else {}
         platform = str(detail.get("platform") or "").strip().lower()
         allowed_platforms = {
@@ -839,6 +966,9 @@ class Runtime:
         }
         if platform not in allowed_platforms:
             return
+        if platform == "telegram":
+            return
+        self.store.heartbeat(f"browser:{source}")
         access_state = str(detail.get("access_state") or "unknown").strip().lower()
         access_state = {
             "content_visible": "accessible",
@@ -1258,7 +1388,8 @@ class Runtime:
                     decision.action = "WAIT"
                     decision.rejected_reasons.append("position_size_zero")
 
-            self.store.add_decision(decision)
+            decision_id = self.store.add_decision(decision)
+            self.store.finalize_candidate_ranking(event.id, decision, decision_id=decision_id)
             signature = json.dumps(
                 {
                     "action": decision.action,
@@ -1504,6 +1635,9 @@ class Runtime:
                 str(bridge_cfg.get("host", "127.0.0.1")), int(bridge_cfg.get("port", 8765)), str(bridge_cfg["token"]),
                 self.ingest_observation, self.browser_heartbeat,
                 max_body_bytes=int(bridge_cfg.get("max_body_bytes", 262_144)),
+                source_entity_resolver=lambda item: resolve_watchlist_source_entity_id(
+                    item, self.root / "data" / "web_console" / "console_settings.json"
+                ),
             )
             await self.bridge.start()
             self.notifier.send("bridge_started", "browser bridge", {"host": bridge_cfg.get("host"), "port": bridge_cfg.get("port")})

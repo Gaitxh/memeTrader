@@ -52,12 +52,21 @@ def _seed(path: Path) -> tuple[int, str]:
             source="news-a",
             source_kind="news",
             title="Viral otter becomes an internet mascot",
+            text="x" * 2100,
             url="https://news-a.example/story",
             published_at=now - timedelta(minutes=2),
             observed_at=now,
             ingested_at=now,
             role="feature",
             source_item_id="feature-1",
+            author="Otter Daily",
+            raw={
+                "account_type": "publisher",
+                "authority_tier": "established",
+                "is_verified": True,
+                "view_count": 125_000,
+                "like_count": 8_500,
+            },
         ),
         Observation(
             source="browser:x:otter",
@@ -69,7 +78,13 @@ def _seed(path: Path) -> tuple[int, str]:
             ingested_at=now,
             role="identity",
             source_item_id="identity-1",
-            raw={"original_role": "confirmation", "stale_first_observation": True},
+            author="otter",
+            raw={
+                "original_role": "confirmation",
+                "stale_first_observation": True,
+                "source_entity_id": "otter_daily",
+                "bridge_token": "must-never-be-returned",
+            },
         ),
         Observation(
             source="promotion-list",
@@ -80,6 +95,7 @@ def _seed(path: Path) -> tuple[int, str]:
             ingested_at=now,
             role="promotion",
             source_item_id="promotion-1",
+            author="Token Promotions",
             raw={"non_event_market_promotion": True},
         ),
         Observation(
@@ -252,9 +268,21 @@ def test_web_api_empty_database_is_safe_and_live_is_locked(tmp_path: Path):
     assert overview["counts"]["open_positions"] == 0
     assert overview["account"]["equity_usd"] == 1000
     assert overview["account"]["quote_as_of"] is None
+    activity = overview["ingestion_activity"]
+    assert activity["truth_source"] == "persisted_sqlite_activity"
+    assert activity["status"] == "waiting"
+    assert activity["information"]["status"] == "waiting"
+    assert activity["information"]["observations_60s"] == 0
+    assert activity["tokens"]["status"] == "waiting"
+    assert activity["tokens"]["snapshot_updates_5m"] == 0
     assert web.events({})["items"] == []
     assert web.tokens({})["items"] == []
     assert web.decisions({})["items"] == []
+    audit = web.audit()
+    assert audit["status"] == "policy_only"
+    assert audit["policy_enforced"] is True
+    assert audit["future_data_rejected"] is None
+    assert all(item["status"] != "pass" for item in audit["cases"])
 
 
 def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_path: Path):
@@ -274,31 +302,110 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
         },
     )
     store.close()
+    console_dir = tmp_path / "data" / "web_console"
+    console_dir.mkdir(parents=True)
+    (console_dir / "console_settings.json").write_text(
+        json.dumps(
+            {
+                "watch_accounts": [
+                    {
+                        "platform": "x",
+                        "handle": "otter",
+                        "display_name": "Otter",
+                        "url": "https://x.com/otter",
+                        "enabled": True,
+                        "priority": 2,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
     web = WebData(config_path)
 
+    activity = web.overview()["ingestion_activity"]
+    assert activity["status"] == "active"
+    assert activity["information"]["status"] == "active"
+    assert activity["information"]["observations_60s"] == 4
+    assert activity["information"]["rate_per_minute_5m"] == pytest.approx(0.8)
+    assert activity["tokens"]["status"] == "active"
+    assert activity["tokens"]["new_tokens_60s"] == 1
+    assert activity["tokens"]["snapshot_updates_60s"] == 1
+    assert activity["tokens"]["rate_per_minute_5m"] == pytest.approx(0.4)
+
     events = web.events({"limit": ["10"]})["items"]
-    event = next(item for item in events if item["id"] == event_id)
+    event_summary = next(item for item in events if item["id"] == event_id)
+    assert "observations" not in event_summary
+    assert "x" * 600 not in json.dumps(event_summary)
+    event = web.event_detail(event_id)
     roles = {item["role"]: item for item in event["observations"]}
     assert event["event_url"] == f"#/events/{event_id}"
-    assert event["evidence_ranking"]["method"] == "evidence_priority_not_authority"
+    assert event["evidence_ranking"]["method"] == "decision_utility_authority_freshness"
     assert [item["priority_rank"] for item in event["observations"]] == [1, 2, 3, 4]
     assert all(0 <= item["priority_score"] <= 100 for item in event["observations"])
-    assert all(item["ranking_method"] == "evidence_priority_not_authority" for item in event["observations"])
+    assert all(item["ranking_method"] == "decision_utility_authority_freshness" for item in event["observations"])
     assert event["source_count"] == 4
     assert event["total_source_count"] == 4
     assert event["eligible_source_count"] == 1
     assert event["eligible_latest_at"] is not None
     assert event["freshness_minutes"] is not None
-    assert roles["feature"]["decision_eligible"] is True
+    feature = next(item for item in event["observations"] if item["source"] == "news-a")
+    identity = next(item for item in event["observations"] if item["source"] == "browser:x:otter")
+    assert feature["decision_eligible"] is True
+    assert len(feature["text"]) == 600 and feature["text_truncated"] is True
+    assert feature["platform"] == {"id": "web", "label": "news-a.example", "inferred": True}
+    assert feature["author"] == "Otter Daily" and feature["author_known"] is True
+    assert feature["influence"]["account_type"] == "publisher"
+    assert feature["influence"]["account_type_inferred"] is False
+    assert feature["influence"]["authority_tier"] == "established"
+    assert feature["influence"]["verified"] is True
+    assert feature["influence"]["follower_count"] is None
+    assert feature["influence"]["visible_engagement"] == {"view_count": 125000, "like_count": 8500}
+    assert feature["source_group"] == "original_feature"
+    assert event["lead_source"]["id"] == feature["id"]
+    assert identity["platform"]["id"] == "x" and identity["author"] == "otter"
+    assert identity["source_entity_id"] == "otter_daily"
+    assert identity["cross_platform_entity"] == {
+        "id": "otter_daily",
+        "origin": "entity:otter_daily",
+        "deduplication": "explicit_persisted_entity_only",
+    }
+    assert identity["origin"] == "entity:otter_daily"
+    assert "bridge_token" not in identity["metadata"]
+    assert identity["influence"]["authority_tier"] == "unknown"
+    assert identity["influence"]["account_type_inferred"] is True
+    assert identity["influence"]["verified"] is None
+    assert identity["influence"]["follower_count"] is None
+    assert identity["influence"]["curated_watch"] == {
+        "configured": True,
+        "priority": 2,
+        "tier": "community_trend",
+        "display_name": "Otter",
+    }
+    assert identity["decision_eligible"] is False
+    assert identity["ranking_dimensions"]["curated_watch_priority"] == 2
     assert roles["identity"]["original_role"] in {"confirmation", "feature"}
     assert roles["promotion"]["decision_eligible"] is False
     assert "non_decision_role" in roles["promotion"]["rejection_reasons"]
     future = next(item for item in event["observations"] if item["source"] == "future-clock")
     assert future["freshness"] == "future"
     assert future["decision_eligible"] is False
+    assert future["author"] is None and future["author_known"] is False
+    assert future["source_group"] == "identity_promotion_context"
     assert {"published_at", "observed_at", "ingested_at"}.issubset(future)
-    detail = web.event_detail(event_id)
+    detail = event
+    assert detail["ranking_available"] is False
+    assert detail["candidate_ranking"] is None
+    assert detail["ranking_persistence_gap"] == "candidate_ranking_not_available_for_this_event"
     assert detail["ranked_sources"] == event["observations"]
+    assert [group["id"] for group in detail["source_groups"]] == [
+        "original_feature", "identity_promotion_context"
+    ]
+    context_sources = next(
+        group["items"] for group in detail["source_groups"] if group["id"] == "identity_promotion_context"
+    )
+    assert {item["role"] for item in context_sources} == {"identity", "promotion"}
+    assert all(item["decision_eligible"] is False for item in context_sources)
     assert [item["observed_at"] for item in detail["evidence_timeline"]] == sorted(
         item["observed_at"] for item in detail["evidence_timeline"]
     )
@@ -309,15 +416,42 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
     token = web.token_detail(token_id)
     assert token["snapshot"]["momentum"] > 0
     assert token["snapshot"]["buys_5m"] == 30
-    decision = web.decisions({})["items"][0]
+    assert token["linked_event_ids"] == [event_id]
+    assert token["evidence_record_count"] == token["evidence_count"] == 1
+    assert max(len(item["text"]) for item in token["evidence"]) <= 600
+    decision_payload = web.decisions({})
+    assert decision_payload["ranking_available"] is False
+    assert decision_payload["ranking_coverage"] == {"available": 0, "unavailable": 1}
+    decision = decision_payload["items"][0]
     assert decision["action"] == "WAIT" and decision["is_wait"] is True
+    assert decision["ranking_available"] is False and decision["candidate_ranking"] is None
     assert decision["rejected_reasons"] == ["canonical_token_ambiguous"]
     assert decision["position_usd"] == 0
+    safety = {item["name"]: item for item in decision["safety_checks"]["checks"]}
+    assert decision["safety_checks"]["basis"] == "persisted_snapshot_at_or_before_decision"
+    assert decision["safety_checks"]["snapshot_observed_at"] is not None
+    assert safety["liquidity_usd"]["value"] == 50_000
+    assert safety["liquidity_usd"]["state"] == "pass"
+    assert safety["transactions_5m"]["value"] == 40
+    assert safety["buy_ratio_5m"]["value"] == pytest.approx(0.75)
+    assert safety["honeypot"]["state"] == "unknown"
+    assert safety["sellable"]["state"] == "unknown"
+    assert safety["buy_tax_pct"]["state"] == "unknown"
+    assert safety["sell_tax_pct"]["state"] == "unknown"
+    assert safety["risk_score"]["state"] == "unknown"
 
     portfolio = web.portfolio({})
     assert portfolio["simulated"] is True
     assert portfolio["positions"][0]["current_price"] == pytest.approx(0.01)
     assert portfolio["positions"][0]["quote_as_of"] is not None
+    assert portfolio["positions"][0]["take_profit_index"] == 0
+    assert portfolio["positions"][0]["take_profit_total"] == 4
+    assert portfolio["positions"][0]["take_profit_next"] == {
+        "return_pct": 0.5,
+        "sell_fraction": 0.2,
+    }
+    assert portfolio["positions"][0]["narrative_age_minutes"] is not None
+    assert portfolio["positions"][0]["narrative_stale"] is False
     assert portfolio["trades"][0]["simulated"] is True
     assert portfolio["account"]["equity_usd"] is not None
 
@@ -372,11 +506,157 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
         "accepts_sessions": False,
     }
 
-    audit_evidence = web.audit()["recent_decision_evidence"][0]["evidence"]
+    audit = web.audit()
+    assert audit["status"] == "partial_evidence"
+    assert audit["future_data_rejected"] is True
+    assert audit["observed_future_rejection_count"] == 1
+    audit_cases = {item["id"]: item for item in audit["cases"]}
+    assert audit_cases["r5-false-positive"]["status"] == "policy_enforced"
+    assert audit_cases["r5-false-positive"]["observed_case_evidence"] is False
+    assert audit_cases["r6-starlink-stale-reverse-evidence"]["status"] == "not_observed"
+    assert audit_cases["future-data-rejection"]["status"] == "observed_pass"
+    assert audit_cases["future-data-rejection"]["observed_case_evidence"] is True
+    audit_evidence = audit["recent_decision_evidence"][0]["evidence"]
     stale_identity = next(item for item in audit_evidence if item["source"] == "browser:x:otter")
     assert stale_identity["original_role"] == "confirmation"
     assert stale_identity["rejection_reasons"]
     assert {"published_at", "observed_at", "ingested_at"}.issubset(stale_identity)
+
+
+def test_candidate_ranking_api_is_persisted_bounded_sanitized_and_wait_is_truthful(tmp_path: Path):
+    config_path, _ = _config(tmp_path)
+    event_id, token_id = _seed(tmp_path / "db.sqlite3")
+    store = Store(tmp_path / "db.sqlite3")
+    row = store.decisions(1)[0]
+    hidden = "must-never-leak-from-ranking"
+    store.set_candidate_ranking(
+        event_id,
+        {
+            "version": 1,
+            "evaluated_at": row["created_at"],
+            "status": "completed",
+            "outcome": "WAIT",
+            "outcome_reasons": ["canonical_token_ambiguous"],
+            "ranking_method": "candidate_score_desc_then_bounded_semantic_tiebreak",
+            "candidate_count_total": 2,
+            "candidate_count_persisted": 2,
+            "candidates_truncated": False,
+            "tie_break": {
+                "used": False,
+                "tier": None,
+                "confidence": None,
+                "preferred_token_id": None,
+                "prompt": hidden,
+            },
+            "candidates": [
+                {
+                    "rank": 1,
+                    "token_id": token_id,
+                    "chain": "solana",
+                    "address": "A" * 32,
+                    "name": "Viral Otter",
+                    "symbol": "OTTER",
+                    "candidate_score": 65,
+                    "match_score": 88,
+                    "canonical_margin": 2,
+                    "raw_canonical_margin": 2,
+                    "score_gap_to_selected": 0,
+                    "score_gap_to_score_leader": 0,
+                    "score_gap_to_next_rank": 2,
+                    "selection_status": "selected_for_final_decision",
+                    "action": "WAIT",
+                    "position_usd": 0,
+                    "reasons": ["match=88.0"],
+                    "rejected_reasons": ["canonical_token_ambiguous"],
+                    "snapshot": {
+                        "observed_at": row["created_at"],
+                        "provider": "dexscreener",
+                        "price_usd": 0.01,
+                        "liquidity_usd": 50_000,
+                        "volume_5m_usd": 12_000,
+                        "buys_5m": 30,
+                        "sells_5m": 10,
+                        "security_reports": ["rugcheck"],
+                        "raw_json": {"private_key": hidden},
+                    },
+                    "safety": {"status": "not_checked", "rejected_reasons": []},
+                    "tie_break": {"pre_agent_rank": 1, "rank_changed": False, "preferred": False},
+                    "private_key": hidden,
+                },
+                {
+                    "rank": 2,
+                    "token_id": "solana:" + "B" * 32,
+                    "chain": "solana",
+                    "address": "B" * 32,
+                    "name": "Otter Copy",
+                    "symbol": "OTTR",
+                    "candidate_score": 63,
+                    "match_score": 75,
+                    "score_gap_to_selected": 2,
+                    "score_gap_to_score_leader": 2,
+                    "selection_status": "not_selected_lower_rank",
+                    "action": "NOT_SELECTED",
+                    "position_usd": 0,
+                    "reasons": ["ranked below selected candidate"],
+                    "rejected_reasons": [],
+                    "snapshot": {"observed_at": row["created_at"], "provider": "dexscreener"},
+                    "safety": {"status": "not_checked", "rejected_reasons": []},
+                    "tie_break": {"pre_agent_rank": 2, "rank_changed": False, "preferred": False},
+                },
+            ],
+            "final_outcome": {"decision_id": None, "action": "WAIT", "prompt": hidden},
+            "bridge_token": hidden,
+        },
+    )
+    pending_ranking = WebData(config_path).event_detail(event_id)["candidate_ranking"]
+    assert pending_ranking["status"] == "pending_runtime"
+    assert pending_ranking["outcome"] == "UNAVAILABLE"
+    assert pending_ranking["final_outcome"] is None
+    assert pending_ranking["candidates"][0]["action"] == "PENDING_RUNTIME"
+    assert pending_ranking["candidates"][0]["position_usd"] == 0
+    decision = CandidateDecision(
+        event_id=event_id,
+        token_id=token_id,
+        action="WAIT",
+        score=65,
+        match_score=88,
+        canonical_margin=2,
+        reasons=["match=88.0"],
+        rejected_reasons=["canonical_token_ambiguous"],
+        created_at=row["created_at"],
+    )
+    store.finalize_candidate_ranking(event_id, decision, decision_id=int(row["id"]))
+    store.close()
+
+    web = WebData(config_path)
+    payload = web.decisions({})
+    assert payload["ranking_available"] is True
+    assert payload["ranking_coverage"] == {"available": 1, "unavailable": 0}
+    item = payload["items"][0]
+    assert item["action"] == "WAIT" and item["ranking_available"] is True
+    assert item["rank"] == 1
+    ranking = item["candidate_ranking"]
+    assert ranking["outcome"] == "WAIT"
+    assert ranking["final_outcome"]["action"] == "WAIT"
+    assert [candidate["rank"] for candidate in ranking["candidates"]] == [1, 2]
+    assert ranking["candidates"][0]["action"] == "WAIT"
+    assert ranking["candidates"][1]["action"] == "NOT_SELECTED"
+    assert ranking["candidates"][0]["safety"]["status"] == "not_checked"
+    assert ranking["candidates"][0]["snapshot"]["security_reports"] == ["rugcheck"]
+    assert hidden not in json.dumps(payload)
+    assert "raw_json" not in json.dumps(payload)
+    detail = web.event_detail(event_id)
+    assert detail["ranking_available"] is True
+    assert detail["candidate_ranking"]["final_outcome"]["decision_id"] == int(row["id"])
+    assert set(detail["related_token_ids"]) == {token_id, "solana:" + "B" * 32}
+
+    app = (Path(__file__).parents[1] / "src" / "memetrader" / "web_static" / "app.js").read_text(
+        encoding="utf-8"
+    )
+    assert "data-testid='candidate-ranking'" in app
+    assert "WAIT｜未形成交易信号" in app
+    assert "未选中" in app and "NOT SELECTED" in app
+    assert "WAIT is never decorated as an opportunity" in app
 
 
 def test_settings_are_allowlisted_atomic_and_never_expose_secrets(tmp_path: Path):
@@ -404,6 +684,13 @@ def test_settings_are_allowlisted_atomic_and_never_expose_secrets(tmp_path: Path
     assert poll_schema["unit"] == "seconds"
     assert poll_schema["restart_required"] is True
     assert settings["live_locked"] is True
+    telegram_option = next(
+        item
+        for item in settings["schema"]["collection_preferences"]["platform_options"]
+        if item["value"] == "telegram"
+    )
+    assert telegram_option["automation_available"] is False
+    assert telegram_option["manual_directory_only"] is True
 
     public_access = tmp_path / "data" / "web_console" / "PUBLIC_ACCESS.txt"
     public_access.parent.mkdir(parents=True, exist_ok=True)
@@ -427,12 +714,14 @@ def test_settings_are_allowlisted_atomic_and_never_expose_secrets(tmp_path: Path
                         "platform": "x",
                         "handle": "@example",
                         "display_name": "Example",
+                        "entity_id": "example_media",
                         "url": "https://x.com/example",
                         "enabled": True,
                         "priority": 1,
                     }
                 ],
                 "topics": ["viral animals"],
+                "platforms": [{"platform": "telegram", "enabled": True}],
             },
         }
     )
@@ -444,6 +733,8 @@ def test_settings_are_allowlisted_atomic_and_never_expose_secrets(tmp_path: Path
     watchlist = web.watchlist()
     assert watchlist["watch_accounts"][0]["handle"] == "@example"
     assert watchlist["watch_accounts"][0]["priority"] == 1
+    assert watchlist["watch_accounts"][0]["entity_id"] == "example_media"
+    assert watchlist["platforms"] == [{"platform": "telegram", "enabled": False}]
     assert watchlist["contains_credentials"] is False
 
     before = config_path.read_bytes()
@@ -463,7 +754,147 @@ def test_settings_are_allowlisted_atomic_and_never_expose_secrets(tmp_path: Path
                 }
             }
         )
+    for bad_entity_id in ("NASA", "bad/entity", "-leading", "trailing-", "a" * 65):
+        with pytest.raises(Exception, match="entity_id"):
+            web.patch_settings(
+                {
+                    "console": {
+                        "watch_accounts": [
+                            {
+                                "platform": "x",
+                                "handle": "@example",
+                                "entity_id": bad_entity_id,
+                                "enabled": True,
+                            }
+                        ]
+                    }
+                }
+            )
     assert "must-not-save" not in (tmp_path / "data" / "web_console" / "console_settings.json").read_text(encoding="utf-8")
+
+
+def test_notifications_missing_empty_malformed_and_strict_public_whitelist(tmp_path: Path):
+    config_path, config = _config(tmp_path)
+    web = WebData(config_path)
+    notification_path = tmp_path / "notifications.jsonl"
+
+    missing = web.notifications({})
+    assert missing["items"] == []
+    assert missing["status"] == "missing"
+    assert missing["latest_at"] is None
+    assert missing["execution_context"] == {
+        "mode": "paper",
+        "simulated": True,
+        "live_enabled": False,
+        "live_locked": True,
+    }
+
+    notification_path.write_text("", encoding="utf-8")
+    empty = web.notifications({})
+    assert empty["items"] == [] and empty["status"] == "empty"
+
+    private_value = "private-wallet-material-must-not-leak"
+    bot_value = "telegram-bot-token-must-not-leak"
+    records = [
+        "not-json",
+        json.dumps([]),
+        json.dumps({"time": "not-a-time", "kind": "paper_buy", "title": "bad time"}),
+        json.dumps(
+            {
+                "time": iso(),
+                "kind": "future_kind_with_unknown_payload_contract",
+                "title": "unknown kinds are not public",
+                "payload": {"private_key": private_value},
+            }
+        ),
+        json.dumps(
+            {
+                "time": iso(),
+                "kind": "paper_buy",
+                "title": "solana:public-token",
+                "payload": {
+                    "event_id": 7,
+                    "token_id": "solana:public-token",
+                    "action": "CANDIDATE",
+                    "amount_usd": 12.5,
+                    "score": 83,
+                    "source": "example-news",
+                    "private_key": private_value,
+                    "telegram_bot_token": bot_value,
+                    "error": "TimeoutError",
+                    "detail": "C:/secret/runtime/path",
+                    "unknown_nested": {"cookie": "session-must-not-leak"},
+                    "usage": {"agent_prompt": "must-not-leak"},
+                },
+                "raw_payload": {"bridge_token": "must-not-leak"},
+            }
+        ),
+    ]
+    notification_path.write_text("\n".join(records) + "\n", encoding="utf-8")
+
+    payload = web.notifications({})
+    assert payload["status"] == "active"
+    assert payload["total"] == 1
+    assert payload["malformed_skipped"] == 4
+    item = payload["items"][0]
+    assert item["kind"] == "paper_buy"
+    assert item["event_id"] == 7 and item["event_url"] == "#/events/7"
+    assert item["token_id"] == "solana:public-token"
+    assert item["token_url"] == "#/tokens/solana:public-token"
+    assert item["source_display_name"] == "example-news"
+    assert item["metrics"] == {"amount_usd": 12.5, "score": 83.0}
+    assert item["simulation"] == {
+        "is_simulated": True,
+        "mode": "paper",
+        "label": "PAPER / SIMULATED",
+    }
+    serialized = json.dumps(payload)
+    for forbidden in (
+        private_value,
+        bot_value,
+        "session-must-not-leak",
+        "agent_prompt",
+        "bridge_token",
+        "raw_payload",
+        "unknown_nested",
+        "TimeoutError",
+        "C:/secret/runtime/path",
+        config["notifications"]["telegram_bot_token"],
+    ):
+        assert forbidden not in serialized
+
+
+def test_notifications_pagination_limit_and_rotated_generation(tmp_path: Path):
+    config_path, _ = _config(tmp_path)
+    web = WebData(config_path)
+    notification_path = tmp_path / "notifications.jsonl"
+    now = utcnow()
+
+    def record(minutes: int, title: str) -> str:
+        return json.dumps(
+            {
+                "time": iso(now - timedelta(minutes=minutes)),
+                "kind": "event_detected",
+                "title": title,
+                "payload": {"event_id": minutes + 1, "attention": 70 - minutes},
+            }
+        )
+
+    notification_path.write_text(record(3, "oldest") + "\n" + record(2, "middle") + "\n", encoding="utf-8")
+    notification_path.replace(Path(str(notification_path) + ".1"))
+    notification_path.write_text(record(1, "newest") + "\n", encoding="utf-8")
+
+    page = web.notifications({"limit": ["1"], "offset": ["1"]})
+    assert page["total"] == 3
+    assert page["limit"] == 1 and page["offset"] == 1
+    assert page["has_more"] is True
+    assert [item["title"] for item in page["items"]] == ["middle"]
+    assert page["rotated_generations_read"] == 1
+    assert page["bounded_tail"] is True
+
+    clamped = web.notifications({"limit": ["999"], "offset": ["-9"]})
+    assert clamped["limit"] == 200 and clamped["offset"] == 0
+    assert [item["title"] for item in clamped["items"]] == ["newest", "middle", "oldest"]
 
 
 def test_http_routes_require_optional_file_token_and_serve_api(tmp_path: Path):
@@ -482,6 +913,9 @@ def test_http_routes_require_optional_file_token_and_serve_api(tmp_path: Path):
             headers = {"Authorization": "Bearer a-local-access-token-longer-than-24"}
             health = client.get(f"{base}/api/health", headers=headers)
             assert health.status_code == 200 and health.json()["live"]["locked"] is True
+            notifications = client.get(f"{base}/api/notifications", headers=headers)
+            assert notifications.status_code == 200
+            assert notifications.json()["execution_context"]["live_locked"] is True
             assert client.get(f"{base}/", headers=headers).text == "<h1>console</h1>"
             asset = client.get(f"{base}/static/app.js", headers=headers)
             assert asset.status_code == 200
@@ -553,6 +987,7 @@ def test_wallet_http_is_local_only_public_view_is_masked_and_secret_is_never_per
     fake_wallet = FakeWallet()
     server, thread, base = _start_server(config_path, static)
     server.web_data.wallet_service = fake_wallet
+    assert server.wallet_controls_allowed is True
     private_key = "do-not-" + "persist-private-key"
     try:
         with httpx.Client(timeout=5) as client:
@@ -611,6 +1046,81 @@ def test_wallet_http_is_local_only_public_view_is_masked_and_secret_is_never_per
         assert ("connect", (private_key, "test only")) in fake_wallet.calls
         secret = private_key.encode("utf-8")
         assert all(secret not in path.read_bytes() for path in tmp_path.rglob("*") if path.is_file())
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_access_token_server_never_enables_wallet_controls_with_spoofed_loopback_host(tmp_path: Path):
+    config_path, _ = _config(tmp_path)
+    Store(tmp_path / "db.sqlite3").close()
+    static = tmp_path / "static"
+    static.mkdir()
+    (static / "index.html").write_text("console", encoding="utf-8")
+    token = "public-console-token-that-is-long-enough"
+    token_file = tmp_path / "access-token.txt"
+    token_file.write_text(token, encoding="utf-8")
+
+    class FakeWallet:
+        def __init__(self):
+            self.calls: list[tuple[str, object]] = []
+
+        def snapshot(self, *, public_view: bool = False, refresh: bool = False):
+            self.calls.append(("snapshot", public_view))
+            return {
+                "address": "masked" if public_view else "full-wallet-address",
+                "signing": {"available": not public_view},
+            }
+
+        def connect(self, private_key, alias):
+            self.calls.append(("connect", alias))
+            return {"connected": True}
+
+        def request_airdrop(self, sol):
+            self.calls.append(("faucet", sol))
+            return {"status": "confirmed"}
+
+        def transfer(self, recipient, sol, confirm_phrase):
+            self.calls.append(("transfer", recipient))
+            return {"status": "confirmed"}
+
+        def disconnect(self):
+            self.calls.append(("disconnect", None))
+            return {"connected": False}
+
+    server, thread, base = _start_server(config_path, static, token_file)
+    fake_wallet = FakeWallet()
+    server.web_data.wallet_service = fake_wallet
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Host": "127.0.0.1",
+        "Connection": "close",
+    }
+    try:
+        assert server.wallet_controls_allowed is False
+        with httpx.Client(timeout=5) as client:
+            public = client.get(f"{base}/api/wallet", headers=headers)
+            assert public.status_code == 200
+            assert public.json()["address"] == "masked"
+            assert public.json()["signing"]["available"] is False
+
+            mutations = [
+                client.post(
+                    f"{base}/api/wallet/connect",
+                    headers=headers,
+                    json={"private_key": "must-not-reach-wallet", "alias": "blocked"},
+                ),
+                client.post(f"{base}/api/wallet/faucet", headers=headers, json={"sol": 0.1}),
+                client.post(
+                    f"{base}/api/wallet/transfer",
+                    headers=headers,
+                    json={"recipient": "recipient", "sol": 0.001, "confirm_phrase": "DEVNET ONLY"},
+                ),
+                client.delete(f"{base}/api/wallet", headers=headers),
+            ]
+            assert [response.status_code for response in mutations] == [403, 403, 403, 403]
+        assert fake_wallet.calls == [("snapshot", True)]
     finally:
         server.shutdown()
         server.server_close()

@@ -1,0 +1,54 @@
+# START HERE — memeTrader 项目上下文
+
+最后更新：2026-08-30（Asia/Shanghai）
+
+这个目录是给后续开发者和 Agent 使用的**版本控制内项目记忆**。它保存产品意图、架构、安全边界、已实现状态、未完成事项和运行手册，但绝不保存密码、Cookie、Session、验证码、私钥、钱包材料、Bridge Token、公开入口口令、数据库内容或日志。
+
+## 权威顺序
+
+发生冲突时，按以下顺序判断：
+
+1. 根目录 [AGENTS.md](../../AGENTS.md) 的安全和工程规则；
+2. 当前工作区代码、测试和被 Git 忽略的本机 `config.json`；
+3. `config.json -> database` 指向的当前 SQLite；
+4. 本目录中最新的日期快照；
+5. 旧版验收文档和聊天摘要。
+
+不要用本目录覆盖运行事实。本目录解释“为什么”和“当前应当怎样继续”，运行状态仍应通过 Web `/api/health`、计划任务、当前配置和 SQLite 只读查询确认。
+
+## 必读地图
+
+- [PRODUCT_AND_REQUIREMENTS.md](PRODUCT_AND_REQUIREMENTS.md)：产品目的、非目标、完整需求和界面语义。
+- [ARCHITECTURE_AND_DATAFLOW.md](ARCHITECTURE_AND_DATAFLOW.md)：组件、数据流、关键代码路径、SQLite 表和实时更新方式。
+- [SAFETY_AND_INVARIANTS.md](SAFETY_AND_INVARIANTS.md)：Paper/Live、时间门、账号、Agent、钱包和公开 URL 的硬边界。
+- [SNAPSHOT_2026-08-30.md](SNAPSHOT_2026-08-30.md)：本次上下文归档时的实现、运行和未完成状态。
+- [OPERATIONS_AND_VALIDATION.md](OPERATIONS_AND_VALIDATION.md)：Windows 常驻、Web、浏览器采集、验证与发布检查。
+- [UPDATE_PROTOCOL.md](UPDATE_PROTOCOL.md)：以后怎样维护这份项目记忆。
+
+## 一句话产品定义
+
+memeTrader 是一个运行在个人 Windows 电脑上的、仅前向证据驱动的 meme-token 研究与 Paper 交易系统：它把新闻/社交事件与新 Token/新池双向关联，通过确定性评分、安全门和 Paper 风控做出 `WAIT / REJECT / CANDIDATE` 决策，并在深色双语 Web 控制台中实时、可审计地展示全过程。
+
+## 当前不可突破的状态
+
+- 常驻自动策略只能为 `paper` 或 `shadow`；当前为 Paper。
+- `live.enabled=false`，网页没有 Mainnet Live 开关。
+- Solana Devnet 钱包页只用于本机人工真链测试，不连接常驻策略。
+- 自主 Agent 最多同时 2 个；六个界面角色是职责视图，不是六个常驻进程。
+- `WAIT` 就是没有信号；空结果、零交易和陈旧状态必须如实显示。
+- 所有可用于决策的证据必须满足 `observed_at <= decision_time` 且 `ingested_at <= decision_time`。
+- 登录凭据由本机浏览器和用户持有，项目与 Agent 不读取、导出或保存。
+
+## 开始任何后续工作前
+
+先执行只读检查：
+
+```powershell
+Set-Location E:\memeTrader
+Get-Content -Raw .\AGENTS.md
+git status --short --branch
+git log -1 --oneline
+.\.venv\Scripts\python.exe -m memetrader status --config config.json --limit 10
+```
+
+随后阅读本目录最新快照。若工作树已有改动，先确认归属并保留；不要覆盖其他 Agent 或用户的修改。

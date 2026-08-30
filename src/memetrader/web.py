@@ -36,7 +36,7 @@ from .autonomous_search import (
 )
 from .models import TokenSnapshot, iso, parse_time, utcnow
 from .runtime import DEFAULT_CONFIG, load_config
-from .strategy import CandidateEvaluator, evidence_origin, evidence_rejection
+from .strategy import CandidateEvaluator, evidence_origin, evidence_rejection, sanitize_source_entity_id
 from .wallet import SolanaDevnetWallet, WalletError
 
 
@@ -61,10 +61,14 @@ PLATFORM_ACCESS = {
     "instagram": ("browser_signed_in_recommended", True),
     "tiktok": ("browser_public_or_signed_in", True),
     "youtube": ("public_web", False),
-    "telegram": ("public_web_preview", False),
+    "telegram": ("manual_directory_only", False),
 }
+PLATFORM_AUTOMATION_DISABLED = {"telegram"}
 DEFAULT_CONSOLE_SETTINGS = {
-    "platforms": [{"platform": name, "enabled": True} for name in PLATFORMS],
+    "platforms": [
+        {"platform": name, "enabled": name not in PLATFORM_AUTOMATION_DISABLED}
+        for name in PLATFORMS
+    ],
     "watch_accounts": [],
     "topics": [],
 }
@@ -82,11 +86,17 @@ EXPECTED_TABLES = {
     "trades",
 }
 SAFE_OBSERVATION_RAW_FIELDS = {
+    "account_type",
     "agent_model",
     "agent_task",
+    "authority_tier",
     "category",
     "confidence",
     "event_title",
+    "follower_count",
+    "followers_count",
+    "is_official",
+    "is_verified",
     "keywords",
     "like_count",
     "memeability",
@@ -98,13 +108,86 @@ SAFE_OBSERVATION_RAW_FIELDS = {
     "repost_count",
     "reverse_name_only",
     "reverse_token_id",
+    "source_entity_id",
     "source_age_minutes",
     "stale_first_observation",
     "token_momentum_score",
     "view_count",
     "volume_usd",
 }
+PLATFORM_HOSTS = {
+    "x": {"x.com", "twitter.com"},
+    "truth": {"truthsocial.com"},
+    "bluesky": {"bsky.app"},
+    "reddit": {"reddit.com", "www.reddit.com", "old.reddit.com"},
+    "threads": {"threads.net", "www.threads.net"},
+    "instagram": {"instagram.com", "www.instagram.com"},
+    "tiktok": {"tiktok.com", "www.tiktok.com"},
+    "youtube": {"youtube.com", "www.youtube.com", "youtu.be"},
+    "telegram": {"t.me", "telegram.me"},
+}
+AUTHORITY_TIER_SCORES = {
+    "official_primary": 20.0,
+    "primary_source": 20.0,
+    "major_news": 16.0,
+    "established": 12.0,
+    "specialist": 8.0,
+    "community": 4.0,
+}
+CURATED_PRIORITY_TIERS = {
+    5: "authoritative_organization",
+    4: "original_public_figure_creator",
+    3: "curated_monitor",
+    2: "community_trend",
+    1: "noisy_satire_discovery_only",
+}
 SENSITIVE_QUERY_MARKERS = ("api_key", "apikey", "auth", "credential", "key", "secret", "signature", "token")
+NOTIFICATION_KIND_META = {
+    "event_detected": ("events", "info"),
+    "event_attention_up": ("events", "info"),
+    "token_new": ("tokens", "info"),
+    "candidate_decision": ("decisions", "info"),
+    "paper_buy": ("paper", "success"),
+    "paper_sell": ("paper", "success"),
+    "shadow_buy": ("paper", "info"),
+    "source_error": ("sources", "error"),
+    "source_stale": ("sources", "warning"),
+    "autonomous_source_paused": ("sources", "warning"),
+    "autonomous_sources_added": ("sources", "info"),
+    "autonomous_trends_found": ("agents", "info"),
+    "autonomous_context_found": ("agents", "info"),
+    "quote_error": ("system", "warning"),
+    "runtime_error": ("system", "error"),
+    "bridge_started": ("system", "info"),
+}
+NOTIFICATION_NUMERIC_FIELDS = {
+    "attention",
+    "score",
+    "match_score",
+    "canonical_margin",
+    "position_usd",
+    "amount_usd",
+    "cost_usd",
+    "remaining_cost_usd",
+    "gross_usd",
+    "net_usd",
+    "pnl_usd",
+    "fee_usd",
+    "quantity",
+    "fraction",
+    "quote_price",
+    "execution_price",
+    "entry_price",
+    "highest_price",
+    "slippage_rate",
+    "minutes_since_ok",
+    "threshold",
+    "observation_count",
+}
+NOTIFICATION_BOOLEAN_FIELDS = {"official", "new_cluster"}
+NOTIFICATION_ACTIONS = {"WAIT", "CANDIDATE", "REJECT", "BUY", "SELL"}
+NOTIFICATION_TAIL_BYTES = 2_000_000
+NOTIFICATION_ROTATIONS = 2
 
 
 # Only these non-secret, non-live fields are writable through the console.
@@ -212,6 +295,63 @@ def _safe_float(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
+
+
+def _observation_platform(source: Any, source_kind: Any, url: Any) -> dict[str, Any]:
+    source_text = str(source or "").strip()
+    source_prefix = source_text.split(":", 1)[0].lower()
+    safe_url = _safe_url(url)
+    host = (urlparse(safe_url).hostname or "").lower() if safe_url else ""
+    for platform, hosts in PLATFORM_HOSTS.items():
+        if host in hosts or source_prefix == platform:
+            return {"id": platform, "label": "X" if platform == "x" else platform.title(), "inferred": True}
+    if host:
+        return {"id": "web", "label": host.removeprefix("www."), "inferred": True}
+    kind = str(source_kind or "").strip().lower()
+    if kind in {"social", "official_social"}:
+        return {"id": "social", "label": "Social", "inferred": True}
+    if kind == "news":
+        return {"id": "web", "label": "Web / news", "inferred": True}
+    return {"id": "unknown", "label": "Unknown", "inferred": False}
+
+
+def _known_bool(value: Any) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _observation_influence(source_kind: Any, safe_raw: dict[str, Any], engagement: dict[str, float]) -> dict[str, Any]:
+    kind = str(source_kind or "").strip().lower()
+    official = _known_bool(safe_raw.get("is_official"))
+    if kind == "official_social":
+        official = True
+    verified = _known_bool(safe_raw.get("is_verified"))
+    explicit_type = str(safe_raw.get("account_type") or "").strip().lower()
+    known_types = {"official", "publisher", "journalist", "creator", "public_figure", "community", "organization"}
+    account_type_inferred = explicit_type not in known_types
+    if explicit_type not in known_types:
+        explicit_type = "official" if kind == "official_social" else ("social" if kind == "social" else ("publisher" if kind == "news" else "unknown"))
+    authority_tier = str(safe_raw.get("authority_tier") or "").strip().lower()
+    authority_inferred = False
+    if authority_tier not in AUTHORITY_TIER_SCORES:
+        authority_tier = "official_primary" if official is True else "unknown"
+        authority_inferred = official is True
+    followers = _safe_float(safe_raw.get("follower_count"))
+    if followers is None:
+        followers = _safe_float(safe_raw.get("followers_count"))
+    followers = max(0, int(followers)) if followers is not None else None
+    visible_engagement = {key: int(value) for key, value in engagement.items() if value > 0}
+    return {
+        "account_type": explicit_type,
+        "account_type_inferred": account_type_inferred and explicit_type != "unknown",
+        "official": official,
+        "verified": verified,
+        "authority_tier": authority_tier,
+        "authority_known": authority_tier != "unknown",
+        "authority_inferred": authority_inferred,
+        "follower_count": followers,
+        "visible_engagement": visible_engagement,
+        "reach": int(engagement.get("view_count") or 0) or None,
+    }
 
 
 def _minutes_since(value: Any) -> float | None:
@@ -330,14 +470,19 @@ def _validate_console_settings(value: Any) -> dict[str, Any]:
         if not isinstance(enabled, bool):
             raise APIError(400, "platform enabled must be boolean")
         seen_platforms.add(platform)
-        platforms.append({"platform": platform, "enabled": enabled})
+        platforms.append(
+            {
+                "platform": platform,
+                "enabled": enabled and platform not in PLATFORM_AUTOMATION_DISABLED,
+            }
+        )
 
     accounts_value = value.get("watch_accounts", [])
     if not isinstance(accounts_value, list) or len(accounts_value) > 500:
         raise APIError(400, "watch_accounts must be a bounded list")
     accounts: list[dict[str, Any]] = []
     seen_accounts: set[tuple[str, str]] = set()
-    allowed_account_fields = {"platform", "handle", "display_name", "url", "enabled", "priority"}
+    allowed_account_fields = {"platform", "handle", "display_name", "url", "enabled", "priority", "entity_id"}
     for item in accounts_value:
         if not isinstance(item, dict) or set(item) - allowed_account_fields:
             raise APIError(400, "watch account contains unsupported fields")
@@ -351,6 +496,13 @@ def _validate_console_settings(value: Any) -> dict[str, Any]:
         if key in seen_accounts:
             raise APIError(400, f"duplicate watch account: {platform}/{handle}")
         display_name = _plain_text(item.get("display_name"), "watch account display_name", 160)
+        raw_entity_id = _plain_text(item.get("entity_id"), "watch account entity_id", 64)
+        entity_id = sanitize_source_entity_id(raw_entity_id)
+        if raw_entity_id and not entity_id:
+            raise APIError(
+                400,
+                "watch account entity_id must be a lowercase 1-64 character slug using letters, numbers, _ or -",
+            )
         raw_url = _plain_text(item.get("url"), "watch account url", 2048)
         url = _safe_url(raw_url) if raw_url else None
         if raw_url and url is None:
@@ -383,6 +535,7 @@ def _validate_console_settings(value: Any) -> dict[str, Any]:
                 "platform": platform,
                 "handle": handle,
                 "display_name": display_name,
+                "entity_id": entity_id,
                 "url": url or "",
                 "enabled": enabled,
                 "priority": priority,
@@ -484,6 +637,201 @@ class WebData:
         self.database = database if database.is_absolute() else self.root / database
         lock_file = Path(str(self.config.get("lock_file") or "data/memetrader.lock"))
         self.lock_file = lock_file if lock_file.is_absolute() else self.root / lock_file
+
+    def _notification_log_path(self) -> Path:
+        configured = Path(str((self.config.get("notifications") or {}).get("jsonl") or "data/notifications.jsonl"))
+        return configured if configured.is_absolute() else self.root / configured
+
+    @staticmethod
+    def _notification_text(value: Any, maximum: int, *, allow_path: bool = False) -> str | None:
+        if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+            return None
+        text = " ".join(str(value).split()).strip()
+        if not text or len(text) > maximum:
+            return None
+        lowered = text.casefold()
+        if not allow_path and (
+            "\\" in text
+            or text.startswith(("/", "~"))
+            or "://" in text
+            or "file://" in lowered
+            or (len(text) > 2 and text[1:3] == ":/")
+        ):
+            return None
+        return text
+
+    @staticmethod
+    def _tail_text_lines(path: Path, maximum_bytes: int) -> tuple[list[str], bool, bool]:
+        """Read a bounded tail while tolerating append, replacement, and rotation races."""
+        if maximum_bytes <= 0:
+            return [], False, False
+        try:
+            with path.open("rb") as handle:
+                size = handle.seek(0, os.SEEK_END)
+                start = max(0, size - maximum_bytes)
+                handle.seek(start)
+                data = handle.read(maximum_bytes)
+        except FileNotFoundError:
+            return [], False, False
+        except OSError:
+            return [], True, False
+        if start and data:
+            newline = data.find(b"\n")
+            data = data[newline + 1:] if newline >= 0 else b""
+        return data.decode("utf-8", errors="replace").splitlines(), True, start > 0
+
+    def _public_notification(self, raw: Any) -> dict[str, Any] | None:
+        if not isinstance(raw, dict):
+            return None
+        kind = self._notification_text(raw.get("kind"), 80)
+        title = self._notification_text(raw.get("title"), 300)
+        try:
+            when = parse_time(raw.get("time"))
+        except Exception:
+            return None
+        if not kind or not title or kind not in NOTIFICATION_KIND_META:
+            return None
+        payload = raw.get("payload") if isinstance(raw.get("payload"), dict) else {}
+        group, severity = NOTIFICATION_KIND_META[kind]
+
+        event_id = None
+        value = payload.get("event_id")
+        if not isinstance(value, bool):
+            try:
+                parsed_event_id = int(value)
+                event_id = parsed_event_id if parsed_event_id > 0 else None
+            except (TypeError, ValueError):
+                pass
+
+        token_id = self._notification_text(payload.get("token_id"), 512)
+        if token_id is None and kind in {"paper_buy", "paper_sell", "shadow_buy", "quote_error"}:
+            token_id = self._notification_text(title, 512)
+
+        action = self._notification_text(payload.get("action"), 32)
+        action = action.upper() if action else None
+        if action not in NOTIFICATION_ACTIONS:
+            action = {"paper_buy": "BUY", "shadow_buy": "BUY", "paper_sell": "SELL"}.get(kind)
+        if kind == "candidate_decision":
+            if action == "CANDIDATE":
+                severity = "success"
+            elif action == "WAIT":
+                severity = "warning"
+            elif action == "REJECT":
+                severity = "error"
+
+        source_name = self._notification_text(payload.get("source"), 200)
+        if source_name is None and group == "sources":
+            source_name = self._notification_text(title, 200)
+        reason = self._notification_text(payload.get("reason"), 160)
+
+        metrics: dict[str, Any] = {}
+        for field in NOTIFICATION_NUMERIC_FIELDS:
+            number = _safe_float(payload.get(field))
+            if number is not None:
+                metrics[field] = number
+        for field in NOTIFICATION_BOOLEAN_FIELDS:
+            if isinstance(payload.get(field), bool):
+                metrics[field] = payload[field]
+
+        item: dict[str, Any] = {
+            "time": iso(when),
+            "kind": kind,
+            "title": title,
+            "group": group,
+            "severity": severity,
+            "metrics": metrics,
+        }
+        if event_id is not None:
+            item.update({"event_id": event_id, "event_url": f"#/events/{event_id}"})
+        if token_id is not None:
+            item.update({"token_id": token_id, "token_url": f"#/tokens/{token_id}"})
+        if action is not None:
+            item["action"] = action
+        if source_name is not None:
+            item["source_display_name"] = source_name
+        if reason is not None:
+            item["reason"] = reason
+        if kind in {"paper_buy", "paper_sell", "shadow_buy"}:
+            mode = "shadow" if kind == "shadow_buy" else "paper"
+            item["simulation"] = {
+                "is_simulated": True,
+                "mode": mode,
+                "label": f"{mode.upper()} / SIMULATED",
+            }
+        return item
+
+    def notifications(self, query: dict[str, list[str]]) -> dict[str, Any]:
+        limit = _query_int(query, "limit", 100, 1, 200)
+        offset = _query_int(query, "offset", 0, 0, 1_000_000)
+        base = self._notification_log_path()
+        paths = [base, *(Path(str(base) + f".{index}") for index in range(1, NOTIFICATION_ROTATIONS + 1))]
+        remaining = NOTIFICATION_TAIL_BYTES
+        lines: list[str] = []
+        files_seen = 0
+        rotated_files_seen = 0
+        truncated = False
+        for index, path in enumerate(paths):
+            batch, existed, clipped = self._tail_text_lines(path, remaining)
+            if not existed:
+                continue
+            files_seen += 1
+            rotated_files_seen += int(index > 0)
+            truncated = truncated or clipped
+            lines.extend(batch)
+            remaining = max(0, remaining - sum(len(line.encode("utf-8", errors="replace")) + 1 for line in batch))
+            if remaining == 0:
+                truncated = True
+                break
+
+        items: list[dict[str, Any]] = []
+        malformed = 0
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                raw = json.loads(line)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                malformed += 1
+                continue
+            item = self._public_notification(raw)
+            if item is None:
+                malformed += 1
+                continue
+            items.append(item)
+        items.sort(key=lambda item: parse_time(item["time"]), reverse=True)
+
+        latest_at = items[0]["time"] if items else None
+        stale = False
+        if latest_at:
+            stale = utcnow() - parse_time(latest_at) > timedelta(minutes=30)
+        if items:
+            status = "stale" if stale else "active"
+        elif files_seen:
+            status = "empty"
+        else:
+            status = "missing"
+        total = len(items)
+        return {
+            "items": items[offset:offset + limit],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + limit < total,
+            "latest_at": latest_at,
+            "status": status,
+            "stale": stale,
+            "malformed_skipped": malformed,
+            "bounded_tail": True,
+            "history_truncated": truncated,
+            "rotated_generations_read": rotated_files_seen,
+            "as_of": iso(),
+            "execution_context": {
+                "mode": str(self.config.get("mode") or "paper"),
+                "simulated": True,
+                "live_enabled": False,
+                "live_locked": True,
+            },
+        }
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection | None]:
@@ -640,6 +988,162 @@ class WebData:
         except Exception:
             return max(values)
 
+    @staticmethod
+    def _activity_lane(
+        *,
+        latest_at: str | None,
+        counts: dict[str, int | float],
+        active_window_seconds: float,
+        degraded_window_seconds: float,
+    ) -> dict[str, Any]:
+        age_seconds: float | None = None
+        if latest_at:
+            try:
+                age_seconds = round(max(0.0, (utcnow() - parse_time(latest_at)).total_seconds()), 1)
+            except Exception:
+                pass
+        if age_seconds is None:
+            status = "waiting"
+        elif age_seconds <= active_window_seconds:
+            status = "active"
+        elif age_seconds <= degraded_window_seconds:
+            status = "degraded"
+        else:
+            status = "stale"
+        return {
+            "status": status,
+            "latest_at": latest_at,
+            "age_seconds": age_seconds,
+            "active_window_seconds": round(active_window_seconds, 1),
+            "degraded_window_seconds": round(degraded_window_seconds, 1),
+            **counts,
+        }
+
+    def ingestion_activity(self, connection: sqlite3.Connection | None) -> dict[str, Any]:
+        """Return recent persisted collection activity without synthesizing heartbeats."""
+
+        now = utcnow()
+        cutoffs = {60: iso(now - timedelta(seconds=60)), 300: iso(now - timedelta(seconds=300))}
+        poll_seconds = max(10.0, float(self.config.get("poll_seconds", 60)))
+        active_window = max(90.0, poll_seconds * 3)
+        degraded_window = max(900.0, active_window * 4)
+        query_ok = True
+        try:
+            information_latest: str | None = None
+            information_counts: dict[str, int | float] = {
+                "observations_60s": 0,
+                "observations_5m": 0,
+                "rate_per_minute_5m": 0.0,
+            }
+            token_latest: str | None = None
+            token_counts: dict[str, int | float] = {
+                "new_tokens_60s": 0,
+                "new_tokens_5m": 0,
+                "token_updates_60s": 0,
+                "token_updates_5m": 0,
+                "snapshot_updates_60s": 0,
+                "snapshot_updates_5m": 0,
+                "rate_per_minute_5m": 0.0,
+            }
+            if connection is not None and self._table_exists(connection, "observations"):
+                live_information = "LOWER(source_kind)!='onchain' AND COALESCE(capture_phase,'live')='live'"
+                row = connection.execute(
+                    f"""
+                    SELECT MAX(ingested_at) AS latest,
+                           SUM(CASE WHEN ingested_at>=? THEN 1 ELSE 0 END) AS count_60s,
+                           SUM(CASE WHEN ingested_at>=? THEN 1 ELSE 0 END) AS count_5m
+                    FROM observations WHERE {live_information}
+                    """,
+                    (cutoffs[60], cutoffs[300]),
+                ).fetchone()
+                information_latest = str(row["latest"]) if row and row["latest"] else None
+                information_counts["observations_60s"] = int(row["count_60s"] or 0)
+                information_counts["observations_5m"] = int(row["count_5m"] or 0)
+                information_counts["rate_per_minute_5m"] = round(
+                    float(information_counts["observations_5m"]) / 5.0, 2
+                )
+            token_times: list[str] = []
+            if connection is not None and self._table_exists(connection, "tokens"):
+                row = connection.execute(
+                    """
+                    SELECT MAX(last_seen_at) AS latest,
+                           SUM(CASE WHEN first_seen_at>=? THEN 1 ELSE 0 END) AS new_60s,
+                           SUM(CASE WHEN first_seen_at>=? THEN 1 ELSE 0 END) AS new_5m,
+                           SUM(CASE WHEN last_seen_at>=? THEN 1 ELSE 0 END) AS updated_60s,
+                           SUM(CASE WHEN last_seen_at>=? THEN 1 ELSE 0 END) AS updated_5m
+                    FROM tokens
+                    """,
+                    (cutoffs[60], cutoffs[300], cutoffs[60], cutoffs[300]),
+                ).fetchone()
+                if row and row["latest"]:
+                    token_times.append(str(row["latest"]))
+                token_counts["new_tokens_60s"] = int(row["new_60s"] or 0)
+                token_counts["new_tokens_5m"] = int(row["new_5m"] or 0)
+                token_counts["token_updates_60s"] = int(row["updated_60s"] or 0)
+                token_counts["token_updates_5m"] = int(row["updated_5m"] or 0)
+            if connection is not None and self._table_exists(connection, "token_snapshots"):
+                row = connection.execute(
+                    """
+                    SELECT MAX(observed_at) AS latest,
+                           SUM(CASE WHEN observed_at>=? THEN 1 ELSE 0 END) AS count_60s,
+                           SUM(CASE WHEN observed_at>=? THEN 1 ELSE 0 END) AS count_5m
+                    FROM token_snapshots
+                    """,
+                    (cutoffs[60], cutoffs[300]),
+                ).fetchone()
+                if row and row["latest"]:
+                    token_times.append(str(row["latest"]))
+                token_counts["snapshot_updates_60s"] = int(row["count_60s"] or 0)
+                token_counts["snapshot_updates_5m"] = int(row["count_5m"] or 0)
+            if token_times:
+                try:
+                    token_latest = iso(max(parse_time(value) for value in token_times))
+                except Exception:
+                    token_latest = max(token_times)
+            token_counts["rate_per_minute_5m"] = round(
+                (
+                    float(token_counts["token_updates_5m"])
+                    + float(token_counts["snapshot_updates_5m"])
+                )
+                / 5.0,
+                2,
+            )
+        except sqlite3.Error:
+            query_ok = False
+        information = self._activity_lane(
+            latest_at=information_latest,
+            counts=information_counts,
+            active_window_seconds=active_window,
+            degraded_window_seconds=degraded_window,
+        )
+        tokens = self._activity_lane(
+            latest_at=token_latest,
+            counts=token_counts,
+            active_window_seconds=active_window,
+            degraded_window_seconds=degraded_window,
+        )
+        statuses = {information["status"], tokens["status"]}
+        if not query_ok:
+            status = "unavailable"
+            information["status"] = "unavailable"
+            tokens["status"] = "unavailable"
+        elif statuses == {"active"}:
+            status = "active"
+        elif "active" in statuses or "degraded" in statuses:
+            status = "degraded"
+        elif "stale" in statuses:
+            status = "stale"
+        else:
+            status = "waiting"
+        return {
+            "status": status,
+            "as_of": iso(now),
+            "truth_source": "persisted_sqlite_activity",
+            "query_ok": query_ok,
+            "information": information,
+            "tokens": tokens,
+        }
+
     def system_health(self) -> dict[str, Any]:
         now = utcnow()
         with self._system_lock:
@@ -707,6 +1211,20 @@ class WebData:
     def _snapshot_payload(row: sqlite3.Row | None) -> dict[str, Any] | None:
         if row is None:
             return None
+        raw = _json_load(row["raw_json"], {})
+        rugcheck = raw.get("rugcheck") if isinstance(raw, dict) else None
+        risk_score = None
+        rugged = None
+        if isinstance(rugcheck, dict):
+            risk_score = _safe_float(rugcheck.get("score_normalised"))
+            if risk_score is None:
+                risk_score = _safe_float(rugcheck.get("score"))
+            rugged = rugcheck.get("rugged") if isinstance(rugcheck.get("rugged"), bool) else None
+        report_names = (
+            name
+            for name in ("goplus_evm", "honeypot_is", "goplus_solana", "rugcheck")
+            if isinstance(raw.get(name), dict)
+        ) if isinstance(raw, dict) else ()
         buys = row["buys_5m"]
         sells = row["sells_5m"]
         transactions = None if buys is None or sells is None else int(buys) + int(sells)
@@ -749,8 +1267,109 @@ class WebData:
             "sell_tax_pct": row["sell_tax_pct"],
             "honeypot": None if row["honeypot"] is None else bool(row["honeypot"]),
             "sellable": None if row["sellable"] is None else bool(row["sellable"]),
+            "risk_score": risk_score,
+            "rugged": rugged,
+            "security_reports": list(report_names),
             "momentum": momentum,
             "momentum_score": momentum,
+        }
+
+    def _safety_check_payload(
+        self, snapshot: dict[str, Any] | None, rejected_reasons: list[str]
+    ) -> dict[str, Any]:
+        """Describe persisted deterministic inputs without inferring unavailable safety facts."""
+        cfg = self.config.get("safety") or {}
+        rejected = set(rejected_reasons)
+
+        def minimum(name: str, value: Any, threshold: float, reason: str) -> dict[str, Any]:
+            number = _safe_float(value)
+            state = "fail" if reason in rejected else ("unknown" if number is None else ("pass" if number >= threshold else "fail"))
+            return {"name": name, "value": number, "operator": ">=", "threshold": threshold, "state": state}
+
+        def maximum(name: str, value: Any, threshold: float, reason: str) -> dict[str, Any]:
+            number = _safe_float(value)
+            state = "fail" if reason in rejected else ("unknown" if number is None else ("pass" if number <= threshold else "fail"))
+            return {"name": name, "value": number, "operator": "<=", "threshold": threshold, "state": state}
+
+        snapshot = snapshot or {}
+        honeypot = snapshot.get("honeypot")
+        sellable = snapshot.get("sellable")
+        risk_reasons = sorted(
+            reason
+            for reason in rejected
+            if reason.startswith(("goplus_", "solana_", "evm_", "honeypot"))
+            or reason in {"not_sellable"}
+        )
+        risk_score = _safe_float(snapshot.get("risk_score"))
+        risk_threshold = float(cfg.get("max_solana_risk_score", 79.0))
+        risk_state = (
+            "fail"
+            if risk_reasons or snapshot.get("rugged") is True
+            else "unknown"
+            if risk_score is None
+            else "pass"
+            if risk_score <= risk_threshold
+            else "fail"
+        )
+        checks = [
+            minimum(
+                "liquidity_usd",
+                snapshot.get("liquidity_usd"),
+                float(cfg.get("min_liquidity_usd", 12_000)),
+                "low_liquidity",
+            ),
+            minimum(
+                "transactions_5m",
+                snapshot.get("transactions_5m"),
+                float(cfg.get("min_5m_transactions", 8)),
+                "insufficient_recent_transactions",
+            ),
+            minimum(
+                "buy_ratio_5m",
+                snapshot.get("buy_ratio_5m"),
+                float(cfg.get("min_buy_ratio", 0.55)),
+                "buy_flow_too_weak",
+            ),
+            {
+                "name": "honeypot",
+                "value": honeypot if isinstance(honeypot, bool) else None,
+                "expected": False,
+                "state": "fail" if "honeypot" in rejected or honeypot is True else ("pass" if honeypot is False else "unknown"),
+            },
+            {
+                "name": "sellable",
+                "value": sellable if isinstance(sellable, bool) else None,
+                "expected": True,
+                "state": "fail" if "not_sellable" in rejected or sellable is False else ("pass" if sellable is True else "unknown"),
+            },
+            maximum(
+                "buy_tax_pct",
+                snapshot.get("buy_tax_pct"),
+                float(cfg.get("max_tax_pct", 12.0)),
+                "buy_tax_too_high",
+            ),
+            maximum(
+                "sell_tax_pct",
+                snapshot.get("sell_tax_pct"),
+                float(cfg.get("max_tax_pct", 12.0)),
+                "sell_tax_too_high",
+            ),
+            {
+                "name": "risk_score",
+                "value": risk_score,
+                "operator": "<=",
+                "threshold": risk_threshold,
+                "state": risk_state,
+                "reports": list(snapshot.get("security_reports") or []),
+                "failed_reasons": risk_reasons,
+            },
+        ]
+        return {
+            "basis": "persisted_snapshot_at_or_before_decision",
+            "snapshot_observed_at": snapshot.get("observed_at"),
+            "checks": checks,
+            "unknown_count": sum(1 for item in checks if item["state"] == "unknown"),
+            "failed_count": sum(1 for item in checks if item["state"] == "fail"),
         }
 
     def _position_payloads(self, connection: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -832,7 +1451,9 @@ class WebData:
         account = {"cash_usd": None, "realized_pnl_usd": None}
         positions: list[dict[str, Any]] = []
         daily_exposure: float | None = None
+        ingestion_activity: dict[str, Any]
         with self.connect() as connection:
+            ingestion_activity = self.ingestion_activity(connection)
             if connection is not None:
                 for table in counts:
                     if self._table_exists(connection, table):
@@ -903,6 +1524,7 @@ class WebData:
             "open_position_count": len(positions),
             "recent_events": recent_events,
             "counts": counts,
+            "ingestion_activity": ingestion_activity,
         }
 
     def _observation_payload(self, row: sqlite3.Row, decision_at=None) -> dict[str, Any]:
@@ -938,14 +1560,34 @@ class WebData:
             + engagement_values["reply_count"] * 10
         )
         engagement_heat = round(min(10.0, math.log10(engagement_total + 1) * 2.0), 2) if engagement_total else 0.0
+        platform = _observation_platform(row["source"], row["source_kind"], row["url"])
+        influence = _observation_influence(row["source_kind"], safe_raw, engagement_values)
+        author = str(row["author"] or "").strip()
+        source_entity_id = sanitize_source_entity_id(safe_raw.get("source_entity_id"))
+        full_text = str(row["text"] or "")
+        text_excerpt = full_text[:600]
         return {
             "id": int(row["id"]),
             "source": row["source"],
             "source_kind": row["source_kind"],
             "title": row["title"],
-            "text": row["text"],
+            "text": text_excerpt,
+            "text_truncated": len(full_text) > len(text_excerpt),
             "url": _safe_url(row["url"]),
-            "author": row["author"],
+            "author": author or None,
+            "author_known": bool(author),
+            "platform": platform,
+            "source_entity_id": source_entity_id or None,
+            "cross_platform_entity": (
+                {
+                    "id": source_entity_id,
+                    "origin": f"entity:{source_entity_id}",
+                    "deduplication": "explicit_persisted_entity_only",
+                }
+                if source_entity_id
+                else None
+            ),
+            "influence": influence,
             "published_at": published,
             "observed_at": observed,
             "ingested_at": row["ingested_at"],
@@ -970,44 +1612,94 @@ class WebData:
             origin = str(item.get("origin") or "")
             if origin:
                 origin_counts[origin] = origin_counts.get(origin, 0) + 1
+        first_observed_id = None
+        if observations:
+            first_observed_id = min(
+                observations,
+                key=lambda item: (
+                    parse_time(item.get("observed_at") or item.get("ingested_at") or "1970-01-01T00:00:00Z"),
+                    int(item.get("id") or 0),
+                ),
+            ).get("id")
         ranked: list[dict[str, Any]] = []
-        role_scores = {"feature": 25.0, "confirmation": 20.0, "identity": 5.0, "promotion": 0.0}
+        role_scores = {"feature": 20.0, "confirmation": 15.0, "identity": 2.0, "promotion": 0.0}
+        freshness_scores = {"fresh": 8.0, "unknown": 2.0, "stale": 0.0, "future": 0.0}
         for item in observations:
             value = copy.deepcopy(item)
             role = str(value.get("role") or "identity")
             eligible = bool(value.get("decision_eligible"))
             freshness = str(value.get("freshness") or "unknown")
             origin = str(value.get("origin") or "")
-            score = 45.0 if eligible else 0.0
+            independent = bool(origin and origin_counts.get(origin) == 1)
+            first_observed = value.get("id") == first_observed_id
+            influence = value.get("influence") if isinstance(value.get("influence"), dict) else {}
+            authority_tier = str(influence.get("authority_tier") or "unknown")
+            authority_score = AUTHORITY_TIER_SCORES.get(authority_tier, 0.0)
+            curated_watch = influence.get("curated_watch") if isinstance(influence.get("curated_watch"), dict) else {}
+            curated_priority = int(curated_watch.get("priority") or 0)
+            decision_utility = (60.0 if eligible else 0.0) + role_scores.get(role, 0.0)
+            freshness_score = freshness_scores.get(freshness, 0.0)
+            score = decision_utility
             reasons = ["decision_eligible"] if eligible else ["context_only"]
-            score += role_scores.get(role, 0.0)
             reasons.append(f"role:{role}")
+            if authority_score:
+                score += authority_score / 20.0 * 8.0
+                reasons.append(f"authority:{authority_tier}")
+            else:
+                reasons.append("authority_unknown")
             if freshness == "fresh":
-                score += 15.0
+                score += freshness_score
                 reasons.append("fresh")
             elif freshness == "unknown":
-                score += 4.0
+                score += freshness_score
                 reasons.append("freshness_unknown")
             else:
                 reasons.append(freshness)
-            if origin and origin_counts.get(origin) == 1:
-                score += 5.0
+            if independent:
+                score += 2.0
                 reasons.append("independent_origin")
             if value.get("url"):
-                score += 3.0
+                score += 1.0
                 reasons.append("direct_source_link")
+            if curated_priority:
+                score += curated_priority / 5.0
+                reasons.append(f"configured_curated_tier:{curated_priority}")
             heat = max(0.0, min(10.0, _safe_float(value.get("engagement_heat")) or 0.0))
-            score += heat
+            score += heat / 10.0
             if heat:
                 reasons.append("observed_engagement")
+            if first_observed:
+                reasons.append("first_locally_observed_source")
+            if role in {"identity", "promotion"} or not eligible:
+                source_group = "identity_promotion_context"
+            elif role == "feature":
+                source_group = "original_feature"
+            elif str(value.get("source_kind") or "").lower() in {"social", "official_social"} and not authority_score:
+                source_group = "community_amplification"
+            else:
+                source_group = "authoritative_confirmation"
+            value["first_observed_source"] = first_observed
+            value["independent_origin"] = independent
+            value["source_group"] = source_group
+            value["ranking_dimensions"] = {
+                "decision_utility": round(decision_utility, 2),
+                "authority": round(authority_score, 2) if authority_score else None,
+                "freshness": round(freshness_score, 2),
+                "curated_watch_priority": curated_priority or None,
+                "engagement_heat": round(heat, 2) if heat else None,
+            }
             value["priority_score"] = round(max(0.0, min(100.0, score)), 2)
             value["priority_reasons"] = reasons
-            value["ranking_method"] = "evidence_priority_not_authority"
+            value["ranking_method"] = "decision_utility_authority_freshness"
             ranked.append(value)
         ranked.sort(
             key=lambda item: (
-                bool(item.get("decision_eligible")),
-                float(item.get("priority_score") or 0),
+                float((item.get("ranking_dimensions") or {}).get("decision_utility") or 0),
+                float((item.get("ranking_dimensions") or {}).get("authority") or 0),
+                float((item.get("ranking_dimensions") or {}).get("freshness") or 0),
+                float((item.get("ranking_dimensions") or {}).get("curated_watch_priority") or 0),
+                bool(item.get("independent_origin")),
+                float((item.get("ranking_dimensions") or {}).get("engagement_heat") or 0),
                 parse_time(item.get("observed_at") or "1970-01-01T00:00:00Z"),
             ),
             reverse=True,
@@ -1021,6 +1713,15 @@ class WebData:
     ) -> list[dict[str, Any]]:
         if not rows:
             return []
+        curated_accounts: dict[tuple[str, str], dict[str, Any]] = {}
+        for account in self.console_settings().get("watch_accounts", []):
+            if not account.get("enabled", True):
+                continue
+            platform = str(account.get("platform") or "").strip().lower()
+            for identity in (account.get("handle"), account.get("display_name")):
+                identity_key = str(identity or "").strip().casefold().lstrip("@")
+                if platform and identity_key:
+                    curated_accounts[(platform, identity_key)] = account
         ids = [int(row["id"]) for row in rows]
         grouped: dict[int, list[dict[str, Any]]] = {event_id: [] for event_id in ids}
         placeholders = ",".join("?" for _ in ids)
@@ -1033,7 +1734,19 @@ class WebData:
                 """,
                 ids,
             ):
-                grouped[int(observation["event_id"])].append(self._observation_payload(observation))
+                value = self._observation_payload(observation)
+                platform = str((value.get("platform") or {}).get("id") or "").lower()
+                author = str(value.get("author") or "").strip().casefold().lstrip("@")
+                curated = curated_accounts.get((platform, author))
+                if curated:
+                    priority = int(curated.get("priority") or 3)
+                    value["influence"]["curated_watch"] = {
+                        "configured": True,
+                        "priority": priority,
+                        "tier": CURATED_PRIORITY_TIERS[priority],
+                        "display_name": str(curated.get("display_name") or "") or None,
+                    }
+                grouped[int(observation["event_id"])].append(value)
         output: list[dict[str, Any]] = []
         for row in rows:
             event_id = int(row["id"])
@@ -1068,10 +1781,22 @@ class WebData:
                 "decision_eligible": bool(eligible_origins),
                 "event_url": f"#/events/{event_id}",
                 "evidence_ranking": {
-                    "method": "evidence_priority_not_authority",
-                    "order": ["decision_eligibility", "role", "freshness", "independent_origin", "observed_engagement"],
+                    "method": "decision_utility_authority_freshness",
+                    "order": ["decision_utility", "known_authority", "freshness", "configured_curated_tier", "independent_origin", "observed_engagement"],
                 },
             }
+            if ranked_observations:
+                lead = ranked_observations[0]
+                payload["lead_source"] = {
+                    key: lead.get(key)
+                    for key in (
+                        "id", "platform", "author", "author_known", "source_entity_id", "cross_platform_entity",
+                        "source_kind", "role", "source_group",
+                        "decision_eligible", "freshness", "influence", "url", "first_observed_source", "independent_origin",
+                    )
+                }
+            else:
+                payload["lead_source"] = None
             if include_observations:
                 payload["observations"] = ranked_observations
             output.append(payload)
@@ -1097,7 +1822,7 @@ class WebData:
                     [*params, limit, offset],
                 )
             )
-            items = self._events_payload(connection, rows, include_observations=True)
+            items = self._events_payload(connection, rows, include_observations=False)
         requested_role = str((query.get("role") or [""])[0]).strip().lower()
         if requested_role:
             items = [item for item in items if item["roles"].get(requested_role)]
@@ -1112,10 +1837,40 @@ class WebData:
                 raise APIError(404, "event not found")
             event = self._events_payload(connection, [row], include_observations=True)[0]
             decisions = self._decision_rows(connection, "d.event_id=?", [event_id], 200, 0)
-            token_ids = list(dict.fromkeys(str(item["token_id"]) for item in decisions if item.get("token_id")))
+            candidate_ranking = self._candidate_ranking(connection, event_id)
+            ranked_token_ids = [
+                str(item["token_id"])
+                for item in (candidate_ranking or {}).get("candidates", [])
+                if item.get("token_id")
+            ]
+            token_ids = list(
+                dict.fromkeys(
+                    [str(item["token_id"]) for item in decisions if item.get("token_id")]
+                    + ranked_token_ids
+                )
+            )
             event["decisions"] = decisions
             event["related_token_ids"] = token_ids
+            event["candidate_ranking"] = candidate_ranking
+            event["ranking_available"] = candidate_ranking is not None
+            event["ranking_persistence_gap"] = (
+                None if candidate_ranking else "candidate_ranking_not_available_for_this_event"
+            )
             event["ranked_sources"] = event["observations"]
+            group_order = (
+                "original_feature",
+                "authoritative_confirmation",
+                "community_amplification",
+                "identity_promotion_context",
+            )
+            event["source_groups"] = [
+                {
+                    "id": group,
+                    "items": [item for item in event["observations"] if item.get("source_group") == group],
+                }
+                for group in group_order
+                if any(item.get("source_group") == group for item in event["observations"])
+            ]
             event["evidence_timeline"] = sorted(
                 event["observations"],
                 key=lambda item: parse_time(item.get("observed_at") or "1970-01-01T00:00:00Z"),
@@ -1213,6 +1968,7 @@ class WebData:
             "momentum": snapshot.get("momentum") if snapshot else None,
             "evidence_chain": links,
             "evidence_count": len(links),
+            "evidence_record_count": len(links),
             "event_to_token": "persisted decision relation" if decision_links else None,
             "token_to_event": "verified reverse-context observation" if reverse_links else None,
             "evidence_role": "confirmation" if reverse_links else ("decision_record" if decision_links else None),
@@ -1259,6 +2015,174 @@ class WebData:
             payload["decisions"] = self._decision_rows(connection, "d.token_id=?", [token_id], 200, 0)
             return payload
 
+    def _candidate_ranking(
+        self,
+        connection: sqlite3.Connection,
+        event_id: int,
+    ) -> dict[str, Any] | None:
+        if not self._table_exists(connection, "kv"):
+            return None
+        row = connection.execute(
+            "SELECT value_json FROM kv WHERE key=?",
+            (f"candidate_ranking:{int(event_id)}",),
+        ).fetchone()
+        raw = _json_load(row["value_json"], None) if row else None
+        if not isinstance(raw, dict):
+            return None
+
+        def text_value(value: Any, limit: int = 512) -> str | None:
+            if value is None:
+                return None
+            return str(value)[:limit]
+
+        def reasons(value: Any) -> list[str]:
+            if not isinstance(value, list):
+                return []
+            return [str(item)[:300] for item in value[:100]]
+
+        def integer(value: Any) -> int | None:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+
+        def snapshot_payload(value: Any) -> dict[str, Any] | None:
+            if not isinstance(value, dict):
+                return None
+            reports = value.get("security_reports")
+            allowed_reports = {"goplus_evm", "honeypot_is", "goplus_solana", "rugcheck"}
+            return {
+                "observed_at": text_value(value.get("observed_at")),
+                "provider": text_value(value.get("provider"), 120),
+                "price_usd": _safe_float(value.get("price_usd")),
+                "liquidity_usd": _safe_float(value.get("liquidity_usd")),
+                "market_cap_usd": _safe_float(value.get("market_cap_usd")),
+                "volume_5m_usd": _safe_float(value.get("volume_5m_usd")),
+                "buys_5m": integer(value.get("buys_5m")),
+                "sells_5m": integer(value.get("sells_5m")),
+                "transactions_5m": integer(value.get("transactions_5m")),
+                "buyers_5m": integer(value.get("buyers_5m")),
+                "holders": integer(value.get("holders")),
+                "buy_tax_pct": _safe_float(value.get("buy_tax_pct")),
+                "sell_tax_pct": _safe_float(value.get("sell_tax_pct")),
+                "honeypot": value.get("honeypot") if isinstance(value.get("honeypot"), bool) else None,
+                "sellable": value.get("sellable") if isinstance(value.get("sellable"), bool) else None,
+                "risk_score": _safe_float(value.get("risk_score")),
+                "rugged": value.get("rugged") if isinstance(value.get("rugged"), bool) else None,
+                "security_reports": [
+                    str(item) for item in reports[:10]
+                    if str(item) in allowed_reports
+                ] if isinstance(reports, list) else [],
+            }
+
+        candidates: list[dict[str, Any]] = []
+        for value in (raw.get("candidates") if isinstance(raw.get("candidates"), list) else [])[:25]:
+            if not isinstance(value, dict):
+                continue
+            rank = integer(value.get("rank"))
+            token_id = text_value(value.get("token_id"), 512)
+            if rank is None or rank < 1 or not token_id:
+                continue
+            rejected = reasons(value.get("rejected_reasons"))
+            snapshot = snapshot_payload(value.get("snapshot"))
+            safety = value.get("safety") if isinstance(value.get("safety"), dict) else {}
+            tie_break = value.get("tie_break") if isinstance(value.get("tie_break"), dict) else {}
+            action = str(value.get("action") or "NOT_SELECTED").upper()
+            if action not in {"WAIT", "REJECT", "CANDIDATE", "NOT_SELECTED", "PENDING_RUNTIME"}:
+                action = "NOT_SELECTED"
+            candidate = {
+                "rank": rank,
+                "token_id": token_id,
+                "chain": text_value(value.get("chain"), 32),
+                "address": text_value(value.get("address"), 512),
+                "name": text_value(value.get("name"), 200),
+                "symbol": text_value(value.get("symbol"), 80),
+                "candidate_score": _safe_float(value.get("candidate_score")),
+                "match_score": _safe_float(value.get("match_score")),
+                "canonical_margin": _safe_float(value.get("canonical_margin")),
+                "raw_canonical_margin": _safe_float(value.get("raw_canonical_margin")),
+                "score_gap_to_selected": _safe_float(value.get("score_gap_to_selected")),
+                "score_gap_to_score_leader": _safe_float(value.get("score_gap_to_score_leader")),
+                "score_gap_to_next_rank": _safe_float(value.get("score_gap_to_next_rank")),
+                "selection_status": text_value(value.get("selection_status"), 80),
+                "action": action,
+                "position_usd": _safe_float(value.get("position_usd")) or 0.0,
+                "reasons": reasons(value.get("reasons")),
+                "rejected_reasons": rejected,
+                "snapshot": snapshot,
+                "safety": {
+                    "status": text_value(safety.get("status"), 40) or "not_checked",
+                    "rejected_reasons": reasons(safety.get("rejected_reasons")),
+                },
+                "tie_break": {
+                    "pre_agent_rank": integer(tie_break.get("pre_agent_rank")),
+                    "rank_changed": tie_break.get("rank_changed") is True,
+                    "preferred": tie_break.get("preferred") is True,
+                },
+            }
+            candidate["safety_checks"] = self._safety_check_payload(snapshot, rejected)
+            candidates.append(candidate)
+        candidates.sort(key=lambda item: item["rank"])
+
+        final = raw.get("final_outcome") if isinstance(raw.get("final_outcome"), dict) else None
+        final_outcome = None
+        if final is not None:
+            decision_id = integer(final.get("decision_id"))
+            action = str(final.get("action") or "WAIT").upper()
+            if decision_id is None or action not in {"WAIT", "REJECT", "CANDIDATE"}:
+                final = None
+        if final is not None:
+            decision_id = integer(final.get("decision_id"))
+            action = str(final.get("action") or "WAIT").upper()
+            if action not in {"WAIT", "REJECT", "CANDIDATE"}:
+                action = "WAIT"
+            final_outcome = {
+                "decision_id": decision_id,
+                "action": action,
+                "token_id": text_value(final.get("token_id"), 512) or "",
+                "candidate_score": _safe_float(final.get("candidate_score")) or 0.0,
+                "match_score": _safe_float(final.get("match_score")) or 0.0,
+                "canonical_margin": _safe_float(final.get("canonical_margin")) or 0.0,
+                "position_usd": _safe_float(final.get("position_usd")) or 0.0,
+                "reasons": reasons(final.get("reasons")),
+                "rejected_reasons": reasons(final.get("rejected_reasons")),
+                "created_at": text_value(final.get("created_at")),
+            }
+        if final_outcome is None:
+            for candidate in candidates:
+                if str(candidate.get("selection_status") or "").startswith("selected_"):
+                    candidate["action"] = "PENDING_RUNTIME"
+                    candidate["position_usd"] = 0.0
+        tie_break = raw.get("tie_break") if isinstance(raw.get("tie_break"), dict) else {}
+        status = text_value(raw.get("status"), 80) or "unknown"
+        if final_outcome is None and status == "completed":
+            status = "pending_runtime"
+        return {
+            "available": True,
+            "version": integer(raw.get("version")) or 1,
+            "event_id": int(event_id),
+            "evaluated_at": text_value(raw.get("evaluated_at")),
+            "status": status,
+            "outcome": (
+                text_value(raw.get("outcome"), 80) or "UNAVAILABLE"
+                if final_outcome is not None
+                else "UNAVAILABLE"
+            ),
+            "outcome_reasons": reasons(raw.get("outcome_reasons")),
+            "ranking_method": text_value(raw.get("ranking_method"), 160),
+            "candidate_count_total": integer(raw.get("candidate_count_total")) or 0,
+            "candidate_count_persisted": len(candidates),
+            "candidates_truncated": raw.get("candidates_truncated") is True,
+            "tie_break": {
+                "used": tie_break.get("used") is True,
+                "tier": text_value(tie_break.get("tier"), 40),
+                "confidence": _safe_float(tie_break.get("confidence")),
+                "preferred_token_id": text_value(tie_break.get("preferred_token_id"), 512),
+            },
+            "candidates": candidates,
+            "final_outcome": final_outcome,
+        }
+
     def _decision_rows(
         self,
         connection: sqlite3.Connection,
@@ -1282,14 +2206,46 @@ class WebData:
                 [*params, limit, offset],
             )
         )
-        snapshots = self._latest_snapshots(connection, [str(row["token_id"]) for row in rows if row["token_id"]])
         output = []
+        ranking_cache: dict[int, dict[str, Any] | None] = {}
         for row in rows:
             action = str(row["action"])
+            rejected_reasons = _json_load(row["rejected_reasons_json"], [])
+            snapshot_row = None
+            if row["token_id"] and self._table_exists(connection, "token_snapshots"):
+                snapshot_row = connection.execute(
+                    """
+                    SELECT * FROM token_snapshots
+                    WHERE token_id=? AND observed_at<=?
+                    ORDER BY observed_at DESC,id DESC LIMIT 1
+                    """,
+                    (str(row["token_id"]), row["created_at"]),
+                ).fetchone()
+            snapshot = self._snapshot_payload(snapshot_row)
+            event_id = int(row["event_id"])
+            if event_id not in ranking_cache:
+                ranking_cache[event_id] = self._candidate_ranking(connection, event_id)
+            latest_ranking = ranking_cache[event_id]
+            final_outcome = latest_ranking.get("final_outcome") if latest_ranking else None
+            ranking = (
+                latest_ranking
+                if isinstance(final_outcome, dict) and final_outcome.get("decision_id") == int(row["id"])
+                else None
+            )
+            selected_rank = None
+            if ranking:
+                selected = next(
+                    (
+                        item for item in ranking["candidates"]
+                        if item.get("token_id") == str(row["token_id"])
+                    ),
+                    None,
+                )
+                selected_rank = selected.get("rank") if selected else None
             output.append(
                 {
                     "id": int(row["id"]),
-                    "event_id": int(row["event_id"]),
+                    "event_id": event_id,
                     "event_title": row["event_title"],
                     "token_id": row["token_id"],
                     "token": {
@@ -1305,12 +2261,15 @@ class WebData:
                     "match_score": float(row["match_score"]),
                     "canonical_margin": float(row["canonical_margin"]),
                     "reasons": _json_load(row["reasons_json"], []),
-                    "rejected_reasons": _json_load(row["rejected_reasons_json"], []),
+                    "rejected_reasons": rejected_reasons,
                     "position_usd": float(row["position_usd"]),
                     "created_at": row["created_at"],
-                    "snapshot": self._snapshot_payload(snapshots.get(str(row["token_id"]))),
-                    "ranking_available": False,
-                    "persistence_gap": "candidate_ranking_not_persisted_in_0.6.3",
+                    "snapshot": snapshot,
+                    "safety_checks": self._safety_check_payload(snapshot, rejected_reasons),
+                    "rank": selected_rank,
+                    "candidate_ranking": ranking,
+                    "ranking_available": ranking is not None,
+                    "persistence_gap": None if ranking else "candidate_ranking_unavailable_for_this_decision",
                     "simulated": self.config.get("mode") == "paper",
                 }
             )
@@ -1343,8 +2302,11 @@ class WebData:
             "total": total,
             "limit": limit,
             "offset": offset,
-            "ranking_available": False,
-            "persistence_gap": "only_final_candidate_decision_is_persisted_in_0.6.3",
+            "ranking_available": any(item["ranking_available"] for item in items),
+            "ranking_coverage": {
+                "available": sum(1 for item in items if item["ranking_available"]),
+                "unavailable": sum(1 for item in items if not item["ranking_available"]),
+            },
             "as_of": iso(),
         }
 
@@ -1901,10 +2863,14 @@ class WebData:
                         "SELECT COUNT(*) FROM observations WHERE raw_json LIKE '%\"stale_first_observation\": true%'"
                     ).fetchone()[0]
                 )
-                counts["future_rejected"] = int(
-                    connection.execute(
-                        "SELECT COUNT(*) FROM observations WHERE raw_json LIKE '%\"published_time_in_future\": true%'"
-                    ).fetchone()[0]
+                future_rows = connection.execute(
+                    "SELECT * FROM observations WHERE raw_json LIKE '%\"published_time_in_future\": true%'"
+                ).fetchall()
+                decision_at = utcnow()
+                max_age = float((self.config.get("events") or {}).get("max_source_age_minutes", 30))
+                counts["future_rejected"] = sum(
+                    "published_time_in_future" in evidence_rejection(row, decision_at, max_age)
+                    for row in future_rows
                 )
             if connection is not None and self._table_exists(connection, "events"):
                 row = connection.execute("SELECT * FROM events WHERE id=360").fetchone()
@@ -1929,6 +2895,7 @@ class WebData:
                                 "published_at": item["published_at"],
                                 "observed_at": item["observed_at"],
                                 "ingested_at": item["ingested_at"],
+                                "freshness": item["freshness"],
                                 "decision_eligible": item["decision_eligible"],
                                 "rejection_reasons": item["rejection_reasons"],
                             }
@@ -1968,50 +2935,89 @@ class WebData:
                             }
                         )
                     decision["evidence"] = evidence
+        starlink_stale_reverse = [
+            item
+            for item in starlink.get("evidence", [])
+            if item.get("original_role") in {"feature", "confirmation"}
+            and item.get("role") == "identity"
+            and (
+                item.get("freshness") == "stale"
+                or any("stale" in str(reason) for reason in item.get("rejection_reasons", []))
+            )
+        ]
+        starlink["observed_stale_reverse_count"] = len(starlink_stale_reverse)
+        starlink_observed_pass = bool(
+            starlink.get("present")
+            and starlink_stale_reverse
+            and all(item.get("decision_eligible") is False for item in starlink_stale_reverse)
+        )
+        starlink_review = bool(
+            starlink.get("present")
+            and any(item.get("decision_eligible") is True for item in starlink_stale_reverse)
+        )
+        future_observed = counts["future_rejected"] > 0
+        cases = [
+            {
+                "id": "r5-false-positive",
+                "title": "r5 promotional false-positive exclusion",
+                "summary": "The active forward database excludes r5 from performance; this API does not claim to have re-run the archived r5 audit.",
+                "database": "r5",
+                "status": "policy_enforced",
+                "evidence_state": "documented_policy_only",
+                "outcome": "not_in_performance",
+                "included_in_performance": False,
+                "observed_case_evidence": False,
+                "reason": "promotional_listicles_and_generic_token_name_matches",
+                "examples": ["Coins", "Attention"],
+            },
+            {
+                "id": "r6-starlink-stale-reverse-evidence",
+                "title": "r6 Starlink stale reverse evidence",
+                "summary": "Stale reverse evidence must remain identity context and cannot create decision attention.",
+                "database": "r6",
+                "status": "review_required" if starlink_review else ("observed_pass" if starlink_observed_pass else "not_observed"),
+                "evidence_state": "observed_case" if starlink.get("present") else "case_not_present_in_active_database",
+                "outcome": "identity_only" if starlink_observed_pass else "not_observed",
+                "rule": "stale feature/confirmation is retained as identity with zero attention",
+                "observed_case_evidence": starlink_observed_pass,
+                "runtime_evidence": starlink,
+            },
+            {
+                "id": "future-data-rejection",
+                "title": "Future-data rejection",
+                "summary": "The policy rejects evidence observed or ingested after a decision; an observed pass requires matching rows in this database.",
+                "status": "observed_pass" if future_observed else "policy_enforced",
+                "evidence_state": "observed_case" if future_observed else "policy_only_no_matching_rows",
+                "outcome": "future_features_rejected" if future_observed else "rule_enforced_not_observed",
+                "rules": [
+                    "observed_at_must_not_follow_decision_time",
+                    "ingested_at_must_not_follow_decision_time",
+                    "future_outcomes_are_forbidden_features",
+                    "future_published_time_is_identity_only",
+                ],
+                "observed_case_evidence": future_observed,
+                "observed_rejection_count": counts["future_rejected"],
+            },
+        ]
+        case_statuses = {str(item["status"]) for item in cases}
+        if "review_required" in case_statuses:
+            overall_status = "review_required"
+        elif all(item.get("observed_case_evidence") is True for item in cases):
+            overall_status = "pass"
+        elif any(item.get("observed_case_evidence") is True for item in cases):
+            overall_status = "partial_evidence"
+        else:
+            overall_status = "policy_only"
         return {
             "release": "0.6.3",
             "forward_database": {"path_exposed": False, "status": self.database_health()["status"]},
-            "cases": [
-                {
-                    "id": "r5-false-positive",
-                    "title": "r5 promotional false-positive exclusion",
-                    "summary": "Promotional listicles and generic Coins/Attention matches remain excluded from performance.",
-                    "database": "r5",
-                    "status": "excluded",
-                    "outcome": "not_in_performance",
-                    "included_in_performance": False,
-                    "reason": "promotional_listicles_and_generic_token_name_matches",
-                    "examples": ["Coins", "Attention"],
-                },
-                {
-                    "id": "r6-starlink-stale-reverse-evidence",
-                    "title": "r6 Starlink stale reverse evidence",
-                    "summary": "Stale reverse evidence is retained as identity context and cannot create decision attention.",
-                    "database": "r6",
-                    "status": "protected",
-                    "outcome": "identity_only",
-                    "rule": "stale feature/confirmation is retained as identity with zero attention",
-                    "runtime_evidence": starlink,
-                },
-                {
-                    "id": "future-data-rejection",
-                    "title": "Future-data rejection",
-                    "summary": "Evidence observed or ingested after the decision is rejected; outcome fields are forbidden.",
-                    "status": "enforced",
-                    "outcome": "future_features_rejected",
-                    "rules": [
-                        "observed_at_must_not_follow_decision_time",
-                        "ingested_at_must_not_follow_decision_time",
-                        "future_outcomes_are_forbidden_features",
-                        "future_published_time_is_identity_only",
-                    ],
-                    "observed_rejection_count": counts["future_rejected"],
-                },
-            ],
+            "cases": cases,
             "observation_counts": counts,
             "recent_decision_evidence": recent_decisions,
-            "status": "pass",
-            "future_data_rejected": True,
+            "status": overall_status,
+            "policy_enforced": True,
+            "future_data_rejected": True if future_observed else None,
+            "observed_future_rejection_count": counts["future_rejected"],
             "as_of": iso(),
         }
 
@@ -2064,7 +3070,13 @@ class WebData:
                 "fields": schema_fields,
                 "collection_preferences": {
                     "platform_options": [
-                        {"value": platform, "label": platform.upper()} for platform in PLATFORMS
+                        {
+                            "value": platform,
+                            "label": platform.upper(),
+                            "automation_available": platform not in PLATFORM_AUTOMATION_DISABLED,
+                            "manual_directory_only": platform in PLATFORM_AUTOMATION_DISABLED,
+                        }
+                        for platform in PLATFORMS
                     ]
                 },
             },
@@ -2268,6 +3280,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         return bool(host and _is_loopback(host))
 
     def _local_wallet_origin_allowed(self) -> bool:
+        if not getattr(self.server, "wallet_controls_allowed", False):
+            return False
         if not self._request_host_is_loopback():
             return False
         host_header = str(self.headers.get("Host") or "").strip().lower()
@@ -2346,7 +3360,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 "version": "0.6.3",
                 "routes": [
                     "/api/overview", "/api/events", "/api/tokens", "/api/decisions",
-                    "/api/portfolio", "/api/agents", "/api/sources", "/api/audit", "/api/settings",
+                    "/api/portfolio", "/api/notifications", "/api/agents", "/api/sources", "/api/audit", "/api/settings",
                     "/api/watchlist", "/api/wallet",
                 ],
                 "live": {"enabled": False, "locked": True, "available": False},
@@ -2368,6 +3382,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             return self.data.decisions(query)
         if path == "/api/portfolio":
             return self.data.portfolio(query)
+        if path == "/api/notifications":
+            return self.data.notifications(query)
         if path == "/api/agents":
             return self.data.agents()
         if path == "/api/sources":
@@ -2379,7 +3395,11 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/watchlist":
             return self.data.watchlist()
         if path == "/api/wallet":
-            return self.data.wallet_state(public_view=not self._request_host_is_loopback())
+            local_wallet_view = bool(
+                getattr(self.server, "wallet_controls_allowed", False)
+                and self._request_host_is_loopback()
+            )
+            return self.data.wallet_state(public_view=not local_wallet_view)
         raise APIError(404, "API route not found")
 
     def do_GET(self) -> None:
@@ -2507,7 +3527,12 @@ class WebServer(ThreadingHTTPServer):
         self.web_data = web_data
         self.static_dir = static_dir
         self.access_token = access_token
+        self._wallet_controls_allowed = bool(_is_loopback(address[0]) and not access_token)
         super().__init__(address, WebRequestHandler)
+
+    @property
+    def wallet_controls_allowed(self) -> bool:
+        return self._wallet_controls_allowed
 
 
 class IPv6WebServer(WebServer):

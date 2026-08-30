@@ -5,7 +5,7 @@ from datetime import timedelta
 import pytest
 
 from memetrader.cli import cmd_doctor
-from memetrader.models import CandidateDecision, Observation, TokenCandidate, TokenSnapshot, utcnow
+from memetrader.models import CandidateDecision, Observation, TokenCandidate, TokenSnapshot, iso, utcnow
 from memetrader.runtime import (
     Notifier,
     Runtime,
@@ -205,13 +205,50 @@ def test_candidate_decision_persists_computed_position_size(tmp_path):
 
         class FakeEvaluator:
             async def discover_and_decide(self, event):
-                return CandidateDecision(event.id, token.token_id, "CANDIDATE", 85, 90, 20, ["test"])
+                decision = CandidateDecision(event.id, token.token_id, "CANDIDATE", 85, 90, 20, ["test"])
+                runtime.store.set_candidate_ranking(
+                    event.id,
+                    {
+                        "version": 1,
+                        "evaluated_at": iso(),
+                        "status": "completed",
+                        "outcome": "CANDIDATE",
+                        "candidates": [
+                            {
+                                "rank": 1,
+                                "token_id": token.token_id,
+                                "action": "CANDIDATE",
+                                "position_usd": 0,
+                                "reasons": ["test"],
+                                "rejected_reasons": [],
+                            }
+                        ],
+                        "final_outcome": {"decision_id": None, "action": "CANDIDATE"},
+                    },
+                )
+                return decision
 
         runtime.evaluator = FakeEvaluator()
         await runtime.evaluate_events_once()
         row = runtime.store.decisions(1)[0]
         assert row["position_usd"] > 0
         assert runtime.store.position(token.token_id) is not None
+        ranking = runtime.store.candidate_ranking(event_id)
+        assert ranking["final_outcome"]["decision_id"] == row["id"]
+        assert ranking["final_outcome"]["position_usd"] == row["position_usd"]
+        assert ranking["candidates"][0]["position_usd"] == row["position_usd"]
+
+        runtime.store.set_kv(f"event_decision_next:{event_id}", "1970-01-01T00:00:00Z")
+        await runtime.evaluate_events_once()
+        adjusted = runtime.store.decisions(1)[0]
+        assert adjusted["action"] == "WAIT"
+        assert json.loads(adjusted["rejected_reasons_json"]) == ["position_already_open"]
+        adjusted_ranking = runtime.store.candidate_ranking(event_id)
+        assert adjusted_ranking["final_outcome"]["decision_id"] == adjusted["id"]
+        assert adjusted_ranking["final_outcome"]["action"] == "WAIT"
+        assert adjusted_ranking["final_outcome"]["position_usd"] == 0
+        assert adjusted_ranking["candidates"][0]["action"] == "WAIT"
+        assert adjusted_ranking["candidates"][0]["rejected_reasons"] == ["position_already_open"]
         await runtime.close()
 
     asyncio.run(scenario())

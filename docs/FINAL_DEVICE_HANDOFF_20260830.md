@@ -1,14 +1,16 @@
-# memeTrader 最终设备交接（2026-08-30）
+# memeTrader 最终设备交接（历史快照，2026-08-30）
+
+> **已被当前版本取代。** 本文保留的是早期 0.5.1 / r3 设备快照，不能用于判断当前 0.6.3 / r6 配置、Agent 开关或运行状态。继续开发或运维前请先阅读 [PROJECT_CONTEXT/START_HERE.md](PROJECT_CONTEXT/START_HERE.md)，并以当前代码、`config.json`、SQLite 和 `/api/health` 为准。
 
 ## 权威入口
 
 继续本项目时，以以下文件和工作区最新字节为准：
 
 1. `E:\memeTrader\AGENTS.md`
-2. `E:\memeTrader\docs\FINAL_DEVICE_HANDOFF_20260830.md`
-3. `E:\memeTrader\docs\DEVICE_VALIDATION_20260830.md`
-4. 私有且被 Git 忽略的 `E:\memeTrader\config.json`
-5. `config.json` 的 `database` 字段指向的 SQLite 文件
+2. `E:\memeTrader\docs\PROJECT_CONTEXT\START_HERE.md`
+3. 私有且被 Git 忽略的 `E:\memeTrader\config.json`
+4. `config.json` 的 `database` 字段指向的 SQLite 文件
+5. `/api/health` 与当前 Windows 计划任务状态
 
 不要用聊天摘要覆盖工作区事实。
 

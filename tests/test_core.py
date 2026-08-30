@@ -21,6 +21,7 @@ from memetrader.strategy import (
     is_context_searchable_token_name,
     is_distinctive_token_name,
     is_promotional_market_content,
+    replay_guard,
     temporal_rejection_reasons,
     token_snapshot_temporal_rejections,
 )
@@ -99,6 +100,36 @@ def test_initial_page_and_old_polled_news_are_not_entry_evidence():
     assert "stale_received_item" in temporal_rejection_reasons(received, decision_at, 30)
 
 
+def test_identity_and_future_published_content_are_never_decision_evidence():
+    decision_at = datetime(2026, 1, 1, 3, tzinfo=timezone.utc)
+    identity = Observation(
+        source="browser:x:identity",
+        source_kind="social",
+        title="Identity context only",
+        role="identity",
+        observed_at=decision_at,
+        ingested_at=decision_at,
+        availability_proof="local_receive",
+    )
+    future = Observation(
+        source="rss:future",
+        source_kind="news",
+        title="Clock-skewed future article",
+        role="feature",
+        published_at=decision_at + timedelta(hours=1),
+        observed_at=decision_at,
+        ingested_at=decision_at,
+        availability_proof="local_poll",
+        raw={"published_time_in_future": True},
+    )
+    assert "non_feature_role" in temporal_rejection_reasons(identity, decision_at, 30)
+    assert "published_time_in_future" in temporal_rejection_reasons(future, decision_at, 30)
+    accepted, rejected = replay_guard([identity, future], decision_at, 30)
+    assert accepted == []
+    assert rejected["browser:x:identity"] == ["non_feature_role"]
+    assert "published_time_in_future" in rejected["rss:future"]
+
+
 def test_reverse_name_distinctiveness_blocks_generic_short_terms():
     assert is_distinctive_token_name("Peanut") is True
     assert is_distinctive_token_name("Viral Animal") is True
@@ -163,6 +194,37 @@ def test_news_source_independence_uses_underlying_publisher():
     }
     assert evidence_origin(direct) == evidence_origin(aggregated) == "coindesk.com"
     assert evidence_origin(other) == "reuters.com"
+
+
+def test_social_source_independence_uses_only_explicit_persisted_entity_ids():
+    x_nasa = {
+        "source": "x:nasa",
+        "source_kind": "official_social",
+        "raw_json": json.dumps({"source_entity_id": "nasa"}),
+    }
+    youtube_nasa = {
+        "source": "youtube:nasa",
+        "source_kind": "social",
+        "raw_json": json.dumps({"source_entity_id": "nasa"}),
+    }
+    x_spacex = {
+        "source": "x:spacex",
+        "source_kind": "official_social",
+        "raw_json": json.dumps({"source_entity_id": "spacex"}),
+    }
+    unknown_x = {"source": "x:unknown", "source_kind": "social", "raw_json": "{}"}
+    unknown_youtube = {"source": "youtube:unknown", "source_kind": "social", "raw_json": "{}"}
+    forged = {
+        "source": "youtube:other",
+        "source_kind": "social",
+        "raw_json": json.dumps({"source_entity_id": "NASA/../../forged"}),
+    }
+
+    assert evidence_origin(x_nasa) == evidence_origin(youtube_nasa) == "entity:nasa"
+    assert len({evidence_origin(x_nasa), evidence_origin(youtube_nasa)}) == 1
+    assert len({evidence_origin(x_nasa), evidence_origin(x_spacex)}) == 2
+    assert len({evidence_origin(unknown_x), evidence_origin(unknown_youtube)}) == 2
+    assert evidence_origin(forged) == "youtube:other"
 
 
 def test_event_clustering_and_dedup(tmp_path: Path):
@@ -328,6 +390,41 @@ def test_live_mode_is_locked(tmp_path: Path):
         load_config(config)
 
 
+def test_candidate_ranking_is_neutral_until_runtime_finalizes(tmp_path: Path):
+    store = Store(tmp_path / "ranking.sqlite3")
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    event = EventView(1, "Viral otter", ["otter"], 80, now, now)
+    token = TokenCandidate("solana", "A" * 32, "Viral Otter", "OTTER")
+    snapshot = TokenSnapshot(
+        "solana", token.address, 0.01, 50_000, 500_000, 12_000, 30, 10,
+        observed_at=now,
+        provider="dexscreener",
+    )
+    decision = CandidateDecision(1, token.token_id, "CANDIDATE", 80, 90, 10, ["test"], created_at=now)
+    evaluator = CandidateEvaluator(store, None, None, {}, None)
+    evaluator._persist_ranking(
+        event,
+        evaluated_at=now,
+        ranked=[(80, 90, token, snapshot, ["test"])],
+        decision=decision,
+        safety_checked=True,
+    )
+    pending = store.candidate_ranking(1)
+    assert pending["status"] == "pending_runtime"
+    assert pending["outcome"] == "UNAVAILABLE"
+    assert pending["final_outcome"] is None
+    assert pending["candidates"][0]["action"] == "PENDING_RUNTIME"
+
+    decision_id = store.add_decision(decision)
+    store.finalize_candidate_ranking(1, decision, decision_id=decision_id)
+    final = store.candidate_ranking(1)
+    assert final["status"] == "completed"
+    assert final["outcome"] == "CANDIDATE"
+    assert final["final_outcome"]["decision_id"] == decision_id
+    assert final["candidates"][0]["action"] == "CANDIDATE"
+    store.close()
+
+
 def test_old_config_keys_are_migrated_and_negative_drawdown_is_normalized(tmp_path: Path):
     payload = {
         "mode": "paper",
@@ -373,6 +470,10 @@ def test_browser_extension_persists_queue_filters_old_posts_and_heartbeats():
     assert "memetrader-watchlist-sync" in background
     assert 'credentials: "omit"' in background
     assert "watchAccountEntries" in background
+    assert "entity_id" in background and "source_entity_id" in content
+    assert "matchedWatchAccount(author)" in content
+    assert "item.platform === platform()" in content
+    assert "authorKey === accountKey(item.handle)" in content
     assert "platformStates" in content and "platformEnabled()" in content
     assert all(state in content for state in ("content_visible", "login_prompt", "no_recent_items"))
     assert "selector_count" in content and "page_url" in content
@@ -445,6 +546,13 @@ def test_generic_token_name_cannot_hijack_unrelated_news_event(tmp_path: Path):
         assert decision.action == "WAIT"
         assert decision.reasons == ["no_matching_token"]
         assert store.token(token.token_id) is None
+        ranking = store.candidate_ranking(event_id)
+        assert ranking is not None
+        assert ranking["status"] == "pending_runtime" and ranking["outcome"] == "UNAVAILABLE"
+        assert ranking["candidate_count_total"] == 0
+        assert ranking["candidates"] == []
+        assert ranking["final_outcome"] is None
+        assert ranking["outcome_reasons"] == ["no_matching_token"]
         store.close()
 
     asyncio.run(scenario())
@@ -709,6 +817,22 @@ def test_budgeted_agent_can_resolve_only_a_close_semantic_tie(tmp_path: Path):
         assert decision.canonical_margin == 5
         assert agent.tier == "medium"
         assert "agent_tiebreak=medium" in decision.reasons
+        ranking = store.candidate_ranking(event_id)
+        assert ranking is not None
+        assert ranking["candidate_count_total"] == 2
+        assert [item["rank"] for item in ranking["candidates"]] == [1, 2]
+        assert [item["token_id"] for item in ranking["candidates"]] == [second.token_id, first.token_id]
+        assert ranking["candidates"][0]["action"] == "PENDING_RUNTIME"
+        assert ranking["candidates"][1]["action"] == "NOT_SELECTED"
+        assert ranking["candidates"][0]["canonical_margin"] == 5
+        assert ranking["tie_break"] == {
+            "used": True,
+            "tier": "medium",
+            "confidence": 0.9,
+            "preferred_token_id": second.token_id,
+        }
+        serialized = json.dumps(ranking)
+        assert "raw_json" not in serialized and "social_urls" not in serialized
         store.close()
 
     asyncio.run(scenario())

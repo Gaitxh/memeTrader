@@ -13,7 +13,7 @@
         "https://x.com/*", "https://twitter.com/*", "https://truthsocial.com/*",
         "https://bsky.app/*", "https://www.reddit.com/*", "https://old.reddit.com/*",
         "https://www.threads.net/*", "https://www.instagram.com/*", "https://www.tiktok.com/*",
-        "https://www.youtube.com/*", "https://t.me/*"
+        "https://www.youtube.com/*"
       ],
       "js": ["content.js"],
       "run_at": "document_idle"

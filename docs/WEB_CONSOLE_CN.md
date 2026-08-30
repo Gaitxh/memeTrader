@@ -4,6 +4,8 @@ Web 控制台是现有 memeTrader Runtime 与 SQLite 的观察、审计和安全
 
 顶部提供“中文 / English”即时切换。语言偏好只保存在浏览器 `localStorage`，不会写入机器人配置或发送到外部服务；事件、Token 与来源的原始文本保持原文。
 
+界面所有工作区都会动态更新当前页：Overview 约 10 秒、Live Events 约 12 秒、Token/Decisions/Paper Portfolio/Wallet 约 15 秒、Agent Operations/Sources 约 20 秒、Audit 约 30 秒、Settings 约 60 秒。页面隐藏、存在未保存设置或正在编辑钱包时会暂停自动请求；重新回到页面时立即刷新。当前实现是对本机 API 的低成本轮询，不需要新增 WebSocket、Redis 或消息队列；右上角的刷新时间每秒更新显示，但只有实际 API 请求才改变数据快照。
+
 ## 数据仍保存在本机
 
 权威运行数据继续保存在 `config.json -> database` 指定的 SQLite 文件中。Web 层用短连接和只读查询访问 WAL 数据库，不会清空、迁移或回写 r5/r6 历史证据。
@@ -25,6 +27,8 @@ data/
 ```
 
 `data/`、`config.json`、数据库、日志、会话和访问口令都被 Git 忽略。
+
+不含敏感信息的长期产品上下文保存在版本控制内的 [PROJECT_CONTEXT/START_HERE.md](PROJECT_CONTEXT/START_HERE.md) 及其配套文档。它用于跨聊天窗口延续需求、架构、安全边界、操作和验收背景，但不能代替当前代码、本机配置、SQLite 或 `/api/health` 的运行事实。
 
 ## 本机启动
 
@@ -75,8 +79,8 @@ Quick Tunnel 地址在隧道重建后会变化，适合个人临时远程查看�
 
 ## 页面与信息语义
 
-- **Overview**：Paper/Live 锁、机器人/计划任务、SQLite、浏览器桥、资金、权益、当日 exposure、开放仓位和数据总量。
-- **Live Events**：attention、独立来源数、freshness、来源角色、资格状态和原始链接。
+- **Overview**：Paper/Live 锁、机器人/计划任务、SQLite、浏览器桥、资金、权益、当日 exposure、开放仓位和数据总量；顶部另有由 SQLite 真实写入驱动的信息/Token 双通道采集脉冲。
+- **Live Events**：attention、独立来源数、freshness、来源角色、资格状态和原始链接，并显示平台、发布者和可验证的影响力维度。
 - **Token Discovery**：chain、CA、创建/首次观察、流动性、5m 量、买卖笔数、momentum 和双向证据链。
 - **Decisions**：事件、候选结果、match/candidate score、canonical margin、WAIT/CANDIDATE/REJECT、仓位金额与拒绝原因。
 - **Paper Portfolio**：所有金额和 PNL 均明确为 Paper/模拟；展示止损、分批止盈、移动退出和叙事衰减状态。
@@ -95,23 +99,30 @@ Quick Tunnel 地址在隧道重建后会变化，适合个人临时远程查看�
 
 每条证据还单独显示 decision eligibility。角色本身不代表它在某个决策时刻一定合格。
 
-事件详情中的“来源排名”依次考虑：决策资格、来源角色、新鲜度、是否有可访问原始链接以及页面上可观察到的热度。这个顺序只表示**证据优先级**，方便先审查最相关材料；它不是“权威真值排名”，也不会自动证明来源内容真实。全部来源仍可展开查看其原始链接、角色与时间线。
+Overview 的采集脉冲完全由已持久化数据计算。信息通道统计新闻、社交、浏览器和 Agent observation；Token 通道分别统计新 Token 与 snapshot 更新。每条通道显示最近 60 秒计数、5 分钟每分钟写入率、最近写入时间和 `active / waiting / stale` 状态。只有近期确有 SQLite 写入时动画才运行；页面计时、计划任务存在或浏览器打开本身都不会伪造 active。
+
+事件详情中的“来源排名”依次考虑：当时决策用途、已知权威层级、来源角色、新鲜度、是否有可访问原始链接以及页面上可观察到的热度。每条来源独立展示平台、发布者、账号类型、官方/认证状态、已知关注者或覆盖、可见互动和本地策展优先级；没有证据的字段显示为“未知”，不能根据显示名或平台猜测。这个顺序只表示**证据优先级**，方便先审查最相关材料；它不是“权威真值排名”，也不会自动证明来源内容真实。`feature/confirmation` 与 `identity/promotion` 分组展示，后者明确为仅上下文；高影响力账号也不能让 identity/promotion 单独成为交易依据。全部来源仍可展开查看原始链接、发布时间、本机观察/入库时间、角色与时间线。
 
 `WAIT` 的固定含义是“未形成交易信号”，不能被渲染成机会、买入或看涨提示。`CANDIDATE` 只表示通过候选门槛，后续仍受安全、仓位和 Paper 执行约束。
 
 ## 平台与公开账号观察清单
 
+版本控制内的 [SOCIAL_SOURCE_CATALOG.json](SOCIAL_SOURCE_CATALOG.json) 提供 80 条经过人工复核的公开候选种子，覆盖 X、YouTube、Instagram、TikTok、Threads、Bluesky、Telegram 和 Reddit；分类、优先级、权威语义和跨平台实体去重见 [SOCIAL_SOURCE_CATALOG_CN.md](SOCIAL_SOURCE_CATALOG_CN.md)。目录不包含任何登录身份，也不会自动等于“当前正在采集”。用户导入或选择后，当前观察清单保存在 Git 忽略的 `data/web_console/console_settings.json`，可以按本机需要增删、停用并与目录版本保持不同。每轮 Agent 只从启用清单中轮换有限数量，不会同时扫描全部 80 条。
+
 控制台保存的账号清单只允许：
 
 - 平台；
 - 公开显示名或 handle；
+- 可选的稳定 `entity_id`（仅允许 1–64 位小写字母、数字、`_`、`-`；空值表示未知）；
 - 公开主页 URL；
 - 优先级；
 - 是否启用。
 
-它绝不保存平台用户名、密码、Cookie、Session、验证码或私信。X、Truth Social、Bluesky、Reddit、Threads、Instagram、TikTok、YouTube 与 Telegram 网页仍由用户在专用的本机 Chrome/Edge 配置中手工登录并实际打开；扩展只读取已加载的公开页面。项目不会要求用户把密码、Cookie 或 Session 发给 Agent。需要登录、登录失效或页面未打开时，Sources 会及时显示状态，由用户自行完成登录。
+它绝不保存平台用户名、密码、Cookie、Session、验证码或私信。X、Truth Social、Bluesky、Reddit、Threads、Instagram、TikTok 与 YouTube 的登录只发生在专用的本机 Chrome/Edge 配置中；扩展只读取已经加载的公开页面。Telegram 在设置页固定为 `manual_directory_only`，其页面正文不由扩展读取、入库或送入 Agent。项目和 Agent 不读取、导出或持久化浏览器凭据。登录失败、要求人工验证或不值得继续的平台直接跳过，Sources 如实标记降级，并继续使用公开页面、RSS、Agent 搜索及其他可访问来源，不让单个平台阻塞整套系统。
 
 “加入观察清单”不等于页面正在采集。需要浏览器页面的平台会显示 `Open page required` 和最近浏览器心跳。
+
+浏览器扩展只有在“平台 + 作者 handle”与已启用观察项精确匹配时，才随观察发送该项的 `entity_id`；Runtime 会再次读取本机观察清单核对，并丢弃客户端自报、格式非法、账号不匹配或清单中不存在的值。被接受的值随当次 observation 持久化，策略只按这个历史值合并独立来源。显示名、粉丝数和今天的目录都不会被用来猜测实体，也不会回写或改算旧决策。
 
 ## Agent 额度
 
@@ -122,6 +133,18 @@ Quick Tunnel 地址在隧道重建后会变化，适合个人临时远程查看�
 项目默认最多两个并发 Agent 槽位；6 个逻辑角色共同共享该上限。Settings 只允许 `1–2`，默认 `2`。调用次数与 token 预算的修改不会重置当日已使用量。
 
 每次 Agent 尝试都会记录安全的用量账本；Agent Operations 按任务、模型与推理强度分别汇总调用次数、输入 token、缓存输入 token、输出 token、推理 token、回退结果和当日/七日预算。账本不保存 prompt、stderr、Codex 登录材料或任何 secret。
+
+源码示例仍保留面向普通电脑的保守默认值；本机 2026-08-30 已通过安全 Settings 应用一个适度加快的运行配置：
+
+| 项目 | 源码示例默认 | 当前本机运行值 |
+|---|---:|---:|
+| 主采集轮询 | 60 秒 | 45 秒 |
+| Token 反向新闻 | 45 秒 | 30 秒 |
+| Trend Scout 普通 / 热点 / 空结果退避 | 12 / 3 / 30 分钟 | 8 / 3 / 20 分钟 |
+| Source Discovery | 24 小时 | 12 小时 |
+| Token Context 全局 / 同 Token 冷却 | 5 / 240 分钟 | 4 / 180 分钟 |
+
+本机运行值保存在 Git 忽略的 `config.json`，不会反向修改仓库中的默认值；实际值应以 Settings/API 读取结果为准。Runtime 设置保存后需要安全重启单一常驻任务才生效。无论额度或频率怎样调整，并发仍限制为最多 2 个 Agent 子进程。
 
 ## Paper、Devnet 与 Mainnet 边界
 

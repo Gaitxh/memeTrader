@@ -128,6 +128,6 @@ ingested_at <= decision_time
 2. 开启开发者模式；
 3. 加载已解压扩展 `E:\memeTrader\browser-extension`；
 4. 把本机私有 `config.json` 中的 `bridge.token` 填入扩展选项；
-5. 打开需要持续观察的公开 X List、官方账号、Truth Social、Reddit、Bluesky、YouTube 或 Telegram 公共页面。
+5. 打开需要持续观察的公开 X List、官方账号、Truth Social、Reddit、Bluesky 或 YouTube 页面。Telegram 只在 Sources 目录中人工打开，不自动采集。
 
 不要把 `config.json`、数据库、日志、Cookie、Session、钱包材料或 bridge token 提交到 GitHub。

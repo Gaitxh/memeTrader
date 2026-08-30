@@ -44,6 +44,7 @@ function queueId(item) {
 }
 
 function appendQueue(item) {
+  if (platformName(item?.platform) === "telegram") return Promise.resolve();
   return withQueueLock(async () => {
     const state = await settings();
     const pendingObservations = Array.isArray(state.pendingObservations) ? state.pendingObservations : [];
@@ -62,7 +63,12 @@ async function flushQueue() {
   try {
     const state = await withQueueLock(settings);
     if (!state.token || !Array.isArray(state.pendingObservations) || state.pendingObservations.length === 0) return;
-    const batch = state.pendingObservations.slice(0, 100);
+    const eligible = state.pendingObservations.filter((item) => platformName(item?.platform) !== "telegram");
+    if (eligible.length !== state.pendingObservations.length) {
+      await chrome.storage.local.set({pendingObservations: eligible});
+    }
+    if (eligible.length === 0) return;
+    const batch = eligible.slice(0, 100);
     const sentIds = new Set(batch.map((item) => item._queue_id));
     const response = await fetch(`${state.bridgeUrl.replace(/\/$/, "")}/v1/observe`, {
       method: "POST",
@@ -118,6 +124,11 @@ function platformName(value) {
   return String(value || "").trim().toLowerCase();
 }
 
+function sourceEntityId(value) {
+  const entityId = String(value || "").trim();
+  return /^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/.test(entityId) ? entityId : "";
+}
+
 async function syncWatchlist() {
   const state = await settings();
   try {
@@ -135,12 +146,15 @@ async function syncWatchlist() {
       const name = platformName(item.platform);
       if (name) platformStates[name] = item.enabled !== false;
     }
+    platformStates.telegram = false;
     const watchAccountEntries = [];
     for (const item of Array.isArray(payload.watch_accounts) ? payload.watch_accounts.slice(0, 500) : []) {
       if (!item || typeof item !== "object" || item.enabled === false) continue;
       const handle = String(item.handle || "").trim().replace(/^@/, "").slice(0, 120);
       const platform = platformName(item.platform);
-      if (handle && platform) watchAccountEntries.push({platform, handle});
+      const entityId = sourceEntityId(item.entity_id);
+      if (platform === "telegram") continue;
+      if (handle && platform) watchAccountEntries.push({platform, handle, entity_id: entityId});
     }
     const watchTerms = (Array.isArray(payload.topics) ? payload.topics : [])
       .map((item) => String(item || "").trim().slice(0, 160))

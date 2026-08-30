@@ -146,7 +146,7 @@ websockets
 - SQLite、RSS/XML、HTTP Bridge、状态机都使用标准库；
 - 浏览器扩展无第三方 JavaScript；
 - Agent 为可选本地命令；
-- Telegram 登录态监听为可选依赖；
+- Telegram 自动监听不接入；仅保留人工来源目录；
 - 未来接入真实链上执行时再单独增加链 SDK，不提前污染 Paper 核心。
 
 ## 采用判断标准

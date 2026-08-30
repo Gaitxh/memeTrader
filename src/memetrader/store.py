@@ -23,6 +23,8 @@ from .models import (
 
 
 class Store:
+    CANDIDATE_RANKING_KEY_PREFIX = "candidate_ranking:"
+
     def __init__(self, path: str | Path, initial_cash_usd: float = 10000):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -577,6 +579,52 @@ class Store:
                 "INSERT INTO kv(key,value_json,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at",
                 (key,self._json(value),iso()),
             )
+
+    def candidate_ranking(self, event_id: int) -> dict[str, Any] | None:
+        value = self.get_kv(f"{self.CANDIDATE_RANKING_KEY_PREFIX}{int(event_id)}")
+        return value if isinstance(value, dict) else None
+
+    def set_candidate_ranking(self, event_id: int, value: dict[str, Any]) -> None:
+        payload = dict(value)
+        payload["event_id"] = int(event_id)
+        self.set_kv(f"{self.CANDIDATE_RANKING_KEY_PREFIX}{int(event_id)}", payload)
+
+    def finalize_candidate_ranking(
+        self,
+        event_id: int,
+        decision: CandidateDecision,
+        *,
+        decision_id: int,
+    ) -> None:
+        """Attach Runtime's final sizing/action without inventing a missing ranking."""
+        ranking = self.candidate_ranking(event_id)
+        if ranking is None:
+            return
+        final_outcome = {
+            "decision_id": int(decision_id),
+            "action": str(decision.action),
+            "token_id": str(decision.token_id),
+            "candidate_score": float(decision.score),
+            "match_score": float(decision.match_score),
+            "canonical_margin": float(decision.canonical_margin),
+            "position_usd": float(decision.position_usd),
+            "reasons": [str(reason) for reason in decision.reasons],
+            "rejected_reasons": [str(reason) for reason in decision.rejected_reasons],
+            "created_at": iso(decision.created_at),
+        }
+        ranking["status"] = "completed"
+        ranking["outcome"] = str(decision.action)
+        ranking["final_outcome"] = final_outcome
+        for candidate in ranking.get("candidates") or []:
+            if not isinstance(candidate, dict) or str(candidate.get("token_id") or "") != decision.token_id:
+                continue
+            candidate["action"] = str(decision.action)
+            candidate["position_usd"] = float(decision.position_usd)
+            candidate["reasons"] = [str(reason) for reason in decision.reasons]
+            candidate["rejected_reasons"] = [str(reason) for reason in decision.rejected_reasons]
+            candidate["selection_status"] = "selected_for_final_decision"
+            break
+        self.set_candidate_ranking(event_id, ranking)
 
     def increment_kv(self, key: str, amount: int) -> int:
         """Atomically increment an integer KV value and return the new value."""

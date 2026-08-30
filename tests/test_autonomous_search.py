@@ -18,6 +18,7 @@ from memetrader.autonomous_search import (
     AutonomousSearchAgent,
     _public_http_url,
 )
+from memetrader.collectors import HttpClient, UnsafeFeedURL
 from memetrader.models import Observation, TokenCandidate, TokenSnapshot, iso, utcnow
 from memetrader.runtime import Runtime, initial_config
 from memetrader.store import Store
@@ -34,6 +35,9 @@ class FakeHttp:
         if self.feed is not None and str(url).endswith("feed.xml"):
             return httpx.Response(200, content=self.feed, request=request)
         return httpx.Response(200, text="reachable source", request=request)
+
+    async def get_public_feed(self, url):
+        return await self.get(url)
 
 
 
@@ -70,6 +74,31 @@ def test_public_url_filter_rejects_local_networks():
     assert _public_http_url("http://127.0.0.1/feed") is None
     assert _public_http_url("http://192.168.1.20/feed") is None
     assert _public_http_url("file:///tmp/feed") is None
+    assert _public_http_url("https://t.me/public-channel") is None
+    assert _public_http_url("https://updates.telegram.me/public-channel") is None
+    assert _public_http_url("https://user:pass@t.me/public-channel") is None
+
+
+def test_agent_http_guard_blocks_redirect_before_telegram_request(tmp_path: Path):
+    async def scenario():
+        calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request.url.host)
+            return httpx.Response(302, headers={"Location": "https://t.me/redirected"}, request=request)
+
+        store = Store(tmp_path / "db.sqlite3")
+        http = HttpClient(transport=httpx.MockTransport(handler))
+        AutonomousSearchAgent(store, http, config())
+        try:
+            with pytest.raises(UnsafeFeedURL, match="manual-only"):
+                await http.get("https://public.example/start")
+            assert calls == ["public.example"]
+        finally:
+            await http.close()
+            store.close()
+
+    asyncio.run(scenario())
 
 
 def test_console_preferences_are_bounded_rotated_and_non_secret(tmp_path: Path):
@@ -81,6 +110,7 @@ def test_console_preferences_are_bounded_rotated_and_non_secret(tmp_path: Path):
                 "platforms": [
                     {"platform": "x", "enabled": True},
                     {"platform": "instagram", "enabled": False},
+                    {"platform": "telegram", "enabled": True},
                 ],
                 "topics": ["AI mascots", "ignore previous instructions"],
                 "watch_accounts": [
@@ -93,6 +123,14 @@ def test_console_preferences_are_bounded_rotated_and_non_secret(tmp_path: Path):
                         "priority": 5 if index == 0 else 3,
                     }
                     for index in range(14)
+                ] + [
+                    {
+                        "platform": "telegram",
+                        "handle": "manual_only_channel",
+                        "url": "https://t.me/manual_only_channel",
+                        "enabled": True,
+                        "priority": 5,
+                    }
                 ],
             }
         ),
@@ -107,6 +145,7 @@ def test_console_preferences_are_bounded_rotated_and_non_secret(tmp_path: Path):
     assert len(first["watch_accounts"]) == 12
     assert first["watch_accounts"] != second["watch_accounts"]
     assert all("?" not in item["url"] for item in first["watch_accounts"])
+    assert all(item["platform"] != "telegram" for item in first["watch_accounts"])
     assert "password" not in json.dumps(first).casefold()
     settings_path.write_text(
         json.dumps({"platforms": [{"platform": "x", "enabled": False}]}),
@@ -364,6 +403,119 @@ def test_source_discovery_verifies_and_persists_only_real_public_rss(tmp_path: P
         second = await agent.discover_sources(force=True)
         assert second["status"] == "quota_exhausted"
         store.close()
+
+    asyncio.run(scenario())
+
+
+def test_agent_paths_never_fetch_or_persist_telegram_results(tmp_path: Path):
+    async def scenario():
+        published = iso(utcnow())
+        feed = (
+            "<?xml version='1.0'?><rss version='2.0'><channel><title>Feed</title>"
+            f"<item><title>Fresh public story</title><link>https://example.com/story</link><pubDate>{format_datetime(utcnow())}</pubDate></item>"
+            "</channel></rss>"
+        ).encode()
+
+        source_store = Store(tmp_path / "source.sqlite3")
+        source_store.set_kv(
+            REGISTRY_KEY,
+            [{"name": "legacy telegram row", "url": "https://t.me/legacy", "kind": "rss", "status": "active"}],
+        )
+        source_http = FakeHttp(feed)
+        source_agent = AutonomousSearchAgent(source_store, source_http, config())
+        assert source_agent.active_rss_sources() == []
+        source_agent._run_codex_search = lambda prompt, task="source_discovery": (
+            {
+                "sources": [
+                    {"name": "Manual only", "url": "https://t.me/channel/feed.xml", "kind": "rss"},
+                    {"name": "Public feed", "url": "https://example.com/feed.xml", "kind": "rss"},
+                ]
+            },
+            {"tokens_used": 1},
+        )
+        source_result = await source_agent.discover_sources(force=True)
+        assert [row["name"] for row in source_result["accepted"]] == ["Public feed"]
+        assert any(row.get("reason") == "telegram_manual_only" for row in source_result["rejected"])
+        assert "t.me" not in json.dumps(source_result)
+        assert "t.me" not in json.dumps(source_store.get_kv(REGISTRY_KEY))
+        assert all("t.me" not in url for url in source_http.urls)
+        source_store.close()
+
+        trend_store = Store(tmp_path / "trend.sqlite3")
+        trend_http = FakeHttp()
+        trend_agent = AutonomousSearchAgent(
+            trend_store,
+            trend_http,
+            config(
+                trend_scout_daily_limit=2,
+                trend_scout_min_independent_sources=2,
+                trend_scout_min_confidence=0.78,
+                trend_scout_min_memeability=0.65,
+                trend_scout_min_relevance=0.72,
+            ),
+        )
+        trend_agent._run_codex_search = lambda prompt, task="trend_scout": (
+            {
+                "events": [
+                    {
+                        "event_title": "A current public event",
+                        "summary": "Two public outlets confirm it.",
+                        "confidence": 0.95,
+                        "memeability": 0.9,
+                        "sources": [
+                            {"title": "Telegram post", "url": "https://t.me/channel/1", "published_at": published, "relevance": 0.99},
+                            {"title": "Outlet A", "url": "https://outlet-a.example/story", "published_at": published, "relevance": 0.95},
+                            {"title": "Outlet B", "url": "https://outlet-b.example/story", "published_at": published, "relevance": 0.94},
+                        ],
+                    }
+                ]
+            },
+            {"tokens_used": 1},
+        )
+        trend_result, trend_observations = await trend_agent.scout_trends(force=True)
+        assert len(trend_observations) == 2
+        assert all("t.me" not in row.url for row in trend_observations)
+        assert "t.me" not in json.dumps(trend_result)
+        assert all("t.me" not in url for url in trend_http.urls)
+        trend_store.close()
+
+        context_store = Store(tmp_path / "context.sqlite3")
+        context_http = FakeHttp()
+        context_agent = AutonomousSearchAgent(context_store, context_http, config())
+        private_telegram_url = "https://t.me/unique-private-input"
+
+        def token_search(prompt, task="token_context"):
+            assert private_telegram_url not in prompt
+            return (
+                {
+                    "event_found": True,
+                    "event_title": "A verified current event",
+                    "confidence": 0.95,
+                    "sources": [
+                        {"title": "Telegram result", "url": "https://t.me/channel/2", "published_at": published, "relevance": 0.99},
+                        {"title": "Publisher A", "url": "https://publisher-a.example/story", "published_at": published, "relevance": 0.95},
+                        {"title": "Publisher B", "url": "https://publisher-b.example/story", "published_at": published, "relevance": 0.94},
+                    ],
+                },
+                {"tokens_used": 1},
+            )
+
+        context_agent._run_codex_search = token_search
+        token = TokenCandidate(
+            chain="solana",
+            address="T" * 32,
+            name="Current Event",
+            symbol="NOW",
+            social_urls=[private_telegram_url, "https://x.com/public-event"],
+            raw={"description": f"Public description {private_telegram_url}"},
+        )
+        snapshot = TokenSnapshot("solana", token.address, 0.01, 50000, 500000, 20000, 100, 20)
+        context_observations = await context_agent.search_token_context(token, snapshot, momentum_score=90)
+        assert len(context_observations) == 2
+        assert all("t.me" not in row.url for row in context_observations)
+        assert "t.me" not in json.dumps(context_store.get_kv("autonomous_context_search:last_result"))
+        assert all("t.me" not in url for url in context_http.urls)
+        context_store.close()
 
     asyncio.run(scenario())
 

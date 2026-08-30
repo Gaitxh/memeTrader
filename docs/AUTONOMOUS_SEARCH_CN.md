@@ -37,6 +37,11 @@ Agent 定期寻找无需付费 API Key 的公开 RSS/Atom 源。候选源不会�
 
 验证通过后写入动态源注册表，下一轮采集会自动使用，不需要修改 `config.json`。
 
+RSS 默认不继承系统代理。若电脑只能通过本机 SOCKS5 出网，可选配置
+`sources.rss_proxy_url`，例如 `socks5://127.0.0.1:7890`。这里只接受无账号密码、
+无路径/参数的 literal loopback IP；目标 RSS 仍先在本机解析并校验为公网地址，再以
+批准后的 IP 通过 SOCKS5 连接，同时保留原域名的 Host 与 TLS SNI。留空即直接连接。
+
 ### 3. Token 反向事件搜索（Token Context）
 
 只有新 Token 已出现真实流动性、成交量、买卖笔数和买盘优势时，系统才调用 Agent 反查名称背后的现实事件。结果同样要求两个独立、近期、可访问来源。

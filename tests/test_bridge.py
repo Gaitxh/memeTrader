@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from memetrader.models import Observation
-from memetrader.runtime import BrowserBridge
+from memetrader.runtime import BrowserBridge, resolve_watchlist_source_entity_id
 
 
 def free_port() -> int:
@@ -30,6 +30,11 @@ def test_browser_bridge_uses_local_receive_time_and_versioned_routes(tmp_path: P
             heartbeats.append((source, detail))
 
         port = free_port()
+        settings_path = tmp_path / "console_settings.json"
+        settings_path.write_text(
+            '{"watch_accounts":[{"platform":"x","handle":"@example","entity_id":"example_media","enabled":true}]}',
+            encoding="utf-8",
+        )
         bridge = BrowserBridge(
             "127.0.0.1",
             port,
@@ -37,6 +42,7 @@ def test_browser_bridge_uses_local_receive_time_and_versioned_routes(tmp_path: P
             on_observation,
             on_heartbeat,
             max_body_bytes=100_000,
+            source_entity_resolver=lambda item: resolve_watchlist_source_entity_id(item, settings_path),
         )
         await bridge.start()
         base = f"http://127.0.0.1:{port}"
@@ -59,6 +65,9 @@ def test_browser_bridge_uses_local_receive_time_and_versioned_routes(tmp_path: P
                         "published_at": "2026-01-01T00:00:00Z",
                         "observed_at": "1999-01-01T00:00:00Z",
                         "capture_phase": "initial",
+                        "platform": "x",
+                        "author": "example",
+                        "source_entity_id": "example_media",
                         "like_count": 1200,
                         "repost_count": 300,
                         "view_count": 50000,
@@ -73,6 +82,96 @@ def test_browser_bridge_uses_local_receive_time_and_versioned_routes(tmp_path: P
                 assert observations[0].capture_phase == "initial"
                 assert observations[0].raw["like_count"] == 1200
                 assert observations[0].raw["view_count"] == 50000
+                assert observations[0].raw["source_entity_id"] == "example_media"
+                assert observations[0].raw["browser"]["source_entity_id"] == "example_media"
+
+                forged = await client.post(
+                    f"{base}/v1/observe",
+                    headers={"X-MemeTrader-Token": "secret-token-that-is-long-enough"},
+                    json={
+                        "source": "browser:x:example",
+                        "source_kind": "social",
+                        "title": "An attacker cannot choose an arbitrary deduplication entity",
+                        "platform": "x",
+                        "author": "example",
+                        "source_entity_id": "forged_entity",
+                    },
+                )
+                assert forged.status_code == 200
+                assert "source_entity_id" not in observations[1].raw
+                assert "source_entity_id" not in observations[1].raw["browser"]
+
+                wrong_author = dict(
+                    source="browser:x:impostor",
+                    source_kind="social",
+                    title="A display-name similarity cannot claim a configured entity",
+                    platform="x",
+                    author="Example Media",
+                    source_entity_id="example_media",
+                )
+                response = await client.post(
+                    f"{base}/v1/observe",
+                    headers={"X-MemeTrader-Token": "secret-token-that-is-long-enough"},
+                    json=wrong_author,
+                )
+                assert response.status_code == 200
+                assert "source_entity_id" not in observations[2].raw
+
+                telegram = await client.post(
+                    f"{base}/v1/observe",
+                    headers={"X-MemeTrader-Token": "secret-token-that-is-long-enough"},
+                    json={
+                        "source": "browser:telegram:example",
+                        "source_kind": "social",
+                        "title": "Telegram content must remain manual-directory only",
+                        "platform": "telegram",
+                        "author": "example",
+                        "url": "https://t.me/example/1",
+                    },
+                )
+                assert telegram.status_code == 200
+                assert telegram.json()["accepted"] == 0
+                assert len(observations) == 3
+
+                telegram_spoofs = await client.post(
+                    f"{base}/v1/observe",
+                    headers={"X-MemeTrader-Token": "secret-token-that-is-long-enough"},
+                    json=[
+                        {
+                            "source": "browser:x:spoof",
+                            "platform": "x",
+                            "title": "A forged X platform must not hide a Telegram URL",
+                            "url": "https://news.t.me/example/2",
+                        },
+                        {
+                            "source": "browser:telegram:spoof",
+                            "platform": "x",
+                            "title": "The source prefix independently blocks Telegram",
+                            "url": "https://x.com/example/status/2",
+                        },
+                        {
+                            "source": "browser:x:spoof",
+                            "platform": "x",
+                            "title": "Telegram legacy host subdomains are manual-only",
+                            "url": "https://channel.telegram.me/example/3",
+                        },
+                        {
+                            "source": "browser:x:spoof",
+                            "platform": "x",
+                            "title": "Credential and authority confusion URLs are rejected",
+                            "url": "https://x.com@t.me/example/4",
+                        },
+                        {
+                            "source": "browser:x:spoof",
+                            "platform": "x",
+                            "title": "Backslash URL confusion is rejected",
+                            "url": "https://x.com\\@t.me/example/5",
+                        },
+                    ],
+                )
+                assert telegram_spoofs.status_code == 200
+                assert telegram_spoofs.json()["accepted"] == 0
+                assert len(observations) == 3
 
                 unauthorized = await client.post(
                     f"{base}/v1/observe",
@@ -80,6 +179,21 @@ def test_browser_bridge_uses_local_receive_time_and_versioned_routes(tmp_path: P
                     json={"title": "blocked"},
                 )
                 assert unauthorized.status_code == 401
+
+                blocked_heartbeat = await client.post(
+                    f"{base}/v1/heartbeat",
+                    headers={"X-MemeTrader-Token": "secret-token-that-is-long-enough"},
+                    json={
+                        "source": "browser:x:spoof",
+                        "detail": {
+                            "platform": "x",
+                            "page_url": "https://updates.t.me/example",
+                        },
+                    },
+                )
+                assert blocked_heartbeat.status_code == 200
+                assert blocked_heartbeat.json()["accepted"] == 0
+                assert heartbeats == []
 
                 heartbeat = await client.post(
                     f"{base}/v1/heartbeat",
@@ -119,3 +233,11 @@ def test_browser_bridge_rejects_non_loopback():
             noop_observation,
             noop_heartbeat,
         )
+
+
+def test_extension_manifest_does_not_inject_telegram_pages():
+    manifest = (Path(__file__).parents[1] / "browser-extension" / "manifest.json").read_text(
+        encoding="utf-8"
+    )
+    assert "t.me" not in manifest
+    assert "telegram.me" not in manifest
