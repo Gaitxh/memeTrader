@@ -39,6 +39,16 @@ def test_doctor_treats_unrequired_security_endpoint_failure_as_warning(tmp_path,
     class FakeResponse:
         status_code = 200
 
+        def __init__(self, url):
+            self.url = url
+
+        def json(self):
+            if "gopluslabs.io" in self.url:
+                return {"code": 1, "result": {"probe": {"safe": "1"}}}
+            if "rugcheck.xyz" in self.url:
+                return {"score": 1, "risks": []}
+            return {}
+
     class FakeClient:
         def __init__(self, *args, **kwargs):
             pass
@@ -52,7 +62,7 @@ def test_doctor_treats_unrequired_security_endpoint_failure_as_warning(tmp_path,
         def get(self, url):
             if "honeypot.is" in url:
                 raise TimeoutError("optional endpoint unavailable")
-            return FakeResponse()
+            return FakeResponse(url)
 
     monkeypatch.setattr("memetrader.cli.httpx.Client", FakeClient)
     assert cmd_doctor(str(path), True) == 0
@@ -78,6 +88,16 @@ def test_doctor_requires_at_least_one_provider_per_security_family(tmp_path, mon
     class FakeResponse:
         status_code = 200
 
+        def __init__(self, url):
+            self.url = url
+
+        def json(self):
+            if "gopluslabs.io" in self.url:
+                return {"code": 1, "result": {"probe": {"safe": "1"}}}
+            if "rugcheck.xyz" in self.url:
+                return {"score": 1, "risks": []}
+            return {}
+
     class FakeClient:
         def __init__(self, *args, **kwargs):
             pass
@@ -91,7 +111,7 @@ def test_doctor_requires_at_least_one_provider_per_security_family(tmp_path, mon
         def get(self, url):
             if "gopluslabs.io/api/v1/token_security/56" in url or "honeypot.is" in url:
                 raise TimeoutError("all EVM security providers unavailable")
-            return FakeResponse()
+            return FakeResponse(url)
 
     monkeypatch.setattr("memetrader.cli.httpx.Client", FakeClient)
     assert cmd_doctor(str(path), True) == 4
