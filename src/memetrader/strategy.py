@@ -47,10 +47,24 @@ STOPWORDS = {
     "一个", "这个", "那个", "以及", "已经", "进行", "新闻", "热点", "代币", "官方", "发布", "开始", "相关",
 }
 GENERIC_REVERSE_NAMES = {
-    "ai", "animal", "baby", "cat", "coin", "crypto", "dog", "dream", "dream job",
-    "gang", "job", "king", "love", "meme", "money", "moon", "pump", "queen",
-    "test", "token", "viral",
+    "ai", "altcoin", "altcoins", "animal", "attention", "baby", "breakout", "cat",
+    "coin", "coins", "crypto", "cryptos", "dog", "dream", "dream job", "gang", "hype",
+    "investor", "investors", "job", "king", "list", "love", "market", "meme", "money",
+    "moon", "pump", "queen", "spotlight", "test", "token", "top", "viral", "watch",
+    "新闻", "热点", "代币", "市场", "投资", "暴涨", "牛市", "明星", "网红", "动物",
+    "总统", "世界", "中国", "美国", "关注", "注意力",
 }
+
+PROMOTIONAL_MARKET_PATTERNS = (
+    re.compile(r"\bpresale\b", re.I),
+    re.compile(r"\bprice\s+(?:prediction|forecast)\b", re.I),
+    re.compile(r"\b(?:top|best)\s+\d+\s+(?:meme\s+)?(?:coins?|cryptos?|altcoins?|tokens?)\b", re.I),
+    re.compile(r"\b(?:coins?|cryptos?|altcoins?|tokens?)\s+to\s+(?:buy|watch)\b", re.I),
+    re.compile(r"\b(?:next|top)\s+100x\b|\b100x\s+(?:coins?|cryptos?|tokens?)\b", re.I),
+    re.compile(r"\binvestors?\s+(?:seek|eye|target)\s+the\s+next\b", re.I),
+    re.compile(r"\bwhich\s+crypto\s+could\b", re.I),
+    re.compile(r"\bsponsored\s+(?:content|post|article)\b", re.I),
+)
 
 TERM_ALIASES = {
     "usdc": "stablecoin",
@@ -92,15 +106,35 @@ def terms(value: str) -> set[str]:
     return output
 
 
-def is_distinctive_token_name(value: str) -> bool:
+def _token_name_shape(value: str) -> tuple[str, list[str], str]:
     normalized = clean_text(value)
+    words = re.findall(r"[a-z0-9]+", normalized)
+    return normalized, words, "".join(words)
+
+
+def is_context_searchable_token_name(value: str) -> bool:
+    """Allow short names into evidence gathering, but not direct event linking."""
+    normalized, words, compact = _token_name_shape(value)
     if not normalized or normalized in GENERIC_REVERSE_NAMES:
         return False
     if len(re.findall(r"[\u3400-\u9fff]", normalized)) >= 2:
         return True
-    words = re.findall(r"[a-z0-9]+", normalized)
-    compact = "".join(words)
-    return len(compact) >= 6 or (len(words) >= 2 and len(compact) >= 5)
+    return len(compact) >= 4 or (len(words) >= 2 and len(compact) >= 5)
+
+
+def is_distinctive_token_name(value: str) -> bool:
+    """Require stronger lexical identity before a name alone can link a token."""
+    normalized, words, compact = _token_name_shape(value)
+    if not normalized or normalized in GENERIC_REVERSE_NAMES:
+        return False
+    if len(re.findall(r"[\u3400-\u9fff]", normalized)) >= 2:
+        return True
+    return len(compact) >= 5 or (len(words) >= 2 and len(compact) >= 5)
+
+
+def is_promotional_market_content(title: str, text: str = "") -> bool:
+    content = clean_text(f"{title}\n{text}")
+    return any(pattern.search(content) for pattern in PROMOTIONAL_MARKET_PATTERNS)
 
 
 def extract_addresses(value: str) -> dict[str, set[str]]:
@@ -754,6 +788,9 @@ class CandidateEvaluator:
         for token, snap in found.values():
             if token.chain.lower() not in allowed_chains:
                 continue
+            agent_linked = token.token_id in agent_linked_token_ids
+            if not direct_addresses and not agent_linked and not is_distinctive_token_name(token.name or token.symbol):
+                continue
             if normalized_official_addresses and token.address.lower() not in normalized_official_addresses:
                 continue
             if normalized_official_addresses and official_chain_hints and token.chain.lower() not in official_chain_hints:
@@ -775,7 +812,6 @@ class CandidateEvaluator:
                 continue
             self.store.add_snapshot(snap)
             match = self._match(event_text, aliases, token, direct_addresses)
-            agent_linked = token.token_id in agent_linked_token_ids
             if agent_linked:
                 match = max(match, 96.0)
             if match < float(self.config.get("min_match_score", 28.0)):

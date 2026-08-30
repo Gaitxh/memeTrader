@@ -1,84 +1,169 @@
 {
-  "status": "PASS",
-  "validated_at": "2026-08-30",
+  "status": "PASS_WITH_FAIL_CLOSED_EXTERNAL_PROVIDER_OUTAGE",
+  "checked_at_utc": "2026-08-30T04:14:05Z",
   "version": "0.6.0",
-  "mode": "paper",
-  "live_enabled": false,
-  "max_concurrent_agents": 2,
-  "routing": {
+  "tests": {
+    "collected": 67,
+    "passed": 67,
+    "failed": 0,
+    "compileall": "PASS",
+    "wheel": "dist/memetrader-0.6.0-py3-none-any.whl",
+    "wheel_sha256": "d1b3aa346b6efbc49b4ff64a246a2507756651d199c639fe848a6997c14c1d18",
+    "fresh_venv_install": "PASS",
+    "pip_check": "PASS",
+    "installed_cli": "PASS",
+    "temporal_replay": "PASS"
+  },
+  "runtime": {
+    "database": "data/memetrader_forward_20260830_r6.sqlite3",
+    "sqlite_integrity": "ok",
+    "scheduled_task": "memeTrader Paper Bot",
+    "scheduled_task_state": "Running",
+    "bridge_listener": "127.0.0.1:8765",
+    "bridge_health": "PASS",
+    "listener_pid_at_check": 23812,
+    "mode": "paper",
+    "live_enabled": false,
+    "counts_at_check": {
+      "observations": 537,
+      "events": 362,
+      "tokens": 966,
+      "token_snapshots": 372,
+      "decisions": 0,
+      "positions": 0,
+      "trades": 0
+    }
+  },
+  "agent_routing": {
+    "max_concurrent_agent_slots": 2,
+    "interpretation": "Two slots are a concurrency ceiling, not two permanently running duplicate agents.",
     "trend_scout": {
-      "primary": "gpt-5.3-codex-spark",
+      "primary_model": "gpt-5.3-codex-spark",
       "primary_reasoning": "low",
-      "fallback": "gpt-5.6-luna",
-      "fallback_reasoning": "low"
+      "fallback_model": "gpt-5.6-luna",
+      "fallback_reasoning": "low",
+      "normal_interval_minutes": 12,
+      "normal_topic_lanes_per_run": 3,
+      "surge_interval_minutes": 3,
+      "surge_topic_lanes_per_run": 5,
+      "fallback_or_high_token_normal_floor_minutes": 30,
+      "fallback_or_high_token_surge_floor_minutes": 10,
+      "high_token_threshold": 18000,
+      "daily_call_limit": 64,
+      "daily_token_budget": 500000,
+      "max_web_searches_per_run": 4,
+      "max_events_per_run": 3
     },
     "source_discovery": {
-      "primary": "gpt-5.3-codex-spark",
-      "primary_reasoning": "low",
-      "fallback": "gpt-5.6-luna",
-      "fallback_reasoning": "low"
+      "primary_model": "gpt-5.3-codex-spark",
+      "fallback_model": "gpt-5.6-luna",
+      "reasoning": "low",
+      "normal_interval_hours": 24,
+      "daily_call_limit": 2,
+      "daily_token_budget": 100000,
+      "consecutive_poll_failures_before_pause": 3
     },
     "token_context": {
-      "primary": "gpt-5.6-luna",
+      "primary_model": "gpt-5.6-luna",
       "primary_reasoning": "low",
-      "fallbacks": [
+      "fallback_models": [
         "gpt-5.6-terra",
         "gpt-5.6-sol"
       ],
-      "fallback_reasoning": "medium"
+      "fallback_reasoning": "medium",
+      "minimum_momentum_score": 80,
+      "global_cooldown_minutes": 5,
+      "same_token_cooldown_minutes": 240,
+      "daily_call_limit": 8,
+      "daily_token_budget": 250000
     }
   },
-  "cadence": {
-    "trend_base_minutes": 12,
-    "trend_surge_minutes": 3,
-    "trend_quiet_minutes": 30,
-    "trend_fallback_minimum_minutes": 30,
-    "trend_surge_duration_minutes": 30,
-    "source_discovery_interval_hours": 24,
-    "token_context_cooldown_minutes": 240
+  "real_agent_runs": {
+    "usage_today": {
+      "trend_scout_calls": 2,
+      "trend_scout_tokens": 38206,
+      "source_discovery_calls": 2,
+      "source_discovery_tokens": 58851,
+      "token_context_calls": 8,
+      "token_context_tokens": 171802
+    },
+    "latest_trend_scout": {
+      "model": "gpt-5.6-luna",
+      "reasoning": "low",
+      "tokens_used": 13385,
+      "topic_lanes": [
+        "AI, gaming and technology memes",
+        "crypto-native community events",
+        "breaking global news, politics and public figures"
+      ],
+      "qualifying_events": 0,
+      "next_interval_minutes": 30,
+      "interpretation": "Spark was unavailable, the Agent fell back to Luna, searched only the rotating three lanes, and correctly returned no event instead of inventing one."
+    },
+    "cost_comparison": {
+      "previous_full_lane_luna_call_tokens": 30636,
+      "latest_rotating_lane_luna_call_tokens": 13385,
+      "reduction_fraction": 0.5631
+    },
+    "source_discovery": {
+      "active_verified_dynamic_sources": [
+        "Ars Technica All News",
+        "Tagesschau International News",
+        "CBS News Entertainment",
+        "RTHK World News",
+        "RTHK Sport News"
+      ],
+      "content_quality_paused": [
+        "TokenInsight News",
+        "NorriWire English News"
+      ],
+      "finding": "The resident process has real last_ok_at and last_item_at records for the active dynamic feeds."
+    },
+    "token_context": {
+      "finding": "Eight calls and 171802 tokens were consumed before the global cooldown and reduced daily limits were frozen.",
+      "current_controls": "Five-minute global cooldown, 240-minute per-token cooldown, momentum threshold 80, eight-call daily limit and 250000-token daily budget."
+    }
   },
-  "daily_limits": {
-    "trend_scout": 64,
-    "source_discovery": 2,
-    "token_context": 8
-  },
-  "daily_token_budgets": {
-    "trend_scout": 500000,
-    "source_discovery": 100000,
-    "token_context": 250000
-  },
-  "lane_routing": {
-    "normal_lanes_per_run": 3,
-    "surge_lanes_per_run": 5,
-    "total_lanes": 5
-  },
-  "tests": {
-    "pytest_passed": 59,
-    "compileall": "PASS",
-    "wheel_build": "PASS",
-    "fresh_install": "PASS",
-    "pip_check": "PASS",
-    "doctor_online": "PASS",
-    "unicode_roundtrip": "PASS"
-  },
-  "real_source_discovery": {
-    "status": "PASS",
-    "accepted": [
-      "https://www.aljazeera.com/xml/rss/all.xml",
-      "https://www.france24.com/en/rss",
-      "https://www.theguardian.com/world/rss",
-      "https://www.lemonde.fr/en/international/rss_full.xml"
+  "source_quality": {
+    "technical_validation": [
+      "public DNS",
+      "HTTP success",
+      "RSS/Atom parse",
+      "recent timestamped items"
     ],
-    "rejected_count": 2,
-    "resident_polling_confirmed": true
+    "content_validation": {
+      "minimum_recent_items": 2,
+      "maximum_market_digest_ratio": 0.5,
+      "auto_pause_examples": [
+        "Daily Market Wrap",
+        "price update",
+        "technical analysis",
+        "Presale",
+        "Top/Best/100x listicle"
+      ]
+    },
+    "automatic_maintenance": "Verified dynamic feeds reset failure counters after successful polls and are paused after three consecutive real failures."
   },
-  "real_trend_scout": {
-    "status": "completed",
-    "events": 0,
-    "fabricated_event": false,
-    "used_model": "gpt-5.6-luna",
-    "reasoning_effort": "low",
-    "tokens_used": 31583,
-    "next_interval_minutes": 30
+  "false_positive_audit": {
+    "excluded_database": "data/memetrader_forward_20260830_r5.sqlite3",
+    "reason": "Promotional listicles allowed generic Coins and Attention tokens to create invalid Paper entries.",
+    "audit_file": "docs/FORWARD_FALSE_POSITIVE_AUDIT_20260830.md",
+    "clean_database": "data/memetrader_forward_20260830_r6.sqlite3"
+  },
+  "online_diagnostic": {
+    "passing": [
+      "DexScreener",
+      "GeckoTerminal",
+      "RugCheck",
+      "Codex CLI",
+      "configured RSS feeds"
+    ],
+    "failing": {
+      "source": "Honeypot.is",
+      "observed_state": "HTTP 500 and timeout during repeated checks",
+      "required_by_current_config": true,
+      "doctor_result": "FAIL",
+      "runtime_behavior": "BSC candidates fail closed because require_evm_simulation=true; the rest of the resident collector continues running."
+    }
   }
 }

@@ -18,7 +18,9 @@ from memetrader.strategy import (
     SafetyChecker,
     extract_addresses,
     extract_aliases,
+    is_context_searchable_token_name,
     is_distinctive_token_name,
+    is_promotional_market_content,
     temporal_rejection_reasons,
     token_snapshot_temporal_rejections,
 )
@@ -101,8 +103,29 @@ def test_reverse_name_distinctiveness_blocks_generic_short_terms():
     assert is_distinctive_token_name("Peanut") is True
     assert is_distinctive_token_name("Viral Animal") is True
     assert is_distinctive_token_name("牛来") is True
+    assert is_distinctive_token_name("热点") is False
+    assert is_context_searchable_token_name("新闻") is False
+    assert is_distinctive_token_name("Luce") is False
+    assert is_context_searchable_token_name("Luce") is True
+    assert is_distinctive_token_name("Neiro") is True
     assert is_distinctive_token_name("Gang") is False
     assert is_distinctive_token_name("AI") is False
+    assert is_distinctive_token_name("Coins") is False
+    assert is_distinctive_token_name("Attention") is False
+    assert is_context_searchable_token_name("Musk") is True
+    assert is_distinctive_token_name("Musk") is False
+
+
+def test_promotional_market_listicles_are_not_event_evidence():
+    assert is_promotional_market_content(
+        "Top Altcoin News: 7 Meme Coins Enter the Spotlight as a Presale Leads the List"
+    )
+    assert is_promotional_market_content(
+        "Top 100x Cryptos Before the Next Breakout: Coins to Watch"
+    )
+    assert not is_promotional_market_content(
+        "Rescued otter video goes viral after a mayor shares it"
+    )
 
 
 def test_aliases_and_addresses():
@@ -362,6 +385,111 @@ def test_exact_contract_address_dominates_name_similarity():
     assert CandidateEvaluator._match_score(["Official Post"], event_text, copy, addresses) < 100
 
 
+def test_generic_token_name_cannot_hijack_unrelated_news_event(tmp_path: Path):
+    async def scenario():
+        store = Store(tmp_path / "db.sqlite3")
+        event_id, _, _ = EventEngine(store).ingest(
+            Observation(
+                source="news-a",
+                source_kind="news",
+                title="Fresh market attention follows a quarterly company report",
+                availability_proof="local_poll",
+            )
+        )
+        token = TokenCandidate(chain="solana", address="A" * 32, name="Attention", symbol="ATTENTION")
+        snap = TokenSnapshot("solana", token.address, 0.01, 250000, 1000000, 50000, 500, 20)
+
+        class FakeDex:
+            async def quote(self, chain, address):
+                return None
+
+            async def search(self, query, limit=25):
+                return [(token, snap)]
+
+        class FakeSafety:
+            async def check(self, snapshot):
+                return True, []
+
+        class FakeAgent:
+            def ask(self, payload, tier="low"):
+                return None
+
+        decision = await CandidateEvaluator(
+            store,
+            FakeDex(),
+            FakeSafety(),
+            {
+                "chains": ["solana"],
+                "min_match_score": 1,
+                "min_candidate_score": 1,
+                "min_canonical_margin": 1,
+                "max_alias_queries": 2,
+                "token_watch_minutes": 240,
+                "max_source_age_minutes": 30,
+            },
+            FakeAgent(),
+        ).discover_and_decide(store.get_event(event_id))
+        assert decision is not None
+        assert decision.action == "WAIT"
+        assert decision.reasons == ["no_matching_token"]
+        assert store.token(token.token_id) is None
+        store.close()
+
+    asyncio.run(scenario())
+
+
+def test_four_character_person_name_requires_more_than_text_overlap(tmp_path: Path):
+    async def scenario():
+        store = Store(tmp_path / "db.sqlite3")
+        event_id, _, _ = EventEngine(store).ingest(
+            Observation(
+                source="news-a",
+                source_kind="news",
+                title="Elon Musk comments on a new spacecraft test",
+                availability_proof="local_poll",
+            )
+        )
+        token = TokenCandidate(chain="solana", address="M" * 32, name="Musk", symbol="MUSK")
+        snap = TokenSnapshot("solana", token.address, 0.01, 250000, 1000000, 50000, 500, 20)
+
+        class FakeDex:
+            async def quote(self, chain, address):
+                return None
+
+            async def search(self, query, limit=25):
+                return [(token, snap)]
+
+        class FakeSafety:
+            async def check(self, snapshot):
+                return True, []
+
+        class FakeAgent:
+            def ask(self, payload, tier="low"):
+                return None
+
+        decision = await CandidateEvaluator(
+            store,
+            FakeDex(),
+            FakeSafety(),
+            {
+                "chains": ["solana"],
+                "min_match_score": 1,
+                "min_candidate_score": 1,
+                "min_canonical_margin": 1,
+                "max_alias_queries": 2,
+                "token_watch_minutes": 240,
+                "max_source_age_minutes": 30,
+            },
+            FakeAgent(),
+        ).discover_and_decide(store.get_event(event_id))
+        assert decision is not None and decision.action == "WAIT"
+        assert decision.reasons == ["no_matching_token"]
+        assert store.token(token.token_id) is None
+        store.close()
+
+    asyncio.run(scenario())
+
+
 def test_official_contract_filters_higher_liquidity_name_clone(tmp_path: Path):
     async def scenario():
         store = Store(tmp_path / "db.sqlite3")
@@ -378,7 +506,7 @@ def test_official_contract_filters_higher_liquidity_name_clone(tmp_path: Path):
             )
         )
         event = store.get_event(event_id)
-        exact = TokenCandidate(chain="bsc", address=ca, name="Official Launch", symbol="REAL")
+        exact = TokenCandidate(chain="bsc", address=ca, name="Test", symbol="TST")
         clone = TokenCandidate(chain="bsc", address=clone_ca, name="Official Launch", symbol="REAL")
         exact_snap = TokenSnapshot("bsc", ca, 0.001, 20000, 100000, 10000, 20, 5)
         clone_snap = TokenSnapshot("bsc", clone_ca, 0.001, 1000000, 1000000, 500000, 500, 30)
@@ -672,5 +800,35 @@ def test_solana_rugcheck_high_score_is_rejected():
         ok, reasons = await checker.check(snap)
         assert ok is False
         assert "solana_risk_score_too_high" in reasons
+
+    asyncio.run(scenario())
+
+
+def test_required_external_safety_reports_fail_closed():
+    class FailingHttp:
+        async def get(self, *args, **kwargs):
+            raise TimeoutError("provider unavailable")
+
+    async def scenario():
+        checker = SafetyChecker(
+            FailingHttp(),
+            {
+                "min_liquidity_usd": 100,
+                "min_5m_transactions": 1,
+                "min_buy_ratio": 0.4,
+                "max_tax_pct": 12,
+                "honeypot_is": True,
+                "require_evm_simulation": True,
+                "rugcheck": True,
+                "require_solana_report": True,
+                "max_solana_risk_score": 79,
+            },
+        )
+        bsc = TokenSnapshot("bsc", "0x" + "1" * 40, 1, 10000, 100000, 1000, 10, 2)
+        sol = TokenSnapshot("solana", "A" * 32, 1, 10000, 100000, 1000, 10, 2)
+        bsc_ok, bsc_reasons = await checker.check(bsc)
+        sol_ok, sol_reasons = await checker.check(sol)
+        assert bsc_ok is False and "evm_simulation_unavailable" in bsc_reasons
+        assert sol_ok is False and "solana_risk_report_unavailable" in sol_reasons
 
     asyncio.run(scenario())

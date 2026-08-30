@@ -15,16 +15,29 @@ from typing import Any
 from .collectors import HttpClient, RSSCollector
 from .models import Observation, TokenCandidate, TokenSnapshot, iso, parse_time, utcnow
 from .store import Store
+from .strategy import is_promotional_market_content
 
 REGISTRY_KEY = "autonomous_source_registry:v1"
 SOURCE_RUN_KEY = "autonomous_source_discovery:last_run"
 SOURCE_RESULT_KEY = "autonomous_source_discovery:last_result"
 CONTEXT_RESULT_KEY = "autonomous_context_search:last_result"
+CONTEXT_RUN_KEY = "autonomous_context_search:last_run"
+CONTEXT_ERROR_RETRY_KEY = "autonomous_context_search:error_retry_after"
 TREND_RUN_KEY = "autonomous_trend_scout:last_run"
 TREND_RESULT_KEY = "autonomous_trend_scout:last_result"
 TREND_EMPTY_STREAK_KEY = "autonomous_trend_scout:empty_streak"
 TREND_SURGE_UNTIL_KEY = "autonomous_trend_scout:surge_until"
 TREND_LANE_CURSOR_KEY = "autonomous_trend_scout:lane_cursor"
+
+LOW_VALUE_MARKET_PATTERNS = (
+    re.compile(r"\bdaily\s+market\s+wrap\b", re.I),
+    re.compile(r"\bmarket\s+(?:wrap|recap|overview|outlook|update)\b", re.I),
+    re.compile(r"\bcrypto\s+\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b", re.I),
+    re.compile(r"\b(?:btc|bitcoin|eth|ethereum|sol|solana)\b.{0,50}\b(?:above|below|gains?|falls?|slides?|rises?|price)\b", re.I),
+    re.compile(r"\bprice\s+(?:analysis|update|prediction|forecast)\b", re.I),
+    re.compile(r"\btechnical\s+analysis\b", re.I),
+    re.compile(r"\bdaily\s+brief\b", re.I),
+)
 
 DISALLOWED_CONTEXT_HOSTS = {
     "coinmarketcap.com",
@@ -40,6 +53,13 @@ DISALLOWED_CONTEXT_HOSTS = {
     "gate.com",
     "lbank.com",
 }
+
+
+def _is_low_value_market_item(row: Observation) -> bool:
+    content = f"{row.title}\n{row.text}"
+    return is_promotional_market_content(row.title, row.text) or any(
+        pattern.search(content) for pattern in LOW_VALUE_MARKET_PATTERNS
+    )
 
 
 def _as_float(value: Any, default: float = 0.0) -> float:
@@ -200,8 +220,9 @@ class AutonomousSearchAgent:
             return False
         day = utcnow().date().isoformat()
         token_budget = int(self.config.get(f"{kind}_daily_token_budget", 0))
+        token_reserve = max(0, int(self.config.get(f"{kind}_token_reserve_per_call", 0)))
         tokens_used = int(self.store.get_kv(f"autonomous_search_tokens:{day}:{kind}", 0))
-        if token_budget > 0 and tokens_used >= token_budget:
+        if token_budget > 0 and tokens_used + token_reserve >= token_budget:
             return False
         key = f"autonomous_search_quota:{day}:{kind}"
         used = int(self.store.get_kv(key, 0))
@@ -332,6 +353,38 @@ class AutonomousSearchAgent:
         async with self._agent_slots:
             return await asyncio.to_thread(self._run_codex_search, prompt, task)
 
+    def _rss_content_quality(self, rows: list[Observation]) -> tuple[bool, dict[str, Any]]:
+        if not rows:
+            return False, {"reason": "empty_feed"}
+        now = utcnow()
+        max_age = timedelta(hours=float(self.config.get("max_feed_item_age_hours", 72)))
+        recent_rows = [
+            row
+            for row in rows
+            if row.published_at is not None and timedelta(minutes=-5) <= now - row.published_at <= max_age
+        ]
+        if not recent_rows:
+            return False, {"reason": "no_recent_timestamped_items", "items": len(rows)}
+        low_value = [row for row in recent_rows if _is_low_value_market_item(row)]
+        ratio = len(low_value) / len(recent_rows)
+        min_items = max(1, int(self.config.get("source_quality_min_recent_items", 2)))
+        max_ratio = max(0.0, min(1.0, float(self.config.get("source_max_market_digest_ratio", 0.5))))
+        if len(recent_rows) >= min_items and ratio >= max_ratio:
+            return False, {
+                "reason": "low_value_market_digest",
+                "items": len(rows),
+                "recent_items": len(recent_rows),
+                "low_value_items": len(low_value),
+                "low_value_ratio": round(ratio, 4),
+            }
+        return True, {
+            "items": len(rows),
+            "recent_items": len(recent_rows),
+            "low_value_items": len(low_value),
+            "low_value_ratio": round(ratio, 4),
+            "latest_published_at": iso(max(row.published_at for row in recent_rows if row.published_at)),
+        }
+
     async def _verify_rss(self, name: str, url: str) -> tuple[bool, dict[str, Any]]:
         if self.config.get("verify_public_dns", True) and not await _resolves_to_public_network(url):
             return False, {"reason": "non_public_or_unresolved_dns"}
@@ -339,19 +392,32 @@ class AutonomousSearchAgent:
             rows = await RSSCollector(self.http, name, url, "news").poll()
         except Exception as exc:
             return False, {"reason": f"{type(exc).__name__}: {exc}"[:500]}
-        if not rows:
-            return False, {"reason": "empty_feed"}
-        now = utcnow()
-        max_age = timedelta(hours=float(self.config.get("max_feed_item_age_hours", 72)))
-        dated = [row.published_at for row in rows if row.published_at is not None]
-        recent = [value for value in dated if timedelta(minutes=-5) <= now - value <= max_age]
-        if not recent:
-            return False, {"reason": "no_recent_timestamped_items", "items": len(rows)}
-        return True, {
-            "items": len(rows),
-            "recent_items": len(recent),
-            "latest_published_at": iso(max(recent)),
-        }
+        return self._rss_content_quality(rows)
+
+    def review_discovered_rss_content(self, url: str, rows: list[Observation]) -> str | None:
+        normalized = str(url or "").rstrip("/")
+        if not normalized:
+            return None
+        registry = self.registry()
+        target = next(
+            (
+                row
+                for row in registry
+                if row.get("status") == "active" and str(row.get("url") or "").rstrip("/") == normalized
+            ),
+            None,
+        )
+        if target is None:
+            return None
+        ok, detail = self._rss_content_quality(rows)
+        if ok or detail.get("reason") != "low_value_market_digest":
+            return None
+        target["status"] = "paused"
+        target["paused_at"] = iso()
+        target["pause_reason"] = "low_value_market_digest"
+        target["content_quality"] = detail
+        self.store.set_kv(REGISTRY_KEY, registry)
+        return "low_value_market_digest"
 
     def mark_trend_surge(self, minutes: float | None = None) -> None:
         duration = max(
@@ -647,18 +713,7 @@ class AutonomousSearchAgent:
         if not force and last and now - parse_time(last) < interval:
             return {"status": "not_due", "accepted": [], "rejected": []}
         daily_limit = int(self.config.get("source_discovery_daily_limit", 1))
-        used_today = self.usage()["source_discovery"]
-        retrying_failed_call = (
-            force
-            and daily_limit > 0
-            and used_today >= daily_limit
-            and isinstance(previous_result, dict)
-            and previous_result.get("status") == "agent_error"
-        )
-        if not retrying_failed_call and not self._consume_quota(
-            "source_discovery",
-            daily_limit,
-        ):
+        if not self._consume_quota("source_discovery", daily_limit):
             return {"status": "quota_exhausted", "accepted": [], "rejected": []}
         self.store.set_kv(SOURCE_RUN_KEY, iso(now))
 
@@ -670,9 +725,10 @@ class AutonomousSearchAgent:
             "AI and technology memes",
             "crypto-native community events",
         ]
+        registry_snapshot = self.registry()
         excluded_hosts = sorted(
             self.known_source_hosts
-            | {_host(str(row.get("url") or "")) for row in self.active_rss_sources() if row.get("url")}
+            | {_host(str(row.get("url") or "")) for row in registry_snapshot if row.get("url")}
         )
         prompt = (
             "Use live web search. Find public information sources that a personal-computer meme-token event bot can poll "
@@ -796,6 +852,13 @@ class AutonomousSearchAgent:
         if momentum_score < float(self.config.get("context_min_momentum_score", 75)):
             return []
         now = utcnow()
+        error_retry_after = self.store.get_kv(CONTEXT_ERROR_RETRY_KEY)
+        if error_retry_after and now < parse_time(error_retry_after):
+            return []
+        global_cooldown = timedelta(minutes=float(self.config.get("context_global_cooldown_minutes", 5)))
+        last_global = self.store.get_kv(CONTEXT_RUN_KEY)
+        if last_global and now - parse_time(last_global) < global_cooldown:
+            return []
         cooldown = timedelta(minutes=float(self.config.get("context_token_cooldown_minutes", 360)))
         token_key = f"autonomous_context_search:token:{token.token_id}"
         previous = self.store.get_kv(token_key)
@@ -803,7 +866,6 @@ class AutonomousSearchAgent:
             return []
         if not self._consume_quota("token_context", int(self.config.get("context_search_daily_limit", 2))):
             return []
-        self.store.set_kv(token_key, iso(now))
 
         lookback = int(self.config.get("context_lookback_minutes", 180))
         prompt = (
@@ -835,8 +897,13 @@ class AutonomousSearchAgent:
         try:
             payload, metadata = await self._search(prompt, "token_context")
             self._record_tokens("token_context", metadata)
+            self.store.set_kv(CONTEXT_ERROR_RETRY_KEY, None)
+            self.store.set_kv(CONTEXT_RUN_KEY, iso(now))
+            self.store.set_kv(token_key, iso(now))
         except Exception as exc:
             self._refund_quota("token_context")
+            retry_minutes = max(1.0, float(self.config.get("context_error_retry_minutes", 10)))
+            self.store.set_kv(CONTEXT_ERROR_RETRY_KEY, iso(now + timedelta(minutes=retry_minutes)))
             self.store.set_kv(
                 CONTEXT_RESULT_KEY,
                 {"status": "agent_error", "token_id": token.token_id, "error": f"{type(exc).__name__}: {exc}"[:1000]},

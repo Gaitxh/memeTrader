@@ -3,6 +3,7 @@ import json
 
 import pytest
 
+from memetrader.cli import cmd_doctor
 from memetrader.models import CandidateDecision, Observation, TokenCandidate, TokenSnapshot
 from memetrader.runtime import (
     Notifier,
@@ -20,6 +21,49 @@ def test_initial_config_has_private_token_and_live_locked():
     assert config["mode"] == "paper"
     assert config["agent"]["enabled"] is False
     assert config["live"]["enabled"] is False
+    assert config["safety"]["require_evm_simulation"] is True
+    assert config["safety"]["require_solana_report"] is True
+
+
+def test_doctor_treats_unrequired_security_endpoint_failure_as_warning(tmp_path, monkeypatch, capsys):
+    config = initial_config()
+    config["database"] = "db.sqlite3"
+    config["sources"]["rss"] = []
+    config["sources"]["bluesky_queries"] = []
+    config["safety"]["require_evm_simulation"] = False
+    config["safety"]["require_solana_report"] = False
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+
+    class FakeResponse:
+        status_code = 200
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url):
+            if "honeypot.is" in url:
+                raise TimeoutError("optional endpoint unavailable")
+            return FakeResponse()
+
+    monkeypatch.setattr("memetrader.cli.httpx.Client", FakeClient)
+    assert cmd_doctor(str(path), True) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["warnings"] == ["online:honeypot"]
+    assert output["errors"] == []
+
+    config["safety"]["require_evm_simulation"] = True
+    path.write_text(json.dumps(config), encoding="utf-8")
+    assert cmd_doctor(str(path), True) == 4
+    output = json.loads(capsys.readouterr().out)
+    assert output["errors"] == ["online:honeypot"]
 
 
 def test_live_cannot_be_enabled(tmp_path):
@@ -101,6 +145,35 @@ def test_store_reopen_does_not_reset_paper_cash(tmp_path):
     reopened = Store(path, initial_cash_usd=10000)
     assert reopened.account()["cash_usd"] == 777
     reopened.close()
+
+
+def test_promotional_listicle_is_stored_but_cannot_create_attention(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        config["sources"]["rss"] = []
+        config["sources"]["gecko_networks"] = []
+        config["sources"]["pumpportal"]["enabled"] = False
+        config["sources"]["reverse_google_news"]["enabled"] = False
+        config["autonomous_search"]["enabled"] = False
+        config["notifications"]["jsonl"] = "notifications.jsonl"
+        runtime = Runtime(config, tmp_path)
+        await runtime.ingest_observation(
+            Observation(
+                source="google-news-memecoin",
+                source_kind="news",
+                title="Top 7 Meme Coins to Watch as a Presale Countdown Begins",
+                availability_proof="local_poll",
+            )
+        )
+        row = runtime.store.db.execute("SELECT role FROM observations").fetchone()
+        event = runtime.store.active_events(minutes=60, limit=1)[0]
+        assert row["role"] == "promotion"
+        assert event.attention == 0
+        await runtime.close()
+
+    asyncio.run(scenario())
 
 
 def test_raw_items_are_stored_without_notification_spam(tmp_path):
@@ -218,7 +291,7 @@ def test_reverse_news_only_runs_for_tokens_with_real_momentum(tmp_path, monkeypa
         )
         runtime = Runtime(config, tmp_path)
         quiet = TokenCandidate(chain="solana", address="Q" * 32, name="Quiet Token", symbol="QUIET")
-        active = TokenCandidate(chain="solana", address="A" * 32, name="Viral Animal", symbol="VIRAL")
+        active = TokenCandidate(chain="solana", address="A" * 32, name="Luce", symbol="LUCE")
         generic = TokenCandidate(chain="solana", address="G" * 32, name="Gang", symbol="GANG")
         runtime.store.upsert_token(quiet)
         runtime.store.upsert_token(active)

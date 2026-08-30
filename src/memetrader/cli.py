@@ -143,6 +143,7 @@ def cmd_status(config_path: str, limit: int) -> int:
 
 def cmd_doctor(config_path: str, online: bool) -> int:
     errors: list[str] = []
+    warnings: list[str] = []
     checks: list[dict] = []
     try:
         config, root = load_config(config_path)
@@ -173,30 +174,63 @@ def cmd_doctor(config_path: str, online: bool) -> int:
         )
         if online:
             targets = {
-                "dexscreener": "https://api.dexscreener.com/latest/dex/search?q=PNUT",
-                "geckoterminal": "https://api.geckoterminal.com/api/v2/networks/solana/new_pools?page=1",
-                "honeypot": "https://api.honeypot.is/v2/IsHoneypot?address=0x55d398326f99059fF775485246999027B3197955&chainID=56",
-                "rugcheck": "https://api.rugcheck.xyz/v1/tokens/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v/report/summary",
+                "dexscreener": ("https://api.dexscreener.com/latest/dex/search?q=PNUT", True),
+                "geckoterminal": ("https://api.geckoterminal.com/api/v2/networks/solana/new_pools?page=1", True),
+                "honeypot": (
+                    "https://api.honeypot.is/v2/IsHoneypot?address=0x55d398326f99059fF775485246999027B3197955&chainID=56",
+                    bool(config["safety"].get("require_evm_simulation", False)),
+                ),
+                "rugcheck": (
+                    "https://api.rugcheck.xyz/v1/tokens/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v/report/summary",
+                    bool(config["safety"].get("require_solana_report", False)),
+                ),
             }
             if config["sources"].get("bluesky_queries"):
-                targets["bluesky"] = "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=memecoin&limit=1"
+                targets["bluesky"] = (
+                    "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=memecoin&limit=1",
+                    True,
+                )
             for item in config["sources"].get("rss", []):
                 if item.get("enabled", True) and item.get("url"):
-                    targets[f"rss:{item.get('name') or item['url']}"] = str(item["url"])
+                    targets[f"rss:{item.get('name') or item['url']}"] = (str(item["url"]), True)
             with httpx.Client(timeout=15, follow_redirects=True, headers={"User-Agent": "memeTrader-doctor/0.6"}) as client:
-                for name, url in targets.items():
+                for name, (url, required) in targets.items():
                     try:
                         response = client.get(url)
-                        ok = 200 <= response.status_code < 400
-                        checks.append({"name": f"online:{name}", "ok": ok, "status": response.status_code})
+                        reachable = 200 <= response.status_code < 400
+                        checks.append(
+                            {
+                                "name": f"online:{name}",
+                                "ok": reachable or not required,
+                                "reachable": reachable,
+                                "required": required,
+                                "status": response.status_code,
+                            }
+                        )
                     except Exception as exc:
-                        checks.append({"name": f"online:{name}", "ok": False, "error": type(exc).__name__})
+                        checks.append(
+                            {
+                                "name": f"online:{name}",
+                                "ok": not required,
+                                "reachable": False,
+                                "required": required,
+                                "error": type(exc).__name__,
+                            }
+                        )
     except Exception as exc:
         checks.append({"name": "startup", "ok": False, "error": f"{type(exc).__name__}: {exc}"})
     for check in checks:
         if not check.get("ok"):
             errors.append(check["name"])
-    print(json.dumps({"ok": not errors, "checks": checks, "errors": errors}, ensure_ascii=False, indent=2))
+        elif check.get("reachable") is False:
+            warnings.append(check["name"])
+    print(
+        json.dumps(
+            {"ok": not errors, "checks": checks, "errors": errors, "warnings": warnings},
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0 if not errors else 4
 
 

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+from datetime import timedelta
 from email.utils import format_datetime
 from pathlib import Path
 
 import httpx
 
 from memetrader.autonomous_search import (
+    CONTEXT_ERROR_RETRY_KEY,
     REGISTRY_KEY,
     TREND_EMPTY_STREAK_KEY,
     TREND_RESULT_KEY,
@@ -163,6 +165,60 @@ def test_failed_search_refunds_internal_daily_quota(tmp_path: Path):
     asyncio.run(scenario())
 
 
+def test_forced_source_retry_cannot_bypass_daily_limit(tmp_path: Path):
+    async def scenario():
+        store = Store(tmp_path / "db.sqlite3")
+        agent = AutonomousSearchAgent(store, FakeHttp(), config(source_discovery_daily_limit=1))
+        assert agent._consume_quota("source_discovery", 1) is True
+        store.set_kv("autonomous_source_discovery:last_result", {"status": "agent_error"})
+        called = False
+
+        def search(prompt, task="source_discovery"):
+            nonlocal called
+            called = True
+            return {"sources": []}, {"tokens_used": 1}
+
+        agent._run_codex_search = search
+        result = await agent.discover_sources(force=True)
+        assert result["status"] == "quota_exhausted"
+        assert called is False
+        store.close()
+
+    asyncio.run(scenario())
+
+
+def test_failed_token_context_search_does_not_start_full_cooldown(tmp_path: Path):
+    async def scenario():
+        store = Store(tmp_path / "db.sqlite3")
+        agent = AutonomousSearchAgent(
+            store,
+            FakeHttp(),
+            config(context_global_cooldown_minutes=5, context_search_daily_limit=2),
+        )
+        attempts = 0
+
+        def search(prompt, task="token_context"):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("temporary model failure")
+            return {"event_found": False, "confidence": 0.0, "sources": []}, {"tokens_used": 10}
+
+        agent._run_codex_search = search
+        token = TokenCandidate(chain="solana", address="A" * 32, name="Viral Otter")
+        snapshot = TokenSnapshot("solana", token.address, 0.01, 50000, 500000, 20000, 100, 20)
+        assert await agent.search_token_context(token, snapshot, momentum_score=90) == []
+        assert await agent.search_token_context(token, snapshot, momentum_score=90) == []
+        assert attempts == 1
+        store.set_kv(CONTEXT_ERROR_RETRY_KEY, iso(utcnow() - timedelta(minutes=1)))
+        assert await agent.search_token_context(token, snapshot, momentum_score=90) == []
+        assert attempts == 2
+        assert agent.usage()["token_context"] == 1
+        store.close()
+
+    asyncio.run(scenario())
+
+
 
 def test_source_discovery_verifies_and_persists_only_real_public_rss(tmp_path: Path):
     async def scenario():
@@ -197,6 +253,113 @@ def test_source_discovery_verifies_and_persists_only_real_public_rss(tmp_path: P
 
     asyncio.run(scenario())
 
+
+
+def test_source_discovery_prompt_excludes_previously_paused_domains(tmp_path: Path):
+    async def scenario():
+        store = Store(tmp_path / "db.sqlite3")
+        agent = AutonomousSearchAgent(store, FakeHttp(), config())
+        store.set_kv(
+            REGISTRY_KEY,
+            [{"name": "Paused", "url": "https://paused.example/feed.xml", "kind": "rss", "status": "paused"}],
+        )
+        prompts = []
+
+        def search(prompt, task="source_discovery"):
+            prompts.append(prompt)
+            return {"sources": []}, {"tokens_used": 1}
+
+        agent._run_codex_search = search
+        await agent.discover_sources(force=True)
+        assert prompts and "paused.example" in prompts[0]
+        store.close()
+
+    asyncio.run(scenario())
+
+
+def test_source_discovery_rejects_a_working_market_digest_feed(tmp_path: Path):
+    async def scenario():
+        published = format_datetime(utcnow())
+        feed = (
+            "<?xml version='1.0'?><rss version='2.0'><channel><title>Feed</title>"
+            f"<item><title>Daily Market Wrap | Today</title><link>https://example.com/a</link><pubDate>{published}</pubDate></item>"
+            f"<item><title>BTC price update and market outlook</title><link>https://example.com/b</link><pubDate>{published}</pubDate></item>"
+            "</channel></rss>"
+        ).encode()
+        store = Store(tmp_path / "db.sqlite3")
+        agent = AutonomousSearchAgent(
+            store,
+            FakeHttp(feed),
+            config(source_quality_min_recent_items=2, source_max_market_digest_ratio=0.5),
+        )
+        agent._run_codex_search = lambda prompt, task="source_discovery": (
+            {"sources": [{"name": "Market Digest", "url": "https://example.com/feed.xml", "kind": "rss"}]},
+            {"tokens_used": 10},
+        )
+        result = await agent.discover_sources(force=True)
+        assert result["accepted"] == []
+        assert result["rejected"][0]["reason"] == "low_value_market_digest"
+        assert agent.active_rss_sources() == []
+        store.close()
+
+    asyncio.run(scenario())
+
+
+def test_active_discovered_market_digest_is_paused_on_poll(tmp_path: Path):
+    store = Store(tmp_path / "db.sqlite3")
+    agent = AutonomousSearchAgent(
+        store,
+        FakeHttp(),
+        config(source_quality_min_recent_items=2, source_max_market_digest_ratio=0.5),
+    )
+    store.set_kv(
+        REGISTRY_KEY,
+        [{"name": "Digest", "url": "https://digest.example/feed", "kind": "rss", "status": "active"}],
+    )
+    now = utcnow()
+    rows = [
+        Observation(source="Digest", source_kind="news", title="Daily Market Wrap", published_at=now),
+        Observation(source="Digest", source_kind="news", title="Bitcoin price update and market outlook", published_at=now),
+    ]
+    assert agent.review_discovered_rss_content("https://digest.example/feed", rows) == "low_value_market_digest"
+    assert agent.registry()[0]["status"] == "paused"
+    assert agent.active_rss_sources() == []
+    store.close()
+
+
+def test_token_context_global_cooldown_prevents_bursts(tmp_path: Path):
+    async def scenario():
+        store = Store(tmp_path / "db.sqlite3")
+        agent = AutonomousSearchAgent(
+            store,
+            FakeHttp(),
+            config(context_global_cooldown_minutes=5, context_search_daily_limit=8),
+        )
+        calls = []
+
+        def search(prompt, task="token_context"):
+            calls.append(task)
+            return {"event_found": False, "sources": []}, {"tokens_used": 25}
+
+        agent._run_codex_search = search
+        snapshot_a = TokenSnapshot("solana", "A" * 32, 0.01, 50000, 500000, 20000, 100, 20)
+        snapshot_b = TokenSnapshot("solana", "B" * 32, 0.01, 50000, 500000, 20000, 100, 20)
+        await agent.search_token_context(
+            TokenCandidate(chain="solana", address="A" * 32, name="Viral Otter"),
+            snapshot_a,
+            momentum_score=90,
+        )
+        await agent.search_token_context(
+            TokenCandidate(chain="solana", address="B" * 32, name="Dancing Beaver"),
+            snapshot_b,
+            momentum_score=90,
+        )
+        assert calls == ["token_context"]
+        assert agent.usage()["token_context"] == 1
+        assert agent.usage()["token_context_tokens"] == 25
+        store.close()
+
+    asyncio.run(scenario())
 
 
 def test_token_context_search_requires_two_recent_reachable_sources(tmp_path: Path):
@@ -443,6 +606,23 @@ def test_daily_token_budget_stops_more_agent_calls(tmp_path: Path):
     )
     agent._record_tokens("trend_scout", {"tokens_used": 100})
     assert agent.usage()["trend_scout_tokens"] == 100
+    assert agent._consume_quota("trend_scout", 10) is False
+    store.close()
+
+
+
+def test_daily_token_reserve_blocks_a_call_that_would_cross_budget(tmp_path: Path):
+    store = Store(tmp_path / "db.sqlite3")
+    agent = AutonomousSearchAgent(
+        store,
+        FakeHttp(),
+        config(
+            trend_scout_daily_limit=10,
+            trend_scout_daily_token_budget=100,
+            trend_scout_token_reserve_per_call=40,
+        ),
+    )
+    agent._record_tokens("trend_scout", {"tokens_used": 61})
     assert agent._consume_quota("trend_scout", 10) is False
     store.close()
 

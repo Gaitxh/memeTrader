@@ -33,7 +33,9 @@ from .strategy import (
     clean_text,
     evidence_origin,
     extract_addresses,
+    is_context_searchable_token_name,
     is_distinctive_token_name,
+    is_promotional_market_content,
     terms,
 )
 
@@ -153,9 +155,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "min_buy_ratio": 0.55,
         "max_tax_pct": 12.0,
         "honeypot_is": True,
-        "require_evm_simulation": False,
+        "require_evm_simulation": True,
         "rugcheck": True,
-        "require_solana_report": False,
+        "require_solana_report": True,
         "max_solana_risk_score": 79.0,
     },
     "paper": {
@@ -236,6 +238,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "trend_scout_empty_streak_for_quiet": 3,
         "trend_scout_daily_limit": 64,
         "trend_scout_daily_token_budget": 500_000,
+        "trend_scout_token_reserve_per_call": 40_000,
         "trend_scout_lookback_minutes": 120,
         "trend_scout_lanes_per_run": 3,
         "trend_scout_surge_lanes_per_run": 5,
@@ -254,15 +257,21 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "source_error_retry_hours": 4,
         "source_discovery_daily_limit": 2,
         "source_discovery_daily_token_budget": 100_000,
+        "source_discovery_token_reserve_per_call": 30_000,
         "max_source_candidates": 6,
         "max_active_rss_sources": 16,
         "max_feed_item_age_hours": 72,
         "source_auto_pause_failures": 3,
+        "source_quality_min_recent_items": 2,
+        "source_max_market_digest_ratio": 0.5,
         "verify_public_dns": True,
         "context_search_enabled": True,
         "context_search_daily_limit": 8,
         "token_context_daily_token_budget": 250_000,
-        "context_min_momentum_score": 75,
+        "token_context_token_reserve_per_call": 30_000,
+        "context_global_cooldown_minutes": 5,
+        "context_error_retry_minutes": 10,
+        "context_min_momentum_score": 80,
         "context_token_cooldown_minutes": 240,
         "context_lookback_minutes": 180,
         "context_min_confidence": 0.78,
@@ -414,16 +423,22 @@ def load_config(path: str | Path) -> tuple[dict[str, Any], Path]:
             "trend_scout_high_token_min_interval_minutes",
             "trend_scout_high_token_surge_interval_minutes",
             "trend_scout_surge_duration_minutes",
+            "context_global_cooldown_minutes",
+            "context_error_retry_minutes",
+            "source_quality_min_recent_items",
         ):
             if float(autonomous.get(name, 0)) <= 0:
                 raise ValueError(f"autonomous_search.{name} must be positive")
         for name in (
             "trend_scout_daily_limit",
             "trend_scout_daily_token_budget",
+            "trend_scout_token_reserve_per_call",
             "source_discovery_daily_limit",
             "source_discovery_daily_token_budget",
+            "source_discovery_token_reserve_per_call",
             "context_search_daily_limit",
             "token_context_daily_token_budget",
+            "token_context_token_reserve_per_call",
             "trend_scout_high_token_threshold",
         ):
             if int(autonomous.get(name, 0)) < 0:
@@ -436,6 +451,9 @@ def load_config(path: str | Path) -> tuple[dict[str, Any], Path]:
             raise ValueError("autonomous_search.trend_scout_surge_lanes_per_run must be positive")
         if int(autonomous.get("source_auto_pause_failures", 3)) < 1:
             raise ValueError("autonomous_search.source_auto_pause_failures must be positive")
+        market_ratio = float(autonomous.get("source_max_market_digest_ratio", 0.5))
+        if not 0 <= market_ratio <= 1:
+            raise ValueError("autonomous_search.source_max_market_digest_ratio must be between 0 and 1")
         if not 30 <= int(autonomous.get("timeout_seconds", 180)) <= 300:
             raise ValueError("autonomous_search.timeout_seconds must be between 30 and 300")
         for task, profile in (autonomous.get("profiles") or {}).items():
@@ -720,6 +738,10 @@ class Runtime:
         self.store.close()
 
     def _classify_observation(self, obs: Observation) -> Observation:
+        if obs.role.lower() == "feature" and is_promotional_market_content(obs.title, obs.text):
+            obs.role = "promotion"
+            obs.raw = {**obs.raw, "non_event_market_promotion": True}
+            return obs
         if obs.published_at is None or obs.role.lower() != "feature":
             return obs
         max_age = float((self.config.get("events") or {}).get("max_source_age_minutes", 30))
@@ -840,6 +862,14 @@ class Runtime:
             self.store.heartbeat(name, item=bool(observations))
             if url:
                 self.autonomous_search.record_rss_poll(url, ok=True)
+                pause_reason = self.autonomous_search.review_discovered_rss_content(url, observations)
+                if pause_reason:
+                    self.notifier.send(
+                        "autonomous_source_paused",
+                        name,
+                        {"url": url, "reason": pause_reason},
+                    )
+                    return
             for obs in observations:
                 await self.ingest_observation(obs)
         except Exception as exc:
@@ -981,7 +1011,7 @@ class Runtime:
             if scanned >= max_scanned:
                 break
             query = " ".join(part for part in [token.name, token.symbol] if part).strip()
-            if len(query) < 3 or not is_distinctive_token_name(token.name or token.symbol):
+            if len(query) < 3 or not is_context_searchable_token_name(token.name or token.symbol):
                 continue
             key = f"reverse_news:{token.token_id}"
             last = self.store.get_kv(key)

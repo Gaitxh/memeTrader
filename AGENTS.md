@@ -35,6 +35,6 @@ For resident-operation changes, verify the single scheduled task, port `8765`, `
 
 - Working folder: `E:\memeTrader`
 - Scheduled task: `memeTrader Paper Bot` (interactive user, at logon, `IgnoreNew`, battery-safe)
-- Runtime database: always resolve `database` from ignored `config.json`; current device path is `data\memetrader_forward_20260830_r3.sqlite3`
+- Runtime database: always resolve `database` from ignored `config.json`; current device path is `data\memetrader_forward_20260830_r6.sqlite3`. Earlier `r5` contains rejected false-positive Paper evidence from promotional listicles and must not be merged into performance statistics.
 - Browser bridge: loopback only on `127.0.0.1:8765`
 - Manual step: load `browser-extension` as an unpacked Chrome/Edge extension and copy the local `bridge.token` from ignored `config.json` into its options.
