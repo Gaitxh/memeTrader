@@ -412,8 +412,9 @@ def test_web_api_empty_database_is_safe_and_live_is_locked(tmp_path: Path):
     assert overview["account"]["valuation_status"] == "cash_only"
     assert overview["account"]["equity_curve"][-1]["equity_usd"] == 1000
     assert overview["account"]["equity_curve"][-1]["persisted"] is False
-    assert overview["account"]["execution_costs"]["configured_slippage_rate"] == pytest.approx(0.02)
+    assert overview["account"]["execution_costs"]["configured_slippage_rate"] == pytest.approx(0.04)
     assert overview["account"]["execution_costs"]["configured_fee_bps"] == pytest.approx(60)
+    assert overview["account"]["execution_costs"]["pump_swap_fee_bps"] == pytest.approx(125)
     activity = overview["ingestion_activity"]
     assert activity["truth_source"] == "persisted_sqlite_activity"
     assert activity["status"] == "waiting"
@@ -427,6 +428,8 @@ def test_web_api_empty_database_is_safe_and_live_is_locked(tmp_path: Path):
     empty_sources = web.sources()
     assert empty_sources["source_poll_learning"]["status"] == "not_observed"
     assert empty_sources["source_poll_learning"]["affects"] == "review_only_no_schedule_or_trading_effect"
+    assert empty_sources["token_discovery_learning"]["status"] == "not_observed"
+    assert empty_sources["token_discovery_learning"]["affects"] == "review_only_no_schedule_or_trading_effect"
     assert empty_sources["shadow_followup"]["status"] == "not_observed"
     assert empty_sources["shadow_followup"]["summary"]["cohorts"] == 0
     assert empty_sources["shadow_followup"]["horizons_minutes"] == [15, 60, 240]
@@ -532,6 +535,31 @@ def test_web_sources_exposes_masked_source_poll_learning(tmp_path: Path):
     serialized = json.dumps(payload).lower()
     assert "password" not in serialized and "private_key" not in serialized
     assert "https://" not in serialized and "?q=" not in serialized
+
+
+def test_web_sources_exposes_forward_token_discovery_without_sensitive_fields(tmp_path: Path):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    round_id = store.start_token_discovery_round(
+        provider="dexscreener", surface="token_profiles", mode="poll", chain_scope="solana",
+    )
+    store.add_token_discovery_exposure(
+        round_id, token_id=f"solana:{'T' * 32}", chain="solana", role="identity",
+        first_local_discovery=True, source_link_count=2, new_source_link_count=1,
+    )
+    store.finish_token_discovery_round(
+        round_id, status="completed", requested_count=1, returned_count=2,
+    )
+    store.close()
+
+    payload = WebData(config_path).sources()["token_discovery_learning"]
+    assert payload["status"] == "collecting"
+    assert payload["summary"]["completed"] == 1
+    assert payload["summary"]["first_local_discovery_count"] == 1
+    assert payload["items"][0]["surface"] == "token_profiles"
+    serialized = json.dumps(payload).lower()
+    assert "password" not in serialized and "private_key" not in serialized
+    assert "bridge_token" not in serialized and "https://" not in serialized
 
 
 def test_learning_closure_does_not_borrow_same_event_outcomes_from_other_source(tmp_path: Path):

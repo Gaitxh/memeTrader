@@ -207,7 +207,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "paper": {
         "starting_cash_usd": 1_000,
         "fee_bps": 60,
-        "slippage_rate": 0.02,
+        "pump_swap_fee_bps": 125,
+        "slippage_rate": 0.04,
         "max_quote_age_seconds": 45,
         "risk_per_trade_pct": 0.005,
         "max_cash_fraction": 0.08,
@@ -590,6 +591,8 @@ def load_config(path: str | Path) -> tuple[dict[str, Any], Path]:
         raise ValueError("paper.slippage_rate must be between 0 and 0.5")
     if not 0 <= float(paper["fee_bps"]) <= 5000:
         raise ValueError("paper.fee_bps must be between 0 and 5000")
+    if not 0 <= float(paper.get("pump_swap_fee_bps", paper["fee_bps"])) <= 5000:
+        raise ValueError("paper.pump_swap_fee_bps must be between 0 and 5000")
     if not 1 <= float(paper.get("max_quote_age_seconds", 45)) <= 600:
         raise ValueError("paper.max_quote_age_seconds must be between 1 and 600")
     if int(paper["max_open_positions"]) < 1:
@@ -994,6 +997,7 @@ class Runtime:
             db_path if db_path.is_absolute() else root / db_path,
             initial_cash_usd=starting_cash,
         )
+        self.store.recover_interrupted_exposure_attempts()
         if not self.store.open_positions() and not self.store.trades():
             with self.store.db:
                 self.store.db.execute("UPDATE paper_account SET cash_usd=?,updated_at=? WHERE singleton=1", (starting_cash, iso()))
@@ -1081,6 +1085,18 @@ class Runtime:
         if age_seconds > float(self.config["paper"].get("max_quote_age_seconds", 45)):
             reasons.append("quote_stale_at_execution")
         return list(dict.fromkeys(reasons))
+
+    def _paper_fee_bps(self, snapshot: TokenSnapshot) -> float:
+        paper = self.config["paper"]
+        default_fee = float(paper.get("fee_bps", 60))
+        raw = snapshot.raw if isinstance(snapshot.raw, dict) else {}
+        pair = raw.get("pair") if isinstance(raw.get("pair"), dict) else {}
+        dex_id = str(
+            pair.get("dexId") or pair.get("dex_id") or raw.get("dexId") or ""
+        ).lower()
+        if snapshot.chain.lower() == "solana" and "pump" in dex_id:
+            return max(default_fee, float(paper.get("pump_swap_fee_bps", 125)))
+        return default_fee
 
     def _classify_observation(self, obs: Observation) -> Observation:
         if obs.role.lower() == "feature" and is_promotional_market_content(obs.title, obs.text):
@@ -1220,7 +1236,7 @@ class Runtime:
                 selector_count=selector_count,
             )
 
-    async def ingest_token(self, token: TokenCandidate) -> None:
+    async def ingest_token(self, token: TokenCandidate) -> bool:
         token_created = self.store.upsert_token(token)
         self.store.heartbeat(token.source or "onchain", item=token_created)
         if token_created and self.config["notifications"].get("notify_new_tokens", False):
@@ -1229,6 +1245,7 @@ class Runtime:
                 f"{token.symbol or token.name} on {token.chain}",
                 {"token_id": token.token_id, "source": token.source},
             )
+        return token_created
 
     def _rss_collectors(self) -> list[RSSCollector]:
         result: list[RSSCollector] = []
@@ -1367,12 +1384,44 @@ class Runtime:
 
     async def _poll_gecko_network(self, network: str) -> None:
         name = f"geckoterminal:{network}"
+        round_id = self.store.start_token_discovery_round(
+            provider="geckoterminal",
+            surface="new_pools",
+            mode="poll",
+            chain_scope=str(network),
+        )
         try:
             tokens = await GeckoNewPoolsCollector(self.http, network).poll()
             self.store.heartbeat(name, item=bool(tokens))
+            duplicates = 0
             for token in tokens:
-                await self.ingest_token(token)
+                known_before = self.store.token_discovery_known(token.token_id)
+                created = await self.ingest_token(token)
+                first_local = not known_before and created
+                duplicates += int(not first_local)
+                self.store.add_token_discovery_exposure(
+                    round_id,
+                    token_id=token.token_id,
+                    chain=token.chain,
+                    role="new_pool",
+                    first_local_discovery=first_local,
+                    new_token=created,
+                    observed_at=token.first_seen_at,
+                )
+            self.store.finish_token_discovery_round(
+                round_id,
+                status="completed",
+                requested_count=1,
+                returned_count=len(tokens),
+                duplicate_token_count=duplicates,
+            )
         except Exception as exc:
+            self.store.finish_token_discovery_round(
+                round_id,
+                status="error",
+                requested_count=1,
+                error_type=type(exc).__name__,
+            )
             self._notify_source_error(name, exc)
 
     async def poll_dexscreener_discovery_once(self) -> None:
@@ -1385,20 +1434,60 @@ class Runtime:
         direct_context_candidates: list[tuple[int, TokenCandidate, TokenSnapshot, float, dict[str, Any]]] = []
         for surface in self.dex.DISCOVERY_SURFACES:
             source = f"dexscreener:{surface}"
+            round_id = self.store.start_token_discovery_round(
+                provider="dexscreener",
+                surface=str(surface),
+                mode="poll",
+                chain_scope=",".join(sorted(allowed_chains)),
+            )
             try:
                 links = await self.dex.discover_surface(surface, allowed_chains, limit=max_items)
             except Exception as exc:
+                self.store.finish_token_discovery_round(
+                    round_id,
+                    status="error",
+                    requested_count=1,
+                    error_type=type(exc).__name__,
+                )
                 self._notify_source_error(source, exc)
                 continue
             self.store.heartbeat(source, item=bool(links))
+            by_token: dict[str, list[dict[str, Any]]] = {}
             for link in links:
                 token_id = str(link.get("token_id") or "")
                 chain = str(link.get("chain") or "").lower()
                 address = str(link.get("address") or "")
                 if not token_id or chain not in allowed_chains or not address:
                     continue
-                self.store.upsert_token_source_link(link)
-                self.store.enqueue_token_detail_hydration(chain, address)
+                by_token.setdefault(token_id, []).append(link)
+            first_discoveries = 0
+            for token_id, token_links in by_token.items():
+                known_before = self.store.token_discovery_known(token_id)
+                new_links = 0
+                for link in token_links:
+                    _, created = self.store.upsert_token_source_link(link)
+                    new_links += int(created)
+                    self.store.enqueue_token_detail_hydration(
+                        str(link.get("chain") or ""), str(link.get("address") or "")
+                    )
+                first_local = not known_before and new_links > 0
+                first_discoveries += int(first_local)
+                self.store.add_token_discovery_exposure(
+                    round_id,
+                    token_id=token_id,
+                    chain=str(token_links[0].get("chain") or ""),
+                    role=str(token_links[0].get("role") or "identity"),
+                    first_local_discovery=first_local,
+                    source_link_count=len(token_links),
+                    new_source_link_count=new_links,
+                )
+            self.store.finish_token_discovery_round(
+                round_id,
+                status="completed",
+                requested_count=1,
+                returned_count=len(links),
+                duplicate_token_count=max(0, len(by_token) - first_discoveries),
+            )
 
         due = self.store.due_token_detail_hydrations(limit=max_hydrations)
         if not due:
@@ -1409,6 +1498,12 @@ class Runtime:
         for chain, rows in by_chain.items():
             for offset in range(0, len(rows), 30):
                 chunk = rows[offset : offset + 30]
+                round_id = self.store.start_token_discovery_round(
+                    provider="dexscreener",
+                    surface="hydration",
+                    mode="batch_quote",
+                    chain_scope=str(chain),
+                )
                 try:
                     if hasattr(self.dex, "batch_quote"):
                         quoted_by_token = await self.dex.batch_quote(
@@ -1421,6 +1516,12 @@ class Runtime:
                             if quoted:
                                 quoted_by_token[quoted[0].token_id] = quoted
                 except Exception as exc:
+                    self.store.finish_token_discovery_round(
+                        round_id,
+                        status="error",
+                        requested_count=len(chunk),
+                        error_type=type(exc).__name__,
+                    )
                     self._notify_source_error("dexscreener:hydration", exc)
                     for row in chunk:
                         self.store.mark_token_detail_hydration(
@@ -1433,14 +1534,37 @@ class Runtime:
                     quoted = quoted_by_token.get(token_id)
                     if not quoted:
                         self.store.mark_token_detail_hydration(token_id, "no_pair")
+                        self.store.add_token_discovery_exposure(
+                            round_id,
+                            token_id=token_id,
+                            chain=chain,
+                            role="hydration",
+                            no_pair=True,
+                        )
                         continue
                     token, snapshot = quoted
                     if token.token_id != token_id:
                         self.store.mark_token_detail_hydration(token_id, "no_pair")
+                        self.store.add_token_discovery_exposure(
+                            round_id,
+                            token_id=token_id,
+                            chain=chain,
+                            role="hydration",
+                            no_pair=True,
+                        )
                         continue
-                    self.store.upsert_token(token, seen_at=snapshot.observed_at)
+                    created = self.store.upsert_token(token, seen_at=snapshot.observed_at)
                     self.store.add_snapshot(snapshot)
                     self.store.mark_token_detail_hydration(token_id, "hydrated")
+                    self.store.add_token_discovery_exposure(
+                        round_id,
+                        token_id=token_id,
+                        chain=chain,
+                        role="hydration",
+                        new_token=created,
+                        snapshot_count=1,
+                        observed_at=snapshot.observed_at,
+                    )
                     momentum = CandidateEvaluator._momentum_score(snapshot)
                     trigger = self.autonomous_search.resolve_token_context_trigger(
                         token,
@@ -1450,6 +1574,13 @@ class Runtime:
                         direct_context_candidates.append(
                             (int(trigger.get("priority") or 0), token, snapshot, momentum, trigger)
                         )
+                self.store.finish_token_discovery_round(
+                    round_id,
+                    status="completed",
+                    requested_count=len(chunk),
+                    returned_count=len(quoted_by_token),
+                    duplicate_token_count=max(0, len(chunk) - len(quoted_by_token)),
+                )
 
         if direct_context_candidates:
             _, token, snapshot, momentum, trigger = max(
@@ -1842,7 +1973,8 @@ class Runtime:
                     score=decision.score,
                     daily_exposure_usd=self.store.daily_buy_gross_usd(),
                 )
-                fee_rate = float(self.config["paper"].get("fee_bps", 60)) / 10_000
+                fee_bps = self._paper_fee_bps(snap)
+                fee_rate = fee_bps / 10_000
                 amount = min(amount, account["cash_usd"] / (1 + fee_rate))
                 decision.position_usd = amount
                 if amount < float(self.config["paper"].get("min_position_usd", 0)):
@@ -1922,7 +2054,7 @@ class Runtime:
                     token=token,
                     price=execution_price,
                     gross_usd=amount,
-                    fee_bps=float(self.config["paper"].get("fee_bps", 60)),
+                    fee_bps=fee_bps,
                     reason="event_candidate",
                     quote_price=float(snap.price_usd),
                     tax_pct=snap.buy_tax_pct,
@@ -2056,7 +2188,6 @@ class Runtime:
             self.notifier.send("source_stale", source, {"minutes_since_ok": round(age_minutes, 1), "threshold": threshold})
 
     async def monitor_positions_once(self) -> None:
-        fee = float(self.config["paper"].get("fee_bps", 80))
         executed = False
         for position in list(self.store.open_positions()):
             try:
@@ -2129,6 +2260,7 @@ class Runtime:
             self.store.upsert_token(token, seen_at=snap.observed_at)
             self.store.add_snapshot(snap)
             slippage = float(self.config["paper"].get("slippage_rate", 0.0))
+            fee = self._paper_fee_bps(snap)
             execution_price = float(snap.price_usd) * (1.0 - slippage)
             result = self.store.paper_sell(
                 position.token_id,
@@ -2176,10 +2308,72 @@ class Runtime:
         if not cfg.get("enabled", True):
             return
         collector = PumpPortalCollector(str(cfg.get("url") or PumpPortalCollector.URL))
-        async for token in collector.stream():
-            if self._stop.is_set():
-                break
-            await self.ingest_token(token)
+        queue: asyncio.Queue[TokenCandidate] = asyncio.Queue()
+
+        async def produce() -> None:
+            async for token in collector.stream():
+                await queue.put(token)
+
+        producer = asyncio.create_task(produce(), name="pumpportal_stream_reader")
+        window_seconds = max(1.0, float(cfg.get("exposure_window_seconds", 60)))
+        try:
+            while not self._stop.is_set():
+                round_ids = {
+                    surface: self.store.start_token_discovery_round(
+                        provider="pumpportal",
+                        surface=surface,
+                        mode="stream_window",
+                        chain_scope="solana",
+                    )
+                    for surface in ("create", "migration")
+                }
+                returned = {"create": 0, "migration": 0}
+                duplicates = {"create": 0, "migration": 0}
+                deadline = asyncio.get_running_loop().time() + window_seconds
+                try:
+                    while not self._stop.is_set():
+                        remaining = deadline - asyncio.get_running_loop().time()
+                        if remaining <= 0:
+                            break
+                        try:
+                            token = await asyncio.wait_for(queue.get(), timeout=min(1.0, remaining))
+                        except TimeoutError:
+                            continue
+                        surface = "migration" if token.source.endswith(":migration") else "create"
+                        known_before = self.store.token_discovery_known(token.token_id)
+                        created = await self.ingest_token(token)
+                        first_local = not known_before and created
+                        returned[surface] += 1
+                        duplicates[surface] += int(not first_local)
+                        self.store.add_token_discovery_exposure(
+                            round_ids[surface],
+                            token_id=token.token_id,
+                            chain=token.chain,
+                            role=surface,
+                            first_local_discovery=first_local,
+                            new_token=created,
+                            observed_at=token.first_seen_at,
+                        )
+                except asyncio.CancelledError:
+                    for surface, round_id in round_ids.items():
+                        self.store.finish_token_discovery_round(
+                            round_id,
+                            status="interrupted",
+                            returned_count=returned[surface],
+                            duplicate_token_count=duplicates[surface],
+                        )
+                    raise
+                status = "interrupted" if self._stop.is_set() else "completed"
+                for surface, round_id in round_ids.items():
+                    self.store.finish_token_discovery_round(
+                        round_id,
+                        status=status,
+                        returned_count=returned[surface],
+                        duplicate_token_count=duplicates[surface],
+                    )
+        finally:
+            producer.cancel()
+            await asyncio.gather(producer, return_exceptions=True)
 
     async def run_once(self) -> None:
         await self.poll_external_once()

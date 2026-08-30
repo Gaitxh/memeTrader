@@ -25,6 +25,30 @@ def test_initial_config_has_private_token_and_live_locked():
     assert config["safety"]["require_evm_security_report"] is True
     assert config["safety"]["require_evm_simulation"] is False
     assert config["safety"]["require_solana_report"] is True
+    assert config["paper"]["slippage_rate"] == pytest.approx(0.04)
+    assert config["paper"]["fee_bps"] == pytest.approx(60)
+    assert config["paper"]["pump_swap_fee_bps"] == pytest.approx(125)
+
+
+def test_paper_fee_uses_pumpswap_cap_only_for_identified_venue(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        runtime = Runtime(config, tmp_path)
+        generic = TokenSnapshot(
+            "solana", "G" * 32, 1, 10_000, 100_000, 1_000, 10, 5,
+            raw={"pair": {"dexId": "raydium"}},
+        )
+        pump = TokenSnapshot(
+            "solana", "P" * 32, 1, 10_000, 100_000, 1_000, 10, 5,
+            raw={"pair": {"dexId": "pumpswap"}},
+        )
+        assert runtime._paper_fee_bps(generic) == pytest.approx(60)
+        assert runtime._paper_fee_bps(pump) == pytest.approx(125)
+        await runtime.close()
+
+    asyncio.run(scenario())
 
 
 def test_followup_tick_finalizes_event_and_token_context_without_agent_or_quote(tmp_path):
@@ -93,6 +117,92 @@ def test_observation_polls_record_completed_duplicate_empty_and_error_exposure(t
         serialized = json.dumps([dict(row) for row in rows])
         assert "DO_NOT_STORE" not in serialized
         assert "private diagnostic text" not in serialized
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_gecko_poll_records_first_duplicate_and_error_rounds(tmp_path, monkeypatch):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        runtime = Runtime(config, tmp_path)
+        token = TokenCandidate(
+            chain="solana", address="G" * 32, name="Gecko Discovery", source="geckoterminal:solana"
+        )
+
+        class Gecko:
+            calls = 0
+
+            def __init__(self, http, network):
+                assert network == "solana"
+
+            async def poll(self):
+                Gecko.calls += 1
+                if Gecko.calls == 3:
+                    raise TimeoutError("provider detail must not persist")
+                return [token] if Gecko.calls <= 2 else []
+
+        monkeypatch.setattr("memetrader.runtime.GeckoNewPoolsCollector", Gecko)
+        await runtime._poll_gecko_network("solana")
+        await runtime._poll_gecko_network("solana")
+        await runtime._poll_gecko_network("solana")
+        rows = runtime.store.db.execute(
+            "SELECT * FROM token_discovery_rounds ORDER BY id"
+        ).fetchall()
+        assert [row["status"] for row in rows] == ["completed", "completed", "error"]
+        assert rows[0]["first_local_discovery_count"] == 1
+        assert rows[1]["first_local_discovery_count"] == 0
+        assert rows[1]["duplicate_token_count"] == 1
+        assert rows[2]["error_type"] == "TimeoutError"
+        assert "provider detail" not in json.dumps([dict(row) for row in rows])
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_pump_stream_records_create_migration_and_empty_windows(tmp_path, monkeypatch):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        config["sources"]["pumpportal"]["exposure_window_seconds"] = 1
+        runtime = Runtime(config, tmp_path)
+        create = TokenCandidate(
+            chain="solana", address="C" * 32, name="Pump Create", source="pumpportal:create"
+        )
+        migration = TokenCandidate(
+            chain="solana", address="M" * 32, name="Pump Migration", source="pumpportal:migration"
+        )
+
+        class Pump:
+            URL = "wss://example.invalid"
+
+            def __init__(self, url):
+                pass
+
+            async def stream(self):
+                yield create
+                yield migration
+                while True:
+                    await asyncio.sleep(10)
+
+        monkeypatch.setattr("memetrader.runtime.PumpPortalCollector", Pump)
+        task = asyncio.create_task(runtime.pump_loop())
+        await asyncio.sleep(1.15)
+        runtime.stop()
+        await task
+        rows = runtime.store.db.execute(
+            "SELECT surface,status,returned_count,first_local_discovery_count "
+            "FROM token_discovery_rounds ORDER BY id"
+        ).fetchall()
+        completed = [row for row in rows if row["status"] == "completed"]
+        assert {(row["surface"], row["returned_count"]) for row in completed} >= {
+            ("create", 1), ("migration", 1)
+        }
+        assert any(row["returned_count"] == 0 for row in rows)
+        assert sum(row["first_local_discovery_count"] for row in rows) == 2
         await runtime.close()
 
     asyncio.run(scenario())

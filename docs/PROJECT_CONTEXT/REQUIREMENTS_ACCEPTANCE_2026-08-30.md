@@ -128,10 +128,29 @@
 
 ## 10. 剩余推进优先级
 
-1. 发布并观察按任务结构无效回退的新账本状态；只有发布后的 `valid_output / invalid_output` 参与结构通过率，旧 `completed` 记录不冒充已校验样本。
-2. 让浏览器扩展真正连接一个已登录 X 精确账号页，产生第一条真实 platform heartbeat 和 watch-account exposure；这是人物/平台学习链当前最前端的断点。
-3. 继续 Paper 前向运行，收集 WAIT/CANDIDATE 的 15/60/240 分钟随访及真实闭仓样本；样本未成熟前不调学习倍率。
-4. 等待新的 Token Context cohort 形成 15/60/240 分钟真实结果，审查 missing 比例、各 assessment 状态覆盖和是否存在选择偏差；不得在成熟前启用任何优化。
-5. 只在出现真实的事实冲突或证据复杂度失败样本后，设计更强模型升级门；合法空结果不升级。
-6. Devnet 有可用测试 SOL 时完成最小人工链上签名验证；Mainnet Live 继续锁定。
-7. OKX Meme Pump 仅列为待明确授权的可选研究源：核心详情/开发者/bundle/同车钱包接口需要官方签名凭据并属于 Premium，当前不得逆向抓取页面。若未来接入，social 仍是 `provider_metadata` 身份线索，聪明钱标签只进入前向 shadow 研究，不进入确定性交易。
+1. 让浏览器扩展真正连接一个已登录 X 精确账号页，产生第一条真实 platform heartbeat 和 watch-account exposure；这是人物/平台学习链当前最前端的断点。
+2. 继续 Paper 前向运行，收集 WAIT/CANDIDATE 的 15/60/240 分钟随访、Token Context 固定时点结果和真实闭仓样本；样本未成熟前不调学习倍率。
+3. 观察 `source-poll-exposure/v1` 与 `token-discovery-exposure/v1` 的真实空轮次、错误、首次发现及后续候选漏斗；只做人工覆盖复核，不自动按短期结果改频率。
+4. 只在出现真实的事实冲突或证据复杂度失败样本后，设计更强模型升级门；合法空结果不升级。
+5. Devnet 有可用测试 SOL 时完成最小人工链上签名验证；Mainnet Live 继续锁定。
+6. OKX Meme Pump 仅列为待明确授权的可选研究源：核心详情/开发者/bundle/同车钱包接口需要官方签名凭据并属于 Premium，当前不得逆向抓取页面。若未来接入，social 仍是 `provider_metadata` 身份线索，聪明钱标签只进入前向 shadow 研究，不进入确定性交易。
+
+## 11. 2026-08-31 再次全量复核结论
+
+这次复核没有把“代码存在”“页面能显示”“设备已登录”和“真实前向链已跑通”混为一谈。整段聊天需求按以下五类继续管理；因此结论是**核心产品已可用，但所有累积需求并未全部完成，长期目标也不能关闭**。
+
+| 分类 | 当前结论 | 主要证据或缺口 |
+|---|---|---|
+| 已真实完成 | Paper 常驻 Runtime、SQLite、双语动态 Web、事件/Token/决策/Paper/Agent/来源/审计/设置页面，Event↔Token、WAIT 语义、未来数据门、成本与账户曲线、受保护临时公开 URL | 当前代码、测试、SQLite 与 API；页面不复制策略，Live 保持锁定 |
+| 已真实完成 | RSS/Bluesky/Mastodon/反向新闻的真实请求分母，以及 PumpPortal/GeckoTerminal/DexScreener 各发现面、hydration 与空窗口的前向暴露分母 | `source-poll-exposure/v1` 与 `token-discovery-exposure/v1`；不回填历史，不自动改变调度或交易 |
+| 已实现但样本不足 | 来源/平台/人物/主题选择性学习、Shadow、Token Context 与 Paper 精确 cohort 归因 | 机制和可视化已存在，但当前样本不足以证明哪个来源、人物或题材更优，更不能据此声称盈利能力 |
+| 部分完成/设备步骤 | X 等精确账号页面采集、固定公网域名、Devnet 真链签名 | 登录不等于桥采集；需专用浏览器扩展真实 heartbeat；Quick Tunnel 非固定；Devnet 钱包缺可核验 signature |
+| 尚未实现 | 基于事实冲突/证据复杂度的通用模型升级、可审查 Mainnet Broker 与真实成交发布线 | 现有任务级路由与结构无效回退可用，但通用复杂度升级和 Mainnet 交易闭环不存在 |
+| 已完成设计、待前向实现 | 按热度/舆论/人物/社区/链上质量研究金额、入场次数、分批止盈、runner 和持仓期 | 已冻结为不可回填的策略 cohort + 预注册 Paper challenger 方案；当前样本太少，不能直接改仓位或退出基线 |
+| 明确跳过/禁止 | Telegram 自动正文采集与 Agent 摄取、自动注册/关注/发帖/私信、读取密码/Cookie/验证码、使用聊天中暴露的私钥、网页解锁 Live、逆向抓取 OKX Premium 接口 | 与平台、秘密管理、证据质量或当前 Paper 安全边界冲突；只保留人工目录、公开原文和允许的机器 feed |
+
+关于用户提出的“取消每日 Token 预算”：当前工程不采用真正无限值。每日调用上限、有限 Token 上限、冷却、退避和最多两个并发槽位仍是防失控边界；本机预算可以提高到远高于当前日用量，并由日常巡检在出现 `daily_token_reserve_exceeded` 时继续复核和提高有限上限。这样避免合格任务被旧小预算跳过，同时仍保留可审计的故障上限。
+
+关于用户补充的“4% 滑点、实际费率和买卖次数”：固定 4% 被采用为每侧不利执行压力，而不是声称真实成交必然损失 4%。通用场地费保持每笔 60 bps，Dex 报价明确识别 PumpSwap 时使用 125 bps 保守上限；滑点/价格冲击、DEX/creator/platform fee、Token 税和 Solana base/priority fee 分开记录，未知链费不伪装为 0，也不重复扣除。当前保持一次入场，最多四层按剩余仓位止盈；缺少可验证路由和更多前向样本前不增加 DCA/加仓复杂度。
+
+这份矩阵是累积需求的权威总账；新补充只追加或修正解释，不会静默删除旧要求。后续每次发布应更新最新快照中的真实运行数字、样本成熟度和外部人工断点，而不是重新宣称“全部完成”。

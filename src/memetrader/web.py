@@ -108,6 +108,8 @@ EXPECTED_TABLES = {
     "token_context_outcome_cohorts",
     "token_context_outcome_labels",
     "token_context_outcomes",
+    "token_discovery_exposures",
+    "token_discovery_rounds",
     "token_snapshots",
     "tokens",
     "trades",
@@ -261,6 +263,7 @@ SETTING_SPECS: dict[str, tuple[str, float, float]] = {
     "paper.max_cash_fraction": ("float", 0, 1),
     "paper.max_liquidity_impact_pct": ("float", 0, 0.1),
     "paper.fee_bps": ("float", 0, 5000),
+    "paper.pump_swap_fee_bps": ("float", 0, 5000),
     "paper.slippage_rate": ("float", 0, 0.4999),
     "paper.max_quote_age_seconds": ("float", 1, 600),
     "paper.max_daily_new_exposure_usd": ("float", 0, 10_000_000),
@@ -1581,6 +1584,7 @@ class WebData:
             "model": "fixed_adverse_quote_adjustment_plus_fee_and_observed_tax",
             "configured_slippage_rate": float(paper.get("slippage_rate", 0)),
             "configured_fee_bps": float(paper.get("fee_bps", 0)),
+            "pump_swap_fee_bps": float(paper.get("pump_swap_fee_bps", paper.get("fee_bps", 0))),
             "max_quote_age_seconds": float(paper.get("max_quote_age_seconds", 45)),
             "total_fee_usd": 0.0,
             "total_recorded_slippage_usd": 0.0,
@@ -3346,6 +3350,15 @@ class WebData:
             "mode": "forward_append_only_observation",
             "affects": "review_only_no_schedule_or_trading_effect",
         }
+        token_discovery_learning: dict[str, Any] = {
+            "status": "not_observed",
+            "version": Store.TOKEN_DISCOVERY_EXPOSURE_VERSION,
+            "items": [],
+            "summary": {"rounds": 0, "completed": 0, "errors": 0, "first_local_discovery_count": 0},
+            "mode": "forward_append_only_observation",
+            "affects": "review_only_no_schedule_or_trading_effect",
+            "cohort_definition": "first_local_discovery_at_or_after_version_activation",
+        }
         exposure: dict[str, Any] = {
             "status": "not_observed", "items": [],
             "summary": {"runs": 0, "completed_runs": 0, "lane_exposures": 0, "accepted_events": 0},
@@ -3452,6 +3465,17 @@ class WebData:
                     )
                 except (sqlite3.Error, TypeError, ValueError):
                     source_poll_learning["status"] = "unavailable"
+                try:
+                    token_discovery_learning = (
+                        Store.token_discovery_learning_summary_from_connection(
+                            connection,
+                            lookback_days=int(
+                                autonomous_cfg.get("source_learning_lookback_days", 90)
+                            ),
+                        )
+                    )
+                except (sqlite3.Error, TypeError, ValueError):
+                    token_discovery_learning["status"] = "unavailable"
                 try:
                     learning = Store.source_learning_summary_from_connection(
                         connection,
@@ -3863,6 +3887,7 @@ class WebData:
             "browser_bridge": self._bridge_health(),
             "learning": learning,
             "source_poll_learning": source_poll_learning,
+            "token_discovery_learning": token_discovery_learning,
             "trend_lanes": trend_lanes,
             "trend_attention_policy": trend_attention_policy,
             "watch_account_learning": watch_account_learning,

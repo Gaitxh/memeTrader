@@ -124,6 +124,7 @@ Trend Scout 主题通道基线 round-robin / 受限选择性分配
 - `events` / `event_observations`：聚类事件、首次接受时冻结的前向 topic 及其全部证据；迁移前记录保持 `unknown`。
 - `tokens` / `token_snapshots`：Token 身份和随时间变化的价格、流动性、成交与安全字段。
 - `token_source_links`：Dex/pair 附带 URL 的发现面、identity/promotion 角色、类型、平台及本机首次/最后观察。
+- `token_discovery_rounds` / `token_discovery_exposures`：PumpPortal、GeckoTerminal 与 DexScreener 的真实发现轮次、空窗口、错误、重复、本机首次 Token、链接、hydration 快照及 no-pair 前向分母；只作人工覆盖复核。
 - `decisions`：action、score、match、canonical margin、理由、拒绝理由和 Paper 仓位金额。
 - `paper_account` / `positions` / `trades`：Paper 现金、持仓、退出和历史成交；新持仓/成交冻结最终 `decision_id/cohort_id`，并保存报价、执行价、报价/请求时间、滑点、手续费和已知 Token 税。
 - `paper_account_snapshots`：append-only 账户曲线；普通运行最多五分钟追加一次，买卖后强制追加，缺少新鲜报价时权益为 `null`。

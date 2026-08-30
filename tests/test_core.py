@@ -73,6 +73,91 @@ def test_source_poll_exposure_summary_includes_zero_yield_and_errors_without_raw
     store.close()
 
 
+def test_token_discovery_exposure_preserves_denominator_and_forward_outcomes(tmp_path: Path):
+    store = Store(tmp_path / "token-discovery.sqlite3", initial_cash_usd=1000)
+    observed_at = datetime.now(timezone.utc) - timedelta(minutes=2)
+    token = TokenCandidate(chain="solana", address="D" * 32, name="Discovery Token", symbol="DISC")
+
+    first_round = store.start_token_discovery_round(
+        provider="geckoterminal", surface="new_pools", mode="poll", chain_scope="solana",
+        started_at=observed_at,
+    )
+    store.add_token_discovery_exposure(
+        first_round, token_id=token.token_id, chain="solana", role="new_pool",
+        first_local_discovery=True, new_token=True, observed_at=observed_at,
+    )
+    store.finish_token_discovery_round(
+        first_round, status="completed", requested_count=1, returned_count=1,
+        completed_at=observed_at + timedelta(seconds=1),
+    )
+    empty_round = store.start_token_discovery_round(
+        provider="geckoterminal", surface="new_pools", mode="poll", chain_scope="solana",
+    )
+    store.finish_token_discovery_round(empty_round, status="completed", requested_count=1)
+    error_round = store.start_token_discovery_round(
+        provider="dexscreener", surface="token_profiles", mode="poll", chain_scope="solana",
+    )
+    store.finish_token_discovery_round(
+        error_round, status="error", requested_count=1, error_type="TimeoutError",
+    )
+
+    event_id = store.create_event("Discovery event", ["discovery"], 80, observed_at)
+    store.upsert_token(token, seen_at=observed_at)
+    decision_at = observed_at + timedelta(minutes=1)
+    decision_id = store.add_decision(
+        CandidateDecision(
+            event_id, token.token_id, "CANDIDATE", 85, 75, 20,
+            ["forward discovery"], position_usd=10, created_at=decision_at,
+        )
+    )
+    store.paper_buy(
+        event_id=event_id, token=token, price=1, gross_usd=10, fee_bps=60,
+        reason="forward-discovery-test", decision_id=decision_id,
+        quote_observed_at=decision_at, execution_attempted_at=decision_at,
+    )
+
+    summary = store.token_discovery_learning_summary_from_connection(store.db)
+    gecko = next(item for item in summary["items"] if item["provider"] == "geckoterminal")
+    dex = next(item for item in summary["items"] if item["provider"] == "dexscreener")
+    assert summary["status"] == "collecting"
+    assert gecko["rounds"] == 2 and gecko["completed_zero_new"] == 1
+    assert gecko["first_local_discovery_count"] == 1
+    assert gecko["candidate_first_discoveries"] == 1
+    assert gecko["paper_bought_first_discoveries"] == 1
+    assert gecko["candidate_conversion_rate"] == 1
+    assert dex["errors"] == 1 and dex["last_error_type"] == "TimeoutError"
+    assert summary["affects"] == "review_only_no_schedule_or_trading_effect"
+    store.close()
+
+
+def test_runtime_restart_reclassifies_only_unfinished_exposure_attempts(tmp_path: Path):
+    database = tmp_path / "interrupted-exposure.sqlite3"
+    store = Store(database, initial_cash_usd=1000)
+    poll_id = store.start_source_poll_attempt(
+        collector_kind="rss", source_key="rss:interrupted", platform="rss_news",
+    )
+    round_id = store.start_token_discovery_round(
+        provider="pumpportal", surface="create", mode="stream_window", chain_scope="solana",
+    )
+    completed_round = store.start_token_discovery_round(
+        provider="geckoterminal", surface="new_pools", mode="poll", chain_scope="solana",
+    )
+    store.finish_token_discovery_round(completed_round, status="completed", requested_count=1)
+    store.recover_interrupted_exposure_attempts()
+    poll = store.db.execute("SELECT * FROM source_poll_attempts WHERE id=?", (poll_id,)).fetchone()
+    interrupted = store.db.execute(
+        "SELECT * FROM token_discovery_rounds WHERE id=?", (round_id,)
+    ).fetchone()
+    completed = store.db.execute(
+        "SELECT * FROM token_discovery_rounds WHERE id=?", (completed_round,)
+    ).fetchone()
+    assert poll["status"] == "error" and poll["error_type"] == "ProcessRestart"
+    assert interrupted["status"] == "interrupted"
+    assert interrupted["error_type"] == "ProcessRestart"
+    assert completed["status"] == "completed" and completed["error_type"] == ""
+    store.close()
+
+
 def test_store_migrates_legacy_source_outcomes_without_backfill(tmp_path: Path):
     database = tmp_path / "legacy-source-outcomes.sqlite3"
     connection = sqlite3.connect(database)

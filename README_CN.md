@@ -110,7 +110,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\status.ps1
 
 Web 控制台直接读取当前 `config.json` 指向的 SQLite，不复制策略、不生成演示成交。它提供 Overview、实时事件、Token 发现、候选/决策、Paper Portfolio、Agent Operations、Sources、Audit、安全 Settings 和 Wallet 十个工作区。
 
-Overview 与 Paper Portfolio 展示追加式账户时间曲线、现金/持仓市值/权益/当日 exposure、报价缺失区段、逐笔报价与模拟执行价、滑点、双边手续费、已知 Token 税和模拟执行失败原因。零成交时显示真实的平坦现金状态，不生成假仓位或假成交。执行与未来 Live 的严格边界见 [Paper 前向执行与未来 Live 验收](docs/PAPER_FORWARD_EXECUTION_CN.md)。
+Overview 与 Paper Portfolio 展示追加式账户时间曲线、现金/持仓市值/权益/当日 exposure、报价缺失区段、逐笔报价与模拟执行价、滑点、每笔场地费、已知 Token 税和模拟执行失败原因。当前每侧 4% 是早期 meme 的保守不利执行压力，不冒充必然发生的真实滑点；通用场地费估计为每笔 60 bps，报价明确识别为 PumpSwap 时使用 125 bps 保守上限。链费与 priority fee 没有可验证路由时明确保持未建模。零成交时显示真实的平坦现金状态，不生成假仓位或假成交。执行与未来 Live 的严格边界见 [Paper 前向执行与未来 Live 验收](docs/PAPER_FORWARD_EXECUTION_CN.md)。
 
 顶部可在“中文 / English”之间即时切换；选择只保存在当前浏览器本地，刷新后仍会保留。事件标题、Token 名称和来源原文不会被自动翻译。
 

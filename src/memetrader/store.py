@@ -35,6 +35,7 @@ class Store:
     TREND_ATTENTION_POLICY_VERSION = "trend-attention/v1"
     PAPER_SOURCE_ATTRIBUTION_VERSION = "paper-source-attribution/v2-decision-cohort"
     SOURCE_POLL_EXPOSURE_VERSION = "source-poll-exposure/v1"
+    TOKEN_DISCOVERY_EXPOSURE_VERSION = "token-discovery-exposure/v1"
 
     def __init__(self, path: str | Path, initial_cash_usd: float = 10000):
         self.path = Path(path)
@@ -407,6 +408,49 @@ class Store:
                     ON source_poll_attempts(source_key,started_at DESC,id DESC);
                 CREATE INDEX IF NOT EXISTS source_poll_attempts_platform_idx
                     ON source_poll_attempts(platform,started_at DESC,id DESC);
+                CREATE TABLE IF NOT EXISTS token_discovery_rounds (
+                    id INTEGER PRIMARY KEY,
+                    version TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    surface TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    chain_scope TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'running',
+                    requested_count INTEGER NOT NULL DEFAULT 0,
+                    returned_count INTEGER NOT NULL DEFAULT 0,
+                    exposed_token_count INTEGER NOT NULL DEFAULT 0,
+                    first_local_discovery_count INTEGER NOT NULL DEFAULT 0,
+                    new_token_count INTEGER NOT NULL DEFAULT 0,
+                    duplicate_token_count INTEGER NOT NULL DEFAULT 0,
+                    source_link_count INTEGER NOT NULL DEFAULT 0,
+                    new_source_link_count INTEGER NOT NULL DEFAULT 0,
+                    snapshot_count INTEGER NOT NULL DEFAULT 0,
+                    no_pair_count INTEGER NOT NULL DEFAULT 0,
+                    error_type TEXT NOT NULL DEFAULT '',
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS token_discovery_rounds_surface_idx
+                    ON token_discovery_rounds(provider,surface,started_at DESC,id DESC);
+                CREATE TABLE IF NOT EXISTS token_discovery_exposures (
+                    id INTEGER PRIMARY KEY,
+                    round_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    chain TEXT NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'discovery',
+                    first_local_discovery INTEGER NOT NULL DEFAULT 0,
+                    new_token INTEGER NOT NULL DEFAULT 0,
+                    occurrence_count INTEGER NOT NULL DEFAULT 1,
+                    source_link_count INTEGER NOT NULL DEFAULT 0,
+                    new_source_link_count INTEGER NOT NULL DEFAULT 0,
+                    snapshot_count INTEGER NOT NULL DEFAULT 0,
+                    no_pair INTEGER NOT NULL DEFAULT 0,
+                    observed_at TEXT NOT NULL,
+                    UNIQUE(round_id,token_id),
+                    FOREIGN KEY(round_id) REFERENCES token_discovery_rounds(id)
+                );
+                CREATE INDEX IF NOT EXISTS token_discovery_exposures_token_idx
+                    ON token_discovery_exposures(token_id,observed_at DESC,id DESC);
                 CREATE TABLE IF NOT EXISTS kv (
                     key TEXT PRIMARY KEY,
                     value_json TEXT NOT NULL,
@@ -3439,6 +3483,320 @@ class Store:
             "summary": summary,
             "mode": "forward_append_only_observation",
             "affects": "review_only_no_schedule_or_trading_effect",
+            "as_of": iso(),
+        }
+
+    def token_discovery_known(self, token_id: str) -> bool:
+        row = self.db.execute(
+            """
+            SELECT 1 FROM tokens WHERE token_id=?
+            UNION ALL
+            SELECT 1 FROM token_source_links WHERE token_id=? LIMIT 1
+            """,
+            (str(token_id), str(token_id)),
+        ).fetchone()
+        return row is not None
+
+    def recover_interrupted_exposure_attempts(self, *, recovered_at: Any = None) -> None:
+        completed_at = iso(recovered_at or utcnow())
+        with self._lock, self.db:
+            self.db.execute(
+                """
+                UPDATE source_poll_attempts
+                SET status='error',error_type='ProcessRestart',completed_at=?
+                WHERE status='running'
+                """,
+                (completed_at,),
+            )
+            self.db.execute(
+                """
+                UPDATE token_discovery_rounds
+                SET status='interrupted',error_type='ProcessRestart',completed_at=?
+                WHERE status='running'
+                """,
+                (completed_at,),
+            )
+
+    def start_token_discovery_round(
+        self,
+        *,
+        provider: str,
+        surface: str,
+        mode: str,
+        chain_scope: str,
+        started_at: Any = None,
+    ) -> int:
+        clean = lambda value: re.sub(r"[^a-zA-Z0-9:._,-]+", "-", str(value).strip())[:160]
+        with self._lock, self.db:
+            cursor = self.db.execute(
+                """
+                INSERT INTO token_discovery_rounds(
+                    version,provider,surface,mode,chain_scope,status,started_at
+                ) VALUES(?,?,?,?,?,'running',?)
+                """,
+                (
+                    self.TOKEN_DISCOVERY_EXPOSURE_VERSION,
+                    clean(provider) or "unknown",
+                    clean(surface) or "unknown",
+                    clean(mode) or "unknown",
+                    clean(chain_scope) or "unknown",
+                    iso(started_at or utcnow()),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def add_token_discovery_exposure(
+        self,
+        round_id: int,
+        *,
+        token_id: str,
+        chain: str,
+        role: str = "discovery",
+        first_local_discovery: bool = False,
+        new_token: bool = False,
+        occurrence_count: int = 1,
+        source_link_count: int = 0,
+        new_source_link_count: int = 0,
+        snapshot_count: int = 0,
+        no_pair: bool = False,
+        observed_at: Any = None,
+    ) -> None:
+        token_id = str(token_id).strip()[:300]
+        if not token_id:
+            return
+        clean = lambda value: re.sub(r"[^a-zA-Z0-9:._-]+", "-", str(value).strip())[:100]
+        with self._lock, self.db:
+            self.db.execute(
+                """
+                INSERT INTO token_discovery_exposures(
+                    round_id,token_id,chain,role,first_local_discovery,new_token,
+                    occurrence_count,source_link_count,new_source_link_count,snapshot_count,
+                    no_pair,observed_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(round_id,token_id) DO UPDATE SET
+                    first_local_discovery=MAX(first_local_discovery,excluded.first_local_discovery),
+                    new_token=MAX(new_token,excluded.new_token),
+                    occurrence_count=token_discovery_exposures.occurrence_count+excluded.occurrence_count,
+                    source_link_count=token_discovery_exposures.source_link_count+excluded.source_link_count,
+                    new_source_link_count=token_discovery_exposures.new_source_link_count+excluded.new_source_link_count,
+                    snapshot_count=token_discovery_exposures.snapshot_count+excluded.snapshot_count,
+                    no_pair=MAX(no_pair,excluded.no_pair)
+                """,
+                (
+                    int(round_id), token_id, clean(chain) or "unknown", clean(role) or "discovery",
+                    int(bool(first_local_discovery)), int(bool(new_token)),
+                    max(1, int(occurrence_count or 1)), max(0, int(source_link_count or 0)),
+                    max(0, int(new_source_link_count or 0)), max(0, int(snapshot_count or 0)),
+                    int(bool(no_pair)), iso(observed_at or utcnow()),
+                ),
+            )
+
+    def finish_token_discovery_round(
+        self,
+        round_id: int,
+        *,
+        status: str,
+        requested_count: int = 0,
+        returned_count: int = 0,
+        duplicate_token_count: int = 0,
+        error_type: str = "",
+        completed_at: Any = None,
+    ) -> None:
+        allowed = {"completed", "error", "interrupted"}
+        status = status if status in allowed else "error"
+        error_type = re.sub(r"[^a-zA-Z0-9_.-]+", "", str(error_type))[:80]
+        with self._lock, self.db:
+            totals = self.db.execute(
+                """
+                SELECT COUNT(*) AS exposed_token_count,
+                       COALESCE(SUM(first_local_discovery),0) AS first_local_discovery_count,
+                       COALESCE(SUM(new_token),0) AS new_token_count,
+                       COALESCE(SUM(source_link_count),0) AS source_link_count,
+                       COALESCE(SUM(new_source_link_count),0) AS new_source_link_count,
+                       COALESCE(SUM(snapshot_count),0) AS snapshot_count,
+                       COALESCE(SUM(no_pair),0) AS no_pair_count
+                FROM token_discovery_exposures WHERE round_id=?
+                """,
+                (int(round_id),),
+            ).fetchone()
+            self.db.execute(
+                """
+                UPDATE token_discovery_rounds SET
+                    status=?,requested_count=?,returned_count=?,exposed_token_count=?,
+                    first_local_discovery_count=?,new_token_count=?,duplicate_token_count=?,
+                    source_link_count=?,new_source_link_count=?,snapshot_count=?,no_pair_count=?,
+                    error_type=?,completed_at=?
+                WHERE id=? AND status='running'
+                """,
+                (
+                    status, max(0, int(requested_count or 0)), max(0, int(returned_count or 0)),
+                    int(totals["exposed_token_count"] or 0),
+                    int(totals["first_local_discovery_count"] or 0),
+                    int(totals["new_token_count"] or 0), max(0, int(duplicate_token_count or 0)),
+                    int(totals["source_link_count"] or 0),
+                    int(totals["new_source_link_count"] or 0),
+                    int(totals["snapshot_count"] or 0), int(totals["no_pair_count"] or 0),
+                    error_type, iso(completed_at or utcnow()), int(round_id),
+                ),
+            )
+
+    @classmethod
+    def token_discovery_learning_summary_from_connection(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        lookback_days: int = 90,
+    ) -> dict[str, Any]:
+        tables = {
+            str(row["name"])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+                "('token_discovery_rounds','token_discovery_exposures')"
+            )
+        }
+        empty = {
+            "status": "not_observed",
+            "version": cls.TOKEN_DISCOVERY_EXPOSURE_VERSION,
+            "items": [],
+            "summary": {"rounds": 0, "completed": 0, "errors": 0, "first_local_discovery_count": 0},
+            "mode": "forward_append_only_observation",
+            "affects": "review_only_no_schedule_or_trading_effect",
+        }
+        if tables != {"token_discovery_rounds", "token_discovery_exposures"}:
+            return empty
+        start = iso(utcnow() - timedelta(days=max(1, min(3650, int(lookback_days)))))
+        rows = connection.execute(
+            """
+            SELECT provider,surface,mode,chain_scope,
+                   COUNT(*) AS rounds,
+                   SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,
+                   SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS errors,
+                   SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) AS running,
+                   SUM(CASE WHEN status='interrupted' THEN 1 ELSE 0 END) AS interrupted,
+                   SUM(CASE WHEN status='completed' AND first_local_discovery_count=0 THEN 1 ELSE 0 END)
+                       AS completed_zero_new,
+                   SUM(requested_count) AS requested_count,
+                   SUM(returned_count) AS returned_count,
+                   SUM(exposed_token_count) AS exposed_token_count,
+                   SUM(first_local_discovery_count) AS first_local_discovery_count,
+                   SUM(new_token_count) AS new_token_count,
+                   SUM(duplicate_token_count) AS duplicate_token_count,
+                   SUM(source_link_count) AS source_link_count,
+                   SUM(new_source_link_count) AS new_source_link_count,
+                   SUM(snapshot_count) AS snapshot_count,
+                   SUM(no_pair_count) AS no_pair_count,
+                   COUNT(DISTINCT substr(started_at,1,10)) AS round_day_count,
+                   MAX(started_at) AS last_started_at
+            FROM token_discovery_rounds WHERE started_at>=?
+            GROUP BY provider,surface,mode,chain_scope
+            ORDER BY completed DESC,rounds DESC,provider,surface
+            """,
+            (start,),
+        ).fetchall()
+        outcome_rows = connection.execute(
+            """
+            SELECT r.provider,r.surface,r.mode,r.chain_scope,
+                   COUNT(DISTINCT CASE WHEN e.first_local_discovery=1 THEN e.token_id END)
+                       AS first_tokens,
+                   COUNT(DISTINCT CASE WHEN e.first_local_discovery=1 AND EXISTS(
+                       SELECT 1 FROM decisions d WHERE d.token_id=e.token_id
+                         AND d.action='CANDIDATE' AND d.created_at>=e.observed_at
+                   ) THEN e.token_id END) AS candidate_tokens,
+                   COUNT(DISTINCT CASE WHEN e.first_local_discovery=1 AND EXISTS(
+                       SELECT 1 FROM trades t WHERE t.token_id=e.token_id
+                         AND t.side='BUY' AND t.created_at>=e.observed_at
+                   ) THEN e.token_id END) AS paper_bought_tokens
+            FROM token_discovery_rounds r
+            JOIN token_discovery_exposures e ON e.round_id=r.id
+            WHERE r.started_at>=?
+            GROUP BY r.provider,r.surface,r.mode,r.chain_scope
+            """,
+            (start,),
+        ).fetchall()
+        outcomes = {
+            (str(row["provider"]), str(row["surface"]), str(row["mode"]), str(row["chain_scope"])): row
+            for row in outcome_rows
+        }
+        latest: dict[tuple[str, str, str, str], sqlite3.Row] = {}
+        for row in connection.execute(
+            """
+            SELECT provider,surface,mode,chain_scope,status,error_type,started_at,completed_at
+            FROM token_discovery_rounds WHERE started_at>=? ORDER BY id DESC
+            """,
+            (start,),
+        ):
+            key = (
+                str(row["provider"]), str(row["surface"]),
+                str(row["mode"]), str(row["chain_scope"]),
+            )
+            latest.setdefault(key, row)
+        items = []
+        for row in rows:
+            key = (
+                str(row["provider"]), str(row["surface"]),
+                str(row["mode"]), str(row["chain_scope"]),
+            )
+            outcome = outcomes.get(key)
+            completed = int(row["completed"] or 0)
+            first_count = int((outcome["first_tokens"] if outcome else 0) or 0)
+            candidate_count = int((outcome["candidate_tokens"] if outcome else 0) or 0)
+            bought_count = int((outcome["paper_bought_tokens"] if outcome else 0) or 0)
+            last = latest[key]
+            items.append(
+                {
+                    "provider": key[0], "surface": key[1], "mode": key[2], "chain_scope": key[3],
+                    "rounds": int(row["rounds"] or 0), "completed": completed,
+                    "errors": int(row["errors"] or 0), "running": int(row["running"] or 0),
+                    "interrupted": int(row["interrupted"] or 0),
+                    "completed_zero_new": int(row["completed_zero_new"] or 0),
+                    "requested_count": int(row["requested_count"] or 0),
+                    "returned_count": int(row["returned_count"] or 0),
+                    "exposed_token_count": int(row["exposed_token_count"] or 0),
+                    "first_local_discovery_count": first_count,
+                    "new_token_count": int(row["new_token_count"] or 0),
+                    "duplicate_token_count": int(row["duplicate_token_count"] or 0),
+                    "source_link_count": int(row["source_link_count"] or 0),
+                    "new_source_link_count": int(row["new_source_link_count"] or 0),
+                    "snapshot_count": int(row["snapshot_count"] or 0),
+                    "no_pair_count": int(row["no_pair_count"] or 0),
+                    "round_day_count": int(row["round_day_count"] or 0),
+                    "candidate_first_discoveries": candidate_count,
+                    "paper_bought_first_discoveries": bought_count,
+                    "candidate_conversion_rate": (
+                        round(candidate_count / first_count, 6) if first_count else None
+                    ),
+                    "paper_buy_conversion_rate": (
+                        round(bought_count / first_count, 6) if first_count else None
+                    ),
+                    "review_eligible": completed >= 20 and int(row["round_day_count"] or 0) >= 5,
+                    "last_status": str(last["status"]),
+                    "last_error_type": str(last["error_type"] or "") or None,
+                    "last_started_at": str(last["started_at"]),
+                    "last_completed_at": last["completed_at"],
+                }
+            )
+        summary_names = (
+            "rounds", "completed", "errors", "running", "interrupted", "completed_zero_new",
+            "returned_count", "exposed_token_count", "first_local_discovery_count",
+            "new_token_count", "source_link_count", "new_source_link_count", "snapshot_count",
+        )
+        summary = {name: sum(int(item[name] or 0) for item in items) for name in summary_names}
+        summary["surfaces"] = len(items)
+        summary["candidate_first_discoveries"] = sum(
+            int(item["candidate_first_discoveries"] or 0) for item in items
+        )
+        summary["paper_bought_first_discoveries"] = sum(
+            int(item["paper_bought_first_discoveries"] or 0) for item in items
+        )
+        summary["review_eligible_surfaces"] = sum(bool(item["review_eligible"]) for item in items)
+        return {
+            "status": "collecting" if items else "not_observed",
+            "version": cls.TOKEN_DISCOVERY_EXPOSURE_VERSION,
+            "items": items,
+            "summary": summary,
+            "mode": "forward_append_only_observation",
+            "affects": "review_only_no_schedule_or_trading_effect",
+            "cohort_definition": "first_local_discovery_at_or_after_version_activation",
             "as_of": iso(),
         }
 

@@ -177,7 +177,8 @@
   "paper": {
     "starting_cash_usd": 1000,
     "fee_bps": 60,
-    "slippage_rate": 0.02,
+    "pump_swap_fee_bps": 125,
+    "slippage_rate": 0.04,
     "risk_per_trade_pct": 0.005,
     "max_position_usd": 35,
     "min_position_usd": 3,

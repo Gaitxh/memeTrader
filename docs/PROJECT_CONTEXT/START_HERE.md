@@ -29,6 +29,7 @@
 - [../DEXSCREENER_PROVENANCE_AND_SOURCE_LEARNING_CN.md](../DEXSCREENER_PROVENANCE_AND_SOURCE_LEARNING_CN.md)：旧 model1/model3 修正、Dex 附带链接角色、Token→来源溯源和只影响观察轮换的前向 Paper 学习。
 - [../OKX_MEME_PUMP_AND_SMART_MONEY_ASSESSMENT_CN.md](../OKX_MEME_PUMP_AND_SMART_MONEY_ASSESSMENT_CN.md)：OKX Meme Pump 的签名/Premium 边界、与现有免费来源的差异，以及聪明钱只能进入前向 shadow 研究的安全结论。
 - [../PAPER_FORWARD_EXECUTION_CN.md](../PAPER_FORWARD_EXECUTION_CN.md)：Paper 禁止未来数据/回填、追加式账户曲线、模拟执行成本和未来 Live 的独立发布门。
+- [../PAPER_STRATEGY_FORWARD_LEARNING_CN.md](../PAPER_STRATEGY_FORWARD_LEARNING_CN.md)：热度/人物/社区/链上条件与入场、分批止盈、runner 的前向 cohort 和预注册 Paper 对照实验边界。
 - [../TOKEN_CONTEXT_FORWARD_LEARNING_CN.md](../TOKEN_CONTEXT_FORWARD_LEARNING_CN.md)：Token Context 五轨 assessment 的冻结标签、15/60/240 分钟无回填结果和描述性成熟门。
 
 ## 一句话产品定义
