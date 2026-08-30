@@ -210,6 +210,59 @@ def test_event_topic_is_deterministic_forward_only_and_immutable(tmp_path: Path)
     store.close()
 
 
+def test_watch_account_discovery_review_requires_real_exposure_and_keeps_rotation_inactive(tmp_path: Path):
+    store = Store(tmp_path / "account-exposure.sqlite3")
+    now = datetime.now(timezone.utc)
+    accounts = [
+        {
+            "platform": "x", "handle": "account_a", "entity_id": "person_a", "priority": 5,
+            "watch_cadence": "normal", "selection_role": "exploration",
+            "learning_basis": "baseline", "learning_multiplier": 1.0,
+        },
+        {
+            "platform": "x", "handle": "account_b", "entity_id": "person_b", "priority": 4,
+            "watch_cadence": "normal", "selection_role": "exploration",
+            "learning_basis": "baseline", "learning_multiplier": 1.0,
+        },
+    ]
+    for index in range(20):
+        started = now - timedelta(days=index // 2, minutes=index)
+        run_id = f"account-run-{index}"
+        store.start_trend_lane_run(
+            run_id=run_id, taxonomy_version="trend-lanes/v1", prompt_version="test",
+            selection_mode="baseline_round_robin", surge=False, max_web_searches=2,
+            started_at=started, lanes=[], watch_accounts=accounts,
+        )
+        store.finish_trend_lane_run(
+            run_id, status="completed", finished_at=started + timedelta(minutes=1),
+            account_results={
+                ("x", "account_a"): {
+                    "exact_source_hits": 1 if index < 15 else 0,
+                    "accepted_event_count": 1 if index < 15 else 0,
+                    "observation_count": 1 if index < 15 else 0,
+                },
+                ("x", "account_b"): {
+                    "exact_source_hits": 1 if index < 5 else 0,
+                    "accepted_event_count": 1 if index < 5 else 0,
+                    "observation_count": 1 if index < 5 else 0,
+                },
+            },
+        )
+    summary = store.watch_account_exposure_summary_from_connection(store.db)
+    assert summary["status"] == "shadow_review_available"
+    assert summary["summary"]["completed_account_exposures"] == 40
+    assert summary["summary"]["exact_source_hits"] == 20
+    assert summary["summary"]["review_eligible_accounts"] == 2
+    account_a = next(item for item in summary["items"] if item["handle"] == "account_a")
+    account_b = next(item for item in summary["items"] if item["handle"] == "account_b")
+    assert account_a["run_day_count"] == 10
+    assert account_a["zero_yield_completed_exposures"] == 5
+    assert account_a["discovery_review_multiplier"] > 1.0
+    assert account_b["discovery_review_multiplier"] < 1.0
+    assert all(item["rotation_active"] is False for item in summary["items"])
+    store.close()
+
+
 def test_shadow_event_followup_is_forward_only_fixed_horizon_and_non_activating(tmp_path: Path):
     store = Store(tmp_path / "shadow-followup.sqlite3")
     now = datetime.now(timezone.utc)

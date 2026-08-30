@@ -118,6 +118,7 @@ Trend Scout 固定主题 round-robin
 - `paper_account` / `positions` / `trades`：Paper 现金、持仓、退出和历史成交。
 - `source_utility_outcomes`：完全平仓后对最早合格来源的追加式、费后 Paper 结果归因；只供观察轮换。
 - `trend_lane_runs` / `trend_lane_run_lanes`：每次 Trend Scout 的版本化通道选择、运行状态、空结果、事件与 Observation 产出；不含凭据。
+- `trend_watch_account_exposures`：每轮实际账号选择、选择角色、完成/失败、精确原帖命中与零产出；不回填旧轮次，不含凭据。
 - `shadow_event_cohorts` / `shadow_event_cohort_labels` / `shadow_event_outcomes`：首次 WAIT/CANDIDATE 的冻结价格、来源标签和固定时点市场随访；结果角色与交易策略完全隔离。
 - `source_health`：来源最后成功、最后产出、最后错误。
 - `agent_attempts`：按任务/模型/推理强度记录安全的 token 用量账本。
@@ -156,7 +157,7 @@ docs/PROJECT_CONTEXT/               无 secret 的版本控制内项目记忆
 
 Trend Scout 与 Source Discovery 首选 Spark/low，额度不可用时 Luna/low；Token Context 首选 Luna/low，回退 Terra/medium，Sol/medium 仅最后回退。所有本地计算不消耗 Agent。
 
-账号选择不是“全目录每轮扫描”：`critical` 账号最多保留 4 个槽位；其余先按人工 P5–P1 策展，并在 12 个候选观察槽位中始终保留至少 40%（5 个）做轮换探索。只有达到 20 个已平仓 Paper / 10 个结果日 / 5 个亏损结果（人物要求 30 / 15 / 两个平台）的平台、来源或实体标签才允许在 `0.75×–1.25×` 内改变观察轮换。事件/热点 topic 和 Trend Scout 通道只做前向描述，永不激活轮换。Trend Scout 每轮仍按五个稳定通道做基线 round-robin，surge 全覆盖；通道影子审查至少要求两个通道分别达到 20 次完成暴露、30 个不同已平仓事件、15 个事件日和 8 个加权亏损结果。以上值不传给 CandidateEvaluator、SafetyChecker 或 PaperPolicy。
+账号选择不是“全目录每轮扫描”：`critical` 账号最多保留 4 个槽位；其余先按人工 P5–P1 策展，并在 12 个候选观察槽位中始终保留至少 40%（5 个）做轮换探索。账号暴露账本记录每次被检查却无产出的情况；精确原帖命中必须匹配平台和账号 URL 路径，成熟后只产生 `0.85×–1.15×` 的影子发现效率建议。只有达到 20 个已平仓 Paper / 10 个结果日 / 5 个亏损结果（人物要求 30 / 15 / 两个平台）的平台、来源或实体标签才允许在 `0.75×–1.25×` 内改变观察轮换。事件/热点 topic 和 Trend Scout 通道只做前向描述，永不激活轮换。Trend Scout 每轮仍按五个稳定通道做基线 round-robin，surge 全覆盖；通道影子审查至少要求两个通道分别达到 20 次完成暴露、30 个不同已平仓事件、15 个事件日和 8 个加权亏损结果。以上值不传给 CandidateEvaluator、SafetyChecker 或 PaperPolicy。
 
 注意：`runtime.py` 的通用配置校验仍允许 `max_concurrent_agents` 到 4，但根目录 `AGENTS.md` 和 Web 安全接口把当前发布运行上限限定为 2。继续工作时必须遵守更严格的 2，不能借通用校验提高并发。
 

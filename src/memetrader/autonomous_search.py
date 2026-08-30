@@ -42,6 +42,12 @@ WATCH_ACCOUNT_CURSOR_PREFIX = "autonomous_search:watch_account_cursor"
 CONSOLE_PLATFORMS = {
     "x", "truth", "bluesky", "reddit", "threads", "instagram", "tiktok", "youtube"
 }
+SOCIAL_PLATFORM_HOSTS = {
+    "x.com": "x", "twitter.com": "x", "truthsocial.com": "truth",
+    "bsky.app": "bluesky", "reddit.com": "reddit", "old.reddit.com": "reddit",
+    "threads.net": "threads", "instagram.com": "instagram", "tiktok.com": "tiktok",
+    "youtube.com": "youtube", "youtu.be": "youtube",
+}
 TELEGRAM_MANUAL_ONLY_HOSTS = {"t.me", "telegram.me"}
 
 TREND_TOPIC_LANES = (
@@ -222,6 +228,38 @@ def _host(value: str) -> str:
     return (urllib.parse.urlparse(value).hostname or "").lower().removeprefix("www.")
 
 
+def _social_platform_for_url(value: str) -> str:
+    return SOCIAL_PLATFORM_HOSTS.get(_host(value), "")
+
+
+def _exact_watch_account_for_url(
+    accounts: list[dict[str, Any]], value: str,
+) -> dict[str, Any] | None:
+    platform = _social_platform_for_url(value)
+    if not platform:
+        return None
+    source_path = urllib.parse.unquote(urllib.parse.urlsplit(value).path).rstrip("/").casefold()
+    if not source_path:
+        return None
+    for account in accounts:
+        if str(account.get("platform") or "") != platform:
+            continue
+        configured_url = str(account.get("url") or "")
+        configured_path = (
+            urllib.parse.unquote(urllib.parse.urlsplit(configured_url).path).rstrip("/").casefold()
+            if configured_url else ""
+        )
+        handle = str(account.get("handle") or "").strip().lstrip("@").casefold()
+        candidate_paths = [configured_path] if configured_path else []
+        if handle:
+            candidate_paths.extend(
+                [f"/{handle}", f"/@{handle}", f"/profile/{handle}", f"/user/{handle}", f"/u/{handle}"]
+            )
+        if any(path and (source_path == path or source_path.startswith(path + "/")) for path in candidate_paths):
+            return account
+    return None
+
+
 async def _resolves_to_public_network(url: str) -> bool:
     try:
         await public_destination_addresses(url)
@@ -340,7 +378,13 @@ class AutonomousSearchAgent:
             critical_all = [row for row in accounts if row["watch_cadence"] == "critical"]
             critical = critical_all[:4]
             normal = [row for row in accounts if row not in critical]
-            selected_accounts = critical
+            selected_accounts = [
+                {
+                    **row, "selection_role": "critical", "learning_basis": "curated_critical",
+                    "learning_multiplier": 1.0,
+                }
+                for row in critical
+            ]
             selection_policy["critical_slots"] = len(selected_accounts)
             selection_policy["critical_slot_cap"] = 4
             selection_policy["critical_overflow"] = max(0, len(critical_all) - len(critical))
@@ -396,18 +440,34 @@ class AutonomousSearchAgent:
                     key=lambda row: (-row[0], row[2]["platform"], row[2]["handle"].casefold())
                 )
                 curated = [row[2] for row in ranked[:curated_count]]
-                selected_accounts.extend(curated)
+                curated_ids = {id(row) for row in curated}
+                for account in curated:
+                    multiplier, basis = learned_multiplier(account)
+                    selected_accounts.append(
+                        {
+                            **account,
+                            "selection_role": "learned" if basis != "baseline" else "curated",
+                            "learning_basis": basis,
+                            "learning_multiplier": multiplier,
+                        }
+                    )
                 selection_policy["curated_or_learned_slots"] = len(curated)
                 if any(row[1] != "baseline" for row in ranked[:curated_count]):
                     selection_policy["mode"] = "mature_paper_learning_plus_exploration"
-                exploration_pool = [row for row in normal if row not in curated]
+                exploration_pool = [row for row in normal if id(row) not in curated_ids]
                 count = min(remaining - len(curated), len(exploration_pool))
                 cursor_key = f"{WATCH_ACCOUNT_CURSOR_PREFIX}:{task}"
                 if count > 0 and exploration_pool:
                     cursor = int(self.store.get_kv(cursor_key, 0)) % len(exploration_pool)
-                    selected_accounts.extend(
-                        exploration_pool[(cursor + index) % len(exploration_pool)] for index in range(count)
-                    )
+                    for index in range(count):
+                        account = exploration_pool[(cursor + index) % len(exploration_pool)]
+                        multiplier, basis = learned_multiplier(account)
+                        selected_accounts.append(
+                            {
+                                **account, "selection_role": "exploration", "learning_basis": basis,
+                                "learning_multiplier": multiplier,
+                            }
+                        )
                     self.store.set_kv(cursor_key, (cursor + count) % len(exploration_pool))
                 selection_policy["exploration_slots"] = count
         self.store.set_kv(
@@ -422,6 +482,9 @@ class AutonomousSearchAgent:
                         "priority": row["priority"],
                         "watch_cadence": row["watch_cadence"],
                         "entity_id": row.get("entity_id") or "",
+                        "selection_role": row.get("selection_role") or "baseline",
+                        "learning_basis": row.get("learning_basis") or "baseline",
+                        "learning_multiplier": float(row.get("learning_multiplier") or 1.0),
                     }
                     for row in selected_accounts
                 ],
@@ -955,6 +1018,7 @@ class AutonomousSearchAgent:
             max_web_searches=max_searches,
             started_at=now,
             lanes=lanes,
+            watch_accounts=preferences["watch_accounts"],
         )
         self.store.set_kv(TREND_LANE_SELECTION_KEY, lane_selection)
         prompt = (
@@ -1009,6 +1073,12 @@ class AutonomousSearchAgent:
         rejected_events: list[dict[str, Any]] = []
         accepted_by_lane = {lane_id: 0 for lane_id in selected_lane_ids}
         observations_by_lane = {lane_id: 0 for lane_id in selected_lane_ids}
+        account_results = {
+            (str(account["platform"]), str(account["handle"]).casefold()): {
+                "exact_source_hits": 0, "accepted_event_count": 0, "observation_count": 0,
+            }
+            for account in preferences["watch_accounts"]
+        }
 
         events = payload.get("events") if isinstance(payload.get("events"), list) else []
         for item in events[:max_events]:
@@ -1072,6 +1142,7 @@ class AutonomousSearchAgent:
                     continue
                 seen_urls.add(final_url)
                 seen_domains.add(final_domain)
+                matched_account = _exact_watch_account_for_url(preferences["watch_accounts"], final_url)
                 verified_sources.append(
                     {
                         "title": str(source.get("title") or title)[:500],
@@ -1080,6 +1151,8 @@ class AutonomousSearchAgent:
                         "published_at": published,
                         "relevance": relevance,
                         "domain": final_domain,
+                        "platform": _social_platform_for_url(final_url),
+                        "watch_account": matched_account,
                     }
                 )
 
@@ -1094,11 +1167,23 @@ class AutonomousSearchAgent:
                 continue
 
             keywords = [str(value)[:100] for value in (item.get("keywords") or []) if str(value).strip()][:12]
+            event_account_keys: set[tuple[str, str]] = set()
             for source in verified_sources:
+                matched_account = source.get("watch_account")
+                account_key = None
+                if isinstance(matched_account, dict):
+                    account_key = (
+                        str(matched_account.get("platform") or ""),
+                        str(matched_account.get("handle") or "").casefold(),
+                    )
+                    if account_key in account_results:
+                        account_results[account_key]["exact_source_hits"] += 1
+                        account_results[account_key]["observation_count"] += 1
+                        event_account_keys.add(account_key)
                 observations.append(
                     Observation(
                         source=f"agent-scout:{source['domain']}",
-                        source_kind="news",
+                        source_kind="social" if source["platform"] else "news",
                         title=title,
                         text=f"{source['title']}. {summary}".strip(),
                         url=source["url"],
@@ -1123,10 +1208,21 @@ class AutonomousSearchAgent:
                             "memeability": memeability,
                             "relevance": source["relevance"],
                             "keywords": keywords,
+                            **({"platform": source["platform"]} if source["platform"] else {}),
+                            **(
+                                {
+                                    "source_entity_id": str(matched_account.get("entity_id") or ""),
+                                    "watch_account_handle": str(matched_account.get("handle") or ""),
+                                    "watch_account_exact_match": True,
+                                }
+                                if isinstance(matched_account, dict) else {}
+                            ),
                         },
                     )
                 )
                 observations_by_lane[lane_id] += 1
+            for account_key in event_account_keys:
+                account_results[account_key]["accepted_event_count"] += 1
             accepted_by_lane[lane_id] += 1
             accepted_events.append(
                 {
@@ -1164,6 +1260,7 @@ class AutonomousSearchAgent:
             reasoning_effort=str(metadata.get("reasoning_effort") or ""),
             accepted_by_lane=accepted_by_lane,
             observations_by_lane=observations_by_lane,
+            account_results=account_results,
             rejected_event_count=len(rejected_events),
         )
         self.store.set_kv(TREND_RESULT_KEY, result)

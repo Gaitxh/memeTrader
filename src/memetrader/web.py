@@ -103,6 +103,7 @@ EXPECTED_TABLES = {
     "trades",
     "trend_lane_run_lanes",
     "trend_lane_runs",
+    "trend_watch_account_exposures",
 }
 SAFE_OBSERVATION_RAW_FIELDS = {
     "account_type",
@@ -2868,6 +2869,10 @@ class WebData:
             "items": [],
             "summary": {"cohorts": 0, "pending_cohorts": 0, "complete_cohorts": 0},
         }
+        watch_account_learning: dict[str, Any] = {
+            "status": "not_observed", "items": [],
+            "summary": {"runs": 0, "completed_runs": 0, "account_exposures": 0},
+        }
         with self.connect() as connection:
             if connection is not None and self._table_exists(connection, "source_health"):
                 health = {str(row["source"]): row for row in connection.execute("SELECT * FROM source_health")}
@@ -3024,6 +3029,13 @@ class WebData:
                 except (sqlite3.Error, TypeError, ValueError, json.JSONDecodeError):
                     trend_lanes["status"] = "unavailable"
                 try:
+                    watch_account_learning = Store.watch_account_exposure_summary_from_connection(
+                        connection,
+                        lookback_days=int(autonomous_cfg.get("source_learning_lookback_days", 90)),
+                    )
+                except (sqlite3.Error, TypeError, ValueError):
+                    watch_account_learning["status"] = "unavailable"
+                try:
                     shadow_followup = Store.shadow_event_learning_summary_from_connection(
                         connection,
                         lookback_days=int(autonomous_cfg.get("source_learning_lookback_days", 90)),
@@ -3151,6 +3163,7 @@ class WebData:
             "browser_bridge": self._bridge_health(),
             "learning": learning,
             "trend_lanes": trend_lanes,
+            "watch_account_learning": watch_account_learning,
             "shadow_followup": shadow_followup,
             "as_of": iso(),
         }

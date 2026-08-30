@@ -907,6 +907,90 @@ def test_trend_lane_ledger_records_empty_results_and_agent_errors(tmp_path: Path
     asyncio.run(scenario())
 
 
+def test_trend_watch_account_ledger_records_zero_yield_and_exact_public_post_matches(tmp_path: Path):
+    async def scenario():
+        settings = tmp_path / "console_settings.json"
+        settings.write_text(
+            json.dumps(
+                {
+                    "platforms": [{"platform": "x", "enabled": True}],
+                    "watch_accounts": [
+                        {
+                            "platform": "x", "handle": "elonmusk", "url": "https://x.com/elonmusk",
+                            "entity_id": "elon_musk", "priority": 5,
+                        },
+                        {
+                            "platform": "x", "handle": "cz_binance", "url": "https://x.com/cz_binance",
+                            "entity_id": "cz", "priority": 4,
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        store = Store(tmp_path / "db.sqlite3")
+        agent = AutonomousSearchAgent(
+            store, FakeHttp(), config(trend_scout_daily_limit=4), console_settings_path=settings,
+        )
+        agent._run_codex_search = lambda prompt, task="trend_scout": (
+            {"events": []},
+            {"model": "gpt-5.3-codex-spark", "reasoning_effort": "low", "tokens_used": 10},
+        )
+        first, _ = await agent.scout_trends(force=True)
+        assert first["status"] == "completed"
+
+        published = iso(utcnow())
+        agent._run_codex_search = lambda prompt, task="trend_scout": (
+            {
+                "events": [
+                    {
+                        "lane_id": "ai_tech_gaming", "event_title": "Public post triggers a new meme format",
+                        "summary": "A public post is independently covered by a news outlet.",
+                        "category": "viral post", "confidence": 0.94, "memeability": 0.90,
+                        "keywords": ["public post"],
+                        "sources": [
+                            {
+                                "title": "Original post", "url": "https://x.com/elonmusk/status/12345",
+                                "publisher": "Elon Musk", "published_at": published, "relevance": 0.97,
+                            },
+                            {
+                                "title": "Independent coverage", "url": "https://publisher.example/story",
+                                "publisher": "Publisher", "published_at": published, "relevance": 0.92,
+                            },
+                        ],
+                    }
+                ]
+            },
+            {"model": "gpt-5.3-codex-spark", "reasoning_effort": "low", "tokens_used": 10},
+        )
+        second, observations = await agent.scout_trends(force=True)
+        assert second["status"] == "completed"
+        assert len(observations) == 2
+        social = next(row for row in observations if row.url and "x.com/elonmusk/" in row.url)
+        assert social.source_kind == "social"
+        assert social.raw["platform"] == "x"
+        assert social.raw["source_entity_id"] == "elon_musk"
+        assert social.raw["watch_account_exact_match"] is True
+
+        summary = store.watch_account_exposure_summary_from_connection(store.db)
+        assert summary["summary"]["runs"] == 2
+        assert summary["summary"]["completed_runs"] == 2
+        assert summary["summary"]["account_exposures"] == 4
+        assert summary["summary"]["exact_source_hits"] == 1
+        musk = next(item for item in summary["items"] if item["handle"] == "elonmusk")
+        cz = next(item for item in summary["items"] if item["handle"] == "cz_binance")
+        assert musk["completed_exposures"] == 2
+        assert musk["zero_yield_completed_exposures"] == 1
+        assert musk["accepted_events"] == 1
+        assert musk["observations"] == 1
+        assert cz["completed_exposures"] == 2
+        assert cz["zero_yield_completed_exposures"] == 2
+        assert all(item["rotation_active"] is False for item in summary["items"])
+        store.close()
+
+    asyncio.run(scenario())
+
+
 def test_trend_scout_rejects_unselected_lane_and_filters_custom_topic_bypass(tmp_path: Path):
     async def scenario():
         settings = tmp_path / "console_settings.json"

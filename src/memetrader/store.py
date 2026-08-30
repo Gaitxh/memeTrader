@@ -275,6 +275,26 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS trend_lane_run_lanes_lane_idx
                     ON trend_lane_run_lanes(lane_id,run_id);
+                CREATE TABLE IF NOT EXISTS trend_watch_account_exposures (
+                    run_id TEXT NOT NULL,
+                    platform TEXT NOT NULL,
+                    handle TEXT NOT NULL,
+                    handle_key TEXT NOT NULL,
+                    entity_id TEXT NOT NULL DEFAULT '',
+                    configured_priority INTEGER NOT NULL,
+                    watch_cadence TEXT NOT NULL,
+                    selection_role TEXT NOT NULL,
+                    learning_basis TEXT NOT NULL,
+                    learning_multiplier REAL NOT NULL DEFAULT 1,
+                    exact_source_hits INTEGER NOT NULL DEFAULT 0,
+                    accepted_event_count INTEGER NOT NULL DEFAULT 0,
+                    observation_count INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(run_id,platform,handle_key)
+                );
+                CREATE INDEX IF NOT EXISTS trend_watch_account_exposures_account_idx
+                    ON trend_watch_account_exposures(platform,handle_key,run_id);
+                CREATE INDEX IF NOT EXISTS trend_watch_account_exposures_entity_idx
+                    ON trend_watch_account_exposures(entity_id,run_id);
 
                 CREATE TABLE IF NOT EXISTS shadow_event_cohorts (
                     id INTEGER PRIMARY KEY,
@@ -1632,8 +1652,10 @@ class Store:
         max_web_searches: int,
         started_at: Any,
         lanes: Iterable[Mapping[str, Any]],
+        watch_accounts: Iterable[Mapping[str, Any]] = (),
     ) -> None:
         lane_rows = list(lanes)
+        account_rows = list(watch_accounts)
         coverage = len(lane_rows) / max(1, int(lane_rows[0].get("total_lane_count", len(lane_rows)))) if lane_rows else 0.0
         with self._lock, self.db:
             self.db.execute(
@@ -1661,6 +1683,29 @@ class Store:
                         str(lane.get("selection_role") or "baseline")[:32], float(coverage),
                     ),
                 )
+            for account in account_rows:
+                platform = str(account.get("platform") or "").strip().lower()[:32]
+                handle = str(account.get("handle") or "").strip()[:120]
+                handle_key = handle.casefold()
+                if not platform or not handle_key:
+                    continue
+                self.db.execute(
+                    """
+                    INSERT INTO trend_watch_account_exposures(
+                        run_id,platform,handle,handle_key,entity_id,configured_priority,watch_cadence,
+                        selection_role,learning_basis,learning_multiplier
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        str(run_id), platform, handle, handle_key,
+                        str(account.get("entity_id") or "")[:64],
+                        max(1, min(5, int(account.get("priority") or 3))),
+                        str(account.get("watch_cadence") or "normal")[:32],
+                        str(account.get("selection_role") or "baseline")[:32],
+                        str(account.get("learning_basis") or "baseline")[:32],
+                        max(0.5, min(1.5, float(account.get("learning_multiplier") or 1.0))),
+                    ),
+                )
 
     def finish_trend_lane_run(
         self,
@@ -1671,12 +1716,14 @@ class Store:
         reasoning_effort: str = "",
         accepted_by_lane: Mapping[str, int] | None = None,
         observations_by_lane: Mapping[str, int] | None = None,
+        account_results: Mapping[tuple[str, str], Mapping[str, int]] | None = None,
         rejected_event_count: int = 0,
         error_type: str = "",
         finished_at: Any = None,
     ) -> None:
         accepted = {str(key): max(0, int(value)) for key, value in (accepted_by_lane or {}).items()}
         observations = {str(key): max(0, int(value)) for key, value in (observations_by_lane or {}).items()}
+        accounts = account_results or {}
         with self._lock, self.db:
             for lane_id in set(accepted) | set(observations):
                 self.db.execute(
@@ -1686,6 +1733,20 @@ class Store:
                     WHERE run_id=? AND lane_id=?
                     """,
                     (accepted.get(lane_id, 0), observations.get(lane_id, 0), str(run_id), lane_id),
+                )
+            for (platform, handle_key), values in accounts.items():
+                self.db.execute(
+                    """
+                    UPDATE trend_watch_account_exposures
+                    SET exact_source_hits=?,accepted_event_count=?,observation_count=?
+                    WHERE run_id=? AND platform=? AND handle_key=?
+                    """,
+                    (
+                        max(0, int(values.get("exact_source_hits", 0))),
+                        max(0, int(values.get("accepted_event_count", 0))),
+                        max(0, int(values.get("observation_count", 0))),
+                        str(run_id), str(platform), str(handle_key),
+                    ),
                 )
             self.db.execute(
                 """
@@ -1786,6 +1847,159 @@ class Store:
                 "accepted_events": sum(int(item["accepted_events"]) for item in items),
                 "observations": sum(int(item["observations"]) for item in items),
             },
+            "lookback_days": int(lookback_days),
+        }
+
+    @staticmethod
+    def watch_account_exposure_summary_from_connection(
+        connection: sqlite3.Connection,
+        *,
+        lookback_days: int = 90,
+    ) -> dict[str, Any]:
+        tables = {
+            str(row["name"])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name IN ('trend_lane_runs','trend_watch_account_exposures')"
+            )
+        }
+        policy = {
+            "minimum_completed_exposures": 20,
+            "minimum_run_days": 10,
+            "minimum_zero_yield_exposures": 5,
+            "minimum_global_exact_source_hits": 20,
+            "maximum_review_multiplier": 1.15,
+            "minimum_review_multiplier": 0.85,
+            "affects": "review_only_no_schedule_or_trading_effect",
+        }
+        if tables != {"trend_lane_runs", "trend_watch_account_exposures"}:
+            return {
+                "status": "not_observed", "items": [],
+                "summary": {"runs": 0, "completed_runs": 0, "account_exposures": 0},
+                "review_policy": policy,
+            }
+        start = iso(utcnow() - timedelta(days=max(1, min(3650, int(lookback_days)))))
+        rows = list(
+            connection.execute(
+                """
+                SELECT r.run_id,r.started_at,r.status,a.platform,a.handle,a.handle_key,a.entity_id,
+                       a.configured_priority,a.watch_cadence,a.selection_role,a.learning_basis,
+                       a.learning_multiplier,a.exact_source_hits,a.accepted_event_count,a.observation_count
+                FROM trend_lane_runs r
+                JOIN trend_watch_account_exposures a ON a.run_id=r.run_id
+                WHERE r.started_at>=?
+                ORDER BY r.started_at,r.run_id,a.platform,a.handle_key
+                """,
+                (start,),
+            )
+        )
+        metrics: dict[tuple[str, str], dict[str, Any]] = {}
+        run_ids: set[str] = set()
+        completed_run_ids: set[str] = set()
+        global_completed = 0
+        global_hits = 0
+        for row in rows:
+            run_id = str(row["run_id"])
+            run_ids.add(run_id)
+            completed = str(row["status"]) == "completed"
+            if completed:
+                completed_run_ids.add(run_id)
+                global_completed += 1
+                global_hits += int(row["exact_source_hits"] or 0)
+            key = (str(row["platform"]), str(row["handle_key"]))
+            metric = metrics.setdefault(
+                key,
+                {
+                    "platform": str(row["platform"]), "handle": str(row["handle"]),
+                    "entity_id": str(row["entity_id"] or ""), "exposures": 0,
+                    "completed_exposures": 0, "error_exposures": 0,
+                    "zero_yield_completed_exposures": 0, "exact_source_hits": 0,
+                    "accepted_events": 0, "observations": 0, "run_days": set(),
+                    "last_selected_at": None, "configured_priority": int(row["configured_priority"]),
+                    "watch_cadence": str(row["watch_cadence"]),
+                    "last_selection_role": str(row["selection_role"]),
+                    "last_learning_basis": str(row["learning_basis"]),
+                    "last_learning_multiplier": float(row["learning_multiplier"]),
+                },
+            )
+            metric["exposures"] += 1
+            if completed:
+                metric["completed_exposures"] += 1
+                metric["run_days"].add(str(row["started_at"])[:10])
+                if int(row["exact_source_hits"] or 0) == 0:
+                    metric["zero_yield_completed_exposures"] += 1
+            elif str(row["status"]) == "agent_error":
+                metric["error_exposures"] += 1
+            metric["exact_source_hits"] += int(row["exact_source_hits"] or 0)
+            metric["accepted_events"] += int(row["accepted_event_count"] or 0)
+            metric["observations"] += int(row["observation_count"] or 0)
+            metric["last_selected_at"] = max(
+                str(metric["last_selected_at"] or ""), str(row["started_at"])
+            )
+            metric["last_selection_role"] = str(row["selection_role"])
+            metric["last_learning_basis"] = str(row["learning_basis"])
+            metric["last_learning_multiplier"] = float(row["learning_multiplier"])
+        global_rate = global_hits / global_completed if global_completed else 0.0
+        items = []
+        for metric in metrics.values():
+            completed = int(metric["completed_exposures"])
+            raw_rate = int(metric["exact_source_hits"]) / completed if completed else None
+            review_eligible = (
+                completed >= policy["minimum_completed_exposures"]
+                and len(metric["run_days"]) >= policy["minimum_run_days"]
+                and int(metric["zero_yield_completed_exposures"])
+                >= policy["minimum_zero_yield_exposures"]
+                and global_hits >= policy["minimum_global_exact_source_hits"]
+            )
+            review_multiplier = 1.0
+            if review_eligible and global_rate > 0:
+                prior = 10.0
+                shrunk_rate = (int(metric["exact_source_hits"]) + prior * global_rate) / (completed + prior)
+                lift = shrunk_rate / global_rate
+                review_multiplier = max(
+                    policy["minimum_review_multiplier"],
+                    min(policy["maximum_review_multiplier"], 1.0 + (lift - 1.0) * 0.15),
+                )
+            items.append(
+                {
+                    **{key: value for key, value in metric.items() if key != "run_days"},
+                    "run_day_count": len(metric["run_days"]),
+                    "exact_source_hits_per_completed_exposure": round(raw_rate, 4)
+                    if raw_rate is not None else None,
+                    "zero_yield_rate": round(
+                        int(metric["zero_yield_completed_exposures"]) / completed, 4
+                    ) if completed else None,
+                    "discovery_review_eligible": review_eligible,
+                    "discovery_review_multiplier": round(review_multiplier, 4),
+                    "rotation_active": False,
+                }
+            )
+        items.sort(
+            key=lambda item: (
+                not bool(item["discovery_review_eligible"]),
+                -float(item["discovery_review_multiplier"]),
+                -int(item["completed_exposures"]),
+                str(item["platform"]), str(item["handle"]).casefold(),
+            )
+        )
+        return {
+            "status": (
+                "shadow_review_available"
+                if any(item["discovery_review_eligible"] for item in items)
+                else "collecting_exposure" if rows else "not_observed"
+            ),
+            "items": items,
+            "summary": {
+                "runs": len(run_ids), "completed_runs": len(completed_run_ids),
+                "account_exposures": len(rows), "completed_account_exposures": global_completed,
+                "exact_source_hits": global_hits,
+                "global_exact_source_hits_per_completed_exposure": round(global_rate, 4)
+                if global_completed else None,
+                "review_eligible_accounts": sum(
+                    1 for item in items if item["discovery_review_eligible"]
+                ),
+            },
+            "review_policy": policy,
             "lookback_days": int(lookback_days),
         }
 

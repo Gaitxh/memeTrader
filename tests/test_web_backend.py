@@ -225,6 +225,13 @@ def _seed(path: Path) -> tuple[int, str]:
                 "total_lane_count": 5,
             }
         ],
+        watch_accounts=[
+            {
+                "platform": "x", "handle": "otter", "entity_id": "otter_daily",
+                "priority": 4, "watch_cadence": "normal", "selection_role": "exploration",
+                "learning_basis": "baseline", "learning_multiplier": 1.0,
+            }
+        ],
     )
     store.finish_trend_lane_run(
         "seed-lane-run",
@@ -233,6 +240,11 @@ def _seed(path: Path) -> tuple[int, str]:
         reasoning_effort="low",
         accepted_by_lane={"culture_entertainment": 1},
         observations_by_lane={"culture_entertainment": 2},
+        account_results={
+            ("x", "otter"): {
+                "exact_source_hits": 1, "accepted_event_count": 1, "observation_count": 1,
+            }
+        },
         finished_at=now - timedelta(minutes=2),
     )
     store.set_kv(
@@ -350,6 +362,8 @@ def test_web_api_empty_database_is_safe_and_live_is_locked(tmp_path: Path):
     assert empty_sources["shadow_followup"]["status"] == "not_observed"
     assert empty_sources["shadow_followup"]["summary"]["cohorts"] == 0
     assert empty_sources["shadow_followup"]["horizons_minutes"] == [15, 60, 240]
+    assert empty_sources["watch_account_learning"]["status"] == "not_observed"
+    assert empty_sources["watch_account_learning"]["summary"]["account_exposures"] == 0
     audit = web.audit()
     assert audit["status"] == "policy_only"
     assert audit["policy_enforced"] is True
@@ -594,6 +608,13 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
     assert culture_lane["accepted_events"] == 1
     assert culture_lane["accepted_events_per_completed_run"] == 1.0
     assert culture_lane["shadow_mature"] is False
+    assert source_payload["watch_account_learning"]["status"] == "collecting_exposure"
+    assert source_payload["watch_account_learning"]["summary"]["account_exposures"] == 1
+    assert source_payload["watch_account_learning"]["summary"]["exact_source_hits"] == 1
+    account_exposure = source_payload["watch_account_learning"]["items"][0]
+    assert account_exposure["platform"] == "x" and account_exposure["handle"] == "otter"
+    assert account_exposure["completed_exposures"] == 1
+    assert account_exposure["rotation_active"] is False
     assert source_payload["shadow_followup"]["status"] == "collecting_followup"
     assert source_payload["shadow_followup"]["version"] == "shadow-event-followup/v1"
     assert source_payload["shadow_followup"]["horizons_minutes"] == [15, 60, 240]
@@ -764,6 +785,8 @@ def test_candidate_ranking_api_is_persisted_bounded_sanitized_and_wait_is_truthf
     assert "未选中" in app and "NOT SELECTED" in app
     assert "WAIT is never decorated as an opportunity" in app
     assert "data-testid='source-learning'" in app
+    assert "data-testid='watch-account-exposure'" in app
+    assert "A checked account with no yield must still become data" in app
     assert "Learning changes watch rotation only" in app
     assert "event_topic" in app and "observe only" in app
     assert "Linked narrative / event observation timeline" in app
