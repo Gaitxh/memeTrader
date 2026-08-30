@@ -799,6 +799,50 @@ class AutonomousSearchAgent:
             "token_context_tokens": int(self.store.get_kv(f"autonomous_search_tokens:{day}:token_context", 0)),
         }
 
+    def _token_context_quota_state(self, now) -> dict[str, Any]:
+        day = now.date().isoformat()
+        return {
+            "quota_day": day,
+            "daily_call_limit": max(0, int(self.config.get("context_search_daily_limit", 2))),
+            "calls_used_before": max(
+                0, int(self.store.get_kv(f"autonomous_search_quota:{day}:token_context", 0))
+            ),
+            "daily_token_budget": max(
+                0, int(self.config.get("token_context_daily_token_budget", 0))
+            ),
+            "tokens_used_before": max(
+                0, int(self.store.get_kv(f"autonomous_search_tokens:{day}:token_context", 0))
+            ),
+            "token_reserve_per_call": max(
+                0, int(self.config.get("token_context_token_reserve_per_call", 0))
+            ),
+        }
+
+    def _record_token_context_admission(
+        self,
+        token: TokenCandidate,
+        snapshot: TokenSnapshot,
+        *,
+        momentum_score: float,
+        outcome: str,
+        reason: str,
+        trigger: dict[str, Any] | None,
+        now,
+        quota: dict[str, Any],
+        next_eligible_at=None,
+    ) -> None:
+        self.store.add_token_context_admission_attempt(
+            token.token_id,
+            outcome=outcome,
+            reason=reason,
+            trigger=trigger,
+            snapshot_observed_at=snapshot.observed_at,
+            momentum_score=momentum_score,
+            next_eligible_at=next_eligible_at,
+            evaluated_at=now,
+            **quota,
+        )
+
     def _consume_quota(self, kind: str, limit: int) -> bool:
         if limit <= 0:
             return False
@@ -1921,7 +1965,19 @@ class AutonomousSearchAgent:
         momentum_score: float,
         event_relation: dict[str, Any] | None = None,
     ) -> list[Observation]:
-        if not self.enabled or not self.config.get("context_search_enabled", True):
+        now = utcnow()
+        quota = self._token_context_quota_state(now)
+        if not self.enabled:
+            self._record_token_context_admission(
+                token, snapshot, momentum_score=momentum_score, outcome="skipped",
+                reason="autonomous_search_disabled", trigger=None, now=now, quota=quota,
+            )
+            return []
+        if not self.config.get("context_search_enabled", True):
+            self._record_token_context_admission(
+                token, snapshot, momentum_score=momentum_score, outcome="skipped",
+                reason="context_search_disabled", trigger=None, now=now, quota=quota,
+            )
             return []
         trigger = self.resolve_token_context_trigger(
             token,
@@ -1929,22 +1985,67 @@ class AutonomousSearchAgent:
             event_relation=event_relation,
         )
         if trigger is None:
+            self._record_token_context_admission(
+                token, snapshot, momentum_score=momentum_score, outcome="skipped",
+                reason="no_eligible_trigger", trigger=None, now=now, quota=quota,
+            )
             return []
-        now = utcnow()
         error_retry_after = self.store.get_kv(CONTEXT_ERROR_RETRY_KEY)
         if error_retry_after and now < parse_time(error_retry_after):
+            self._record_token_context_admission(
+                token, snapshot, momentum_score=momentum_score, outcome="skipped",
+                reason="error_retry_active", trigger=trigger, now=now, quota=quota,
+                next_eligible_at=error_retry_after,
+            )
             return []
         global_cooldown = timedelta(minutes=float(self.config.get("context_global_cooldown_minutes", 5)))
         last_global = self.store.get_kv(CONTEXT_RUN_KEY)
         if last_global and now - parse_time(last_global) < global_cooldown:
+            self._record_token_context_admission(
+                token, snapshot, momentum_score=momentum_score, outcome="skipped",
+                reason="global_cooldown_active", trigger=trigger, now=now, quota=quota,
+                next_eligible_at=parse_time(last_global) + global_cooldown,
+            )
             return []
         cooldown = timedelta(minutes=float(self.config.get("context_token_cooldown_minutes", 360)))
         token_key = f"autonomous_context_search:token:{token.token_id}"
         previous = self.store.get_kv(token_key)
         if previous and now - parse_time(previous) < cooldown:
+            self._record_token_context_admission(
+                token, snapshot, momentum_score=momentum_score, outcome="skipped",
+                reason="token_cooldown_active", trigger=trigger, now=now, quota=quota,
+                next_eligible_at=parse_time(previous) + cooldown,
+            )
             return []
-        if not self._consume_quota("token_context", int(self.config.get("context_search_daily_limit", 2))):
+        if (
+            quota["daily_token_budget"] > 0
+            and quota["tokens_used_before"] + quota["token_reserve_per_call"]
+            >= quota["daily_token_budget"]
+        ):
+            self._record_token_context_admission(
+                token, snapshot, momentum_score=momentum_score, outcome="skipped",
+                reason="daily_token_reserve_exceeded", trigger=trigger, now=now, quota=quota,
+            )
             return []
+        if (
+            quota["daily_call_limit"] <= 0
+            or quota["calls_used_before"] >= quota["daily_call_limit"]
+        ):
+            self._record_token_context_admission(
+                token, snapshot, momentum_score=momentum_score, outcome="skipped",
+                reason="daily_call_limit_reached", trigger=trigger, now=now, quota=quota,
+            )
+            return []
+        if not self._consume_quota("token_context", quota["daily_call_limit"]):
+            self._record_token_context_admission(
+                token, snapshot, momentum_score=momentum_score, outcome="skipped",
+                reason="quota_unavailable", trigger=trigger, now=now, quota=quota,
+            )
+            return []
+        self._record_token_context_admission(
+            token, snapshot, momentum_score=momentum_score, outcome="admitted",
+            reason="admitted", trigger=trigger, now=now, quota=quota,
+        )
 
         lookback = int(self.config.get("context_lookback_minutes", 180))
         metadata_seeds: list[dict[str, Any]] = []

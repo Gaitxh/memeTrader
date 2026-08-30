@@ -99,8 +99,10 @@ EXPECTED_TABLES = {
     "source_utility_outcomes",
     "shadow_event_cohort_labels",
     "shadow_event_cohorts",
+    "shadow_event_admission_attempts",
     "shadow_event_outcomes",
     "token_source_links",
+    "token_context_admission_attempts",
     "token_context_outcome_cohorts",
     "token_context_outcome_labels",
     "token_context_outcomes",
@@ -2251,6 +2253,51 @@ class WebData:
             }
         return result
 
+    def _token_context_admissions(
+        self, connection: sqlite3.Connection, token_ids: list[str]
+    ) -> dict[str, dict[str, Any] | None]:
+        result: dict[str, dict[str, Any] | None] = {token_id: None for token_id in token_ids}
+        if not token_ids or not self._table_exists(connection, "token_context_admission_attempts"):
+            return result
+        placeholders = ",".join("?" for _ in token_ids)
+        for row in connection.execute(
+            f"""
+            SELECT * FROM token_context_admission_attempts
+            WHERE id IN (
+                SELECT MAX(id) FROM token_context_admission_attempts
+                WHERE token_id IN ({placeholders}) GROUP BY token_id
+            )
+            """,
+            token_ids,
+        ):
+            result[str(row["token_id"])] = {
+                "id": int(row["id"]),
+                "version": str(row["version"]),
+                "evaluated_at": str(row["evaluated_at"]),
+                "outcome": str(row["outcome"]),
+                "reason": str(row["reason"]),
+                "trigger_kind": str(row["trigger_kind"] or ""),
+                "trigger_priority": row["trigger_priority"],
+                "platform": str(row["platform"] or ""),
+                "entity_id": str(row["entity_id"] or ""),
+                "event_id": row["event_id"],
+                "decision_id": row["decision_id"],
+                "snapshot_observed_at": str(row["snapshot_observed_at"]),
+                "momentum_score": float(row["momentum_score"] or 0.0),
+                "next_eligible_at": row["next_eligible_at"],
+                "quota": {
+                    "day": str(row["quota_day"]),
+                    "calls_used_before": int(row["calls_used_before"]),
+                    "daily_call_limit": int(row["daily_call_limit"]),
+                    "tokens_used_before": int(row["tokens_used_before"]),
+                    "daily_token_budget": int(row["daily_token_budget"]),
+                    "token_reserve_per_call": int(row["token_reserve_per_call"]),
+                },
+                "decision_eligible": False,
+                "context_only": True,
+            }
+        return result
+
     def _token_context_outcome_tracking(
         self, connection: sqlite3.Connection, assessment_id: int
     ) -> dict[str, Any]:
@@ -2387,6 +2434,7 @@ class WebData:
             source_links = self._token_source_links(connection, token_ids)
             hydrations = self._token_hydration_states(connection, token_ids)
             assessments = self._token_context_assessments(connection, token_ids)
+            admissions = self._token_context_admissions(connection, token_ids)
             items = [
                 self._token_payload(
                     row,
@@ -2395,6 +2443,7 @@ class WebData:
                     source_links[str(row["token_id"])],
                     hydrations[str(row["token_id"])],
                     assessments[str(row["token_id"])],
+                    admissions[str(row["token_id"])],
                 )
                 for row in rows
             ]
@@ -2412,6 +2461,7 @@ class WebData:
         source_links: list[dict[str, Any]],
         hydration: dict[str, Any] | None = None,
         context_assessment: dict[str, Any] | None = None,
+        context_admission: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         social = _json_load(row["social_urls_json"], [])
         snapshot = self._snapshot_payload(snapshot_row)
@@ -2440,6 +2490,7 @@ class WebData:
             "linked_event_ids": sorted({int(item["event_id"]) for item in links}),
             "detail_hydration": hydration,
             "context_assessment": context_assessment,
+            "context_admission": context_admission,
             **self._token_source_link_counts(source_links),
         }
 
@@ -2455,8 +2506,9 @@ class WebData:
             source_links = self._token_source_links(connection, [token_id])[token_id]
             hydration = self._token_hydration_states(connection, [token_id])[token_id]
             context_assessment = self._token_context_assessments(connection, [token_id])[token_id]
+            context_admission = self._token_context_admissions(connection, [token_id])[token_id]
             payload = self._token_payload(
-                row, snapshot, links, source_links, hydration, context_assessment
+                row, snapshot, links, source_links, hydration, context_assessment, context_admission
             )
             payload["attached_links"] = source_links
             if self._table_exists(connection, "token_context_assessments"):
@@ -3326,6 +3378,18 @@ class WebData:
             "endorsement_inferred": False,
             "affects": "none",
         }
+        token_context_admissions: dict[str, Any] = {
+            "status": "not_observed",
+            "version": Store.TOKEN_CONTEXT_ADMISSION_VERSION,
+            "items": [],
+            "reasons": [],
+            "summary": {
+                "attempts": 0, "trigger_qualified_attempts": 0,
+                "admitted": 0, "skipped": 0, "admission_rate": None,
+            },
+            "mode": "forward_append_only_observation",
+            "affects": "none",
+        }
         watch_account_learning: dict[str, Any] = {
             "status": "not_observed", "items": [],
             "summary": {"runs": 0, "completed_runs": 0, "account_exposures": 0},
@@ -3522,6 +3586,17 @@ class WebData:
                     )
                 except (sqlite3.Error, TypeError, ValueError):
                     token_context_followup["status"] = "unavailable"
+                try:
+                    token_context_admissions = (
+                        Store.token_context_admission_summary_from_connection(
+                            connection,
+                            lookback_days=int(
+                                autonomous_cfg.get("source_learning_lookback_days", 90)
+                            ),
+                        )
+                    )
+                except (sqlite3.Error, TypeError, ValueError):
+                    token_context_admissions["status"] = "unavailable"
                 try:
                     lookback_days = int(autonomous_cfg.get("source_learning_lookback_days", 90))
                     start = iso(utcnow() - timedelta(days=max(1, min(3650, lookback_days))))
@@ -3776,6 +3851,7 @@ class WebData:
             "watch_attention_policy": watch_attention,
             "shadow_followup": shadow_followup,
             "token_context_followup": token_context_followup,
+            "token_context_admissions": token_context_admissions,
             "learning_closure": learning_closure,
             "as_of": iso(),
         }

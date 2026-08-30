@@ -122,6 +122,8 @@ Token 页另显示详情补全队列的 `pending / hydrated / no_pair / error`�
 
 每次新的 Token Context 调查还会在当时存在本地正价格快照时冻结一个前向 cohort，并只用后来实际采集到的 15/60/240 分钟快照描述调查后的市场延续。`no_context`、Agent 错误、未核验候选和 missing 同样保留；历史调查和缺失窗口不回填。未核验人物姓名不进入实体标签，只有浏览器精确原帖实体可被分组，且仍不代表背书。Token 详情显示单次随访，Sources 显示跨样本汇总；该账本固定不影响 Agent 调度、证据、候选、风控、Paper 或 Live。详见 [Token Context 前向结果学习](docs/TOKEN_CONTEXT_FORWARD_LEARNING_CN.md)。
 
+从 `token-context-admission/v1` 起，每次实际进入 Token Context 检查的 Token 还会前向记录 `admitted/skipped` 与稳定原因：无合格触发、错误退避、全局/同 Token 冷却、每日调用上限、Token 预留预算不足或成功准入。记录只含安全的触发类别、时间、计数和预算快照，不保存 prompt、Agent 原文、项目描述、密码、Cookie、Session 或 secret。Token 详情显示最近一次原因，Sources 显示跨 Token 汇总；跳过不是 `no_context`，也不是正面或负面信号。旧调用不回填原因。
+
 双击：
 
 ```text
@@ -162,6 +164,8 @@ Sources 页另有“主题通道覆盖与影子学习”和“来源学习与观
 OKX Web3 Meme Pump 可提供 launchpad 阶段、社交、开发者、bundle 和同车钱包等补充字段，但核心接口需要官方签名凭据且属于 Premium；当前不抓取网页内部请求，也不把 `SMART_MONEY` / `INFLUENCER` 标签当交易信号。评估与未来接入边界见 [OKX Meme Pump 与聪明钱来源评估](docs/OKX_MEME_PUMP_AND_SMART_MONEY_ASSESSMENT_CN.md)。
 
 为避免只从“实际买入并完全平仓”的事件学习，Runtime 使用 `shadow-event-followup/v2-event-action` 建立前向随访：首次带有效 Token/价格的 WAIT 冻结一个样本；若同一事件后来真实升级为 CANDIDATE，再冻结升级时的价格和当时合格来源。同一事件每种动作最多一个 cohort，CANDIDATE 后因已有持仓或执行门产生的 WAIT 不会重复采样，旧 v1 记录也不会回填。随后只用本机之后真实观察到的 15/60/240 分钟快照计算原始价格延续与区间最高/最低回报。缺失窗口永久记为 missing，不用后来补录的旧时间戳回填。该数据不含手续费、滑点或可成交性，不是 Paper PNL；只有成熟的 60 分钟人物/平台随访可与成熟账号暴露共同进入观察轮换，15/240 分钟、热点类型和主题通道仍只供研究，所有随访永不进入交易。
+
+`shadow-event-admission/v1` 同时为每个新 WAIT/CANDIDATE decision 只写一条前向准入记录，区分已创建、同动作已有样本、WAIT 已被 CANDIDATE 覆盖、缺少决策时价格、缺少来源引用和没有当时合格证据。Sources 分开显示新版本的 CANDIDATE 覆盖率与历史/未受监测候选；旧 CANDIDATE 不补造跳过原因，也不冒充新 cohort。
 
 详细说明见 [docs/WEB_CONSOLE_CN.md](docs/WEB_CONSOLE_CN.md)。
 

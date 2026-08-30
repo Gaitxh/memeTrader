@@ -610,6 +610,13 @@ def test_shadow_event_followup_is_forward_only_fixed_horizon_and_non_activating(
         source_observation_ids=observation_ids,
     )
     assert cohort_id is not None
+    admission = store.db.execute(
+        "SELECT * FROM shadow_event_admission_attempts WHERE decision_id=?", (decision_id,)
+    ).fetchone()
+    assert admission["status"] == "created"
+    assert admission["reason"] == "created"
+    assert admission["cohort_id"] == cohort_id
+    assert admission["eligible_source_count"] == 2
     cohort = store.db.execute("SELECT * FROM shadow_event_cohorts WHERE id=?", (cohort_id,)).fetchone()
     assert cohort["action"] == "WAIT"
     assert cohort["eligible_source_count"] == 2
@@ -646,6 +653,9 @@ def test_shadow_event_followup_is_forward_only_fixed_horizon_and_non_activating(
         source_observation_ids=observation_ids,
     ) == cohort_id
     assert store.db.execute("SELECT COUNT(*) FROM shadow_event_cohorts").fetchone()[0] == 2
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM shadow_event_admission_attempts"
+    ).fetchone()[0] == 2
 
     for minutes, price in ((10, 0.5), (16, 2.0), (61, 1.5)):
         store.add_snapshot(
@@ -705,6 +715,110 @@ def test_shadow_event_followup_is_forward_only_fixed_horizon_and_non_activating(
     assert entity_60m["shadow_review_eligible"] is False
     assert entity_60m["rotation_active"] is False
     store.close()
+
+
+def test_shadow_event_admission_ledger_records_forward_skip_reasons_and_coverage(tmp_path: Path):
+    store = Store(tmp_path / "shadow-admission.sqlite3")
+    now = datetime.now(timezone.utc)
+    token = TokenCandidate(chain="solana", address="A" * 32, name="Admission")
+    store.upsert_token(token, seen_at=now)
+
+    missing_snapshot_event = store.create_event("Missing snapshot", ["missing snapshot"], 60, now)
+    missing_snapshot = CandidateDecision(
+        missing_snapshot_event, token.token_id, "WAIT", 60, 80, 2, ["test"], created_at=now
+    )
+    missing_snapshot_id = store.add_decision(missing_snapshot)
+    assert store.create_shadow_event_cohort(
+        missing_snapshot, decision_id=missing_snapshot_id, source_observation_ids=[]
+    ) is None
+    assert store.create_shadow_event_cohort(
+        missing_snapshot, decision_id=missing_snapshot_id, source_observation_ids=[]
+    ) is None
+    row = store.db.execute(
+        "SELECT * FROM shadow_event_admission_attempts WHERE decision_id=?",
+        (missing_snapshot_id,),
+    ).fetchone()
+    assert row["reason"] == "missing_entry_snapshot"
+
+    store.add_snapshot(
+        TokenSnapshot(
+            chain="solana", address=token.address, price_usd=1.0, liquidity_usd=50_000,
+            market_cap_usd=500_000, volume_5m_usd=10_000, buys_5m=20, sells_5m=10,
+            observed_at=now, provider="fixture",
+        )
+    )
+    candidate_event = store.create_event("Candidate first", ["candidate first"], 80, now)
+    observation_id, _ = store.add_observation(
+        Observation(
+            source="fixture-news", source_kind="news", title="Candidate first",
+            observed_at=now, ingested_at=now, role="feature", source_item_id="candidate-first",
+        )
+    )
+    store.link_event_observation(candidate_event, observation_id)
+    candidate = CandidateDecision(
+        candidate_event, token.token_id, "CANDIDATE", 82, 92, 12, ["test"], created_at=now
+    )
+    candidate_id = store.add_decision(candidate)
+    candidate_cohort_id = store.create_shadow_event_cohort(
+        candidate, decision_id=candidate_id, source_observation_ids=[observation_id]
+    )
+    assert candidate_cohort_id is not None
+
+    later_wait = CandidateDecision(
+        candidate_event, token.token_id, "WAIT", 70, 85, 5, ["later"],
+        created_at=now + timedelta(seconds=1),
+    )
+    later_wait_id = store.add_decision(later_wait)
+    assert store.create_shadow_event_cohort(
+        later_wait, decision_id=later_wait_id, source_observation_ids=[observation_id]
+    ) == candidate_cohort_id
+    row = store.db.execute(
+        "SELECT * FROM shadow_event_admission_attempts WHERE decision_id=?", (later_wait_id,)
+    ).fetchone()
+    assert row["status"] == "already_admitted"
+    assert row["reason"] == "wait_superseded_by_candidate"
+
+    missing_observation_event = store.create_event(
+        "Missing observations", ["missing observations"], 60, now
+    )
+    missing_observation = CandidateDecision(
+        missing_observation_event, token.token_id, "WAIT", 60, 80, 2, ["test"], created_at=now
+    )
+    missing_observation_id = store.add_decision(missing_observation)
+    assert store.create_shadow_event_cohort(
+        missing_observation, decision_id=missing_observation_id, source_observation_ids=[]
+    ) is None
+    row = store.db.execute(
+        "SELECT * FROM shadow_event_admission_attempts WHERE decision_id=?",
+        (missing_observation_id,),
+    ).fetchone()
+    assert row["reason"] == "missing_observation_ids"
+
+    admission = store.shadow_event_admission_summary_from_connection(store.db)
+    assert admission["summary"]["attempts"] == 4
+    assert admission["summary"]["candidate_instrumented"] == 1
+    assert admission["summary"]["candidate_covered"] == 1
+    assert admission["summary"]["forward_candidate_coverage_rate"] == 1.0
+    assert admission["summary"]["legacy_or_uninstrumented_decisions"] == 0
+    store.close()
+
+
+def test_shadow_admission_summary_marks_pre_schema_candidate_uninstrumented():
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.execute(
+        "CREATE TABLE decisions(id INTEGER PRIMARY KEY,action TEXT NOT NULL,created_at TEXT NOT NULL)"
+    )
+    connection.execute(
+        "INSERT INTO decisions(action,created_at) VALUES('CANDIDATE',?)",
+        (datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),),
+    )
+    summary = Store.shadow_event_admission_summary_from_connection(connection)
+    assert summary["status"] == "not_instrumented"
+    assert summary["summary"]["candidate_decisions"] == 1
+    assert summary["summary"]["candidate_legacy_or_uninstrumented"] == 1
+    assert summary["summary"]["forward_candidate_coverage_rate"] is None
+    connection.close()
 
 
 def test_token_context_outcomes_are_forward_only_safe_labeled_and_non_activating(tmp_path: Path):

@@ -574,6 +574,53 @@ def test_learning_closure_does_not_borrow_same_event_outcomes_from_other_source(
     assert closure["breakpoint"] == "observed_60m"
 
 
+def test_web_exposes_forward_admission_reasons_and_keeps_legacy_candidate_uninstrumented(
+    tmp_path: Path,
+):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    now = utcnow()
+    token = TokenCandidate(chain="solana", address="L" * 32, name="Ledger", symbol="LDG")
+    store.upsert_token(token, seen_at=now)
+    store.add_token_context_admission_attempt(
+        token.token_id,
+        outcome="skipped",
+        reason="daily_call_limit_reached",
+        trigger={"kind": "onchain_momentum", "priority": 1},
+        snapshot_observed_at=now,
+        momentum_score=88,
+        quota_day=now.date().isoformat(),
+        daily_call_limit=8,
+        calls_used_before=8,
+        daily_token_budget=250000,
+        tokens_used_before=12000,
+        token_reserve_per_call=18000,
+        evaluated_at=now,
+    )
+    event_id = store.create_event("Legacy candidate", ["legacy candidate"], 70, now)
+    store.add_decision(
+        CandidateDecision(
+            event_id, token.token_id, "CANDIDATE", 82, 91, 10, ["legacy"], created_at=now
+        )
+    )
+    store.close()
+
+    web = WebData(config_path)
+    sources = web.sources()
+    context = sources["token_context_admissions"]
+    assert context["summary"]["attempts"] == 1
+    assert context["summary"]["admitted"] == 0
+    assert context["items"][0]["reason"] == "daily_call_limit_reached"
+    shadow = sources["shadow_followup"]["admission"]["summary"]
+    assert shadow["candidate_decisions"] == 1
+    assert shadow["candidate_instrumented"] == 0
+    assert shadow["candidate_legacy_or_uninstrumented"] == 1
+    assert shadow["forward_candidate_coverage_rate"] is None
+    detail = web.token_detail(token.token_id)
+    assert detail["context_admission"]["reason"] == "daily_call_limit_reached"
+    assert "password" not in json.dumps(context).lower()
+
+
 def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_path: Path):
     config_path, _ = _config(tmp_path)
     event_id, token_id = _seed(tmp_path / "db.sqlite3")

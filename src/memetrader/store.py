@@ -26,7 +26,9 @@ from .models import (
 class Store:
     CANDIDATE_RANKING_KEY_PREFIX = "candidate_ranking:"
     SHADOW_EVENT_COHORT_VERSION = "shadow-event-followup/v2-event-action"
+    SHADOW_EVENT_ADMISSION_VERSION = "shadow-event-admission/v1"
     SHADOW_EVENT_HORIZONS_MINUTES = (15, 60, 240)
+    TOKEN_CONTEXT_ADMISSION_VERSION = "token-context-admission/v1"
     TOKEN_CONTEXT_OUTCOME_VERSION = "token-context-outcome/v1"
     TOKEN_CONTEXT_OUTCOME_HORIZONS_MINUTES = (15, 60, 240)
     WATCH_ATTENTION_POLICY_VERSION = "watch-attention/v1"
@@ -169,6 +171,33 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS token_context_assessments_lookup_idx
                     ON token_context_assessments(token_id, assessed_at DESC, id DESC);
+                CREATE TABLE IF NOT EXISTS token_context_admission_attempts (
+                    id INTEGER PRIMARY KEY,
+                    version TEXT NOT NULL,
+                    token_id TEXT NOT NULL,
+                    evaluated_at TEXT NOT NULL,
+                    outcome TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    trigger_kind TEXT NOT NULL DEFAULT '',
+                    trigger_priority INTEGER,
+                    platform TEXT NOT NULL DEFAULT '',
+                    entity_id TEXT NOT NULL DEFAULT '',
+                    event_id INTEGER,
+                    decision_id INTEGER,
+                    snapshot_observed_at TEXT NOT NULL,
+                    momentum_score REAL NOT NULL,
+                    next_eligible_at TEXT,
+                    quota_day TEXT NOT NULL,
+                    daily_call_limit INTEGER NOT NULL,
+                    calls_used_before INTEGER NOT NULL,
+                    daily_token_budget INTEGER NOT NULL,
+                    tokens_used_before INTEGER NOT NULL,
+                    token_reserve_per_call INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS token_context_admission_attempts_lookup_idx
+                    ON token_context_admission_attempts(token_id,evaluated_at DESC,id DESC);
+                CREATE INDEX IF NOT EXISTS token_context_admission_attempts_reason_idx
+                    ON token_context_admission_attempts(reason,evaluated_at DESC);
                 CREATE TABLE IF NOT EXISTS token_context_outcome_cohorts (
                     id INTEGER PRIMARY KEY,
                     cohort_key TEXT NOT NULL UNIQUE,
@@ -467,6 +496,25 @@ class Store:
                     ON shadow_event_cohorts(status,decision_at);
                 CREATE INDEX IF NOT EXISTS shadow_event_cohorts_event_idx
                     ON shadow_event_cohorts(event_id,token_id);
+                CREATE TABLE IF NOT EXISTS shadow_event_admission_attempts (
+                    id INTEGER PRIMARY KEY,
+                    admission_key TEXT NOT NULL UNIQUE,
+                    version TEXT NOT NULL,
+                    decision_id INTEGER NOT NULL,
+                    event_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    requested_action TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    cohort_id INTEGER,
+                    source_observation_count INTEGER NOT NULL DEFAULT 0,
+                    eligible_source_count INTEGER NOT NULL DEFAULT 0,
+                    attempted_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS shadow_event_admission_attempts_event_idx
+                    ON shadow_event_admission_attempts(event_id,requested_action);
+                CREATE INDEX IF NOT EXISTS shadow_event_admission_attempts_status_idx
+                    ON shadow_event_admission_attempts(status,requested_action,attempted_at);
                 CREATE TABLE IF NOT EXISTS shadow_event_cohort_labels (
                     cohort_id INTEGER NOT NULL,
                     source_observation_id INTEGER NOT NULL,
@@ -841,6 +889,168 @@ class Store:
         return self.db.execute(
             "SELECT * FROM token_detail_hydration WHERE token_id=?", (str(token_id),)
         ).fetchone()
+
+    def add_token_context_admission_attempt(
+        self,
+        token_id: str,
+        *,
+        outcome: str,
+        reason: str,
+        trigger: Mapping[str, Any] | None,
+        snapshot_observed_at: Any,
+        momentum_score: float,
+        next_eligible_at: Any = None,
+        quota_day: str,
+        daily_call_limit: int,
+        calls_used_before: int,
+        daily_token_budget: int,
+        tokens_used_before: int,
+        token_reserve_per_call: int,
+        evaluated_at: Any = None,
+    ) -> int:
+        trigger = trigger if isinstance(trigger, Mapping) else {}
+        with self._lock, self.db:
+            cursor = self.db.execute(
+                """
+                INSERT INTO token_context_admission_attempts(
+                    version,token_id,evaluated_at,outcome,reason,trigger_kind,
+                    trigger_priority,platform,entity_id,event_id,decision_id,
+                    snapshot_observed_at,momentum_score,next_eligible_at,quota_day,
+                    daily_call_limit,calls_used_before,daily_token_budget,
+                    tokens_used_before,token_reserve_per_call
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    self.TOKEN_CONTEXT_ADMISSION_VERSION,
+                    str(token_id),
+                    iso(parse_time(evaluated_at or utcnow())),
+                    str(outcome)[:40],
+                    str(reason)[:120],
+                    str(trigger.get("kind") or "")[:120],
+                    int(trigger["priority"]) if trigger.get("priority") is not None else None,
+                    str(trigger.get("platform") or "")[:80],
+                    str(trigger.get("entity_id") or "")[:160],
+                    int(trigger["event_id"]) if trigger.get("event_id") is not None else None,
+                    int(trigger["decision_id"]) if trigger.get("decision_id") is not None else None,
+                    iso(parse_time(snapshot_observed_at)),
+                    float(momentum_score),
+                    iso(parse_time(next_eligible_at)) if next_eligible_at else None,
+                    str(quota_day)[:20],
+                    max(0, int(daily_call_limit)),
+                    max(0, int(calls_used_before)),
+                    max(0, int(daily_token_budget)),
+                    max(0, int(tokens_used_before)),
+                    max(0, int(token_reserve_per_call)),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def token_context_admission_attempts(
+        self, token_id: str, *, limit: int = 20
+    ) -> list[sqlite3.Row]:
+        return list(
+            self.db.execute(
+                """
+                SELECT * FROM token_context_admission_attempts
+                WHERE token_id=? ORDER BY evaluated_at DESC,id DESC LIMIT ?
+                """,
+                (str(token_id), max(1, min(100, int(limit)))),
+            )
+        )
+
+    @staticmethod
+    def token_context_admission_summary_from_connection(
+        connection: sqlite3.Connection, *, lookback_days: int = 90
+    ) -> dict[str, Any]:
+        empty = {
+            "status": "not_observed",
+            "version": Store.TOKEN_CONTEXT_ADMISSION_VERSION,
+            "items": [],
+            "reasons": [],
+            "summary": {
+                "attempts": 0,
+                "trigger_qualified_attempts": 0,
+                "admitted": 0,
+                "skipped": 0,
+                "admission_rate": None,
+            },
+            "mode": "forward_append_only_observation",
+            "affects": "none",
+        }
+        tables = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        if "token_context_admission_attempts" not in tables:
+            return empty
+        start = iso(utcnow() - timedelta(days=max(1, min(3650, int(lookback_days)))))
+        rows = list(
+            connection.execute(
+                """
+                SELECT * FROM token_context_admission_attempts
+                WHERE evaluated_at>=? ORDER BY evaluated_at DESC,id DESC
+                """,
+                (start,),
+            )
+        )
+        if not rows:
+            return empty
+        reason_counts: dict[str, int] = {}
+        for row in rows:
+            reason = str(row["reason"] or "unknown")
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        admitted = sum(str(row["outcome"]) == "admitted" for row in rows)
+        trigger_qualified = sum(bool(str(row["trigger_kind"] or "")) for row in rows)
+        recent = [
+            {
+                "id": int(row["id"]),
+                "token_id": str(row["token_id"]),
+                "evaluated_at": str(row["evaluated_at"]),
+                "outcome": str(row["outcome"]),
+                "reason": str(row["reason"]),
+                "trigger_kind": str(row["trigger_kind"] or ""),
+                "trigger_priority": row["trigger_priority"],
+                "platform": str(row["platform"] or ""),
+                "entity_id": str(row["entity_id"] or ""),
+                "event_id": row["event_id"],
+                "decision_id": row["decision_id"],
+                "snapshot_observed_at": str(row["snapshot_observed_at"]),
+                "momentum_score": float(row["momentum_score"] or 0.0),
+                "next_eligible_at": row["next_eligible_at"],
+                "quota": {
+                    "day": str(row["quota_day"]),
+                    "calls_used_before": int(row["calls_used_before"]),
+                    "daily_call_limit": int(row["daily_call_limit"]),
+                    "tokens_used_before": int(row["tokens_used_before"]),
+                    "daily_token_budget": int(row["daily_token_budget"]),
+                    "token_reserve_per_call": int(row["token_reserve_per_call"]),
+                },
+            }
+            for row in rows[:30]
+        ]
+        return {
+            "status": "observed",
+            "version": Store.TOKEN_CONTEXT_ADMISSION_VERSION,
+            "observed_versions": sorted({str(row["version"]) for row in rows}),
+            "items": recent,
+            "reasons": [
+                {"reason": reason, "count": count}
+                for reason, count in sorted(reason_counts.items(), key=lambda item: (-item[1], item[0]))
+            ],
+            "summary": {
+                "attempts": len(rows),
+                "trigger_qualified_attempts": trigger_qualified,
+                "admitted": admitted,
+                "skipped": len(rows) - admitted,
+                "admission_rate": round(admitted / trigger_qualified, 4)
+                if trigger_qualified
+                else None,
+                "tracking_started_at": min(str(row["evaluated_at"]) for row in rows),
+            },
+            "mode": "forward_append_only_observation",
+            "affects": "none",
+            "as_of": iso(),
+        }
 
     def add_token_context_assessment(
         self,
@@ -2200,14 +2410,60 @@ class Store:
     ) -> int | None:
         """Freeze the first WAIT and later first CANDIDATE follow-up without changing strategy."""
         action = str(decision.action).upper()
-        if action not in {"WAIT", "CANDIDATE"} or not decision.token_id:
-            return None
+        admission_key = f"{self.SHADOW_EVENT_ADMISSION_VERSION}:{int(decision_id)}"
         cohort_key = hashlib.sha256(
             f"{self.SHADOW_EVENT_COHORT_VERSION}\n{int(decision.event_id)}\n{action}".encode("utf-8")
         ).hexdigest()
         decision_at = iso(decision.created_at)
-        observation_ids = sorted({int(value) for value in source_observation_ids if int(value) > 0})
         with self._lock, self.db:
+            prior_admission = self.db.execute(
+                "SELECT cohort_id FROM shadow_event_admission_attempts WHERE admission_key=?",
+                (admission_key,),
+            ).fetchone()
+            if prior_admission is not None:
+                return int(prior_admission["cohort_id"]) if prior_admission["cohort_id"] else None
+
+            observation_ids: list[int] = []
+
+            def record_admission(
+                status: str,
+                reason: str,
+                *,
+                cohort_id: int | None = None,
+                eligible_source_count: int = 0,
+            ) -> None:
+                self.db.execute(
+                    """
+                    INSERT INTO shadow_event_admission_attempts(
+                        admission_key,version,decision_id,event_id,token_id,requested_action,
+                        status,reason,cohort_id,source_observation_count,eligible_source_count,attempted_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        admission_key,
+                        self.SHADOW_EVENT_ADMISSION_VERSION,
+                        int(decision_id),
+                        int(decision.event_id),
+                        str(decision.token_id or ""),
+                        action,
+                        str(status),
+                        str(reason),
+                        cohort_id,
+                        len(observation_ids),
+                        max(0, int(eligible_source_count)),
+                        iso(),
+                    ),
+                )
+
+            if action not in {"WAIT", "CANDIDATE"}:
+                record_admission("skipped", "unsupported_action")
+                return None
+            if not decision.token_id:
+                record_admission("skipped", "missing_token_id")
+                return None
+            observation_ids = sorted({
+                int(value) for value in source_observation_ids if int(value) > 0
+            })
             existing = list(
                 self.db.execute(
                     "SELECT id,action FROM shadow_event_cohorts WHERE event_id=? ORDER BY id",
@@ -2218,13 +2474,21 @@ class Store:
                 (row for row in existing if str(row["action"]).upper() == action), None
             )
             if same_action:
-                return int(same_action["id"])
+                cohort_id = int(same_action["id"])
+                record_admission(
+                    "already_admitted", "already_admitted_same_action", cohort_id=cohort_id
+                )
+                return cohort_id
             if action == "WAIT":
                 candidate = next(
                     (row for row in existing if str(row["action"]).upper() == "CANDIDATE"), None
                 )
                 if candidate:
-                    return int(candidate["id"])
+                    cohort_id = int(candidate["id"])
+                    record_admission(
+                        "already_admitted", "wait_superseded_by_candidate", cohort_id=cohort_id
+                    )
+                    return cohort_id
             snapshot = self.db.execute(
                 """
                 SELECT id,observed_at,price_usd FROM token_snapshots
@@ -2233,7 +2497,11 @@ class Store:
                 """,
                 (decision.token_id, decision_at),
             ).fetchone()
-            if snapshot is None or not observation_ids:
+            if snapshot is None:
+                record_admission("skipped", "missing_entry_snapshot")
+                return None
+            if not observation_ids:
+                record_admission("skipped", "missing_observation_ids")
                 return None
             placeholders = ",".join("?" for _ in observation_ids)
             eligible = list(
@@ -2253,6 +2521,7 @@ class Store:
                 )
             )
             if not eligible:
+                record_admission("skipped", "no_eligible_leads")
                 return None
             first_at = parse_time(eligible[0]["observed_at"])
             leads = [
@@ -2260,6 +2529,7 @@ class Store:
                 if (parse_time(row["observed_at"]) - first_at).total_seconds() <= 60
             ]
             if not leads:
+                record_admission("skipped", "no_eligible_leads")
                 return None
             cursor = self.db.execute(
                 """
@@ -2288,6 +2558,10 @@ class Store:
                         """,
                         (cohort_id, int(row["id"]), dimension, value, platform, weight),
                     )
+            record_admission(
+                "created", "created", cohort_id=cohort_id,
+                eligible_source_count=len(leads),
+            )
             return cohort_id
 
     def finalize_shadow_event_outcomes(
@@ -2398,11 +2672,148 @@ class Store:
         }
 
     @staticmethod
+    def shadow_event_admission_summary_from_connection(
+        connection: sqlite3.Connection, *, lookback_days: int = 90
+    ) -> dict[str, Any]:
+        empty = {
+            "status": "not_observed",
+            "version": Store.SHADOW_EVENT_ADMISSION_VERSION,
+            "items": [],
+            "reasons": [],
+            "summary": {
+                "decision_count": 0,
+                "instrumented_decisions": 0,
+                "legacy_or_uninstrumented_decisions": 0,
+                "attempts": 0,
+                "created": 0,
+                "already_admitted": 0,
+                "skipped": 0,
+                "candidate_decisions": 0,
+                "candidate_instrumented": 0,
+                "candidate_covered": 0,
+                "candidate_skipped": 0,
+                "candidate_legacy_or_uninstrumented": 0,
+                "forward_candidate_coverage_rate": None,
+                "overall_candidate_coverage_rate": None,
+            },
+            "mode": "forward_append_only_observation",
+            "affects": "none",
+        }
+        tables = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        ledger_available = "shadow_event_admission_attempts" in tables
+        start = iso(utcnow() - timedelta(days=max(1, min(3650, int(lookback_days)))))
+        attempts = (
+            list(
+                connection.execute(
+                    """
+                    SELECT * FROM shadow_event_admission_attempts
+                    WHERE attempted_at>=? ORDER BY attempted_at DESC,id DESC
+                    """,
+                    (start,),
+                )
+            )
+            if ledger_available
+            else []
+        )
+        decisions: list[sqlite3.Row] = []
+        if "decisions" in tables:
+            decisions = list(
+                connection.execute(
+                    """
+                    SELECT id,action FROM decisions
+                    WHERE created_at>=? AND action IN ('WAIT','CANDIDATE')
+                    """,
+                    (start,),
+                )
+            )
+        decision_ids = {int(row["id"]) for row in decisions}
+        candidate_ids = {
+            int(row["id"]) for row in decisions if str(row["action"]).upper() == "CANDIDATE"
+        }
+        instrumented_ids = {int(row["decision_id"]) for row in attempts}
+        candidate_attempts = [
+            row for row in attempts if str(row["requested_action"]).upper() == "CANDIDATE"
+        ]
+        candidate_covered = sum(
+            str(row["status"]) in {"created", "already_admitted"} and row["cohort_id"] is not None
+            for row in candidate_attempts
+        )
+        reason_counts: dict[str, int] = {}
+        for row in attempts:
+            reason = str(row["reason"] or "unknown")
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        summary = {
+            "decision_count": len(decisions),
+            "instrumented_decisions": len(decision_ids & instrumented_ids),
+            "legacy_or_uninstrumented_decisions": len(decision_ids - instrumented_ids),
+            "attempts": len(attempts),
+            "created": sum(str(row["status"]) == "created" for row in attempts),
+            "already_admitted": sum(
+                str(row["status"]) == "already_admitted" for row in attempts
+            ),
+            "skipped": sum(str(row["status"]) == "skipped" for row in attempts),
+            "candidate_decisions": len(candidate_ids),
+            "candidate_instrumented": len(candidate_attempts),
+            "candidate_covered": candidate_covered,
+            "candidate_skipped": sum(
+                str(row["status"]) == "skipped" for row in candidate_attempts
+            ),
+            "candidate_legacy_or_uninstrumented": len(candidate_ids - instrumented_ids),
+            "forward_candidate_coverage_rate": round(
+                candidate_covered / len(candidate_attempts), 4
+            ) if candidate_attempts else None,
+            "overall_candidate_coverage_rate": round(
+                candidate_covered / len(candidate_ids), 4
+            ) if candidate_ids else None,
+            "tracking_started_at": min(
+                (str(row["attempted_at"]) for row in attempts), default=None
+            ),
+        }
+        recent = [
+            {
+                "id": int(row["id"]),
+                "decision_id": int(row["decision_id"]),
+                "event_id": int(row["event_id"]),
+                "token_id": str(row["token_id"]),
+                "requested_action": str(row["requested_action"]),
+                "status": str(row["status"]),
+                "reason": str(row["reason"]),
+                "cohort_id": row["cohort_id"],
+                "source_observation_count": int(row["source_observation_count"]),
+                "eligible_source_count": int(row["eligible_source_count"]),
+                "attempted_at": str(row["attempted_at"]),
+            }
+            for row in attempts[:30]
+        ]
+        return {
+            "status": "observed" if attempts else (
+                "not_instrumented" if decisions and not ledger_available else "not_observed"
+            ),
+            "version": Store.SHADOW_EVENT_ADMISSION_VERSION,
+            "observed_versions": sorted({str(row["version"]) for row in attempts}),
+            "items": recent,
+            "reasons": [
+                {"reason": reason, "count": count}
+                for reason, count in sorted(reason_counts.items(), key=lambda item: (-item[1], item[0]))
+            ],
+            "summary": summary,
+            "mode": "forward_append_only_observation",
+            "affects": "none",
+            "as_of": iso(),
+        }
+
+    @staticmethod
     def shadow_event_learning_summary_from_connection(
         connection: sqlite3.Connection,
         *,
         lookback_days: int = 90,
     ) -> dict[str, Any]:
+        admission = Store.shadow_event_admission_summary_from_connection(
+            connection, lookback_days=lookback_days
+        )
         required_tables = {
             "shadow_event_cohorts", "shadow_event_cohort_labels", "shadow_event_outcomes"
         }
@@ -2426,6 +2837,7 @@ class Store:
             return {
                 "status": "not_observed", "items": [],
                 "summary": {"cohorts": 0, "pending_cohorts": 0, "complete_cohorts": 0},
+                "admission": admission,
                 "review_policy": policy,
             }
         start = iso(utcnow() - timedelta(days=max(1, min(3650, int(lookback_days)))))
@@ -2563,6 +2975,7 @@ class Store:
                 "outcomes_by_horizon": outcome_counts,
                 "review_eligible_labels": sum(item["shadow_review_eligible"] for item in items),
             },
+            "admission": admission,
             "review_policy": policy,
             "as_of": iso(),
         }

@@ -50,6 +50,8 @@ RSS 默认不继承系统代理。若电脑只能通过本机 SOCKS5 出网，�
 
 完整调查追加到 `token_context_assessments` 供 Web 审计，默认 `decision_eligible=false`。只有独立报道同时通过本机 URL/DNS、可访问性、发布时间、相关性和至少两个独立域名检查时，才生成 confirmation Observation 并沿原有 Token→Event 链进入事件系统；Agent 自报的社区状态或公众人物候选不会直接进入主叙事候选排序。四字母名称（例如人物姓氏或短昵称）允许进入搜证，但不能仅凭文本重合连接新闻。最终仍要通过报价、流动性、税率、可卖性、GoPlus/Honeypot、GoPlus/RugCheck 和仓位限制。当前 Paper 对 EVM 与 Solana 均默认要求至少一个外部安全报告；同一链族的报告全部不可用时失败关闭，而不是当作安全。
 
+`token_context_admission_attempts` 从上线时起追加每次检查的准入结论和预算/冷却快照。稳定原因包括关闭、无合格触发、错误退避、全局/同 Token 冷却、每日调用上限、Token 预留预算不足以及已准入。该表不会把跳过写成 assessment，也不保存 prompt、Agent 输出、Token 描述或 URL 内容；历史检查不回填。准入成功的记录在 Agent 启动前写入，因此即使调用随后失败并退还调用次数，也能审计“曾经准入”和“Agent 执行失败”这两个不同事实。
+
 每个新 assessment 在评估时已有本机正价格快照时，会另外冻结一个只读前向 cohort。既有低成本随访任务只用之后本机真实观察到的 15/60/240 分钟快照计算原始价格延续；`no_context`、Agent 错误、未核验候选和 missing 都保留，历史调查与缺失窗口不回填。只有浏览器桥精确原帖可形成公众人物实体标签，未核验名字不允许进入实体统计。该结果账本只回答“哪些调查语境值得继续研究”，固定不改变 Agent 调度、证据、候选、风控、Paper 或 Live。详见 [Token Context 前向结果学习](TOKEN_CONTEXT_FORWARD_LEARNING_CN.md)。
 
 ## 默认 Agent 数量与模型路由

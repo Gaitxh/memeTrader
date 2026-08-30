@@ -517,6 +517,13 @@ def test_failed_token_context_search_does_not_start_full_cooldown(tmp_path: Path
         assert await agent.search_token_context(token, snapshot, momentum_score=90) == []
         assert attempts == 2
         assert agent.usage()["token_context"] == 1
+        admissions = list(reversed(store.token_context_admission_attempts(token.token_id)))
+        assert [row["reason"] for row in admissions] == [
+            "admitted", "error_retry_active", "admitted"
+        ]
+        assert [row["outcome"] for row in admissions] == [
+            "admitted", "skipped", "admitted"
+        ]
         store.close()
 
     asyncio.run(scenario())
@@ -793,6 +800,9 @@ def test_token_context_global_cooldown_prevents_bursts(tmp_path: Path):
         assert calls == ["token_context"]
         assert agent.usage()["token_context"] == 1
         assert agent.usage()["token_context_tokens"] == 25
+        assert [row["reason"] for row in store.token_context_admission_attempts(
+            snapshot_b.token_id
+        )] == ["global_cooldown_active"]
         store.close()
 
     asyncio.run(scenario())
@@ -926,6 +936,42 @@ def test_name_or_profile_imitation_cannot_bypass_context_momentum_gate(tmp_path:
         snapshot = TokenSnapshot("solana", token.address, 0.01, 100, 1000, 10, 1, 1)
         assert await agent.search_token_context(token, snapshot, momentum_score=5) == []
         assert calls == []
+        assert store.token_context_assessments(token.token_id) == []
+        admission = store.token_context_admission_attempts(token.token_id)[0]
+        assert admission["outcome"] == "skipped"
+        assert admission["reason"] == "no_eligible_trigger"
+        store.close()
+
+    asyncio.run(scenario())
+
+
+def test_token_context_admission_records_token_budget_skip_without_agent_call(tmp_path: Path):
+    async def scenario():
+        store = Store(tmp_path / "db.sqlite3")
+        agent = AutonomousSearchAgent(
+            store,
+            FakeHttp(),
+            config(
+                context_search_daily_limit=8,
+                token_context_daily_token_budget=100,
+                token_context_token_reserve_per_call=100,
+            ),
+        )
+        calls = []
+        agent._run_codex_search = lambda prompt, task="token_context": (
+            calls.append(task) or {"event_found": False, "sources": []},
+            {"tokens_used": 1},
+        )
+        token = TokenCandidate(chain="solana", address="Q" * 32, name="Budget Gate")
+        snapshot = TokenSnapshot("solana", token.address, 0.01, 50000, 500000, 20000, 100, 20)
+        assert await agent.search_token_context(token, snapshot, momentum_score=90) == []
+        assert calls == []
+        admission = store.token_context_admission_attempts(token.token_id)[0]
+        assert admission["reason"] == "daily_token_reserve_exceeded"
+        assert admission["calls_used_before"] == 0
+        assert admission["tokens_used_before"] == 0
+        assert admission["daily_token_budget"] == 100
+        assert admission["token_reserve_per_call"] == 100
         assert store.token_context_assessments(token.token_id) == []
         store.close()
 
