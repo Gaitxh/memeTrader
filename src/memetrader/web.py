@@ -3106,6 +3106,12 @@ class WebData:
             )
         items.sort(key=lambda item: (item["status"] not in {"error", "stale"}, str(item["name"]).lower()))
         watchlist = self.console_settings()
+        watch_attention = Store.build_watch_attention_policy(
+            watchlist["watch_accounts"],
+            exposure=watch_account_learning,
+            shadow=shadow_followup,
+            paper=learning,
+        )
         configured_platforms = {
             str(item.get("platform") or ""): bool(item.get("enabled", True))
             for item in watchlist["platforms"]
@@ -3164,6 +3170,7 @@ class WebData:
             "learning": learning,
             "trend_lanes": trend_lanes,
             "watch_account_learning": watch_account_learning,
+            "watch_attention_policy": watch_attention,
             "shadow_followup": shadow_followup,
             "as_of": iso(),
         }

@@ -166,6 +166,46 @@ def test_console_preferences_are_bounded_rotated_and_non_secret(tmp_path: Path):
     store.close()
 
 
+def test_console_watch_rotation_uses_only_joint_attention_policy(tmp_path: Path):
+    settings_path = tmp_path / "console_settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "platforms": [{"platform": "x", "enabled": True}],
+                "watch_accounts": [
+                    {
+                        "platform": "x", "handle": f"account_{index}",
+                        "url": f"https://x.com/account_{index}", "priority": 3,
+                    }
+                    for index in range(20)
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = Store(tmp_path / "db.sqlite3")
+    store.watch_attention_policy = lambda accounts, **kwargs: {
+        "version": "watch-attention/v1",
+        "items": [
+            {
+                "platform": "x", "handle": "account_19", "rotation_active": True,
+                "applied_rotation_multiplier": 1.20,
+            }
+        ],
+    }
+    agent = AutonomousSearchAgent(store, FakeHttp(), config(), console_settings_path=settings_path)
+    preferences = agent._console_search_preferences("trend_scout")
+    learned = next(item for item in preferences["watch_accounts"] if item["handle"] == "account_19")
+    assert learned["selection_role"] == "learned"
+    assert learned["learning_basis"] == "attention_policy"
+    assert learned["learning_multiplier"] == 1.20
+    assert preferences["watch_selection"]["mode"] == "mature_forward_attention_learning_plus_exploration"
+    assert preferences["watch_selection"]["attention_policy_version"] == "watch-attention/v1"
+    assert preferences["watch_selection"]["active_attention_accounts"] == 1
+    assert preferences["watch_selection"]["exploration_slots"] >= 5
+    store.close()
+
+
 
 def test_codex_search_command_is_ephemeral_read_only_and_web_enabled(tmp_path: Path):
     store = Store(tmp_path / "db.sqlite3")

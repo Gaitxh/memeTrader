@@ -364,6 +364,9 @@ def test_web_api_empty_database_is_safe_and_live_is_locked(tmp_path: Path):
     assert empty_sources["shadow_followup"]["horizons_minutes"] == [15, 60, 240]
     assert empty_sources["watch_account_learning"]["status"] == "not_observed"
     assert empty_sources["watch_account_learning"]["summary"]["account_exposures"] == 0
+    assert empty_sources["watch_attention_policy"]["version"] == "watch-attention/v1"
+    assert empty_sources["watch_attention_policy"]["status"] == "not_configured"
+    assert empty_sources["watch_attention_policy"]["items"] == []
     audit = web.audit()
     assert audit["status"] == "policy_only"
     assert audit["policy_enforced"] is True
@@ -615,6 +618,17 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
     assert account_exposure["platform"] == "x" and account_exposure["handle"] == "otter"
     assert account_exposure["completed_exposures"] == 1
     assert account_exposure["rotation_active"] is False
+    assert source_payload["watch_attention_policy"]["version"] == "watch-attention/v1"
+    assert source_payload["watch_attention_policy"]["status"] == "collecting_evidence"
+    attention_item = source_payload["watch_attention_policy"]["items"][0]
+    assert attention_item["platform"] == "x" and attention_item["handle"] == "otter"
+    assert attention_item["state"] == "collecting_account_exposure"
+    assert attention_item["applied_rotation_multiplier"] == 1.0
+    assert attention_item["rotation_active"] is False
+    assert source_payload["watch_attention_policy"]["activation_policy"]["never_affects"] == [
+        "evidence_weight", "candidate_ranking", "decision_eligibility",
+        "risk", "position_size", "exits", "live_trading",
+    ]
     assert source_payload["shadow_followup"]["status"] == "collecting_followup"
     assert source_payload["shadow_followup"]["version"] == "shadow-event-followup/v1"
     assert source_payload["shadow_followup"]["horizons_minutes"] == [15, 60, 240]
@@ -786,8 +800,8 @@ def test_candidate_ranking_api_is_persisted_bounded_sanitized_and_wait_is_truthf
     assert "WAIT is never decorated as an opportunity" in app
     assert "data-testid='source-learning'" in app
     assert "data-testid='watch-account-exposure'" in app
-    assert "A checked account with no yield must still become data" in app
-    assert "Learning changes watch rotation only" in app
+    assert "Watch rotation changes only after both check efficiency and non-buy-only market follow-up mature" in app
+    assert "Closed Paper outcomes are secondary validation and cannot change watch rotation alone" in app
     assert "event_topic" in app and "observe only" in app
     assert "Linked narrative / event observation timeline" in app
     assert "Verified narrative / event evidence timeline" not in app

@@ -399,37 +399,44 @@ class AutonomousSearchAgent:
                 metrics: dict[tuple[str, str], dict[str, Any]] = {}
                 if task == "trend_scout" and self.config.get("source_learning_enabled", True):
                     try:
-                        learning = self.store.source_learning_summary(
+                        learning = self.store.watch_attention_policy(
+                            accounts,
                             lookback_days=int(self.config.get("source_learning_lookback_days", 90)),
-                            min_closed_outcomes=int(self.config.get("source_learning_min_closed_outcomes", 20)),
-                            min_event_days=int(self.config.get("source_learning_min_event_days", 10)),
-                            min_losing_outcomes=int(self.config.get("source_learning_min_losing_outcomes", 5)),
-                            entity_min_closed_outcomes=int(
-                                self.config.get("source_learning_entity_min_closed_outcomes", 30)
-                            ),
-                            entity_min_event_days=int(self.config.get("source_learning_entity_min_event_days", 15)),
-                            entity_min_platforms=int(self.config.get("source_learning_entity_min_platforms", 2)),
+                            source_learning_kwargs={
+                                "min_closed_outcomes": int(
+                                    self.config.get("source_learning_min_closed_outcomes", 20)
+                                ),
+                                "min_event_days": int(self.config.get("source_learning_min_event_days", 10)),
+                                "min_losing_outcomes": int(
+                                    self.config.get("source_learning_min_losing_outcomes", 5)
+                                ),
+                                "entity_min_closed_outcomes": int(
+                                    self.config.get("source_learning_entity_min_closed_outcomes", 30)
+                                ),
+                                "entity_min_event_days": int(
+                                    self.config.get("source_learning_entity_min_event_days", 15)
+                                ),
+                                "entity_min_platforms": int(
+                                    self.config.get("source_learning_entity_min_platforms", 2)
+                                ),
+                            },
                         )
                         metrics = {
-                            (str(item.get("dimension")), str(item.get("value"))): item
+                            (str(item.get("platform")), str(item.get("handle")).casefold()): item
                             for item in learning.get("items", [])
                             if isinstance(item, dict) and item.get("rotation_active") is True
                         }
+                        selection_policy["attention_policy_version"] = learning.get("version")
+                        selection_policy["active_attention_accounts"] = len(metrics)
                     except (sqlite3.Error, TypeError, ValueError):
                         metrics = {}
 
                 def learned_multiplier(account: dict[str, Any]) -> tuple[float, str]:
-                    fallbacks = [
-                        ("entity", str(account.get("entity_id") or "")),
-                        ("platform", str(account.get("platform") or "")),
-                        ("source_kind", "social"),
-                    ]
-                    for key in fallbacks:
-                        if not key[1]:
-                            continue
-                        item = metrics.get(key)
-                        if item:
-                            return float(item.get("rotation_multiplier") or 1.0), key[0]
+                    item = metrics.get(
+                        (str(account.get("platform") or ""), str(account.get("handle") or "").casefold())
+                    )
+                    if item:
+                        return float(item.get("applied_rotation_multiplier") or 1.0), "attention_policy"
                     return 1.0, "baseline"
 
                 ranked: list[tuple[float, str, dict[str, Any]]] = []
@@ -453,7 +460,7 @@ class AutonomousSearchAgent:
                     )
                 selection_policy["curated_or_learned_slots"] = len(curated)
                 if any(row[1] != "baseline" for row in ranked[:curated_count]):
-                    selection_policy["mode"] = "mature_paper_learning_plus_exploration"
+                    selection_policy["mode"] = "mature_forward_attention_learning_plus_exploration"
                 exploration_pool = [row for row in normal if id(row) not in curated_ids]
                 count = min(remaining - len(curated), len(exploration_pool))
                 cursor_key = f"{WATCH_ACCOUNT_CURSOR_PREFIX}:{task}"

@@ -27,6 +27,7 @@ class Store:
     CANDIDATE_RANKING_KEY_PREFIX = "candidate_ranking:"
     SHADOW_EVENT_COHORT_VERSION = "shadow-event-followup/v1"
     SHADOW_EVENT_HORIZONS_MINUTES = (15, 60, 240)
+    WATCH_ATTENTION_POLICY_VERSION = "watch-attention/v1"
 
     def __init__(self, path: str | Path, initial_cash_usd: float = 10000):
         self.path = Path(path)
@@ -2002,6 +2003,177 @@ class Store:
             "review_policy": policy,
             "lookback_days": int(lookback_days),
         }
+
+    @classmethod
+    def build_watch_attention_policy(
+        cls,
+        accounts: Iterable[Mapping[str, Any]],
+        *,
+        exposure: Mapping[str, Any],
+        shadow: Mapping[str, Any],
+        paper: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Combine discovery exposure and forward market follow-up for watch rotation only."""
+        exposure_items = {
+            (str(item.get("platform") or ""), str(item.get("handle") or "").casefold()): item
+            for item in exposure.get("items", [])
+            if isinstance(item, Mapping)
+        }
+        shadow_items = {
+            (str(item.get("dimension") or ""), str(item.get("value") or "")): item
+            for item in shadow.get("items", [])
+            if isinstance(item, Mapping) and int(item.get("horizon_minutes") or 0) == 60
+        }
+        paper_items = {
+            (str(item.get("dimension") or ""), str(item.get("value") or "")): item
+            for item in paper.get("items", [])
+            if isinstance(item, Mapping) and item.get("rotation_active") is True
+        }
+        items = []
+        for account in accounts:
+            if account.get("enabled", True) is not True:
+                continue
+            platform = str(account.get("platform") or "").strip().lower()
+            handle = str(account.get("handle") or "").strip()
+            if not platform or not handle:
+                continue
+            entity_id = str(account.get("entity_id") or "").strip().lower()
+            exposure_item = dict(exposure_items.get((platform, handle.casefold())) or {})
+            exposure_mature = exposure_item.get("discovery_review_eligible") is True
+            shadow_item: dict[str, Any] = {}
+            market_basis = ""
+            for key in (("entity", entity_id), ("platform", platform)):
+                candidate = shadow_items.get(key)
+                if key[1] and candidate and candidate.get("shadow_review_eligible") is True:
+                    shadow_item = dict(candidate)
+                    market_basis = key[0]
+                    break
+            shadow_score = shadow_item.get("shadow_descriptive_score")
+            market_mature = bool(shadow_item) and shadow_score is not None
+            paper_item: dict[str, Any] = {}
+            paper_basis = ""
+            for key in (("entity", entity_id), ("platform", platform), ("source_kind", "social")):
+                candidate = paper_items.get(key)
+                if key[1] and candidate:
+                    paper_item = dict(candidate)
+                    paper_basis = key[0]
+                    break
+            discovery_multiplier = float(exposure_item.get("discovery_review_multiplier") or 1.0)
+            market_multiplier = (
+                max(0.90, min(1.10, 1.0 + float(shadow_score) * 0.5))
+                if market_mature else 1.0
+            )
+            paper_multiplier = float(paper_item.get("rotation_multiplier") or 1.0)
+            evidence_mature = exposure_mature and market_mature
+            recommended = 1.0
+            if evidence_mature:
+                recommended = max(
+                    0.80,
+                    min(1.20, discovery_multiplier * market_multiplier * (paper_multiplier ** 0.5)),
+                )
+            critical = str(account.get("watch_cadence") or "normal").lower() == "critical"
+            rotation_active = evidence_mature and not critical
+            if not exposure_mature:
+                state = "collecting_account_exposure"
+            elif not market_mature:
+                state = "collecting_market_followup"
+            elif critical:
+                state = "mature_review_critical_fixed"
+            else:
+                state = "active_watch_rotation"
+            items.append(
+                {
+                    "platform": platform,
+                    "handle": handle,
+                    "entity_id": entity_id,
+                    "configured_priority": int(account.get("priority") or 3),
+                    "watch_cadence": "critical" if critical else "normal",
+                    **exposure_item,
+                    "market_basis": market_basis or None,
+                    "market_distinct_event_count": int(shadow_item.get("distinct_event_count") or 0),
+                    "market_event_day_count": int(shadow_item.get("event_day_count") or 0),
+                    "market_weighted_negative_outcomes": float(
+                        shadow_item.get("weighted_negative_outcomes") or 0
+                    ),
+                    "market_mean_raw_return": shadow_item.get("mean_raw_return"),
+                    "market_descriptive_score": shadow_score,
+                    "paper_basis": paper_basis or None,
+                    "paper_distinct_closed_outcomes": int(
+                        paper_item.get("distinct_closed_paper_outcomes") or 0
+                    ),
+                    "paper_mean_net_return": paper_item.get("paper_mean_net_return"),
+                    "discovery_multiplier": round(discovery_multiplier, 4),
+                    "market_multiplier": round(market_multiplier, 4),
+                    "paper_multiplier": round(paper_multiplier, 4),
+                    "recommended_multiplier": round(recommended, 4),
+                    "applied_rotation_multiplier": round(recommended if rotation_active else 1.0, 4),
+                    "exposure_mature": exposure_mature,
+                    "market_followup_mature": market_mature,
+                    "attention_active": evidence_mature,
+                    "rotation_active": rotation_active,
+                    "state": state,
+                }
+            )
+        items.sort(
+            key=lambda item: (
+                not bool(item["rotation_active"]), not bool(item["attention_active"]),
+                str(item["watch_cadence"]) != "critical", -int(item["configured_priority"]),
+                -float(item["recommended_multiplier"]), -int(item.get("completed_exposures") or 0),
+                str(item["platform"]), str(item["handle"]).casefold(),
+            )
+        )
+        return {
+            "version": cls.WATCH_ATTENTION_POLICY_VERSION,
+            "status": (
+                "active_watch_rotation" if any(item["rotation_active"] for item in items)
+                else "mature_review_only" if any(item["attention_active"] for item in items)
+                else "collecting_evidence" if items else "not_configured"
+            ),
+            "items": items,
+            "summary": {
+                "configured_accounts": len(items),
+                "exposure_mature_accounts": sum(1 for item in items if item["exposure_mature"]),
+                "market_mature_accounts": sum(1 for item in items if item["market_followup_mature"]),
+                "attention_mature_accounts": sum(1 for item in items if item["attention_active"]),
+                "rotation_active_accounts": sum(1 for item in items if item["rotation_active"]),
+                "actual_rotation_changed_by_learning": any(item["rotation_active"] for item in items),
+            },
+            "activation_policy": {
+                "requires_account_exposure_review_eligible": True,
+                "requires_60m_shadow_followup_review_eligible": True,
+                "paper_outcome_role": "optional_secondary_validation",
+                "minimum_applied_multiplier": 0.80,
+                "maximum_applied_multiplier": 1.20,
+                "critical_accounts_remain_fixed": True,
+                "minimum_exploration_fraction": 0.40,
+                "affects": "agent_watch_rotation_only",
+                "never_affects": [
+                    "evidence_weight", "candidate_ranking", "decision_eligibility",
+                    "risk", "position_size", "exits", "live_trading",
+                ],
+            },
+        }
+
+    def watch_attention_policy(
+        self,
+        accounts: Iterable[Mapping[str, Any]],
+        *,
+        lookback_days: int = 90,
+        source_learning_kwargs: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            exposure = self.watch_account_exposure_summary_from_connection(
+                self.db, lookback_days=lookback_days,
+            )
+            shadow = self.shadow_event_learning_summary_from_connection(
+                self.db, lookback_days=lookback_days,
+            )
+            paper = self.source_learning_summary_from_connection(
+                self.db, lookback_days=lookback_days, **dict(source_learning_kwargs or {}),
+            )
+            return self.build_watch_attention_policy(
+                accounts, exposure=exposure, shadow=shadow, paper=paper,
+            )
 
     def agent_attempts(self, *, limit: int = 100) -> list[sqlite3.Row]:
         return list(

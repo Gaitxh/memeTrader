@@ -263,6 +263,71 @@ def test_watch_account_discovery_review_requires_real_exposure_and_keeps_rotatio
     store.close()
 
 
+def test_watch_attention_policy_requires_exposure_and_wait_inclusive_market_followup():
+    accounts = [
+        {"platform": "x", "handle": "alpha", "entity_id": "alpha", "priority": 5},
+        {"platform": "x", "handle": "beta", "entity_id": "beta", "priority": 4},
+        {
+            "platform": "x", "handle": "critical", "entity_id": "critical",
+            "priority": 5, "watch_cadence": "critical",
+        },
+        {"platform": "x", "handle": "collecting", "entity_id": "collecting", "priority": 3},
+    ]
+    exposure = {
+        "items": [
+            {
+                "platform": "x", "handle": handle, "completed_exposures": 20,
+                "discovery_review_eligible": eligible, "discovery_review_multiplier": multiplier,
+            }
+            for handle, eligible, multiplier in (
+                ("alpha", True, 1.10), ("beta", True, 0.90),
+                ("critical", True, 1.15), ("collecting", False, 1.0),
+            )
+        ]
+    }
+    shadow = {
+        "items": [
+            {
+                "horizon_minutes": 60, "dimension": "entity", "value": entity,
+                "shadow_review_eligible": True, "shadow_descriptive_score": score,
+                "distinct_event_count": 50, "event_day_count": 20,
+                "weighted_negative_outcomes": 10, "mean_raw_return": score,
+            }
+            for entity, score in (("alpha", 0.10), ("beta", -0.10), ("critical", 0.50))
+        ]
+    }
+    paper = {
+        "items": [
+            {
+                "dimension": "entity", "value": "alpha", "rotation_active": True,
+                "rotation_multiplier": 1.10, "distinct_closed_paper_outcomes": 30,
+            },
+            {
+                "dimension": "entity", "value": "beta", "rotation_active": True,
+                "rotation_multiplier": 0.90, "distinct_closed_paper_outcomes": 30,
+            },
+        ]
+    }
+    policy = Store.build_watch_attention_policy(
+        accounts, exposure=exposure, shadow=shadow, paper=paper,
+    )
+    assert policy["version"] == "watch-attention/v1"
+    assert policy["status"] == "active_watch_rotation"
+    alpha = next(item for item in policy["items"] if item["handle"] == "alpha")
+    beta = next(item for item in policy["items"] if item["handle"] == "beta")
+    critical = next(item for item in policy["items"] if item["handle"] == "critical")
+    collecting = next(item for item in policy["items"] if item["handle"] == "collecting")
+    assert alpha["rotation_active"] is True and 1.0 < alpha["applied_rotation_multiplier"] <= 1.20
+    assert beta["rotation_active"] is True and 0.80 <= beta["applied_rotation_multiplier"] < 1.0
+    assert critical["attention_active"] is True
+    assert critical["rotation_active"] is False
+    assert critical["applied_rotation_multiplier"] == 1.0
+    assert collecting["state"] == "collecting_account_exposure"
+    assert collecting["rotation_active"] is False
+    assert policy["activation_policy"]["requires_60m_shadow_followup_review_eligible"] is True
+    assert "decision_eligibility" in policy["activation_policy"]["never_affects"]
+
+
 def test_shadow_event_followup_is_forward_only_fixed_horizon_and_non_activating(tmp_path: Path):
     store = Store(tmp_path / "shadow-followup.sqlite3")
     now = datetime.now(timezone.utc)
