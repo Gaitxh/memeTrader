@@ -1,10 +1,11 @@
 import asyncio
 import json
+from datetime import timedelta
 
 import pytest
 
 from memetrader.cli import cmd_doctor
-from memetrader.models import CandidateDecision, Observation, TokenCandidate, TokenSnapshot
+from memetrader.models import CandidateDecision, Observation, TokenCandidate, TokenSnapshot, utcnow
 from memetrader.runtime import (
     Notifier,
     Runtime,
@@ -261,7 +262,7 @@ def test_raw_items_are_stored_without_notification_spam(tmp_path):
     asyncio.run(scenario())
 
 
-def test_stale_first_polled_item_is_identity_only_and_has_zero_attention(tmp_path):
+def test_stale_polled_features_and_confirmations_are_identity_only(tmp_path):
     async def scenario():
         config = initial_config()
         config["database"] = "db.sqlite3"
@@ -271,19 +272,77 @@ def test_stale_first_polled_item_is_identity_only_and_has_zero_attention(tmp_pat
         config["sources"]["pumpportal"]["enabled"] = False
         config["sources"]["reverse_google_news"]["enabled"] = False
         runtime = Runtime(config, tmp_path)
-        observation = Observation(
-            source="rss:archive",
-            source_kind="news",
-            title="An old article first discovered today",
-            published_at="2026-01-01T00:00:00Z",
-            observed_at="2026-01-01T03:00:00Z",
-            ingested_at="2026-01-01T03:00:00Z",
-            availability_proof="local_poll",
+        for role in ("feature", "confirmation"):
+            observation = Observation(
+                source=f"rss:archive:{role}",
+                source_kind="news",
+                title=f"An old {role} article first discovered today",
+                role=role,
+                published_at="2026-01-01T00:00:00Z",
+                observed_at="2026-01-01T03:00:00Z",
+                ingested_at="2026-01-01T03:00:00Z",
+                availability_proof="local_poll",
+            )
+            classified = runtime._classify_observation(observation)
+            assert classified.role == "identity"
+            assert classified.raw["original_role"] == role
+            event_id, _, _ = runtime.events.ingest(classified)
+            assert runtime.store.get_event(event_id).attention == 0
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_stale_only_event_is_not_retried_until_new_evidence_arrives(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        config["sources"]["rss"] = []
+        config["sources"]["gecko_networks"] = []
+        config["sources"]["pumpportal"]["enabled"] = False
+        config["sources"]["reverse_google_news"]["enabled"] = False
+        config["autonomous_search"]["enabled"] = False
+        config["event_min_attention"] = 0
+        runtime = Runtime(config, tmp_path)
+        now = utcnow()
+        event_id, _, _ = runtime.events.ingest(
+            Observation(
+                source="google-news-reverse",
+                source_kind="news",
+                title="Starlink offers flood-relief internet",
+                role="confirmation",
+                published_at=now - timedelta(hours=3),
+                observed_at=now,
+                ingested_at=now,
+                availability_proof="local_poll",
+            )
         )
-        classified = runtime._classify_observation(observation)
-        assert classified.role == "identity"
-        event_id, _, _ = runtime.events.ingest(classified)
-        assert runtime.store.get_event(event_id).attention == 0
+        runtime.store.set_kv(f"event_decision_attempt:{event_id}", 13)
+        calls = 0
+
+        class FakeEvaluator:
+            async def discover_and_decide(self, event):
+                nonlocal calls
+                calls += 1
+                return None
+
+        runtime.evaluator = FakeEvaluator()
+        await runtime.evaluate_events_once()
+        assert calls == 0
+        assert runtime.store.get_kv(f"event_decision_next:{event_id}") is not None
+        assert runtime.store.get_kv(f"event_decision_attempt:{event_id}") == 13
+
+        await runtime.ingest_observation(
+            Observation(
+                source="live-news",
+                source_kind="news",
+                title="Starlink offers flood-relief internet",
+                availability_proof="local_poll",
+            )
+        )
+        assert runtime.store.get_kv(f"event_decision_next:{event_id}") is None
+        assert runtime.store.get_kv(f"event_decision_attempt:{event_id}") == 0
         await runtime.close()
 
     asyncio.run(scenario())

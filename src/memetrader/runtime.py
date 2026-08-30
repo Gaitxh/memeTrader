@@ -36,6 +36,7 @@ from .strategy import (
     is_context_searchable_token_name,
     is_distinctive_token_name,
     is_promotional_market_content,
+    replay_guard,
     terms,
 )
 
@@ -770,20 +771,22 @@ class Runtime:
             obs.role = "promotion"
             obs.raw = {**obs.raw, "non_event_market_promotion": True}
             return obs
-        if obs.published_at is None or obs.role.lower() != "feature":
+        original_role = obs.role.lower()
+        if obs.published_at is None or original_role not in {"feature", "confirmation"}:
             return obs
         max_age = float((self.config.get("events") or {}).get("max_source_age_minutes", 30))
         source_age = obs.observed_at - obs.published_at
-        if obs.availability_proof in {"local_poll", "local_receive"} and source_age > timedelta(minutes=max_age):
+        if obs.availability_proof in {"local_poll", "local_receive", "agent_search_verified"} and source_age > timedelta(minutes=max_age):
             obs.role = "identity"
             obs.raw = {
                 **obs.raw,
+                "original_role": original_role,
                 "stale_first_observation": True,
                 "source_age_minutes": round(source_age.total_seconds() / 60.0, 2),
             }
         elif source_age < timedelta(minutes=-5):
             obs.role = "identity"
-            obs.raw = {**obs.raw, "published_time_in_future": True}
+            obs.raw = {**obs.raw, "original_role": original_role, "published_time_in_future": True}
         return obs
 
     async def ingest_observation(self, obs: Observation) -> None:
@@ -793,6 +796,8 @@ class Runtime:
         if not observation_created:
             return
         event = self.store.get_event(event_id)
+        self.store.set_kv(f"event_decision_next:{event_id}", None)
+        self.store.set_kv(f"event_decision_attempt:{event_id}", 0)
         notify_cfg = self.config["notifications"]
         threshold = float(notify_cfg.get("minimum_event_attention", self.config.get("event_min_attention", 40)))
         is_official = obs.source_kind.lower() == "official_social"
@@ -1154,6 +1159,18 @@ class Runtime:
             next_key = f"event_decision_next:{event.id}"
             next_at = self.store.get_kv(next_key)
             if next_at and now < parse_time(next_at):
+                continue
+
+            max_source_age = float(candidate_cfg.get("max_source_age_minutes", 30))
+            accepted, _ = replay_guard(self.store.event_observations(event.id), now, max_source_age)
+            if not any(str(row["source_kind"]).lower() != "onchain" for row in accepted):
+                # Do not repeatedly spend DEX/API work on an event whose only
+                # evidence is already stale. Any newly ingested observation clears
+                # this key and makes the event immediately eligible again.
+                self.store.set_kv(
+                    next_key,
+                    iso(max(now + timedelta(minutes=5), event.last_seen_at + timedelta(minutes=480))),
+                )
                 continue
 
             decision = await self.evaluator.discover_and_decide(event)
