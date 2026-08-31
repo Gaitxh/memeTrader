@@ -1,6 +1,6 @@
 # memeTrader 0.6.3：个人电脑上的自主信息源 Meme 机器人
 
-后续开发者和 Agent 请先阅读 [docs/PROJECT_CONTEXT/START_HERE.md](docs/PROJECT_CONTEXT/START_HERE.md)。这里保存无敏感信息的产品需求、架构、安全边界、当前状态与运行手册，避免关键上下文只存在于聊天窗口。本轮对整段聊天需求的逐项验收见 [docs/PROJECT_CONTEXT/REQUIREMENTS_ACCEPTANCE_2026-08-30.md](docs/PROJECT_CONTEXT/REQUIREMENTS_ACCEPTANCE_2026-08-30.md)，信息先于市场的独立前向研究规则见 [docs/INFORMATION_FIRST_SHADOW_CN.md](docs/INFORMATION_FIRST_SHADOW_CN.md)。
+后续开发者和 Agent 请先阅读 [docs/PROJECT_CONTEXT/START_HERE.md](docs/PROJECT_CONTEXT/START_HERE.md)。这里保存无敏感信息的产品需求、架构、安全边界、当前状态与运行手册，避免关键上下文只存在于聊天窗口。本轮对整段聊天需求的逐项验收见 [docs/PROJECT_CONTEXT/REQUIREMENTS_ACCEPTANCE_2026-08-30.md](docs/PROJECT_CONTEXT/REQUIREMENTS_ACCEPTANCE_2026-08-30.md)，信息先于市场的独立前向研究规则见 [docs/INFORMATION_FIRST_SHADOW_CN.md](docs/INFORMATION_FIRST_SHADOW_CN.md)，主路径受限时的合法替代链与证据差距见 [docs/PROJECT_CONTEXT/CONSTRAINT_SUBSTITUTION_MATRIX.md](docs/PROJECT_CONTEXT/CONSTRAINT_SUBSTITUTION_MATRIX.md)。
 
 `memeTrader` 常驻运行在普通 Windows 电脑上，目标不是全网毫秒级抢跑，而是以现实可行的**几十秒到几分钟**速度完成：
 

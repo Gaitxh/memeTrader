@@ -183,6 +183,30 @@ def test_public_redirect_to_private_destination_is_rejected():
     assert calls == 1
 
 
+def test_public_document_handoff_rejects_private_and_telegram_redirects_before_fetch():
+    async def scenario(location: str, expected_exception: type[Exception]):
+        calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(302, headers={"Location": location}, request=request)
+
+        http = HttpClient(transport=httpx.MockTransport(handler))
+        try:
+            with pytest.raises(expected_exception):
+                await http.get_public_document(
+                    "https://public.example/story",
+                    forbidden_host_suffixes={"t.me", "telegram.me", "telegram.org"},
+                )
+        finally:
+            await http.close()
+        assert calls == 1
+
+    run(scenario("http://169.254.169.254/latest/meta-data", UnsafeFeedURL))
+    run(scenario("https://t.me/BNONews/123", UnsafeFeedURL))
+
+
 def test_feed_redirect_loop_and_excess_are_bounded():
     async def loop_scenario():
         def handler(request: httpx.Request) -> httpx.Response:

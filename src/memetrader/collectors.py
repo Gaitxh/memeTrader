@@ -57,6 +57,10 @@ class InvalidFeedContentType(RuntimeError):
     pass
 
 
+class InvalidPublicDocumentContentType(RuntimeError):
+    pass
+
+
 class UnsupportedFeedContentEncoding(RuntimeError):
     pass
 
@@ -521,6 +525,103 @@ class HttpClient:
                         },
                     )
                     return response
+
+    async def get_public_document(
+        self,
+        url: str,
+        *,
+        maximum_bytes: int = 524_288,
+        maximum_redirects: int = 3,
+        forbidden_host_suffixes: set[str] | None = None,
+    ) -> httpx.Response:
+        """Fetch one bounded public text document with DNS pinning and checked redirects."""
+        current_url = normalize_public_http_url(url)
+        forbidden = {str(value).lower().strip(".") for value in (forbidden_host_suffixes or set())}
+        seen: set[str] = set()
+        redirects = 0
+        maximum_bytes = max(1, int(maximum_bytes))
+        maximum_redirects = max(0, int(maximum_redirects))
+        while True:
+            current_url = normalize_public_http_url(current_url)
+            host_name = (urllib.parse.urlsplit(current_url).hostname or "").lower().rstrip(".")
+            if any(host_name == suffix or host_name.endswith(f".{suffix}") for suffix in forbidden):
+                raise UnsafeFeedURL("document URL host is not allowed")
+            if current_url in seen:
+                raise FeedRedirectError("document redirect loop detected")
+            seen.add(current_url)
+            approved_addresses = await public_destination_addresses(current_url)
+            request_headers = {
+                "Accept": "text/html,application/xhtml+xml,application/json,text/plain,application/xml;q=0.8,*/*;q=0.1",
+                "Accept-Encoding": "identity",
+            }
+            host = urllib.parse.urlsplit(current_url).netloc.lower()
+            async with self._locks[host]:
+                wait = self.min_host_interval - (time.monotonic() - self._last[host])
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                async with self._pinned_feed_response(
+                    current_url, approved_addresses, request_headers
+                ) as upstream:
+                    self._last[host] = time.monotonic()
+                    peer = self._peer_address(upstream)
+                    expected_peers = {self.feed_proxy_ip} if self.feed_proxy_ip else approved_addresses
+                    if peer is None:
+                        if self._require_feed_peer:
+                            raise UnsafeFeedURL("document connection destination could not be verified")
+                    elif peer not in expected_peers or (not self.feed_proxy_ip and not _public_ip(peer)):
+                        raise UnsafeFeedURL("document connection reached an unapproved destination")
+                    if upstream.status_code in RSS_REDIRECT_STATUSES:
+                        location = upstream.headers.get("Location", "")
+                        if not location:
+                            raise FeedRedirectError("document redirect omitted Location")
+                        if redirects >= maximum_redirects:
+                            raise FeedRedirectError("document redirect limit exceeded")
+                        current_url = normalize_public_http_url(
+                            urllib.parse.urljoin(current_url, location)
+                        )
+                        redirects += 1
+                        continue
+                    content_encoding = upstream.headers.get("Content-Encoding", "").strip().lower()
+                    if content_encoding not in {"", "identity"}:
+                        raise UnsupportedFeedContentEncoding(
+                            "compressed document responses are not accepted"
+                        )
+                    upstream.raise_for_status()
+                    media_type = upstream.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+                    if not (
+                        media_type.startswith("text/")
+                        or media_type in {"application/json", "application/xml", "application/xhtml+xml"}
+                        or media_type.endswith("+json")
+                        or media_type.endswith("+xml")
+                    ):
+                        raise InvalidPublicDocumentContentType(
+                            "response is not a text document"
+                        )
+                    content_length = upstream.headers.get("Content-Length")
+                    if content_length:
+                        try:
+                            declared_size = int(content_length)
+                        except ValueError:
+                            declared_size = -1
+                        if declared_size > maximum_bytes:
+                            raise FeedResponseTooLarge("document response exceeds byte limit")
+                    chunks: list[bytes] = []
+                    size = 0
+                    async for chunk in upstream.aiter_raw():
+                        size += len(chunk)
+                        if size > maximum_bytes:
+                            raise FeedResponseTooLarge("document response exceeds byte limit")
+                        chunks.append(chunk)
+                    safe_headers = httpx.Headers(upstream.headers)
+                    safe_headers.pop("Content-Encoding", None)
+                    safe_headers.pop("Content-Length", None)
+                    return httpx.Response(
+                        upstream.status_code,
+                        content=b"".join(chunks),
+                        headers=safe_headers,
+                        request=httpx.Request("GET", current_url),
+                        extensions={"logical_url": current_url},
+                    )
 
 
 class RSSCollector:

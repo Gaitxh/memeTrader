@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import base64
 import copy
 import hashlib
@@ -19,11 +20,14 @@ import tempfile
 import threading
 from contextlib import contextmanager
 from datetime import timedelta
+from html.parser import HTMLParser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlparse, urlunparse
+
+import httpx
 
 from .autonomous_search import (
     CONTEXT_ERROR_RETRY_KEY,
@@ -38,10 +42,25 @@ from .autonomous_search import (
     TREND_RESULT_KEY,
     TREND_RUN_KEY,
 )
-from .models import TokenSnapshot, iso, parse_time, utcnow
+from .collectors import (
+    FeedRedirectError,
+    FeedResponseTooLarge,
+    HttpClient,
+    InvalidPublicDocumentContentType,
+    UnsafeFeedURL,
+    UnsupportedFeedContentEncoding,
+    normalize_public_http_url,
+)
+from .models import Observation, TokenSnapshot, iso, parse_time, utcnow
 from .runtime import DEFAULT_CONFIG, load_config
 from .store import Store
-from .strategy import CandidateEvaluator, evidence_origin, evidence_rejection, sanitize_source_entity_id
+from .strategy import (
+    CandidateEvaluator,
+    EventEngine,
+    evidence_origin,
+    evidence_rejection,
+    sanitize_source_entity_id,
+)
 from .wallet import SolanaDevnetWallet, WalletError
 
 
@@ -85,6 +104,62 @@ DEFAULT_CONSOLE_SETTINGS = {
     "watch_accounts": [],
     "topics": [],
 }
+CONSTRAINT_SUBSTITUTIONS = [
+    {
+        "id": "telegram_content_ingestion",
+        "objective": "timely Telegram-assisted discovery with verifiable origins",
+        "constraint": "platform terms block automated message-body ingestion and Agent use",
+        "substitute": "loopback external-origin handoff; refetch the non-Telegram original URL",
+        "status": "implemented",
+        "evidence_gap": "does not measure complete Telegram coverage, message timing, or channel authority",
+        "upgrade_gate": "documented platform permission plus scoped, revocable content rights",
+    },
+    {
+        "id": "x_full_firehose",
+        "objective": "early detection of high-impact public posts",
+        "constraint": "no licensed full-firehose access is configured",
+        "substitute": "exact public-page browser observations, web search, official sites and cross-platform originals",
+        "status": "partial",
+        "evidence_gap": "does not claim complete X coverage or platform-wide engagement",
+        "upgrade_gate": "licensed export/API or publisher-provided machine feed",
+    },
+    {
+        "id": "permanent_public_url",
+        "objective": "remote read-only observation of the resident console",
+        "constraint": "no user-owned domain or permanent tunnel is configured",
+        "substitute": "authenticated ephemeral HTTPS tunnel plus stable loopback console",
+        "status": "partial",
+        "evidence_gap": "public URL can rotate after tunnel restart",
+        "upgrade_gate": "user-owned domain and authenticated named tunnel",
+    },
+    {
+        "id": "mainnet_execution_validation",
+        "objective": "validate execution readiness without risking funds",
+        "constraint": "Mainnet Live is explicitly locked for this project",
+        "substitute": "Solana Devnet signing/transfer checks plus forward-only costed Paper execution",
+        "status": "implemented_safety_proxy",
+        "evidence_gap": "does not prove mainnet swap routing, liquidity, slippage or profit",
+        "upgrade_gate": "separate explicit review and authorization outside the current locked release",
+    },
+    {
+        "id": "commercial_token_rankings",
+        "objective": "fast new-token discovery and metadata-to-narrative links",
+        "constraint": "no authorized OKX premium/private feed is configured",
+        "substitute": "PumpPortal, DexScreener and GeckoTerminal public surfaces with frozen provenance",
+        "status": "implemented_partial",
+        "evidence_gap": "does not claim OKX ranking parity or proprietary smart-money labels",
+        "upgrade_gate": "documented official feed with compatible terms and stable provenance",
+    },
+    {
+        "id": "smart_money_and_holder_breadth",
+        "objective": "assess buyer quality, holder breadth and coordinated flow",
+        "constraint": "current public snapshots do not prove unique-wallet identity or smart-money labels",
+        "substitute": "provider-labeled metadata and on-chain activity remain shadow/context only",
+        "status": "not_equivalent",
+        "evidence_gap": "no unique-wallet breadth, ownership identity or causal performance claim",
+        "upgrade_gate": "validated indexer data and preregistered forward outcome study",
+    },
+]
 EXPECTED_TABLES = {
     "agent_attempts",
     "decisions",
@@ -96,6 +171,9 @@ EXPECTED_TABLES = {
     "source_item_revisions",
     "observation_provenance_registrations",
     "observation_provenance_assertions",
+    "telegram_external_handoff_registrations",
+    "telegram_external_handoff_attempts",
+    "telegram_external_handoff_results",
     "events",
     "information_first_shadow_admission_attempts",
     "information_first_shadow_cohorts",
@@ -339,6 +417,42 @@ class APIError(Exception):
         self.message = message
 
 
+class _DocumentMetadataParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.in_title = False
+        self.title_parts: list[str] = []
+        self.description = ""
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.casefold() == "title":
+            self.in_title = True
+            return
+        if tag.casefold() != "meta":
+            return
+        values = {str(key).casefold(): str(value or "") for key, value in attrs}
+        name = (values.get("property") or values.get("name") or "").casefold()
+        if name in {"description", "og:description", "twitter:description"} and not self.description:
+            self.description = " ".join(values.get("content", "").split())[:2000]
+        if name in {"og:title", "twitter:title"} and not self.title_parts:
+            title = " ".join(values.get("content", "").split())
+            if title:
+                self.title_parts.append(title[:500])
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.casefold() == "title":
+            self.in_title = False
+
+    def handle_data(self, data: str) -> None:
+        if self.in_title:
+            value = " ".join(str(data or "").split())
+            if value:
+                self.title_parts.append(value)
+
+    def metadata(self) -> tuple[str, str]:
+        return " ".join(" ".join(self.title_parts).split())[:500], self.description[:2000]
+
+
 def _json_load(value: Any, default: Any) -> Any:
     if value in (None, ""):
         return copy.deepcopy(default)
@@ -389,6 +503,47 @@ def _safe_attached_link_url(value: Any) -> str | None:
     ):
         return None
     return safe
+
+
+def _telegram_handoff_external_url(value: Any) -> str | None:
+    """Return a query-free public URL and reject Telegram itself as the content origin."""
+    try:
+        normalized = normalize_public_http_url(str(value or ""))
+    except (TypeError, ValueError, UnsafeFeedURL):
+        return None
+    parsed = urlparse(normalized)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if any(
+        host == suffix or host.endswith(f".{suffix}")
+        for suffix in {"t.me", "telegram.me", "telegram.org"}
+    ):
+        return None
+    query_free = urlunparse((parsed.scheme, parsed.netloc, parsed.path or "/", "", "", ""))
+    return _safe_attached_link_url(query_free)
+
+
+def _external_document_metadata(response: httpx.Response) -> tuple[str, str]:
+    media_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+    text = response.text[:500_000]
+    if media_type == "application/json" or media_type.endswith("+json"):
+        try:
+            value = json.loads(text)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return "", ""
+        if not isinstance(value, dict):
+            return "", ""
+        title = value.get("headline") or value.get("title") or value.get("name") or ""
+        description = value.get("description") or value.get("summary") or ""
+        return " ".join(str(title).split())[:500], " ".join(str(description).split())[:2000]
+    if "html" in media_type:
+        parser = _DocumentMetadataParser()
+        try:
+            parser.feed(text)
+        except Exception:
+            return "", ""
+        return parser.metadata()
+    first_line = next((" ".join(line.split()) for line in text.splitlines() if line.strip()), "")
+    return first_line[:500], ""
 
 
 def _safe_float(value: Any) -> float | None:
@@ -807,7 +962,235 @@ class WebData:
                     "https://core.telegram.org/api/terms",
                 ],
             },
+            "handoff": self.telegram_external_handoffs(),
         }
+
+    def telegram_external_handoffs(self, *, write_available: bool = False) -> dict[str, Any]:
+        empty = {
+            "version": Store.TELEGRAM_EXTERNAL_HANDOFF_VERSION,
+            "status": "not_observed",
+            "summary": {
+                "attempts": 0,
+                "completed": 0,
+                "pending": 0,
+                "verified": 0,
+                "duplicate": 0,
+                "zero_yield": 0,
+                "rejected": 0,
+                "error": 0,
+            },
+            "items": [],
+            "telegram_message_content_stored": False,
+            "decision_eligible": False,
+            "affects": "investigation_only",
+            "write_available": bool(write_available),
+        }
+        try:
+            with self.connect() as connection:
+                if connection is None or not all(
+                    self._table_exists(connection, table)
+                    for table in (
+                        "telegram_external_handoff_attempts",
+                        "telegram_external_handoff_results",
+                    )
+                ):
+                    return empty
+                counts = {
+                    str(row["status"]): int(row["value"] or 0)
+                    for row in connection.execute(
+                        "SELECT status,COUNT(*) AS value "
+                        "FROM telegram_external_handoff_results GROUP BY status"
+                    )
+                }
+                attempts = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM telegram_external_handoff_attempts"
+                    ).fetchone()[0]
+                )
+                rows = connection.execute(
+                    """
+                    SELECT a.id,a.received_at,a.catalog_entity_id,a.external_url_safe,
+                           r.recorded_at,r.status,r.reason,r.final_external_url_safe,
+                           r.observation_id,r.event_id,r.http_status
+                    FROM telegram_external_handoff_attempts a
+                    LEFT JOIN telegram_external_handoff_results r ON r.attempt_id=a.id
+                    ORDER BY a.id DESC LIMIT 20
+                    """
+                ).fetchall()
+        except sqlite3.Error:
+            return {**empty, "status": "unavailable"}
+        completed = sum(counts.values())
+        return {
+            **empty,
+            "status": "collecting" if attempts else "not_observed",
+            "summary": {
+                "attempts": attempts,
+                "completed": completed,
+                "pending": max(0, attempts - completed),
+                **{
+                    name: counts.get(name, 0)
+                    for name in ("verified", "duplicate", "zero_yield", "rejected", "error")
+                },
+            },
+            "items": [
+                {
+                    "attempt_id": int(row["id"]),
+                    "received_at": row["received_at"],
+                    "catalog_entity_id": row["catalog_entity_id"],
+                    "external_url": row["final_external_url_safe"] or row["external_url_safe"] or None,
+                    "finished_at": row["recorded_at"],
+                    "status": row["status"] or "received",
+                    "reason": row["reason"] or "network_request_not_finished",
+                    "observation_id": row["observation_id"],
+                    "event_id": row["event_id"],
+                    "http_status": row["http_status"],
+                    "decision_eligible": False,
+                    "affects": "investigation_only",
+                }
+                for row in rows
+            ],
+        }
+
+    @staticmethod
+    async def _fetch_telegram_external_origin(url: str) -> httpx.Response:
+        client = HttpClient(timeout=12, min_host_interval=0, feed_max_response_bytes=524_288)
+        try:
+            return await client.get_public_document(
+                url,
+                maximum_bytes=524_288,
+                maximum_redirects=3,
+                forbidden_host_suffixes={"t.me", "telegram.me", "telegram.org"},
+            )
+        finally:
+            await client.close()
+
+    def submit_telegram_external_handoff(self, payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise APIError(400, "telegram external handoff must be a JSON object")
+        if set(payload) != {"catalog_entity_id", "external_url", "consent_acknowledged"}:
+            raise APIError(400, "handoff accepts only catalog_entity_id, external_url and consent_acknowledged")
+        entity_id = _plain_text(payload.get("catalog_entity_id"), "catalog_entity_id", 128, required=True)
+        raw_url = _plain_text(payload.get("external_url"), "external_url", 2048, required=True)
+        consent = payload.get("consent_acknowledged") is True
+        safe_url = _telegram_handoff_external_url(raw_url) or ""
+        fingerprint = hashlib.sha256(raw_url.encode("utf-8", errors="ignore")).hexdigest()
+        store = Store(self.database, initial_cash_usd=0)
+        attempt_id = store.start_telegram_external_handoff(
+            catalog_entity_id=entity_id,
+            external_url_safe=safe_url,
+            external_url_fingerprint=fingerprint,
+        )
+
+        def reject(reason: str) -> None:
+            store.finish_telegram_external_handoff(attempt_id, status="rejected", reason=reason)
+            raise APIError(400, reason)
+
+        try:
+            if not consent:
+                reject("explicit voluntary submission acknowledgement is required")
+            catalog_ids = {item["entity_id"] for item in self.telegram_directory()["items"]}
+            if entity_id not in catalog_ids:
+                reject("telegram catalog entity is not audited")
+            if not safe_url:
+                reject("external URL must be a public non-Telegram http/https URL")
+            try:
+                response = asyncio.run(self._fetch_telegram_external_origin(safe_url))
+            except (
+                UnsafeFeedURL,
+                FeedRedirectError,
+                FeedResponseTooLarge,
+                InvalidPublicDocumentContentType,
+                UnsupportedFeedContentEncoding,
+            ) as exc:
+                reason = type(exc).__name__
+                store.finish_telegram_external_handoff(
+                    attempt_id, status="rejected", reason=reason
+                )
+                raise APIError(400, "external origin failed public-document safety validation") from None
+            except (httpx.HTTPError, OSError, TimeoutError) as exc:
+                reason = type(exc).__name__
+                store.finish_telegram_external_handoff(attempt_id, status="error", reason=reason)
+                raise APIError(502, "external origin could not be fetched") from None
+            final_url = _telegram_handoff_external_url(
+                response.extensions.get("logical_url") or str(response.request.url)
+            )
+            if not final_url:
+                store.finish_telegram_external_handoff(
+                    attempt_id, status="rejected", reason="unsafe_final_url"
+                )
+                raise APIError(400, "external origin redirected to a disallowed URL")
+            title, description = _external_document_metadata(response)
+            if len(title) < 8:
+                store.finish_telegram_external_handoff(
+                    attempt_id,
+                    status="zero_yield",
+                    reason="document_has_no_usable_title",
+                    final_external_url_safe=final_url,
+                    http_status=response.status_code,
+                )
+                return {
+                    "ok": True,
+                    "attempt_id": attempt_id,
+                    "status": "zero_yield",
+                    "decision_eligible": False,
+                    "affects": "investigation_only",
+                }
+            now = utcnow()
+            host = (urlparse(final_url).hostname or "external-origin").removeprefix("www.")
+            observation = Observation(
+                source=f"telegram-handoff:{entity_id}",
+                source_kind="news",
+                title=title,
+                text=description,
+                url=final_url,
+                author=host,
+                observed_at=now,
+                ingested_at=now,
+                availability_proof="local_poll",
+                role="identity",
+                source_item_id=(
+                    "external-origin:"
+                    + hashlib.sha256(final_url.encode("utf-8", errors="ignore")).hexdigest()
+                ),
+                raw={
+                    "telegram_external_handoff": True,
+                    "telegram_catalog_entity_id": entity_id,
+                    "origin_platform": "web",
+                    "decision_eligible": False,
+                    "affects": "investigation_only",
+                },
+            )
+            event_id, _event_created, observation_created = EventEngine(store).ingest(observation)
+            observation_id = store.observation_id_for(observation)
+            status = "verified" if observation_created else "duplicate"
+            store.finish_telegram_external_handoff(
+                attempt_id,
+                status=status,
+                reason="external_origin_refetched_and_context_ingested",
+                final_external_url_safe=final_url,
+                observation_id=observation_id,
+                event_id=event_id or None,
+                http_status=response.status_code,
+            )
+            return {
+                "ok": True,
+                "attempt_id": attempt_id,
+                "status": status,
+                "event_id": event_id or None,
+                "observation_id": observation_id,
+                "external_url": final_url,
+                "decision_eligible": False,
+                "affects": "investigation_only",
+            }
+        except APIError:
+            raise
+        except Exception as exc:
+            store.finish_telegram_external_handoff(
+                attempt_id, status="error", reason=type(exc).__name__
+            )
+            raise APIError(500, "telegram external handoff failed") from None
+        finally:
+            store.close()
     def public_access_url(self) -> str | None:
         access_path = self.console_settings_path.with_name("PUBLIC_ACCESS.txt")
         try:
@@ -3909,7 +4292,7 @@ class WebData:
             "as_of": iso(),
         }
 
-    def sources(self) -> dict[str, Any]:
+    def sources(self, *, local_controls_available: bool = False) -> dict[str, Any]:
         configured: list[dict[str, Any]] = []
         source_cfg = self.config.get("sources") or {}
         for item in source_cfg.get("rss", []):
@@ -4599,7 +4982,12 @@ class WebData:
                 "accepts_sessions": False,
             },
             "browser_bridge": self._bridge_health(),
-            "telegram": self.telegram_directory(),
+            "telegram": {
+                **self.telegram_directory(),
+                "handoff": self.telegram_external_handoffs(
+                    write_available=local_controls_available
+                ),
+            },
             "learning": learning,
             "source_poll_learning": source_poll_learning,
             "token_discovery_learning": token_discovery_learning,
@@ -4798,6 +5186,12 @@ class WebData:
             "policy_enforced": True,
             "future_data_rejected": True if future_observed else None,
             "observed_future_rejection_count": counts["future_rejected"],
+            "constraint_substitutions": {
+                "version": "constraint-substitution-matrix/v1",
+                "policy": "legal_verifiable_substitute_with_explicit_evidence_gap",
+                "illegal_or_unsafe_bypass_allowed": False,
+                "items": copy.deepcopy(CONSTRAINT_SUBSTITUTIONS),
+            },
             "as_of": iso(),
         }
 
@@ -5140,7 +5534,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 "routes": [
                     "/api/overview", "/api/events", "/api/tokens", "/api/decisions",
                     "/api/portfolio", "/api/notifications", "/api/agents", "/api/sources", "/api/audit", "/api/settings",
-                    "/api/watchlist", "/api/wallet",
+                    "/api/watchlist", "/api/wallet", "/api/telegram/external-handoffs",
                 ],
                 "live": {"enabled": False, "locked": True, "available": False},
             }
@@ -5166,7 +5560,13 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/agents":
             return self.data.agents()
         if path == "/api/sources":
-            return self.data.sources()
+            return self.data.sources(
+                local_controls_available=self._local_wallet_origin_allowed()
+            )
+        if path == "/api/telegram/external-handoffs":
+            return self.data.telegram_external_handoffs(
+                write_available=self._local_wallet_origin_allowed()
+            )
         if path == "/api/audit":
             return self.data.audit()
         if path == "/api/settings":
@@ -5227,6 +5627,19 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self._unauthorized()
             return
         path = urlparse(self.path).path.rstrip("/")
+        if path == "/api/telegram/external-handoffs":
+            if not self._local_wallet_origin_allowed():
+                self._discard_request_body(maximum=4096)
+                self._error(
+                    APIError(403, "external handoff is available only on the local loopback console")
+                )
+                return
+            try:
+                payload = self._read_json_body(maximum=4096)
+                self._json(200, self.data.submit_telegram_external_handoff(payload))
+            except APIError as exc:
+                self._error(exc)
+            return
         wallet_routes = {
             "/api/wallet/connect": self.data.connect_wallet,
             "/api/wallet/faucet": self.data.wallet_airdrop,

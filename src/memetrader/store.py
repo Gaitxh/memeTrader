@@ -54,6 +54,7 @@ class Store:
     EVENT_CLAIM_ASSESSMENT_VERSION = "event-claim-assessment/v1"
     SOURCE_ITEM_REVISION_VERSION = "source-item-revision/v1"
     OBSERVATION_PROVENANCE_VERSION = "observation-provenance/v1"
+    TELEGRAM_EXTERNAL_HANDOFF_VERSION = "telegram-manual-external-origin-handoff/v1"
     EVENT_CLAIM_STATUSES = {
         "confirmed_fact", "probable_report", "unverified_rumor", "false_claim",
         "correction", "retraction", "satire", "impersonation", "promotion",
@@ -262,6 +263,59 @@ class Store:
                 CREATE TRIGGER IF NOT EXISTS observation_provenance_assertions_no_delete
                 BEFORE DELETE ON observation_provenance_assertions
                 BEGIN SELECT RAISE(ABORT,'observation provenance assertions are immutable'); END;
+
+                CREATE TABLE IF NOT EXISTS telegram_external_handoff_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS telegram_external_handoff_attempts (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    received_at TEXT NOT NULL,
+                    catalog_entity_id TEXT NOT NULL,
+                    external_url_safe TEXT NOT NULL,
+                    external_url_fingerprint TEXT NOT NULL,
+                    submitted_via TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'investigation_only' CHECK(affects='investigation_only')
+                );
+                CREATE TABLE IF NOT EXISTS telegram_external_handoff_results (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    attempt_id INTEGER NOT NULL UNIQUE,
+                    recorded_at TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('verified','duplicate','zero_yield','rejected','error')),
+                    reason TEXT NOT NULL,
+                    final_external_url_safe TEXT NOT NULL,
+                    observation_id INTEGER,
+                    event_id INTEGER,
+                    http_status INTEGER,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'investigation_only' CHECK(affects='investigation_only')
+                );
+                CREATE INDEX IF NOT EXISTS telegram_external_handoff_attempts_time_idx
+                    ON telegram_external_handoff_attempts(received_at,id);
+                CREATE INDEX IF NOT EXISTS telegram_external_handoff_results_time_idx
+                    ON telegram_external_handoff_results(recorded_at,id);
+                CREATE TRIGGER IF NOT EXISTS telegram_external_handoff_registrations_no_update
+                BEFORE UPDATE ON telegram_external_handoff_registrations
+                BEGIN SELECT RAISE(ABORT,'telegram external handoff registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS telegram_external_handoff_registrations_no_delete
+                BEFORE DELETE ON telegram_external_handoff_registrations
+                BEGIN SELECT RAISE(ABORT,'telegram external handoff registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS telegram_external_handoff_attempts_no_update
+                BEFORE UPDATE ON telegram_external_handoff_attempts
+                BEGIN SELECT RAISE(ABORT,'telegram external handoff attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS telegram_external_handoff_attempts_no_delete
+                BEFORE DELETE ON telegram_external_handoff_attempts
+                BEGIN SELECT RAISE(ABORT,'telegram external handoff attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS telegram_external_handoff_results_no_update
+                BEFORE UPDATE ON telegram_external_handoff_results
+                BEGIN SELECT RAISE(ABORT,'telegram external handoff results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS telegram_external_handoff_results_no_delete
+                BEFORE DELETE ON telegram_external_handoff_results
+                BEGIN SELECT RAISE(ABORT,'telegram external handoff results are immutable'); END;
 
                 CREATE TABLE IF NOT EXISTS tokens (
                     token_id TEXT PRIMARY KEY,
@@ -1178,6 +1232,26 @@ class Store:
                     ),
                 ),
             )
+            self.db.execute(
+                "INSERT OR IGNORE INTO telegram_external_handoff_registrations("
+                "definition_version,registered_at,definition_json) VALUES(?,?,?)",
+                (
+                    self.TELEGRAM_EXTERNAL_HANDOFF_VERSION,
+                    iso(),
+                    self._json(
+                        {
+                            "append_only": True,
+                            "no_historical_backfill": True,
+                            "scope": "user_submitted_external_original_urls_only",
+                            "telegram_message_content_stored": False,
+                            "telegram_credentials_or_sessions_accepted": False,
+                            "external_origin_refetched_locally": True,
+                            "transport_is_not_origin": True,
+                            "decision_effect": "none",
+                        }
+                    ),
+                ),
+            )
             event_columns = {row["name"] for row in self.db.execute("PRAGMA table_info(events)")}
             if "topic" not in event_columns:
                 self.db.execute("ALTER TABLE events ADD COLUMN topic TEXT NOT NULL DEFAULT 'unknown'")
@@ -1399,7 +1473,14 @@ class Store:
         transport_source = source[:300]
         local_collector = "local_poll" if obs.availability_proof == "local_poll" else "unknown"
         evidence_basis = "insufficient_explicit_provenance"
-        if obs.availability_proof == "local_receive" and browser:
+        if raw.get("telegram_external_handoff") is True:
+            route_kind = "relay"
+            identity_state = "verified_external_origin_page"
+            transport_platform = "telegram"
+            transport_source = str(raw.get("telegram_catalog_entity_id") or "")[:300]
+            local_collector = "local_web_external_handoff"
+            evidence_basis = "user_submitted_external_origin_refetched_locally"
+        elif obs.availability_proof == "local_receive" and browser:
             local_collector = "browser_bridge"
             transport_platform = "none"
             transport_source = ""
@@ -1468,6 +1549,130 @@ class Store:
             ),
         )
         return self.db.execute("SELECT changes()").fetchone()[0] > 0
+
+    def start_telegram_external_handoff(
+        self,
+        *,
+        catalog_entity_id: str,
+        external_url_safe: str,
+        external_url_fingerprint: str,
+        submitted_via: str = "local_web",
+    ) -> int:
+        """Persist a denominator row before any external network request is made."""
+        with self._lock, self.db:
+            cur = self.db.execute(
+                """
+                INSERT INTO telegram_external_handoff_attempts(
+                    definition_version,received_at,catalog_entity_id,external_url_safe,
+                    external_url_fingerprint,submitted_via,decision_eligible,affects
+                ) VALUES(?,?,?,?,?,?,0,'investigation_only')
+                """,
+                (
+                    self.TELEGRAM_EXTERNAL_HANDOFF_VERSION,
+                    iso(),
+                    str(catalog_entity_id or "")[:128],
+                    str(external_url_safe or "")[:2048],
+                    str(external_url_fingerprint or "")[:64],
+                    str(submitted_via or "local_web")[:64],
+                ),
+            )
+            return int(cur.lastrowid)
+
+    def finish_telegram_external_handoff(
+        self,
+        attempt_id: int,
+        *,
+        status: str,
+        reason: str,
+        final_external_url_safe: str = "",
+        observation_id: int | None = None,
+        event_id: int | None = None,
+        http_status: int | None = None,
+    ) -> bool:
+        allowed = {"verified", "duplicate", "zero_yield", "rejected", "error"}
+        if status not in allowed:
+            raise ValueError("unsupported telegram external handoff result")
+        with self._lock, self.db:
+            cur = self.db.execute(
+                """
+                INSERT OR IGNORE INTO telegram_external_handoff_results(
+                    definition_version,attempt_id,recorded_at,status,reason,
+                    final_external_url_safe,observation_id,event_id,http_status,
+                    decision_eligible,affects
+                ) VALUES(?,?,?,?,?,?,?,?,?,0,'investigation_only')
+                """,
+                (
+                    self.TELEGRAM_EXTERNAL_HANDOFF_VERSION,
+                    int(attempt_id),
+                    iso(),
+                    status,
+                    str(reason or "")[:300],
+                    str(final_external_url_safe or "")[:2048],
+                    observation_id,
+                    event_id,
+                    http_status,
+                ),
+            )
+            return cur.rowcount > 0
+
+    def telegram_external_handoff_summary(self, *, limit: int = 20) -> dict[str, Any]:
+        limit = max(1, min(100, int(limit)))
+        with self._lock:
+            counts = {
+                str(row["status"]): int(row["value"] or 0)
+                for row in self.db.execute(
+                    "SELECT status,COUNT(*) AS value FROM telegram_external_handoff_results GROUP BY status"
+                )
+            }
+            attempts = int(
+                self.db.execute("SELECT COUNT(*) FROM telegram_external_handoff_attempts").fetchone()[0]
+            )
+            rows = self.db.execute(
+                """
+                SELECT a.id,a.received_at,a.catalog_entity_id,a.external_url_safe,
+                       r.recorded_at,r.status,r.reason,r.final_external_url_safe,
+                       r.observation_id,r.event_id,r.http_status
+                FROM telegram_external_handoff_attempts a
+                LEFT JOIN telegram_external_handoff_results r ON r.attempt_id=a.id
+                ORDER BY a.id DESC LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        items = []
+        for row in rows:
+            items.append(
+                {
+                    "attempt_id": int(row["id"]),
+                    "received_at": row["received_at"],
+                    "catalog_entity_id": row["catalog_entity_id"],
+                    "external_url": row["final_external_url_safe"] or row["external_url_safe"] or None,
+                    "finished_at": row["recorded_at"],
+                    "status": row["status"] or "received",
+                    "reason": row["reason"] or "network_request_not_finished",
+                    "observation_id": row["observation_id"],
+                    "event_id": row["event_id"],
+                    "http_status": row["http_status"],
+                    "decision_eligible": False,
+                    "affects": "investigation_only",
+                }
+            )
+        completed = sum(counts.values())
+        return {
+            "version": self.TELEGRAM_EXTERNAL_HANDOFF_VERSION,
+            "status": "collecting" if attempts else "not_observed",
+            "summary": {
+                "attempts": attempts,
+                "completed": completed,
+                "pending": max(0, attempts - completed),
+                **{name: counts.get(name, 0) for name in sorted(
+                    {"verified", "duplicate", "zero_yield", "rejected", "error"}
+                )},
+            },
+            "items": items,
+            "telegram_message_content_stored": False,
+            "decision_eligible": False,
+            "affects": "investigation_only",
+        }
 
     @classmethod
     def _source_item_key(cls, obs: Observation) -> tuple[str, str] | None:

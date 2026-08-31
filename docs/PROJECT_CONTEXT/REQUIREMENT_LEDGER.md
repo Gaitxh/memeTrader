@@ -1,7 +1,7 @@
 # memeTrader 长期需求台账
 
 最后核验：2026-08-31 18:00（Asia/Shanghai）
-当前功能基线：`main` / `b84a4894e51d39f63d382039ddbacbb99e27232c` / Paper / `live.enabled=false`
+本轮实现前基线：`main` / `92c3303c41196502a6d2c8af246aef8c8b6d614a` / Paper / `live.enabled=false`；发布后 SHA 以 Git 为准。
 
 本文件是长期任务的逐项台账，不是某次发布的完成声明。运行事实仍以 `AGENTS.md`、当前代码、忽略的本机 `config.json`、当前 SQLite、实时 API、进程与端口检查为准。`CONTINUOUS` 表示工程链路存在但研究或运行验证必须持续，不能改成 `DONE`。
 
@@ -20,6 +20,7 @@
 | SRC-002 | 长期总 Prompt §5 | source-poll exposure 保存完成、空结果、重复、过滤和错误 | CONTINUOUS | `source_poll_attempts` 与 Sources 面板已实现 | 持续评估各入口覆盖和稳定性 | 是 | 否 | 为非空结果删分母 | 保留所有真实 poll 终态 | 2026-08-31 16:35 |
 | TOKEN-001 | 用户 Dex/OKX/新币来源要求；长期总 Prompt §5、§7 | 多入口新 Token/池发现与 Event↔Token 证据链 | CONTINUOUS | PumpPortal、GeckoTerminal、DexScreener discovery/hydration、token discovery exposure 已实现 | OKX Premium/签名接口未接；不逆向绕过 | 是 | 否 | 推广榜单、同名币、来源竞争 | 继续比较本机首次发现与后续漏斗 | 2026-08-31 16:35 |
 | TOKEN-002 | 长期总 Prompt §7 | canonical Token 竞争与 CA 置信度 | CONTINUOUS | match/candidate/canonical margin、WAIT/REJECT/CANDIDATE 已实现 | image similarity、dominant contract/buyer breadth仍不完整 | 是 | 否 | 同名币和未来赢家回填 | 只用决策时可得证据扩充特征 | 2026-08-31 16:35 |
+| TOKEN-003 | 用户提醒 Pump 每天有一批而非极少数高涨幅 Token | 证明完整新币总体的机会召回率和当前 Paper 交易稀疏度是否合理 | NOT_STARTED | token-discovery exposure 已保存入口、返回、首次发现及后续 Candidate/Paper 漏斗，但尚无覆盖整个前向 Token 总体的固定时点涨幅分层 | 缺少所有发现 Token 的 15/60/240 分钟 outcome、涨幅阈值分层、当时动作和断点联合 cohort | 是 | 否 | 用用户列举的事后赢家反向拟合，或用“策略谨慎”掩盖系统性漏检 | 预注册 `token-universe-forward-outcomes`；覆盖完整新币流、保留 missing/zero/error，只用后续总体样本评估 recall 与 challenger | 2026-08-31 20:35 |
 | INFO-001 | 用户“信息可能先于价格”；长期总 Prompt §6 | 独立 information-first 前向 cohort | CONTINUOUS | `information-first-shadow/v1`，缺基线也入分母，15/60/240 追加终态 | 样本尚不成熟 | 是 | 否 | 把低活动误写成未定价 | 继续积累注册后 cohort | 2026-08-31 16:35 |
 | INFO-002 | 长期总 Prompt §6 | 严格 Information Lead Gap | CONTINUOUS | `information-first-ilg/v1`；同 provider/chain/DEX/pair；Store 生成 `recorded_at` | 需更多注册后 crossing/missing 样本 | 是 | 否 | 后来快照/跨池回填 | 保持固定 240m+30m 终态 | 2026-08-31 16:35 |
 | INFO-003 | 长期总 Prompt §6 | 10s/30s/1m/5m mention velocity、加速度、跨平台扩散 | PARTIAL | `event-attention-trajectory/v1` 保留本机到达率下界；`observation-provenance/v1` 从上线后显式拆分 Origin/Transport/Local capture，并给出已证明不同原始条目下界。旧事件不回填，覆盖不足为 null | 全平台分母、稳定 actor 分母、reply/quote/repost 修订和完整跨社区扩散仍不可用 | 是 | 否 | 45s 轮询不足以解析 10s/30s；前向 proven origin 样本仍需自然积累 | 先积累注册后路径与轨迹，再做 collector coverage；不得把 transport/域名/singleton 当 origin independence | 2026-08-31 19:30 |
@@ -35,7 +36,8 @@
 | TG-002 | Telegram 官方 Content Licensing/API 条款；长期总 Prompt 的客观判断要求 | 自动抓取、聚合并送入 AI 前必须满足平台条款 | BLOCKED | 2026-08-31 官方条款明确禁止面向 AI/ML 的 scraping/indexing/aggregation/deployment；Web 返回 `blocked_by_platform_terms` | 未取得 Telegram 及所有相关用户的明确、持续、限定同意 | 是 | 否 | 账号/API 封禁、版权与隐私 | 保持自动正文采集和 Agent 摄取关闭；定期复核官方条款 | 2026-08-31 16:35 |
 | TG-003 | 长期总 Prompt §12.1–12.2 | Telegram 候选、身份、角色、替代机器源目录 | IN_PROGRESS | `SOCIAL_SOURCE_CATALOG.json` 已扩充为 13 个 Telegram 候选；未核验/非官方/transport 明确标注 | 仍需逐一核验当前 profile/运营方/活跃性 | 是 | 否 | 把搬运当官方、一源多算 | 从官网双向核验；优先使用外部原文/RSS | 2026-08-31 16:35 |
 | TG-004 | 长期总 Prompt §12.3–12.9 | MTProto collector、message revision/tombstone/exposure/provenance/learning | BLOCKED | 当前 r6 无 Telegram 表/Observation/poll；Web 明确显示 0 messages/0 exposure | 全部工程链路未上线 | 是 | 否 | 与 TG-002 平台条款冲突 | 只有合规条件改变后再按严格 allowlist 设计评审 | 2026-08-31 16:35 |
-| TG-005 | 用户“Telegram 失败时作备用” | 人工发现后回到官网/RSS/X/链上原始证据 | CONTINUOUS | 253 条 Dex Token Telegram 链接仅保存为 manual identity/promotion；通用 Agent/Bridge 拒绝 t.me | 需持续衡量这些链接是否带来可核验外部原文 | 是 | 否 | 项目方自报和转发污染 | 只追踪允许机器读取的 external origin | 2026-08-31 16:35 |
+| TG-005 | 用户“Telegram 失败时作备用” | 人工发现后回到官网/RSS/X/链上原始证据 | CONTINUOUS | Dex Token Telegram 链接仅保存为 manual identity/promotion；通用 Agent/Bridge 拒绝 t.me；`telegram-manual-external-origin-handoff/v1` 可在本机提交站外原始 URL 并重新抓取 | 需持续衡量这些链接是否带来可核验外部原文 | 是 | 否 | 项目方自报和转发污染 | 保留成功、失败、重复和 zero-yield 分母；只生成 context | 2026-08-31 20:20 |
+| TG-006 | 用户“让 Telegram 机器人转发到本地”及“曲线实现” | 在不摄取 Telegram 正文的前提下建立可运行交接 | CONTINUOUS | append-only attempts/results、SSRF/重定向/大小/类型检查、本机 POST、公网 403、Sources 双语表单与 Audit 证据差距已实现 | 尚未创建 Telegram Bot 凭据或自动转发；当前由用户主动提交站外 URL | 是 | 否 | 自动机器人仍受平台条款及凭据创建确认约束 | 先积累真实手工交接分母；只有合规条件改变才评审自动化 | 2026-08-31 20:20 |
 | DEVNET-001 | 用户真实交易测试讨论 | Devnet 可核验签名；Mainnet 仍锁定 | BLOCKED | 隔离 Devnet Wallet 工程存在 | 测试钱包无 Devnet SOL，尚无公开可核验 signature | 否 | “只接私钥即可无缝实盘”已 INVALIDATED | 用户曾暴露的私钥不可使用 | 仅用户自行充值 Devnet SOL 后做最小签名验证 | 2026-08-31 16:35 |
 | PUBLIC-001 | 用户公开 URL 要求 | 受保护公网只读控制台，不暴露 loopback/secret | PARTIALLY_DONE | Quick Tunnel 脚本和口令保护已实现 | 当前 tunnel 530，8788 未监听；URL 非固定域名 | 是 | 否 | 临时域名变化、口令泄露 | 发布后恢复临时入口；固定域名需用户自有 Tunnel | 2026-08-31 16:35 |
 
@@ -46,7 +48,7 @@
 - Paper：cash/equity `1001.4917655212 USD`，累计已实现 Paper PnL `+1.4917655212 USD`；这不是 Mainnet 利润。
 - 事实账本：31 个注册后前向点 / 22 个事件，当前均为 `unassessed`；不是 31 个已证实事实，也没有历史回填。
 - Agent 当日：118 calls、144 attempts、26 fallback attempts、6,937,075 已知 tokens；并发上限 2。Context 本机有限调用上限已从 96 调到 192。
-- Telegram：0 专表、0 Observation、0 poll attempt、0 自动消息、0 forward exposure；253 个 Token 元数据 `telegram_manual` 链接不等于采集。
+- Telegram：3 张站外链接交接专表、0 handoff attempt、0 自动消息正文、0 Telegram 内容 Observation；Token 元数据 `telegram_manual` 链接仍不等于采集。交接只从用户今后的真实本机提交开始，不回填历史。
 - Runtime：一个 Windows 计划任务与一个活动锁；8765/8787/8788 各单 listener。受保护 Quick Tunnel 正常，未鉴权 401、鉴权后 200。
 
 这些数字是本次核验快照，会继续变化；后续不得直接复制为“当前状态”。

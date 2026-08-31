@@ -234,6 +234,12 @@ Telegram 来源应和其他平台使用同一证据模型：
 
 不应为每个 Telegram 频道启动一个 Agent。采集、URL 提取、去重、时间判断和角色分配应由本地确定性逻辑完成。Telegram 本身不直接喂给 Agent；当人工线索指向允许机器读取的官网/RSS原文时，才进入现有 Trend Scout 或 Token Context 流程。搜索机器人的结果只能触发“寻找原始来源”，不能直接增加 attention 或 candidate score。
 
+### 10.4 已实现的站外原始链接交接
+
+`telegram-manual-external-origin-handoff/v1` 已提供一个不摄取 Telegram 正文的本机替代入口：用户在已登录 Telegram 中看到消息后，只把消息指向的**站外原始 URL**主动提交到 `http://127.0.0.1:8787/#/sources`。系统在网络请求前记录 append-only attempt，移除查询参数，拒绝 Telegram/私网/loopback/metadata 目标和危险重定向，再以固定大小重新抓取站外文本页。
+
+结果固定为 `verified / duplicate / zero_yield / rejected / error`；失败与零产出也保留。站外页只生成 `identity/context`，Telegram 只记为 discovery/transport，`decision_eligible=false`、`affects=investigation_only`。该入口不保存消息正文、caption、消息 ID、Telegram 时间、Session、Cookie、验证码或密码，也不把内容送入 Agent。受保护公网控制台保持只读。它解决的是“从人工线索到可验证站外原文”的交接，不等价于 Telegram 全量采集、频道热度或发布时间覆盖。
+
 ## 11. 推荐频率
 
 下列频率仅适用于**发布者官网/RSS、GitHub、状态页或已获授权的机器 feed**，不是对未授权 `t.me` 页面进行抓取的建议：

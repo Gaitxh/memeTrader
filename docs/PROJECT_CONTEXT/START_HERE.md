@@ -27,6 +27,7 @@
 - [SNAPSHOT_2026-08-30.md](SNAPSHOT_2026-08-30.md)：上一阶段实现、运行和未完成状态。
 - [OPERATIONS_AND_VALIDATION.md](OPERATIONS_AND_VALIDATION.md)：Windows 常驻、Web、浏览器采集、验证与发布检查。
 - [UPDATE_PROTOCOL.md](UPDATE_PROTOCOL.md)：以后怎样维护这份项目记忆。
+- [CONSTRAINT_SUBSTITUTION_MATRIX.md](CONSTRAINT_SUBSTITUTION_MATRIX.md)：当主路径受平台、权限、数据或安全边界限制时，怎样用合法替代链继续实现真实目的，并明确证据差距。
 - [../DEXSCREENER_PROVENANCE_AND_SOURCE_LEARNING_CN.md](../DEXSCREENER_PROVENANCE_AND_SOURCE_LEARNING_CN.md)：旧 model1/model3 修正、Dex 附带链接角色、Token→来源溯源和只影响观察轮换的前向 Paper 学习。
 - [../OKX_MEME_PUMP_AND_SMART_MONEY_ASSESSMENT_CN.md](../OKX_MEME_PUMP_AND_SMART_MONEY_ASSESSMENT_CN.md)：OKX Meme Pump 的签名/Premium 边界、与现有免费来源的差异，以及聪明钱只能进入前向 shadow 研究的安全结论。
 - [../PAPER_FORWARD_EXECUTION_CN.md](../PAPER_FORWARD_EXECUTION_CN.md)：Paper 禁止未来数据/回填、追加式账户曲线、模拟执行成本和未来 Live 的独立发布门。

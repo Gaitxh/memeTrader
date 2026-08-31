@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import socket
+import sqlite3
 import threading
 from datetime import timedelta
 from pathlib import Path
@@ -20,7 +21,7 @@ from memetrader.models import CandidateDecision, Observation, TokenCandidate, To
 from memetrader.runtime import initial_config
 from memetrader.store import Store
 from memetrader.strategy import EventEngine
-from memetrader.web import WebData, create_server
+from memetrader.web import APIError, WebData, create_server
 
 
 def _free_port() -> int:
@@ -591,6 +592,9 @@ def test_web_api_empty_database_is_safe_and_live_is_locked(tmp_path: Path):
     assert telegram["candidate_count"] == 13
     assert all(item["active_collection"] is False for item in telegram["items"])
     assert all(item["agent_processing"] is False for item in telegram["items"])
+    assert telegram["handoff"]["version"] == "telegram-manual-external-origin-handoff/v1"
+    assert telegram["handoff"]["summary"]["attempts"] == 0
+    assert telegram["handoff"]["write_available"] is False
     assert empty_sources["source_poll_learning"]["status"] == "not_observed"
     assert empty_sources["source_poll_learning"]["affects"] == "review_only_no_schedule_or_trading_effect"
     assert empty_sources["token_discovery_learning"]["status"] == "not_observed"
@@ -626,6 +630,143 @@ def test_web_api_empty_database_is_safe_and_live_is_locked(tmp_path: Path):
     assert audit["policy_enforced"] is True
     assert audit["future_data_rejected"] is None
     assert all(item["status"] != "pass" for item in audit["cases"])
+    substitutions = audit["constraint_substitutions"]
+    assert substitutions["version"] == "constraint-substitution-matrix/v1"
+    assert substitutions["illegal_or_unsafe_bypass_allowed"] is False
+    assert any(item["id"] == "telegram_content_ingestion" for item in substitutions["items"])
+
+
+def test_telegram_external_origin_handoff_is_forward_only_context_and_keeps_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    config_path, _ = _config(tmp_path)
+    Store(tmp_path / "db.sqlite3", initial_cash_usd=1000).close()
+    web = WebData(config_path)
+    fetched: list[str] = []
+
+    async def fake_fetch(url: str) -> httpx.Response:
+        fetched.append(url)
+        final = "https://publisher.example/original-story"
+        return httpx.Response(
+            200,
+            content=(
+                b"<html><head><title>Verified external breaking story</title>"
+                b"<meta name='description' content='External publisher summary'></head></html>"
+            ),
+            headers={"Content-Type": "text/html; charset=utf-8"},
+            request=httpx.Request("GET", final),
+            extensions={"logical_url": final},
+        )
+
+    monkeypatch.setattr(web, "_fetch_telegram_external_origin", fake_fetch)
+    payload = {
+        "catalog_entity_id": "bno_news_telegram",
+        "external_url": "https://publisher.example/original-story?utm_source=telegram&token=must-not-store",
+        "consent_acknowledged": True,
+    }
+    result = web.submit_telegram_external_handoff(payload)
+    duplicate = web.submit_telegram_external_handoff(payload)
+    assert result["status"] == "verified"
+    assert duplicate["status"] == "duplicate"
+    assert fetched == ["https://publisher.example/original-story"] * 2
+
+    with pytest.raises(APIError, match="public non-Telegram"):
+        web.submit_telegram_external_handoff(
+            {**payload, "external_url": "https://t.me/BNONews/123"}
+        )
+    with pytest.raises(APIError, match="accepts only"):
+        web.submit_telegram_external_handoff({**payload, "message_text": "must not be accepted"})
+
+    handoff = web.telegram_external_handoffs(write_available=True)
+    assert handoff["summary"] == {
+        "attempts": 3,
+        "completed": 3,
+        "pending": 0,
+        "verified": 1,
+        "duplicate": 1,
+        "zero_yield": 0,
+        "rejected": 1,
+        "error": 0,
+    }
+    assert handoff["write_available"] is True
+    serialized = json.dumps(handoff)
+    assert "must-not-store" not in serialized
+    assert "message_text" not in serialized
+
+    connection = sqlite3.connect(tmp_path / "db.sqlite3")
+    connection.row_factory = sqlite3.Row
+    try:
+        observation = connection.execute(
+            "SELECT * FROM observations WHERE source='telegram-handoff:bno_news_telegram'"
+        ).fetchone()
+        assert observation["role"] == "identity"
+        assert observation["url"] == "https://publisher.example/original-story"
+        raw = json.loads(observation["raw_json"])
+        assert raw["decision_eligible"] is False
+        provenance = connection.execute(
+            "SELECT * FROM observation_provenance_assertions WHERE observation_id=?",
+            (observation["id"],),
+        ).fetchone()
+        assert provenance["route_kind"] == "relay"
+        assert provenance["origin_identity_state"] == "verified_external_origin_page"
+        assert provenance["transport_platform"] == "telegram"
+        assert provenance["transport_source"] == "bno_news_telegram"
+        assert provenance["decision_eligible"] == 0
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            connection.execute(
+                "UPDATE telegram_external_handoff_attempts SET catalog_entity_id='changed' WHERE id=1"
+            )
+    finally:
+        connection.close()
+
+
+def test_telegram_external_handoff_http_is_loopback_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    config_path, _ = _config(tmp_path)
+    Store(tmp_path / "db.sqlite3").close()
+    static = tmp_path / "static"
+    static.mkdir()
+    (static / "index.html").write_text("console", encoding="utf-8")
+    server, thread, base = _start_server(config_path, static)
+
+    async def fake_fetch(url: str) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b"<title>External origin headline</title>",
+            headers={"Content-Type": "text/html"},
+            request=httpx.Request("GET", url),
+            extensions={"logical_url": url},
+        )
+
+    monkeypatch.setattr(server.web_data, "_fetch_telegram_external_origin", fake_fetch)
+    payload = {
+        "catalog_entity_id": "bno_news_telegram",
+        "external_url": "https://publisher.example/story",
+        "consent_acknowledged": True,
+    }
+    try:
+        with httpx.Client(timeout=5) as client:
+            accepted = client.post(
+                f"{base}/api/telegram/external-handoffs",
+                headers={"Origin": base},
+                json=payload,
+            )
+            assert accepted.status_code == 200
+            assert accepted.json()["decision_eligible"] is False
+            visible = client.get(f"{base}/api/telegram/external-handoffs")
+            assert visible.status_code == 200
+            assert visible.json()["write_available"] is True
+            blocked = client.post(
+                f"{base}/api/telegram/external-handoffs",
+                headers={"Host": "console.example", "Connection": "close"},
+                json=payload,
+            )
+            assert blocked.status_code == 403
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def test_web_paper_curve_costs_attempts_and_stale_valuation_are_truthful(tmp_path: Path):
@@ -1949,9 +2090,18 @@ def test_access_token_server_never_enables_wallet_controls_with_spoofed_loopback
                     headers=headers,
                     json={"recipient": "recipient", "sol": 0.001, "confirm_phrase": "DEVNET ONLY"},
                 ),
+                client.post(
+                    f"{base}/api/telegram/external-handoffs",
+                    headers=headers,
+                    json={
+                        "catalog_entity_id": "bno_news_telegram",
+                        "external_url": "https://example.com/story",
+                        "consent_acknowledged": True,
+                    },
+                ),
                 client.delete(f"{base}/api/wallet", headers=headers),
             ]
-            assert [response.status_code for response in mutations] == [403, 403, 403, 403]
+            assert [response.status_code for response in mutations] == [403, 403, 403, 403, 403]
         assert fake_wallet.calls == [("snapshot", True)]
     finally:
         server.shutdown()
