@@ -821,6 +821,61 @@ def test_token_universe_funnel_is_forward_only_append_only_and_dag_aware(tmp_pat
         )
     )
     store.link_event_observation(event_id, observation_id)
+    identity_observation_id, _ = store.add_observation(
+        Observation(
+            source="fixture-profile", source_kind="social",
+            title="Forward Funnel project profile", observed_at=now,
+            ingested_at=now, role="identity", source_item_id="forward-identity-link",
+            raw={"reverse_token_id": token.token_id},
+        )
+    )
+    store.link_event_observation(event_id, identity_observation_id)
+    identity_poll_id = store.start_source_poll_attempt(
+        collector_kind="reverse_news", source_key="identity-match",
+        platform="web", started_at=now,
+    )
+    store.finish_source_poll_attempt(
+        identity_poll_id, status="completed", fetched_count=1,
+        new_observation_count=1, context_only_count=1, completed_at=now,
+    )
+    store.record_token_universe_funnel_transition(
+        token.token_id, stage="event_lookup_result", status="found",
+        reason_code="reverse_news_identity_matched", evaluation_key="lookup:identity",
+        observed_at=now, ingested_at=now, source_table="source_poll_attempts",
+        source_poll_attempt_id=identity_poll_id,
+        metadata={"matched_count": 1, "decision_eligible_count": 0,
+                  "identity_context_count": 1, "distinct_publisher_count": 1},
+    )
+    legacy_poll_id = store.start_source_poll_attempt(
+        collector_kind="reverse_news", source_key="legacy-match",
+        platform="web", started_at=now,
+    )
+    store.finish_source_poll_attempt(
+        legacy_poll_id, status="completed", fetched_count=1,
+        new_observation_count=1, completed_at=now,
+    )
+    store.record_token_universe_funnel_transition(
+        token.token_id, stage="event_lookup_result", status="found",
+        reason_code="reverse_news_matched", evaluation_key="lookup:legacy",
+        observed_at=now, ingested_at=now, source_table="source_poll_attempts",
+        source_poll_attempt_id=legacy_poll_id, metadata={"accepted_count": 1},
+    )
+    eligible_poll_id = store.start_source_poll_attempt(
+        collector_kind="reverse_news", source_key="eligible-match",
+        platform="web", started_at=now,
+    )
+    store.finish_source_poll_attempt(
+        eligible_poll_id, status="completed", fetched_count=1,
+        new_observation_count=1, decision_eligible_count=1, completed_at=now,
+    )
+    store.record_token_universe_funnel_transition(
+        token.token_id, stage="event_lookup_result", status="found",
+        reason_code="reverse_news_matched", evaluation_key="lookup:eligible",
+        observed_at=now, ingested_at=now, source_table="source_poll_attempts",
+        source_poll_attempt_id=eligible_poll_id,
+        metadata={"matched_count": 1, "decision_eligible_count": 1,
+                  "identity_context_count": 0, "distinct_publisher_count": 1},
+    )
     decision_id = store.add_decision(
         CandidateDecision(
             event_id, token.token_id, "WAIT", 55, 60, 1, ["insufficient confirmation"],
@@ -863,11 +918,18 @@ def test_token_universe_funnel_is_forward_only_append_only_and_dag_aware(tmp_pat
 
     summary = store.token_universe_funnel_summary_from_connection(store.db)
     assert summary["summary"]["cohorts"] == 1
-    assert summary["summary"]["transition_attempts"] == 8
+    assert summary["summary"]["transition_attempts"] == 12
     assert summary["summary"]["excluded_time_order"] == 1
     milestones = {item["stage"]: item for item in summary["milestones"]}
     assert milestones["context_trigger_evaluation"]["cohorts"] == 1
     assert milestones["event_token_relation"]["cohorts"] == 1
+    assert milestones["event_token_relation"]["attempts"] == 2
+    assert milestones["event_token_relation_decision_eligible"]["attempts"] == 1
+    assert milestones["event_token_relation_context_only"]["attempts"] == 1
+    assert milestones["event_lookup_found"]["attempts"] == 3
+    assert milestones["event_lookup_decision_eligible_found"]["attempts"] == 1
+    assert milestones["event_lookup_identity_context_only_found"]["attempts"] == 1
+    assert milestones["event_lookup_found_unclassified"]["attempts"] == 1
     assert milestones["candidate_evaluator_called"]["cohorts"] == 1
     assert milestones["decision_wait"]["cohorts"] == 1
     assert milestones["decision_candidate"]["cohorts"] == 1

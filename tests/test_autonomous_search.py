@@ -121,6 +121,44 @@ def test_agent_http_guard_blocks_redirect_before_telegram_request(tmp_path: Path
     asyncio.run(scenario())
 
 
+def test_http_429_retry_remains_inside_same_host_lock():
+    async def scenario():
+        active = 0
+        maximum_active = 0
+        first = True
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal active, maximum_active, first
+            active += 1
+            maximum_active = max(maximum_active, active)
+            try:
+                if first:
+                    first = False
+                    return httpx.Response(
+                        429, headers={"Retry-After": "0.01"}, request=request
+                    )
+                await asyncio.sleep(0.02)
+                return httpx.Response(200, json={"ok": True}, request=request)
+            finally:
+                active -= 1
+
+        http = HttpClient(
+            transport=httpx.MockTransport(handler), min_host_interval=0
+        )
+        try:
+            first_response, second_response = await asyncio.gather(
+                http.get("https://market.example/first"),
+                http.get("https://market.example/second"),
+            )
+            assert first_response.status_code == 200
+            assert second_response.status_code == 200
+            assert maximum_active == 1
+        finally:
+            await http.close()
+
+    asyncio.run(scenario())
+
+
 def test_console_preferences_are_bounded_rotated_and_non_secret(tmp_path: Path):
     settings_path = tmp_path / "data" / "web_console" / "console_settings.json"
     settings_path.parent.mkdir(parents=True)

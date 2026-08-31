@@ -294,10 +294,11 @@ class HttpClient:
                 await asyncio.sleep(wait)
             response = await self.client.get(url, params=params, headers=headers)
             self._last[host] = time.monotonic()
-        if response.status_code == 429:
-            retry = min(15.0, float(response.headers.get("Retry-After", "2") or 2))
-            await asyncio.sleep(retry)
-            response = await self.client.get(url, params=params, headers=headers)
+            if response.status_code == 429:
+                retry = min(15.0, float(response.headers.get("Retry-After", "2") or 2))
+                await asyncio.sleep(retry)
+                response = await self.client.get(url, params=params, headers=headers)
+                self._last[host] = time.monotonic()
         response.raise_for_status()
         if ttl:
             try:

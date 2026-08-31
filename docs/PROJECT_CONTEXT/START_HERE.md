@@ -1,6 +1,6 @@
 # START HERE — memeTrader 项目上下文
 
-最后更新：2026-08-31（Asia/Shanghai）
+最后更新：2026-09-01（Asia/Shanghai）
 
 这个目录是给后续开发者和 Agent 使用的**版本控制内项目记忆**。它保存产品意图、架构、安全边界、已实现状态、未完成事项和运行手册，但绝不保存密码、Cookie、Session、验证码、私钥、钱包材料、Bridge Token、公开入口口令、数据库内容或日志。
 

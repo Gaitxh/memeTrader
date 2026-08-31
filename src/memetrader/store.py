@@ -8918,8 +8918,42 @@ class Store:
         lookup_attempted = stage_count("event_lookup_attempt")
         lookup_zero = stage_count("event_lookup_result", "zero_yield")
         lookup_found = stage_count("event_lookup_result", "found")
+        lookup_decision_eligible = transition_count(
+            "t.stage='event_lookup_result' AND t.status='found' "
+            "AND COALESCE(CAST(json_extract(t.metadata_json,'$.decision_eligible_count') "
+            "AS INTEGER),0)>0"
+        )
+        lookup_identity_context_only = transition_count(
+            "t.stage='event_lookup_result' AND t.status='found' "
+            "AND COALESCE(CAST(json_extract(t.metadata_json,'$.decision_eligible_count') "
+            "AS INTEGER),0)=0 AND ("
+            "COALESCE(CAST(json_extract(t.metadata_json,'$.identity_context_count') "
+            "AS INTEGER),0)>0 OR t.reason_code='reverse_news_identity_matched')"
+        )
+        lookup_unclassified = transition_count(
+            "t.stage='event_lookup_result' AND t.status='found' "
+            "AND COALESCE(CAST(json_extract(t.metadata_json,'$.decision_eligible_count') "
+            "AS INTEGER),0)=0 "
+            "AND COALESCE(CAST(json_extract(t.metadata_json,'$.identity_context_count') "
+            "AS INTEGER),0)=0 AND t.reason_code<>'reverse_news_identity_matched'"
+        )
         lookup_failed = stage_count("event_lookup_result", "error")
         event_linked = stage_count("event_token_relation", "linked")
+        eligible_relation_condition = (
+            "t.stage='event_token_relation' AND t.status='linked' AND EXISTS ("
+            "SELECT 1 FROM observations o WHERE o.id=t.observation_id "
+            "AND o.role IN ('feature','confirmation') "
+            "AND julianday(o.observed_at)<=julianday(t.recorded_at) "
+            "AND julianday(o.ingested_at)<=julianday(t.recorded_at))"
+        )
+        event_linked_decision_eligible = transition_count(eligible_relation_condition)
+        event_linked_context_only = transition_count(
+            "t.stage='event_token_relation' AND t.status='linked' AND NOT EXISTS ("
+            "SELECT 1 FROM observations o WHERE o.id=t.observation_id "
+            "AND o.role IN ('feature','confirmation') "
+            "AND julianday(o.observed_at)<=julianday(t.recorded_at) "
+            "AND julianday(o.ingested_at)<=julianday(t.recorded_at))"
+        )
         candidate_called = transition_count(
             "t.stage IN ('candidate_evaluator_call','candidate_evaluation')"
         )
@@ -8971,12 +9005,17 @@ class Store:
             milestone("agent_result", "Context Agent result", *agent_result, "context"),
             milestone("token_context_failed", "Context Agent failed", *agent_failed, "context"),
             milestone("token_context_no_context", "Context Agent zero-yield", *context_no_result, "context"),
-            milestone("token_context_context_found", "Context found", *context_found, "context"),
+            milestone("token_context_context_found", "Context found · context only", *context_found, "context"),
             milestone("event_lookup_attempt", "Reverse event lookup attempted", *lookup_attempted, "evidence"),
             milestone("event_lookup_zero_yield", "Reverse event lookup zero-yield", *lookup_zero, "evidence"),
-            milestone("event_lookup_found", "Reverse event lookup found", *lookup_found, "evidence"),
+            milestone("event_lookup_found", "Reverse event lookup matched · all roles", *lookup_found, "evidence"),
+            milestone("event_lookup_decision_eligible_found", "Reverse lookup · decision-eligible", *lookup_decision_eligible, "evidence"),
+            milestone("event_lookup_identity_context_only_found", "Reverse lookup · identity/context only", *lookup_identity_context_only, "evidence"),
+            milestone("event_lookup_found_unclassified", "Reverse lookup · legacy/unclassified", *lookup_unclassified, "evidence"),
             milestone("event_lookup_failed", "Reverse event lookup failed", *lookup_failed, "evidence"),
-            milestone("event_token_relation", "Explicit event-token relation", *event_linked, "evidence"),
+            milestone("event_token_relation", "Explicit event-token relation · all roles", *event_linked, "evidence"),
+            milestone("event_token_relation_decision_eligible", "Event-token relation · decision-eligible", *event_linked_decision_eligible, "evidence"),
+            milestone("event_token_relation_context_only", "Event-token relation · context only", *event_linked_context_only, "evidence"),
             milestone("candidate_evaluator_called", "Candidate evaluator called", *candidate_called, "decision"),
             milestone("candidate_evaluator_not_called", "No recorded evaluator call", *candidate_not_called, "decision"),
             milestone("canonical_mapping_ambiguous", "Canonical mapping ambiguous", *canonical_ambiguous, "decision"),
@@ -9056,14 +9095,16 @@ class Store:
                 cohort_params,
             ).fetchall()
             recall_stages = {
-                "context_found": (
+                "context_found_context_only": (
                     "t.stage='agent_result' AND t.status LIKE '%_context_only'"
                 ),
-                "reverse_lookup_found": (
-                    "t.stage='event_lookup_result' AND t.status='found'"
+                "reverse_lookup_decision_eligible_found": (
+                    "t.stage='event_lookup_result' AND t.status='found' "
+                    "AND COALESCE(CAST(json_extract(t.metadata_json,'$.decision_eligible_count') "
+                    "AS INTEGER),0)>0"
                 ),
-                "event_linked": (
-                    "t.stage='event_token_relation' AND t.status='linked'"
+                "event_relation_decision_eligible": (
+                    eligible_relation_condition
                 ),
                 "candidate_evaluator_called": (
                     "t.stage IN ('candidate_evaluator_call','candidate_evaluation')"
@@ -9122,6 +9163,10 @@ class Store:
                             "same_route_liquidity_supported_and_"
                             "estimated_net_return_after_costs_gte_25pct"
                         ),
+                        "evidence_capture_policy": (
+                            "decision_eligible_feature_or_confirmation_only; "
+                            "identity_context_only_and_legacy_unclassified_excluded"
+                        ),
                         "captures": captures,
                     }
                 )
@@ -9165,6 +9210,11 @@ class Store:
             "reason_codes": reason_codes,
             "latencies": latencies,
             "potential_opportunity_recall": potential_opportunity_recall,
+            "evidence_capture_policy": {
+                "decision_evidence": "feature_or_confirmation_observed_and_ingested_by_recorded_at",
+                "identity_context_only": "reported_separately_and_excluded_from_evidence_recall",
+                "legacy_unclassified": "missing_explicit_eligibility_metadata_and_excluded_from_evidence_recall",
+            },
             "decision_eligible": False,
             "affects": "none",
             "as_of": iso(),
