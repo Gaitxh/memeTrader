@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from memetrader.collectors import DexScreenerClient, MastodonCollector
-from memetrader.models import CandidateDecision, EventView, Observation, Position, TokenCandidate, TokenSnapshot, iso, parse_time
+from memetrader.models import CandidateDecision, EventView, Observation, Position, TokenCandidate, TokenSnapshot, iso, parse_time, utcnow
 from memetrader.runtime import load_config
 from memetrader.store import Store
 from memetrader.strategy import (
@@ -191,6 +191,112 @@ def test_event_claim_assessments_are_forward_append_only_context_only_and_future
         )
     store.create_event("Legacy event without claim backfill", ["legacy claim"], 10, now)
     assert store.db.execute("SELECT COUNT(*) FROM event_claim_assessments").fetchone()[0] == 3
+    store.close()
+
+
+def test_source_item_revisions_are_forward_append_only_shadow_and_future_safe(tmp_path: Path):
+    store = Store(tmp_path / "source-revisions.sqlite3")
+    engine = EventEngine(store, similarity=0.1)
+    now = utcnow()
+    base = dict(
+        source="browser:x:example",
+        source_kind="social",
+        title="A public post creates a meme narrative",
+        text="Original public post",
+        url="https://x.com/example/status/123?utm_source=test&token=never-return",
+        author="example",
+        observed_at=now,
+        ingested_at=now,
+        availability_proof="local_receive",
+        source_item_id="x:example:123",
+        raw={"source_item_state": "present", "view_count": 10},
+    )
+    event_id, _, created = engine.ingest(Observation(**base))
+    assert created is True
+    first_event = store.get_event(event_id)
+    first_observation_count = store.db.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
+
+    identical = {**base, "raw": {"source_item_state": "present", "view_count": 999}}
+    assert engine.ingest(Observation(**identical)) == (event_id, False, False)
+    edited = {**base, "text": "Edited public post with a correction note"}
+    assert engine.ingest(Observation(**edited)) == (event_id, False, False)
+    deleted = {
+        **edited,
+        "role": "identity",
+        "raw": {
+            "source_item_state": "deleted",
+            "source_item_state_evidence": "platform_deleted_marker",
+        },
+    }
+    assert engine.ingest(Observation(**deleted)) == (event_id, False, False)
+    assert engine.ingest(Observation(**edited)) == (event_id, False, False)
+    future = now + timedelta(hours=1)
+    assert engine.ingest(Observation(**{**edited, "text": "Future capture", "observed_at": future, "ingested_at": future})) == (
+        event_id, False, False
+    )
+
+    rows = list(store.db.execute("SELECT * FROM source_item_revisions ORDER BY sequence_no"))
+    assert [row["revision_kind"] for row in rows] == [
+        "baseline", "content_edit", "explicit_deleted", "restored", "content_edit"
+    ]
+    assert [row["sequence_no"] for row in rows] == [1, 2, 3, 4, 5]
+    assert rows[0]["previous_revision_id"] is None
+    assert rows[-1]["previous_revision_id"] == rows[-2]["id"]
+    assert rows[2]["local_state"] == "deleted"
+    assert rows[2]["semantic_signal"] == "none"
+    assert "capture_observed_in_future" in rows[-1]["temporal_exclusion_reason"]
+    assert all(row["decision_eligible"] == 0 and row["affects"] == "none" for row in rows)
+    assert store.db.execute("SELECT COUNT(*) FROM observations").fetchone()[0] == first_observation_count
+    current_event = store.get_event(event_id)
+    assert current_event.attention == first_event.attention
+    assert current_event.last_seen_at == first_event.last_seen_at
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute("UPDATE source_item_revisions SET local_state='present' WHERE id=?", (rows[2]["id"],))
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute("DELETE FROM source_item_revision_registrations")
+    store.close()
+
+
+def test_source_item_revision_does_not_backfill_or_create_unanchored_tombstone(tmp_path: Path):
+    store = Store(tmp_path / "source-revision-boundary.sqlite3")
+    historical = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    store.add_observation(
+        Observation(
+            source="historical-feed", source_kind="news", title="Historical item",
+            url="https://example.com/history", source_item_id="history-1",
+            observed_at=historical, ingested_at=historical,
+        )
+    )
+    assert store.db.execute("SELECT COUNT(*) FROM source_item_revisions").fetchone()[0] == 0
+    engine = EventEngine(store)
+    known_result = engine.ingest(
+        Observation(
+            source="historical-feed", source_kind="news", title="Source item state marker",
+            url="https://example.com/history", source_item_id="history-1", role="identity",
+            raw={
+                "source_item_state": "deleted",
+                "source_item_state_evidence": "publisher_deleted_marker",
+            },
+        )
+    )
+    assert known_result == (0, False, False)
+    recorded = store.db.execute("SELECT * FROM source_item_revisions").fetchone()
+    assert recorded["revision_kind"] == "explicit_deleted"
+    assert recorded["sequence_no"] == 1
+    result = engine.ingest(
+        Observation(
+            source="new-feed", source_kind="news", title="Source item state marker",
+            source_item_id="missing", role="identity",
+            raw={
+                "source_item_state": "deleted",
+                "source_item_state_evidence": "publisher_deleted_marker",
+            },
+        )
+    )
+    assert result == (0, False, False)
+    assert store.db.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+    assert store.db.execute("SELECT COUNT(*) FROM observations").fetchone()[0] == 1
+    assert store.db.execute("SELECT COUNT(*) FROM source_item_revisions").fetchone()[0] == 1
     store.close()
 
 
@@ -384,6 +490,8 @@ def test_mastodon_collector_freezes_platform_for_forward_learning(tmp_path: Path
     )
     assert len(observations) == 1
     assert observations[0].raw["platform"] == "mastodon"
+    assert observations[0].source_item_id == "https://mastodon.social/@example/1"
+    assert observations[0].raw["source_item_state"] == "present"
     store = Store(tmp_path / "mastodon-learning.sqlite3")
     store.add_observation(observations[0])
     summary = store.source_learning_summary()

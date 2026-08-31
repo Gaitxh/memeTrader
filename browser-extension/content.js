@@ -217,6 +217,7 @@
           published_at: publishedAt,
           observed_at: observedAt,
           capture_phase: capturePhase,
+          source_item_state: "present",
           priority: priority(text, author),
           page_url: safePageUrl(),
           platform: platform(),

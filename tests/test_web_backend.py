@@ -467,6 +467,63 @@ def test_event_fact_propagation_and_correction_are_separate_and_agent_assessment
     assert "bridge-secret" not in serialized and "raw_json" not in serialized
 
 
+def test_event_source_revision_timeline_is_safe_forward_only_and_semantically_separate(tmp_path: Path):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3")
+    engine = EventEngine(store, similarity=0.1)
+    now = utcnow()
+    common = dict(
+        source="browser:x:publisher",
+        source_kind="social",
+        title="Publisher shares a viral animal story",
+        url="https://x.com/publisher/status/77?token=must-not-return&utm_source=test",
+        author="publisher",
+        source_item_id="private-origin-item-id",
+        observed_at=now,
+        ingested_at=now,
+        availability_proof="local_receive",
+    )
+    event_id, _, _ = engine.ingest(
+        Observation(text="First version", raw={"source_item_state": "present"}, **common)
+    )
+    engine.ingest(
+        Observation(text="Second version", raw={"source_item_state": "present"}, **common)
+    )
+    engine.ingest(
+        Observation(
+            text="Second version",
+            role="identity",
+            raw={
+                "source_item_state": "retracted",
+                "source_item_state_evidence": "publisher_retraction_marker",
+            },
+            **common,
+        )
+    )
+    store.close()
+
+    web = WebData(config_path)
+    summary = next(item for item in web.events({})["items"] if item["id"] == event_id)
+    assert summary["source_revision_summary"]["revision_count"] == 3
+    assert summary["source_revision_summary"]["locally_observed_retractions"] == 1
+    assert summary["source_revision_summary"]["affects"] == "none"
+    assert "source_item_histories" not in summary["source_revision_summary"]
+    detail = web.event_detail(event_id)
+    history = detail["source_revision_summary"]["source_item_histories"][0]
+    assert history["availability_state"] == "retracted_locally_observed"
+    assert history["origin"]["status"] == "unknown"
+    assert [item["kind"] for item in history["revisions"]] == [
+        "baseline", "content_edit", "explicit_retracted"
+    ]
+    assert all(item["decision_eligible"] is False and item["affects"] == "none" for item in history["revisions"])
+    serialized = json.dumps(detail)
+    assert "private-origin-item-id" not in serialized
+    assert "must-not-return" not in serialized
+    assert '"source_item_id":' not in serialized
+    assert "content_sha256" not in serialized
+    assert "snapshot_json" not in serialized
+
+
 def _start_server(config: Path, static_dir: Path, access_token_file: Path | None = None):
     server = create_server(
         config,
@@ -1328,7 +1385,11 @@ def test_candidate_ranking_api_is_persisted_bounded_sanitized_and_wait_is_truthf
     assert "data-testid='story-lifecycle-timeline'" in app
     assert "Facts, propagation & corrections" in app
     assert "An Agent structured assessment is pending verification, not independent fact verification" in app
-    assert "No correction locally observed in the forward ledger" in app
+    assert "No correction label observed in the forward assessment ledger" in app
+    assert "data-testid='source-revision-timeline'" in app
+    assert "Original source content versions" in app
+    assert "Deletion is not retraction, and retraction is not proof that a claim is false" in app
+    assert "LATEST ASSESSMENT" in app
     assert "OBSERVE ONLY · AFFECTS NONE" in app
     assert "It is not platform-wide mentions, replies, quotes, or repost velocity" in app
     assert "no future price was filled in" in app

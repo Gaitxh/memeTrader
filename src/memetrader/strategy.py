@@ -423,11 +423,21 @@ class EventEngine:
         return min(100.0, score)
 
     def ingest(self, obs: Observation) -> tuple[int, bool, bool]:
+        raw = obs.raw if isinstance(obs.raw, dict) else {}
+        source_item_state = str(raw.get("source_item_state") or "present").strip().lower()
+        if (
+            source_item_state in {"deleted", "retracted", "access_lost"}
+            and self.store.observation_id_for(obs) is None
+        ):
+            # An unanchored absence/withdrawal signal cannot safely create a new event.
+            return 0, False, False
         observation_id, observation_created = self.store.add_observation(obs)
         if not observation_created:
             linked_event = self.store.event_for_observation(observation_id)
             if linked_event is not None:
                 return linked_event, False, False
+            if source_item_state in {"deleted", "retracted", "access_lost"}:
+                return 0, False, False
         alias_list = extract_aliases(obs.title, obs.text)
         token_terms = terms(" ".join(alias_list))
         best: tuple[float, EventView] | None = None

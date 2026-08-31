@@ -581,5 +581,11 @@ def test_valid_rss_atom_and_conservative_plain_xml_fallback(path, content, conte
         after = utcnow()
         assert [row.title for row in rows] == [title]
         assert before <= rows[0].observed_at <= after
+        assert rows[0].source_item_id in {
+            "https://public.example/story", "https://public.example/atom-story"
+        }
+        assert rows[0].raw["source_item_state"] == "present"
+        if path == "/atom":
+            assert rows[0].raw["source_reported_revision_at"] == "2026-08-30T01:00:00Z"
 
     run(scenario())

@@ -212,6 +212,28 @@ def test_browser_bridge_uses_local_receive_time_and_versioned_routes(tmp_path: P
                 assert heartbeat.status_code == 200
                 assert heartbeats[0][0] == "https://x.com/i/lists/1"
                 assert heartbeats[0][1]["platform"] == "x"
+
+                tombstone = await client.post(
+                    f"{base}/v1/observe",
+                    headers={"X-MemeTrader-Token": "secret-token-that-is-long-enough"},
+                    json={
+                        "source": "browser:x:example",
+                        "source_kind": "social",
+                        "source_item_id": "x:1",
+                        "url": "https://x.com/example/status/1",
+                        "platform": "x",
+                        "author": "example",
+                        "source_item_state": "deleted",
+                        "source_item_state_evidence": "platform_deleted_marker",
+                        "source_reported_revision_at": "2026-08-31T00:00:00Z",
+                    },
+                )
+                assert tombstone.status_code == 200
+                assert tombstone.json()["accepted"] == 1
+                assert observations[-1].title == "Source item state marker"
+                assert observations[-1].role == "identity"
+                assert observations[-1].raw["source_item_state"] == "deleted"
+                assert observations[-1].raw["source_item_state_evidence"] == "platform_deleted_marker"
         finally:
             await bridge.close()
 

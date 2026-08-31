@@ -10,7 +10,7 @@ from dataclasses import asdict
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Iterable, Mapping
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from .models import (
     CandidateDecision,
@@ -52,6 +52,7 @@ class Store:
     TOKEN_DISCOVERY_EXPOSURE_VERSION = "token-discovery-exposure/v1"
     EVENT_ATTENTION_TRAJECTORY_VERSION = "event-attention-trajectory/v1"
     EVENT_CLAIM_ASSESSMENT_VERSION = "event-claim-assessment/v1"
+    SOURCE_ITEM_REVISION_VERSION = "source-item-revision/v1"
     EVENT_CLAIM_STATUSES = {
         "confirmed_fact", "probable_report", "unverified_rumor", "false_claim",
         "correction", "retraction", "satire", "impersonation", "promotion",
@@ -167,6 +168,57 @@ class Store:
                 CREATE TRIGGER IF NOT EXISTS event_claim_ledger_registrations_no_delete
                 BEFORE DELETE ON event_claim_ledger_registrations
                 BEGIN SELECT RAISE(ABORT,'event claim ledger registrations are immutable'); END;
+                CREATE TABLE IF NOT EXISTS source_item_revision_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS source_item_revisions (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    source_item_key TEXT NOT NULL,
+                    sequence_no INTEGER NOT NULL,
+                    previous_revision_id INTEGER,
+                    edge_fingerprint TEXT NOT NULL UNIQUE,
+                    anchor_observation_id INTEGER,
+                    capture_observation_id INTEGER,
+                    recorded_at TEXT NOT NULL,
+                    capture_observed_at TEXT NOT NULL,
+                    capture_ingested_at TEXT NOT NULL,
+                    source_published_at TEXT,
+                    source_reported_revision_at TEXT,
+                    source TEXT NOT NULL,
+                    source_kind TEXT NOT NULL,
+                    identity_mode TEXT NOT NULL,
+                    revision_kind TEXT NOT NULL,
+                    local_state TEXT NOT NULL,
+                    semantic_signal TEXT NOT NULL,
+                    content_sha256 TEXT NOT NULL,
+                    snapshot_json TEXT NOT NULL,
+                    changed_fields_json TEXT NOT NULL,
+                    availability_proof TEXT NOT NULL,
+                    tombstone_evidence_code TEXT,
+                    temporal_exclusion_reason TEXT,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    UNIQUE(definition_version,source_item_key,sequence_no)
+                );
+                CREATE INDEX IF NOT EXISTS source_item_revisions_key_idx
+                    ON source_item_revisions(definition_version,source_item_key,sequence_no);
+                CREATE INDEX IF NOT EXISTS source_item_revisions_anchor_idx
+                    ON source_item_revisions(anchor_observation_id,recorded_at,id);
+                CREATE TRIGGER IF NOT EXISTS source_item_revision_registrations_no_update
+                BEFORE UPDATE ON source_item_revision_registrations
+                BEGIN SELECT RAISE(ABORT,'source item revision registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS source_item_revision_registrations_no_delete
+                BEFORE DELETE ON source_item_revision_registrations
+                BEGIN SELECT RAISE(ABORT,'source item revision registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS source_item_revisions_no_update
+                BEFORE UPDATE ON source_item_revisions
+                BEGIN SELECT RAISE(ABORT,'source item revisions are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS source_item_revisions_no_delete
+                BEFORE DELETE ON source_item_revisions
+                BEGIN SELECT RAISE(ABORT,'source item revisions are immutable'); END;
 
                 CREATE TABLE IF NOT EXISTS tokens (
                     token_id TEXT PRIMARY KEY,
@@ -1045,6 +1097,26 @@ class Store:
                     ),
                 ),
             )
+            self.db.execute(
+                "INSERT OR IGNORE INTO source_item_revision_registrations("
+                "definition_version,registered_at,definition_json) VALUES(?,?,?)",
+                (
+                    self.SOURCE_ITEM_REVISION_VERSION,
+                    iso(),
+                    self._json(
+                        {
+                            "append_only": True,
+                            "no_historical_backfill": True,
+                            "scope": "new_forward_source_item_captures_only",
+                            "identity_modes": ["explicit_source_item_id", "exact_safe_url"],
+                            "absence_is_not_deletion": True,
+                            "delete_is_not_retraction": True,
+                            "retraction_is_not_false_claim": True,
+                            "decision_effect": "none",
+                        }
+                    ),
+                ),
+            )
             event_columns = {row["name"] for row in self.db.execute("PRAGMA table_info(events)")}
             if "topic" not in event_columns:
                 self.db.execute("ALTER TABLE events ADD COLUMN topic TEXT NOT NULL DEFAULT 'unknown'")
@@ -1149,6 +1221,14 @@ class Store:
         )
 
     @staticmethod
+    def _json_object(value: Any) -> dict[str, Any]:
+        try:
+            parsed = json.loads(str(value or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    @staticmethod
     def _fingerprint(obs: Observation) -> str:
         if obs.source_item_id:
             stable = f"{obs.source.strip().lower()}\n{obs.source_item_id.strip()}"
@@ -1158,9 +1238,230 @@ class Store:
         )
         return hashlib.sha256(stable.encode("utf-8", errors="ignore")).hexdigest()
 
+    @staticmethod
+    def _legacy_fingerprint(obs: Observation) -> str:
+        stable = "\n".join(
+            [obs.source.strip().lower(), obs.url.strip(), obs.author.strip().lower(), obs.title.strip(), obs.text.strip()]
+        )
+        return hashlib.sha256(stable.encode("utf-8", errors="ignore")).hexdigest()
+
+    @staticmethod
+    def _revision_safe_url(value: Any) -> str:
+        text = str(value or "").strip()
+        try:
+            parsed = urlparse(text)
+        except Exception:
+            return ""
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
+            return ""
+        safe_query = []
+        for key, item in parse_qsl(parsed.query, keep_blank_values=True):
+            lowered = key.casefold().replace("-", "_")
+            if lowered.startswith("utm_") or any(
+                marker in lowered
+                for marker in ("token", "secret", "password", "passwd", "auth", "api_key", "apikey", "session")
+            ):
+                continue
+            if lowered not in {"fbclid", "gclid", "ref_src"}:
+                safe_query.append((key, item))
+        return urlunparse((parsed.scheme, parsed.netloc.lower(), parsed.path, parsed.params, urlencode(safe_query), ""))
+
+    @classmethod
+    def _source_item_key(cls, obs: Observation) -> tuple[str, str] | None:
+        source = obs.source.strip().casefold()
+        if obs.source_item_id.strip():
+            identity_mode = "explicit_source_item_id"
+            identity = obs.source_item_id.strip()
+        else:
+            identity_mode = "exact_safe_url"
+            identity = cls._revision_safe_url(obs.url)
+        if not source or not identity:
+            return None
+        material = f"{cls.SOURCE_ITEM_REVISION_VERSION}\n{source}\n{identity_mode}\n{identity}"
+        return hashlib.sha256(material.encode("utf-8", errors="ignore")).hexdigest(), identity_mode
+
+    @staticmethod
+    def _revision_signal(obs: Observation) -> tuple[str, str, str, str | None]:
+        raw = obs.raw if isinstance(obs.raw, dict) else {}
+        requested = str(raw.get("source_item_state") or "present").strip().lower()
+        evidence = str(raw.get("source_item_state_evidence") or "").strip().lower() or None
+        allowed_evidence = {
+            "platform_deleted_marker", "publisher_deleted_marker", "publisher_retraction_marker",
+            "publisher_correction_marker", "platform_restored_marker", "http_410", "access_denied",
+            "api_revision",
+        }
+        if evidence not in allowed_evidence:
+            evidence = None
+        if requested == "deleted" and evidence in {"platform_deleted_marker", "publisher_deleted_marker"}:
+            return "deleted", "none", "explicit_deleted", evidence
+        if requested == "retracted" and evidence == "publisher_retraction_marker":
+            return "retracted", "retraction", "explicit_retracted", evidence
+        if requested == "correction" and evidence == "publisher_correction_marker":
+            return "present", "correction", "explicit_correction", evidence
+        if requested == "access_lost" and evidence in {"http_410", "access_denied"}:
+            return "access_lost", "none", "access_lost", evidence
+        if requested in {"deleted", "retracted", "access_lost"}:
+            return "unknown", "none", "unverified_state_signal", evidence
+        if requested == "restored":
+            return "present", "none", "restored", evidence
+        return "present", "none", "present", evidence
+
+    def _source_item_anchor_locked(self, obs: Observation) -> int | None:
+        identity = self._source_item_key(obs)
+        if identity is None:
+            return None
+        key, _ = identity
+        row = self.db.execute(
+            "SELECT anchor_observation_id FROM source_item_revisions "
+            "WHERE definition_version=? AND source_item_key=? ORDER BY sequence_no DESC LIMIT 1",
+            (self.SOURCE_ITEM_REVISION_VERSION, key),
+        ).fetchone()
+        if row is not None and row["anchor_observation_id"] is not None:
+            return int(row["anchor_observation_id"])
+        if not obs.source_item_id.strip():
+            return None
+        row = self.db.execute(
+            "SELECT id FROM observations WHERE fingerprint=?",
+            (self._fingerprint(obs),),
+        ).fetchone()
+        if row is None:
+            row = self.db.execute(
+                "SELECT id FROM observations WHERE fingerprint=?",
+                (self._legacy_fingerprint(obs),),
+            ).fetchone()
+        if row is None and obs.url.strip():
+            row = self.db.execute(
+                "SELECT id FROM observations WHERE source=? AND url=? ORDER BY id LIMIT 1",
+                (obs.source, obs.url),
+            ).fetchone()
+        return int(row["id"]) if row is not None else None
+
+    def _record_source_item_revision_locked(self, obs: Observation, observation_id: int) -> bool:
+        identity = self._source_item_key(obs)
+        if identity is None:
+            return False
+        key, identity_mode = identity
+        registration = self.db.execute(
+            "SELECT registered_at FROM source_item_revision_registrations WHERE definition_version=?",
+            (self.SOURCE_ITEM_REVISION_VERSION,),
+        ).fetchone()
+        if registration is None or obs.ingested_at < parse_time(registration["registered_at"]):
+            return False
+        previous = self.db.execute(
+            "SELECT * FROM source_item_revisions WHERE definition_version=? AND source_item_key=? "
+            "ORDER BY sequence_no DESC LIMIT 1",
+            (self.SOURCE_ITEM_REVISION_VERSION, key),
+        ).fetchone()
+        local_state, semantic_signal, requested_kind, evidence = self._revision_signal(obs)
+        if previous is None and local_state in {"deleted", "retracted", "access_lost", "unknown"}:
+            anchor_row = self.db.execute(
+                "SELECT ingested_at FROM observations WHERE id=?", (observation_id,)
+            ).fetchone()
+            if (
+                anchor_row is None
+                or parse_time(anchor_row["ingested_at"]) >= parse_time(registration["registered_at"])
+            ):
+                return False
+        safe_url = self._revision_safe_url(obs.url)
+        snapshot = {
+            "title": str(obs.title or "")[:500],
+            "text": str(obs.text or "")[:20_000],
+            "url": safe_url,
+            "author": str(obs.author or "")[:300],
+            "published_at": iso(obs.published_at) if obs.published_at else None,
+        }
+        digest_material = self._json(
+            {"snapshot": snapshot, "local_state": local_state, "semantic_signal": semantic_signal}
+        )
+        content_sha256 = hashlib.sha256(digest_material.encode("utf-8", errors="ignore")).hexdigest()
+        if (
+            previous is not None
+            and previous["content_sha256"] == content_sha256
+            and previous["local_state"] == local_state
+            and previous["semantic_signal"] == semantic_signal
+        ):
+            return False
+        prior_snapshot = self._json_object(previous["snapshot_json"]) if previous is not None else {}
+        changed_fields = [
+            field for field in snapshot if prior_snapshot.get(field) != snapshot.get(field)
+        ]
+        if previous is None:
+            revision_kind = requested_kind if requested_kind != "present" else "baseline"
+            changed_fields = ["source_item_state"] if revision_kind != "baseline" else ["initial_capture"]
+            anchor_observation_id = observation_id
+            sequence_no = 1
+            previous_id = None
+        else:
+            prior_state = str(previous["local_state"] or "unknown")
+            if requested_kind in {
+                "explicit_deleted", "explicit_retracted", "explicit_correction",
+                "access_lost", "unverified_state_signal",
+            }:
+                revision_kind = requested_kind
+            elif prior_state in {"deleted", "retracted", "access_lost", "unknown"} and local_state == "present":
+                revision_kind = "restored"
+            else:
+                revision_kind = "content_edit"
+            if not changed_fields and (prior_state != local_state or previous["semantic_signal"] != semantic_signal):
+                changed_fields = ["source_item_state"]
+            anchor_observation_id = int(previous["anchor_observation_id"] or observation_id)
+            sequence_no = int(previous["sequence_no"]) + 1
+            previous_id = int(previous["id"])
+        recorded_at = utcnow()
+        exclusions = []
+        if obs.observed_at > recorded_at:
+            exclusions.append("capture_observed_in_future")
+        if obs.ingested_at > recorded_at:
+            exclusions.append("capture_ingested_in_future")
+        reported_revision_at = None
+        raw = obs.raw if isinstance(obs.raw, dict) else {}
+        if raw.get("source_reported_revision_at"):
+            try:
+                parsed_revision_at = parse_time(raw["source_reported_revision_at"])
+                reported_revision_at = iso(parsed_revision_at)
+                if parsed_revision_at > recorded_at:
+                    exclusions.append("source_reported_revision_in_future")
+            except (TypeError, ValueError):
+                exclusions.append("source_reported_revision_time_invalid")
+        if obs.published_at and obs.published_at > recorded_at:
+            exclusions.append("source_published_in_future")
+        edge_material = "\n".join(
+            [
+                self.SOURCE_ITEM_REVISION_VERSION, key, str(previous_id or "ROOT"), revision_kind,
+                content_sha256, evidence or "",
+            ]
+        )
+        edge_fingerprint = hashlib.sha256(edge_material.encode("utf-8", errors="ignore")).hexdigest()
+        self.db.execute(
+            """
+            INSERT OR IGNORE INTO source_item_revisions(
+                definition_version,source_item_key,sequence_no,previous_revision_id,edge_fingerprint,
+                anchor_observation_id,capture_observation_id,recorded_at,capture_observed_at,
+                capture_ingested_at,source_published_at,source_reported_revision_at,source,source_kind,
+                identity_mode,revision_kind,local_state,semantic_signal,content_sha256,snapshot_json,
+                changed_fields_json,availability_proof,tombstone_evidence_code,temporal_exclusion_reason,
+                decision_eligible,affects
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'none')
+            """,
+            (
+                self.SOURCE_ITEM_REVISION_VERSION, key, sequence_no, previous_id, edge_fingerprint,
+                anchor_observation_id, observation_id, iso(recorded_at), iso(obs.observed_at),
+                iso(obs.ingested_at), iso(obs.published_at) if obs.published_at else None,
+                reported_revision_at, obs.source, obs.source_kind, identity_mode, revision_kind,
+                local_state, semantic_signal, content_sha256, self._bounded_json(snapshot, 24_000),
+                self._json(changed_fields), obs.availability_proof, evidence,
+                ";".join(exclusions) or None,
+            ),
+        )
+        return self.db.execute("SELECT changes()").fetchone()[0] > 0
+
     def add_observation(self, obs: Observation) -> tuple[int, bool]:
         fp = self._fingerprint(obs)
         with self._lock, self.db:
+            anchor = self._source_item_anchor_locked(obs) if obs.source_item_id.strip() else None
+            if anchor is not None:
+                self._record_source_item_revision_locked(obs, anchor)
+                return anchor, False
             try:
                 cur = self.db.execute(
                     """
@@ -1187,10 +1488,14 @@ class Store:
                         self._json(obs.raw),
                     ),
                 )
-                return int(cur.lastrowid), True
+                observation_id = int(cur.lastrowid)
+                self._record_source_item_revision_locked(obs, observation_id)
+                return observation_id, True
             except sqlite3.IntegrityError:
                 row = self.db.execute("SELECT id FROM observations WHERE fingerprint=?", (fp,)).fetchone()
-                return int(row["id"]), False
+                observation_id = int(row["id"])
+                self._record_source_item_revision_locked(obs, observation_id)
+                return observation_id, False
 
     def observation(self, observation_id: int) -> sqlite3.Row:
         row = self.db.execute("SELECT * FROM observations WHERE id=?", (observation_id,)).fetchone()
@@ -1204,6 +1509,9 @@ class Store:
                 "SELECT id FROM observations WHERE fingerprint=?",
                 (self._fingerprint(obs),),
             ).fetchone()
+            if row is None:
+                anchor = self._source_item_anchor_locked(obs)
+                return anchor
         return int(row["id"]) if row is not None else None
 
     def recent_observations(self, minutes: int = 120, limit: int = 1000) -> list[sqlite3.Row]:

@@ -558,8 +558,11 @@ class RSSCollector:
             if not link:
                 node = item.find("{http://www.w3.org/2005/Atom}link")
                 link = node.attrib.get("href", "") if node is not None else ""
-            description = text("description", "summary", "{http://www.w3.org/2005/Atom}summary", "content")
-            pub = text("pubDate", "published", "updated", "{http://www.w3.org/2005/Atom}published", "{http://www.w3.org/2005/Atom}updated")
+            description = text("description", "summary", "{http://www.w3.org/2005/Atom}summary", "content", "{http://www.w3.org/2005/Atom}content")
+            published = text("pubDate", "published", "{http://www.w3.org/2005/Atom}published")
+            updated = text("updated", "{http://www.w3.org/2005/Atom}updated")
+            updated_at = _published(updated)
+            source_item_id = text("guid", "id", "{http://www.w3.org/2005/Atom}id") or link
             author = text("author", "creator", "{http://www.w3.org/2005/Atom}author")
             source_node = item.find("source")
             publisher = (source_node.text or "").strip() if source_node is not None and source_node.text else ""
@@ -572,13 +575,44 @@ class RSSCollector:
                     text=description,
                     url=link,
                     author=author or publisher,
-                    published_at=_published(pub),
+                    published_at=_published(published or updated),
                     observed_at=observed_at,
                     availability_proof="local_poll",
+                    source_item_id=source_item_id,
                     raw={
                         "feed_url": self.url,
                         "publisher": publisher,
                         "publisher_url": publisher_url,
+                        "source_item_state": "present",
+                        **({
+                            "source_reported_revision_at": iso(updated_at),
+                            "source_item_state_evidence": "api_revision",
+                        } if updated_at else {}),
+                    },
+                )
+            )
+        for tombstone in root.findall(".//{http://purl.org/atompub/tombstones/1.0}deleted-entry")[:80]:
+            source_item_id = str(tombstone.attrib.get("ref") or "").strip()
+            deleted_at = str(tombstone.attrib.get("when") or "").strip()
+            deleted_time = _published(deleted_at)
+            if not source_item_id:
+                continue
+            out.append(
+                Observation(
+                    source=self.name,
+                    source_kind=self.source_kind,
+                    title="Source item deletion marker",
+                    text="",
+                    url=source_item_id if source_item_id.startswith(("http://", "https://")) else "",
+                    observed_at=observed_at,
+                    availability_proof="local_poll",
+                    role="identity",
+                    source_item_id=source_item_id,
+                    raw={
+                        "feed_url": self.url,
+                        "source_item_state": "deleted",
+                        "source_item_state_evidence": "publisher_deleted_marker",
+                        **({"source_reported_revision_at": iso(deleted_time)} if deleted_time else {}),
                     },
                 )
             )
@@ -609,7 +643,13 @@ class BlueskySearchCollector:
                 Observation(
                     source=f"bluesky:{self.query}", source_kind="social", title=text[:240], text=text,
                     url=url, author=handle, published_at=_published(record.get("createdAt")), observed_at=utcnow(),
-                    availability_proof="local_poll", raw={"like_count": post.get("likeCount"), "repost_count": post.get("repostCount")},
+                    availability_proof="local_poll", source_item_id=uri or url,
+                    raw={
+                        "like_count": post.get("likeCount"),
+                        "repost_count": post.get("repostCount"),
+                        "source_revision_id": post.get("cid"),
+                        "source_item_state": "present",
+                    },
                 )
             )
         return out
@@ -639,10 +679,16 @@ class MastodonCollector:
                         source=self.name, source_kind="social", title=title, text=content, url=url, author=author,
                         published_at=_published(status.get("created_at")), observed_at=utcnow(),
                         availability_proof="local_poll",
+                        source_item_id=str(status.get("id") or status.get("uri") or url),
                         raw={
                             "platform": "mastodon",
                             "reblogs_count": status.get("reblogs_count"),
                             "favourites_count": status.get("favourites_count"),
+                            "source_item_state": "present",
+                            **({
+                                "source_reported_revision_at": status.get("edited_at"),
+                                "source_item_state_evidence": "api_revision",
+                            } if status.get("edited_at") else {}),
                         },
                     )
                 )

@@ -938,7 +938,24 @@ class BrowserBridge:
                         url=item.get("url"),
                     ):
                         continue
+                    source_item_state = str(item.get("source_item_state") or "present").strip().lower()
+                    if source_item_state not in {
+                        "present", "deleted", "retracted", "correction", "access_lost", "restored",
+                    }:
+                        source_item_state = "present"
+                    source_item_state_evidence = str(
+                        item.get("source_item_state_evidence") or ""
+                    ).strip().lower()
+                    if source_item_state_evidence not in {
+                        "platform_deleted_marker", "publisher_deleted_marker",
+                        "publisher_retraction_marker", "publisher_correction_marker",
+                        "platform_restored_marker", "http_410", "access_denied", "api_revision",
+                    }:
+                        source_item_state_evidence = ""
+                    source_item_id = str(item.get("source_item_id") or item.get("url") or "")[:2000]
                     title = str(item.get("title") or item.get("text") or "").strip()
+                    if not title and source_item_id and source_item_state != "present":
+                        title = "Source item state marker"
                     # Client timestamps are untrusted. Availability starts only when this
                     # local process receives the item.
                     observed_at = utcnow()
@@ -964,11 +981,17 @@ class BrowserBridge:
                             url=str(item.get("url") or "")[:2000], author=str(item.get("author") or "")[:300],
                             published_at=published_at, observed_at=observed_at,
                             ingested_at=utcnow(), availability_proof="local_receive",
-                            source_item_id=str(item.get("source_item_id") or item.get("url") or "")[:2000],
+                            source_item_id=source_item_id,
                             capture_phase=str(item.get("capture_phase") or "live")[:20],
+                            role="identity" if source_item_state != "present" else "feature",
                             raw={
                                 "browser": browser_item,
                                 **({"source_entity_id": source_entity_id} if source_entity_id else {}),
+                                "source_item_state": source_item_state,
+                                **({"source_item_state_evidence": source_item_state_evidence} if source_item_state_evidence else {}),
+                                **({
+                                    "source_reported_revision_at": str(item.get("source_reported_revision_at"))[:100]
+                                } if item.get("source_reported_revision_at") else {}),
                                 **{
                                     key: item.get(key)
                                     for key in ("like_count", "repost_count", "reply_count", "view_count", "score", "priority")

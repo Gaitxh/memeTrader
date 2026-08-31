@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import base64
 import copy
+import hashlib
 import hmac
 import http.client
 import ipaddress
@@ -91,6 +92,8 @@ EXPECTED_TABLES = {
     "event_attention_points",
     "event_claim_ledger_registrations",
     "event_claim_assessments",
+    "source_item_revision_registrations",
+    "source_item_revisions",
     "events",
     "information_first_shadow_admission_attempts",
     "information_first_shadow_cohorts",
@@ -2159,7 +2162,9 @@ class WebData:
         grouped: dict[int, list[dict[str, Any]]] = {event_id: [] for event_id in ids}
         attention_points: dict[int, list[dict[str, Any]]] = {event_id: [] for event_id in ids}
         claim_points: dict[int, list[dict[str, Any]]] = {event_id: [] for event_id in ids}
+        revision_rows: dict[int, list[sqlite3.Row]] = {event_id: [] for event_id in ids}
         claim_registered_at = None
+        revision_registered_at = None
         placeholders = ",".join("?" for _ in ids)
         if self._table_exists(connection, "event_observations") and self._table_exists(connection, "observations"):
             for observation in connection.execute(
@@ -2249,6 +2254,26 @@ class WebData:
                         "exclusion_reason": point["exclusion_reason"],
                     }
                 )
+        if self._table_exists(connection, "source_item_revision_registrations"):
+            registration = connection.execute(
+                "SELECT registered_at FROM source_item_revision_registrations WHERE definition_version=?",
+                (Store.SOURCE_ITEM_REVISION_VERSION,),
+            ).fetchone()
+            revision_registered_at = registration["registered_at"] if registration else None
+        if self._table_exists(connection, "source_item_revisions"):
+            for revision in connection.execute(
+                f"""
+                SELECT DISTINCT eo.event_id,r.*
+                FROM source_item_revisions r
+                JOIN event_observations eo
+                  ON eo.observation_id=r.anchor_observation_id
+                  OR eo.observation_id=r.capture_observation_id
+                WHERE eo.event_id IN ({placeholders}) AND r.definition_version=?
+                ORDER BY eo.event_id,r.recorded_at,r.id
+                """,
+                [*ids, Store.SOURCE_ITEM_REVISION_VERSION],
+            ):
+                revision_rows[int(revision["event_id"])].append(revision)
         output: list[dict[str, Any]] = []
         for row in rows:
             event_id = int(row["id"])
@@ -2279,7 +2304,7 @@ class WebData:
                 point for point in meaningful_factual_points
                 if point["claim_status"] in {"correction", "retraction", "false_claim"}
             ]
-            transition_count = sum(
+            assessment_status_change_count = sum(
                 1 for previous, current in zip(meaningful_factual_points, meaningful_factual_points[1:])
                 if previous["claim_status"] != current["claim_status"]
             )
@@ -2292,8 +2317,9 @@ class WebData:
                 "historical_backfill": False,
                 "assessment_count": len(factual_points),
                 "meaningful_assessment_count": len(meaningful_factual_points),
-                "transition_count": transition_count,
+                "assessment_status_change_count": assessment_status_change_count,
                 "current": meaningful_factual_points[-1] if meaningful_factual_points else None,
+                "current_semantics": "latest_structured_or_local_assessment_not_verified_fact",
                 "correction_state": (
                     "locally_observed" if correction_points else
                     "not_observed_in_forward_ledger" if factual_points else
@@ -2389,6 +2415,104 @@ class WebData:
             }
             if include_observations:
                 trajectory["points"] = points
+            event_revisions = revision_rows.get(event_id, [])
+            revision_histories: list[dict[str, Any]] = []
+            histories_by_key: dict[str, list[sqlite3.Row]] = {}
+            for revision in event_revisions:
+                histories_by_key.setdefault(str(revision["source_item_key"]), []).append(revision)
+            for source_item_key, history_rows in histories_by_key.items():
+                history_rows.sort(key=lambda item: (int(item["sequence_no"]), int(item["id"])))
+                latest = history_rows[-1]
+                safe_revisions = []
+                for revision in history_rows:
+                    snapshot = _json_load(revision["snapshot_json"], {})
+                    if not isinstance(snapshot, dict):
+                        snapshot = {}
+                    text_value = str(snapshot.get("text") or "")
+                    safe_revisions.append(
+                        {
+                            "sequence": int(revision["sequence_no"]),
+                            "predecessor_sequence": (
+                                int(revision["sequence_no"]) - 1
+                                if revision["previous_revision_id"] is not None else None
+                            ),
+                            "kind": revision["revision_kind"],
+                            "local_state": revision["local_state"],
+                            "semantic_signal": revision["semantic_signal"],
+                            "recorded_at": revision["recorded_at"],
+                            "source_published_at": revision["source_published_at"],
+                            "source_reported_revision_at": revision["source_reported_revision_at"],
+                            "changed_fields": _json_load(revision["changed_fields_json"], []),
+                            "title": str(snapshot.get("title") or "")[:500],
+                            "text_excerpt": text_value[:600],
+                            "text_truncated": len(text_value) > 600,
+                            "url": _safe_url(snapshot.get("url")),
+                            "availability_proof": revision["availability_proof"],
+                            "tombstone_evidence": revision["tombstone_evidence_code"],
+                            "tombstone_scope": "unknown",
+                            "temporal_exclusion_reason": revision["temporal_exclusion_reason"],
+                            "decision_eligible": False,
+                            "affects": "none",
+                        }
+                    )
+                latest_snapshot = _json_load(latest["snapshot_json"], {})
+                if not isinstance(latest_snapshot, dict):
+                    latest_snapshot = {}
+                latest_state = str(latest["local_state"] or "unknown")
+                availability_state = {
+                    "present": "available_at_last_observation",
+                    "deleted": "deleted_locally_observed",
+                    "retracted": "retracted_locally_observed",
+                    "access_lost": "access_lost_locally_observed",
+                }.get(latest_state, "unknown")
+                revision_histories.append(
+                    {
+                        "item_id": "source-" + hashlib.sha256(
+                            f"{event_id}:{source_item_key}".encode("utf-8")
+                        ).hexdigest()[:12],
+                        "source": latest["source"],
+                        "source_kind": latest["source_kind"],
+                        "identity_mode": latest["identity_mode"],
+                        "origin": {
+                            "status": "unknown",
+                            "reason": "origin_and_transport_not_proven_separately",
+                        },
+                        "transport": {
+                            "label": latest["source"],
+                            "kind": latest["source_kind"],
+                        },
+                        "url": _safe_url(latest_snapshot.get("url")),
+                        "availability_state": availability_state,
+                        "last_locally_observed_state": latest_state,
+                        "revision_count": len(history_rows),
+                        "correction_state": (
+                            "linked_correction_locally_observed"
+                            if any(str(item["semantic_signal"]) == "correction" for item in history_rows)
+                            else "not_observed_in_forward_revision_ledger"
+                        ),
+                        "revisions": safe_revisions,
+                    }
+                )
+            revision_kinds = [str(item["revision_kind"]) for item in event_revisions]
+            source_revision_summary = {
+                "version": Store.SOURCE_ITEM_REVISION_VERSION,
+                "coverage_status": (
+                    "observed_forward_only" if event_revisions
+                    else "not_observed_in_forward_revision_ledger"
+                ),
+                "registered_at": revision_registered_at,
+                "historical_backfill": False,
+                "absence_is_not_deletion": True,
+                "history_count": len(revision_histories),
+                "revision_count": len(event_revisions),
+                "observed_item_revision_count": sum(kind in {"content_edit", "restored"} for kind in revision_kinds),
+                "locally_observed_deletion_tombstones": revision_kinds.count("explicit_deleted"),
+                "locally_observed_retractions": revision_kinds.count("explicit_retracted"),
+                "locally_observed_corrections": revision_kinds.count("explicit_correction"),
+                "affects": "none",
+            }
+            if include_observations:
+                source_revision_summary["source_item_histories"] = revision_histories
             payload = {
                 "id": event_id,
                 "title": row["title"],
@@ -2409,6 +2533,7 @@ class WebData:
                 "attention_history": [point["score"] for point in points],
                 "attention_trajectory": trajectory,
                 "factuality": factuality,
+                "source_revision_summary": source_revision_summary,
                 "event_url": f"#/events/{event_id}",
                 "evidence_ranking": {
                     "method": "decision_utility_authority_freshness",
