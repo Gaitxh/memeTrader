@@ -168,6 +168,8 @@ Sources 的“来源轮询暴露”从 `source-poll-exposure/v1` 上线后，为
 
 Sources 的“完整 Token 总体前向结果”从 `token-universe-forward-outcomes/v1` 注册后，为每个本机首次发现的新 Token 建立一次且仅一次 cohort，不选择性排除后来没有进入事件/决策的 Token。Runtime 会在发现后 5 分钟内主动取得基准价，并在 15/60/240 分钟目标窗口通过现有 DexScreener 批量报价补充固定时点快照；没有基准、没有结果、no-pair 和报价错误仍保留在发现账本中。页面分开显示固定时点原始回报和本机稀疏采样峰值，后者不是市场 ATH；同时显示当时 WAIT/CANDIDATE/Paper 召回。旧 Token、用户事后列举的赢家和错过窗口绝不回填，结果固定 `decision_eligible=false / affects=none`。
 
+Sources 的“逐 Token 报价尝试”从 `token-discovery-quote-attempt/v1` 注册后，为上述完整总体的每次 DexScreener 批量报价逐 Token 冻结 `running → success/no_pair/error/interrupted` 终态、时点角色、请求延迟、排队年龄、重复次数、错误类型、下一次允许重试时间和截止错失。批次异常不再只有一个 round 级错误，也不会绕过冷却立即热重试；失败使用最长 15 分钟的有限指数退避和确定性抖动。市场报价使用独立 HTTP 连接池，避免新闻、社交、安全或 Agent 请求占满同一连接池。该账本只影响报价调度，不改变事件证据、Decision、Paper、仓位或 Live，注册前批次不回填，Web 不返回逐 Token 标识。
+
 Audit 的 `token-universe-outcome-quality/v1` 是部署后才生效的追加式质量覆盖层，保留上述 v1 原始结果不变。它把 provider、chain、DEX、pair、quote、流动性、报价年龄和 PumpFun→PumpSwap 迁移路径一起冻结，分别展示原始混合路径峰值、同 pair、同 route、迁移调整和满足流动性门后的成本估算；只有卖出能力、honeypot 和税费均已有当时安全证据时才显示“确认可执行净回报”。`NULL` 流动性不是零流动性，跨池跳变也不是可成交收益。覆盖层从自己的注册点向前运行，不回填旧结果，固定 `decision_eligible=false / affects=none`。
 
 Audit 的“完整总体漏检账本”使用 `missed-opportunity-audit/v1`，从自身注册后为上述每个新结果追加一条不可变审计记录；低涨幅、缺基线和缺结果同样留在分母。只有本机采样路径达到预注册的 +25% 层且目标时点前没有 Paper 买入时才标记为 `potential_miss`，再按 `no_entry_snapshot / no_outcome_snapshot / no_decision / wait / reject / candidate_no_paper_buy / paper_bought` 展示可证明的粗断点。它不是市场 ATH、可成交收益或已证明的策略错误，不回填注册前案例，不改写历史决策，也不影响策略、Agent、Paper 或 Live。

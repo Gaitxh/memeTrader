@@ -657,6 +657,9 @@ def test_web_api_empty_database_is_safe_and_live_is_locked(tmp_path: Path):
     assert empty_sources["source_poll_learning"]["affects"] == "review_only_no_schedule_or_trading_effect"
     assert empty_sources["token_discovery_learning"]["status"] == "not_observed"
     assert empty_sources["token_discovery_learning"]["affects"] == "review_only_no_schedule_or_trading_effect"
+    assert empty_sources["token_quote_attempts"]["status"] == "not_observed"
+    assert empty_sources["token_quote_attempts"]["decision_eligible"] is False
+    assert empty_sources["token_quote_attempts"]["affects"] == "quote_scheduling_only"
     assert empty_sources["shadow_followup"]["status"] == "not_observed"
     assert empty_sources["shadow_followup"]["summary"]["cohorts"] == 0
     assert empty_sources["shadow_followup"]["horizons_minutes"] == [15, 60, 240]
@@ -936,6 +939,29 @@ def test_web_sources_exposes_forward_token_discovery_without_sensitive_fields(tm
     )
     cohort = store.db.execute("SELECT * FROM token_universe_forward_cohorts").fetchone()
     discovered = parse_time(cohort["discovery_recorded_at"])
+    quote_round_id = store.start_token_discovery_round(
+        provider="dexscreener", surface="universe_baseline",
+        mode="batch_quote", chain_scope="solana",
+    )
+    attempt_ids = store.start_token_discovery_quote_attempts(
+        quote_round_id,
+        [{
+            "cohort_id": cohort["id"], "token_id": cohort["token_id"],
+            "chain": "solana", "role": "universe_baseline",
+            "queue_due_at": discovered,
+            "deadline_at": cohort["baseline_deadline_at"],
+        }],
+        requested_at=discovered,
+    )
+    store.finish_token_discovery_quote_attempt(
+        attempt_ids[(cohort["token_id"], "universe_baseline")],
+        status="error", reason_code="batch_request_failed", error_type="PoolTimeout",
+        completed_at=discovered + timedelta(seconds=60),
+    )
+    store.finish_token_discovery_round(
+        quote_round_id, status="error", requested_count=1, error_type="PoolTimeout",
+        completed_at=discovered + timedelta(seconds=60),
+    )
     for minutes, price in ((1, 1.0), (15, 1.4)):
         when = iso(discovered + timedelta(minutes=minutes, seconds=10))
         store.db.execute(
@@ -957,6 +983,20 @@ def test_web_sources_exposes_forward_token_discovery_without_sensitive_fields(tm
     serialized = json.dumps(payload).lower()
     assert "password" not in serialized and "private_key" not in serialized
     assert "bridge_token" not in serialized and "https://" not in serialized
+    quote_attempts = sources["token_quote_attempts"]
+    assert quote_attempts["status"] == "collecting"
+    assert quote_attempts["summary"]["attempts"] == 1
+    assert quote_attempts["summary"]["errors"] == 1
+    assert quote_attempts["summary"]["backoff_active"] == 1
+    assert quote_attempts["items"][0]["error_types"] == [
+        {"error_type": "PoolTimeout", "count": 1}
+    ]
+    assert quote_attempts["decision_eligible"] is False
+    assert quote_attempts["affects"] == "quote_scheduling_only"
+    quote_json = json.dumps(quote_attempts).lower()
+    assert cohort["token_id"].lower() not in quote_json
+    assert "password" not in quote_json and "private_key" not in quote_json
+    assert "bridge_token" not in quote_json and "https://" not in quote_json
     universe = sources["token_universe_forward"]
     assert universe["status"] == "collecting"
     assert universe["summary"]["cohorts"] == 1

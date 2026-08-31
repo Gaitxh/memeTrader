@@ -677,6 +677,72 @@ def test_token_discovery_exposure_preserves_denominator_and_forward_outcomes(tmp
     store.close()
 
 
+def test_token_universe_quote_attempts_record_terminal_errors_and_defer_hot_retry(tmp_path: Path):
+    store = Store(tmp_path / "quote-attempts.sqlite3", initial_cash_usd=1000)
+    token = TokenCandidate(chain="solana", address="Q" * 32, name="Quote Queue", symbol="QQ")
+    discovered_at = utcnow()
+    store.upsert_token(token, seen_at=discovered_at)
+    discovery_round = store.start_token_discovery_round(
+        provider="pumpportal", surface="create", mode="stream_window", chain_scope="solana",
+        started_at=discovered_at,
+    )
+    store.add_token_discovery_exposure(
+        discovery_round, token_id=token.token_id, chain=token.chain, role="create",
+        first_local_discovery=True, new_token=True, observed_at=discovered_at,
+    )
+    store.finish_token_discovery_round(discovery_round, status="completed", returned_count=1)
+    due = store.due_token_universe_quotes(now=discovered_at + timedelta(seconds=1))
+    assert len(due) == 1 and due[0]["role"] == "universe_baseline"
+
+    first_round = store.start_token_discovery_round(
+        provider="dexscreener", surface="universe_baseline", mode="batch_quote",
+        chain_scope="solana", started_at=discovered_at + timedelta(seconds=1),
+    )
+    attempt_ids = store.start_token_discovery_quote_attempts(
+        first_round, due, requested_at=discovered_at + timedelta(seconds=1),
+    )
+    attempt_id = attempt_ids[(token.token_id, "universe_baseline")]
+    retry_after = store.finish_token_discovery_quote_attempt(
+        attempt_id, status="error", reason_code="batch_request_failed",
+        error_type="PoolTimeout", completed_at=discovered_at + timedelta(seconds=61),
+    )
+    store.finish_token_discovery_round(
+        first_round, status="error", requested_count=1, error_type="PoolTimeout",
+        completed_at=discovered_at + timedelta(seconds=61),
+    )
+    attempt = store.db.execute(
+        "SELECT * FROM token_discovery_quote_attempts WHERE id=?", (attempt_id,)
+    ).fetchone()
+    assert attempt["status"] == "error" and attempt["error_type"] == "PoolTimeout"
+    assert attempt["latency_ms"] == pytest.approx(60_000, abs=20)
+    assert attempt["queue_age_seconds"] == pytest.approx(1, abs=0.1)
+    assert parse_time(retry_after) > parse_time(attempt["completed_at"])
+    assert store.due_token_universe_quotes(
+        now=parse_time(attempt["completed_at"]) + timedelta(seconds=1)
+    ) == []
+    assert store.due_token_universe_quotes(
+        now=parse_time(retry_after) + timedelta(seconds=1)
+    )[0]["token_id"] == token.token_id
+
+    summary = store.token_discovery_quote_attempt_summary_from_connection(store.db)
+    assert summary["summary"]["attempts"] == 1
+    assert summary["summary"]["errors"] == 1
+    assert summary["summary"]["backoff_active"] == 1
+    assert summary["items"][0]["error_types"] == [
+        {"error_type": "PoolTimeout", "count": 1}
+    ]
+    assert summary["decision_eligible"] is False
+    assert summary["affects"] == "quote_scheduling_only"
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute(
+            "UPDATE token_discovery_quote_attempts SET reason_code='rewritten' WHERE id=?",
+            (attempt_id,),
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute("DELETE FROM token_discovery_quote_attempt_registrations")
+    store.close()
+
+
 def test_full_token_universe_forward_outcomes_are_complete_and_immutable(tmp_path: Path):
     store = Store(tmp_path / "token-universe.sqlite3", initial_cash_usd=1000)
     token = TokenCandidate(chain="solana", address="U" * 32, name="Universe", symbol="UNI")

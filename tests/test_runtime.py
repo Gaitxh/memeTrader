@@ -119,8 +119,61 @@ def test_token_universe_followup_actively_quotes_due_baseline_without_trading(tm
             "SELECT * FROM token_discovery_rounds WHERE surface='universe_baseline'"
         ).fetchone()
         assert followup_round is not None and followup_round["snapshot_count"] == 1
+        attempt = runtime.store.db.execute(
+            "SELECT * FROM token_discovery_quote_attempts WHERE round_id=?",
+            (int(followup_round["id"]),),
+        ).fetchone()
+        assert attempt is not None and attempt["status"] == "success"
+        assert attempt["reason_code"] == "snapshot_persisted"
+        assert attempt["decision_eligible"] == 0 and attempt["affects"] == "none"
+        assert runtime.dex.http is runtime.market_http
+        assert runtime.dex.http is not runtime.http
         assert runtime.store.db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == 0
         assert runtime.store.db.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == 0
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_token_universe_quote_failure_records_each_token_and_suppresses_hot_retry(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        runtime = Runtime(config, tmp_path)
+        token = TokenCandidate(
+            chain="solana", address="Y" * 32, name="Quote Failure", symbol="QF",
+            source="pumpportal:create",
+        )
+        runtime.store.upsert_token(token)
+        round_id = runtime.store.start_token_discovery_round(
+            provider="pumpportal", surface="create", mode="stream_window", chain_scope="solana",
+        )
+        runtime.store.add_token_discovery_exposure(
+            round_id, token_id=token.token_id, chain=token.chain, role="create",
+            first_local_discovery=True, new_token=True,
+        )
+        runtime.store.finish_token_discovery_round(round_id, status="completed", returned_count=1)
+        calls = 0
+
+        async def batch_quote(chain, addresses):
+            nonlocal calls
+            calls += 1
+            raise RuntimeError("pool unavailable")
+
+        runtime.dex.batch_quote = batch_quote
+        await runtime.token_universe_followup_once()
+        attempt = runtime.store.db.execute(
+            "SELECT * FROM token_discovery_quote_attempts ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert attempt is not None and attempt["status"] == "error"
+        assert attempt["error_type"] == "RuntimeError"
+        assert attempt["retry_after_at"] > attempt["completed_at"]
+        await runtime.token_universe_followup_once()
+        assert calls == 1
+        assert runtime.store.db.execute(
+            "SELECT COUNT(*) FROM token_discovery_quote_attempts"
+        ).fetchone()[0] == 1
         await runtime.close()
 
     asyncio.run(scenario())

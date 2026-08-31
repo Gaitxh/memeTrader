@@ -206,6 +206,8 @@ EXPECTED_TABLES = {
     "token_context_outcomes",
     "token_discovery_exposures",
     "token_discovery_rounds",
+    "token_discovery_quote_attempt_registrations",
+    "token_discovery_quote_attempts",
     "token_universe_forward_registrations",
     "token_universe_forward_cohorts",
     "token_universe_forward_baselines",
@@ -4718,6 +4720,20 @@ class WebData:
             "affects": "review_only_no_schedule_or_trading_effect",
             "cohort_definition": "first_local_discovery_at_or_after_version_activation",
         }
+        token_quote_attempts: dict[str, Any] = {
+            "status": "not_observed",
+            "version": Store.TOKEN_DISCOVERY_QUOTE_ATTEMPT_VERSION,
+            "registered_at": None,
+            "activation_round_id": None,
+            "definition": Store._token_discovery_quote_attempt_definition(),
+            "summary": {
+                "attempts": 0, "success": 0, "no_pair": 0, "errors": 0,
+                "interrupted": 0, "running": 0, "repeat_attempts": 0,
+                "deadline_misses": 0, "backoff_active": 0,
+            },
+            "items": [], "decision_eligible": False,
+            "affects": "quote_scheduling_only",
+        }
         token_universe_forward: dict[str, Any] = {
             "status": "not_observed",
             "version": Store.TOKEN_UNIVERSE_FORWARD_VERSION,
@@ -4883,6 +4899,14 @@ class WebData:
                     )
                 except (sqlite3.Error, TypeError, ValueError):
                     token_discovery_learning["status"] = "unavailable"
+                try:
+                    token_quote_attempts = (
+                        Store.token_discovery_quote_attempt_summary_from_connection(
+                            connection, lookback_hours=24,
+                        )
+                    )
+                except (sqlite3.Error, TypeError, ValueError):
+                    token_quote_attempts["status"] = "unavailable"
                 try:
                     token_universe_forward = (
                         Store.token_universe_forward_summary_from_connection(
@@ -5338,6 +5362,7 @@ class WebData:
             "learning": learning,
             "source_poll_learning": source_poll_learning,
             "token_discovery_learning": token_discovery_learning,
+            "token_quote_attempts": token_quote_attempts,
             "token_universe_forward": token_universe_forward,
             "trend_lanes": trend_lanes,
             "trend_attention_policy": trend_attention_policy,
