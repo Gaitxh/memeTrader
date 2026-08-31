@@ -37,6 +37,7 @@
 ## 已实现但必须等待前向样本
 
 - `information-first-shadow/v1` 已上线：在最终决策后按事件与 Token 首写冻结，保留信号时点基线缺失的分母，并做 15/60/240 分钟不可回填随访。它只提供描述性市场活动分层，`affects=none`。详细规则见 [Information-first Shadow 前向研究](INFORMATION_FIRST_SHADOW_CN.md)。
+- `information-first-ilg/v1` 已预注册：只对上线后的新 cohort 计算“首次本机耐久记录的同交易对活动越界”上界；使用 5 分钟成交量/成交笔数，不把混合 market cap/FDV 的字段冒充活动，旧快照与旧 cohort 均排除。
 
 ## 尚未实现、需要前向数据能力的部分
 

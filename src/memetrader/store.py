@@ -38,6 +38,11 @@ class Store:
     INFORMATION_FIRST_SHADOW_QUIET_MARKET_CAP_USD = 1_000_000.0
     INFORMATION_FIRST_SHADOW_QUIET_VOLUME_5M_USD = 20_000.0
     INFORMATION_FIRST_SHADOW_QUIET_TRANSACTIONS_5M = 30
+    INFORMATION_FIRST_ILG_VERSION = "information-first-ilg/v1"
+    INFORMATION_FIRST_ILG_WINDOW_MINUTES = 240
+    INFORMATION_FIRST_ILG_TERMINAL_GRACE_MINUTES = 30
+    INFORMATION_FIRST_ILG_VOLUME_5M_USD = 20_000.0
+    INFORMATION_FIRST_ILG_TRANSACTIONS_5M = 30
     WATCH_ATTENTION_POLICY_VERSION = "watch-attention/v3-experiment-gated"
     TREND_ATTENTION_POLICY_VERSION = "trend-attention/v2-experiment-gated"
     ATTENTION_EXPERIMENT_VERSION = "attention-experiment/v1"
@@ -115,6 +120,7 @@ class Store:
                     token_id TEXT NOT NULL,
                     observed_at TEXT NOT NULL,
                     ingested_at TEXT,
+                    recorded_at TEXT,
                     provider TEXT NOT NULL,
                     price_usd REAL,
                     liquidity_usd REAL,
@@ -837,6 +843,57 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS information_first_shadow_outcomes_horizon_idx
                     ON information_first_shadow_outcomes(horizon_minutes,status,evaluated_at);
+                CREATE TABLE IF NOT EXISTS information_first_ilg_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS information_first_ilg_cohorts (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL UNIQUE,
+                    enrolled_at TEXT NOT NULL,
+                    signal_available_at TEXT NOT NULL,
+                    token_id TEXT NOT NULL,
+                    eligibility TEXT NOT NULL,
+                    eligibility_reason TEXT NOT NULL,
+                    window_end_at TEXT NOT NULL,
+                    terminal_at TEXT NOT NULL,
+                    baseline_snapshot_id INTEGER,
+                    baseline_recorded_at TEXT,
+                    baseline_volume_5m_usd REAL,
+                    baseline_transactions_5m INTEGER,
+                    surface_key TEXT,
+                    surface_provider TEXT,
+                    surface_chain_id TEXT,
+                    surface_dex_id TEXT,
+                    surface_pair_address TEXT,
+                    definition_json TEXT NOT NULL,
+                    FOREIGN KEY(shadow_cohort_id) REFERENCES information_first_shadow_cohorts(id)
+                );
+                CREATE INDEX IF NOT EXISTS information_first_ilg_cohorts_status_idx
+                    ON information_first_ilg_cohorts(eligibility,enrolled_at);
+                CREATE TABLE IF NOT EXISTS information_first_ilg_outcomes (
+                    id INTEGER PRIMARY KEY,
+                    ilg_cohort_id INTEGER NOT NULL UNIQUE,
+                    status TEXT NOT NULL,
+                    window_end_at TEXT NOT NULL,
+                    terminal_at TEXT NOT NULL,
+                    crossing_snapshot_id INTEGER,
+                    crossing_observed_at TEXT,
+                    crossing_ingested_at TEXT,
+                    crossing_recorded_at TEXT,
+                    ilg_seconds REAL,
+                    crossing_volume_5m_usd REAL,
+                    crossing_transactions_5m INTEGER,
+                    crossed_dimensions_json TEXT NOT NULL,
+                    valid_snapshot_count INTEGER NOT NULL,
+                    surface_key TEXT,
+                    evaluated_at TEXT NOT NULL,
+                    FOREIGN KEY(ilg_cohort_id) REFERENCES information_first_ilg_cohorts(id)
+                );
+                CREATE INDEX IF NOT EXISTS information_first_ilg_outcomes_status_idx
+                    ON information_first_ilg_outcomes(status,evaluated_at);
                 CREATE TRIGGER IF NOT EXISTS information_first_shadow_cohorts_no_update
                 BEFORE UPDATE ON information_first_shadow_cohorts
                 BEGIN SELECT RAISE(ABORT,'information-first shadow cohorts are immutable'); END;
@@ -855,6 +912,30 @@ class Store:
                 CREATE TRIGGER IF NOT EXISTS information_first_shadow_outcomes_no_delete
                 BEFORE DELETE ON information_first_shadow_outcomes
                 BEGIN SELECT RAISE(ABORT,'information-first shadow outcomes are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS information_first_ilg_registrations_no_update
+                BEFORE UPDATE ON information_first_ilg_registrations
+                BEGIN SELECT RAISE(ABORT,'information-first ILG registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS information_first_ilg_registrations_no_delete
+                BEFORE DELETE ON information_first_ilg_registrations
+                BEGIN SELECT RAISE(ABORT,'information-first ILG registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS information_first_ilg_cohorts_no_update
+                BEFORE UPDATE ON information_first_ilg_cohorts
+                BEGIN SELECT RAISE(ABORT,'information-first ILG cohorts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS information_first_ilg_cohorts_no_delete
+                BEFORE DELETE ON information_first_ilg_cohorts
+                BEGIN SELECT RAISE(ABORT,'information-first ILG cohorts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS information_first_ilg_outcomes_no_update
+                BEFORE UPDATE ON information_first_ilg_outcomes
+                BEGIN SELECT RAISE(ABORT,'information-first ILG outcomes are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS information_first_ilg_outcomes_no_delete
+                BEFORE DELETE ON information_first_ilg_outcomes
+                BEGIN SELECT RAISE(ABORT,'information-first ILG outcomes are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_snapshots_no_update
+                BEFORE UPDATE ON token_snapshots
+                BEGIN SELECT RAISE(ABORT,'token snapshots are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_snapshots_no_delete
+                BEFORE DELETE ON token_snapshots
+                BEGIN SELECT RAISE(ABORT,'token snapshots are immutable'); END;
                 """
             )
             columns = {row["name"] for row in self.db.execute("PRAGMA table_info(observations)")}
@@ -867,6 +948,17 @@ class Store:
             }
             if "ingested_at" not in snapshot_columns:
                 self.db.execute("ALTER TABLE token_snapshots ADD COLUMN ingested_at TEXT")
+            if "recorded_at" not in snapshot_columns:
+                self.db.execute("ALTER TABLE token_snapshots ADD COLUMN recorded_at TEXT")
+            self.db.execute(
+                "INSERT OR IGNORE INTO information_first_ilg_registrations("
+                "definition_version,registered_at,definition_json) VALUES(?,?,?)",
+                (
+                    self.INFORMATION_FIRST_ILG_VERSION,
+                    iso(),
+                    self._json(self._information_first_ilg_definition()),
+                ),
+            )
             event_columns = {row["name"] for row in self.db.execute("PRAGMA table_info(events)")}
             if "topic" not in event_columns:
                 self.db.execute("ALTER TABLE events ADD COLUMN topic TEXT NOT NULL DEFAULT 'unknown'")
@@ -2107,15 +2199,16 @@ class Store:
         token_id = f"{snap.chain.lower()}:{snap.address}"
         ingested_at = snap.ingested_at or utcnow()
         with self._lock, self.db:
+            recorded_at = utcnow()
             self.db.execute(
                 """
                 INSERT INTO token_snapshots(
-                    token_id,observed_at,ingested_at,provider,price_usd,liquidity_usd,market_cap_usd,volume_5m_usd,
+                    token_id,observed_at,ingested_at,recorded_at,provider,price_usd,liquidity_usd,market_cap_usd,volume_5m_usd,
                     buys_5m,sells_5m,buyers_5m,holders,buy_tax_pct,sell_tax_pct,honeypot,sellable,raw_json
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
-                    token_id, iso(snap.observed_at), iso(ingested_at), snap.provider,
+                    token_id, iso(snap.observed_at), iso(ingested_at), iso(recorded_at), snap.provider,
                     snap.price_usd, snap.liquidity_usd,
                     snap.market_cap_usd, snap.volume_5m_usd, snap.buys_5m, snap.sells_5m,
                     snap.buyers_5m, snap.holders, snap.buy_tax_pct, snap.sell_tax_pct,
@@ -3388,6 +3481,141 @@ class Store:
     def _information_first_label(value: Any) -> str:
         return re.sub(r"\s+", " ", str(value or "").strip().casefold())[:160]
 
+    @classmethod
+    def _information_first_ilg_definition(cls) -> dict[str, Any]:
+        return {
+            "version": cls.INFORMATION_FIRST_ILG_VERSION,
+            "activity": {
+                "volume_5m_usd": cls.INFORMATION_FIRST_ILG_VOLUME_5M_USD,
+                "transactions_5m": cls.INFORMATION_FIRST_ILG_TRANSACTIONS_5M,
+                "operator": "strict_greater_than_any",
+                "market_cap_excluded": True,
+            },
+            "window_minutes": cls.INFORMATION_FIRST_ILG_WINDOW_MINUTES,
+            "terminal_grace_minutes": cls.INFORMATION_FIRST_ILG_TERMINAL_GRACE_MINUTES,
+            "time_basis": "durable_recorded_at",
+            "interval_censored": True,
+            "same_surface_only": True,
+            "affects": "none",
+        }
+
+    @staticmethod
+    def _information_first_snapshot_surface(row: sqlite3.Row) -> dict[str, str] | None:
+        try:
+            raw = json.loads(str(row["raw_json"] or "{}"))
+        except (TypeError, json.JSONDecodeError):
+            return None
+        raw = raw if isinstance(raw, dict) else {}
+        pair = raw.get("pair") if isinstance(raw.get("pair"), dict) else raw
+        provider = str(row["provider"] or "").strip().casefold()
+        chain_id = str(pair.get("chainId") or pair.get("chain_id") or "").strip().casefold()
+        dex_id = str(pair.get("dexId") or pair.get("dex_id") or "").strip().casefold()
+        pair_address = str(
+            pair.get("pairAddress") or pair.get("pair_address") or ""
+        ).strip().casefold()
+        if not all((provider, chain_id, dex_id, pair_address)):
+            return None
+        key = json.dumps(
+            [provider, chain_id, dex_id, pair_address],
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
+        return {
+            "key": key,
+            "provider": provider,
+            "chain_id": chain_id,
+            "dex_id": dex_id,
+            "pair_address": pair_address,
+        }
+
+    def _create_information_first_ilg_cohort(
+        self, shadow_cohort_id: int, *, enrolled_at: Any = None
+    ) -> int | None:
+        enrolled = parse_time(enrolled_at or utcnow())
+        registration = self.db.execute(
+            "SELECT * FROM information_first_ilg_registrations WHERE definition_version=?",
+            (self.INFORMATION_FIRST_ILG_VERSION,),
+        ).fetchone()
+        shadow = self.db.execute(
+            "SELECT * FROM information_first_shadow_cohorts WHERE id=?",
+            (int(shadow_cohort_id),),
+        ).fetchone()
+        if registration is None or shadow is None:
+            return None
+        if parse_time(shadow["signal_available_at"]) < parse_time(registration["registered_at"]):
+            return None
+        try:
+            definition = json.loads(str(registration["definition_json"]))
+            activity = definition["activity"]
+            volume_threshold = float(activity["volume_5m_usd"])
+            transactions_threshold = int(activity["transactions_5m"])
+            window_minutes = int(definition["window_minutes"])
+            grace_minutes = int(definition["terminal_grace_minutes"])
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return None
+        existing = self.db.execute(
+            "SELECT id FROM information_first_ilg_cohorts WHERE shadow_cohort_id=?",
+            (int(shadow_cohort_id),),
+        ).fetchone()
+        if existing is not None:
+            return int(existing["id"])
+
+        signal = parse_time(shadow["signal_available_at"])
+        baseline = self.db.execute(
+            """
+            SELECT * FROM token_snapshots
+            WHERE token_id=? AND observed_at<=? AND ingested_at<=? AND recorded_at<=?
+              AND observed_at<=ingested_at AND ingested_at<=recorded_at
+              AND volume_5m_usd IS NOT NULL AND buys_5m IS NOT NULL AND sells_5m IS NOT NULL
+            ORDER BY recorded_at DESC,observed_at DESC,id DESC LIMIT 1
+            """,
+            (str(shadow["token_id"]), iso(signal), iso(signal), iso(signal)),
+        ).fetchone()
+        eligibility = "ineligible_activity_baseline_missing"
+        reason = "no_strictly_forward_complete_baseline"
+        transactions = None
+        surface = None
+        if baseline is not None:
+            transactions = int(baseline["buys_5m"]) + int(baseline["sells_5m"])
+            surface = self._information_first_snapshot_surface(baseline)
+            if surface is None:
+                eligibility = "ineligible_activity_surface_unknown"
+                reason = "provider_chain_dex_pair_required"
+            elif (
+                float(baseline["volume_5m_usd"]) > volume_threshold
+                or transactions > transactions_threshold
+            ):
+                eligibility = "already_active_at_signal"
+                reason = "baseline_strictly_above_activity_threshold"
+            else:
+                eligibility = "eligible_at_risk"
+                reason = "baseline_at_or_below_both_activity_thresholds"
+        window_end = signal + timedelta(minutes=window_minutes)
+        terminal = window_end + timedelta(minutes=grace_minutes)
+        cursor = self.db.execute(
+            """
+            INSERT INTO information_first_ilg_cohorts(
+                definition_version,shadow_cohort_id,enrolled_at,signal_available_at,token_id,
+                eligibility,eligibility_reason,window_end_at,terminal_at,baseline_snapshot_id,
+                baseline_recorded_at,baseline_volume_5m_usd,baseline_transactions_5m,
+                surface_key,surface_provider,surface_chain_id,surface_dex_id,surface_pair_address,
+                definition_json
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                self.INFORMATION_FIRST_ILG_VERSION, int(shadow_cohort_id), iso(enrolled), iso(signal),
+                str(shadow["token_id"]), eligibility, reason, iso(window_end), iso(terminal),
+                int(baseline["id"]) if baseline is not None else None,
+                str(baseline["recorded_at"]) if baseline is not None else None,
+                float(baseline["volume_5m_usd"]) if baseline is not None else None,
+                transactions, surface["key"] if surface else None,
+                surface["provider"] if surface else None, surface["chain_id"] if surface else None,
+                surface["dex_id"] if surface else None, surface["pair_address"] if surface else None,
+                str(registration["definition_json"]),
+            ),
+        )
+        return int(cursor.lastrowid)
+
     @staticmethod
     def _information_first_source_facts(row: sqlite3.Row) -> tuple[str, str, str]:
         try:
@@ -3673,6 +3901,7 @@ class Store:
                 ),
             )
             cohort_id = int(cursor.lastrowid)
+            self._create_information_first_ilg_cohort(cohort_id, enrolled_at=captured)
             record_admission(
                 "created_baseline_missing" if entry is None else "created",
                 "baseline_missing_at_signal_available" if entry is None else "created",
@@ -3777,6 +4006,250 @@ class Store:
             "outcomes_observed": observed_count,
             "outcomes_missing": missing_count,
             "pending_outcomes": max(0, len(cohorts) * len(horizons) - outcome_total),
+        }
+
+    def finalize_information_first_ilg_outcomes(self, *, now: Any = None) -> dict[str, int]:
+        """Freeze the first durable same-surface activity crossing, or its terminal missing state."""
+        evaluated = parse_time(now or utcnow())
+        crossed_count = 0
+        missing_count = 0
+        with self._lock, self.db:
+            cohorts = list(self.db.execute(
+                """
+                SELECT c.* FROM information_first_ilg_cohorts c
+                LEFT JOIN information_first_ilg_outcomes o ON o.ilg_cohort_id=c.id
+                WHERE c.eligibility='eligible_at_risk' AND o.id IS NULL
+                ORDER BY c.signal_available_at,c.id
+                """
+            ))
+            for cohort in cohorts:
+                try:
+                    definition = json.loads(str(cohort["definition_json"]))
+                    activity = definition["activity"]
+                    volume_threshold = float(activity["volume_5m_usd"])
+                    transactions_threshold = int(activity["transactions_5m"])
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                signal = parse_time(cohort["signal_available_at"])
+                window_end = parse_time(cohort["window_end_at"])
+                terminal = parse_time(cohort["terminal_at"])
+                upper = min(evaluated, window_end)
+                rows = list(self.db.execute(
+                    """
+                    SELECT * FROM token_snapshots
+                    WHERE token_id=? AND observed_at>=? AND observed_at<=?
+                      AND ingested_at>=? AND ingested_at<=?
+                      AND recorded_at>? AND recorded_at<=?
+                      AND observed_at<=ingested_at AND ingested_at<=recorded_at
+                      AND volume_5m_usd IS NOT NULL AND buys_5m IS NOT NULL AND sells_5m IS NOT NULL
+                    ORDER BY recorded_at,observed_at,id
+                    """,
+                    (
+                        str(cohort["token_id"]), iso(signal), iso(window_end),
+                        iso(signal), iso(window_end), iso(signal), iso(upper),
+                    ),
+                )) if upper > signal else []
+                valid = [
+                    row for row in rows
+                    if (
+                        (surface := self._information_first_snapshot_surface(row)) is not None
+                        and surface["key"] == str(cohort["surface_key"])
+                    )
+                ]
+                crossing = None
+                crossing_valid_count = 0
+                dimensions: list[str] = []
+                for valid_index, row in enumerate(valid, start=1):
+                    transactions = int(row["buys_5m"]) + int(row["sells_5m"])
+                    current_dimensions = []
+                    if float(row["volume_5m_usd"]) > volume_threshold:
+                        current_dimensions.append("volume_5m_usd")
+                    if transactions > transactions_threshold:
+                        current_dimensions.append("transactions_5m")
+                    if current_dimensions:
+                        crossing = row
+                        crossing_valid_count = valid_index
+                        dimensions = current_dimensions
+                        break
+                if crossing is not None:
+                    transactions = int(crossing["buys_5m"]) + int(crossing["sells_5m"])
+                    recorded = parse_time(crossing["recorded_at"])
+                    self.db.execute(
+                        """
+                        INSERT INTO information_first_ilg_outcomes(
+                            ilg_cohort_id,status,window_end_at,terminal_at,crossing_snapshot_id,
+                            crossing_observed_at,crossing_ingested_at,crossing_recorded_at,ilg_seconds,
+                            crossing_volume_5m_usd,crossing_transactions_5m,crossed_dimensions_json,
+                            valid_snapshot_count,surface_key,evaluated_at
+                        ) VALUES(?,'crossed',?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        """,
+                        (
+                            int(cohort["id"]), str(cohort["window_end_at"]), str(cohort["terminal_at"]),
+                            int(crossing["id"]), str(crossing["observed_at"]),
+                            str(crossing["ingested_at"]), str(crossing["recorded_at"]),
+                            (recorded - signal).total_seconds(), float(crossing["volume_5m_usd"]),
+                            transactions, self._json(dimensions), crossing_valid_count,
+                            str(cohort["surface_key"]),
+                            iso(evaluated),
+                        ),
+                    )
+                    crossed_count += 1
+                elif evaluated >= terminal:
+                    status = (
+                        "missing_not_crossed_by_240m"
+                        if valid else "missing_no_valid_activity_snapshot"
+                    )
+                    self.db.execute(
+                        """
+                        INSERT INTO information_first_ilg_outcomes(
+                            ilg_cohort_id,status,window_end_at,terminal_at,crossed_dimensions_json,
+                            valid_snapshot_count,surface_key,evaluated_at
+                        ) VALUES(?,?,?,?, '[]',?,?,?)
+                        """,
+                        (
+                            int(cohort["id"]), status, str(cohort["window_end_at"]),
+                            str(cohort["terminal_at"]), len(valid), str(cohort["surface_key"]),
+                            iso(evaluated),
+                        ),
+                    )
+                    missing_count += 1
+        pending = int(self.db.execute(
+            """
+            SELECT COUNT(*) FROM information_first_ilg_cohorts c
+            LEFT JOIN information_first_ilg_outcomes o ON o.ilg_cohort_id=c.id
+            WHERE c.eligibility='eligible_at_risk' AND o.id IS NULL
+            """
+        ).fetchone()[0])
+        return {
+            "cohorts_checked": len(cohorts),
+            "outcomes_crossed": crossed_count,
+            "outcomes_missing": missing_count,
+            "outcomes_pending": pending,
+        }
+
+    @classmethod
+    def information_first_ilg_summary_from_connection(
+        cls, connection: sqlite3.Connection, *, lookback_days: int = 90
+    ) -> dict[str, Any]:
+        definition = cls._information_first_ilg_definition()
+        empty = {
+            "version": cls.INFORMATION_FIRST_ILG_VERSION,
+            "status": "not_observed",
+            "mode": "strict_forward_interval_censored",
+            "affects": "none",
+            "definition": definition,
+            "items": [],
+            "summary": {
+                "registered_cohorts": 0, "eligible_at_risk": 0, "already_active_at_signal": 0,
+                "activity_baseline_missing": 0, "activity_surface_unknown": 0,
+                "pre_registration_excluded": 0, "crossed": 0,
+                "missing_not_crossed_by_240m": 0, "missing_no_valid_activity_snapshot": 0,
+                "pending": 0, "crossing_rate": None, "median_ilg_seconds": None,
+                "p25_ilg_seconds": None, "p75_ilg_seconds": None,
+            },
+        }
+        tables = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        required = {
+            "information_first_ilg_registrations", "information_first_ilg_cohorts",
+            "information_first_ilg_outcomes", "information_first_shadow_cohorts",
+        }
+        if not required.issubset(tables):
+            return {**empty, "status": "unavailable"}
+        registration = connection.execute(
+            "SELECT * FROM information_first_ilg_registrations WHERE definition_version=?",
+            (cls.INFORMATION_FIRST_ILG_VERSION,),
+        ).fetchone()
+        if registration is None:
+            return {**empty, "status": "unavailable"}
+        try:
+            frozen_definition = json.loads(str(registration["definition_json"]))
+        except (TypeError, json.JSONDecodeError):
+            frozen_definition = definition
+        start = iso(utcnow() - timedelta(days=max(1, min(3650, int(lookback_days)))))
+        cohorts = list(connection.execute(
+            "SELECT * FROM information_first_ilg_cohorts WHERE enrolled_at>=? ORDER BY enrolled_at,id",
+            (start,),
+        ))
+        pre_registration = int(connection.execute(
+            """
+            SELECT COUNT(*) FROM information_first_shadow_cohorts s
+            WHERE s.signal_available_at<? AND s.captured_at>=?
+            """,
+            (str(registration["registered_at"]), start),
+        ).fetchone()[0])
+        if not cohorts:
+            result = dict(empty)
+            result["definition"] = frozen_definition
+            result["summary"] = {**empty["summary"], "pre_registration_excluded": pre_registration}
+            result["registered_at"] = str(registration["registered_at"])
+            return result
+        ids = [int(row["id"]) for row in cohorts]
+        placeholders = ",".join("?" for _ in ids)
+        outcomes = list(connection.execute(
+            f"SELECT * FROM information_first_ilg_outcomes WHERE ilg_cohort_id IN ({placeholders})",
+            ids,
+        ))
+        by_cohort = {int(row["ilg_cohort_id"]): row for row in outcomes}
+        eligible = [row for row in cohorts if str(row["eligibility"]) == "eligible_at_risk"]
+        crossed = [row for row in outcomes if str(row["status"]) == "crossed"]
+        values = sorted(float(row["ilg_seconds"]) for row in crossed if row["ilg_seconds"] is not None)
+
+        def percentile(fraction: float) -> float | None:
+            if not values:
+                return None
+            position = (len(values) - 1) * fraction
+            lower = int(math.floor(position))
+            upper = int(math.ceil(position))
+            if lower == upper:
+                return values[lower]
+            return values[lower] + (values[upper] - values[lower]) * (position - lower)
+
+        items = []
+        for eligibility in sorted({str(row["eligibility"]) for row in cohorts}):
+            rows = [row for row in cohorts if str(row["eligibility"]) == eligibility]
+            row_outcomes = [by_cohort[int(row["id"])] for row in rows if int(row["id"]) in by_cohort]
+            item_values = sorted(
+                float(row["ilg_seconds"])
+                for row in row_outcomes
+                if str(row["status"]) == "crossed" and row["ilg_seconds"] is not None
+            )
+            items.append({
+                "eligibility": eligibility,
+                "cohorts": len(rows),
+                "crossed": sum(str(row["status"]) == "crossed" for row in row_outcomes),
+                "missing": sum(str(row["status"]).startswith("missing_") for row in row_outcomes),
+                "pending": len(rows) - len(row_outcomes) if eligibility == "eligible_at_risk" else 0,
+                "median_ilg_seconds": item_values[len(item_values) // 2] if item_values else None,
+            })
+        summary = {
+            "registered_cohorts": len(cohorts),
+            "eligible_at_risk": len(eligible),
+            "already_active_at_signal": sum(str(row["eligibility"]) == "already_active_at_signal" for row in cohorts),
+            "activity_baseline_missing": sum(str(row["eligibility"]) == "ineligible_activity_baseline_missing" for row in cohorts),
+            "activity_surface_unknown": sum(str(row["eligibility"]) == "ineligible_activity_surface_unknown" for row in cohorts),
+            "pre_registration_excluded": pre_registration,
+            "crossed": len(crossed),
+            "missing_not_crossed_by_240m": sum(str(row["status"]) == "missing_not_crossed_by_240m" for row in outcomes),
+            "missing_no_valid_activity_snapshot": sum(str(row["status"]) == "missing_no_valid_activity_snapshot" for row in outcomes),
+            "pending": len(eligible) - len(outcomes),
+            "crossing_rate": round(len(crossed) / len(eligible), 6) if eligible else None,
+            "median_ilg_seconds": percentile(0.5),
+            "p25_ilg_seconds": percentile(0.25),
+            "p75_ilg_seconds": percentile(0.75),
+        }
+        return {
+            "version": cls.INFORMATION_FIRST_ILG_VERSION,
+            "status": "collecting" if summary["pending"] else "observed",
+            "mode": "strict_forward_interval_censored",
+            "affects": "none",
+            "definition": frozen_definition,
+            "registered_at": str(registration["registered_at"]),
+            "items": items,
+            "summary": summary,
+            "as_of": iso(),
         }
 
     @classmethod

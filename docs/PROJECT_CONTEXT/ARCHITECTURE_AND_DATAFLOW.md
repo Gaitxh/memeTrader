@@ -122,7 +122,9 @@ Trend Scout 主题通道基线 round-robin / 受限选择性分配
 
 - `observations`：来源、平台文本、作者、URL、角色、发布时间、本机观察/摄入时间、原始 JSON。
 - `events` / `event_observations`：聚类事件、首次接受时冻结的前向 topic 及其全部证据；迁移前记录保持 `unknown`。
-- `tokens` / `token_snapshots`：Token 身份和随时间变化的价格、流动性、成交与安全字段。
+- `tokens` / `token_snapshots`：Token 身份和随时间变化的价格、流动性、成交与安全字段；新快照由 Store 内部写入不可覆盖的 `recorded_at`，旧行保持未知，不回填。
+- `information_first_shadow_*`：最终决策时冻结的信息先行 cohort、准入与 15/60/240 分钟价格结果。
+- `information_first_ilg_registrations` / `information_first_ilg_cohorts` / `information_first_ilg_outcomes`：预注册后、同交易表面的成交量/笔数首次越界上界及不可变终态；`affects=none`。
 - `token_source_links`：Dex/pair 附带 URL 的发现面、identity/promotion 角色、类型、平台及本机首次/最后观察。
 - `token_discovery_rounds` / `token_discovery_exposures`：PumpPortal、GeckoTerminal 与 DexScreener 的真实发现轮次、空窗口、错误、重复、本机首次 Token、链接、hydration 快照及 no-pair 前向分母；只作人工覆盖复核。
 - `decisions`：action、score、match、canonical margin、理由、拒绝理由和 Paper 仓位金额。

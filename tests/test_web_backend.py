@@ -446,6 +446,10 @@ def test_web_api_empty_database_is_safe_and_live_is_locked(tmp_path: Path):
     assert empty_sources["information_first_shadow"]["status"] == "not_observed"
     assert empty_sources["information_first_shadow"]["summary"]["cohorts"] == 0
     assert empty_sources["information_first_shadow"]["affects"] == "none"
+    assert empty_sources["information_first_shadow"]["ilg"]["status"] == "not_observed"
+    assert empty_sources["information_first_shadow"]["ilg"]["affects"] == "none"
+    assert empty_sources["information_first_shadow"]["ilg"]["definition"]["same_surface_only"] is True
+    assert empty_sources["information_first_shadow"]["ilg"]["definition"]["activity"]["market_cap_excluded"] is True
     assert empty_sources["watch_account_learning"]["status"] == "not_observed"
     assert empty_sources["watch_account_learning"]["summary"]["account_exposures"] == 0
     assert empty_sources["learning_closure"]["status"] == "not_observed"
@@ -1201,7 +1205,9 @@ def test_candidate_ranking_api_is_persisted_bounded_sanitized_and_wait_is_truthf
     assert "data-testid='attention-experiment'" in app
     assert "data-testid='token-context-followup'" in app
     assert "data-testid='information-first-shadow'" in app
+    assert "data-testid='information-first-ilg'" in app
     assert "low activity is not “unpriced” and is not a buy signal" in app
+    assert "first locally recorded same-surface activity crossing" in app
     assert "Token-context forward follow-through: learn what merits more research" in app
     assert "Trend-lane statistics are descriptive and cannot change scheduling on their own" in app
     assert "Account correlations create hypotheses; only a preregistered randomized experiment may alter a watch slot" in app

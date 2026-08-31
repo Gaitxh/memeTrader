@@ -61,8 +61,9 @@ def test_followup_tick_finalizes_event_and_token_context_without_agent_or_quote(
         runtime.store.finalize_shadow_event_outcomes = lambda: calls.append("event")
         runtime.store.finalize_token_context_outcomes = lambda: calls.append("token_context")
         runtime.store.finalize_information_first_shadow_outcomes = lambda: calls.append("information_first")
+        runtime.store.finalize_information_first_ilg_outcomes = lambda: calls.append("information_first_ilg")
         await runtime.shadow_event_followup_once()
-        assert calls == ["event", "token_context", "information_first"]
+        assert calls == ["event", "token_context", "information_first", "information_first_ilg"]
         await runtime.close()
 
     asyncio.run(scenario())

@@ -29,3 +29,16 @@ DexScreener 的 `pairCreatedAt` 只能描述交易对时间，不能声称是链
 结果只接受目标时点之后才真实入库的快照，窗口错过后写入终态 `missing`；结果表不可更新或删除。Sources 页面提供中英文面板，按市场活动层展示 cohort、可随访数、信号基线缺失、60 分钟观察/缺失/等待和平均原始回报。
 
 在跨多个日期、包含失败和 missing 的独立样本达到预注册成熟门前，不得把这些分层用于提高 Agent 频率、放大仓位或修改退出策略。
+
+## 严格前向 ILG
+
+`information-first-ilg/v1` 单独检验“合格信息在本机可用后，多久首次在同一交易表面观察到活动越界”。它只接收定义注册后创建的新 cohort；更早的 information-first cohort 明确计为 `pre_registration_excluded`，不会事后入组。
+
+- `token_snapshots.recorded_at` 只能由 Store 在持锁写入时生成，调用方不可传入；旧快照保持 `NULL`，永久不能进入 ILG。
+- 基线和后续快照都必须满足 `signal <= observed_at <= ingested_at <= recorded_at`。
+- provider、chain、DEX 与 pair address 必须与基线完全一致，禁止把不同池的成交量拼成一次越界。
+- 活动越界预注册为 `volume_5m_usd > 20,000` 或 `buys_5m + sells_5m > 30`，严格大于，任一满足即越界。`market_cap_usd` 可能混合 market cap/FDV，只作描述分层，不进入活动 ILG。
+- `ILG = crossing_recorded_at - signal_available_at`。它是首次本机耐久落库观察的上界，属于 interval-censored 数据，不声称是真实市场精确越界时间。
+- 观察窗为 240 分钟，另留 30 分钟终态审计期。未越界分为 `missing_not_crossed_by_240m` 与 `missing_no_valid_activity_snapshot`，写入后不可更新或删除。
+
+ILG 仍为 `affects=none`，不进入账号权重、Agent 调度、证据资格、候选、风控、Paper 或 Live。

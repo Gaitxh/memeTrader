@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from memetrader.collectors import DexScreenerClient, MastodonCollector
-from memetrader.models import CandidateDecision, EventView, Observation, Position, TokenCandidate, TokenSnapshot, iso
+from memetrader.models import CandidateDecision, EventView, Observation, Position, TokenCandidate, TokenSnapshot, iso, parse_time
 from memetrader.runtime import load_config
 from memetrader.store import Store
 from memetrader.strategy import (
@@ -2594,6 +2594,183 @@ def test_information_first_shadow_rejects_invalid_observation_availability(tmp_p
     assert (attempt["status"], attempt["reason"]) == (
         "skipped", "no_eligible_accepted_information_lead"
     )
+
+
+def test_information_first_ilg_is_strict_forward_same_surface_and_terminal(tmp_path: Path):
+    store = Store(tmp_path / "information-first-ilg.sqlite3")
+    registration = store.db.execute(
+        "SELECT * FROM information_first_ilg_registrations WHERE definition_version=?",
+        (Store.INFORMATION_FIRST_ILG_VERSION,),
+    ).fetchone()
+    registered_at = parse_time(registration["registered_at"])
+    signal = registered_at + timedelta(seconds=2)
+    surface = {
+        "pair": {
+            "chainId": "solana", "dexId": "raydium", "pairAddress": "PAIR-A",
+        }
+    }
+
+    def add_recorded_snapshot(
+        token_id: str,
+        *,
+        recorded_at: datetime,
+        volume: float,
+        buys: int,
+        sells: int,
+        raw: dict | None = None,
+        market_cap: float = 500_000,
+    ) -> int:
+        with store.db:
+            cursor = store.db.execute(
+                """
+                INSERT INTO token_snapshots(
+                    token_id,observed_at,ingested_at,recorded_at,provider,price_usd,
+                    liquidity_usd,market_cap_usd,volume_5m_usd,buys_5m,sells_5m,raw_json
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    token_id, iso(recorded_at), iso(recorded_at), iso(recorded_at), "dexscreener",
+                    1.0, 50_000, market_cap, volume, buys, sells,
+                    json.dumps(surface if raw is None else raw),
+                ),
+            )
+        return int(cursor.lastrowid)
+
+    sequence = 0
+
+    def create_cohort(*, volume: float = 20_000, buys: int = 20, sells: int = 10, raw=None):
+        nonlocal sequence
+        sequence += 1
+        address = chr(64 + sequence) * 32
+        token = TokenCandidate(chain="solana", address=address, name=f"ILG {sequence}")
+        store.upsert_token(token, seen_at=registered_at - timedelta(minutes=2))
+        event_id = store.create_event(
+            f"ILG event {sequence}", [f"ILG {sequence}"], 70,
+            registered_at - timedelta(minutes=1),
+        )
+        lead = Observation(
+            source=f"ilg-fixture-{sequence}", source_kind="news", title=f"ILG {sequence}",
+            observed_at=registered_at - timedelta(seconds=10), ingested_at=registered_at,
+            published_at=registered_at - timedelta(seconds=10), role="feature", capture_phase="live",
+        )
+        lead_id, _ = store.add_observation(lead)
+        store.link_event_observation(event_id, lead_id)
+        add_recorded_snapshot(
+            token.token_id, recorded_at=registered_at + timedelta(seconds=1),
+            volume=volume, buys=buys, sells=sells, raw=surface if raw is None else raw,
+        )
+        decision_id = store.add_decision(CandidateDecision(
+            event_id, token.token_id, "WAIT", 60, 70, 3, [], created_at=signal,
+        ))
+        shadow_id = store.create_information_first_shadow_cohort(
+            event_id, token.token_id, decision_id=decision_id,
+            accepted_observation_ids=[lead_id], captured_at=signal, relation_available_at=signal,
+        )
+        cohort = store.db.execute(
+            "SELECT * FROM information_first_ilg_cohorts WHERE shadow_cohort_id=?", (shadow_id,)
+        ).fetchone()
+        return token, cohort
+
+    crossed_token, crossed_cohort = create_cohort()
+    assert crossed_cohort["eligibility"] == "eligible_at_risk"
+    add_recorded_snapshot(
+        crossed_token.token_id, recorded_at=signal + timedelta(seconds=20),
+        volume=1_000_000, buys=100, sells=100,
+        raw={"pair": {"chainId": "solana", "dexId": "raydium", "pairAddress": "PAIR-B"}},
+    )
+    add_recorded_snapshot(
+        crossed_token.token_id, recorded_at=signal + timedelta(seconds=30),
+        volume=20_000, buys=20, sells=10, market_cap=50_000_000,
+    )
+    crossing_id = add_recorded_snapshot(
+        crossed_token.token_id, recorded_at=signal + timedelta(seconds=40),
+        volume=20_000.01, buys=20, sells=10,
+    )
+    result = store.finalize_information_first_ilg_outcomes(now=signal + timedelta(seconds=41))
+    assert result["outcomes_crossed"] == 1
+    outcome = store.db.execute(
+        "SELECT * FROM information_first_ilg_outcomes WHERE ilg_cohort_id=?",
+        (int(crossed_cohort["id"]),),
+    ).fetchone()
+    assert outcome["crossing_snapshot_id"] == crossing_id
+    assert outcome["ilg_seconds"] == pytest.approx(40)
+    assert json.loads(outcome["crossed_dimensions_json"]) == ["volume_5m_usd"]
+    assert outcome["valid_snapshot_count"] == 2
+
+    invalid_future_token, invalid_future_cohort = create_cohort()
+    store.add_snapshot(TokenSnapshot(
+        chain="solana", address=invalid_future_token.address, price_usd=1,
+        liquidity_usd=50_000, market_cap_usd=500_000, volume_5m_usd=50_000,
+        buys_5m=50, sells_5m=20, observed_at=signal + timedelta(minutes=10),
+        ingested_at=signal + timedelta(minutes=10), provider="dexscreener", raw=surface,
+    ))
+    future_row = store.db.execute(
+        "SELECT * FROM token_snapshots WHERE token_id=? ORDER BY id DESC LIMIT 1",
+        (invalid_future_token.token_id,),
+    ).fetchone()
+    assert parse_time(future_row["recorded_at"]) < parse_time(future_row["ingested_at"])
+
+    low_token, low_cohort = create_cohort()
+    add_recorded_snapshot(
+        low_token.token_id, recorded_at=signal + timedelta(minutes=60),
+        volume=20_000, buys=20, sells=10,
+    )
+    already_active_token, already_active_cohort = create_cohort(volume=20_000.01)
+    assert already_active_cohort["eligibility"] == "already_active_at_signal"
+    _, unknown_surface_cohort = create_cohort(raw={})
+    assert unknown_surface_cohort["eligibility"] == "ineligible_activity_surface_unknown"
+
+    terminal = signal + timedelta(minutes=270)
+    terminal_result = store.finalize_information_first_ilg_outcomes(now=terminal)
+    assert terminal_result["outcomes_missing"] == 2
+    terminal_statuses = {
+        int(row["ilg_cohort_id"]): str(row["status"])
+        for row in store.db.execute(
+            "SELECT ilg_cohort_id,status FROM information_first_ilg_outcomes"
+        )
+    }
+    assert terminal_statuses[int(invalid_future_cohort["id"])] == "missing_no_valid_activity_snapshot"
+    assert terminal_statuses[int(low_cohort["id"])] == "missing_not_crossed_by_240m"
+    add_recorded_snapshot(
+        low_token.token_id, recorded_at=signal + timedelta(minutes=120),
+        volume=50_000, buys=50, sells=20,
+    )
+    assert store.finalize_information_first_ilg_outcomes(now=terminal + timedelta(minutes=1))["cohorts_checked"] == 0
+    with pytest.raises(sqlite3.IntegrityError):
+        with store.db:
+            store.db.execute(
+                "UPDATE information_first_ilg_outcomes SET status='crossed' WHERE ilg_cohort_id=?",
+                (int(low_cohort["id"]),),
+            )
+
+    old_signal = registered_at - timedelta(seconds=1)
+    with store.db:
+        old_shadow = store.db.execute(
+            """
+            INSERT INTO information_first_shadow_cohorts(
+                cohort_key,version,event_id,token_id,decision_id,captured_at,signal_available_at,
+                relation_available_at,lead_observation_id,lead_observed_at,trackability,
+                features_json,created_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                "pre-registration", Store.INFORMATION_FIRST_SHADOW_VERSION, 999_991,
+                already_active_token.token_id, 999_991, iso(old_signal), iso(old_signal),
+                iso(old_signal), 999_991, iso(old_signal), "baseline_missing_at_signal_available",
+                "{}", iso(old_signal),
+            ),
+        ).lastrowid
+    assert store._create_information_first_ilg_cohort(int(old_shadow)) is None
+
+    summary = Store.information_first_ilg_summary_from_connection(store.db)
+    assert summary["affects"] == "none"
+    assert summary["definition"]["activity"]["market_cap_excluded"] is True
+    assert summary["summary"]["eligible_at_risk"] == 3
+    assert summary["summary"]["crossed"] == 1
+    assert summary["summary"]["missing_not_crossed_by_240m"] == 1
+    assert summary["summary"]["missing_no_valid_activity_snapshot"] == 1
+    assert summary["summary"]["pre_registration_excluded"] == 1
+    assert summary["summary"]["median_ilg_seconds"] == pytest.approx(40)
 
 
 def test_four_character_person_name_requires_more_than_text_overlap(tmp_path: Path):

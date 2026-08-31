@@ -2386,6 +2386,7 @@ class Runtime:
         self.store.finalize_shadow_event_outcomes()
         self.store.finalize_token_context_outcomes()
         self.store.finalize_information_first_shadow_outcomes()
+        self.store.finalize_information_first_ilg_outcomes()
         self.store.finalize_attention_experiment_outcomes()
 
     async def pump_loop(self) -> None:

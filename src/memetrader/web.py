@@ -92,6 +92,9 @@ EXPECTED_TABLES = {
     "information_first_shadow_admission_attempts",
     "information_first_shadow_cohorts",
     "information_first_shadow_outcomes",
+    "information_first_ilg_registrations",
+    "information_first_ilg_cohorts",
+    "information_first_ilg_outcomes",
     "kv",
     "observations",
     "paper_account",
@@ -3553,6 +3556,23 @@ class WebData:
             },
             "not_available": ["unique_buyers", "image_similarity", "holder_clusters"],
         }
+        information_first_ilg: dict[str, Any] = {
+            "status": "not_observed",
+            "version": Store.INFORMATION_FIRST_ILG_VERSION,
+            "mode": "strict_forward_interval_censored",
+            "affects": "none",
+            "definition": Store._information_first_ilg_definition(),
+            "items": [],
+            "summary": {
+                "registered_cohorts": 0, "eligible_at_risk": 0,
+                "already_active_at_signal": 0, "activity_baseline_missing": 0,
+                "activity_surface_unknown": 0, "pre_registration_excluded": 0,
+                "crossed": 0, "missing_not_crossed_by_240m": 0,
+                "missing_no_valid_activity_snapshot": 0, "pending": 0,
+                "crossing_rate": None, "median_ilg_seconds": None,
+                "p25_ilg_seconds": None, "p75_ilg_seconds": None,
+            },
+        }
         watch_account_learning: dict[str, Any] = {
             "status": "not_observed", "items": [],
             "summary": {"runs": 0, "completed_runs": 0, "account_exposures": 0},
@@ -3803,6 +3823,15 @@ class WebData:
                     )
                 except (sqlite3.Error, TypeError, ValueError, json.JSONDecodeError):
                     information_first_shadow["status"] = "unavailable"
+                try:
+                    information_first_ilg = Store.information_first_ilg_summary_from_connection(
+                        connection,
+                        lookback_days=int(
+                            autonomous_cfg.get("source_learning_lookback_days", 90)
+                        ),
+                    )
+                except (sqlite3.Error, TypeError, ValueError, json.JSONDecodeError):
+                    information_first_ilg["status"] = "unavailable"
                 try:
                     lookback_days = int(autonomous_cfg.get("source_learning_lookback_days", 90))
                     start = iso(utcnow() - timedelta(days=max(1, min(3650, lookback_days))))
@@ -4061,7 +4090,10 @@ class WebData:
             "shadow_followup": shadow_followup,
             "token_context_followup": token_context_followup,
             "token_context_admissions": token_context_admissions,
-            "information_first_shadow": information_first_shadow,
+            "information_first_shadow": {
+                **information_first_shadow,
+                "ilg": information_first_ilg,
+            },
             "learning_closure": learning_closure,
             "as_of": iso(),
         }
