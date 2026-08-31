@@ -73,6 +73,57 @@ def test_source_poll_exposure_summary_includes_zero_yield_and_errors_without_raw
     store.close()
 
 
+def test_event_attention_points_are_forward_append_only_and_future_safe(tmp_path: Path):
+    store = Store(tmp_path / "attention-trajectory.sqlite3")
+    engine = EventEngine(store, similarity=0.1)
+    now = datetime.now(timezone.utc)
+    base = dict(
+        source_kind="news",
+        title="Viral capybara mascot appears online",
+        text="Viral capybara mascot appears online",
+        observed_at=now,
+        ingested_at=now,
+    )
+    event_id, _, _ = engine.ingest(Observation(source="news-a", source_item_id="a", **base))
+    engine.ingest(Observation(source="news-b", source_item_id="b", role="confirmation", **base))
+    engine.ingest(Observation(source="context", source_item_id="c", role="promotion", **base))
+    engine.ingest(Observation(source="news-a", source_item_id="a", **base))
+    future = now + timedelta(hours=1)
+    engine.ingest(
+        Observation(
+            source="future",
+            source_kind="news",
+            title=base["title"],
+            text=base["text"],
+            observed_at=future,
+            ingested_at=future,
+            source_item_id="future",
+        )
+    )
+
+    points = list(store.db.execute(
+        "SELECT * FROM event_attention_points WHERE event_id=? ORDER BY id", (event_id,)
+    ))
+    assert len(points) == 4
+    assert [row["trigger_role"] for row in points] == ["feature", "confirmation", "promotion", "feature"]
+    assert points[2]["trigger_decision_eligible"] == 0
+    assert points[3]["trigger_decision_eligible"] == 0
+    assert points[3]["exclusion_reason"] == "trigger_observed_in_future"
+    assert points[2]["attention"] == points[1]["attention"]
+    assert points[3]["attention"] == points[2]["attention"]
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute("UPDATE event_attention_points SET attention=99 WHERE id=?", (points[0]["id"],))
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute("DELETE FROM event_attention_points WHERE id=?", (points[0]["id"],))
+    store.close()
+
+    reopened = Store(tmp_path / "attention-trajectory.sqlite3")
+    assert reopened.db.execute("SELECT COUNT(*) FROM event_attention_points").fetchone()[0] == 4
+    reopened.create_event("Legacy event without fabricated history", ["legacy"], 10, now)
+    assert reopened.db.execute("SELECT COUNT(*) FROM event_attention_points").fetchone()[0] == 4
+    reopened.close()
+
+
 def test_token_discovery_exposure_preserves_denominator_and_forward_outcomes(tmp_path: Path):
     store = Store(tmp_path / "token-discovery.sqlite3", initial_cash_usd=1000)
     observed_at = datetime.now(timezone.utc) - timedelta(minutes=2)

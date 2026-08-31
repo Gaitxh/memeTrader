@@ -2144,6 +2144,7 @@ class WebData:
                     curated_accounts[(platform, identity_key)] = account
         ids = [int(row["id"]) for row in rows]
         grouped: dict[int, list[dict[str, Any]]] = {event_id: [] for event_id in ids}
+        attention_points: dict[int, list[dict[str, Any]]] = {event_id: [] for event_id in ids}
         placeholders = ",".join("?" for _ in ids)
         if self._table_exists(connection, "event_observations") and self._table_exists(connection, "observations"):
             for observation in connection.execute(
@@ -2167,6 +2168,32 @@ class WebData:
                         "display_name": str(curated.get("display_name") or "") or None,
                     }
                 grouped[int(observation["event_id"])].append(value)
+        if self._table_exists(connection, "event_attention_points"):
+            point_limit = 96 if include_observations else 24
+            for point in connection.execute(
+                f"""
+                SELECT * FROM (
+                    SELECT p.*,ROW_NUMBER() OVER (
+                        PARTITION BY event_id ORDER BY recorded_at DESC,id DESC
+                    ) AS event_rank
+                    FROM event_attention_points p
+                    WHERE event_id IN ({placeholders})
+                ) WHERE event_rank<=?
+                ORDER BY event_id,recorded_at,id
+                """,
+                [*ids, point_limit],
+            ):
+                attention_points[int(point["event_id"])].append(
+                    {
+                        "recorded_at": point["recorded_at"],
+                        "score": float(point["attention"]),
+                        "eligible_observation_count": int(point["eligible_observation_count"]),
+                        "context_observation_count": int(point["context_observation_count"]),
+                        "trigger_role": point["trigger_role"],
+                        "trigger_decision_eligible": bool(point["trigger_decision_eligible"]),
+                        "exclusion_reason": point["exclusion_reason"],
+                    }
+                )
         output: list[dict[str, Any]] = []
         for row in rows:
             event_id = int(row["id"])
@@ -2182,6 +2209,92 @@ class WebData:
             roles: dict[str, int] = {}
             for item in observations:
                 roles[item["role"]] = roles.get(item["role"], 0) + 1
+            points = attention_points.get(event_id, [])
+            eligible_points = [point for point in points if point["trigger_decision_eligible"]]
+            trajectory_status = (
+                "not_observed" if not points else
+                "context_only" if not eligible_points else
+                "insufficient_samples" if len(points) < 2 else
+                "observed"
+            )
+            delta_score = None
+            score_velocity = None
+            score_acceleration = None
+            coverage_seconds = None
+            if len(points) >= 2:
+                start = parse_time(points[0]["recorded_at"])
+                end = parse_time(points[-1]["recorded_at"])
+                coverage_seconds = max(0.0, (end - start).total_seconds())
+                if coverage_seconds > 0:
+                    delta_score = round(points[-1]["score"] - points[0]["score"], 4)
+                    score_velocity = round(delta_score / coverage_seconds * 60.0, 4)
+            if len(points) >= 3:
+                first, middle, last = points[-3:]
+                first_at = parse_time(first["recorded_at"])
+                middle_at = parse_time(middle["recorded_at"])
+                last_at = parse_time(last["recorded_at"])
+                first_seconds = (middle_at - first_at).total_seconds()
+                second_seconds = (last_at - middle_at).total_seconds()
+                if first_seconds > 0 and second_seconds > 0:
+                    first_velocity = (middle["score"] - first["score"]) / first_seconds * 60.0
+                    second_velocity = (last["score"] - middle["score"]) / second_seconds * 60.0
+                    score_acceleration = round(
+                        (second_velocity - first_velocity) / second_seconds * 60.0,
+                        4,
+                    )
+            arrival_windows: dict[str, dict[str, Any]] = {}
+            if points:
+                current_at = parse_time(points[-1]["recorded_at"])
+                first_at = parse_time(points[0]["recorded_at"])
+                for label, seconds in (("10s", 10), ("30s", 30), ("1m", 60), ("5m", 300)):
+                    covered = (current_at - first_at).total_seconds() >= seconds
+                    count = sum(
+                        1 for point in points
+                        if point["trigger_decision_eligible"]
+                        and 0 <= (current_at - parse_time(point["recorded_at"])).total_seconds() < seconds
+                    )
+                    arrival_windows[label] = {
+                        "status": "observed_lower_bound" if covered else "under_resolved",
+                        "value": round(count / seconds * 60.0, 4) if covered else None,
+                        "numerator": count if covered else None,
+                        "window_seconds": seconds,
+                        "unit": "local_unique_observations_per_minute",
+                    }
+            unavailable = {
+                name: {
+                    "status": "unavailable",
+                    "reason": reason,
+                }
+                for name, reason in {
+                    "mention_velocity": "platform_total_mentions_and_exposure_denominator_not_observed",
+                    "unique_author_velocity": "stable_origin_actor_ids_not_available",
+                    "reply_velocity": "engagement_revision_history_not_available",
+                    "quote_velocity": "engagement_revision_history_not_available",
+                    "repost_velocity": "engagement_revision_history_not_available",
+                    "cross_community_diffusion": "community_origin_taxonomy_not_available",
+                    "cross_platform_diffusion": "origin_platform_and_transport_are_not_yet_separated",
+                }.items()
+            }
+            trajectory = {
+                "version": Store.EVENT_ATTENTION_TRAJECTORY_VERSION,
+                "status": trajectory_status,
+                "affects": "none",
+                "scope": "local_new_observation_arrivals_only",
+                "point_count": len(points),
+                "eligible_point_count": len(eligible_points),
+                "context_point_count": len(points) - len(eligible_points),
+                "recorded_from": points[0]["recorded_at"] if points else None,
+                "recorded_to": points[-1]["recorded_at"] if points else None,
+                "coverage_seconds": round(coverage_seconds, 3) if coverage_seconds is not None else None,
+                "current_score": points[-1]["score"] if points else None,
+                "delta_score": delta_score,
+                "score_velocity_per_minute": score_velocity,
+                "score_acceleration_per_minute2": score_acceleration,
+                "local_arrival_velocity": arrival_windows,
+                "unavailable_metrics": unavailable,
+            }
+            if include_observations:
+                trajectory["points"] = points
             payload = {
                 "id": event_id,
                 "title": row["title"],
@@ -2199,6 +2312,8 @@ class WebData:
                 "observation_count": len(observations),
                 "roles": roles,
                 "decision_eligible": bool(eligible_origins),
+                "attention_history": [point["score"] for point in points],
+                "attention_trajectory": trajectory,
                 "event_url": f"#/events/{event_id}",
                 "evidence_ranking": {
                     "method": "decision_utility_authority_freshness",

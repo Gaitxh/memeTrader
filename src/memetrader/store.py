@@ -50,6 +50,7 @@ class Store:
     PAPER_SOURCE_ATTRIBUTION_VERSION = "paper-source-attribution/v2-decision-cohort"
     SOURCE_POLL_EXPOSURE_VERSION = "source-poll-exposure/v1"
     TOKEN_DISCOVERY_EXPOSURE_VERSION = "token-discovery-exposure/v1"
+    EVENT_ATTENTION_TRAJECTORY_VERSION = "event-attention-trajectory/v1"
 
     def __init__(self, path: str | Path, initial_cash_usd: float = 10000):
         self.path = Path(path)
@@ -98,6 +99,29 @@ class Store:
                     observation_id INTEGER NOT NULL,
                     PRIMARY KEY(event_id, observation_id)
                 );
+                CREATE TABLE IF NOT EXISTS event_attention_points (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    event_id INTEGER NOT NULL,
+                    observation_id INTEGER NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    attention REAL NOT NULL,
+                    eligible_observation_count INTEGER NOT NULL,
+                    context_observation_count INTEGER NOT NULL,
+                    trigger_role TEXT NOT NULL,
+                    trigger_decision_eligible INTEGER NOT NULL,
+                    exclusion_reason TEXT,
+                    coverage_mode TEXT NOT NULL,
+                    UNIQUE(definition_version,event_id,observation_id)
+                );
+                CREATE INDEX IF NOT EXISTS event_attention_points_event_idx
+                    ON event_attention_points(event_id,recorded_at,id);
+                CREATE TRIGGER IF NOT EXISTS event_attention_points_no_update
+                BEFORE UPDATE ON event_attention_points
+                BEGIN SELECT RAISE(ABORT,'event attention points are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS event_attention_points_no_delete
+                BEFORE DELETE ON event_attention_points
+                BEGIN SELECT RAISE(ABORT,'event attention points are immutable'); END;
 
                 CREATE TABLE IF NOT EXISTS tokens (
                     token_id TEXT PRIMARY KEY,
@@ -1168,12 +1192,89 @@ class Store:
             )
             return int(cur.lastrowid)
 
-    def update_event(self, event_id: int, *, title: str, aliases: Iterable[str], attention: float, seen_at=None) -> None:
+    def update_event(
+        self,
+        event_id: int,
+        *,
+        title: str,
+        aliases: Iterable[str],
+        attention: float,
+        seen_at=None,
+        trigger_observation_id: int | None = None,
+    ) -> None:
         with self._lock, self.db:
             self.db.execute(
                 "UPDATE events SET title=?,aliases_json=?,attention=?,last_seen_at=? WHERE id=?",
                 (title, self._json(sorted(set(aliases))), attention, iso(seen_at or utcnow()), event_id),
             )
+            if trigger_observation_id is not None:
+                self._record_event_attention_point_locked(
+                    event_id,
+                    trigger_observation_id,
+                    attention,
+                )
+
+    def _record_event_attention_point_locked(
+        self,
+        event_id: int,
+        observation_id: int,
+        attention: float,
+    ) -> bool:
+        recorded_at = utcnow()
+        trigger = self.db.execute(
+            """
+            SELECT o.* FROM observations o
+            JOIN event_observations eo ON eo.observation_id=o.id
+            WHERE eo.event_id=? AND o.id=?
+            """,
+            (event_id, observation_id),
+        ).fetchone()
+        if trigger is None:
+            return False
+        exclusion_reason = None
+        if parse_time(trigger["observed_at"]) > recorded_at:
+            exclusion_reason = "trigger_observed_in_future"
+        elif parse_time(trigger["ingested_at"]) > recorded_at:
+            exclusion_reason = "trigger_ingested_in_future"
+        trigger_role = str(trigger["role"] or "").lower()
+        trigger_eligible = exclusion_reason is None and trigger_role in {"feature", "confirmation"}
+        counts = self.db.execute(
+            """
+            SELECT
+                SUM(CASE WHEN o.role IN ('feature','confirmation')
+                              AND o.observed_at<=? AND o.ingested_at<=? THEN 1 ELSE 0 END) AS eligible_count,
+                SUM(CASE WHEN o.role NOT IN ('feature','confirmation')
+                              OR o.observed_at>? OR o.ingested_at>? THEN 1 ELSE 0 END) AS context_count
+            FROM observations o
+            JOIN event_observations eo ON eo.observation_id=o.id
+            WHERE eo.event_id=?
+            """,
+            (iso(recorded_at), iso(recorded_at), iso(recorded_at), iso(recorded_at), event_id),
+        ).fetchone()
+        before = self.db.total_changes
+        self.db.execute(
+            """
+            INSERT OR IGNORE INTO event_attention_points(
+                definition_version,event_id,observation_id,recorded_at,attention,
+                eligible_observation_count,context_observation_count,trigger_role,
+                trigger_decision_eligible,exclusion_reason,coverage_mode
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                self.EVENT_ATTENTION_TRAJECTORY_VERSION,
+                event_id,
+                observation_id,
+                iso(recorded_at),
+                float(attention),
+                int(counts["eligible_count"] or 0),
+                int(counts["context_count"] or 0),
+                trigger_role or "unknown",
+                int(trigger_eligible),
+                exclusion_reason,
+                "local_new_observation_arrivals_only",
+            ),
+        )
+        return self.db.total_changes > before
 
     def link_event_observation(self, event_id: int, observation_id: int) -> None:
         with self._lock, self.db:

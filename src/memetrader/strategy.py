@@ -391,11 +391,14 @@ class EventEngine:
         return max(jaccard, containment * 0.9)
 
     @staticmethod
-    def _attention(rows: list[Any]) -> float:
+    def _attention(rows: list[Any], *, as_of=None) -> float:
+        as_of = parse_time(as_of or utcnow())
         rows = [
             row
             for row in rows
             if str(row["role"]).lower() in {"feature", "confirmation"}
+            and parse_time(row["observed_at"]) <= as_of
+            and parse_time(row["ingested_at"]) <= as_of
         ]
         if not rows:
             return 0.0
@@ -438,7 +441,14 @@ class EventEngine:
             rows = self.store.event_observations(event_id)
             aliases = list(dict.fromkeys([*best[1].aliases, *alias_list]))[:32]
             title = best[1].title if len(best[1].title) <= len(obs.title) else obs.title
-            self.store.update_event(event_id, title=title, aliases=aliases, attention=self._attention(rows), seen_at=obs.observed_at)
+            self.store.update_event(
+                event_id,
+                title=title,
+                aliases=aliases,
+                attention=self._attention(rows),
+                seen_at=obs.observed_at,
+                trigger_observation_id=observation_id,
+            )
             return event_id, False, observation_created
         event_id = self.store.create_event(
             obs.title,
@@ -449,7 +459,14 @@ class EventEngine:
         )
         self.store.link_event_observation(event_id, observation_id)
         rows = self.store.event_observations(event_id)
-        self.store.update_event(event_id, title=obs.title, aliases=alias_list, attention=self._attention(rows), seen_at=obs.observed_at)
+        self.store.update_event(
+            event_id,
+            title=obs.title,
+            aliases=alias_list,
+            attention=self._attention(rows),
+            seen_at=obs.observed_at,
+            trigger_observation_id=observation_id,
+        )
         return event_id, True, observation_created
 
 

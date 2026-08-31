@@ -77,6 +77,20 @@ a:hover { color: #81edf0; }
   transform: rotate(-3deg);
 }
 
+.event-score > span,
+.data-table .sparkline + small { color: var(--dim); font: 500 8px/1.35 var(--mono); }
+.trajectory-boundary { margin-bottom: 12px; padding: 11px 13px; border: 1px solid rgba(69,214,219,.16); border-radius: var(--radius-sm); background: rgba(69,214,219,.045); }
+.trajectory-boundary strong { color: var(--cyan); font: 700 10px/1 var(--mono); letter-spacing: .08em; }
+.trajectory-boundary p { margin: 7px 0 0; color: var(--muted); line-height: 1.55; }
+.trajectory-plot { min-height: 62px; display: grid; grid-template-columns: minmax(100px,1fr) auto; align-items: center; gap: 16px; margin-bottom: 12px; padding: 10px 13px; border: 1px solid var(--line-soft); border-radius: var(--radius-sm); background: var(--bg-raised); }
+.trajectory-plot .sparkline { width: 100%; height: 46px; }
+.trajectory-plot > div:last-child { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; }
+.trajectory-plot small,.trajectory-plot .muted { color: var(--dim); font: 500 9px/1.35 var(--mono); }
+@media (max-width: 520px) {
+  .trajectory-plot { grid-template-columns: 1fr; }
+  .trajectory-plot > div:last-child { align-items: flex-start; }
+}
+
 .app-shell { min-height: 100vh; }
 
 .sidebar {

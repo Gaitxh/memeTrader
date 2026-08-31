@@ -19,6 +19,7 @@ from memetrader.autonomous_search import (
 from memetrader.models import CandidateDecision, Observation, TokenCandidate, TokenSnapshot, iso, utcnow
 from memetrader.runtime import initial_config
 from memetrader.store import Store
+from memetrader.strategy import EventEngine
 from memetrader.web import WebData, create_server
 
 
@@ -372,6 +373,36 @@ def _seed(path: Path) -> tuple[int, str]:
     )
     store.close()
     return event_id, token.token_id
+
+
+def test_event_attention_trajectory_api_reports_local_scope_without_fake_mentions(tmp_path: Path):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3")
+    engine = EventEngine(store, similarity=0.1)
+    now = utcnow()
+    common = dict(
+        source_kind="news",
+        title="Viral llama becomes a meme mascot",
+        text="Viral llama becomes a meme mascot",
+        observed_at=now,
+        ingested_at=now,
+    )
+    event_id, _, _ = engine.ingest(Observation(source="news-one", source_item_id="one", **common))
+    engine.ingest(Observation(source="news-two", source_item_id="two", role="confirmation", **common))
+    store.close()
+
+    web = WebData(config_path)
+    summary = next(item for item in web.events({})["items"] if item["id"] == event_id)
+    assert len(summary["attention_history"]) == 2
+    assert summary["attention_trajectory"]["status"] == "observed"
+    assert summary["attention_trajectory"]["affects"] == "none"
+    assert summary["attention_trajectory"]["scope"] == "local_new_observation_arrivals_only"
+    assert summary["attention_trajectory"]["unavailable_metrics"]["mention_velocity"]["status"] == "unavailable"
+    assert "points" not in summary["attention_trajectory"]
+    detail = web.event_detail(event_id)
+    assert len(detail["attention_trajectory"]["points"]) == 2
+    serialized = json.dumps(detail)
+    assert "raw_json" not in serialized and "bridge-secret" not in serialized
 
 
 def _start_server(config: Path, static_dir: Path, access_token_file: Path | None = None):
@@ -1231,6 +1262,9 @@ def test_candidate_ranking_api_is_persisted_bounded_sanitized_and_wait_is_truthf
     assert "Verified narrative / event evidence timeline" not in app
     assert "data-testid='paper-account-curve'" in app
     assert "data-testid='paper-execution-attempts'" in app
+    assert "data-testid='attention-trajectory'" in app
+    assert "OBSERVE ONLY · AFFECTS NONE" in app
+    assert "It is not platform-wide mentions, replies, quotes, or repost velocity" in app
     assert "no future price was filled in" in app
     assert "no fake fills are generated" in app
 
