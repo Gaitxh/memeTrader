@@ -16,7 +16,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .collectors import DexScreenerClient, HttpClient
-from .models import CandidateDecision, EventView, Observation, Position, TokenCandidate, TokenSnapshot, iso, parse_time, utcnow
+from .models import CandidateDecision, EventView, Observation, ObservationRevisionHandoff, Position, TokenCandidate, TokenSnapshot, iso, parse_time, utcnow
 from .store import Store
 
 EVM_ADDRESS_RE = re.compile(r"(?<![0-9a-fA-F])0x[0-9a-fA-F]{40}(?![0-9a-fA-F])")
@@ -422,7 +422,15 @@ class EventEngine:
             score += 18.0
         return min(100.0, score)
 
-    def ingest(self, obs: Observation) -> tuple[int, bool, bool]:
+    def ingest(
+        self,
+        obs: Observation,
+        *,
+        revision_handoff: ObservationRevisionHandoff | None = None,
+    ) -> tuple[int, bool, bool]:
+        if revision_handoff is not None:
+            revision_handoff.revision_id = None
+            revision_handoff.claim_relation_ids = ()
         raw = obs.raw if isinstance(obs.raw, dict) else {}
         source_item_state = str(raw.get("source_item_state") or "present").strip().lower()
         has_explicit_retraction_target = (
@@ -435,7 +443,9 @@ class EventEngine:
         ):
             # An unanchored absence/withdrawal signal cannot safely create a new event.
             return 0, False, False
-        observation_id, observation_created = self.store.add_observation(obs)
+        observation_id, observation_created = self.store.add_observation(
+            obs, revision_handoff=revision_handoff
+        )
         if not observation_created:
             linked_event = self.store.event_for_observation(observation_id)
             if linked_event is not None:

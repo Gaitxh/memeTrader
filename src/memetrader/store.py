@@ -16,6 +16,7 @@ from .models import (
     CandidateDecision,
     EventView,
     Observation,
+    ObservationRevisionHandoff,
     Position,
     TokenCandidate,
     TokenSnapshot,
@@ -2434,7 +2435,7 @@ class Store:
         target_match_count: int,
         evidence_basis: str,
         temporal_exclusion_reason: str | None = None,
-    ) -> None:
+    ) -> int | None:
         edge_material = "\n".join(
             [
                 self.EVENT_CLAIM_RELATION_VERSION,
@@ -2448,7 +2449,7 @@ class Store:
         edge_fingerprint = hashlib.sha256(
             edge_material.encode("utf-8", errors="ignore")
         ).hexdigest()
-        self.db.execute(
+        cursor = self.db.execute(
             """
             INSERT OR IGNORE INTO event_claim_relations(
                 definition_version,edge_fingerprint,source_revision_id,target_revision_id,
@@ -2474,8 +2475,12 @@ class Store:
                 temporal_exclusion_reason or revision["temporal_exclusion_reason"],
             ),
         )
+        return int(cursor.lastrowid) if cursor.rowcount == 1 else None
 
-    def _record_claim_relations_locked(self, obs: Observation, revision_id: int) -> None:
+    def _record_claim_relations_locked(
+        self, obs: Observation, revision_id: int
+    ) -> tuple[int, ...]:
+        relation_ids: list[int] = []
         registration = self.db.execute(
             "SELECT registered_at FROM event_claim_relation_registrations WHERE definition_version=?",
             (self.EVENT_CLAIM_RELATION_VERSION,),
@@ -2490,7 +2495,7 @@ class Store:
             or parse_time(revision["recorded_at"]) < parse_time(registration["registered_at"])
             or parse_time(revision["capture_ingested_at"]) < parse_time(registration["registered_at"])
         ):
-            return
+            return ()
         exclusion = str(revision["temporal_exclusion_reason"] or "")
         previous_revision_id = (
             int(revision["previous_revision_id"])
@@ -2505,7 +2510,7 @@ class Store:
             previous_exclusion = str(previous["temporal_exclusion_reason"] or "") if previous else ""
         if previous_revision_id is not None:
             relation_exclusion = exclusion or previous_exclusion
-            self._insert_claim_relation_locked(
+            relation_id = self._insert_claim_relation_locked(
                 revision=revision,
                 relation_type="supersedes",
                 relation_scope="same_item_version",
@@ -2516,12 +2521,14 @@ class Store:
                 evidence_basis="stable_source_item_sequence",
                 temporal_exclusion_reason=relation_exclusion or None,
             )
+            if relation_id is not None:
+                relation_ids.append(relation_id)
         relation_type = {
             "explicit_correction": "corrects",
             "explicit_retracted": "retracts",
         }.get(str(revision["revision_kind"]))
         if relation_type is None:
-            return
+            return tuple(relation_ids)
         raw = obs.raw if isinstance(obs.raw, dict) else {}
         raw_target = raw.get("claim_target_url")
         safe_target_url = self._revision_safe_url(raw_target) if raw_target else ""
@@ -2567,7 +2574,7 @@ class Store:
             match_count = int(previous_revision_id is not None)
             resolution = "resolved" if previous_revision_id is not None else "target_not_found"
             scope = "same_item_version"
-        self._insert_claim_relation_locked(
+        relation_id = self._insert_claim_relation_locked(
             revision=revision,
             relation_type=relation_type,
             relation_scope=scope,
@@ -2579,18 +2586,23 @@ class Store:
             temporal_exclusion_reason=(previous_exclusion or None)
             if resolution == "excluded_temporal" and not exclusion else None,
         )
+        if relation_id is not None:
+            relation_ids.append(relation_id)
+        return tuple(relation_ids)
 
-    def _record_source_item_revision_locked(self, obs: Observation, observation_id: int) -> int | None:
+    def _record_source_item_revision_locked(
+        self, obs: Observation, observation_id: int
+    ) -> ObservationRevisionHandoff:
         identity = self._source_item_key(obs)
         if identity is None:
-            return None
+            return ObservationRevisionHandoff()
         key, identity_mode = identity
         registration = self.db.execute(
             "SELECT registered_at FROM source_item_revision_registrations WHERE definition_version=?",
             (self.SOURCE_ITEM_REVISION_VERSION,),
         ).fetchone()
         if registration is None or obs.ingested_at < parse_time(registration["registered_at"]):
-            return None
+            return ObservationRevisionHandoff()
         previous = self.db.execute(
             "SELECT * FROM source_item_revisions WHERE definition_version=? AND source_item_key=? "
             "ORDER BY sequence_no DESC LIMIT 1",
@@ -2613,7 +2625,7 @@ class Store:
                 anchor_row is None
                 or parse_time(anchor_row["ingested_at"]) >= parse_time(registration["registered_at"])
             ):
-                return None
+                return ObservationRevisionHandoff()
         safe_url = self._revision_safe_url(obs.url)
         snapshot = {
             "title": str(obs.title or "")[:500],
@@ -2632,7 +2644,7 @@ class Store:
             and previous["local_state"] == local_state
             and previous["semantic_signal"] == semantic_signal
         ):
-            return None
+            return ObservationRevisionHandoff()
         prior_snapshot = self._json_object(previous["snapshot_json"]) if previous is not None else {}
         changed_fields = [
             field for field in snapshot if prior_snapshot.get(field) != snapshot.get(field)
@@ -2711,17 +2723,31 @@ class Store:
             ),
         )
         if cursor.rowcount != 1:
-            return None
+            return ObservationRevisionHandoff()
         revision_id = int(cursor.lastrowid)
-        self._record_claim_relations_locked(obs, revision_id)
-        return revision_id
+        relation_ids = self._record_claim_relations_locked(obs, revision_id)
+        return ObservationRevisionHandoff(revision_id, relation_ids)
 
-    def add_observation(self, obs: Observation) -> tuple[int, bool]:
+    def add_observation(
+        self,
+        obs: Observation,
+        *,
+        revision_handoff: ObservationRevisionHandoff | None = None,
+    ) -> tuple[int, bool]:
+        if revision_handoff is not None:
+            revision_handoff.revision_id = None
+            revision_handoff.claim_relation_ids = ()
+
+        def publish_handoff(value: ObservationRevisionHandoff) -> None:
+            if revision_handoff is not None:
+                revision_handoff.revision_id = value.revision_id
+                revision_handoff.claim_relation_ids = value.claim_relation_ids
+
         fp = self._fingerprint(obs)
         with self._lock, self.db:
             anchor = self._source_item_anchor_locked(obs) if obs.source_item_id.strip() else None
             if anchor is not None:
-                self._record_source_item_revision_locked(obs, anchor)
+                publish_handoff(self._record_source_item_revision_locked(obs, anchor))
                 return anchor, False
             try:
                 stored_raw = dict(obs.raw) if isinstance(obs.raw, dict) else {}
@@ -2755,13 +2781,17 @@ class Store:
                     ),
                 )
                 observation_id = int(cur.lastrowid)
-                self._record_source_item_revision_locked(obs, observation_id)
+                publish_handoff(
+                    self._record_source_item_revision_locked(obs, observation_id)
+                )
                 self._record_observation_provenance_locked(obs, observation_id)
                 return observation_id, True
             except sqlite3.IntegrityError:
                 row = self.db.execute("SELECT id FROM observations WHERE fingerprint=?", (fp,)).fetchone()
                 observation_id = int(row["id"])
-                self._record_source_item_revision_locked(obs, observation_id)
+                publish_handoff(
+                    self._record_source_item_revision_locked(obs, observation_id)
+                )
                 return observation_id, False
 
     def observation(self, observation_id: int) -> sqlite3.Row:

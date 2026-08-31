@@ -55,6 +55,12 @@ class Observation:
 
 
 @dataclass(slots=True)
+class ObservationRevisionHandoff:
+    revision_id: int | None = None
+    claim_relation_ids: tuple[int, ...] = ()
+
+
+@dataclass(slots=True)
 class EventView:
     id: int
     title: str

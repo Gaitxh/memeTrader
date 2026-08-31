@@ -25,7 +25,7 @@ from .collectors import (
     normalize_loopback_socks5_proxy_url,
     normalize_public_http_url,
 )
-from .models import CandidateDecision, Observation, TokenCandidate, iso, parse_time, utcnow
+from .models import CandidateDecision, Observation, ObservationRevisionHandoff, TokenCandidate, iso, parse_time, utcnow
 from .store import Store
 from .strategy import (
     AgentRouter,
@@ -1196,12 +1196,17 @@ class Runtime:
 
     async def ingest_observation(self, obs: Observation) -> dict[str, Any]:
         obs = self._classify_observation(obs)
-        event_id, event_created, observation_created = self.events.ingest(obs)
+        revision_handoff = ObservationRevisionHandoff()
+        event_id, event_created, observation_created = self.events.ingest(
+            obs, revision_handoff=revision_handoff
+        )
         result = {
             "event_id": event_id,
             "event_created": event_created,
             "observation_created": observation_created,
             "decision_eligible": obs.role.lower() in {"feature", "confirmation"},
+            "revision_id": revision_handoff.revision_id,
+            "claim_relation_ids": list(revision_handoff.claim_relation_ids),
         }
         self.store.heartbeat(obs.source, item=observation_created)
         if not observation_created:

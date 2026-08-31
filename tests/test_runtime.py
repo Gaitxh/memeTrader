@@ -967,6 +967,66 @@ def test_promotional_listicle_is_stored_but_cannot_create_attention(tmp_path):
     asyncio.run(scenario())
 
 
+def test_runtime_returns_revision_handoff_when_observation_anchor_is_reused(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        config["sources"]["rss"] = []
+        config["sources"]["gecko_networks"] = []
+        config["sources"]["pumpportal"]["enabled"] = False
+        config["sources"]["reverse_google_news"]["enabled"] = False
+        config["autonomous_search"]["enabled"] = False
+        runtime = Runtime(config, tmp_path)
+        now = utcnow()
+        common = {
+            "source": "browser:x:publisher",
+            "source_kind": "social",
+            "title": "Publisher reports a meme event",
+            "url": "https://x.com/publisher/status/9001",
+            "source_item_id": "x:publisher:9001",
+            "observed_at": now,
+            "ingested_at": now,
+            "availability_proof": "local_receive",
+        }
+        first = await runtime.ingest_observation(
+            Observation(text="Original report", raw={"source_item_state": "present"}, **common)
+        )
+        second = await runtime.ingest_observation(
+            Observation(
+                text="Publisher correction",
+                role="identity",
+                raw={
+                    "source_item_state": "correction",
+                    "source_item_state_evidence": "publisher_correction_marker",
+                    "claim_target_url": common["url"],
+                },
+                **common,
+            )
+        )
+        assert first["observation_created"] is True
+        assert first["revision_id"] is not None
+        assert first["claim_relation_ids"] == []
+        assert second["event_id"] == first["event_id"]
+        assert second["observation_created"] is False
+        assert second["revision_id"] is not None
+        assert len(second["claim_relation_ids"]) == 2
+        relations = list(
+            runtime.store.db.execute(
+                "SELECT id,source_revision_id,relation_type,decision_eligible,affects "
+                "FROM event_claim_relations WHERE id IN (?,?) ORDER BY id",
+                tuple(second["claim_relation_ids"]),
+            )
+        )
+        assert {row["id"] for row in relations} == set(second["claim_relation_ids"])
+        assert {row["source_revision_id"] for row in relations} == {second["revision_id"]}
+        assert {row["relation_type"] for row in relations} == {"supersedes", "corrects"}
+        assert all(row["decision_eligible"] == 0 and row["affects"] == "none" for row in relations)
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
 def test_raw_items_are_stored_without_notification_spam(tmp_path):
     async def scenario():
         config = initial_config()

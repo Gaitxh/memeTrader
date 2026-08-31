@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from memetrader.collectors import DexScreenerClient, MastodonCollector
-from memetrader.models import CandidateDecision, EventView, Observation, Position, TokenCandidate, TokenSnapshot, iso, parse_time, utcnow
+from memetrader.models import CandidateDecision, EventView, Observation, ObservationRevisionHandoff, Position, TokenCandidate, TokenSnapshot, iso, parse_time, utcnow
 from memetrader.runtime import load_config
 from memetrader.store import Store
 from memetrader.strategy import (
@@ -211,15 +211,30 @@ def test_source_item_revisions_are_forward_append_only_shadow_and_future_safe(tm
         source_item_id="x:example:123",
         raw={"source_item_state": "present", "view_count": 10},
     )
-    event_id, _, created = engine.ingest(Observation(**base))
+    baseline_handoff = ObservationRevisionHandoff()
+    event_id, _, created = engine.ingest(
+        Observation(**base), revision_handoff=baseline_handoff
+    )
     assert created is True
+    assert baseline_handoff.revision_id is not None
+    assert baseline_handoff.claim_relation_ids == ()
     first_event = store.get_event(event_id)
     first_observation_count = store.db.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
 
     identical = {**base, "raw": {"source_item_state": "present", "view_count": 999}}
-    assert engine.ingest(Observation(**identical)) == (event_id, False, False)
+    unchanged_handoff = ObservationRevisionHandoff(999, (999,))
+    assert engine.ingest(
+        Observation(**identical), revision_handoff=unchanged_handoff
+    ) == (event_id, False, False)
+    assert unchanged_handoff.revision_id is None
+    assert unchanged_handoff.claim_relation_ids == ()
     edited = {**base, "text": "Edited public post with a correction note"}
-    assert engine.ingest(Observation(**edited)) == (event_id, False, False)
+    edit_handoff = ObservationRevisionHandoff()
+    assert engine.ingest(
+        Observation(**edited), revision_handoff=edit_handoff
+    ) == (event_id, False, False)
+    assert edit_handoff.revision_id is not None
+    assert len(edit_handoff.claim_relation_ids) == 1
     deleted = {
         **edited,
         "role": "identity",
@@ -325,6 +340,7 @@ def test_claim_relations_are_atomic_forward_only_and_keep_deletion_semantically_
     engine.ingest(
         Observation(text="Edited claim", raw={"source_item_state": "present"}, **common)
     )
+    correction_handoff = ObservationRevisionHandoff()
     engine.ingest(
         Observation(
             text="Publisher correction",
@@ -335,7 +351,8 @@ def test_claim_relations_are_atomic_forward_only_and_keep_deletion_semantically_
                 "claim_target_url": common["url"],
             },
             **common,
-        )
+        ),
+        revision_handoff=correction_handoff,
     )
     engine.ingest(
         Observation(
@@ -366,6 +383,10 @@ def test_claim_relations_are_atomic_forward_only_and_keep_deletion_semantically_
         "supersedes", "supersedes", "corrects", "supersedes", "supersedes"
     ]
     correction = next(row for row in relations if row["relation_type"] == "corrects")
+    assert correction_handoff.revision_id == correction["source_revision_id"]
+    assert set(correction_handoff.claim_relation_ids) == {
+        row["id"] for row in relations if row["source_revision_id"] == correction["source_revision_id"]
+    }
     assert correction["source_revision_id"] == revisions[2]["id"]
     assert correction["target_revision_id"] == revisions[1]["id"]
     assert correction["resolution_status"] == "resolved"
