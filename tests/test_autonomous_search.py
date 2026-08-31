@@ -186,6 +186,66 @@ def test_console_preferences_are_bounded_rotated_and_non_secret(tmp_path: Path):
     store.close()
 
 
+def test_preregistered_watch_assignment_is_persisted_before_agent_prompt(tmp_path: Path):
+    settings_path = tmp_path / "console_settings.json"
+    accounts = [
+        {
+            "platform": "x", "handle": "openai", "entity_id": "openai",
+            "url": "https://x.com/openai", "priority": 5,
+            "watch_cadence": "normal", "enabled": True,
+        },
+        {
+            "platform": "x", "handle": "anthropic", "entity_id": "anthropic",
+            "url": "https://x.com/anthropic", "priority": 5,
+            "watch_cadence": "normal", "enabled": True,
+        },
+        *[
+            {
+                "platform": "x", "handle": f"other_{index}",
+                "entity_id": f"other_{index}", "url": f"https://x.com/other_{index}",
+                "priority": 3, "watch_cadence": "normal", "enabled": True,
+            }
+            for index in range(10)
+        ],
+    ]
+    settings_path.write_text(
+        json.dumps({"platforms": [{"platform": "x", "enabled": True}], "watch_accounts": accounts}),
+        encoding="utf-8",
+    )
+    store = Store(tmp_path / "db.sqlite3")
+    store.register_attention_experiment(
+        experiment_id="watch-openai-vs-anthropic",
+        hypothesis="fixture",
+        challenger=accounts[0], control=accounts[1],
+        random_seed="0123456789abcdef0123456789abcdef",
+    )
+    store.set_attention_experiment_state(
+        "watch-openai-vs-anthropic", "activated", reason="fixture",
+    )
+    agent = AutonomousSearchAgent(
+        store, FakeHttp(), config(source_learning_enabled=True),
+        console_settings_path=settings_path,
+    )
+    run_id = "persisted-before-prompt"
+    preferences = agent._console_search_preferences("trend_scout", run_id=run_id)
+    assignment = store.db.execute(
+        "SELECT * FROM attention_experiment_assignments WHERE run_id=?", (run_id,),
+    ).fetchone()
+    assert assignment is not None
+    selected_experiment = [
+        row for row in preferences["watch_accounts"]
+        if str(row.get("selection_role") or "").startswith("experiment_")
+    ]
+    assert len(selected_experiment) == 1
+    assert selected_experiment[0]["handle"] == assignment["target_handle_key"]
+    assert selected_experiment[0]["learning_multiplier"] == 1.0
+    assert len({row["handle"] for row in preferences["watch_accounts"]} & {"openai", "anthropic"}) == 1
+    assert preferences["watch_selection"]["attention_experiment_slots"] == 1
+    assert preferences["watch_selection"]["actual_rotation_changed_by_experiment"] is True
+    assert preferences["watch_selection"]["exploration_slots"] >= 5
+    store.close()
+
+
 def test_console_watch_rotation_uses_only_joint_attention_policy(tmp_path: Path):
     settings_path = tmp_path / "console_settings.json"
     settings_path.write_text(
@@ -1634,6 +1694,18 @@ def test_runtime_ingests_autonomous_trend_observations(tmp_path: Path):
         cfg["sources"]["reverse_google_news"]["enabled"] = False
         cfg["notifications"]["jsonl"] = "notifications.jsonl"
         runtime = Runtime(cfg, tmp_path)
+        run_id = "runtime-ingestion-finalization"
+        runtime.store.start_trend_lane_run(
+            run_id=run_id, taxonomy_version="fixture", prompt_version="fixture",
+            selection_mode="fixture", surge=False, max_web_searches=1,
+            started_at=utcnow(),
+            lanes=[{
+                "id": "fixture", "prompt": "fixture", "event_topics": ["other"],
+                "selection_role": "baseline", "attention_multiplier": 1.0,
+                "total_lane_count": 1,
+            }],
+        )
+        runtime.store.finish_trend_lane_run(run_id, status="completed")
         observations = [
             Observation(
                 source="agent-scout:one.example",
@@ -1654,13 +1726,21 @@ def test_runtime_ingests_autonomous_trend_observations(tmp_path: Path):
         ]
 
         async def fake_scout(*, force=False):
-            return {"status": "completed", "events": [{"event_title": observations[0].title}]}, observations
+            return {
+                "status": "completed",
+                "events": [{"event_title": observations[0].title}],
+                "lane_selection": {"run_id": run_id},
+            }, observations
 
         runtime.autonomous_search.scout_trends = fake_scout
         result = await runtime.scout_trends_once(force=True)
         assert result["status"] == "completed"
         assert runtime.store.db.execute("SELECT COUNT(*) FROM observations").fetchone()[0] == 2
         assert runtime.store.db.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
+        run = runtime.store.db.execute(
+            "SELECT * FROM trend_lane_runs WHERE run_id=?", (run_id,),
+        ).fetchone()
+        assert run["observation_ingestion_status"] == "completed"
         await runtime.close()
 
     asyncio.run(scenario())

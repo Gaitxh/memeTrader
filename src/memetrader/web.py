@@ -3539,6 +3539,14 @@ class WebData:
             "status": "not_observed", "items": [],
             "summary": {"runs": 0, "completed_runs": 0, "account_exposures": 0},
         }
+        attention_experiment: dict[str, Any] = {
+            "version": Store.ATTENTION_EXPERIMENT_VERSION,
+            "status": "not_registered", "experiment": None,
+            "arms": {"challenger": {}, "control": {}},
+            "gates": {}, "stage1_ready": False,
+            "automatic_promotion": False, "actual_multiplier": 1.0,
+            "affects": "one_normal_trend_scout_watch_slot_only",
+        }
         learning_closure: dict[str, Any] = {
             "version": "browser-watch-closure/v1",
             "status": "not_observed",
@@ -3731,6 +3739,12 @@ class WebData:
                     )
                 except (sqlite3.Error, TypeError, ValueError):
                     watch_account_learning["status"] = "unavailable"
+                try:
+                    attention_experiment = Store.attention_experiment_summary_from_connection(
+                        connection
+                    )
+                except (sqlite3.Error, TypeError, ValueError, json.JSONDecodeError):
+                    attention_experiment["status"] = "unavailable"
                 try:
                     shadow_followup = Store.shadow_event_learning_summary_from_connection(
                         connection,
@@ -4014,6 +4028,7 @@ class WebData:
             "trend_attention_policy": trend_attention_policy,
             "watch_account_learning": watch_account_learning,
             "watch_attention_policy": watch_attention,
+            "attention_experiment": attention_experiment,
             "shadow_followup": shadow_followup,
             "token_context_followup": token_context_followup,
             "token_context_admissions": token_context_admissions,

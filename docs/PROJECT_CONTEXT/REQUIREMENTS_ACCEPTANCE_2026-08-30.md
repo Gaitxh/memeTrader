@@ -154,3 +154,13 @@
 关于用户补充的“4% 滑点、实际费率和买卖次数”：固定 4% 被采用为每侧不利执行压力，而不是声称真实成交必然损失 4%。通用场地费保持每笔 60 bps，Dex 报价明确识别 PumpSwap 时使用 125 bps 保守上限；滑点/价格冲击、DEX/creator/platform fee、Token 税和 Solana base/priority fee 分开记录，未知链费不伪装为 0，也不重复扣除。当前保持一次入场，最多四层按剩余仓位止盈；缺少可验证路由和更多前向样本前不增加 DCA/加仓复杂度。
 
 这份矩阵是累积需求的权威总账；新补充只追加或修正解释，不会静默删除旧要求。后续每次发布应更新最新快照中的真实运行数字、样本成熟度和外部人工断点，而不是重新宣称“全部完成”。
+
+## 12. 2026-08-31 选择性注意力实验增量
+
+- 账号与主题的历史相关性已降为描述性假设；`watch-attention/v3-experiment-gated` 与 `trend-attention/v2-experiment-gated` 的实际倍率始终为 `1.00×`，不再依据同一段观察数据直接优化调度。
+- `attention-experiment/v1` 预注册固定每组 60 个 assignment，采用 2:2 平衡区块，在 Agent 调用前写入不可变 assignment。Agent 错误、调用前中止、零产出、跨组碰撞与 60 分钟 missing 全部保留在 intention-to-observe 分母；只有平台、handle、entity 与 run 完全匹配的原帖观察可以归因。
+- 第 1 阶段只有在固定 assignment 全部终结、所有归属事件的 60 分钟市场结果终结且标准双侧 95% Newcombe-Wilson 下界通过时才可显示通过；之后仍需独立时间顺序 holdout。系统不会自动提升观察倍率，更不会把该结果写入证据、排名、风控、仓位、Paper 退出或 Live。
+- 这是观察槽位实验，不是 Paper 策略 Phase 2。金额、入场次数、分批止盈、runner 与持仓期的 challenger 仍须等待既定成熟门，不能借注意力实验提前启用。
+- 当日实测 Token Context 最多使用约 47/96 次调用和 3.24M/50M token；没有新的 `daily_token_reserve_exceeded` 或 `daily_call_limit_reached`。本轮不盲目继续抬高预算，保留有限上限、冷却、退避与最多两个并发 Agent；只有再次出现真实预算阻塞且触发质量合格时才调整。
+- 结论仍是“核心产品可用、长期前向学习持续进行”，不是全部累积需求已经完成。X 精确账号桥接样本、固定公网域名、Devnet signature、通用事实冲突升级、Paper Phase 2 与 Mainnet Broker 仍分别属于外部步骤、待实现或明确锁定项。
+- “热点信息可能先于价格”已落成独立早期入口：本机浏览器桥精确实收的高影响力账号原帖，或新鲜高 attention 且与 Token 高匹配的 WAIT/CANDIDATE 事件关系，可在市值、成交量和 momentum 尚低时直接准入 Token Context。该入口只启动调查，不绕过同名碰瓷、未来时间、身份/推广角色、CA、独立来源、安全与流动性门，也不因人物或叙事标签直接交易。链上动量仍作为并行发现面，而不是唯一前置条件。

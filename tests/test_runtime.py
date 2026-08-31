@@ -658,6 +658,15 @@ def test_non_paper_mode_is_rejected(tmp_path):
         load_config(path)
 
 
+def test_agent_concurrency_is_hard_limited_to_two(tmp_path):
+    config = initial_config()
+    config["autonomous_search"]["max_concurrent_agents"] = 3
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    with pytest.raises(ValueError, match="between 1 and 2"):
+        load_config(path)
+
+
 def test_single_instance_lock(tmp_path):
     lock = tmp_path / "robot.lock"
     with SingleInstance(lock):

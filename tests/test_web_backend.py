@@ -449,9 +449,12 @@ def test_web_api_empty_database_is_safe_and_live_is_locked(tmp_path: Path):
     assert empty_sources["learning_closure"]["breakpoint"] == "browser_exposure"
     assert [item["count"] for item in empty_sources["learning_closure"]["stages"]] == [0, 0, 0, 0, 0]
     assert empty_sources["learning_closure"]["conversion_rates_available"] is False
-    assert empty_sources["watch_attention_policy"]["version"] == "watch-attention/v2-exact-entity"
+    assert empty_sources["watch_attention_policy"]["version"] == "watch-attention/v3-experiment-gated"
     assert empty_sources["watch_attention_policy"]["status"] == "not_configured"
     assert empty_sources["watch_attention_policy"]["items"] == []
+    assert empty_sources["attention_experiment"]["status"] == "not_registered"
+    assert empty_sources["attention_experiment"]["actual_multiplier"] == 1.0
+    assert empty_sources["attention_experiment"]["automatic_promotion"] is False
     audit = web.audit()
     assert audit["status"] == "policy_only"
     assert audit["policy_enforced"] is True
@@ -960,7 +963,7 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
     assert source_payload["learning"]["activation_policy"]["decision_support_affects"] == "descriptive_only"
     assert source_payload["trend_lanes"]["status"] == "collecting_exposure"
     assert source_payload["trend_lanes"]["actual_schedule_changed_by_learning"] is False
-    assert source_payload["trend_attention_policy"]["version"] == "trend-attention/v1"
+    assert source_payload["trend_attention_policy"]["version"] == "trend-attention/v2-experiment-gated"
     assert source_payload["trend_attention_policy"]["summary"]["actual_schedule_changed_by_learning"] is False
     policy_lane = next(
         item for item in source_payload["trend_attention_policy"]["items"]
@@ -989,7 +992,7 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
     assert account_exposure["rotation_active"] is False
     assert [item["count"] for item in source_payload["learning_closure"]["stages"]] == [1, 1, 0, 0, 0]
     assert source_payload["learning_closure"]["breakpoint"] == "eligible_event"
-    assert source_payload["watch_attention_policy"]["version"] == "watch-attention/v2-exact-entity"
+    assert source_payload["watch_attention_policy"]["version"] == "watch-attention/v3-experiment-gated"
     assert source_payload["watch_attention_policy"]["status"] == "collecting_evidence"
     assert source_payload["watch_attention_policy"]["summary"][
         "rotation_activation_available"
@@ -1192,10 +1195,12 @@ def test_candidate_ranking_api_is_persisted_bounded_sanitized_and_wait_is_truthf
     assert "data-testid='source-learning'" in app
     assert "data-testid='watch-account-exposure'" in app
     assert "data-testid='trend-attention-policy'" in app
+    assert "data-testid='attention-experiment'" in app
     assert "data-testid='token-context-followup'" in app
     assert "Token-context forward follow-through: learn what merits more research" in app
-    assert "Trend attention learning: exploration first, never trading" in app
-    assert "Watch rotation requires exact-account efficiency plus same-entity independent-event follow-up" in app
+    assert "Trend-lane statistics are descriptive and cannot change scheduling on their own" in app
+    assert "Account correlations create hypotheses; only a preregistered randomized experiment may alter a watch slot" in app
+    assert "Preregistered randomized attention experiment: one normal watch slot only" in app
     assert "Paper source outcomes require an exact final-decision → admitted-cohort → fill → close chain" in app
     assert "Forward learning state" in app
     assert "COLLECTING · NOTHING MATURE" in app

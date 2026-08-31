@@ -143,6 +143,18 @@ def test_runtime_restart_reclassifies_only_unfinished_exposure_attempts(tmp_path
         provider="geckoterminal", surface="new_pools", mode="poll", chain_scope="solana",
     )
     store.finish_token_discovery_round(completed_round, status="completed", requested_count=1)
+    for run_id in ("interrupted-trend", "completed-before-ingestion"):
+        store.start_trend_lane_run(
+            run_id=run_id, taxonomy_version="fixture", prompt_version="fixture",
+            selection_mode="fixture", surge=False, max_web_searches=1,
+            started_at=datetime.now(timezone.utc),
+            lanes=[{
+                "id": "fixture", "prompt": "fixture", "event_topics": ["other"],
+                "selection_role": "baseline", "attention_multiplier": 1.0,
+                "total_lane_count": 1,
+            }],
+        )
+    store.finish_trend_lane_run("completed-before-ingestion", status="completed")
     store.recover_interrupted_exposure_attempts()
     poll = store.db.execute("SELECT * FROM source_poll_attempts WHERE id=?", (poll_id,)).fetchone()
     interrupted = store.db.execute(
@@ -155,6 +167,17 @@ def test_runtime_restart_reclassifies_only_unfinished_exposure_attempts(tmp_path
     assert interrupted["status"] == "interrupted"
     assert interrupted["error_type"] == "ProcessRestart"
     assert completed["status"] == "completed" and completed["error_type"] == ""
+    interrupted_trend = store.db.execute(
+        "SELECT * FROM trend_lane_runs WHERE run_id='interrupted-trend'"
+    ).fetchone()
+    completed_before_ingestion = store.db.execute(
+        "SELECT * FROM trend_lane_runs WHERE run_id='completed-before-ingestion'"
+    ).fetchone()
+    assert interrupted_trend["status"] == "agent_error"
+    assert interrupted_trend["observation_ingestion_status"] == "error"
+    assert completed_before_ingestion["status"] == "completed"
+    assert completed_before_ingestion["observation_ingestion_status"] == "error"
+    assert completed_before_ingestion["error_type"] == "ProcessRestartDuringIngestion"
     store.close()
 
 
@@ -694,20 +717,26 @@ def test_watch_attention_policy_requires_exposure_and_wait_inclusive_market_foll
     policy = Store.build_watch_attention_policy(
         accounts, exposure=exposure, shadow=shadow, paper=paper,
     )
-    assert policy["version"] == "watch-attention/v2-exact-entity"
-    assert policy["status"] == "active_watch_rotation"
+    assert policy["version"] == "watch-attention/v3-experiment-gated"
+    assert policy["status"] == "mature_review_only"
     alpha = next(item for item in policy["items"] if item["handle"] == "alpha")
     beta = next(item for item in policy["items"] if item["handle"] == "beta")
     critical = next(item for item in policy["items"] if item["handle"] == "critical")
     collecting = next(item for item in policy["items"] if item["handle"] == "collecting")
-    assert alpha["rotation_active"] is True and 1.0 < alpha["applied_rotation_multiplier"] <= 1.20
-    assert beta["rotation_active"] is True and 0.80 <= beta["applied_rotation_multiplier"] < 1.0
+    assert alpha["attention_active"] is True and alpha["rotation_active"] is False
+    assert beta["attention_active"] is True and beta["rotation_active"] is False
+    assert alpha["applied_rotation_multiplier"] == 1.0
+    assert beta["applied_rotation_multiplier"] == 1.0
+    assert alpha["state"] == "mature_review_waiting_randomized_experiment"
+    assert beta["state"] == "mature_review_waiting_randomized_experiment"
     assert critical["attention_active"] is True
     assert critical["rotation_active"] is False
     assert critical["applied_rotation_multiplier"] == 1.0
     assert collecting["state"] == "collecting_account_exposure"
     assert collecting["rotation_active"] is False
     assert policy["activation_policy"]["requires_60m_shadow_followup_review_eligible"] is True
+    assert policy["activation_policy"]["requires_preregistered_randomized_attention_experiment"] is True
+    assert policy["activation_policy"]["observational_scores_are_descriptive_only"] is True
     assert "decision_eligibility" in policy["activation_policy"]["never_affects"]
 
 
@@ -750,19 +779,22 @@ def test_trend_attention_policy_requires_joint_maturity_and_bounds_lane_allocati
     policy = Store.build_trend_attention_policy(
         lanes, exposure=exposure, shadow=shadow, paper=paper,
     )
-    assert policy["version"] == "trend-attention/v1"
-    assert policy["status"] == "active_lane_schedule"
-    assert policy["summary"]["schedule_activation_available"] is True
+    assert policy["version"] == "trend-attention/v2-experiment-gated"
+    assert policy["status"] == "mature_waiting_for_randomized_experiment"
+    assert policy["summary"]["schedule_activation_available"] is False
     assert policy["summary"]["actual_schedule_changed_by_learning"] is False
     high = next(item for item in policy["items"] if item["lane_id"] == "high")
     low = next(item for item in policy["items"] if item["lane_id"] == "low")
     collecting = next(item for item in policy["items"] if item["lane_id"] == "collecting")
-    assert 1.0 < high["applied_schedule_multiplier"] <= 1.20
-    assert 0.80 <= low["applied_schedule_multiplier"] < 1.0
+    assert high["applied_schedule_multiplier"] == 1.0
+    assert low["applied_schedule_multiplier"] == 1.0
+    assert high["state"] == "mature_waiting_for_randomized_experiment"
+    assert low["state"] == "mature_waiting_for_randomized_experiment"
     assert high["paper_multiplier"] > 1.0
     assert collecting["schedule_active"] is False
     assert collecting["state"] == "collecting_market_followup"
     assert policy["activation_policy"]["minimum_round_robin_exploration_lanes_per_run"] == 1
+    assert policy["activation_policy"]["requires_preregistered_randomized_attention_experiment"] is True
     assert "live_trading" in policy["activation_policy"]["never_affects"]
 
 
@@ -819,7 +851,9 @@ def test_watch_attention_requires_exact_entity_and_never_uses_platform_fallback(
     untested_route = next(
         item for item in policy["items"] if item["handle"] == "untested_route"
     )
-    assert alpha_x["rotation_active"] is True and alpha_x["market_basis"] == "entity"
+    assert alpha_x["attention_active"] is True and alpha_x["market_basis"] == "entity"
+    assert alpha_x["rotation_active"] is False
+    assert alpha_x["applied_rotation_multiplier"] == 1.0
     assert alpha_bluesky["market_basis"] == "entity"
     assert alpha_bluesky["rotation_active"] is False
     assert alpha_bluesky["state"] == "collecting_account_exposure"
@@ -827,9 +861,309 @@ def test_watch_attention_requires_exact_entity_and_never_uses_platform_fallback(
     assert route_only["state"] == "missing_exact_entity_mapping"
     assert untested_route["rotation_active"] is False
     assert untested_route["state"] == "missing_exact_entity_mapping"
-    assert policy["summary"]["rotation_activation_available"] is True
+    assert policy["summary"]["rotation_activation_available"] is False
     assert policy["summary"]["actual_rotation_changed_by_learning"] is False
     assert policy["activation_policy"]["platform_fallback_for_accounts"] is False
+
+
+def test_preregistered_attention_experiment_balances_assignments_and_never_auto_promotes(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "attention-experiment.sqlite3")
+    accounts = [
+        {
+            "platform": "x", "handle": "openai", "entity_id": "openai",
+            "priority": 5, "watch_cadence": "normal", "enabled": True,
+        },
+        {
+            "platform": "x", "handle": "anthropic", "entity_id": "anthropic",
+            "priority": 5, "watch_cadence": "normal", "enabled": True,
+        },
+    ]
+    assert store.register_attention_experiment(
+        experiment_id="watch-openai-vs-anthropic-20260831",
+        hypothesis="OpenAI public posts produce more independent decision-eligible events per completed watch exposure.",
+        challenger=accounts[0],
+        control=accounts[1],
+        random_seed="0123456789abcdef0123456789abcdef",
+    ) is True
+    assert store.register_attention_experiment(
+        experiment_id="watch-openai-vs-anthropic-20260831",
+        hypothesis="duplicate",
+        challenger=accounts[0],
+        control=accounts[1],
+        random_seed="fedcba9876543210fedcba9876543210",
+    ) is False
+    store.set_attention_experiment_state(
+        "watch-openai-vs-anthropic-20260831", "activated", reason="manual preregistration review",
+    )
+
+    arms: list[str] = []
+    for index in range(8):
+        run_id = f"attention-run-{index}"
+        assignment = store.reserve_attention_experiment_assignment(
+            run_id=run_id, accounts=accounts,
+        )
+        assert assignment is not None
+        assert assignment["assignment_probability"] == 0.5
+        arms.append(str(assignment["arm"]))
+        chosen = next(
+            account for account in accounts
+            if account["handle"] == assignment["target_handle_key"]
+        )
+        store.start_trend_lane_run(
+            run_id=run_id,
+            taxonomy_version="fixture",
+            prompt_version="fixture",
+            selection_mode="fixture",
+            surge=False,
+            max_web_searches=1,
+            started_at=datetime.now(timezone.utc) + timedelta(days=index),
+            lanes=[{
+                "id": "fixture", "prompt": "fixture", "event_topics": ["other"],
+                "selection_role": "baseline", "attention_multiplier": 1.0,
+                "total_lane_count": 1,
+            }],
+            watch_accounts=[{
+                **chosen,
+                "selection_role": f"experiment_{assignment['arm']}",
+                "learning_basis": Store.ATTENTION_EXPERIMENT_VERSION,
+                "learning_multiplier": 1.0,
+            }],
+        )
+        store.finish_trend_lane_run(
+            run_id,
+            status="completed",
+            account_results={("x", chosen["handle"]): {
+                "exact_source_hits": 0,
+                "accepted_event_count": 0,
+                "observation_count": 0,
+            }},
+        )
+        store.finalize_trend_lane_observation_ingestion(run_id, status="completed")
+
+    assert arms[:4].count("challenger") == 2
+    assert arms[:4].count("control") == 2
+    assert arms[4:].count("challenger") == 2
+    assert arms[4:].count("control") == 2
+    summary = Store.attention_experiment_summary_from_connection(store.db)
+    assert summary["status"] == "collecting_stage1"
+    assert summary["arms"]["challenger"]["completed"] == 4
+    assert summary["arms"]["control"]["completed"] == 4
+    assert summary["arms"]["challenger"]["zero_yield_completed_exposures"] == 4
+    assert summary["arms"]["control"]["zero_yield_completed_exposures"] == 4
+    assert summary["automatic_promotion"] is False
+    assert summary["holdout_required"] is True
+    assert summary["actual_multiplier"] == 1.0
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute(
+            "UPDATE attention_experiments SET hypothesis='changed' WHERE experiment_id=?",
+            ("watch-openai-vs-anthropic-20260831",),
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute(
+            "DELETE FROM attention_experiment_assignments WHERE run_id='attention-run-0'",
+        )
+    store.close()
+
+
+def test_attention_experiment_uses_exact_links_excludes_collisions_and_rejects_future_ingestion(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "attention-outcomes.sqlite3")
+    now = datetime.now(timezone.utc)
+    accounts = [
+        {
+            "platform": "x", "handle": "openai", "entity_id": "openai",
+            "priority": 5, "watch_cadence": "normal", "enabled": True,
+        },
+        {
+            "platform": "x", "handle": "anthropic", "entity_id": "anthropic",
+            "priority": 5, "watch_cadence": "normal", "enabled": True,
+        },
+    ]
+    experiment_id = "watch-exact-forward-outcome"
+    store.register_attention_experiment(
+        experiment_id=experiment_id,
+        hypothesis="fixture",
+        challenger=accounts[0],
+        control=accounts[1],
+        random_seed="0123456789abcdef0123456789abcdef",
+        registered_at=now - timedelta(minutes=5),
+    )
+    store.set_attention_experiment_state(
+        experiment_id, "activated", reason="fixture", effective_at=now - timedelta(minutes=4),
+    )
+
+    assignments: dict[str, tuple[str, dict[str, object]]] = {}
+    for index in range(4):
+        run_id = f"exact-run-{index}"
+        assignment = store.reserve_attention_experiment_assignment(
+            run_id=run_id, accounts=accounts, assigned_at=now - timedelta(minutes=3),
+        )
+        assert assignment is not None
+        chosen = next(
+            account for account in accounts
+            if account["handle"] == assignment["target_handle_key"]
+        )
+        store.start_trend_lane_run(
+            run_id=run_id, taxonomy_version="fixture", prompt_version="fixture",
+            selection_mode="fixture", surge=False, max_web_searches=1,
+            started_at=now - timedelta(minutes=3),
+            lanes=[{
+                "id": "fixture", "prompt": "fixture", "event_topics": ["other"],
+                "selection_role": "baseline", "attention_multiplier": 1.0,
+                "total_lane_count": 1,
+            }],
+            watch_accounts=[chosen],
+        )
+        store.finish_trend_lane_run(
+            run_id, status="completed",
+            account_results={("x", chosen["handle"]): {
+                "exact_source_hits": 1, "accepted_event_count": 1, "observation_count": 1,
+            }},
+            finished_at=now - timedelta(minutes=2),
+        )
+        store.finalize_trend_lane_observation_ingestion(
+            run_id, status="completed", finalized_at=now - timedelta(minutes=2),
+        )
+        assignments.setdefault(str(assignment["arm"]), (run_id, chosen))
+    assert set(assignments) == {"challenger", "control"}
+
+    collision_event = store.create_event(
+        "Cross-arm shared event", ["shared"], 80, now - timedelta(minutes=2),
+    )
+    collision_observation_ids = []
+    for arm, (run_id, account) in assignments.items():
+        observation = Observation(
+            source=f"agent-scout:{arm}", source_kind="social", title="Shared post",
+            url=f"https://x.com/{account['handle']}/status/{arm}",
+            observed_at=now - timedelta(minutes=2),
+            ingested_at=now - timedelta(minutes=2), role="feature",
+            source_item_id=f"shared-{arm}",
+        )
+        observation_id, _ = store.add_observation(observation)
+        store.link_event_observation(collision_event, observation_id)
+        collision_observation_ids.append(observation_id)
+        assert store.record_attention_experiment_observation(
+            run_id=run_id, platform="x", handle=str(account["handle"]),
+            entity_id=str(account["entity_id"]), observation_id=observation_id,
+            event_id=collision_event, decision_eligible=True,
+            observed_at=observation.observed_at,
+        ) is True
+    token = TokenCandidate(chain="solana", address="C" * 32, name="Shared", symbol="SHR")
+    store.upsert_token(token, seen_at=now - timedelta(minutes=1))
+    store.add_snapshot(TokenSnapshot(
+        chain="solana", address=token.address, price_usd=1.0, liquidity_usd=50_000,
+        market_cap_usd=100_000, volume_5m_usd=10_000, buys_5m=20, sells_5m=10,
+        observed_at=now - timedelta(seconds=10), ingested_at=now - timedelta(seconds=9),
+        provider="fixture",
+    ))
+    collision_decision = CandidateDecision(
+        collision_event, token.token_id, "WAIT", 70, 80, 1, ["fixture"], ["fixture"],
+        created_at=now,
+    )
+    collision_decision_id = store.add_decision(collision_decision)
+    collision_shadow_id = store.create_shadow_event_cohort(
+        collision_decision,
+        decision_id=collision_decision_id,
+        source_observation_ids=collision_observation_ids,
+    )
+    assert collision_shadow_id is not None
+    assert store.create_attention_experiment_event_cohort(
+        event_id=collision_event,
+        decision_id=collision_decision_id,
+        shadow_cohort_id=collision_shadow_id,
+    ) == 1
+
+    run_id, account = assignments["challenger"]
+    forward_event = store.create_event(
+        "Single-arm forward event", ["forward"], 82, now + timedelta(minutes=1),
+    )
+    exact = Observation(
+        source="agent-scout:x.com", source_kind="social", title="Exact post",
+        url=f"https://x.com/{account['handle']}/status/forward",
+        observed_at=now + timedelta(minutes=1), ingested_at=now + timedelta(minutes=1),
+        role="feature", source_item_id="forward-exact",
+    )
+    exact_id, _ = store.add_observation(exact)
+    store.link_event_observation(forward_event, exact_id)
+    confirmation = Observation(
+        source="news-confirmation", source_kind="news", title="Independent confirmation",
+        observed_at=now + timedelta(minutes=1), ingested_at=now + timedelta(minutes=1),
+        role="confirmation", source_item_id="forward-confirmation",
+    )
+    confirmation_id, _ = store.add_observation(confirmation)
+    store.link_event_observation(forward_event, confirmation_id)
+    assert store.record_attention_experiment_observation(
+        run_id=run_id, platform="x", handle=str(account["handle"]),
+        entity_id=str(account["entity_id"]), observation_id=exact_id,
+        event_id=forward_event, decision_eligible=True, observed_at=exact.observed_at,
+    ) is True
+    assert store.record_attention_experiment_observation(
+        run_id=run_id, platform="x", handle="wrong-handle",
+        entity_id=str(account["entity_id"]), observation_id=confirmation_id,
+        event_id=forward_event, decision_eligible=True, observed_at=confirmation.observed_at,
+    ) is False
+    forward_token = TokenCandidate(
+        chain="solana", address="F" * 32, name="Forward", symbol="FWD",
+    )
+    decision_at = now + timedelta(minutes=2)
+    store.upsert_token(forward_token, seen_at=now + timedelta(minutes=1))
+    store.add_snapshot(TokenSnapshot(
+        chain="solana", address=forward_token.address, price_usd=1.0, liquidity_usd=50_000,
+        market_cap_usd=100_000, volume_5m_usd=10_000, buys_5m=20, sells_5m=10,
+        observed_at=decision_at - timedelta(seconds=10),
+        ingested_at=decision_at - timedelta(seconds=9), provider="fixture",
+    ))
+    forward_decision = CandidateDecision(
+        forward_event, forward_token.token_id, "WAIT", 70, 80, 1,
+        ["fixture"], ["fixture"], created_at=decision_at,
+    )
+    forward_decision_id = store.add_decision(forward_decision)
+    forward_shadow_id = store.create_shadow_event_cohort(
+        forward_decision,
+        decision_id=forward_decision_id,
+        source_observation_ids=[exact_id, confirmation_id],
+    )
+    assert forward_shadow_id is not None
+    assert store.create_attention_experiment_event_cohort(
+        event_id=forward_event,
+        decision_id=forward_decision_id,
+        shadow_cohort_id=forward_shadow_id,
+    ) == 1
+    target = decision_at + timedelta(minutes=60)
+    store.add_snapshot(TokenSnapshot(
+        chain="solana", address=forward_token.address, price_usd=9.0, liquidity_usd=50_000,
+        market_cap_usd=100_000, volume_5m_usd=10_000, buys_5m=20, sells_5m=10,
+        observed_at=target + timedelta(minutes=5),
+        ingested_at=target - timedelta(minutes=1), provider="future-fixture",
+    ))
+    store.add_snapshot(TokenSnapshot(
+        chain="solana", address=forward_token.address, price_usd=1.1, liquidity_usd=50_000,
+        market_cap_usd=100_000, volume_5m_usd=10_000, buys_5m=20, sells_5m=10,
+        observed_at=target + timedelta(minutes=10),
+        ingested_at=target + timedelta(minutes=11), provider="valid-fixture",
+    ))
+    result = store.finalize_attention_experiment_outcomes(now=target + timedelta(minutes=20))
+    assert result["observed"] == 1
+    assert result["excluded"] == 1
+    rows = list(store.db.execute(
+        """
+        SELECT c.event_id,o.status,o.outcome_price FROM attention_experiment_event_cohorts c
+        JOIN attention_experiment_outcomes o ON o.cohort_id=c.id
+        ORDER BY c.event_id
+        """
+    ))
+    by_event = {int(row["event_id"]): row for row in rows}
+    assert by_event[collision_event]["status"] == "cross_arm_collision"
+    assert by_event[forward_event]["status"] == "observed"
+    assert by_event[forward_event]["outcome_price"] == pytest.approx(1.1)
+    summary = Store.attention_experiment_summary_from_connection(store.db)
+    assert summary["inference"]["cross_arm_collision_events"] == 1
+    assert summary["automatic_promotion"] is False
+    assert summary["actual_multiplier"] == 1.0
+    store.close()
 
 
 def test_shadow_event_followup_is_forward_only_fixed_horizon_and_non_activating(tmp_path: Path):

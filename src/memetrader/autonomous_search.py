@@ -346,7 +346,12 @@ class AutonomousSearchAgent:
             if isinstance(hooks, dict) and _reject_telegram_http_request not in hooks.setdefault("request", []):
                 hooks["request"].append(_reject_telegram_http_request)
 
-    def _console_search_preferences(self, task: str) -> dict[str, Any]:
+    def _console_search_preferences(
+        self,
+        task: str,
+        *,
+        run_id: str | None = None,
+    ) -> dict[str, Any]:
         """Load bounded, non-secret search preferences as untrusted prompt data."""
         value: Any = {}
         try:
@@ -426,6 +431,8 @@ class AutonomousSearchAgent:
             "attention_activation_available": False,
             "learned_multiplier_applied_to_selected": False,
             "actual_rotation_changed_by_learning": False,
+            "actual_rotation_changed_by_experiment": False,
+            "attention_experiment_slots": 0,
         }
         if accounts:
             critical_all = [row for row in accounts if row["watch_cadence"] == "critical"]
@@ -443,12 +450,80 @@ class AutonomousSearchAgent:
             selection_policy["critical_overflow"] = max(0, len(critical_all) - len(critical))
             remaining = 12 - len(selected_accounts)
             if remaining > 0 and normal:
+                experiment_assignment: dict[str, Any] | None = None
+                experiment_target_keys: set[tuple[str, str]] = set()
+                if (
+                    task == "trend_scout" and run_id
+                    and self.config.get("source_learning_enabled", True)
+                ):
+                    try:
+                        experiment_assignment = self.store.reserve_attention_experiment_assignment(
+                            run_id=run_id, accounts=normal,
+                        )
+                        experiment = self.store.active_attention_experiment()
+                    except (sqlite3.Error, TypeError, ValueError):
+                        experiment_assignment = None
+                        experiment = None
+                    if experiment_assignment and experiment:
+                        experiment_target_keys = {
+                            (
+                                str(experiment.get(f"{arm}_platform") or ""),
+                                str(experiment.get(f"{arm}_handle_key") or "").casefold(),
+                            )
+                            for arm in ("challenger", "control")
+                        }
+                        chosen_key = (
+                            str(experiment_assignment.get("target_platform") or ""),
+                            str(experiment_assignment.get("target_handle_key") or "").casefold(),
+                        )
+                        chosen = next(
+                            (
+                                account for account in normal
+                                if (
+                                    str(account.get("platform") or ""),
+                                    str(account.get("handle") or "").casefold(),
+                                ) == chosen_key
+                            ),
+                            None,
+                        )
+                        if chosen is not None:
+                            selected_accounts.append(
+                                {
+                                    **chosen,
+                                    "selection_role": f"experiment_{experiment_assignment['arm']}",
+                                    "learning_basis": self.store.ATTENTION_EXPERIMENT_VERSION,
+                                    "learning_multiplier": 1.0,
+                                }
+                            )
+                            normal = [
+                                account for account in normal
+                                if (
+                                    str(account.get("platform") or ""),
+                                    str(account.get("handle") or "").casefold(),
+                                ) not in experiment_target_keys
+                            ]
+                            remaining -= 1
+                            selection_policy.update(
+                                {
+                                    "mode": "preregistered_attention_experiment_plus_exploration",
+                                    "attention_experiment_slots": 1,
+                                    "attention_experiment_version": self.store.ATTENTION_EXPERIMENT_VERSION,
+                                    "attention_experiment_id": experiment_assignment["experiment_id"],
+                                    "attention_experiment_arm": experiment_assignment["arm"],
+                                    "actual_rotation_changed_by_experiment": True,
+                                }
+                            )
                 exploration_fraction = max(
                     0.40,
                     min(0.95, float(self.config.get("source_learning_exploration_fraction", 0.40))),
                 )
-                exploration_count = min(remaining, max(1, math.ceil(12 * exploration_fraction)))
-                curated_count = max(0, remaining - exploration_count)
+                exploration_count = min(
+                    remaining, len(normal), max(1, math.ceil(12 * exploration_fraction))
+                )
+                curated_count = min(
+                    max(0, remaining - exploration_count),
+                    max(0, len(normal) - exploration_count),
+                )
                 metrics: dict[tuple[str, str], dict[str, Any]] = {}
                 if task == "trend_scout" and self.config.get("source_learning_enabled", True):
                     try:
@@ -1382,14 +1457,14 @@ class AutonomousSearchAgent:
             for lane in lanes
             for topic in lane.get("event_topics") or []
         }
-        preferences = self._console_search_preferences("trend_scout")
+        lane_run_id = uuid.uuid4().hex
+        preferences = self._console_search_preferences("trend_scout", run_id=lane_run_id)
         custom_topic_hints = [
             topic
             for topic in preferences["topics"]
             if classify_event_topic(topic) in selected_event_topics
         ][:12]
         prompt_preferences = {**preferences, "topics": custom_topic_hints}
-        lane_run_id = uuid.uuid4().hex
         lane_selection = {**lane_selection, "run_id": lane_run_id, "selected_at": iso(now)}
         self.store.start_trend_lane_run(
             run_id=lane_run_id,

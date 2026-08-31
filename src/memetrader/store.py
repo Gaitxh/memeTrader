@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import sqlite3
 import threading
@@ -31,8 +32,10 @@ class Store:
     TOKEN_CONTEXT_ADMISSION_VERSION = "token-context-admission/v1"
     TOKEN_CONTEXT_OUTCOME_VERSION = "token-context-outcome/v1"
     TOKEN_CONTEXT_OUTCOME_HORIZONS_MINUTES = (15, 60, 240)
-    WATCH_ATTENTION_POLICY_VERSION = "watch-attention/v2-exact-entity"
-    TREND_ATTENTION_POLICY_VERSION = "trend-attention/v1"
+    WATCH_ATTENTION_POLICY_VERSION = "watch-attention/v3-experiment-gated"
+    TREND_ATTENTION_POLICY_VERSION = "trend-attention/v2-experiment-gated"
+    ATTENTION_EXPERIMENT_VERSION = "attention-experiment/v1"
+    ATTENTION_EXPERIMENT_HORIZON_MINUTES = 60
     PAPER_SOURCE_ATTRIBUTION_VERSION = "paper-source-attribution/v2-decision-cohort"
     SOURCE_POLL_EXPOSURE_VERSION = "source-poll-exposure/v1"
     TOKEN_DISCOVERY_EXPOSURE_VERSION = "token-discovery-exposure/v1"
@@ -500,7 +503,9 @@ class Store:
                     accepted_event_count INTEGER NOT NULL DEFAULT 0,
                     rejected_event_count INTEGER NOT NULL DEFAULT 0,
                     observation_count INTEGER NOT NULL DEFAULT 0,
-                    error_type TEXT NOT NULL DEFAULT ''
+                    error_type TEXT NOT NULL DEFAULT '',
+                    observation_ingestion_status TEXT NOT NULL DEFAULT 'pending',
+                    observation_ingestion_finalized_at TEXT
                 );
                 CREATE INDEX IF NOT EXISTS trend_lane_runs_time_idx
                     ON trend_lane_runs(started_at DESC);
@@ -571,6 +576,134 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS browser_watch_observation_links_event_idx
                     ON browser_watch_observation_links(event_id,observed_at);
+
+                CREATE TABLE IF NOT EXISTS attention_experiments (
+                    experiment_id TEXT PRIMARY KEY,
+                    version TEXT NOT NULL,
+                    target_kind TEXT NOT NULL CHECK(target_kind='watch_account'),
+                    hypothesis TEXT NOT NULL,
+                    challenger_platform TEXT NOT NULL,
+                    challenger_handle_key TEXT NOT NULL,
+                    challenger_entity_id TEXT NOT NULL,
+                    control_platform TEXT NOT NULL,
+                    control_handle_key TEXT NOT NULL,
+                    control_entity_id TEXT NOT NULL,
+                    random_seed TEXT NOT NULL,
+                    assignment_block_size INTEGER NOT NULL CHECK(assignment_block_size=4),
+                    planned_assignments_per_arm INTEGER NOT NULL,
+                    min_calendar_days INTEGER NOT NULL,
+                    config_json TEXT NOT NULL,
+                    registered_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS attention_experiment_events (
+                    id INTEGER PRIMARY KEY,
+                    experiment_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    effective_at TEXT NOT NULL,
+                    reason TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(experiment_id) REFERENCES attention_experiments(experiment_id)
+                );
+                CREATE INDEX IF NOT EXISTS attention_experiment_events_latest_idx
+                    ON attention_experiment_events(experiment_id,effective_at DESC,id DESC);
+                CREATE TABLE IF NOT EXISTS attention_experiment_assignments (
+                    assignment_id TEXT PRIMARY KEY,
+                    experiment_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    arm TEXT NOT NULL CHECK(arm IN ('challenger','control')),
+                    target_platform TEXT NOT NULL,
+                    target_handle_key TEXT NOT NULL,
+                    target_entity_id TEXT NOT NULL,
+                    assignment_index INTEGER NOT NULL,
+                    assignment_probability REAL NOT NULL CHECK(assignment_probability=0.5),
+                    assigned_at TEXT NOT NULL,
+                    UNIQUE(experiment_id,run_id),
+                    UNIQUE(experiment_id,assignment_index),
+                    FOREIGN KEY(experiment_id) REFERENCES attention_experiments(experiment_id)
+                );
+                CREATE INDEX IF NOT EXISTS attention_experiment_assignments_run_idx
+                    ON attention_experiment_assignments(run_id,target_platform,target_handle_key);
+                CREATE TABLE IF NOT EXISTS attention_experiment_observation_links (
+                    experiment_id TEXT NOT NULL,
+                    assignment_id TEXT NOT NULL,
+                    observation_id INTEGER NOT NULL,
+                    event_id INTEGER NOT NULL,
+                    arm TEXT NOT NULL CHECK(arm IN ('challenger','control')),
+                    decision_eligible INTEGER NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    PRIMARY KEY(experiment_id,observation_id),
+                    FOREIGN KEY(experiment_id) REFERENCES attention_experiments(experiment_id),
+                    FOREIGN KEY(assignment_id) REFERENCES attention_experiment_assignments(assignment_id)
+                );
+                CREATE INDEX IF NOT EXISTS attention_experiment_observation_event_idx
+                    ON attention_experiment_observation_links(experiment_id,event_id,observed_at);
+                CREATE TABLE IF NOT EXISTS attention_experiment_event_cohorts (
+                    id INTEGER PRIMARY KEY,
+                    experiment_id TEXT NOT NULL,
+                    event_id INTEGER NOT NULL,
+                    assignment_id TEXT,
+                    arm TEXT,
+                    source_observation_id INTEGER,
+                    decision_id INTEGER NOT NULL,
+                    decision_at TEXT NOT NULL,
+                    token_id TEXT NOT NULL DEFAULT '',
+                    entry_snapshot_id INTEGER,
+                    entry_snapshot_at TEXT,
+                    entry_price REAL,
+                    status TEXT NOT NULL,
+                    linked_at TEXT NOT NULL,
+                    UNIQUE(experiment_id,event_id),
+                    FOREIGN KEY(experiment_id) REFERENCES attention_experiments(experiment_id)
+                );
+                CREATE TABLE IF NOT EXISTS attention_experiment_outcomes (
+                    cohort_id INTEGER NOT NULL,
+                    horizon_minutes INTEGER NOT NULL CHECK(horizon_minutes=60),
+                    target_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    outcome_snapshot_id INTEGER,
+                    outcome_observed_at TEXT,
+                    outcome_price REAL,
+                    raw_return REAL,
+                    evaluated_at TEXT NOT NULL,
+                    PRIMARY KEY(cohort_id,horizon_minutes),
+                    FOREIGN KEY(cohort_id) REFERENCES attention_experiment_event_cohorts(id)
+                );
+                CREATE TRIGGER IF NOT EXISTS attention_experiments_no_update
+                BEFORE UPDATE ON attention_experiments
+                BEGIN SELECT RAISE(ABORT,'attention experiment registration is immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS attention_experiments_no_delete
+                BEFORE DELETE ON attention_experiments
+                BEGIN SELECT RAISE(ABORT,'attention experiment registration is immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS attention_assignments_no_update
+                BEFORE UPDATE ON attention_experiment_assignments
+                BEGIN SELECT RAISE(ABORT,'attention experiment assignment is immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS attention_assignments_no_delete
+                BEFORE DELETE ON attention_experiment_assignments
+                BEGIN SELECT RAISE(ABORT,'attention experiment assignment is immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS attention_experiment_events_no_update
+                BEFORE UPDATE ON attention_experiment_events
+                BEGIN SELECT RAISE(ABORT,'attention experiment state history is immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS attention_experiment_events_no_delete
+                BEFORE DELETE ON attention_experiment_events
+                BEGIN SELECT RAISE(ABORT,'attention experiment state history is immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS attention_experiment_links_no_update
+                BEFORE UPDATE ON attention_experiment_observation_links
+                BEGIN SELECT RAISE(ABORT,'attention experiment observation links are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS attention_experiment_links_no_delete
+                BEFORE DELETE ON attention_experiment_observation_links
+                BEGIN SELECT RAISE(ABORT,'attention experiment observation links are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS attention_experiment_cohorts_no_update
+                BEFORE UPDATE ON attention_experiment_event_cohorts
+                BEGIN SELECT RAISE(ABORT,'attention experiment cohorts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS attention_experiment_cohorts_no_delete
+                BEFORE DELETE ON attention_experiment_event_cohorts
+                BEGIN SELECT RAISE(ABORT,'attention experiment cohorts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS attention_experiment_outcomes_no_update
+                BEFORE UPDATE ON attention_experiment_outcomes
+                BEGIN SELECT RAISE(ABORT,'attention experiment outcomes are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS attention_experiment_outcomes_no_delete
+                BEFORE DELETE ON attention_experiment_outcomes
+                BEGIN SELECT RAISE(ABORT,'attention experiment outcomes are immutable'); END;
 
                 CREATE TABLE IF NOT EXISTS shadow_event_cohorts (
                     id INTEGER PRIMARY KEY,
@@ -662,6 +795,26 @@ class Store:
                 self.db.execute(
                     "ALTER TABLE trend_lane_run_lanes "
                     "ADD COLUMN attention_multiplier REAL NOT NULL DEFAULT 1"
+                )
+            trend_run_columns = {
+                row["name"] for row in self.db.execute("PRAGMA table_info(trend_lane_runs)")
+            }
+            if "observation_ingestion_status" not in trend_run_columns:
+                self.db.execute(
+                    "ALTER TABLE trend_lane_runs ADD COLUMN "
+                    "observation_ingestion_status TEXT NOT NULL DEFAULT 'legacy_uninstrumented'"
+                )
+            if "observation_ingestion_finalized_at" not in trend_run_columns:
+                self.db.execute(
+                    "ALTER TABLE trend_lane_runs ADD COLUMN observation_ingestion_finalized_at TEXT"
+                )
+            attention_columns = {
+                row["name"] for row in self.db.execute("PRAGMA table_info(attention_experiments)")
+            }
+            if "planned_assignments_per_arm" not in attention_columns:
+                self.db.execute(
+                    "ALTER TABLE attention_experiments ADD COLUMN "
+                    "planned_assignments_per_arm INTEGER NOT NULL DEFAULT 60"
                 )
             trade_columns = {row["name"] for row in self.db.execute("PRAGMA table_info(trades)")}
             for name, definition in (
@@ -3763,6 +3916,26 @@ class Store:
                 """,
                 (completed_at,),
             )
+            self.db.execute(
+                """
+                UPDATE trend_lane_runs
+                SET status='agent_error',error_type='ProcessRestart',finished_at=?,
+                    observation_ingestion_status='error',
+                    observation_ingestion_finalized_at=?
+                WHERE status='running'
+                """,
+                (completed_at, completed_at),
+            )
+            self.db.execute(
+                """
+                UPDATE trend_lane_runs
+                SET observation_ingestion_status='error',
+                    observation_ingestion_finalized_at=?,
+                    error_type=CASE WHEN error_type='' THEN 'ProcessRestartDuringIngestion' ELSE error_type END
+                WHERE status='completed' AND observation_ingestion_status='pending'
+                """,
+                (completed_at,),
+            )
 
     def start_token_discovery_round(
         self,
@@ -4152,8 +4325,8 @@ class Store:
                 """
                 INSERT INTO trend_lane_runs(
                     run_id,taxonomy_version,prompt_version,selection_mode,surge,max_web_searches,
-                    started_at,status
-                ) VALUES(?,?,?,?,?,?,?,'running')
+                    started_at,status,observation_ingestion_status
+                ) VALUES(?,?,?,?,?,?,?,'running','pending')
                 """,
                 (
                     str(run_id), str(taxonomy_version), str(prompt_version), str(selection_mode),
@@ -4255,6 +4428,26 @@ class Store:
                 ),
             )
 
+    def finalize_trend_lane_observation_ingestion(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        finalized_at: Any = None,
+    ) -> None:
+        status = str(status).strip().lower()
+        if status not in {"completed", "error"}:
+            raise ValueError("trend observation ingestion status must be completed or error")
+        with self._lock, self.db:
+            self.db.execute(
+                """
+                UPDATE trend_lane_runs
+                SET observation_ingestion_status=?,observation_ingestion_finalized_at=?
+                WHERE run_id=? AND observation_ingestion_status='pending'
+                """,
+                (status, iso(finalized_at or utcnow()), str(run_id)),
+            )
+
     @staticmethod
     def _browser_exposure_window(value: Any, minutes: int = 30) -> tuple[str, str]:
         observed = parse_time(value)
@@ -4350,6 +4543,795 @@ class Store:
                     (int(bool(decision_eligible)), exposure_id),
                 )
         return exposure_id
+
+    def register_attention_experiment(
+        self,
+        *,
+        experiment_id: str,
+        hypothesis: str,
+        challenger: Mapping[str, Any],
+        control: Mapping[str, Any],
+        random_seed: str,
+        registered_at: Any = None,
+    ) -> bool:
+        """Register one immutable, forward-only watch-account attention experiment."""
+        experiment_id = re.sub(r"[^a-zA-Z0-9:._-]+", "-", str(experiment_id).strip())[:160]
+        random_seed = re.sub(r"[^a-zA-Z0-9._-]+", "", str(random_seed).strip())[:160]
+        if not experiment_id or len(random_seed) < 16:
+            raise ValueError("attention experiment requires an id and a non-trivial random seed")
+
+        def target(value: Mapping[str, Any]) -> tuple[str, str, str]:
+            platform = str(value.get("platform") or "").strip().lower()[:32]
+            handle_key = str(value.get("handle") or value.get("handle_key") or "").strip().casefold()[:120]
+            entity_id = str(value.get("entity_id") or "").strip().lower()[:64]
+            if not platform or not handle_key or not entity_id:
+                raise ValueError("attention experiment targets require platform, handle and entity_id")
+            return platform, handle_key, entity_id
+
+        challenger_target = target(challenger)
+        control_target = target(control)
+        if challenger_target[:2] == control_target[:2]:
+            raise ValueError("challenger and control must be distinct accounts")
+        if challenger_target[0] != control_target[0]:
+            raise ValueError("v1 challenger and control must use the same platform")
+        config = {
+            "assignment": "balanced_blocks_2_challenger_2_control",
+            "assignment_probability": 0.5,
+            "primary_inference_metric": "productive_terminal_assignment_rate",
+            "descriptive_yield_metric": "unique_decision_eligible_events_per_completed_exposure",
+            "secondary_metric": "observed_60m_positive_return_rate",
+            "planned_assignments_per_arm": 60,
+            "primary_population": "intention_to_observe_including_agent_and_pre_run_failures",
+            "minimum_calendar_days": 15,
+            "minimum_zero_yield_per_arm": 10,
+            "minimum_unique_events_per_arm": 20,
+            "minimum_observed_coverage": 0.80,
+            "maximum_coverage_gap": 0.10,
+            "maximum_terminal_failure_gap": 0.10,
+            "maximum_cross_arm_collision_rate": 0.10,
+            "minimum_productive_rate_difference_lower_bound": 0.05,
+            "minimum_positive_rate_difference_lower_bound": -0.10,
+            "confidence": "two_sided_95pct_newcombe_wilson_lower_endpoint",
+            "automatic_promotion": False,
+            "maximum_future_multiplier": 1.10,
+            "requires_independent_holdout": True,
+            "affects": "one_normal_trend_scout_watch_slot_only",
+            "never_affects": [
+                "evidence_weight", "candidate_ranking", "decision_eligibility", "risk",
+                "position_size", "paper_execution", "exits", "live_trading",
+            ],
+        }
+        when = iso(registered_at or utcnow())
+        with self._lock, self.db:
+            cursor = self.db.execute(
+                """
+                INSERT OR IGNORE INTO attention_experiments(
+                    experiment_id,version,target_kind,hypothesis,
+                    challenger_platform,challenger_handle_key,challenger_entity_id,
+                    control_platform,control_handle_key,control_entity_id,random_seed,
+                    assignment_block_size,planned_assignments_per_arm,min_calendar_days,
+                    config_json,registered_at
+                ) VALUES(?,?,'watch_account',?,?,?,?,?,?,?,?,4,60,15,?,?)
+                """,
+                (
+                    experiment_id, self.ATTENTION_EXPERIMENT_VERSION, str(hypothesis).strip()[:1000],
+                    *challenger_target, *control_target, random_seed, self._json(config), when,
+                ),
+            )
+            if cursor.rowcount != 1:
+                return False
+            self.db.execute(
+                """
+                INSERT INTO attention_experiment_events(
+                    experiment_id,event_type,effective_at,reason,created_at
+                ) VALUES(?,'registered',?,'preregistered_forward_only',?)
+                """,
+                (experiment_id, when, iso()),
+            )
+            return True
+
+    def set_attention_experiment_state(
+        self,
+        experiment_id: str,
+        event_type: str,
+        *,
+        reason: str,
+        effective_at: Any = None,
+    ) -> None:
+        event_type = str(event_type).strip().lower()
+        if event_type not in {"activated", "paused", "completed", "invalid"}:
+            raise ValueError("unsupported attention experiment state")
+        parsed_when = parse_time(effective_at) if effective_at is not None else utcnow()
+        if parsed_when > utcnow() + timedelta(seconds=5):
+            raise ValueError("attention experiment state cannot be future-dated")
+        when = iso(parsed_when)
+        with self._lock, self.db:
+            experiment = self.db.execute(
+                "SELECT experiment_id,registered_at FROM attention_experiments WHERE experiment_id=?",
+                (str(experiment_id),),
+            ).fetchone()
+            if experiment is None:
+                raise ValueError("attention experiment not found")
+            latest = self.db.execute(
+                """
+                SELECT effective_at FROM attention_experiment_events
+                WHERE experiment_id=? ORDER BY id DESC LIMIT 1
+                """,
+                (str(experiment_id),),
+            ).fetchone()
+            lower_bound = parse_time(
+                latest["effective_at"] if latest is not None else experiment["registered_at"]
+            )
+            if parsed_when < lower_bound:
+                raise ValueError("attention experiment state cannot be backdated")
+            if event_type == "activated":
+                active = self.db.execute(
+                    """
+                    SELECT e.experiment_id FROM attention_experiments e
+                    JOIN attention_experiment_events v ON v.id=(
+                        SELECT id FROM attention_experiment_events
+                        WHERE experiment_id=e.experiment_id
+                        ORDER BY id DESC LIMIT 1
+                    )
+                    WHERE v.event_type='activated' AND e.experiment_id<>? LIMIT 1
+                    """,
+                    (str(experiment_id),),
+                ).fetchone()
+                if active is not None:
+                    raise ValueError("only one attention experiment may be active")
+            self.db.execute(
+                """
+                INSERT INTO attention_experiment_events(
+                    experiment_id,event_type,effective_at,reason,created_at
+                ) VALUES(?,?,?,?,?)
+                """,
+                (str(experiment_id), event_type, when, str(reason)[:500], iso()),
+            )
+
+    @staticmethod
+    def _active_attention_experiment_from_connection(
+        connection: sqlite3.Connection,
+    ) -> dict[str, Any] | None:
+        row = connection.execute(
+            """
+            SELECT e.* FROM attention_experiments e
+            JOIN attention_experiment_events v ON v.id=(
+                SELECT id FROM attention_experiment_events
+                WHERE experiment_id=e.experiment_id
+                ORDER BY id DESC LIMIT 1
+            )
+            WHERE v.event_type='activated'
+            ORDER BY e.registered_at DESC,e.experiment_id DESC LIMIT 1
+            """
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def active_attention_experiment(self) -> dict[str, Any] | None:
+        with self._lock:
+            return self._active_attention_experiment_from_connection(self.db)
+
+    def reserve_attention_experiment_assignment(
+        self,
+        *,
+        run_id: str,
+        accounts: Iterable[Mapping[str, Any]],
+        assigned_at: Any = None,
+    ) -> dict[str, Any] | None:
+        """Atomically persist the balanced assignment that chooses one normal watch slot."""
+        account_rows = [dict(account) for account in accounts]
+        with self._lock, self.db:
+            existing = self.db.execute(
+                "SELECT * FROM attention_experiment_assignments WHERE run_id=?",
+                (str(run_id),),
+            ).fetchone()
+            if existing is not None:
+                return dict(existing)
+            experiment = self._active_attention_experiment_from_connection(self.db)
+            if experiment is None:
+                return None
+            candidates = {
+                (
+                    str(account.get("platform") or "").strip().lower(),
+                    str(account.get("handle") or "").strip().casefold(),
+                ): account
+                for account in account_rows
+                if account.get("enabled", True) is True
+                and str(account.get("watch_cadence") or "normal").lower() == "normal"
+            }
+            challenger_key = (
+                str(experiment["challenger_platform"]), str(experiment["challenger_handle_key"])
+            )
+            control_key = (
+                str(experiment["control_platform"]), str(experiment["control_handle_key"])
+            )
+            challenger = candidates.get(challenger_key)
+            control = candidates.get(control_key)
+            if challenger is None or control is None:
+                return None
+            if int(challenger.get("priority") or 0) != int(control.get("priority") or 0):
+                return None
+            if str(challenger.get("entity_id") or "").lower() != str(
+                experiment["challenger_entity_id"]
+            ) or str(control.get("entity_id") or "").lower() != str(experiment["control_entity_id"]):
+                return None
+            assignment_index = int(
+                self.db.execute(
+                    "SELECT COUNT(*) FROM attention_experiment_assignments WHERE experiment_id=?",
+                    (str(experiment["experiment_id"]),),
+                ).fetchone()[0]
+            )
+            planned_per_arm = max(1, int(experiment["planned_assignments_per_arm"]))
+            if assignment_index >= planned_per_arm * 2:
+                return None
+            block = assignment_index // 4
+            position = assignment_index % 4
+            entries = ["challenger:0", "challenger:1", "control:0", "control:1"]
+            seed = str(experiment["random_seed"])
+            entries.sort(
+                key=lambda value: hashlib.sha256(
+                    f"{seed}\n{block}\n{value}".encode("utf-8")
+                ).hexdigest()
+            )
+            arm = entries[position].split(":", 1)[0]
+            chosen = challenger if arm == "challenger" else control
+            platform = str(chosen.get("platform") or "").strip().lower()
+            handle_key = str(chosen.get("handle") or "").strip().casefold()
+            entity_id = str(chosen.get("entity_id") or "").strip().lower()
+            assignment_id = hashlib.sha256(
+                f"{experiment['experiment_id']}\n{run_id}".encode("utf-8")
+            ).hexdigest()
+            self.db.execute(
+                """
+                INSERT INTO attention_experiment_assignments(
+                    assignment_id,experiment_id,run_id,arm,target_platform,target_handle_key,
+                    target_entity_id,assignment_index,assignment_probability,assigned_at
+                ) VALUES(?,?,?,?,?,?,?,?,0.5,?)
+                """,
+                (
+                    assignment_id, str(experiment["experiment_id"]), str(run_id), arm,
+                    platform, handle_key, entity_id, assignment_index,
+                    iso(assigned_at or utcnow()),
+                ),
+            )
+            return dict(
+                self.db.execute(
+                    "SELECT * FROM attention_experiment_assignments WHERE assignment_id=?",
+                    (assignment_id,),
+                ).fetchone()
+            )
+
+    def record_attention_experiment_observation(
+        self,
+        *,
+        run_id: str,
+        platform: str,
+        handle: str,
+        entity_id: str,
+        observation_id: int,
+        event_id: int,
+        decision_eligible: bool,
+        observed_at: Any,
+    ) -> bool:
+        with self._lock, self.db:
+            assignment = self.db.execute(
+                """
+                SELECT * FROM attention_experiment_assignments
+                WHERE run_id=? AND target_platform=? AND target_handle_key=? AND target_entity_id=?
+                """,
+                (
+                    str(run_id), str(platform).strip().lower(), str(handle).strip().casefold(),
+                    str(entity_id).strip().lower(),
+                ),
+            ).fetchone()
+            if assignment is None:
+                return False
+            inserted = self.db.execute(
+                """
+                INSERT OR IGNORE INTO attention_experiment_observation_links(
+                    experiment_id,assignment_id,observation_id,event_id,arm,
+                    decision_eligible,observed_at
+                ) VALUES(?,?,?,?,?,?,?)
+                """,
+                (
+                    str(assignment["experiment_id"]), str(assignment["assignment_id"]),
+                    int(observation_id), int(event_id), str(assignment["arm"]),
+                    int(bool(decision_eligible)), iso(parse_time(observed_at)),
+                ),
+            )
+            return inserted.rowcount == 1
+
+    def create_attention_experiment_event_cohort(
+        self,
+        *,
+        event_id: int,
+        decision_id: int,
+        shadow_cohort_id: int | None,
+    ) -> int:
+        """Freeze at most one experiment outcome cohort per event without backfilling."""
+        created = 0
+        with self._lock, self.db:
+            experiments = list(
+                self.db.execute(
+                    """
+                    SELECT DISTINCT experiment_id FROM attention_experiment_observation_links
+                    WHERE event_id=? AND decision_eligible=1
+                    """,
+                    (int(event_id),),
+                )
+            )
+            decision = self.db.execute(
+                "SELECT created_at FROM decisions WHERE id=?", (int(decision_id),)
+            ).fetchone()
+            if decision is None:
+                return 0
+            shadow = (
+                self.db.execute(
+                    """
+                    SELECT * FROM shadow_event_cohorts
+                    WHERE id=? AND event_id=? AND decision_id=?
+                    """,
+                    (int(shadow_cohort_id), int(event_id), int(decision_id)),
+                ).fetchone()
+                if shadow_cohort_id is not None else None
+            )
+            for experiment_row in experiments:
+                experiment_id = str(experiment_row["experiment_id"])
+                if self.db.execute(
+                    "SELECT 1 FROM attention_experiment_event_cohorts WHERE experiment_id=? AND event_id=?",
+                    (experiment_id, int(event_id)),
+                ).fetchone() is not None:
+                    continue
+                links = list(
+                    self.db.execute(
+                        """
+                        SELECT * FROM attention_experiment_observation_links
+                        WHERE experiment_id=? AND event_id=? AND decision_eligible=1
+                        ORDER BY observed_at,observation_id
+                        """,
+                        (experiment_id, int(event_id)),
+                    )
+                )
+                arms = {str(row["arm"]) for row in links}
+                winner = links[0] if len(arms) == 1 and links else None
+                status = "cross_arm_collision" if len(arms) > 1 else (
+                    "pending" if winner is not None and shadow is not None else "untrackable"
+                )
+                cursor = self.db.execute(
+                    """
+                    INSERT INTO attention_experiment_event_cohorts(
+                        experiment_id,event_id,assignment_id,arm,source_observation_id,
+                        decision_id,decision_at,token_id,entry_snapshot_id,entry_snapshot_at,
+                        entry_price,status,linked_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        experiment_id, int(event_id),
+                        str(winner["assignment_id"]) if winner is not None else None,
+                        str(winner["arm"]) if winner is not None else None,
+                        int(winner["observation_id"]) if winner is not None else None,
+                        int(decision_id), str(decision["created_at"]),
+                        str(shadow["token_id"]) if shadow is not None else "",
+                        int(shadow["entry_snapshot_id"]) if shadow is not None else None,
+                        str(shadow["entry_snapshot_at"]) if shadow is not None else None,
+                        float(shadow["entry_price"]) if shadow is not None else None,
+                        status, iso(),
+                    ),
+                )
+                created += int(cursor.rowcount == 1)
+        return created
+
+    def finalize_attention_experiment_outcomes(
+        self,
+        *,
+        now: Any = None,
+        max_lateness_minutes: int = 30,
+    ) -> dict[str, int]:
+        evaluated_at = parse_time(now) if now is not None else utcnow()
+        observed = missing = excluded = 0
+        with self._lock, self.db:
+            cohorts = list(
+                self.db.execute(
+                    """
+                    SELECT c.* FROM attention_experiment_event_cohorts c
+                    LEFT JOIN attention_experiment_outcomes o ON o.cohort_id=c.id
+                    WHERE o.cohort_id IS NULL ORDER BY c.decision_at,c.id
+                    """
+                )
+            )
+            for cohort in cohorts:
+                target = parse_time(cohort["decision_at"]) + timedelta(
+                    minutes=self.ATTENTION_EXPERIMENT_HORIZON_MINUTES
+                )
+                if evaluated_at < target:
+                    continue
+                arm_count = int(
+                    self.db.execute(
+                        """
+                        SELECT COUNT(DISTINCT arm) FROM attention_experiment_observation_links
+                        WHERE experiment_id=? AND event_id=? AND decision_eligible=1
+                        """,
+                        (str(cohort["experiment_id"]), int(cohort["event_id"])),
+                    ).fetchone()[0]
+                )
+                if arm_count > 1 or str(cohort["status"]) == "cross_arm_collision":
+                    status = "cross_arm_collision"
+                    snapshot = None
+                elif str(cohort["status"]) != "pending" or not cohort["token_id"]:
+                    status = "untrackable"
+                    snapshot = None
+                else:
+                    deadline = target + timedelta(minutes=max(1, int(max_lateness_minutes)))
+                    upper = min(evaluated_at, deadline)
+                    snapshot = self.db.execute(
+                        """
+                        SELECT id,observed_at,ingested_at,price_usd FROM token_snapshots
+                        WHERE token_id=? AND observed_at>=? AND observed_at<=?
+                          AND ingested_at>=? AND ingested_at<=?
+                          AND ingested_at>=observed_at AND price_usd>0
+                        ORDER BY ingested_at,observed_at,id LIMIT 1
+                        """,
+                        (str(cohort["token_id"]), iso(target), iso(upper), iso(target), iso(upper)),
+                    ).fetchone()
+                    if snapshot is not None:
+                        status = "observed"
+                    elif evaluated_at >= deadline:
+                        status = "missing"
+                    else:
+                        continue
+                raw_return = (
+                    float(snapshot["price_usd"]) / float(cohort["entry_price"]) - 1.0
+                    if snapshot is not None and cohort["entry_price"] else None
+                )
+                self.db.execute(
+                    """
+                    INSERT INTO attention_experiment_outcomes(
+                        cohort_id,horizon_minutes,target_at,status,outcome_snapshot_id,
+                        outcome_observed_at,outcome_price,raw_return,evaluated_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        int(cohort["id"]), self.ATTENTION_EXPERIMENT_HORIZON_MINUTES,
+                        iso(target), status,
+                        int(snapshot["id"]) if snapshot is not None else None,
+                        str(snapshot["observed_at"]) if snapshot is not None else None,
+                        float(snapshot["price_usd"]) if snapshot is not None else None,
+                        raw_return, iso(evaluated_at),
+                    ),
+                )
+                observed += int(status == "observed")
+                missing += int(status == "missing")
+                excluded += int(status in {"untrackable", "cross_arm_collision"})
+        return {"cohorts_checked": len(cohorts), "observed": observed, "missing": missing, "excluded": excluded}
+
+    @staticmethod
+    def _two_sided_wilson_95(successes: int, total: int) -> tuple[float, float] | None:
+        if total <= 0:
+            return None
+        z = 1.959963984540054
+        p = successes / total
+        denominator = 1.0 + z * z / total
+        center = (p + z * z / (2.0 * total)) / denominator
+        radius = z * math.sqrt(p * (1.0 - p) / total + z * z / (4.0 * total * total)) / denominator
+        return max(0.0, center - radius), min(1.0, center + radius)
+
+    @classmethod
+    def _newcombe_difference_lower_bound(
+        cls,
+        challenger_successes: int,
+        challenger_total: int,
+        control_successes: int,
+        control_total: int,
+    ) -> float | None:
+        challenger_bounds = cls._two_sided_wilson_95(challenger_successes, challenger_total)
+        control_bounds = cls._two_sided_wilson_95(control_successes, control_total)
+        if challenger_bounds is None or control_bounds is None:
+            return None
+        challenger_rate = challenger_successes / challenger_total
+        control_rate = control_successes / control_total
+        return (challenger_rate - control_rate) - math.sqrt(
+            (challenger_rate - challenger_bounds[0]) ** 2
+            + (control_bounds[1] - control_rate) ** 2
+        )
+
+    @classmethod
+    def attention_experiment_summary_from_connection(
+        cls,
+        connection: sqlite3.Connection,
+    ) -> dict[str, Any]:
+        required = {
+            "attention_experiments", "attention_experiment_events",
+            "attention_experiment_assignments", "attention_experiment_observation_links",
+            "attention_experiment_event_cohorts", "attention_experiment_outcomes",
+        }
+        tables = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            if str(row["name"]) in required
+        }
+        empty = {
+            "version": cls.ATTENTION_EXPERIMENT_VERSION,
+            "status": "not_registered", "experiment": None,
+            "arms": {"challenger": {}, "control": {}},
+            "gates": {}, "stage1_ready": False,
+            "automatic_promotion": False, "actual_multiplier": 1.0,
+            "affects": "one_normal_trend_scout_watch_slot_only",
+        }
+        if tables != required:
+            return empty
+        experiment = connection.execute(
+            """
+            SELECT e.* FROM attention_experiments e
+            JOIN attention_experiment_events v ON v.id=(
+                SELECT id FROM attention_experiment_events
+                WHERE experiment_id=e.experiment_id ORDER BY id DESC LIMIT 1
+            )
+            ORDER BY CASE WHEN v.event_type='activated' THEN 0 ELSE 1 END,
+                     e.registered_at DESC,e.experiment_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if experiment is None:
+            return empty
+        experiment_id = str(experiment["experiment_id"])
+        latest_event = connection.execute(
+            """
+            SELECT event_type,effective_at,reason FROM attention_experiment_events
+            WHERE experiment_id=? ORDER BY id DESC LIMIT 1
+            """,
+            (experiment_id,),
+        ).fetchone()
+        assignments = list(
+            connection.execute(
+                """
+                SELECT a.*,r.status AS run_status,r.started_at,r.finished_at,
+                       r.observation_ingestion_status,r.observation_ingestion_finalized_at,
+                       w.exact_source_hits,w.accepted_event_count,w.observation_count
+                FROM attention_experiment_assignments a
+                LEFT JOIN trend_lane_runs r ON r.run_id=a.run_id
+                LEFT JOIN trend_watch_account_exposures w
+                  ON w.run_id=a.run_id AND w.platform=a.target_platform
+                 AND w.handle_key=a.target_handle_key
+                WHERE a.experiment_id=? ORDER BY a.assignment_index
+                """,
+                (experiment_id,),
+            )
+        )
+        completed_ids = {
+            str(row["assignment_id"])
+            for row in assignments
+            if str(row["run_status"] or "") == "completed"
+            and str(row["observation_ingestion_status"] or "") == "completed"
+            and row["exact_source_hits"] is not None
+        }
+        error_ids = {
+            str(row["assignment_id"])
+            for row in assignments
+            if str(row["run_status"] or "") == "agent_error"
+            or str(row["observation_ingestion_status"] or "") == "error"
+        }
+        stale_cutoff = utcnow() - timedelta(minutes=30)
+        cancelled_before_agent_ids = {
+            str(row["assignment_id"])
+            for row in assignments
+            if row["run_status"] is None and parse_time(row["assigned_at"]) <= stale_cutoff
+        }
+        terminal_ids = completed_ids | error_ids | cancelled_before_agent_ids
+        links = list(
+            connection.execute(
+                """
+                SELECT * FROM attention_experiment_observation_links
+                WHERE experiment_id=? AND decision_eligible=1
+                ORDER BY event_id,observed_at,observation_id
+                """,
+                (experiment_id,),
+            )
+        )
+        by_event: dict[int, list[sqlite3.Row]] = {}
+        for row in links:
+            by_event.setdefault(int(row["event_id"]), []).append(row)
+        event_attribution: dict[int, sqlite3.Row] = {}
+        collision_events: set[int] = set()
+        for event_id, rows in by_event.items():
+            if len({str(row["arm"]) for row in rows}) > 1:
+                collision_events.add(event_id)
+            else:
+                event_attribution[event_id] = rows[0]
+        config = json.loads(str(experiment["config_json"] or "{}"))
+        arm_stats: dict[str, dict[str, Any]] = {}
+        for arm in ("challenger", "control"):
+            arm_rows = [row for row in assignments if str(row["arm"]) == arm]
+            completed = [row for row in arm_rows if str(row["assignment_id"]) in completed_ids]
+            errors = [row for row in arm_rows if str(row["assignment_id"]) in error_ids]
+            cancelled = [
+                row for row in arm_rows
+                if str(row["assignment_id"]) in cancelled_before_agent_ids
+            ]
+            terminal = [row for row in arm_rows if str(row["assignment_id"]) in terminal_ids]
+            attributed = {
+                event_id: row for event_id, row in event_attribution.items()
+                if str(row["arm"]) == arm and str(row["assignment_id"]) in completed_ids
+            }
+            productive_ids = {str(row["assignment_id"]) for row in attributed.values()}
+            terminal_failures = len(errors) + len(cancelled)
+            arm_stats[arm] = {
+                "assigned": len(arm_rows),
+                "completed": len(completed),
+                "agent_errors": len(errors),
+                "cancelled_before_agent": len(cancelled),
+                "terminal_assignments": len(terminal),
+                "pending_or_unstarted": max(0, len(arm_rows) - len(terminal)),
+                "calendar_days": len({
+                    str(row["started_at"] or row["assigned_at"])[:10] for row in terminal
+                }),
+                "productive_exposures": len(productive_ids),
+                "zero_yield_completed_exposures": max(0, len(completed) - len(productive_ids)),
+                "unique_decision_eligible_events": len(attributed),
+                "productive_exposure_rate": round(len(productive_ids) / len(terminal), 6)
+                if terminal else None,
+                "unique_events_per_completed_exposure": round(len(attributed) / len(completed), 6)
+                if completed else None,
+                "terminal_failure_rate": round(terminal_failures / len(terminal), 6)
+                if terminal else None,
+            }
+        outcomes = {
+            int(row["event_id"]): row
+            for row in connection.execute(
+                """
+                SELECT c.event_id,c.status AS cohort_status,o.status,o.raw_return
+                FROM attention_experiment_event_cohorts c
+                LEFT JOIN attention_experiment_outcomes o
+                  ON o.cohort_id=c.id AND o.horizon_minutes=?
+                WHERE c.experiment_id=?
+                """,
+                (cls.ATTENTION_EXPERIMENT_HORIZON_MINUTES, experiment_id),
+            )
+        }
+        for arm in ("challenger", "control"):
+            attributed_event_ids = {
+                event_id for event_id, row in event_attribution.items()
+                if str(row["arm"]) == arm and str(row["assignment_id"]) in completed_ids
+            }
+            values = [outcomes.get(event_id) for event_id in attributed_event_ids]
+            observed_rows = [row for row in values if row is not None and str(row["status"]) == "observed"]
+            missing_rows = [
+                row for row in values
+                if row is not None and str(row["status"]) in {"missing", "untrackable"}
+            ]
+            positives = sum(float(row["raw_return"] or 0) > 0 for row in observed_rows)
+            terminal_market = len(observed_rows) + len(missing_rows)
+            denominator = len(attributed_event_ids)
+            arm_stats[arm].update(
+                {
+                    "market_outcomes_observed": len(observed_rows),
+                    "market_outcomes_missing_or_untrackable": len(missing_rows),
+                    "market_outcomes_pending": max(0, denominator - terminal_market),
+                    "market_positive": positives,
+                    "market_observed_coverage": round(len(observed_rows) / denominator, 6)
+                    if denominator else None,
+                    "market_positive_rate": round(positives / len(observed_rows), 6)
+                    if observed_rows else None,
+                }
+            )
+        challenger = arm_stats["challenger"]
+        control = arm_stats["control"]
+        productive_lower = cls._newcombe_difference_lower_bound(
+            int(challenger["productive_exposures"]), int(challenger["terminal_assignments"]),
+            int(control["productive_exposures"]), int(control["terminal_assignments"]),
+        )
+        market_lower = cls._newcombe_difference_lower_bound(
+            int(challenger["market_positive"]), int(challenger["market_outcomes_observed"]),
+            int(control["market_positive"]), int(control["market_outcomes_observed"]),
+        )
+        failure_rates = [challenger["terminal_failure_rate"], control["terminal_failure_rate"]]
+        failure_gap = (
+            abs(float(failure_rates[0]) - float(failure_rates[1]))
+            if None not in failure_rates else None
+        )
+        coverages = [challenger["market_observed_coverage"], control["market_observed_coverage"]]
+        coverage_gap = (
+            abs(float(coverages[0]) - float(coverages[1])) if None not in coverages else None
+        )
+        collision_rate = len(collision_events) / len(by_event) if by_event else 0.0
+        planned_per_arm = int(experiment["planned_assignments_per_arm"])
+        gates = {
+            "fixed_assignments_per_arm": all(
+                int(arm_stats[arm]["assigned"]) == planned_per_arm
+                for arm in ("challenger", "control")
+            ),
+            "all_assignments_terminal": all(
+                int(arm_stats[arm]["terminal_assignments"]) == planned_per_arm
+                for arm in ("challenger", "control")
+            ),
+            "calendar_days_per_arm": all(
+                int(arm_stats[arm]["calendar_days"]) >= int(experiment["min_calendar_days"])
+                for arm in ("challenger", "control")
+            ),
+            "zero_yield_exposures_per_arm": all(
+                int(arm_stats[arm]["zero_yield_completed_exposures"])
+                >= int(config.get("minimum_zero_yield_per_arm", 10))
+                for arm in ("challenger", "control")
+            ),
+            "terminal_failure_balance": failure_gap is not None and failure_gap <= float(
+                config.get("maximum_terminal_failure_gap", 0.10)
+            ),
+            "cross_arm_collision_rate": collision_rate <= float(
+                config.get("maximum_cross_arm_collision_rate", 0.10)
+            ),
+            "productive_rate_effect": productive_lower is not None and productive_lower >= float(
+                config.get("minimum_productive_rate_difference_lower_bound", 0.05)
+            ),
+            "unique_events_per_arm": all(
+                int(arm_stats[arm]["unique_decision_eligible_events"])
+                >= int(config.get("minimum_unique_events_per_arm", 20))
+                for arm in ("challenger", "control")
+            ),
+            "all_market_outcomes_terminal": all(
+                int(arm_stats[arm]["market_outcomes_pending"]) == 0
+                for arm in ("challenger", "control")
+            ),
+            "market_coverage_per_arm": all(
+                arm_stats[arm]["market_observed_coverage"] is not None
+                and float(arm_stats[arm]["market_observed_coverage"])
+                >= float(config.get("minimum_observed_coverage", 0.80))
+                for arm in ("challenger", "control")
+            ),
+            "market_coverage_balance": coverage_gap is not None and coverage_gap <= float(
+                config.get("maximum_coverage_gap", 0.10)
+            ),
+            "market_noninferiority": market_lower is not None and market_lower > float(
+                config.get("minimum_positive_rate_difference_lower_bound", -0.10)
+            ),
+        }
+        stage1_ready = all(gates.values())
+        latest_type = str(latest_event["event_type"] if latest_event is not None else "registered")
+        status = (
+            "stage1_ready_for_holdout" if latest_type == "activated" and stage1_ready
+            else "collecting_stage1" if latest_type == "activated"
+            else latest_type
+        )
+        return {
+            "version": str(experiment["version"]),
+            "status": status,
+            "experiment": {
+                "id": experiment_id,
+                "target_kind": str(experiment["target_kind"]),
+                "hypothesis": str(experiment["hypothesis"]),
+                "challenger": {
+                    "platform": str(experiment["challenger_platform"]),
+                    "entity_id": str(experiment["challenger_entity_id"]),
+                },
+                "control": {
+                    "platform": str(experiment["control_platform"]),
+                    "entity_id": str(experiment["control_entity_id"]),
+                },
+                "registered_at": str(experiment["registered_at"]),
+                "latest_event": latest_type,
+                "latest_event_at": str(latest_event["effective_at"]) if latest_event is not None else None,
+                "assignment": str(config.get("assignment") or ""),
+                "planned_assignments_per_arm": planned_per_arm,
+                "primary_population": str(config.get("primary_population") or ""),
+            },
+            "arms": arm_stats,
+            "inference": {
+                "productive_rate_difference_two_sided_95_lower": round(productive_lower, 6)
+                if productive_lower is not None else None,
+                "market_positive_rate_difference_two_sided_95_lower": round(market_lower, 6)
+                if market_lower is not None else None,
+                "terminal_failure_rate_gap": round(failure_gap, 6) if failure_gap is not None else None,
+                "market_coverage_gap": round(coverage_gap, 6) if coverage_gap is not None else None,
+                "cross_arm_collision_events": len(collision_events),
+                "linked_events": len(by_event),
+                "cross_arm_collision_rate": round(collision_rate, 6),
+            },
+            "gates": gates,
+            "stage1_ready": stage1_ready,
+            "automatic_promotion": False,
+            "holdout_required": True,
+            "actual_multiplier": 1.0,
+            "affects": "one_normal_trend_scout_watch_slot_only",
+            "never_affects": list(config.get("never_affects") or []),
+            "as_of": iso(),
+        }
 
     @staticmethod
     def trend_lane_exposure_summary_from_connection(
@@ -4557,7 +5539,7 @@ class Store:
                 }
             )
         mature_count = sum(1 for item in items if item["attention_mature"])
-        schedule_active = mature_count >= 2
+        schedule_active = False
         for item in items:
             item["schedule_active"] = schedule_active and bool(item["attention_mature"])
             item["applied_schedule_multiplier"] = (
@@ -4566,8 +5548,7 @@ class Store:
             item["state"] = (
                 "collecting_lane_exposure" if not item["exposure_mature"]
                 else "collecting_market_followup" if not item["market_followup_mature"]
-                else "active_lane_schedule" if schedule_active
-                else "mature_waiting_for_comparison"
+                else "mature_waiting_for_randomized_experiment"
             )
         items.sort(
             key=lambda item: (
@@ -4578,8 +5559,7 @@ class Store:
         return {
             "version": cls.TREND_ATTENTION_POLICY_VERSION,
             "status": (
-                "active_lane_schedule" if schedule_active
-                else "mature_waiting_for_comparison" if mature_count
+                "mature_waiting_for_randomized_experiment" if mature_count
                 else "collecting_evidence" if items else "not_configured"
             ),
             "items": items,
@@ -4599,8 +5579,11 @@ class Store:
                 "minimum_global_accepted_events": 20,
                 "requires_60m_shadow_followup_review_eligible": True,
                 "minimum_comparable_mature_lanes": 2,
-                "minimum_applied_multiplier": 0.80,
-                "maximum_applied_multiplier": 1.20,
+                "requires_preregistered_randomized_attention_experiment": True,
+                "observational_scores_are_descriptive_only": True,
+                "minimum_applied_multiplier": 1.0,
+                "maximum_applied_multiplier": 1.0,
+                "future_experiment_multiplier_cap": 1.10,
                 "minimum_round_robin_exploration_lanes_per_run": 1,
                 "surge_always_full_coverage": True,
                 "paper_outcome_role": "optional_secondary_validation",
@@ -4926,7 +5909,7 @@ class Store:
                     min(1.20, discovery_multiplier * market_multiplier * (paper_multiplier ** 0.5)),
                 )
             critical = str(account.get("watch_cadence") or "normal").lower() == "critical"
-            rotation_active = evidence_mature and not critical
+            rotation_active = False
             if entity_mapping_conflict:
                 state = "entity_mapping_conflict"
             elif not entity_id:
@@ -4938,7 +5921,7 @@ class Store:
             elif critical:
                 state = "mature_review_critical_fixed"
             else:
-                state = "active_watch_rotation"
+                state = "mature_review_waiting_randomized_experiment"
             items.append(
                 {
                     "platform": platform,
@@ -4965,7 +5948,7 @@ class Store:
                     "market_multiplier": round(market_multiplier, 4),
                     "paper_multiplier": round(paper_multiplier, 4),
                     "recommended_multiplier": round(recommended, 4),
-                    "applied_rotation_multiplier": round(recommended if rotation_active else 1.0, 4),
+                    "applied_rotation_multiplier": 1.0,
                     "exposure_mature": exposure_mature,
                     "market_followup_mature": market_mature,
                     "attention_active": evidence_mature,
@@ -4984,8 +5967,7 @@ class Store:
         return {
             "version": cls.WATCH_ATTENTION_POLICY_VERSION,
             "status": (
-                "active_watch_rotation" if any(item["rotation_active"] for item in items)
-                else "mature_review_only" if any(item["attention_active"] for item in items)
+                "mature_review_only" if any(item["attention_active"] for item in items)
                 else "collecting_evidence" if items else "not_configured"
             ),
             "items": items,
@@ -5004,8 +5986,11 @@ class Store:
                 "requires_exact_entity_market_evidence": True,
                 "platform_fallback_for_accounts": False,
                 "paper_outcome_role": "optional_secondary_validation",
-                "minimum_applied_multiplier": 0.80,
-                "maximum_applied_multiplier": 1.20,
+                "requires_preregistered_randomized_attention_experiment": True,
+                "observational_scores_are_descriptive_only": True,
+                "minimum_applied_multiplier": 1.0,
+                "maximum_applied_multiplier": 1.0,
+                "future_experiment_multiplier_cap": 1.10,
                 "critical_accounts_remain_fixed": True,
                 "minimum_exploration_fraction": 0.40,
                 "affects": "agent_watch_rotation_only",

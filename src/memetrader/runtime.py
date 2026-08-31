@@ -547,8 +547,8 @@ def load_config(path: str | Path) -> tuple[dict[str, Any], Path]:
         ):
             if int(autonomous.get(name, 0)) < 0:
                 raise ValueError(f"autonomous_search.{name} must be non-negative")
-        if not 1 <= int(autonomous.get("max_concurrent_agents", 2)) <= 4:
-            raise ValueError("autonomous_search.max_concurrent_agents must be between 1 and 4")
+        if not 1 <= int(autonomous.get("max_concurrent_agents", 2)) <= 2:
+            raise ValueError("autonomous_search.max_concurrent_agents must be between 1 and 2")
         if int(autonomous.get("trend_scout_lanes_per_run", 1)) < 1:
             raise ValueError("autonomous_search.trend_scout_lanes_per_run must be positive")
         if int(autonomous.get("trend_scout_surge_lanes_per_run", 1)) < 1:
@@ -1147,6 +1147,20 @@ class Runtime:
                     observed_at=obs.observed_at,
                     decision_eligible=obs.role.lower() in {"feature", "confirmation"},
                 )
+        raw = obs.raw if isinstance(obs.raw, dict) else {}
+        if raw.get("agent_task") == "trend_scout" and raw.get("watch_account_exact_match") is True:
+            observation_id = self.store.observation_id_for(obs)
+            if observation_id is not None:
+                self.store.record_attention_experiment_observation(
+                    run_id=str(raw.get("trend_lane_run_id") or ""),
+                    platform=str(raw.get("platform") or ""),
+                    handle=str(raw.get("watch_account_handle") or ""),
+                    entity_id=str(raw.get("source_entity_id") or ""),
+                    observation_id=observation_id,
+                    event_id=event_id,
+                    decision_eligible=bool(result["decision_eligible"]),
+                    observed_at=obs.observed_at,
+                )
         event = self.store.get_event(event_id)
         self.store.set_kv(f"event_decision_next:{event_id}", None)
         self.store.set_kv(f"event_decision_attempt:{event_id}", 0)
@@ -1641,10 +1655,20 @@ class Runtime:
 
     async def scout_trends_once(self, *, force: bool = False) -> dict[str, Any]:
         result, observations = await self.autonomous_search.scout_trends(force=force)
+        lane_selection = result.get("lane_selection") if isinstance(result, dict) else None
+        run_id = str((lane_selection or {}).get("run_id") or "") if isinstance(lane_selection, dict) else ""
         if result.get("status") == "completed":
             self.store.heartbeat("autonomous-trend-scout", item=bool(observations))
-        for observation in observations:
-            await self.ingest_observation(observation)
+        try:
+            for observation in observations:
+                await self.ingest_observation(observation)
+        except Exception:
+            if run_id:
+                self.store.finalize_trend_lane_observation_ingestion(run_id, status="error")
+            raise
+        else:
+            if run_id and result.get("status") == "completed":
+                self.store.finalize_trend_lane_observation_ingestion(run_id, status="completed")
         if observations:
             self.notifier.send(
                 "autonomous_trends_found",
@@ -1988,6 +2012,11 @@ class Runtime:
                 decision_id=decision_id,
                 source_observation_ids=[int(row["id"]) for row in accepted],
             )
+            self.store.create_attention_experiment_event_cohort(
+                event_id=event.id,
+                decision_id=decision_id,
+                shadow_cohort_id=cohort_id,
+            )
             if pending_entry_attempt is not None:
                 self.store.record_paper_execution_attempt(
                     **pending_entry_attempt, decision_id=decision_id, cohort_id=cohort_id
@@ -2312,6 +2341,7 @@ class Runtime:
     async def shadow_event_followup_once(self) -> None:
         self.store.finalize_shadow_event_outcomes()
         self.store.finalize_token_context_outcomes()
+        self.store.finalize_attention_experiment_outcomes()
 
     async def pump_loop(self) -> None:
         cfg = self.config["sources"].get("pumpportal") or {}

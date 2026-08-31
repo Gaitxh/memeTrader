@@ -108,13 +108,13 @@ powershell -ExecutionPolicy Bypass -File .\scripts\status.ps1
 
 ## 本机 Web 控制台
 
-Web 控制台直接读取当前 `config.json` 指向的 SQLite，不复制策略、不生成演示成交。它提供 Overview、实时事件、Token 发现、候选/决策、Paper Portfolio、Agent Operations、Sources、Audit、安全 Settings 和 Wallet 十个工作区。
+Web 控制台直接读取当前 `config.json` 指向的 SQLite，不复制策略、不生成演示成交。它提供 Overview、实时事件、Token 发现、候选/决策、Paper Portfolio、Agent Operations、Sources、Audit、安全 Settings、Wallet 和事件/Token 详情共十一个工作区。
 
 Overview 与 Paper Portfolio 展示追加式账户时间曲线、现金/持仓市值/权益/当日 exposure、报价缺失区段、逐笔报价与模拟执行价、滑点、每笔场地费、已知 Token 税和模拟执行失败原因。当前每侧 4% 是早期 meme 的保守不利执行压力，不冒充必然发生的真实滑点；通用场地费估计为每笔 60 bps，报价明确识别为 PumpSwap 时使用 125 bps 保守上限。链费与 priority fee 没有可验证路由时明确保持未建模。零成交时显示真实的平坦现金状态，不生成假仓位或假成交。执行与未来 Live 的严格边界见 [Paper 前向执行与未来 Live 验收](docs/PAPER_FORWARD_EXECUTION_CN.md)。
 
 顶部可在“中文 / English”之间即时切换；选择只保存在当前浏览器本地，刷新后仍会保留。事件标题、Token 名称和来源原文不会被自动翻译。
 
-十个工作区都会在页面可见且没有未保存表单时自动刷新当前页；Overview 约 10 秒、事件约 12 秒、Token/决策/组合/Wallet 约 15 秒、Agent/Sources 约 20 秒、Audit 约 30 秒、Settings 约 60 秒。当前采用低成本轮询，不需要 Redis、消息队列或额外 WebSocket 服务；切回浏览器标签时会立即取一次新快照，打开的事件/Token 详情也随当前页一起更新。
+十一个工作区都会在页面可见且没有未保存表单时自动刷新当前页；Overview 约 10 秒、事件约 12 秒、Token/决策/组合/Wallet 约 15 秒、Agent/Sources 约 20 秒、Audit 约 30 秒、Settings 约 60 秒。当前采用低成本轮询，不需要 Redis、消息队列或额外 WebSocket 服务；切回浏览器标签时会立即取一次新快照，打开的事件/Token 详情也随当前页一起更新。
 
 Overview 顶部的动态采集脉冲不是装饰性计时器。它从 SQLite 已持久化时间戳分别计算“新闻/社交/Agent 信息”和“新 Token/池及快照”两条通道的最近 60 秒数量、5 分钟写入速率、最近写入时间与 active/waiting/stale 状态。只有近期确有写入时才播放脉冲动画；没有新数据会如实显示等待或陈旧，不会伪造“实时运行”。
 
@@ -152,16 +152,16 @@ Wallet 只在 `127.0.0.1` 接受私钥录入和 Devnet 操作。私钥不会回�
 
 事件详情把全部来源按决策用途、已知权威层级、新鲜度、原始链接和可观察热度排列，并逐条显示**平台、发布者、账号类型、官方/认证状态、已知关注者/覆盖与可见互动、本地观察优先级**。未知字段明确显示为未知，绝不根据平台或显示名猜测影响力。`feature/confirmation` 与 `identity/promotion` 分组展示；后两者始终是仅上下文，影响力再高也不能单独触发决策。这是审计用的**证据优先级**，不是对媒体权威性或事实真假的自动裁决；每项仍显示原始链接、发布时间、本机观察/入库时间和当时决策资格。
 
-Sources 页另有“主题通道覆盖与影子学习”和“来源学习与观察优先级”。Trend Scout 使用五个版本化稳定通道；每轮把实际选中通道、完成/失败、空结果、事件产出和 Observation 数写入追加式账本，Agent 返回的事件必须带本轮有效的 `lane_id`。主题通道只有在本通道至少 20 次完成暴露、10 个运行日、5 次零产出，且全局至少 20 个已接受事件，并具有成熟的 60 分钟 WAIT/REJECT/CANDIDATE 市场随访后才可参与选择性分配；至少两个可比较通道同时成熟才会启用。倍率限于 `0.80×–1.20×`；普通运行始终保留至少一个按 round-robin 的探索通道，surge 覆盖全部五类。已平仓 Paper 结果只作可选的次级验证。当前运行预计仍在收集样本，尚未启用选择性分配；无论是否启用，它只影响 Trend Scout 的通道分配，绝不进入证据、决策、风险、仓位、退出或 Live。
+Sources 页另有“主题通道覆盖与影子学习”和“来源学习与观察优先级”。Trend Scout 使用五个版本化稳定通道；每轮把实际选中通道、完成/失败、空结果、事件产出和 Observation 数写入追加式账本，Agent 返回的事件必须带本轮有效的 `lane_id`。`trend-attention/v2-experiment-gated` 把这些相关性统计降为描述性假设：即使通道暴露和 60 分钟随访成熟，实际调度倍率仍固定为 `1.00×`，不能自行改变通道分配。普通运行继续按 round-robin 探索，surge 覆盖全部五类；任何未来有限倍率都必须先经过预注册随机实验和独立时间顺序复验。已平仓 Paper 结果只作可选次级验证；所有值绝不进入证据、决策、风险、仓位、退出或 Live。
 
 Sources 的“来源轮询暴露”从 `source-poll-exposure/v1` 上线后，为每一次真正发出的 RSS、Bluesky、Mastodon 和 Token→Google News 反查请求追加一行；成功但无新增、重复、过滤、仅上下文、质量暂停和错误都保留。禁用、冷却或尚未到期不计为一次尝试。账本只保存由无参数 URL 或查询哈希生成的稳定脱敏 ID 与错误类型，不保存原始查询词、带参数 URL 或异常正文。完成轮、零新增、错误、获取数、新 Observation/事件及 F/C 与 I/P 数可在中英文页面查看；至少 20 个完成轮和 5 个不同日期只表示可人工复核，不会自动改变频率、Agent 路由、证据、候选、Paper 或 Live，历史轮询不回填。
 
-同页的“账号选择性关注策略”会为每轮实际选中的公开账号保存完成、失败和零产出暴露。只有合格事件中的原始帖子 URL 能与平台和账号路径精确匹配时才归因；转述、同名人物和登录受阻均不猜测为账号命中。至少 20 次完成暴露、10 个运行日、5 次零产出且全局已有 20 个精确命中后，才算发现效率成熟；还必须同时具备成熟的 60 分钟同人物独立事件随访，普通账号才可在 `0.80×–1.20×` 内小幅改变观察轮换。critical 固定且至少 40% 槽位继续探索。
+同页的“账号选择性关注策略”会为每轮实际选中的公开账号保存完成、失败和零产出暴露。只有合格事件中的原始帖子 URL 能与平台和账号路径精确匹配时才归因；转述、同名人物和登录受阻均不猜测为账号命中。`watch-attention/v3-experiment-gated` 只用成熟相关性生成实验假设，实际倍率固定为 `1.00×`。`attention-experiment/v1` 可在一对同平台、同优先级、非 critical 的普通账号之间随机分配一个观察槽位：第 1 阶段固定每组 60 个 assignment，2:2 平衡区块在 Agent 调用前持久化，错误、调用前中止、零产出、跨组碰撞与 60 分钟缺失均保留在 ITT 分母。全部样本终结前不允许显示通过；通过后仍需独立时间顺序 holdout，不自动提高倍率。critical 固定且总槽位至少 40% 继续探索。
 
 浏览器桥还会为与配置 URL、平台、handle 和 `entity_id` 完全一致的公开账号页建立 30 分钟前向暴露窗口，并把本机收到的原帖 Observation、事件 ID、同事件 60 分钟随访和同事件 Paper 平仓保存为可回链关系。X 首页、搜索页、登录页、同名账号、Telegram 手工发现和旧数据回填均不计入。Sources 页的“同源前向学习闭环”按不同单位诚实展示每一阶段，不把全库无关总数拼成转化率。
 人物与平台不会被重复建立一套脱节的账号排名：只有稳定且无冲突的 `entity_id` 才能复用同一人物的跨平台市场随访；缺少人物映射时不再回退到平台总体结果。每个具体账号路径仍必须自己达到暴露门槛，未测试的账号不得继承同人物或同平台其他账号的倍率。Web 分开显示“具备启用资格”与“上轮选择实际因学习改变”，避免把成熟建议误报为已发生调度变化。
 
-来源学习同时展示平台、信息类型、具体来源、已持久化实体以及事件/热点类型在前向样本中的 `feature/confirmation/identity/promotion` 数量，并且只有 observed、ingested、published 三个时间都不晚于该事件首个最终 CANDIDATE 的 feature/confirmation 才计入“决策时合格率”和候选前关联。事件类型只在事件第一次被本机接受时冻结；旧事件保持 `unknown`，不按后来结果回填。前向分类会识别明确的体育语境，以及 `goes viral`、`viral clip/video` 等互联网文化传播标记；这不会追改已冻结的 `other/unknown`。Mastodon Collector 也只从新采集记录开始冻结 `platform=mastodon`；旧的泛化 `social` 记录保持原样。新 Paper 买入把最终 `decision_id` 和已准入 `cohort_id` 同时冻结到持仓、每笔成交和执行尝试；完全平仓后仅把该 cohort 决策时冻结的最早合格 feature/confirmation 记为 `discovery_lead`，并按记录的手续费、滑点和已知卖出税计算净结果。缺少 decision/cohort 的平仓或旧执行尝试会明确标为未链接；旧的事件时间窗归因保留为 `legacy-event-window/v1`，但不进入学习。实际账号轮换由 `watch-attention/v2-exact-entity` 约束：账号暴露效率和同一明确人物的 60 分钟独立事件随访必须共同成熟；平台平均表现不能替代具体账号，实体缺失或冲突时保持基线；同一事件后续 WAIT/REJECT/CANDIDATE 仍保留在动作账本，但不重复抬高人物/平台样本。总共 12 个候选观察槽位中至少 40% 始终轮换探索，critical 最多占 4 个且不应用学习倍率。Overview 直接显示当前版独立事件、动作分母、固定时点缺失、独立 Token、精确 Paper 链和 Phase 2 数据门；“正在收集”不能显示成“已经学会”。学习不进入 `CandidateEvaluator`、证据权重、canonical margin、安全检查、仓位公式或退出规则。详见 [DexScreener 溯源与前向来源学习](docs/DEXSCREENER_PROVENANCE_AND_SOURCE_LEARNING_CN.md)。
+来源学习同时展示平台、信息类型、具体来源、已持久化实体以及事件/热点类型在前向样本中的 `feature/confirmation/identity/promotion` 数量，并且只有 observed、ingested、published 三个时间都不晚于该事件首个最终 CANDIDATE 的 feature/confirmation 才计入“决策时合格率”和候选前关联。事件类型只在事件第一次被本机接受时冻结；旧事件保持 `unknown`，不按后来结果回填。前向分类会识别明确的体育语境，以及 `goes viral`、`viral clip/video` 等互联网文化传播标记；这不会追改已冻结的 `other/unknown`。Mastodon Collector 也只从新采集记录开始冻结 `platform=mastodon`；旧的泛化 `social` 记录保持原样。新 Paper 买入把最终 `decision_id` 和已准入 `cohort_id` 同时冻结到持仓、每笔成交和执行尝试；完全平仓后仅把该 cohort 决策时冻结的最早合格 feature/confirmation 记为 `discovery_lead`，并按记录的手续费、滑点和已知卖出税计算净结果。缺少 decision/cohort 的平仓或旧执行尝试会明确标为未链接；旧的事件时间窗归因保留为 `legacy-event-window/v1`，但不进入学习。平台平均表现不能替代具体账号，实体缺失或冲突时保持基线；同一事件后续 WAIT/REJECT/CANDIDATE 仍保留在动作账本，但不重复抬高人物/平台样本。描述性排名不能直接改变轮换，只有预注册随机实验可以交替一个普通槽位；总共 12 个候选观察槽位中至少 40% 始终轮换探索，critical 最多占 4 个且不应用实验倍率。Overview 直接显示当前版独立事件、动作分母、固定时点缺失、独立 Token、精确 Paper 链和 Phase 2 数据门；“正在收集”不能显示成“已经学会”。学习不进入 `CandidateEvaluator`、证据权重、canonical margin、安全检查、仓位公式或退出规则。详见 [DexScreener 溯源与前向来源学习](docs/DEXSCREENER_PROVENANCE_AND_SOURCE_LEARNING_CN.md)。
 
 OKX Web3 Meme Pump 可提供 launchpad 阶段、社交、开发者、bundle 和同车钱包等补充字段，但核心接口需要官方签名凭据且属于 Premium；当前不抓取网页内部请求，也不把 `SMART_MONEY` / `INFLUENCER` 标签当交易信号。评估与未来接入边界见 [OKX Meme Pump 与聪明钱来源评估](docs/OKX_MEME_PUMP_AND_SMART_MONEY_ASSESSMENT_CN.md)。
 
