@@ -1172,12 +1172,13 @@ def test_token_context_search_requires_two_recent_reachable_sources(tmp_path: Pa
         assert agent.usage()["token_context_tokens"] == 456
         run = store.token_context_assessments(token.token_id)[0]
         assessment = json.loads(run["assessment_json"])
-        assert run["status"] == "verified_reporting"
+        assert run["status"] == "invalid_output_context_only"
         assert assessment["project_claims"]["status"] == "project_attached_unverified"
         assert assessment["community_amplification"]["status"] == "independent_amplification_observed"
         assert assessment["public_figure_linkage"]["status"] == "unverified_candidates"
         assert assessment["public_figure_linkage"]["items"][0]["endorsement_inferred"] is False
-        assert assessment["independent_reporting"]["confirmation_ingested"] is True
+        assert assessment["independent_reporting"]["confirmation_ingested"] is False
+        assert assessment["content_verifier"]["status"] == "invalid_output"
         assert assessment["decision_eligible"] is False
         store.close()
 
@@ -1212,7 +1213,7 @@ def test_token_context_search_does_not_promote_one_source(tmp_path: Path):
         assert await agent.search_token_context(token, snapshot, momentum_score=90) == []
         run = store.token_context_assessments(token.token_id)[0]
         assessment = json.loads(run["assessment_json"])
-        assert run["status"] == "insufficient_verified_sources"
+        assert run["status"] == "insufficient_reachable_sources"
         assert assessment["independent_reporting"]["confirmation_ingested"] is False
         assert assessment["decision_eligible"] is False
         store.close()
@@ -1264,7 +1265,7 @@ def test_token_context_public_figure_post_stays_context_without_two_independent_
         run = store.token_context_assessments(token.token_id)[0]
         assessment = json.loads(run["assessment_json"])
         audit = json.loads(run["audit_json"])
-        assert run["status"] == "insufficient_verified_sources"
+        assert run["status"] == "insufficient_reachable_sources"
         assert assessment["public_figure_linkage"]["status"] == "unverified_candidates"
         assert assessment["public_figure_linkage"]["items"][0]["endorsement_inferred"] is False
         assert any(item.get("error") == "social_source_context_only" for item in audit)
@@ -1759,5 +1760,72 @@ def test_runtime_ingests_autonomous_trend_observations(tmp_path: Path):
         ).fetchone()
         assert run["observation_ingestion_status"] == "completed"
         await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_separate_fact_verifier_records_context_only_support(tmp_path: Path):
+    async def scenario():
+        store = Store(tmp_path / "db.sqlite3")
+        agent = AutonomousSearchAgent(store, FakeHttp(), config())
+        published = iso(utcnow())
+        agent._run_codex_search = lambda prompt, task="fact_verifier": (
+            {
+                "verifications": [
+                    {
+                        "subject_id": "subject-1",
+                        "verdict": "cross_source_support",
+                        "claim_status": "probable_report",
+                        "confidence": 0.88,
+                        "sources": [
+                            {
+                                "url": "https://one.example/story",
+                                "stance": "supports",
+                                "content_basis": "The article directly reports the claim.",
+                                "origin_relationship": "distinct_origin",
+                            },
+                            {
+                                "url": "https://two.example/story",
+                                "stance": "supports",
+                                "content_basis": "A second article directly reports the claim.",
+                                "origin_relationship": "unknown",
+                            },
+                        ],
+                        "corroborated_points": ["Both pages state the event occurred."],
+                        "conflicts": [],
+                    }
+                ]
+            },
+            {
+                "run_id": "verification-run",
+                "model": "gpt-5.6-terra",
+                "reasoning_effort": "medium",
+                "tokens_used": 321,
+            },
+        )
+        result = await agent._verify_fact_subjects(
+            parent_task="trend_scout",
+            parent_run_id="parent-run",
+            requested_at=utcnow(),
+            subjects=[
+                {
+                    "subject_id": "subject-1",
+                    "subject_kind": "event",
+                    "title": "Observed event",
+                    "claim": "The observed event occurred.",
+                    "sources": [
+                        {"url": "https://one.example/story", "domain": "one.example", "published_at": published},
+                        {"url": "https://two.example/story", "domain": "two.example", "published_at": published},
+                    ],
+                }
+            ],
+        )
+        assert result["subject-1"]["status"] == "cross_source_supported"
+        assert result["subject-1"]["decision_eligible"] is False
+        row = store.db.execute("SELECT * FROM agent_fact_verifications").fetchone()
+        assert row["distinct_support_domain_count"] == 2
+        assert row["affects"] == "none"
+        assert row["model"] == "gpt-5.6-terra"
+        store.close()
 
     asyncio.run(scenario())

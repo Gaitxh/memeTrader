@@ -2197,3 +2197,74 @@ def test_loopback_settings_reject_dns_rebinding_host(tmp_path: Path):
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_event_detail_exposes_safe_separate_fact_verification(tmp_path: Path):
+    config_path, _ = _config(tmp_path)
+    event_id, _ = _seed(tmp_path / "db.sqlite3")
+    store = Store(tmp_path / "db.sqlite3")
+    now = utcnow()
+    verification_id = store.add_agent_fact_verification(
+        {
+            "verification_run_id": "verifier-run-secret",
+            "parent_task": "trend_scout",
+            "parent_run_id": "parent-run-secret",
+            "subject_id": "subject-secret",
+            "subject_kind": "event",
+            "subject_title": "Viral otter becomes an internet mascot",
+            "claim_sha256": "a" * 64,
+            "requested_at": iso(now),
+            "completed_at": iso(now),
+            "status": "cross_source_supported",
+            "claim_status": "probable_report",
+            "confidence": 0.87,
+            "support_source_count": 2,
+            "contradiction_source_count": 0,
+            "context_source_count": 0,
+            "distinct_support_domain_count": 2,
+            "evidence": {
+                "sources": [
+                    {
+                        "url": "https://news-a.example/story",
+                        "domain": "news-a.example",
+                        "publisher": "News A",
+                        "stance": "supports",
+                        "content_basis": "The article directly reports the event.",
+                        "origin_relationship": "unknown",
+                    }
+                ]
+            },
+            "model": "gpt-5.6-terra",
+            "reasoning_effort": "medium",
+            "tokens_used": 222,
+            "error_code": "",
+        }
+    )
+    observation_id, _ = store.add_observation(
+        Observation(
+            source="agent-scout:news-a.example",
+            source_kind="news",
+            title="Viral otter becomes an internet mascot",
+            url="https://news-a.example/story",
+            published_at=now,
+            observed_at=now,
+            role="identity",
+            raw={
+                "fact_verification_record_id": verification_id,
+                "fact_verification_status": "cross_source_supported",
+            },
+        )
+    )
+    store.link_event_observation(event_id, observation_id)
+    store.close()
+
+    detail = WebData(config_path).event_detail(event_id)
+    result = detail["fact_verification"]["items"][0]
+    assert result["status"] == "cross_source_supported"
+    assert result["decision_eligible"] is False
+    assert result["affects"] == "none"
+    serialized = json.dumps(detail)
+    assert "verifier-run-secret" not in serialized
+    assert "parent-run-secret" not in serialized
+    assert "subject-secret" not in serialized
+    assert '"claim_sha256"' not in serialized

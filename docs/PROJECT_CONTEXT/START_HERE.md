@@ -36,6 +36,7 @@
 - [../INFORMATION_FIRST_X_REVIEW_20260831_CN.md](../INFORMATION_FIRST_X_REVIEW_20260831_CN.md)：用户补充的 X 账号、历史案例与“信息先于价格”假设的事实审阅、已修正边界和未实现研究项。
 - [../INFORMATION_FIRST_SHADOW_CN.md](../INFORMATION_FIRST_SHADOW_CN.md)：独立 information-first 前向 cohort 的冻结时点、缺失分母、描述性市场层和不影响交易的边界。
 - [../EVENT_CLAIM_RELATIONS_CN.md](../EVENT_CLAIM_RELATIONS_CN.md)：前向来源版本之间的 supersede/correct/retract 目标关系、唯一 URL 解析、不回填和 `affects=none` 边界。
+- [../AGENT_FACT_VERIFIER_CN.md](../AGENT_FACT_VERIFIER_CN.md)：Trend/Token Context 的第二阶段独立正文核验、模型与 Token 记账、无历史回填及 `affects=none` 边界。
 
 ## 一句话产品定义
 
@@ -48,6 +49,7 @@ memeTrader 是一个运行在个人 Windows 电脑上的、仅前向证据驱动
 - Solana Devnet 钱包页只用于本机人工真链测试，不连接常驻策略。
 - 自主 Agent 最多同时 2 个；六个界面角色是职责视图，不是六个常驻进程。
 - Trend Scout 与 Token Context 的 Agent 网页结论只是 `identity/context-only` 待核验上下文；URL/时间/域名可达不等于事实已独立验证。
+- `agent-fact-verification/v1` 会用第二个独立 Codex 上下文核验新候选来源正文；不同域名支持仍只是下界，结果固定 `decision_eligible=false / affects=none`，不进入策略或 Paper。
 - `source-item-revision/v1` 只从注册时刻前向记录来源条目 baseline/edit/明确删除/撤回/纠正/恢复，固定 `affects=none`；缺项、404 和 DOM 消失绝不是删除证据。
 - `event-claim-relation/v1` 只在本次真实抓取新增来源 revision 的同一事务内追加目标关系；跨条目只允许精确安全 URL 唯一匹配，未命中、歧义和未来/陈旧时间均不补链，固定 `affects=none`。
 - `observation-provenance/v1` 只从注册时刻前向记录 `Origin → Transport → Local capture`；RSS/Agent/域名推断与 singleton 都不等于独立来源，内部 provenance root 不通过 API 暴露。

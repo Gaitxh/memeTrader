@@ -53,6 +53,7 @@ class Store:
     EVENT_ATTENTION_TRAJECTORY_VERSION = "event-attention-trajectory/v1"
     EVENT_CLAIM_ASSESSMENT_VERSION = "event-claim-assessment/v1"
     EVENT_CLAIM_RELATION_VERSION = "event-claim-relation/v1"
+    AGENT_FACT_VERIFICATION_VERSION = "agent-fact-verification/v1"
     SOURCE_ITEM_REVISION_VERSION = "source-item-revision/v1"
     OBSERVATION_PROVENANCE_VERSION = "observation-provenance/v1"
     TELEGRAM_EXTERNAL_HANDOFF_VERSION = "telegram-manual-external-origin-handoff/v1"
@@ -218,6 +219,58 @@ class Store:
                 CREATE TRIGGER IF NOT EXISTS event_claim_relations_no_delete
                 BEFORE DELETE ON event_claim_relations
                 BEGIN SELECT RAISE(ABORT,'event claim relations are immutable'); END;
+                CREATE TABLE IF NOT EXISTS agent_fact_verification_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS agent_fact_verifications (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    verification_run_id TEXT NOT NULL,
+                    parent_task TEXT NOT NULL CHECK(parent_task IN ('trend_scout','token_context')),
+                    parent_run_id TEXT NOT NULL,
+                    subject_id TEXT NOT NULL,
+                    subject_kind TEXT NOT NULL CHECK(subject_kind IN ('event','token_context')),
+                    subject_title TEXT NOT NULL,
+                    claim_sha256 TEXT NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    completed_at TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN (
+                        'cross_source_supported','contradicted','conflicted','insufficient',
+                        'disabled','quota_unavailable','agent_error','invalid_output','excluded_temporal'
+                    )),
+                    claim_status TEXT NOT NULL,
+                    confidence REAL,
+                    support_source_count INTEGER NOT NULL CHECK(support_source_count>=0),
+                    contradiction_source_count INTEGER NOT NULL CHECK(contradiction_source_count>=0),
+                    context_source_count INTEGER NOT NULL CHECK(context_source_count>=0),
+                    distinct_support_domain_count INTEGER NOT NULL CHECK(distinct_support_domain_count>=0),
+                    evidence_json TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    reasoning_effort TEXT NOT NULL,
+                    tokens_used INTEGER,
+                    error_code TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    UNIQUE(definition_version,verification_run_id,subject_id)
+                );
+                CREATE INDEX IF NOT EXISTS agent_fact_verifications_parent_idx
+                    ON agent_fact_verifications(parent_task,parent_run_id,completed_at,id);
+                CREATE INDEX IF NOT EXISTS agent_fact_verifications_subject_idx
+                    ON agent_fact_verifications(subject_id,completed_at,id);
+                CREATE TRIGGER IF NOT EXISTS agent_fact_verification_registrations_no_update
+                BEFORE UPDATE ON agent_fact_verification_registrations
+                BEGIN SELECT RAISE(ABORT,'agent fact verification registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS agent_fact_verification_registrations_no_delete
+                BEFORE DELETE ON agent_fact_verification_registrations
+                BEGIN SELECT RAISE(ABORT,'agent fact verification registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS agent_fact_verifications_no_update
+                BEFORE UPDATE ON agent_fact_verifications
+                BEGIN SELECT RAISE(ABORT,'agent fact verifications are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS agent_fact_verifications_no_delete
+                BEFORE DELETE ON agent_fact_verifications
+                BEGIN SELECT RAISE(ABORT,'agent fact verifications are immutable'); END;
                 CREATE TABLE IF NOT EXISTS source_item_revision_registrations (
                     definition_version TEXT PRIMARY KEY,
                     registered_at TEXT NOT NULL,
@@ -1296,6 +1349,25 @@ class Store:
                             "scope": "new_forward_observations_only",
                             "unknown_is_not_independent": True,
                             "transport_is_not_origin": True,
+                            "decision_effect": "none",
+                        }
+                    ),
+                ),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO agent_fact_verification_registrations("
+                "definition_version,registered_at,definition_json) VALUES(?,?,?)",
+                (
+                    self.AGENT_FACT_VERIFICATION_VERSION,
+                    iso(),
+                    self._json(
+                        {
+                            "append_only": True,
+                            "no_historical_backfill": True,
+                            "scope": "new_trend_and_token_context_candidates_only",
+                            "separate_agent_run": True,
+                            "distinct_domains_are_only_a_lower_bound": True,
+                            "agent_verdict_is_not_ground_truth": True,
                             "decision_effect": "none",
                         }
                     ),
@@ -6608,6 +6680,45 @@ class Store:
                 tuple(attempt.get(field) for field in fields),
             )
             return cursor.rowcount == 1
+
+    def add_agent_fact_verification(self, verification: Mapping[str, Any]) -> int:
+        """Append one final verifier denominator/result row and return its id."""
+        fields = (
+            "definition_version", "verification_run_id", "parent_task", "parent_run_id",
+            "subject_id", "subject_kind", "subject_title", "claim_sha256", "requested_at",
+            "completed_at", "status", "claim_status", "confidence", "support_source_count",
+            "contradiction_source_count", "context_source_count", "distinct_support_domain_count",
+            "evidence_json", "model", "reasoning_effort", "tokens_used", "error_code",
+            "decision_eligible", "affects",
+        )
+        row = {
+            **verification,
+            "definition_version": self.AGENT_FACT_VERIFICATION_VERSION,
+            "subject_title": str(verification.get("subject_title") or "")[:500],
+            "evidence_json": self._bounded_json(verification.get("evidence") or {}, 40_000),
+            "decision_eligible": 0,
+            "affects": "none",
+        }
+        with self._lock, self.db:
+            cursor = self.db.execute(
+                f"INSERT OR IGNORE INTO agent_fact_verifications({','.join(fields)}) "
+                f"VALUES({','.join('?' for _ in fields)})",
+                tuple(row.get(field) for field in fields),
+            )
+            if cursor.rowcount == 1:
+                return int(cursor.lastrowid)
+            existing = self.db.execute(
+                "SELECT id FROM agent_fact_verifications WHERE definition_version=? "
+                "AND verification_run_id=? AND subject_id=?",
+                (
+                    self.AGENT_FACT_VERIFICATION_VERSION,
+                    row.get("verification_run_id"),
+                    row.get("subject_id"),
+                ),
+            ).fetchone()
+            if existing is None:
+                raise sqlite3.IntegrityError("agent fact verification was not inserted")
+            return int(existing["id"])
 
     def start_trend_lane_run(
         self,

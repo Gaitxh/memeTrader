@@ -267,6 +267,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
                 "reasoning_effort": "low",
                 "fallback_models": ["gpt-5.6-luna"],
                 "fallback_reasoning_effort": "low"
+            },
+            "fact_verifier": {
+                "model": "gpt-5.6-terra",
+                "reasoning_effort": "medium",
+                "fallback_models": ["gpt-5.6-sol"],
+                "fallback_reasoning_effort": "medium"
             }
         },
         "trend_scout_enabled": True,
@@ -324,6 +330,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "context_search_daily_limit": 8,
         "token_context_daily_token_budget": 250_000,
         "token_context_token_reserve_per_call": 30_000,
+        "fact_verifier_enabled": True,
+        "fact_verifier_daily_limit": 192,
+        "fact_verifier_daily_token_budget": 50_000_000,
+        "fact_verifier_token_reserve_per_call": 60_000,
+        "fact_verifier_max_web_searches": 6,
         "context_global_cooldown_minutes": 5,
         "context_error_retry_minutes": 10,
         "context_min_momentum_score": 80,
@@ -543,6 +554,9 @@ def load_config(path: str | Path) -> tuple[dict[str, Any], Path]:
             "context_search_daily_limit",
             "token_context_daily_token_budget",
             "token_context_token_reserve_per_call",
+            "fact_verifier_daily_limit",
+            "fact_verifier_daily_token_budget",
+            "fact_verifier_token_reserve_per_call",
             "trend_scout_high_token_threshold",
         ):
             if int(autonomous.get(name, 0)) < 0:

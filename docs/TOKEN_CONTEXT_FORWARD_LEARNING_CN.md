@@ -10,7 +10,7 @@ Token Context 会调查“这个 Token 为什么出现、社区是否跨平台�
 
 每次新调查完成时，只在评估时点已经存在本机正价格快照的情况下建立一个 cohort，并冻结：
 
-- assessment 状态，包括 `verified_reporting / no_context / agent_error / insufficient_verified_sources`；
+- assessment 状态，包括 `cross_source_supported_context_only / conflicted_context_only / contradicted_context_only / insufficient_context_only / no_context / agent_error / insufficient_reachable_sources`；
 - 触发类型：链上动量、浏览器精确高影响力账号原帖或新鲜高热事件关系；
 - 项目附带声明状态；
 - 社区扩散状态与平台；

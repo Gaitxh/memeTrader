@@ -162,6 +162,8 @@ CONSTRAINT_SUBSTITUTIONS = [
 ]
 EXPECTED_TABLES = {
     "agent_attempts",
+    "agent_fact_verification_registrations",
+    "agent_fact_verifications",
     "decisions",
     "event_observations",
     "event_attention_points",
@@ -253,6 +255,13 @@ SAFE_OBSERVATION_RAW_FIELDS = {
     "trend_lane_taxonomy",
     "view_count",
     "volume_usd",
+    "fact_verification_record_id",
+    "fact_verification_status",
+    "fact_verification_claim_status",
+    "fact_verification_confidence",
+    "fact_verification_support_domains",
+    "fact_verification_model",
+    "fact_verification_reasoning_effort",
 }
 PLATFORM_HOSTS = {
     "x": {"x.com", "twitter.com"},
@@ -409,6 +418,11 @@ SETTING_SPECS: dict[str, tuple[str, float, float]] = {
     "autonomous_search.context_direct_event_min_match_score": ("float", 0, 100),
     "autonomous_search.token_context_daily_token_budget": ("int", 0, 100_000_000),
     "autonomous_search.token_context_token_reserve_per_call": ("int", 0, 10_000_000),
+    "autonomous_search.fact_verifier_daily_limit": ("int", 0, 1000),
+    "autonomous_search.fact_verifier_daily_token_budget": ("int", 0, 100_000_000),
+    "autonomous_search.fact_verifier_token_reserve_per_call": ("int", 0, 10_000_000),
+    "autonomous_search.fact_verifier_enabled": ("bool", 0, 1),
+    "autonomous_search.fact_verifier_max_web_searches": ("int", 2, 12),
 }
 
 
@@ -2563,6 +2577,8 @@ class WebData:
         claim_revision_event_ids: dict[int, set[int]] = {}
         revision_rows: dict[int, list[sqlite3.Row]] = {event_id: [] for event_id in ids}
         provenance_by_observation: dict[int, dict[str, Any]] = {}
+        fact_verifications: dict[int, dict[str, Any]] = {}
+        fact_verification_registered_at = None
         claim_registered_at = None
         claim_relation_registered_at = None
         revision_registered_at = None
@@ -2590,6 +2606,67 @@ class WebData:
                         "display_name": str(curated.get("display_name") or "") or None,
                     }
                 grouped[int(observation["event_id"])].append(value)
+        if self._table_exists(connection, "agent_fact_verification_registrations"):
+            registration = connection.execute(
+                "SELECT registered_at FROM agent_fact_verification_registrations WHERE definition_version=?",
+                (Store.AGENT_FACT_VERIFICATION_VERSION,),
+            ).fetchone()
+            fact_verification_registered_at = registration["registered_at"] if registration else None
+        verification_ids = sorted(
+            {
+                int(value["metadata"]["fact_verification_record_id"])
+                for values in grouped.values()
+                for value in values
+                if isinstance(value.get("metadata"), dict)
+                and str(value["metadata"].get("fact_verification_record_id") or "").isdigit()
+            }
+        )
+        if verification_ids and self._table_exists(connection, "agent_fact_verifications"):
+            verification_placeholders = ",".join("?" for _ in verification_ids)
+            for verification in connection.execute(
+                f"SELECT * FROM agent_fact_verifications WHERE id IN ({verification_placeholders})",
+                verification_ids,
+            ):
+                evidence = _json_load(verification["evidence_json"], {})
+                evidence = evidence if isinstance(evidence, dict) else {}
+                fact_verifications[int(verification["id"])] = {
+                    "id": int(verification["id"]),
+                    "version": verification["definition_version"],
+                    "parent_task": verification["parent_task"],
+                    "subject_kind": verification["subject_kind"],
+                    "subject_title": verification["subject_title"],
+                    "requested_at": verification["requested_at"],
+                    "completed_at": verification["completed_at"],
+                    "status": verification["status"],
+                    "claim_status": verification["claim_status"],
+                    "confidence": verification["confidence"],
+                    "support_source_count": int(verification["support_source_count"]),
+                    "contradiction_source_count": int(verification["contradiction_source_count"]),
+                    "context_source_count": int(verification["context_source_count"]),
+                    "distinct_support_domain_count": int(verification["distinct_support_domain_count"]),
+                    "sources": [
+                        {
+                            "url": _safe_url(source.get("url")),
+                            "domain": str(source.get("domain") or "")[:255],
+                            "publisher": str(source.get("publisher") or "")[:300],
+                            "published_at": source.get("published_at"),
+                            "stance": str(source.get("stance") or "")[:40],
+                            "content_basis": str(source.get("content_basis") or "")[:1200],
+                            "origin_relationship": str(source.get("origin_relationship") or "unknown")[:80],
+                        }
+                        for source in (evidence.get("sources") or [])
+                        if isinstance(source, dict)
+                    ],
+                    "corroborated_points": [str(value)[:800] for value in (evidence.get("corroborated_points") or [])],
+                    "conflicts": [str(value)[:800] for value in (evidence.get("conflicts") or [])],
+                    "model": verification["model"],
+                    "reasoning_effort": verification["reasoning_effort"],
+                    "tokens_used": verification["tokens_used"],
+                    "error_code": str(verification["error_code"] or "")[:200] or None,
+                    "decision_eligible": False,
+                    "affects": "none",
+                    "boundary": "separate_agent_verifier_is_not_ground_truth",
+                }
         if self._table_exists(connection, "observation_provenance_registrations"):
             registration = connection.execute(
                 "SELECT registered_at FROM observation_provenance_registrations WHERE definition_version=?",
@@ -2793,6 +2870,9 @@ class WebData:
             event_id = int(row["id"])
             observations = grouped.get(event_id, [])
             for observation in observations:
+                verification_id = (observation.get("metadata") or {}).get("fact_verification_record_id")
+                if str(verification_id or "").isdigit():
+                    observation["fact_verification"] = fact_verifications.get(int(verification_id))
                 provenance = provenance_by_observation.get(int(observation["id"]))
                 if provenance:
                     observation["_provenance_root_key"] = provenance.get("_origin_root_key") or ""
@@ -3215,6 +3295,21 @@ class WebData:
                 "attention_history": [point["score"] for point in points],
                 "attention_trajectory": trajectory,
                 "factuality": factuality,
+                "fact_verification": {
+                    "version": Store.AGENT_FACT_VERIFICATION_VERSION,
+                    "registered_at": fact_verification_registered_at,
+                    "status": "observed" if any(item.get("fact_verification") for item in observations) else "not_observed",
+                    "items": list(
+                        {
+                            item["fact_verification"]["id"]: item["fact_verification"]
+                            for item in observations
+                            if item.get("fact_verification")
+                        }.values()
+                    ) if include_observations else [],
+                    "decision_eligible": False,
+                    "affects": "none",
+                    "boundary": "separate_agent_verifier_is_not_ground_truth",
+                },
                 "claim_relation_graph": claim_relation_graph,
                 "source_revision_summary": source_revision_summary,
                 "provenance_summary": provenance_summary,
@@ -4331,6 +4426,14 @@ class WebData:
                 "run_key": CONTEXT_RUN_KEY,
                 "result_key": CONTEXT_RESULT_KEY,
             },
+            "fact_verifier": {
+                "profile": "fact_verifier",
+                "call_budget": int(cfg.get("fact_verifier_daily_limit", 0)),
+                "token_budget": int(cfg.get("fact_verifier_daily_token_budget", 0)),
+                "reserve": int(cfg.get("fact_verifier_token_reserve_per_call", 0)),
+                "run_key": None,
+                "result_key": None,
+            },
         }
         output = []
         usage_summary: dict[str, Any] = {}
@@ -4341,8 +4444,29 @@ class WebData:
                 profile = dict((cfg.get("profiles") or {}).get(item["profile"]) or {})
                 calls = int(self._kv(connection, f"autonomous_search_quota:{day}:{kind}", 0))
                 tokens = int(self._kv(connection, f"autonomous_search_tokens:{day}:{kind}", 0))
-                last_run = self._kv(connection, item["run_key"])
-                last_result = self._agent_last_result(self._kv(connection, item["result_key"]))
+                last_run = self._kv(connection, item["run_key"]) if item["run_key"] else None
+                last_result = (
+                    self._agent_last_result(self._kv(connection, item["result_key"]))
+                    if item["result_key"] else None
+                )
+                if kind == "fact_verifier" and connection is not None and self._table_exists(
+                    connection, "agent_fact_verifications"
+                ):
+                    latest_verification = connection.execute(
+                        "SELECT * FROM agent_fact_verifications ORDER BY completed_at DESC,id DESC LIMIT 1"
+                    ).fetchone()
+                    if latest_verification is not None:
+                        last_run = latest_verification["completed_at"]
+                        last_result = {
+                            "status": latest_verification["status"],
+                            "parent_task": latest_verification["parent_task"],
+                            "subject_kind": latest_verification["subject_kind"],
+                            "model": latest_verification["model"],
+                            "reasoning_effort": latest_verification["reasoning_effort"],
+                            "tokens_used": latest_verification["tokens_used"],
+                            "decision_eligible": False,
+                            "affects": "none",
+                        }
                 if kind == "trend_scout":
                     recorded_interval = _safe_float((last_result or {}).get("next_interval_minutes"))
                     interval = recorded_interval if recorded_interval is not None else float(cfg.get("trend_scout_base_interval_minutes", 12))
@@ -4358,7 +4482,7 @@ class WebData:
                         interval = float(cfg.get("source_discovery_interval_hours", 24))
                     next_run = _iso_add(last_run, timedelta(hours=interval))
                     trigger = "scheduled"
-                else:
+                elif kind == "token_context":
                     interval = float(cfg.get("context_global_cooldown_minutes", 5))
                     next_run = _iso_add(last_run, timedelta(minutes=interval))
                     error_retry = self._kv(connection, CONTEXT_ERROR_RETRY_KEY)
@@ -4369,15 +4493,21 @@ class WebData:
                         except Exception:
                             next_run = error_retry
                     trigger = "event_driven"
+                else:
+                    next_run = None
+                    trigger = "parent_candidate_gate"
                 primary = str(profile.get("model") or cfg.get("model") or "")
                 used_model = str((last_result or {}).get("model") or "") or None
                 enabled = bool(cfg.get("enabled", False)) and (
-                    bool(cfg.get("trend_scout_enabled", True)) if kind == "trend_scout" else True
+                    bool(cfg.get("trend_scout_enabled", True)) if kind == "trend_scout"
+                    else bool(cfg.get("fact_verifier_enabled", True)) if kind == "fact_verifier"
+                    else True
                 )
                 labels = {
                     "trend_scout": "Trend Scout",
                     "source_discovery": "Source Discovery",
                     "token_context": "Token Context",
+                    "fact_verifier": "Independent Fact Verifier",
                 }
                 result_status = str((last_result or {}).get("status") or "not_run")
                 result_summary = result_status
