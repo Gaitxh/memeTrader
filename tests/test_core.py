@@ -677,6 +677,95 @@ def test_token_discovery_exposure_preserves_denominator_and_forward_outcomes(tmp
     store.close()
 
 
+def test_full_token_universe_forward_outcomes_are_complete_and_immutable(tmp_path: Path):
+    store = Store(tmp_path / "token-universe.sqlite3", initial_cash_usd=1000)
+    token = TokenCandidate(chain="solana", address="U" * 32, name="Universe", symbol="UNI")
+    missing = TokenCandidate(chain="solana", address="N" * 32, name="No Quote", symbol="NOQ")
+    store.upsert_token(token)
+    store.upsert_token(missing)
+    round_id = store.start_token_discovery_round(
+        provider="pumpportal", surface="create", mode="stream_window", chain_scope="solana",
+    )
+    for item in (token, missing):
+        store.add_token_discovery_exposure(
+            round_id, token_id=item.token_id, chain=item.chain, role="create",
+            first_local_discovery=True, new_token=True,
+        )
+    store.finish_token_discovery_round(round_id, status="completed", returned_count=2)
+    duplicate_round = store.start_token_discovery_round(
+        provider="geckoterminal", surface="new_pools", mode="poll", chain_scope="solana",
+    )
+    store.add_token_discovery_exposure(
+        duplicate_round, token_id=token.token_id, chain=token.chain, role="new_pool",
+        first_local_discovery=False,
+    )
+    store.finish_token_discovery_round(duplicate_round, status="completed", returned_count=1)
+    cohorts = store.db.execute(
+        "SELECT * FROM token_universe_forward_cohorts ORDER BY id"
+    ).fetchall()
+    assert len(cohorts) == 2
+    cohort = next(row for row in cohorts if row["token_id"] == token.token_id)
+    discovered = parse_time(cohort["discovery_recorded_at"])
+
+    def snapshot(minutes: int, price: float) -> None:
+        when = discovered + timedelta(minutes=minutes, seconds=10)
+        store.db.execute(
+            """
+            INSERT INTO token_snapshots(
+                token_id,observed_at,ingested_at,recorded_at,provider,price_usd,raw_json
+            ) VALUES(?,?,?,?,?,?,?)
+            """,
+            (token.token_id, iso(when), iso(when), iso(when), "forward-test", price, "{}"),
+        )
+
+    snapshot(1, 1.0)
+    snapshot(15, 1.5)
+    snapshot(60, 2.2)
+    snapshot(240, 0.8)
+    event_id = store.create_event("Universe event", ["universe"], 70, discovered)
+    store.add_decision(CandidateDecision(
+        event_id, token.token_id, "WAIT", 55, 60, 1, ["wait"],
+        created_at=discovered + timedelta(minutes=10),
+    ))
+    store.add_decision(CandidateDecision(
+        event_id, token.token_id, "CANDIDATE", 85, 80, 20, ["candidate"],
+        created_at=discovered + timedelta(minutes=55),
+    ))
+    store.finalize_token_universe_forward_outcomes(now=discovered + timedelta(minutes=16))
+    store.finalize_token_universe_forward_outcomes(now=discovered + timedelta(minutes=61))
+    store.finalize_token_universe_forward_outcomes(now=discovered + timedelta(minutes=241))
+
+    outcomes = store.db.execute(
+        "SELECT * FROM token_universe_forward_outcomes WHERE cohort_id=? ORDER BY horizon_minutes",
+        (int(cohort["id"]),),
+    ).fetchall()
+    assert [row["horizon_minutes"] for row in outcomes] == [15, 60, 240]
+    assert outcomes[0]["best_action_at_target"] == "WAIT"
+    assert outcomes[1]["best_action_at_target"] == "CANDIDATE"
+    assert outcomes[1]["raw_return"] == pytest.approx(1.2)
+    assert outcomes[1]["peak_return_tier"] == "gte_100pct"
+    missing_rows = store.db.execute(
+        """
+        SELECT o.status FROM token_universe_forward_outcomes o
+        JOIN token_universe_forward_cohorts c ON c.id=o.cohort_id
+        WHERE c.token_id=? ORDER BY o.horizon_minutes
+        """,
+        (missing.token_id,),
+    ).fetchall()
+    assert [row["status"] for row in missing_rows] == ["baseline_missing"] * 3
+    summary = store.token_universe_forward_summary_from_connection(store.db)
+    assert summary["summary"]["cohorts"] == 2
+    assert summary["summary"]["baseline_observed"] == 1
+    assert summary["summary"]["baseline_missing"] == 1
+    assert summary["decision_eligible"] is False and summary["affects"] == "none"
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute(
+            "UPDATE token_universe_forward_outcomes SET status='observed' WHERE cohort_id=?",
+            (int(cohort["id"]),),
+        )
+    store.close()
+
+
 def test_runtime_restart_reclassifies_only_unfinished_exposure_attempts(tmp_path: Path):
     database = tmp_path / "interrupted-exposure.sqlite3"
     store = Store(database, initial_cash_usd=1000)

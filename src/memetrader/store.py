@@ -50,6 +50,10 @@ class Store:
     PAPER_SOURCE_ATTRIBUTION_VERSION = "paper-source-attribution/v2-decision-cohort"
     SOURCE_POLL_EXPOSURE_VERSION = "source-poll-exposure/v1"
     TOKEN_DISCOVERY_EXPOSURE_VERSION = "token-discovery-exposure/v1"
+    TOKEN_UNIVERSE_FORWARD_VERSION = "token-universe-forward-outcomes/v1"
+    TOKEN_UNIVERSE_HORIZONS_MINUTES = (15, 60, 240)
+    TOKEN_UNIVERSE_BASELINE_WINDOW_MINUTES = 5
+    TOKEN_UNIVERSE_OUTCOME_GRACE_MINUTES = 30
     EVENT_ATTENTION_TRAJECTORY_VERSION = "event-attention-trajectory/v1"
     EVENT_CLAIM_ASSESSMENT_VERSION = "event-claim-assessment/v1"
     EVENT_CLAIM_RELATION_VERSION = "event-claim-relation/v1"
@@ -783,11 +787,98 @@ class Store:
                     snapshot_count INTEGER NOT NULL DEFAULT 0,
                     no_pair INTEGER NOT NULL DEFAULT 0,
                     observed_at TEXT NOT NULL,
+                    recorded_at TEXT,
                     UNIQUE(round_id,token_id),
                     FOREIGN KEY(round_id) REFERENCES token_discovery_rounds(id)
                 );
                 CREATE INDEX IF NOT EXISTS token_discovery_exposures_token_idx
                     ON token_discovery_exposures(token_id,observed_at DESC,id DESC);
+                CREATE TABLE IF NOT EXISTS token_universe_forward_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS token_universe_forward_cohorts (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    exposure_id INTEGER NOT NULL UNIQUE,
+                    round_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    chain TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    surface TEXT NOT NULL,
+                    discovery_role TEXT NOT NULL,
+                    discovery_observed_at TEXT NOT NULL,
+                    discovery_recorded_at TEXT NOT NULL,
+                    baseline_deadline_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0,
+                    affects TEXT NOT NULL DEFAULT 'none',
+                    UNIQUE(definition_version,token_id)
+                );
+                CREATE INDEX IF NOT EXISTS token_universe_forward_cohorts_due_idx
+                    ON token_universe_forward_cohorts(discovery_recorded_at,baseline_deadline_at);
+                CREATE TABLE IF NOT EXISTS token_universe_forward_baselines (
+                    cohort_id INTEGER PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    snapshot_id INTEGER,
+                    observed_at TEXT,
+                    ingested_at TEXT,
+                    recorded_at TEXT,
+                    price_usd REAL,
+                    provider TEXT,
+                    reason TEXT NOT NULL,
+                    evaluated_at TEXT NOT NULL,
+                    FOREIGN KEY(cohort_id) REFERENCES token_universe_forward_cohorts(id)
+                );
+                CREATE TABLE IF NOT EXISTS token_universe_forward_outcomes (
+                    id INTEGER PRIMARY KEY,
+                    cohort_id INTEGER NOT NULL,
+                    horizon_minutes INTEGER NOT NULL,
+                    target_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    outcome_snapshot_id INTEGER,
+                    outcome_observed_at TEXT,
+                    outcome_ingested_at TEXT,
+                    outcome_recorded_at TEXT,
+                    outcome_price REAL,
+                    raw_return REAL,
+                    maximum_return REAL,
+                    minimum_return REAL,
+                    snapshot_count INTEGER NOT NULL DEFAULT 0,
+                    best_action_at_target TEXT NOT NULL,
+                    candidate_by_target INTEGER NOT NULL DEFAULT 0,
+                    paper_bought_by_target INTEGER NOT NULL DEFAULT 0,
+                    peak_return_tier TEXT,
+                    evaluated_at TEXT NOT NULL,
+                    UNIQUE(cohort_id,horizon_minutes),
+                    FOREIGN KEY(cohort_id) REFERENCES token_universe_forward_cohorts(id)
+                );
+                CREATE INDEX IF NOT EXISTS token_universe_forward_outcomes_horizon_idx
+                    ON token_universe_forward_outcomes(horizon_minutes,status,evaluated_at);
+                CREATE TRIGGER IF NOT EXISTS token_universe_forward_registrations_no_update
+                BEFORE UPDATE ON token_universe_forward_registrations
+                BEGIN SELECT RAISE(ABORT,'token-universe forward registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_universe_forward_registrations_no_delete
+                BEFORE DELETE ON token_universe_forward_registrations
+                BEGIN SELECT RAISE(ABORT,'token-universe forward registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_universe_forward_cohorts_no_update
+                BEFORE UPDATE ON token_universe_forward_cohorts
+                BEGIN SELECT RAISE(ABORT,'token-universe forward cohorts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_universe_forward_cohorts_no_delete
+                BEFORE DELETE ON token_universe_forward_cohorts
+                BEGIN SELECT RAISE(ABORT,'token-universe forward cohorts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_universe_forward_baselines_no_update
+                BEFORE UPDATE ON token_universe_forward_baselines
+                BEGIN SELECT RAISE(ABORT,'token-universe forward baselines are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_universe_forward_baselines_no_delete
+                BEFORE DELETE ON token_universe_forward_baselines
+                BEGIN SELECT RAISE(ABORT,'token-universe forward baselines are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_universe_forward_outcomes_no_update
+                BEFORE UPDATE ON token_universe_forward_outcomes
+                BEGIN SELECT RAISE(ABORT,'token-universe forward outcomes are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_universe_forward_outcomes_no_delete
+                BEFORE DELETE ON token_universe_forward_outcomes
+                BEGIN SELECT RAISE(ABORT,'token-universe forward outcomes are immutable'); END;
                 CREATE TABLE IF NOT EXISTS kv (
                     key TEXT PRIMARY KEY,
                     value_json TEXT NOT NULL,
@@ -1269,6 +1360,20 @@ class Store:
                 self.db.execute("ALTER TABLE token_snapshots ADD COLUMN ingested_at TEXT")
             if "recorded_at" not in snapshot_columns:
                 self.db.execute("ALTER TABLE token_snapshots ADD COLUMN recorded_at TEXT")
+            discovery_exposure_columns = {
+                row["name"] for row in self.db.execute("PRAGMA table_info(token_discovery_exposures)")
+            }
+            if "recorded_at" not in discovery_exposure_columns:
+                self.db.execute("ALTER TABLE token_discovery_exposures ADD COLUMN recorded_at TEXT")
+            self.db.execute(
+                "INSERT OR IGNORE INTO token_universe_forward_registrations("
+                "definition_version,registered_at,definition_json) VALUES(?,?,?)",
+                (
+                    self.TOKEN_UNIVERSE_FORWARD_VERSION,
+                    iso(),
+                    self._json(self._token_universe_forward_definition()),
+                ),
+            )
             self.db.execute(
                 "INSERT OR IGNORE INTO information_first_ilg_registrations("
                 "definition_version,registered_at,definition_json) VALUES(?,?,?)",
@@ -6362,14 +6467,16 @@ class Store:
         if not token_id:
             return
         clean = lambda value: re.sub(r"[^a-zA-Z0-9:._-]+", "-", str(value).strip())[:100]
+        exposure_observed_at = iso(observed_at or utcnow())
+        exposure_recorded_at = iso()
         with self._lock, self.db:
             self.db.execute(
                 """
                 INSERT INTO token_discovery_exposures(
                     round_id,token_id,chain,role,first_local_discovery,new_token,
                     occurrence_count,source_link_count,new_source_link_count,snapshot_count,
-                    no_pair,observed_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                    no_pair,observed_at,recorded_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(round_id,token_id) DO UPDATE SET
                     first_local_discovery=MAX(first_local_discovery,excluded.first_local_discovery),
                     new_token=MAX(new_token,excluded.new_token),
@@ -6384,9 +6491,49 @@ class Store:
                     int(bool(first_local_discovery)), int(bool(new_token)),
                     max(1, int(occurrence_count or 1)), max(0, int(source_link_count or 0)),
                     max(0, int(new_source_link_count or 0)), max(0, int(snapshot_count or 0)),
-                    int(bool(no_pair)), iso(observed_at or utcnow()),
+                    int(bool(no_pair)), exposure_observed_at, exposure_recorded_at,
                 ),
             )
+            if first_local_discovery:
+                exposure = self.db.execute(
+                    """
+                    SELECT e.id,e.round_id,e.token_id,e.chain,e.role,e.observed_at,e.recorded_at,
+                           r.provider,r.surface
+                    FROM token_discovery_exposures e
+                    JOIN token_discovery_rounds r ON r.id=e.round_id
+                    WHERE e.round_id=? AND e.token_id=?
+                    """,
+                    (int(round_id), token_id),
+                ).fetchone()
+                registration = self.db.execute(
+                    "SELECT registered_at FROM token_universe_forward_registrations "
+                    "WHERE definition_version=?",
+                    (self.TOKEN_UNIVERSE_FORWARD_VERSION,),
+                ).fetchone()
+                if (
+                    exposure is not None
+                    and registration is not None
+                    and exposure["recorded_at"]
+                    and parse_time(exposure["recorded_at"]) >= parse_time(registration["registered_at"])
+                ):
+                    discovered = parse_time(exposure["recorded_at"])
+                    self.db.execute(
+                        """
+                        INSERT OR IGNORE INTO token_universe_forward_cohorts(
+                            definition_version,exposure_id,round_id,token_id,chain,provider,surface,
+                            discovery_role,discovery_observed_at,discovery_recorded_at,
+                            baseline_deadline_at,decision_eligible,affects
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,0,'none')
+                        """,
+                        (
+                            self.TOKEN_UNIVERSE_FORWARD_VERSION, int(exposure["id"]),
+                            int(exposure["round_id"]), str(exposure["token_id"]),
+                            str(exposure["chain"]), str(exposure["provider"]),
+                            str(exposure["surface"]), str(exposure["role"]),
+                            str(exposure["observed_at"]), str(exposure["recorded_at"]),
+                            iso(discovered + timedelta(minutes=self.TOKEN_UNIVERSE_BASELINE_WINDOW_MINUTES)),
+                        ),
+                    )
 
     def finish_token_discovery_round(
         self,
@@ -6436,6 +6583,457 @@ class Store:
                     error_type, iso(completed_at or utcnow()), int(round_id),
                 ),
             )
+
+    @classmethod
+    def _token_universe_forward_definition(cls) -> dict[str, Any]:
+        return {
+            "version": cls.TOKEN_UNIVERSE_FORWARD_VERSION,
+            "cohort": "unique_first_local_token_after_registration",
+            "no_historical_backfill": True,
+            "baseline_window_minutes": cls.TOKEN_UNIVERSE_BASELINE_WINDOW_MINUTES,
+            "horizons_minutes": list(cls.TOKEN_UNIVERSE_HORIZONS_MINUTES),
+            "outcome_grace_minutes": cls.TOKEN_UNIVERSE_OUTCOME_GRACE_MINUTES,
+            "peak_return_tiers": [0.25, 0.5, 1.0, 3.0],
+            "time_basis": "durable_local_recorded_at",
+            "sampled_path_is_not_market_high_low": True,
+            "decision_eligible": False,
+            "affects": "none",
+        }
+
+    @staticmethod
+    def _token_universe_peak_tier(value: float) -> str:
+        if value >= 3.0:
+            return "gte_300pct"
+        if value >= 1.0:
+            return "gte_100pct"
+        if value >= 0.5:
+            return "gte_50pct"
+        if value >= 0.25:
+            return "gte_25pct"
+        return "lt_25pct"
+
+    @staticmethod
+    def _token_universe_action_at_target(
+        connection: sqlite3.Connection,
+        *,
+        token_id: str,
+        discovered_at: str,
+        target_at: str,
+    ) -> tuple[str, int, int]:
+        actions = {
+            str(row["action"]).upper()
+            for row in connection.execute(
+                "SELECT action FROM decisions WHERE token_id=? AND created_at>=? AND created_at<=?",
+                (token_id, discovered_at, target_at),
+            )
+        }
+        candidate = int("CANDIDATE" in actions)
+        paper_bought = int(
+            connection.execute(
+                "SELECT 1 FROM trades WHERE token_id=? AND side='BUY' "
+                "AND created_at>=? AND created_at<=? LIMIT 1",
+                (token_id, discovered_at, target_at),
+            ).fetchone()
+            is not None
+        )
+        if paper_bought:
+            return "PAPER_BUY", candidate, paper_bought
+        for action in ("CANDIDATE", "WAIT", "REJECT"):
+            if action in actions:
+                return action, candidate, paper_bought
+        return "NONE", candidate, paper_bought
+
+    def finalize_token_universe_forward_outcomes(self, *, now: Any = None) -> dict[str, int]:
+        """Append immutable full-universe baselines and fixed-horizon outcomes."""
+        evaluated = parse_time(now or utcnow())
+        baseline_observed = baseline_missing = outcomes_observed = outcomes_missing = 0
+        with self._lock, self.db:
+            cohorts = list(
+                self.db.execute(
+                    """
+                    SELECT c.* FROM token_universe_forward_cohorts c
+                    WHERE (SELECT COUNT(*) FROM token_universe_forward_outcomes o
+                           WHERE o.cohort_id=c.id) < ?
+                    ORDER BY c.discovery_recorded_at,c.id
+                    """,
+                    (len(self.TOKEN_UNIVERSE_HORIZONS_MINUTES),),
+                )
+            )
+            for cohort in cohorts:
+                baseline = self.db.execute(
+                    "SELECT * FROM token_universe_forward_baselines WHERE cohort_id=?",
+                    (int(cohort["id"]),),
+                ).fetchone()
+                baseline_deadline = parse_time(cohort["baseline_deadline_at"])
+                if baseline is None:
+                    upper = min(evaluated, baseline_deadline)
+                    snapshot = self.db.execute(
+                        """
+                        SELECT id,observed_at,ingested_at,recorded_at,price_usd,provider
+                        FROM token_snapshots
+                        WHERE token_id=? AND price_usd>0
+                          AND observed_at>=? AND ingested_at>=observed_at
+                          AND recorded_at>=ingested_at AND recorded_at>=? AND recorded_at<=?
+                        ORDER BY recorded_at,ingested_at,observed_at,id LIMIT 1
+                        """,
+                        (
+                            str(cohort["token_id"]), str(cohort["discovery_recorded_at"]),
+                            str(cohort["discovery_recorded_at"]), iso(upper),
+                        ),
+                    ).fetchone()
+                    if snapshot is not None:
+                        self.db.execute(
+                            """
+                            INSERT INTO token_universe_forward_baselines(
+                                cohort_id,status,snapshot_id,observed_at,ingested_at,recorded_at,
+                                price_usd,provider,reason,evaluated_at
+                            ) VALUES(?,'observed',?,?,?,?,?,?,?,?)
+                            """,
+                            (
+                                int(cohort["id"]), int(snapshot["id"]),
+                                str(snapshot["observed_at"]), str(snapshot["ingested_at"]),
+                                str(snapshot["recorded_at"]), float(snapshot["price_usd"]),
+                                str(snapshot["provider"]), "first_durable_quote_within_5m",
+                                iso(evaluated),
+                            ),
+                        )
+                        baseline_observed += 1
+                    elif evaluated >= baseline_deadline:
+                        self.db.execute(
+                            """
+                            INSERT INTO token_universe_forward_baselines(
+                                cohort_id,status,reason,evaluated_at
+                            ) VALUES(?,'missing','no_durable_price_within_5m',?)
+                            """,
+                            (int(cohort["id"]), iso(evaluated)),
+                        )
+                        baseline_missing += 1
+                    baseline = self.db.execute(
+                        "SELECT * FROM token_universe_forward_baselines WHERE cohort_id=?",
+                        (int(cohort["id"]),),
+                    ).fetchone()
+                for horizon in self.TOKEN_UNIVERSE_HORIZONS_MINUTES:
+                    if self.db.execute(
+                        "SELECT 1 FROM token_universe_forward_outcomes "
+                        "WHERE cohort_id=? AND horizon_minutes=?",
+                        (int(cohort["id"]), int(horizon)),
+                    ).fetchone() is not None:
+                        continue
+                    target = parse_time(cohort["discovery_recorded_at"]) + timedelta(minutes=horizon)
+                    if evaluated < target:
+                        continue
+                    action, candidate, bought = self._token_universe_action_at_target(
+                        self.db,
+                        token_id=str(cohort["token_id"]),
+                        discovered_at=str(cohort["discovery_recorded_at"]),
+                        target_at=iso(target),
+                    )
+                    if baseline is not None and str(baseline["status"]) != "observed":
+                        self.db.execute(
+                            """
+                            INSERT INTO token_universe_forward_outcomes(
+                                cohort_id,horizon_minutes,target_at,status,snapshot_count,
+                                best_action_at_target,candidate_by_target,paper_bought_by_target,
+                                evaluated_at
+                            ) VALUES(?,?,?,'baseline_missing',0,?,?,?,?)
+                            """,
+                            (
+                                int(cohort["id"]), horizon, iso(target), action,
+                                candidate, bought, iso(evaluated),
+                            ),
+                        )
+                        outcomes_missing += 1
+                        continue
+                    if baseline is None:
+                        continue
+                    deadline = target + timedelta(minutes=self.TOKEN_UNIVERSE_OUTCOME_GRACE_MINUTES)
+                    upper = min(evaluated, deadline)
+                    snapshot = self.db.execute(
+                        """
+                        SELECT id,observed_at,ingested_at,recorded_at,price_usd,provider
+                        FROM token_snapshots
+                        WHERE token_id=? AND price_usd>0
+                          AND observed_at>=? AND ingested_at>=observed_at
+                          AND recorded_at>=ingested_at AND recorded_at>=? AND recorded_at<=?
+                        ORDER BY recorded_at,ingested_at,observed_at,id LIMIT 1
+                        """,
+                        (str(cohort["token_id"]), iso(target), iso(target), iso(upper)),
+                    ).fetchone()
+                    if snapshot is not None:
+                        path = list(
+                            self.db.execute(
+                                """
+                                SELECT price_usd FROM token_snapshots
+                                WHERE token_id=? AND price_usd>0
+                                  AND observed_at>=? AND ingested_at>=observed_at
+                                  AND recorded_at>=ingested_at AND recorded_at>=? AND recorded_at<=?
+                                ORDER BY recorded_at,observed_at,id
+                                """,
+                                (
+                                    str(cohort["token_id"]), str(baseline["observed_at"]),
+                                    str(baseline["recorded_at"]), str(snapshot["recorded_at"]),
+                                ),
+                            )
+                        )
+                        entry_price = float(baseline["price_usd"])
+                        returns = [float(row["price_usd"]) / entry_price - 1.0 for row in path]
+                        raw_return = float(snapshot["price_usd"]) / entry_price - 1.0
+                        maximum = max(returns) if returns else raw_return
+                        minimum = min(returns) if returns else raw_return
+                        self.db.execute(
+                            """
+                            INSERT INTO token_universe_forward_outcomes(
+                                cohort_id,horizon_minutes,target_at,status,outcome_snapshot_id,
+                                outcome_observed_at,outcome_ingested_at,outcome_recorded_at,
+                                outcome_price,raw_return,maximum_return,minimum_return,snapshot_count,
+                                best_action_at_target,candidate_by_target,paper_bought_by_target,
+                                peak_return_tier,evaluated_at
+                            ) VALUES(?,?,?,'observed',?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                            """,
+                            (
+                                int(cohort["id"]), horizon, iso(target), int(snapshot["id"]),
+                                str(snapshot["observed_at"]), str(snapshot["ingested_at"]),
+                                str(snapshot["recorded_at"]), float(snapshot["price_usd"]),
+                                raw_return, maximum, minimum, len(path), action, candidate, bought,
+                                self._token_universe_peak_tier(maximum), iso(evaluated),
+                            ),
+                        )
+                        outcomes_observed += 1
+                    elif evaluated >= deadline:
+                        self.db.execute(
+                            """
+                            INSERT INTO token_universe_forward_outcomes(
+                                cohort_id,horizon_minutes,target_at,status,snapshot_count,
+                                best_action_at_target,candidate_by_target,paper_bought_by_target,
+                                evaluated_at
+                            ) VALUES(?,?,?,'missing',0,?,?,?,?)
+                            """,
+                            (
+                                int(cohort["id"]), horizon, iso(target), action,
+                                candidate, bought, iso(evaluated),
+                            ),
+                        )
+                        outcomes_missing += 1
+        return {
+            "cohorts_checked": len(cohorts),
+            "baselines_observed": baseline_observed,
+            "baselines_missing": baseline_missing,
+            "outcomes_observed": outcomes_observed,
+            "outcomes_missing": outcomes_missing,
+        }
+
+    def due_token_universe_quotes(
+        self,
+        *,
+        now: Any = None,
+        limit: int = 180,
+        retry_seconds: int = 120,
+    ) -> list[dict[str, Any]]:
+        current = parse_time(now or utcnow())
+        retry_after = iso(current - timedelta(seconds=max(30, int(retry_seconds))))
+        recent = {
+            (str(row["token_id"]), str(row["role"]))
+            for row in self.db.execute(
+                "SELECT token_id,role FROM token_discovery_exposures "
+                "WHERE recorded_at>=? AND role LIKE 'universe_%'",
+                (retry_after,),
+            )
+        }
+        due: list[dict[str, Any]] = []
+        rows = self.db.execute(
+            """
+            SELECT c.* FROM token_universe_forward_cohorts c
+            LEFT JOIN token_universe_forward_baselines b ON b.cohort_id=c.id
+            WHERE b.cohort_id IS NULL AND c.baseline_deadline_at>=?
+            ORDER BY c.baseline_deadline_at,c.id LIMIT ?
+            """,
+            (iso(current), max(1, int(limit))),
+        ).fetchall()
+        for row in rows:
+            if (str(row["token_id"]), "universe_baseline") in recent:
+                continue
+            due.append({
+                "cohort_id": int(row["id"]), "token_id": str(row["token_id"]),
+                "chain": str(row["chain"]), "role": "universe_baseline", "horizon_minutes": 0,
+            })
+            if len(due) >= limit:
+                return due
+        lower = iso(current - timedelta(minutes=max(self.TOKEN_UNIVERSE_HORIZONS_MINUTES) + 31))
+        rows = self.db.execute(
+            """
+            SELECT c.* FROM token_universe_forward_cohorts c
+            JOIN token_universe_forward_baselines b ON b.cohort_id=c.id AND b.status='observed'
+            WHERE c.discovery_recorded_at>=? ORDER BY c.discovery_recorded_at,c.id
+            """,
+            (lower,),
+        ).fetchall()
+        existing = {
+            (int(row["cohort_id"]), int(row["horizon_minutes"]))
+            for row in self.db.execute(
+                """
+                SELECT o.cohort_id,o.horizon_minutes
+                FROM token_universe_forward_outcomes o
+                JOIN token_universe_forward_cohorts c ON c.id=o.cohort_id
+                WHERE c.discovery_recorded_at>=?
+                """,
+                (lower,),
+            )
+        }
+        for row in rows:
+            discovered = parse_time(row["discovery_recorded_at"])
+            for horizon in self.TOKEN_UNIVERSE_HORIZONS_MINUTES:
+                if (int(row["id"]), horizon) in existing:
+                    continue
+                target = discovered + timedelta(minutes=horizon)
+                deadline = target + timedelta(minutes=self.TOKEN_UNIVERSE_OUTCOME_GRACE_MINUTES)
+                role = f"universe_{horizon}m"
+                if target <= current <= deadline and (str(row["token_id"]), role) not in recent:
+                    due.append({
+                        "cohort_id": int(row["id"]), "token_id": str(row["token_id"]),
+                        "chain": str(row["chain"]), "role": role,
+                        "horizon_minutes": horizon,
+                    })
+                    break
+            if len(due) >= limit:
+                break
+        return due
+
+    @classmethod
+    def token_universe_forward_summary_from_connection(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        lookback_days: int = 90,
+    ) -> dict[str, Any]:
+        required = {
+            "token_universe_forward_registrations", "token_universe_forward_cohorts",
+            "token_universe_forward_baselines", "token_universe_forward_outcomes",
+        }
+        tables = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        empty = {
+            "status": "not_observed", "version": cls.TOKEN_UNIVERSE_FORWARD_VERSION,
+            "definition": cls._token_universe_forward_definition(),
+            "summary": {"cohorts": 0, "baseline_observed": 0, "baseline_missing": 0},
+            "horizons": [], "tiers": [], "surfaces": [],
+            "decision_eligible": False, "affects": "none",
+        }
+        if not required.issubset(tables):
+            return empty
+        registration = connection.execute(
+            "SELECT * FROM token_universe_forward_registrations WHERE definition_version=?",
+            (cls.TOKEN_UNIVERSE_FORWARD_VERSION,),
+        ).fetchone()
+        if registration is None:
+            return empty
+        start = max(
+            parse_time(registration["registered_at"]),
+            utcnow() - timedelta(days=max(1, min(3650, int(lookback_days)))),
+        )
+        summary_row = connection.execute(
+            """
+            SELECT COUNT(*) AS cohorts,
+                   SUM(CASE WHEN b.status='observed' THEN 1 ELSE 0 END) AS baseline_observed,
+                   SUM(CASE WHEN b.status='missing' THEN 1 ELSE 0 END) AS baseline_missing,
+                   SUM(CASE WHEN b.cohort_id IS NULL THEN 1 ELSE 0 END) AS baseline_pending
+            FROM token_universe_forward_cohorts c
+            LEFT JOIN token_universe_forward_baselines b ON b.cohort_id=c.id
+            WHERE c.discovery_recorded_at>=?
+            """,
+            (iso(start),),
+        ).fetchone()
+        horizon_rows = connection.execute(
+            """
+            SELECT o.horizon_minutes,o.status,COUNT(*) AS count,
+                   SUM(o.candidate_by_target) AS candidate_count,
+                   SUM(o.paper_bought_by_target) AS paper_bought_count
+            FROM token_universe_forward_outcomes o
+            JOIN token_universe_forward_cohorts c ON c.id=o.cohort_id
+            WHERE c.discovery_recorded_at>=?
+            GROUP BY o.horizon_minutes,o.status
+            """,
+            (iso(start),),
+        ).fetchall()
+        cohorts = int(summary_row["cohorts"] or 0)
+        by_horizon: dict[int, dict[str, Any]] = {
+            horizon: {
+                "horizon_minutes": horizon, "pending": cohorts, "observed": 0,
+                "missing": 0, "baseline_missing": 0, "candidate_count": 0,
+                "paper_bought_count": 0,
+            }
+            for horizon in cls.TOKEN_UNIVERSE_HORIZONS_MINUTES
+        }
+        for row in horizon_rows:
+            item = by_horizon[int(row["horizon_minutes"])]
+            status = str(row["status"])
+            item[status] = int(row["count"] or 0)
+            item["pending"] -= int(row["count"] or 0)
+            item["candidate_count"] += int(row["candidate_count"] or 0)
+            item["paper_bought_count"] += int(row["paper_bought_count"] or 0)
+        tiers = [
+            {
+                "horizon_minutes": int(row["horizon_minutes"]),
+                "peak_return_tier": str(row["peak_return_tier"]),
+                "observed_count": int(row["observed_count"] or 0),
+                "candidate_count": int(row["candidate_count"] or 0),
+                "paper_bought_count": int(row["paper_bought_count"] or 0),
+                "candidate_recall": (
+                    float(row["candidate_count"] or 0) / int(row["observed_count"])
+                    if int(row["observed_count"] or 0) else None
+                ),
+                "paper_recall": (
+                    float(row["paper_bought_count"] or 0) / int(row["observed_count"])
+                    if int(row["observed_count"] or 0) else None
+                ),
+            }
+            for row in connection.execute(
+                """
+                SELECT o.horizon_minutes,o.peak_return_tier,COUNT(*) AS observed_count,
+                       SUM(o.candidate_by_target) AS candidate_count,
+                       SUM(o.paper_bought_by_target) AS paper_bought_count
+                FROM token_universe_forward_outcomes o
+                JOIN token_universe_forward_cohorts c ON c.id=o.cohort_id
+                WHERE c.discovery_recorded_at>=? AND o.status='observed'
+                GROUP BY o.horizon_minutes,o.peak_return_tier
+                ORDER BY o.horizon_minutes,o.peak_return_tier
+                """,
+                (iso(start),),
+            )
+        ]
+        surfaces = [
+            {
+                "provider": str(row["provider"]), "surface": str(row["surface"]),
+                "cohorts": int(row["cohorts"] or 0),
+                "baseline_observed": int(row["baseline_observed"] or 0),
+            }
+            for row in connection.execute(
+                """
+                SELECT c.provider,c.surface,COUNT(*) AS cohorts,
+                       SUM(CASE WHEN b.status='observed' THEN 1 ELSE 0 END) AS baseline_observed
+                FROM token_universe_forward_cohorts c
+                LEFT JOIN token_universe_forward_baselines b ON b.cohort_id=c.id
+                WHERE c.discovery_recorded_at>=?
+                GROUP BY c.provider,c.surface ORDER BY cohorts DESC,c.provider,c.surface
+                """,
+                (iso(start),),
+            )
+        ]
+        return {
+            "status": "collecting" if cohorts else "not_observed",
+            "version": cls.TOKEN_UNIVERSE_FORWARD_VERSION,
+            "registered_at": str(registration["registered_at"]),
+            "definition": json.loads(str(registration["definition_json"])),
+            "summary": {
+                "cohorts": cohorts,
+                "baseline_observed": int(summary_row["baseline_observed"] or 0),
+                "baseline_missing": int(summary_row["baseline_missing"] or 0),
+                "baseline_pending": int(summary_row["baseline_pending"] or 0),
+            },
+            "horizons": list(by_horizon.values()), "tiers": tiers, "surfaces": surfaces,
+            "decision_eligible": False, "affects": "none", "as_of": iso(),
+        }
 
     @classmethod
     def token_discovery_learning_summary_from_connection(

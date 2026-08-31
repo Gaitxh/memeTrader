@@ -2448,6 +2448,59 @@ class Runtime:
         self.store.finalize_information_first_shadow_outcomes()
         self.store.finalize_information_first_ilg_outcomes()
         self.store.finalize_attention_experiment_outcomes()
+        await self.token_universe_followup_once()
+
+    async def token_universe_followup_once(self) -> None:
+        """Actively quote only due full-universe forward checkpoints."""
+        self.store.finalize_token_universe_forward_outcomes()
+        due = self.store.due_token_universe_quotes(limit=180)
+        by_chain: dict[str, list[dict[str, Any]]] = {}
+        for item in due:
+            by_chain.setdefault(str(item["chain"]), []).append(item)
+        for chain, items in by_chain.items():
+            for offset in range(0, len(items), 30):
+                chunk = items[offset : offset + 30]
+                roles = sorted({str(item["role"]) for item in chunk})
+                surface = roles[0] if len(roles) == 1 else "universe_mixed"
+                round_id = self.store.start_token_discovery_round(
+                    provider="dexscreener", surface=surface, mode="batch_quote",
+                    chain_scope=chain,
+                )
+                try:
+                    quoted = await self.dex.batch_quote(
+                        chain,
+                        [str(item["token_id"]).split(":", 1)[1] for item in chunk],
+                    )
+                except Exception as exc:
+                    self.store.finish_token_discovery_round(
+                        round_id, status="error", requested_count=len(chunk),
+                        error_type=type(exc).__name__,
+                    )
+                    self._notify_source_error(f"dexscreener:{surface}", exc)
+                    continue
+                for item in chunk:
+                    token_id = str(item["token_id"])
+                    result = quoted.get(token_id)
+                    if result is None or result[0].token_id != token_id:
+                        self.store.add_token_discovery_exposure(
+                            round_id, token_id=token_id, chain=chain,
+                            role=str(item["role"]), no_pair=True,
+                        )
+                        continue
+                    token, snapshot = result
+                    self.store.upsert_token(token, seen_at=snapshot.observed_at)
+                    self.store.add_snapshot(snapshot)
+                    self.store.add_token_discovery_exposure(
+                        round_id, token_id=token_id, chain=chain,
+                        role=str(item["role"]), snapshot_count=1,
+                        observed_at=snapshot.observed_at,
+                    )
+                self.store.finish_token_discovery_round(
+                    round_id, status="completed", requested_count=len(chunk),
+                    returned_count=len(quoted),
+                    duplicate_token_count=max(0, len(chunk) - len(quoted)),
+                )
+        self.store.finalize_token_universe_forward_outcomes()
 
     async def pump_loop(self) -> None:
         cfg = self.config["sources"].get("pumpportal") or {}

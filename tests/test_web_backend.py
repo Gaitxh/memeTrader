@@ -926,7 +926,8 @@ def test_web_sources_exposes_forward_token_discovery_without_sensitive_fields(tm
     )
     store.close()
 
-    payload = WebData(config_path).sources()["token_discovery_learning"]
+    sources = WebData(config_path).sources()
+    payload = sources["token_discovery_learning"]
     assert payload["status"] == "collecting"
     assert payload["summary"]["completed"] == 1
     assert payload["summary"]["first_local_discovery_count"] == 1
@@ -934,6 +935,14 @@ def test_web_sources_exposes_forward_token_discovery_without_sensitive_fields(tm
     serialized = json.dumps(payload).lower()
     assert "password" not in serialized and "private_key" not in serialized
     assert "bridge_token" not in serialized and "https://" not in serialized
+    universe = sources["token_universe_forward"]
+    assert universe["status"] == "collecting"
+    assert universe["summary"]["cohorts"] == 1
+    assert universe["summary"]["baseline_pending"] == 1
+    assert universe["decision_eligible"] is False and universe["affects"] == "none"
+    universe_json = json.dumps(universe).lower()
+    assert "password" not in universe_json and "private_key" not in universe_json
+    assert "bridge_token" not in universe_json and "https://" not in universe_json
 
 
 def test_learning_closure_does_not_borrow_same_event_outcomes_from_other_source(tmp_path: Path):

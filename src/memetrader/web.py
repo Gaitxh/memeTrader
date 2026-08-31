@@ -206,6 +206,10 @@ EXPECTED_TABLES = {
     "token_context_outcomes",
     "token_discovery_exposures",
     "token_discovery_rounds",
+    "token_universe_forward_registrations",
+    "token_universe_forward_cohorts",
+    "token_universe_forward_baselines",
+    "token_universe_forward_outcomes",
     "token_snapshots",
     "tokens",
     "trades",
@@ -4710,6 +4714,14 @@ class WebData:
             "affects": "review_only_no_schedule_or_trading_effect",
             "cohort_definition": "first_local_discovery_at_or_after_version_activation",
         }
+        token_universe_forward: dict[str, Any] = {
+            "status": "not_observed",
+            "version": Store.TOKEN_UNIVERSE_FORWARD_VERSION,
+            "definition": Store._token_universe_forward_definition(),
+            "summary": {"cohorts": 0, "baseline_observed": 0, "baseline_missing": 0},
+            "horizons": [], "tiers": [], "surfaces": [],
+            "decision_eligible": False, "affects": "none",
+        }
         exposure: dict[str, Any] = {
             "status": "not_observed", "items": [],
             "summary": {"runs": 0, "completed_runs": 0, "lane_exposures": 0, "accepted_events": 0},
@@ -4867,6 +4879,17 @@ class WebData:
                     )
                 except (sqlite3.Error, TypeError, ValueError):
                     token_discovery_learning["status"] = "unavailable"
+                try:
+                    token_universe_forward = (
+                        Store.token_universe_forward_summary_from_connection(
+                            connection,
+                            lookback_days=int(
+                                autonomous_cfg.get("source_learning_lookback_days", 90)
+                            ),
+                        )
+                    )
+                except (sqlite3.Error, TypeError, ValueError):
+                    token_universe_forward["status"] = "unavailable"
                 try:
                     learning = Store.source_learning_summary_from_connection(
                         connection,
@@ -5311,6 +5334,7 @@ class WebData:
             "learning": learning,
             "source_poll_learning": source_poll_learning,
             "token_discovery_learning": token_discovery_learning,
+            "token_universe_forward": token_universe_forward,
             "trend_lanes": trend_lanes,
             "trend_attention_policy": trend_attention_policy,
             "watch_account_learning": watch_account_learning,

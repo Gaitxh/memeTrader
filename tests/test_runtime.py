@@ -62,8 +62,63 @@ def test_followup_tick_finalizes_event_and_token_context_without_agent_or_quote(
         runtime.store.finalize_token_context_outcomes = lambda: calls.append("token_context")
         runtime.store.finalize_information_first_shadow_outcomes = lambda: calls.append("information_first")
         runtime.store.finalize_information_first_ilg_outcomes = lambda: calls.append("information_first_ilg")
+        async def universe():
+            calls.append("token_universe")
+        runtime.token_universe_followup_once = universe
         await runtime.shadow_event_followup_once()
-        assert calls == ["event", "token_context", "information_first", "information_first_ilg"]
+        assert calls == [
+            "event", "token_context", "information_first", "information_first_ilg",
+            "token_universe",
+        ]
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_token_universe_followup_actively_quotes_due_baseline_without_trading(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        runtime = Runtime(config, tmp_path)
+        token = TokenCandidate(
+            chain="solana", address="V" * 32, name="Universe Quote", symbol="UVQ",
+            source="pumpportal:create",
+        )
+        runtime.store.upsert_token(token)
+        round_id = runtime.store.start_token_discovery_round(
+            provider="pumpportal", surface="create", mode="stream_window", chain_scope="solana",
+        )
+        runtime.store.add_token_discovery_exposure(
+            round_id, token_id=token.token_id, chain=token.chain, role="create",
+            first_local_discovery=True, new_token=True,
+        )
+        runtime.store.finish_token_discovery_round(
+            round_id, status="completed", returned_count=1,
+        )
+
+        async def batch_quote(chain, addresses):
+            assert chain == "solana" and addresses == [token.address]
+            snapshot = TokenSnapshot(
+                chain=token.chain, address=token.address, price_usd=0.01,
+                liquidity_usd=20_000, market_cap_usd=100_000,
+                volume_5m_usd=5_000, buys_5m=20, sells_5m=5,
+                observed_at=utcnow(), provider="dexscreener",
+            )
+            return {token.token_id: (token, snapshot)}
+
+        runtime.dex.batch_quote = batch_quote
+        await runtime.token_universe_followup_once()
+        baseline = runtime.store.db.execute(
+            "SELECT * FROM token_universe_forward_baselines"
+        ).fetchone()
+        assert baseline is not None and baseline["status"] == "observed"
+        followup_round = runtime.store.db.execute(
+            "SELECT * FROM token_discovery_rounds WHERE surface='universe_baseline'"
+        ).fetchone()
+        assert followup_round is not None and followup_round["snapshot_count"] == 1
+        assert runtime.store.db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == 0
+        assert runtime.store.db.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == 0
         await runtime.close()
 
     asyncio.run(scenario())
