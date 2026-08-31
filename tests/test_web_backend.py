@@ -688,6 +688,10 @@ def test_web_api_empty_database_is_safe_and_live_is_locked(tmp_path: Path):
     assert audit["policy_enforced"] is True
     assert audit["future_data_rejected"] is None
     assert all(item["status"] != "pass" for item in audit["cases"])
+    assert audit["missed_opportunity"]["status"] == "not_observed"
+    assert audit["missed_opportunity"]["summary"]["audited_outcomes"] == 0
+    assert audit["missed_opportunity"]["decision_eligible"] is False
+    assert audit["missed_opportunity"]["affects"] == "none"
     substitutions = audit["constraint_substitutions"]
     assert substitutions["version"] == "constraint-substitution-matrix/v1"
     assert substitutions["illegal_or_unsafe_bypass_allowed"] is False
@@ -924,6 +928,17 @@ def test_web_sources_exposes_forward_token_discovery_without_sensitive_fields(tm
     store.finish_token_discovery_round(
         round_id, status="completed", requested_count=1, returned_count=2,
     )
+    cohort = store.db.execute("SELECT * FROM token_universe_forward_cohorts").fetchone()
+    discovered = parse_time(cohort["discovery_recorded_at"])
+    for minutes, price in ((1, 1.0), (15, 1.4)):
+        when = iso(discovered + timedelta(minutes=minutes, seconds=10))
+        store.db.execute(
+            "INSERT INTO token_snapshots(token_id,observed_at,ingested_at,recorded_at,provider,price_usd,raw_json) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (cohort["token_id"], when, when, when, "forward-test", price, "{}"),
+        )
+    store.finalize_token_universe_forward_outcomes(now=discovered + timedelta(minutes=16))
+    store.finalize_missed_opportunity_audits()
     store.close()
 
     sources = WebData(config_path).sources()
@@ -938,11 +953,18 @@ def test_web_sources_exposes_forward_token_discovery_without_sensitive_fields(tm
     universe = sources["token_universe_forward"]
     assert universe["status"] == "collecting"
     assert universe["summary"]["cohorts"] == 1
-    assert universe["summary"]["baseline_pending"] == 1
+    assert universe["summary"]["baseline_observed"] == 1
     assert universe["decision_eligible"] is False and universe["affects"] == "none"
     universe_json = json.dumps(universe).lower()
     assert "password" not in universe_json and "private_key" not in universe_json
     assert "bridge_token" not in universe_json and "https://" not in universe_json
+    miss = WebData(config_path).audit()["missed_opportunity"]
+    assert miss["summary"]["audited_outcomes"] == 1
+    assert miss["summary"]["potential_misses"] == 1
+    assert miss["recent_potential_misses"][0]["funnel_breakpoint"] == "no_decision"
+    miss_json = json.dumps(miss).lower()
+    assert "password" not in miss_json and "private_key" not in miss_json
+    assert "bridge_token" not in miss_json and "https://" not in miss_json
 
 
 def test_learning_closure_does_not_borrow_same_event_outcomes_from_other_source(tmp_path: Path):

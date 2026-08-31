@@ -54,6 +54,7 @@ class Store:
     TOKEN_UNIVERSE_HORIZONS_MINUTES = (15, 60, 240)
     TOKEN_UNIVERSE_BASELINE_WINDOW_MINUTES = 5
     TOKEN_UNIVERSE_OUTCOME_GRACE_MINUTES = 30
+    MISSED_OPPORTUNITY_AUDIT_VERSION = "missed-opportunity-audit/v1"
     EVENT_ATTENTION_TRAJECTORY_VERSION = "event-attention-trajectory/v1"
     EVENT_CLAIM_ASSESSMENT_VERSION = "event-claim-assessment/v1"
     EVENT_CLAIM_RELATION_VERSION = "event-claim-relation/v1"
@@ -879,6 +880,49 @@ class Store:
                 CREATE TRIGGER IF NOT EXISTS token_universe_forward_outcomes_no_delete
                 BEFORE DELETE ON token_universe_forward_outcomes
                 BEGIN SELECT RAISE(ABORT,'token-universe forward outcomes are immutable'); END;
+                CREATE TABLE IF NOT EXISTS missed_opportunity_audit_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_outcome_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS missed_opportunity_audits (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    outcome_id INTEGER NOT NULL UNIQUE,
+                    cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    horizon_minutes INTEGER NOT NULL,
+                    target_at TEXT NOT NULL,
+                    outcome_status TEXT NOT NULL,
+                    raw_return REAL,
+                    maximum_return REAL,
+                    peak_return_tier TEXT,
+                    action_at_target TEXT NOT NULL,
+                    candidate_by_target INTEGER NOT NULL,
+                    paper_bought_by_target INTEGER NOT NULL,
+                    funnel_breakpoint TEXT NOT NULL,
+                    audit_class TEXT NOT NULL,
+                    audited_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0,
+                    affects TEXT NOT NULL DEFAULT 'none',
+                    FOREIGN KEY(outcome_id) REFERENCES token_universe_forward_outcomes(id),
+                    FOREIGN KEY(cohort_id) REFERENCES token_universe_forward_cohorts(id)
+                );
+                CREATE INDEX IF NOT EXISTS missed_opportunity_audits_horizon_idx
+                    ON missed_opportunity_audits(horizon_minutes,audit_class,funnel_breakpoint);
+                CREATE TRIGGER IF NOT EXISTS missed_opportunity_audit_registrations_no_update
+                BEFORE UPDATE ON missed_opportunity_audit_registrations
+                BEGIN SELECT RAISE(ABORT,'missed-opportunity registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS missed_opportunity_audit_registrations_no_delete
+                BEFORE DELETE ON missed_opportunity_audit_registrations
+                BEGIN SELECT RAISE(ABORT,'missed-opportunity registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS missed_opportunity_audits_no_update
+                BEFORE UPDATE ON missed_opportunity_audits
+                BEGIN SELECT RAISE(ABORT,'missed-opportunity audits are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS missed_opportunity_audits_no_delete
+                BEFORE DELETE ON missed_opportunity_audits
+                BEGIN SELECT RAISE(ABORT,'missed-opportunity audits are immutable'); END;
                 CREATE TABLE IF NOT EXISTS kv (
                     key TEXT PRIMARY KEY,
                     value_json TEXT NOT NULL,
@@ -1372,6 +1416,16 @@ class Store:
                     self.TOKEN_UNIVERSE_FORWARD_VERSION,
                     iso(),
                     self._json(self._token_universe_forward_definition()),
+                ),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO missed_opportunity_audit_registrations("
+                "definition_version,registered_at,activation_outcome_id,definition_json) "
+                "VALUES(?,?,COALESCE((SELECT MAX(id) FROM token_universe_forward_outcomes),0),?)",
+                (
+                    self.MISSED_OPPORTUNITY_AUDIT_VERSION,
+                    iso(),
+                    self._json(self._missed_opportunity_audit_definition()),
                 ),
             )
             self.db.execute(
@@ -6600,6 +6654,24 @@ class Store:
             "affects": "none",
         }
 
+    @classmethod
+    def _missed_opportunity_audit_definition(cls) -> dict[str, Any]:
+        return {
+            "version": cls.MISSED_OPPORTUNITY_AUDIT_VERSION,
+            "source": cls.TOKEN_UNIVERSE_FORWARD_VERSION,
+            "cohort": "every_new_token_universe_outcome_after_registration",
+            "no_historical_backfill": True,
+            "complete_denominator": ["observed", "baseline_missing", "missing"],
+            "potential_opportunity_rule": "sampled_path_max_return_gte_25pct",
+            "sampled_path_is_not_market_ath": True,
+            "breakpoints": [
+                "no_entry_snapshot", "no_outcome_snapshot", "no_decision", "wait",
+                "reject", "candidate_no_paper_buy", "paper_bought",
+            ],
+            "decision_eligible": False,
+            "affects": "none",
+        }
+
     @staticmethod
     def _token_universe_peak_tier(value: float) -> str:
         if value >= 3.0:
@@ -7033,6 +7105,190 @@ class Store:
             },
             "horizons": list(by_horizon.values()), "tiers": tiers, "surfaces": surfaces,
             "decision_eligible": False, "affects": "none", "as_of": iso(),
+        }
+
+    def finalize_missed_opportunity_audits(self) -> dict[str, int]:
+        """Append a denominator-complete, research-only audit of new universe outcomes."""
+        audited_at = iso()
+        inserted = potential_misses = 0
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT * FROM missed_opportunity_audit_registrations "
+                "WHERE definition_version=?",
+                (self.MISSED_OPPORTUNITY_AUDIT_VERSION,),
+            ).fetchone()
+            if registration is None:
+                return {"inserted": 0, "potential_misses": 0}
+            rows = self.db.execute(
+                """
+                SELECT o.*,c.token_id FROM token_universe_forward_outcomes o
+                JOIN token_universe_forward_cohorts c ON c.id=o.cohort_id
+                LEFT JOIN missed_opportunity_audits a ON a.outcome_id=o.id
+                WHERE o.id>? AND a.id IS NULL
+                ORDER BY o.id
+                """,
+                (int(registration["activation_outcome_id"]),),
+            ).fetchall()
+            for row in rows:
+                status = str(row["status"])
+                action = str(row["best_action_at_target"] or "NONE").upper()
+                if status == "baseline_missing":
+                    breakpoint = "no_entry_snapshot"
+                elif status != "observed":
+                    breakpoint = "no_outcome_snapshot"
+                elif int(row["paper_bought_by_target"] or 0):
+                    breakpoint = "paper_bought"
+                elif action == "CANDIDATE":
+                    breakpoint = "candidate_no_paper_buy"
+                elif action == "WAIT":
+                    breakpoint = "wait"
+                elif action == "REJECT":
+                    breakpoint = "reject"
+                else:
+                    breakpoint = "no_decision"
+                if status != "observed":
+                    audit_class = "outcome_unavailable"
+                elif float(row["maximum_return"] or 0.0) < 0.25:
+                    audit_class = "non_opportunity_observed"
+                elif breakpoint == "paper_bought":
+                    audit_class = "captured_paper"
+                else:
+                    audit_class = "potential_miss"
+                    potential_misses += 1
+                self.db.execute(
+                    """
+                    INSERT INTO missed_opportunity_audits(
+                        definition_version,outcome_id,cohort_id,token_id,horizon_minutes,
+                        target_at,outcome_status,raw_return,maximum_return,peak_return_tier,
+                        action_at_target,candidate_by_target,paper_bought_by_target,
+                        funnel_breakpoint,audit_class,audited_at,decision_eligible,affects
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'none')
+                    """,
+                    (
+                        self.MISSED_OPPORTUNITY_AUDIT_VERSION, int(row["id"]),
+                        int(row["cohort_id"]), str(row["token_id"]),
+                        int(row["horizon_minutes"]), str(row["target_at"]), status,
+                        row["raw_return"], row["maximum_return"], row["peak_return_tier"],
+                        action, int(row["candidate_by_target"] or 0),
+                        int(row["paper_bought_by_target"] or 0), breakpoint,
+                        audit_class, audited_at,
+                    ),
+                )
+                inserted += 1
+        return {"inserted": inserted, "potential_misses": potential_misses}
+
+    @classmethod
+    def missed_opportunity_audit_summary_from_connection(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        recent_limit: int = 20,
+    ) -> dict[str, Any]:
+        required = {
+            "missed_opportunity_audit_registrations", "missed_opportunity_audits",
+        }
+        tables = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        empty = {
+            "status": "not_observed", "version": cls.MISSED_OPPORTUNITY_AUDIT_VERSION,
+            "definition": cls._missed_opportunity_audit_definition(),
+            "summary": {"audited_outcomes": 0, "potential_misses": 0},
+            "horizons": [], "breakpoints": [], "classes": [], "recent_potential_misses": [],
+            "decision_eligible": False, "affects": "none",
+        }
+        if not required.issubset(tables):
+            return empty
+        registration = connection.execute(
+            "SELECT * FROM missed_opportunity_audit_registrations WHERE definition_version=?",
+            (cls.MISSED_OPPORTUNITY_AUDIT_VERSION,),
+        ).fetchone()
+        if registration is None:
+            return empty
+        summary = connection.execute(
+            """
+            SELECT COUNT(*) AS audited_outcomes,
+                   SUM(CASE WHEN audit_class='potential_miss' THEN 1 ELSE 0 END) AS potential_misses,
+                   SUM(CASE WHEN audit_class='captured_paper' THEN 1 ELSE 0 END) AS captured_paper,
+                   SUM(CASE WHEN audit_class='outcome_unavailable' THEN 1 ELSE 0 END) AS unavailable
+            FROM missed_opportunity_audits WHERE definition_version=?
+            """,
+            (cls.MISSED_OPPORTUNITY_AUDIT_VERSION,),
+        ).fetchone()
+
+        def grouped(column: str) -> list[dict[str, Any]]:
+            return [
+                {column: row[column], "count": int(row["count"] or 0)}
+                for row in connection.execute(
+                    f"SELECT {column},COUNT(*) AS count FROM missed_opportunity_audits "
+                    "WHERE definition_version=? GROUP BY " + column + " ORDER BY count DESC," + column,
+                    (cls.MISSED_OPPORTUNITY_AUDIT_VERSION,),
+                )
+            ]
+
+        horizons = [
+            {
+                "horizon_minutes": int(row["horizon_minutes"]),
+                "audited_outcomes": int(row["audited_outcomes"] or 0),
+                "observed": int(row["observed"] or 0),
+                "unavailable": int(row["unavailable"] or 0),
+                "potential_misses": int(row["potential_misses"] or 0),
+                "captured_paper": int(row["captured_paper"] or 0),
+            }
+            for row in connection.execute(
+                """
+                SELECT horizon_minutes,COUNT(*) AS audited_outcomes,
+                       SUM(CASE WHEN outcome_status='observed' THEN 1 ELSE 0 END) AS observed,
+                       SUM(CASE WHEN audit_class='outcome_unavailable' THEN 1 ELSE 0 END) AS unavailable,
+                       SUM(CASE WHEN audit_class='potential_miss' THEN 1 ELSE 0 END) AS potential_misses,
+                       SUM(CASE WHEN audit_class='captured_paper' THEN 1 ELSE 0 END) AS captured_paper
+                FROM missed_opportunity_audits WHERE definition_version=?
+                GROUP BY horizon_minutes ORDER BY horizon_minutes
+                """,
+                (cls.MISSED_OPPORTUNITY_AUDIT_VERSION,),
+            )
+        ]
+        recent = [
+            {
+                "token_id": str(row["token_id"]),
+                "horizon_minutes": int(row["horizon_minutes"]),
+                "target_at": str(row["target_at"]),
+                "maximum_return": float(row["maximum_return"]),
+                "peak_return_tier": str(row["peak_return_tier"]),
+                "action_at_target": str(row["action_at_target"]),
+                "funnel_breakpoint": str(row["funnel_breakpoint"]),
+            }
+            for row in connection.execute(
+                """
+                SELECT token_id,horizon_minutes,target_at,maximum_return,peak_return_tier,
+                       action_at_target,funnel_breakpoint
+                FROM missed_opportunity_audits
+                WHERE definition_version=? AND audit_class='potential_miss'
+                ORDER BY audited_at DESC,id DESC LIMIT ?
+                """,
+                (cls.MISSED_OPPORTUNITY_AUDIT_VERSION, max(1, min(100, int(recent_limit)))),
+            )
+        ]
+        total = int(summary["audited_outcomes"] or 0)
+        return {
+            "status": "collecting" if total else "not_observed",
+            "version": cls.MISSED_OPPORTUNITY_AUDIT_VERSION,
+            "registered_at": str(registration["registered_at"]),
+            "definition": json.loads(str(registration["definition_json"])),
+            "summary": {
+                "audited_outcomes": total,
+                "potential_misses": int(summary["potential_misses"] or 0),
+                "captured_paper": int(summary["captured_paper"] or 0),
+                "outcome_unavailable": int(summary["unavailable"] or 0),
+            },
+            "horizons": horizons,
+            "breakpoints": grouped("funnel_breakpoint"),
+            "classes": grouped("audit_class"),
+            "recent_potential_misses": recent,
+            "decision_eligible": False,
+            "affects": "none",
+            "as_of": iso(),
         }
 
     @classmethod

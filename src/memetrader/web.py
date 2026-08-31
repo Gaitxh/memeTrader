@@ -210,6 +210,8 @@ EXPECTED_TABLES = {
     "token_universe_forward_cohorts",
     "token_universe_forward_baselines",
     "token_universe_forward_outcomes",
+    "missed_opportunity_audit_registrations",
+    "missed_opportunity_audits",
     "token_snapshots",
     "tokens",
     "trades",
@@ -5363,6 +5365,13 @@ class WebData:
         }
         starlink: dict[str, Any] = {"event_id": 360, "present": False}
         recent_decisions: list[dict[str, Any]] = []
+        missed_opportunity = {
+            "status": "not_observed",
+            "version": Store.MISSED_OPPORTUNITY_AUDIT_VERSION,
+            "summary": {"audited_outcomes": 0, "potential_misses": 0},
+            "horizons": [], "breakpoints": [], "classes": [],
+            "recent_potential_misses": [], "decision_eligible": False, "affects": "none",
+        }
         with self.connect() as connection:
             if connection is not None and self._table_exists(connection, "observations"):
                 counts["observations"] = int(connection.execute("SELECT COUNT(*) FROM observations").fetchone()[0])
@@ -5417,6 +5426,9 @@ class WebData:
                         "next_check_at": self._kv(connection, "event_decision_next:360"),
                     }
             if connection is not None:
+                missed_opportunity = Store.missed_opportunity_audit_summary_from_connection(
+                    connection
+                )
                 recent_decisions = self._decision_rows(connection, "1=1", [], 20, 0)
                 for decision in recent_decisions:
                     event_id = int(decision["event_id"])
@@ -5526,6 +5538,7 @@ class WebData:
             "cases": cases,
             "observation_counts": counts,
             "recent_decision_evidence": recent_decisions,
+            "missed_opportunity": missed_opportunity,
             "status": overall_status,
             "policy_enforced": True,
             "future_data_rejected": True if future_observed else None,

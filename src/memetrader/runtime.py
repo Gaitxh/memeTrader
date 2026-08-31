@@ -2449,6 +2449,7 @@ class Runtime:
         self.store.finalize_information_first_ilg_outcomes()
         self.store.finalize_attention_experiment_outcomes()
         await self.token_universe_followup_once()
+        self.store.finalize_missed_opportunity_audits()
 
     async def token_universe_followup_once(self) -> None:
         """Actively quote only due full-universe forward checkpoints."""

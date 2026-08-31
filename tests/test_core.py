@@ -734,6 +734,8 @@ def test_full_token_universe_forward_outcomes_are_complete_and_immutable(tmp_pat
     store.finalize_token_universe_forward_outcomes(now=discovered + timedelta(minutes=16))
     store.finalize_token_universe_forward_outcomes(now=discovered + timedelta(minutes=61))
     store.finalize_token_universe_forward_outcomes(now=discovered + timedelta(minutes=241))
+    audit_result = store.finalize_missed_opportunity_audits()
+    assert audit_result == {"inserted": 6, "potential_misses": 3}
 
     outcomes = store.db.execute(
         "SELECT * FROM token_universe_forward_outcomes WHERE cohort_id=? ORDER BY horizon_minutes",
@@ -758,11 +760,84 @@ def test_full_token_universe_forward_outcomes_are_complete_and_immutable(tmp_pat
     assert summary["summary"]["baseline_observed"] == 1
     assert summary["summary"]["baseline_missing"] == 1
     assert summary["decision_eligible"] is False and summary["affects"] == "none"
+    miss = store.missed_opportunity_audit_summary_from_connection(store.db)
+    assert miss["summary"] == {
+        "audited_outcomes": 6,
+        "potential_misses": 3,
+        "captured_paper": 0,
+        "outcome_unavailable": 3,
+    }
+    assert {row["funnel_breakpoint"]: row["count"] for row in miss["breakpoints"]} == {
+        "candidate_no_paper_buy": 2,
+        "no_entry_snapshot": 3,
+        "wait": 1,
+    }
+    assert miss["decision_eligible"] is False and miss["affects"] == "none"
+    assert store.finalize_missed_opportunity_audits()["inserted"] == 0
     with pytest.raises(sqlite3.IntegrityError):
         store.db.execute(
             "UPDATE token_universe_forward_outcomes SET status='observed' WHERE cohort_id=?",
             (int(cohort["id"]),),
         )
+    audit_id = store.db.execute("SELECT id FROM missed_opportunity_audits LIMIT 1").fetchone()[0]
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute(
+            "UPDATE missed_opportunity_audits SET audit_class='captured_paper' WHERE id=?",
+            (audit_id,),
+        )
+    store.close()
+
+
+def test_missed_opportunity_audit_registration_never_backfills_existing_outcomes(tmp_path: Path):
+    database = tmp_path / "miss-registration.sqlite3"
+    store = Store(database, initial_cash_usd=1000)
+    token = TokenCandidate(chain="solana", address="M" * 32, name="Miss", symbol="MISS")
+    store.upsert_token(token)
+    round_id = store.start_token_discovery_round(
+        provider="pumpportal", surface="create", mode="stream_window", chain_scope="solana",
+    )
+    store.add_token_discovery_exposure(
+        round_id, token_id=token.token_id, chain=token.chain, role="create",
+        first_local_discovery=True, new_token=True,
+    )
+    store.finish_token_discovery_round(round_id, status="completed", returned_count=1)
+    cohort = store.db.execute("SELECT * FROM token_universe_forward_cohorts").fetchone()
+    discovered = parse_time(cohort["discovery_recorded_at"])
+    for minutes, price in ((1, 1.0), (15, 1.5)):
+        when = iso(discovered + timedelta(minutes=minutes, seconds=10))
+        store.db.execute(
+            "INSERT INTO token_snapshots(token_id,observed_at,ingested_at,recorded_at,provider,price_usd,raw_json) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (token.token_id, when, when, when, "forward-test", price, "{}"),
+        )
+    store.finalize_token_universe_forward_outcomes(now=discovered + timedelta(minutes=16))
+    old_outcome_id = int(
+        store.db.execute("SELECT MAX(id) FROM token_universe_forward_outcomes").fetchone()[0]
+    )
+    store.close()
+
+    raw = sqlite3.connect(database)
+    raw.execute("DROP TRIGGER missed_opportunity_audit_registrations_no_delete")
+    raw.execute("DELETE FROM missed_opportunity_audit_registrations")
+    raw.commit()
+    raw.close()
+
+    store = Store(database, initial_cash_usd=1000)
+    registration = store.db.execute(
+        "SELECT * FROM missed_opportunity_audit_registrations"
+    ).fetchone()
+    assert int(registration["activation_outcome_id"]) == old_outcome_id
+    assert store.finalize_missed_opportunity_audits()["inserted"] == 0
+    when = iso(discovered + timedelta(minutes=60, seconds=10))
+    store.db.execute(
+        "INSERT INTO token_snapshots(token_id,observed_at,ingested_at,recorded_at,provider,price_usd,raw_json) "
+        "VALUES(?,?,?,?,?,?,?)",
+        (token.token_id, when, when, when, "forward-test", 2.0, "{}"),
+    )
+    store.finalize_token_universe_forward_outcomes(now=discovered + timedelta(minutes=61))
+    assert store.finalize_missed_opportunity_audits() == {
+        "inserted": 1, "potential_misses": 1,
+    }
     store.close()
 
 
