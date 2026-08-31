@@ -1325,6 +1325,10 @@ class Runtime:
 
     async def ingest_token(self, token: TokenCandidate) -> bool:
         token_created = self.store.upsert_token(token)
+        if token.chain.lower() in {
+            str(chain).lower() for chain in self.config["candidate"].get("chains", [])
+        }:
+            self.store.enqueue_token_detail_hydration(token.chain, token.address)
         self.store.heartbeat(token.source or "onchain", item=token_created)
         if token_created and self.config["notifications"].get("notify_new_tokens", False):
             self.notifier.send(

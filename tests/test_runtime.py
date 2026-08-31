@@ -241,14 +241,14 @@ def test_gecko_poll_records_first_duplicate_and_error_rounds(tmp_path, monkeypat
         config["bridge"]["enabled"] = False
         runtime = Runtime(config, tmp_path)
         token = TokenCandidate(
-            chain="solana", address="G" * 32, name="Gecko Discovery", source="geckoterminal:solana"
+            chain="bsc", address="0x" + "1" * 40, name="Gecko Discovery", source="geckoterminal:bsc"
         )
 
         class Gecko:
             calls = 0
 
             def __init__(self, http, network):
-                assert network == "solana"
+                assert network == "bsc"
 
             async def poll(self):
                 Gecko.calls += 1
@@ -257,9 +257,9 @@ def test_gecko_poll_records_first_duplicate_and_error_rounds(tmp_path, monkeypat
                 return [token] if Gecko.calls <= 2 else []
 
         monkeypatch.setattr("memetrader.runtime.GeckoNewPoolsCollector", Gecko)
-        await runtime._poll_gecko_network("solana")
-        await runtime._poll_gecko_network("solana")
-        await runtime._poll_gecko_network("solana")
+        await runtime._poll_gecko_network("bsc")
+        await runtime._poll_gecko_network("bsc")
+        await runtime._poll_gecko_network("bsc")
         rows = runtime.store.db.execute(
             "SELECT * FROM token_discovery_rounds ORDER BY id"
         ).fetchall()
@@ -269,6 +269,8 @@ def test_gecko_poll_records_first_duplicate_and_error_rounds(tmp_path, monkeypat
         assert rows[1]["duplicate_token_count"] == 1
         assert rows[2]["error_type"] == "TimeoutError"
         assert "provider detail" not in json.dumps([dict(row) for row in rows])
+        hydration = runtime.store.token_detail_hydration(token.token_id)
+        assert hydration["status"] == "pending" and hydration["chain"] == "bsc"
         await runtime.close()
 
     asyncio.run(scenario())
