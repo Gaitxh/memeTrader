@@ -1158,24 +1158,31 @@ def test_reverse_news_only_runs_for_tokens_with_real_momentum(tmp_path, monkeypa
         )
         runtime = Runtime(config, tmp_path)
         quiet = TokenCandidate(chain="solana", address="Q" * 32, name="Quiet Token", symbol="QUIET")
-        active = TokenCandidate(chain="solana", address="A" * 32, name="Luce", symbol="LUCE")
+        active = TokenCandidate(chain="bsc", address="0x" + "2" * 40, name="Luce", symbol="LUCE")
         generic = TokenCandidate(chain="solana", address="G" * 32, name="Gang", symbol="GANG")
         runtime.store.upsert_token(quiet)
         runtime.store.upsert_token(active)
         runtime.store.upsert_token(generic)
 
         class FakeDex:
-            async def quote(self, chain, address):
-                if address == active.address:
-                    token = active
-                    snapshot = TokenSnapshot(chain, address, 1, 50000, 1000000, 30000, 120, 30)
-                elif address == generic.address:
-                    token = generic
-                    snapshot = TokenSnapshot(chain, address, 1, 50000, 1000000, 30000, 120, 30)
-                else:
-                    token = quiet
-                    snapshot = TokenSnapshot(chain, address, 1, 1000, 10000, 10, 1, 1)
-                return token, snapshot
+            def __init__(self):
+                self.calls = []
+
+            async def batch_quote(self, chain, addresses):
+                self.calls.append((chain, list(addresses)))
+                result = {}
+                for address in addresses:
+                    token = active if address == active.address else quiet
+                    snapshot = TokenSnapshot(
+                        chain, address, 1,
+                        50000 if token is active else 1000,
+                        1000000 if token is active else 10000,
+                        30000 if token is active else 10,
+                        120 if token is active else 1,
+                        30 if token is active else 1,
+                    )
+                    result[token.token_id] = (token, snapshot)
+                return result
 
         queried = []
 
@@ -1187,13 +1194,16 @@ def test_reverse_news_only_runs_for_tokens_with_real_momentum(tmp_path, monkeypa
             async def poll(self):
                 return []
 
-        runtime.dex = FakeDex()
+        dex = FakeDex()
+        runtime.dex = dex
         monkeypatch.setattr("memetrader.runtime.RSSCollector", FakeRSS)
         await runtime.reverse_news_once()
         assert queried == ["google-news-reverse"]
         assert runtime.store.latest_snapshot(active.token_id) is not None
         assert runtime.store.latest_snapshot(quiet.token_id) is not None
         assert runtime.store.latest_snapshot(generic.token_id) is None
+        assert {chain for chain, _ in dex.calls} == {"solana", "bsc"}
+        assert sum(len(addresses) for _, addresses in dex.calls) == 2
         await runtime.close()
 
     asyncio.run(scenario())

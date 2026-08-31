@@ -1919,10 +1919,9 @@ class Runtime:
             ),
             reverse=True,
         )
-        scanned = 0
-
+        probe_candidates: list[TokenCandidate] = []
         for token in tokens:
-            if scanned >= max_scanned:
+            if len(probe_candidates) >= max_scanned:
                 break
             query = " ".join(part for part in [token.name, token.symbol] if part).strip()
             if len(query) < 3 or not is_context_searchable_token_name(token.name or token.symbol):
@@ -1936,12 +1935,34 @@ class Runtime:
             if last_probe and now - parse_time(last_probe) < timedelta(seconds=probe_cooldown):
                 continue
             self.store.set_kv(probe_key, iso(now))
-            scanned += 1
-            try:
-                quoted = await self.dex.quote(token.chain, token.address)
-            except Exception as exc:
-                self._notify_source_error(f"reverse-quote:{token.token_id}", exc)
-                continue
+            probe_candidates.append(token)
+
+        quoted_by_token: dict[str, tuple[TokenCandidate, TokenSnapshot]] = {}
+        if hasattr(self.dex, "batch_quote"):
+            by_chain: dict[str, list[TokenCandidate]] = {}
+            for token in probe_candidates:
+                by_chain.setdefault(token.chain, []).append(token)
+            for chain, chain_tokens in by_chain.items():
+                try:
+                    quoted_by_token.update(
+                        await self.dex.batch_quote(
+                            chain, [token.address for token in chain_tokens]
+                        )
+                    )
+                except Exception as exc:
+                    self._notify_source_error(f"reverse-quote:{chain}", exc)
+        else:
+            for token in probe_candidates:
+                try:
+                    quoted = await self.dex.quote(token.chain, token.address)
+                except Exception as exc:
+                    self._notify_source_error(f"reverse-quote:{token.token_id}", exc)
+                    continue
+                if quoted:
+                    quoted_by_token[token.token_id] = quoted
+
+        for token in probe_candidates:
+            quoted = quoted_by_token.get(token.token_id)
             if not quoted:
                 continue
             quoted_token, snap = quoted
