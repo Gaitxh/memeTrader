@@ -31,6 +31,7 @@
 - [../PAPER_FORWARD_EXECUTION_CN.md](../PAPER_FORWARD_EXECUTION_CN.md)：Paper 禁止未来数据/回填、追加式账户曲线、模拟执行成本和未来 Live 的独立发布门。
 - [../PAPER_STRATEGY_FORWARD_LEARNING_CN.md](../PAPER_STRATEGY_FORWARD_LEARNING_CN.md)：热度/人物/社区/链上条件与入场、分批止盈、runner 的前向 cohort 和预注册 Paper 对照实验边界。
 - [../TOKEN_CONTEXT_FORWARD_LEARNING_CN.md](../TOKEN_CONTEXT_FORWARD_LEARNING_CN.md)：Token Context 五轨 assessment 的冻结标签、15/60/240 分钟无回填结果和描述性成熟门。
+- [../INFORMATION_FIRST_X_REVIEW_20260831_CN.md](../INFORMATION_FIRST_X_REVIEW_20260831_CN.md)：用户补充的 X 账号、历史案例与“信息先于价格”假设的事实审阅、已修正边界和未实现研究项。
 
 ## 一句话产品定义
 

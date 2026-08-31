@@ -68,3 +68,39 @@ def test_telegram_catalog_entries_remain_manual_discovery_only():
 
     assert len(telegram) == 2
     assert all(source["automation"] == expected for source in telegram)
+
+
+def test_20260831_x_candidates_replace_stale_handle_and_keep_risky_accounts_deferred():
+    catalog = load_catalog()
+    sources = catalog["sources"]
+    x_by_handle = {
+        source["handle"].casefold(): source
+        for source in sources
+        if source["platform"] == "x"
+    }
+
+    assert "@coinbaseassets" not in x_by_handle
+    assert x_by_handle["@coinbasemarkets"]["enabled_default"] is True
+    assert x_by_handle["@robinhoodapp"]["verification_status"] == "official_site_verified"
+    assert x_by_handle["@upbitglobal"]["verification_status"] == "official_site_verified"
+    assert x_by_handle["@official_upbit"]["verification_status"] == "official_site_verified"
+    assert x_by_handle["@upbitglobal"]["entity_id"] == x_by_handle["@official_upbit"]["entity_id"]
+    assert catalog["superseded_handles"] == [
+        {
+            "platform": "x",
+            "handle": "@CoinbaseAssets",
+            "replacement": "@CoinbaseMarkets",
+            "reason": "Coinbase consolidated listing announcements into @CoinbaseMarkets in 2025",
+            "verification_url": "https://www.coinbase.com/blog/coinbase-markets-on-x-your-new-home-for-all-listings",
+        }
+    ]
+    assert x_by_handle["@aixbt_agent"]["priority"] == 2
+    assert x_by_handle["@aixbt_agent"]["default_role"] == "promotion_or_discovery"
+    for handle in (
+        "@stoolpresidente", "@iggyazalea", "@blknoiz06", "@muststopmurad",
+        "@lucanetz", "@justinsuntron", "@cobratate", "@phillipbankss",
+    ):
+        assert x_by_handle[handle]["enabled_default"] is False
+        assert x_by_handle[handle]["default_role"] in {
+            "promotion_or_discovery", "promotion_or_identity", "identity_or_discovery",
+        }

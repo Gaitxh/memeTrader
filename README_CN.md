@@ -49,7 +49,7 @@ Bluesky 公共搜索接口在部分网络会返回 403。本机配置遇到这�
 
 浏览器扩展不读取 Cookie、密码、私信或浏览器历史，不自动滚动、点赞、发帖或登录。它只能看到实际打开并加载的公开页面。因此实际使用时，建议常驻少量高价值页面：名人/项目官方账号、X Lists、Truth Social 账号页、Reddit/Bluesky 重点社区。Telegram 链接只能由用户按需人工打开。
 
-项目同时维护一份可审查、可版本控制的 [82 条公开社交信息源目录](docs/SOCIAL_SOURCE_CATALOG.json)，覆盖 X、Truth Social、YouTube、Instagram、TikTok、Threads、Bluesky、Telegram 和 Reddit；分类、优先级与跨平台去重原则见 [目录说明](docs/SOCIAL_SOURCE_CATALOG_CN.md)。这只是候选种子，不是每轮扫描全部账号，也不使账号内容自动具备决策资格。Trump、Elon Musk、CZ 等少量高影响实体使用 `critical` 观察轮换标签；最多保留 4 个 critical 账号槽位，且该标签不提高权威、证据角色、热度或决策资格。实际启用的当前观察清单由用户导入/选择后保存在 Git 忽略的 `data/web_console/console_settings.json`，可以与目录版本不同。
+项目同时维护一份可审查、可版本控制的 [107 条公开社交信息源目录](docs/SOCIAL_SOURCE_CATALOG.json)，覆盖 X、Truth Social、YouTube、Instagram、TikTok、Threads、Bluesky、Telegram 和 Reddit；分类、优先级与跨平台去重原则见 [目录说明](docs/SOCIAL_SOURCE_CATALOG_CN.md)。这只是候选种子，不是每轮扫描全部账号，也不使账号内容自动具备决策资格。Trump、Elon Musk、CZ 等少量高影响实体使用 `critical` 观察轮换标签；最多保留 4 个 critical 账号槽位，且该标签不提高权威、证据角色、热度或决策资格。实际启用的当前观察清单由用户导入/选择后保存在 Git 忽略的 `data/web_console/console_settings.json`，可以与目录版本不同。
 
 ## Windows 安装
 

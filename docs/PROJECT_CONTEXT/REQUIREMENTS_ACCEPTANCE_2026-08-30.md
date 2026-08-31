@@ -164,3 +164,11 @@
 - 当日实测 Token Context 最多使用约 47/96 次调用和 3.24M/50M token；没有新的 `daily_token_reserve_exceeded` 或 `daily_call_limit_reached`。本轮不盲目继续抬高预算，保留有限上限、冷却、退避与最多两个并发 Agent；只有再次出现真实预算阻塞且触发质量合格时才调整。
 - 结论仍是“核心产品可用、长期前向学习持续进行”，不是全部累积需求已经完成。X 精确账号桥接样本、固定公网域名、Devnet signature、通用事实冲突升级、Paper Phase 2 与 Mainnet Broker 仍分别属于外部步骤、待实现或明确锁定项。
 - “热点信息可能先于价格”已落成独立早期入口：本机浏览器桥精确实收的高影响力账号原帖，或新鲜高 attention 且与 Token 高匹配的 WAIT/CANDIDATE 事件关系，可在市值、成交量和 momentum 尚低时直接准入 Token Context。该入口只启动调查，不绕过同名碰瓷、未来时间、身份/推广角色、CA、独立来源、安全与流动性门，也不因人物或叙事标签直接交易。链上动量仍作为并行发现面，而不是唯一前置条件。
+
+## 13. 2026-08-31 X 账号与 information-first 补充审阅
+
+- 用户给出的 S+/S/A 名单已按“候选假设”处理，没有导入为 alpha 权重。目录新增 25 个 X 候选并补齐 Upbit 韩国官方账号；高利益冲突、喊单或归属待核验账号默认禁用，新增账号不占 critical。
+- Coinbase 2025 年已把上市公告迁移至 `@CoinbaseMarkets`，因此保留旧 `@CoinbaseAssets` 的 replacement 审计记录而不启用。Upbit 的 `@Official_Upbit` 与 `@UpbitGlobal` 分别对应韩国与新加坡，不能混用。
+- 案例审阅同时保留正例和反例：Musk 帖子既有 JIMOTHY 强反应，也有 DOGE 无反应；CATE/GOAT 说明事件后 Token 也可能传播；Portnoy、Milei、人物否认和 Pokémon 账号失窃说明影响力也会放大操纵与错误。
+- 确定性修正已经落地：Agent 不能再把原始 canonical 分差抬到门槛；事件后创建 Token 不再获得对称时间奖励。歧义保持 `WAIT`。
+- ILG、attention acceleration、unique buyer/资金聚类、holder concentration、image similarity、显式 account quarantine 和独立 information-first cohort 尚未实现；现有数据不能支持这些指标。详见 [信息先行审阅](../INFORMATION_FIRST_X_REVIEW_20260831_CN.md)。

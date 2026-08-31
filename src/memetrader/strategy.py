@@ -934,8 +934,8 @@ class CandidateEvaluator:
         if snap.market_cap_usd and event.attention >= 40:
             gap = event.attention / max(1.0, math.log10(snap.market_cap_usd + 10.0) * 10.0)
             score += min(5.0, gap * 5.0)
-        if token.created_at:
-            delta = abs((token.created_at - event.first_seen_at).total_seconds()) / 60.0
+        if token.created_at and token.created_at <= event.first_seen_at:
+            delta = (event.first_seen_at - token.created_at).total_seconds() / 60.0
             score += max(0.0, 5.0 - min(5.0, delta / 30.0))
         reasons.extend([f"liquidity={liquidity:.0f}", f"volume_5m={volume:.0f}", f"tx_5m={tx}"])
         return min(100.0, score), reasons
@@ -1200,7 +1200,6 @@ class CandidateEvaluator:
         margin = raw_margin
         if agent_resolution:
             preferred, confidence, tier = agent_resolution
-            margin = max(raw_margin, min_margin)
             reasons = [
                 *reasons,
                 f"agent_tiebreak={tier}",

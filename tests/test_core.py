@@ -2625,7 +2625,7 @@ def test_verified_token_context_link_excludes_unlinked_name_clone(tmp_path: Path
 
 
 
-def test_budgeted_agent_can_resolve_only_a_close_semantic_tie(tmp_path: Path):
+def test_budgeted_agent_cannot_manufacture_canonical_certainty_from_a_tie(tmp_path: Path):
     async def scenario():
         store = Store(tmp_path / "db.sqlite3")
         engine = EventEngine(store)
@@ -2688,9 +2688,10 @@ def test_budgeted_agent_can_resolve_only_a_close_semantic_tie(tmp_path: Path):
             agent,
         )
         decision = await evaluator.discover_and_decide(event)
-        assert decision is not None and decision.action == "CANDIDATE"
+        assert decision is not None and decision.action == "WAIT"
         assert decision.token_id == second.token_id
-        assert decision.canonical_margin == 5
+        assert decision.canonical_margin == 0
+        assert decision.rejected_reasons == ["canonical_token_ambiguous"]
         assert agent.tier == "medium"
         assert "agent_tiebreak=medium" in decision.reasons
         ranking = store.candidate_ranking(event_id)
@@ -2700,7 +2701,7 @@ def test_budgeted_agent_can_resolve_only_a_close_semantic_tie(tmp_path: Path):
         assert [item["token_id"] for item in ranking["candidates"]] == [second.token_id, first.token_id]
         assert ranking["candidates"][0]["action"] == "PENDING_RUNTIME"
         assert ranking["candidates"][1]["action"] == "NOT_SELECTED"
-        assert ranking["candidates"][0]["canonical_margin"] == 5
+        assert ranking["candidates"][0]["canonical_margin"] == 0
         assert ranking["tie_break"] == {
             "used": True,
             "tier": "medium",
@@ -2718,6 +2719,31 @@ def test_momentum_rewards_real_activity():
     quiet = TokenSnapshot("solana", "a", 1, 1000, 10000, 10, 1, 1)
     active = TokenSnapshot("solana", "b", 1, 50000, 1000000, 30000, 120, 30)
     assert CandidateEvaluator._momentum_score(active) > CandidateEvaluator._momentum_score(quiet)
+
+
+def test_quality_does_not_reward_a_token_created_after_the_event():
+    event_time = datetime(2026, 8, 31, tzinfo=timezone.utc)
+    event = EventView(1, "Viral capybara", [], 80, event_time, event_time)
+    snapshot = TokenSnapshot("solana", "a", 1, 50000, 1000000, 30000, 120, 30)
+    before = TokenCandidate(
+        chain="solana",
+        address="a",
+        name="Viral capybara",
+        symbol="CAPY",
+        created_at=event_time - timedelta(minutes=5),
+    )
+    after = TokenCandidate(
+        chain="solana",
+        address="b",
+        name="Viral capybara",
+        symbol="CAPY",
+        created_at=event_time + timedelta(minutes=5),
+    )
+
+    before_score, _ = CandidateEvaluator._quality(event, before, snapshot, 90, 2)
+    after_score, _ = CandidateEvaluator._quality(event, after, snapshot, 90, 2)
+
+    assert before_score > after_score
 
 
 def test_exit_policy_handles_liquidity_and_trailing_drawdown():

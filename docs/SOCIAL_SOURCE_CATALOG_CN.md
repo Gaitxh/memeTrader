@@ -1,6 +1,6 @@
 # 社交信息源目录
 
-`SOCIAL_SOURCE_CATALOG.json` 是 memeTrader 的公开社交信息源候选目录。当前 `v3` 版本在 2026-08-30 复核，共 82 条，覆盖 X、Truth Social、YouTube、Instagram、TikTok、Threads、Bluesky、Telegram 和 Reddit。文件只保存公开账号、公开 URL、实体映射、类别、优先级、观察轮换标签与非敏感自动化策略，不包含登录账号、密码、Cookie、会话、邮箱、API Key、Bot Token 或其他私密信息。
+`SOCIAL_SOURCE_CATALOG.json` 是 memeTrader 的公开社交信息源候选目录。当前 `v3` 版本在 2026-08-31 复核，共 107 条，覆盖 X、Truth Social、YouTube、Instagram、TikTok、Threads、Bluesky、Telegram 和 Reddit。文件只保存公开账号、公开 URL、实体映射、类别、优先级、观察轮换标签与非敏感自动化策略，不包含登录账号、密码、Cookie、会话、邮箱、API Key、Bot Token 或其他私密信息。
 
 此目录是研究和采集入口，不会替代现有的时间门、安全门、候选币排序、`WAIT` 结论或 Paper 风控。账号进入目录也不表示其内容自动具备决策资格。
 
@@ -56,9 +56,22 @@ Telegram 条目还保存 `owner_verification` 和 `preferred_machine_source`。�
 
 ## 使用建议
 
-目录不要求每轮同时扫描全部 82 条。可按平台、类别和优先级轮换：先为 `watch_cadence = critical` 的账号保留更短回访间隔，再优先观察 `priority = 5`，为其他 `priority = 4` 账号保留名人、体育和创作者通道，低频使用 `priority = 1–2` 做趋势发现。账号权威度、帖子实时热度、内容角色和来源独立性应分别保存，不应合成一个模糊的“可信度”数字。
+目录不要求每轮同时扫描全部 107 条。可按平台、类别和优先级轮换：先为 `watch_cadence = critical` 的账号保留更短回访间隔，再优先观察 `priority = 5`，为其他 `priority = 4` 账号保留名人、体育和创作者通道，低频使用 `priority = 1–2` 做趋势发现。账号权威度、帖子实时热度、内容角色和来源独立性应分别保存，不应合成一个模糊的“可信度”数字。
 
 建议事件详情保留原帖永久链接、平台、作者、发布时间、本地首次观察时间、抓取时间和角色，并明确展示该证据是 `feature`、`confirmation`、`identity` 还是 `promotion`。
+
+## 2026-08-31 X 候选批次的独立审阅
+
+用户补充的 30 个账号没有被机械照抄成新的 S/A 排名。目录新增 25 个原先没有的 X 候选（包括补齐韩国区官方 Upbit 账号），并用 `enabled_default` 区分受控首批与暂缓候选：
+
+- 首批启用覆盖官方上市/交易平台、政治人物、Meme 起源、AI Meme、Web3 Meme 品牌和一个低权威 AI/KOL 发现源。加入目录不改变帖子角色；项目方、人物或 Agent 自述仍可能只是 `identity/promotion`。
+- `@stoolpresidente`、`@IGGYAZALEA`、`@blknoiz06`、`@MustStopMurad`、`@LucaNetz`、`@justinsuntron`、`@Cobratate`、`@PhillipBankss` 默认禁用。原因不是认定它们“无价值”，而是喊单、持仓利益、争议性或账号归属的证据风险较高；应先完成官方交叉核验，再通过保留空结果/失败的前向 exposure 实验评估发现价值。
+- `@aixbt_agent` 作为低优先级 discovery 样本启用，不作为独立确认；它明确自述为自动化 Agent，不能把输出等同于一手事实。
+- `@GetTrumpMemes` 与 `@pudgypenguins` 是项目/品牌原始账号，但项目自身谈论自己的 Token 默认仍属于 promotion/identity，不能因为“官方”二字自动成为独立 confirmation。
+
+原名单中的 `@CoinbaseAssets` 已过时。Coinbase 在 2025-09-08 宣布把现货、期货和永续等上市消息统一迁移到 `@CoinbaseMarkets`，并将逐步停用 `@CoinbaseAssets` 与 `@CoinbaseIntExch`；目录因此保存 replacement 记录而不启用旧账号。Robinhood 官网确认 `@RobinhoodApp`，Upbit 官网确认新加坡入口 `@UpbitGlobal`；Upbit 的韩国官方入口另为 `@Official_Upbit`，二者不能无条件互换区域上市语义。
+
+这批候选不会挤入 critical。critical 仍只保留 Donald Trump 的 X/Truth、Elon Musk 和 CZ 四个观察入口；新增账号进入普通轮换，并继续保留至少 40% 探索。是否值得长期关注必须由真实 assignment、零产出、错误、独立合格事件和固定时点结果决定，不能由这份初始名单自证。
 
 ## 主要官方复核入口
 
@@ -70,6 +83,10 @@ Telegram 条目还保存 `owner_verification` 和 `preferred_machine_source`。�
 - [Bloomberg 官方社交入口](https://www.bloomberg.com/company/press-contacts/)
 - [Solana 官方社区与 Telegram 入口](https://solana.com/community)
 - [Binance 官方账号验证工具](https://www.binance.com/en/official-verification)
+- [Coinbase 官方账号验证清单](https://help.coinbase.com/en-au/coinbase/other-topics/other/is-coinbase-present-on-social-media)
+- [Coinbase Markets 上市公告迁移说明](https://www.coinbase.com/blog/coinbase-markets-on-x-your-new-home-for-all-listings)
+- [Robinhood 官方社交账号清单](https://robinhood.com/us/en/support/articles/robinhood-social-media/)
+- [Upbit 官方 SNS 清单](https://support.upbit.com/hc/ko/articles/49617343307289-%EC%97%85%EB%B9%84%ED%8A%B8-%EA%B3%B5%EC%8B%9D-SNS-%EC%95%88%EB%82%B4)
 - [Ethereum 官方社区目录](https://ethereum.org/community/online/)
 - [Phantom 官方频道安全说明](https://help.phantom.com/hc/en-us/articles/40411433367187-Phantom-will-never-DM-email-or-ask-you-to-send-funds)
 - [Uniswap Labs 官方链接](https://support.uniswap.org/hc/en-us/articles/17522892515341-Official-Uniswap-Labs-links)
