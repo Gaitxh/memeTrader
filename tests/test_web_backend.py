@@ -405,6 +405,68 @@ def test_event_attention_trajectory_api_reports_local_scope_without_fake_mention
     assert "raw_json" not in serialized and "bridge-secret" not in serialized
 
 
+def test_event_fact_propagation_and_correction_are_separate_and_agent_assessment_is_context_only(tmp_path: Path):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3")
+    engine = EventEngine(store, similarity=0.1)
+    now = utcnow()
+    common = dict(
+        source_kind="news",
+        title="Viral alpaca claim spreads online",
+        text="Viral alpaca claim spreads online",
+        observed_at=now,
+        ingested_at=now,
+        role="identity",
+    )
+    event_id, _, _ = engine.ingest(
+        Observation(
+            source="agent-scout:publisher-a.example",
+            source_item_id="report",
+            raw={
+                "agent_task": "trend_scout",
+                "claim_status": "unverified_rumor",
+                "factual_confidence": 0.35,
+                "attention_confidence": 0.88,
+                "decision_eligible": False,
+                "affects": "audit_context_only",
+            },
+            **common,
+        )
+    )
+    engine.ingest(
+        Observation(
+            source="agent-scout:publisher-b.example",
+            source_item_id="correction",
+            raw={
+                "agent_task": "trend_scout",
+                "claim_status": "correction",
+                "factual_confidence": 0.8,
+                "correction_risk": 0.1,
+                "decision_eligible": False,
+                "affects": "audit_context_only",
+            },
+            **common,
+        )
+    )
+    store.close()
+
+    web = WebData(config_path)
+    summary = next(item for item in web.events({})["items"] if item["id"] == event_id)
+    assert summary["factuality"]["current"]["claim_status"] == "correction"
+    assert summary["factuality"]["correction_state"] == "locally_observed"
+    assert summary["factuality"]["affects"] == "none"
+    assert summary["factuality"]["historical_backfill"] is False
+    assert "points" not in summary["factuality"]
+    assert summary["attention_trajectory"]["status"] == "context_only"
+    detail = web.event_detail(event_id)
+    assert [point["claim_status"] for point in detail["factuality"]["points"]] == [
+        "unverified_rumor", "correction"
+    ]
+    assert all(item["decision_eligible"] is False for item in detail["observations"])
+    serialized = json.dumps(detail)
+    assert "bridge-secret" not in serialized and "raw_json" not in serialized
+
+
 def _start_server(config: Path, static_dir: Path, access_token_file: Path | None = None):
     server = create_server(
         config,
@@ -1263,6 +1325,10 @@ def test_candidate_ranking_api_is_persisted_bounded_sanitized_and_wait_is_truthf
     assert "data-testid='paper-account-curve'" in app
     assert "data-testid='paper-execution-attempts'" in app
     assert "data-testid='attention-trajectory'" in app
+    assert "data-testid='story-lifecycle-timeline'" in app
+    assert "Facts, propagation & corrections" in app
+    assert "An Agent structured assessment is pending verification, not independent fact verification" in app
+    assert "No correction locally observed in the forward ledger" in app
     assert "OBSERVE ONLY · AFFECTS NONE" in app
     assert "It is not platform-wide mentions, replies, quotes, or repost velocity" in app
     assert "no future price was filled in" in app

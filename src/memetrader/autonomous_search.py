@@ -50,6 +50,14 @@ SOCIAL_PLATFORM_HOSTS = {
     "youtube.com": "youtube", "youtu.be": "youtube",
 }
 TELEGRAM_MANUAL_ONLY_HOSTS = {"t.me", "telegram.me"}
+AGENT_CLAIM_STATUSES = {
+    "confirmed_fact", "probable_report", "unverified_rumor", "false_claim",
+    "correction", "retraction", "satire", "impersonation", "promotion", "unassessed",
+}
+AGENT_FACT_SCORE_FIELDS = (
+    "factual_confidence", "source_identity_confidence", "attention_confidence",
+    "meme_catalyst_strength", "correction_risk",
+)
 
 TREND_TOPIC_LANES = (
     {
@@ -118,6 +126,27 @@ def _as_float(value: Any, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return default
     return number if number == number and number not in {float("inf"), float("-inf")} else default
+
+
+def _agent_fact_assessment(payload: dict[str, Any]) -> dict[str, Any]:
+    """Sanitize the Agent's assessment without treating it as verified truth."""
+    status = str(payload.get("claim_status") or "unassessed").strip().lower().replace("-", "_").replace(" ", "_")
+    if status not in AGENT_CLAIM_STATUSES:
+        status = "unassessed"
+    result: dict[str, Any] = {
+        "claim_status": status,
+        "fact_assessment_provenance": "agent_structured_assessment",
+        "decision_eligible": False,
+        "affects": "audit_context_only",
+    }
+    for name in AGENT_FACT_SCORE_FIELDS:
+        value = payload.get(name)
+        if value is None:
+            continue
+        number = _as_float(value, default=-1.0)
+        if 0.0 <= number <= 1.0:
+            result[name] = number
+    return result
 
 
 def _extract_json(text: str) -> dict[str, Any]:
@@ -1487,7 +1516,10 @@ class AutonomousSearchAgent:
             f"least two independent exact source URLs and at most {max_sources} sources. Use no more than {max_searches} web "
             "searches. Return exact JSON only: "
             '{"events":[{"lane_id":"one selected lane id","event_title":"...","summary":"...","category":"...","confidence":0.0,'
-            '"memeability":0.0,"keywords":["..."],"sources":[{"title":"...","url":"exact article or public post URL",'
+            '"memeability":0.0,"claim_status":"confirmed_fact|probable_report|unverified_rumor|false_claim|correction|'
+            'retraction|satire|impersonation|promotion|unassessed","factual_confidence":0.0,"source_identity_confidence":0.0,'
+            '"attention_confidence":0.0,"meme_catalyst_strength":0.0,"correction_risk":0.0,"keywords":["..."],'
+            '"sources":[{"title":"...","url":"exact article or public post URL",'
             '"publisher":"...","published_at":"ISO-8601 with timezone","relevance":0.0}]}]}. '
             f"Return at most {max_events} events. If there is no strong current event, return {{\"events\":[]}}. "
             "URLs and timestamps must come from this search, never from memory. Telegram is manual-only: never search, open, "
@@ -1554,6 +1586,7 @@ class AutonomousSearchAgent:
             summary = str(item.get("summary") or "").strip()[:5000]
             confidence = max(0.0, min(1.0, _as_float(item.get("confidence"))))
             memeability = max(0.0, min(1.0, _as_float(item.get("memeability"))))
+            fact_assessment = _agent_fact_assessment(item)
             if not title or confidence < min_confidence or memeability < min_memeability:
                 rejected_events.append(
                     {
@@ -1649,7 +1682,7 @@ class AutonomousSearchAgent:
                         observed_at=now,
                         ingested_at=utcnow(),
                         availability_proof="agent_search_verified",
-                        role="feature",
+                        role="identity",
                         source_item_id=source["url"],
                         raw={
                             "agent_web_search": True,
@@ -1665,6 +1698,8 @@ class AutonomousSearchAgent:
                             "memeability": memeability,
                             "relevance": source["relevance"],
                             "keywords": keywords,
+                            "original_agent_role": "feature",
+                            **fact_assessment,
                             **({"platform": source["platform"]} if source["platform"] else {}),
                             **(
                                 {
@@ -1690,6 +1725,7 @@ class AutonomousSearchAgent:
                     "memeability": memeability,
                     "domains": sorted(seen_domains),
                     "keywords": keywords,
+                    "fact_assessment": fact_assessment,
                 }
             )
 
@@ -1941,6 +1977,7 @@ class AutonomousSearchAgent:
             "version": "token-context-assessment/v1",
             "decision_eligible": False,
             "affects": "context_display_and_verified_reporting_only",
+            "fact_assessment": _agent_fact_assessment(payload),
             "investigation_trigger": safe_trigger,
             "project_claims": {
                 "status": "project_attached_unverified" if metadata_seeds else "no_attached_social_seed",
@@ -2169,7 +2206,10 @@ class AutonomousSearchAgent:
             "high-impact-account post or fresh high-attention event relation may trigger this investigation before on-chain momentum, "
             "but its content and relevance must still be verified. "
             "Return exact JSON only: "
-            '{"event_found":true,"event_title":"...","confidence":0.0,"sources":['
+            '{"event_found":true,"event_title":"...","confidence":0.0,"claim_status":"confirmed_fact|probable_report|'
+            'unverified_rumor|false_claim|correction|retraction|satire|impersonation|promotion|unassessed",'
+            '"factual_confidence":0.0,"source_identity_confidence":0.0,"attention_confidence":0.0,'
+            '"meme_catalyst_strength":0.0,"correction_risk":0.0,"sources":['
             '{"title":"...","url":"exact source URL","publisher":"...","published_at":"ISO-8601 with timezone",'
             '"summary":"...","relevance":0.0}],"community_spread":{"status":"independent_amplification_observed|'
             'project_channels_only|limited|unknown","summary":"...","platforms":["x"]},"public_figure_links":['
@@ -2218,6 +2258,7 @@ class AutonomousSearchAgent:
             )
             return []
         confidence = max(0.0, min(1.0, _as_float(payload.get("confidence"))))
+        fact_assessment = _agent_fact_assessment(payload)
         if not payload.get("event_found") or confidence < float(self.config.get("context_min_confidence", 0.78)):
             self._record_token_context_assessment(
                 token,
@@ -2289,7 +2330,7 @@ class AutonomousSearchAgent:
                     observed_at=now,
                     ingested_at=utcnow(),
                     availability_proof="agent_search_verified",
-                    role="confirmation",
+                    role="identity",
                     source_item_id=url,
                     raw={
                         "agent_web_search": True,
@@ -2302,6 +2343,8 @@ class AutonomousSearchAgent:
                         "token_id": token.token_id,
                         "reverse_token_id": token.token_id,
                         "metadata": metadata,
+                        "original_agent_role": "confirmation",
+                        **fact_assessment,
                     },
                 )
             )

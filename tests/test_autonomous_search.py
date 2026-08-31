@@ -1104,6 +1104,12 @@ def test_token_context_search_requires_two_recent_reachable_sources(tmp_path: Pa
                 "event_found": True,
                 "event_title": "A celebrity pet becomes a viral meme",
                 "confidence": 0.91,
+                "claim_status": "probable_report",
+                "factual_confidence": 0.82,
+                "source_identity_confidence": 0.9,
+                "attention_confidence": 0.76,
+                "meme_catalyst_strength": 0.88,
+                "correction_risk": 0.2,
                 "community_spread": {
                     "status": "independent_amplification_observed",
                     "summary": "Separate communities are discussing the same pet story.",
@@ -1155,7 +1161,10 @@ def test_token_context_search_requires_two_recent_reachable_sources(tmp_path: Pa
         observations = await agent.search_token_context(token, snapshot, momentum_score=90)
         assert len(observations) == 2
         assert all(row.availability_proof == "agent_search_verified" for row in observations)
-        assert all(row.role == "confirmation" for row in observations)
+        assert all(row.role == "identity" for row in observations)
+        assert all(row.raw["decision_eligible"] is False for row in observations)
+        assert all(row.raw["affects"] == "audit_context_only" for row in observations)
+        assert all(row.raw["claim_status"] == "probable_report" for row in observations)
         assert {row.source for row in observations} == {
             "agent-search:publisher-a.example",
             "agent-search:publisher-b.example",
@@ -1321,6 +1330,12 @@ def test_trend_scout_verifies_two_sources_and_enters_surge_mode(tmp_path: Path):
                         "category": "viral animal",
                         "confidence": 0.91,
                         "memeability": 0.94,
+                        "claim_status": "probable_report",
+                        "factual_confidence": 0.84,
+                        "source_identity_confidence": 0.9,
+                        "attention_confidence": 0.8,
+                        "meme_catalyst_strength": 0.93,
+                        "correction_risk": 0.15,
                         "keywords": ["otter", "rescue"],
                         "sources": [
                             {
@@ -1348,7 +1363,9 @@ def test_trend_scout_verifies_two_sources_and_enters_surge_mode(tmp_path: Path):
         assert len(result["events"]) == 1
         assert len(observations) == 2
         assert all(row.availability_proof == "agent_search_verified" for row in observations)
-        assert all(row.role == "feature" for row in observations)
+        assert all(row.role == "identity" for row in observations)
+        assert all(row.raw["decision_eligible"] is False for row in observations)
+        assert all(row.raw["claim_status"] == "probable_report" for row in observations)
         assert agent.usage()["trend_scout"] == 1
         assert agent.usage()["trend_scout_tokens"] == 100
         assert agent.trend_interval_minutes() == 3

@@ -51,6 +51,12 @@ class Store:
     SOURCE_POLL_EXPOSURE_VERSION = "source-poll-exposure/v1"
     TOKEN_DISCOVERY_EXPOSURE_VERSION = "token-discovery-exposure/v1"
     EVENT_ATTENTION_TRAJECTORY_VERSION = "event-attention-trajectory/v1"
+    EVENT_CLAIM_ASSESSMENT_VERSION = "event-claim-assessment/v1"
+    EVENT_CLAIM_STATUSES = {
+        "confirmed_fact", "probable_report", "unverified_rumor", "false_claim",
+        "correction", "retraction", "satire", "impersonation", "promotion",
+        "unassessed", "excluded_future",
+    }
 
     def __init__(self, path: str | Path, initial_cash_usd: float = 10000):
         self.path = Path(path)
@@ -122,6 +128,45 @@ class Store:
                 CREATE TRIGGER IF NOT EXISTS event_attention_points_no_delete
                 BEFORE DELETE ON event_attention_points
                 BEGIN SELECT RAISE(ABORT,'event attention points are immutable'); END;
+                CREATE TABLE IF NOT EXISTS event_claim_ledger_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS event_claim_assessments (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    event_id INTEGER NOT NULL,
+                    observation_id INTEGER NOT NULL,
+                    previous_assessment_id INTEGER,
+                    assessed_at TEXT NOT NULL,
+                    claim_status TEXT NOT NULL,
+                    factual_confidence REAL,
+                    source_identity_confidence REAL,
+                    attention_confidence REAL,
+                    meme_catalyst_strength REAL,
+                    correction_risk REAL,
+                    assessment_source TEXT NOT NULL,
+                    assessment_basis TEXT NOT NULL,
+                    trigger_role TEXT NOT NULL,
+                    trigger_decision_eligible INTEGER NOT NULL,
+                    exclusion_reason TEXT,
+                    UNIQUE(definition_version,event_id,observation_id)
+                );
+                CREATE INDEX IF NOT EXISTS event_claim_assessments_event_idx
+                    ON event_claim_assessments(event_id,assessed_at,id);
+                CREATE TRIGGER IF NOT EXISTS event_claim_assessments_no_update
+                BEFORE UPDATE ON event_claim_assessments
+                BEGIN SELECT RAISE(ABORT,'event claim assessments are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS event_claim_assessments_no_delete
+                BEFORE DELETE ON event_claim_assessments
+                BEGIN SELECT RAISE(ABORT,'event claim assessments are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS event_claim_ledger_registrations_no_update
+                BEFORE UPDATE ON event_claim_ledger_registrations
+                BEGIN SELECT RAISE(ABORT,'event claim ledger registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS event_claim_ledger_registrations_no_delete
+                BEFORE DELETE ON event_claim_ledger_registrations
+                BEGIN SELECT RAISE(ABORT,'event claim ledger registrations are immutable'); END;
 
                 CREATE TABLE IF NOT EXISTS tokens (
                     token_id TEXT PRIMARY KEY,
@@ -983,6 +1028,23 @@ class Store:
                     self._json(self._information_first_ilg_definition()),
                 ),
             )
+            self.db.execute(
+                "INSERT OR IGNORE INTO event_claim_ledger_registrations("
+                "definition_version,registered_at,definition_json) VALUES(?,?,?)",
+                (
+                    self.EVENT_CLAIM_ASSESSMENT_VERSION,
+                    iso(),
+                    self._json(
+                        {
+                            "append_only": True,
+                            "no_historical_backfill": True,
+                            "assessment_scope": "new_forward_observations_only",
+                            "statuses": sorted(self.EVENT_CLAIM_STATUSES),
+                            "decision_effect": "none",
+                        }
+                    ),
+                ),
+            )
             event_columns = {row["name"] for row in self.db.execute("PRAGMA table_info(events)")}
             if "topic" not in event_columns:
                 self.db.execute("ALTER TABLE events ADD COLUMN topic TEXT NOT NULL DEFAULT 'unknown'")
@@ -1213,6 +1275,92 @@ class Store:
                     trigger_observation_id,
                     attention,
                 )
+                self._record_event_claim_assessment_locked(event_id, trigger_observation_id)
+
+    @staticmethod
+    def _claim_confidence(value: Any) -> float | None:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number if math.isfinite(number) and 0.0 <= number <= 1.0 else None
+
+    def _record_event_claim_assessment_locked(self, event_id: int, observation_id: int) -> bool:
+        assessed_at = utcnow()
+        trigger = self.db.execute(
+            """
+            SELECT o.* FROM observations o
+            JOIN event_observations eo ON eo.observation_id=o.id
+            WHERE eo.event_id=? AND o.id=?
+            """,
+            (event_id, observation_id),
+        ).fetchone()
+        if trigger is None:
+            return False
+        try:
+            raw = json.loads(trigger["raw_json"] or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw = {}
+        if not isinstance(raw, dict):
+            raw = {}
+        role = str(trigger["role"] or "").strip().lower() or "unknown"
+        source = str(raw.get("agent_task") or "").strip().lower()
+        exclusion_reason = None
+        if parse_time(trigger["observed_at"]) > assessed_at:
+            exclusion_reason = "trigger_observed_in_future"
+        elif parse_time(trigger["ingested_at"]) > assessed_at:
+            exclusion_reason = "trigger_ingested_in_future"
+        if exclusion_reason:
+            status = "excluded_future"
+            basis = "local_temporal_exclusion"
+        elif role == "promotion":
+            status = "promotion"
+            basis = "deterministic_evidence_role"
+        else:
+            proposed = str(raw.get("claim_status") or "").strip().lower().replace("-", "_").replace(" ", "_")
+            if source in {"trend_scout", "token_context"} and proposed in self.EVENT_CLAIM_STATUSES - {"excluded_future"}:
+                status = proposed
+                basis = "agent_structured_assessment"
+            else:
+                status = "unassessed"
+                basis = "no_structured_fact_assessment"
+        scores = [
+            self._claim_confidence(raw.get(name)) if basis == "agent_structured_assessment" else None
+            for name in (
+                "factual_confidence", "source_identity_confidence", "attention_confidence",
+                "meme_catalyst_strength", "correction_risk",
+            )
+        ]
+        previous = self.db.execute(
+            "SELECT id FROM event_claim_assessments WHERE event_id=? ORDER BY id DESC LIMIT 1",
+            (event_id,),
+        ).fetchone()
+        before = self.db.total_changes
+        self.db.execute(
+            """
+            INSERT OR IGNORE INTO event_claim_assessments(
+                definition_version,event_id,observation_id,previous_assessment_id,assessed_at,
+                claim_status,factual_confidence,source_identity_confidence,attention_confidence,
+                meme_catalyst_strength,correction_risk,assessment_source,assessment_basis,
+                trigger_role,trigger_decision_eligible,exclusion_reason
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                self.EVENT_CLAIM_ASSESSMENT_VERSION,
+                event_id,
+                observation_id,
+                int(previous["id"]) if previous else None,
+                iso(assessed_at),
+                status,
+                *scores,
+                source or "local_observation",
+                basis,
+                role,
+                int(role in {"feature", "confirmation"} and exclusion_reason is None),
+                exclusion_reason,
+            ),
+        )
+        return self.db.total_changes > before
 
     def _record_event_attention_point_locked(
         self,

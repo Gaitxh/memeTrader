@@ -124,6 +124,76 @@ def test_event_attention_points_are_forward_append_only_and_future_safe(tmp_path
     reopened.close()
 
 
+def test_event_claim_assessments_are_forward_append_only_context_only_and_future_safe(tmp_path: Path):
+    store = Store(tmp_path / "claim-assessments.sqlite3")
+    engine = EventEngine(store, similarity=0.1)
+    now = datetime.now(timezone.utc)
+    common = dict(
+        source_kind="news",
+        title="Viral seal story spreads online",
+        text="Viral seal story spreads online",
+        observed_at=now,
+        ingested_at=now,
+        role="identity",
+    )
+    event_id, _, _ = engine.ingest(
+        Observation(
+            source="agent-scout:publisher.example",
+            source_item_id="report",
+            raw={
+                "agent_task": "trend_scout",
+                "claim_status": "probable_report",
+                "factual_confidence": 0.82,
+                "source_identity_confidence": 0.9,
+                "attention_confidence": 0.7,
+                "meme_catalyst_strength": 0.88,
+                "correction_risk": 0.2,
+                "decision_eligible": False,
+            },
+            **common,
+        )
+    )
+    engine.ingest(
+        Observation(
+            source="agent-scout:publisher.example",
+            source_item_id="correction",
+            raw={"agent_task": "trend_scout", "claim_status": "correction"},
+            **common,
+        )
+    )
+    future = now + timedelta(hours=1)
+    engine.ingest(
+        Observation(
+            source="agent-scout:future.example",
+            source_item_id="future",
+            raw={"agent_task": "trend_scout", "claim_status": "confirmed_fact"},
+            **{**common, "observed_at": future, "ingested_at": future},
+        )
+    )
+
+    registration = store.db.execute(
+        "SELECT * FROM event_claim_ledger_registrations WHERE definition_version=?",
+        (Store.EVENT_CLAIM_ASSESSMENT_VERSION,),
+    ).fetchone()
+    rows = list(store.db.execute(
+        "SELECT * FROM event_claim_assessments WHERE event_id=? ORDER BY id", (event_id,)
+    ))
+    assert registration is not None
+    assert [row["claim_status"] for row in rows] == ["probable_report", "correction", "excluded_future"]
+    assert rows[0]["factual_confidence"] == pytest.approx(0.82)
+    assert rows[0]["trigger_decision_eligible"] == 0
+    assert rows[1]["previous_assessment_id"] == rows[0]["id"]
+    assert rows[2]["exclusion_reason"] == "trigger_observed_in_future"
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute(
+            "UPDATE event_claim_assessments SET claim_status='confirmed_fact' WHERE id=?",
+            (rows[0]["id"],),
+        )
+    store.create_event("Legacy event without claim backfill", ["legacy claim"], 10, now)
+    assert store.db.execute("SELECT COUNT(*) FROM event_claim_assessments").fetchone()[0] == 3
+    store.close()
+
+
 def test_token_discovery_exposure_preserves_denominator_and_forward_outcomes(tmp_path: Path):
     store = Store(tmp_path / "token-discovery.sqlite3", initial_cash_usd=1000)
     observed_at = datetime.now(timezone.utc) - timedelta(minutes=2)

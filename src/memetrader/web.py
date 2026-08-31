@@ -88,6 +88,9 @@ EXPECTED_TABLES = {
     "agent_attempts",
     "decisions",
     "event_observations",
+    "event_attention_points",
+    "event_claim_ledger_registrations",
+    "event_claim_assessments",
     "events",
     "information_first_shadow_admission_attempts",
     "information_first_shadow_cohorts",
@@ -129,6 +132,7 @@ SAFE_OBSERVATION_RAW_FIELDS = {
     "agent_task",
     "authority_tier",
     "category",
+    "claim_status",
     "confidence",
     "event_title",
     "follower_count",
@@ -138,6 +142,15 @@ SAFE_OBSERVATION_RAW_FIELDS = {
     "keywords",
     "like_count",
     "memeability",
+    "factual_confidence",
+    "source_identity_confidence",
+    "attention_confidence",
+    "meme_catalyst_strength",
+    "correction_risk",
+    "fact_assessment_provenance",
+    "decision_eligible",
+    "affects",
+    "original_agent_role",
     "non_event_market_promotion",
     "original_role",
     "published_time_in_future",
@@ -2145,6 +2158,8 @@ class WebData:
         ids = [int(row["id"]) for row in rows]
         grouped: dict[int, list[dict[str, Any]]] = {event_id: [] for event_id in ids}
         attention_points: dict[int, list[dict[str, Any]]] = {event_id: [] for event_id in ids}
+        claim_points: dict[int, list[dict[str, Any]]] = {event_id: [] for event_id in ids}
+        claim_registered_at = None
         placeholders = ",".join("?" for _ in ids)
         if self._table_exists(connection, "event_observations") and self._table_exists(connection, "observations"):
             for observation in connection.execute(
@@ -2194,6 +2209,46 @@ class WebData:
                         "exclusion_reason": point["exclusion_reason"],
                     }
                 )
+        if self._table_exists(connection, "event_claim_ledger_registrations"):
+            registration = connection.execute(
+                "SELECT registered_at FROM event_claim_ledger_registrations WHERE definition_version=?",
+                (Store.EVENT_CLAIM_ASSESSMENT_VERSION,),
+            ).fetchone()
+            claim_registered_at = registration["registered_at"] if registration else None
+        if self._table_exists(connection, "event_claim_assessments"):
+            claim_limit = 96 if include_observations else 24
+            for point in connection.execute(
+                f"""
+                SELECT * FROM (
+                    SELECT a.*,ROW_NUMBER() OVER (
+                        PARTITION BY event_id ORDER BY assessed_at DESC,id DESC
+                    ) AS event_rank
+                    FROM event_claim_assessments a
+                    WHERE event_id IN ({placeholders})
+                ) WHERE event_rank<=?
+                ORDER BY event_id,assessed_at,id
+                """,
+                [*ids, claim_limit],
+            ):
+                claim_points[int(point["event_id"])].append(
+                    {
+                        "assessment_id": int(point["id"]),
+                        "observation_id": int(point["observation_id"]),
+                        "previous_assessment_id": point["previous_assessment_id"],
+                        "assessed_at": point["assessed_at"],
+                        "claim_status": point["claim_status"],
+                        "factual_confidence": point["factual_confidence"],
+                        "source_identity_confidence": point["source_identity_confidence"],
+                        "attention_confidence": point["attention_confidence"],
+                        "meme_catalyst_strength": point["meme_catalyst_strength"],
+                        "correction_risk": point["correction_risk"],
+                        "assessment_source": point["assessment_source"],
+                        "assessment_basis": point["assessment_basis"],
+                        "trigger_role": point["trigger_role"],
+                        "trigger_decision_eligible": bool(point["trigger_decision_eligible"]),
+                        "exclusion_reason": point["exclusion_reason"],
+                    }
+                )
         output: list[dict[str, Any]] = []
         for row in rows:
             event_id = int(row["id"])
@@ -2210,6 +2265,45 @@ class WebData:
             for item in observations:
                 roles[item["role"]] = roles.get(item["role"], 0) + 1
             points = attention_points.get(event_id, [])
+            factual_points = claim_points.get(event_id, [])
+            meaningful_factual_points = [
+                point for point in factual_points
+                if point["claim_status"] not in {"unassessed", "excluded_future"}
+            ]
+            factual_status = (
+                "not_observed" if not factual_points else
+                "unassessed" if not meaningful_factual_points else
+                "assessed"
+            )
+            correction_points = [
+                point for point in meaningful_factual_points
+                if point["claim_status"] in {"correction", "retraction", "false_claim"}
+            ]
+            transition_count = sum(
+                1 for previous, current in zip(meaningful_factual_points, meaningful_factual_points[1:])
+                if previous["claim_status"] != current["claim_status"]
+            )
+            factuality = {
+                "version": Store.EVENT_CLAIM_ASSESSMENT_VERSION,
+                "status": factual_status,
+                "affects": "none",
+                "scope": "new_forward_observations_only",
+                "registered_at": claim_registered_at,
+                "historical_backfill": False,
+                "assessment_count": len(factual_points),
+                "meaningful_assessment_count": len(meaningful_factual_points),
+                "transition_count": transition_count,
+                "current": meaningful_factual_points[-1] if meaningful_factual_points else None,
+                "correction_state": (
+                    "locally_observed" if correction_points else
+                    "not_observed_in_forward_ledger" if factual_points else
+                    "ledger_not_observed"
+                ),
+                "latest_correction": correction_points[-1] if correction_points else None,
+                "boundary": "agent_assessment_is_not_independent_fact_verification",
+            }
+            if include_observations:
+                factuality["points"] = factual_points
             eligible_points = [point for point in points if point["trigger_decision_eligible"]]
             trajectory_status = (
                 "not_observed" if not points else
@@ -2314,6 +2408,7 @@ class WebData:
                 "decision_eligible": bool(eligible_origins),
                 "attention_history": [point["score"] for point in points],
                 "attention_trajectory": trajectory,
+                "factuality": factuality,
                 "event_url": f"#/events/{event_id}",
                 "evidence_ranking": {
                     "method": "decision_utility_authority_freshness",

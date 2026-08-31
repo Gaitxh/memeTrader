@@ -82,6 +82,15 @@ a:hover { color: #81edf0; }
 .trajectory-boundary { margin-bottom: 12px; padding: 11px 13px; border: 1px solid rgba(69,214,219,.16); border-radius: var(--radius-sm); background: rgba(69,214,219,.045); }
 .trajectory-boundary strong { color: var(--cyan); font: 700 10px/1 var(--mono); letter-spacing: .08em; }
 .trajectory-boundary p { margin: 7px 0 0; color: var(--muted); line-height: 1.55; }
+.story-lifecycle .detail-stat strong { line-height: 1.3; overflow-wrap: anywhere; }
+.story-lifecycle .detail-stat span { display: block; margin-top: 6px; color: var(--dim); font: 8px/1.35 var(--mono); overflow-wrap: anywhere; }
+.claim-timeline { display: grid; gap: 7px; margin-top: 10px; }
+.claim-timeline article { display: grid; grid-template-columns: 9px minmax(0,1fr); gap: 9px; padding: 9px 10px; border: 1px solid var(--line-soft); border-radius: 6px; background: rgba(8,12,17,.28); }
+.claim-timeline article > i { width: 7px; height: 7px; margin-top: 3px; border: 1px solid var(--cyan); border-radius: 50%; box-shadow: 0 0 9px rgba(69,214,219,.28); }
+.claim-timeline strong, .claim-timeline small, .claim-timeline span { display: block; overflow-wrap: anywhere; }
+.claim-timeline strong { color: #dbe7ef; font-size: 10px; line-height: 1.3; }
+.claim-timeline small { margin-top: 4px; color: var(--dim); font: 8px/1.45 var(--mono); }
+.claim-timeline span { margin-top: 5px; color: var(--muted); font: 8px/1.45 var(--mono); }
 .trajectory-plot { min-height: 62px; display: grid; grid-template-columns: minmax(100px,1fr) auto; align-items: center; gap: 16px; margin-bottom: 12px; padding: 10px 13px; border: 1px solid var(--line-soft); border-radius: var(--radius-sm); background: var(--bg-raised); }
 .trajectory-plot .sparkline { width: 100%; height: 46px; }
 .trajectory-plot > div:last-child { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; }
