@@ -89,6 +89,9 @@ EXPECTED_TABLES = {
     "decisions",
     "event_observations",
     "events",
+    "information_first_shadow_admission_attempts",
+    "information_first_shadow_cohorts",
+    "information_first_shadow_outcomes",
     "kv",
     "observations",
     "paper_account",
@@ -3535,6 +3538,21 @@ class WebData:
             "mode": "forward_append_only_observation",
             "affects": "none",
         }
+        information_first_shadow: dict[str, Any] = {
+            "status": "not_observed",
+            "version": Store.INFORMATION_FIRST_SHADOW_VERSION,
+            "mode": "descriptive_forward_only_observation",
+            "affects": "none",
+            "items": [],
+            "summary": {
+                "cohorts": 0, "independent_events": 0, "independent_tokens": 0,
+                "outcomes_observed": 0, "outcomes_missing": 0, "outcomes_pending": 0,
+                "baseline_missing_at_signal_available": 0,
+                "admission_attempts": 0, "admissions_created": 0,
+                "admissions_skipped": 0,
+            },
+            "not_available": ["unique_buyers", "image_similarity", "holder_clusters"],
+        }
         watch_account_learning: dict[str, Any] = {
             "status": "not_observed", "items": [],
             "summary": {"runs": 0, "completed_runs": 0, "account_exposures": 0},
@@ -3774,6 +3792,17 @@ class WebData:
                     )
                 except (sqlite3.Error, TypeError, ValueError):
                     token_context_admissions["status"] = "unavailable"
+                try:
+                    information_first_shadow = (
+                        Store.information_first_shadow_summary_from_connection(
+                            connection,
+                            lookback_days=int(
+                                autonomous_cfg.get("source_learning_lookback_days", 90)
+                            ),
+                        )
+                    )
+                except (sqlite3.Error, TypeError, ValueError, json.JSONDecodeError):
+                    information_first_shadow["status"] = "unavailable"
                 try:
                     lookback_days = int(autonomous_cfg.get("source_learning_lookback_days", 90))
                     start = iso(utcnow() - timedelta(days=max(1, min(3650, lookback_days))))
@@ -4032,6 +4061,7 @@ class WebData:
             "shadow_followup": shadow_followup,
             "token_context_followup": token_context_followup,
             "token_context_admissions": token_context_admissions,
+            "information_first_shadow": information_first_shadow,
             "learning_closure": learning_closure,
             "as_of": iso(),
         }

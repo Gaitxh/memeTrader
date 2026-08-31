@@ -60,8 +60,9 @@ def test_followup_tick_finalizes_event_and_token_context_without_agent_or_quote(
         calls = []
         runtime.store.finalize_shadow_event_outcomes = lambda: calls.append("event")
         runtime.store.finalize_token_context_outcomes = lambda: calls.append("token_context")
+        runtime.store.finalize_information_first_shadow_outcomes = lambda: calls.append("information_first")
         await runtime.shadow_event_followup_once()
-        assert calls == ["event", "token_context"]
+        assert calls == ["event", "token_context", "information_first"]
         await runtime.close()
 
     asyncio.run(scenario())
@@ -769,6 +770,12 @@ def test_candidate_decision_persists_computed_position_size(tmp_path):
         assert adjusted_ranking["candidates"][0]["action"] == "WAIT"
         assert adjusted_ranking["candidates"][0]["rejected_reasons"] == ["position_already_open"]
         assert runtime.store.db.execute("SELECT COUNT(*) FROM shadow_event_cohorts").fetchone()[0] == 1
+        assert runtime.store.db.execute(
+            "SELECT COUNT(*) FROM information_first_shadow_cohorts"
+        ).fetchone()[0] == 1
+        assert runtime.store.db.execute(
+            "SELECT COUNT(*) FROM information_first_shadow_admission_attempts"
+        ).fetchone()[0] == 2
         await runtime.close()
 
     asyncio.run(scenario())

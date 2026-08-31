@@ -34,13 +34,16 @@
 - 事件后才创建的 Token 不再获得“与事件时间接近”的对称奖励。事件前 Token 仅保留一个有限的描述性接近奖励；这不表示长期旧币必然更优。
 - 账号目录新增候选时保留 `feature/confirmation/identity/promotion` 角色，默认不进入 critical，也不提高证据权重。
 
-## 尚未实现、需要前向样本的部分
+## 已实现但必须等待前向样本
+
+- `information-first-shadow/v1` 已上线：在最终决策后按事件与 Token 首写冻结，保留信号时点基线缺失的分母，并做 15/60/240 分钟不可回填随访。它只提供描述性市场活动分层，`affects=none`。详细规则见 [Information-first Shadow 前向研究](INFORMATION_FIRST_SHADOW_CN.md)。
+
+## 尚未实现、需要前向数据能力的部分
 
 - 真正的 ILG：首个合格信息本机入库时间到预注册市场阈值首次越界的时间差。
 - attention 历史、速度与加速度；当前只有累计 attention 单值。
 - 追加式 event-token 关系类型、canonical CA 独立核验状态和账号 compromise/quarantine 时间窗。
 - 资金聚类后的独立买家、持仓集中度、开发者集群和不可篡改图像相似度。
-- `information-first-shadow/v1` 独立 cohort。实现时必须只冻结上线后的 top candidate，当时缺少合规快照就记 missing，15/60/240 分钟结果不得回填。
 
 这些缺口不妨碍继续运行现有 Paper，但它们说明系统现在只能说“具备部分信息先行入口”，不能宣称已经学会在市场定价前稳定获利。
 

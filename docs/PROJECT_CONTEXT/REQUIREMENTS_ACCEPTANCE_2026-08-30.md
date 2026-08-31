@@ -171,4 +171,4 @@
 - Coinbase 2025 年已把上市公告迁移至 `@CoinbaseMarkets`，因此保留旧 `@CoinbaseAssets` 的 replacement 审计记录而不启用。Upbit 的 `@Official_Upbit` 与 `@UpbitGlobal` 分别对应韩国与新加坡，不能混用。
 - 案例审阅同时保留正例和反例：Musk 帖子既有 JIMOTHY 强反应，也有 DOGE 无反应；CATE/GOAT 说明事件后 Token 也可能传播；Portnoy、Milei、人物否认和 Pokémon 账号失窃说明影响力也会放大操纵与错误。
 - 确定性修正已经落地：Agent 不能再把原始 canonical 分差抬到门槛；事件后创建 Token 不再获得对称时间奖励。歧义保持 `WAIT`。
-- ILG、attention acceleration、unique buyer/资金聚类、holder concentration、image similarity、显式 account quarantine 和独立 information-first cohort 尚未实现；现有数据不能支持这些指标。详见 [信息先行审阅](../INFORMATION_FIRST_X_REVIEW_20260831_CN.md)。
+- 独立 `information-first-shadow/v1` cohort 已实现，但刚开始前向收集，不构成策略结论。ILG、attention acceleration、unique buyer/资金聚类、holder concentration、image similarity 和显式 account quarantine 仍未实现；现有数据不能支持这些指标。详见 [信息先行审阅](../INFORMATION_FIRST_X_REVIEW_20260831_CN.md)与 [前向研究规则](../INFORMATION_FIRST_SHADOW_CN.md)。

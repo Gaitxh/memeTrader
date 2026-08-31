@@ -32,6 +32,7 @@
 - [../PAPER_STRATEGY_FORWARD_LEARNING_CN.md](../PAPER_STRATEGY_FORWARD_LEARNING_CN.md)：热度/人物/社区/链上条件与入场、分批止盈、runner 的前向 cohort 和预注册 Paper 对照实验边界。
 - [../TOKEN_CONTEXT_FORWARD_LEARNING_CN.md](../TOKEN_CONTEXT_FORWARD_LEARNING_CN.md)：Token Context 五轨 assessment 的冻结标签、15/60/240 分钟无回填结果和描述性成熟门。
 - [../INFORMATION_FIRST_X_REVIEW_20260831_CN.md](../INFORMATION_FIRST_X_REVIEW_20260831_CN.md)：用户补充的 X 账号、历史案例与“信息先于价格”假设的事实审阅、已修正边界和未实现研究项。
+- [../INFORMATION_FIRST_SHADOW_CN.md](../INFORMATION_FIRST_SHADOW_CN.md)：独立 information-first 前向 cohort 的冻结时点、缺失分母、描述性市场层和不影响交易的边界。
 
 ## 一句话产品定义
 

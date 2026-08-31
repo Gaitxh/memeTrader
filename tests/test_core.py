@@ -2434,6 +2434,168 @@ def test_generic_token_name_cannot_hijack_unrelated_news_event(tmp_path: Path):
     asyncio.run(scenario())
 
 
+def test_information_first_shadow_cohort_is_forward_append_only_and_preserves_missing_baselines(tmp_path: Path):
+    store = Store(tmp_path / "information-first-shadow.sqlite3")
+    now = datetime.now(timezone.utc)
+    event_id = store.create_event("Forward information", ["Forward"], 80, now - timedelta(minutes=3))
+    lead = Observation(
+        source="fixture-news", source_kind="news", title="Forward information", text="Forward",
+        observed_at=now - timedelta(minutes=2), ingested_at=now - timedelta(minutes=1),
+        published_at=now - timedelta(minutes=2), role="feature", capture_phase="live",
+    )
+    lead_id, _ = store.add_observation(lead)
+    store.link_event_observation(event_id, lead_id)
+    identity = Observation(
+        source="project-link", source_kind="social", title="Identity", text="",
+        observed_at=now - timedelta(minutes=1), ingested_at=now - timedelta(minutes=1),
+        role="identity", capture_phase="live",
+    )
+    identity_id, _ = store.add_observation(identity)
+    store.link_event_observation(event_id, identity_id)
+    token = TokenCandidate(
+        chain="solana", address="F" * 32, name="Forward Token", symbol="FWD",
+        created_at=now - timedelta(minutes=5),
+    )
+    peer = TokenCandidate(chain="solana", address="P" * 32, name="forward   token", symbol="FWD")
+    future_peer = TokenCandidate(chain="solana", address="Q" * 32, name="Forward Token", symbol="FWD")
+    store.upsert_token(token, seen_at=now - timedelta(minutes=3))
+    store.upsert_token(peer, seen_at=now - timedelta(minutes=3))
+    store.upsert_token(future_peer, seen_at=now + timedelta(minutes=1))
+    store.add_snapshot(TokenSnapshot(
+        chain="solana", address=token.address, price_usd=1.0, liquidity_usd=40_000,
+        market_cap_usd=500_000, volume_5m_usd=10_000, buys_5m=10, sells_5m=5,
+        observed_at=now - timedelta(seconds=30), ingested_at=now - timedelta(seconds=30), provider="fixture",
+    ))
+    decision_id = store.add_decision(CandidateDecision(
+        event_id, token.token_id, "WAIT", 70, 80, 4, [], created_at=now,
+    ))
+    cohort_id = store.create_information_first_shadow_cohort(
+        event_id, token.token_id, decision_id=decision_id, accepted_observation_ids=[lead_id, identity_id],
+        captured_at=now, relation_available_at=now, candidate_facts={
+            "candidate_count": 2, "selected_rank": 1, "raw_score_margin": 3.0,
+            "canonical_margin": 4.0, "tie_break_used": False,
+        },
+    )
+    assert cohort_id is not None
+    cohort = store.db.execute(
+        "SELECT * FROM information_first_shadow_cohorts WHERE id=?", (cohort_id,)
+    ).fetchone()
+    assert cohort["signal_available_at"] == iso(now)
+    features = json.loads(cohort["features_json"])
+    assert features["market_state"]["label"] == "low_observed_market_activity"
+    assert features["same_name_competition"]["preexisting_same_name_count"] == 1
+    assert features["same_name_competition"]["preexisting_same_symbol_count"] == 1
+    assert features["attention_source_breadth"]["qualified_observation_count"] == 1
+    assert features["attention_source_breadth"]["mode"] == "descriptive_observed_origins_not_independence_claim"
+    assert features["token_preexistence"]["status"] == "not_available"
+    assert features["pair_preexistence_descriptive"]["status"] == "preexisting"
+    assert features["not_available"] == ["unique_buyers", "image_similarity", "holder_clusters"]
+    repeat_decision_id = store.add_decision(CandidateDecision(
+        event_id, token.token_id, "WAIT", 70, 80, 4, [], created_at=now,
+    ))
+    assert store.create_information_first_shadow_cohort(
+        event_id, token.token_id, decision_id=repeat_decision_id, accepted_observation_ids=[lead_id],
+        captured_at=now, relation_available_at=now,
+    ) == cohort_id
+    admissions = list(store.db.execute(
+        "SELECT status,reason FROM information_first_shadow_admission_attempts ORDER BY id"
+    ))
+    assert [(row["status"], row["reason"]) for row in admissions] == [
+        ("created", "created"), ("already_admitted", "first_write_wins_event_token"),
+    ]
+    with pytest.raises(sqlite3.IntegrityError):
+        with store.db:
+            store.db.execute(
+                "UPDATE information_first_shadow_cohorts SET token_id='changed' WHERE id=?", (cohort_id,)
+            )
+
+    for minutes, price in ((16, 2.0), (61, 1.5)):
+        store.add_snapshot(TokenSnapshot(
+            chain="solana", address=token.address, price_usd=price, liquidity_usd=40_000,
+            market_cap_usd=500_000, volume_5m_usd=10_000, buys_5m=10, sells_5m=5,
+            observed_at=now + timedelta(minutes=minutes), ingested_at=now + timedelta(minutes=minutes), provider="fixture",
+        ))
+    assert store.finalize_information_first_shadow_outcomes(now=now + timedelta(minutes=17))["outcomes_observed"] == 1
+    store.finalize_information_first_shadow_outcomes(now=now + timedelta(minutes=62))
+    final = store.finalize_information_first_shadow_outcomes(now=now + timedelta(minutes=271))
+    assert final["outcomes_missing"] == 1
+    outcomes = list(store.db.execute(
+        "SELECT horizon_minutes,status,raw_return FROM information_first_shadow_outcomes WHERE cohort_id=? ORDER BY horizon_minutes",
+        (cohort_id,),
+    ))
+    assert [(row["horizon_minutes"], row["status"]) for row in outcomes] == [
+        (15, "observed"), (60, "observed"), (240, "missing"),
+    ]
+    assert outcomes[0]["raw_return"] == pytest.approx(1.0)
+
+    missing_event = store.create_event("No baseline", ["No baseline"], 70, now - timedelta(minutes=1))
+    missing_lead = Observation(
+        source="fixture-news-2", source_kind="news", title="No baseline", text="",
+        observed_at=now - timedelta(seconds=50), ingested_at=now - timedelta(seconds=40),
+        role="feature", capture_phase="live",
+    )
+    missing_lead_id, _ = store.add_observation(missing_lead)
+    store.link_event_observation(missing_event, missing_lead_id)
+    missing_token = TokenCandidate(chain="solana", address="M" * 32, name="Missing baseline")
+    store.upsert_token(missing_token, seen_at=now - timedelta(minutes=1))
+    store.add_snapshot(TokenSnapshot(
+        chain="solana", address=missing_token.address, price_usd=1.0, liquidity_usd=10_000,
+        market_cap_usd=100_000, volume_5m_usd=100, buys_5m=1, sells_5m=1,
+        observed_at=now + timedelta(minutes=1), ingested_at=now + timedelta(minutes=1), provider="future-fixture",
+    ))
+    missing_decision_id = store.add_decision(CandidateDecision(
+        missing_event, missing_token.token_id, "WAIT", 60, 70, 3, [], created_at=now,
+    ))
+    missing_cohort_id = store.create_information_first_shadow_cohort(
+        missing_event, missing_token.token_id, decision_id=missing_decision_id,
+        accepted_observation_ids=[missing_lead_id], captured_at=now, relation_available_at=now,
+    )
+    missing_cohort = store.db.execute(
+        "SELECT trackability,entry_price FROM information_first_shadow_cohorts WHERE id=?", (missing_cohort_id,)
+    ).fetchone()
+    assert missing_cohort["trackability"] == "baseline_missing_at_signal_available"
+    assert missing_cohort["entry_price"] is None
+    assert store.finalize_information_first_shadow_outcomes(now=now + timedelta(minutes=271))["cohorts_checked"] == 1
+    summary = Store.information_first_shadow_summary_from_connection(store.db)
+    assert summary["summary"]["cohorts"] == 2
+    assert summary["summary"]["baseline_missing_at_signal_available"] == 1
+    assert summary["summary"]["outcomes_observed"] == 2
+    assert summary["affects"] == "none"
+
+
+def test_information_first_shadow_rejects_invalid_observation_availability(tmp_path: Path):
+    store = Store(tmp_path / "information-first-invalid-lead.sqlite3")
+    now = datetime.now(timezone.utc)
+    event_id = store.create_event("Invalid lead", ["Invalid"], 60, now - timedelta(minutes=2))
+    invalid = Observation(
+        source="invalid-fixture", source_kind="news", title="Invalid lead", text="",
+        observed_at=now - timedelta(minutes=1), ingested_at=now - timedelta(minutes=2),
+        role="feature", capture_phase="live",
+    )
+    observation_id, _ = store.add_observation(invalid)
+    store.link_event_observation(event_id, observation_id)
+    token = TokenCandidate(chain="solana", address="V" * 32, name="Invalid")
+    store.upsert_token(token, seen_at=now - timedelta(minutes=2))
+    store.add_snapshot(TokenSnapshot(
+        chain="solana", address=token.address, price_usd=1.0, liquidity_usd=10_000,
+        market_cap_usd=100_000, volume_5m_usd=100, buys_5m=1, sells_5m=1,
+        observed_at=now - timedelta(minutes=1), ingested_at=now - timedelta(minutes=1), provider="fixture",
+    ))
+    decision_id = store.add_decision(CandidateDecision(
+        event_id, token.token_id, "WAIT", 60, 70, 3, [], created_at=now,
+    ))
+    assert store.create_information_first_shadow_cohort(
+        event_id, token.token_id, decision_id=decision_id, accepted_observation_ids=[observation_id],
+        captured_at=now, relation_available_at=now,
+    ) is None
+    attempt = store.db.execute(
+        "SELECT status,reason FROM information_first_shadow_admission_attempts WHERE decision_id=?", (decision_id,)
+    ).fetchone()
+    assert (attempt["status"], attempt["reason"]) == (
+        "skipped", "no_eligible_accepted_information_lead"
+    )
+
+
 def test_four_character_person_name_requires_more_than_text_overlap(tmp_path: Path):
     async def scenario():
         store = Store(tmp_path / "db.sqlite3")

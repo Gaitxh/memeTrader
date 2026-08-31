@@ -10,6 +10,7 @@ from dataclasses import asdict
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+from urllib.parse import urlparse
 
 from .models import (
     CandidateDecision,
@@ -32,6 +33,11 @@ class Store:
     TOKEN_CONTEXT_ADMISSION_VERSION = "token-context-admission/v1"
     TOKEN_CONTEXT_OUTCOME_VERSION = "token-context-outcome/v1"
     TOKEN_CONTEXT_OUTCOME_HORIZONS_MINUTES = (15, 60, 240)
+    INFORMATION_FIRST_SHADOW_VERSION = "information-first-shadow/v1"
+    INFORMATION_FIRST_SHADOW_HORIZONS_MINUTES = (15, 60, 240)
+    INFORMATION_FIRST_SHADOW_QUIET_MARKET_CAP_USD = 1_000_000.0
+    INFORMATION_FIRST_SHADOW_QUIET_VOLUME_5M_USD = 20_000.0
+    INFORMATION_FIRST_SHADOW_QUIET_TRANSACTIONS_5M = 30
     WATCH_ATTENTION_POLICY_VERSION = "watch-attention/v3-experiment-gated"
     TREND_ATTENTION_POLICY_VERSION = "trend-attention/v2-experiment-gated"
     ATTENTION_EXPERIMENT_VERSION = "attention-experiment/v1"
@@ -773,6 +779,82 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS shadow_event_outcomes_horizon_idx
                     ON shadow_event_outcomes(horizon_minutes,status,evaluated_at);
+
+                CREATE TABLE IF NOT EXISTS information_first_shadow_cohorts (
+                    id INTEGER PRIMARY KEY,
+                    cohort_key TEXT NOT NULL UNIQUE,
+                    version TEXT NOT NULL,
+                    event_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    decision_id INTEGER NOT NULL,
+                    captured_at TEXT NOT NULL,
+                    signal_available_at TEXT NOT NULL,
+                    relation_available_at TEXT NOT NULL,
+                    lead_observation_id INTEGER NOT NULL,
+                    lead_observed_at TEXT NOT NULL,
+                    entry_snapshot_id INTEGER,
+                    entry_snapshot_at TEXT,
+                    entry_snapshot_ingested_at TEXT,
+                    entry_price REAL,
+                    trackability TEXT NOT NULL,
+                    features_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(version,event_id,token_id)
+                );
+                CREATE INDEX IF NOT EXISTS information_first_shadow_cohorts_token_idx
+                    ON information_first_shadow_cohorts(token_id,captured_at);
+                CREATE TABLE IF NOT EXISTS information_first_shadow_admission_attempts (
+                    id INTEGER PRIMARY KEY,
+                    admission_key TEXT NOT NULL UNIQUE,
+                    version TEXT NOT NULL,
+                    decision_id INTEGER NOT NULL,
+                    event_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    attempted_at TEXT NOT NULL,
+                    relation_available_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    cohort_id INTEGER
+                );
+                CREATE INDEX IF NOT EXISTS information_first_shadow_admission_attempts_event_idx
+                    ON information_first_shadow_admission_attempts(event_id,token_id,attempted_at);
+                CREATE TABLE IF NOT EXISTS information_first_shadow_outcomes (
+                    id INTEGER PRIMARY KEY,
+                    cohort_id INTEGER NOT NULL,
+                    horizon_minutes INTEGER NOT NULL,
+                    target_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    outcome_snapshot_id INTEGER,
+                    outcome_observed_at TEXT,
+                    outcome_price REAL,
+                    raw_return REAL,
+                    maximum_return REAL,
+                    minimum_return REAL,
+                    snapshot_count INTEGER NOT NULL DEFAULT 0,
+                    evaluated_at TEXT NOT NULL,
+                    UNIQUE(cohort_id,horizon_minutes),
+                    FOREIGN KEY(cohort_id) REFERENCES information_first_shadow_cohorts(id)
+                );
+                CREATE INDEX IF NOT EXISTS information_first_shadow_outcomes_horizon_idx
+                    ON information_first_shadow_outcomes(horizon_minutes,status,evaluated_at);
+                CREATE TRIGGER IF NOT EXISTS information_first_shadow_cohorts_no_update
+                BEFORE UPDATE ON information_first_shadow_cohorts
+                BEGIN SELECT RAISE(ABORT,'information-first shadow cohorts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS information_first_shadow_cohorts_no_delete
+                BEFORE DELETE ON information_first_shadow_cohorts
+                BEGIN SELECT RAISE(ABORT,'information-first shadow cohorts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS information_first_shadow_admission_attempts_no_update
+                BEFORE UPDATE ON information_first_shadow_admission_attempts
+                BEGIN SELECT RAISE(ABORT,'information-first shadow admissions are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS information_first_shadow_admission_attempts_no_delete
+                BEFORE DELETE ON information_first_shadow_admission_attempts
+                BEGIN SELECT RAISE(ABORT,'information-first shadow admissions are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS information_first_shadow_outcomes_no_update
+                BEFORE UPDATE ON information_first_shadow_outcomes
+                BEGIN SELECT RAISE(ABORT,'information-first shadow outcomes are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS information_first_shadow_outcomes_no_delete
+                BEFORE DELETE ON information_first_shadow_outcomes
+                BEGIN SELECT RAISE(ABORT,'information-first shadow outcomes are immutable'); END;
                 """
             )
             columns = {row["name"] for row in self.db.execute("PRAGMA table_info(observations)")}
@@ -3300,6 +3382,512 @@ class Store:
             "outcomes_observed": observed_count,
             "outcomes_missing": missing_count,
             "cohorts_completed": completed_count,
+        }
+
+    @staticmethod
+    def _information_first_label(value: Any) -> str:
+        return re.sub(r"\s+", " ", str(value or "").strip().casefold())[:160]
+
+    @staticmethod
+    def _information_first_source_facts(row: sqlite3.Row) -> tuple[str, str, str]:
+        try:
+            raw = json.loads(str(row["raw_json"] or "{}"))
+        except (TypeError, json.JSONDecodeError):
+            raw = {}
+        raw = raw if isinstance(raw, dict) else {}
+        browser = raw.get("browser") if isinstance(raw.get("browser"), dict) else {}
+        source = str(row["source"] or "").strip().casefold()[:200]
+        source_kind = str(row["source_kind"] or "").strip().casefold()[:80]
+        entity_id = str(raw.get("source_entity_id") or "").strip().casefold()
+        if not re.fullmatch(r"[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?", entity_id):
+            entity_id = ""
+        if source_kind in {"social", "official_social"}:
+            origin = f"entity:{entity_id}" if entity_id else source
+        else:
+            publisher_url = str(raw.get("publisher_url") or "")
+            article_url = str(row["url"] or "")
+            origin = (urlparse(publisher_url).netloc or urlparse(article_url).netloc or source).casefold()
+        platform = str(browser.get("platform") or raw.get("platform") or "").strip().casefold()
+        if not platform:
+            platform = source_kind
+        return origin[:240], platform[:80], entity_id
+
+    def create_information_first_shadow_cohort(
+        self,
+        event_id: int,
+        token_id: str,
+        *,
+        decision_id: int,
+        accepted_observation_ids: Iterable[int],
+        captured_at: Any = None,
+        relation_available_at: Any = None,
+        candidate_facts: Mapping[str, Any] | None = None,
+    ) -> int | None:
+        """Freeze one information-first cohort from a final decision's known inputs.
+
+        This is descriptive only. It records contemporaneously available facts and never
+        creates a cohort from a later token, snapshot, or observation.
+        """
+        captured = parse_time(captured_at or utcnow())
+        if captured > utcnow() + timedelta(seconds=5):
+            raise ValueError("information-first cohort cannot be future-dated")
+        relation_available = parse_time(relation_available_at or captured)
+        if relation_available > captured:
+            raise ValueError("relation availability cannot be after its decision capture")
+        captured_text = iso(captured)
+        relation_text = iso(relation_available)
+        observation_ids = sorted({int(value) for value in accepted_observation_ids if int(value) > 0})
+        candidate_facts = candidate_facts if isinstance(candidate_facts, Mapping) else {}
+        cohort_key = hashlib.sha256(
+            f"{self.INFORMATION_FIRST_SHADOW_VERSION}\n{int(event_id)}\n{str(token_id)}".encode("utf-8")
+        ).hexdigest()
+        admission_key = f"{self.INFORMATION_FIRST_SHADOW_VERSION}:{int(decision_id)}"
+        with self._lock, self.db:
+            prior_admission = self.db.execute(
+                "SELECT cohort_id FROM information_first_shadow_admission_attempts WHERE admission_key=?",
+                (admission_key,),
+            ).fetchone()
+            if prior_admission is not None:
+                return int(prior_admission["cohort_id"]) if prior_admission["cohort_id"] else None
+
+            def record_admission(status: str, reason: str, cohort_id: int | None = None) -> None:
+                self.db.execute(
+                    """
+                    INSERT INTO information_first_shadow_admission_attempts(
+                        admission_key,version,decision_id,event_id,token_id,attempted_at,
+                        relation_available_at,status,reason,cohort_id
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        admission_key, self.INFORMATION_FIRST_SHADOW_VERSION, int(decision_id),
+                        int(event_id), str(token_id), captured_text, relation_text,
+                        status, reason, cohort_id,
+                    ),
+                )
+
+            existing = self.db.execute(
+                "SELECT id FROM information_first_shadow_cohorts WHERE version=? AND event_id=? AND token_id=?",
+                (self.INFORMATION_FIRST_SHADOW_VERSION, int(event_id), str(token_id)),
+            ).fetchone()
+            if existing is not None:
+                cohort_id = int(existing["id"])
+                record_admission("already_admitted", "first_write_wins_event_token", cohort_id)
+                return cohort_id
+            decision = self.db.execute(
+                """
+                SELECT created_at FROM decisions
+                WHERE id=? AND event_id=? AND token_id=?
+                """,
+                (int(decision_id), int(event_id), str(token_id)),
+            ).fetchone()
+            if decision is None:
+                record_admission("skipped", "missing_or_mismatched_final_decision")
+                return None
+            if parse_time(decision["created_at"]) > captured:
+                record_admission("skipped", "final_decision_after_capture")
+                return None
+            event = self.db.execute(
+                "SELECT attention FROM events WHERE id=?", (int(event_id),)
+            ).fetchone()
+            token = self.db.execute(
+                """
+                SELECT * FROM tokens WHERE token_id=? AND first_seen_at<=?
+                """,
+                (str(token_id), captured_text),
+            ).fetchone()
+            if event is None or token is None:
+                record_admission("skipped", "missing_event_or_token")
+                return None
+            if not observation_ids:
+                record_admission("skipped", "missing_accepted_observations")
+                return None
+            placeholders = ",".join("?" for _ in observation_ids)
+            leads = list(
+                self.db.execute(
+                    f"""
+                    SELECT o.* FROM observations o
+                    JOIN event_observations eo ON eo.observation_id=o.id
+                    WHERE eo.event_id=? AND o.capture_phase='live'
+                      AND o.role IN ('feature','confirmation')
+                      AND o.source_kind<>'onchain'
+                      AND o.id IN ({placeholders})
+                      AND o.observed_at<=? AND o.ingested_at<=?
+                      AND o.ingested_at>=o.observed_at
+                      AND (o.published_at IS NULL OR o.published_at<=?)
+                    ORDER BY CASE WHEN o.observed_at>o.ingested_at THEN o.observed_at ELSE o.ingested_at END,o.id
+                    """,
+                    (int(event_id), *observation_ids, captured_text, captured_text, captured_text),
+                )
+            )
+            if not leads:
+                record_admission("skipped", "no_eligible_accepted_information_lead")
+                return None
+            lead = leads[0]
+            signal_available = max(
+                parse_time(lead["observed_at"]), parse_time(lead["ingested_at"]), relation_available
+            )
+            signal_text = iso(signal_available)
+            entry = self.db.execute(
+                """
+                SELECT * FROM token_snapshots
+                WHERE token_id=? AND observed_at<=? AND ingested_at<=?
+                  AND ingested_at>=observed_at AND price_usd>0
+                ORDER BY observed_at DESC,id DESC LIMIT 1
+                """,
+                (str(token_id), signal_text, signal_text),
+            ).fetchone()
+            target_name = self._information_first_label(token["name"])
+            target_symbol = self._information_first_label(token["symbol"])
+            peers = list(
+                self.db.execute(
+                    "SELECT token_id,name,symbol FROM tokens WHERE token_id<>? AND first_seen_at<=?",
+                    (str(token_id), signal_text),
+                )
+            )
+            same_name_count = sum(
+                bool(target_name) and self._information_first_label(row["name"]) == target_name
+                for row in peers
+            )
+            same_symbol_count = sum(
+                bool(target_symbol) and self._information_first_label(row["symbol"]) == target_symbol
+                for row in peers
+            )
+            origins: set[str] = set()
+            platforms: set[str] = set()
+            source_kinds: set[str] = set()
+            entities: set[str] = set()
+            for row in leads:
+                origin, platform, entity_id = self._information_first_source_facts(row)
+                if origin:
+                    origins.add(origin)
+                if platform:
+                    platforms.add(platform)
+                source_kinds.add(str(row["source_kind"] or "").casefold())
+                if entity_id:
+                    entities.add(entity_id)
+            transactions = (
+                int(entry["buys_5m"]) + int(entry["sells_5m"])
+                if entry is not None and entry["buys_5m"] is not None and entry["sells_5m"] is not None else None
+            )
+            market_complete = (
+                entry is not None
+                and entry["market_cap_usd"] is not None
+                and entry["volume_5m_usd"] is not None
+                and transactions is not None
+            )
+            if not market_complete:
+                market_label = "insufficient_market_data"
+            elif (
+                float(entry["market_cap_usd"]) <= self.INFORMATION_FIRST_SHADOW_QUIET_MARKET_CAP_USD
+                and float(entry["volume_5m_usd"]) <= self.INFORMATION_FIRST_SHADOW_QUIET_VOLUME_5M_USD
+                and transactions <= self.INFORMATION_FIRST_SHADOW_QUIET_TRANSACTIONS_5M
+            ):
+                market_label = "low_observed_market_activity"
+            else:
+                market_label = "observed_market_activity"
+            created_at = str(token["created_at"] or "")
+            first_seen_at = str(token["first_seen_at"] or "")
+            lead_at = parse_time(lead["observed_at"])
+            pair_preexistence = (
+                "unknown" if not created_at else
+                "preexisting" if parse_time(created_at) < lead_at else
+                "contemporaneous" if parse_time(created_at) == lead_at else "post_event"
+            )
+            local_preexistence = (
+                "locally_known_before_or_at_information_lead"
+                if parse_time(first_seen_at) <= lead_at else "locally_first_seen_after_information_lead"
+            )
+            features = {
+                "event_attention": float(event["attention"]),
+                "market_state": {
+                    "label": market_label,
+                    "liquidity_usd": entry["liquidity_usd"] if entry is not None else None,
+                    "market_cap_usd": entry["market_cap_usd"] if entry is not None else None,
+                    "volume_5m_usd": entry["volume_5m_usd"] if entry is not None else None,
+                    "buys_5m": entry["buys_5m"] if entry is not None else None,
+                    "sells_5m": entry["sells_5m"] if entry is not None else None,
+                    "transactions_5m": transactions,
+                    "entry_snapshot_age_seconds": max(
+                        0.0, (signal_available - parse_time(entry["observed_at"])).total_seconds()
+                    ) if entry is not None else None,
+                    "thresholds": {
+                        "market_cap_usd": self.INFORMATION_FIRST_SHADOW_QUIET_MARKET_CAP_USD,
+                        "volume_5m_usd": self.INFORMATION_FIRST_SHADOW_QUIET_VOLUME_5M_USD,
+                        "transactions_5m": self.INFORMATION_FIRST_SHADOW_QUIET_TRANSACTIONS_5M,
+                    },
+                },
+                "token_preexistence": {
+                    "status": "not_available",
+                    "reason": "chain_mint_time_not_collected",
+                    "local_first_seen_at": first_seen_at,
+                    "local_preexistence": local_preexistence,
+                },
+                "pair_preexistence_descriptive": {
+                    "pair_created_at": created_at or None,
+                    "status": pair_preexistence,
+                    "provider": "token_created_at",
+                },
+                "same_name_competition": {
+                    "normalized_name": target_name or None,
+                    "normalized_symbol": target_symbol or None,
+                    "preexisting_same_name_count": same_name_count,
+                    "preexisting_same_symbol_count": same_symbol_count,
+                },
+                "candidate_ambiguity": {
+                    "candidate_count": candidate_facts.get("candidate_count"),
+                    "selected_rank": candidate_facts.get("selected_rank"),
+                    "raw_score_margin": candidate_facts.get("raw_score_margin"),
+                    "canonical_margin": candidate_facts.get("canonical_margin"),
+                    "tie_break_used": bool(candidate_facts.get("tie_break_used")),
+                    "mapping_basis": candidate_facts.get("mapping_basis") or "unknown",
+                    "candidate_set_truncated": bool(candidate_facts.get("candidate_set_truncated")),
+                },
+                "attention_source_breadth": {
+                    "mode": "descriptive_observed_origins_not_independence_claim",
+                    "qualified_observation_count": len(leads),
+                    "distinct_origin_count": len(origins),
+                    "distinct_platform_count": len(platforms),
+                    "distinct_source_kind_count": len(source_kinds),
+                    "exact_source_entity_count": len(entities),
+                },
+                "not_available": ["unique_buyers", "image_similarity", "holder_clusters"],
+            }
+            cursor = self.db.execute(
+                """
+                INSERT INTO information_first_shadow_cohorts(
+                    cohort_key,version,event_id,token_id,decision_id,captured_at,signal_available_at,
+                    relation_available_at,lead_observation_id,
+                    lead_observed_at,entry_snapshot_id,entry_snapshot_at,entry_snapshot_ingested_at,
+                    entry_price,trackability,features_json,created_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    cohort_key, self.INFORMATION_FIRST_SHADOW_VERSION, int(event_id), str(token_id),
+                    int(decision_id), captured_text, signal_text, relation_text, int(lead["id"]),
+                    str(lead["observed_at"]), int(entry["id"]) if entry is not None else None,
+                    str(entry["observed_at"]) if entry is not None else None,
+                    str(entry["ingested_at"]) if entry is not None else None,
+                    float(entry["price_usd"]) if entry is not None else None,
+                    "trackable" if entry is not None else "baseline_missing_at_signal_available",
+                    self._json(features), iso(),
+                ),
+            )
+            cohort_id = int(cursor.lastrowid)
+            record_admission(
+                "created_baseline_missing" if entry is None else "created",
+                "baseline_missing_at_signal_available" if entry is None else "created",
+                cohort_id,
+            )
+            return cohort_id
+
+    def finalize_information_first_shadow_outcomes(
+        self,
+        *,
+        now: Any = None,
+        horizons_minutes: Iterable[int] | None = None,
+        max_lateness_minutes: int = 30,
+    ) -> dict[str, int]:
+        """Append fixed-horizon descriptive outcomes without historical backfill."""
+        evaluated_at = parse_time(now or utcnow())
+        horizons = tuple(sorted({
+            max(1, int(value))
+            for value in (horizons_minutes or self.INFORMATION_FIRST_SHADOW_HORIZONS_MINUTES)
+        }))
+        observed_count = 0
+        missing_count = 0
+        with self._lock, self.db:
+            cohorts = list(self.db.execute(
+                "SELECT * FROM information_first_shadow_cohorts WHERE trackability='trackable' ORDER BY captured_at,id"
+            ))
+            for cohort in cohorts:
+                existing = {
+                    int(row["horizon_minutes"])
+                    for row in self.db.execute(
+                        "SELECT horizon_minutes FROM information_first_shadow_outcomes WHERE cohort_id=?",
+                        (int(cohort["id"]),),
+                    )
+                }
+                for horizon in horizons:
+                    if horizon in existing:
+                        continue
+                    target = parse_time(cohort["signal_available_at"]) + timedelta(minutes=horizon)
+                    if evaluated_at < target:
+                        continue
+                    deadline = target + timedelta(minutes=max(1, int(max_lateness_minutes)))
+                    upper = min(evaluated_at, deadline)
+                    snapshot = self.db.execute(
+                        """
+                        SELECT id,observed_at,ingested_at,price_usd FROM token_snapshots
+                        WHERE token_id=? AND observed_at>=? AND observed_at<=?
+                          AND ingested_at>=? AND ingested_at<=?
+                          AND ingested_at>=observed_at AND price_usd>0
+                        ORDER BY ingested_at,observed_at,id LIMIT 1
+                        """,
+                        (str(cohort["token_id"]), iso(target), iso(upper), iso(target), iso(upper)),
+                    ).fetchone()
+                    if snapshot is not None:
+                        path = list(self.db.execute(
+                            """
+                            SELECT price_usd FROM token_snapshots
+                            WHERE token_id=? AND observed_at>=? AND observed_at<=?
+                              AND ingested_at IS NOT NULL AND ingested_at<=?
+                              AND ingested_at>=observed_at AND price_usd>0
+                            ORDER BY observed_at,id
+                            """,
+                            (
+                                str(cohort["token_id"]), str(cohort["entry_snapshot_at"]),
+                                str(snapshot["observed_at"]), str(snapshot["ingested_at"]),
+                            ),
+                        ))
+                        entry_price = float(cohort["entry_price"])
+                        returns = [float(row["price_usd"]) / entry_price - 1.0 for row in path]
+                        raw_return = float(snapshot["price_usd"]) / entry_price - 1.0
+                        self.db.execute(
+                            """
+                            INSERT INTO information_first_shadow_outcomes(
+                                cohort_id,horizon_minutes,target_at,status,outcome_snapshot_id,
+                                outcome_observed_at,outcome_price,raw_return,maximum_return,minimum_return,
+                                snapshot_count,evaluated_at
+                            ) VALUES(?,?,?,'observed',?,?,?,?,?,?,?,?)
+                            """,
+                            (
+                                int(cohort["id"]), horizon, iso(target), int(snapshot["id"]),
+                                str(snapshot["observed_at"]), float(snapshot["price_usd"]), raw_return,
+                                max(returns) if returns else raw_return,
+                                min(returns) if returns else raw_return,
+                                len(path), iso(evaluated_at),
+                            ),
+                        )
+                        observed_count += 1
+                    elif evaluated_at >= deadline:
+                        self.db.execute(
+                            """
+                            INSERT INTO information_first_shadow_outcomes(
+                                cohort_id,horizon_minutes,target_at,status,snapshot_count,evaluated_at
+                            ) VALUES(?,?,?,'missing',0,?)
+                            """,
+                            (int(cohort["id"]), horizon, iso(target), iso(evaluated_at)),
+                        )
+                        missing_count += 1
+        outcome_total = int(self.db.execute(
+            "SELECT COUNT(*) FROM information_first_shadow_outcomes"
+        ).fetchone()[0])
+        return {
+            "cohorts_checked": len(cohorts),
+            "outcomes_observed": observed_count,
+            "outcomes_missing": missing_count,
+            "pending_outcomes": max(0, len(cohorts) * len(horizons) - outcome_total),
+        }
+
+    @classmethod
+    def information_first_shadow_summary_from_connection(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        lookback_days: int = 90,
+    ) -> dict[str, Any]:
+        empty = {
+            "version": cls.INFORMATION_FIRST_SHADOW_VERSION,
+            "status": "not_observed",
+            "mode": "descriptive_forward_only_observation",
+            "affects": "none",
+            "items": [],
+            "summary": {
+                "cohorts": 0, "independent_events": 0, "independent_tokens": 0,
+                "outcomes_observed": 0, "outcomes_missing": 0, "outcomes_pending": 0,
+                "baseline_missing_at_signal_available": 0,
+                "admission_attempts": 0, "admissions_created": 0, "admissions_skipped": 0,
+            },
+        }
+        tables = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        required = {"information_first_shadow_cohorts", "information_first_shadow_outcomes"}
+        if not required.issubset(tables):
+            return {**empty, "status": "unavailable"}
+        start = iso(utcnow() - timedelta(days=max(1, min(3650, int(lookback_days)))))
+        cohorts = list(connection.execute(
+            "SELECT * FROM information_first_shadow_cohorts WHERE captured_at>=? ORDER BY captured_at,id",
+            (start,),
+        ))
+        if not cohorts:
+            return empty
+        cohort_ids = [int(row["id"]) for row in cohorts]
+        trackable_ids = {
+            int(row["id"]) for row in cohorts if str(row["trackability"]) == "trackable"
+        }
+        placeholders = ",".join("?" for _ in cohort_ids)
+        outcomes = list(connection.execute(
+            f"SELECT * FROM information_first_shadow_outcomes WHERE cohort_id IN ({placeholders})",
+            cohort_ids,
+        ))
+        attempts = list(connection.execute(
+            """
+            SELECT * FROM information_first_shadow_admission_attempts
+            WHERE attempted_at>=? ORDER BY attempted_at,id
+            """,
+            (start,),
+        )) if "information_first_shadow_admission_attempts" in tables else []
+        by_cohort_horizon = {(int(row["cohort_id"]), int(row["horizon_minutes"])): row for row in outcomes}
+        groups: dict[str, list[sqlite3.Row]] = {}
+        for cohort in cohorts:
+            try:
+                features = json.loads(str(cohort["features_json"] or "{}"))
+            except (TypeError, json.JSONDecodeError):
+                features = {}
+            market = features.get("market_state") if isinstance(features, dict) else {}
+            label = str(market.get("label") or "insufficient_market_data") if isinstance(market, dict) else "insufficient_market_data"
+            groups.setdefault(label, []).append(cohort)
+        items = []
+        for label, rows in sorted(groups.items()):
+            trackable_count = sum(str(row["trackability"]) == "trackable" for row in rows)
+            observed = []
+            missing = []
+            for row in rows:
+                outcome = by_cohort_horizon.get((int(row["id"]), 60))
+                if outcome is not None and str(outcome["status"]) == "observed":
+                    observed.append(outcome)
+                elif outcome is not None and str(outcome["status"]) == "missing":
+                    missing.append(outcome)
+            values = [float(row["raw_return"]) for row in observed if row and row["raw_return"] is not None]
+            items.append({
+                "market_state": label,
+                "cohorts": len(rows),
+                "trackable_cohorts": trackable_count,
+                "baseline_missing_at_signal_available": sum(
+                    str(row["trackability"]) == "baseline_missing_at_signal_available" for row in rows
+                ),
+                "observed_60m": len(observed),
+                "missing_60m": len(missing),
+                "pending_60m": trackable_count - len(observed) - len(missing),
+                "mean_raw_return_60m": round(sum(values) / len(values), 6) if values else None,
+            })
+        observed_total = sum(str(row["status"]) == "observed" for row in outcomes)
+        missing_total = sum(str(row["status"]) == "missing" for row in outcomes)
+        return {
+            "version": cls.INFORMATION_FIRST_SHADOW_VERSION,
+            "status": "collecting" if len(outcomes) < len(trackable_ids) * len(cls.INFORMATION_FIRST_SHADOW_HORIZONS_MINUTES) else "observed",
+            "mode": "descriptive_forward_only_observation",
+            "affects": "none",
+            "items": items,
+            "summary": {
+                "cohorts": len(cohorts),
+                "independent_events": len({int(row["event_id"]) for row in cohorts}),
+                "independent_tokens": len({str(row["token_id"]) for row in cohorts}),
+                "outcomes_observed": observed_total,
+                "outcomes_missing": missing_total,
+                "outcomes_pending": max(0, len(trackable_ids) * len(cls.INFORMATION_FIRST_SHADOW_HORIZONS_MINUTES) - len(outcomes)),
+                "baseline_missing_at_signal_available": len(cohorts) - len(trackable_ids),
+                "admission_attempts": len(attempts),
+                "admissions_created": sum(
+                    str(row["status"]) in {"created", "created_baseline_missing"}
+                    for row in attempts
+                ),
+                "admissions_skipped": sum(str(row["status"]) == "skipped" for row in attempts),
+            },
+            "not_available": ["unique_buyers", "image_similarity", "holder_clusters"],
+            "as_of": iso(),
         }
 
     @staticmethod

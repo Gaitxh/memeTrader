@@ -2012,6 +2012,50 @@ class Runtime:
                 decision_id=decision_id,
                 source_observation_ids=[int(row["id"]) for row in accepted],
             )
+            ranking = self.store.candidate_ranking(event.id) or {}
+            ranked_candidates = [
+                item for item in ranking.get("candidates", []) if isinstance(item, dict)
+            ]
+            selected_candidate = next(
+                (
+                    item for item in ranked_candidates
+                    if str(item.get("token_id") or "") == str(decision.token_id or "")
+                ),
+                {},
+            )
+            relation_available_at = decision.created_at
+            mapping_basis = "lexical_or_context_relation_available_at_decision"
+            if decision.token_id:
+                token_address = decision.token_id.split(":", 1)[-1]
+                exact_relation_times = []
+                for row in accepted:
+                    groups = extract_addresses(f"{row['title']}\n{row['text']}")
+                    addresses = {*groups["solana"], *groups["evm"]}
+                    if any(value.casefold() == token_address.casefold() for value in addresses):
+                        exact_relation_times.append(
+                            max(parse_time(row["observed_at"]), parse_time(row["ingested_at"]))
+                        )
+                if exact_relation_times:
+                    relation_available_at = min(exact_relation_times)
+                    mapping_basis = "exact_ca_in_eligible_source"
+            if decision.token_id:
+                self.store.create_information_first_shadow_cohort(
+                    event.id,
+                    decision.token_id,
+                    decision_id=decision_id,
+                    accepted_observation_ids=[int(row["id"]) for row in accepted],
+                    captured_at=decision.created_at,
+                    relation_available_at=relation_available_at,
+                    candidate_facts={
+                        "candidate_count": ranking.get("candidate_count_total"),
+                        "selected_rank": selected_candidate.get("rank"),
+                        "raw_score_margin": selected_candidate.get("raw_canonical_margin"),
+                        "canonical_margin": decision.canonical_margin,
+                        "tie_break_used": bool((ranking.get("tie_break") or {}).get("used")),
+                        "mapping_basis": mapping_basis,
+                        "candidate_set_truncated": bool(ranking.get("candidates_truncated")),
+                    },
+                )
             self.store.create_attention_experiment_event_cohort(
                 event_id=event.id,
                 decision_id=decision_id,
@@ -2341,6 +2385,7 @@ class Runtime:
     async def shadow_event_followup_once(self) -> None:
         self.store.finalize_shadow_event_outcomes()
         self.store.finalize_token_context_outcomes()
+        self.store.finalize_information_first_shadow_outcomes()
         self.store.finalize_attention_experiment_outcomes()
 
     async def pump_loop(self) -> None:
