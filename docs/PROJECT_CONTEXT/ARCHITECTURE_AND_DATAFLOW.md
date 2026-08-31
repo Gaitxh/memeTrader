@@ -129,6 +129,7 @@ Trend Scout 主题通道基线 round-robin / 受限选择性分配
 - `token_discovery_rounds` / `token_discovery_exposures`：PumpPortal、GeckoTerminal 与 DexScreener 的真实发现轮次、空窗口、错误、重复、本机首次 Token、链接、hydration 快照及 no-pair 前向分母；只作人工覆盖复核。
 - `token_discovery_quote_attempt_registrations` / `token_discovery_quote_attempts`：完整 Token 总体 DexScreener 批量报价的逐 Token 不可变终态、请求/排队延迟、错误、有限退避、重试与截止错失；只影响报价调度，注册前不回填，Web 仅返回脱敏汇总。
 - `token_universe_forward_registrations` / `token_universe_forward_cohorts` / `token_universe_forward_outcomes`：完整新 Token 总体的首次发现、5 分钟内基准及 15/60/240 分钟前向结果；原始 v1 保留混合路径采样含义且不可改写。
+- `token_universe_funnel_registrations` / `token_universe_funnel_transitions`：注册后完整 cohort 的追加式证据 DAG；typed ID 将 discovery/hydration、Context admission/queue/dispatch/result、event lookup/relation、candidate evaluation、final decision 与 Paper attempt/fill 精确连接。`token_discovery_exposure_source_links` 另外冻结发现 exposure 与当轮外部链接的精确关系；成功 Paper attempt 与 fill 在同一 Store 事务中按顺序保存并互相回链。缺失不是拒绝，时间异常排除，禁止按 token+后来时间推断。
 - `token_universe_outcome_quality_registrations` / `token_universe_outcome_quality`：从独立注册点向前把 pair、route、quote、流动性、迁移、报价年龄和成本冻结为质量覆盖层；不回填 v1，不把跨池跳变当可成交回报，固定 `affects=none`。
 - `missed_opportunity_audit_registrations` / `missed_opportunity_audits`：完整总体的不可变粗漏斗账本；保留缺基线、缺结果和低涨幅分母，`potential_miss` 只是审计候选而非确定策略错误。
 - `decisions`：action、score、match、canonical margin、理由、拒绝理由和 Paper 仓位金额。

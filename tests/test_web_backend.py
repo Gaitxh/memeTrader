@@ -1018,6 +1018,16 @@ def test_web_sources_exposes_forward_token_discovery_without_sensitive_fields(tm
     quality_json = json.dumps(quality).lower()
     assert "raw_json" not in quality_json and "pair_transitions_json" not in quality_json
     assert "password" not in quality_json and "private_key" not in quality_json
+    funnel = WebData(config_path).audit()["token_universe_funnel"]
+    assert funnel["status"] == "collecting"
+    assert funnel["summary"]["cohorts"] == 1
+    assert funnel["summary"]["transition_attempts"] == 0
+    assert funnel["decision_eligible"] is False and funnel["affects"] == "none"
+    funnel_json = json.dumps(funnel).lower()
+    assert cohort["token_id"].lower() not in funnel_json
+    assert "raw_json" not in funnel_json and "source_record_ids_json" not in funnel_json
+    assert "password" not in funnel_json and "private_key" not in funnel_json
+    assert "bridge_token" not in funnel_json and "https://" not in funnel_json
 
 
 def test_learning_closure_does_not_borrow_same_event_outcomes_from_other_source(tmp_path: Path):

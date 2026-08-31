@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import math
 import re
@@ -13,7 +14,7 @@ import uuid
 from collections import Counter
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .collectors import (
     HttpClient,
@@ -739,9 +740,53 @@ class AutonomousSearchAgent:
         *,
         momentum_score: float,
         event_relation: dict[str, Any] | None = None,
+        snapshot_observed_at=None,
     ) -> dict[str, Any] | None:
+        def finish(trigger: dict[str, Any] | None, reason: str) -> dict[str, Any] | None:
+            value = trigger if isinstance(trigger, dict) else None
+            evaluation_at = parse_time(snapshot_observed_at or utcnow())
+            evaluation_key = ":".join(
+                (
+                    "snapshot", iso(evaluation_at),
+                    "decision", str((value or {}).get("decision_id") or 0),
+                    "source_link", str((value or {}).get("source_link_id") or 0),
+                    "observation", str((value or {}).get("observation_id") or 0),
+                )
+            )
+            self.store.record_token_universe_funnel_transition(
+                token.token_id,
+                stage="context_trigger_evaluation",
+                status="eligible" if value is not None else "ineligible",
+                reason_code=reason,
+                evaluation_key=evaluation_key,
+                observed_at=evaluation_at,
+                ingested_at=utcnow(),
+                source_table="token_context_trigger",
+                source_record_ids={
+                    key: value.get(key)
+                    for key in ("source_link_id", "observation_id", "event_id", "decision_id")
+                    if value is not None and value.get(key) is not None
+                },
+                source_link_id=int(value["source_link_id"])
+                if value is not None and value.get("source_link_id") is not None else None,
+                observation_id=int(value["observation_id"])
+                if value is not None and value.get("observation_id") is not None else None,
+                event_id=int(value["event_id"])
+                if value is not None and value.get("event_id") is not None else None,
+                decision_id=int(value["decision_id"])
+                if value is not None and value.get("decision_id") is not None else None,
+                metadata={
+                    "trigger_kind": str((value or {}).get("kind") or ""),
+                    "trigger_priority": (value or {}).get("priority"),
+                    "momentum_score": float(momentum_score),
+                    "snapshot_observed_at": iso(parse_time(snapshot_observed_at))
+                    if snapshot_observed_at is not None else None,
+                },
+            )
+            return value
+
         if not self.config.get("context_direct_trigger_enabled", True):
-            return (
+            trigger = (
                 {
                     "kind": "onchain_momentum",
                     "priority": 1,
@@ -750,6 +795,11 @@ class AutonomousSearchAgent:
                 }
                 if momentum_score >= float(self.config.get("context_min_momentum_score", 75))
                 else None
+            )
+            return finish(
+                trigger,
+                "onchain_momentum" if trigger is not None
+                else "direct_trigger_disabled_below_momentum_threshold",
             )
 
         accounts = self._configured_high_impact_accounts()
@@ -781,7 +831,7 @@ class AutonomousSearchAgent:
                     observed_url = str(observation["url"] or observation["source_item_id"] or "")
                     if not _same_social_url(url, observed_url):
                         continue
-                    return {
+                    return finish({
                         "kind": "high_impact_account_post",
                         "priority": 3,
                         "source_link_id": int(row["id"]),
@@ -794,7 +844,7 @@ class AutonomousSearchAgent:
                         "verification_status": "browser_exact_entity_observation",
                         "decision_eligible": False,
                         "endorsement_inferred": False,
-                    }
+                    }, "high_impact_account_post")
 
         relation = event_relation if isinstance(event_relation, dict) else {}
         try:
@@ -818,7 +868,7 @@ class AutonomousSearchAgent:
                     and match_score >= float(self.config.get("context_direct_event_min_match_score", 70))
                     and attention >= float(self.config.get("context_direct_event_min_attention", 55))
                 ):
-                    return {
+                    return finish({
                         "kind": "fresh_high_attention_event_relation",
                         "priority": 2,
                         "decision_id": int(row["decision_id"]),
@@ -829,16 +879,16 @@ class AutonomousSearchAgent:
                         "relation_status": "persisted_decision_relation",
                         "decision_eligible": False,
                         "endorsement_inferred": False,
-                    }
+                    }, "fresh_high_attention_event_relation")
 
         if momentum_score >= float(self.config.get("context_min_momentum_score", 75)):
-            return {
+            return finish({
                 "kind": "onchain_momentum",
                 "priority": 1,
                 "momentum_score": float(momentum_score),
                 "decision_eligible": False,
-            }
-        return None
+            }, "onchain_momentum")
+        return finish(None, "no_eligible_trigger")
 
     @property
     def enabled(self) -> bool:
@@ -939,8 +989,8 @@ class AutonomousSearchAgent:
         now,
         quota: dict[str, Any],
         next_eligible_at=None,
-    ) -> None:
-        self.store.add_token_context_admission_attempt(
+    ) -> int:
+        admission_id = self.store.add_token_context_admission_attempt(
             token.token_id,
             outcome=outcome,
             reason=reason,
@@ -951,6 +1001,28 @@ class AutonomousSearchAgent:
             evaluated_at=now,
             **quota,
         )
+        self.store.record_token_universe_funnel_transition(
+            token.token_id,
+            stage="context_admission",
+            status=outcome,
+            reason_code=reason,
+            evaluation_key=f"admission:{admission_id}",
+            observed_at=now,
+            ingested_at=now,
+            source_table="token_context_admission_attempts",
+            source_record_ids={"admission_id": admission_id},
+            admission_id=admission_id,
+            event_id=int(trigger["event_id"])
+            if isinstance(trigger, dict) and trigger.get("event_id") is not None else None,
+            decision_id=int(trigger["decision_id"])
+            if isinstance(trigger, dict) and trigger.get("decision_id") is not None else None,
+            metadata={
+                "trigger_kind": str((trigger or {}).get("kind") or ""),
+                "momentum_score": float(momentum_score),
+                "next_eligible_at": iso(parse_time(next_eligible_at)) if next_eligible_at else None,
+            },
+        )
+        return admission_id
 
     def _consume_quota(self, kind: str, limit: int) -> bool:
         if limit <= 0:
@@ -1068,6 +1140,7 @@ class AutonomousSearchAgent:
         self,
         prompt: str,
         task: str = "trend_scout",
+        run_id: str | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         profile = self._profile(task)
         primary = str(profile.get("model") or "gpt-5.3-codex-spark").strip()
@@ -1081,7 +1154,7 @@ class AutonomousSearchAgent:
         fallback_effort = str(profile.get("fallback_reasoning_effort") or primary_effort).strip()
         attempts: list[dict[str, Any]] = []
         last_error = "Codex web search failed"
-        run_id = uuid.uuid4().hex
+        run_id = str(run_id or uuid.uuid4().hex)
         with tempfile.TemporaryDirectory(prefix="memetrader-search-") as temp_dir:
             for index, model in enumerate(models):
                 effort = primary_effort if index == 0 else fallback_effort
@@ -1215,9 +1288,20 @@ class AutonomousSearchAgent:
                     break
         raise RuntimeError(last_error)
 
-    async def _search(self, prompt: str, task: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    async def _search(
+        self,
+        prompt: str,
+        task: str,
+        *,
+        run_id: str | None = None,
+        on_started: Callable[[], None] | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         async with self._agent_slots:
-            return await asyncio.to_thread(self._run_codex_search, prompt, task)
+            if on_started is not None:
+                on_started()
+            runner = self._run_codex_search
+            kwargs = {"run_id": run_id} if "run_id" in inspect.signature(runner).parameters else {}
+            return await asyncio.to_thread(runner, prompt, task, **kwargs)
 
     def _persist_fact_verifications(
         self,
@@ -2201,7 +2285,9 @@ class AutonomousSearchAgent:
         audit: list[dict[str, Any]] | None = None,
         fact_verification: dict[str, Any] | None = None,
         assessed_at=None,
-    ) -> None:
+        admission_id: int | None = None,
+        agent_run_id: str = "",
+    ) -> int:
         payload = payload if isinstance(payload, dict) else {}
         metadata = metadata if isinstance(metadata, dict) else {}
         audit = audit if isinstance(audit, list) else []
@@ -2336,7 +2422,7 @@ class AutonomousSearchAgent:
             "fallback_used": len(metadata.get("attempts") or []) > 1,
             "contains_credentials": False,
         }
-        self.store.add_token_context_assessment(
+        assessment_id = self.store.add_token_context_assessment(
             token.token_id,
             trigger=str(safe_trigger.get("kind") or "unknown")[:120],
             status=status,
@@ -2346,6 +2432,30 @@ class AutonomousSearchAgent:
             agent_metadata=safe_metadata,
             audit=audit,
             assessed_at=assessed_at or utcnow(),
+        )
+        completed_at = utcnow()
+        self.store.record_token_universe_funnel_transition(
+            token.token_id,
+            stage="agent_result",
+            status=status,
+            reason_code=status,
+            evaluation_key=f"assessment:{assessment_id}",
+            observed_at=completed_at,
+            ingested_at=completed_at,
+            source_table="token_context_assessments",
+            source_record_ids={
+                "assessment_id": assessment_id,
+                "admission_id": admission_id,
+                "agent_run_id": agent_run_id or safe_metadata["run_id"],
+            },
+            admission_id=admission_id,
+            agent_run_id=agent_run_id or safe_metadata["run_id"],
+            assessment_id=assessment_id,
+            metadata={
+                "agent_run_id": agent_run_id or safe_metadata["run_id"],
+                "trigger_kind": str(safe_trigger.get("kind") or "unknown"),
+                "verified_domain_count": len(verified_domains),
+            },
         )
         self.store.set_kv(
             CONTEXT_RESULT_KEY,
@@ -2362,6 +2472,7 @@ class AutonomousSearchAgent:
                 "contains_credentials": False,
             },
         )
+        return assessment_id
 
     async def search_token_context(
         self,
@@ -2389,6 +2500,7 @@ class AutonomousSearchAgent:
             token,
             momentum_score=momentum_score,
             event_relation=event_relation,
+            snapshot_observed_at=snapshot.observed_at,
         )
         if trigger is None:
             self._record_token_context_admission(
@@ -2448,7 +2560,7 @@ class AutonomousSearchAgent:
                 reason="quota_unavailable", trigger=trigger, now=now, quota=quota,
             )
             return []
-        self._record_token_context_admission(
+        admission_id = self._record_token_context_admission(
             token, snapshot, momentum_score=momentum_score, outcome="admitted",
             reason="admitted", trigger=trigger, now=now, quota=quota,
         )
@@ -2530,8 +2642,58 @@ class AutonomousSearchAgent:
                 ensure_ascii=False,
             )
         )
+        agent_run_id = uuid.uuid4().hex
+        queued_at = utcnow()
+        self.store.record_token_universe_funnel_transition(
+            token.token_id,
+            stage="agent_queued",
+            status="queued",
+            reason_code="token_context_admitted",
+            evaluation_key=f"admission:{admission_id}:queued",
+            observed_at=queued_at,
+            ingested_at=queued_at,
+            source_table="agent_attempts",
+            source_record_ids={
+                "admission_id": admission_id, "agent_run_id": agent_run_id
+            },
+            admission_id=admission_id,
+            agent_run_id=agent_run_id,
+            event_id=int(trigger["event_id"]) if trigger.get("event_id") is not None else None,
+            decision_id=int(trigger["decision_id"])
+            if trigger.get("decision_id") is not None else None,
+            metadata={"agent_run_id": agent_run_id, "task": "token_context"},
+        )
+
+        def record_dispatch() -> None:
+            dispatched_at = utcnow()
+            self.store.record_token_universe_funnel_transition(
+                token.token_id,
+                stage="agent_dispatch",
+                status="dispatched",
+                reason_code="agent_slot_acquired",
+                evaluation_key=f"admission:{admission_id}:dispatch",
+                observed_at=dispatched_at,
+                ingested_at=dispatched_at,
+                source_table="agent_attempts",
+                source_record_ids={
+                    "admission_id": admission_id, "agent_run_id": agent_run_id
+                },
+                admission_id=admission_id,
+                agent_run_id=agent_run_id,
+                event_id=int(trigger["event_id"])
+                if trigger.get("event_id") is not None else None,
+                decision_id=int(trigger["decision_id"])
+                if trigger.get("decision_id") is not None else None,
+                metadata={"agent_run_id": agent_run_id, "task": "token_context"},
+            )
+
         try:
-            payload, metadata = await self._search(prompt, "token_context")
+            payload, metadata = await self._search(
+                prompt,
+                "token_context",
+                run_id=agent_run_id,
+                on_started=record_dispatch,
+            )
             self._record_tokens("token_context", metadata)
             self.store.set_kv(CONTEXT_ERROR_RETRY_KEY, None)
             self.store.set_kv(CONTEXT_RUN_KEY, iso(now))
@@ -2549,6 +2711,8 @@ class AutonomousSearchAgent:
                 metadata_seeds=metadata_seeds,
                 audit=[{"verified": False, "error": f"{type(exc).__name__}: {exc}"[:500]}],
                 assessed_at=now,
+                admission_id=admission_id,
+                agent_run_id=agent_run_id,
             )
             return []
         confidence = max(0.0, min(1.0, _as_float(payload.get("confidence"))))
@@ -2564,6 +2728,8 @@ class AutonomousSearchAgent:
                 payload=payload,
                 metadata=metadata,
                 assessed_at=now,
+                admission_id=admission_id,
+                agent_run_id=agent_run_id,
             )
             return []
 
@@ -2717,5 +2883,7 @@ class AutonomousSearchAgent:
             audit=audit,
             fact_verification=fact_verification,
             assessed_at=now,
+            admission_id=admission_id,
+            agent_run_id=agent_run_id,
         )
         return verified

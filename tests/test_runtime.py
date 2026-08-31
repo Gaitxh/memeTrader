@@ -362,9 +362,39 @@ def test_dexscreener_discovery_persists_provenance_and_hydrates_bounded_token(tm
         assert runtime.store.token(token.token_id) is not None
         links = runtime.store.token_source_links(token.token_id)
         assert len(links) == 1 and links[0]["role"] == "identity"
+        exposure_link = runtime.store.db.execute(
+            """
+            SELECT el.decision_eligible,el.affects
+            FROM token_discovery_exposure_source_links el
+            JOIN token_discovery_exposures e ON e.id=el.exposure_id
+            JOIN token_source_links l ON l.id=el.source_link_id
+            WHERE e.token_id=? AND l.token_id=e.token_id
+            """,
+            (token.token_id,),
+        ).fetchone()
+        assert exposure_link is not None
+        assert exposure_link["decision_eligible"] == 0 and exposure_link["affects"] == "none"
+        funnel = runtime.store.token_universe_funnel_summary_from_connection(runtime.store.db)
+        external_links = next(
+            item for item in funnel["milestones"] if item["stage"] == "external_links_found"
+        )
+        assert external_links["cohorts"] == 1 and external_links["attempts"] == 1
         health = {row["source"]: row for row in runtime.store.source_health()}
         assert health["dexscreener:token_profiles"]["last_ok_at"] is not None
         assert health["dexscreener:hydration"]["last_item_at"] is not None
+        transitions = runtime.store.db.execute(
+            "SELECT stage,status,round_id,snapshot_id,decision_eligible,affects "
+            "FROM token_universe_funnel_transitions WHERE token_id=? "
+            "AND stage LIKE 'metadata_hydration_%' ORDER BY id",
+            (token.token_id,),
+        ).fetchall()
+        assert [(row["stage"], row["status"]) for row in transitions] == [
+            ("metadata_hydration_attempt", "attempted"),
+            ("metadata_hydration_result", "hydrated"),
+        ]
+        assert transitions[0]["round_id"] is not None
+        assert transitions[1]["snapshot_id"] is not None
+        assert all(row["decision_eligible"] == 0 and row["affects"] == "none" for row in transitions)
         await runtime.close()
 
     asyncio.run(scenario())
@@ -1198,7 +1228,19 @@ def test_reverse_context_prioritizes_exact_high_impact_post_without_momentum(tmp
         token = TokenCandidate(
             chain="solana", address="P" * 32, name="Rocket Otter", symbol="ROT"
         )
-        runtime.store.upsert_token(token)
+        discovered_at = utcnow()
+        runtime.store.upsert_token(token, seen_at=discovered_at)
+        round_id = runtime.store.start_token_discovery_round(
+            provider="pumpportal", surface="create", mode="stream_window",
+            chain_scope="solana", started_at=discovered_at,
+        )
+        runtime.store.add_token_discovery_exposure(
+            round_id, token_id=token.token_id, chain=token.chain, role="create",
+            first_local_discovery=True, new_token=True, observed_at=discovered_at,
+        )
+        runtime.store.finish_token_discovery_round(
+            round_id, status="completed", returned_count=1
+        )
         runtime.store.upsert_token_source_link(
             {
                 "token_id": token.token_id,
@@ -1256,6 +1298,17 @@ def test_reverse_context_prioritizes_exact_high_impact_post_without_momentum(tmp
         assert len(investigations) == 1
         assert investigations[0][0] == token.token_id
         assert investigations[0][2]["kind"] == "high_impact_account_post"
+        lookup_edges = list(
+            runtime.store.db.execute(
+                "SELECT stage,status FROM token_universe_funnel_transitions "
+                "WHERE token_id=? AND stage LIKE 'event_lookup_%' ORDER BY id",
+                (token.token_id,),
+            )
+        )
+        assert [(row["stage"], row["status"]) for row in lookup_edges] == [
+            ("event_lookup_attempt", "started"),
+            ("event_lookup_result", "zero_yield"),
+        ]
         await runtime.close()
 
     asyncio.run(scenario())

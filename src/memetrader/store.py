@@ -52,6 +52,7 @@ class Store:
     TOKEN_DISCOVERY_EXPOSURE_VERSION = "token-discovery-exposure/v1"
     TOKEN_DISCOVERY_QUOTE_ATTEMPT_VERSION = "token-discovery-quote-attempt/v1"
     TOKEN_UNIVERSE_FORWARD_VERSION = "token-universe-forward-outcomes/v1"
+    TOKEN_UNIVERSE_FUNNEL_VERSION = "token-universe-funnel-transitions/v1"
     TOKEN_UNIVERSE_HORIZONS_MINUTES = (15, 60, 240)
     TOKEN_UNIVERSE_BASELINE_WINDOW_MINUTES = 5
     TOKEN_UNIVERSE_OUTCOME_GRACE_MINUTES = 30
@@ -796,6 +797,35 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS token_discovery_exposures_token_idx
                     ON token_discovery_exposures(token_id,observed_at DESC,id DESC);
+                CREATE TABLE IF NOT EXISTS token_discovery_exposure_source_links (
+                    id INTEGER PRIMARY KEY,
+                    exposure_id INTEGER NOT NULL,
+                    source_link_id INTEGER NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    UNIQUE(exposure_id,source_link_id),
+                    FOREIGN KEY(exposure_id) REFERENCES token_discovery_exposures(id),
+                    FOREIGN KEY(source_link_id) REFERENCES token_source_links(id)
+                );
+                CREATE INDEX IF NOT EXISTS token_discovery_exposure_source_links_exposure_idx
+                    ON token_discovery_exposure_source_links(exposure_id,source_link_id);
+                CREATE TRIGGER IF NOT EXISTS token_discovery_exposure_source_links_insert_guard
+                BEFORE INSERT ON token_discovery_exposure_source_links
+                WHEN NOT EXISTS (
+                    SELECT 1
+                    FROM token_discovery_exposures e
+                    JOIN token_source_links l ON l.id=NEW.source_link_id
+                    WHERE e.id=NEW.exposure_id AND e.token_id=l.token_id
+                )
+                BEGIN SELECT RAISE(ABORT,'token discovery exposure/source link mismatch'); END;
+                CREATE TRIGGER IF NOT EXISTS token_discovery_exposure_source_links_no_update
+                BEFORE UPDATE ON token_discovery_exposure_source_links
+                BEGIN SELECT RAISE(ABORT,'token discovery exposure/source links are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_discovery_exposure_source_links_no_delete
+                BEFORE DELETE ON token_discovery_exposure_source_links
+                BEGIN SELECT RAISE(ABORT,'token discovery exposure/source links are immutable'); END;
                 CREATE TABLE IF NOT EXISTS token_discovery_quote_attempt_registrations (
                     definition_version TEXT PRIMARY KEY,
                     registered_at TEXT NOT NULL,
@@ -884,6 +914,162 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS token_universe_forward_cohorts_due_idx
                     ON token_universe_forward_cohorts(discovery_recorded_at,baseline_deadline_at);
+                CREATE TABLE IF NOT EXISTS token_universe_funnel_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_cohort_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS token_universe_funnel_transitions (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    transition_key TEXT NOT NULL UNIQUE,
+                    evaluation_key TEXT NOT NULL,
+                    cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    stage TEXT NOT NULL CHECK(stage IN (
+                        'metadata_hydration_attempt','metadata_hydration_result',
+                        'context_trigger_evaluation','context_admission','agent_queued',
+                        'agent_dispatch','agent_result','event_lookup_attempt','event_lookup_result',
+                        'event_token_relation','candidate_evaluator_call','candidate_evaluation',
+                        'decision_final','paper_execution_attempt','paper_fill'
+                    )),
+                    status TEXT NOT NULL,
+                    reason_code TEXT NOT NULL CHECK(length(reason_code)>0),
+                    observed_at TEXT NOT NULL,
+                    ingested_at TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    source_table TEXT NOT NULL DEFAULT '',
+                    source_record_ids_json TEXT NOT NULL DEFAULT '{}',
+                    round_id INTEGER,
+                    source_link_id INTEGER,
+                    source_poll_attempt_id INTEGER,
+                    admission_id INTEGER,
+                    agent_run_id TEXT NOT NULL DEFAULT '',
+                    assessment_id INTEGER,
+                    observation_id INTEGER,
+                    event_id INTEGER,
+                    decision_id INTEGER,
+                    snapshot_id INTEGER,
+                    paper_execution_attempt_id INTEGER,
+                    trade_id INTEGER,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    FOREIGN KEY(cohort_id) REFERENCES token_universe_forward_cohorts(id),
+                    FOREIGN KEY(round_id) REFERENCES token_discovery_rounds(id),
+                    FOREIGN KEY(source_link_id) REFERENCES token_source_links(id),
+                    FOREIGN KEY(source_poll_attempt_id) REFERENCES source_poll_attempts(id),
+                    FOREIGN KEY(admission_id) REFERENCES token_context_admission_attempts(id),
+                    FOREIGN KEY(assessment_id) REFERENCES token_context_assessments(id),
+                    FOREIGN KEY(observation_id) REFERENCES observations(id),
+                    FOREIGN KEY(event_id) REFERENCES events(id),
+                    FOREIGN KEY(decision_id) REFERENCES decisions(id),
+                    FOREIGN KEY(snapshot_id) REFERENCES token_snapshots(id),
+                    FOREIGN KEY(paper_execution_attempt_id) REFERENCES paper_execution_attempts(id),
+                    FOREIGN KEY(trade_id) REFERENCES trades(id)
+                );
+                CREATE INDEX IF NOT EXISTS token_universe_funnel_transitions_cohort_idx
+                    ON token_universe_funnel_transitions(cohort_id,stage,recorded_at,id);
+                CREATE INDEX IF NOT EXISTS token_universe_funnel_transitions_stage_idx
+                    ON token_universe_funnel_transitions(stage,status,recorded_at,id);
+                CREATE TRIGGER IF NOT EXISTS token_universe_funnel_registrations_no_update
+                BEFORE UPDATE ON token_universe_funnel_registrations
+                BEGIN SELECT RAISE(ABORT,'token universe funnel registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_universe_funnel_registrations_no_delete
+                BEFORE DELETE ON token_universe_funnel_registrations
+                BEGIN SELECT RAISE(ABORT,'token universe funnel registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_universe_funnel_transitions_no_update
+                BEFORE UPDATE ON token_universe_funnel_transitions
+                BEGIN SELECT RAISE(ABORT,'token universe funnel transitions are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_universe_funnel_transitions_no_delete
+                BEFORE DELETE ON token_universe_funnel_transitions
+                BEGIN SELECT RAISE(ABORT,'token universe funnel transitions are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_universe_funnel_transitions_insert_guard
+                BEFORE INSERT ON token_universe_funnel_transitions
+                WHEN NOT EXISTS (
+                    SELECT 1
+                    FROM token_universe_funnel_registrations r
+                    JOIN token_universe_forward_cohorts c ON c.id=NEW.cohort_id
+                    WHERE r.definition_version=NEW.definition_version
+                      AND NEW.cohort_id>r.activation_cohort_id
+                      AND c.token_id=NEW.token_id
+                )
+                OR (NEW.round_id IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM token_discovery_rounds WHERE id=NEW.round_id
+                ))
+                OR (NEW.admission_id IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM token_context_admission_attempts
+                    WHERE id=NEW.admission_id AND token_id=NEW.token_id
+                ))
+                OR (NEW.source_link_id IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM token_source_links
+                    WHERE id=NEW.source_link_id AND token_id=NEW.token_id
+                ))
+                OR (NEW.source_poll_attempt_id IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM source_poll_attempts WHERE id=NEW.source_poll_attempt_id
+                ))
+                OR (NEW.assessment_id IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM token_context_assessments
+                    WHERE id=NEW.assessment_id AND token_id=NEW.token_id
+                ))
+                OR (NEW.observation_id IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM observations WHERE id=NEW.observation_id
+                ))
+                OR (NEW.event_id IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM events WHERE id=NEW.event_id
+                ))
+                OR (NEW.decision_id IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM decisions
+                    WHERE id=NEW.decision_id AND token_id=NEW.token_id
+                      AND (NEW.event_id IS NULL OR event_id=NEW.event_id)
+                ))
+                OR (NEW.snapshot_id IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM token_snapshots
+                    WHERE id=NEW.snapshot_id AND token_id=NEW.token_id
+                ))
+                OR (NEW.observation_id IS NOT NULL AND NEW.event_id IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM event_observations
+                    WHERE observation_id=NEW.observation_id AND event_id=NEW.event_id
+                ))
+                OR (NEW.paper_execution_attempt_id IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM paper_execution_attempts
+                    WHERE id=NEW.paper_execution_attempt_id AND token_id=NEW.token_id
+                      AND (NEW.decision_id IS NULL OR decision_id=NEW.decision_id)
+                      AND (NEW.event_id IS NULL OR event_id=NEW.event_id)
+                ))
+                OR (NEW.trade_id IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM trades
+                    WHERE id=NEW.trade_id AND token_id=NEW.token_id
+                      AND (NEW.decision_id IS NULL OR decision_id=NEW.decision_id)
+                      AND (NEW.event_id IS NULL OR event_id=NEW.event_id)
+                ))
+                OR (NEW.stage='metadata_hydration_attempt' AND NEW.round_id IS NULL)
+                OR (NEW.stage='metadata_hydration_result' AND NEW.round_id IS NULL)
+                OR (NEW.stage='context_admission' AND NEW.admission_id IS NULL)
+                OR (NEW.stage IN ('agent_queued','agent_dispatch') AND (
+                    NEW.admission_id IS NULL OR NEW.agent_run_id=''
+                ))
+                OR (NEW.stage='agent_result' AND (
+                    NEW.admission_id IS NULL OR NEW.assessment_id IS NULL OR NEW.agent_run_id=''
+                ))
+                OR (NEW.stage IN ('event_lookup_attempt','event_lookup_result')
+                    AND NEW.source_poll_attempt_id IS NULL)
+                OR (NEW.stage='event_token_relation' AND (
+                    NEW.observation_id IS NULL OR NEW.event_id IS NULL
+                ))
+                OR (NEW.stage IN ('candidate_evaluator_call','candidate_evaluation')
+                    AND NEW.event_id IS NULL)
+                OR (NEW.stage='decision_final' AND (
+                    NEW.decision_id IS NULL OR NEW.event_id IS NULL
+                ))
+                OR (NEW.stage='paper_execution_attempt' AND (
+                    NEW.paper_execution_attempt_id IS NULL OR NEW.decision_id IS NULL
+                ))
+                OR (NEW.stage='paper_fill' AND (
+                    NEW.trade_id IS NULL OR NEW.decision_id IS NULL
+                ))
+                BEGIN SELECT RAISE(ABORT,'invalid token universe funnel transition link'); END;
                 CREATE TABLE IF NOT EXISTS token_universe_forward_baselines (
                     cohort_id INTEGER PRIMARY KEY,
                     status TEXT NOT NULL,
@@ -1569,6 +1755,16 @@ class Store:
                     self.TOKEN_UNIVERSE_FORWARD_VERSION,
                     iso(),
                     self._json(self._token_universe_forward_definition()),
+                ),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO token_universe_funnel_registrations("
+                "definition_version,registered_at,activation_cohort_id,definition_json) "
+                "VALUES(?,?,COALESCE((SELECT MAX(id) FROM token_universe_forward_cohorts),0),?)",
+                (
+                    self.TOKEN_UNIVERSE_FUNNEL_VERSION,
+                    iso(),
+                    self._json(self._token_universe_funnel_definition()),
                 ),
             )
             self.db.execute(
@@ -2809,6 +3005,35 @@ class Store:
                 "INSERT OR IGNORE INTO event_observations(event_id,observation_id) VALUES(?,?)",
                 (event_id, observation_id),
             )
+            observation = self.db.execute(
+                "SELECT observed_at,ingested_at,raw_json FROM observations WHERE id=?",
+                (int(observation_id),),
+            ).fetchone()
+            if observation is None:
+                return
+            raw = self._json_object(observation["raw_json"])
+            token_id = str(raw.get("reverse_token_id") or "").strip()
+            if not token_id or ":" not in token_id:
+                return
+            if str(raw.get("agent_task") or "") == "token_context":
+                reason = "token_context_observation"
+            else:
+                reason = "reverse_news_observation"
+            self.record_token_universe_funnel_transition(
+                token_id,
+                stage="event_token_relation",
+                status="linked",
+                reason_code=reason,
+                evaluation_key=f"observation:{int(observation_id)}:event:{int(event_id)}",
+                observed_at=observation["observed_at"],
+                ingested_at=observation["ingested_at"],
+                source_table="event_observations",
+                source_record_ids={
+                    "observation_id": int(observation_id), "event_id": int(event_id)
+                },
+                observation_id=int(observation_id),
+                event_id=int(event_id),
+            )
 
     def event_for_observation(self, observation_id: int) -> int | None:
         row = self.db.execute(
@@ -3783,6 +4008,35 @@ class Store:
         )
         return fingerprint, not existed
 
+    def link_token_discovery_exposure_source_links(
+        self,
+        exposure_id: int,
+        source_link_fingerprints: Iterable[str],
+        *,
+        observed_at: Any = None,
+    ) -> int:
+        observed = iso(parse_time(observed_at or utcnow()))
+        recorded = iso()
+        inserted = 0
+        with self._lock, self.db:
+            for fingerprint in dict.fromkeys(str(value) for value in source_link_fingerprints if value):
+                link = self.db.execute(
+                    "SELECT id FROM token_source_links WHERE fingerprint=?",
+                    (fingerprint,),
+                ).fetchone()
+                if link is None:
+                    continue
+                cursor = self.db.execute(
+                    """
+                    INSERT OR IGNORE INTO token_discovery_exposure_source_links(
+                        exposure_id,source_link_id,observed_at,recorded_at,decision_eligible,affects
+                    ) VALUES(?,?,?,?,0,'none')
+                    """,
+                    (int(exposure_id), int(link["id"]), observed, recorded),
+                )
+                inserted += int(cursor.rowcount > 0)
+        return inserted
+
     def upsert_token_source_link(self, link: Mapping[str, Any], *, observed_at=None) -> tuple[str, bool]:
         with self._lock, self.db:
             return self._upsert_token_source_link_locked(link, observed_at=observed_at)
@@ -3823,12 +4077,12 @@ class Store:
         rows = self.db.execute("SELECT token_id FROM tokens WHERE last_seen_at>=? ORDER BY last_seen_at DESC LIMIT ?", (since, limit))
         return [token for row in rows if (token := self.token(row["token_id"])) is not None]
 
-    def add_snapshot(self, snap: TokenSnapshot) -> None:
+    def add_snapshot(self, snap: TokenSnapshot) -> int:
         token_id = f"{snap.chain.lower()}:{snap.address}"
         ingested_at = snap.ingested_at or utcnow()
         with self._lock, self.db:
             recorded_at = utcnow()
-            self.db.execute(
+            cursor = self.db.execute(
                 """
                 INSERT INTO token_snapshots(
                     token_id,observed_at,ingested_at,recorded_at,provider,price_usd,liquidity_usd,market_cap_usd,volume_5m_usd,
@@ -3844,6 +4098,7 @@ class Store:
                     None if snap.sellable is None else int(snap.sellable), self._json(snap.raw),
                 ),
             )
+            return int(cursor.lastrowid)
 
     def latest_snapshot(self, token_id: str, *, at_or_before: Any = None) -> TokenSnapshot | None:
         cutoff = iso(parse_time(at_or_before)) if at_or_before is not None else iso()
@@ -3880,7 +4135,34 @@ class Store:
                     decision.position_usd, iso(decision.created_at),
                 ),
             )
-            return int(cur.lastrowid)
+            decision_id = int(cur.lastrowid)
+            if decision.token_id:
+                self.record_token_universe_funnel_transition(
+                    decision.token_id,
+                    stage="decision_final",
+                    status=str(decision.action).lower(),
+                    reason_code=(
+                        str(decision.rejected_reasons[0])
+                        if decision.rejected_reasons else str(decision.action).lower()
+                    ),
+                    evaluation_key=f"decision:{decision_id}",
+                    observed_at=decision.created_at,
+                    ingested_at=utcnow(),
+                    source_table="decisions",
+                    source_record_ids={
+                        "decision_id": decision_id, "event_id": int(decision.event_id)
+                    },
+                    event_id=int(decision.event_id),
+                    decision_id=decision_id,
+                    metadata={
+                        "action": str(decision.action),
+                        "candidate_score": float(decision.score),
+                        "match_score": float(decision.match_score),
+                        "canonical_margin": float(decision.canonical_margin),
+                        "position_usd": float(decision.position_usd),
+                    },
+                )
+            return decision_id
 
     def decisions(self, limit: int = 30) -> list[sqlite3.Row]:
         return list(self.db.execute("SELECT * FROM decisions ORDER BY id DESC LIMIT ?", (limit,)))
@@ -3930,13 +4212,47 @@ class Store:
                     iso(parse_time(quote_as_of)) if quote_as_of else None,
                 ),
             )
-        return int(cursor.lastrowid)
+            return int(cursor.lastrowid)
 
     def latest_paper_account_snapshot_at(self):
         row = self.db.execute(
             "SELECT recorded_at FROM paper_account_snapshots ORDER BY id DESC LIMIT 1"
         ).fetchone()
         return parse_time(row["recorded_at"]) if row else None
+
+    def _insert_paper_execution_attempt_locked(
+        self,
+        *,
+        event_id: int,
+        token_id: str,
+        decision_id: int | None = None,
+        cohort_id: int | None = None,
+        side: str,
+        status: str,
+        reason: str,
+        requested_at: Any,
+        quote_observed_at: Any = None,
+        quote_provider: str = "",
+        quote_price: float | None = None,
+        execution_price: float | None = None,
+        gross_usd: float | None = None,
+    ) -> int:
+        cursor = self.db.execute(
+            """
+            INSERT INTO paper_execution_attempts(
+                event_id,token_id,decision_id,cohort_id,side,status,reason,requested_at,
+                quote_observed_at,quote_provider,quote_price,execution_price,gross_usd
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                int(event_id), str(token_id), decision_id, cohort_id,
+                str(side).upper(), str(status), str(reason),
+                iso(parse_time(requested_at)),
+                iso(parse_time(quote_observed_at)) if quote_observed_at else None,
+                str(quote_provider or ""), quote_price, execution_price, gross_usd,
+            ),
+        )
+        return int(cursor.lastrowid)
 
     def record_paper_execution_attempt(
         self,
@@ -3956,22 +4272,42 @@ class Store:
         gross_usd: float | None = None,
     ) -> int:
         with self._lock, self.db:
-            cursor = self.db.execute(
-                """
-                INSERT INTO paper_execution_attempts(
-                    event_id,token_id,decision_id,cohort_id,side,status,reason,requested_at,
-                    quote_observed_at,quote_provider,quote_price,execution_price,gross_usd
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
-                """,
-                (
-                    int(event_id), str(token_id), decision_id, cohort_id,
-                    str(side).upper(), str(status), str(reason),
-                    iso(parse_time(requested_at)),
-                    iso(parse_time(quote_observed_at)) if quote_observed_at else None,
-                    str(quote_provider or ""), quote_price, execution_price, gross_usd,
-                ),
+            attempt_id = self._insert_paper_execution_attempt_locked(
+                event_id=event_id,
+                token_id=token_id,
+                decision_id=decision_id,
+                cohort_id=cohort_id,
+                side=side,
+                status=status,
+                reason=reason,
+                requested_at=requested_at,
+                quote_observed_at=quote_observed_at,
+                quote_provider=quote_provider,
+                quote_price=quote_price,
+                execution_price=execution_price,
+                gross_usd=gross_usd,
             )
-        return int(cursor.lastrowid)
+            if decision_id is not None:
+                self.record_token_universe_funnel_transition(
+                    str(token_id),
+                    stage="paper_execution_attempt",
+                    status=str(status).lower(),
+                    reason_code=str(reason),
+                    evaluation_key=f"paper_execution_attempt:{attempt_id}",
+                    observed_at=requested_at,
+                    ingested_at=utcnow(),
+                    source_table="paper_execution_attempts",
+                    source_record_ids={
+                        "paper_execution_attempt_id": attempt_id,
+                        "decision_id": int(decision_id),
+                        "event_id": int(event_id),
+                    },
+                    event_id=int(event_id),
+                    decision_id=int(decision_id),
+                    paper_execution_attempt_id=attempt_id,
+                    metadata={"side": str(side).upper(), "status": str(status)},
+                )
+            return attempt_id
 
     def paper_buy(
         self, *, event_id: int, token: TokenCandidate, price: float, gross_usd: float,
@@ -3979,6 +4315,8 @@ class Store:
         tax_pct: float | None = None, quote_observed_at: Any = None,
         quote_provider: str = "", execution_attempted_at: Any = None,
         decision_id: int | None = None, cohort_id: int | None = None,
+        paper_execution_attempt_id: int | None = None,
+        record_execution_attempt: bool = False,
     ) -> Position:
         if price <= 0 or gross_usd <= 0:
             raise ValueError("price and gross_usd must be positive")
@@ -4004,6 +4342,24 @@ class Store:
             if self.db.execute("SELECT 1 FROM positions WHERE token_id=?", (token.token_id,)).fetchone():
                 raise ValueError("position already exists")
             now = iso()
+            if record_execution_attempt:
+                if paper_execution_attempt_id is not None:
+                    raise ValueError("paper execution attempt already supplied")
+                paper_execution_attempt_id = self._insert_paper_execution_attempt_locked(
+                    event_id=event_id,
+                    token_id=token.token_id,
+                    decision_id=decision_id,
+                    cohort_id=cohort_id,
+                    side="BUY",
+                    status="filled",
+                    reason=reason,
+                    requested_at=execution_attempted_at or now,
+                    quote_observed_at=quote_observed_at,
+                    quote_provider=quote_provider,
+                    quote_price=quote_price,
+                    execution_price=price,
+                    gross_usd=gross_usd,
+                )
             self.db.execute("UPDATE paper_account SET cash_usd=cash_usd-?,updated_at=? WHERE singleton=1", (debit, now))
             self.db.execute(
                 """
@@ -4016,7 +4372,7 @@ class Store:
                     token.symbol,quantity,price,debit,debit,price,now,0.0,
                 ),
             )
-            self.db.execute(
+            trade_cursor = self.db.execute(
                 """
                 INSERT INTO trades(
                     token_id,event_id,decision_id,cohort_id,side,quantity,price,quote_price,gross_usd,fee_usd,
@@ -4032,6 +4388,49 @@ class Store:
                  iso(parse_time(execution_attempted_at)) if execution_attempted_at else now,
                  reason,now),
             )
+            trade_id = int(trade_cursor.lastrowid)
+            if decision_id is not None:
+                if paper_execution_attempt_id is not None:
+                    self.record_token_universe_funnel_transition(
+                        token.token_id,
+                        stage="paper_execution_attempt",
+                        status="filled",
+                        reason_code=str(reason),
+                        evaluation_key=f"paper_execution_attempt:{paper_execution_attempt_id}",
+                        observed_at=execution_attempted_at or now,
+                        ingested_at=utcnow(),
+                        source_table="paper_execution_attempts",
+                        source_record_ids={
+                            "paper_execution_attempt_id": paper_execution_attempt_id,
+                            "decision_id": int(decision_id),
+                            "event_id": int(event_id),
+                        },
+                        event_id=int(event_id),
+                        decision_id=int(decision_id),
+                        paper_execution_attempt_id=paper_execution_attempt_id,
+                        metadata={"side": "BUY", "status": "filled"},
+                    )
+                self.record_token_universe_funnel_transition(
+                    token.token_id,
+                    stage="paper_fill",
+                    status="filled",
+                    reason_code=str(reason),
+                    evaluation_key=f"trade:{trade_id}",
+                    observed_at=execution_attempted_at or now,
+                    ingested_at=utcnow(),
+                    source_table="trades",
+                    source_record_ids={
+                        "trade_id": trade_id,
+                        "decision_id": int(decision_id),
+                        "event_id": int(event_id),
+                        "paper_execution_attempt_id": paper_execution_attempt_id,
+                    },
+                    event_id=int(event_id),
+                    decision_id=int(decision_id),
+                    paper_execution_attempt_id=paper_execution_attempt_id,
+                    trade_id=trade_id,
+                    metadata={"side": "BUY"},
+                )
         return self.position(token.token_id)
 
     def position(self, token_id: str) -> Position | None:
@@ -4065,6 +4464,7 @@ class Store:
         reason: str, quote_price: float | None = None, tax_pct: float | None = None,
         quote_observed_at: Any = None, quote_provider: str = "",
         execution_attempted_at: Any = None,
+        record_execution_attempt: bool = False,
     ) -> dict[str, float]:
         position = self.position(token_id)
         if not position:
@@ -4091,11 +4491,28 @@ class Store:
         remaining_cost = position.remaining_cost_usd - cost_released
         now = iso()
         with self._lock, self.db:
+            paper_execution_attempt_id = None
+            if record_execution_attempt:
+                paper_execution_attempt_id = self._insert_paper_execution_attempt_locked(
+                    event_id=position.event_id,
+                    token_id=position.token_id,
+                    decision_id=position.decision_id,
+                    cohort_id=position.cohort_id,
+                    side="SELL",
+                    status="filled",
+                    reason=reason,
+                    requested_at=execution_attempted_at or now,
+                    quote_observed_at=quote_observed_at,
+                    quote_provider=quote_provider,
+                    quote_price=quote_price,
+                    execution_price=price,
+                    gross_usd=gross,
+                )
             self.db.execute(
                 "UPDATE paper_account SET cash_usd=cash_usd+?,realized_pnl_usd=realized_pnl_usd+?,updated_at=? WHERE singleton=1",
                 (net, pnl, now),
             )
-            self.db.execute(
+            trade_cursor = self.db.execute(
                 """
                 INSERT INTO trades(
                     token_id,event_id,decision_id,cohort_id,side,quantity,price,quote_price,gross_usd,fee_usd,
@@ -4113,6 +4530,7 @@ class Store:
                  iso(parse_time(execution_attempted_at)) if execution_attempted_at else now,
                  reason,now),
             )
+            trade_id = int(trade_cursor.lastrowid)
             if remaining_quantity <= max(1e-12, position.quantity * 1e-8):
                 self._record_source_utility_outcome_locked(position, closed_at=now)
                 self.db.execute("DELETE FROM positions WHERE token_id=?", (token_id,))
@@ -4120,6 +4538,48 @@ class Store:
                 self.db.execute(
                     "UPDATE positions SET quantity=?,remaining_cost_usd=?,realized_pnl_usd=realized_pnl_usd+? WHERE token_id=?",
                     (remaining_quantity,remaining_cost,pnl,token_id),
+                )
+            if position.decision_id is not None:
+                if paper_execution_attempt_id is not None:
+                    self.record_token_universe_funnel_transition(
+                        position.token_id,
+                        stage="paper_execution_attempt",
+                        status="filled",
+                        reason_code=str(reason),
+                        evaluation_key=f"paper_execution_attempt:{paper_execution_attempt_id}",
+                        observed_at=execution_attempted_at or now,
+                        ingested_at=utcnow(),
+                        source_table="paper_execution_attempts",
+                        source_record_ids={
+                            "paper_execution_attempt_id": paper_execution_attempt_id,
+                            "decision_id": int(position.decision_id),
+                            "event_id": int(position.event_id),
+                        },
+                        event_id=int(position.event_id),
+                        decision_id=int(position.decision_id),
+                        paper_execution_attempt_id=paper_execution_attempt_id,
+                        metadata={"side": "SELL", "status": "filled"},
+                    )
+                self.record_token_universe_funnel_transition(
+                    position.token_id,
+                    stage="paper_fill",
+                    status="filled",
+                    reason_code=str(reason),
+                    evaluation_key=f"trade:{trade_id}",
+                    observed_at=execution_attempted_at or now,
+                    ingested_at=utcnow(),
+                    source_table="trades",
+                    source_record_ids={
+                        "trade_id": trade_id,
+                        "decision_id": int(position.decision_id),
+                        "event_id": int(position.event_id),
+                        "paper_execution_attempt_id": paper_execution_attempt_id,
+                    },
+                    event_id=int(position.event_id),
+                    decision_id=int(position.decision_id),
+                    paper_execution_attempt_id=paper_execution_attempt_id,
+                    trade_id=trade_id,
+                    metadata={"side": "SELL"},
                 )
         return {
             "quantity": quantity, "gross_usd": gross, "fee_usd": fee, "net_usd": net,
@@ -6816,10 +7276,10 @@ class Store:
         snapshot_count: int = 0,
         no_pair: bool = False,
         observed_at: Any = None,
-    ) -> None:
+    ) -> int | None:
         token_id = str(token_id).strip()[:300]
         if not token_id:
-            return
+            return None
         clean = lambda value: re.sub(r"[^a-zA-Z0-9:._-]+", "-", str(value).strip())[:100]
         exposure_observed_at = iso(observed_at or utcnow())
         exposure_recorded_at = iso()
@@ -6847,6 +7307,12 @@ class Store:
                     max(0, int(new_source_link_count or 0)), max(0, int(snapshot_count or 0)),
                     int(bool(no_pair)), exposure_observed_at, exposure_recorded_at,
                 ),
+            )
+            exposure_id = int(
+                self.db.execute(
+                    "SELECT id FROM token_discovery_exposures WHERE round_id=? AND token_id=?",
+                    (int(round_id), token_id),
+                ).fetchone()["id"]
             )
             if first_local_discovery:
                 exposure = self.db.execute(
@@ -6888,6 +7354,7 @@ class Store:
                             iso(discovered + timedelta(minutes=self.TOKEN_UNIVERSE_BASELINE_WINDOW_MINUTES)),
                         ),
                     )
+            return exposure_id
 
     def finish_token_discovery_round(
         self,
@@ -6971,6 +7438,253 @@ class Store:
             "decision_eligible": False,
             "affects": "none",
         }
+
+    @classmethod
+    def _token_universe_funnel_definition(cls) -> dict[str, Any]:
+        return {
+            "version": cls.TOKEN_UNIVERSE_FUNNEL_VERSION,
+            "cohort": "token_universe_forward_cohort_created_after_registration",
+            "no_historical_backfill": True,
+            "append_only": True,
+            "recorded_transition_stages": [
+                "metadata_hydration_attempt",
+                "metadata_hydration_result",
+                "context_trigger_evaluation",
+                "context_admission",
+                "agent_queued",
+                "agent_dispatch",
+                "agent_result",
+                "event_lookup_attempt",
+                "event_lookup_result",
+                "event_token_relation",
+                "candidate_evaluator_call",
+                "candidate_evaluation",
+                "decision_final",
+                "paper_execution_attempt",
+                "paper_fill",
+            ],
+            "derived_existing_stages": [
+                "token_discovered",
+                "quote_baseline_pending",
+                "quote_baseline_invalid",
+                "quote_baseline_valid",
+                "metadata_hydration_attempted",
+                "metadata_hydration_failed",
+                "external_links_found",
+                "decision_wait",
+                "decision_reject",
+                "decision_candidate",
+                "paper_gate_failed",
+                "paper_buy",
+            ],
+            "time_basis": "source_observed_at_then_local_ingested_at_then_store_recorded_at",
+            "absence_is_not_rejection": True,
+            "decision_eligible": False,
+            "affects": "none",
+        }
+
+    def record_token_universe_funnel_transition(
+        self,
+        token_id: str,
+        *,
+        stage: str,
+        status: str,
+        reason_code: str,
+        evaluation_key: str,
+        observed_at: Any = None,
+        ingested_at: Any = None,
+        source_table: str = "",
+        source_record_ids: Mapping[str, Any] | None = None,
+        round_id: int | None = None,
+        source_link_id: int | None = None,
+        source_poll_attempt_id: int | None = None,
+        admission_id: int | None = None,
+        agent_run_id: str = "",
+        assessment_id: int | None = None,
+        observation_id: int | None = None,
+        event_id: int | None = None,
+        decision_id: int | None = None,
+        snapshot_id: int | None = None,
+        paper_execution_attempt_id: int | None = None,
+        trade_id: int | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> int | None:
+        allowed_stages = set(self._token_universe_funnel_definition()["recorded_transition_stages"])
+        if stage not in allowed_stages:
+            raise ValueError("invalid token universe funnel stage")
+        token_id = str(token_id).strip()[:300]
+        if not token_id:
+            return None
+        natural_key = str(evaluation_key).strip()[:500]
+        if not natural_key:
+            raise ValueError("token universe funnel evaluation_key is required")
+        stage_status = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(status))[:80] or "unknown"
+        reason = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(reason_code))[:120] or "unspecified"
+        observed = parse_time(observed_at or utcnow())
+        ingested = parse_time(ingested_at or observed)
+        recorded = utcnow()
+        source_name = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(source_table))[:100]
+        safe_source_ids = {
+            re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(key))[:80]: value
+            for key, value in dict(source_record_ids or {}).items()
+            if isinstance(value, (str, int, float, bool)) or value is None
+        }
+        safe_metadata = {
+            re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(key))[:80]: value
+            for key, value in dict(metadata or {}).items()
+            if isinstance(value, (str, int, float, bool)) or value is None
+        }
+        if observed > ingested or ingested > recorded:
+            safe_metadata["reported_status"] = stage_status
+            safe_metadata["reported_reason_code"] = reason
+            stage_status = "excluded_time_order"
+            reason = "invalid_time_order"
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT activation_cohort_id FROM token_universe_funnel_registrations "
+                "WHERE definition_version=?",
+                (self.TOKEN_UNIVERSE_FUNNEL_VERSION,),
+            ).fetchone()
+            if registration is None:
+                return None
+            cohort = self.db.execute(
+                "SELECT id FROM token_universe_forward_cohorts "
+                "WHERE definition_version=? AND token_id=? AND id>?",
+                (
+                    self.TOKEN_UNIVERSE_FORWARD_VERSION,
+                    token_id,
+                    int(registration["activation_cohort_id"] or 0),
+                ),
+            ).fetchone()
+            if cohort is None:
+                return None
+            source_json = self._bounded_json(safe_source_ids, max_chars=4000)
+            metadata_json = self._bounded_json(safe_metadata, max_chars=8000)
+            material = "\n".join((
+                self.TOKEN_UNIVERSE_FUNNEL_VERSION,
+                str(cohort["id"]), stage, natural_key,
+            ))
+            transition_key = hashlib.sha256(material.encode("utf-8", errors="ignore")).hexdigest()
+            self.db.execute(
+                """
+                INSERT OR IGNORE INTO token_universe_funnel_transitions(
+                    definition_version,transition_key,evaluation_key,cohort_id,token_id,stage,status,reason_code,
+                    observed_at,ingested_at,recorded_at,source_table,source_record_ids_json,
+                    round_id,source_link_id,source_poll_attempt_id,admission_id,agent_run_id,
+                    assessment_id,observation_id,event_id,decision_id,
+                    snapshot_id,paper_execution_attempt_id,trade_id,
+                    metadata_json,decision_eligible,affects
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'none')
+                """,
+                (
+                    self.TOKEN_UNIVERSE_FUNNEL_VERSION, transition_key, natural_key,
+                    int(cohort["id"]),
+                    token_id, stage, stage_status, reason, iso(observed), iso(ingested), iso(),
+                    source_name, source_json, round_id, source_link_id, source_poll_attempt_id,
+                    admission_id, str(agent_run_id)[:100], assessment_id,
+                    observation_id, event_id, decision_id, snapshot_id,
+                    paper_execution_attempt_id, trade_id, metadata_json,
+                ),
+            )
+            row = self.db.execute(
+                "SELECT id FROM token_universe_funnel_transitions WHERE transition_key=?",
+                (transition_key,),
+            ).fetchone()
+            return int(row["id"]) if row is not None else None
+
+    def record_token_universe_candidate_evaluations(
+        self,
+        event_id: int,
+        *,
+        evaluated_at: Any,
+        candidates: Iterable[Mapping[str, Any]],
+        selected_token_id: str = "",
+        selected_action: str = "",
+        outcome_reasons: Iterable[str] = (),
+    ) -> int:
+        candidate_rows = [dict(item) for item in candidates if isinstance(item, Mapping)]
+        candidate_by_token = {
+            str(item.get("token_id") or ""): item
+            for item in candidate_rows
+            if str(item.get("token_id") or "")
+        }
+        related_tokens = {
+            str(row["token_id"])
+            for row in self.db.execute(
+                "SELECT DISTINCT token_id FROM token_universe_funnel_transitions "
+                "WHERE definition_version=? AND stage='event_token_relation' "
+                "AND status='linked' AND event_id=?",
+                (self.TOKEN_UNIVERSE_FUNNEL_VERSION, int(event_id)),
+            )
+        }
+        token_ids = sorted({*candidate_by_token, *related_tokens})
+        if not token_ids:
+            return 0
+        reasons = [str(value)[:120] for value in outcome_reasons if str(value).strip()]
+        recorded = 0
+        for token_id in token_ids:
+            item = candidate_by_token.get(token_id)
+            if item is None:
+                stage = "candidate_evaluator_call"
+                status = "evaluated_no_ranked_candidate"
+                reason = reasons[0] if reasons else "not_in_ranked_candidate_set"
+                metadata: dict[str, Any] = {"candidate_rank": None}
+            elif item.get("filter_reason"):
+                stage = "candidate_evaluation"
+                status = "filtered"
+                reason = str(item.get("filter_reason") or "filtered")
+                metadata = {
+                    "candidate_rank": None,
+                    "probe_reason": item.get("probe_reason"),
+                    "match_score": item.get("match_score"),
+                }
+            elif token_id == str(selected_token_id or ""):
+                stage = "candidate_evaluation"
+                action = re.sub(
+                    r"[^a-zA-Z0-9_.-]+", "_", str(selected_action or "unknown").lower()
+                )[:40]
+                status = (
+                    "selected_candidate" if action == "candidate" else f"top_rank_{action}"
+                )
+                rejected = item.get("rejected_reasons")
+                rejected = rejected if isinstance(rejected, list) else []
+                reason = str(rejected[0]) if rejected else str(selected_action or "selected").lower()
+                metadata = {
+                    "candidate_rank": item.get("rank"),
+                    "candidate_score": item.get("candidate_score"),
+                    "match_score": item.get("match_score"),
+                    "canonical_margin": item.get("canonical_margin"),
+                    "safety_status": (item.get("safety") or {}).get("status")
+                    if isinstance(item.get("safety"), Mapping) else None,
+                    "final_action": str(selected_action or ""),
+                }
+            else:
+                stage = "candidate_evaluation"
+                status = "considered_not_selected"
+                reason = "lower_rank"
+                metadata = {
+                    "candidate_rank": item.get("rank"),
+                    "candidate_score": item.get("candidate_score"),
+                    "match_score": item.get("match_score"),
+                    "score_gap_to_selected": item.get("score_gap_to_selected"),
+                }
+            if self.record_token_universe_funnel_transition(
+                token_id,
+                stage=stage,
+                status=status,
+                reason_code=reason,
+                evaluation_key=f"event:{int(event_id)}:{iso(parse_time(evaluated_at))}",
+                observed_at=evaluated_at,
+                ingested_at=evaluated_at,
+                source_table="candidate_ranking",
+                source_record_ids={"event_id": int(event_id)},
+                event_id=int(event_id),
+                snapshot_id=int(item["snapshot_id"])
+                if item is not None and item.get("snapshot_id") is not None else None,
+                metadata=metadata,
+            ) is not None:
+                recorded += 1
+        return recorded
 
     def register_token_universe_outcome_quality(
         self,
@@ -8021,6 +8735,439 @@ class Store:
             },
             "horizons": list(by_horizon.values()), "tiers": tiers, "surfaces": surfaces,
             "decision_eligible": False, "affects": "none", "as_of": iso(),
+        }
+
+    @classmethod
+    def token_universe_funnel_summary_from_connection(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        lookback_days: int = 90,
+    ) -> dict[str, Any]:
+        required = {
+            "token_universe_funnel_registrations",
+            "token_universe_funnel_transitions",
+            "token_universe_forward_cohorts",
+            "token_universe_forward_baselines",
+        }
+        tables = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        empty = {
+            "status": "not_observed",
+            "version": cls.TOKEN_UNIVERSE_FUNNEL_VERSION,
+            "definition": cls._token_universe_funnel_definition(),
+            "summary": {"cohorts": 0, "transition_attempts": 0},
+            "milestones": [],
+            "transitions": [],
+            "reason_codes": [],
+            "latencies": [],
+            "potential_opportunity_recall": [],
+            "decision_eligible": False,
+            "affects": "none",
+        }
+        if not required.issubset(tables):
+            return empty
+        registration = connection.execute(
+            "SELECT * FROM token_universe_funnel_registrations WHERE definition_version=?",
+            (cls.TOKEN_UNIVERSE_FUNNEL_VERSION,),
+        ).fetchone()
+        if registration is None:
+            return empty
+        activation = int(registration["activation_cohort_id"] or 0)
+        start = max(
+            parse_time(registration["registered_at"]),
+            utcnow() - timedelta(days=max(1, min(3650, int(lookback_days)))),
+        )
+        cohort_where = "c.id>? AND c.discovery_recorded_at>=?"
+        cohort_params = (activation, iso(start))
+        cohort_row = connection.execute(
+            f"""
+            SELECT COUNT(*) AS cohorts,
+                   SUM(CASE WHEN b.status='observed' THEN 1 ELSE 0 END) AS baseline_observed,
+                   SUM(CASE WHEN b.status='missing' THEN 1 ELSE 0 END) AS baseline_missing,
+                   SUM(CASE WHEN b.cohort_id IS NULL THEN 1 ELSE 0 END) AS baseline_pending
+            FROM token_universe_forward_cohorts c
+            LEFT JOIN token_universe_forward_baselines b ON b.cohort_id=c.id
+            WHERE {cohort_where}
+            """,
+            cohort_params,
+        ).fetchone()
+        cohorts = int(cohort_row["cohorts"] or 0)
+        transition_rows = connection.execute(
+            f"""
+            SELECT t.stage,t.status,COUNT(*) AS attempts,
+                   COUNT(DISTINCT t.cohort_id) AS cohorts
+            FROM token_universe_funnel_transitions t
+            JOIN token_universe_forward_cohorts c ON c.id=t.cohort_id
+            WHERE t.definition_version=? AND {cohort_where}
+            GROUP BY t.stage,t.status ORDER BY t.stage,t.status
+            """,
+            (cls.TOKEN_UNIVERSE_FUNNEL_VERSION, *cohort_params),
+        ).fetchall()
+        stage_rows = connection.execute(
+            f"""
+            SELECT t.stage,COUNT(*) AS attempts,COUNT(DISTINCT t.cohort_id) AS cohorts
+            FROM token_universe_funnel_transitions t
+            JOIN token_universe_forward_cohorts c ON c.id=t.cohort_id
+            WHERE t.definition_version=? AND {cohort_where}
+              AND t.status<>'excluded_time_order'
+            GROUP BY t.stage
+            """,
+            (cls.TOKEN_UNIVERSE_FUNNEL_VERSION, *cohort_params),
+        ).fetchall()
+        stage_totals = {
+            str(row["stage"]): {
+                "attempts": int(row["attempts"] or 0),
+                "cohorts": int(row["cohorts"] or 0),
+            }
+            for row in stage_rows
+        }
+        status_totals = {
+            (str(row["stage"]), str(row["status"])): {
+                "attempts": int(row["attempts"] or 0),
+                "cohorts": int(row["cohorts"] or 0),
+            }
+            for row in transition_rows
+        }
+        def stage_count(stage: str, status: str | None = None) -> tuple[int, int]:
+            value = stage_totals.get(stage, {}) if status is None else status_totals.get((stage, status), {})
+            return int(value.get("cohorts", 0)), int(value.get("attempts", 0))
+
+        def transition_count(condition: str, params: tuple[Any, ...] = ()) -> tuple[int, int]:
+            row = connection.execute(
+                f"""
+                SELECT COUNT(DISTINCT t.cohort_id) AS cohorts,COUNT(*) AS attempts
+                FROM token_universe_funnel_transitions t
+                JOIN token_universe_forward_cohorts c ON c.id=t.cohort_id
+                WHERE t.definition_version=? AND {cohort_where}
+                  AND t.status<>'excluded_time_order' AND ({condition})
+                """,
+                (cls.TOKEN_UNIVERSE_FUNNEL_VERSION, *cohort_params, *params),
+            ).fetchone()
+            return int(row["cohorts"] or 0), int(row["attempts"] or 0)
+
+        def milestone(
+            stage: str,
+            label: str,
+            count: int,
+            attempts: int,
+            lane: str,
+            *,
+            conversion_from: tuple[str, int] | None = None,
+        ) -> dict[str, Any]:
+            denominator = int(conversion_from[1]) if conversion_from else 0
+            return {
+                "stage": stage,
+                "label": label,
+                "lane": lane,
+                "cohorts": int(count),
+                "attempts": int(attempts),
+                "coverage": (int(count) / cohorts) if cohorts else None,
+                "missing": max(0, cohorts - int(count)),
+                "conversion_from": conversion_from[0] if conversion_from else None,
+                "conversion": (int(count) / denominator) if denominator else None,
+            }
+
+        baseline_valid = int(cohort_row["baseline_observed"] or 0)
+        baseline_invalid = int(cohort_row["baseline_missing"] or 0)
+        baseline_pending = int(cohort_row["baseline_pending"] or 0)
+        hydration_attempted = stage_count("metadata_hydration_attempt")
+        hydration_completed = stage_count("metadata_hydration_result", "hydrated")
+        hydration_failed = transition_count(
+            "t.stage='metadata_hydration_result' AND t.status IN ('error','no_pair')"
+        )
+        external_links = (0, 0)
+        if "token_discovery_exposure_source_links" in tables:
+            link_row = connection.execute(
+                f"""
+                SELECT COUNT(DISTINCT c.id) AS cohorts,COUNT(*) AS attempts
+                FROM token_discovery_exposure_source_links el
+                JOIN token_universe_forward_cohorts c ON c.exposure_id=el.exposure_id
+                WHERE {cohort_where}
+                """,
+                cohort_params,
+            ).fetchone()
+            external_links = (
+                int(link_row["cohorts"] or 0), int(link_row["attempts"] or 0)
+            )
+        trigger_evaluated = stage_count("context_trigger_evaluation")
+        trigger_eligible = stage_count("context_trigger_evaluation", "eligible")
+        context_admitted = stage_count("context_admission", "admitted")
+        context_not_admitted = stage_count("context_admission", "skipped")
+        budget_blocked = transition_count(
+            "t.stage='context_admission' AND t.reason_code IN "
+            "('daily_call_limit_reached','daily_token_reserve_exceeded','quota_unavailable')"
+        )
+        cooldown_blocked = transition_count(
+            "t.stage='context_admission' AND t.reason_code IN "
+            "('global_cooldown_active','token_cooldown_active','error_retry_active')"
+        )
+        agent_queued = stage_count("agent_queued")
+        agent_dispatched = stage_count("agent_dispatch")
+        agent_result = stage_count("agent_result")
+        agent_failed = stage_count("agent_result", "agent_error")
+        context_no_result = transition_count(
+            "t.stage='agent_result' AND t.status IN "
+            "('no_context','insufficient_reachable_sources')"
+        )
+        context_found = transition_count(
+            "t.stage='agent_result' AND t.status LIKE '%_context_only'"
+        )
+        lookup_attempted = stage_count("event_lookup_attempt")
+        lookup_zero = stage_count("event_lookup_result", "zero_yield")
+        lookup_found = stage_count("event_lookup_result", "found")
+        lookup_failed = stage_count("event_lookup_result", "error")
+        event_linked = stage_count("event_token_relation", "linked")
+        candidate_called = transition_count(
+            "t.stage IN ('candidate_evaluator_call','candidate_evaluation')"
+        )
+        candidate_not_called = (max(0, cohorts - candidate_called[0]), 0)
+        canonical_ambiguous = transition_count(
+            "t.stage='candidate_evaluation' AND t.reason_code='canonical_token_ambiguous'"
+        )
+        canonical_resolved = transition_count(
+            "t.stage='candidate_evaluation' AND t.status IN "
+            "('selected_candidate','top_rank_wait','top_rank_reject') "
+            "AND t.reason_code<>'canonical_token_ambiguous'"
+        )
+        safety_failed = transition_count(
+            "t.stage='candidate_evaluation' "
+            "AND json_extract(t.metadata_json,'$.safety_status')='rejected'"
+        )
+        decision_wait = stage_count("decision_final", "wait")
+        decision_reject = stage_count("decision_final", "reject")
+        decision_candidate = stage_count("decision_final", "candidate")
+        paper_attempted = transition_count(
+            "t.stage='paper_execution_attempt' "
+            "AND json_extract(t.metadata_json,'$.side')='BUY'"
+        )
+        paper_gate_failed = transition_count(
+            "t.stage='paper_execution_attempt' AND t.status='rejected' "
+            "AND json_extract(t.metadata_json,'$.side')='BUY'"
+        )
+        paper_bought = transition_count(
+            "t.stage='paper_fill' AND t.status='filled' "
+            "AND json_extract(t.metadata_json,'$.side')='BUY'"
+        )
+        milestones = [
+            milestone("token_discovered", "Token discovered", cohorts, cohorts, "universe"),
+            milestone("quote_baseline_pending", "Quote baseline pending", baseline_pending, baseline_pending, "market"),
+            milestone("quote_baseline_invalid", "Quote baseline invalid", baseline_invalid, baseline_invalid, "market"),
+            milestone("quote_baseline_valid", "Valid quote baseline", baseline_valid, baseline_valid, "market", conversion_from=("token_discovered", cohorts)),
+            milestone("metadata_hydration_attempt", "Metadata hydration attempted", *hydration_attempted, "market"),
+            milestone("metadata_hydration_result", "Metadata hydrated", *hydration_completed, "market"),
+            milestone("metadata_hydration_failed", "Metadata hydration failed", *hydration_failed, "market"),
+            milestone("external_links_found", "External token links found", *external_links, "evidence"),
+            milestone("context_trigger_evaluation", "Context trigger evaluated", *trigger_evaluated, "context"),
+            milestone("context_trigger_eligible", "Context trigger eligible", *trigger_eligible, "context"),
+            milestone("context_admission", "Context Agent admitted", *context_admitted, "context"),
+            milestone("token_context_not_admitted", "Context Agent not admitted", *context_not_admitted, "context"),
+            milestone("token_context_budget_blocked", "Context budget blocked", *budget_blocked, "context"),
+            milestone("token_context_cooldown_blocked", "Context cooldown blocked", *cooldown_blocked, "context"),
+            milestone("agent_queued", "Context Agent queued", *agent_queued, "context", conversion_from=("context_admission", context_admitted[0])),
+            milestone("agent_dispatch", "Context Agent dispatched", *agent_dispatched, "context"),
+            milestone("agent_result", "Context Agent result", *agent_result, "context"),
+            milestone("token_context_failed", "Context Agent failed", *agent_failed, "context"),
+            milestone("token_context_no_context", "Context Agent zero-yield", *context_no_result, "context"),
+            milestone("token_context_context_found", "Context found", *context_found, "context"),
+            milestone("event_lookup_attempt", "Reverse event lookup attempted", *lookup_attempted, "evidence"),
+            milestone("event_lookup_zero_yield", "Reverse event lookup zero-yield", *lookup_zero, "evidence"),
+            milestone("event_lookup_found", "Reverse event lookup found", *lookup_found, "evidence"),
+            milestone("event_lookup_failed", "Reverse event lookup failed", *lookup_failed, "evidence"),
+            milestone("event_token_relation", "Explicit event-token relation", *event_linked, "evidence"),
+            milestone("candidate_evaluator_called", "Candidate evaluator called", *candidate_called, "decision"),
+            milestone("candidate_evaluator_not_called", "No recorded evaluator call", *candidate_not_called, "decision"),
+            milestone("canonical_mapping_ambiguous", "Canonical mapping ambiguous", *canonical_ambiguous, "decision"),
+            milestone("canonical_mapping_resolved", "Canonical mapping resolved", *canonical_resolved, "decision"),
+            milestone("safety_check_failed", "Safety check failed", *safety_failed, "decision"),
+            milestone("decision_wait", "WAIT", *decision_wait, "decision"),
+            milestone("decision_reject", "REJECT", *decision_reject, "decision"),
+            milestone("decision_candidate", "CANDIDATE", *decision_candidate, "decision"),
+            milestone("paper_buy_attempt", "Paper BUY attempted", *paper_attempted, "paper", conversion_from=("decision_candidate", decision_candidate[0])),
+            milestone("paper_gate_failed", "Paper gate failed", *paper_gate_failed, "paper"),
+            milestone("paper_buy", "Paper BUY filled", *paper_bought, "paper"),
+        ]
+        reason_codes = [
+            {
+                "stage": str(row["stage"]),
+                "reason_code": str(row["reason_code"]),
+                "attempts": int(row["attempts"] or 0),
+                "cohorts": int(row["cohorts"] or 0),
+            }
+            for row in connection.execute(
+                f"""
+                SELECT t.stage,t.reason_code,COUNT(*) AS attempts,
+                       COUNT(DISTINCT t.cohort_id) AS cohorts
+                FROM token_universe_funnel_transitions t
+                JOIN token_universe_forward_cohorts c ON c.id=t.cohort_id
+                WHERE t.definition_version=? AND {cohort_where}
+                GROUP BY t.stage,t.reason_code
+                ORDER BY attempts DESC,t.stage,t.reason_code LIMIT 40
+                """,
+                (cls.TOKEN_UNIVERSE_FUNNEL_VERSION, *cohort_params),
+            )
+        ]
+        latencies = [
+            {
+                "stage": str(row["stage"]),
+                "cohorts": int(row["cohorts"] or 0),
+                "average_seconds": float(row["average_seconds"] or 0),
+                "maximum_seconds": float(row["maximum_seconds"] or 0),
+            }
+            for row in connection.execute(
+                f"""
+                WITH first_transition AS (
+                    SELECT cohort_id,stage,MIN(recorded_at) AS first_at
+                    FROM token_universe_funnel_transitions
+                    WHERE definition_version=? AND status<>'excluded_time_order'
+                    GROUP BY cohort_id,stage
+                )
+                SELECT f.stage,COUNT(*) AS cohorts,
+                       AVG((julianday(f.first_at)-julianday(c.discovery_recorded_at))*86400.0) AS average_seconds,
+                       MAX((julianday(f.first_at)-julianday(c.discovery_recorded_at))*86400.0) AS maximum_seconds
+                FROM first_transition f
+                JOIN token_universe_forward_cohorts c ON c.id=f.cohort_id
+                WHERE {cohort_where} AND f.first_at>=c.discovery_recorded_at
+                GROUP BY f.stage ORDER BY f.stage
+                """,
+                (cls.TOKEN_UNIVERSE_FUNNEL_VERSION, *cohort_params),
+            )
+        ]
+        transition_attempts = sum(int(row["attempts"] or 0) for row in transition_rows)
+        excluded_time_order = sum(
+            int(row["attempts"] or 0)
+            for row in transition_rows
+            if str(row["status"]) == "excluded_time_order"
+        )
+        potential_opportunity_recall: list[dict[str, Any]] = []
+        if "token_universe_outcome_quality" in tables:
+            potential_rows = connection.execute(
+                f"""
+                SELECT q.horizon_minutes,COUNT(DISTINCT q.cohort_id) AS opportunities
+                FROM token_universe_outcome_quality q
+                JOIN token_universe_forward_cohorts c ON c.id=q.cohort_id
+                WHERE {cohort_where}
+                  AND q.quality_status='same_route_liquidity_supported'
+                  AND q.estimated_net_return_after_costs>=0.25
+                GROUP BY q.horizon_minutes ORDER BY q.horizon_minutes
+                """,
+                cohort_params,
+            ).fetchall()
+            recall_stages = {
+                "context_found": (
+                    "t.stage='agent_result' AND t.status LIKE '%_context_only'"
+                ),
+                "reverse_lookup_found": (
+                    "t.stage='event_lookup_result' AND t.status='found'"
+                ),
+                "event_linked": (
+                    "t.stage='event_token_relation' AND t.status='linked'"
+                ),
+                "candidate_evaluator_called": (
+                    "t.stage IN ('candidate_evaluator_call','candidate_evaluation')"
+                ),
+                "decision_candidate": (
+                    "t.stage='decision_final' AND t.status='candidate'"
+                ),
+                "paper_buy": (
+                    "t.stage='paper_fill' AND t.status='filled' "
+                    "AND json_extract(t.metadata_json,'$.side')='BUY'"
+                ),
+            }
+            for row in potential_rows:
+                horizon = int(row["horizon_minutes"])
+                opportunities = int(row["opportunities"] or 0)
+                captures: list[dict[str, Any]] = []
+                for stage, condition in recall_stages.items():
+                    captured = int(
+                        connection.execute(
+                            f"""
+                            SELECT COUNT(DISTINCT q.cohort_id)
+                            FROM token_universe_outcome_quality q
+                            JOIN token_universe_forward_cohorts c ON c.id=q.cohort_id
+                            WHERE {cohort_where} AND q.horizon_minutes=?
+                              AND q.quality_status='same_route_liquidity_supported'
+                              AND q.estimated_net_return_after_costs>=0.25
+                              AND EXISTS (
+                                  SELECT 1 FROM token_universe_funnel_transitions t
+                                  WHERE t.definition_version=?
+                                    AND t.cohort_id=q.cohort_id
+                                    AND t.status<>'excluded_time_order'
+                                    AND t.recorded_at<=q.target_at
+                                    AND ({condition})
+                              )
+                            """,
+                            (
+                                *cohort_params,
+                                horizon,
+                                cls.TOKEN_UNIVERSE_FUNNEL_VERSION,
+                            ),
+                        ).fetchone()[0]
+                        or 0
+                    )
+                    captures.append(
+                        {
+                            "stage": stage,
+                            "captured": captured,
+                            "recall": (captured / opportunities) if opportunities else None,
+                        }
+                    )
+                potential_opportunity_recall.append(
+                    {
+                        "horizon_minutes": horizon,
+                        "potential_opportunities": opportunities,
+                        "definition": (
+                            "same_route_liquidity_supported_and_"
+                            "estimated_net_return_after_costs_gte_25pct"
+                        ),
+                        "captures": captures,
+                    }
+                )
+        return {
+            "status": "collecting" if cohorts else "not_observed",
+            "version": cls.TOKEN_UNIVERSE_FUNNEL_VERSION,
+            "registered_at": str(registration["registered_at"]),
+            "activation_cohort_id": activation,
+            "definition": json.loads(str(registration["definition_json"])),
+            "summary": {
+                "cohorts": cohorts,
+                "transition_attempts": transition_attempts,
+                "excluded_time_order": excluded_time_order,
+                "baseline_observed": int(cohort_row["baseline_observed"] or 0),
+                "baseline_missing": int(cohort_row["baseline_missing"] or 0),
+                "baseline_pending": int(cohort_row["baseline_pending"] or 0),
+                "failure_attempts": sum(
+                    int(row["attempts"] or 0)
+                    for row in transition_rows
+                    if str(row["status"]) in {"error", "agent_error", "failed"}
+                ),
+                "zero_yield_attempts": sum(
+                    int(row["attempts"] or 0)
+                    for row in transition_rows
+                    if str(row["status"])
+                    in {"zero_yield", "no_context", "insufficient_reachable_sources"}
+                ),
+                "paper_buy_attempts": paper_attempted[1],
+                "paper_buys": paper_bought[1],
+            },
+            "milestones": milestones,
+            "transitions": [
+                {
+                    "stage": str(row["stage"]),
+                    "status": str(row["status"]),
+                    "attempts": int(row["attempts"] or 0),
+                    "cohorts": int(row["cohorts"] or 0),
+                }
+                for row in transition_rows
+            ],
+            "reason_codes": reason_codes,
+            "latencies": latencies,
+            "potential_opportunity_recall": potential_opportunity_recall,
+            "decision_eligible": False,
+            "affects": "none",
+            "as_of": iso(),
         }
 
     @classmethod

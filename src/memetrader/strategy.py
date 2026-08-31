@@ -830,6 +830,7 @@ class CandidateEvaluator:
         raw_canonical_margin: float | None = None,
         tie_break: dict[str, Any] | None = None,
         safety_checked: bool = False,
+        evaluated_candidates: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         persisted = ranked[:25]
         selected_score = persisted[0][0] if persisted else None
@@ -900,6 +901,45 @@ class CandidateEvaluator:
                 "candidates": candidates,
                 "final_outcome": None,
             },
+        )
+        audit_evaluated_at = decision.created_at if decision is not None else evaluated_at
+        audit_candidates_by_token = {
+            str(token_id): {"token_id": str(token_id), **dict(item)}
+            for token_id, item in (evaluated_candidates or {}).items()
+        }
+        full_selected_score = ranked[0][0] if ranked else None
+        for index, (score, match, token, _snap, reasons) in enumerate(ranked):
+            is_selected = bool(decision and token.token_id == decision.token_id and index == 0)
+            audit_candidates_by_token[token.token_id] = {
+                    "rank": index + 1,
+                    "token_id": token.token_id,
+                    "candidate_score": float(score),
+                    "match_score": float(match),
+                    "canonical_margin": float(decision.canonical_margin)
+                    if is_selected and decision else None,
+                    "score_gap_to_selected": None
+                    if full_selected_score is None else float(full_selected_score - score),
+                    "reasons": list(decision.reasons) if is_selected and decision else list(reasons),
+                    "rejected_reasons": list(decision.rejected_reasons)
+                    if is_selected and decision else [],
+                    "safety": {
+                        "status": (
+                            "rejected" if decision and decision.action == "REJECT" else "passed"
+                        ) if is_selected and safety_checked else "not_checked"
+                    },
+                    **{
+                        key: value
+                        for key, value in audit_candidates_by_token.get(token.token_id, {}).items()
+                        if key in {"probe_reason", "snapshot_id"}
+                    },
+                }
+        self.store.record_token_universe_candidate_evaluations(
+            event.id,
+            evaluated_at=audit_evaluated_at,
+            candidates=list(audit_candidates_by_token.values()),
+            selected_token_id=decision.token_id if decision is not None else "",
+            selected_action=decision.action if decision is not None else "",
+            outcome_reasons=[str(reason) for reason in (outcome_reasons or [])],
         )
 
     @staticmethod
@@ -1040,6 +1080,17 @@ class CandidateEvaluator:
         source_count = len({evidence_origin(row) for row in external})
         aliases = list(dict.fromkeys([*event.aliases, *extract_aliases(event.title, event_text)]))
         found: dict[str, tuple[TokenCandidate, TokenSnapshot]] = {}
+        evaluated_candidates: dict[str, dict[str, Any]] = {}
+
+        def remember_candidate(
+            quoted: tuple[TokenCandidate, TokenSnapshot], probe_reason: str
+        ) -> None:
+            quoted_token, quoted_snapshot = quoted
+            found[quoted_token.token_id] = (quoted_token, quoted_snapshot)
+            evaluated_candidates.setdefault(
+                quoted_token.token_id,
+                {"token_id": quoted_token.token_id, "probe_reason": probe_reason},
+            )
         allowed_chains = {
             str(chain).lower()
             for chain in self.config.get("chains", ["solana", "bsc", "base"])
@@ -1059,7 +1110,7 @@ class CandidateEvaluator:
             except Exception:
                 quoted = None
             if quoted and quoted[0].token_id == token_id:
-                found[token_id] = quoted
+                remember_candidate(quoted, "agent_context_exact_token")
 
         # Exact CA evidence is queried first, only on address-compatible chains.
         exact_queries: list[tuple[str, str]] = []
@@ -1079,7 +1130,7 @@ class CandidateEvaluator:
             except Exception:
                 quoted = None
             if quoted:
-                found[quoted[0].token_id] = quoted
+                remember_candidate(quoted, "exact_contract_address")
 
         # Search only a bounded set of useful aliases.
         queries: list[str] = []
@@ -1090,7 +1141,7 @@ class CandidateEvaluator:
         for query in queries[: int(self.config.get("max_alias_queries", 4))]:
             try:
                 for token, snap in await self.dex.search(query, limit=25):
-                    found[token.token_id] = (token, snap)
+                    remember_candidate((token, snap), "alias_search")
             except Exception:
                 continue
 
@@ -1104,7 +1155,7 @@ class CandidateEvaluator:
                 except Exception:
                     quoted = None
                 if quoted:
-                    found[token.token_id] = quoted
+                    remember_candidate(quoted, "recent_token_overlap")
 
         ranked: list[tuple[float, float, TokenCandidate, TokenSnapshot, list[str]]] = []
         asset_temporal_rejections: list[str] = []
@@ -1112,13 +1163,17 @@ class CandidateEvaluator:
         final_decision_at = utcnow()
         for token, snap in found.values():
             if token.chain.lower() not in allowed_chains:
+                evaluated_candidates[token.token_id]["filter_reason"] = "chain_not_allowed"
                 continue
             agent_linked = token.token_id in agent_linked_token_ids
             if not direct_addresses and not agent_linked and not is_distinctive_token_name(token.name or token.symbol):
+                evaluated_candidates[token.token_id]["filter_reason"] = "non_distinctive_token_name"
                 continue
             if normalized_official_addresses and token.address.lower() not in normalized_official_addresses:
+                evaluated_candidates[token.token_id]["filter_reason"] = "official_contract_mismatch"
                 continue
             if normalized_official_addresses and official_chain_hints and token.chain.lower() not in official_chain_hints:
+                evaluated_candidates[token.token_id]["filter_reason"] = "official_chain_mismatch"
                 continue
             if reverse_only and not direct_addresses:
                 min_sources = int(self.config.get("min_reverse_independent_sources", 2))
@@ -1128,18 +1183,22 @@ class CandidateEvaluator:
                     or not is_distinctive_token_name(token.name or token.symbol)
                 ):
                     reverse_bootstrap_rejected = True
+                    evaluated_candidates[token.token_id]["filter_reason"] = "reverse_news_confirmation_insufficient"
                     continue
             self.store.upsert_token(token, seen_at=snap.observed_at)
             token = self.store.token(token.token_id) or token
             temporal_reasons = token_snapshot_temporal_rejections(token, snap, final_decision_at)
             if temporal_reasons:
                 asset_temporal_rejections.extend(temporal_reasons)
+                evaluated_candidates[token.token_id]["filter_reason"] = temporal_reasons[0]
                 continue
-            self.store.add_snapshot(snap)
+            evaluated_candidates[token.token_id]["snapshot_id"] = self.store.add_snapshot(snap)
             match = self._match(event_text, aliases, token, direct_addresses)
             if agent_linked:
                 match = max(match, 96.0)
             if match < float(self.config.get("min_match_score", 28.0)):
+                evaluated_candidates[token.token_id]["filter_reason"] = "match_score_below_minimum"
+                evaluated_candidates[token.token_id]["match_score"] = float(match)
                 continue
             score, reasons = self._quality(event, token, snap, match, source_count)
             if agent_linked:
@@ -1174,6 +1233,7 @@ class CandidateEvaluator:
                 ranked=[],
                 decision=decision,
                 outcome_reasons=[*decision.reasons, *decision.rejected_reasons],
+                evaluated_candidates=evaluated_candidates,
             )
             return decision
 
@@ -1246,6 +1306,7 @@ class CandidateEvaluator:
                 decision=decision,
                 raw_canonical_margin=raw_margin,
                 tie_break=tie_break,
+                evaluated_candidates=evaluated_candidates,
             )
             return decision
         if len(ranked) > 1 and margin < min_margin:
@@ -1257,12 +1318,13 @@ class CandidateEvaluator:
                 decision=decision,
                 raw_canonical_margin=raw_margin,
                 tie_break=tie_break,
+                evaluated_candidates=evaluated_candidates,
             )
             return decision
         ok, rejected_reasons = await self.safety.check(snap)
         # Persist the post-enrichment snapshot so an audit can see the exact
         # Honeypot/RugCheck information used by this decision.
-        self.store.add_snapshot(snap)
+        evaluated_candidates[token.token_id]["snapshot_id"] = self.store.add_snapshot(snap)
         if not ok:
             decision = CandidateDecision(event.id, token.token_id, "REJECT", score, match, margin, reasons, rejected_reasons)
             self._persist_ranking(
@@ -1273,6 +1335,7 @@ class CandidateEvaluator:
                 raw_canonical_margin=raw_margin,
                 tie_break=tie_break,
                 safety_checked=True,
+                evaluated_candidates=evaluated_candidates,
             )
             return decision
         decision = CandidateDecision(event.id, token.token_id, "CANDIDATE", score, match, margin, reasons)
@@ -1284,6 +1347,7 @@ class CandidateEvaluator:
             raw_canonical_margin=raw_margin,
             tie_break=tie_break,
             safety_checked=True,
+            evaluated_candidates=evaluated_candidates,
         )
         return decision
 

@@ -170,6 +170,8 @@ Sources 的“完整 Token 总体前向结果”从 `token-universe-forward-outc
 
 Sources 的“逐 Token 报价尝试”从 `token-discovery-quote-attempt/v1` 注册后，为上述完整总体的每次 DexScreener 批量报价逐 Token 冻结 `running → success/no_pair/error/interrupted` 终态、时点角色、请求延迟、排队年龄、重复次数、错误类型、下一次允许重试时间和截止错失。批次异常不再只有一个 round 级错误，也不会绕过冷却立即热重试；失败使用最长 15 分钟的有限指数退避和确定性抖动。市场报价使用独立 HTTP 连接池，避免新闻、社交、安全或 Agent 请求占满同一连接池。该账本只影响报价调度，不改变事件证据、Decision、Paper、仓位或 Live，注册前批次不回填，Web 不返回逐 Token 标识。
 
+Audit 的 `token-universe-funnel-transitions/v1` 从自己的注册点向前，为完整 Token cohort 保存单一、追加式证据图。它明确区分 metadata hydration 尝试/结果、Context 触发/准入/预算或冷却阻挡、Agent 排队/取得并发槽位/结果、反向事件查询尝试/零产出/失败/命中、显式 Event↔Token 关系、候选评估、最终 WAIT/REJECT/CANDIDATE，以及带正式 `decision_id` 的 Paper 尝试和成交。发现轮次中的外部链接另以不可变 `exposure_id → source_link_id` 关系计数，不用“同一 Token 的后来链接”猜测；成功 Paper 路径在同一 Store 事务内先保存 execution attempt、再保存 trade，并由 fill 显式引用 attempt。页面同时显示独立 Token 覆盖、真实尝试、缺失、转换、延迟、错误、zero-yield 和质量有效潜在机会的前向召回。缺少节点只表示未观察或未调用，不等于拒绝；时间顺序异常保留原始时间但从统计状态与延迟中排除。决策和 Paper 只接受正式 ID 关系，不按“同一 Token 后来发生过什么”推断归因。该图不回填旧 cohort，固定 `decision_eligible=false / affects=none`。
+
 Audit 的 `token-universe-outcome-quality/v1` 是部署后才生效的追加式质量覆盖层，保留上述 v1 原始结果不变。它把 provider、chain、DEX、pair、quote、流动性、报价年龄和 PumpFun→PumpSwap 迁移路径一起冻结，分别展示原始混合路径峰值、同 pair、同 route、迁移调整和满足流动性门后的成本估算；只有卖出能力、honeypot 和税费均已有当时安全证据时才显示“确认可执行净回报”。`NULL` 流动性不是零流动性，跨池跳变也不是可成交收益。覆盖层从自己的注册点向前运行，不回填旧结果，固定 `decision_eligible=false / affects=none`。
 
 Audit 的“完整总体漏检账本”使用 `missed-opportunity-audit/v1`，从自身注册后为上述每个新结果追加一条不可变审计记录；低涨幅、缺基线和缺结果同样留在分母。只有本机采样路径达到预注册的 +25% 层且目标时点前没有 Paper 买入时才标记为 `potential_miss`，再按 `no_entry_snapshot / no_outcome_snapshot / no_decision / wait / reject / candidate_no_paper_buy / paper_bought` 展示可证明的粗断点。它不是市场 ATH、可成交收益或已证明的策略错误，不回填注册前案例，不改写历史决策，也不影响策略、Agent、Paper 或 Live。

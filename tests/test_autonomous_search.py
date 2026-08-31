@@ -569,6 +569,17 @@ def test_failed_token_context_search_does_not_start_full_cooldown(tmp_path: Path
 
         agent._run_codex_search = search
         token = TokenCandidate(chain="solana", address="A" * 32, name="Viral Otter")
+        discovered_at = utcnow()
+        store.upsert_token(token, seen_at=discovered_at)
+        round_id = store.start_token_discovery_round(
+            provider="pumpportal", surface="create", mode="stream_window",
+            chain_scope="solana", started_at=discovered_at,
+        )
+        store.add_token_discovery_exposure(
+            round_id, token_id=token.token_id, chain=token.chain, role="create",
+            first_local_discovery=True, new_token=True, observed_at=discovered_at,
+        )
+        store.finish_token_discovery_round(round_id, status="completed", returned_count=1)
         snapshot = TokenSnapshot("solana", token.address, 0.01, 50000, 500000, 20000, 100, 20)
         assert await agent.search_token_context(token, snapshot, momentum_score=90) == []
         assert await agent.search_token_context(token, snapshot, momentum_score=90) == []
@@ -584,6 +595,17 @@ def test_failed_token_context_search_does_not_start_full_cooldown(tmp_path: Path
         assert [row["outcome"] for row in admissions] == [
             "admitted", "skipped", "admitted"
         ]
+        stages = {
+            row["stage"]: int(row["count"])
+            for row in store.db.execute(
+                "SELECT stage,COUNT(*) AS count FROM token_universe_funnel_transitions "
+                "WHERE token_id=? GROUP BY stage",
+                (token.token_id,),
+            )
+        }
+        assert stages["agent_queued"] == 2
+        assert stages["agent_dispatch"] == 2
+        assert stages["agent_result"] == 2
         store.close()
 
     asyncio.run(scenario())

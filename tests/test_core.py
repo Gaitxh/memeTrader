@@ -743,6 +743,172 @@ def test_token_universe_quote_attempts_record_terminal_errors_and_defer_hot_retr
     store.close()
 
 
+def test_token_universe_funnel_is_forward_only_append_only_and_dag_aware(tmp_path: Path):
+    store = Store(tmp_path / "token-universe-funnel.sqlite3", initial_cash_usd=1000)
+    now = utcnow()
+    token = TokenCandidate(
+        chain="solana", address="F" * 32, name="Forward Funnel", symbol="FUNNEL"
+    )
+    store.upsert_token(token, seen_at=now)
+    round_id = store.start_token_discovery_round(
+        provider="pumpportal", surface="create", mode="stream_window",
+        chain_scope="solana", started_at=now,
+    )
+    store.add_token_discovery_exposure(
+        round_id, token_id=token.token_id, chain=token.chain, role="create",
+        first_local_discovery=True, new_token=True, observed_at=now,
+    )
+    store.finish_token_discovery_round(round_id, status="completed", returned_count=1)
+    decision_at = parse_time(
+        store.db.execute(
+            "SELECT discovery_recorded_at FROM token_universe_forward_cohorts WHERE token_id=?",
+            (token.token_id,),
+        ).fetchone()[0]
+    )
+
+    first_id = store.record_token_universe_funnel_transition(
+        token.token_id,
+        stage="context_trigger_evaluation",
+        status="eligible",
+        reason_code="high_impact_account_post",
+        evaluation_key="snapshot:one",
+        observed_at=now,
+        ingested_at=now,
+        source_table="token_context_trigger",
+    )
+    duplicate_id = store.record_token_universe_funnel_transition(
+        token.token_id,
+        stage="context_trigger_evaluation",
+        status="ineligible",
+        reason_code="later_duplicate_resolution",
+        evaluation_key="snapshot:one",
+        observed_at=now + timedelta(seconds=1),
+        ingested_at=now + timedelta(seconds=1),
+        source_table="token_context_trigger",
+    )
+    assert duplicate_id == first_id
+    trigger = store.db.execute(
+        "SELECT * FROM token_universe_funnel_transitions WHERE id=?", (first_id,)
+    ).fetchone()
+    assert trigger["status"] == "eligible"
+    assert trigger["reason_code"] == "high_impact_account_post"
+
+    future_observed = now + timedelta(hours=1)
+    excluded_id = store.record_token_universe_funnel_transition(
+        token.token_id,
+        stage="context_trigger_evaluation",
+        status="eligible",
+        reason_code="should_be_excluded",
+        evaluation_key="lookup:future",
+        observed_at=future_observed,
+        ingested_at=now,
+        source_table="fixture",
+    )
+    excluded = store.db.execute(
+        "SELECT * FROM token_universe_funnel_transitions WHERE id=?", (excluded_id,)
+    ).fetchone()
+    assert excluded["status"] == "excluded_time_order"
+    assert excluded["reason_code"] == "invalid_time_order"
+    assert parse_time(excluded["observed_at"]) == parse_time(future_observed)
+    assert parse_time(excluded["ingested_at"]) == parse_time(now)
+
+    event_id = store.create_event("Forward explicit link", ["forward funnel"], 70, now)
+    observation_id, _ = store.add_observation(
+        Observation(
+            source="fixture", source_kind="news", title="Forward explicit link",
+            observed_at=now, ingested_at=now, role="feature",
+            source_item_id="forward-explicit-link", raw={"reverse_token_id": token.token_id},
+        )
+    )
+    store.link_event_observation(event_id, observation_id)
+    decision_id = store.add_decision(
+        CandidateDecision(
+            event_id, token.token_id, "WAIT", 55, 60, 1, ["insufficient confirmation"],
+            created_at=decision_at,
+        )
+    )
+    assert decision_id > 0
+    assert store.record_token_universe_candidate_evaluations(
+        event_id,
+        evaluated_at=decision_at,
+        candidates=[{
+            "rank": 1, "token_id": token.token_id, "candidate_score": 55,
+            "match_score": 60, "reasons": ["insufficient confirmation"],
+            "safety": {"status": "not_checked"},
+        }],
+        selected_token_id=token.token_id,
+        selected_action="WAIT",
+    ) == 1
+    candidate_decision_id = store.add_decision(
+        CandidateDecision(
+            event_id, token.token_id, "CANDIDATE", 88, 90, 12,
+            ["verified forward candidate"], position_usd=10,
+            created_at=decision_at,
+        )
+    )
+    execution_at = decision_at
+    store.paper_buy(
+        event_id=event_id, token=token, price=1.04, gross_usd=10,
+        fee_bps=60, reason="fixture_fill", quote_price=1.0,
+        execution_attempted_at=execution_at,
+        decision_id=candidate_decision_id,
+        record_execution_attempt=True,
+    )
+    attempt_id = int(
+        store.db.execute(
+            "SELECT id FROM paper_execution_attempts WHERE decision_id=?",
+            (candidate_decision_id,),
+        ).fetchone()["id"]
+    )
+
+    summary = store.token_universe_funnel_summary_from_connection(store.db)
+    assert summary["summary"]["cohorts"] == 1
+    assert summary["summary"]["transition_attempts"] == 8
+    assert summary["summary"]["excluded_time_order"] == 1
+    milestones = {item["stage"]: item for item in summary["milestones"]}
+    assert milestones["context_trigger_evaluation"]["cohorts"] == 1
+    assert milestones["event_token_relation"]["cohorts"] == 1
+    assert milestones["candidate_evaluator_called"]["cohorts"] == 1
+    assert milestones["decision_wait"]["cohorts"] == 1
+    assert milestones["decision_candidate"]["cohorts"] == 1
+    assert milestones["paper_buy_attempt"]["cohorts"] == 1
+    assert milestones["paper_buy"]["cohorts"] == 1
+    candidate_edge = store.db.execute(
+        "SELECT status FROM token_universe_funnel_transitions "
+        "WHERE stage='candidate_evaluation' AND token_id=?",
+        (token.token_id,),
+    ).fetchone()
+    assert candidate_edge["status"] == "top_rank_wait"
+    decision_edge = store.db.execute(
+        "SELECT status,decision_id FROM token_universe_funnel_transitions "
+        "WHERE stage='decision_final' AND token_id=? AND decision_id=?",
+        (token.token_id, decision_id),
+    ).fetchone()
+    assert decision_edge["status"] == "wait"
+    assert decision_edge["decision_id"] == decision_id
+    paper_edges = list(
+        store.db.execute(
+            "SELECT stage,paper_execution_attempt_id,trade_id FROM "
+            "token_universe_funnel_transitions WHERE token_id=? "
+            "AND stage IN ('paper_execution_attempt','paper_fill') ORDER BY id",
+            (token.token_id,),
+        )
+    )
+    assert paper_edges[0]["paper_execution_attempt_id"] == attempt_id
+    assert paper_edges[1]["paper_execution_attempt_id"] == attempt_id
+    assert paper_edges[1]["trade_id"] is not None
+    assert summary["decision_eligible"] is False and summary["affects"] == "none"
+
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute(
+            "UPDATE token_universe_funnel_transitions SET status='rewritten' WHERE id=?",
+            (first_id,),
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute("DELETE FROM token_universe_funnel_registrations")
+    store.close()
+
+
 def test_full_token_universe_forward_outcomes_are_complete_and_immutable(tmp_path: Path):
     store = Store(tmp_path / "token-universe.sqlite3", initial_cash_usd=1000)
     token = TokenCandidate(chain="solana", address="U" * 32, name="Universe", symbol="UNI")

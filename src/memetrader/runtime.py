@@ -1551,15 +1551,17 @@ class Runtime:
             for token_id, token_links in by_token.items():
                 known_before = self.store.token_discovery_known(token_id)
                 new_links = 0
+                source_link_fingerprints: list[str] = []
                 for link in token_links:
-                    _, created = self.store.upsert_token_source_link(link)
+                    fingerprint, created = self.store.upsert_token_source_link(link)
+                    source_link_fingerprints.append(fingerprint)
                     new_links += int(created)
                     self.store.enqueue_token_detail_hydration(
                         str(link.get("chain") or ""), str(link.get("address") or "")
                     )
                 first_local = not known_before and new_links > 0
                 first_discoveries += int(first_local)
-                self.store.add_token_discovery_exposure(
+                exposure_id = self.store.add_token_discovery_exposure(
                     round_id,
                     token_id=token_id,
                     chain=str(token_links[0].get("chain") or ""),
@@ -1568,6 +1570,10 @@ class Runtime:
                     source_link_count=len(token_links),
                     new_source_link_count=new_links,
                 )
+                if exposure_id is not None:
+                    self.store.link_token_discovery_exposure_source_links(
+                        exposure_id, source_link_fingerprints
+                    )
             self.store.finish_token_discovery_round(
                 round_id,
                 status="completed",
@@ -1591,6 +1597,22 @@ class Runtime:
                     mode="batch_quote",
                     chain_scope=str(chain),
                 )
+                hydration_started_at = utcnow()
+                for row in chunk:
+                    token_id = str(row["token_id"])
+                    self.store.record_token_universe_funnel_transition(
+                        token_id,
+                        stage="metadata_hydration_attempt",
+                        status="attempted",
+                        reason_code="due_detail_hydration",
+                        evaluation_key=f"round:{round_id}:attempt",
+                        observed_at=hydration_started_at,
+                        ingested_at=hydration_started_at,
+                        source_table="token_discovery_rounds",
+                        source_record_ids={"round_id": round_id},
+                        round_id=round_id,
+                        metadata={"provider": "dexscreener", "chain": str(chain)},
+                    )
                 try:
                     if hasattr(self.dex, "batch_quote"):
                         quoted_by_token = await self.dex.batch_quote(
@@ -1611,8 +1633,23 @@ class Runtime:
                     )
                     self._notify_source_error("dexscreener:hydration", exc)
                     for row in chunk:
+                        token_id = str(row["token_id"])
                         self.store.mark_token_detail_hydration(
-                            str(row["token_id"]), "error", error=f"{type(exc).__name__}: {exc}"
+                            token_id, "error", error=f"{type(exc).__name__}: {exc}"
+                        )
+                        failed_at = utcnow()
+                        self.store.record_token_universe_funnel_transition(
+                            token_id,
+                            stage="metadata_hydration_result",
+                            status="error",
+                            reason_code=type(exc).__name__,
+                            evaluation_key=f"round:{round_id}:result",
+                            observed_at=failed_at,
+                            ingested_at=failed_at,
+                            source_table="token_discovery_rounds",
+                            source_record_ids={"round_id": round_id},
+                            round_id=round_id,
+                            metadata={"provider": "dexscreener", "chain": str(chain)},
                         )
                     continue
                 self.store.heartbeat("dexscreener:hydration", item=bool(quoted_by_token))
@@ -1628,6 +1665,20 @@ class Runtime:
                             role="hydration",
                             no_pair=True,
                         )
+                        completed_at = utcnow()
+                        self.store.record_token_universe_funnel_transition(
+                            token_id,
+                            stage="metadata_hydration_result",
+                            status="no_pair",
+                            reason_code="quote_returned_no_pair",
+                            evaluation_key=f"round:{round_id}:result",
+                            observed_at=completed_at,
+                            ingested_at=completed_at,
+                            source_table="token_discovery_rounds",
+                            source_record_ids={"round_id": round_id},
+                            round_id=round_id,
+                            metadata={"provider": "dexscreener", "chain": str(chain)},
+                        )
                         continue
                     token, snapshot = quoted
                     if token.token_id != token_id:
@@ -1639,9 +1690,23 @@ class Runtime:
                             role="hydration",
                             no_pair=True,
                         )
+                        completed_at = utcnow()
+                        self.store.record_token_universe_funnel_transition(
+                            token_id,
+                            stage="metadata_hydration_result",
+                            status="no_pair",
+                            reason_code="quote_token_mismatch",
+                            evaluation_key=f"round:{round_id}:result",
+                            observed_at=completed_at,
+                            ingested_at=completed_at,
+                            source_table="token_discovery_rounds",
+                            source_record_ids={"round_id": round_id},
+                            round_id=round_id,
+                            metadata={"provider": "dexscreener", "chain": str(chain)},
+                        )
                         continue
                     created = self.store.upsert_token(token, seen_at=snapshot.observed_at)
-                    self.store.add_snapshot(snapshot)
+                    snapshot_id = self.store.add_snapshot(snapshot)
                     self.store.mark_token_detail_hydration(token_id, "hydrated")
                     self.store.add_token_discovery_exposure(
                         round_id,
@@ -1652,10 +1717,32 @@ class Runtime:
                         snapshot_count=1,
                         observed_at=snapshot.observed_at,
                     )
+                    completed_at = utcnow()
+                    self.store.record_token_universe_funnel_transition(
+                        token_id,
+                        stage="metadata_hydration_result",
+                        status="hydrated",
+                        reason_code="snapshot_persisted",
+                        evaluation_key=f"round:{round_id}:result",
+                        observed_at=snapshot.observed_at,
+                        ingested_at=completed_at,
+                        source_table="token_snapshots",
+                        source_record_ids={"round_id": round_id, "snapshot_id": snapshot_id},
+                        round_id=round_id,
+                        snapshot_id=snapshot_id,
+                        metadata={
+                            "provider": "dexscreener",
+                            "chain": str(chain),
+                            "source_link_count": len(
+                                self.store.token_source_links(token_id, limit=100)
+                            ),
+                        },
+                    )
                     momentum = CandidateEvaluator._momentum_score(snapshot)
                     trigger = self.autonomous_search.resolve_token_context_trigger(
                         token,
                         momentum_score=momentum,
+                        snapshot_observed_at=snapshot.observed_at,
                     )
                     if trigger and str(trigger.get("kind") or "") != "onchain_momentum":
                         direct_context_candidates.append(
@@ -1862,6 +1949,7 @@ class Runtime:
             trigger = self.autonomous_search.resolve_token_context_trigger(
                 quoted_token,
                 momentum_score=momentum,
+                snapshot_observed_at=snap.observed_at,
             )
             market_gate = (
                 (snap.liquidity_usd or 0) >= min_liquidity
@@ -1892,6 +1980,20 @@ class Runtime:
                 collector_kind="reverse_news",
                 source_key=source_key,
                 platform="rss_news",
+            )
+            lookup_started_at = utcnow()
+            self.store.record_token_universe_funnel_transition(
+                token.token_id,
+                stage="event_lookup_attempt",
+                status="started",
+                reason_code="reverse_news_lookup_started",
+                evaluation_key=f"source_poll_attempt:{attempt_id}:attempt",
+                observed_at=lookup_started_at,
+                ingested_at=lookup_started_at,
+                source_table="source_poll_attempts",
+                source_record_ids={"source_poll_attempt_id": attempt_id},
+                source_poll_attempt_id=attempt_id,
+                metadata={"query": query},
             )
             try:
                 observations = await RSSCollector(self.http, source, url, "news").poll()
@@ -1927,11 +2029,42 @@ class Runtime:
                     duplicate_count=duplicates,
                     filtered_count=max(0, len(observations) - accepted),
                 )
+                lookup_completed_at = utcnow()
+                self.store.record_token_universe_funnel_transition(
+                    token.token_id,
+                    stage="event_lookup_result",
+                    status="found" if accepted else "zero_yield",
+                    reason_code="reverse_news_matched" if accepted else "no_matching_recent_news",
+                    evaluation_key=f"source_poll_attempt:{attempt_id}:result",
+                    observed_at=lookup_completed_at,
+                    ingested_at=lookup_completed_at,
+                    source_table="source_poll_attempts",
+                    source_record_ids={"source_poll_attempt_id": attempt_id},
+                    source_poll_attempt_id=attempt_id,
+                    metadata={
+                        "fetched_count": len(observations),
+                        "accepted_count": accepted,
+                        "independent_origin_count": len(accepted_origins),
+                    },
+                )
             except Exception as exc:
                 self.store.finish_source_poll_attempt(
                     attempt_id,
                     status="error",
                     error_type=type(exc).__name__,
+                )
+                lookup_completed_at = utcnow()
+                self.store.record_token_universe_funnel_transition(
+                    token.token_id,
+                    stage="event_lookup_result",
+                    status="error",
+                    reason_code=type(exc).__name__,
+                    evaluation_key=f"source_poll_attempt:{attempt_id}:result",
+                    observed_at=lookup_completed_at,
+                    ingested_at=lookup_completed_at,
+                    source_table="source_poll_attempts",
+                    source_record_ids={"source_poll_attempt_id": attempt_id},
+                    source_poll_attempt_id=attempt_id,
                 )
                 self._notify_source_error(source, exc)
 
@@ -2214,6 +2347,7 @@ class Runtime:
                     execution_attempted_at=execution_requested_at,
                     decision_id=decision_id,
                     cohort_id=cohort_id,
+                    record_execution_attempt=True,
                 )
             except ValueError as exc:
                 self.store.record_paper_execution_attempt(
@@ -2230,15 +2364,6 @@ class Runtime:
                     {"error": "paper_buy_rejected", "reason": str(exc)},
                 )
                 continue
-            self.store.record_paper_execution_attempt(
-                event_id=event.id, token_id=token.token_id, side="BUY",
-                decision_id=decision_id, cohort_id=cohort_id,
-                status="filled", reason="event_candidate",
-                requested_at=execution_requested_at or utcnow(),
-                quote_observed_at=snap.observed_at, quote_provider=snap.provider,
-                quote_price=snap.price_usd, execution_price=execution_price,
-                gross_usd=amount,
-            )
             self._record_paper_account_snapshot(force=True)
             self.notifier.send(
                 "paper_buy",
@@ -2428,14 +2553,7 @@ class Runtime:
                 quote_observed_at=snap.observed_at,
                 quote_provider=snap.provider,
                 execution_attempted_at=execution_requested_at,
-            )
-            self.store.record_paper_execution_attempt(
-                event_id=position.event_id, token_id=position.token_id, side="SELL",
-                decision_id=position.decision_id, cohort_id=position.cohort_id,
-                status="filled", reason=reason, requested_at=execution_requested_at,
-                quote_observed_at=snap.observed_at, quote_provider=snap.provider,
-                quote_price=snap.price_usd, execution_price=execution_price,
-                gross_usd=result["gross_usd"],
+                record_execution_attempt=True,
             )
             executed = True
             remaining = self.store.position(position.token_id)

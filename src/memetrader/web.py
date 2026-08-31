@@ -212,6 +212,8 @@ EXPECTED_TABLES = {
     "token_universe_forward_cohorts",
     "token_universe_forward_baselines",
     "token_universe_forward_outcomes",
+    "token_universe_funnel_registrations",
+    "token_universe_funnel_transitions",
     "missed_opportunity_audit_registrations",
     "missed_opportunity_audits",
     "token_universe_outcome_quality_registrations",
@@ -5410,6 +5412,15 @@ class WebData:
             "horizons": [], "route_classes": [], "quality_classes": [], "recent": [],
             "decision_eligible": False, "affects": "none",
         }
+        token_universe_funnel = {
+            "status": "not_observed",
+            "version": Store.TOKEN_UNIVERSE_FUNNEL_VERSION,
+            "definition": Store._token_universe_funnel_definition(),
+            "summary": {"cohorts": 0, "transition_attempts": 0},
+            "milestones": [], "transitions": [], "reason_codes": [], "latencies": [],
+            "potential_opportunity_recall": [],
+            "decision_eligible": False, "affects": "none",
+        }
         with self.connect() as connection:
             if connection is not None and self._table_exists(connection, "observations"):
                 counts["observations"] = int(connection.execute("SELECT COUNT(*) FROM observations").fetchone()[0])
@@ -5468,6 +5479,9 @@ class WebData:
                     connection
                 )
                 outcome_quality = Store.token_universe_outcome_quality_summary_from_connection(
+                    connection
+                )
+                token_universe_funnel = Store.token_universe_funnel_summary_from_connection(
                     connection
                 )
                 recent_decisions = self._decision_rows(connection, "1=1", [], 20, 0)
@@ -5581,6 +5595,7 @@ class WebData:
             "recent_decision_evidence": recent_decisions,
             "missed_opportunity": missed_opportunity,
             "token_universe_outcome_quality": outcome_quality,
+            "token_universe_funnel": token_universe_funnel,
             "status": overall_status,
             "policy_enforced": True,
             "future_data_rejected": True if future_observed else None,
