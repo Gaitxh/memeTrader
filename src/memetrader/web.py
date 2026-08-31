@@ -717,6 +717,79 @@ class WebData:
             # resident bot. The next valid PATCH replaces it atomically.
             return copy.deepcopy(DEFAULT_CONSOLE_SETTINGS)
 
+    def telegram_directory(self) -> dict[str, Any]:
+        """Expose the audited Telegram directory without reading Telegram content."""
+        catalog_path = self.root / "docs" / "SOCIAL_SOURCE_CATALOG.json"
+        if not catalog_path.exists():
+            catalog_path = Path(__file__).resolve().parents[2] / "docs" / "SOCIAL_SOURCE_CATALOG.json"
+        items: list[dict[str, Any]] = []
+        catalog_status = "unavailable"
+        try:
+            catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+            for item in catalog.get("sources", []):
+                if not isinstance(item, dict) or item.get("platform") != "telegram":
+                    continue
+                automation = item.get("automation") if isinstance(item.get("automation"), dict) else {}
+                verification = (
+                    item.get("owner_verification")
+                    if isinstance(item.get("owner_verification"), dict)
+                    else {}
+                )
+                machine_source = (
+                    item.get("preferred_machine_source")
+                    if isinstance(item.get("preferred_machine_source"), dict)
+                    else {}
+                )
+                items.append(
+                    {
+                        "entity_id": str(item.get("entity_id") or ""),
+                        "handle": str(item.get("handle") or ""),
+                        "display_name": str(item.get("display_name") or item.get("handle") or ""),
+                        "url": _safe_url(item.get("url")),
+                        "category": str(item.get("category") or "unknown"),
+                        "source_role": str(item.get("source_role") or "discovery_only"),
+                        "identity_status": str(
+                            item.get("identity_status") or verification.get("status") or "unverified"
+                        ),
+                        "verification_url": _safe_url(verification.get("url")),
+                        "preferred_machine_source": {
+                            "kind": str(machine_source.get("kind") or "none"),
+                            "url": _safe_url(machine_source.get("url")),
+                        },
+                        "access_mode": str(automation.get("access_mode") or "manual_discovery_only"),
+                        "active_collection": False,
+                        "agent_processing": False,
+                        "trade_effect": False,
+                    }
+                )
+            catalog_status = "loaded"
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            pass
+        return {
+            "version": "telegram-access-policy/v1",
+            "status": "blocked_by_platform_terms",
+            "catalog_status": catalog_status,
+            "collection_mode": "manual_directory_and_external_origin_only",
+            "automated_capture": False,
+            "agent_processing": False,
+            "trade_effect": False,
+            "messages_ingested": 0,
+            "forward_exposures": 0,
+            "candidate_count": len(items),
+            "items": items,
+            "policy": {
+                "user_project_authorization_recorded": True,
+                "platform_terms_override_user_authorization": True,
+                "private_chats_allowed": False,
+                "session_material_accepted": False,
+                "external_original_links_preferred": True,
+                "terms_checked_at": "2026-08-31",
+                "terms_urls": [
+                    "https://telegram.org/tos/content-licensing",
+                    "https://core.telegram.org/api/terms",
+                ],
+            },
+        }
     def public_access_url(self) -> str | None:
         access_path = self.console_settings_path.with_name("PUBLIC_ACCESS.txt")
         try:
@@ -4079,6 +4152,7 @@ class WebData:
                 "accepts_sessions": False,
             },
             "browser_bridge": self._bridge_health(),
+            "telegram": self.telegram_directory(),
             "learning": learning,
             "source_poll_learning": source_poll_learning,
             "token_discovery_learning": token_discovery_learning,

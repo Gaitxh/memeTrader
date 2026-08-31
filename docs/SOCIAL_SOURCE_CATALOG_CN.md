@@ -1,6 +1,6 @@
 # 社交信息源目录
 
-`SOCIAL_SOURCE_CATALOG.json` 是 memeTrader 的公开社交信息源候选目录。当前 `v3` 版本在 2026-08-31 复核，共 107 条，覆盖 X、Truth Social、YouTube、Instagram、TikTok、Threads、Bluesky、Telegram 和 Reddit。文件只保存公开账号、公开 URL、实体映射、类别、优先级、观察轮换标签与非敏感自动化策略，不包含登录账号、密码、Cookie、会话、邮箱、API Key、Bot Token 或其他私密信息。
+`SOCIAL_SOURCE_CATALOG.json` 是 memeTrader 的公开社交信息源候选目录。当前 `v3` 版本在 2026-08-31 复核，共 118 条，覆盖 X、Truth Social、YouTube、Instagram、TikTok、Threads、Bluesky、Telegram 和 Reddit。文件只保存公开账号、公开 URL、实体映射、类别、优先级、观察轮换标签与非敏感自动化策略，不包含登录账号、密码、Cookie、会话、邮箱、API Key、Bot Token 或其他私密信息。
 
 此目录是研究和采集入口，不会替代现有的时间门、安全门、候选币排序、`WAIT` 结论或 Paper 风控。账号进入目录也不表示其内容自动具备决策资格。
 
@@ -45,7 +45,7 @@ Telegram 在本目录中只作为可点击的人工发现目录，不是默认�
 
 Telegram 条目还保存 `owner_verification` 和 `preferred_machine_source`。前者记录当前用于核对账号所有者的公开入口；后者优先指向发布者自己的官网、公告页或 feed。用户可点击 `t.me` 入口人工发现线索，但自动化应读取允许机器访问的首选官网来源，并回到原始公告或链上证据。目录本身不授权抓取 Telegram、保存全文或把帖子交给 Agent。
 
-本次复核保留 Binance 公告目录，并用 Solana 官网当前明确链接的 `@solana` 取代缺少本轮所有者核验记录的 `@durov` 种子。两条均关闭自动抓取。完整的条款边界、核验依据、禁用候选与推荐替代来源见 [Telegram 信息源、搜索机器人与采集方案调研](TELEGRAM_SOURCE_RESEARCH_20260830_CN.md)。
+本次复核保留 Binance 公告与 Solana 官网链接的 `@solana`，并把用户提出的 Junction、FeedReader、Summary、BNO、Liveuamap、OSINT、Aurora 与 BBC/Reuters 转发入口加入待核验目录。目录明确区分 `aggregator_transport`、`summarizer`、`news_discovery`、`unverified_transport` 和 `unofficial_transport`；`@aggregaat_bot` 保持 quarantined，`@BBCBreakingBot` 不标为 BBC 官方，Reuters 两个入口只记非官方 transport。13 条 Telegram 候选全部关闭自动抓取、Agent 处理和交易影响。完整条款边界见 [Telegram 信息源、搜索机器人与采集方案调研](TELEGRAM_SOURCE_RESEARCH_20260830_CN.md)。
 
 ## 登录与公开访问现实
 

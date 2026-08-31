@@ -432,6 +432,15 @@ def test_web_api_empty_database_is_safe_and_live_is_locked(tmp_path: Path):
     assert web.tokens({})["items"] == []
     assert web.decisions({})["items"] == []
     empty_sources = web.sources()
+    telegram = empty_sources["telegram"]
+    assert telegram["status"] == "blocked_by_platform_terms"
+    assert telegram["automated_capture"] is False
+    assert telegram["agent_processing"] is False
+    assert telegram["trade_effect"] is False
+    assert telegram["messages_ingested"] == 0
+    assert telegram["candidate_count"] == 13
+    assert all(item["active_collection"] is False for item in telegram["items"])
+    assert all(item["agent_processing"] is False for item in telegram["items"])
     assert empty_sources["source_poll_learning"]["status"] == "not_observed"
     assert empty_sources["source_poll_learning"]["affects"] == "review_only_no_schedule_or_trading_effect"
     assert empty_sources["token_discovery_learning"]["status"] == "not_observed"

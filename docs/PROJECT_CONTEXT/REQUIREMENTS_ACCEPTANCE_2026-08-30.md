@@ -2,6 +2,8 @@
 
 本文件把本轮聊天、附件和当前工作区事实统一归档。它不是运行状态的永久保证；发生冲突时仍以 `AGENTS.md`、当前代码、被 Git 忽略的 `config.json`、当前 SQLite 和实时 API 为准。本文不保存任何密码、私钥、Cookie、Session、验证码、Bridge Token 或公开入口口令。
 
+> 2026-08-31 supersession：用户最新授权已取代本文中“因用户选择而永久禁止 Telegram 项目内配置/读取”的旧结论；但 Telegram 官方 Content Licensing/API 条款仍禁止面向 AI/ML 产品的抓取、聚合和摄取，因此自动正文采集与 Agent 处理当前继续以 `BLOCKED_BY_PLATFORM_TERMS` 关闭。最新逐项状态以 [REQUIREMENT_LEDGER.md](REQUIREMENT_LEDGER.md) 为准。
+
 ## 1. 验收时真实状态
 
 - 项目位于 `E:\memeTrader`，版本 `0.6.3`，权威前向数据库为当前 `config.json` 指向的 r6 SQLite。

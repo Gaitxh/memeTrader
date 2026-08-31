@@ -4,6 +4,22 @@
 适用项目：memeTrader / GXH coin
 状态：研究结论，不代表已安装、已登录或已自动接入任何 Telegram 来源
 
+## 2026-08-31 最新授权与官方条款复核
+
+用户最新授权已经取代项目内部旧的“因用户选择而禁止 Telegram 自动读取”。项目现在可以盘点、核验和配置项目相关的公开 Telegram 候选，也可以在官方条款允许时设计严格 allowlist 的只读接入。这个授权不能覆盖 Telegram 自身的服务条款。
+
+2026-08-31 重新核验 [Telegram Content Licensing 条款](https://telegram.org/tos/content-licensing) 与 [Telegram API 条款](https://core.telegram.org/api/terms)：官方仍明确禁止为了 AI/ML 产品抓取、索引、聚合或使用平台数据，并把该约束延伸到 API 使用。除非取得条款所述的全部相关用户逐一、明确、知情、持续且限定上下文的同意，memeTrader 不得把 Telegram 正文自动摄取、持久化或送入 Agent。
+
+因此当前可执行边界是：
+
+- 维护项目相关公开候选目录、身份状态、角色与外部原始来源；
+- 人工在官方客户端查看，或从 Telegram 线索回到官网、RSS、原始 X 帖和链上数据；
+- 聚合器、搬运频道、摘要机器人和未核验账号只获得 discovery/transport credit；
+- 不读取私聊、联系人、Session，不抓正文，不建立 Telegram 消息索引，不送入 Agent，不影响交易；
+- Web 控制台必须把自动采集显示为 `blocked_by_platform_terms`，消息与 exposure 如实为 0。
+
+若官方条款或所需同意条件将来发生实质变化，再单独评审 MTProto allowlist、消息版本、删除 tombstone、来源图、幂等、退避和 Secret 隔离；不得提前把预留架构写成“已接入”。
+
 ## 1. 结论摘要
 
 Telegram 对 Crypto、Solana 和 Meme 社区确实有价值，但对 memeTrader 最合适的定位是**人工发现目录和原始链接入口**，不是默认自动抓取平台。

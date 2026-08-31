@@ -66,8 +66,13 @@ def test_telegram_catalog_entries_remain_manual_discovery_only():
     expected = catalog["platform_automation_defaults"]["telegram"]
     telegram = [source for source in catalog["sources"] if source["platform"] == "telegram"]
 
-    assert len(telegram) == 2
+    assert len(telegram) == 13
     assert all(source["automation"] == expected for source in telegram)
+    by_handle = {source["handle"].casefold(): source for source in telegram}
+    assert by_handle["@aggregaat_bot"]["identity_status"] == "unverified_quarantined"
+    assert by_handle["@bbcbreakingbot"]["identity_status"] == "not_verified_as_bbc_official"
+    assert by_handle["@reutersnews_bot"]["source_role"] == "unofficial_transport"
+    assert by_handle["@reutersworldchannel"]["source_role"] == "unofficial_transport"
 
 
 def test_20260831_x_candidates_replace_stale_handle_and_keep_risky_accounts_deferred():
