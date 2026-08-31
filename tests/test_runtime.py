@@ -1204,6 +1204,30 @@ def test_reverse_news_only_runs_for_tokens_with_real_momentum(tmp_path, monkeypa
         assert runtime.store.latest_snapshot(generic.token_id) is None
         assert {chain for chain, _ in dex.calls} == {"solana", "bsc"}
         assert sum(len(addresses) for _, addresses in dex.calls) == 2
+        attempts = list(
+            runtime.store.db.execute(
+                "SELECT role,status,reason_code,batch_size FROM token_discovery_quote_attempts "
+                "WHERE role='reverse_context_probe' ORDER BY id"
+            )
+        )
+        assert [(row["status"], row["reason_code"]) for row in attempts] == [
+            ("success", "batch_quote_returned_token"),
+            ("success", "batch_quote_returned_token"),
+        ]
+        assert all(row["batch_size"] == 1 for row in attempts)
+        rounds = list(
+            runtime.store.db.execute(
+                "SELECT surface,status,requested_count,returned_count "
+                "FROM token_discovery_rounds WHERE surface='reverse_context_probe' ORDER BY id"
+            )
+        )
+        assert len(rounds) == 2
+        assert all(
+            row["status"] == "completed"
+            and row["requested_count"] == 1
+            and row["returned_count"] == 1
+            for row in rounds
+        )
         await runtime.close()
 
     asyncio.run(scenario())

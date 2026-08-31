@@ -1943,13 +1943,72 @@ class Runtime:
             for token in probe_candidates:
                 by_chain.setdefault(token.chain, []).append(token)
             for chain, chain_tokens in by_chain.items():
+                requested_at = utcnow()
+                round_id = self.store.start_token_discovery_round(
+                    provider="dexscreener",
+                    surface="reverse_context_probe",
+                    mode="batch_quote",
+                    chain_scope=chain,
+                    started_at=requested_at,
+                )
+                attempt_ids = self.store.start_token_discovery_quote_attempts(
+                    round_id,
+                    [
+                        {
+                            "token_id": token.token_id,
+                            "chain": token.chain,
+                            "role": "reverse_context_probe",
+                            "queue_due_at": requested_at,
+                        }
+                        for token in chain_tokens
+                    ],
+                    requested_at=requested_at,
+                )
                 try:
-                    quoted_by_token.update(
-                        await self.dex.batch_quote(
-                            chain, [token.address for token in chain_tokens]
+                    batch = await self.dex.batch_quote(
+                        chain, [token.address for token in chain_tokens]
+                    )
+                    quoted_by_token.update(batch)
+                    completed_at = utcnow()
+                    for token in chain_tokens:
+                        attempt_id = attempt_ids.get(
+                            (token.token_id, "reverse_context_probe")
                         )
+                        if attempt_id is not None:
+                            found = token.token_id in batch
+                            self.store.finish_token_discovery_quote_attempt(
+                                attempt_id,
+                                status="success" if found else "no_pair",
+                                reason_code=(
+                                    "batch_quote_returned_token"
+                                    if found else "batch_quote_missing_token"
+                                ),
+                                completed_at=completed_at,
+                            )
+                    self.store.finish_token_discovery_round(
+                        round_id,
+                        status="completed",
+                        requested_count=len(chain_tokens),
+                        returned_count=len(batch),
+                        completed_at=completed_at,
                     )
                 except Exception as exc:
+                    completed_at = utcnow()
+                    for attempt_id in attempt_ids.values():
+                        self.store.finish_token_discovery_quote_attempt(
+                            attempt_id,
+                            status="error",
+                            reason_code="batch_request_failed",
+                            error_type=type(exc).__name__,
+                            completed_at=completed_at,
+                        )
+                    self.store.finish_token_discovery_round(
+                        round_id,
+                        status="error",
+                        requested_count=len(chain_tokens),
+                        error_type=type(exc).__name__,
+                        completed_at=completed_at,
+                    )
                     self._notify_source_error(f"reverse-quote:{chain}", exc)
         else:
             for token in probe_candidates:

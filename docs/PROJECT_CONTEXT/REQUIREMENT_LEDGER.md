@@ -1,6 +1,6 @@
 # memeTrader 长期需求台账
 
-最后核验：2026-09-01 04:40（Asia/Shanghai）
+最后核验：2026-09-01 04:55（Asia/Shanghai）
 本轮实现前基线：`main` / `8977d7366c729bd0efaac2c33a762b71e6f50b7a` / Paper / `live.enabled=false`；发布后 SHA 以 Git 为准。
 
 本文件是长期任务的逐项台账，不是某次发布的完成声明。运行事实仍以 `AGENTS.md`、当前代码、忽略的本机 `config.json`、当前 SQLite、实时 API、进程与端口检查为准。`CONTINUOUS` 表示工程链路存在但研究或运行验证必须持续，不能改成 `DONE`。
@@ -20,7 +20,7 @@
 | SRC-002 | 长期总 Prompt §5 | source-poll exposure 保存完成、空结果、重复、过滤和错误 | CONTINUOUS | `source_poll_attempts` 与 Sources 面板已实现 | 持续评估各入口覆盖和稳定性 | 是 | 否 | 为非空结果删分母 | 保留所有真实 poll 终态 | 2026-08-31 16:35 |
 | TOKEN-001 | 用户 Dex/OKX/新币来源要求；长期总 Prompt §5、§7 | 多入口新 Token/池发现与 Event↔Token 证据链 | CONTINUOUS | PumpPortal、GeckoTerminal、DexScreener discovery/hydration、token discovery exposure 已实现 | OKX Premium/签名接口未接；不逆向绕过 | 是 | 否 | 推广榜单、同名币、来源竞争 | 继续比较本机首次发现与后续漏斗 | 2026-08-31 16:35 |
 | TOKEN-002 | 长期总 Prompt §7 | canonical Token 竞争与 CA 置信度 | CONTINUOUS | match/candidate/canonical margin、WAIT/REJECT/CANDIDATE 已实现 | image similarity、dominant contract/buyer breadth仍不完整 | 是 | 否 | 同名币和未来赢家回填 | 只用决策时可得证据扩充特征 | 2026-08-31 16:35 |
-| TOKEN-003 | 用户提醒 Pump 每天有一批而非极少数高涨幅 Token | 证明完整新币总体的机会召回率和当前 Paper 交易稀疏度是否合理 | CONTINUOUS | 原始总体与质量覆盖层保持不可变；`token-universe-funnel-transitions/v1` 按质量有效且估算费后 ≥25% 输出时点内召回。BSC hydration 缺口已修复；修复后的 4 个高动量 BSC cohort 又证明逐 Token reverse quote 可零返回而同 Token 批量 hydration 成功，现已把 reverse probe 改为按链批量报价 | 新批量 reverse probe 部署后的 lookup、Context、候选召回仍待自然积累；不回填旧 cohort 或历史赢家 | 是 | 否 | 把链路缺失称为风控拒绝；为追回历史赢家回填；用结果直接放宽交易门 | 持续比较各 chain 的 hydration→trigger→reverse quote→lookup→evaluator 覆盖；再以新自然机会判断下一个断点 | 2026-09-01 04:31 |
+| TOKEN-003 | 用户提醒 Pump 每天有一批而非极少数高涨幅 Token | 证明完整新币总体的机会召回率和当前 Paper 交易稀疏度是否合理 | CONTINUOUS | BSC hydration 缺口已修复，reverse probe 已按链批量报价并复用 `token-discovery-quote-attempt/v1` 的 `reverse_context_probe` 角色。发布验收自然形成 Solana 45 attempts（44 success / 1 no-pair）与 BSC 5/5 success，0 error/running，Sources API 已按 surface/chain 展示 | lookup→Context→候选召回和更长错误窗口仍待自然积累；不回填旧 cohort 或历史赢家 | 是 | 否 | 把链路缺失称为风控拒绝；只看 lookup 而看不到报价分母；为追回历史赢家回填 | 持续比较各 chain 的 hydration→trigger→reverse quote→lookup→evaluator 覆盖及错误/延迟；再以新自然机会判断下一个断点 | 2026-09-01 04:55 |
 | INFO-001 | 用户“信息可能先于价格”；长期总 Prompt §6 | 独立 information-first 前向 cohort | CONTINUOUS | `information-first-shadow/v1`，缺基线也入分母，15/60/240 追加终态 | 样本尚不成熟 | 是 | 否 | 把低活动误写成未定价 | 继续积累注册后 cohort | 2026-08-31 16:35 |
 | INFO-002 | 长期总 Prompt §6 | 严格 Information Lead Gap | CONTINUOUS | `information-first-ilg/v1`；同 provider/chain/DEX/pair；Store 生成 `recorded_at` | 需更多注册后 crossing/missing 样本 | 是 | 否 | 后来快照/跨池回填 | 保持固定 240m+30m 终态 | 2026-08-31 16:35 |
 | INFO-003 | 长期总 Prompt §6 | 10s/30s/1m/5m mention velocity、加速度、跨平台扩散 | PARTIAL | `event-attention-trajectory/v1` 保留本机到达率下界；`observation-provenance/v1` 从上线后显式拆分 Origin/Transport/Local capture，并给出已证明不同原始条目下界。旧事件不回填，覆盖不足为 null | 全平台分母、稳定 actor 分母、reply/quote/repost 修订和完整跨社区扩散仍不可用 | 是 | 否 | 45s 轮询不足以解析 10s/30s；前向 proven origin 样本仍需自然积累 | 先积累注册后路径与轨迹，再做 collector coverage；不得把 transport/域名/singleton 当 origin independence | 2026-08-31 19:30 |
