@@ -62,6 +62,7 @@ def test_followup_tick_finalizes_event_and_token_context_without_agent_or_quote(
         runtime.store.finalize_token_context_outcomes = lambda: calls.append("token_context")
         runtime.store.finalize_information_first_shadow_outcomes = lambda: calls.append("information_first")
         runtime.store.finalize_information_first_ilg_outcomes = lambda: calls.append("information_first_ilg")
+        runtime.store.finalize_token_universe_outcome_quality = lambda: calls.append("outcome_quality")
         runtime.store.finalize_missed_opportunity_audits = lambda: calls.append("missed_opportunity")
         async def universe():
             calls.append("token_universe")
@@ -69,7 +70,7 @@ def test_followup_tick_finalizes_event_and_token_context_without_agent_or_quote(
         await runtime.shadow_event_followup_once()
         assert calls == [
             "event", "token_context", "information_first", "information_first_ilg",
-            "token_universe", "missed_opportunity",
+            "token_universe", "outcome_quality", "missed_opportunity",
         ]
         await runtime.close()
 

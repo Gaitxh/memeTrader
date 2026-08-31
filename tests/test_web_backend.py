@@ -918,6 +918,12 @@ def test_web_sources_exposes_masked_source_poll_learning(tmp_path: Path):
 def test_web_sources_exposes_forward_token_discovery_without_sensitive_fields(tmp_path: Path):
     config_path, _ = _config(tmp_path)
     store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    store.register_token_universe_outcome_quality(
+        reference_notional_usd=35, min_liquidity_usd=12_000,
+        max_liquidity_impact_pct=0.0025, slippage_rate=0.04,
+        default_fee_bps=60, pump_fee_bps=125,
+        max_quote_age_seconds=45, max_tax_pct=10,
+    )
     round_id = store.start_token_discovery_round(
         provider="dexscreener", surface="token_profiles", mode="poll", chain_scope="solana",
     )
@@ -938,6 +944,7 @@ def test_web_sources_exposes_forward_token_discovery_without_sensitive_fields(tm
             (cohort["token_id"], when, when, when, "forward-test", price, "{}"),
         )
     store.finalize_token_universe_forward_outcomes(now=discovered + timedelta(minutes=16))
+    store.finalize_token_universe_outcome_quality()
     store.finalize_missed_opportunity_audits()
     store.close()
 
@@ -965,6 +972,12 @@ def test_web_sources_exposes_forward_token_discovery_without_sensitive_fields(tm
     miss_json = json.dumps(miss).lower()
     assert "password" not in miss_json and "private_key" not in miss_json
     assert "bridge_token" not in miss_json and "https://" not in miss_json
+    quality = WebData(config_path).audit()["token_universe_outcome_quality"]
+    assert quality["summary"]["assessed_outcomes"] == 1
+    assert quality["decision_eligible"] is False and quality["affects"] == "none"
+    quality_json = json.dumps(quality).lower()
+    assert "raw_json" not in quality_json and "pair_transitions_json" not in quality_json
+    assert "password" not in quality_json and "private_key" not in quality_json
 
 
 def test_learning_closure_does_not_borrow_same_event_outcomes_from_other_source(tmp_path: Path):

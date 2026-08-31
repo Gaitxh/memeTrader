@@ -1118,6 +1118,8 @@ select.control { padding-right: 28px; }
   .source-provenance--compact { grid-template-columns: auto minmax(0, 1fr); }
   .source-provenance--compact .influence-facts { grid-column: 1 / -1; }
   .source-evidence-group > header { flex-direction: column; }
+  .audit-banner { grid-template-columns: 44px minmax(0, 1fr); }
+  .audit-banner > .status-pill { grid-column: 1 / -1; justify-self: start; max-width: 100%; height: auto; min-height: 23px; white-space: normal; }
 }
 
 @media (max-width: 430px) {

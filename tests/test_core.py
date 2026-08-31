@@ -841,6 +841,162 @@ def test_missed_opportunity_audit_registration_never_backfills_existing_outcomes
     store.close()
 
 
+def test_token_universe_quality_overlay_is_forward_only_route_aware_and_immutable(tmp_path: Path):
+    store = Store(tmp_path / "quality-overlay.sqlite3", initial_cash_usd=1000)
+
+    def enroll(address: str):
+        token = TokenCandidate(chain="solana", address=address, name="Quality", symbol="QLT")
+        store.upsert_token(token)
+        round_id = store.start_token_discovery_round(
+            provider="pumpportal", surface="create", mode="stream_window", chain_scope="solana",
+        )
+        store.add_token_discovery_exposure(
+            round_id, token_id=token.token_id, chain=token.chain, role="create",
+            first_local_discovery=True, new_token=True,
+        )
+        store.finish_token_discovery_round(round_id, status="completed", returned_count=1)
+        cohort = store.db.execute(
+            "SELECT * FROM token_universe_forward_cohorts WHERE token_id=?", (token.token_id,)
+        ).fetchone()
+        return token, cohort, parse_time(cohort["discovery_recorded_at"])
+
+    def add_pair_snapshot(token, when, price, pair="PAIR-A"):
+        raw = json.dumps({
+            "pair": {
+                "chainId": "solana", "dexId": "pumpswap", "pairAddress": pair,
+                "baseToken": {"address": token.address},
+                "quoteToken": {"address": "So11111111111111111111111111111111111111112"},
+                "priceUsd": str(price), "liquidity": {"usd": 20_000},
+            }
+        })
+        stamp = iso(when)
+        store.db.execute(
+            """
+            INSERT INTO token_snapshots(
+                token_id,observed_at,ingested_at,recorded_at,provider,price_usd,
+                liquidity_usd,market_cap_usd,volume_5m_usd,buys_5m,sells_5m,
+                buy_tax_pct,sell_tax_pct,honeypot,sellable,raw_json
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                token.token_id, stamp, stamp, stamp, "dexscreener", price,
+                20_000, 100_000, 5_000, 20, 5, 0, 0, 0, 1, raw,
+            ),
+        )
+
+    legacy, _, legacy_discovered = enroll("L" * 32)
+    add_pair_snapshot(legacy, legacy_discovered + timedelta(minutes=1), 1.0)
+    add_pair_snapshot(legacy, legacy_discovered + timedelta(minutes=15, seconds=10), 1.4)
+    store.finalize_token_universe_forward_outcomes(
+        now=legacy_discovered + timedelta(minutes=16)
+    )
+    legacy_outcome_id = int(
+        store.db.execute("SELECT MAX(id) FROM token_universe_forward_outcomes").fetchone()[0]
+    )
+    registration = store.register_token_universe_outcome_quality(
+        reference_notional_usd=35,
+        min_liquidity_usd=12_000,
+        max_liquidity_impact_pct=0.0025,
+        slippage_rate=0.04,
+        default_fee_bps=60,
+        pump_fee_bps=125,
+        max_quote_age_seconds=45,
+        max_tax_pct=10,
+    )
+    assert int(registration["activation_outcome_id"]) == legacy_outcome_id
+    assert store.finalize_token_universe_outcome_quality()["inserted"] == 0
+
+    forward, _, discovered = enroll("Q" * 32)
+    add_pair_snapshot(forward, discovered + timedelta(minutes=1), 1.0)
+    add_pair_snapshot(forward, discovered + timedelta(minutes=15, seconds=10), 1.5)
+    store.finalize_token_universe_forward_outcomes(now=discovered + timedelta(minutes=16))
+    assert store.finalize_token_universe_outcome_quality() == {
+        "inserted": 1, "quality_valid": 1, "confirmed_tradable": 1,
+    }
+    row = store.db.execute("SELECT * FROM token_universe_outcome_quality").fetchone()
+    assert row["route_class"] == "same_pair"
+    assert row["quality_status"] == "same_route_liquidity_supported"
+    assert row["tradability_status"] == "confirmed_executable"
+    assert row["raw_fixed_horizon_return"] == pytest.approx(0.5)
+    assert row["raw_token_path_return"] == pytest.approx(0.5)
+    assert row["same_pair_return"] == pytest.approx(0.5)
+    assert row["same_route_return"] == pytest.approx(0.5)
+    assert row["canonical_liquid_pair_return"] == pytest.approx(0.5)
+    assert row["estimated_net_return_after_costs"] < 0.5
+    assert row["net_executable_return_after_costs"] == pytest.approx(
+        row["estimated_net_return_after_costs"]
+    )
+    summary = store.token_universe_outcome_quality_summary_from_connection(store.db)
+    assert summary["summary"]["assessed_outcomes"] == 1
+    assert summary["summary"]["raw_potential"] == 1
+    assert summary["summary"]["quality_valid"] == 1
+    assert summary["summary"]["confirmed_tradable"] == 1
+    assert summary["retrospective_v1_diagnostic_included"] is False
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute(
+            "UPDATE token_universe_outcome_quality SET quality_status='unknown' WHERE id=?",
+            (int(row["id"]),),
+        )
+    store.close()
+
+
+def test_token_universe_quality_overlay_does_not_treat_cross_pair_peak_as_same_pair(tmp_path: Path):
+    store = Store(tmp_path / "quality-cross-pair.sqlite3", initial_cash_usd=1000)
+    store.register_token_universe_outcome_quality(
+        reference_notional_usd=35, min_liquidity_usd=12_000,
+        max_liquidity_impact_pct=0.0025, slippage_rate=0.04,
+        default_fee_bps=60, pump_fee_bps=125,
+        max_quote_age_seconds=45, max_tax_pct=10,
+    )
+    token = TokenCandidate(chain="solana", address="X" * 32, name="Cross", symbol="CROSS")
+    store.upsert_token(token)
+    round_id = store.start_token_discovery_round(
+        provider="geckoterminal", surface="new_pools", mode="poll", chain_scope="solana",
+    )
+    store.add_token_discovery_exposure(
+        round_id, token_id=token.token_id, chain=token.chain, role="new_pool",
+        first_local_discovery=True, new_token=True,
+    )
+    store.finish_token_discovery_round(round_id, status="completed", returned_count=1)
+    cohort = store.db.execute("SELECT * FROM token_universe_forward_cohorts").fetchone()
+    discovered = parse_time(cohort["discovery_recorded_at"])
+    quote = "So11111111111111111111111111111111111111112"
+    for minutes, price, dex, pair, liquidity in (
+        (1, 0.000001, "meteora", "DUST", 0.79),
+        (15, 0.1, "meteoradbc", "LIQUID", 50_000),
+    ):
+        when = iso(discovered + timedelta(minutes=minutes, seconds=10))
+        raw = json.dumps({"pair": {
+            "chainId": "solana", "dexId": dex, "pairAddress": pair,
+            "baseToken": {"address": token.address}, "quoteToken": {"address": quote},
+            "priceUsd": str(price), "liquidity": {"usd": liquidity},
+        }})
+        store.db.execute(
+            """
+            INSERT INTO token_snapshots(
+                token_id,observed_at,ingested_at,recorded_at,provider,price_usd,
+                liquidity_usd,market_cap_usd,volume_5m_usd,buys_5m,sells_5m,raw_json
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                token.token_id, when, when, when, "dexscreener", price,
+                liquidity, 100_000, 5_000, 20, 5, raw,
+            ),
+        )
+    store.finalize_token_universe_forward_outcomes(now=discovered + timedelta(minutes=16))
+    store.finalize_token_universe_outcome_quality()
+    row = store.db.execute("SELECT * FROM token_universe_outcome_quality").fetchone()
+    flags = json.loads(row["quality_flags_json"])
+    assert row["route_class"] == "canonical_pair_switch"
+    assert row["quality_status"] == "cross_pair_incomparable"
+    assert row["raw_token_path_return"] > 10_000
+    assert row["same_pair_return"] == pytest.approx(0.0)
+    assert row["canonical_liquid_pair_return"] is None
+    assert "dust_pool_to_liquid_pool" in flags
+    assert row["net_executable_return_after_costs"] is None
+    store.close()
+
+
 def test_runtime_restart_reclassifies_only_unfinished_exposure_attempts(tmp_path: Path):
     database = tmp_path / "interrupted-exposure.sqlite3"
     store = Store(database, initial_cash_usd=1000)
@@ -2592,6 +2748,34 @@ def test_dexscreener_batch_quote_chunks_30_and_keeps_highest_liquidity_pair():
         row["link_kind"] == "social_post" and row["role"] == "identity"
         for row in first.raw["token_source_links"]
     )
+
+
+def test_dexscreener_batch_quote_preserves_caller_evm_address_casing():
+    requested_address = "0xAbCdEf1234567890AbCdEf1234567890AbCdEf12"
+
+    class Response:
+        def json(self):
+            return [{
+                "chainId": "bsc", "dexId": "pancakeswap", "pairAddress": "0xpair",
+                "baseToken": {
+                    "address": requested_address.lower(), "name": "Case", "symbol": "CASE",
+                },
+                "quoteToken": {"address": "0xquote"}, "priceUsd": "0.01",
+                "liquidity": {"usd": 50_000}, "volume": {"m5": 1_000},
+                "txns": {"m5": {"buys": 12, "sells": 3}},
+            }]
+
+    class Http:
+        async def get(self, url, **kwargs):
+            return Response()
+
+    result = asyncio.run(
+        DexScreenerClient(Http()).batch_quote("bsc", [requested_address])
+    )
+    token_id = f"bsc:{requested_address}"
+    assert list(result) == [token_id]
+    assert result[token_id][0].address == requested_address
+    assert result[token_id][1].address == requested_address
 
 
 def test_initial_page_and_old_polled_news_are_not_entry_evidence():

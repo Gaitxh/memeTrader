@@ -55,6 +55,7 @@ class Store:
     TOKEN_UNIVERSE_BASELINE_WINDOW_MINUTES = 5
     TOKEN_UNIVERSE_OUTCOME_GRACE_MINUTES = 30
     MISSED_OPPORTUNITY_AUDIT_VERSION = "missed-opportunity-audit/v1"
+    TOKEN_UNIVERSE_OUTCOME_QUALITY_VERSION = "token-universe-outcome-quality/v1"
     EVENT_ATTENTION_TRAJECTORY_VERSION = "event-attention-trajectory/v1"
     EVENT_CLAIM_ASSESSMENT_VERSION = "event-claim-assessment/v1"
     EVENT_CLAIM_RELATION_VERSION = "event-claim-relation/v1"
@@ -923,6 +924,83 @@ class Store:
                 CREATE TRIGGER IF NOT EXISTS missed_opportunity_audits_no_delete
                 BEFORE DELETE ON missed_opportunity_audits
                 BEGIN SELECT RAISE(ABORT,'missed-opportunity audits are immutable'); END;
+                CREATE TABLE IF NOT EXISTS token_universe_outcome_quality_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_outcome_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS token_universe_outcome_quality (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    outcome_id INTEGER NOT NULL UNIQUE,
+                    cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    horizon_minutes INTEGER NOT NULL,
+                    target_at TEXT NOT NULL,
+                    outcome_status TEXT NOT NULL,
+                    baseline_snapshot_id INTEGER,
+                    raw_peak_snapshot_id INTEGER,
+                    target_snapshot_id INTEGER,
+                    canonical_entry_snapshot_id INTEGER,
+                    canonical_peak_snapshot_id INTEGER,
+                    baseline_provider TEXT,
+                    baseline_chain_id TEXT,
+                    baseline_dex_id TEXT,
+                    baseline_pair_address TEXT,
+                    baseline_quote_address TEXT,
+                    peak_provider TEXT,
+                    peak_chain_id TEXT,
+                    peak_dex_id TEXT,
+                    peak_pair_address TEXT,
+                    peak_quote_address TEXT,
+                    target_provider TEXT,
+                    target_chain_id TEXT,
+                    target_dex_id TEXT,
+                    target_pair_address TEXT,
+                    target_quote_address TEXT,
+                    route_class TEXT NOT NULL,
+                    migration_evidence TEXT NOT NULL,
+                    quality_status TEXT NOT NULL,
+                    tradability_status TEXT NOT NULL,
+                    quality_flags_json TEXT NOT NULL,
+                    pair_transitions_json TEXT NOT NULL,
+                    path_snapshot_count INTEGER NOT NULL DEFAULT 0,
+                    distinct_route_count INTEGER NOT NULL DEFAULT 0,
+                    baseline_pair_snapshot_count INTEGER NOT NULL DEFAULT 0,
+                    baseline_liquidity_usd REAL,
+                    peak_liquidity_usd REAL,
+                    target_liquidity_usd REAL,
+                    baseline_quote_age_seconds REAL,
+                    target_quote_delay_seconds REAL,
+                    raw_fixed_horizon_return REAL,
+                    raw_token_path_return REAL,
+                    same_pair_return REAL,
+                    same_route_return REAL,
+                    migration_adjusted_return REAL,
+                    canonical_liquid_pair_return REAL,
+                    estimated_net_return_after_costs REAL,
+                    net_executable_return_after_costs REAL,
+                    assessed_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0,
+                    affects TEXT NOT NULL DEFAULT 'none',
+                    FOREIGN KEY(outcome_id) REFERENCES token_universe_forward_outcomes(id),
+                    FOREIGN KEY(cohort_id) REFERENCES token_universe_forward_cohorts(id)
+                );
+                CREATE INDEX IF NOT EXISTS token_universe_outcome_quality_horizon_idx
+                    ON token_universe_outcome_quality(horizon_minutes,quality_status,route_class);
+                CREATE TRIGGER IF NOT EXISTS token_universe_outcome_quality_registrations_no_update
+                BEFORE UPDATE ON token_universe_outcome_quality_registrations
+                BEGIN SELECT RAISE(ABORT,'token-universe quality registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_universe_outcome_quality_registrations_no_delete
+                BEFORE DELETE ON token_universe_outcome_quality_registrations
+                BEGIN SELECT RAISE(ABORT,'token-universe quality registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_universe_outcome_quality_no_update
+                BEFORE UPDATE ON token_universe_outcome_quality
+                BEGIN SELECT RAISE(ABORT,'token-universe outcome quality is immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_universe_outcome_quality_no_delete
+                BEFORE DELETE ON token_universe_outcome_quality
+                BEGIN SELECT RAISE(ABORT,'token-universe outcome quality is immutable'); END;
                 CREATE TABLE IF NOT EXISTS kv (
                     key TEXT PRIMARY KEY,
                     value_json TEXT NOT NULL,
@@ -6672,6 +6750,164 @@ class Store:
             "affects": "none",
         }
 
+    def register_token_universe_outcome_quality(
+        self,
+        *,
+        reference_notional_usd: float,
+        min_liquidity_usd: float,
+        max_liquidity_impact_pct: float,
+        slippage_rate: float,
+        default_fee_bps: float,
+        pump_fee_bps: float,
+        max_quote_age_seconds: float,
+        max_tax_pct: float,
+    ) -> sqlite3.Row:
+        """Freeze a forward-only quality overlay without changing TOKEN-003 v1."""
+        notional = max(0.01, float(reference_notional_usd))
+        impact = max(0.000001, float(max_liquidity_impact_pct))
+        definition = {
+            "version": self.TOKEN_UNIVERSE_OUTCOME_QUALITY_VERSION,
+            "source": self.TOKEN_UNIVERSE_FORWARD_VERSION,
+            "no_historical_backfill": True,
+            "complete_denominator": ["observed", "baseline_missing", "missing"],
+            "reference_notional_usd": notional,
+            "min_liquidity_usd": max(0.0, float(min_liquidity_usd)),
+            "max_liquidity_impact_pct": impact,
+            "required_liquidity_usd": max(
+                max(0.0, float(min_liquidity_usd)), notional / impact
+            ),
+            "slippage_rate_each_side": max(0.0, min(0.49, float(slippage_rate))),
+            "default_fee_bps_each_side": max(0.0, float(default_fee_bps)),
+            "pump_fee_bps_each_side": max(0.0, float(pump_fee_bps)),
+            "max_quote_age_seconds": max(1.0, float(max_quote_age_seconds)),
+            "max_tax_pct": max(0.0, float(max_tax_pct)),
+            "near_zero_market_cap_usd": 100.0,
+            "potential_opportunity_return": 0.25,
+            "return_semantics": {
+                "raw_fixed_horizon_return": "v1 first durable quote after target versus v1 baseline",
+                "raw_token_path_return": "v1 mixed-token sampled path maximum; not tradability evidence",
+                "same_pair_return": "sampled maximum restricted to the baseline chain and pair",
+                "same_route_return": "sampled maximum restricted to provider, chain, dex, pair, base and quote",
+                "migration_adjusted_return": "sampled maximum after a locally observed PumpPortal migration transition",
+                "canonical_liquid_pair_return": "sampled maximum on one route whose entry and exit satisfy frozen liquidity",
+                "estimated_net_return_after_costs": "canonical liquid route after frozen slippage and fees; unknown safety is flagged",
+                "net_executable_return_after_costs": "estimated net return only when sellability, honeypot and taxes are known safe",
+            },
+            "decision_eligible": False,
+            "affects": "none",
+        }
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO token_universe_outcome_quality_registrations("
+                "definition_version,registered_at,activation_outcome_id,definition_json) "
+                "VALUES(?,?,COALESCE((SELECT MAX(id) FROM token_universe_forward_outcomes),0),?)",
+                (
+                    self.TOKEN_UNIVERSE_OUTCOME_QUALITY_VERSION,
+                    iso(),
+                    self._json(definition),
+                ),
+            )
+            return self.db.execute(
+                "SELECT * FROM token_universe_outcome_quality_registrations "
+                "WHERE definition_version=?",
+                (self.TOKEN_UNIVERSE_OUTCOME_QUALITY_VERSION,),
+            ).fetchone()
+
+    @staticmethod
+    def _token_universe_snapshot_route(row: sqlite3.Row | None) -> dict[str, Any]:
+        if row is None:
+            return {}
+        try:
+            raw = json.loads(str(row["raw_json"] or "{}"))
+        except (TypeError, json.JSONDecodeError):
+            raw = {}
+        raw = raw if isinstance(raw, dict) else {}
+        pair = raw.get("pair") if isinstance(raw.get("pair"), dict) else raw
+        base = pair.get("baseToken") if isinstance(pair.get("baseToken"), dict) else {}
+        quote = pair.get("quoteToken") if isinstance(pair.get("quoteToken"), dict) else {}
+
+        def text(*keys: str) -> str:
+            for key in keys:
+                value = pair.get(key)
+                if value is not None and str(value).strip():
+                    return str(value).strip().casefold()
+            return ""
+
+        route = {
+            "provider": str(row["provider"] or "").strip().casefold(),
+            "chain_id": text("chainId", "chain_id"),
+            "dex_id": text("dexId", "dex_id"),
+            "pair_address": text("pairAddress", "pair_address"),
+            "base_address": str(base.get("address") or "").strip().casefold(),
+            "quote_address": str(quote.get("address") or "").strip().casefold(),
+            "liquidity_usd": row["liquidity_usd"],
+            "market_cap_usd": row["market_cap_usd"],
+            "price_usd": row["price_usd"],
+            "buy_tax_pct": row["buy_tax_pct"],
+            "sell_tax_pct": row["sell_tax_pct"],
+            "honeypot": row["honeypot"],
+            "sellable": row["sellable"],
+            "observed_at": str(row["observed_at"] or ""),
+            "recorded_at": str(row["recorded_at"] or ""),
+            "snapshot_id": int(row["id"]),
+        }
+        route["pair_key"] = json.dumps(
+            [route["chain_id"], route["pair_address"]], separators=(",", ":")
+        ) if route["chain_id"] and route["pair_address"] else ""
+        route["route_key"] = json.dumps(
+            [
+                route["provider"], route["chain_id"], route["dex_id"],
+                route["pair_address"], route["base_address"], route["quote_address"],
+            ],
+            separators=(",", ":"),
+        ) if all(
+            route[key] for key in (
+                "provider", "chain_id", "dex_id", "pair_address",
+                "base_address", "quote_address",
+            )
+        ) else ""
+        return route
+
+    @staticmethod
+    def _token_universe_net_return(
+        entry: dict[str, Any],
+        exit_: dict[str, Any],
+        definition: Mapping[str, Any],
+        *,
+        require_known_safety: bool,
+    ) -> float | None:
+        entry_price = float(entry.get("price_usd") or 0.0)
+        exit_price = float(exit_.get("price_usd") or 0.0)
+        if entry_price <= 0 or exit_price <= 0:
+            return None
+        safety_values = (
+            entry.get("honeypot"), exit_.get("honeypot"),
+            entry.get("sellable"), exit_.get("sellable"),
+            entry.get("buy_tax_pct"), exit_.get("sell_tax_pct"),
+        )
+        if require_known_safety and any(value is None for value in safety_values):
+            return None
+        if entry.get("honeypot") == 1 or exit_.get("honeypot") == 1:
+            return None
+        if entry.get("sellable") == 0 or exit_.get("sellable") == 0:
+            return None
+        max_tax = float(definition.get("max_tax_pct") or 0.0)
+        buy_tax = float(entry.get("buy_tax_pct") or 0.0)
+        sell_tax = float(exit_.get("sell_tax_pct") or 0.0)
+        if buy_tax > max_tax or sell_tax > max_tax:
+            return None
+        slippage = float(definition.get("slippage_rate_each_side") or 0.0)
+        pump_fee = float(definition.get("pump_fee_bps_each_side") or 0.0)
+        default_fee = float(definition.get("default_fee_bps_each_side") or 0.0)
+        entry_fee = pump_fee if "pump" in str(entry.get("dex_id") or "") else default_fee
+        exit_fee = pump_fee if "pump" in str(exit_.get("dex_id") or "") else default_fee
+        cost = entry_price * (1.0 + slippage) * (1.0 + entry_fee / 10_000.0)
+        proceeds = (
+            exit_price * (1.0 - slippage) * (1.0 - exit_fee / 10_000.0)
+            * (1.0 - buy_tax / 100.0) * (1.0 - sell_tax / 100.0)
+        )
+        return proceeds / cost - 1.0 if cost > 0 else None
+
     @staticmethod
     def _token_universe_peak_tier(value: float) -> str:
         if value >= 3.0:
@@ -6894,6 +7130,425 @@ class Store:
             "outcomes_missing": outcomes_missing,
         }
 
+    def finalize_token_universe_outcome_quality(self) -> dict[str, int]:
+        """Append route, liquidity and cost quality for new TOKEN-003 v1 outcomes."""
+        assessed_at = iso()
+        inserted = quality_valid = confirmed_tradable = 0
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT * FROM token_universe_outcome_quality_registrations "
+                "WHERE definition_version=?",
+                (self.TOKEN_UNIVERSE_OUTCOME_QUALITY_VERSION,),
+            ).fetchone()
+            if registration is None:
+                return {"inserted": 0, "quality_valid": 0, "confirmed_tradable": 0}
+            definition = json.loads(str(registration["definition_json"]))
+            required_liquidity = float(definition["required_liquidity_usd"])
+            reference_notional = float(definition["reference_notional_usd"])
+            max_quote_age = float(definition["max_quote_age_seconds"])
+            near_zero_market_cap = float(definition["near_zero_market_cap_usd"])
+            rows = self.db.execute(
+                """
+                SELECT o.*,c.token_id,c.discovery_recorded_at,c.baseline_deadline_at,
+                       b.snapshot_id AS baseline_snapshot_id,b.status AS baseline_status
+                FROM token_universe_forward_outcomes o
+                JOIN token_universe_forward_cohorts c ON c.id=o.cohort_id
+                LEFT JOIN token_universe_forward_baselines b ON b.cohort_id=o.cohort_id
+                LEFT JOIN token_universe_outcome_quality q ON q.outcome_id=o.id
+                WHERE o.id>? AND q.id IS NULL
+                ORDER BY o.id
+                """,
+                (int(registration["activation_outcome_id"]),),
+            ).fetchall()
+
+            for outcome in rows:
+                payload: dict[str, Any] = {
+                    "definition_version": self.TOKEN_UNIVERSE_OUTCOME_QUALITY_VERSION,
+                    "outcome_id": int(outcome["id"]),
+                    "cohort_id": int(outcome["cohort_id"]),
+                    "token_id": str(outcome["token_id"]),
+                    "horizon_minutes": int(outcome["horizon_minutes"]),
+                    "target_at": str(outcome["target_at"]),
+                    "outcome_status": str(outcome["status"]),
+                    "baseline_snapshot_id": outcome["baseline_snapshot_id"],
+                    "raw_peak_snapshot_id": None,
+                    "target_snapshot_id": outcome["outcome_snapshot_id"],
+                    "canonical_entry_snapshot_id": None,
+                    "canonical_peak_snapshot_id": None,
+                    "baseline_provider": None,
+                    "baseline_chain_id": None,
+                    "baseline_dex_id": None,
+                    "baseline_pair_address": None,
+                    "baseline_quote_address": None,
+                    "peak_provider": None,
+                    "peak_chain_id": None,
+                    "peak_dex_id": None,
+                    "peak_pair_address": None,
+                    "peak_quote_address": None,
+                    "target_provider": None,
+                    "target_chain_id": None,
+                    "target_dex_id": None,
+                    "target_pair_address": None,
+                    "target_quote_address": None,
+                    "route_class": "not_evaluable",
+                    "migration_evidence": "not_observed",
+                    "quality_status": "not_evaluable_outcome",
+                    "tradability_status": "unknown",
+                    "quality_flags_json": "[]",
+                    "pair_transitions_json": "[]",
+                    "path_snapshot_count": int(outcome["snapshot_count"] or 0),
+                    "distinct_route_count": 0,
+                    "baseline_pair_snapshot_count": 0,
+                    "baseline_liquidity_usd": None,
+                    "peak_liquidity_usd": None,
+                    "target_liquidity_usd": None,
+                    "baseline_quote_age_seconds": None,
+                    "target_quote_delay_seconds": None,
+                    "raw_fixed_horizon_return": outcome["raw_return"],
+                    "raw_token_path_return": outcome["maximum_return"],
+                    "same_pair_return": None,
+                    "same_route_return": None,
+                    "migration_adjusted_return": None,
+                    "canonical_liquid_pair_return": None,
+                    "estimated_net_return_after_costs": None,
+                    "net_executable_return_after_costs": None,
+                    "assessed_at": assessed_at,
+                }
+                flags: list[str] = []
+                if str(outcome["baseline_status"] or "") != "observed":
+                    flags.extend(["baseline_liquidity_missing", "invalid_or_non_executable"])
+                    payload["quality_status"] = "not_evaluable_baseline"
+                elif str(outcome["status"]) != "observed":
+                    flags.extend(["target_liquidity_missing", "invalid_or_non_executable"])
+                    payload["quality_status"] = "not_evaluable_outcome"
+                else:
+                    baseline_row = self.db.execute(
+                        "SELECT * FROM token_snapshots WHERE id=?",
+                        (int(outcome["baseline_snapshot_id"]),),
+                    ).fetchone()
+                    target_row = self.db.execute(
+                        "SELECT * FROM token_snapshots WHERE id=?",
+                        (int(outcome["outcome_snapshot_id"]),),
+                    ).fetchone()
+                    if baseline_row is None or target_row is None:
+                        flags.extend(["unknown", "invalid_or_non_executable"])
+                        payload["quality_status"] = "metadata_unverifiable"
+                    else:
+                        path_rows = self.db.execute(
+                            """
+                            SELECT * FROM token_snapshots
+                            WHERE token_id=? AND price_usd>0
+                              AND observed_at>=? AND ingested_at>=observed_at
+                              AND recorded_at>=ingested_at AND recorded_at>=? AND recorded_at<=?
+                            ORDER BY recorded_at,observed_at,id
+                            """,
+                            (
+                                str(outcome["token_id"]), str(baseline_row["observed_at"]),
+                                str(baseline_row["recorded_at"]), str(target_row["recorded_at"]),
+                            ),
+                        ).fetchall()
+                        path = [self._token_universe_snapshot_route(row) for row in path_rows]
+                        baseline = self._token_universe_snapshot_route(baseline_row)
+                        target = self._token_universe_snapshot_route(target_row)
+                        entry_price = float(baseline.get("price_usd") or 0.0)
+                        peak = max(
+                            path,
+                            key=lambda item: float(item.get("price_usd") or 0.0),
+                            default=target,
+                        )
+                        payload.update({
+                            "raw_peak_snapshot_id": peak.get("snapshot_id"),
+                            "baseline_provider": baseline.get("provider") or None,
+                            "baseline_chain_id": baseline.get("chain_id") or None,
+                            "baseline_dex_id": baseline.get("dex_id") or None,
+                            "baseline_pair_address": baseline.get("pair_address") or None,
+                            "baseline_quote_address": baseline.get("quote_address") or None,
+                            "peak_provider": peak.get("provider") or None,
+                            "peak_chain_id": peak.get("chain_id") or None,
+                            "peak_dex_id": peak.get("dex_id") or None,
+                            "peak_pair_address": peak.get("pair_address") or None,
+                            "peak_quote_address": peak.get("quote_address") or None,
+                            "target_provider": target.get("provider") or None,
+                            "target_chain_id": target.get("chain_id") or None,
+                            "target_dex_id": target.get("dex_id") or None,
+                            "target_pair_address": target.get("pair_address") or None,
+                            "target_quote_address": target.get("quote_address") or None,
+                            "path_snapshot_count": len(path),
+                            "baseline_liquidity_usd": baseline.get("liquidity_usd"),
+                            "peak_liquidity_usd": peak.get("liquidity_usd"),
+                            "target_liquidity_usd": target.get("liquidity_usd"),
+                            "baseline_quote_age_seconds": max(
+                                0.0,
+                                (parse_time(baseline["recorded_at"]) - parse_time(baseline["observed_at"])).total_seconds(),
+                            ),
+                            "target_quote_delay_seconds": max(
+                                0.0,
+                                (parse_time(target["recorded_at"]) - parse_time(outcome["target_at"])).total_seconds(),
+                            ),
+                        })
+                        route_keys = [item["route_key"] for item in path if item.get("route_key")]
+                        payload["distinct_route_count"] = len(set(route_keys))
+                        transitions: list[dict[str, Any]] = []
+                        last_key = None
+                        for item in path:
+                            if not item.get("route_key") or item["route_key"] == last_key:
+                                continue
+                            transitions.append({
+                                "provider": item["provider"], "chain_id": item["chain_id"],
+                                "dex_id": item["dex_id"], "pair_address": item["pair_address"],
+                                "quote_address": item["quote_address"],
+                                "recorded_at": item["recorded_at"],
+                            })
+                            last_key = item["route_key"]
+                        payload["pair_transitions_json"] = self._json(transitions)
+                        same_pair = [
+                            item for item in path
+                            if baseline.get("pair_key") and item.get("pair_key") == baseline["pair_key"]
+                        ]
+                        same_route = [
+                            item for item in path
+                            if baseline.get("route_key") and item.get("route_key") == baseline["route_key"]
+                        ]
+                        payload["baseline_pair_snapshot_count"] = len(same_pair)
+                        if entry_price > 0 and same_pair:
+                            payload["same_pair_return"] = max(
+                                float(item["price_usd"]) / entry_price - 1.0 for item in same_pair
+                            )
+                        if entry_price > 0 and same_route:
+                            payload["same_route_return"] = max(
+                                float(item["price_usd"]) / entry_price - 1.0 for item in same_route
+                            )
+
+                        migration = self.db.execute(
+                            """
+                            SELECT e.recorded_at FROM token_discovery_exposures e
+                            JOIN token_discovery_rounds r ON r.id=e.round_id
+                            WHERE e.token_id=? AND r.provider='pumpportal' AND r.surface='migration'
+                              AND e.recorded_at>=? AND e.recorded_at<=?
+                            ORDER BY e.recorded_at LIMIT 1
+                            """,
+                            (
+                                str(outcome["token_id"]), str(baseline_row["recorded_at"]),
+                                str(target_row["recorded_at"]),
+                            ),
+                        ).fetchone()
+                        migrated_path = []
+                        if migration is not None and baseline.get("dex_id") == "pumpfun":
+                            migrated_path = [
+                                item for item in path
+                                if item.get("dex_id") == "pumpswap"
+                                and item.get("base_address") == baseline.get("base_address")
+                                and item.get("quote_address") == baseline.get("quote_address")
+                                and parse_time(item["recorded_at"]) >= parse_time(migration["recorded_at"])
+                            ]
+                        if entry_price > 0 and migrated_path:
+                            payload["migration_adjusted_return"] = max(
+                                float(item["price_usd"]) / entry_price - 1.0 for item in migrated_path
+                            )
+                            payload["migration_evidence"] = "pumpportal_migration_observed_before_quote"
+
+                        if baseline.get("route_key") and peak.get("route_key") == baseline["route_key"]:
+                            payload["route_class"] = "same_pair"
+                            flags.append("same_pair")
+                        elif migrated_path and peak.get("dex_id") == "pumpswap":
+                            payload["route_class"] = "launch_curve_to_amm_migration"
+                            flags.append("launch_curve_to_amm_migration")
+                        elif baseline.get("provider") and peak.get("provider") != baseline["provider"]:
+                            payload["route_class"] = "provider_switch"
+                            flags.append("provider_switch")
+                        elif baseline.get("dex_id") and peak.get("dex_id") == baseline["dex_id"]:
+                            payload["route_class"] = "same_dex_different_pair"
+                            flags.append("same_dex_different_pair")
+                        elif baseline.get("route_key") and peak.get("route_key"):
+                            payload["route_class"] = "canonical_pair_switch"
+                            flags.append("canonical_pair_switch")
+                        else:
+                            payload["route_class"] = "unknown"
+                            flags.append("unknown")
+
+                        baseline_liquidity = baseline.get("liquidity_usd")
+                        peak_liquidity = peak.get("liquidity_usd")
+                        target_liquidity = target.get("liquidity_usd")
+                        if baseline_liquidity is None:
+                            flags.append("baseline_liquidity_missing")
+                        elif float(baseline_liquidity) < reference_notional:
+                            flags.append("baseline_liquidity_below_stake")
+                        if target_liquidity is None:
+                            flags.append("target_liquidity_missing")
+                        if (
+                            baseline.get("market_cap_usd") is not None
+                            and float(baseline["market_cap_usd"]) <= near_zero_market_cap
+                        ):
+                            flags.append("baseline_market_cap_near_zero")
+                        if (
+                            baseline_liquidity is not None and peak_liquidity is not None
+                            and float(baseline_liquidity) < required_liquidity
+                            <= float(peak_liquidity)
+                        ):
+                            flags.append("dust_pool_to_liquid_pool")
+                        if (
+                            baseline_liquidity is not None and target_liquidity is not None
+                            and float(baseline_liquidity) >= required_liquidity
+                            > float(target_liquidity)
+                        ):
+                            flags.append("liquid_pool_to_dust_pool")
+                        if len(path) < 2:
+                            flags.append("snapshot_count_too_small")
+                        if float(payload["baseline_quote_age_seconds"] or 0.0) > max_quote_age:
+                            flags.append("stale_quote")
+                        for previous, current in zip(path, path[1:]):
+                            if (
+                                previous.get("route_key") and current.get("route_key")
+                                and previous["route_key"] != current["route_key"]
+                                and abs((parse_time(current["recorded_at"]) - parse_time(previous["recorded_at"])).total_seconds()) <= 30
+                                and min(float(previous.get("price_usd") or 0.0), float(current.get("price_usd") or 0.0)) > 0
+                                and max(float(previous["price_usd"]), float(current["price_usd"]))
+                                / min(float(previous["price_usd"]), float(current["price_usd"])) >= 3.0
+                            ):
+                                flags.append("simultaneous_cross_pair_price_disagreement")
+                                break
+
+                        entry_rows = self.db.execute(
+                            """
+                            SELECT * FROM token_snapshots
+                            WHERE token_id=? AND price_usd>0 AND liquidity_usd>=?
+                              AND observed_at>=? AND ingested_at>=observed_at
+                              AND recorded_at>=ingested_at AND recorded_at>=? AND recorded_at<=?
+                            ORDER BY liquidity_usd DESC,recorded_at,id
+                            """,
+                            (
+                                str(outcome["token_id"]), required_liquidity,
+                                str(outcome["discovery_recorded_at"]),
+                                str(outcome["discovery_recorded_at"]),
+                                str(outcome["baseline_deadline_at"]),
+                            ),
+                        ).fetchall()
+                        canonical_entry = None
+                        canonical_peak = None
+                        if entry_rows:
+                            canonical_entry = self._token_universe_snapshot_route(entry_rows[0])
+                            canonical_path_rows = self.db.execute(
+                                """
+                                SELECT * FROM token_snapshots
+                                WHERE token_id=? AND price_usd>0 AND liquidity_usd>=?
+                                  AND observed_at>=? AND ingested_at>=observed_at
+                                  AND recorded_at>=ingested_at AND recorded_at>=? AND recorded_at<=?
+                                ORDER BY recorded_at,observed_at,id
+                                """,
+                                (
+                                    str(outcome["token_id"]), required_liquidity,
+                                    str(canonical_entry["observed_at"]),
+                                    str(canonical_entry["recorded_at"]),
+                                    str(target_row["recorded_at"]),
+                                ),
+                            ).fetchall()
+                            canonical_path = [
+                                item for item in map(self._token_universe_snapshot_route, canonical_path_rows)
+                                if item.get("route_key") == canonical_entry.get("route_key")
+                            ]
+                            if canonical_path:
+                                canonical_peak = max(
+                                    canonical_path,
+                                    key=lambda item: float(item.get("price_usd") or 0.0),
+                                )
+                                canonical_return = (
+                                    float(canonical_peak["price_usd"])
+                                    / float(canonical_entry["price_usd"]) - 1.0
+                                )
+                                payload.update({
+                                    "canonical_entry_snapshot_id": canonical_entry["snapshot_id"],
+                                    "canonical_peak_snapshot_id": canonical_peak["snapshot_id"],
+                                    "canonical_liquid_pair_return": canonical_return,
+                                    "estimated_net_return_after_costs": self._token_universe_net_return(
+                                        canonical_entry, canonical_peak, definition,
+                                        require_known_safety=False,
+                                    ),
+                                    "net_executable_return_after_costs": self._token_universe_net_return(
+                                        canonical_entry, canonical_peak, definition,
+                                        require_known_safety=True,
+                                    ),
+                                })
+
+                        explicit_unsafe = any(
+                            item.get("honeypot") == 1 or item.get("sellable") == 0
+                            for item in (canonical_entry or {}, canonical_peak or {})
+                        )
+                        if explicit_unsafe:
+                            payload["quality_status"] = "invalid_or_non_executable"
+                            payload["tradability_status"] = "known_non_executable"
+                            flags.append("invalid_or_non_executable")
+                        elif canonical_entry and canonical_peak:
+                            payload["quality_status"] = "same_route_liquidity_supported"
+                            quality_valid += 1
+                            if payload["net_executable_return_after_costs"] is not None:
+                                payload["tradability_status"] = "confirmed_executable"
+                                confirmed_tradable += 1
+                            else:
+                                payload["tradability_status"] = "liquidity_supported_safety_unknown"
+                                flags.append("unknown")
+                        elif payload["route_class"] == "launch_curve_to_amm_migration":
+                            payload["quality_status"] = "migration_observed_execution_unknown"
+                            flags.append("unknown")
+                        elif payload["route_class"] != "same_pair":
+                            payload["quality_status"] = "cross_pair_incomparable"
+                            flags.append("unknown")
+                        elif baseline_liquidity is None or target_liquidity is None:
+                            payload["quality_status"] = "same_route_liquidity_metadata_unavailable"
+                            flags.append("unknown")
+                        elif min(float(baseline_liquidity), float(target_liquidity)) < required_liquidity:
+                            payload["quality_status"] = "same_route_below_liquidity_floor"
+                            payload["tradability_status"] = "insufficient_liquidity"
+                            flags.append("invalid_or_non_executable")
+                        else:
+                            payload["quality_status"] = "same_route_activity_unverified"
+                            flags.append("unknown")
+
+                payload["quality_flags_json"] = self._json(sorted(set(flags)))
+                self.db.execute(
+                    """
+                    INSERT INTO token_universe_outcome_quality(
+                        definition_version,outcome_id,cohort_id,token_id,horizon_minutes,target_at,
+                        outcome_status,baseline_snapshot_id,raw_peak_snapshot_id,target_snapshot_id,
+                        canonical_entry_snapshot_id,canonical_peak_snapshot_id,
+                        baseline_provider,baseline_chain_id,baseline_dex_id,baseline_pair_address,
+                        baseline_quote_address,peak_provider,peak_chain_id,peak_dex_id,
+                        peak_pair_address,peak_quote_address,target_provider,target_chain_id,
+                        target_dex_id,target_pair_address,target_quote_address,route_class,
+                        migration_evidence,quality_status,tradability_status,quality_flags_json,
+                        pair_transitions_json,path_snapshot_count,distinct_route_count,
+                        baseline_pair_snapshot_count,baseline_liquidity_usd,peak_liquidity_usd,
+                        target_liquidity_usd,baseline_quote_age_seconds,target_quote_delay_seconds,
+                        raw_fixed_horizon_return,raw_token_path_return,same_pair_return,
+                        same_route_return,migration_adjusted_return,canonical_liquid_pair_return,
+                        estimated_net_return_after_costs,net_executable_return_after_costs,
+                        assessed_at,decision_eligible,affects
+                    ) VALUES(
+                        :definition_version,:outcome_id,:cohort_id,:token_id,:horizon_minutes,:target_at,
+                        :outcome_status,:baseline_snapshot_id,:raw_peak_snapshot_id,:target_snapshot_id,
+                        :canonical_entry_snapshot_id,:canonical_peak_snapshot_id,
+                        :baseline_provider,:baseline_chain_id,:baseline_dex_id,:baseline_pair_address,
+                        :baseline_quote_address,:peak_provider,:peak_chain_id,:peak_dex_id,
+                        :peak_pair_address,:peak_quote_address,:target_provider,:target_chain_id,
+                        :target_dex_id,:target_pair_address,:target_quote_address,:route_class,
+                        :migration_evidence,:quality_status,:tradability_status,:quality_flags_json,
+                        :pair_transitions_json,:path_snapshot_count,:distinct_route_count,
+                        :baseline_pair_snapshot_count,:baseline_liquidity_usd,:peak_liquidity_usd,
+                        :target_liquidity_usd,:baseline_quote_age_seconds,:target_quote_delay_seconds,
+                        :raw_fixed_horizon_return,:raw_token_path_return,:same_pair_return,
+                        :same_route_return,:migration_adjusted_return,:canonical_liquid_pair_return,
+                        :estimated_net_return_after_costs,:net_executable_return_after_costs,
+                        :assessed_at,0,'none'
+                    )
+                    """,
+                    payload,
+                )
+                inserted += 1
+        return {
+            "inserted": inserted,
+            "quality_valid": quality_valid,
+            "confirmed_tradable": confirmed_tradable,
+        }
+
     def due_token_universe_quotes(
         self,
         *,
@@ -7105,6 +7760,147 @@ class Store:
             },
             "horizons": list(by_horizon.values()), "tiers": tiers, "surfaces": surfaces,
             "decision_eligible": False, "affects": "none", "as_of": iso(),
+        }
+
+    @classmethod
+    def token_universe_outcome_quality_summary_from_connection(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        recent_limit: int = 20,
+    ) -> dict[str, Any]:
+        required = {
+            "token_universe_outcome_quality_registrations",
+            "token_universe_outcome_quality",
+        }
+        tables = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        empty = {
+            "status": "not_observed",
+            "version": cls.TOKEN_UNIVERSE_OUTCOME_QUALITY_VERSION,
+            "summary": {
+                "assessed_outcomes": 0, "raw_potential": 0, "quality_valid": 0,
+                "confirmed_tradable": 0, "estimated_net_potential": 0,
+                "net_executable_potential": 0, "unknown_or_unavailable": 0,
+            },
+            "horizons": [], "route_classes": [], "quality_classes": [], "recent": [],
+            "decision_eligible": False, "affects": "none",
+        }
+        if not required.issubset(tables):
+            return empty
+        registration = connection.execute(
+            "SELECT * FROM token_universe_outcome_quality_registrations "
+            "WHERE definition_version=?",
+            (cls.TOKEN_UNIVERSE_OUTCOME_QUALITY_VERSION,),
+        ).fetchone()
+        if registration is None:
+            return empty
+        version = cls.TOKEN_UNIVERSE_OUTCOME_QUALITY_VERSION
+        summary = connection.execute(
+            """
+            SELECT COUNT(*) AS assessed_outcomes,
+                   SUM(CASE WHEN raw_token_path_return>=0.25 THEN 1 ELSE 0 END) AS raw_potential,
+                   SUM(CASE WHEN quality_status='same_route_liquidity_supported' THEN 1 ELSE 0 END) AS quality_valid,
+                   SUM(CASE WHEN tradability_status='confirmed_executable' THEN 1 ELSE 0 END) AS confirmed_tradable,
+                   SUM(CASE WHEN estimated_net_return_after_costs>=0.25 THEN 1 ELSE 0 END) AS estimated_net_potential,
+                   SUM(CASE WHEN net_executable_return_after_costs>=0.25 THEN 1 ELSE 0 END) AS net_executable_potential,
+                   SUM(CASE WHEN outcome_status<>'observed' OR quality_flags_json LIKE '%"unknown"%'
+                            THEN 1 ELSE 0 END) AS unknown_or_unavailable
+            FROM token_universe_outcome_quality WHERE definition_version=?
+            """,
+            (version,),
+        ).fetchone()
+        horizons = [
+            {
+                "horizon_minutes": int(row["horizon_minutes"]),
+                "assessed_outcomes": int(row["assessed_outcomes"] or 0),
+                "observed": int(row["observed"] or 0),
+                "raw_potential": int(row["raw_potential"] or 0),
+                "same_pair_potential": int(row["same_pair_potential"] or 0),
+                "quality_valid": int(row["quality_valid"] or 0),
+                "estimated_net_potential": int(row["estimated_net_potential"] or 0),
+                "net_executable_potential": int(row["net_executable_potential"] or 0),
+            }
+            for row in connection.execute(
+                """
+                SELECT horizon_minutes,COUNT(*) AS assessed_outcomes,
+                       SUM(CASE WHEN outcome_status='observed' THEN 1 ELSE 0 END) AS observed,
+                       SUM(CASE WHEN raw_token_path_return>=0.25 THEN 1 ELSE 0 END) AS raw_potential,
+                       SUM(CASE WHEN same_pair_return>=0.25 THEN 1 ELSE 0 END) AS same_pair_potential,
+                       SUM(CASE WHEN quality_status='same_route_liquidity_supported' THEN 1 ELSE 0 END) AS quality_valid,
+                       SUM(CASE WHEN estimated_net_return_after_costs>=0.25 THEN 1 ELSE 0 END) AS estimated_net_potential,
+                       SUM(CASE WHEN net_executable_return_after_costs>=0.25 THEN 1 ELSE 0 END) AS net_executable_potential
+                FROM token_universe_outcome_quality WHERE definition_version=?
+                GROUP BY horizon_minutes ORDER BY horizon_minutes
+                """,
+                (version,),
+            )
+        ]
+
+        def grouped(column: str) -> list[dict[str, Any]]:
+            return [
+                {column: str(row[column]), "count": int(row["count"] or 0)}
+                for row in connection.execute(
+                    f"SELECT {column},COUNT(*) AS count FROM token_universe_outcome_quality "
+                    "WHERE definition_version=? GROUP BY " + column + " ORDER BY count DESC," + column,
+                    (version,),
+                )
+            ]
+
+        recent = [
+            {
+                "token_id": str(row["token_id"]),
+                "horizon_minutes": int(row["horizon_minutes"]),
+                "target_at": str(row["target_at"]),
+                "route_class": str(row["route_class"]),
+                "quality_status": str(row["quality_status"]),
+                "tradability_status": str(row["tradability_status"]),
+                "raw_fixed_horizon_return": row["raw_fixed_horizon_return"],
+                "raw_token_path_return": row["raw_token_path_return"],
+                "same_pair_return": row["same_pair_return"],
+                "migration_adjusted_return": row["migration_adjusted_return"],
+                "canonical_liquid_pair_return": row["canonical_liquid_pair_return"],
+                "estimated_net_return_after_costs": row["estimated_net_return_after_costs"],
+                "net_executable_return_after_costs": row["net_executable_return_after_costs"],
+                "baseline_liquidity_usd": row["baseline_liquidity_usd"],
+                "target_liquidity_usd": row["target_liquidity_usd"],
+                "quality_flags": json.loads(str(row["quality_flags_json"] or "[]")),
+            }
+            for row in connection.execute(
+                """
+                SELECT * FROM token_universe_outcome_quality
+                WHERE definition_version=? AND raw_token_path_return>=0.25
+                ORDER BY assessed_at DESC,id DESC LIMIT ?
+                """,
+                (version, max(1, min(100, int(recent_limit)))),
+            )
+        ]
+        total = int(summary["assessed_outcomes"] or 0)
+        return {
+            "status": "collecting" if total else "registered_waiting_forward_data",
+            "version": version,
+            "registered_at": str(registration["registered_at"]),
+            "activation_outcome_id": int(registration["activation_outcome_id"]),
+            "definition": json.loads(str(registration["definition_json"])),
+            "summary": {
+                "assessed_outcomes": total,
+                "raw_potential": int(summary["raw_potential"] or 0),
+                "quality_valid": int(summary["quality_valid"] or 0),
+                "confirmed_tradable": int(summary["confirmed_tradable"] or 0),
+                "estimated_net_potential": int(summary["estimated_net_potential"] or 0),
+                "net_executable_potential": int(summary["net_executable_potential"] or 0),
+                "unknown_or_unavailable": int(summary["unknown_or_unavailable"] or 0),
+            },
+            "horizons": horizons,
+            "route_classes": grouped("route_class"),
+            "quality_classes": grouped("quality_status"),
+            "recent": recent,
+            "retrospective_v1_diagnostic_included": False,
+            "decision_eligible": False,
+            "affects": "none",
+            "as_of": iso(),
         }
 
     def finalize_missed_opportunity_audits(self) -> dict[str, int]:

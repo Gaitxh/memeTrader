@@ -1107,7 +1107,7 @@ class DexScreenerClient:
         by_token: dict[str, tuple[TokenCandidate, TokenSnapshot]] = {}
         for offset in range(0, len(unique), 30):
             chunk = unique[offset : offset + 30]
-            requested = {value.lower() for value in chunk}
+            requested = {value.lower(): value for value in chunk}
             joined = urllib.parse.quote(",".join(chunk), safe=",")
             response = await self.http.get(
                 f"{self.BASE}/tokens/v1/{normalized_chain}/{joined}",
@@ -1120,8 +1120,11 @@ class DexScreenerClient:
                 candidate, snap = self._candidate(pair), self._snapshot(pair)
                 if not candidate or not snap or candidate.chain.lower() != normalized_chain:
                     continue
-                if candidate.address.lower() not in requested:
+                requested_address = requested.get(candidate.address.lower())
+                if requested_address is None:
                     continue
+                candidate.address = requested_address
+                snap.address = requested_address
                 current = by_token.get(candidate.token_id)
                 if current is None or (snap.liquidity_usd or 0.0) > (current[1].liquidity_usd or 0.0):
                     by_token[candidate.token_id] = (candidate, snap)

@@ -127,6 +127,9 @@ Trend Scout 主题通道基线 round-robin / 受限选择性分配
 - `information_first_ilg_registrations` / `information_first_ilg_cohorts` / `information_first_ilg_outcomes`：预注册后、同交易表面的成交量/笔数首次越界上界及不可变终态；`affects=none`。
 - `token_source_links`：Dex/pair 附带 URL 的发现面、identity/promotion 角色、类型、平台及本机首次/最后观察。
 - `token_discovery_rounds` / `token_discovery_exposures`：PumpPortal、GeckoTerminal 与 DexScreener 的真实发现轮次、空窗口、错误、重复、本机首次 Token、链接、hydration 快照及 no-pair 前向分母；只作人工覆盖复核。
+- `token_universe_forward_registrations` / `token_universe_forward_cohorts` / `token_universe_forward_outcomes`：完整新 Token 总体的首次发现、5 分钟内基准及 15/60/240 分钟前向结果；原始 v1 保留混合路径采样含义且不可改写。
+- `token_universe_outcome_quality_registrations` / `token_universe_outcome_quality`：从独立注册点向前把 pair、route、quote、流动性、迁移、报价年龄和成本冻结为质量覆盖层；不回填 v1，不把跨池跳变当可成交回报，固定 `affects=none`。
+- `missed_opportunity_audit_registrations` / `missed_opportunity_audits`：完整总体的不可变粗漏斗账本；保留缺基线、缺结果和低涨幅分母，`potential_miss` 只是审计候选而非确定策略错误。
 - `decisions`：action、score、match、canonical margin、理由、拒绝理由和 Paper 仓位金额。
 - `paper_account` / `positions` / `trades`：Paper 现金、持仓、退出和历史成交；新持仓/成交冻结最终 `decision_id/cohort_id`，并保存报价、执行价、报价/请求时间、滑点、手续费和已知 Token 税。
 - `paper_account_snapshots`：append-only 账户曲线；普通运行最多五分钟追加一次，买卖后强制追加，缺少新鲜报价时权益为 `null`。

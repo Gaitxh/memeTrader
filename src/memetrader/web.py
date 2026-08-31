@@ -212,6 +212,8 @@ EXPECTED_TABLES = {
     "token_universe_forward_outcomes",
     "missed_opportunity_audit_registrations",
     "missed_opportunity_audits",
+    "token_universe_outcome_quality_registrations",
+    "token_universe_outcome_quality",
     "token_snapshots",
     "tokens",
     "trades",
@@ -5372,6 +5374,17 @@ class WebData:
             "horizons": [], "breakpoints": [], "classes": [],
             "recent_potential_misses": [], "decision_eligible": False, "affects": "none",
         }
+        outcome_quality = {
+            "status": "not_observed",
+            "version": Store.TOKEN_UNIVERSE_OUTCOME_QUALITY_VERSION,
+            "summary": {
+                "assessed_outcomes": 0, "raw_potential": 0, "quality_valid": 0,
+                "confirmed_tradable": 0, "estimated_net_potential": 0,
+                "net_executable_potential": 0, "unknown_or_unavailable": 0,
+            },
+            "horizons": [], "route_classes": [], "quality_classes": [], "recent": [],
+            "decision_eligible": False, "affects": "none",
+        }
         with self.connect() as connection:
             if connection is not None and self._table_exists(connection, "observations"):
                 counts["observations"] = int(connection.execute("SELECT COUNT(*) FROM observations").fetchone()[0])
@@ -5427,6 +5440,9 @@ class WebData:
                     }
             if connection is not None:
                 missed_opportunity = Store.missed_opportunity_audit_summary_from_connection(
+                    connection
+                )
+                outcome_quality = Store.token_universe_outcome_quality_summary_from_connection(
                     connection
                 )
                 recent_decisions = self._decision_rows(connection, "1=1", [], 20, 0)
@@ -5539,6 +5555,7 @@ class WebData:
             "observation_counts": counts,
             "recent_decision_evidence": recent_decisions,
             "missed_opportunity": missed_opportunity,
+            "token_universe_outcome_quality": outcome_quality,
             "status": overall_status,
             "policy_enforced": True,
             "future_data_rejected": True if future_observed else None,

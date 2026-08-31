@@ -1050,6 +1050,17 @@ class Runtime:
             db_path if db_path.is_absolute() else root / db_path,
             initial_cash_usd=starting_cash,
         )
+        paper_config = config["paper"]
+        self.store.register_token_universe_outcome_quality(
+            reference_notional_usd=float(paper_config.get("max_position_usd", 35)),
+            min_liquidity_usd=float(config["safety"].get("min_liquidity_usd", 12_000)),
+            max_liquidity_impact_pct=float(paper_config.get("max_liquidity_impact_pct", 0.0025)),
+            slippage_rate=float(paper_config.get("slippage_rate", 0.04)),
+            default_fee_bps=float(paper_config.get("fee_bps", 60)),
+            pump_fee_bps=float(paper_config.get("pump_swap_fee_bps", 125)),
+            max_quote_age_seconds=float(paper_config.get("max_quote_age_seconds", 45)),
+            max_tax_pct=float(config["safety"].get("max_tax_pct", 10)),
+        )
         self.store.recover_interrupted_exposure_attempts()
         if not self.store.open_positions() and not self.store.trades():
             with self.store.db:
@@ -2449,6 +2460,7 @@ class Runtime:
         self.store.finalize_information_first_ilg_outcomes()
         self.store.finalize_attention_experiment_outcomes()
         await self.token_universe_followup_once()
+        self.store.finalize_token_universe_outcome_quality()
         self.store.finalize_missed_opportunity_audits()
 
     async def token_universe_followup_once(self) -> None:
