@@ -1350,6 +1350,12 @@ def test_reverse_context_prioritizes_exact_high_impact_post_without_momentum(tmp
                         title="An unrelated current story",
                         published_at=utcnow(),
                     ),
+                    Observation(
+                        source="google-news-reverse",
+                        source_kind="news",
+                        title="Rocket Otter becomes a current headline",
+                        published_at=utcnow(),
+                    ),
                 ]
 
         investigations = []
@@ -1375,14 +1381,31 @@ def test_reverse_context_prioritizes_exact_high_impact_post_without_momentum(tmp
         )
         assert [(row["stage"], row["status"]) for row in lookup_edges] == [
             ("event_lookup_attempt", "started"),
-            ("event_lookup_result", "zero_yield"),
+            ("event_lookup_result", "found"),
         ]
         result = lookup_edges[-1]
         breakdown = json.loads(result["metadata_json"])
-        assert result["reason_code"] == "no_eligible_result"
-        assert breakdown["fetched_count"] == 2
+        assert result["reason_code"] == "reverse_news_identity_matched"
+        assert breakdown["fetched_count"] == 3
+        assert breakdown["matched_count"] == 1
+        assert breakdown["accepted_count"] == 0
+        assert breakdown["decision_eligible_count"] == 0
+        assert breakdown["identity_context_count"] == 1
         assert breakdown["outside_time_window_count"] == 1
         assert breakdown["identity_mismatch_count"] == 1
+        reverse_observation = runtime.store.db.execute(
+            "SELECT role,raw_json FROM observations WHERE raw_json LIKE '%reverse_name_only%'"
+        ).fetchone()
+        assert reverse_observation["role"] == "identity"
+        reverse_raw = json.loads(reverse_observation["raw_json"])
+        assert reverse_raw["decision_eligible"] is False
+        assert reverse_raw["affects"] == "audit_context_only"
+        poll_attempt = runtime.store.db.execute(
+            "SELECT decision_eligible_count,context_only_count FROM source_poll_attempts "
+            "WHERE collector_kind='reverse_news'"
+        ).fetchone()
+        assert poll_attempt["decision_eligible_count"] == 0
+        assert poll_attempt["context_only_count"] == 1
         await runtime.close()
 
     asyncio.run(scenario())

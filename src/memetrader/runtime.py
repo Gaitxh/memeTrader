@@ -2055,8 +2055,10 @@ class Runtime:
                 {"q": query, "hl": "en-US", "gl": "US", "ceid": "US:en"}
             )
             source = "google-news-reverse"
-            accepted = 0
-            accepted_origins: set[str] = set()
+            matched = 0
+            eligible = 0
+            context_only = 0
+            matched_publishers: set[str] = set()
             outside_time_window = 0
             identity_mismatches = 0
             source_key = "reverse-news:" + hashlib.sha256(
@@ -2095,33 +2097,41 @@ class Runtime:
                     if not _reverse_news_matches_token(token, obs):
                         identity_mismatches += 1
                         continue
-                    obs.role = "confirmation"
+                    obs.role = "identity"
                     obs.raw["reverse_token_id"] = token.token_id
                     obs.raw["reverse_query"] = query
                     obs.raw["token_momentum_score"] = momentum
                     obs.raw["reverse_name_only"] = True
+                    obs.raw["decision_eligible"] = False
+                    obs.raw["affects"] = "audit_context_only"
                     result = await self.ingest_observation(obs)
                     new_observations += int(bool(result["observation_created"]))
                     new_events += int(bool(result["event_created"]))
                     duplicates += int(not result["observation_created"])
-                    accepted += 1
-                    accepted_origins.add(evidence_origin(obs))
-                    if accepted >= max_results:
+                    matched += 1
+                    eligible += int(bool(result["decision_eligible"]))
+                    context_only += int(not result["decision_eligible"])
+                    matched_publishers.add(evidence_origin(obs))
+                    if matched >= max_results:
                         break
-                self.store.heartbeat(source, item=accepted > 0)
+                self.store.heartbeat(source, item=matched > 0)
                 self.store.finish_source_poll_attempt(
                     attempt_id,
                     status="completed",
                     fetched_count=len(observations),
                     new_observation_count=new_observations,
                     new_event_count=new_events,
-                    decision_eligible_count=accepted,
+                    decision_eligible_count=eligible,
+                    context_only_count=context_only,
                     duplicate_count=duplicates,
-                    filtered_count=max(0, len(observations) - accepted),
+                    filtered_count=max(0, len(observations) - matched),
                 )
                 lookup_completed_at = utcnow()
-                if accepted:
-                    lookup_reason = "reverse_news_matched"
+                if matched:
+                    lookup_reason = (
+                        "reverse_news_matched"
+                        if eligible else "reverse_news_identity_matched"
+                    )
                 elif not observations:
                     lookup_reason = "no_results_returned"
                 elif outside_time_window == len(observations):
@@ -2133,7 +2143,7 @@ class Runtime:
                 self.store.record_token_universe_funnel_transition(
                     token.token_id,
                     stage="event_lookup_result",
-                    status="found" if accepted else "zero_yield",
+                    status="found" if matched else "zero_yield",
                     reason_code=lookup_reason,
                     evaluation_key=f"source_poll_attempt:{attempt_id}:result",
                     observed_at=lookup_completed_at,
@@ -2143,10 +2153,13 @@ class Runtime:
                     source_poll_attempt_id=attempt_id,
                     metadata={
                         "fetched_count": len(observations),
-                        "accepted_count": accepted,
+                        "matched_count": matched,
+                        "accepted_count": eligible,
+                        "decision_eligible_count": eligible,
+                        "identity_context_count": context_only,
                         "outside_time_window_count": outside_time_window,
                         "identity_mismatch_count": identity_mismatches,
-                        "independent_origin_count": len(accepted_origins),
+                        "distinct_publisher_count": len(matched_publishers),
                     },
                 )
             except Exception as exc:
@@ -2170,8 +2183,8 @@ class Runtime:
                 )
                 self._notify_source_error(source, exc)
 
-            minimum_sources = int(cfg.get("min_independent_sources", 2))
-            if len(accepted_origins) < minimum_sources:
+            minimum_publishers = int(cfg.get("min_independent_sources", 2))
+            if len(matched_publishers) < minimum_publishers:
                 snapshot = self.store.latest_snapshot(token.token_id)
                 if snapshot is not None:
                     await self._investigate_token_context(
