@@ -2057,6 +2057,8 @@ class Runtime:
             source = "google-news-reverse"
             accepted = 0
             accepted_origins: set[str] = set()
+            outside_time_window = 0
+            identity_mismatches = 0
             source_key = "reverse-news:" + hashlib.sha256(
                 token.token_id.encode("utf-8", errors="ignore")
             ).hexdigest()[:16]
@@ -2085,9 +2087,13 @@ class Runtime:
                 new_events = 0
                 duplicates = 0
                 for obs in observations:
-                    if obs.published_at and now - obs.published_at > max_result_age:
-                        continue
+                    if obs.published_at:
+                        age = now - obs.published_at
+                        if age < timedelta(minutes=-5) or age > max_result_age:
+                            outside_time_window += 1
+                            continue
                     if not _reverse_news_matches_token(token, obs):
+                        identity_mismatches += 1
                         continue
                     obs.role = "confirmation"
                     obs.raw["reverse_token_id"] = token.token_id
@@ -2114,11 +2120,21 @@ class Runtime:
                     filtered_count=max(0, len(observations) - accepted),
                 )
                 lookup_completed_at = utcnow()
+                if accepted:
+                    lookup_reason = "reverse_news_matched"
+                elif not observations:
+                    lookup_reason = "no_results_returned"
+                elif outside_time_window == len(observations):
+                    lookup_reason = "all_results_outside_time_window"
+                elif identity_mismatches == len(observations):
+                    lookup_reason = "no_identity_match"
+                else:
+                    lookup_reason = "no_eligible_result"
                 self.store.record_token_universe_funnel_transition(
                     token.token_id,
                     stage="event_lookup_result",
                     status="found" if accepted else "zero_yield",
-                    reason_code="reverse_news_matched" if accepted else "no_matching_recent_news",
+                    reason_code=lookup_reason,
                     evaluation_key=f"source_poll_attempt:{attempt_id}:result",
                     observed_at=lookup_completed_at,
                     ingested_at=lookup_completed_at,
@@ -2128,6 +2144,8 @@ class Runtime:
                     metadata={
                         "fetched_count": len(observations),
                         "accepted_count": accepted,
+                        "outside_time_window_count": outside_time_window,
+                        "identity_mismatch_count": identity_mismatches,
                         "independent_origin_count": len(accepted_origins),
                     },
                 )

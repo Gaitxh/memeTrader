@@ -1163,6 +1163,18 @@ def test_reverse_news_only_runs_for_tokens_with_real_momentum(tmp_path, monkeypa
         runtime.store.upsert_token(quiet)
         runtime.store.upsert_token(active)
         runtime.store.upsert_token(generic)
+        discovered_at = utcnow()
+        round_id = runtime.store.start_token_discovery_round(
+            provider="geckoterminal", surface="new_pools", mode="poll",
+            chain_scope="bsc", started_at=discovered_at,
+        )
+        runtime.store.add_token_discovery_exposure(
+            round_id, token_id=active.token_id, chain=active.chain, role="new_pool",
+            first_local_discovery=True, new_token=True, observed_at=discovered_at,
+        )
+        runtime.store.finish_token_discovery_round(
+            round_id, status="completed", returned_count=1
+        )
 
         class FakeDex:
             def __init__(self):
@@ -1228,6 +1240,13 @@ def test_reverse_news_only_runs_for_tokens_with_real_momentum(tmp_path, monkeypa
             and row["returned_count"] == 1
             for row in rounds
         )
+        lookup = runtime.store.db.execute(
+            "SELECT reason_code,metadata_json FROM token_universe_funnel_transitions "
+            "WHERE token_id=? AND stage='event_lookup_result'",
+            (active.token_id,),
+        ).fetchone()
+        assert lookup["reason_code"] == "no_results_returned"
+        assert json.loads(lookup["metadata_json"])["fetched_count"] == 0
         await runtime.close()
 
     asyncio.run(scenario())
@@ -1318,7 +1337,20 @@ def test_reverse_context_prioritizes_exact_high_impact_post_without_momentum(tmp
                 queried.append(name)
 
             async def poll(self):
-                return []
+                return [
+                    Observation(
+                        source="google-news-reverse",
+                        source_kind="news",
+                        title="Rocket Otter becomes a headline",
+                        published_at=utcnow() + timedelta(hours=1),
+                    ),
+                    Observation(
+                        source="google-news-reverse",
+                        source_kind="news",
+                        title="An unrelated current story",
+                        published_at=utcnow(),
+                    ),
+                ]
 
         investigations = []
 
@@ -1336,7 +1368,7 @@ def test_reverse_context_prioritizes_exact_high_impact_post_without_momentum(tmp
         assert investigations[0][2]["kind"] == "high_impact_account_post"
         lookup_edges = list(
             runtime.store.db.execute(
-                "SELECT stage,status FROM token_universe_funnel_transitions "
+                "SELECT stage,status,reason_code,metadata_json FROM token_universe_funnel_transitions "
                 "WHERE token_id=? AND stage LIKE 'event_lookup_%' ORDER BY id",
                 (token.token_id,),
             )
@@ -1345,6 +1377,12 @@ def test_reverse_context_prioritizes_exact_high_impact_post_without_momentum(tmp
             ("event_lookup_attempt", "started"),
             ("event_lookup_result", "zero_yield"),
         ]
+        result = lookup_edges[-1]
+        breakdown = json.loads(result["metadata_json"])
+        assert result["reason_code"] == "no_eligible_result"
+        assert breakdown["fetched_count"] == 2
+        assert breakdown["outside_time_window_count"] == 1
+        assert breakdown["identity_mismatch_count"] == 1
         await runtime.close()
 
     asyncio.run(scenario())
