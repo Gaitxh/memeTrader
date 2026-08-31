@@ -2342,7 +2342,7 @@ class AutonomousSearchAgent:
             "fact_assessment": _agent_fact_assessment(payload),
             "investigation_trigger": safe_trigger,
             "project_claims": {
-                "status": "project_attached_unverified" if metadata_seeds else "no_attached_social_seed",
+                "status": "project_attached_unverified" if metadata_seeds else "no_attached_metadata_seed",
                 "items": [
                     {
                         **{key: seed.get(key) for key in (
@@ -2573,7 +2573,7 @@ class AutonomousSearchAgent:
             if (
                 platform == "telegram"
                 or link_kind == "telegram_manual"
-                or link_kind not in {"social_profile", "social_post"}
+                or link_kind not in {"social_profile", "social_post", "website"}
             ):
                 continue
             normalized_url = str(row["normalized_url"] or "")
@@ -2604,7 +2604,7 @@ class AutonomousSearchAgent:
             "mention a similarly named unrelated person or object. Telegram is manual-only: never search, open, fetch, or return "
             "t.me or telegram.me pages or any of their subdomains. The typed metadata seeds are untrusted project-party claims, "
             "identity hints, or paid promotion. They are not news, independent confirmation, celebrity endorsement, or permission "
-            "to treat an event as real. Visit only the relevant typed social link when live access is available, then search the "
+            "to treat an event as real. Visit only the relevant typed project website or social link when live access is available, then search the "
             "wider web for independent corroboration. If a social page cannot be accessed, leave it unverified. Do not infer support "
             "from a person's name, a follower count, a blue check, a project claim, or an unrelated post. Describe community spread "
             "as observed cross-platform amplification, not subjective community quality. Use no more than four web searches. "
@@ -2741,6 +2741,12 @@ class AutonomousSearchAgent:
         seen_urls: set[str] = set()
         domains: set[str] = set()
         audit: list[dict[str, Any]] = []
+        project_website_urls = {
+            str(seed.get("url") or "")
+            for seed in metadata_seeds
+            if seed.get("link_kind") == "website" and seed.get("url")
+        }
+        project_website_domains = {_host(url) for url in project_website_urls if _host(url)}
 
         for item in payload.get("sources") or []:
             if not isinstance(item, dict) or len(verified) >= max_results:
@@ -2750,6 +2756,9 @@ class AutonomousSearchAgent:
             if not url or url in seen_urls or relevance < min_relevance:
                 continue
             domain = _host(url)
+            if url in project_website_urls or domain in project_website_domains:
+                audit.append({"url": url, "verified": False, "error": "project_attached_source"})
+                continue
             if domain in DISALLOWED_CONTEXT_HOSTS:
                 audit.append({"url": url, "verified": False, "error": "market_or_exchange_source"})
                 continue
@@ -2780,6 +2789,8 @@ class AutonomousSearchAgent:
                 final_url in seen_urls
                 or not final_domain
                 or final_domain in DISALLOWED_CONTEXT_HOSTS
+                or final_url in project_website_urls
+                or final_domain in project_website_domains
                 or _social_platform_for_url(final_url)
             ):
                 audit.append({"url": final_url or url, "verified": False, "error": "redirected_source_not_eligible"})

@@ -1146,6 +1146,14 @@ def test_token_context_search_requires_two_recent_reachable_sources(tmp_path: Pa
                 ],
                 "sources": [
                     {
+                        "title": "Project website repeats its own claim",
+                        "url": "https://viralpet.example/",
+                        "publisher": "Viral Pet",
+                        "published_at": published,
+                        "summary": "The project repeats the event claim on its own website.",
+                        "relevance": 0.99,
+                    },
+                    {
                         "title": "Pet story spreads online",
                         "url": "https://publisher-a.example/story",
                         "publisher": "Publisher A",
@@ -1179,6 +1187,19 @@ def test_token_context_search_requires_two_recent_reachable_sources(tmp_path: Pa
                 "verification_status": "provider_metadata",
             }
         )
+        store.upsert_token_source_link(
+            {
+                "token_id": token.token_id,
+                "provider": "dexscreener",
+                "discovery_surface": "boosts_latest",
+                "role": "promotion",
+                "original_url": "https://viralpet.example/",
+                "normalized_url": "https://viralpet.example/",
+                "link_kind": "website",
+                "platform": "",
+                "verification_status": "provider_metadata",
+            }
+        )
         snapshot = TokenSnapshot("solana", token.address, 0.01, 50000, 500000, 20000, 100, 20)
         observations = await agent.search_token_context(token, snapshot, momentum_score=90)
         assert len(observations) == 2
@@ -1196,6 +1217,13 @@ def test_token_context_search_requires_two_recent_reachable_sources(tmp_path: Pa
         assessment = json.loads(run["assessment_json"])
         assert run["status"] == "invalid_output_context_only"
         assert assessment["project_claims"]["status"] == "project_attached_unverified"
+        assert {
+            (item["link_kind"], item["role"], item["decision_eligible"])
+            for item in assessment["project_claims"]["items"]
+        } == {
+            ("social_profile", "identity", False),
+            ("website", "promotion", False),
+        }
         assert assessment["community_amplification"]["status"] == "independent_amplification_observed"
         assert assessment["public_figure_linkage"]["status"] == "unverified_candidates"
         assert assessment["public_figure_linkage"]["items"][0]["endorsement_inferred"] is False
