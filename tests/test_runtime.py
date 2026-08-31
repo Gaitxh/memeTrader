@@ -882,6 +882,24 @@ def test_stale_polled_features_and_confirmations_are_identity_only(tmp_path):
             assert classified.raw["original_role"] == role
             event_id, _, _ = runtime.events.ingest(classified)
             assert runtime.store.get_event(event_id).attention == 0
+        stale_correction = runtime._classify_observation(
+            Observation(
+                source="browser:x:publisher",
+                source_kind="social",
+                title="Publisher correction first observed late",
+                role="identity",
+                published_at="2026-01-01T00:00:00Z",
+                observed_at="2026-01-01T03:00:00Z",
+                ingested_at="2026-01-01T03:00:00Z",
+                availability_proof="local_receive",
+                raw={
+                    "source_item_state": "correction",
+                    "source_item_state_evidence": "publisher_correction_marker",
+                },
+            )
+        )
+        assert stale_correction.role == "identity"
+        assert stale_correction.raw["stale_first_observation"] is True
         await runtime.close()
 
     asyncio.run(scenario())

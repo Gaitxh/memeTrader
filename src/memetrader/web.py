@@ -167,6 +167,8 @@ EXPECTED_TABLES = {
     "event_attention_points",
     "event_claim_ledger_registrations",
     "event_claim_assessments",
+    "event_claim_relation_registrations",
+    "event_claim_relations",
     "source_item_revision_registrations",
     "source_item_revisions",
     "observation_provenance_registrations",
@@ -2557,9 +2559,12 @@ class WebData:
         grouped: dict[int, list[dict[str, Any]]] = {event_id: [] for event_id in ids}
         attention_points: dict[int, list[dict[str, Any]]] = {event_id: [] for event_id in ids}
         claim_points: dict[int, list[dict[str, Any]]] = {event_id: [] for event_id in ids}
+        claim_relation_rows: dict[int, list[sqlite3.Row]] = {event_id: [] for event_id in ids}
+        claim_revision_event_ids: dict[int, set[int]] = {}
         revision_rows: dict[int, list[sqlite3.Row]] = {event_id: [] for event_id in ids}
         provenance_by_observation: dict[int, dict[str, Any]] = {}
         claim_registered_at = None
+        claim_relation_registered_at = None
         revision_registered_at = None
         provenance_registered_at = None
         placeholders = ",".join("?" for _ in ids)
@@ -2673,7 +2678,6 @@ class WebData:
                     {
                         "assessment_id": int(point["id"]),
                         "observation_id": int(point["observation_id"]),
-                        "previous_assessment_id": point["previous_assessment_id"],
                         "assessed_at": point["assessed_at"],
                         "claim_status": point["claim_status"],
                         "factual_confidence": point["factual_confidence"],
@@ -2688,6 +2692,82 @@ class WebData:
                         "exclusion_reason": point["exclusion_reason"],
                     }
                 )
+        if self._table_exists(connection, "event_claim_relation_registrations"):
+            registration = connection.execute(
+                "SELECT registered_at FROM event_claim_relation_registrations WHERE definition_version=?",
+                (Store.EVENT_CLAIM_RELATION_VERSION,),
+            ).fetchone()
+            claim_relation_registered_at = registration["registered_at"] if registration else None
+        if self._table_exists(connection, "event_claim_relations"):
+            relations = list(connection.execute(
+                f"""
+                SELECT cr.*,
+                       sr.source AS source_source,
+                       sr.source_kind AS source_source_kind,
+                       sr.sequence_no AS source_sequence_no,
+                       sr.revision_kind AS source_revision_kind,
+                       sr.snapshot_json AS source_snapshot_json,
+                       sr.recorded_at AS source_revision_recorded_at,
+                       tr.source AS target_source,
+                       tr.source_kind AS target_source_kind,
+                       tr.sequence_no AS target_sequence_no,
+                       tr.revision_kind AS target_revision_kind,
+                       tr.snapshot_json AS target_snapshot_json,
+                       tr.recorded_at AS target_revision_recorded_at
+                FROM event_claim_relations cr
+                JOIN source_item_revisions sr ON sr.id=cr.source_revision_id
+                LEFT JOIN source_item_revisions tr ON tr.id=cr.target_revision_id
+                WHERE cr.definition_version=? AND (
+                    EXISTS (
+                        SELECT 1 FROM event_observations eo
+                        WHERE eo.event_id IN ({placeholders})
+                          AND eo.observation_id IN (
+                              sr.anchor_observation_id,sr.capture_observation_id
+                          )
+                    ) OR EXISTS (
+                        SELECT 1 FROM event_observations eo
+                        WHERE tr.id IS NOT NULL AND eo.event_id IN ({placeholders})
+                          AND eo.observation_id IN (
+                              tr.anchor_observation_id,tr.capture_observation_id
+                          )
+                    )
+                )
+                ORDER BY cr.recorded_at,cr.id
+                """,
+                [Store.EVENT_CLAIM_RELATION_VERSION, *ids, *ids],
+            ))
+            relation_revision_ids = sorted({
+                int(revision_id)
+                for relation in relations
+                for revision_id in (relation["source_revision_id"], relation["target_revision_id"])
+                if revision_id is not None
+            })
+            if relation_revision_ids:
+                revision_placeholders = ",".join("?" for _ in relation_revision_ids)
+                for mapping in connection.execute(
+                    f"""
+                    SELECT DISTINCT r.id AS revision_id,eo.event_id
+                    FROM source_item_revisions r
+                    JOIN event_observations eo
+                      ON eo.observation_id=r.anchor_observation_id
+                      OR eo.observation_id=r.capture_observation_id
+                    WHERE r.id IN ({revision_placeholders})
+                    """,
+                    relation_revision_ids,
+                ):
+                    claim_revision_event_ids.setdefault(
+                        int(mapping["revision_id"]), set()
+                    ).add(int(mapping["event_id"]))
+            selected_event_ids = set(ids)
+            for relation in relations:
+                related_event_ids = (
+                    claim_revision_event_ids.get(int(relation["source_revision_id"]), set())
+                    | claim_revision_event_ids.get(int(relation["target_revision_id"]), set())
+                    if relation["target_revision_id"] is not None
+                    else claim_revision_event_ids.get(int(relation["source_revision_id"]), set())
+                )
+                for related_event_id in related_event_ids & selected_event_ids:
+                    claim_relation_rows[related_event_id].append(relation)
         if self._table_exists(connection, "source_item_revision_registrations"):
             registration = connection.execute(
                 "SELECT registered_at FROM source_item_revision_registrations WHERE definition_version=?",
@@ -3006,6 +3086,115 @@ class WebData:
             }
             if include_observations:
                 source_revision_summary["source_item_histories"] = revision_histories
+            event_claim_relations = claim_relation_rows.get(event_id, [])
+
+            def claim_node(relation: sqlite3.Row, side: str) -> dict[str, Any] | None:
+                revision_id = relation[f"{side}_revision_id"]
+                if revision_id is None:
+                    return None
+                snapshot = _json_load(relation[f"{side}_snapshot_json"], {})
+                if not isinstance(snapshot, dict):
+                    snapshot = {}
+                text_excerpt = str(snapshot.get("text") or "")[:360]
+                related_event_ids = sorted(
+                    claim_revision_event_ids.get(int(revision_id), set())
+                )
+                related_event_id = (
+                    event_id if event_id in related_event_ids
+                    else related_event_ids[0] if related_event_ids else None
+                )
+                return {
+                    "node_id": "claim-" + hashlib.sha256(
+                        f"{event_id}:{int(revision_id)}".encode("utf-8")
+                    ).hexdigest()[:12],
+                    "event_id": int(related_event_id) if related_event_id is not None else None,
+                    "event_ids": related_event_ids,
+                    "event_url": (
+                        f"#/events/{int(related_event_id)}" if related_event_id is not None else None
+                    ),
+                    "source": relation[f"{side}_source"],
+                    "source_kind": relation[f"{side}_source_kind"],
+                    "sequence": int(relation[f"{side}_sequence_no"]),
+                    "revision_kind": relation[f"{side}_revision_kind"],
+                    "recorded_at": relation[f"{side}_revision_recorded_at"],
+                    "title": str(snapshot.get("title") or "")[:500],
+                    "text_excerpt": text_excerpt,
+                    "url": _safe_url(snapshot.get("url")),
+                }
+
+            safe_claim_relations = []
+            referenced_node_ids: set[str] = set()
+            for relation in event_claim_relations:
+                source_node = claim_node(relation, "source")
+                target_node = claim_node(relation, "target")
+                if source_node:
+                    referenced_node_ids.add(str(source_node["node_id"]))
+                if target_node:
+                    referenced_node_ids.add(str(target_node["node_id"]))
+                safe_claim_relations.append(
+                    {
+                        "relation_id": "relation-" + hashlib.sha256(
+                            f"{event_id}:{int(relation['id'])}".encode("utf-8")
+                        ).hexdigest()[:12],
+                        "relation_type": relation["relation_type"],
+                        "relation_scope": relation["relation_scope"],
+                        "resolution_status": relation["resolution_status"],
+                        "target_match_count": int(relation["target_match_count"]),
+                        "evidence_basis": relation["evidence_basis"],
+                        "recorded_at": relation["recorded_at"],
+                        "temporal_exclusion_reason": relation["temporal_exclusion_reason"],
+                        "source": source_node,
+                        "target": target_node,
+                        "decision_eligible": False,
+                        "affects": "none",
+                    }
+                )
+            relation_type_counts = {
+                relation_type: sum(
+                    str(item["relation_type"]) == relation_type
+                    for item in event_claim_relations
+                )
+                for relation_type in ("supersedes", "corrects", "retracts")
+            }
+            forward_nodes = [
+                revision for revision in event_revisions
+                if claim_relation_registered_at
+                and parse_time(revision["recorded_at"]) >= parse_time(claim_relation_registered_at)
+                and parse_time(revision["capture_ingested_at"]) >= parse_time(claim_relation_registered_at)
+            ]
+            claim_relation_graph = {
+                "version": Store.EVENT_CLAIM_RELATION_VERSION,
+                "coverage_status": (
+                    "observed_forward_only" if forward_nodes or event_claim_relations
+                    else "not_observed_in_forward_relation_ledger"
+                ),
+                "registered_at": claim_relation_registered_at,
+                "historical_backfill": False,
+                "forward_node_count": len(forward_nodes),
+                "referenced_node_count": len(referenced_node_ids),
+                "relation_count": len(event_claim_relations),
+                "resolved_relation_count": sum(
+                    str(item["resolution_status"]) == "resolved"
+                    for item in event_claim_relations
+                ),
+                "unresolved_relation_count": sum(
+                    str(item["resolution_status"]) not in {"resolved", "excluded_temporal"}
+                    for item in event_claim_relations
+                ),
+                "excluded_temporal_count": sum(
+                    str(item["resolution_status"]) == "excluded_temporal"
+                    for item in event_claim_relations
+                ),
+                "relation_types": relation_type_counts,
+                "factual_verification_state": "not_verified_by_relation_graph",
+                "propagation_state": "locally_observed_source_actions_only",
+                "boundary": (
+                    "correction_or_retraction_records_a_publisher_action_not_proof_the_target_is_false"
+                ),
+                "affects": "none",
+            }
+            if include_observations:
+                claim_relation_graph["relations"] = safe_claim_relations
             payload = {
                 "id": event_id,
                 "title": row["title"],
@@ -3026,6 +3215,7 @@ class WebData:
                 "attention_history": [point["score"] for point in points],
                 "attention_trajectory": trajectory,
                 "factuality": factuality,
+                "claim_relation_graph": claim_relation_graph,
                 "source_revision_summary": source_revision_summary,
                 "provenance_summary": provenance_summary,
                 "event_url": f"#/events/{event_id}",

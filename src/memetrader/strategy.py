@@ -425,9 +425,13 @@ class EventEngine:
     def ingest(self, obs: Observation) -> tuple[int, bool, bool]:
         raw = obs.raw if isinstance(obs.raw, dict) else {}
         source_item_state = str(raw.get("source_item_state") or "present").strip().lower()
+        has_explicit_retraction_target = (
+            source_item_state == "retracted" and bool(raw.get("claim_target_url"))
+        )
         if (
             source_item_state in {"deleted", "retracted", "access_lost"}
             and self.store.observation_id_for(obs) is None
+            and not has_explicit_retraction_target
         ):
             # An unanchored absence/withdrawal signal cannot safely create a new event.
             return 0, False, False

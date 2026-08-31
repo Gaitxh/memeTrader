@@ -100,6 +100,19 @@ a:hover { color: #81edf0; }
 .source-revision-history > header small { margin-top: 4px; color: var(--dim); font: 8px/1.4 var(--mono); }
 .source-revision-history > header > span { padding: 4px 7px; border: 1px solid rgba(69,214,219,.18); border-radius: 999px; color: var(--cyan); font: 700 8px/1 var(--mono); text-align: right; }
 .source-revision-history > a { display: inline-block; margin-top: 8px; color: var(--cyan); font: 600 9px/1.3 var(--mono); }
+.claim-relation-list { display: grid; gap: 9px; margin-top: 12px; }
+.claim-relation-list > article { min-width: 0; padding: 10px; border: 1px solid var(--line-soft); border-radius: var(--radius-sm); background: rgba(8,12,17,.24); }
+.claim-relation-list > article > div { display: grid; grid-template-columns: minmax(0,1fr) minmax(92px,.32fr) minmax(0,1fr); align-items: stretch; gap: 8px; }
+.claim-node { min-width: 0; padding: 9px; border: 1px solid rgba(157,178,191,.12); border-radius: 6px; background: rgba(19,28,36,.45); }
+.claim-node strong,.claim-node small { display: block; overflow-wrap: anywhere; }
+.claim-node strong { color: #dbe7ef; font-size: 10px; line-height: 1.35; }
+.claim-node small { margin-top: 5px; color: var(--dim); font: 8px/1.4 var(--mono); }
+.claim-node p { margin: 6px 0 0; color: var(--muted); font-size: 9px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.claim-node.unresolved { border-style: dashed; }
+.claim-edge { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; min-width: 0; text-align: center; }
+.claim-edge strong { color: var(--cyan); font: 700 9px/1.25 var(--mono); letter-spacing: .04em; overflow-wrap: anywhere; }
+.claim-edge small,.claim-relation-list footer { color: var(--dim); font: 8px/1.4 var(--mono); overflow-wrap: anywhere; }
+.claim-relation-list footer { margin-top: 8px; }
 .trajectory-plot { min-height: 62px; display: grid; grid-template-columns: minmax(100px,1fr) auto; align-items: center; gap: 16px; margin-bottom: 12px; padding: 10px 13px; border: 1px solid var(--line-soft); border-radius: var(--radius-sm); background: var(--bg-raised); }
 .trajectory-plot .sparkline { width: 100%; height: 46px; }
 .trajectory-plot > div:last-child { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; }
@@ -107,6 +120,8 @@ a:hover { color: #81edf0; }
 @media (max-width: 520px) {
   .trajectory-plot { grid-template-columns: 1fr; }
   .trajectory-plot > div:last-child { align-items: flex-start; }
+  .claim-relation-list > article > div { grid-template-columns: 1fr; }
+  .claim-edge { align-items: flex-start; text-align: left; padding: 2px 4px; }
 }
 
 .app-shell { min-height: 100vh; }

@@ -970,9 +970,24 @@ class BrowserBridge:
                     source_entity_id = ""
                     if self.source_entity_resolver is not None:
                         source_entity_id = sanitize_source_entity_id(self.source_entity_resolver(item))
-                    browser_item = {key: value for key, value in item.items() if key != "source_entity_id"}
+                    browser_item = {
+                        key: value for key, value in item.items()
+                        if key not in {"source_entity_id", "claim_target_url"}
+                    }
                     if source_entity_id:
                         browser_item["source_entity_id"] = source_entity_id
+                    claim_target_url = ""
+                    if (
+                        source_item_state in {"correction", "retracted"}
+                        and source_item_state_evidence in {
+                            "publisher_correction_marker", "publisher_retraction_marker"
+                        }
+                        and isinstance(item.get("claim_target_url"), str)
+                    ):
+                        requested_target = str(item["claim_target_url"])[:2000]
+                        claim_target_url = (
+                            Store._revision_safe_url(requested_target) or "invalid://claim-target"
+                        )
                     await self.on_observation(
                         Observation(
                             source=str(item.get("source") or "browser"),
@@ -989,6 +1004,7 @@ class BrowserBridge:
                                 **({"source_entity_id": source_entity_id} if source_entity_id else {}),
                                 "source_item_state": source_item_state,
                                 **({"source_item_state_evidence": source_item_state_evidence} if source_item_state_evidence else {}),
+                                **({"claim_target_url": claim_target_url} if claim_target_url else {}),
                                 **({
                                     "source_reported_revision_at": str(item.get("source_reported_revision_at"))[:100]
                                 } if item.get("source_reported_revision_at") else {}),
@@ -1127,12 +1143,19 @@ class Runtime:
             obs.raw = {**obs.raw, "non_event_market_promotion": True}
             return obs
         original_role = obs.role.lower()
-        if obs.published_at is None or original_role not in {"feature", "confirmation"}:
+        raw = obs.raw if isinstance(obs.raw, dict) else {}
+        source_item_state = str(raw.get("source_item_state") or "present").strip().lower()
+        tracks_source_action = source_item_state in {"correction", "retracted"}
+        if (
+            obs.published_at is None
+            or (original_role not in {"feature", "confirmation"} and not tracks_source_action)
+        ):
             return obs
         max_age = float((self.config.get("events") or {}).get("max_source_age_minutes", 30))
         source_age = obs.observed_at - obs.published_at
         if obs.availability_proof in {"local_poll", "local_receive", "agent_search_verified"} and source_age > timedelta(minutes=max_age):
-            obs.role = "identity"
+            if original_role in {"feature", "confirmation"}:
+                obs.role = "identity"
             obs.raw = {
                 **obs.raw,
                 "original_role": original_role,

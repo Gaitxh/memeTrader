@@ -300,6 +300,253 @@ def test_source_item_revision_does_not_backfill_or_create_unanchored_tombstone(t
     store.close()
 
 
+def test_claim_relations_are_atomic_forward_only_and_keep_deletion_semantically_separate(tmp_path: Path):
+    store = Store(tmp_path / "claim-relations.sqlite3")
+    engine = EventEngine(store, similarity=0.1)
+    now = utcnow()
+    common = dict(
+        source="browser:x:publisher",
+        source_kind="social",
+        title="Publisher posts a viral animal claim",
+        url="https://x.com/publisher/status/501",
+        author="publisher",
+        source_item_id="x:publisher:501",
+        observed_at=now,
+        ingested_at=now,
+        availability_proof="local_receive",
+    )
+    event_id, _, created = engine.ingest(
+        Observation(text="Original claim", raw={"source_item_state": "present"}, **common)
+    )
+    assert created is True
+    assert engine.ingest(
+        Observation(text="Original claim", raw={"source_item_state": "present"}, **common)
+    ) == (event_id, False, False)
+    engine.ingest(
+        Observation(text="Edited claim", raw={"source_item_state": "present"}, **common)
+    )
+    engine.ingest(
+        Observation(
+            text="Publisher correction",
+            role="identity",
+            raw={
+                "source_item_state": "correction",
+                "source_item_state_evidence": "publisher_correction_marker",
+                "claim_target_url": common["url"],
+            },
+            **common,
+        )
+    )
+    engine.ingest(
+        Observation(
+            text="Publisher correction",
+            role="identity",
+            raw={
+                "source_item_state": "deleted",
+                "source_item_state_evidence": "publisher_deleted_marker",
+            },
+            **common,
+        )
+    )
+    future = now + timedelta(hours=1)
+    engine.ingest(
+        Observation(
+            text="Future restored capture",
+            role="identity",
+            raw={"source_item_state": "present"},
+            **{**common, "observed_at": future, "ingested_at": future},
+        )
+    )
+
+    revisions = list(store.db.execute("SELECT * FROM source_item_revisions ORDER BY sequence_no"))
+    relations = list(store.db.execute("SELECT * FROM event_claim_relations ORDER BY id"))
+    assert len(revisions) == 5
+    assert store.db.execute("SELECT COUNT(*) FROM observations").fetchone()[0] == 1
+    assert [row["relation_type"] for row in relations] == [
+        "supersedes", "supersedes", "corrects", "supersedes", "supersedes"
+    ]
+    correction = next(row for row in relations if row["relation_type"] == "corrects")
+    assert correction["source_revision_id"] == revisions[2]["id"]
+    assert correction["target_revision_id"] == revisions[1]["id"]
+    assert correction["resolution_status"] == "resolved"
+    assert correction["relation_scope"] == "same_item_version"
+    assert not any(row["relation_type"] == "retracts" for row in relations)
+    assert relations[-1]["resolution_status"] == "excluded_temporal"
+    assert relations[-1]["target_revision_id"] is None
+    engine.ingest(
+        Observation(
+            text="Normal capture after excluded future revision",
+            role="identity",
+            raw={
+                "source_item_state": "correction",
+                "source_item_state_evidence": "publisher_correction_marker",
+                "claim_target_url": common["url"],
+            },
+            **common,
+        )
+    )
+    relations = list(store.db.execute("SELECT * FROM event_claim_relations ORDER BY id"))
+    assert [row["resolution_status"] for row in relations[-2:]] == [
+        "excluded_temporal", "excluded_temporal"
+    ]
+    assert all(row["target_revision_id"] is None for row in relations[-2:])
+    assert all(row["target_match_count"] == 0 for row in relations[-2:])
+    assert all(
+        "capture_" in str(row["temporal_exclusion_reason"])
+        for row in relations[-2:]
+    )
+    assert all(row["decision_eligible"] == 0 and row["affects"] == "none" for row in relations)
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute("UPDATE event_claim_relations SET resolution_status='resolved' WHERE id=?", (relations[-1]["id"],))
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute("DELETE FROM event_claim_relation_registrations")
+    store.close()
+    reopened = Store(tmp_path / "claim-relations.sqlite3")
+    assert reopened.db.execute("SELECT COUNT(*) FROM event_claim_relations").fetchone()[0] == len(relations)
+    reopened.close()
+
+
+def test_claim_relations_do_not_backfill_capture_from_before_relation_registration(tmp_path: Path):
+    store = Store(tmp_path / "claim-registration-boundary.sqlite3")
+    source_registered = parse_time(store.db.execute(
+        "SELECT registered_at FROM source_item_revision_registrations WHERE definition_version=?",
+        (Store.SOURCE_ITEM_REVISION_VERSION,),
+    ).fetchone()["registered_at"])
+    relation_registered = parse_time(store.db.execute(
+        "SELECT registered_at FROM event_claim_relation_registrations WHERE definition_version=?",
+        (Store.EVENT_CLAIM_RELATION_VERSION,),
+    ).fetchone()["registered_at"])
+    assert source_registered < relation_registered
+    old_capture = source_registered + (relation_registered - source_registered) / 2
+    engine = EventEngine(store, similarity=0.1)
+    common = dict(
+        source="boundary-source", source_kind="news", title="Boundary claim",
+        url="https://publisher.example/boundary", source_item_id="boundary-1",
+        observed_at=old_capture, ingested_at=old_capture,
+    )
+    engine.ingest(Observation(text="First old capture", **common))
+    engine.ingest(Observation(text="Edited old capture", **common))
+    assert store.db.execute("SELECT COUNT(*) FROM source_item_revisions").fetchone()[0] == 2
+    assert store.db.execute("SELECT COUNT(*) FROM event_claim_relations").fetchone()[0] == 0
+    store.close()
+
+
+def test_claim_relation_exact_target_is_unique_safe_and_never_late_bound(tmp_path: Path):
+    store = Store(tmp_path / "claim-targets.sqlite3")
+    engine = EventEngine(store, similarity=0.1)
+    now = utcnow()
+    target_url = "https://publisher.example/story?utm_source=test&secret=never-store"
+    target_event, _, _ = engine.ingest(
+        Observation(
+            source="publisher-a", source_kind="news", title="Viral otter report",
+            text="Original report", url=target_url, source_item_id="report-a",
+            observed_at=now, ingested_at=now,
+        )
+    )
+    correction_event, _, _ = engine.ingest(
+        Observation(
+            source="publisher-correction", source_kind="news", title="Viral otter report corrected",
+            text="Correction notice", url="https://publisher.example/correction-1",
+            source_item_id="correction-1", role="identity", observed_at=now, ingested_at=now,
+            raw={
+                "source_item_state": "correction",
+                "source_item_state_evidence": "publisher_correction_marker",
+                "claim_target_url": target_url,
+            },
+        )
+    )
+    assert correction_event == target_event
+    resolved = store.db.execute(
+        "SELECT * FROM event_claim_relations WHERE relation_type='corrects' ORDER BY id LIMIT 1"
+    ).fetchone()
+    assert resolved["resolution_status"] == "resolved"
+    assert resolved["relation_scope"] == "cross_item_exact_url"
+    assert resolved["target_revision_id"] is not None
+    assert len(resolved["target_url_fingerprint"]) == 64
+    stored_raw = store.db.execute(
+        "SELECT raw_json FROM observations WHERE source='publisher-correction'"
+    ).fetchone()["raw_json"]
+    assert "claim_target_url" not in stored_raw and "never-store" not in stored_raw
+
+    retraction_event, _, retraction_created = engine.ingest(
+        Observation(
+            source="publisher-retraction", source_kind="news", title="Viral otter report retracted",
+            text="Retraction notice", url="https://publisher.example/retraction-1",
+            source_item_id="retraction-1", role="identity", observed_at=now, ingested_at=now,
+            raw={
+                "source_item_state": "retracted",
+                "source_item_state_evidence": "publisher_retraction_marker",
+                "claim_target_url": target_url,
+            },
+        )
+    )
+    assert retraction_created is True
+    assert retraction_event == target_event
+    retracted = store.db.execute(
+        "SELECT * FROM event_claim_relations WHERE relation_type='retracts' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert retracted["resolution_status"] == "resolved"
+    assert retracted["relation_scope"] == "cross_item_exact_url"
+    assert retracted["target_revision_id"] == resolved["target_revision_id"]
+
+    engine.ingest(
+        Observation(
+            source="publisher-b", source_kind="news", title="Viral otter report mirror",
+            text="Independent item sharing the same canonical URL", url=target_url,
+            source_item_id="report-b", observed_at=now, ingested_at=now,
+        )
+    )
+    engine.ingest(
+        Observation(
+            source="publisher-correction", source_kind="news", title="Second otter correction",
+            text="Second correction notice", url="https://publisher.example/correction-2",
+            source_item_id="correction-2", role="identity", observed_at=now, ingested_at=now,
+            raw={
+                "source_item_state": "correction",
+                "source_item_state_evidence": "publisher_correction_marker",
+                "claim_target_url": target_url,
+            },
+        )
+    )
+    ambiguous = store.db.execute(
+        "SELECT * FROM event_claim_relations WHERE relation_type='corrects' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert ambiguous["resolution_status"] == "ambiguous_target"
+    assert ambiguous["target_revision_id"] is None
+    assert ambiguous["target_match_count"] == 2
+
+    missing_url = "https://publisher.example/not-yet-observed"
+    engine.ingest(
+        Observation(
+            source="publisher-correction", source_kind="news", title="Missing target correction",
+            text="Target not yet observed", url="https://publisher.example/correction-3",
+            source_item_id="correction-3", role="identity", observed_at=now, ingested_at=now,
+            raw={
+                "source_item_state": "correction",
+                "source_item_state_evidence": "publisher_correction_marker",
+                "claim_target_url": missing_url,
+            },
+        )
+    )
+    missing = store.db.execute(
+        "SELECT * FROM event_claim_relations WHERE relation_type='corrects' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert missing["resolution_status"] == "target_not_found"
+    engine.ingest(
+        Observation(
+            source="publisher-late", source_kind="news", title="Late original target",
+            text="Observed only after the correction", url=missing_url, source_item_id="late-target",
+            observed_at=now, ingested_at=now,
+        )
+    )
+    unchanged = store.db.execute(
+        "SELECT * FROM event_claim_relations WHERE id=?", (missing["id"],)
+    ).fetchone()
+    assert unchanged["resolution_status"] == "target_not_found"
+    assert unchanged["target_revision_id"] is None
+    store.close()
+
+
 def test_observation_provenance_is_forward_immutable_and_separates_origin_transport(tmp_path: Path):
     store = Store(tmp_path / "observation-provenance.sqlite3")
     now = utcnow()

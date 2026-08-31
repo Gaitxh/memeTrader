@@ -17,7 +17,7 @@ from memetrader.autonomous_search import (
     TREND_RUN_KEY,
     TREND_WATCH_SELECTION_KEY,
 )
-from memetrader.models import CandidateDecision, Observation, TokenCandidate, TokenSnapshot, iso, utcnow
+from memetrader.models import CandidateDecision, Observation, TokenCandidate, TokenSnapshot, iso, parse_time, utcnow
 from memetrader.runtime import initial_config
 from memetrader.store import Store
 from memetrader.strategy import EventEngine
@@ -501,6 +501,16 @@ def test_event_source_revision_timeline_is_safe_forward_only_and_semantically_se
             **common,
         )
     )
+    anchor_observation_id = int(store.db.execute(
+        "SELECT id FROM observations WHERE source=? ORDER BY id LIMIT 1", (common["source"],)
+    ).fetchone()["id"])
+    second_event_id = store.create_event(
+        "Second local cluster sharing the exact source item",
+        ["shared exact source item"],
+        0,
+        now,
+    )
+    store.link_event_observation(second_event_id, anchor_observation_id)
     store.close()
 
     web = WebData(config_path)
@@ -509,6 +519,13 @@ def test_event_source_revision_timeline_is_safe_forward_only_and_semantically_se
     assert summary["source_revision_summary"]["locally_observed_retractions"] == 1
     assert summary["source_revision_summary"]["affects"] == "none"
     assert "source_item_histories" not in summary["source_revision_summary"]
+    assert summary["claim_relation_graph"]["forward_node_count"] == 3
+    assert summary["claim_relation_graph"]["relation_count"] == 3
+    assert summary["claim_relation_graph"]["resolved_relation_count"] == 3
+    assert summary["claim_relation_graph"]["relation_types"] == {
+        "supersedes": 2, "corrects": 0, "retracts": 1,
+    }
+    assert "relations" not in summary["claim_relation_graph"]
     detail = web.event_detail(event_id)
     history = detail["source_revision_summary"]["source_item_histories"][0]
     assert history["availability_state"] == "retracted_locally_observed"
@@ -517,12 +534,53 @@ def test_event_source_revision_timeline_is_safe_forward_only_and_semantically_se
         "baseline", "content_edit", "explicit_retracted"
     ]
     assert all(item["decision_eligible"] is False and item["affects"] == "none" for item in history["revisions"])
+    relations = detail["claim_relation_graph"]["relations"]
+    assert [item["relation_type"] for item in relations] == [
+        "supersedes", "supersedes", "retracts"
+    ]
+    assert all(item["decision_eligible"] is False and item["affects"] == "none" for item in relations)
+    assert all(item["source"]["node_id"].startswith("claim-") for item in relations)
+    assert detail["claim_relation_graph"]["factual_verification_state"] == "not_verified_by_relation_graph"
+    second_detail = web.event_detail(second_event_id)
+    assert second_detail["claim_relation_graph"]["relation_count"] == 3
+    assert all(
+        second_event_id in item["source"]["event_ids"]
+        for item in second_detail["claim_relation_graph"]["relations"]
+    )
     serialized = json.dumps(detail)
     assert "private-origin-item-id" not in serialized
     assert "must-not-return" not in serialized
     assert '"source_item_id":' not in serialized
     assert "content_sha256" not in serialized
     assert "snapshot_json" not in serialized
+    assert "target_url_fingerprint" not in serialized
+    assert "previous_assessment_id" not in serialized
+
+
+def test_claim_relation_web_coverage_excludes_pre_registration_captures(tmp_path: Path):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3")
+    source_registered = parse_time(store.db.execute(
+        "SELECT registered_at FROM source_item_revision_registrations WHERE definition_version=?",
+        (Store.SOURCE_ITEM_REVISION_VERSION,),
+    ).fetchone()["registered_at"])
+    relation_registered = parse_time(store.db.execute(
+        "SELECT registered_at FROM event_claim_relation_registrations WHERE definition_version=?",
+        (Store.EVENT_CLAIM_RELATION_VERSION,),
+    ).fetchone()["registered_at"])
+    old_capture = source_registered + (relation_registered - source_registered) / 2
+    event_id, _, _ = EventEngine(store, similarity=0.1).ingest(
+        Observation(
+            source="boundary-source", source_kind="news", title="Boundary claim",
+            text="Old capture", url="https://publisher.example/boundary",
+            source_item_id="boundary-1", observed_at=old_capture, ingested_at=old_capture,
+        )
+    )
+    store.close()
+
+    summary = next(item for item in WebData(config_path).events({})["items"] if item["id"] == event_id)
+    assert summary["claim_relation_graph"]["coverage_status"] == "not_observed_in_forward_relation_ledger"
+    assert summary["claim_relation_graph"]["forward_node_count"] == 0
 
 
 def _start_server(config: Path, static_dir: Path, access_token_file: Path | None = None):
@@ -1584,6 +1642,10 @@ def test_candidate_ranking_api_is_persisted_bounded_sanitized_and_wait_is_truthf
     assert "data-testid='source-revision-timeline'" in app
     assert "Original source content versions" in app
     assert "Deletion is not retraction, and retraction is not proof that a claim is false" in app
+    assert "data-testid='claim-relation-graph'" in app
+    assert "Claim targets & relation graph" in app
+    assert "PUBLISHER ACTION ≠ INDEPENDENT FACT VERIFICATION · AFFECTS NONE" in app
+    assert "A target that appears later never backfills an old relation" in app
     assert "LATEST ASSESSMENT" in app
     assert "OBSERVE ONLY · AFFECTS NONE" in app
     assert "It is not platform-wide mentions, replies, quotes, or repost velocity" in app

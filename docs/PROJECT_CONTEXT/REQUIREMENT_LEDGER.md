@@ -1,7 +1,7 @@
 # memeTrader 长期需求台账
 
-最后核验：2026-08-31 18:00（Asia/Shanghai）
-本轮实现前基线：`main` / `92c3303c41196502a6d2c8af246aef8c8b6d614a` / Paper / `live.enabled=false`；发布后 SHA 以 Git 为准。
+最后核验：2026-08-31 21:28（Asia/Shanghai）
+本轮实现前基线：`main` / `8977d7366c729bd0efaac2c33a762b71e6f50b7a` / Paper / `live.enabled=false`；发布后 SHA 以 Git 为准。
 
 本文件是长期任务的逐项台账，不是某次发布的完成声明。运行事实仍以 `AGENTS.md`、当前代码、忽略的本机 `config.json`、当前 SQLite、实时 API、进程与端口检查为准。`CONTINUOUS` 表示工程链路存在但研究或运行验证必须持续，不能改成 `DONE`。
 
@@ -15,7 +15,7 @@
 | OPS-002 | 长期总 Prompt §22 | 北京时间 00:00/08:00/16:00 复盘，不创建重复自动任务 | DONE | 既有 `memetrader` heartbeat 已从 09:00 更新为 `BYHOUR=0,8,16` | 无 | 否 | 旧 09:00 已 SUPERSEDED | 时区解释错误 | 后续只更新同一 automation | 2026-08-31 16:35 |
 | MEM-001 | 用户“项目内保留上下文”；长期总 Prompt §3 | 持久化完整需求台账和最新断点 | IN_PROGRESS | 本文件建立；`START_HERE` 与日期快照已存在 | 每轮需同步状态、证据、下一步与新 supersession | 是 | 否 | 上下文压缩、旧报告被当成现状 | 每轮巡检更新本表和最新快照 | 2026-08-31 16:35 |
 | WEB-001 | 用户网站/双语/动态要求；长期总 Prompt §20 | 深色中英控制台、动态刷新、响应式、真实数据 | CONTINUOUS | Overview/Events/Tokens/Decisions/Paper/Wallet/Agents/Sources/Audit/Settings 已实现；低成本 polling；8787/8788 与鉴权公网入口运行 | 固定公网域名仍需用户自有 Tunnel | 是 | 否 | 旧页面缓存、临时公网域名变化 | 持续做真实浏览器中英/响应式/错误日志 QA | 2026-08-31 18:00 |
-| WEB-002 | 用户事件来源超链接要求 | 展示全部来源、角色、权威/热度排序与时间线 | CONTINUOUS | Event detail 有 F/C/I/P 分组、链接、透明排序、事实/局部传播/纠正三分栏、来源版本链；`observation-provenance/v1` 对新观察展示 Origin→Transport→Local capture，并移除“来源字符串只出现一次即独立”的错误加分 | claim 级 supersession 与独立内容核验未实现；旧 Observation 不回填 provenance | 是 | 否 | RSS/Agent/域名推断被误算独立来源、删除被误当事实为假、未观察被误读为否定结论 | 累积自然 provenance/revision；独立性只显示已证明不同原始条目下界 | 2026-08-31 19:30 |
+| WEB-002 | 用户事件来源超链接要求 | 展示全部来源、角色、权威/热度排序与时间线 | CONTINUOUS | Event detail 有 F/C/I/P 分组、链接、透明排序、事实/局部传播/纠正三分栏、来源版本链与 `event-claim-relation/v1` 目标关系图；`observation-provenance/v1` 展示 Origin→Transport→Local capture | 独立内容核验未实现；旧 Observation 不回填 provenance/关系 | 是 | 否 | RSS/Agent/域名推断被误算独立来源、删除被误当撤回、关系被误读为事实证明 | 累积自然 provenance/revision/relation；独立性只显示已证明不同原始条目下界 | 2026-08-31 21:28 |
 | SRC-001 | 长期总 Prompt §10、§14 | 平台/来源/人物/主题按前向增量价值学习，保留探索 | CONTINUOUS | source learning、trend lane、watch exposure、至少 40% exploration 已实现 | 样本未成熟，不能改仓位/退出 | 是 | 否 | 幸存者偏差、过拟合 | 累积自然 exposure、失败和 fixed-horizon 结果 | 2026-08-31 16:35 |
 | SRC-002 | 长期总 Prompt §5 | source-poll exposure 保存完成、空结果、重复、过滤和错误 | CONTINUOUS | `source_poll_attempts` 与 Sources 面板已实现 | 持续评估各入口覆盖和稳定性 | 是 | 否 | 为非空结果删分母 | 保留所有真实 poll 终态 | 2026-08-31 16:35 |
 | TOKEN-001 | 用户 Dex/OKX/新币来源要求；长期总 Prompt §5、§7 | 多入口新 Token/池发现与 Event↔Token 证据链 | CONTINUOUS | PumpPortal、GeckoTerminal、DexScreener discovery/hydration、token discovery exposure 已实现 | OKX Premium/签名接口未接；不逆向绕过 | 是 | 否 | 推广榜单、同名币、来源竞争 | 继续比较本机首次发现与后续漏斗 | 2026-08-31 16:35 |
@@ -25,7 +25,7 @@
 | INFO-002 | 长期总 Prompt §6 | 严格 Information Lead Gap | CONTINUOUS | `information-first-ilg/v1`；同 provider/chain/DEX/pair；Store 生成 `recorded_at` | 需更多注册后 crossing/missing 样本 | 是 | 否 | 后来快照/跨池回填 | 保持固定 240m+30m 终态 | 2026-08-31 16:35 |
 | INFO-003 | 长期总 Prompt §6 | 10s/30s/1m/5m mention velocity、加速度、跨平台扩散 | PARTIAL | `event-attention-trajectory/v1` 保留本机到达率下界；`observation-provenance/v1` 从上线后显式拆分 Origin/Transport/Local capture，并给出已证明不同原始条目下界。旧事件不回填，覆盖不足为 null | 全平台分母、稳定 actor 分母、reply/quote/repost 修订和完整跨社区扩散仍不可用 | 是 | 否 | 45s 轮询不足以解析 10s/30s；前向 proven origin 样本仍需自然积累 | 先积累注册后路径与轨迹，再做 collector coverage；不得把 transport/域名/singleton 当 origin independence | 2026-08-31 19:30 |
 | CHAIN-001 | 长期总 Prompt §8 | unique buyers、new holders、buyer breadth、集中度和 cluster | NOT_STARTED | 当前仅 buys/sells/tx/volume/liquidity 与安全服务 | 独立钱包、holder 变化、insider cluster 不可用 | 是 | 否 | RPC/索引成本、伪交易 | 先做 Solana 小样本 shadow 数据可用性实验 | 2026-08-31 16:35 |
-| FACT-001 | 长期总 Prompt §9 | 分离事实真实性、传播真实性、纠错/删除/反转 | PARTIALLY_DONE | `event-claim-assessment/v1`、`source-item-revision/v1`、`observation-provenance/v1` 均已前向注册；来源条目修订与来源/传输路径各自不可变、future 标记、旧数据不回填、固定 `affects=none`；`false_claim` 不再混入 correction/retraction 计数 | 仍无独立内容核验、claim 级 target/supersession 和纠正后的市场反转结果 | 是 | 否 | Agent 自报被误当事实、转载被误算交叉确认、删除被误写为辟谣 | 累积自然 provenance/edit/tombstone；实现 verifier 与 claim relation 前仍保持 shadow | 2026-08-31 19:30 |
+| FACT-001 | 长期总 Prompt §9 | 分离事实真实性、传播真实性、纠错/删除/反转 | PARTIALLY_DONE | `event-claim-assessment/v1`、`source-item-revision/v1`、`observation-provenance/v1` 与 `event-claim-relation/v1` 均已前向注册；关系与 revision 同事务追加，显式区分 supersede/correct/retract，跨条目只按安全 URL 唯一匹配，未命中/歧义/未来/陈旧均不补链，固定 `affects=none` | 仍无独立内容 verifier 和纠正/撤回后的固定时点市场反转结果；工程实现完成不等于事实研究成熟 | 是 | 否 | Agent 自报被误当事实、关系动作被误当独立证明、转载被误算交叉确认 | 累积自然关系样本；下一步在既有 Trend/Context 调用内实现独立 verifier phase | 2026-08-31 21:28 |
 | AGENT-001 | 长期总 Prompt §19 | 不同任务使用合适模型/推理强度，并发最多 2，完整 Token 记账 | CONTINUOUS | Trend/Source 为 Spark-low→Luna-low；Context 为 Luna-low→Terra/Sol-medium；Web 分模型/强度/Token 展示；新 Trend/Context 输出统一 identity/context-only，不再直接成为 F/C 决策证据 | 通用独立事实核验与冲突驱动质量升级未完成 | 是 | 否 | 空结果被误判失败、Agent 自报进入策略、重复升级烧额度 | 为独立内容核验设计前向 verifier；未经核验继续 context-only | 2026-08-31 18:00 |
 | AGENT-002 | 用户预算补充；长期总 Prompt §19 | 本机预算不过度阻塞，但保留有限门、冷却和退避 | CONTINUOUS | 当前上限 Trend 96/50M、Source 12/10M、Context 192/50M；并发 2；Context 在 86/96 接近上限时依据真实节奏提高到 192 | 需持续检查真实用量与 zero-yield cost | 是 | “取消预算”被有限大上限替代 | 无限制循环和重复调用 | 只有真实 limiter 偏低时才提高；不移除触发门/冷却/退避 | 2026-08-31 18:00 |
 | PAPER-001 | 用户 Paper 与成本要求；长期总 Prompt §18 | 前向 Paper、滑点/费率、账户曲线、分批止盈和 runner | CONTINUOUS | append-only cash/equity；4% 配置滑点、60bps、PumpSwap 125bps；两笔历史 Paper fill | 当前只有一个闭环；历史 fill 仍记录旧 2% 滑点 | 是 | 否 | 把 Paper 当真实利润、费用遗漏 | 等待新 cohort，按当时配置审计 | 2026-08-31 16:35 |

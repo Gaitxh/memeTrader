@@ -52,6 +52,7 @@ class Store:
     TOKEN_DISCOVERY_EXPOSURE_VERSION = "token-discovery-exposure/v1"
     EVENT_ATTENTION_TRAJECTORY_VERSION = "event-attention-trajectory/v1"
     EVENT_CLAIM_ASSESSMENT_VERSION = "event-claim-assessment/v1"
+    EVENT_CLAIM_RELATION_VERSION = "event-claim-relation/v1"
     SOURCE_ITEM_REVISION_VERSION = "source-item-revision/v1"
     OBSERVATION_PROVENANCE_VERSION = "observation-provenance/v1"
     TELEGRAM_EXTERNAL_HANDOFF_VERSION = "telegram-manual-external-origin-handoff/v1"
@@ -170,6 +171,53 @@ class Store:
                 CREATE TRIGGER IF NOT EXISTS event_claim_ledger_registrations_no_delete
                 BEFORE DELETE ON event_claim_ledger_registrations
                 BEGIN SELECT RAISE(ABORT,'event claim ledger registrations are immutable'); END;
+                CREATE TABLE IF NOT EXISTS event_claim_relation_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS event_claim_relations (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    edge_fingerprint TEXT NOT NULL UNIQUE,
+                    source_revision_id INTEGER NOT NULL,
+                    target_revision_id INTEGER,
+                    relation_type TEXT NOT NULL CHECK(relation_type IN ('supersedes','corrects','retracts')),
+                    relation_scope TEXT NOT NULL CHECK(relation_scope IN ('same_item_version','cross_item_exact_url')),
+                    resolution_status TEXT NOT NULL CHECK(resolution_status IN (
+                        'resolved','target_not_found','ambiguous_target','invalid_target_url','excluded_temporal'
+                    )),
+                    target_url_fingerprint TEXT NOT NULL,
+                    target_match_count INTEGER NOT NULL CHECK(target_match_count>=0),
+                    evidence_basis TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    source_observed_at TEXT NOT NULL,
+                    source_ingested_at TEXT NOT NULL,
+                    temporal_exclusion_reason TEXT,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    CHECK(
+                        (resolution_status='resolved' AND target_revision_id IS NOT NULL)
+                        OR (resolution_status<>'resolved' AND target_revision_id IS NULL)
+                    ),
+                    UNIQUE(definition_version,source_revision_id,relation_type)
+                );
+                CREATE INDEX IF NOT EXISTS event_claim_relations_source_idx
+                    ON event_claim_relations(source_revision_id,recorded_at,id);
+                CREATE INDEX IF NOT EXISTS event_claim_relations_target_idx
+                    ON event_claim_relations(target_revision_id,recorded_at,id);
+                CREATE TRIGGER IF NOT EXISTS event_claim_relation_registrations_no_update
+                BEFORE UPDATE ON event_claim_relation_registrations
+                BEGIN SELECT RAISE(ABORT,'event claim relation registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS event_claim_relation_registrations_no_delete
+                BEFORE DELETE ON event_claim_relation_registrations
+                BEGIN SELECT RAISE(ABORT,'event claim relation registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS event_claim_relations_no_update
+                BEFORE UPDATE ON event_claim_relations
+                BEGIN SELECT RAISE(ABORT,'event claim relations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS event_claim_relations_no_delete
+                BEFORE DELETE ON event_claim_relations
+                BEGIN SELECT RAISE(ABORT,'event claim relations are immutable'); END;
                 CREATE TABLE IF NOT EXISTS source_item_revision_registrations (
                     definition_version TEXT PRIMARY KEY,
                     registered_at TEXT NOT NULL,
@@ -1215,6 +1263,27 @@ class Store:
                 ),
             )
             self.db.execute(
+                "INSERT OR IGNORE INTO event_claim_relation_registrations("
+                "definition_version,registered_at,definition_json) VALUES(?,?,?)",
+                (
+                    self.EVENT_CLAIM_RELATION_VERSION,
+                    iso(),
+                    self._json(
+                        {
+                            "append_only": True,
+                            "no_historical_backfill": True,
+                            "scope": "new_forward_source_item_revision_assertions_only",
+                            "relation_types": ["supersedes", "corrects", "retracts"],
+                            "nodes": "source_item_revisions",
+                            "exact_target_url_must_resolve_uniquely": True,
+                            "deletion_is_not_retraction": True,
+                            "assessment_labels_are_not_claim_relations": True,
+                            "decision_effect": "none",
+                        }
+                    ),
+                ),
+            )
+            self.db.execute(
                 "INSERT OR IGNORE INTO observation_provenance_registrations("
                 "definition_version,registered_at,definition_json) VALUES(?,?,?)",
                 (
@@ -1744,24 +1813,219 @@ class Store:
             ).fetchone()
         return int(row["id"]) if row is not None else None
 
-    def _record_source_item_revision_locked(self, obs: Observation, observation_id: int) -> bool:
+    def _claim_relation_target_by_url_locked(
+        self,
+        safe_target_url: str,
+        *,
+        before_revision_id: int,
+        source_item_key: str,
+        recorded_at: str,
+    ) -> tuple[int | None, int]:
+        matches: dict[str, sqlite3.Row] = {}
+        for row in self.db.execute(
+            """
+            SELECT id,source_item_key,sequence_no,snapshot_json
+            FROM source_item_revisions
+            WHERE definition_version=? AND id<>? AND recorded_at<=?
+              AND temporal_exclusion_reason IS NULL
+            ORDER BY recorded_at DESC,id DESC
+            """,
+            (self.SOURCE_ITEM_REVISION_VERSION, before_revision_id, recorded_at),
+        ):
+            if str(row["source_item_key"]) == source_item_key:
+                continue
+            snapshot = self._json_object(row["snapshot_json"])
+            if self._revision_safe_url(snapshot.get("url")) != safe_target_url:
+                continue
+            matches.setdefault(str(row["source_item_key"]), row)
+        if len(matches) != 1:
+            return None, len(matches)
+        return int(next(iter(matches.values()))["id"]), 1
+
+    def _insert_claim_relation_locked(
+        self,
+        *,
+        revision: sqlite3.Row,
+        relation_type: str,
+        relation_scope: str,
+        target_revision_id: int | None,
+        resolution_status: str,
+        target_url_fingerprint: str,
+        target_match_count: int,
+        evidence_basis: str,
+        temporal_exclusion_reason: str | None = None,
+    ) -> None:
+        edge_material = "\n".join(
+            [
+                self.EVENT_CLAIM_RELATION_VERSION,
+                str(revision["id"]),
+                relation_type,
+                str(target_revision_id or "UNRESOLVED"),
+                resolution_status,
+                target_url_fingerprint,
+            ]
+        )
+        edge_fingerprint = hashlib.sha256(
+            edge_material.encode("utf-8", errors="ignore")
+        ).hexdigest()
+        self.db.execute(
+            """
+            INSERT OR IGNORE INTO event_claim_relations(
+                definition_version,edge_fingerprint,source_revision_id,target_revision_id,
+                relation_type,relation_scope,resolution_status,target_url_fingerprint,
+                target_match_count,evidence_basis,recorded_at,source_observed_at,
+                source_ingested_at,temporal_exclusion_reason,decision_eligible,affects
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'none')
+            """,
+            (
+                self.EVENT_CLAIM_RELATION_VERSION,
+                edge_fingerprint,
+                int(revision["id"]),
+                target_revision_id,
+                relation_type,
+                relation_scope,
+                resolution_status,
+                target_url_fingerprint,
+                target_match_count,
+                evidence_basis,
+                iso(),
+                revision["capture_observed_at"],
+                revision["capture_ingested_at"],
+                temporal_exclusion_reason or revision["temporal_exclusion_reason"],
+            ),
+        )
+
+    def _record_claim_relations_locked(self, obs: Observation, revision_id: int) -> None:
+        registration = self.db.execute(
+            "SELECT registered_at FROM event_claim_relation_registrations WHERE definition_version=?",
+            (self.EVENT_CLAIM_RELATION_VERSION,),
+        ).fetchone()
+        revision = self.db.execute(
+            "SELECT * FROM source_item_revisions WHERE id=? AND definition_version=?",
+            (revision_id, self.SOURCE_ITEM_REVISION_VERSION),
+        ).fetchone()
+        if (
+            registration is None
+            or revision is None
+            or parse_time(revision["recorded_at"]) < parse_time(registration["registered_at"])
+            or parse_time(revision["capture_ingested_at"]) < parse_time(registration["registered_at"])
+        ):
+            return
+        exclusion = str(revision["temporal_exclusion_reason"] or "")
+        previous_revision_id = (
+            int(revision["previous_revision_id"])
+            if revision["previous_revision_id"] is not None else None
+        )
+        previous_exclusion = ""
+        if previous_revision_id is not None:
+            previous = self.db.execute(
+                "SELECT temporal_exclusion_reason FROM source_item_revisions WHERE id=?",
+                (previous_revision_id,),
+            ).fetchone()
+            previous_exclusion = str(previous["temporal_exclusion_reason"] or "") if previous else ""
+        if previous_revision_id is not None:
+            relation_exclusion = exclusion or previous_exclusion
+            self._insert_claim_relation_locked(
+                revision=revision,
+                relation_type="supersedes",
+                relation_scope="same_item_version",
+                target_revision_id=None if relation_exclusion else previous_revision_id,
+                resolution_status="excluded_temporal" if relation_exclusion else "resolved",
+                target_url_fingerprint="",
+                target_match_count=0 if relation_exclusion else 1,
+                evidence_basis="stable_source_item_sequence",
+                temporal_exclusion_reason=relation_exclusion or None,
+            )
+        relation_type = {
+            "explicit_correction": "corrects",
+            "explicit_retracted": "retracts",
+        }.get(str(revision["revision_kind"]))
+        if relation_type is None:
+            return
+        raw = obs.raw if isinstance(obs.raw, dict) else {}
+        raw_target = raw.get("claim_target_url")
+        safe_target_url = self._revision_safe_url(raw_target) if raw_target else ""
+        target_fingerprint = (
+            hashlib.sha256(safe_target_url.encode("utf-8", errors="ignore")).hexdigest()
+            if safe_target_url else ""
+        )
+        if exclusion:
+            target_revision_id = None
+            match_count = 0
+            resolution = "excluded_temporal"
+            scope = "cross_item_exact_url" if raw_target else "same_item_version"
+        elif raw_target and not safe_target_url:
+            target_revision_id = None
+            match_count = 0
+            resolution = "invalid_target_url"
+            scope = "cross_item_exact_url"
+        elif safe_target_url:
+            current_snapshot = self._json_object(revision["snapshot_json"])
+            if (
+                previous_revision_id is not None
+                and self._revision_safe_url(current_snapshot.get("url")) == safe_target_url
+            ):
+                target_revision_id = None if previous_exclusion else previous_revision_id
+                match_count = 0 if previous_exclusion else 1
+                resolution = "excluded_temporal" if previous_exclusion else "resolved"
+                scope = "same_item_version"
+            else:
+                target_revision_id, match_count = self._claim_relation_target_by_url_locked(
+                    safe_target_url,
+                    before_revision_id=revision_id,
+                    source_item_key=str(revision["source_item_key"]),
+                    recorded_at=str(revision["recorded_at"]),
+                )
+                resolution = (
+                    "resolved" if target_revision_id is not None
+                    else "target_not_found" if match_count == 0
+                    else "ambiguous_target"
+                )
+                scope = "cross_item_exact_url"
+        else:
+            target_revision_id = previous_revision_id
+            match_count = int(previous_revision_id is not None)
+            resolution = "resolved" if previous_revision_id is not None else "target_not_found"
+            scope = "same_item_version"
+        self._insert_claim_relation_locked(
+            revision=revision,
+            relation_type=relation_type,
+            relation_scope=scope,
+            target_revision_id=target_revision_id,
+            resolution_status=resolution,
+            target_url_fingerprint=target_fingerprint,
+            target_match_count=match_count,
+            evidence_basis=str(revision["tombstone_evidence_code"] or "publisher_state_marker"),
+            temporal_exclusion_reason=(previous_exclusion or None)
+            if resolution == "excluded_temporal" and not exclusion else None,
+        )
+
+    def _record_source_item_revision_locked(self, obs: Observation, observation_id: int) -> int | None:
         identity = self._source_item_key(obs)
         if identity is None:
-            return False
+            return None
         key, identity_mode = identity
         registration = self.db.execute(
             "SELECT registered_at FROM source_item_revision_registrations WHERE definition_version=?",
             (self.SOURCE_ITEM_REVISION_VERSION,),
         ).fetchone()
         if registration is None or obs.ingested_at < parse_time(registration["registered_at"]):
-            return False
+            return None
         previous = self.db.execute(
             "SELECT * FROM source_item_revisions WHERE definition_version=? AND source_item_key=? "
             "ORDER BY sequence_no DESC LIMIT 1",
             (self.SOURCE_ITEM_REVISION_VERSION, key),
         ).fetchone()
         local_state, semantic_signal, requested_kind, evidence = self._revision_signal(obs)
-        if previous is None and local_state in {"deleted", "retracted", "access_lost", "unknown"}:
+        raw = obs.raw if isinstance(obs.raw, dict) else {}
+        explicit_cross_item_retraction = (
+            requested_kind == "explicit_retracted" and bool(raw.get("claim_target_url"))
+        )
+        if (
+            previous is None
+            and local_state in {"deleted", "retracted", "access_lost", "unknown"}
+            and not explicit_cross_item_retraction
+        ):
             anchor_row = self.db.execute(
                 "SELECT ingested_at FROM observations WHERE id=?", (observation_id,)
             ).fetchone()
@@ -1769,7 +2033,7 @@ class Store:
                 anchor_row is None
                 or parse_time(anchor_row["ingested_at"]) >= parse_time(registration["registered_at"])
             ):
-                return False
+                return None
         safe_url = self._revision_safe_url(obs.url)
         snapshot = {
             "title": str(obs.title or "")[:500],
@@ -1788,7 +2052,7 @@ class Store:
             and previous["local_state"] == local_state
             and previous["semantic_signal"] == semantic_signal
         ):
-            return False
+            return None
         prior_snapshot = self._json_object(previous["snapshot_json"]) if previous is not None else {}
         changed_fields = [
             field for field in snapshot if prior_snapshot.get(field) != snapshot.get(field)
@@ -1821,8 +2085,9 @@ class Store:
             exclusions.append("capture_observed_in_future")
         if obs.ingested_at > recorded_at:
             exclusions.append("capture_ingested_in_future")
+        if obs.observed_at > obs.ingested_at:
+            exclusions.append("capture_observed_after_ingested")
         reported_revision_at = None
-        raw = obs.raw if isinstance(obs.raw, dict) else {}
         if raw.get("source_reported_revision_at"):
             try:
                 parsed_revision_at = parse_time(raw["source_reported_revision_at"])
@@ -1833,6 +2098,10 @@ class Store:
                 exclusions.append("source_reported_revision_time_invalid")
         if obs.published_at and obs.published_at > recorded_at:
             exclusions.append("source_published_in_future")
+        if raw.get("stale_first_observation") is True:
+            exclusions.append("stale_first_observation")
+        if raw.get("published_time_in_future") is True:
+            exclusions.append("published_time_in_future")
         edge_material = "\n".join(
             [
                 self.SOURCE_ITEM_REVISION_VERSION, key, str(previous_id or "ROOT"), revision_kind,
@@ -1840,7 +2109,7 @@ class Store:
             ]
         )
         edge_fingerprint = hashlib.sha256(edge_material.encode("utf-8", errors="ignore")).hexdigest()
-        self.db.execute(
+        cursor = self.db.execute(
             """
             INSERT OR IGNORE INTO source_item_revisions(
                 definition_version,source_item_key,sequence_no,previous_revision_id,edge_fingerprint,
@@ -1861,7 +2130,11 @@ class Store:
                 ";".join(exclusions) or None,
             ),
         )
-        return self.db.execute("SELECT changes()").fetchone()[0] > 0
+        if cursor.rowcount != 1:
+            return None
+        revision_id = int(cursor.lastrowid)
+        self._record_claim_relations_locked(obs, revision_id)
+        return revision_id
 
     def add_observation(self, obs: Observation) -> tuple[int, bool]:
         fp = self._fingerprint(obs)
@@ -1871,6 +2144,11 @@ class Store:
                 self._record_source_item_revision_locked(obs, anchor)
                 return anchor, False
             try:
+                stored_raw = dict(obs.raw) if isinstance(obs.raw, dict) else {}
+                stored_raw.pop("claim_target_url", None)
+                if isinstance(stored_raw.get("browser"), dict):
+                    stored_raw["browser"] = dict(stored_raw["browser"])
+                    stored_raw["browser"].pop("claim_target_url", None)
                 cur = self.db.execute(
                     """
                     INSERT INTO observations(
@@ -1893,7 +2171,7 @@ class Store:
                         obs.role,
                         obs.source_item_id,
                         obs.capture_phase,
-                        self._json(obs.raw),
+                        self._json(stored_raw),
                     ),
                 )
                 observation_id = int(cur.lastrowid)

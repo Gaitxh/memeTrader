@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import socket
 from datetime import datetime, timezone
 from pathlib import Path
@@ -234,6 +235,28 @@ def test_browser_bridge_uses_local_receive_time_and_versioned_routes(tmp_path: P
                 assert observations[-1].role == "identity"
                 assert observations[-1].raw["source_item_state"] == "deleted"
                 assert observations[-1].raw["source_item_state_evidence"] == "platform_deleted_marker"
+
+                correction = await client.post(
+                    f"{base}/v1/observe",
+                    headers={"X-MemeTrader-Token": "secret-token-that-is-long-enough"},
+                    json={
+                        "source": "browser:x:example",
+                        "source_kind": "social",
+                        "source_item_id": "x:2",
+                        "url": "https://x.com/example/status/2",
+                        "platform": "x",
+                        "author": "example",
+                        "title": "Publisher correction",
+                        "source_item_state": "correction",
+                        "source_item_state_evidence": "publisher_correction_marker",
+                        "claim_target_url": "https://x.com/example/status/1?secret=never-forward",
+                    },
+                )
+                assert correction.status_code == 200
+                assert correction.json()["accepted"] == 1
+                assert observations[-1].raw["claim_target_url"] == "https://x.com/example/status/1"
+                assert "claim_target_url" not in observations[-1].raw["browser"]
+                assert "never-forward" not in json.dumps(observations[-1].raw)
         finally:
             await bridge.close()
 
