@@ -45,6 +45,7 @@ memeTrader 是一个运行在个人 Windows 电脑上的、仅前向证据驱动
 - `live.enabled=false`，网页没有 Mainnet Live 开关。
 - Solana Devnet 钱包页只用于本机人工真链测试，不连接常驻策略。
 - 自主 Agent 最多同时 2 个；六个界面角色是职责视图，不是六个常驻进程。
+- Trend Scout 与 Token Context 的 Agent 网页结论只是 `identity/context-only` 待核验上下文；URL/时间/域名可达不等于事实已独立验证。
 - `WAIT` 就是没有信号；空结果、零交易和陈旧状态必须如实显示。
 - 所有可用于决策的证据必须满足 `observed_at <= decision_time` 且 `ingested_at <= decision_time`。
 - 登录凭据由本机浏览器和用户持有，项目与 Agent 不读取、导出或保存。

@@ -1,7 +1,7 @@
 # memeTrader 长期需求台账
 
-最后核验：2026-08-31 16:35（Asia/Shanghai）  
-当前基线：`main` / `e52e976571cf6129e8d089a24df2ba60f40da307` / Paper / `live.enabled=false`
+最后核验：2026-08-31 18:00（Asia/Shanghai）
+当前功能基线：`main` / `b84a4894e51d39f63d382039ddbacbb99e27232c` / Paper / `live.enabled=false`
 
 本文件是长期任务的逐项台账，不是某次发布的完成声明。运行事实仍以 `AGENTS.md`、当前代码、忽略的本机 `config.json`、当前 SQLite、实时 API、进程与端口检查为准。`CONTINUOUS` 表示工程链路存在但研究或运行验证必须持续，不能改成 `DONE`。
 
@@ -11,11 +11,11 @@
 |---|---|---|---|---|---|---|---|---|---|---|
 | CORE-001 | 长期总 Prompt §2–5 | 单机、单进程、SQLite 的前向事件→Token→决策→Paper 系统 | CONTINUOUS | `Runtime`、`Store`、`Strategy`、47 张业务表；当前 r6 持续产生 observation/event/token/decision | 持续检查漏斗损失、延迟、zero-yield、误报和漏检 | 是 | 否 | 长期运行漂移与来源失效 | 每轮以真实数据库增量复核 | 2026-08-31 16:35 |
 | SAFE-001 | AGENTS.md；长期总 Prompt §21 | Mainnet Live 永久锁定，网页/Telegram 不可解锁 | CONTINUOUS | 当前 `mode=paper`、`live.enabled=false`；Web 返回 locked/available=false | Mainnet Broker 尚不存在，且不是当前发布目标 | 是 | 否 | 私钥暴露、误广播 | 每轮测试 Live 锁与敏感字段隔离 | 2026-08-31 16:35 |
-| OPS-001 | 长期总 Prompt §4、§21 | Paper Runtime 单实例、SQLite 单 writer、端口与任务可审计 | CONTINUOUS | Windows `memeTrader Paper Bot` Running/IgnoreNew；8765 单 listener；SQLite lock 被活动进程持有 | 8787/8788 当前未运行 | 是 | 否 | 重复实例、僵尸进程 | 发布后恢复一个本机 Web 与一个受保护入口 | 2026-08-31 16:35 |
+| OPS-001 | 长期总 Prompt §4、§21 | Paper Runtime 单实例、SQLite 单 writer、端口与任务可审计 | CONTINUOUS | Windows `memeTrader Paper Bot` Running/IgnoreNew；8765/8787/8788 均为单 listener；SQLite lock 被活动进程持有 | 需持续防止重复实例 | 是 | 否 | 重复实例、僵尸进程 | 每轮复核监听、任务和活动锁 | 2026-08-31 18:00 |
 | OPS-002 | 长期总 Prompt §22 | 北京时间 00:00/08:00/16:00 复盘，不创建重复自动任务 | DONE | 既有 `memetrader` heartbeat 已从 09:00 更新为 `BYHOUR=0,8,16` | 无 | 否 | 旧 09:00 已 SUPERSEDED | 时区解释错误 | 后续只更新同一 automation | 2026-08-31 16:35 |
 | MEM-001 | 用户“项目内保留上下文”；长期总 Prompt §3 | 持久化完整需求台账和最新断点 | IN_PROGRESS | 本文件建立；`START_HERE` 与日期快照已存在 | 每轮需同步状态、证据、下一步与新 supersession | 是 | 否 | 上下文压缩、旧报告被当成现状 | 每轮巡检更新本表和最新快照 | 2026-08-31 16:35 |
-| WEB-001 | 用户网站/双语/动态要求；长期总 Prompt §20 | 深色中英控制台、动态刷新、响应式、真实数据 | CONTINUOUS | Overview/Events/Tokens/Decisions/Paper/Wallet/Agents/Sources/Audit/Settings 已实现；低成本 polling | 当前 8787/8788 未监听；本轮新 Telegram 面板待发布 QA | 是 | 否 | 旧页面缓存、公开入口中断 | 启动 Web，做桌面/手机/中英 QA | 2026-08-31 16:35 |
-| WEB-002 | 用户事件来源超链接要求 | 展示全部来源、角色、权威/热度排序与时间线 | CONTINUOUS | Event detail 有 F/C/I/P 分组、链接、时间与透明排序 | 传播/纠错生命周期尚不完整 | 是 | 否 | 聚合转发被误算独立来源 | 继续完善 provenance 与 correction 状态 | 2026-08-31 16:35 |
+| WEB-001 | 用户网站/双语/动态要求；长期总 Prompt §20 | 深色中英控制台、动态刷新、响应式、真实数据 | CONTINUOUS | Overview/Events/Tokens/Decisions/Paper/Wallet/Agents/Sources/Audit/Settings 已实现；低成本 polling；8787/8788 与鉴权公网入口运行 | 固定公网域名仍需用户自有 Tunnel | 是 | 否 | 旧页面缓存、临时公网域名变化 | 持续做真实浏览器中英/响应式/错误日志 QA | 2026-08-31 18:00 |
+| WEB-002 | 用户事件来源超链接要求 | 展示全部来源、角色、权威/热度排序与时间线 | CONTINUOUS | Event detail 有 F/C/I/P 分组、链接、透明排序，并新增事实/局部传播/纠正三分栏和前向时间线 | source edit/delete tombstone 与 claim 级 supersession 未实现 | 是 | 否 | 聚合转发被误算独立来源、未观察纠正被误读为无纠正 | 继续补足原始来源 revision/tombstone；保持 `affects=none` | 2026-08-31 18:00 |
 | SRC-001 | 长期总 Prompt §10、§14 | 平台/来源/人物/主题按前向增量价值学习，保留探索 | CONTINUOUS | source learning、trend lane、watch exposure、至少 40% exploration 已实现 | 样本未成熟，不能改仓位/退出 | 是 | 否 | 幸存者偏差、过拟合 | 累积自然 exposure、失败和 fixed-horizon 结果 | 2026-08-31 16:35 |
 | SRC-002 | 长期总 Prompt §5 | source-poll exposure 保存完成、空结果、重复、过滤和错误 | CONTINUOUS | `source_poll_attempts` 与 Sources 面板已实现 | 持续评估各入口覆盖和稳定性 | 是 | 否 | 为非空结果删分母 | 保留所有真实 poll 终态 | 2026-08-31 16:35 |
 | TOKEN-001 | 用户 Dex/OKX/新币来源要求；长期总 Prompt §5、§7 | 多入口新 Token/池发现与 Event↔Token 证据链 | CONTINUOUS | PumpPortal、GeckoTerminal、DexScreener discovery/hydration、token discovery exposure 已实现 | OKX Premium/签名接口未接；不逆向绕过 | 是 | 否 | 推广榜单、同名币、来源竞争 | 继续比较本机首次发现与后续漏斗 | 2026-08-31 16:35 |
@@ -24,9 +24,9 @@
 | INFO-002 | 长期总 Prompt §6 | 严格 Information Lead Gap | CONTINUOUS | `information-first-ilg/v1`；同 provider/chain/DEX/pair；Store 生成 `recorded_at` | 需更多注册后 crossing/missing 样本 | 是 | 否 | 后来快照/跨池回填 | 保持固定 240m+30m 终态 | 2026-08-31 16:35 |
 | INFO-003 | 长期总 Prompt §6 | 10s/30s/1m/5m mention velocity、加速度、跨平台扩散 | PARTIAL | `event-attention-trajectory/v1` 从上线后为每个新关联 Observation 原子追加不可变分数点；API/UI 显示本机 10s/30s/1m/5m 新观察到达率下界、score velocity/acceleration、覆盖状态和 `affects=none`。旧事件不回填，覆盖不足为 null；全网 mention、稳定作者、reply/quote/repost、跨社区/原始跨平台因缺少平台分母、互动修订、稳定 actor 与 origin/transport 分离而明确 `unavailable` | 全部 | 是 | 否 | 45s 轮询不足以解析 10s/30s；现有 source_entity_id 与跨原始平台样本为 0 | 先积累注册后轨迹，再实现 origin item/actor 与 collector coverage ledger；不得将 transport 当 origin | 2026-08-31 17:08 |
 | CHAIN-001 | 长期总 Prompt §8 | unique buyers、new holders、buyer breadth、集中度和 cluster | NOT_STARTED | 当前仅 buys/sells/tx/volume/liquidity 与安全服务 | 独立钱包、holder 变化、insider cluster 不可用 | 是 | 否 | RPC/索引成本、伪交易 | 先做 Solana 小样本 shadow 数据可用性实验 | 2026-08-31 16:35 |
-| FACT-001 | 长期总 Prompt §9 | 分离事实真实性、传播真实性、纠错/删除/反转 | PARTIALLY_DONE | F/C/I/P、future/stale、来源资格已实现 | `factual_confidence`、correction/retraction 生命周期和反转结果未形成独立账本 | 是 | 否 | 谣言被写成事实或被完全丢弃 | 设计 append-only story revision/correction cohort | 2026-08-31 16:35 |
-| AGENT-001 | 长期总 Prompt §19 | 不同任务使用合适模型/推理强度，并发最多 2，完整 Token 记账 | CONTINUOUS | Trend/Source 为 Spark-low→Luna-low；Context 为 Luna-low→Terra/Sol-medium；Web 分模型/强度/Token 展示 | 通用事实冲突/复杂度质量升级未完成 | 是 | 否 | 空结果被误判失败、重复升级烧额度 | 先对结构错误与事实冲突做前向质量审计 | 2026-08-31 16:35 |
-| AGENT-002 | 用户预算补充；长期总 Prompt §19 | 本机预算不过度阻塞，但保留有限门、冷却和退避 | CONTINUOUS | 当前上限 Trend 96/50M、Source 12/10M、Context 96/50M；并发 2 | 需持续检查真实用量与 zero-yield cost | 是 | “取消预算”被有限大上限替代 | 无限制循环和重复调用 | 只有真实 limiter 偏低时才提高 | 2026-08-31 16:35 |
+| FACT-001 | 长期总 Prompt §9 | 分离事实真实性、传播真实性、纠错/删除/反转 | PARTIALLY_DONE | `event-claim-assessment/v1` 已前向注册；新 Observation 原子追加不可变状态与五类置信度；API/UI 分离事实、局部传播、纠正；future 排除且旧事件不回填 | 当前只有 Agent 结构化评估与 deterministic promotion；无独立内容核验、同源编辑/删除 tombstone、claim 级 supersession 和反转市场结果 | 是 | 否 | Agent 自报被误当事实、未观察纠正被误读为无纠正 | 累积自然前向样本；再设计 source item revision/tombstone，不回填历史 | 2026-08-31 18:00 |
+| AGENT-001 | 长期总 Prompt §19 | 不同任务使用合适模型/推理强度，并发最多 2，完整 Token 记账 | CONTINUOUS | Trend/Source 为 Spark-low→Luna-low；Context 为 Luna-low→Terra/Sol-medium；Web 分模型/强度/Token 展示；新 Trend/Context 输出统一 identity/context-only，不再直接成为 F/C 决策证据 | 通用独立事实核验与冲突驱动质量升级未完成 | 是 | 否 | 空结果被误判失败、Agent 自报进入策略、重复升级烧额度 | 为独立内容核验设计前向 verifier；未经核验继续 context-only | 2026-08-31 18:00 |
+| AGENT-002 | 用户预算补充；长期总 Prompt §19 | 本机预算不过度阻塞，但保留有限门、冷却和退避 | CONTINUOUS | 当前上限 Trend 96/50M、Source 12/10M、Context 192/50M；并发 2；Context 在 86/96 接近上限时依据真实节奏提高到 192 | 需持续检查真实用量与 zero-yield cost | 是 | “取消预算”被有限大上限替代 | 无限制循环和重复调用 | 只有真实 limiter 偏低时才提高；不移除触发门/冷却/退避 | 2026-08-31 18:00 |
 | PAPER-001 | 用户 Paper 与成本要求；长期总 Prompt §18 | 前向 Paper、滑点/费率、账户曲线、分批止盈和 runner | CONTINUOUS | append-only cash/equity；4% 配置滑点、60bps、PumpSwap 125bps；两笔历史 Paper fill | 当前只有一个闭环；历史 fill 仍记录旧 2% 滑点 | 是 | 否 | 把 Paper 当真实利润、费用遗漏 | 等待新 cohort，按当时配置审计 | 2026-08-31 16:35 |
 | PAPER-002 | 用户长期学习；长期总 Prompt §14、§18 | 热度/人物/社区只能先做 shadow，成熟后预注册策略 challenger | NOT_STARTED | Phase 1 学习门和 UI 已实现 | Phase 2 assignment/challenger 尚未实现 | 是 | 否 | 后验调参、样本太少 | 达到文档门前保持基线；预注册首个保守退出 challenger | 2026-08-31 16:35 |
 | MISS-001 | 长期总 Prompt §17 | 系统化漏检、误报、迟发现、错映射账本 | PARTIALLY_DONE | r5 false-positive、r6 Starlink/future/stale 审计和通知已存在 | 没有统一 missed-opportunity/false-negative append-only ledger | 是 | 否 | 用未来赢家倒推规则 | 先记录发现断点，不改历史决策 | 2026-08-31 16:35 |
@@ -41,11 +41,12 @@
 
 ## 当前真实运行快照
 
-- SQLite：`quick_check=ok`、`integrity_check=ok`、WAL，约 456 MB。
-- 当前计数：2,146 observations、1,403 events、49,663 tokens、795 decisions（789 WAIT / 5 REJECT / 1 CANDIDATE）、2 Paper fills、0 open positions。
-- Paper：cash/equity `1000.3087060578 USD`，累计已实现 Paper PnL `+0.3087060578 USD`；这不是 Mainnet 利润。
-- Agent 当日：104 calls、130 attempts、26 fallback attempts、6,012,935 tokens；并发上限 2。
+- SQLite：`quick_check=ok`、WAL；本轮未删除、清空、回填或改写 r6 历史。
+- 本次核验计数：2,273 observations、1,475 events、51,730 tokens、839 decisions（831 WAIT / 6 REJECT / 2 CANDIDATE）、4 Paper fills、0 open positions。
+- Paper：cash/equity `1001.4917655212 USD`，累计已实现 Paper PnL `+1.4917655212 USD`；这不是 Mainnet 利润。
+- 事实账本：31 个注册后前向点 / 22 个事件，当前均为 `unassessed`；不是 31 个已证实事实，也没有历史回填。
+- Agent 当日：118 calls、144 attempts、26 fallback attempts、6,937,075 已知 tokens；并发上限 2。Context 本机有限调用上限已从 96 调到 192。
 - Telegram：0 专表、0 Observation、0 poll attempt、0 自动消息、0 forward exposure；253 个 Token 元数据 `telegram_manual` 链接不等于采集。
-- Runtime：一个 Windows 计划任务与一个活动锁；8765 单 listener。8787、8788 和公网 tunnel 在本次核验时不可用。
+- Runtime：一个 Windows 计划任务与一个活动锁；8765/8787/8788 各单 listener。受保护 Quick Tunnel 正常，未鉴权 401、鉴权后 200。
 
 这些数字是本次核验快照，会继续变化；后续不得直接复制为“当前状态”。
