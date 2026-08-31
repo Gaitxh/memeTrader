@@ -53,6 +53,7 @@ class Store:
     EVENT_ATTENTION_TRAJECTORY_VERSION = "event-attention-trajectory/v1"
     EVENT_CLAIM_ASSESSMENT_VERSION = "event-claim-assessment/v1"
     SOURCE_ITEM_REVISION_VERSION = "source-item-revision/v1"
+    OBSERVATION_PROVENANCE_VERSION = "observation-provenance/v1"
     EVENT_CLAIM_STATUSES = {
         "confirmed_fact", "probable_report", "unverified_rumor", "false_claim",
         "correction", "retraction", "satire", "impersonation", "promotion",
@@ -219,6 +220,48 @@ class Store:
                 CREATE TRIGGER IF NOT EXISTS source_item_revisions_no_delete
                 BEFORE DELETE ON source_item_revisions
                 BEGIN SELECT RAISE(ABORT,'source item revisions are immutable'); END;
+                CREATE TABLE IF NOT EXISTS observation_provenance_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS observation_provenance_assertions (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    observation_id INTEGER NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    source_observed_at TEXT NOT NULL,
+                    source_ingested_at TEXT NOT NULL,
+                    source_published_at TEXT,
+                    route_kind TEXT NOT NULL,
+                    origin_identity_state TEXT NOT NULL,
+                    origin_platform TEXT NOT NULL,
+                    origin_actor TEXT NOT NULL,
+                    origin_item_url TEXT NOT NULL,
+                    origin_root_key TEXT NOT NULL,
+                    transport_platform TEXT NOT NULL,
+                    transport_source TEXT NOT NULL,
+                    local_collector TEXT NOT NULL,
+                    evidence_basis TEXT NOT NULL,
+                    temporal_exclusion_reason TEXT,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    UNIQUE(definition_version,observation_id)
+                );
+                CREATE INDEX IF NOT EXISTS observation_provenance_origin_idx
+                    ON observation_provenance_assertions(origin_root_key,recorded_at,id);
+                CREATE TRIGGER IF NOT EXISTS observation_provenance_registrations_no_update
+                BEFORE UPDATE ON observation_provenance_registrations
+                BEGIN SELECT RAISE(ABORT,'observation provenance registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS observation_provenance_registrations_no_delete
+                BEFORE DELETE ON observation_provenance_registrations
+                BEGIN SELECT RAISE(ABORT,'observation provenance registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS observation_provenance_assertions_no_update
+                BEFORE UPDATE ON observation_provenance_assertions
+                BEGIN SELECT RAISE(ABORT,'observation provenance assertions are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS observation_provenance_assertions_no_delete
+                BEFORE DELETE ON observation_provenance_assertions
+                BEGIN SELECT RAISE(ABORT,'observation provenance assertions are immutable'); END;
 
                 CREATE TABLE IF NOT EXISTS tokens (
                     token_id TEXT PRIMARY KEY,
@@ -1117,6 +1160,24 @@ class Store:
                     ),
                 ),
             )
+            self.db.execute(
+                "INSERT OR IGNORE INTO observation_provenance_registrations("
+                "definition_version,registered_at,definition_json) VALUES(?,?,?)",
+                (
+                    self.OBSERVATION_PROVENANCE_VERSION,
+                    iso(),
+                    self._json(
+                        {
+                            "append_only": True,
+                            "no_historical_backfill": True,
+                            "scope": "new_forward_observations_only",
+                            "unknown_is_not_independent": True,
+                            "transport_is_not_origin": True,
+                            "decision_effect": "none",
+                        }
+                    ),
+                ),
+            )
             event_columns = {row["name"] for row in self.db.execute("PRAGMA table_info(events)")}
             if "topic" not in event_columns:
                 self.db.execute("ALTER TABLE events ADD COLUMN topic TEXT NOT NULL DEFAULT 'unknown'")
@@ -1265,6 +1326,148 @@ class Store:
             if lowered not in {"fbclid", "gclid", "ref_src"}:
                 safe_query.append((key, item))
         return urlunparse((parsed.scheme, parsed.netloc.lower(), parsed.path, parsed.params, urlencode(safe_query), ""))
+
+    @staticmethod
+    def _provenance_platform(url: str, hint: Any = "") -> str:
+        normalized_hint = str(hint or "").strip().lower()
+        normalized_hint = {
+            "twitter": "x", "truthsocial": "truth", "bsky": "bluesky",
+        }.get(normalized_hint, normalized_hint)
+        if normalized_hint:
+            return normalized_hint[:80]
+        host = (urlparse(url).hostname or "").lower().removeprefix("www.")
+        for root, platform in (
+            ("x.com", "x"), ("twitter.com", "x"), ("bsky.app", "bluesky"),
+            ("truthsocial.com", "truth"), ("reddit.com", "reddit"),
+            ("threads.net", "threads"), ("threads.com", "threads"),
+            ("instagram.com", "instagram"), ("tiktok.com", "tiktok"),
+            ("youtube.com", "youtube"), ("youtu.be", "youtube"),
+            ("t.me", "telegram"), ("telegram.me", "telegram"),
+        ):
+            if host == root or host.endswith(f".{root}"):
+                return platform
+        return "web" if host else "unknown"
+
+    @staticmethod
+    def _is_exact_public_item(platform: str, url: str) -> bool:
+        parsed = urlparse(url)
+        path = (parsed.path or "").lower()
+        if platform == "x":
+            return bool(re.fullmatch(r"/[^/]+/status/\d+/?", path))
+        if platform == "bluesky":
+            return bool(re.fullmatch(r"/profile/[^/]+/post/[^/]+/?", path))
+        if platform == "truth":
+            return "/posts/" in path or "/statuses/" in path
+        if platform == "reddit":
+            return "/comments/" in path
+        if platform == "threads":
+            return "/post/" in path
+        if platform == "instagram":
+            return path.startswith(("/p/", "/reel/", "/reels/"))
+        if platform == "tiktok":
+            return "/video/" in path
+        if platform == "youtube":
+            return (parsed.hostname or "").lower().endswith("youtu.be") or path.startswith(("/watch", "/shorts/", "/live/"))
+        if platform == "telegram":
+            return bool(re.fullmatch(r"/[^/]+/\d+/?", path))
+        if platform == "mastodon":
+            return bool(re.search(r"/@[^/]+/\d+/?$", path))
+        return False
+
+    def _record_observation_provenance_locked(self, obs: Observation, observation_id: int) -> bool:
+        registration = self.db.execute(
+            "SELECT registered_at FROM observation_provenance_registrations WHERE definition_version=?",
+            (self.OBSERVATION_PROVENANCE_VERSION,),
+        ).fetchone()
+        if registration is None or obs.ingested_at < parse_time(registration["registered_at"]):
+            return False
+        raw = obs.raw if isinstance(obs.raw, dict) else {}
+        browser = raw.get("browser") if isinstance(raw.get("browser"), dict) else {}
+        safe_url = self._revision_safe_url(obs.url)
+        source = str(obs.source or "").strip()
+        agent_task = str(raw.get("agent_task") or "").strip().lower()
+        platform_hint = browser.get("platform") or raw.get("platform")
+        if not platform_hint and source.lower().startswith("bluesky:"):
+            platform_hint = "bluesky"
+        platform = self._provenance_platform(safe_url, platform_hint)
+        actor = str(raw.get("source_entity_id") or obs.author or raw.get("publisher") or "")[:300]
+        feed_url = self._revision_safe_url(raw.get("feed_url"))
+        publisher_url = self._revision_safe_url(raw.get("publisher_url"))
+        route_kind = "unknown"
+        identity_state = "unknown"
+        transport_platform = "unknown"
+        transport_source = source[:300]
+        local_collector = "local_poll" if obs.availability_proof == "local_poll" else "unknown"
+        evidence_basis = "insufficient_explicit_provenance"
+        if obs.availability_proof == "local_receive" and browser:
+            local_collector = "browser_bridge"
+            transport_platform = "none"
+            transport_source = ""
+            if self._is_exact_public_item(platform, safe_url):
+                route_kind = "direct"
+                identity_state = "proven_direct_item"
+                evidence_basis = "local_browser_exact_permalink"
+        elif platform == "bluesky" and source.lower().startswith("bluesky:") and self._is_exact_public_item(platform, safe_url):
+            route_kind = "direct"
+            identity_state = "proven_direct_item"
+            transport_platform = "bluesky_public_api"
+            local_collector = "bluesky_public_api"
+            evidence_basis = "public_platform_api_exact_item"
+        elif platform == "mastodon" and self._is_exact_public_item(platform, safe_url):
+            route_kind = "direct"
+            identity_state = "proven_direct_item"
+            transport_platform = "mastodon_public_api"
+            local_collector = "mastodon_public_api"
+            evidence_basis = "public_platform_api_exact_item"
+        elif feed_url:
+            route_kind = "relay"
+            identity_state = "asserted_upstream" if publisher_url else "inferred_candidate"
+            transport_platform = "rss"
+            transport_source = source[:300]
+            local_collector = "rss_poll"
+            evidence_basis = "rss_source_element_claim" if publisher_url else "rss_item_link_candidate"
+        elif agent_task or obs.availability_proof == "agent_search_verified":
+            route_kind = "discovery"
+            identity_state = "inferred_candidate" if safe_url else "unknown"
+            transport_platform = "agent_web_search"
+            transport_source = (agent_task or source)[:300]
+            local_collector = "agent_subprocess"
+            evidence_basis = "agent_search_reachable_url_candidate"
+        root_material = safe_url or (
+            f"{source.casefold()}\n{obs.source_item_id.strip()}" if obs.source_item_id.strip() else ""
+        )
+        origin_root_key = (
+            hashlib.sha256(root_material.encode("utf-8", errors="ignore")).hexdigest()
+            if root_material else ""
+        )
+        recorded_at = utcnow()
+        exclusions = []
+        if obs.observed_at > recorded_at:
+            exclusions.append("source_observed_in_future")
+        if obs.ingested_at > recorded_at:
+            exclusions.append("source_ingested_in_future")
+        if obs.published_at and obs.published_at > recorded_at:
+            exclusions.append("source_published_in_future")
+        if exclusions:
+            identity_state = "excluded_future"
+        self.db.execute(
+            """
+            INSERT OR IGNORE INTO observation_provenance_assertions(
+                definition_version,observation_id,recorded_at,source_observed_at,source_ingested_at,
+                source_published_at,route_kind,origin_identity_state,origin_platform,origin_actor,
+                origin_item_url,origin_root_key,transport_platform,transport_source,local_collector,
+                evidence_basis,temporal_exclusion_reason,decision_eligible,affects
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'none')
+            """,
+            (
+                self.OBSERVATION_PROVENANCE_VERSION, observation_id, iso(recorded_at),
+                iso(obs.observed_at), iso(obs.ingested_at), iso(obs.published_at) if obs.published_at else None,
+                route_kind, identity_state, platform, actor, safe_url, origin_root_key,
+                transport_platform, transport_source, local_collector, evidence_basis,
+                ";".join(exclusions) or None,
+            ),
+        )
+        return self.db.execute("SELECT changes()").fetchone()[0] > 0
 
     @classmethod
     def _source_item_key(cls, obs: Observation) -> tuple[str, str] | None:
@@ -1490,6 +1693,7 @@ class Store:
                 )
                 observation_id = int(cur.lastrowid)
                 self._record_source_item_revision_locked(obs, observation_id)
+                self._record_observation_provenance_locked(obs, observation_id)
                 return observation_id, True
             except sqlite3.IntegrityError:
                 row = self.db.execute("SELECT id FROM observations WHERE fingerprint=?", (fp,)).fetchone()

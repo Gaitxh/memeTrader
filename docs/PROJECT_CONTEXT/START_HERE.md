@@ -47,6 +47,7 @@ memeTrader 是一个运行在个人 Windows 电脑上的、仅前向证据驱动
 - 自主 Agent 最多同时 2 个；六个界面角色是职责视图，不是六个常驻进程。
 - Trend Scout 与 Token Context 的 Agent 网页结论只是 `identity/context-only` 待核验上下文；URL/时间/域名可达不等于事实已独立验证。
 - `source-item-revision/v1` 只从注册时刻前向记录来源条目 baseline/edit/明确删除/撤回/纠正/恢复，固定 `affects=none`；缺项、404 和 DOM 消失绝不是删除证据。
+- `observation-provenance/v1` 只从注册时刻前向记录 `Origin → Transport → Local capture`；RSS/Agent/域名推断与 singleton 都不等于独立来源，内部 provenance root 不通过 API 暴露。
 - `WAIT` 就是没有信号；空结果、零交易和陈旧状态必须如实显示。
 - 所有可用于决策的证据必须满足 `observed_at <= decision_time` 且 `ingested_at <= decision_time`。
 - 登录凭据由本机浏览器和用户持有，项目与 Agent 不读取、导出或保存。

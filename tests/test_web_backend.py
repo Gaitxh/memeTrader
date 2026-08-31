@@ -1224,6 +1224,60 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
     assert {"published_at", "observed_at", "ingested_at"}.issubset(stale_identity)
 
 
+def test_event_detail_exposes_forward_provenance_without_fabricated_independence(tmp_path: Path):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3")
+    engine = EventEngine(store, similarity=0.1)
+    now = utcnow()
+    event_id = 0
+    for handle, post_id in (("alpha", "101"), ("beta", "202")):
+        event_id, _, _ = engine.ingest(
+            Observation(
+                source=f"x:{handle}", source_kind="social",
+                title="Two public posts describe the same viral animal event",
+                text="Two public posts describe the same viral animal event",
+                url=f"https://x.com/{handle}/status/{post_id}?token=never-return",
+                author=handle, observed_at=now, ingested_at=now,
+                availability_proof="local_receive", source_item_id=f"x:{handle}:{post_id}",
+                raw={"browser": {"platform": "x"}, "source_entity_id": handle},
+            )
+        )
+    engine.ingest(
+        Observation(
+            source="relay-feed", source_kind="news",
+            title="Two public posts describe the same viral animal event",
+            text="Two public posts describe the same viral animal event",
+            url="https://x.com/alpha/status/101", author="Relay of alpha",
+            observed_at=now, ingested_at=now, source_item_id="relay-viral-animal",
+            raw={"feed_url": "https://relay.example/feed.xml"},
+        )
+    )
+    store.close()
+
+    detail = WebData(config_path).event_detail(event_id)
+    summary = detail["provenance_summary"]
+    assert summary["proven_distinct_origin_lower_bound"] == 2
+    assert summary["direct_item_count"] == 2
+    assert summary["relay_count"] == 1
+    direct = [
+        row for row in detail["observations"]
+        if row["provenance"]["origin_identity_state"] == "proven_direct_item"
+    ]
+    relay = next(
+        row for row in detail["observations"] if row["provenance"]["route_kind"] == "relay"
+    )
+    assert len(direct) == 2
+    assert all(row["origin_independence"] == "proven_distinct_lower_bound" for row in direct)
+    assert relay["origin_independence"] == "unknown"
+    assert "proven_distinct_origin" not in relay["priority_reasons"]
+    summary_item = next(item for item in WebData(config_path).events({})["items"] if item["id"] == event_id)
+    assert summary_item["lead_source"]["provenance"]["origin_identity_state"] == "proven_direct_item"
+    assert "independent_origin" not in summary_item["evidence_ranking"]["order"]
+    serialized = json.dumps(detail)
+    assert "origin_root_key" not in serialized
+    assert "never-return" not in serialized
+
+
 def test_candidate_ranking_api_is_persisted_bounded_sanitized_and_wait_is_truthful(tmp_path: Path):
     config_path, _ = _config(tmp_path)
     event_id, token_id = _seed(tmp_path / "db.sqlite3")

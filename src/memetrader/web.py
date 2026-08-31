@@ -94,6 +94,8 @@ EXPECTED_TABLES = {
     "event_claim_assessments",
     "source_item_revision_registrations",
     "source_item_revisions",
+    "observation_provenance_registrations",
+    "observation_provenance_assertions",
     "events",
     "information_first_shadow_admission_attempts",
     "information_first_shadow_cohorts",
@@ -2043,11 +2045,12 @@ class WebData:
 
     @staticmethod
     def _rank_evidence(observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        origin_counts: dict[str, int] = {}
+        proven_origin_roots: set[str] = set()
         for item in observations:
-            origin = str(item.get("origin") or "")
-            if origin:
-                origin_counts[origin] = origin_counts.get(origin, 0) + 1
+            provenance = item.get("provenance") if isinstance(item.get("provenance"), dict) else {}
+            root = str(item.get("_provenance_root_key") or "")
+            if provenance.get("origin_identity_state") == "proven_direct_item" and root:
+                proven_origin_roots.add(root)
         first_observed_id = None
         if observations:
             first_observed_id = min(
@@ -2065,8 +2068,13 @@ class WebData:
             role = str(value.get("role") or "identity")
             eligible = bool(value.get("decision_eligible"))
             freshness = str(value.get("freshness") or "unknown")
-            origin = str(value.get("origin") or "")
-            independent = bool(origin and origin_counts.get(origin) == 1)
+            provenance = value.get("provenance") if isinstance(value.get("provenance"), dict) else {}
+            provenance_root = str(value.get("_provenance_root_key") or "")
+            distinct_proven_origin = bool(
+                provenance.get("origin_identity_state") == "proven_direct_item"
+                and provenance_root
+                and len(proven_origin_roots) >= 2
+            )
             first_observed = value.get("id") == first_observed_id
             influence = value.get("influence") if isinstance(value.get("influence"), dict) else {}
             authority_tier = str(influence.get("authority_tier") or "unknown")
@@ -2091,9 +2099,9 @@ class WebData:
                 reasons.append("freshness_unknown")
             else:
                 reasons.append(freshness)
-            if independent:
+            if distinct_proven_origin:
                 score += 2.0
-                reasons.append("independent_origin")
+                reasons.append("proven_distinct_origin")
             if value.get("url"):
                 score += 1.0
                 reasons.append("direct_source_link")
@@ -2115,7 +2123,11 @@ class WebData:
             else:
                 source_group = "authoritative_confirmation"
             value["first_observed_source"] = first_observed
-            value["independent_origin"] = independent
+            value["origin_independence"] = (
+                "proven_distinct_lower_bound" if distinct_proven_origin else
+                "single_proven_origin_only" if provenance.get("origin_identity_state") == "proven_direct_item" else
+                "unknown"
+            )
             value["source_group"] = source_group
             value["ranking_dimensions"] = {
                 "decision_utility": round(decision_utility, 2),
@@ -2134,7 +2146,7 @@ class WebData:
                 float((item.get("ranking_dimensions") or {}).get("authority") or 0),
                 float((item.get("ranking_dimensions") or {}).get("freshness") or 0),
                 float((item.get("ranking_dimensions") or {}).get("curated_watch_priority") or 0),
-                bool(item.get("independent_origin")),
+                item.get("origin_independence") == "proven_distinct_lower_bound",
                 float((item.get("ranking_dimensions") or {}).get("engagement_heat") or 0),
                 parse_time(item.get("observed_at") or "1970-01-01T00:00:00Z"),
             ),
@@ -2163,8 +2175,10 @@ class WebData:
         attention_points: dict[int, list[dict[str, Any]]] = {event_id: [] for event_id in ids}
         claim_points: dict[int, list[dict[str, Any]]] = {event_id: [] for event_id in ids}
         revision_rows: dict[int, list[sqlite3.Row]] = {event_id: [] for event_id in ids}
+        provenance_by_observation: dict[int, dict[str, Any]] = {}
         claim_registered_at = None
         revision_registered_at = None
+        provenance_registered_at = None
         placeholders = ",".join("?" for _ in ids)
         if self._table_exists(connection, "event_observations") and self._table_exists(connection, "observations"):
             for observation in connection.execute(
@@ -2188,6 +2202,43 @@ class WebData:
                         "display_name": str(curated.get("display_name") or "") or None,
                     }
                 grouped[int(observation["event_id"])].append(value)
+        if self._table_exists(connection, "observation_provenance_registrations"):
+            registration = connection.execute(
+                "SELECT registered_at FROM observation_provenance_registrations WHERE definition_version=?",
+                (Store.OBSERVATION_PROVENANCE_VERSION,),
+            ).fetchone()
+            provenance_registered_at = registration["registered_at"] if registration else None
+        if self._table_exists(connection, "observation_provenance_assertions"):
+            for assertion in connection.execute(
+                f"""
+                SELECT DISTINCT p.* FROM observation_provenance_assertions p
+                JOIN event_observations eo ON eo.observation_id=p.observation_id
+                WHERE eo.event_id IN ({placeholders}) AND p.definition_version=?
+                ORDER BY p.recorded_at,p.id
+                """,
+                [*ids, Store.OBSERVATION_PROVENANCE_VERSION],
+            ):
+                provenance_by_observation[int(assertion["observation_id"])] = {
+                    "version": assertion["definition_version"],
+                    "recorded_at": assertion["recorded_at"],
+                    "route_kind": assertion["route_kind"],
+                    "origin_identity_state": assertion["origin_identity_state"],
+                    "origin": {
+                        "platform": assertion["origin_platform"] or "unknown",
+                        "actor": assertion["origin_actor"] or None,
+                        "url": _safe_url(assertion["origin_item_url"]),
+                    },
+                    "transport": {
+                        "platform": assertion["transport_platform"] or "unknown",
+                        "source": assertion["transport_source"] or None,
+                    },
+                    "local_capture": assertion["local_collector"],
+                    "evidence_basis": assertion["evidence_basis"],
+                    "temporal_exclusion_reason": assertion["temporal_exclusion_reason"],
+                    "decision_eligible": False,
+                    "affects": "none",
+                    "_origin_root_key": assertion["origin_root_key"],
+                }
         if self._table_exists(connection, "event_attention_points"):
             point_limit = 96 if include_observations else 24
             for point in connection.execute(
@@ -2278,7 +2329,60 @@ class WebData:
         for row in rows:
             event_id = int(row["id"])
             observations = grouped.get(event_id, [])
+            for observation in observations:
+                provenance = provenance_by_observation.get(int(observation["id"]))
+                if provenance:
+                    observation["_provenance_root_key"] = provenance.get("_origin_root_key") or ""
+                    observation["provenance"] = {
+                        key: value for key, value in provenance.items() if key != "_origin_root_key"
+                    }
+                else:
+                    observation["provenance"] = {
+                        "version": Store.OBSERVATION_PROVENANCE_VERSION,
+                        "status": "not_observed",
+                        "route_kind": "unknown",
+                        "origin_identity_state": "unknown",
+                        "origin": {"platform": "unknown", "actor": None, "url": None},
+                        "transport": {"platform": "unknown", "source": None},
+                        "local_capture": "unknown",
+                        "evidence_basis": "outside_forward_provenance_window",
+                        "decision_eligible": False,
+                        "affects": "none",
+                    }
             ranked_observations = self._rank_evidence(observations)
+            proven_roots = {
+                str(item.get("_provenance_root_key") or "")
+                for item in ranked_observations
+                if (item.get("provenance") or {}).get("origin_identity_state") == "proven_direct_item"
+                and item.get("_provenance_root_key")
+            }
+            provenance_summary = {
+                "version": Store.OBSERVATION_PROVENANCE_VERSION,
+                "registered_at": provenance_registered_at,
+                "scope": "new_forward_observations_only",
+                "historical_backfill": False,
+                "assertion_count": sum(
+                    1 for item in ranked_observations
+                    if (item.get("provenance") or {}).get("status") != "not_observed"
+                ),
+                "direct_item_count": sum(
+                    1 for item in ranked_observations
+                    if (item.get("provenance") or {}).get("origin_identity_state") == "proven_direct_item"
+                ),
+                "relay_count": sum(
+                    1 for item in ranked_observations
+                    if (item.get("provenance") or {}).get("route_kind") == "relay"
+                ),
+                "unknown_count": sum(
+                    1 for item in ranked_observations
+                    if (item.get("provenance") or {}).get("origin_identity_state") in {"unknown", "inferred_candidate", "asserted_upstream"}
+                ),
+                "proven_distinct_origin_lower_bound": len(proven_roots),
+                "boundary": "singleton_or_domain_inference_is_not_independent_origin",
+                "affects": "none",
+            }
+            for item in ranked_observations:
+                item.pop("_provenance_root_key", None)
             origins = {item["origin"] for item in observations if item["origin"]}
             eligible_observations = [item for item in observations if item["decision_eligible"]]
             eligible_origins = {
@@ -2302,7 +2406,11 @@ class WebData:
             )
             correction_points = [
                 point for point in meaningful_factual_points
-                if point["claim_status"] in {"correction", "retraction", "false_claim"}
+                if point["claim_status"] in {"correction", "retraction"}
+            ]
+            false_claim_points = [
+                point for point in meaningful_factual_points
+                if point["claim_status"] == "false_claim"
             ]
             assessment_status_change_count = sum(
                 1 for previous, current in zip(meaningful_factual_points, meaningful_factual_points[1:])
@@ -2326,6 +2434,8 @@ class WebData:
                     "ledger_not_observed"
                 ),
                 "latest_correction": correction_points[-1] if correction_points else None,
+                "false_claim_assessment_count": len(false_claim_points),
+                "latest_false_claim_assessment": false_claim_points[-1] if false_claim_points else None,
                 "boundary": "agent_assessment_is_not_independent_fact_verification",
             }
             if include_observations:
@@ -2392,7 +2502,7 @@ class WebData:
                     "quote_velocity": "engagement_revision_history_not_available",
                     "repost_velocity": "engagement_revision_history_not_available",
                     "cross_community_diffusion": "community_origin_taxonomy_not_available",
-                    "cross_platform_diffusion": "origin_platform_and_transport_are_not_yet_separated",
+                    "cross_platform_diffusion": "forward_provenance_available_but_platform_denominator_missing",
                 }.items()
             }
             trajectory = {
@@ -2534,10 +2644,11 @@ class WebData:
                 "attention_trajectory": trajectory,
                 "factuality": factuality,
                 "source_revision_summary": source_revision_summary,
+                "provenance_summary": provenance_summary,
                 "event_url": f"#/events/{event_id}",
                 "evidence_ranking": {
                     "method": "decision_utility_authority_freshness",
-                    "order": ["decision_utility", "known_authority", "freshness", "configured_curated_tier", "independent_origin", "observed_engagement"],
+                    "order": ["decision_utility", "known_authority", "freshness", "configured_curated_tier", "proven_distinct_origin_lower_bound", "observed_engagement"],
                 },
             }
             if ranked_observations:
@@ -2547,7 +2658,8 @@ class WebData:
                     for key in (
                         "id", "platform", "author", "author_known", "source_entity_id", "cross_platform_entity",
                         "source_kind", "role", "source_group",
-                        "decision_eligible", "freshness", "influence", "url", "first_observed_source", "independent_origin",
+                        "decision_eligible", "freshness", "influence", "url", "first_observed_source",
+                        "origin_independence", "provenance",
                     )
                 }
             else:

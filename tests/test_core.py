@@ -300,6 +300,79 @@ def test_source_item_revision_does_not_backfill_or_create_unanchored_tombstone(t
     store.close()
 
 
+def test_observation_provenance_is_forward_immutable_and_separates_origin_transport(tmp_path: Path):
+    store = Store(tmp_path / "observation-provenance.sqlite3")
+    now = utcnow()
+    direct = Observation(
+        source="x:example", source_kind="social", title="Direct public post",
+        url="https://x.com/example/status/123?token=must-not-persist", author="example",
+        observed_at=now, ingested_at=now, availability_proof="local_receive",
+        source_item_id="x:example:123",
+        raw={"browser": {"platform": "x"}, "source_entity_id": "example"},
+    )
+    direct_id, created = store.add_observation(direct)
+    assert created is True
+    relay_id, _ = store.add_observation(
+        Observation(
+            source="aggregated-feed", source_kind="news", title="Relayed report",
+            url="https://publisher.example/report", author="Publisher",
+            observed_at=now, ingested_at=now, source_item_id="relay-1",
+            raw={
+                "feed_url": "https://aggregator.example/feed.xml",
+                "publisher_url": "https://publisher.example/",
+            },
+        )
+    )
+    unknown_id, _ = store.add_observation(
+        Observation(
+            source="unknown-source", source_kind="news", title="Unknown route",
+            observed_at=now, ingested_at=now, source_item_id="unknown-1",
+        )
+    )
+    future = now + timedelta(hours=1)
+    future_id, _ = store.add_observation(
+        Observation(
+            source="x:future", source_kind="social", title="Future direct post",
+            url="https://x.com/future/status/456", author="future",
+            observed_at=future, ingested_at=future, availability_proof="local_receive",
+            source_item_id="x:future:456", raw={"browser": {"platform": "x"}},
+        )
+    )
+    historical = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    store.add_observation(
+        Observation(
+            source="legacy", source_kind="news", title="Legacy observation",
+            observed_at=historical, ingested_at=historical, source_item_id="legacy-1",
+        )
+    )
+    store.add_observation(direct)
+
+    rows = {
+        int(row["observation_id"]): row
+        for row in store.db.execute("SELECT * FROM observation_provenance_assertions")
+    }
+    assert set(rows) == {direct_id, relay_id, unknown_id, future_id}
+    assert rows[direct_id]["route_kind"] == "direct"
+    assert rows[direct_id]["origin_identity_state"] == "proven_direct_item"
+    assert rows[direct_id]["transport_platform"] == "none"
+    assert "must-not-persist" not in rows[direct_id]["origin_item_url"]
+    assert rows[relay_id]["route_kind"] == "relay"
+    assert rows[relay_id]["origin_identity_state"] == "asserted_upstream"
+    assert rows[relay_id]["transport_platform"] == "rss"
+    assert rows[unknown_id]["origin_identity_state"] == "unknown"
+    assert rows[future_id]["origin_identity_state"] == "excluded_future"
+    assert "source_observed_in_future" in rows[future_id]["temporal_exclusion_reason"]
+    assert all(row["decision_eligible"] == 0 and row["affects"] == "none" for row in rows.values())
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute(
+            "UPDATE observation_provenance_assertions SET route_kind='relay' WHERE observation_id=?",
+            (direct_id,),
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute("DELETE FROM observation_provenance_registrations")
+    store.close()
+
+
 def test_token_discovery_exposure_preserves_denominator_and_forward_outcomes(tmp_path: Path):
     store = Store(tmp_path / "token-discovery.sqlite3", initial_cash_usd=1000)
     observed_at = datetime.now(timezone.utc) - timedelta(minutes=2)
