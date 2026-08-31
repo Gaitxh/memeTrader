@@ -54,7 +54,7 @@ class Store:
     TOKEN_DISCOVERY_QUOTE_ATTEMPT_VERSION = "token-discovery-quote-attempt/v1"
     TOKEN_UNIVERSE_FORWARD_VERSION = "token-universe-forward-outcomes/v1"
     TOKEN_UNIVERSE_FUNNEL_VERSION = "token-universe-funnel-transitions/v1"
-    AGENT_SHADOW_REVIEW_VERSION = "agent-shadow-review-trigger/v1"
+    AGENT_SHADOW_REVIEW_VERSION = "agent-shadow-review-trigger/v2"
     AGENT_SHADOW_REVIEW_WINDOW_MINUTES = 15
     TOKEN_UNIVERSE_HORIZONS_MINUTES = (15, 60, 240)
     TOKEN_UNIVERSE_BASELINE_WINDOW_MINUTES = 5
@@ -7635,13 +7635,14 @@ class Store:
             "trigger_relations": ["corrects", "retracts"],
             "requires_resolved_target": True,
             "requires_temporally_clean_source": True,
-            "target_binding": "latest_event_decision_available_at_trigger",
+            "target_binding": "single_target_event_then_latest_decision_available_at_trigger",
             "window_minutes": cls.AGENT_SHADOW_REVIEW_WINDOW_MINUTES,
             "dispatch_requested": False,
             "uses_agent_quota": False,
             "no_historical_backfill": True,
             "coverage_gaps": [
                 "no_token_binding",
+                "ambiguous_target_event",
                 "ambiguous_event_token_mapping",
                 "no_universe_cohort",
                 "cohort_before_overlay_activation",
@@ -7808,15 +7809,15 @@ class Store:
             buy_trade_id = None
             transition_id = None
             target_observation_id = item["target_observation_id"]
-            target_event = None
+            target_events: list[sqlite3.Row] = []
             if target_observation_id is not None:
-                target_event = self.db.execute(
+                target_events = list(self.db.execute(
                     "SELECT event_id FROM event_observations WHERE observation_id=? "
-                    "ORDER BY event_id LIMIT 1",
+                    "ORDER BY event_id",
                     (int(target_observation_id),),
-                ).fetchone()
-            if target_event is not None:
-                event_id = int(target_event["event_id"])
+                ))
+            if len(target_events) == 1:
+                event_id = int(target_events[0]["event_id"])
             metadata = {
                 "policy_version": self.AGENT_SHADOW_REVIEW_VERSION,
                 "trigger_kind": str(item["trigger_kind"]),
@@ -7829,6 +7830,10 @@ class Store:
                 reason = "temporal_exclusion"
             elif str(item["resolution_status"]) != "resolved":
                 reason = f"relation_{item['resolution_status']}"
+            elif len(target_events) > 1:
+                status = "coverage_gap"
+                reason = "ambiguous_target_event"
+                metadata["target_event_count"] = len(target_events)
             elif event_id is None:
                 status = "coverage_gap"
                 reason = "no_token_binding"

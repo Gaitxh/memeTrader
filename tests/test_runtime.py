@@ -1247,6 +1247,71 @@ def test_runtime_shadow_review_correction_records_overlay_and_cohort_gap(tmp_pat
     asyncio.run(scenario())
 
 
+def test_runtime_shadow_review_rejects_ambiguous_target_event(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        config["sources"]["rss"] = []
+        config["sources"]["gecko_networks"] = []
+        config["sources"]["pumpportal"]["enabled"] = False
+        config["sources"]["reverse_google_news"]["enabled"] = False
+        config["autonomous_search"]["enabled"] = False
+        runtime = Runtime(config, tmp_path)
+        now = utcnow()
+        common = {
+            "source": "browser:x:ambiguous-publisher",
+            "source_kind": "social",
+            "title": "Publisher report linked to two event clusters",
+            "url": "https://x.com/ambiguouspublisher/status/9201",
+            "source_item_id": "x:ambiguouspublisher:9201",
+            "availability_proof": "local_receive",
+        }
+        original = await runtime.ingest_observation(
+            Observation(
+                text="Original report", observed_at=now, ingested_at=now,
+                raw={"source_item_state": "present"}, **common,
+            )
+        )
+        observation_id = runtime.store.db.execute(
+            "SELECT observation_id FROM event_observations WHERE event_id=?",
+            (int(original["event_id"]),),
+        ).fetchone()["observation_id"]
+        second_event_id = runtime.store.create_event(
+            "Second cluster for the same report", [], 10, first_seen_at=now
+        )
+        runtime.store.link_event_observation(second_event_id, int(observation_id))
+
+        correction = await runtime.ingest_observation(
+            Observation(
+                text="Publisher correction", role="identity",
+                observed_at=utcnow(), ingested_at=utcnow(),
+                raw={
+                    "source_item_state": "correction",
+                    "source_item_state_evidence": "publisher_correction_marker",
+                    "claim_target_url": common["url"],
+                },
+                **common,
+            )
+        )
+        assert len(correction["shadow_review"]) == 1
+        assert correction["shadow_review"][0]["status"] == "coverage_gap"
+        assert correction["shadow_review"][0]["reason"] == "ambiguous_target_event"
+        assert correction["shadow_review"][0]["transition_id"] is None
+        result = runtime.store.db.execute(
+            "SELECT metadata_json,dispatch_count,decision_eligible,affects "
+            "FROM agent_shadow_review_results WHERE id=?",
+            (correction["shadow_review"][0]["result_id"],),
+        ).fetchone()
+        assert json.loads(result["metadata_json"])["target_event_count"] == 2
+        assert result["dispatch_count"] == 0
+        assert result["decision_eligible"] == 0
+        assert result["affects"] == "none"
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
 def test_raw_items_are_stored_without_notification_spam(tmp_path):
     async def scenario():
         config = initial_config()
