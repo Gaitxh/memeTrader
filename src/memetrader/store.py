@@ -54,6 +54,8 @@ class Store:
     TOKEN_DISCOVERY_QUOTE_ATTEMPT_VERSION = "token-discovery-quote-attempt/v1"
     TOKEN_UNIVERSE_FORWARD_VERSION = "token-universe-forward-outcomes/v1"
     TOKEN_UNIVERSE_FUNNEL_VERSION = "token-universe-funnel-transitions/v1"
+    AGENT_SHADOW_REVIEW_VERSION = "agent-shadow-review-trigger/v1"
+    AGENT_SHADOW_REVIEW_WINDOW_MINUTES = 15
     TOKEN_UNIVERSE_HORIZONS_MINUTES = (15, 60, 240)
     TOKEN_UNIVERSE_BASELINE_WINDOW_MINUTES = 5
     TOKEN_UNIVERSE_OUTCOME_GRACE_MINUTES = 30
@@ -986,6 +988,69 @@ class Store:
                 CREATE TRIGGER IF NOT EXISTS token_universe_funnel_transitions_no_delete
                 BEFORE DELETE ON token_universe_funnel_transitions
                 BEGIN SELECT RAISE(ABORT,'token universe funnel transitions are immutable'); END;
+                CREATE TABLE IF NOT EXISTS agent_shadow_review_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_relation_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS agent_shadow_review_inputs (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    relation_id INTEGER NOT NULL UNIQUE,
+                    trigger_kind TEXT NOT NULL CHECK(trigger_kind IN ('correction','retraction')),
+                    observed_at TEXT NOT NULL,
+                    ingested_at TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    dispatch_count INTEGER NOT NULL DEFAULT 0 CHECK(dispatch_count=0),
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    FOREIGN KEY(relation_id) REFERENCES event_claim_relations(id)
+                );
+                CREATE TABLE IF NOT EXISTS agent_shadow_review_results (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    input_id INTEGER NOT NULL UNIQUE,
+                    status TEXT NOT NULL CHECK(status IN (
+                        'shadow_triggered','coverage_gap','ineligible'
+                    )),
+                    reason_code TEXT NOT NULL,
+                    token_id TEXT NOT NULL DEFAULT '',
+                    event_id INTEGER,
+                    decision_id INTEGER,
+                    buy_trade_id INTEGER,
+                    transition_id INTEGER,
+                    recorded_at TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    dispatch_count INTEGER NOT NULL DEFAULT 0 CHECK(dispatch_count=0),
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    FOREIGN KEY(input_id) REFERENCES agent_shadow_review_inputs(id),
+                    FOREIGN KEY(event_id) REFERENCES events(id),
+                    FOREIGN KEY(decision_id) REFERENCES decisions(id),
+                    FOREIGN KEY(buy_trade_id) REFERENCES trades(id),
+                    FOREIGN KEY(transition_id) REFERENCES token_universe_funnel_transitions(id)
+                );
+                CREATE INDEX IF NOT EXISTS agent_shadow_review_results_status_idx
+                    ON agent_shadow_review_results(definition_version,status,reason_code,recorded_at,id);
+                CREATE TRIGGER IF NOT EXISTS agent_shadow_review_registrations_no_update
+                BEFORE UPDATE ON agent_shadow_review_registrations
+                BEGIN SELECT RAISE(ABORT,'agent shadow review registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS agent_shadow_review_registrations_no_delete
+                BEFORE DELETE ON agent_shadow_review_registrations
+                BEGIN SELECT RAISE(ABORT,'agent shadow review registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS agent_shadow_review_inputs_no_update
+                BEFORE UPDATE ON agent_shadow_review_inputs
+                BEGIN SELECT RAISE(ABORT,'agent shadow review inputs are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS agent_shadow_review_inputs_no_delete
+                BEFORE DELETE ON agent_shadow_review_inputs
+                BEGIN SELECT RAISE(ABORT,'agent shadow review inputs are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS agent_shadow_review_results_no_update
+                BEFORE UPDATE ON agent_shadow_review_results
+                BEGIN SELECT RAISE(ABORT,'agent shadow review results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS agent_shadow_review_results_no_delete
+                BEFORE DELETE ON agent_shadow_review_results
+                BEGIN SELECT RAISE(ABORT,'agent shadow review results are immutable'); END;
                 CREATE TRIGGER IF NOT EXISTS token_universe_funnel_transitions_insert_guard
                 BEFORE INSERT ON token_universe_funnel_transitions
                 WHEN NOT EXISTS (
@@ -1769,6 +1834,26 @@ class Store:
                 ),
             )
             self.db.execute(
+                "INSERT OR IGNORE INTO token_universe_funnel_registrations("
+                "definition_version,registered_at,activation_cohort_id,definition_json) "
+                "VALUES(?,?,COALESCE((SELECT MAX(id) FROM token_universe_forward_cohorts),0),?)",
+                (
+                    self.AGENT_SHADOW_REVIEW_VERSION,
+                    iso(),
+                    self._json(self._agent_shadow_review_definition()),
+                ),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO agent_shadow_review_registrations("
+                "definition_version,registered_at,activation_relation_id,definition_json) "
+                "VALUES(?,?,COALESCE((SELECT MAX(id) FROM event_claim_relations),0),?)",
+                (
+                    self.AGENT_SHADOW_REVIEW_VERSION,
+                    iso(),
+                    self._json(self._agent_shadow_review_definition()),
+                ),
+            )
+            self.db.execute(
                 "INSERT OR IGNORE INTO missed_opportunity_audit_registrations("
                 "definition_version,registered_at,activation_outcome_id,definition_json) "
                 "VALUES(?,?,COALESCE((SELECT MAX(id) FROM token_universe_forward_outcomes),0),?)",
@@ -2475,7 +2560,36 @@ class Store:
                 temporal_exclusion_reason or revision["temporal_exclusion_reason"],
             ),
         )
-        return int(cursor.lastrowid) if cursor.rowcount == 1 else None
+        if cursor.rowcount != 1:
+            return None
+        relation_id = int(cursor.lastrowid)
+        if relation_type in {"corrects", "retracts"}:
+            registration = self.db.execute(
+                "SELECT activation_relation_id FROM agent_shadow_review_registrations "
+                "WHERE definition_version=?",
+                (self.AGENT_SHADOW_REVIEW_VERSION,),
+            ).fetchone()
+            if (
+                registration is not None
+                and relation_id > int(registration["activation_relation_id"] or 0)
+            ):
+                self.db.execute(
+                    """
+                    INSERT OR IGNORE INTO agent_shadow_review_inputs(
+                        definition_version,relation_id,trigger_kind,observed_at,ingested_at,
+                        recorded_at,dispatch_count,decision_eligible,affects
+                    ) VALUES(?,?,?,?,?,?,0,0,'none')
+                    """,
+                    (
+                        self.AGENT_SHADOW_REVIEW_VERSION,
+                        relation_id,
+                        "correction" if relation_type == "corrects" else "retraction",
+                        revision["capture_observed_at"],
+                        revision["capture_ingested_at"],
+                        iso(),
+                    ),
+                )
+        return relation_id
 
     def _record_claim_relations_locked(
         self, obs: Observation, revision_id: int
@@ -7513,10 +7627,35 @@ class Store:
             "affects": "none",
         }
 
+    @classmethod
+    def _agent_shadow_review_definition(cls) -> dict[str, Any]:
+        return {
+            "version": cls.AGENT_SHADOW_REVIEW_VERSION,
+            "source": cls.EVENT_CLAIM_RELATION_VERSION,
+            "trigger_relations": ["corrects", "retracts"],
+            "requires_resolved_target": True,
+            "requires_temporally_clean_source": True,
+            "target_binding": "latest_event_decision_available_at_trigger",
+            "window_minutes": cls.AGENT_SHADOW_REVIEW_WINDOW_MINUTES,
+            "dispatch_requested": False,
+            "uses_agent_quota": False,
+            "no_historical_backfill": True,
+            "coverage_gaps": [
+                "no_token_binding",
+                "ambiguous_event_token_mapping",
+                "no_universe_cohort",
+                "cohort_before_overlay_activation",
+                "transition_not_recorded",
+            ],
+            "decision_eligible": False,
+            "affects": "none",
+        }
+
     def record_token_universe_funnel_transition(
         self,
         token_id: str,
         *,
+        definition_version: str | None = None,
         stage: str,
         status: str,
         reason_code: str,
@@ -7539,6 +7678,7 @@ class Store:
         trade_id: int | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> int | None:
+        version = str(definition_version or self.TOKEN_UNIVERSE_FUNNEL_VERSION)
         allowed_stages = set(self._token_universe_funnel_definition()["recorded_transition_stages"])
         if stage not in allowed_stages:
             raise ValueError("invalid token universe funnel stage")
@@ -7573,7 +7713,7 @@ class Store:
             registration = self.db.execute(
                 "SELECT activation_cohort_id FROM token_universe_funnel_registrations "
                 "WHERE definition_version=?",
-                (self.TOKEN_UNIVERSE_FUNNEL_VERSION,),
+                (version,),
             ).fetchone()
             if registration is None:
                 return None
@@ -7591,7 +7731,7 @@ class Store:
             source_json = self._bounded_json(safe_source_ids, max_chars=4000)
             metadata_json = self._bounded_json(safe_metadata, max_chars=8000)
             material = "\n".join((
-                self.TOKEN_UNIVERSE_FUNNEL_VERSION,
+                version,
                 str(cohort["id"]), stage, natural_key,
             ))
             transition_key = hashlib.sha256(material.encode("utf-8", errors="ignore")).hexdigest()
@@ -7607,7 +7747,7 @@ class Store:
                 ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'none')
                 """,
                 (
-                    self.TOKEN_UNIVERSE_FUNNEL_VERSION, transition_key, natural_key,
+                    version, transition_key, natural_key,
                     int(cohort["id"]),
                     token_id, stage, stage_status, reason, iso(observed), iso(ingested), iso(),
                     source_name, source_json, round_id, source_link_id, source_poll_attempt_id,
@@ -7621,6 +7761,214 @@ class Store:
                 (transition_key,),
             ).fetchone()
             return int(row["id"]) if row is not None else None
+
+    def process_agent_shadow_review_inputs(
+        self,
+        relation_ids: Iterable[int] | None = None,
+        *,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        ids = list(dict.fromkeys(int(value) for value in (relation_ids or ())))
+        where = ""
+        params: list[Any] = [self.AGENT_SHADOW_REVIEW_VERSION]
+        if ids:
+            where = f" AND i.relation_id IN ({','.join('?' for _ in ids)})"
+            params.extend(ids)
+        params.append(max(1, min(1000, int(limit))))
+        inputs = list(
+            self.db.execute(
+                f"""
+                SELECT i.*,cr.relation_type,cr.resolution_status,cr.source_revision_id,
+                       cr.target_revision_id,cr.temporal_exclusion_reason,
+                       sr.anchor_observation_id AS source_observation_id,
+                       tr.anchor_observation_id AS target_observation_id
+                FROM agent_shadow_review_inputs i
+                JOIN event_claim_relations cr ON cr.id=i.relation_id
+                JOIN source_item_revisions sr ON sr.id=cr.source_revision_id
+                LEFT JOIN source_item_revisions tr ON tr.id=cr.target_revision_id
+                LEFT JOIN agent_shadow_review_results rr ON rr.input_id=i.id
+                WHERE i.definition_version=? AND rr.id IS NULL {where}
+                ORDER BY i.id LIMIT ?
+                """,
+                params,
+            )
+        )
+        registration = self.db.execute(
+            "SELECT activation_cohort_id FROM token_universe_funnel_registrations "
+            "WHERE definition_version=?",
+            (self.AGENT_SHADOW_REVIEW_VERSION,),
+        ).fetchone()
+        results: list[dict[str, Any]] = []
+        for item in inputs:
+            status = "ineligible"
+            reason = "unsupported_relation"
+            token_id = ""
+            event_id = None
+            decision_id = None
+            buy_trade_id = None
+            transition_id = None
+            target_observation_id = item["target_observation_id"]
+            target_event = None
+            if target_observation_id is not None:
+                target_event = self.db.execute(
+                    "SELECT event_id FROM event_observations WHERE observation_id=? "
+                    "ORDER BY event_id LIMIT 1",
+                    (int(target_observation_id),),
+                ).fetchone()
+            if target_event is not None:
+                event_id = int(target_event["event_id"])
+            metadata = {
+                "policy_version": self.AGENT_SHADOW_REVIEW_VERSION,
+                "trigger_kind": str(item["trigger_kind"]),
+                "window_minutes": self.AGENT_SHADOW_REVIEW_WINDOW_MINUTES,
+                "dispatch_requested": 0,
+                "dispatch_count": 0,
+                "uses_agent_quota": 0,
+            }
+            if item["temporal_exclusion_reason"] is not None:
+                reason = "temporal_exclusion"
+            elif str(item["resolution_status"]) != "resolved":
+                reason = f"relation_{item['resolution_status']}"
+            elif event_id is None:
+                status = "coverage_gap"
+                reason = "no_token_binding"
+            else:
+                decision = self.db.execute(
+                    "SELECT * FROM decisions WHERE event_id=? AND created_at<=? "
+                    "ORDER BY created_at DESC,id DESC LIMIT 1",
+                    (event_id, item["recorded_at"]),
+                ).fetchone()
+                if decision is not None:
+                    token_id = str(decision["token_id"] or "")
+                    decision_id = int(decision["id"])
+                else:
+                    linked_tokens = [
+                        str(row["token_id"])
+                        for row in self.db.execute(
+                            "SELECT DISTINCT token_id FROM token_universe_funnel_transitions "
+                            "WHERE definition_version=? AND stage='event_token_relation' "
+                            "AND status='linked' AND event_id=? AND recorded_at<=? "
+                            "ORDER BY token_id",
+                            (
+                                self.TOKEN_UNIVERSE_FUNNEL_VERSION,
+                                event_id,
+                                item["recorded_at"],
+                            ),
+                        )
+                    ]
+                    if len(linked_tokens) == 1:
+                        token_id = linked_tokens[0]
+                    elif len(linked_tokens) > 1:
+                        status = "coverage_gap"
+                        reason = "ambiguous_event_token_mapping"
+                if not token_id:
+                    if reason != "ambiguous_event_token_mapping":
+                        status = "coverage_gap"
+                        reason = "no_token_binding"
+                else:
+                    trade_balance = self.db.execute(
+                        """
+                        SELECT COALESCE(SUM(CASE WHEN side='BUY' THEN quantity ELSE -quantity END),0)
+                                   AS remaining_quantity
+                        FROM trades
+                        WHERE token_id=? AND event_id=? AND created_at<=?
+                        """,
+                        (token_id, event_id, item["recorded_at"]),
+                    ).fetchone()
+                    buy_trade = self.db.execute(
+                        """
+                        SELECT id FROM trades
+                        WHERE token_id=? AND event_id=? AND side='BUY' AND created_at<=?
+                        ORDER BY created_at DESC,id DESC LIMIT 1
+                        """,
+                        (token_id, event_id, item["recorded_at"]),
+                    ).fetchone()
+                    position_open = bool(
+                        buy_trade is not None
+                        and float(trade_balance["remaining_quantity"] or 0) > 1e-12
+                    )
+                    buy_trade_id = int(buy_trade["id"]) if position_open else None
+                    metadata["target_scope"] = "position" if position_open else "event_token"
+                    metadata["position_open_at_trigger"] = int(position_open)
+                    metadata["buy_trade_id"] = buy_trade_id
+                    cohort = self.db.execute(
+                        "SELECT id FROM token_universe_forward_cohorts "
+                        "WHERE definition_version=? AND token_id=? ORDER BY id LIMIT 1",
+                        (self.TOKEN_UNIVERSE_FORWARD_VERSION, token_id),
+                    ).fetchone()
+                    activation = int(registration["activation_cohort_id"] or 0) if registration else 0
+                    if cohort is None:
+                        status = "coverage_gap"
+                        reason = "no_universe_cohort"
+                    elif int(cohort["id"]) <= activation:
+                        status = "coverage_gap"
+                        reason = "cohort_before_overlay_activation"
+                    else:
+                        source_ids = {
+                            "shadow_review_input_id": int(item["id"]),
+                            "claim_relation_id": int(item["relation_id"]),
+                            "source_revision_id": int(item["source_revision_id"]),
+                            "target_revision_id": int(item["target_revision_id"]),
+                        }
+                        transition_id = self.record_token_universe_funnel_transition(
+                            token_id,
+                            definition_version=self.AGENT_SHADOW_REVIEW_VERSION,
+                            stage="context_trigger_evaluation",
+                            status="shadow_triggered",
+                            reason_code=f"shadow_review_{item['trigger_kind']}",
+                            evaluation_key=f"claim_relation:{int(item['relation_id'])}",
+                            observed_at=item["observed_at"],
+                            ingested_at=item["ingested_at"],
+                            source_table="agent_shadow_review_inputs",
+                            source_record_ids=source_ids,
+                            observation_id=int(target_observation_id),
+                            event_id=event_id,
+                            decision_id=decision_id,
+                            metadata=metadata,
+                        )
+                        if transition_id is None:
+                            status = "coverage_gap"
+                            reason = "transition_not_recorded"
+                        else:
+                            status = "shadow_triggered"
+                            reason = f"shadow_review_{item['trigger_kind']}"
+            with self._lock, self.db:
+                self.db.execute(
+                    """
+                    INSERT OR IGNORE INTO agent_shadow_review_results(
+                        definition_version,input_id,status,reason_code,token_id,event_id,
+                        decision_id,buy_trade_id,transition_id,recorded_at,metadata_json,dispatch_count,
+                        decision_eligible,affects
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,0,0,'none')
+                    """,
+                    (
+                        self.AGENT_SHADOW_REVIEW_VERSION,
+                        int(item["id"]),
+                        status,
+                        reason,
+                        token_id,
+                        event_id,
+                        decision_id,
+                        buy_trade_id,
+                        transition_id,
+                        iso(),
+                        self._bounded_json(metadata, max_chars=8000),
+                    ),
+                )
+                result = self.db.execute(
+                    "SELECT id,status,reason_code,transition_id FROM "
+                    "agent_shadow_review_results WHERE input_id=?",
+                    (int(item["id"]),),
+                ).fetchone()
+            results.append(
+                {
+                    "status": str(result["status"]),
+                    "result_id": int(result["id"]),
+                    "reason": str(result["reason_code"]),
+                    "transition_id": result["transition_id"],
+                }
+            )
+        return results
 
     def record_token_universe_candidate_evaluations(
         self,
@@ -8765,6 +9113,177 @@ class Store:
             },
             "horizons": list(by_horizon.values()), "tiers": tiers, "surfaces": surfaces,
             "decision_eligible": False, "affects": "none", "as_of": iso(),
+        }
+
+    @classmethod
+    def agent_shadow_review_summary_from_connection(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        definition = cls._agent_shadow_review_definition()
+        empty = {
+            "status": "not_registered",
+            "version": cls.AGENT_SHADOW_REVIEW_VERSION,
+            "definition": definition,
+            "summary": {
+                "inputs": 0,
+                "terminal_results": 0,
+                "pending": 0,
+                "shadow_triggered": 0,
+                "coverage_gap": 0,
+                "ineligible": 0,
+                "distinct_events": 0,
+                "distinct_tokens": 0,
+                "distinct_days": 0,
+                "dispatch_count": 0,
+            },
+            "trigger_kinds": [],
+            "reason_codes": [],
+            "recent": [],
+            "maturity_gate": {
+                "minimum_terminal_per_kind": 30,
+                "minimum_distinct_event_tokens": 20,
+                "minimum_distinct_days": 10,
+                "real_dispatch_allowed": False,
+            },
+            "decision_eligible": False,
+            "affects": "none",
+        }
+        tables = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        required = {
+            "agent_shadow_review_registrations",
+            "agent_shadow_review_inputs",
+            "agent_shadow_review_results",
+        }
+        if not required.issubset(tables):
+            return empty
+        registration = connection.execute(
+            "SELECT * FROM agent_shadow_review_registrations WHERE definition_version=?",
+            (cls.AGENT_SHADOW_REVIEW_VERSION,),
+        ).fetchone()
+        if registration is None:
+            return empty
+        try:
+            registered_definition = json.loads(str(registration["definition_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            registered_definition = definition
+        aggregate = connection.execute(
+            """
+            SELECT COUNT(i.id) AS inputs,
+                   COUNT(r.id) AS terminal_results,
+                   SUM(CASE WHEN r.status='shadow_triggered' THEN 1 ELSE 0 END) AS shadow_triggered,
+                   SUM(CASE WHEN r.status='coverage_gap' THEN 1 ELSE 0 END) AS coverage_gap,
+                   SUM(CASE WHEN r.status='ineligible' THEN 1 ELSE 0 END) AS ineligible,
+                   COUNT(DISTINCT CASE WHEN r.event_id IS NOT NULL THEN r.event_id END) AS distinct_events,
+                   COUNT(DISTINCT CASE WHEN r.token_id<>'' THEN r.token_id END) AS distinct_tokens,
+                   COUNT(DISTINCT substr(i.recorded_at,1,10)) AS distinct_days,
+                   COALESCE(SUM(i.dispatch_count),0)+COALESCE(SUM(r.dispatch_count),0) AS dispatch_count
+            FROM agent_shadow_review_inputs i
+            LEFT JOIN agent_shadow_review_results r ON r.input_id=i.id
+            WHERE i.definition_version=?
+            """,
+            (cls.AGENT_SHADOW_REVIEW_VERSION,),
+        ).fetchone()
+        inputs = int(aggregate["inputs"] or 0)
+        terminal = int(aggregate["terminal_results"] or 0)
+        trigger_kinds = [
+            {
+                "trigger_kind": str(row["trigger_kind"]),
+                "inputs": int(row["inputs"] or 0),
+                "terminal_results": int(row["terminal_results"] or 0),
+            }
+            for row in connection.execute(
+                """
+                SELECT i.trigger_kind,COUNT(i.id) AS inputs,COUNT(r.id) AS terminal_results
+                FROM agent_shadow_review_inputs i
+                LEFT JOIN agent_shadow_review_results r ON r.input_id=i.id
+                WHERE i.definition_version=?
+                GROUP BY i.trigger_kind ORDER BY i.trigger_kind
+                """,
+                (cls.AGENT_SHADOW_REVIEW_VERSION,),
+            )
+        ]
+        reason_codes = [
+            {
+                "status": str(row["status"]),
+                "reason_code": str(row["reason_code"]),
+                "count": int(row["count"] or 0),
+            }
+            for row in connection.execute(
+                """
+                SELECT status,reason_code,COUNT(*) AS count
+                FROM agent_shadow_review_results
+                WHERE definition_version=?
+                GROUP BY status,reason_code ORDER BY count DESC,status,reason_code
+                """,
+                (cls.AGENT_SHADOW_REVIEW_VERSION,),
+            )
+        ]
+        recent = [
+            {
+                "input_id": int(row["input_id"]),
+                "trigger_kind": str(row["trigger_kind"]),
+                "observed_at": str(row["observed_at"]),
+                "recorded_at": str(row["recorded_at"]),
+                "status": str(row["status"] or "pending"),
+                "reason_code": str(row["reason_code"] or "awaiting_coverage_evaluation"),
+                "token_id": str(row["token_id"] or ""),
+                "event_id": int(row["event_id"]) if row["event_id"] is not None else None,
+                "decision_id": int(row["decision_id"])
+                if row["decision_id"] is not None else None,
+                "buy_trade_id": int(row["buy_trade_id"])
+                if row["buy_trade_id"] is not None else None,
+                "dispatch_count": int(row["result_dispatch_count"] or row["input_dispatch_count"] or 0),
+            }
+            for row in connection.execute(
+                """
+                SELECT i.id AS input_id,i.trigger_kind,i.observed_at,i.recorded_at,
+                       i.dispatch_count AS input_dispatch_count,
+                       r.status,r.reason_code,r.token_id,r.event_id,r.decision_id,r.buy_trade_id,
+                       r.dispatch_count AS result_dispatch_count
+                FROM agent_shadow_review_inputs i
+                LEFT JOIN agent_shadow_review_results r ON r.input_id=i.id
+                WHERE i.definition_version=?
+                ORDER BY i.id DESC LIMIT ?
+                """,
+                (cls.AGENT_SHADOW_REVIEW_VERSION, max(1, min(200, int(limit)))),
+            )
+        ]
+        return {
+            "status": "collecting" if inputs else "registered_waiting",
+            "version": cls.AGENT_SHADOW_REVIEW_VERSION,
+            "registered_at": str(registration["registered_at"]),
+            "activation_relation_id": int(registration["activation_relation_id"] or 0),
+            "definition": registered_definition,
+            "summary": {
+                "inputs": inputs,
+                "terminal_results": terminal,
+                "pending": max(0, inputs - terminal),
+                "shadow_triggered": int(aggregate["shadow_triggered"] or 0),
+                "coverage_gap": int(aggregate["coverage_gap"] or 0),
+                "ineligible": int(aggregate["ineligible"] or 0),
+                "distinct_events": int(aggregate["distinct_events"] or 0),
+                "distinct_tokens": int(aggregate["distinct_tokens"] or 0),
+                "distinct_days": int(aggregate["distinct_days"] or 0),
+                "dispatch_count": int(aggregate["dispatch_count"] or 0),
+            },
+            "trigger_kinds": trigger_kinds,
+            "reason_codes": reason_codes,
+            "recent": recent,
+            "maturity_gate": {
+                "minimum_terminal_per_kind": 30,
+                "minimum_distinct_event_tokens": 20,
+                "minimum_distinct_days": 10,
+                "real_dispatch_allowed": False,
+            },
+            "decision_eligible": False,
+            "affects": "none",
+            "as_of": iso(),
         }
 
     @classmethod

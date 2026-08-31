@@ -1207,6 +1207,9 @@ class Runtime:
             "decision_eligible": obs.role.lower() in {"feature", "confirmation"},
             "revision_id": revision_handoff.revision_id,
             "claim_relation_ids": list(revision_handoff.claim_relation_ids),
+            "shadow_review": self.store.process_agent_shadow_review_inputs(
+                revision_handoff.claim_relation_ids
+            ),
         }
         self.store.heartbeat(obs.source, item=observation_created)
         if not observation_created:
@@ -2694,6 +2697,7 @@ class Runtime:
         self._record_paper_account_snapshot(force=executed)
 
     async def shadow_event_followup_once(self) -> None:
+        self.store.process_agent_shadow_review_inputs()
         self.store.finalize_shadow_event_outcomes()
         self.store.finalize_token_context_outcomes()
         self.store.finalize_information_first_shadow_outcomes()

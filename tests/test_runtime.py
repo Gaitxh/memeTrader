@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sqlite3
 from datetime import timedelta
 
 import pytest
@@ -1022,6 +1023,225 @@ def test_runtime_returns_revision_handoff_when_observation_anchor_is_reused(tmp_
         assert {row["source_revision_id"] for row in relations} == {second["revision_id"]}
         assert {row["relation_type"] for row in relations} == {"supersedes", "corrects"}
         assert all(row["decision_eligible"] == 0 and row["affects"] == "none" for row in relations)
+        assert len(second["shadow_review"]) == 1
+        assert second["shadow_review"][0]["status"] == "coverage_gap"
+        assert second["shadow_review"][0]["reason"] == "no_token_binding"
+        assert second["shadow_review"][0]["transition_id"] is None
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_runtime_shadow_review_correction_records_overlay_and_cohort_gap(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        config["sources"]["rss"] = []
+        config["sources"]["gecko_networks"] = []
+        config["sources"]["pumpportal"]["enabled"] = False
+        config["sources"]["reverse_google_news"]["enabled"] = False
+        config["autonomous_search"]["enabled"] = False
+        runtime = Runtime(config, tmp_path)
+        now = utcnow()
+        common = {
+            "source": "browser:x:reviewed-publisher",
+            "source_kind": "social",
+            "title": "Reviewed publisher reports a distinct meme event",
+            "url": "https://x.com/reviewedpublisher/status/9101",
+            "source_item_id": "x:reviewedpublisher:9101",
+            "availability_proof": "local_receive",
+        }
+        first = await runtime.ingest_observation(
+            Observation(
+                text="Original report", observed_at=now, ingested_at=now,
+                raw={"source_item_state": "present"}, **common,
+            )
+        )
+        event_id = int(first["event_id"])
+        uncovered = TokenCandidate(
+            chain="solana", address="U" * 32, name="Uncovered Review", symbol="UGAP"
+        )
+        runtime.store.upsert_token(uncovered, seen_at=now)
+        uncovered_decision_id = runtime.store.add_decision(
+            CandidateDecision(
+                event_id, uncovered.token_id, "WAIT", 60, 75, 6,
+                ["forward review target"], created_at=utcnow(),
+            )
+        )
+        first_correction = await runtime.ingest_observation(
+            Observation(
+                text="First publisher correction", role="identity",
+                observed_at=utcnow(), ingested_at=utcnow(),
+                raw={
+                    "source_item_state": "correction",
+                    "source_item_state_evidence": "publisher_correction_marker",
+                    "claim_target_url": common["url"],
+                },
+                **common,
+            )
+        )
+        assert first_correction["shadow_review"][0]["status"] == "coverage_gap"
+        assert first_correction["shadow_review"][0]["reason"] == "no_universe_cohort"
+        gap = runtime.store.db.execute(
+            "SELECT r.*,i.relation_id,i.dispatch_count AS input_dispatch_count "
+            "FROM agent_shadow_review_results r "
+            "JOIN agent_shadow_review_inputs i ON i.id=r.input_id "
+            "WHERE r.id=?",
+            (first_correction["shadow_review"][0]["result_id"],),
+        ).fetchone()
+        assert gap["definition_version"] == runtime.store.AGENT_SHADOW_REVIEW_VERSION
+        assert gap["token_id"] == uncovered.token_id
+        assert gap["event_id"] == event_id
+        assert gap["decision_id"] == uncovered_decision_id
+        assert gap["dispatch_count"] == gap["input_dispatch_count"] == 0
+        assert gap["decision_eligible"] == 0
+        assert gap["affects"] == "none"
+
+        covered = TokenCandidate(
+            chain="solana", address="C" * 32, name="Covered Review", symbol="COVER"
+        )
+        runtime.store.upsert_token(covered, seen_at=utcnow())
+        round_id = runtime.store.start_token_discovery_round(
+            provider="pumpportal", surface="create", mode="stream_window",
+            chain_scope="solana", started_at=utcnow(),
+        )
+        runtime.store.add_token_discovery_exposure(
+            round_id, token_id=covered.token_id, chain=covered.chain, role="create",
+            first_local_discovery=True, new_token=True, observed_at=utcnow(),
+        )
+        runtime.store.finish_token_discovery_round(
+            round_id, status="completed", returned_count=1
+        )
+        covered_decision_id = runtime.store.add_decision(
+            CandidateDecision(
+                event_id, covered.token_id, "WAIT", 62, 78, 7,
+                ["covered forward review target"], created_at=utcnow(),
+            )
+        )
+        runtime.store.paper_buy(
+            event_id=event_id,
+            token=covered,
+            price=0.001,
+            gross_usd=1.0,
+            fee_bps=0,
+            reason="shadow_review_position_fixture",
+            decision_id=covered_decision_id,
+        )
+        side_effect_queries = {
+            "agent_attempts": "SELECT COUNT(*) FROM agent_attempts",
+            "context_admissions": "SELECT COUNT(*) FROM token_context_admission_attempts",
+            "shadow_admissions": "SELECT COUNT(*) FROM shadow_event_admission_attempts",
+            "information_admissions": (
+                "SELECT COUNT(*) FROM information_first_shadow_admission_attempts"
+            ),
+            "agent_dispatches": (
+                "SELECT COUNT(*) FROM token_universe_funnel_transitions "
+                "WHERE stage='agent_dispatch'"
+            ),
+            "decisions": "SELECT COUNT(*) FROM decisions",
+        }
+        side_effect_counts_before = {
+            name: runtime.store.db.execute(query).fetchone()[0]
+            for name, query in side_effect_queries.items()
+        }
+        second_correction = await runtime.ingest_observation(
+            Observation(
+                text="Second publisher correction", role="identity",
+                observed_at=utcnow(), ingested_at=utcnow(),
+                raw={
+                    "source_item_state": "correction",
+                    "source_item_state_evidence": "publisher_correction_marker",
+                    "claim_target_url": common["url"],
+                },
+                **common,
+            )
+        )
+        assert len(second_correction["shadow_review"]) == 1
+        assert second_correction["shadow_review"][0]["status"] == "shadow_triggered"
+        assert second_correction["shadow_review"][0]["reason"] == "shadow_review_correction"
+        assert second_correction["shadow_review"][0]["transition_id"] is not None
+        transition = runtime.store.db.execute(
+            "SELECT * FROM token_universe_funnel_transitions "
+            "WHERE definition_version=?",
+            (runtime.store.AGENT_SHADOW_REVIEW_VERSION,),
+        ).fetchone()
+        assert transition["token_id"] == covered.token_id
+        assert transition["event_id"] == event_id
+        assert transition["decision_id"] == covered_decision_id
+        assert transition["stage"] == "context_trigger_evaluation"
+        assert transition["status"] == "shadow_triggered"
+        assert transition["reason_code"] == "shadow_review_correction"
+        assert transition["decision_eligible"] == 0
+        assert transition["affects"] == "none"
+        metadata = json.loads(transition["metadata_json"])
+        assert metadata["dispatch_requested"] == 0
+        assert metadata["dispatch_count"] == 0
+        assert metadata["uses_agent_quota"] == 0
+        assert metadata["window_minutes"] == 15
+        assert metadata["target_scope"] == "position"
+        assert metadata["position_open_at_trigger"] == 1
+        result_row = runtime.store.db.execute(
+            "SELECT buy_trade_id FROM agent_shadow_review_results "
+            "WHERE transition_id=?",
+            (second_correction["shadow_review"][0]["transition_id"],),
+        ).fetchone()
+        assert result_row["buy_trade_id"] is not None
+        buy_trade = runtime.store.db.execute(
+            "SELECT side,token_id,event_id FROM trades WHERE id=?",
+            (result_row["buy_trade_id"],),
+        ).fetchone()
+        assert buy_trade["side"] == "BUY"
+        assert buy_trade["token_id"] == covered.token_id
+        assert buy_trade["event_id"] == event_id
+        unresolved = await runtime.ingest_observation(
+            Observation(
+                source=common["source"], source_kind=common["source_kind"],
+                title="Publisher retracts an unknown item",
+                text="Unresolved retraction", role="identity",
+                url="https://x.com/reviewedpublisher/status/9102",
+                source_item_id="x:reviewedpublisher:9102",
+                observed_at=utcnow(), ingested_at=utcnow(),
+                availability_proof="local_receive",
+                raw={
+                    "source_item_state": "retracted",
+                    "source_item_state_evidence": "publisher_retraction_marker",
+                    "claim_target_url": "https://x.com/reviewedpublisher/status/not-found",
+                },
+            )
+        )
+        assert len(unresolved["shadow_review"]) == 1
+        assert unresolved["shadow_review"][0]["status"] == "ineligible"
+        assert unresolved["shadow_review"][0]["reason"] == "relation_target_not_found"
+        assert unresolved["shadow_review"][0]["transition_id"] is None
+        runtime.store.process_agent_shadow_review_inputs()
+        assert runtime.store.db.execute(
+            "SELECT COUNT(*) FROM agent_shadow_review_inputs"
+        ).fetchone()[0] == runtime.store.db.execute(
+            "SELECT COUNT(*) FROM agent_shadow_review_results"
+        ).fetchone()[0]
+        summary = runtime.store.agent_shadow_review_summary_from_connection(
+            runtime.store.db
+        )
+        assert summary["status"] == "collecting"
+        assert summary["summary"]["inputs"] == 3
+        assert summary["summary"]["terminal_results"] == 3
+        assert summary["summary"]["pending"] == 0
+        assert summary["summary"]["shadow_triggered"] == 1
+        assert summary["summary"]["coverage_gap"] == 1
+        assert summary["summary"]["ineligible"] == 1
+        assert summary["summary"]["dispatch_count"] == 0
+        assert summary["maturity_gate"]["real_dispatch_allowed"] is False
+        assert summary["decision_eligible"] is False
+        assert summary["affects"] == "none"
+        assert side_effect_counts_before == {
+            name: runtime.store.db.execute(query).fetchone()[0]
+            for name, query in side_effect_queries.items()
+        }
+        with pytest.raises(sqlite3.IntegrityError):
+            runtime.store.db.execute(
+                "UPDATE agent_shadow_review_results SET dispatch_count=1"
+            )
         await runtime.close()
 
     asyncio.run(scenario())

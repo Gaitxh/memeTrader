@@ -695,6 +695,12 @@ def test_web_api_empty_database_is_safe_and_live_is_locked(tmp_path: Path):
     assert audit["missed_opportunity"]["summary"]["audited_outcomes"] == 0
     assert audit["missed_opportunity"]["decision_eligible"] is False
     assert audit["missed_opportunity"]["affects"] == "none"
+    shadow_review = audit["agent_shadow_review"]
+    assert shadow_review["status"] == "registered_waiting"
+    assert shadow_review["summary"]["inputs"] == 0
+    assert shadow_review["summary"]["dispatch_count"] == 0
+    assert shadow_review["decision_eligible"] is False
+    assert shadow_review["affects"] == "none"
     substitutions = audit["constraint_substitutions"]
     assert substitutions["version"] == "constraint-substitution-matrix/v1"
     assert substitutions["illegal_or_unsafe_bypass_allowed"] is False

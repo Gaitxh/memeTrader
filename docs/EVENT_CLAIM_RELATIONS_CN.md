@@ -70,3 +70,13 @@
 - `affects = none`
 
 下一层仍需在既有 Trend Scout 和 Token Context 调用内部加入独立 verifier phase，并另外前向研究纠正/撤回前后的市场反应。关系图在这些样本成熟前不得进入交易策略。
+
+## AGENT-003 临时复查影子层
+
+`agent-shadow-review-trigger/v1` 从自身注册点以后，把新 `corrects / retracts` 关系作为“本应复查”的只观察输入：
+
+- input 与 claim relation 在同一 SQLite 事务写入；处理未完成时保留 pending，后续 ingest 可补偿处理；
+- 每个输入终结为 `shadow_triggered`、`coverage_gap` 或 `ineligible`；无 Token 绑定、映射歧义、缺少注册后 Token cohort、时间排除和 unresolved target 均保留在分母；
+- 若触发时存在 Paper 持仓，只冻结触发时点以前的不可变 BUY trade 引用和净数量，不提高证据权重；
+- 数据库强制 `dispatch_count=0`、`decision_eligible=0`、`affects=none`，不会写 Agent admission/queued/dispatch，也不会影响候选、仓位或退出；
+- Audit 页显示动态中英汇总。样本成熟门达到前，真实复查 Agent 仍禁止派发。

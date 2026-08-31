@@ -214,6 +214,9 @@ EXPECTED_TABLES = {
     "token_universe_forward_outcomes",
     "token_universe_funnel_registrations",
     "token_universe_funnel_transitions",
+    "agent_shadow_review_registrations",
+    "agent_shadow_review_inputs",
+    "agent_shadow_review_results",
     "missed_opportunity_audit_registrations",
     "missed_opportunity_audits",
     "token_universe_outcome_quality_registrations",
@@ -5421,6 +5424,19 @@ class WebData:
             "potential_opportunity_recall": [],
             "decision_eligible": False, "affects": "none",
         }
+        agent_shadow_review = {
+            "status": "not_registered",
+            "version": Store.AGENT_SHADOW_REVIEW_VERSION,
+            "definition": Store._agent_shadow_review_definition(),
+            "summary": {
+                "inputs": 0, "terminal_results": 0, "pending": 0,
+                "shadow_triggered": 0, "coverage_gap": 0, "ineligible": 0,
+                "distinct_events": 0, "distinct_tokens": 0, "distinct_days": 0,
+                "dispatch_count": 0,
+            },
+            "trigger_kinds": [], "reason_codes": [], "recent": [],
+            "decision_eligible": False, "affects": "none",
+        }
         with self.connect() as connection:
             if connection is not None and self._table_exists(connection, "observations"):
                 counts["observations"] = int(connection.execute("SELECT COUNT(*) FROM observations").fetchone()[0])
@@ -5482,6 +5498,9 @@ class WebData:
                     connection
                 )
                 token_universe_funnel = Store.token_universe_funnel_summary_from_connection(
+                    connection
+                )
+                agent_shadow_review = Store.agent_shadow_review_summary_from_connection(
                     connection
                 )
                 recent_decisions = self._decision_rows(connection, "1=1", [], 20, 0)
@@ -5596,6 +5615,7 @@ class WebData:
             "missed_opportunity": missed_opportunity,
             "token_universe_outcome_quality": outcome_quality,
             "token_universe_funnel": token_universe_funnel,
+            "agent_shadow_review": agent_shadow_review,
             "status": overall_status,
             "policy_enforced": True,
             "future_data_rejected": True if future_observed else None,
