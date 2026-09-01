@@ -51,7 +51,7 @@ class Store:
     PAPER_SOURCE_ATTRIBUTION_VERSION = "paper-source-attribution/v2-decision-cohort"
     SOURCE_POLL_EXPOSURE_VERSION = "source-poll-exposure/v1"
     TOKEN_DISCOVERY_EXPOSURE_VERSION = "token-discovery-exposure/v1"
-    TOKEN_DISCOVERY_QUOTE_ATTEMPT_VERSION = "token-discovery-quote-attempt/v1"
+    TOKEN_DISCOVERY_QUOTE_ATTEMPT_VERSION = "token-discovery-quote-attempt/v2"
     TOKEN_UNIVERSE_FORWARD_VERSION = "token-universe-forward-outcomes/v1"
     TOKEN_UNIVERSE_FUNNEL_VERSION = "token-universe-funnel-transitions/v1"
     AGENT_SHADOW_REVIEW_VERSION = "agent-shadow-review-trigger/v2"
@@ -7198,6 +7198,8 @@ class Store:
             "unit": "one_requested_token_per_batch_round",
             "terminal_statuses": ["success", "no_pair", "error", "interrupted"],
             "error_retry": "bounded_exponential_with_deterministic_jitter",
+            "deadline_miss": "completed_at_after_deadline",
+            "retry_window_exhausted": "non_success_retry_after_at_after_deadline",
             "no_historical_backfill": True,
             "decision_eligible": False,
             "affects": "quote_scheduling_only",
@@ -7226,7 +7228,7 @@ class Store:
                     deadline_miss=CASE WHEN deadline_at IS NOT NULL AND ? > deadline_at THEN 1 ELSE 0 END
                 WHERE status='running'
                 """,
-                (completed_at, completed_at, retry_after_at, retry_after_at),
+                (completed_at, completed_at, retry_after_at, completed_at),
             )
             self.db.execute(
                 """
@@ -7317,8 +7319,8 @@ class Store:
                 retry_index = int(
                     self.db.execute(
                         "SELECT COUNT(*) FROM token_discovery_quote_attempts "
-                        "WHERE token_id=? AND role=?",
-                        (token_id, role),
+                        "WHERE definition_version=? AND token_id=? AND role=?",
+                        (self.TOKEN_DISCOVERY_QUOTE_ATTEMPT_VERSION, token_id, role),
                     ).fetchone()[0]
                 )
                 self.db.execute(
@@ -7382,9 +7384,7 @@ class Store:
                 retry_seconds = base
             retry_after = completed + timedelta(seconds=retry_seconds)
             deadline_miss = bool(
-                status != "success"
-                and row["deadline_at"]
-                and retry_after > parse_time(row["deadline_at"])
+                row["deadline_at"] and completed > parse_time(row["deadline_at"])
             )
             self.db.execute(
                 """
@@ -8876,6 +8876,7 @@ class Store:
         retry_seconds: int = 120,
     ) -> list[dict[str, Any]]:
         current = parse_time(now or utcnow())
+        limit = max(1, int(limit))
         retry_after = iso(current - timedelta(seconds=max(30, int(retry_seconds))))
         recent = {
             (str(row["token_id"]), str(row["role"]))
@@ -8918,25 +8919,31 @@ class Store:
             SELECT c.* FROM token_universe_forward_cohorts c
             LEFT JOIN token_universe_forward_baselines b ON b.cohort_id=c.id
             WHERE b.cohort_id IS NULL AND c.baseline_deadline_at>=?
+              AND NOT EXISTS (
+                  SELECT 1 FROM token_discovery_exposures e
+                  WHERE e.token_id=c.token_id AND e.role='universe_baseline'
+                    AND e.recorded_at>=?
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM token_discovery_quote_attempts a
+                  WHERE a.id=(
+                      SELECT MAX(a2.id) FROM token_discovery_quote_attempts a2
+                      WHERE a2.token_id=c.token_id AND a2.role='universe_baseline'
+                  )
+                    AND (a.status='running' OR (a.retry_after_at IS NOT NULL AND a.retry_after_at>?))
+              )
             ORDER BY c.baseline_deadline_at,c.id LIMIT ?
             """,
-            (iso(current), max(1, int(limit))),
+            (iso(current), retry_after, iso(current), limit),
         ).fetchall()
         for row in rows:
             token_id = str(row["token_id"])
-            if (
-                (token_id, "universe_baseline") in recent
-                or attempt_deferred(token_id, "universe_baseline")
-            ):
-                continue
             due.append({
                 "cohort_id": int(row["id"]), "token_id": token_id,
                 "chain": str(row["chain"]), "role": "universe_baseline", "horizon_minutes": 0,
                 "queue_due_at": str(row["discovery_recorded_at"]),
                 "deadline_at": str(row["baseline_deadline_at"]),
             })
-            if len(due) >= limit:
-                return due
         lower = iso(current - timedelta(minutes=max(self.TOKEN_UNIVERSE_HORIZONS_MINUTES) + 31))
         rows = self.db.execute(
             """
@@ -8979,9 +8986,11 @@ class Store:
                         "queue_due_at": iso(target), "deadline_at": iso(deadline),
                     })
                     break
-            if len(due) >= limit:
-                break
-        return due
+        due.sort(key=lambda item: (
+            parse_time(item["deadline_at"]), parse_time(item["queue_due_at"]),
+            int(item["cohort_id"]), str(item["role"]),
+        ))
+        return due[:limit]
 
     @classmethod
     def token_universe_forward_summary_from_connection(
@@ -10280,7 +10289,8 @@ class Store:
             "summary": {
                 "attempts": 0, "success": 0, "no_pair": 0, "errors": 0,
                 "interrupted": 0, "running": 0, "repeat_attempts": 0,
-                "deadline_misses": 0, "backoff_active": 0,
+                "deadline_misses": 0, "retry_window_exhausted": 0,
+                "backoff_active": 0,
             },
             "items": [],
             "decision_eligible": False,
@@ -10294,10 +10304,10 @@ class Store:
             SELECT a.*,r.provider,r.surface,r.chain_scope
             FROM token_discovery_quote_attempts a
             JOIN token_discovery_rounds r ON r.id=a.round_id
-            WHERE a.requested_at>=?
+            WHERE a.definition_version=? AND a.requested_at>=?
             ORDER BY a.id
             """,
-            (start,),
+            (cls.TOKEN_DISCOVERY_QUOTE_ATTEMPT_VERSION, start),
         ).fetchall()
         if not rows:
             return empty
@@ -10309,10 +10319,20 @@ class Store:
             index = max(0, min(len(ordered) - 1, math.ceil(len(ordered) * fraction) - 1))
             return round(float(ordered[index]), 3)
 
-        grouped: dict[tuple[str, str, str], list[sqlite3.Row]] = {}
+        def retry_window_exhausted(row: sqlite3.Row) -> bool:
+            return bool(
+                str(row["status"]) in {"no_pair", "error", "interrupted"}
+                and row["deadline_at"] and row["retry_after_at"]
+                and str(row["retry_after_at"]) > str(row["deadline_at"])
+            )
+
+        grouped: dict[tuple[str, str, str, str], list[sqlite3.Row]] = {}
         for row in rows:
             grouped.setdefault(
-                (str(row["provider"]), str(row["surface"]), str(row["chain_scope"])), []
+                (
+                    str(row["provider"]), str(row["surface"]),
+                    str(row["chain_scope"]), str(row["role"]),
+                ), []
             ).append(row)
         items: list[dict[str, Any]] = []
         for key, group in grouped.items():
@@ -10327,10 +10347,11 @@ class Store:
             latencies = [float(row["latency_ms"]) for row in group if row["latency_ms"] is not None]
             queue_ages = [float(row["queue_age_seconds"]) for row in group]
             items.append({
-                "provider": key[0], "surface": key[1], "chain_scope": key[2],
+                "provider": key[0], "surface": key[1], "chain_scope": key[2], "role": key[3],
                 "attempts": len(group), **statuses,
                 "repeat_attempts": sum(int(row["retry_index"] or 0) > 0 for row in group),
                 "deadline_misses": sum(bool(row["deadline_miss"]) for row in group),
+                "retry_window_exhausted": sum(retry_window_exhausted(row) for row in group),
                 "latency_p50_ms": percentile(latencies, 0.50),
                 "latency_p95_ms": percentile(latencies, 0.95),
                 "queue_age_p50_seconds": percentile(queue_ages, 0.50),
@@ -10346,9 +10367,11 @@ class Store:
             SELECT a.status,a.retry_after_at FROM token_discovery_quote_attempts a
             JOIN (
                 SELECT token_id,role,MAX(id) AS id
-                FROM token_discovery_quote_attempts GROUP BY token_id,role
+                FROM token_discovery_quote_attempts
+                WHERE definition_version=? GROUP BY token_id,role
             ) x ON x.id=a.id
-            """
+            """,
+            (cls.TOKEN_DISCOVERY_QUOTE_ATTEMPT_VERSION,),
         ).fetchall()
         backoff_active = sum(
             str(row["status"]) in {"no_pair", "error", "interrupted"}
@@ -10365,6 +10388,7 @@ class Store:
             "running": sum(str(row["status"]) == "running" for row in rows),
             "repeat_attempts": sum(int(row["retry_index"] or 0) > 0 for row in rows),
             "deadline_misses": sum(bool(row["deadline_miss"]) for row in rows),
+            "retry_window_exhausted": sum(retry_window_exhausted(row) for row in rows),
             "backoff_active": backoff_active,
             "latency_p50_ms": percentile(
                 [float(row["latency_ms"]) for row in rows if row["latency_ms"] is not None], 0.50

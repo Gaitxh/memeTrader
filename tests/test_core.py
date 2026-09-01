@@ -764,6 +764,141 @@ def test_token_universe_quote_attempts_record_terminal_errors_and_defer_hot_retr
     store.close()
 
 
+def test_token_universe_quote_attempt_deadline_and_retry_exhaustion_are_distinct(tmp_path: Path):
+    store = Store(tmp_path / "quote-deadline-semantics.sqlite3", initial_cash_usd=1000)
+    token = TokenCandidate(chain="solana", address="D" * 32, name="Deadline", symbol="DDL")
+    discovered_at = utcnow()
+    store.upsert_token(token, seen_at=discovered_at)
+    discovery_round = store.start_token_discovery_round(
+        provider="pumpportal", surface="create", mode="stream_window", chain_scope="solana",
+    )
+    store.add_token_discovery_exposure(
+        discovery_round, token_id=token.token_id, chain=token.chain, role="create",
+        first_local_discovery=True, new_token=True, observed_at=discovered_at,
+    )
+    store.finish_token_discovery_round(discovery_round, status="completed", returned_count=1)
+    item = store.due_token_universe_quotes(now=utcnow() + timedelta(seconds=1))[0]
+    deadline = parse_time(item["deadline_at"])
+
+    failed_round = store.start_token_discovery_round(
+        provider="dexscreener", surface="universe_baseline", mode="batch_quote",
+        chain_scope="solana",
+    )
+    failed_id = store.start_token_discovery_quote_attempts(
+        failed_round, [item], requested_at=deadline - timedelta(minutes=1),
+    )[(token.token_id, "universe_baseline")]
+    retry_after = store.finish_token_discovery_quote_attempt(
+        failed_id, status="no_pair", completed_at=deadline - timedelta(seconds=30),
+        base_retry_seconds=120,
+    )
+    failed = store.db.execute(
+        "SELECT * FROM token_discovery_quote_attempts WHERE id=?", (failed_id,)
+    ).fetchone()
+    assert failed["deadline_miss"] == 0
+    assert parse_time(retry_after) > deadline
+
+    late_round = store.start_token_discovery_round(
+        provider="dexscreener", surface="universe_baseline", mode="batch_quote",
+        chain_scope="solana",
+    )
+    late_id = store.start_token_discovery_quote_attempts(
+        late_round, [item], requested_at=deadline - timedelta(seconds=1),
+    )[(token.token_id, "universe_baseline")]
+    store.finish_token_discovery_quote_attempt(
+        late_id, status="success", completed_at=deadline + timedelta(seconds=1),
+    )
+    late = store.db.execute(
+        "SELECT * FROM token_discovery_quote_attempts WHERE id=?", (late_id,)
+    ).fetchone()
+    assert late["deadline_miss"] == 1
+
+    summary = store.token_discovery_quote_attempt_summary_from_connection(store.db)
+    assert summary["version"] == "token-discovery-quote-attempt/v2"
+    assert summary["summary"]["deadline_misses"] == 1
+    assert summary["summary"]["retry_window_exhausted"] == 1
+    assert summary["items"][0]["role"] == "universe_baseline"
+    store.close()
+
+
+def test_token_universe_due_queue_skips_deferred_front_before_limit(tmp_path: Path):
+    store = Store(tmp_path / "quote-deferred-front.sqlite3", initial_cash_usd=1000)
+    for index, letter in enumerate(("A", "B", "C")):
+        token = TokenCandidate(
+            chain="solana", address=letter * 32, name=f"Queue {index}", symbol=f"Q{index}",
+        )
+        store.upsert_token(token)
+        round_id = store.start_token_discovery_round(
+            provider="pumpportal", surface="create", mode="stream_window", chain_scope="solana",
+        )
+        store.add_token_discovery_exposure(
+            round_id, token_id=token.token_id, chain=token.chain, role="create",
+            first_local_discovery=True, new_token=True,
+        )
+        store.finish_token_discovery_round(round_id, status="completed", returned_count=1)
+    checked_at = utcnow() + timedelta(seconds=1)
+    initial = store.due_token_universe_quotes(now=checked_at, limit=3)
+    assert len(initial) == 3
+    attempt_round = store.start_token_discovery_round(
+        provider="dexscreener", surface="universe_baseline", mode="batch_quote",
+        chain_scope="solana",
+    )
+    attempt_ids = store.start_token_discovery_quote_attempts(
+        attempt_round, initial[:2], requested_at=checked_at,
+    )
+    for item in initial[:2]:
+        store.finish_token_discovery_quote_attempt(
+            attempt_ids[(item["token_id"], item["role"])],
+            status="no_pair", completed_at=checked_at + timedelta(seconds=1),
+        )
+    due = store.due_token_universe_quotes(now=checked_at + timedelta(seconds=2), limit=1)
+    assert [item["token_id"] for item in due] == [initial[2]["token_id"]]
+    store.close()
+
+
+def test_token_universe_due_queue_orders_baseline_and_outcome_by_deadline(tmp_path: Path):
+    store = Store(tmp_path / "quote-global-deadline.sqlite3", initial_cash_usd=1000)
+    current = utcnow()
+    old_discovery = current - timedelta(minutes=44)
+    rows = [
+        (1, "solana:" + "O" * 32, old_discovery),
+        (2, "solana:" + "N" * 32, current),
+    ]
+    with store.db:
+        for cohort_id, token_id, discovered in rows:
+            store.db.execute(
+                """
+                INSERT INTO token_universe_forward_cohorts(
+                    id,definition_version,exposure_id,round_id,token_id,chain,provider,surface,
+                    discovery_role,discovery_observed_at,discovery_recorded_at,
+                    baseline_deadline_at,decision_eligible,affects
+                ) VALUES(?,?,?,?,?,'solana','fixture','fixture','create',?,?,?,0,'none')
+                """,
+                (
+                    cohort_id, store.TOKEN_UNIVERSE_FORWARD_VERSION, cohort_id, cohort_id,
+                    token_id, iso(discovered), iso(discovered),
+                    iso(discovered + timedelta(minutes=5)),
+                ),
+            )
+        store.db.execute(
+            """
+            INSERT INTO token_universe_forward_baselines(
+                cohort_id,status,observed_at,ingested_at,recorded_at,price_usd,provider,
+                reason,evaluated_at
+            ) VALUES(1,'observed',?,?,?,?,'fixture',?,?)
+            """,
+            (
+                iso(old_discovery + timedelta(minutes=1)),
+                iso(old_discovery + timedelta(minutes=1)),
+                iso(old_discovery + timedelta(minutes=1)), 1.0,
+                "fixture_baseline", iso(current),
+            ),
+        )
+    due = store.due_token_universe_quotes(now=current, limit=1)
+    assert due[0]["cohort_id"] == 1
+    assert due[0]["role"] == "universe_15m"
+    store.close()
+
+
 def test_token_universe_funnel_is_forward_only_append_only_and_dag_aware(tmp_path: Path):
     store = Store(tmp_path / "token-universe-funnel.sqlite3", initial_cash_usd=1000)
     now = utcnow()

@@ -180,6 +180,46 @@ def test_token_universe_quote_failure_records_each_token_and_suppresses_hot_retr
     asyncio.run(scenario())
 
 
+def test_token_universe_followup_rechecks_cross_chain_deadline_between_batches(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        runtime = Runtime(config, tmp_path)
+        base = utcnow()
+        due = []
+        for index in range(30):
+            due.append({
+                "cohort_id": index + 1, "token_id": f"solana:S{index:031d}",
+                "chain": "solana", "role": "universe_baseline", "horizon_minutes": 0,
+                "queue_due_at": iso(base), "deadline_at": iso(base + timedelta(seconds=1)),
+            })
+        due.append({
+            "cohort_id": 31, "token_id": "bsc:" + "B" * 32,
+            "chain": "bsc", "role": "universe_baseline", "horizon_minutes": 0,
+            "queue_due_at": iso(base), "deadline_at": iso(base + timedelta(seconds=2)),
+        })
+        due.append({
+            "cohort_id": 32, "token_id": "solana:" + "Z" * 32,
+            "chain": "solana", "role": "universe_baseline", "horizon_minutes": 0,
+            "queue_due_at": iso(base), "deadline_at": iso(base + timedelta(seconds=3)),
+        })
+        runtime.store.finalize_token_universe_forward_outcomes = lambda: {}
+        runtime.store.due_token_universe_quotes = lambda limit=180: list(due)
+        calls = []
+
+        async def batch_quote(chain, addresses):
+            calls.append((chain, len(addresses)))
+            return {}
+
+        runtime.dex.batch_quote = batch_quote
+        await runtime.token_universe_followup_once()
+        assert calls == [("solana", 30), ("bsc", 1), ("solana", 1)]
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
 def test_observation_polls_record_completed_duplicate_empty_and_error_exposure(tmp_path):
     async def scenario():
         config = initial_config()

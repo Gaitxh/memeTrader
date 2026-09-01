@@ -4734,7 +4734,8 @@ class WebData:
             "summary": {
                 "attempts": 0, "success": 0, "no_pair": 0, "errors": 0,
                 "interrupted": 0, "running": 0, "repeat_attempts": 0,
-                "deadline_misses": 0, "backoff_active": 0,
+                "deadline_misses": 0, "retry_window_exhausted": 0,
+                "backoff_active": 0,
             },
             "items": [], "decision_eligible": False,
             "affects": "quote_scheduling_only",

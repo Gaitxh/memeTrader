@@ -2714,73 +2714,84 @@ class Runtime:
         by_chain: dict[str, list[dict[str, Any]]] = {}
         for item in due:
             by_chain.setdefault(str(item["chain"]), []).append(item)
-        for chain, items in by_chain.items():
-            for offset in range(0, len(items), 30):
-                chunk = items[offset : offset + 30]
-                roles = sorted({str(item["role"]) for item in chunk})
-                surface = roles[0] if len(roles) == 1 else "universe_mixed"
-                round_id = self.store.start_token_discovery_round(
-                    provider="dexscreener", surface=surface, mode="batch_quote",
-                    chain_scope=chain,
+        while by_chain:
+            chain = min(
+                by_chain,
+                key=lambda name: (
+                    parse_time(by_chain[name][0]["deadline_at"]),
+                    parse_time(by_chain[name][0]["queue_due_at"]),
+                    name,
+                ),
+            )
+            items = by_chain[chain]
+            chunk = items[:30]
+            del items[:30]
+            if not items:
+                del by_chain[chain]
+            roles = sorted({str(item["role"]) for item in chunk})
+            surface = roles[0] if len(roles) == 1 else "universe_mixed"
+            round_id = self.store.start_token_discovery_round(
+                provider="dexscreener", surface=surface, mode="batch_quote",
+                chain_scope=chain,
+            )
+            requested_at = utcnow()
+            attempt_ids = self.store.start_token_discovery_quote_attempts(
+                round_id, chunk, requested_at=requested_at,
+            )
+            try:
+                quoted = await self.dex.batch_quote(
+                    chain,
+                    [str(item["token_id"]).split(":", 1)[1] for item in chunk],
                 )
-                requested_at = utcnow()
-                attempt_ids = self.store.start_token_discovery_quote_attempts(
-                    round_id, chunk, requested_at=requested_at,
-                )
-                try:
-                    quoted = await self.dex.batch_quote(
-                        chain,
-                        [str(item["token_id"]).split(":", 1)[1] for item in chunk],
-                    )
-                except Exception as exc:
-                    completed_at = utcnow()
-                    http_status = getattr(getattr(exc, "response", None), "status_code", None)
-                    for item in chunk:
-                        attempt_id = attempt_ids.get((str(item["token_id"]), str(item["role"])))
-                        if attempt_id is not None:
-                            self.store.finish_token_discovery_quote_attempt(
-                                attempt_id, status="error", reason_code="batch_request_failed",
-                                error_type=type(exc).__name__, http_status=http_status,
-                                completed_at=completed_at,
-                            )
-                    self.store.finish_token_discovery_round(
-                        round_id, status="error", requested_count=len(chunk),
-                        error_type=type(exc).__name__,
-                    )
-                    self._notify_source_error(f"dexscreener:{surface}", exc)
-                    continue
+            except Exception as exc:
+                completed_at = utcnow()
+                http_status = getattr(getattr(exc, "response", None), "status_code", None)
                 for item in chunk:
-                    token_id = str(item["token_id"])
-                    role = str(item["role"])
-                    attempt_id = attempt_ids.get((token_id, role))
-                    result = quoted.get(token_id)
-                    if result is None or result[0].token_id != token_id:
-                        if attempt_id is not None:
-                            self.store.finish_token_discovery_quote_attempt(
-                                attempt_id, status="no_pair", reason_code="provider_returned_no_pair",
-                            )
-                        self.store.add_token_discovery_exposure(
-                            round_id, token_id=token_id, chain=chain,
-                            role=role, no_pair=True,
-                        )
-                        continue
-                    token, snapshot = result
-                    self.store.upsert_token(token, seen_at=snapshot.observed_at)
-                    self.store.add_snapshot(snapshot)
+                    attempt_id = attempt_ids.get((str(item["token_id"]), str(item["role"])))
                     if attempt_id is not None:
                         self.store.finish_token_discovery_quote_attempt(
-                            attempt_id, status="success", reason_code="snapshot_persisted",
+                            attempt_id, status="error", reason_code="batch_request_failed",
+                            error_type=type(exc).__name__, http_status=http_status,
+                            completed_at=completed_at,
+                        )
+                self.store.finish_token_discovery_round(
+                    round_id, status="error", requested_count=len(chunk),
+                    error_type=type(exc).__name__,
+                )
+                self._notify_source_error(f"dexscreener:{surface}", exc)
+                continue
+            for item in chunk:
+                token_id = str(item["token_id"])
+                role = str(item["role"])
+                attempt_id = attempt_ids.get((token_id, role))
+                result = quoted.get(token_id)
+                if result is None or result[0].token_id != token_id:
+                    if attempt_id is not None:
+                        self.store.finish_token_discovery_quote_attempt(
+                            attempt_id, status="no_pair", reason_code="provider_returned_no_pair",
                         )
                     self.store.add_token_discovery_exposure(
                         round_id, token_id=token_id, chain=chain,
-                        role=role, snapshot_count=1,
-                        observed_at=snapshot.observed_at,
+                        role=role, no_pair=True,
                     )
-                self.store.finish_token_discovery_round(
-                    round_id, status="completed", requested_count=len(chunk),
-                    returned_count=len(quoted),
-                    duplicate_token_count=max(0, len(chunk) - len(quoted)),
+                    continue
+                token, snapshot = result
+                self.store.upsert_token(token, seen_at=snapshot.observed_at)
+                self.store.add_snapshot(snapshot)
+                if attempt_id is not None:
+                    self.store.finish_token_discovery_quote_attempt(
+                        attempt_id, status="success", reason_code="snapshot_persisted",
+                    )
+                self.store.add_token_discovery_exposure(
+                    round_id, token_id=token_id, chain=chain,
+                    role=role, snapshot_count=1,
+                    observed_at=snapshot.observed_at,
                 )
+            self.store.finish_token_discovery_round(
+                round_id, status="completed", requested_count=len(chunk),
+                returned_count=len(quoted),
+                duplicate_token_count=max(0, len(chunk) - len(quoted)),
+            )
         self.store.finalize_token_universe_forward_outcomes()
 
     async def pump_loop(self) -> None:
