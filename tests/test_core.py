@@ -1998,6 +1998,123 @@ def test_token_universe_jupiter_quote_is_forward_baseline_buy_then_target_sell(t
     store.close()
 
 
+def test_jupiter_quote_validity_is_forward_and_uses_fixed_target_anchor(tmp_path: Path):
+    store = Store(tmp_path / "jupiter-validity.sqlite3", initial_cash_usd=1000)
+    now = utcnow()
+
+    def enroll(address: str) -> tuple[TokenCandidate, sqlite3.Row, datetime]:
+        token = TokenCandidate(chain="solana", address=address, name="Validity", source="fixture")
+        store.upsert_token(token, seen_at=now)
+        round_id = store.start_token_discovery_round(
+            provider="fixture", surface="fixture", mode="poll", chain_scope="solana",
+            started_at=now,
+        )
+        store.add_token_discovery_exposure(
+            round_id, token_id=token.token_id, chain=token.chain, role="new_token",
+            first_local_discovery=True, new_token=True, observed_at=now,
+        )
+        store.finish_token_discovery_round(round_id, status="completed", returned_count=1)
+        cohort = store.db.execute(
+            "SELECT * FROM token_universe_forward_cohorts WHERE token_id=?", (token.token_id,)
+        ).fetchone()
+        return token, cohort, parse_time(cohort["discovery_recorded_at"])
+
+    def snapshot(token: TokenCandidate, when: datetime, price: float) -> None:
+        stamp = iso(when)
+        store.db.execute(
+            """
+            INSERT INTO token_snapshots(
+                token_id,observed_at,ingested_at,recorded_at,provider,price_usd,liquidity_usd,raw_json
+            ) VALUES(?,?,?,?,?,?,?,?)
+            """,
+            (
+                token.token_id, stamp, stamp, stamp, "dexscreener", price, 20_000,
+                json.dumps({"pair": {"chainId": "solana", "dexId": "raydium",
+                            "pairAddress": "PAIR", "baseToken": {"address": token.address},
+                            "quoteToken": {"address": Store.JUPITER_USDC_MINT}}}),
+            ),
+        )
+
+    old_token, old_cohort, _ = enroll("O" * 32)
+    store.register_token_universe_jupiter_quote(usdc_input_amount_raw=35_000_000)
+    registration = store.register_token_universe_jupiter_quote_validity(
+        max_queue_delay_seconds=30, max_total_delay_seconds=45,
+    )
+    assert int(registration["activation_cohort_id"]) == int(old_cohort["id"])
+    tokens = [enroll(letter * 32) for letter in ("A", "B", "C")]
+    for token, _, discovered in tokens:
+        snapshot(token, discovered + timedelta(seconds=1), 1.0)
+        snapshot(token, discovered + timedelta(minutes=15, seconds=1), 2.0)
+    store.finalize_token_universe_forward_outcomes(now=now + timedelta(minutes=16))
+    assert all(item["cohort_id"] != int(old_cohort["id"])
+               for item in store.due_token_universe_jupiter_quotes(limit=100))
+
+    due = {item["cohort_id"]: item for item in store.due_token_universe_jupiter_quotes(limit=100)}
+    for index in (0, 2):
+        _, cohort, _ = tokens[index]
+        task = due[int(cohort["id"])]
+        anchor = parse_time(task["anchor_at"])
+        assert store.record_token_universe_jupiter_quote_validity(
+            task, status="quoted", out_amount_raw="123456789",
+            other_amount_threshold_raw="120000000", slippage_bps=400,
+            requested_at=anchor + timedelta(seconds=30),
+            completed_at=anchor + timedelta(seconds=45),
+        ) is not None
+    _, blocked_cohort, _ = tokens[1]
+    blocked = due[int(blocked_cohort["id"])]
+    assert store.record_token_universe_jupiter_quote_validity(
+        blocked, status="not_requested",
+        evaluated_at=parse_time(blocked["anchor_at"]) + timedelta(seconds=30, microseconds=1),
+    ) is not None
+
+    targets = {item["cohort_id"]: item for item in store.due_token_universe_jupiter_quotes(limit=100)}
+    valid_target = targets[int(tokens[0][1]["id"])]
+    late_target = targets[int(tokens[2][1]["id"])]
+    assert parse_time(valid_target["anchor_at"]) == parse_time(valid_target["target_at"])
+    assert parse_time(valid_target["source_recorded_at"]) == (
+        parse_time(valid_target["target_at"]) + timedelta(seconds=1)
+    )
+    assert store.record_token_universe_jupiter_quote_validity(
+        valid_target, status="quoted", out_amount_raw="40000000",
+        other_amount_threshold_raw="38000000", slippage_bps=400,
+        requested_at=parse_time(valid_target["target_at"]) + timedelta(seconds=30),
+        completed_at=parse_time(valid_target["target_at"]) + timedelta(seconds=45),
+    ) is not None
+    assert store.record_token_universe_jupiter_quote_validity(
+        late_target, status="quoted", out_amount_raw="40000000",
+        other_amount_threshold_raw="38000000", slippage_bps=400,
+        requested_at=parse_time(late_target["target_at"]) + timedelta(seconds=30),
+        completed_at=parse_time(late_target["target_at"]) + timedelta(seconds=46),
+    ) is not None
+    store.finalize_token_universe_jupiter_quote_validity_gaps()
+
+    rows = list(store.db.execute(
+        "SELECT * FROM token_universe_jupiter_quote_validity_results ORDER BY id"
+    ))
+    statuses = {(row["cohort_id"], row["phase"]): row for row in rows}
+    assert statuses[(int(tokens[0][1]["id"]), "target_sell")]["validity_status"] == "valid"
+    assert statuses[(int(tokens[0][1]["id"]), "target_sell")]["included_in_round_trip"] == 1
+    assert statuses[(int(tokens[1][1]["id"]), "baseline_buy")]["validity_status"] == "queue_delay_expired"
+    assert statuses[(int(tokens[1][1]["id"]), "target_sell")]["validity_status"] == "baseline_not_valid"
+    assert statuses[(int(tokens[2][1]["id"]), "target_sell")]["validity_status"] == "total_delay_expired"
+    assert statuses[(int(tokens[2][1]["id"]), "target_sell")]["included_in_round_trip"] == 0
+    raw_late = store.db.execute(
+        "SELECT round_trip_min_return FROM token_universe_jupiter_quote_results WHERE id=?",
+        (statuses[(int(tokens[2][1]["id"]), "target_sell")]["raw_quote_result_id"],),
+    ).fetchone()
+    assert raw_late is not None and raw_late["round_trip_min_return"] is None
+    summary = Store.token_universe_jupiter_quote_validity_summary_from_connection(store.db)
+    assert summary["summary"]["results"] == 6
+    assert summary["summary"]["valid_round_trips"] == 1
+    assert summary["summary"]["legacy_validity_unknown"] == 0
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute(
+            "UPDATE token_universe_jupiter_quote_validity_results SET validity_status='valid' "
+            "WHERE id=?", (int(rows[-1]["id"]),),
+        )
+    store.close()
+
+
 def test_runtime_restart_reclassifies_only_unfinished_exposure_attempts(tmp_path: Path):
     database = tmp_path / "interrupted-exposure.sqlite3"
     store = Store(database, initial_cash_usd=1000)

@@ -760,9 +760,62 @@ def test_web_audit_jupiter_quote_is_aggregate_only(tmp_path: Path, monkeypatch: 
             "affects": "decision",
         }
 
+    def validity_summary(_connection):
+        return {
+            "status": "collecting",
+            "version": Store.TOKEN_UNIVERSE_JUPITER_QUOTE_VALIDITY_VERSION,
+            "registered_at": "2026-09-01T01:00:00Z",
+            "activation_cohort_id": 12,
+            "activation_quote_result_id": 4,
+            "definition": {
+                "baseline_anchor": "baseline_source_recorded_at",
+                "target_anchor": "fixed_forward_outcome_target_at",
+                "max_queue_delay_seconds": 30,
+                "max_total_delay_seconds": 45,
+                "round_trip_requires": "both_legs_time_valid_and_quoted",
+                "legacy_v1_semantics": "raw_quote_only_validity_unknown",
+                "api_key": "hidden",
+            },
+            "summary": {
+                "results": 2, "time_valid": 1, "time_valid_quoted": 1,
+                "valid_round_trips": 0, "legacy_validity_unknown": 4,
+                "avg_queue_delay_seconds": 10, "max_queue_delay_seconds": 31,
+                "avg_total_delay_seconds": 12, "max_total_delay_seconds": 46,
+                "avg_round_trip_min_return": None,
+                "min_round_trip_min_return": None,
+                "max_round_trip_min_return": None,
+                "transaction": "hidden",
+            },
+            "statuses": [{
+                "phase": "baseline_buy", "validity_status": "queue_delay_expired",
+                "quote_terminal_status": "not_requested", "count": 1,
+                "requestId": "hidden",
+            }],
+            "recent": [{
+                "token_id": "solana:CA123", "phase": "baseline_buy",
+                "validity_status": "valid", "quote_terminal_status": "quoted",
+                "target_at": None, "anchor_at": "2026-09-01T01:00:00Z",
+                "source_observed_at": "2026-09-01T01:00:00Z",
+                "source_ingested_at": "2026-09-01T01:00:00Z",
+                "source_recorded_at": "2026-09-01T01:00:00Z",
+                "requested_at": "2026-09-01T01:00:10Z",
+                "completed_at": "2026-09-01T01:00:12Z",
+                "source_ready_delay_seconds": 0, "queue_delay_seconds": 10,
+                "request_duration_seconds": 2, "total_delay_seconds": 12,
+                "max_queue_delay_seconds": 30, "max_total_delay_seconds": 45,
+                "round_trip_min_return": None, "included_in_round_trip": False,
+                "raw": {"transaction": "hidden"},
+            }],
+            "decision_eligible": True, "affects": "decision",
+        }
+
     monkeypatch.setattr(
         Store, "token_universe_jupiter_quote_summary_from_connection",
         staticmethod(summary), raising=False,
+    )
+    monkeypatch.setattr(
+        Store, "token_universe_jupiter_quote_validity_summary_from_connection",
+        staticmethod(validity_summary), raising=False,
     )
     quote = WebData(config_path).audit()["token_universe_jupiter_quote"]
 
@@ -796,6 +849,10 @@ def test_web_audit_jupiter_quote_is_aggregate_only(tmp_path: Path, monkeypatch: 
         }],
     }]
     assert quote["decision_eligible"] is False and quote["affects"] == "none"
+    assert quote["validity"]["summary"]["results"] == 2
+    assert quote["validity"]["definition"]["target_anchor"] == "fixed_forward_outcome_target_at"
+    assert quote["validity"]["decision_eligible"] is False
+    assert quote["validity"]["affects"] == "none"
     serialized = json.dumps(quote).lower()
     assert '"raw":' not in serialized and "transaction" not in serialized
     assert "requestid" not in serialized and "api_key" not in serialized and "taker" not in serialized
@@ -1858,7 +1915,8 @@ def test_candidate_ranking_api_is_persisted_bounded_sanitized_and_wait_is_truthf
     assert "data-testid='information-first-ilg'" in app
     assert "data-testid='token-universe-jupiter-quote'" in app
     assert "data-testid='token-universe-jupiter-quote-evidence'" in app
-    assert "Solana Jupiter read-only quote coverage" in app
+    assert "Jupiter quote time-validity overlay" in app
+    assert "data-testid='token-universe-jupiter-quote-validity'" in app
     assert "no transaction is built, signed, or broadcast" in app
     assert "AVG ROUND-TRIP MIN RETURN" in app
     assert "quote-bound research, not a profit promise" in app

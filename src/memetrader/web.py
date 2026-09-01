@@ -5446,6 +5446,16 @@ class WebData:
                 "max_round_trip_min_return": None,
             },
             "phases": [], "terminal_statuses": [], "recent": [],
+            "validity": {
+                "status": "not_registered",
+                "version": Store.TOKEN_UNIVERSE_JUPITER_QUOTE_VALIDITY_VERSION,
+                "summary": {
+                    "results": 0, "time_valid": 0, "time_valid_quoted": 0,
+                    "valid_round_trips": 0, "legacy_validity_unknown": 0,
+                },
+                "statuses": [], "recent": [],
+                "decision_eligible": False, "affects": "none",
+            },
             "decision_eligible": False, "affects": "none",
         }
         token_universe_funnel = {
@@ -5634,6 +5644,71 @@ class WebData:
                                 ],
                             }
                             for row in raw_jupiter.get("recent", [])
+                            if isinstance(row, dict)
+                        ],
+                        "decision_eligible": False,
+                        "affects": "none",
+                    }
+                validity_summary = getattr(
+                    Store, "token_universe_jupiter_quote_validity_summary_from_connection", None
+                )
+                if callable(validity_summary):
+                    raw_validity = validity_summary(connection)
+                    raw_validity_summary = raw_validity.get("summary", {})
+                    jupiter_quote["validity"] = {
+                        "status": raw_validity.get("status", "not_registered"),
+                        "version": raw_validity.get(
+                            "version", Store.TOKEN_UNIVERSE_JUPITER_QUOTE_VALIDITY_VERSION
+                        ),
+                        "registered_at": raw_validity.get("registered_at"),
+                        "activation_cohort_id": raw_validity.get("activation_cohort_id"),
+                        "activation_quote_result_id": raw_validity.get(
+                            "activation_quote_result_id"
+                        ),
+                        "definition": {
+                            key: raw_validity.get("definition", {}).get(key)
+                            for key in (
+                                "baseline_anchor", "target_anchor",
+                                "max_queue_delay_seconds", "max_total_delay_seconds",
+                                "round_trip_requires", "legacy_v1_semantics",
+                            )
+                        },
+                        "summary": {
+                            key: raw_validity_summary.get(key)
+                            for key in (
+                                "results", "time_valid", "time_valid_quoted",
+                                "valid_round_trips", "legacy_validity_unknown",
+                                "avg_queue_delay_seconds", "max_queue_delay_seconds",
+                                "avg_total_delay_seconds", "max_total_delay_seconds",
+                                "avg_round_trip_min_return", "min_round_trip_min_return",
+                                "max_round_trip_min_return",
+                            )
+                        },
+                        "statuses": [
+                            {
+                                key: row.get(key)
+                                for key in (
+                                    "phase", "validity_status", "quote_terminal_status", "count"
+                                )
+                            }
+                            for row in raw_validity.get("statuses", [])
+                            if isinstance(row, dict)
+                        ],
+                        "recent": [
+                            {
+                                key: row.get(key)
+                                for key in (
+                                    "token_id", "phase", "validity_status",
+                                    "quote_terminal_status", "target_at", "anchor_at",
+                                    "source_observed_at", "source_ingested_at",
+                                    "source_recorded_at", "requested_at", "completed_at",
+                                    "source_ready_delay_seconds", "queue_delay_seconds",
+                                    "request_duration_seconds", "total_delay_seconds",
+                                    "max_queue_delay_seconds", "max_total_delay_seconds",
+                                    "round_trip_min_return", "included_in_round_trip",
+                                )
+                            }
+                            for row in raw_validity.get("recent", [])
                             if isinstance(row, dict)
                         ],
                         "decision_eligible": False,

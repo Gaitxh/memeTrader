@@ -1076,6 +1076,10 @@ class Runtime:
         self.store.register_token_universe_jupiter_quote(
             usdc_input_amount_raw=round(float(paper_config.get("max_position_usd", 35)) * 1_000_000),
         )
+        self.store.register_token_universe_jupiter_quote_validity(
+            max_queue_delay_seconds=30,
+            max_total_delay_seconds=float(paper_config.get("max_quote_age_seconds", 45)),
+        )
         self.store.recover_interrupted_exposure_attempts()
         if not self.store.open_positions() and not self.store.trades():
             with self.store.db:
@@ -2889,8 +2893,29 @@ class Runtime:
 
     async def token_universe_jupiter_quote_once(self) -> None:
         """Append one forward, quote-only Solana route leg without a wallet or transaction."""
+        self.store.finalize_token_universe_jupiter_quote_validity_gaps()
         for item in self.store.due_token_universe_jupiter_quotes(limit=3):
             requested_at = utcnow()
+            source_times = (
+                item.get("source_observed_at"), item.get("source_ingested_at"),
+                item.get("source_recorded_at"),
+            )
+            source_time_valid = all(source_times)
+            if source_time_valid:
+                observed, ingested, recorded = map(parse_time, source_times)
+                source_time_valid = bool(
+                    observed <= ingested <= recorded
+                    and parse_time(item["anchor_at"]) <= recorded <= requested_at
+                )
+            queue_delay = (requested_at - parse_time(item["anchor_at"])).total_seconds()
+            if (
+                not source_time_valid
+                or queue_delay > float(item["max_queue_delay_seconds"])
+            ):
+                self.store.record_token_universe_jupiter_quote_validity(
+                    item, status="not_requested", evaluated_at=requested_at,
+                )
+                continue
             status = "quoted"
             result: dict[str, Any] = {}
             error_type = ""
@@ -2908,8 +2933,8 @@ class Runtime:
             except Exception as exc:
                 status, error_type = "error", type(exc).__name__
             completed_at = utcnow()
-            self.store.record_token_universe_jupiter_quote(
-                str(item["quote_key"]),
+            self.store.record_token_universe_jupiter_quote_validity(
+                item,
                 status=status,
                 out_amount_raw=result.get("output_amount_raw"),
                 other_amount_threshold_raw=result.get("other_amount_threshold"),

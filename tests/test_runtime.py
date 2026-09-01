@@ -152,6 +152,11 @@ def test_runtime_records_one_quote_only_jupiter_leg_without_trading(tmp_path):
         runtime = Runtime(config, tmp_path)
         due = {
             "quote_key": "jupiter-quote:2:0:baseline_buy",
+            "cohort_id": 2, "outcome_id": None, "phase": "baseline_buy",
+            "anchor_at": iso(utcnow()), "target_at": None,
+            "source_observed_at": iso(utcnow()), "source_ingested_at": iso(utcnow()),
+            "source_recorded_at": iso(utcnow()),
+            "max_queue_delay_seconds": 30, "max_total_delay_seconds": 45,
             "input_mint": Store.JUPITER_USDC_MINT,
             "output_mint": "J" * 32,
             "input_amount_raw": "35000000",
@@ -161,8 +166,9 @@ def test_runtime_records_one_quote_only_jupiter_leg_without_trading(tmp_path):
             lambda limit=1: limits.append(limit) or [due]
         )
         recorded = []
-        runtime.store.record_token_universe_jupiter_quote = (
-            lambda quote_key, **payload: recorded.append((quote_key, payload))
+        runtime.store.finalize_token_universe_jupiter_quote_validity_gaps = lambda: {"inserted": 0}
+        runtime.store.record_token_universe_jupiter_quote_validity = (
+            lambda item, **payload: recorded.append((item, payload))
         )
 
         async def quote(input_mint, output_mint, amount, *, slippage_bps):
@@ -182,11 +188,26 @@ def test_runtime_records_one_quote_only_jupiter_leg_without_trading(tmp_path):
         await runtime.token_universe_jupiter_quote_once()
         assert len(recorded) == 1
         assert limits == [3]
-        quote_key, payload = recorded[0]
-        assert quote_key == due["quote_key"] and payload["status"] == "quoted"
+        item, payload = recorded[0]
+        assert item["quote_key"] == due["quote_key"] and payload["status"] == "quoted"
         assert payload["out_amount_raw"] == "123456789"
         assert payload["other_amount_threshold_raw"] == "118518518"
         assert payload["route_plan"] == [{"label": "Raydium"}]
+        expired_at = utcnow() - timedelta(seconds=31)
+        expired = {
+            **due, "quote_key": "jupiter-quote:3:0:baseline_buy", "cohort_id": 3,
+            "anchor_at": iso(expired_at), "source_observed_at": iso(expired_at),
+            "source_ingested_at": iso(expired_at), "source_recorded_at": iso(expired_at),
+        }
+        runtime.store.due_token_universe_jupiter_quotes = lambda limit=1: [expired]
+        recorded.clear()
+
+        async def must_not_quote(*args, **kwargs):
+            raise AssertionError("expired Jupiter task must not call provider")
+
+        runtime.jupiter.quote = must_not_quote
+        await runtime.token_universe_jupiter_quote_once()
+        assert recorded[0][1]["status"] == "not_requested"
         assert runtime.store.db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == 0
         assert runtime.store.db.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == 0
         await runtime.close()
