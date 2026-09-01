@@ -72,7 +72,7 @@ def test_paper_fee_uses_pumpswap_cap_only_for_identified_venue(tmp_path):
     asyncio.run(scenario())
 
 
-def test_followup_tick_finalizes_event_and_token_context_without_agent_or_quote(tmp_path):
+def test_followup_tick_finalizes_event_and_token_context_with_legacy_quote_lane(tmp_path):
     async def scenario():
         config = initial_config()
         config["database"] = "db.sqlite3"
@@ -89,7 +89,8 @@ def test_followup_tick_finalizes_event_and_token_context_without_agent_or_quote(
         runtime.store.finalize_missed_opportunity_no_decision_attributions = lambda: calls.append("no_decision_attribution")
         async def universe():
             calls.append("token_universe")
-        async def jupiter():
+        async def jupiter(**kwargs):
+            assert kwargs == {"include_universe": True, "include_onchain": False}
             calls.append("jupiter_quote")
         runtime.token_universe_followup_once = universe
         runtime.token_universe_jupiter_quote_once = jupiter
@@ -184,7 +185,9 @@ def test_runtime_records_one_quote_only_jupiter_leg_without_trading(tmp_path):
             lambda limit=1: limits.append(limit) or [due]
         )
         recorded = []
-        runtime.store.finalize_token_universe_jupiter_quote_validity_gaps = lambda: {"inserted": 0}
+        runtime.store.finalize_token_universe_jupiter_quote_validity_gaps = (
+            lambda limit=12: {"inserted": 0}
+        )
         runtime.store.record_token_universe_jupiter_quote_validity = (
             lambda item, **payload: recorded.append((item, payload))
         )
@@ -244,6 +247,84 @@ def test_runtime_records_one_quote_only_jupiter_leg_without_trading(tmp_path):
         ]
         assert runtime.store.db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == 0
         assert runtime.store.db.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == 0
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_runtime_jupiter_provider_budget_is_shared_across_lanes_and_passes(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        runtime = Runtime(config, tmp_path)
+        anchor = utcnow()
+
+        def task(index, *, onchain):
+            common = {
+                "quote_key": f"quote:{index}", "phase": "baseline_buy",
+                "horizon_minutes": 0, "anchor_at": iso(anchor), "target_at": None,
+                "baseline_snapshot_id": 1,
+                "input_mint": Store.JUPITER_USDC_MINT,
+                "output_mint": f"{index}" * 32, "input_amount_raw": "35000000",
+                "max_queue_delay_seconds": 30, "max_total_delay_seconds": 45,
+                "slippage_bps": 400,
+            }
+            if onchain:
+                return {
+                    **common, "lane": Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+                    "shadow_cohort_id": index, "baseline_result_id": None,
+                    "preflight_reason": None,
+                }
+            return {
+                **common, "cohort_id": index, "outcome_id": None,
+                "source_observed_at": iso(anchor), "source_ingested_at": iso(anchor),
+                "source_recorded_at": iso(anchor),
+            }
+
+        runtime.store.due_onchain_only_jupiter_quotes = lambda limit=1: [
+            task(1, onchain=True), task(2, onchain=True),
+        ]
+        runtime.store.due_token_universe_jupiter_quotes = lambda limit=1: [
+            task(3, onchain=False), task(4, onchain=False),
+        ]
+        runtime.store.finalize_token_universe_jupiter_quote_validity_gaps = lambda limit=12: {
+            "inserted": 0
+        }
+        attempts = []
+        runtime.store.start_onchain_only_jupiter_quote_attempt = (
+            lambda item, requested_at=None: attempts.append(item["quote_key"])
+            or len(attempts)
+        )
+        recorded = []
+        runtime.store.record_onchain_only_jupiter_quote = (
+            lambda item, **payload: recorded.append(("onchain", item["quote_key"], payload))
+        )
+        runtime.store.record_token_universe_jupiter_quote_validity = (
+            lambda item, **payload: recorded.append(("universe", item["quote_key"], payload))
+        )
+        provider_calls = []
+
+        async def quote(input_mint, output_mint, amount, *, slippage_bps):
+            provider_calls.append(output_mint)
+            return {
+                "output_amount_raw": "1000000000",
+                "other_amount_threshold": "900000000",
+                "slippage_bps": slippage_bps,
+            }
+
+        runtime.jupiter.quote = quote
+        budget = {"provider_requests": 0, "gap_records": 0}
+        await runtime.token_universe_jupiter_quote_once(budget=budget)
+        await runtime.token_universe_jupiter_quote_once(budget=budget)
+        assert budget["provider_requests"] == 3
+        assert len(provider_calls) == 3
+        assert attempts == ["quote:1", "quote:2"]
+        assert [item[:2] for item in recorded] == [
+            ("onchain", "quote:1"), ("onchain", "quote:2"),
+            ("universe", "quote:3"),
+        ]
+        assert all(item[2]["status"] == "quoted" for item in recorded)
         await runtime.close()
 
     asyncio.run(scenario())

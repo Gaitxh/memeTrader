@@ -707,6 +707,11 @@ def test_web_api_empty_database_is_safe_and_live_is_locked(tmp_path: Path):
     assert jupiter_quote["summary"]["results"] == 0
     assert jupiter_quote["decision_eligible"] is False
     assert jupiter_quote["affects"] == "none"
+    onchain_jupiter = audit["onchain_only_jupiter_quote"]
+    assert onchain_jupiter["status"] == "not_observed"
+    assert onchain_jupiter["summary"]["valid_round_trips"] == 0
+    assert onchain_jupiter["decision_eligible"] is False
+    assert onchain_jupiter["affects"] == "none"
     shadow_review = audit["agent_shadow_review"]
     assert shadow_review["status"] == "registered_waiting"
     assert shadow_review["summary"]["inputs"] == 0
@@ -858,6 +863,83 @@ def test_web_audit_jupiter_quote_is_aggregate_only(tmp_path: Path, monkeypatch: 
     serialized = json.dumps(quote).lower()
     assert '"raw":' not in serialized and "transaction" not in serialized
     assert "requestid" not in serialized and "api_key" not in serialized and "taker" not in serialized
+
+
+def test_web_audit_onchain_jupiter_quote_is_safe_aggregate_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    config_path, _ = _config(tmp_path)
+    Store(tmp_path / "db.sqlite3", initial_cash_usd=1000).close()
+
+    def summary(_connection):
+        return {
+            "status": "collecting",
+            "version": Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+            "registered_at": "2026-09-01T01:00:00Z",
+            "activation_shadow_cohort_id": 12,
+            "definition": {
+                "no_historical_backfill": True,
+                "baseline_anchor": "onchain_trigger_recorded_at",
+                "target_anchor": "onchain_shadow_frozen_target_at",
+                "round_trip_semantics": "minimum_output_lower_bound_not_fill_or_profit",
+                "swap_mode": "ExactIn", "slippage_bps": 400,
+                "max_queue_delay_seconds": 30, "max_total_delay_seconds": 45,
+                "api_key": "hidden", "private_key": "hidden",
+            },
+            "summary": {
+                "eligible_cohorts": 4, "attempts": 3, "results": 3,
+                "baseline_terminal": 2, "baseline_pending": 2,
+                "baseline_valid_quoted": 1, "target_terminal": 1,
+                "valid_round_trips": 1, "positive": 1, "nonpositive": 0,
+                "gte_25pct": 1, "independent_trigger_dates": 1,
+                "wallet": "hidden",
+            },
+            "horizons": [{
+                "horizon_minutes": 15, "terminal": 1, "valid_quoted": 1,
+                "valid_round_trips": 1, "positive": 1, "nonpositive": 0,
+                "gte_25pct": 1, "transaction": "hidden",
+            }],
+            "statuses": [{
+                "phase": "target_sell", "quote_terminal_status": "quoted",
+                "validity_status": "valid", "count": 1, "requestId": "hidden",
+            }],
+            "recent": [{
+                "token_id": "solana:CA123", "trigger_recorded_at": "2026-09-01T01:00:00Z",
+                "phase": "target_sell", "horizon_minutes": 15,
+                "quote_terminal_status": "quoted", "validity_status": "valid",
+                "queue_delay_seconds": 10, "request_duration_seconds": 2,
+                "total_delay_seconds": 12, "round_trip_min_return": 0.30,
+                "included_in_round_trip": True, "recorded_at": "2026-09-01T01:15:12Z",
+                "transaction": "hidden", "taker": "hidden",
+            }],
+            "maturity": {
+                "mature": False,
+                "gate": {
+                    "minimum_valid_round_trips": 30,
+                    "minimum_independent_trigger_dates": 15,
+                    "minimum_positive_results": 5,
+                    "minimum_nonpositive_results": 5,
+                    "secret": "hidden",
+                },
+            },
+            "decision_eligible": True, "affects": "decision",
+        }
+
+    monkeypatch.setattr(
+        Store, "onchain_only_jupiter_quote_summary_from_connection",
+        staticmethod(summary),
+    )
+    quote = WebData(config_path).audit()["onchain_only_jupiter_quote"]
+    assert quote["summary"]["valid_round_trips"] == 1
+    assert quote["horizons"][0]["gte_25pct"] == 1
+    assert quote["recent"][0]["round_trip_min_return"] == pytest.approx(0.30)
+    assert quote["maturity"]["mature"] is False
+    assert quote["decision_eligible"] is False and quote["affects"] == "none"
+    serialized = json.dumps(quote).lower()
+    for forbidden in (
+        "api_key", "private_key", "wallet", "transaction", "requestid", "taker", "secret",
+    ):
+        assert forbidden not in serialized
 
 
 def test_telegram_external_origin_handoff_is_forward_only_context_and_keeps_failures(
@@ -1943,6 +2025,9 @@ def test_candidate_ranking_api_is_persisted_bounded_sanitized_and_wait_is_truthf
     assert "Jupiter quote time-validity overlay" in app
     assert "data-testid='token-universe-jupiter-quote-validity'" in app
     assert "data-testid='onchain-only-shadow'" in app
+    assert "data-testid='onchain-only-shadow-jupiter-quote'" in app
+    assert "Trigger-anchored Jupiter two-leg quote evidence" in app
+    assert "No taker, signing, transaction construction, or broadcast occurs" in app
     assert "On-chain first, context not yet observed" in app
     assert "not globally absent" in app
     assert "Historical tokens are not backfilled" in app

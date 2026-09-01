@@ -68,6 +68,7 @@ class Store:
     TOKEN_UNIVERSE_JUPITER_QUOTE_VERSION = "token-universe-jupiter-quote/v1"
     TOKEN_UNIVERSE_JUPITER_QUOTE_VALIDITY_VERSION = "token-universe-jupiter-quote-validity/v1"
     ONCHAIN_ONLY_SHADOW_VERSION = "onchain-only-shadow/v1"
+    ONCHAIN_ONLY_JUPITER_QUOTE_VERSION = "onchain-only-shadow-jupiter-quote/v1"
     JUPITER_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
     TOKEN_UNIVERSE_EVM_CHAINS = frozenset({
         "arbitrum", "avalanche", "base", "blast", "bsc", "celo", "cronos",
@@ -1681,6 +1682,213 @@ class Store:
                       ))
                 )
                 BEGIN SELECT RAISE(ABORT,'invalid onchain-only Shadow result'); END;
+                CREATE TABLE IF NOT EXISTS onchain_only_jupiter_quote_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_shadow_cohort_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS onchain_only_jupiter_quote_attempts (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    quote_key TEXT NOT NULL UNIQUE,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    phase TEXT NOT NULL CHECK(phase IN ('baseline_buy','target_sell')),
+                    horizon_minutes INTEGER NOT NULL CHECK(horizon_minutes IN (0,15,60,240)),
+                    baseline_snapshot_id INTEGER NOT NULL,
+                    baseline_result_id INTEGER,
+                    target_at TEXT,
+                    anchor_at TEXT NOT NULL,
+                    input_mint TEXT NOT NULL,
+                    output_mint TEXT NOT NULL,
+                    input_amount_raw TEXT NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    FOREIGN KEY(shadow_cohort_id) REFERENCES onchain_only_shadow_cohorts(id),
+                    FOREIGN KEY(baseline_result_id) REFERENCES onchain_only_jupiter_quote_results(id),
+                    FOREIGN KEY(baseline_snapshot_id) REFERENCES token_snapshots(id)
+                );
+                CREATE TABLE IF NOT EXISTS onchain_only_jupiter_quote_results (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    quote_key TEXT NOT NULL UNIQUE,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    attempt_id INTEGER,
+                    baseline_result_id INTEGER,
+                    phase TEXT NOT NULL CHECK(phase IN ('baseline_buy','target_sell')),
+                    horizon_minutes INTEGER NOT NULL CHECK(horizon_minutes IN (0,15,60,240)),
+                    baseline_snapshot_id INTEGER NOT NULL,
+                    target_at TEXT,
+                    anchor_at TEXT NOT NULL,
+                    input_mint TEXT NOT NULL,
+                    output_mint TEXT NOT NULL,
+                    input_amount_raw TEXT NOT NULL,
+                    output_amount_raw TEXT,
+                    other_amount_threshold_raw TEXT,
+                    quote_terminal_status TEXT NOT NULL CHECK(quote_terminal_status IN (
+                        'not_requested','quoted','no_route','error',
+                        'quote_only_protocol_invalid','interrupted_after_request'
+                    )),
+                    validity_status TEXT NOT NULL CHECK(validity_status IN (
+                        'valid','trigger_baseline_invalid','queue_delay_expired',
+                        'total_delay_expired','baseline_not_valid','request_evidence_missing'
+                    )),
+                    requested_at TEXT,
+                    completed_at TEXT,
+                    queue_delay_seconds REAL,
+                    request_duration_seconds REAL,
+                    total_delay_seconds REAL,
+                    max_queue_delay_seconds REAL NOT NULL,
+                    max_total_delay_seconds REAL NOT NULL,
+                    slippage_bps INTEGER,
+                    signature_fee_lamports INTEGER,
+                    prioritization_fee_lamports INTEGER,
+                    rent_fee_lamports INTEGER,
+                    router TEXT NOT NULL DEFAULT '',
+                    mode TEXT NOT NULL DEFAULT '',
+                    fee_bps REAL,
+                    platform_fee_bps REAL,
+                    price_impact_pct REAL,
+                    context_slot INTEGER,
+                    time_taken_ms REAL,
+                    route_json TEXT NOT NULL DEFAULT '[]',
+                    error_type TEXT NOT NULL DEFAULT '',
+                    round_trip_min_return REAL,
+                    included_in_round_trip INTEGER NOT NULL DEFAULT 0
+                        CHECK(included_in_round_trip IN (0,1)),
+                    recorded_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    FOREIGN KEY(shadow_cohort_id) REFERENCES onchain_only_shadow_cohorts(id),
+                    FOREIGN KEY(attempt_id) REFERENCES onchain_only_jupiter_quote_attempts(id),
+                    FOREIGN KEY(baseline_result_id) REFERENCES onchain_only_jupiter_quote_results(id),
+                    FOREIGN KEY(baseline_snapshot_id) REFERENCES token_snapshots(id)
+                );
+                CREATE INDEX IF NOT EXISTS onchain_only_jupiter_quote_results_status_idx
+                    ON onchain_only_jupiter_quote_results(
+                        definition_version,phase,validity_status,quote_terminal_status,recorded_at
+                    );
+                CREATE TRIGGER IF NOT EXISTS onchain_only_jupiter_quote_registrations_no_update
+                BEFORE UPDATE ON onchain_only_jupiter_quote_registrations
+                BEGIN SELECT RAISE(ABORT,'onchain-only Jupiter registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_only_jupiter_quote_registrations_no_delete
+                BEFORE DELETE ON onchain_only_jupiter_quote_registrations
+                BEGIN SELECT RAISE(ABORT,'onchain-only Jupiter registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_only_jupiter_quote_attempts_no_update
+                BEFORE UPDATE ON onchain_only_jupiter_quote_attempts
+                BEGIN SELECT RAISE(ABORT,'onchain-only Jupiter attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_only_jupiter_quote_attempts_no_delete
+                BEFORE DELETE ON onchain_only_jupiter_quote_attempts
+                BEGIN SELECT RAISE(ABORT,'onchain-only Jupiter attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_only_jupiter_quote_results_no_update
+                BEFORE UPDATE ON onchain_only_jupiter_quote_results
+                BEGIN SELECT RAISE(ABORT,'onchain-only Jupiter results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_only_jupiter_quote_results_no_delete
+                BEFORE DELETE ON onchain_only_jupiter_quote_results
+                BEGIN SELECT RAISE(ABORT,'onchain-only Jupiter results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_only_jupiter_quote_attempts_insert_guard
+                BEFORE INSERT ON onchain_only_jupiter_quote_attempts
+                WHEN NOT EXISTS (
+                    SELECT 1
+                    FROM onchain_only_jupiter_quote_registrations reg
+                    JOIN onchain_only_shadow_cohorts c
+                      ON c.id=NEW.shadow_cohort_id
+                     AND c.definition_version='onchain-only-shadow/v1'
+                    WHERE reg.definition_version=NEW.definition_version
+                      AND c.id>reg.activation_shadow_cohort_id
+                      AND lower(c.chain)='solana'
+                      AND c.trigger_snapshot_id=NEW.baseline_snapshot_id
+                      AND NEW.requested_at>=NEW.anchor_at
+                      AND (
+                        (NEW.phase='baseline_buy' AND NEW.horizon_minutes=0
+                         AND NEW.baseline_result_id IS NULL AND NEW.target_at IS NULL
+                         AND NEW.anchor_at=c.trigger_recorded_at
+                         AND NEW.input_mint=json_extract(reg.definition_json,'$.usdc_mint')
+                         AND NEW.input_amount_raw=json_extract(reg.definition_json,'$.usdc_input_amount_raw')
+                         AND NEW.output_mint=substr(c.token_id,instr(c.token_id,':')+1))
+                        OR
+                        (NEW.phase='target_sell' AND NEW.horizon_minutes IN (15,60,240)
+                         AND NEW.target_at=NEW.anchor_at
+                         AND NEW.input_mint=substr(c.token_id,instr(c.token_id,':')+1)
+                         AND NEW.output_mint=json_extract(reg.definition_json,'$.usdc_mint')
+                         AND ABS((julianday(NEW.anchor_at)-julianday(c.trigger_recorded_at))*86400.0
+                                 - NEW.horizon_minutes*60.0)<0.01
+                         AND EXISTS (
+                            SELECT 1 FROM onchain_only_jupiter_quote_results b
+                            WHERE b.id=NEW.baseline_result_id
+                              AND b.shadow_cohort_id=c.id AND b.phase='baseline_buy'
+                              AND b.validity_status='valid' AND b.quote_terminal_status='quoted'
+                              AND b.other_amount_threshold_raw=NEW.input_amount_raw
+                         ))
+                      )
+                )
+                BEGIN SELECT RAISE(ABORT,'invalid onchain-only Jupiter attempt'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_only_jupiter_quote_results_insert_guard
+                BEFORE INSERT ON onchain_only_jupiter_quote_results
+                WHEN NOT EXISTS (
+                    SELECT 1
+                    FROM onchain_only_jupiter_quote_registrations reg
+                    JOIN onchain_only_shadow_cohorts c
+                      ON c.id=NEW.shadow_cohort_id
+                     AND c.definition_version='onchain-only-shadow/v1'
+                    WHERE reg.definition_version=NEW.definition_version
+                      AND c.id>reg.activation_shadow_cohort_id
+                      AND lower(c.chain)='solana'
+                      AND c.trigger_snapshot_id=NEW.baseline_snapshot_id
+                      AND (
+                        (NEW.quote_terminal_status='not_requested' AND NEW.attempt_id IS NULL
+                         AND NEW.requested_at IS NULL AND NEW.completed_at IS NULL)
+                        OR
+                        (NEW.quote_terminal_status<>'not_requested' AND EXISTS (
+                            SELECT 1 FROM onchain_only_jupiter_quote_attempts a
+                            WHERE a.id=NEW.attempt_id AND a.quote_key=NEW.quote_key
+                              AND a.shadow_cohort_id=c.id AND a.phase=NEW.phase
+                              AND a.horizon_minutes=NEW.horizon_minutes
+                              AND a.input_amount_raw=NEW.input_amount_raw
+                              AND a.baseline_result_id IS NEW.baseline_result_id
+                        ))
+                      )
+                      AND (
+                        (NEW.phase='baseline_buy' AND NEW.horizon_minutes=0
+                         AND NEW.baseline_result_id IS NULL AND NEW.target_at IS NULL
+                         AND NEW.anchor_at=c.trigger_recorded_at
+                         AND NEW.input_mint=json_extract(reg.definition_json,'$.usdc_mint')
+                         AND NEW.input_amount_raw=json_extract(reg.definition_json,'$.usdc_input_amount_raw')
+                         AND NEW.output_mint=substr(c.token_id,instr(c.token_id,':')+1))
+                        OR
+                        (NEW.phase='target_sell' AND NEW.horizon_minutes IN (15,60,240)
+                         AND NEW.target_at=NEW.anchor_at
+                         AND NEW.input_mint=substr(c.token_id,instr(c.token_id,':')+1)
+                         AND NEW.output_mint=json_extract(reg.definition_json,'$.usdc_mint')
+                         AND ABS((julianday(NEW.anchor_at)-julianday(c.trigger_recorded_at))*86400.0
+                                 - NEW.horizon_minutes*60.0)<0.01)
+                      )
+                      AND (
+                        NEW.quote_terminal_status<>'quoted'
+                        OR (
+                            CAST(NEW.output_amount_raw AS REAL)>0
+                            AND CAST(NEW.other_amount_threshold_raw AS REAL)>0
+                            AND CAST(NEW.other_amount_threshold_raw AS REAL)
+                                <=CAST(NEW.output_amount_raw AS REAL)
+                        )
+                      )
+                      AND (
+                        NEW.included_in_round_trip=0
+                        OR (
+                            NEW.phase='target_sell' AND NEW.validity_status='valid'
+                            AND NEW.quote_terminal_status='quoted'
+                            AND NEW.round_trip_min_return IS NOT NULL
+                            AND EXISTS (
+                                SELECT 1 FROM onchain_only_jupiter_quote_results b
+                                WHERE b.id=NEW.baseline_result_id
+                                  AND b.shadow_cohort_id=c.id AND b.phase='baseline_buy'
+                                  AND b.validity_status='valid' AND b.quote_terminal_status='quoted'
+                            )
+                        )
+                      )
+                )
+                BEGIN SELECT RAISE(ABORT,'invalid onchain-only Jupiter result'); END;
                 CREATE TABLE IF NOT EXISTS token_universe_jupiter_quote_registrations (
                     definition_version TEXT PRIMARY KEY,
                     registered_at TEXT NOT NULL,
@@ -1733,6 +1941,10 @@ class Store:
                 CREATE INDEX IF NOT EXISTS token_universe_jupiter_quote_results_status_idx
                     ON token_universe_jupiter_quote_results(
                         definition_version,phase,terminal_status,recorded_at
+                    );
+                CREATE INDEX IF NOT EXISTS token_universe_jupiter_quote_results_lookup_idx
+                    ON token_universe_jupiter_quote_results(
+                        definition_version,cohort_id,phase,outcome_id
                     );
                 CREATE TRIGGER IF NOT EXISTS token_universe_jupiter_quote_registrations_no_update
                 BEFORE UPDATE ON token_universe_jupiter_quote_registrations
@@ -1793,6 +2005,10 @@ class Store:
                 CREATE INDEX IF NOT EXISTS token_universe_jupiter_quote_validity_status_idx
                     ON token_universe_jupiter_quote_validity_results(
                         definition_version,phase,validity_status,quote_terminal_status,recorded_at
+                    );
+                CREATE INDEX IF NOT EXISTS token_universe_jupiter_quote_validity_lookup_idx
+                    ON token_universe_jupiter_quote_validity_results(
+                        definition_version,cohort_id,phase,outcome_id
                     );
                 CREATE TRIGGER IF NOT EXISTS token_universe_jupiter_quote_validity_registrations_no_update
                 BEFORE UPDATE ON token_universe_jupiter_quote_validity_registrations
@@ -10552,6 +10768,526 @@ class Store:
                 inserted += int(self.db.total_changes > before)
         return {"inserted": inserted}
 
+    def register_onchain_only_jupiter_quote(
+        self,
+        *,
+        usdc_mint: str = JUPITER_USDC_MINT,
+        usdc_input_amount_raw: int | str = 35_000_000,
+        slippage_bps: int = 400,
+        max_queue_delay_seconds: float = 30,
+        max_total_delay_seconds: float = 45,
+    ) -> sqlite3.Row:
+        """Freeze a trigger-anchored, quote-only Solana execution overlay."""
+        amount = str(int(usdc_input_amount_raw))
+        if int(amount) <= 0:
+            raise ValueError("usdc_input_amount_raw must be positive")
+        mint = str(usdc_mint).strip()[:128]
+        if not mint:
+            raise ValueError("usdc_mint is required")
+        queue_limit = max(1.0, float(max_queue_delay_seconds))
+        total_limit = max(queue_limit, float(max_total_delay_seconds))
+        definition = {
+            "version": self.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+            "source": self.ONCHAIN_ONLY_SHADOW_VERSION,
+            "no_historical_backfill": True,
+            "chain": "solana",
+            "baseline_anchor": "onchain_trigger_recorded_at",
+            "target_anchor": "onchain_shadow_frozen_target_at",
+            "baseline_phase": "USDC_to_token_quote_only",
+            "target_phase": "baseline_minimum_token_output_to_USDC_quote_only",
+            "round_trip_semantics": "minimum_output_lower_bound_not_fill_or_profit",
+            "api_contract": "swap_v2_order_without_taker",
+            "forbidden_request_fields": ["taker", "payer", "receiver", "referralAccount"],
+            "forbidden_response_fields": ["transaction", "requestId"],
+            "usdc_mint": mint,
+            "usdc_input_amount_raw": amount,
+            "swap_mode": "ExactIn",
+            "slippage_bps": max(1, min(5_000, int(slippage_bps))),
+            "max_queue_delay_seconds": queue_limit,
+            "max_total_delay_seconds": total_limit,
+            "horizons_minutes": list(self.TOKEN_UNIVERSE_HORIZONS_MINUTES),
+            "maturity_gate": {
+                "minimum_valid_round_trips": 30,
+                "minimum_independent_trigger_dates": 15,
+                "minimum_positive_results": 5,
+                "minimum_nonpositive_results": 5,
+            },
+            "decision_eligible": False,
+            "affects": "none",
+        }
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO onchain_only_jupiter_quote_registrations("
+                "definition_version,registered_at,activation_shadow_cohort_id,definition_json) "
+                "VALUES(?,?,COALESCE((SELECT MAX(id) FROM onchain_only_shadow_cohorts),0),?)",
+                (self.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION, iso(), self._json(definition)),
+            )
+            return self.db.execute(
+                "SELECT * FROM onchain_only_jupiter_quote_registrations "
+                "WHERE definition_version=?",
+                (self.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,),
+            ).fetchone()
+
+    @staticmethod
+    def _onchain_only_jupiter_quote_key(
+        shadow_cohort_id: int,
+        horizon_minutes: int,
+        phase: str,
+    ) -> str:
+        return (
+            f"onchain-jupiter:{int(shadow_cohort_id)}:"
+            f"{int(horizon_minutes)}:{str(phase)}"
+        )
+
+    @staticmethod
+    def onchain_only_jupiter_preflight_reason(
+        task: Mapping[str, Any],
+        *,
+        evaluated_at: Any = None,
+    ) -> str | None:
+        explicit = str(task.get("preflight_reason") or "")
+        if explicit:
+            return explicit
+        anchor = parse_time(task["anchor_at"])
+        evaluated = parse_time(evaluated_at or utcnow())
+        if evaluated < anchor:
+            return "queue_delay_expired"
+        if (evaluated - anchor).total_seconds() > float(task["max_queue_delay_seconds"]):
+            return "queue_delay_expired"
+        return None
+
+    def due_onchain_only_jupiter_quotes(
+        self,
+        *,
+        now: Any = None,
+        limit: int = 10_000,
+    ) -> list[dict[str, Any]]:
+        """Return new trigger-anchored baseline/target quote legs, including ITT gaps."""
+        current = parse_time(now or utcnow())
+        with self._lock:
+            registration = self.db.execute(
+                "SELECT * FROM onchain_only_jupiter_quote_registrations "
+                "WHERE definition_version=?",
+                (self.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,),
+            ).fetchone()
+            if registration is None:
+                return []
+            definition = self._json_object(registration["definition_json"])
+            activation = int(registration["activation_shadow_cohort_id"])
+            common = {
+                "lane": self.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+                "usdc_mint": str(definition["usdc_mint"]),
+                "slippage_bps": int(definition["slippage_bps"]),
+                "max_queue_delay_seconds": float(definition["max_queue_delay_seconds"]),
+                "max_total_delay_seconds": float(definition["max_total_delay_seconds"]),
+            }
+            tasks: list[dict[str, Any]] = []
+            rows = self.db.execute(
+                """
+                SELECT c.*,a.id AS attempt_id
+                FROM onchain_only_shadow_cohorts c
+                LEFT JOIN onchain_only_jupiter_quote_attempts a
+                  ON a.definition_version=? AND a.shadow_cohort_id=c.id
+                 AND a.phase='baseline_buy' AND a.horizon_minutes=0
+                LEFT JOIN onchain_only_jupiter_quote_results q
+                  ON q.definition_version=? AND q.shadow_cohort_id=c.id
+                 AND q.phase='baseline_buy' AND q.horizon_minutes=0
+                WHERE c.definition_version=? AND c.id>? AND lower(c.chain)='solana'
+                  AND q.id IS NULL
+                ORDER BY c.trigger_recorded_at,c.id
+                """,
+                (
+                    self.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+                    self.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+                    self.ONCHAIN_ONLY_SHADOW_VERSION,
+                    activation,
+                ),
+            ).fetchall()
+            for row in rows:
+                token_id = str(row["token_id"])
+                if ":" not in token_id:
+                    continue
+                tasks.append({
+                    **common,
+                    "quote_key": self._onchain_only_jupiter_quote_key(
+                        int(row["id"]), 0, "baseline_buy"
+                    ),
+                    "shadow_cohort_id": int(row["id"]),
+                    "attempt_id": int(row["attempt_id"]) if row["attempt_id"] else None,
+                    "baseline_result_id": None,
+                    "phase": "baseline_buy",
+                    "horizon_minutes": 0,
+                    "baseline_snapshot_id": int(row["trigger_snapshot_id"]),
+                    "target_at": None,
+                    "anchor_at": str(row["trigger_recorded_at"]),
+                    "input_mint": str(definition["usdc_mint"]),
+                    "output_mint": token_id.split(":", 1)[1],
+                    "input_amount_raw": str(definition["usdc_input_amount_raw"]),
+                    "preflight_reason": (
+                        "request_evidence_missing" if row["attempt_id"] is not None
+                        else "trigger_baseline_invalid"
+                        if str(row["baseline_status"]) != "valid" else None
+                    ),
+                })
+            cohorts = self.db.execute(
+                """
+                SELECT c.* FROM onchain_only_shadow_cohorts c
+                WHERE c.definition_version=? AND c.id>? AND lower(c.chain)='solana'
+                ORDER BY c.trigger_recorded_at,c.id
+                """,
+                (
+                    self.ONCHAIN_ONLY_SHADOW_VERSION,
+                    activation,
+                ),
+            ).fetchall()
+            existing_targets = {
+                (int(row["shadow_cohort_id"]), int(row["horizon_minutes"]))
+                for row in self.db.execute(
+                    "SELECT shadow_cohort_id,horizon_minutes "
+                    "FROM onchain_only_jupiter_quote_results "
+                    "WHERE definition_version=? AND phase='target_sell'",
+                    (self.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,),
+                )
+            }
+            target_attempts = {
+                (int(row["shadow_cohort_id"]), int(row["horizon_minutes"])): int(row["id"])
+                for row in self.db.execute(
+                    "SELECT id,shadow_cohort_id,horizon_minutes "
+                    "FROM onchain_only_jupiter_quote_attempts "
+                    "WHERE definition_version=? AND phase='target_sell'",
+                    (self.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,),
+                )
+            }
+            baselines = {
+                int(row["shadow_cohort_id"]): row
+                for row in self.db.execute(
+                    "SELECT * FROM onchain_only_jupiter_quote_results "
+                    "WHERE definition_version=? AND phase='baseline_buy' AND horizon_minutes=0",
+                    (self.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,),
+                )
+            }
+            for row in cohorts:
+                token_id = str(row["token_id"])
+                if ":" not in token_id:
+                    continue
+                trigger = parse_time(row["trigger_recorded_at"])
+                baseline = baselines.get(int(row["id"]))
+                baseline_valid = bool(
+                    baseline is not None
+                    and baseline["validity_status"] == "valid"
+                    and baseline["quote_terminal_status"] == "quoted"
+                    and baseline["other_amount_threshold_raw"] is not None
+                    and int(baseline["other_amount_threshold_raw"]) > 0
+                )
+                for horizon in self.TOKEN_UNIVERSE_HORIZONS_MINUTES:
+                    target = trigger + timedelta(minutes=horizon)
+                    key = (int(row["id"]), int(horizon))
+                    if target > current or key in existing_targets:
+                        continue
+                    attempt_id = target_attempts.get(key)
+                    tasks.append({
+                        **common,
+                        "quote_key": self._onchain_only_jupiter_quote_key(
+                            int(row["id"]), horizon, "target_sell"
+                        ),
+                        "shadow_cohort_id": int(row["id"]),
+                        "attempt_id": attempt_id,
+                        "baseline_result_id": int(baseline["id"]) if baseline_valid else None,
+                        "phase": "target_sell",
+                        "horizon_minutes": horizon,
+                        "baseline_snapshot_id": int(row["trigger_snapshot_id"]),
+                        "target_at": iso(target),
+                        "anchor_at": iso(target),
+                        "input_mint": token_id.split(":", 1)[1],
+                        "output_mint": str(definition["usdc_mint"]),
+                        "input_amount_raw": (
+                            str(baseline["other_amount_threshold_raw"])
+                            if baseline_valid else "0"
+                        ),
+                        "preflight_reason": (
+                            "request_evidence_missing" if attempt_id is not None
+                            else "baseline_not_valid" if not baseline_valid else None
+                        ),
+                    })
+            tasks.sort(key=lambda item: (
+                parse_time(item["anchor_at"])
+                + timedelta(seconds=float(item["max_queue_delay_seconds"])),
+                0 if item["phase"] == "target_sell" else 1,
+                int(item["shadow_cohort_id"]),
+                int(item["horizon_minutes"]),
+            ))
+            return tasks[:max(1, int(limit))]
+
+    def start_onchain_only_jupiter_quote_attempt(
+        self,
+        task: Mapping[str, Any],
+        *,
+        requested_at: Any = None,
+    ) -> int | None:
+        """Persist provider exposure before the quote-only request starts."""
+        requested = parse_time(requested_at or utcnow())
+        if self.onchain_only_jupiter_preflight_reason(task, evaluated_at=requested):
+            return None
+        values = {
+            "definition_version": self.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+            "quote_key": str(task["quote_key"]),
+            "shadow_cohort_id": int(task["shadow_cohort_id"]),
+            "phase": str(task["phase"]),
+            "horizon_minutes": int(task["horizon_minutes"]),
+            "baseline_snapshot_id": int(task["baseline_snapshot_id"]),
+            "baseline_result_id": task.get("baseline_result_id"),
+            "target_at": task.get("target_at"),
+            "anchor_at": str(task["anchor_at"]),
+            "input_mint": str(task["input_mint"]),
+            "output_mint": str(task["output_mint"]),
+            "input_amount_raw": str(task["input_amount_raw"]),
+            "requested_at": iso(requested),
+        }
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO onchain_only_jupiter_quote_attempts("
+                + ",".join(values)
+                + ",decision_eligible,affects) VALUES("
+                + ",".join(f":{name}" for name in values)
+                + ",0,'none')",
+                values,
+            )
+            row = self.db.execute(
+                "SELECT id FROM onchain_only_jupiter_quote_attempts WHERE quote_key=?",
+                (str(task["quote_key"]),),
+            ).fetchone()
+            return int(row["id"]) if row is not None else None
+
+    def record_onchain_only_jupiter_quote(
+        self,
+        task: Mapping[str, Any],
+        *,
+        status: str,
+        out_amount_raw: int | str | None = None,
+        other_amount_threshold_raw: int | str | None = None,
+        slippage_bps: int | None = None,
+        signature_fee_lamports: int | None = None,
+        prioritization_fee_lamports: int | None = None,
+        rent_fee_lamports: int | None = None,
+        router: str = "",
+        mode: str = "",
+        fee_bps: float | None = None,
+        platform_fee_bps: float | None = None,
+        price_impact_pct: float | None = None,
+        context_slot: int | None = None,
+        time_taken_ms: float | None = None,
+        route_plan: Iterable[Mapping[str, Any]] | None = None,
+        error_type: str = "",
+        attempt_id: int | None = None,
+        requested_at: Any = None,
+        completed_at: Any = None,
+        evaluated_at: Any = None,
+    ) -> int | None:
+        statuses = {
+            "not_requested", "quoted", "no_route", "error",
+            "quote_only_protocol_invalid", "interrupted_after_request",
+        }
+        if status not in statuses:
+            raise ValueError("invalid onchain-only Jupiter quote status")
+        requested = parse_time(requested_at) if requested_at is not None else None
+        completed = parse_time(completed_at) if completed_at is not None else None
+        evaluated = parse_time(evaluated_at or completed_at or requested_at or utcnow())
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT * FROM onchain_only_jupiter_quote_registrations "
+                "WHERE definition_version=?",
+                (self.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,),
+            ).fetchone()
+            if (
+                registration is None
+                or int(task["shadow_cohort_id"])
+                <= int(registration["activation_shadow_cohort_id"])
+            ):
+                return None
+            existing = self.db.execute(
+                "SELECT id FROM onchain_only_jupiter_quote_results WHERE quote_key=?",
+                (str(task["quote_key"]),),
+            ).fetchone()
+            if existing is not None:
+                return None
+            attempt_id = attempt_id or task.get("attempt_id")
+            attempt = None
+            if attempt_id is not None:
+                attempt = self.db.execute(
+                    "SELECT * FROM onchain_only_jupiter_quote_attempts WHERE id=?",
+                    (int(attempt_id),),
+                ).fetchone()
+                if attempt is None or str(attempt["quote_key"]) != str(task["quote_key"]):
+                    raise ValueError("invalid onchain-only Jupiter attempt")
+                requested = requested or parse_time(attempt["requested_at"])
+            if status == "not_requested" and attempt is not None:
+                raise ValueError("not_requested result cannot reference an attempt")
+            if status != "not_requested" and attempt is None:
+                raise ValueError("provider result requires a persisted attempt")
+            anchor = parse_time(task["anchor_at"])
+            preflight = self.onchain_only_jupiter_preflight_reason(
+                task,
+                evaluated_at=requested or evaluated,
+            )
+            validity_status = (
+                "request_evidence_missing"
+                if status == "interrupted_after_request" else preflight or "valid"
+            )
+            queue_at = requested or evaluated
+            queue_delay = max(0.0, (queue_at - anchor).total_seconds())
+            request_duration = (
+                (completed - requested).total_seconds()
+                if requested is not None and completed is not None else None
+            )
+            total_delay = (
+                (completed - anchor).total_seconds() if completed is not None else None
+            )
+            if (
+                status not in {"not_requested", "interrupted_after_request"}
+                and (requested is None or completed is None)
+            ):
+                raise ValueError("requested and completed timestamps are required")
+            if (
+                validity_status == "valid"
+                and (requested is None or completed is None or requested > completed)
+            ):
+                validity_status = "request_evidence_missing"
+            if (
+                validity_status == "valid"
+                and (total_delay is None or total_delay > float(task["max_total_delay_seconds"]))
+            ):
+                validity_status = "total_delay_expired"
+            output = None if out_amount_raw is None else str(int(out_amount_raw))
+            threshold = (
+                None if other_amount_threshold_raw is None
+                else str(int(other_amount_threshold_raw))
+            )
+            if status == "quoted" and (
+                output is None or int(output) <= 0 or threshold is None or int(threshold) <= 0
+                or int(threshold) > int(output)
+            ):
+                raise ValueError("quoted Jupiter result requires a valid minimum output")
+            if status != "quoted":
+                output = threshold = None
+            round_trip_min_return = None
+            included = 0
+            if (
+                str(task["phase"]) == "target_sell"
+                and status == "quoted"
+                and validity_status == "valid"
+            ):
+                buy = self.db.execute(
+                    """
+                    SELECT id,input_amount_raw,other_amount_threshold_raw
+                    FROM onchain_only_jupiter_quote_results
+                    WHERE definition_version=? AND shadow_cohort_id=? AND id=?
+                      AND phase='baseline_buy' AND horizon_minutes=0
+                      AND validity_status='valid' AND quote_terminal_status='quoted'
+                    """,
+                    (
+                        self.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+                        int(task["shadow_cohort_id"]),
+                        int(task.get("baseline_result_id") or 0),
+                    ),
+                ).fetchone()
+                if (
+                    buy is None
+                    or int(buy["input_amount_raw"]) <= 0
+                    or str(buy["other_amount_threshold_raw"]) != str(task["input_amount_raw"])
+                ):
+                    validity_status = "baseline_not_valid"
+                else:
+                    round_trip_min_return = int(threshold) / int(buy["input_amount_raw"]) - 1.0
+                    included = 1
+            normalized_route: list[dict[str, Any]] = []
+            for item in route_plan or ():
+                if not isinstance(item, Mapping):
+                    continue
+                swap = item.get("swapInfo") if isinstance(item.get("swapInfo"), Mapping) else item
+                text_value = lambda *keys: next((
+                    str(swap[key]).strip()[:128] for key in keys
+                    if swap.get(key) is not None and str(swap.get(key)).strip()
+                ), "")
+                percent = item.get("percent")
+                normalized_route.append({
+                    "amm_key": text_value("ammKey", "amm_key"),
+                    "label": text_value("label"),
+                    "input_mint": text_value("inputMint", "input_mint"),
+                    "output_mint": text_value("outputMint", "output_mint"),
+                    "in_amount_raw": text_value("inAmount", "in_amount_raw", "in_amount"),
+                    "out_amount_raw": text_value("outAmount", "out_amount_raw", "out_amount"),
+                    "fee_amount_raw": text_value("feeAmount", "fee_amount_raw", "fee_amount"),
+                    "fee_mint": text_value("feeMint", "fee_mint"),
+                    "percent": float(percent) if percent is not None else None,
+                })
+            clean = lambda value, limit: re.sub(
+                r"[^a-zA-Z0-9_.-]+", "_", str(value or "")
+            )[:limit]
+            values = {
+                "definition_version": self.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+                "quote_key": str(task["quote_key"]),
+                "shadow_cohort_id": int(task["shadow_cohort_id"]),
+                "attempt_id": int(attempt_id) if attempt_id is not None else None,
+                "baseline_result_id": (
+                    int(task["baseline_result_id"])
+                    if task.get("baseline_result_id") is not None else None
+                ),
+                "phase": str(task["phase"]),
+                "horizon_minutes": int(task["horizon_minutes"]),
+                "baseline_snapshot_id": int(task["baseline_snapshot_id"]),
+                "target_at": task.get("target_at"),
+                "anchor_at": iso(anchor),
+                "input_mint": str(task["input_mint"]),
+                "output_mint": str(task["output_mint"]),
+                "input_amount_raw": str(task["input_amount_raw"]),
+                "output_amount_raw": output,
+                "other_amount_threshold_raw": threshold,
+                "quote_terminal_status": status,
+                "validity_status": validity_status,
+                "requested_at": iso(requested) if requested is not None else None,
+                "completed_at": iso(completed) if completed is not None else None,
+                "queue_delay_seconds": queue_delay,
+                "request_duration_seconds": request_duration,
+                "total_delay_seconds": total_delay,
+                "max_queue_delay_seconds": float(task["max_queue_delay_seconds"]),
+                "max_total_delay_seconds": float(task["max_total_delay_seconds"]),
+                "slippage_bps": int(slippage_bps) if slippage_bps is not None else None,
+                "signature_fee_lamports": (
+                    int(signature_fee_lamports) if signature_fee_lamports is not None else None
+                ),
+                "prioritization_fee_lamports": (
+                    int(prioritization_fee_lamports)
+                    if prioritization_fee_lamports is not None else None
+                ),
+                "rent_fee_lamports": int(rent_fee_lamports) if rent_fee_lamports is not None else None,
+                "router": clean(router, 80),
+                "mode": clean(mode, 40),
+                "fee_bps": fee_bps,
+                "platform_fee_bps": platform_fee_bps,
+                "price_impact_pct": price_impact_pct,
+                "context_slot": int(context_slot) if context_slot is not None else None,
+                "time_taken_ms": time_taken_ms,
+                "route_json": self._json(normalized_route),
+                "error_type": clean(error_type, 80),
+                "round_trip_min_return": round_trip_min_return,
+                "included_in_round_trip": included,
+                "recorded_at": iso(),
+            }
+            columns = list(values)
+            self.db.execute(
+                "INSERT OR IGNORE INTO onchain_only_jupiter_quote_results("
+                + ",".join(columns)
+                + ",decision_eligible,affects) VALUES("
+                + ",".join(f":{name}" for name in columns)
+                + ",0,'none')",
+                values,
+            )
+            row = self.db.execute(
+                "SELECT id FROM onchain_only_jupiter_quote_results WHERE quote_key=?",
+                (str(task["quote_key"]),),
+            ).fetchone()
+            return int(row["id"]) if row is not None else None
+
     def register_token_universe_jupiter_quote(
         self,
         *,
@@ -10989,7 +11725,11 @@ class Store:
             raise sqlite3.IntegrityError("Jupiter quote validity result was not recorded")
         return int(row["id"])
 
-    def finalize_token_universe_jupiter_quote_validity_gaps(self) -> dict[str, int]:
+    def finalize_token_universe_jupiter_quote_validity_gaps(
+        self,
+        *,
+        limit: int = 12,
+    ) -> dict[str, int]:
         """Close forward source/baseline gaps so the validity denominator stays complete."""
         with self._lock, self.db:
             registration = self.db.execute(
@@ -11006,6 +11746,7 @@ class Store:
                 "max_total_delay_seconds": float(definition["max_total_delay_seconds"]),
             }
             inserted = 0
+            remaining = max(1, int(limit))
             missing_baselines = self.db.execute(
                 """
                 SELECT c.id AS cohort_id,c.baseline_deadline_at
@@ -11016,10 +11757,12 @@ class Store:
                  AND v.phase='baseline_buy'
                 WHERE c.id>? AND c.definition_version=? AND lower(c.chain)='solana' AND v.id IS NULL
                 ORDER BY c.id
+                LIMIT ?
                 """,
                 (
                     self.TOKEN_UNIVERSE_JUPITER_QUOTE_VALIDITY_VERSION,
                     activation, self.TOKEN_UNIVERSE_FORWARD_VERSION,
+                    remaining,
                 ),
             ).fetchall()
             for row in missing_baselines:
@@ -11037,6 +11780,9 @@ class Store:
                     task, quote_terminal_status="not_requested", validity_status="source_missing"
                 )
                 inserted += 1
+            remaining -= inserted
+            if remaining <= 0:
+                return {"inserted": inserted}
             target_gaps = self.db.execute(
                 """
                 SELECT o.id AS outcome_id,o.cohort_id,o.target_at,o.status AS outcome_status,
@@ -11056,11 +11802,13 @@ class Store:
                     OR o.status!='observed'
                   )
                 ORDER BY o.id
+                LIMIT ?
                 """,
                 (
                     self.TOKEN_UNIVERSE_JUPITER_QUOTE_VALIDITY_VERSION,
                     self.TOKEN_UNIVERSE_JUPITER_QUOTE_VALIDITY_VERSION,
                     activation, self.TOKEN_UNIVERSE_FORWARD_VERSION,
+                    remaining,
                 ),
             ).fetchall()
             for row in target_gaps:
@@ -12638,6 +13386,192 @@ class Store:
             "chains": chain_rows,
             "recent": recent,
             "maturity": {**metrics(overall_for_gate), "gate": gate},
+            "decision_eligible": False,
+            "affects": "none",
+            "as_of": iso(),
+        }
+
+    @classmethod
+    def onchain_only_jupiter_quote_summary_from_connection(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        recent_limit: int = 20,
+    ) -> dict[str, Any]:
+        required = {
+            "onchain_only_jupiter_quote_registrations",
+            "onchain_only_jupiter_quote_attempts",
+            "onchain_only_jupiter_quote_results",
+            "onchain_only_shadow_cohorts",
+        }
+        tables = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        empty = {
+            "status": "not_observed",
+            "version": cls.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+            "summary": {
+                "eligible_cohorts": 0,
+                "attempts": 0,
+                "baseline_terminal": 0,
+                "baseline_valid_quoted": 0,
+                "target_terminal": 0,
+                "valid_round_trips": 0,
+                "positive": 0,
+                "nonpositive": 0,
+                "gte_25pct": 0,
+                "independent_trigger_dates": 0,
+            },
+            "horizons": [], "statuses": [], "recent": [],
+            "maturity": {"mature": False},
+            "decision_eligible": False, "affects": "none",
+        }
+        if not required.issubset(tables):
+            return empty
+        registration = connection.execute(
+            "SELECT * FROM onchain_only_jupiter_quote_registrations "
+            "WHERE definition_version=?",
+            (cls.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,),
+        ).fetchone()
+        if registration is None:
+            return empty
+        version = cls.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION
+        activation = int(registration["activation_shadow_cohort_id"])
+        definition = cls._json_object(registration["definition_json"])
+        gate = (
+            definition.get("maturity_gate")
+            if isinstance(definition.get("maturity_gate"), dict) else {}
+        )
+        eligible = int(connection.execute(
+            "SELECT COUNT(*) FROM onchain_only_shadow_cohorts "
+            "WHERE definition_version=? AND id>? AND lower(chain)='solana'",
+            (cls.ONCHAIN_ONLY_SHADOW_VERSION, activation),
+        ).fetchone()[0])
+        row = connection.execute(
+            """
+            SELECT COUNT(*) AS results,
+                   SUM(phase='baseline_buy') AS baseline_terminal,
+                   SUM(phase='baseline_buy' AND validity_status='valid'
+                       AND quote_terminal_status='quoted') AS baseline_valid_quoted,
+                   SUM(phase='target_sell') AS target_terminal,
+                   SUM(included_in_round_trip=1) AS valid_round_trips,
+                   SUM(included_in_round_trip=1 AND round_trip_min_return>0) AS positive,
+                   SUM(included_in_round_trip=1 AND round_trip_min_return<=0) AS nonpositive,
+                   SUM(included_in_round_trip=1 AND round_trip_min_return>=0.25) AS gte_25pct,
+                   COUNT(DISTINCT CASE WHEN included_in_round_trip=1
+                                      THEN substr(c.trigger_recorded_at,1,10) END)
+                       AS independent_trigger_dates
+            FROM onchain_only_jupiter_quote_results r
+            JOIN onchain_only_shadow_cohorts c ON c.id=r.shadow_cohort_id
+            WHERE r.definition_version=?
+            """,
+            (version,),
+        ).fetchone()
+        attempts = int(connection.execute(
+            "SELECT COUNT(*) FROM onchain_only_jupiter_quote_attempts WHERE definition_version=?",
+            (version,),
+        ).fetchone()[0])
+        summary = {
+            "eligible_cohorts": eligible,
+            "attempts": attempts,
+            "results": int(row["results"] or 0),
+            "baseline_terminal": int(row["baseline_terminal"] or 0),
+            "baseline_pending": max(0, eligible - int(row["baseline_terminal"] or 0)),
+            "baseline_valid_quoted": int(row["baseline_valid_quoted"] or 0),
+            "target_terminal": int(row["target_terminal"] or 0),
+            "valid_round_trips": int(row["valid_round_trips"] or 0),
+            "positive": int(row["positive"] or 0),
+            "nonpositive": int(row["nonpositive"] or 0),
+            "gte_25pct": int(row["gte_25pct"] or 0),
+            "independent_trigger_dates": int(row["independent_trigger_dates"] or 0),
+        }
+        horizons = [
+            {
+                "horizon_minutes": int(item["horizon_minutes"]),
+                "terminal": int(item["terminal"] or 0),
+                "valid_quoted": int(item["valid_quoted"] or 0),
+                "valid_round_trips": int(item["valid_round_trips"] or 0),
+                "positive": int(item["positive"] or 0),
+                "nonpositive": int(item["nonpositive"] or 0),
+                "gte_25pct": int(item["gte_25pct"] or 0),
+            }
+            for item in connection.execute(
+                """
+                SELECT horizon_minutes,COUNT(*) AS terminal,
+                       SUM(validity_status='valid' AND quote_terminal_status='quoted')
+                           AS valid_quoted,
+                       SUM(included_in_round_trip=1) AS valid_round_trips,
+                       SUM(included_in_round_trip=1 AND round_trip_min_return>0) AS positive,
+                       SUM(included_in_round_trip=1 AND round_trip_min_return<=0) AS nonpositive,
+                       SUM(included_in_round_trip=1 AND round_trip_min_return>=0.25) AS gte_25pct
+                FROM onchain_only_jupiter_quote_results
+                WHERE definition_version=? AND phase='target_sell'
+                GROUP BY horizon_minutes ORDER BY horizon_minutes
+                """,
+                (version,),
+            )
+        ]
+        statuses = [
+            {
+                "phase": str(item["phase"]),
+                "quote_terminal_status": str(item["quote_terminal_status"]),
+                "validity_status": str(item["validity_status"]),
+                "count": int(item["count"] or 0),
+            }
+            for item in connection.execute(
+                """
+                SELECT phase,quote_terminal_status,validity_status,COUNT(*) AS count
+                FROM onchain_only_jupiter_quote_results WHERE definition_version=?
+                GROUP BY phase,quote_terminal_status,validity_status
+                ORDER BY phase,count DESC,quote_terminal_status,validity_status
+                """,
+                (version,),
+            )
+        ]
+        recent = [
+            {
+                "token_id": str(item["token_id"]),
+                "trigger_recorded_at": str(item["trigger_recorded_at"]),
+                "phase": str(item["phase"]),
+                "horizon_minutes": int(item["horizon_minutes"]),
+                "quote_terminal_status": str(item["quote_terminal_status"]),
+                "validity_status": str(item["validity_status"]),
+                "queue_delay_seconds": item["queue_delay_seconds"],
+                "request_duration_seconds": item["request_duration_seconds"],
+                "total_delay_seconds": item["total_delay_seconds"],
+                "round_trip_min_return": item["round_trip_min_return"],
+                "included_in_round_trip": bool(item["included_in_round_trip"]),
+                "recorded_at": str(item["recorded_at"]),
+            }
+            for item in connection.execute(
+                """
+                SELECT r.*,c.token_id,c.trigger_recorded_at
+                FROM onchain_only_jupiter_quote_results r
+                JOIN onchain_only_shadow_cohorts c ON c.id=r.shadow_cohort_id
+                WHERE r.definition_version=? ORDER BY r.id DESC LIMIT ?
+                """,
+                (version, max(1, min(100, int(recent_limit)))),
+            )
+        ]
+        mature = bool(
+            summary["valid_round_trips"] >= int(gate.get("minimum_valid_round_trips", 30))
+            and summary["independent_trigger_dates"]
+            >= int(gate.get("minimum_independent_trigger_dates", 15))
+            and summary["positive"] >= int(gate.get("minimum_positive_results", 5))
+            and summary["nonpositive"] >= int(gate.get("minimum_nonpositive_results", 5))
+        )
+        return {
+            "status": "collecting" if eligible else "registered_waiting_forward_data",
+            "version": version,
+            "registered_at": str(registration["registered_at"]),
+            "activation_shadow_cohort_id": activation,
+            "definition": definition,
+            "summary": summary,
+            "horizons": horizons,
+            "statuses": statuses,
+            "recent": recent,
+            "maturity": {"mature": mature, "gate": gate},
             "decision_eligible": False,
             "affects": "none",
             "as_of": iso(),

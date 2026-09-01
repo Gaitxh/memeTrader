@@ -1098,6 +1098,14 @@ class Runtime:
             max_tax_pct=float(config["safety"].get("max_tax_pct", 10)),
             max_quote_delay_seconds=float(paper_config.get("max_quote_age_seconds", 45)),
         )
+        self.store.register_onchain_only_jupiter_quote(
+            usdc_input_amount_raw=round(
+                float(paper_config.get("max_position_usd", 35)) * 1_000_000
+            ),
+            slippage_bps=round(float(paper_config.get("slippage_rate", 0.04)) * 10_000),
+            max_queue_delay_seconds=30,
+            max_total_delay_seconds=float(paper_config.get("max_quote_age_seconds", 45)),
+        )
         self.store.register_token_universe_jupiter_quote(
             usdc_input_amount_raw=round(float(paper_config.get("max_position_usd", 35)) * 1_000_000),
         )
@@ -1143,6 +1151,7 @@ class Runtime:
         self.notifier = Notifier(root, config["notifications"])
         self.bridge: BrowserBridge | None = None
         self._stop = asyncio.Event()
+        self._jupiter_quote_lock = asyncio.Lock()
         self._record_paper_account_snapshot()
 
     async def close(self) -> None:
@@ -2845,7 +2854,10 @@ class Runtime:
         self.store.finalize_information_first_ilg_outcomes()
         self.store.finalize_attention_experiment_outcomes()
         await self.token_universe_followup_once()
-        await self.token_universe_jupiter_quote_once()
+        await self.token_universe_jupiter_quote_once(
+            include_universe=True,
+            include_onchain=False,
+        )
         self.store.finalize_token_universe_outcome_quality()
         self.store.finalize_token_universe_fixed_target_execution()
         self.store.finalize_missed_opportunity_audits()
@@ -2979,39 +2991,120 @@ class Runtime:
         self.store.finalize_token_universe_forward_outcomes()
         self.store.finalize_onchain_only_shadow_gaps()
 
-    async def token_universe_jupiter_quote_once(self) -> None:
-        """Append one forward, quote-only Solana route leg without a wallet or transaction."""
-        self.store.finalize_token_universe_jupiter_quote_validity_gaps()
-        provider_requests = 0
-        gap_records = 0
-        for item in self.store.due_token_universe_jupiter_quotes(limit=10_000):
-            requested_at = utcnow()
+    async def token_universe_jupiter_quote_once(
+        self,
+        *,
+        budget: dict[str, int] | None = None,
+        include_universe: bool = True,
+        include_onchain: bool = True,
+    ) -> None:
+        async with self._jupiter_quote_lock:
+            await self._token_universe_jupiter_quote_once_unlocked(
+                budget=budget,
+                include_universe=include_universe,
+                include_onchain=include_onchain,
+            )
+
+    async def _token_universe_jupiter_quote_once_unlocked(
+        self,
+        *,
+        budget: dict[str, int] | None = None,
+        include_universe: bool = True,
+        include_onchain: bool = True,
+    ) -> None:
+        """Share three quote-only requests across universe and trigger-anchored lanes."""
+        shared = budget if budget is not None else {"provider_requests": 0, "gap_records": 0}
+        shared.setdefault("provider_requests", 0)
+        shared.setdefault("gap_records", 0)
+        universe_tasks: list[dict[str, Any]] = []
+        onchain_tasks: list[dict[str, Any]] = []
+        if include_universe:
+            self.store.finalize_token_universe_jupiter_quote_validity_gaps(limit=12)
+            universe_tasks = self.store.due_token_universe_jupiter_quotes(limit=10_000)
+        if include_onchain:
+            onchain_tasks = self.store.due_onchain_only_jupiter_quotes(limit=10_000)
+        requestable: list[dict[str, Any]] = []
+
+        def universe_preflight_reason(item: Mapping[str, Any], evaluated_at: Any) -> str | None:
             source_times = (
                 item.get("source_observed_at"), item.get("source_ingested_at"),
                 item.get("source_recorded_at"),
             )
-            source_time_valid = all(source_times)
-            if source_time_valid:
-                observed, ingested, recorded = map(parse_time, source_times)
-                source_time_valid = bool(
-                    observed <= ingested <= recorded
-                    and parse_time(item["anchor_at"]) <= recorded <= requested_at
-                )
-            queue_delay = (requested_at - parse_time(item["anchor_at"])).total_seconds()
-            if (
-                not source_time_valid
-                or queue_delay > float(item["max_queue_delay_seconds"])
+            if not all(source_times):
+                return "source_time_invalid"
+            observed, ingested, recorded = map(parse_time, source_times)
+            evaluated = parse_time(evaluated_at)
+            if not (
+                observed <= ingested <= recorded
+                and parse_time(item["anchor_at"]) <= recorded <= evaluated
             ):
-                if gap_records >= 12:
-                    continue
-                gap_records += 1
-                self.store.record_token_universe_jupiter_quote_validity(
-                    item, status="not_requested", evaluated_at=requested_at,
+                return "source_time_invalid"
+            if (
+                evaluated - parse_time(item["anchor_at"])
+            ).total_seconds() > float(item["max_queue_delay_seconds"]):
+                return "queue_delay_expired"
+            return None
+
+        def record_gap(item: Mapping[str, Any], reason: str, evaluated_at: Any) -> None:
+            if shared["gap_records"] >= 12:
+                return
+            shared["gap_records"] += 1
+            if item.get("lane") == Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION:
+                interrupted = reason == "request_evidence_missing"
+                self.store.record_onchain_only_jupiter_quote(
+                    item,
+                    status="interrupted_after_request" if interrupted else "not_requested",
+                    attempt_id=item.get("attempt_id") if interrupted else None,
+                    evaluated_at=evaluated_at,
                 )
+            else:
+                self.store.record_token_universe_jupiter_quote_validity(
+                    item, status="not_requested", evaluated_at=evaluated_at,
+                )
+
+        for item in onchain_tasks:
+            now = utcnow()
+            reason = Store.onchain_only_jupiter_preflight_reason(item, evaluated_at=now)
+            if reason:
+                record_gap(item, reason, now)
+            else:
+                requestable.append(dict(item))
+        for item in universe_tasks:
+            now = utcnow()
+            reason = universe_preflight_reason(item, now)
+            if reason:
+                record_gap(item, reason, now)
+            else:
+                requestable.append(dict(item))
+
+        requestable.sort(key=lambda item: (
+            parse_time(item["anchor_at"])
+            + timedelta(seconds=float(item["max_queue_delay_seconds"])),
+            0 if item.get("lane") == Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION else 1,
+            int(item.get("shadow_cohort_id") or item.get("cohort_id") or 0),
+            str(item.get("phase") or ""),
+        ))
+        for item in requestable:
+            if shared["provider_requests"] >= 3:
+                break
+            requested_at = utcnow()
+            if item.get("lane") == Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION:
+                reason = Store.onchain_only_jupiter_preflight_reason(
+                    item, evaluated_at=requested_at
+                )
+            else:
+                reason = universe_preflight_reason(item, requested_at)
+            if reason:
+                record_gap(item, reason, requested_at)
                 continue
-            if provider_requests >= 3:
-                continue
-            provider_requests += 1
+            attempt_id = None
+            if item.get("lane") == Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION:
+                attempt_id = self.store.start_onchain_only_jupiter_quote_attempt(
+                    item, requested_at=requested_at
+                )
+                if attempt_id is None:
+                    continue
+            shared["provider_requests"] += 1
             status = "quoted"
             result: dict[str, Any] = {}
             error_type = ""
@@ -3020,7 +3113,9 @@ class Runtime:
                     str(item["input_mint"]),
                     str(item["output_mint"]),
                     int(item["input_amount_raw"]),
-                    slippage_bps=round(float(self.config["paper"].get("slippage_rate", 0.04)) * 10_000),
+                    slippage_bps=int(item.get("slippage_bps") or round(
+                        float(self.config["paper"].get("slippage_rate", 0.04)) * 10_000
+                    )),
                 )
             except JupiterNoRouteError:
                 status = "no_route"
@@ -3029,27 +3124,45 @@ class Runtime:
             except Exception as exc:
                 status, error_type = "error", type(exc).__name__
             completed_at = utcnow()
-            self.store.record_token_universe_jupiter_quote_validity(
-                item,
-                status=status,
-                out_amount_raw=result.get("output_amount_raw"),
-                other_amount_threshold_raw=result.get("other_amount_threshold"),
-                slippage_bps=result.get("slippage_bps"),
-                router=str(result.get("router") or ""),
-                mode=str(result.get("mode") or ""),
-                fee_bps=result.get("fee_bps"),
-                platform_fee_bps=result.get("platform_fee_bps"),
-                price_impact_pct=result.get("price_impact_pct"),
-                signature_fee_lamports=result.get("signature_fee_lamports"),
-                prioritization_fee_lamports=result.get("prioritization_fee_lamports"),
-                rent_fee_lamports=result.get("rent_fee_lamports"),
-                route_plan=result.get("route_plan") or [],
-                context_slot=result.get("context_slot"),
-                time_taken_ms=result.get("time_taken_ms"),
-                error_type=error_type,
-                requested_at=result.get("requested_at") or requested_at,
-                completed_at=result.get("completed_at") or completed_at,
-            )
+            payload = {
+                "status": status,
+                "out_amount_raw": result.get("output_amount_raw"),
+                "other_amount_threshold_raw": result.get("other_amount_threshold"),
+                "slippage_bps": result.get("slippage_bps"),
+                "router": str(result.get("router") or ""),
+                "mode": str(result.get("mode") or ""),
+                "fee_bps": result.get("fee_bps"),
+                "platform_fee_bps": result.get("platform_fee_bps"),
+                "price_impact_pct": result.get("price_impact_pct"),
+                "signature_fee_lamports": result.get("signature_fee_lamports"),
+                "prioritization_fee_lamports": result.get("prioritization_fee_lamports"),
+                "rent_fee_lamports": result.get("rent_fee_lamports"),
+                "route_plan": result.get("route_plan") or [],
+                "context_slot": result.get("context_slot"),
+                "time_taken_ms": result.get("time_taken_ms"),
+                "error_type": error_type,
+            }
+            if item.get("lane") == Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION:
+                self.store.record_onchain_only_jupiter_quote(
+                    item,
+                    **payload,
+                    attempt_id=attempt_id,
+                    requested_at=requested_at,
+                    completed_at=result.get("completed_at") or completed_at,
+                )
+            else:
+                self.store.record_token_universe_jupiter_quote_validity(
+                    item,
+                    **payload,
+                    requested_at=result.get("requested_at") or requested_at,
+                    completed_at=result.get("completed_at") or completed_at,
+                )
+
+    async def onchain_only_jupiter_quote_once(self) -> None:
+        await self.token_universe_jupiter_quote_once(
+            include_universe=False,
+            include_onchain=True,
+        )
 
     async def pump_loop(self) -> None:
         cfg = self.config["sources"].get("pumpportal") or {}
@@ -3129,6 +3242,7 @@ class Runtime:
         await self.reverse_news_once()
         await self.evaluate_events_once()
         await self.shadow_event_followup_once()
+        await self.onchain_only_jupiter_quote_once()
         await self.monitor_positions_once()
         await self.check_source_health_once(include_streams=False)
 
@@ -3199,6 +3313,14 @@ class Runtime:
             asyncio.create_task(
                 self._periodic("shadow_event_followup", 30, self.shadow_event_followup_once),
                 name="shadow_event_followup",
+            ),
+            asyncio.create_task(
+                self._periodic(
+                    "onchain_only_jupiter_quote",
+                    5,
+                    self.onchain_only_jupiter_quote_once,
+                ),
+                name="onchain_only_jupiter_quote",
             ),
             asyncio.create_task(
                 self._periodic("position_monitor", self.config.get("position_scan_seconds", 15), self.monitor_positions_once),

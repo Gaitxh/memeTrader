@@ -2333,6 +2333,179 @@ def test_token_universe_jupiter_quote_is_forward_baseline_buy_then_target_sell(t
     store.close()
 
 
+def test_onchain_only_jupiter_quote_is_trigger_anchored_forward_and_attempt_first(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "onchain-jupiter.sqlite3", initial_cash_usd=1000)
+    now = utcnow()
+    store.register_onchain_only_shadow(
+        momentum_threshold=80, paper_stake_usd=35, min_liquidity_usd=12_000,
+        max_liquidity_impact_pct=0.0025, slippage_rate=0.04,
+        default_fee_bps=60, pump_fee_bps=125, max_tax_pct=10,
+        max_quote_delay_seconds=45,
+    )
+
+    def enroll(address: str, *, recorded_at: datetime) -> tuple[TokenCandidate, int, datetime]:
+        token = TokenCandidate(
+            chain="solana", address=address, name="Onchain Jupiter", source="fixture"
+        )
+        store.upsert_token(token, seen_at=recorded_at)
+        round_id = store.start_token_discovery_round(
+            provider="fixture", surface="fixture", mode="poll", chain_scope="solana",
+            started_at=recorded_at,
+        )
+        store.add_token_discovery_exposure(
+            round_id, token_id=token.token_id, chain="solana", role="new_token",
+            first_local_discovery=True, new_token=True, observed_at=recorded_at,
+        )
+        store.finish_token_discovery_round(round_id, status="completed", returned_count=1)
+        snapshot_id = store.add_snapshot(TokenSnapshot(
+            "solana", token.address, 1.0, 20_000, 100_000, 30_000, 30, 10,
+            observed_at=recorded_at, ingested_at=recorded_at, provider="fixture",
+        ))
+        transition_id = store.record_token_universe_funnel_transition(
+            token.token_id,
+            stage="context_trigger_evaluation", status="eligible",
+            reason_code="onchain_momentum", evaluation_key=f"onchain-jupiter:{address}",
+            observed_at=recorded_at, ingested_at=recorded_at,
+            source_table="token_context_trigger", snapshot_id=snapshot_id,
+            metadata={"trigger_kind": "onchain_momentum", "momentum_score": 90.0},
+        )
+        shadow_id = store.enroll_onchain_only_shadow(transition_id)
+        assert shadow_id is not None
+        cohort = store.db.execute(
+            "SELECT trigger_recorded_at FROM onchain_only_shadow_cohorts WHERE id=?",
+            (shadow_id,),
+        ).fetchone()
+        return token, int(shadow_id), parse_time(cohort["trigger_recorded_at"])
+
+    _, old_shadow_id, _ = enroll(
+        "O" * 32, recorded_at=now - timedelta(seconds=4)
+    )
+    registration = store.register_onchain_only_jupiter_quote(
+        usdc_input_amount_raw=35_000_000, max_queue_delay_seconds=30,
+        max_total_delay_seconds=45,
+    )
+    assert int(registration["activation_shadow_cohort_id"]) == old_shadow_id
+    token, shadow_id, trigger_at = enroll(
+        "J" * 32, recorded_at=now - timedelta(seconds=3)
+    )
+    assert all(
+        item["shadow_cohort_id"] != old_shadow_id
+        for item in store.due_onchain_only_jupiter_quotes(now=trigger_at)
+    )
+
+    baseline = next(
+        item for item in store.due_onchain_only_jupiter_quotes(now=trigger_at)
+        if item["shadow_cohort_id"] == shadow_id and item["phase"] == "baseline_buy"
+    )
+    assert parse_time(baseline["anchor_at"]) == trigger_at
+    assert baseline["input_amount_raw"] == "35000000"
+    assert baseline["input_mint"] == Store.JUPITER_USDC_MINT
+    assert baseline["output_mint"] == token.address
+    requested = trigger_at + timedelta(seconds=30)
+    attempt_id = store.start_onchain_only_jupiter_quote_attempt(
+        baseline, requested_at=requested,
+    )
+    assert attempt_id is not None
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM onchain_only_jupiter_quote_results"
+    ).fetchone()[0] == 0
+    baseline_id = store.record_onchain_only_jupiter_quote(
+        baseline, status="quoted", attempt_id=attempt_id,
+        out_amount_raw="1000000000", other_amount_threshold_raw="900000000",
+        slippage_bps=400, requested_at=requested,
+        completed_at=trigger_at + timedelta(seconds=45),
+    )
+    assert baseline_id is not None
+
+    targets = store.due_onchain_only_jupiter_quotes(
+        now=trigger_at + timedelta(minutes=15)
+    )
+    target = next(
+        item for item in targets
+        if item["shadow_cohort_id"] == shadow_id and item["horizon_minutes"] == 15
+    )
+    assert parse_time(target["anchor_at"]) == trigger_at + timedelta(minutes=15)
+    assert target["baseline_result_id"] == baseline_id
+    assert target["input_amount_raw"] == "900000000"
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM onchain_only_shadow_results"
+    ).fetchone()[0] == 0
+    target_requested = parse_time(target["anchor_at"]) + timedelta(seconds=10)
+    target_attempt_id = store.start_onchain_only_jupiter_quote_attempt(
+        target, requested_at=target_requested,
+    )
+    target_id = store.record_onchain_only_jupiter_quote(
+        target, status="quoted", attempt_id=target_attempt_id,
+        out_amount_raw="50000000", other_amount_threshold_raw="45000000",
+        slippage_bps=400, requested_at=target_requested,
+        completed_at=parse_time(target["anchor_at"]) + timedelta(seconds=20),
+    )
+    result = store.db.execute(
+        "SELECT * FROM onchain_only_jupiter_quote_results WHERE id=?", (target_id,)
+    ).fetchone()
+    assert result["validity_status"] == "valid"
+    assert result["included_in_round_trip"] == 1
+    assert result["round_trip_min_return"] == pytest.approx(45 / 35 - 1)
+    assert result["decision_eligible"] == 0 and result["affects"] == "none"
+
+    interrupted_token, interrupted_shadow_id, interrupted_at = enroll(
+        "I" * 32, recorded_at=now - timedelta(seconds=2)
+    )
+    interrupted = next(
+        item for item in store.due_onchain_only_jupiter_quotes(now=interrupted_at)
+        if item["shadow_cohort_id"] == interrupted_shadow_id
+    )
+    interrupted_attempt_id = store.start_onchain_only_jupiter_quote_attempt(
+        interrupted, requested_at=interrupted_at + timedelta(seconds=1),
+    )
+    recovered = next(
+        item for item in store.due_onchain_only_jupiter_quotes(
+            now=interrupted_at + timedelta(seconds=2)
+        ) if item["shadow_cohort_id"] == interrupted_shadow_id
+    )
+    assert recovered["preflight_reason"] == "request_evidence_missing"
+    store.record_onchain_only_jupiter_quote(
+        recovered, status="interrupted_after_request",
+        attempt_id=interrupted_attempt_id, evaluated_at=interrupted_at + timedelta(seconds=2),
+    )
+
+    _, expired_shadow_id, expired_at = enroll(
+        "E" * 32, recorded_at=now - timedelta(seconds=1)
+    )
+    expired = next(
+        item for item in store.due_onchain_only_jupiter_quotes(
+            now=expired_at + timedelta(seconds=31)
+        ) if item["shadow_cohort_id"] == expired_shadow_id
+    )
+    assert Store.onchain_only_jupiter_preflight_reason(
+        expired, evaluated_at=expired_at + timedelta(seconds=31)
+    ) == "queue_delay_expired"
+    assert store.record_onchain_only_jupiter_quote(
+        expired, status="not_requested", evaluated_at=expired_at + timedelta(seconds=31)
+    ) is not None
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM onchain_only_jupiter_quote_attempts "
+        "WHERE shadow_cohort_id=?", (expired_shadow_id,),
+    ).fetchone()[0] == 0
+
+    summary = Store.onchain_only_jupiter_quote_summary_from_connection(store.db)
+    assert summary["summary"]["valid_round_trips"] == 1
+    assert summary["summary"]["positive"] == 1
+    assert summary["summary"]["gte_25pct"] == 1
+    assert summary["maturity"]["mature"] is False
+    assert store.db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == 0
+    assert store.db.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == 0
+    assert store.db.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 0
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute(
+            "UPDATE onchain_only_jupiter_quote_results SET router='changed' WHERE id=?",
+            (target_id,),
+        )
+    store.close()
+
+
 def test_jupiter_quote_validity_is_forward_and_uses_fixed_target_anchor(tmp_path: Path):
     store = Store(tmp_path / "jupiter-validity.sqlite3", initial_cash_usd=1000)
     now = utcnow()

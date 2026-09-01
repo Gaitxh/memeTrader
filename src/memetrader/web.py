@@ -228,6 +228,9 @@ EXPECTED_TABLES = {
     "onchain_only_shadow_registrations",
     "onchain_only_shadow_cohorts",
     "onchain_only_shadow_results",
+    "onchain_only_jupiter_quote_registrations",
+    "onchain_only_jupiter_quote_attempts",
+    "onchain_only_jupiter_quote_results",
     "token_snapshots",
     "tokens",
     "trades",
@@ -5488,6 +5491,20 @@ class WebData:
             "maturity": {"mature": False},
             "decision_eligible": False, "affects": "none",
         }
+        onchain_only_jupiter_quote = {
+            "status": "not_observed",
+            "version": Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+            "summary": {
+                "eligible_cohorts": 0, "attempts": 0, "results": 0,
+                "baseline_terminal": 0, "baseline_pending": 0,
+                "baseline_valid_quoted": 0, "target_terminal": 0,
+                "valid_round_trips": 0, "positive": 0, "nonpositive": 0,
+                "gte_25pct": 0, "independent_trigger_dates": 0,
+            },
+            "horizons": [], "statuses": [], "recent": [],
+            "maturity": {"mature": False},
+            "decision_eligible": False, "affects": "none",
+        }
         jupiter_quote = {
             "status": "not_observed",
             "version": Store.TOKEN_UNIVERSE_JUPITER_QUOTE_VERSION,
@@ -5612,6 +5629,89 @@ class WebData:
                 onchain_only_shadow = Store.onchain_only_shadow_summary_from_connection(
                     connection
                 )
+                raw_onchain_jupiter = (
+                    Store.onchain_only_jupiter_quote_summary_from_connection(connection)
+                )
+                raw_onchain_jupiter_summary = raw_onchain_jupiter.get("summary", {})
+                raw_onchain_jupiter_maturity = raw_onchain_jupiter.get("maturity", {})
+                raw_onchain_jupiter_gate = raw_onchain_jupiter_maturity.get("gate", {})
+                onchain_only_jupiter_quote = {
+                    "status": raw_onchain_jupiter.get("status", "not_observed"),
+                    "version": raw_onchain_jupiter.get(
+                        "version", Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION
+                    ),
+                    "registered_at": raw_onchain_jupiter.get("registered_at"),
+                    "activation_shadow_cohort_id": raw_onchain_jupiter.get(
+                        "activation_shadow_cohort_id"
+                    ),
+                    "definition": {
+                        key: raw_onchain_jupiter.get("definition", {}).get(key)
+                        for key in (
+                            "no_historical_backfill", "baseline_anchor", "target_anchor",
+                            "round_trip_semantics", "swap_mode", "slippage_bps",
+                            "max_queue_delay_seconds", "max_total_delay_seconds",
+                        )
+                    },
+                    "summary": {
+                        key: raw_onchain_jupiter_summary.get(key)
+                        for key in (
+                            "eligible_cohorts", "attempts", "results",
+                            "baseline_terminal", "baseline_pending",
+                            "baseline_valid_quoted", "target_terminal",
+                            "valid_round_trips", "positive", "nonpositive",
+                            "gte_25pct", "independent_trigger_dates",
+                        )
+                    },
+                    "horizons": [
+                        {
+                            key: row.get(key)
+                            for key in (
+                                "horizon_minutes", "terminal", "valid_quoted",
+                                "valid_round_trips", "positive", "nonpositive", "gte_25pct",
+                            )
+                        }
+                        for row in raw_onchain_jupiter.get("horizons", [])
+                        if isinstance(row, dict)
+                    ],
+                    "statuses": [
+                        {
+                            key: row.get(key)
+                            for key in (
+                                "phase", "quote_terminal_status", "validity_status", "count",
+                            )
+                        }
+                        for row in raw_onchain_jupiter.get("statuses", [])
+                        if isinstance(row, dict)
+                    ],
+                    "recent": [
+                        {
+                            key: row.get(key)
+                            for key in (
+                                "token_id", "trigger_recorded_at", "phase", "horizon_minutes",
+                                "quote_terminal_status", "validity_status",
+                                "queue_delay_seconds", "request_duration_seconds",
+                                "total_delay_seconds", "round_trip_min_return",
+                                "included_in_round_trip", "recorded_at",
+                            )
+                        }
+                        for row in raw_onchain_jupiter.get("recent", [])
+                        if isinstance(row, dict)
+                    ],
+                    "maturity": {
+                        "mature": bool(raw_onchain_jupiter_maturity.get("mature", False)),
+                        "gate": {
+                            key: raw_onchain_jupiter_gate.get(key)
+                            for key in (
+                                "minimum_valid_round_trips",
+                                "minimum_independent_trigger_dates",
+                                "minimum_positive_results",
+                                "minimum_nonpositive_results",
+                            )
+                        },
+                    },
+                    "decision_eligible": False,
+                    "affects": "none",
+                }
                 jupiter_summary = getattr(
                     Store, "token_universe_jupiter_quote_summary_from_connection", None
                 )
@@ -5894,6 +5994,7 @@ class WebData:
             "token_universe_outcome_quality": outcome_quality,
             "token_universe_fixed_target_execution": fixed_target_execution,
             "onchain_only_shadow": onchain_only_shadow,
+            "onchain_only_jupiter_quote": onchain_only_jupiter_quote,
             "token_universe_jupiter_quote": jupiter_quote,
             "token_universe_funnel": token_universe_funnel,
             "token_event_lookup_name_screen": event_lookup_name_screen,
