@@ -4221,6 +4221,103 @@ class Store:
         rows = self.db.execute("SELECT token_id FROM tokens WHERE last_seen_at>=? ORDER BY last_seen_at DESC LIMIT ?", (since, limit))
         return [token for row in rows if (token := self.token(row["token_id"])) is not None]
 
+    def pending_event_lookup_tokens(
+        self,
+        chains: Iterable[str],
+        *,
+        minutes: int = 180,
+        as_of: Any = None,
+        limit: int = 300,
+    ) -> list[dict[str, Any]]:
+        normalized_chains = sorted({str(value).strip().lower() for value in chains if str(value).strip()})
+        if not normalized_chains:
+            return []
+        cutoff = parse_time(as_of or utcnow())
+        since = cutoff - timedelta(minutes=max(1, int(minutes)))
+        placeholders = ",".join("?" for _ in normalized_chains)
+        with self._lock:
+            rows = list(
+                self.db.execute(
+                    f"""
+                    WITH eligible AS (
+                        SELECT t.*,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY t.cohort_id
+                                   ORDER BY t.recorded_at,t.id
+                               ) AS eligible_rank
+                        FROM token_universe_funnel_transitions t
+                        JOIN token_universe_forward_cohorts c
+                          ON c.id=t.cohort_id AND c.token_id=t.token_id
+                        JOIN token_universe_funnel_registrations r
+                          ON r.definition_version=t.definition_version
+                        JOIN tokens tok
+                          ON tok.token_id=t.token_id AND lower(tok.chain)=lower(c.chain)
+                        WHERE t.definition_version=?
+                          AND c.definition_version=?
+                          AND c.id>r.activation_cohort_id
+                          AND c.discovery_recorded_at>=r.registered_at
+                          AND lower(c.chain) IN ({placeholders})
+                          AND t.stage='context_trigger_evaluation'
+                          AND t.status='eligible'
+                          AND t.recorded_at>=? AND t.recorded_at<=?
+                          AND c.discovery_observed_at<=c.discovery_recorded_at
+                          AND c.discovery_recorded_at<=t.recorded_at
+                          AND t.observed_at<=t.ingested_at
+                          AND t.ingested_at<=t.recorded_at
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM token_universe_funnel_transitions lookup
+                              WHERE lookup.definition_version=t.definition_version
+                                AND lookup.cohort_id=t.cohort_id
+                                AND lookup.stage='event_lookup_attempt'
+                          )
+                    )
+                    SELECT * FROM eligible
+                    WHERE eligible_rank=1
+                    ORDER BY recorded_at,id,cohort_id
+                    LIMIT ?
+                    """,
+                    (
+                        self.TOKEN_UNIVERSE_FUNNEL_VERSION,
+                        self.TOKEN_UNIVERSE_FORWARD_VERSION,
+                        *normalized_chains,
+                        iso(since),
+                        iso(cutoff),
+                        max(1, min(5000, int(limit))),
+                    ),
+                )
+            )
+            pending: list[dict[str, Any]] = []
+            for row in rows:
+                token = self.token(str(row["token_id"]))
+                if token is None:
+                    continue
+                try:
+                    metadata = json.loads(row["metadata_json"] or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    metadata = {}
+                trigger = {
+                    "kind": str(metadata.get("trigger_kind") or row["reason_code"]),
+                    "priority": int(metadata.get("trigger_priority") or 0),
+                    "decision_eligible": False,
+                    "endorsement_inferred": False,
+                }
+                for key in ("source_link_id", "observation_id", "event_id", "decision_id"):
+                    if row[key] is not None:
+                        trigger[key] = int(row[key])
+                if metadata.get("momentum_score") is not None:
+                    trigger["momentum_score"] = float(metadata["momentum_score"])
+                pending.append(
+                    {
+                        "token": token,
+                        "trigger": trigger,
+                        "cohort_id": int(row["cohort_id"]),
+                        "eligible_transition_id": int(row["id"]),
+                        "eligible_at": parse_time(row["recorded_at"]),
+                    }
+                )
+            return pending
+
     def add_snapshot(self, snap: TokenSnapshot) -> int:
         token_id = f"{snap.chain.lower()}:{snap.address}"
         ingested_at = snap.ingested_at or utcnow()

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import sqlite3
+import urllib.parse
 from datetime import timedelta
 
 import pytest
@@ -1632,6 +1633,177 @@ def test_reverse_news_only_runs_for_tokens_with_real_momentum(tmp_path, monkeypa
         ).fetchone()
         assert lookup["reason_code"] == "no_results_returned"
         assert json.loads(lookup["metadata_json"])["fetched_count"] == 0
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_reverse_news_prioritizes_oldest_persistent_pending_without_raising_caps(tmp_path, monkeypatch):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        config["sources"]["rss"] = []
+        config["sources"]["gecko_networks"] = []
+        config["sources"]["pumpportal"]["enabled"] = False
+        config["autonomous_search"]["enabled"] = False
+        config["sources"]["reverse_google_news"].update(
+            {
+                "queries_per_cycle": 1,
+                "max_tokens_scanned_per_cycle": 1,
+                "candidate_pool_limit": 1,
+                "min_independent_sources": 0,
+            }
+        )
+        runtime = Runtime(config, tmp_path)
+        observed_at = utcnow()
+        pending = TokenCandidate(
+            chain="bsc", address="0x" + "7" * 40,
+            name="Pending Narrative", symbol="PEND", source="dexscreener",
+        )
+        recent = TokenCandidate(
+            chain="solana", address="R" * 32,
+            name="Recent Migration", symbol="RECENT", source="pumpportal:migration",
+        )
+        runtime.store.upsert_token(pending, seen_at=observed_at - timedelta(minutes=10))
+        round_id = runtime.store.start_token_discovery_round(
+            provider="dexscreener", surface="new_pairs", mode="poll",
+            chain_scope="bsc", started_at=observed_at,
+        )
+        runtime.store.add_token_discovery_exposure(
+            round_id, token_id=pending.token_id, chain=pending.chain, role="new_pair",
+            first_local_discovery=True, new_token=True, observed_at=observed_at,
+        )
+        runtime.store.finish_token_discovery_round(
+            round_id, status="completed", returned_count=1,
+        )
+        runtime.store.record_token_universe_funnel_transition(
+            pending.token_id,
+            stage="context_trigger_evaluation", status="eligible",
+            reason_code="onchain_momentum", evaluation_key="pending:eligible",
+            observed_at=observed_at, ingested_at=observed_at,
+            metadata={"trigger_kind": "onchain_momentum", "trigger_priority": 1,
+                      "momentum_score": 85.0},
+        )
+        runtime.store.upsert_token(recent, seen_at=utcnow())
+
+        class FakeDex:
+            def __init__(self):
+                self.calls = []
+
+            async def batch_quote(self, chain, addresses):
+                self.calls.append((chain, list(addresses)))
+                token = pending if addresses == [pending.address] else recent
+                snapshot = TokenSnapshot(chain, token.address, 1, 100, 1000, 10, 1, 1)
+                return {token.token_id: (token, snapshot)}
+
+        queried = []
+
+        class FakeRSS:
+            def __init__(self, http, name, url, kind):
+                queried.append(name)
+
+            async def poll(self):
+                return []
+
+        runtime.dex = FakeDex()
+        monkeypatch.setattr("memetrader.runtime.RSSCollector", FakeRSS)
+        await runtime.reverse_news_once()
+        assert runtime.dex.calls == [("bsc", [pending.address])]
+        assert queried == ["google-news-reverse"]
+        assert runtime.store.get_kv(f"reverse_news:{pending.token_id}") is not None
+        assert runtime.store.get_kv(f"reverse_news:{recent.token_id}") is None
+        assert runtime.store.pending_event_lookup_tokens(["bsc", "solana"]) == []
+        lookup = runtime.store.db.execute(
+            "SELECT status FROM token_universe_funnel_transitions "
+            "WHERE token_id=? AND stage='event_lookup_attempt'",
+            (pending.token_id,),
+        ).fetchone()
+        assert lookup["status"] == "started"
+
+        await runtime.reverse_news_once()
+        assert runtime.dex.calls == [
+            ("bsc", [pending.address]),
+            ("solana", [recent.address]),
+        ]
+        assert queried == ["google-news-reverse"]
+        assert all(len(addresses) == 1 for _, addresses in runtime.dex.calls)
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_reverse_news_keeps_one_current_slot_while_draining_pending(tmp_path, monkeypatch):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        config["autonomous_search"]["enabled"] = False
+        config["sources"]["reverse_google_news"].update(
+            {
+                "queries_per_cycle": 3,
+                "max_tokens_scanned_per_cycle": 4,
+                "candidate_pool_limit": 4,
+                "min_independent_sources": 0,
+            }
+        )
+        runtime = Runtime(config, tmp_path)
+        now = utcnow()
+        pending_tokens = [
+            TokenCandidate(
+                chain="bsc", address="0x" + str(index) * 40,
+                name=f"Pending Topic {index}", symbol=f"P{index}", source="dexscreener",
+            )
+            for index in (1, 2, 3)
+        ]
+        current = TokenCandidate(
+            chain="bsc", address="0x" + "9" * 40,
+            name="Current Topic", symbol="CUR", source="pumpportal:migration",
+        )
+        runtime.store.pending_event_lookup_tokens = lambda *args, **kwargs: [
+            {
+                "token": token,
+                "trigger": {"kind": "onchain_momentum", "priority": 1,
+                            "decision_eligible": False, "endorsement_inferred": False},
+                "cohort_id": index,
+                "eligible_transition_id": index,
+                "eligible_at": now + timedelta(seconds=index),
+            }
+            for index, token in enumerate(pending_tokens)
+        ]
+        runtime.store.recent_tokens = lambda *args, **kwargs: [current, *pending_tokens]
+
+        class FakeDex:
+            async def batch_quote(self, chain, addresses):
+                by_address = {token.address: token for token in [*pending_tokens, current]}
+                return {
+                    by_address[address].token_id: (
+                        by_address[address],
+                        TokenSnapshot(chain, address, 1, 50_000, 100_000, 30_000, 100, 20),
+                    )
+                    for address in addresses
+                }
+
+        queries = []
+
+        class FakeRSS:
+            def __init__(self, http, name, url, kind):
+                queries.append(urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["q"][0])
+
+            async def poll(self):
+                return []
+
+        runtime.dex = FakeDex()
+        monkeypatch.setattr("memetrader.runtime.RSSCollector", FakeRSS)
+        await runtime.reverse_news_once()
+        assert queries == [
+            '"Pending Topic 1" when:1d',
+            '"Pending Topic 2" when:1d',
+            '"Current Topic" when:1d',
+        ]
+        assert len(runtime.store.db.execute(
+            "SELECT id FROM source_poll_attempts WHERE collector_kind='reverse_news'"
+        ).fetchall()) == 3
         await runtime.close()
 
     asyncio.run(scenario())

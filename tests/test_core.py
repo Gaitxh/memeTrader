@@ -899,6 +899,108 @@ def test_token_universe_due_queue_orders_baseline_and_outcome_by_deadline(tmp_pa
     store.close()
 
 
+def test_pending_event_lookup_tokens_are_forward_only_oldest_first_and_deduplicated(tmp_path: Path):
+    store = Store(tmp_path / "pending-event-lookup.sqlite3", initial_cash_usd=1000)
+    observed_at = utcnow()
+
+    def discover(chain: str, address: str, name: str) -> TokenCandidate:
+        token = TokenCandidate(
+            chain=chain, address=address, name=name, symbol=name[:5].upper(),
+            source="fixture",
+        )
+        store.upsert_token(token, seen_at=observed_at)
+        round_id = store.start_token_discovery_round(
+            provider="fixture", surface="fixture", mode="poll",
+            chain_scope=chain, started_at=observed_at,
+        )
+        store.add_token_discovery_exposure(
+            round_id, token_id=token.token_id, chain=chain, role="new_token",
+            first_local_discovery=True, new_token=True, observed_at=observed_at,
+        )
+        store.finish_token_discovery_round(round_id, status="completed", returned_count=1)
+        return token
+
+    oldest = discover("bsc", "0x" + "1" * 40, "Oldest Eligible")
+    attempted = discover("solana", "S" * 32, "Already Attempted")
+    later = discover("base", "0x" + "2" * 40, "Later Eligible")
+    first_transition = store.record_token_universe_funnel_transition(
+        oldest.token_id,
+        stage="context_trigger_evaluation", status="eligible",
+        reason_code="onchain_momentum", evaluation_key="oldest:first",
+        observed_at=observed_at, ingested_at=observed_at,
+        metadata={"trigger_kind": "onchain_momentum", "trigger_priority": 1,
+                  "momentum_score": 88.0},
+    )
+    store.record_token_universe_funnel_transition(
+        oldest.token_id,
+        stage="context_trigger_evaluation", status="eligible",
+        reason_code="fresh_high_attention_event_relation", evaluation_key="oldest:second",
+        observed_at=observed_at, ingested_at=observed_at,
+        metadata={"trigger_kind": "fresh_high_attention_event_relation",
+                  "trigger_priority": 2},
+    )
+    attempted_poll_id = store.start_source_poll_attempt(
+        collector_kind="reverse_news", source_key="attempted-before-eligible",
+        platform="rss_news", started_at=observed_at,
+    )
+    store.record_token_universe_funnel_transition(
+        attempted.token_id,
+        stage="event_lookup_attempt", status="started",
+        reason_code="reverse_news_lookup_started", evaluation_key="attempted:lookup",
+        observed_at=observed_at, ingested_at=observed_at,
+        source_poll_attempt_id=attempted_poll_id,
+    )
+    store.record_token_universe_funnel_transition(
+        attempted.token_id,
+        stage="context_trigger_evaluation", status="eligible",
+        reason_code="onchain_momentum", evaluation_key="attempted:eligible",
+        observed_at=observed_at, ingested_at=observed_at,
+        metadata={"trigger_kind": "onchain_momentum", "trigger_priority": 1},
+    )
+    store.record_token_universe_funnel_transition(
+        later.token_id,
+        stage="context_trigger_evaluation", status="eligible",
+        reason_code="high_impact_account_post", evaluation_key="later:eligible",
+        observed_at=observed_at, ingested_at=observed_at,
+        metadata={"trigger_kind": "high_impact_account_post", "trigger_priority": 3},
+    )
+
+    cutoff = utcnow()
+    pending = store.pending_event_lookup_tokens(
+        ["solana", "bsc", "base"], as_of=cutoff, minutes=180,
+    )
+    assert [item["token"].token_id for item in pending] == [oldest.token_id, later.token_id]
+    assert pending[0]["eligible_transition_id"] == first_transition
+    assert pending[0]["trigger"] == {
+        "kind": "onchain_momentum", "priority": 1, "decision_eligible": False,
+        "endorsement_inferred": False, "momentum_score": 88.0,
+    }
+    assert [item["token"].token_id for item in store.pending_event_lookup_tokens(["BSC"])] == [
+        oldest.token_id
+    ]
+    assert store.pending_event_lookup_tokens(["solana"]) == []
+    assert store.pending_event_lookup_tokens([]) == []
+    assert store.pending_event_lookup_tokens(
+        ["bsc", "base"], as_of=cutoff + timedelta(minutes=181), minutes=180,
+    ) == []
+
+    oldest_poll_id = store.start_source_poll_attempt(
+        collector_kind="reverse_news", source_key="oldest-after-eligible",
+        platform="rss_news", started_at=utcnow(),
+    )
+    store.record_token_universe_funnel_transition(
+        oldest.token_id,
+        stage="event_lookup_attempt", status="started",
+        reason_code="reverse_news_lookup_started", evaluation_key="oldest:lookup",
+        observed_at=utcnow(), ingested_at=utcnow(),
+        source_poll_attempt_id=oldest_poll_id,
+    )
+    assert [item["token"].token_id for item in store.pending_event_lookup_tokens(
+        ["bsc", "base"]
+    )] == [later.token_id]
+    store.close()
+
+
 def test_token_universe_funnel_is_forward_only_append_only_and_dag_aware(tmp_path: Path):
     store = Store(tmp_path / "token-universe-funnel.sqlite3", initial_cash_usd=1000)
     now = utcnow()

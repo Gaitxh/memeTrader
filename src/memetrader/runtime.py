@@ -1918,19 +1918,34 @@ class Runtime:
         max_result_age = timedelta(minutes=float(cfg.get("max_result_age_minutes", 180)))
         now = utcnow()
         ranked: list[tuple[int, float, TokenCandidate, dict[str, Any] | None]] = []
+        pending_ranked: list[tuple[Any, float, TokenCandidate, dict[str, Any]]] = []
         source_priority = {"pumpportal:migration": 4, "geckoterminal": 3, "dexscreener": 2, "pumpportal": 1}
-        tokens = self.store.recent_tokens(minutes=180, limit=candidate_pool_limit)
-        tokens.sort(
+        pending = self.store.pending_event_lookup_tokens(
+            self.config.get("candidate", {}).get("chains", []),
+            minutes=180,
+            as_of=now,
+            limit=candidate_pool_limit,
+        )
+        pending_by_token = {item["token"].token_id: item for item in pending}
+        recent_tokens = self.store.recent_tokens(minutes=180, limit=candidate_pool_limit)
+        recent_tokens.sort(
             key=lambda token: (
                 max((value for prefix, value in source_priority.items() if token.source.startswith(prefix)), default=0),
                 token.first_seen_at or now,
             ),
             reverse=True,
         )
+        tokens = [item["token"] for item in pending]
+        tokens.extend(token for token in recent_tokens if token.token_id not in pending_by_token)
         probe_candidates: list[TokenCandidate] = []
+        pending_probes = 0
+        pending_probe_limit = min(max_scanned, max_queries)
         for token in tokens:
             if len(probe_candidates) >= max_scanned:
                 break
+            is_pending = token.token_id in pending_by_token
+            if is_pending and pending_probes >= pending_probe_limit:
+                continue
             query = " ".join(part for part in [token.name, token.symbol] if part).strip()
             if len(query) < 3 or not is_context_searchable_token_name(token.name or token.symbol):
                 continue
@@ -1944,6 +1959,7 @@ class Runtime:
                 continue
             self.store.set_kv(probe_key, iso(now))
             probe_candidates.append(token)
+            pending_probes += int(is_pending)
 
         quoted_by_token: dict[str, tuple[TokenCandidate, TokenSnapshot]] = {}
         if hasattr(self.dex, "batch_quote"):
@@ -2038,23 +2054,49 @@ class Runtime:
             transactions = (snap.buys_5m or 0) + (snap.sells_5m or 0)
             buy_ratio = (snap.buys_5m or 0) / transactions if transactions else 0.0
             momentum = CandidateEvaluator._momentum_score(snap)
-            trigger = self.autonomous_search.resolve_token_context_trigger(
-                quoted_token,
-                momentum_score=momentum,
-                snapshot_observed_at=snap.observed_at,
-            )
             market_gate = (
                 (snap.liquidity_usd or 0) >= min_liquidity
                 and (snap.volume_5m_usd or 0) >= min_volume
                 and transactions >= min_transactions
                 and buy_ratio >= min_buy_ratio
             )
+            pending_item = pending_by_token.get(quoted_token.token_id)
+            if pending_item is not None:
+                pending_ranked.append(
+                    (
+                        pending_item["eligible_at"],
+                        momentum,
+                        quoted_token,
+                        pending_item["trigger"],
+                    )
+                )
+                continue
+            trigger = self.autonomous_search.resolve_token_context_trigger(
+                quoted_token,
+                momentum_score=momentum,
+                snapshot_observed_at=snap.observed_at,
+            )
             if not market_gate and trigger is None:
                 continue
             ranked.append((int((trigger or {}).get("priority") or 0), momentum, quoted_token, trigger))
 
+        pending_ranked.sort(key=lambda item: (item[0], item[2].token_id))
         ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
-        for _, momentum, token, trigger in ranked[:max_queries]:
+        pending_lookup_limit = max_queries
+        if pending_ranked and ranked and max_queries > 1:
+            pending_lookup_limit -= 1
+        lookup_candidates = [
+            (int(trigger.get("priority") or 0), momentum, token, trigger)
+            for _, momentum, token, trigger in pending_ranked[:pending_lookup_limit]
+        ]
+        lookup_candidates.extend(ranked[:max_queries - len(lookup_candidates)])
+        if len(lookup_candidates) < max_queries:
+            lookup_candidates.extend(
+                (int(trigger.get("priority") or 0), momentum, token, trigger)
+                for _, momentum, token, trigger in pending_ranked[pending_lookup_limit:]
+                if token.token_id not in {item[2].token_id for item in lookup_candidates}
+            )
+        for _, momentum, token, trigger in lookup_candidates[:max_queries]:
             key = f"reverse_news:{token.token_id}"
             self.store.set_kv(key, iso(now))
             name = token.name.strip() or token.symbol.strip()
