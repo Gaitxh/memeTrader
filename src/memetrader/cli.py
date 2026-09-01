@@ -24,7 +24,7 @@ from .strategy import EventEngine, replay_guard, token_snapshot_temporal_rejecti
 def _doctor_payload_valid(name: str, response) -> bool:
     if not 200 <= int(response.status_code) < 400:
         return False
-    if name not in {"goplus_evm", "goplus_solana", "honeypot", "rugcheck"}:
+    if name not in {"goplus_evm", "goplus_solana", "honeypot", "rugcheck", "jupiter_quote"}:
         return True
     try:
         payload = response.json()
@@ -38,6 +38,15 @@ def _doctor_payload_valid(name: str, response) -> bool:
     if name == "honeypot":
         result = payload.get("honeypotResult") if isinstance(payload, dict) else None
         return isinstance(result, dict) and "isHoneypot" in result
+    if name == "jupiter_quote":
+        return (
+            isinstance(payload, dict)
+            and payload.get("transaction") is None
+            and int(payload.get("outAmount") or 0) > 0
+            and int(payload.get("otherAmountThreshold") or 0) > 0
+            and isinstance(payload.get("routePlan"), list)
+            and bool(payload["routePlan"])
+        )
     return isinstance(payload, dict) and any(
         key in payload for key in ("score", "score_normalised", "risks", "rugged")
     )
@@ -204,6 +213,13 @@ def cmd_doctor(config_path: str, online: bool) -> int:
             targets = {
                 "dexscreener": ("https://api.dexscreener.com/latest/dex/search?q=PNUT", True),
                 "geckoterminal": ("https://api.geckoterminal.com/api/v2/networks/solana/new_pools?page=1", True),
+                "jupiter_quote": (
+                    "https://api.jup.ag/swap/v2/order?"
+                    "inputMint=So11111111111111111111111111111111111111112&"
+                    "outputMint=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v&"
+                    "amount=1000000&slippageBps=400",
+                    True,
+                ),
             }
             if safety_cfg.get("goplus_evm", True):
                 targets["goplus_evm"] = (

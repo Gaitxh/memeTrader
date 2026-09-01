@@ -7,8 +7,16 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+import httpx
 
-from memetrader.collectors import DexScreenerClient, MastodonCollector
+from memetrader.collectors import (
+    DexScreenerClient,
+    JupiterNoRouteError,
+    JupiterQuoteError,
+    JupiterQuoteProtocolError,
+    JupiterQuoteClient,
+    MastodonCollector,
+)
 from memetrader.models import CandidateDecision, EventView, Observation, ObservationRevisionHandoff, Position, TokenCandidate, TokenSnapshot, iso, parse_time, utcnow
 from memetrader.runtime import load_config
 from memetrader.store import Store
@@ -1737,6 +1745,134 @@ def test_token_universe_fixed_target_execution_is_forward_fixed_route_and_append
         store.db.execute(
             "UPDATE token_universe_fixed_target_execution_results SET terminal_status='route_mismatch' WHERE id=?",
             (int(modeled["id"]),),
+        )
+    store.close()
+
+
+def test_token_universe_jupiter_quote_is_forward_baseline_buy_then_target_sell(tmp_path: Path):
+    store = Store(tmp_path / "jupiter-quote.sqlite3", initial_cash_usd=1000)
+    now = utcnow()
+
+    def enroll(address: str) -> tuple[TokenCandidate, sqlite3.Row, datetime]:
+        token = TokenCandidate(chain="solana", address=address, name="Jupiter", source="fixture")
+        store.upsert_token(token, seen_at=now)
+        round_id = store.start_token_discovery_round(
+            provider="fixture", surface="fixture", mode="poll", chain_scope="solana",
+            started_at=now,
+        )
+        store.add_token_discovery_exposure(
+            round_id, token_id=token.token_id, chain=token.chain, role="new_token",
+            first_local_discovery=True, new_token=True, observed_at=now,
+        )
+        store.finish_token_discovery_round(round_id, status="completed", returned_count=1)
+        cohort = store.db.execute(
+            "SELECT * FROM token_universe_forward_cohorts WHERE token_id=?", (token.token_id,)
+        ).fetchone()
+        return token, cohort, parse_time(cohort["discovery_recorded_at"])
+
+    def snapshot(token: TokenCandidate, when: datetime, price: float) -> None:
+        stamp = iso(when)
+        store.db.execute(
+            """
+            INSERT INTO token_snapshots(
+                token_id,observed_at,ingested_at,recorded_at,provider,price_usd,liquidity_usd,raw_json
+            ) VALUES(?,?,?,?,?,?,?,?)
+            """,
+            (
+                token.token_id, stamp, stamp, stamp, "dexscreener", price, 20_000,
+                json.dumps({"pair": {"chainId": "solana", "dexId": "raydium",
+                            "pairAddress": "PAIR", "baseToken": {"address": token.address},
+                            "quoteToken": {"address": Store.JUPITER_USDC_MINT}}}),
+            ),
+        )
+
+    enroll("L" * 32)
+    registration = store.register_token_universe_jupiter_quote(usdc_input_amount_raw=35_000_000)
+    assert int(registration["activation_cohort_id"]) == 1
+    token, cohort, discovered = enroll("J" * 32)
+    snapshot(token, discovered + timedelta(minutes=1), 1.0)
+    snapshot(token, discovered + timedelta(minutes=15, seconds=10), 2.0)
+    store.finalize_token_universe_forward_outcomes(now=now + timedelta(minutes=16))
+    decisions_before = store.db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
+    trades_before = store.db.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
+
+    due = store.due_token_universe_jupiter_quotes()
+    assert len(due) == 1
+    buy = due[0]
+    assert buy["phase"] == "baseline_buy" and buy["outcome_id"] is None
+    assert buy["input_mint"] == Store.JUPITER_USDC_MINT
+    assert buy["output_mint"] == token.address and buy["input_amount_raw"] == "35000000"
+    with pytest.raises(ValueError, match="time order"):
+        store.record_token_universe_jupiter_quote(
+            buy["quote_key"], status="no_route",
+            requested_at=parse_time(buy["source_recorded_at"]) - timedelta(seconds=1),
+            completed_at=parse_time(buy["source_recorded_at"]),
+        )
+    buy_id = store.record_token_universe_jupiter_quote(
+        buy["quote_key"], status="quoted", out_amount_raw="123456789",
+        other_amount_threshold_raw="120000000", slippage_bps=400,
+        signature_fee_lamports=5000, prioritization_fee_lamports=1000, rent_fee_lamports=0,
+        router="metis", mode="quote_only", fee_bps=10, platform_fee_bps=5,
+        price_impact_pct=0.12, context_slot=123, time_taken_ms=12.5,
+        requested_at=parse_time(buy["source_recorded_at"]) + timedelta(seconds=1),
+        completed_at=parse_time(buy["source_recorded_at"]) + timedelta(seconds=2),
+        route_plan=[{
+            "swapInfo": {
+                "ammKey": "AMM-1", "label": "Raydium", "inputMint": Store.JUPITER_USDC_MINT,
+                "outputMint": token.address, "inAmount": "35000000", "outAmount": "123456789",
+                "feeAmount": "12", "feeMint": Store.JUPITER_USDC_MINT,
+                "transaction": "must_not_store", "requestId": "must_not_store",
+            },
+            "percent": 100, "raw": "must_not_store",
+        }],
+    )
+    assert buy_id is not None
+    sell = store.due_token_universe_jupiter_quotes()[0]
+    assert sell["phase"] == "target_sell" and sell["outcome_id"] is not None
+    assert sell["input_mint"] == token.address
+    assert sell["output_mint"] == Store.JUPITER_USDC_MINT
+    assert sell["input_amount_raw"] == "120000000"
+    assert store.record_token_universe_jupiter_quote(
+        sell["quote_key"], status="quoted", out_amount_raw="40000000",
+        other_amount_threshold_raw="38000000", router="metis", slippage_bps=400,
+        requested_at=parse_time(sell["source_recorded_at"]) + timedelta(seconds=1),
+        completed_at=parse_time(sell["source_recorded_at"]) + timedelta(seconds=2),
+    ) is not None
+    assert store.due_token_universe_jupiter_quotes() == []
+    rows = list(store.db.execute(
+        "SELECT * FROM token_universe_jupiter_quote_results ORDER BY id"
+    ))
+    assert [(row["phase"], row["terminal_status"]) for row in rows] == [
+        ("baseline_buy", "quoted"), ("target_sell", "quoted"),
+    ]
+    assert all(row["decision_eligible"] == 0 and row["affects"] == "none" for row in rows)
+    assert store.db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == decisions_before
+    assert store.db.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == trades_before
+    columns = {
+        row["name"] for row in store.db.execute(
+            "PRAGMA table_info(token_universe_jupiter_quote_results)"
+        )
+    }
+    assert not {"raw_json", "transaction", "request_id", "api_key"} & columns
+    summary = Store.token_universe_jupiter_quote_summary_from_connection(store.db)
+    assert summary["summary"]["results"] == 2 and summary["summary"]["quoted"] == 2
+    assert summary["summary"]["max_quote_delay_seconds"] == pytest.approx(2.0)
+    assert summary["summary"]["avg_round_trip_min_return"] == pytest.approx(38 / 35 - 1)
+    assert summary["recent"][0]["round_trip_min_return"] == pytest.approx(38 / 35 - 1)
+    assert summary["recent"][0]["phase"] == "target_sell"
+    assert summary["recent"][0]["token_id"] == token.token_id
+    assert summary["recent"][0]["source_observed_at"] == sell["source_observed_at"]
+    stored_route = json.loads(rows[0]["route_json"])
+    assert stored_route == [{
+        "amm_key": "AMM-1", "label": "Raydium", "input_mint": Store.JUPITER_USDC_MINT,
+        "output_mint": token.address, "in_amount_raw": "35000000", "out_amount_raw": "123456789",
+        "fee_amount_raw": "12", "fee_mint": Store.JUPITER_USDC_MINT, "percent": 100.0,
+    }]
+    assert "must_not_store" not in json.dumps(summary)
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute(
+            "UPDATE token_universe_jupiter_quote_results SET router='changed' WHERE id=?",
+            (buy_id,),
         )
     store.close()
 
@@ -3520,6 +3656,75 @@ def test_dexscreener_batch_quote_preserves_caller_evm_address_casing():
     assert list(result) == [token_id]
     assert result[token_id][0].address == requested_address
     assert result[token_id][1].address == requested_address
+
+
+def test_jupiter_quote_is_normalized_and_never_exposes_transaction():
+    class Response:
+        def json(self):
+            return {
+                "inputMint": "SOL", "inAmount": "100", "outputMint": "TOKEN",
+                "outAmount": "90", "otherAmountThreshold": "89", "swapMode": "ExactIn",
+                "slippageBps": 100, "priceImpactPct": "0.1",
+                "platformFee": {"amount": "0", "feeBps": 0}, "contextSlot": 7,
+                "timeTaken": 0.01, "requestId": "secret-id",
+                "transaction": "",
+                "routePlan": [{"percent": 100, "swapInfo": {
+                    "ammKey": "amm", "label": "AMM", "inputMint": "SOL",
+                    "outputMint": "TOKEN", "inAmount": "100", "outAmount": "90",
+                    "feeAmount": "1", "feeMint": "SOL",
+                }}],
+            }
+
+    class Http:
+        async def get(self, url, **kwargs):
+            assert url == JupiterQuoteClient.BASE
+            assert kwargs["params"] == {
+                "inputMint": "SOL", "outputMint": "TOKEN", "amount": 100,
+                "slippageBps": 100,
+            }
+            return Response()
+
+    result = asyncio.run(JupiterQuoteClient(Http()).quote(" SOL ", "TOKEN", 100, slippage_bps=100))
+    assert result["out_amount"] == "90"
+    assert result["route_plan"][0]["amm_key"] == "amm"
+    assert "transaction" not in result and "requestId" not in result
+
+
+def test_jupiter_quote_rejects_transaction_and_maps_no_route():
+    class Response:
+        def __init__(self, payload): self.payload = payload
+        def json(self): return self.payload
+
+    class Http:
+        def __init__(self, response): self.response = response
+        async def get(self, url, **kwargs): return self.response
+
+    with pytest.raises(JupiterQuoteProtocolError, match="contains a transaction"):
+        asyncio.run(JupiterQuoteClient(Http(Response({"transaction": "signed"}))).quote("SOL", "TOKEN", 1))
+
+    request = httpx.Request("GET", JupiterQuoteClient.BASE)
+    response = httpx.Response(400, request=request, content=b"Could not find any route")
+    with pytest.raises(JupiterNoRouteError):
+        class ErrorHttp:
+            async def get(self, url, **kwargs):
+                    raise httpx.HTTPStatusError("Could not find any route", request=request, response=response)
+        asyncio.run(JupiterQuoteClient(ErrorHttp()).quote("SOL", "TOKEN", 1))
+
+
+def test_jupiter_quote_rejects_mismatched_response():
+    class Response:
+        def raise_for_status(self): return None
+        def json(self):
+            return {
+                "inputMint": "OTHER", "outputMint": "TOKEN", "inAmount": "1",
+                "outAmount": "2", "routePlan": [{"swapInfo": {}}], "transaction": None,
+            }
+
+    class Http:
+        async def get(self, *_args, **_kwargs): return Response()
+
+    with pytest.raises(JupiterQuoteError, match="requested route"):
+        asyncio.run(JupiterQuoteClient(Http()).quote("SOL", "TOKEN", 1))
 
 
 def test_initial_page_and_old_polled_news_are_not_entry_evidence():

@@ -64,6 +64,8 @@ class Store:
     MISSED_OPPORTUNITY_AUDIT_VERSION = "missed-opportunity-audit/v1"
     TOKEN_UNIVERSE_OUTCOME_QUALITY_VERSION = "token-universe-outcome-quality/v1"
     TOKEN_UNIVERSE_FIXED_TARGET_EXECUTION_VERSION = "token-universe-fixed-target-execution/v1"
+    TOKEN_UNIVERSE_JUPITER_QUOTE_VERSION = "token-universe-jupiter-quote/v1"
+    JUPITER_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
     TOKEN_UNIVERSE_EVM_CHAINS = frozenset({
         "arbitrum", "avalanche", "base", "blast", "bsc", "celo", "cronos",
         "ethereum", "eth", "fantom", "linea", "mantle", "optimism", "polygon",
@@ -1449,6 +1451,71 @@ class Store:
                 CREATE TRIGGER IF NOT EXISTS token_universe_fixed_target_execution_results_no_delete
                 BEFORE DELETE ON token_universe_fixed_target_execution_results
                 BEGIN SELECT RAISE(ABORT,'token-universe fixed-target execution results are immutable'); END;
+                CREATE TABLE IF NOT EXISTS token_universe_jupiter_quote_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_cohort_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS token_universe_jupiter_quote_results (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    quote_key TEXT NOT NULL UNIQUE,
+                    cohort_id INTEGER NOT NULL,
+                    outcome_id INTEGER,
+                    phase TEXT NOT NULL CHECK(phase IN ('baseline_buy','target_sell')),
+                    baseline_snapshot_id INTEGER,
+                    target_snapshot_id INTEGER,
+                    source_observed_at TEXT NOT NULL,
+                    source_ingested_at TEXT NOT NULL,
+                    source_recorded_at TEXT NOT NULL,
+                    input_mint TEXT NOT NULL,
+                    output_mint TEXT NOT NULL,
+                    input_amount_raw TEXT NOT NULL,
+                    output_amount_raw TEXT,
+                    other_amount_threshold_raw TEXT,
+                    slippage_bps INTEGER,
+                    signature_fee_lamports INTEGER,
+                    prioritization_fee_lamports INTEGER,
+                    rent_fee_lamports INTEGER,
+                    round_trip_min_return REAL,
+                    terminal_status TEXT NOT NULL CHECK(terminal_status IN (
+                        'quoted','no_route','error','quote_only_protocol_invalid'
+                    )),
+                    router TEXT NOT NULL DEFAULT '',
+                    mode TEXT NOT NULL DEFAULT '',
+                    fee_bps REAL,
+                    platform_fee_bps REAL,
+                    price_impact_pct REAL,
+                    context_slot INTEGER,
+                    time_taken_ms REAL,
+                    route_json TEXT NOT NULL DEFAULT '[]',
+                    error_type TEXT NOT NULL DEFAULT '',
+                    requested_at TEXT NOT NULL,
+                    completed_at TEXT NOT NULL,
+                    quote_delay_seconds REAL NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    FOREIGN KEY(cohort_id) REFERENCES token_universe_forward_cohorts(id),
+                    FOREIGN KEY(outcome_id) REFERENCES token_universe_forward_outcomes(id)
+                );
+                CREATE INDEX IF NOT EXISTS token_universe_jupiter_quote_results_status_idx
+                    ON token_universe_jupiter_quote_results(
+                        definition_version,phase,terminal_status,recorded_at
+                    );
+                CREATE TRIGGER IF NOT EXISTS token_universe_jupiter_quote_registrations_no_update
+                BEFORE UPDATE ON token_universe_jupiter_quote_registrations
+                BEGIN SELECT RAISE(ABORT,'token-universe Jupiter quote registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_universe_jupiter_quote_registrations_no_delete
+                BEFORE DELETE ON token_universe_jupiter_quote_registrations
+                BEGIN SELECT RAISE(ABORT,'token-universe Jupiter quote registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_universe_jupiter_quote_results_no_update
+                BEFORE UPDATE ON token_universe_jupiter_quote_results
+                BEGIN SELECT RAISE(ABORT,'token-universe Jupiter quote results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_universe_jupiter_quote_results_no_delete
+                BEFORE DELETE ON token_universe_jupiter_quote_results
+                BEGIN SELECT RAISE(ABORT,'token-universe Jupiter quote results are immutable'); END;
                 CREATE TABLE IF NOT EXISTS kv (
                     key TEXT PRIMARY KEY,
                     value_json TEXT NOT NULL,
@@ -1930,6 +1997,25 @@ class Store:
                 self.db.execute("ALTER TABLE token_snapshots ADD COLUMN ingested_at TEXT")
             if "recorded_at" not in snapshot_columns:
                 self.db.execute("ALTER TABLE token_snapshots ADD COLUMN recorded_at TEXT")
+            jupiter_result_columns = {
+                row["name"]
+                for row in self.db.execute("PRAGMA table_info(token_universe_jupiter_quote_results)")
+            }
+            if jupiter_result_columns and "route_json" not in jupiter_result_columns:
+                self.db.execute(
+                    "ALTER TABLE token_universe_jupiter_quote_results "
+                    "ADD COLUMN route_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            for column, definition in (
+                ("other_amount_threshold_raw", "TEXT"), ("slippage_bps", "INTEGER"),
+                ("signature_fee_lamports", "INTEGER"),
+                ("prioritization_fee_lamports", "INTEGER"), ("rent_fee_lamports", "INTEGER"),
+                ("round_trip_min_return", "REAL"),
+            ):
+                if jupiter_result_columns and column not in jupiter_result_columns:
+                    self.db.execute(
+                        f"ALTER TABLE token_universe_jupiter_quote_results ADD COLUMN {column} {definition}"
+                    )
             discovery_exposure_columns = {
                 row["name"] for row in self.db.execute("PRAGMA table_info(token_discovery_exposures)")
             }
@@ -2237,6 +2323,14 @@ class Store:
         except (TypeError, ValueError, json.JSONDecodeError):
             return {}
         return parsed if isinstance(parsed, dict) else {}
+
+    @staticmethod
+    def _json_list(value: Any) -> list[Any]:
+        try:
+            parsed = json.loads(str(value or "[]"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
+        return parsed if isinstance(parsed, list) else []
 
     @staticmethod
     def _fingerprint(obs: Observation) -> str:
@@ -9602,6 +9696,278 @@ class Store:
                 inserted += 1
         return {"inserted": inserted, "modeled_executable": modeled_executable}
 
+    def register_token_universe_jupiter_quote(
+        self,
+        *,
+        usdc_mint: str = JUPITER_USDC_MINT,
+        usdc_input_amount_raw: int | str = 35_000_000,
+    ) -> sqlite3.Row:
+        """Freeze a quote-only, forward Solana baseline-buy/target-sell overlay."""
+        amount = str(int(usdc_input_amount_raw))
+        if int(amount) <= 0:
+            raise ValueError("usdc_input_amount_raw must be positive")
+        mint = str(usdc_mint).strip()[:128]
+        if not mint:
+            raise ValueError("usdc_mint is required")
+        definition = {
+            "version": self.TOKEN_UNIVERSE_JUPITER_QUOTE_VERSION,
+            "source": self.TOKEN_UNIVERSE_FORWARD_VERSION,
+            "no_historical_backfill": True,
+            "chain": "solana",
+            "baseline_phase": "USDC_to_token_quote_only",
+            "target_phase": "baseline_quote_output_to_USDC_quote_only",
+            "api_contract": "swap_v2_order_without_taker",
+            "forbidden_request_fields": ["taker", "payer", "receiver", "referralAccount"],
+            "forbidden_response_fields": ["transaction", "requestId"],
+            "usdc_mint": mint,
+            "usdc_input_amount_raw": amount,
+            "decision_eligible": False,
+            "affects": "none",
+        }
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO token_universe_jupiter_quote_registrations("
+                "definition_version,registered_at,activation_cohort_id,definition_json) "
+                "VALUES(?,?,COALESCE((SELECT MAX(id) FROM token_universe_forward_cohorts),0),?)",
+                (
+                    self.TOKEN_UNIVERSE_JUPITER_QUOTE_VERSION,
+                    iso(), self._json(definition),
+                ),
+            )
+            return self.db.execute(
+                "SELECT * FROM token_universe_jupiter_quote_registrations WHERE definition_version=?",
+                (self.TOKEN_UNIVERSE_JUPITER_QUOTE_VERSION,),
+            ).fetchone()
+
+    @staticmethod
+    def _token_universe_jupiter_quote_key(cohort_id: int, outcome_id: int, phase: str) -> str:
+        return f"jupiter-quote:{int(cohort_id)}:{int(outcome_id)}:{phase}"
+
+    def due_token_universe_jupiter_quotes(self, *, limit: int = 60) -> list[dict[str, Any]]:
+        """Return post-registration, source-timestamp-valid quote-only legs."""
+        with self._lock:
+            registration = self.db.execute(
+                "SELECT * FROM token_universe_jupiter_quote_registrations WHERE definition_version=?",
+                (self.TOKEN_UNIVERSE_JUPITER_QUOTE_VERSION,),
+            ).fetchone()
+            if registration is None:
+                return []
+            definition = self._json_object(registration["definition_json"])
+            activation = int(registration["activation_cohort_id"])
+            rows = self.db.execute(
+                """
+                SELECT c.id AS cohort_id,c.token_id,b.snapshot_id AS baseline_snapshot_id,
+                       s.observed_at,s.ingested_at,s.recorded_at
+                FROM token_universe_forward_cohorts c
+                JOIN token_universe_forward_baselines b ON b.cohort_id=c.id AND b.status='observed'
+                JOIN token_snapshots s ON s.id=b.snapshot_id
+                LEFT JOIN token_universe_jupiter_quote_results r
+                  ON r.definition_version=? AND r.cohort_id=c.id AND r.outcome_id IS NULL
+                 AND r.phase='baseline_buy'
+                WHERE c.id>? AND c.definition_version=? AND lower(c.chain)='solana' AND r.id IS NULL
+                  AND s.observed_at<=s.ingested_at AND s.ingested_at<=s.recorded_at
+                ORDER BY c.discovery_recorded_at,c.id
+                """,
+                (
+                    self.TOKEN_UNIVERSE_JUPITER_QUOTE_VERSION, activation,
+                    self.TOKEN_UNIVERSE_FORWARD_VERSION,
+                ),
+            ).fetchall()
+            baseline_due: list[dict[str, Any]] = []
+            for row in rows:
+                token_id = str(row["token_id"])
+                if ":" not in token_id:
+                    continue
+                cohort_id = int(row["cohort_id"])
+                baseline_due.append({
+                    "quote_key": self._token_universe_jupiter_quote_key(cohort_id, 0, "baseline_buy"),
+                    "cohort_id": cohort_id, "outcome_id": None, "phase": "baseline_buy",
+                    "baseline_snapshot_id": int(row["baseline_snapshot_id"]), "target_snapshot_id": None,
+                    "source_observed_at": str(row["observed_at"]),
+                    "source_ingested_at": str(row["ingested_at"]),
+                    "source_recorded_at": str(row["recorded_at"]),
+                    "input_mint": str(definition["usdc_mint"]),
+                    "output_mint": token_id.split(":", 1)[1],
+                    "input_amount_raw": str(definition["usdc_input_amount_raw"]),
+                })
+            rows = self.db.execute(
+                """
+                SELECT c.id AS cohort_id,c.token_id,o.id AS outcome_id,
+                       b.snapshot_id AS baseline_snapshot_id,o.outcome_snapshot_id AS target_snapshot_id,
+                       s.observed_at,s.ingested_at,s.recorded_at,
+                       buy.other_amount_threshold_raw
+                FROM token_universe_forward_outcomes o
+                JOIN token_universe_forward_cohorts c ON c.id=o.cohort_id
+                JOIN token_universe_forward_baselines b ON b.cohort_id=c.id AND b.status='observed'
+                JOIN token_universe_jupiter_quote_results buy
+                 ON buy.definition_version=? AND buy.cohort_id=c.id AND buy.outcome_id IS NULL
+                 AND buy.phase='baseline_buy' AND buy.terminal_status='quoted'
+                 AND buy.other_amount_threshold_raw IS NOT NULL
+                JOIN token_snapshots s ON s.id=o.outcome_snapshot_id
+                LEFT JOIN token_universe_jupiter_quote_results sell
+                  ON sell.definition_version=? AND sell.cohort_id=c.id AND sell.outcome_id=o.id
+                 AND sell.phase='target_sell'
+                WHERE c.id>? AND c.definition_version=? AND lower(c.chain)='solana'
+                  AND o.status='observed' AND sell.id IS NULL
+                  AND s.observed_at<=s.ingested_at AND s.ingested_at<=s.recorded_at
+                ORDER BY o.target_at,o.id
+                """,
+                (
+                    self.TOKEN_UNIVERSE_JUPITER_QUOTE_VERSION,
+                    self.TOKEN_UNIVERSE_JUPITER_QUOTE_VERSION,
+                    activation, self.TOKEN_UNIVERSE_FORWARD_VERSION,
+                ),
+            ).fetchall()
+            target_due: list[dict[str, Any]] = []
+            for row in rows:
+                token_id = str(row["token_id"])
+                if ":" not in token_id:
+                    continue
+                cohort_id, outcome_id = int(row["cohort_id"]), int(row["outcome_id"])
+                target_due.append({
+                    "quote_key": self._token_universe_jupiter_quote_key(cohort_id, outcome_id, "target_sell"),
+                    "cohort_id": cohort_id, "outcome_id": outcome_id, "phase": "target_sell",
+                    "baseline_snapshot_id": int(row["baseline_snapshot_id"]),
+                    "target_snapshot_id": int(row["target_snapshot_id"]),
+                    "source_observed_at": str(row["observed_at"]),
+                    "source_ingested_at": str(row["ingested_at"]),
+                    "source_recorded_at": str(row["recorded_at"]),
+                    "input_mint": token_id.split(":", 1)[1],
+                    "output_mint": str(definition["usdc_mint"]),
+                    "input_amount_raw": str(row["other_amount_threshold_raw"]),
+                })
+            return (target_due + baseline_due)[:max(1, int(limit))]
+
+    def record_token_universe_jupiter_quote(
+        self,
+        quote_key: str,
+        *,
+        status: str,
+        out_amount_raw: int | str | None = None,
+        other_amount_threshold_raw: int | str | None = None,
+        slippage_bps: int | None = None,
+        signature_fee_lamports: int | None = None,
+        prioritization_fee_lamports: int | None = None,
+        rent_fee_lamports: int | None = None,
+        router: str = "",
+        mode: str = "",
+        fee_bps: float | None = None,
+        platform_fee_bps: float | None = None,
+        price_impact_pct: float | None = None,
+        context_slot: int | None = None,
+        time_taken_ms: float | None = None,
+        route_plan: Iterable[Mapping[str, Any]] | None = None,
+        error_type: str = "",
+        requested_at: Any = None,
+        completed_at: Any = None,
+    ) -> int | None:
+        """Append one terminal, redacted quote-only result for a currently due leg."""
+        statuses = {"quoted", "no_route", "error", "quote_only_protocol_invalid"}
+        if status not in statuses:
+            raise ValueError("invalid Jupiter quote status")
+        task = next(
+            (item for item in self.due_token_universe_jupiter_quotes(limit=10_000)
+             if item["quote_key"] == str(quote_key)),
+            None,
+        )
+        if task is None:
+            return None
+        requested = parse_time(requested_at or utcnow())
+        completed = parse_time(completed_at or utcnow())
+        source_observed = parse_time(task["source_observed_at"])
+        source_ingested = parse_time(task["source_ingested_at"])
+        source_recorded = parse_time(task["source_recorded_at"])
+        if not (source_observed <= source_ingested <= source_recorded <= requested <= completed):
+            raise ValueError("invalid Jupiter quote time order")
+        output = None if out_amount_raw is None else str(int(out_amount_raw))
+        threshold = (
+            None if other_amount_threshold_raw is None else str(int(other_amount_threshold_raw))
+        )
+        if status == "quoted" and (
+            output is None or int(output) <= 0 or threshold is None or int(threshold) <= 0
+        ):
+            raise ValueError("quoted Jupiter result requires positive output and threshold")
+        if status != "quoted":
+            output = None
+            threshold = None
+        normalized_route: list[dict[str, Any]] = []
+        for item in route_plan or ():
+            if not isinstance(item, Mapping):
+                continue
+            swap = item.get("swapInfo") if isinstance(item.get("swapInfo"), Mapping) else item
+            text = lambda *keys: next(
+                (
+                    str(swap[key]).strip()[:128]
+                    for key in keys
+                    if swap.get(key) is not None and str(swap.get(key)).strip()
+                ),
+                "",
+            )
+            percent = item.get("percent")
+            normalized_route.append({
+                "amm_key": text("ammKey", "amm_key"),
+                "label": text("label"),
+                "input_mint": text("inputMint", "input_mint"),
+                "output_mint": text("outputMint", "output_mint"),
+                "in_amount_raw": text("inAmount", "in_amount_raw", "in_amount"),
+                "out_amount_raw": text("outAmount", "out_amount_raw", "out_amount"),
+                "fee_amount_raw": text("feeAmount", "fee_amount_raw", "fee_amount"),
+                "fee_mint": text("feeMint", "fee_mint"),
+                "percent": float(percent) if percent is not None else None,
+            })
+        clean = lambda value, limit: re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(value or ""))[:limit]
+        round_trip_min_return = None
+        if task["phase"] == "target_sell" and status == "quoted":
+            with self._lock:
+                buy = self.db.execute(
+                    """
+                    SELECT input_amount_raw FROM token_universe_jupiter_quote_results
+                    WHERE definition_version=? AND cohort_id=? AND outcome_id IS NULL
+                      AND phase='baseline_buy' AND terminal_status='quoted'
+                    """,
+                    (self.TOKEN_UNIVERSE_JUPITER_QUOTE_VERSION, int(task["cohort_id"])),
+                ).fetchone()
+            if buy is None or int(buy["input_amount_raw"]) <= 0:
+                return None
+            round_trip_min_return = int(threshold) / int(buy["input_amount_raw"]) - 1.0
+        with self._lock, self.db:
+            self.db.execute(
+                """
+                INSERT OR IGNORE INTO token_universe_jupiter_quote_results(
+                    definition_version,quote_key,cohort_id,outcome_id,phase,baseline_snapshot_id,
+                    target_snapshot_id,source_observed_at,source_ingested_at,source_recorded_at,
+                    input_mint,output_mint,input_amount_raw,output_amount_raw,terminal_status,
+                    other_amount_threshold_raw,slippage_bps,signature_fee_lamports,
+                    prioritization_fee_lamports,rent_fee_lamports,round_trip_min_return,
+                    router,mode,fee_bps,platform_fee_bps,price_impact_pct,context_slot,time_taken_ms,
+                    route_json,error_type,requested_at,completed_at,quote_delay_seconds,recorded_at,
+                    decision_eligible,affects
+                ) VALUES(""" + ",".join("?" for _ in range(34)) + ",0,'none')",
+                (
+                    self.TOKEN_UNIVERSE_JUPITER_QUOTE_VERSION, str(task["quote_key"]),
+                    int(task["cohort_id"]),
+                    int(task["outcome_id"]) if task["outcome_id"] is not None else None,
+                    str(task["phase"]),
+                    task["baseline_snapshot_id"], task["target_snapshot_id"],
+                    task["source_observed_at"], task["source_ingested_at"], task["source_recorded_at"],
+                    task["input_mint"], task["output_mint"], task["input_amount_raw"], output, status,
+                    threshold, int(slippage_bps) if slippage_bps is not None else None,
+                    int(signature_fee_lamports) if signature_fee_lamports is not None else None,
+                    int(prioritization_fee_lamports) if prioritization_fee_lamports is not None else None,
+                    int(rent_fee_lamports) if rent_fee_lamports is not None else None,
+                    round_trip_min_return,
+                    clean(router, 80), clean(mode, 40), fee_bps, platform_fee_bps,
+                    price_impact_pct, int(context_slot) if context_slot is not None else None,
+                    time_taken_ms, self._json(normalized_route), clean(error_type, 80), iso(requested), iso(completed),
+                    max(0.0, (completed - source_recorded).total_seconds()), iso(),
+                ),
+            )
+            row = self.db.execute(
+                "SELECT id FROM token_universe_jupiter_quote_results WHERE quote_key=?",
+                (str(task["quote_key"]),),
+            ).fetchone()
+            return int(row["id"]) if row is not None else None
+
     def due_token_universe_quotes(
         self,
         *,
@@ -10761,6 +11127,117 @@ class Store:
             "decision_eligible": False,
             "affects": "none",
             "as_of": iso(),
+        }
+
+    @classmethod
+    def token_universe_jupiter_quote_summary_from_connection(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        recent_limit: int = 20,
+    ) -> dict[str, Any]:
+        required = {
+            "token_universe_jupiter_quote_registrations",
+            "token_universe_jupiter_quote_results",
+        }
+        tables = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        empty = {
+            "status": "not_observed", "version": cls.TOKEN_UNIVERSE_JUPITER_QUOTE_VERSION,
+            "summary": {"results": 0, "quoted": 0}, "phases": [], "recent": [],
+            "decision_eligible": False, "affects": "none",
+        }
+        if not required.issubset(tables):
+            return empty
+        registration = connection.execute(
+            "SELECT * FROM token_universe_jupiter_quote_registrations WHERE definition_version=?",
+            (cls.TOKEN_UNIVERSE_JUPITER_QUOTE_VERSION,),
+        ).fetchone()
+        if registration is None:
+            return empty
+        version = cls.TOKEN_UNIVERSE_JUPITER_QUOTE_VERSION
+        summary = connection.execute(
+            """
+            SELECT COUNT(*) AS results,
+                   SUM(CASE WHEN terminal_status='quoted' THEN 1 ELSE 0 END) AS quoted,
+                   AVG(quote_delay_seconds) AS avg_quote_delay_seconds,
+                   MAX(quote_delay_seconds) AS max_quote_delay_seconds,
+                   AVG(round_trip_min_return) AS avg_round_trip_min_return,
+                   MIN(round_trip_min_return) AS min_round_trip_min_return,
+                   MAX(round_trip_min_return) AS max_round_trip_min_return
+            FROM token_universe_jupiter_quote_results WHERE definition_version=?
+            """,
+            (version,),
+        ).fetchone()
+        phases = [
+            {
+                "phase": str(row["phase"]), "terminal_status": str(row["terminal_status"]),
+                "count": int(row["count"] or 0),
+            }
+            for row in connection.execute(
+                """
+                SELECT phase,terminal_status,COUNT(*) AS count
+                FROM token_universe_jupiter_quote_results WHERE definition_version=?
+                GROUP BY phase,terminal_status ORDER BY phase,count DESC,terminal_status
+                """,
+                (version,),
+            )
+        ]
+        recent = [
+            {
+                "token_id": str(row["token_id"]),
+                "cohort_id": int(row["cohort_id"]),
+                "outcome_id": int(row["outcome_id"]) if row["outcome_id"] is not None else None,
+                "phase": str(row["phase"]),
+                "terminal_status": str(row["terminal_status"]),
+                "source_observed_at": str(row["source_observed_at"]),
+                "input_amount_raw": str(row["input_amount_raw"]),
+                "output_amount_raw": row["output_amount_raw"],
+                "other_amount_threshold_raw": row["other_amount_threshold_raw"],
+                "slippage_bps": row["slippage_bps"],
+                "signature_fee_lamports": row["signature_fee_lamports"],
+                "prioritization_fee_lamports": row["prioritization_fee_lamports"],
+                "rent_fee_lamports": row["rent_fee_lamports"],
+                "round_trip_min_return": row["round_trip_min_return"],
+                "router": str(row["router"]), "mode": str(row["mode"]),
+                "fee_bps": row["fee_bps"], "platform_fee_bps": row["platform_fee_bps"],
+                "price_impact_pct": row["price_impact_pct"], "context_slot": row["context_slot"],
+                "time_taken_ms": row["time_taken_ms"],
+                "route_plan": cls._json_list(row["route_json"]),
+                "requested_at": str(row["requested_at"]),
+                "completed_at": str(row["completed_at"]),
+                "quote_delay_seconds": row["quote_delay_seconds"],
+                "recorded_at": str(row["recorded_at"]),
+            }
+            for row in connection.execute(
+                """
+                SELECT r.*,c.token_id
+                FROM token_universe_jupiter_quote_results r
+                JOIN token_universe_forward_cohorts c ON c.id=r.cohort_id
+                WHERE r.definition_version=? ORDER BY r.id DESC LIMIT ?
+                """,
+                (version, max(1, min(100, int(recent_limit)))),
+            )
+        ]
+        total = int(summary["results"] or 0)
+        return {
+            "status": "collecting" if total else "registered_waiting_forward_data",
+            "version": version,
+            "registered_at": str(registration["registered_at"]),
+            "activation_cohort_id": int(registration["activation_cohort_id"]),
+            "definition": cls._json_object(registration["definition_json"]),
+            "summary": {
+                "results": total, "quoted": int(summary["quoted"] or 0),
+                "avg_quote_delay_seconds": summary["avg_quote_delay_seconds"],
+                "max_quote_delay_seconds": summary["max_quote_delay_seconds"],
+                "avg_round_trip_min_return": summary["avg_round_trip_min_return"],
+                "min_round_trip_min_return": summary["min_round_trip_min_return"],
+                "max_round_trip_min_return": summary["max_round_trip_min_return"],
+            },
+            "phases": phases, "recent": recent,
+            "decision_eligible": False, "affects": "none", "as_of": iso(),
         }
 
     def finalize_missed_opportunity_audits(self) -> dict[str, int]:

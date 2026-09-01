@@ -16,6 +16,7 @@ from memetrader.runtime import (
     initial_config,
     load_config,
 )
+from memetrader.store import Store
 
 
 def test_initial_config_has_private_token_and_live_locked():
@@ -69,11 +70,15 @@ def test_followup_tick_finalizes_event_and_token_context_without_agent_or_quote(
         runtime.store.finalize_missed_opportunity_audits = lambda: calls.append("missed_opportunity")
         async def universe():
             calls.append("token_universe")
+        async def jupiter():
+            calls.append("jupiter_quote")
         runtime.token_universe_followup_once = universe
+        runtime.token_universe_jupiter_quote_once = jupiter
         await runtime.shadow_event_followup_once()
         assert calls == [
             "event", "token_context", "information_first", "information_first_ilg",
-            "token_universe", "outcome_quality", "fixed_execution", "missed_opportunity",
+            "token_universe", "jupiter_quote", "outcome_quality", "fixed_execution",
+            "missed_opportunity",
         ]
         await runtime.close()
 
@@ -131,6 +136,56 @@ def test_token_universe_followup_actively_quotes_due_baseline_without_trading(tm
         assert attempt["decision_eligible"] == 0 and attempt["affects"] == "none"
         assert runtime.dex.http is runtime.market_http
         assert runtime.dex.http is not runtime.http
+        assert runtime.store.db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == 0
+        assert runtime.store.db.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == 0
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_runtime_records_one_quote_only_jupiter_leg_without_trading(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        runtime = Runtime(config, tmp_path)
+        due = {
+            "quote_key": "jupiter-quote:2:0:baseline_buy",
+            "input_mint": Store.JUPITER_USDC_MINT,
+            "output_mint": "J" * 32,
+            "input_amount_raw": "35000000",
+        }
+        limits = []
+        runtime.store.due_token_universe_jupiter_quotes = (
+            lambda limit=1: limits.append(limit) or [due]
+        )
+        recorded = []
+        runtime.store.record_token_universe_jupiter_quote = (
+            lambda quote_key, **payload: recorded.append((quote_key, payload))
+        )
+
+        async def quote(input_mint, output_mint, amount, *, slippage_bps):
+            assert (input_mint, output_mint, amount, slippage_bps) == (
+                Store.JUPITER_USDC_MINT, "J" * 32, 35_000_000, 400,
+            )
+            stamp = iso(utcnow())
+            return {
+                "requested_at": stamp, "completed_at": stamp,
+                "output_amount_raw": "123456789", "other_amount_threshold": "118518518",
+                "slippage_bps": 400, "router": "metis", "mode": "manual",
+                "fee_bps": 2, "platform_fee_bps": 2, "price_impact_pct": 0.1,
+                "time_taken_ms": 12, "route_plan": [{"label": "Raydium"}],
+            }
+
+        runtime.jupiter.quote = quote
+        await runtime.token_universe_jupiter_quote_once()
+        assert len(recorded) == 1
+        assert limits == [3]
+        quote_key, payload = recorded[0]
+        assert quote_key == due["quote_key"] and payload["status"] == "quoted"
+        assert payload["out_amount_raw"] == "123456789"
+        assert payload["other_amount_threshold_raw"] == "118518518"
+        assert payload["route_plan"] == [{"label": "Raydium"}]
         assert runtime.store.db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == 0
         assert runtime.store.db.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == 0
         await runtime.close()
@@ -818,6 +873,9 @@ def test_doctor_treats_unrequired_security_endpoint_failure_as_warning(tmp_path,
             self.url = url
 
         def json(self):
+            if "api.jup.ag" in self.url:
+                return {"transaction": None, "outAmount": "2", "otherAmountThreshold": "1",
+                        "routePlan": [{"swapInfo": {"label": "fixture"}}]}
             if "gopluslabs.io" in self.url:
                 return {"code": 1, "result": {"probe": {"safe": "1"}}}
             if "rugcheck.xyz" in self.url:
@@ -867,6 +925,9 @@ def test_doctor_requires_at_least_one_provider_per_security_family(tmp_path, mon
             self.url = url
 
         def json(self):
+            if "api.jup.ag" in self.url:
+                return {"transaction": None, "outAmount": "2", "otherAmountThreshold": "1",
+                        "routePlan": [{"swapInfo": {"label": "fixture"}}]}
             if "gopluslabs.io" in self.url:
                 return {"code": 1, "result": {"probe": {"safe": "1"}}}
             if "rugcheck.xyz" in self.url:

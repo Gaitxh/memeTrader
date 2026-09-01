@@ -45,6 +45,18 @@ class UnsafeFeedURL(ValueError):
     pass
 
 
+class JupiterQuoteError(RuntimeError):
+    pass
+
+
+class JupiterNoRouteError(JupiterQuoteError):
+    pass
+
+
+class JupiterQuoteProtocolError(JupiterQuoteError):
+    pass
+
+
 class FeedRedirectError(RuntimeError):
     pass
 
@@ -1131,6 +1143,7 @@ class DexScreenerClient:
                     by_token[candidate.token_id] = (candidate, snap)
         return by_token
 
+
     async def discover_surface(
         self,
         surface: str,
@@ -1173,6 +1186,111 @@ class DexScreenerClient:
                 seen.add(key)
                 rows.append(row)
         return rows
+
+
+class JupiterQuoteClient:
+    """Read-only Jupiter Swap API V2 quote client."""
+
+    BASE = "https://api.jup.ag/swap/v2/order"
+
+    def __init__(self, http: HttpClient):
+        self.http = http
+
+    async def quote(
+        self,
+        input_mint: str,
+        output_mint: str,
+        amount: int,
+        *,
+        slippage_bps: int = 50,
+    ) -> dict[str, Any]:
+        input_mint, output_mint = str(input_mint).strip(), str(output_mint).strip()
+        amount, slippage_bps = int(amount), int(slippage_bps)
+        if not input_mint or not output_mint or amount <= 0:
+            raise ValueError("input/output mint and amount are required")
+        if slippage_bps < 0 or slippage_bps > 10000:
+            raise ValueError("slippage_bps must be between 0 and 10000")
+        requested_at = iso(utcnow())
+        try:
+            response = await self.http.get(self.BASE, params={
+                "inputMint": input_mint, "outputMint": output_mint,
+                "amount": amount, "slippageBps": slippage_bps,
+            })
+            if hasattr(response, "raise_for_status"):
+                response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 400:
+                try:
+                    exc.response.read()
+                    message = exc.response.content.decode("utf-8", errors="replace").casefold()
+                except Exception:
+                    message = ""
+                message = (message + " " + str(exc)).casefold()
+                if exc.response.status_code == 400 and (
+                    "no route" in message or "no_route" in message or "no route found" in message
+                    or "find any route" in message
+                ):
+                    raise JupiterNoRouteError("Jupiter returned no route") from exc
+            raise JupiterQuoteError(f"Jupiter quote failed with HTTP {exc.response.status_code}") from exc
+        completed_at = iso(utcnow())
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Jupiter quote response must be an object")
+        if any(payload.get(key) for key in ("transaction", "swapTransaction")):
+            raise JupiterQuoteProtocolError("Jupiter quote response contains a transaction")
+        if (
+            str(payload.get("inputMint") or "") != input_mint
+            or str(payload.get("outputMint") or "") != output_mint
+            or str(payload.get("inAmount") or "") != str(amount)
+            or int(payload.get("slippageBps") if payload.get("slippageBps") is not None else -1) != slippage_bps
+            or str(payload.get("swapMode") or "ExactIn") != "ExactIn"
+            or int(payload.get("outAmount") or 0) <= 0
+            or int(payload.get("otherAmountThreshold") or 0) <= 0
+            or int(payload.get("otherAmountThreshold") or 0) > int(payload.get("outAmount") or 0)
+            or not isinstance(payload.get("routePlan"), list)
+            or not payload.get("routePlan")
+        ):
+            raise JupiterQuoteError("Jupiter quote response does not match the requested route")
+
+        def text(value: Any) -> str | None:
+            return str(value) if value is not None else None
+
+        route_plan: list[dict[str, Any]] = []
+        for item in payload.get("routePlan") or []:
+            if not isinstance(item, dict) or not isinstance(item.get("swapInfo"), dict):
+                continue
+            swap = item["swapInfo"]
+            route_plan.append({
+                "percent": item.get("percent"),
+                "amm_key": text(swap.get("ammKey")), "label": text(swap.get("label")),
+                "input_mint": text(swap.get("inputMint")), "output_mint": text(swap.get("outputMint")),
+                "in_amount": text(swap.get("inAmount")), "out_amount": text(swap.get("outAmount")),
+                "fee_amount": text(swap.get("feeAmount")), "fee_mint": text(swap.get("feeMint")),
+            })
+        return {
+            "provider": "jupiter", "requested_at": requested_at, "completed_at": completed_at,
+            "input_mint": text(payload.get("inputMint")), "in_amount": text(payload.get("inAmount")),
+            "output_mint": text(payload.get("outputMint")), "out_amount": text(payload.get("outAmount")),
+            "other_amount_threshold": text(payload.get("otherAmountThreshold")),
+            "mode": text(payload.get("mode") or payload.get("swapMode")),
+            "router": text(payload.get("router")),
+            "slippage_bps": payload.get("slippageBps"),
+            "price_impact_pct": text(payload.get("priceImpact") or payload.get("priceImpactPct")),
+            "fee_bps": payload.get("feeBps"),
+            "signature_fee_lamports": payload.get("signatureFeeLamports"),
+            "prioritization_fee_lamports": payload.get("prioritizationFeeLamports"),
+            "rent_fee_lamports": payload.get("rentFeeLamports"),
+            "platform_fee_bps": (
+                (payload.get("platformFee") or {}).get("feeBps")
+                if isinstance(payload.get("platformFee"), dict) else None
+            ),
+            "output_amount_raw": text(payload.get("outAmount")),
+            "route_plan": route_plan,
+            "context_slot": payload.get("contextSlot"),
+            "time_taken_ms": payload.get("totalTime")
+            if payload.get("totalTime") is not None
+            else ((float(payload["timeTaken"]) * 1000) if payload.get("timeTaken") is not None else None),
+        }
 
 
 class PumpPortalCollector:

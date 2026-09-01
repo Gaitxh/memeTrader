@@ -19,6 +19,9 @@ from .collectors import (
     DexScreenerClient,
     GeckoNewPoolsCollector,
     HttpClient,
+    JupiterNoRouteError,
+    JupiterQuoteClient,
+    JupiterQuoteProtocolError,
     MastodonCollector,
     PumpPortalCollector,
     RSSCollector,
@@ -1070,6 +1073,9 @@ class Runtime:
             pump_fee_bps=float(paper_config.get("pump_swap_fee_bps", 125)),
             max_tax_pct=float(config["safety"].get("max_tax_pct", 10)),
         )
+        self.store.register_token_universe_jupiter_quote(
+            usdc_input_amount_raw=round(float(paper_config.get("max_position_usd", 35)) * 1_000_000),
+        )
         self.store.recover_interrupted_exposure_attempts()
         if not self.store.open_positions() and not self.store.trades():
             with self.store.db:
@@ -1082,7 +1088,9 @@ class Runtime:
             conditional_store=self.store,
         )
         self.market_http = HttpClient()
+        self.jupiter_http = HttpClient(min_host_interval=2.1)
         self.dex = DexScreenerClient(self.market_http)
+        self.jupiter = JupiterQuoteClient(self.jupiter_http)
         self.events = EventEngine(
             self.store,
             similarity_threshold=float((config.get("events") or {}).get("similarity", 0.28)),
@@ -1111,6 +1119,7 @@ class Runtime:
     async def close(self) -> None:
         if self.bridge:
             await self.bridge.close()
+        await self.jupiter_http.close()
         await self.market_http.close()
         await self.http.close()
         self.store.close()
@@ -2771,6 +2780,7 @@ class Runtime:
         self.store.finalize_information_first_ilg_outcomes()
         self.store.finalize_attention_experiment_outcomes()
         await self.token_universe_followup_once()
+        await self.token_universe_jupiter_quote_once()
         self.store.finalize_token_universe_outcome_quality()
         self.store.finalize_token_universe_fixed_target_execution()
         self.store.finalize_missed_opportunity_audits()
@@ -2875,6 +2885,49 @@ class Runtime:
                 duplicate_token_count=max(0, len(chunk) - len(quoted)),
             )
         self.store.finalize_token_universe_forward_outcomes()
+
+    async def token_universe_jupiter_quote_once(self) -> None:
+        """Append one forward, quote-only Solana route leg without a wallet or transaction."""
+        for item in self.store.due_token_universe_jupiter_quotes(limit=3):
+            requested_at = utcnow()
+            status = "quoted"
+            result: dict[str, Any] = {}
+            error_type = ""
+            try:
+                result = await self.jupiter.quote(
+                    str(item["input_mint"]),
+                    str(item["output_mint"]),
+                    int(item["input_amount_raw"]),
+                    slippage_bps=round(float(self.config["paper"].get("slippage_rate", 0.04)) * 10_000),
+                )
+            except JupiterNoRouteError:
+                status = "no_route"
+            except JupiterQuoteProtocolError as exc:
+                status, error_type = "quote_only_protocol_invalid", type(exc).__name__
+            except Exception as exc:
+                status, error_type = "error", type(exc).__name__
+            completed_at = utcnow()
+            self.store.record_token_universe_jupiter_quote(
+                str(item["quote_key"]),
+                status=status,
+                out_amount_raw=result.get("output_amount_raw"),
+                other_amount_threshold_raw=result.get("other_amount_threshold"),
+                slippage_bps=result.get("slippage_bps"),
+                router=str(result.get("router") or ""),
+                mode=str(result.get("mode") or ""),
+                fee_bps=result.get("fee_bps"),
+                platform_fee_bps=result.get("platform_fee_bps"),
+                price_impact_pct=result.get("price_impact_pct"),
+                signature_fee_lamports=result.get("signature_fee_lamports"),
+                prioritization_fee_lamports=result.get("prioritization_fee_lamports"),
+                rent_fee_lamports=result.get("rent_fee_lamports"),
+                route_plan=result.get("route_plan") or [],
+                context_slot=result.get("context_slot"),
+                time_taken_ms=result.get("time_taken_ms"),
+                error_type=error_type,
+                requested_at=result.get("requested_at") or requested_at,
+                completed_at=result.get("completed_at") or completed_at,
+            )
 
     async def pump_loop(self) -> None:
         cfg = self.config["sources"].get("pumpportal") or {}

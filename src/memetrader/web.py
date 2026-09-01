@@ -5427,6 +5427,20 @@ class WebData:
             "terminal_statuses": [], "recent": [],
             "decision_eligible": False, "affects": "none",
         }
+        jupiter_quote = {
+            "status": "not_observed",
+            "version": Store.TOKEN_UNIVERSE_JUPITER_QUOTE_VERSION,
+            "summary": {
+                "results": 0, "quoted": 0, "no_route": 0, "errors": 0,
+                "quote_only_protocol_invalid": 0,
+                "avg_quote_delay_seconds": None, "max_quote_delay_seconds": None,
+                "avg_round_trip_min_return": None,
+                "min_round_trip_min_return": None,
+                "max_round_trip_min_return": None,
+            },
+            "phases": [], "terminal_statuses": [], "recent": [],
+            "decision_eligible": False, "affects": "none",
+        }
         token_universe_funnel = {
             "status": "not_observed",
             "version": Store.TOKEN_UNIVERSE_FUNNEL_VERSION,
@@ -5519,6 +5533,100 @@ class WebData:
                 fixed_target_execution = (
                     Store.token_universe_fixed_target_execution_summary_from_connection(connection)
                 )
+                jupiter_summary = getattr(
+                    Store, "token_universe_jupiter_quote_summary_from_connection", None
+                )
+                if callable(jupiter_summary):
+                    raw_jupiter = jupiter_summary(connection)
+                    raw_summary = raw_jupiter.get("summary", {})
+                    safe_phases = [
+                        {
+                            "phase": row.get("phase", "unknown"),
+                            "terminal_status": row.get("terminal_status", "unknown"),
+                            "count": row.get("count", 0),
+                        }
+                        for row in raw_jupiter.get("phases", [])
+                        if isinstance(row, dict)
+                    ]
+                    status_counts: dict[str, int] = {}
+                    for row in safe_phases:
+                        terminal_status = str(row["terminal_status"])
+                        status_counts[terminal_status] = (
+                            status_counts.get(terminal_status, 0) + int(row["count"] or 0)
+                        )
+                    jupiter_quote = {
+                        "status": raw_jupiter.get("status", "not_observed"),
+                        "version": raw_jupiter.get(
+                            "version", Store.TOKEN_UNIVERSE_JUPITER_QUOTE_VERSION
+                        ),
+                        "summary": {
+                            "results": raw_summary.get("results", 0),
+                            "quoted": raw_summary.get("quoted", 0),
+                            "no_route": status_counts.get("no_route", 0),
+                            "errors": status_counts.get("error", 0),
+                            "quote_only_protocol_invalid": status_counts.get(
+                                "quote_only_protocol_invalid", 0
+                            ),
+                            "avg_quote_delay_seconds": raw_summary.get(
+                                "avg_quote_delay_seconds"
+                            ),
+                            "max_quote_delay_seconds": raw_summary.get(
+                                "max_quote_delay_seconds"
+                            ),
+                            "avg_round_trip_min_return": raw_summary.get(
+                                "avg_round_trip_min_return"
+                            ),
+                            "min_round_trip_min_return": raw_summary.get(
+                                "min_round_trip_min_return"
+                            ),
+                            "max_round_trip_min_return": raw_summary.get(
+                                "max_round_trip_min_return"
+                            ),
+                        },
+                        "phases": safe_phases,
+                        "terminal_statuses": [
+                            {
+                                "terminal_status": terminal_status,
+                                "count": count,
+                            }
+                            for terminal_status, count in sorted(status_counts.items())
+                        ],
+                        "recent": [
+                            {
+                                "token_id": row.get("token_id"),
+                                "phase": row.get("phase", "unknown"),
+                                "terminal_status": row.get("terminal_status", "unknown"),
+                                "source_observed_at": row.get("source_observed_at"),
+                                "requested_at": row.get("requested_at"),
+                                "completed_at": row.get("completed_at"),
+                                "quote_delay_seconds": row.get("quote_delay_seconds"),
+                                "router": row.get("router", ""),
+                                "mode": row.get("mode", ""),
+                                "other_amount_threshold_raw": row.get(
+                                    "other_amount_threshold_raw"
+                                ),
+                                "slippage_bps": row.get("slippage_bps"),
+                                "round_trip_min_return": row.get("round_trip_min_return"),
+                                "route_plan": [
+                                    {
+                                        key: leg.get(key)
+                                        for key in (
+                                            "amm_key", "label", "input_mint", "output_mint",
+                                            "in_amount_raw", "out_amount_raw", "fee_amount_raw",
+                                            "fee_mint", "percent",
+                                        )
+                                        if key in leg
+                                    }
+                                    for leg in row.get("route_plan", [])
+                                    if isinstance(leg, dict)
+                                ],
+                            }
+                            for row in raw_jupiter.get("recent", [])
+                            if isinstance(row, dict)
+                        ],
+                        "decision_eligible": False,
+                        "affects": "none",
+                    }
                 token_universe_funnel = Store.token_universe_funnel_summary_from_connection(
                     connection
                 )
@@ -5640,6 +5748,7 @@ class WebData:
             "missed_opportunity": missed_opportunity,
             "token_universe_outcome_quality": outcome_quality,
             "token_universe_fixed_target_execution": fixed_target_execution,
+            "token_universe_jupiter_quote": jupiter_quote,
             "token_universe_funnel": token_universe_funnel,
             "token_event_lookup_name_screen": event_lookup_name_screen,
             "agent_shadow_review": agent_shadow_review,

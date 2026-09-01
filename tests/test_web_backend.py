@@ -695,6 +695,11 @@ def test_web_api_empty_database_is_safe_and_live_is_locked(tmp_path: Path):
     assert audit["missed_opportunity"]["summary"]["audited_outcomes"] == 0
     assert audit["missed_opportunity"]["decision_eligible"] is False
     assert audit["missed_opportunity"]["affects"] == "none"
+    jupiter_quote = audit["token_universe_jupiter_quote"]
+    assert jupiter_quote["status"] == "not_observed"
+    assert jupiter_quote["summary"]["results"] == 0
+    assert jupiter_quote["decision_eligible"] is False
+    assert jupiter_quote["affects"] == "none"
     shadow_review = audit["agent_shadow_review"]
     assert shadow_review["status"] == "registered_waiting"
     assert shadow_review["summary"]["inputs"] == 0
@@ -705,6 +710,90 @@ def test_web_api_empty_database_is_safe_and_live_is_locked(tmp_path: Path):
     assert substitutions["version"] == "constraint-substitution-matrix/v1"
     assert substitutions["illegal_or_unsafe_bypass_allowed"] is False
     assert any(item["id"] == "telegram_content_ingestion" for item in substitutions["items"])
+
+
+def test_web_audit_jupiter_quote_is_aggregate_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    config_path, _ = _config(tmp_path)
+    Store(tmp_path / "db.sqlite3", initial_cash_usd=1000).close()
+
+    def summary(_connection):
+        return {
+            "status": "collecting",
+            "version": Store.TOKEN_UNIVERSE_JUPITER_QUOTE_VERSION,
+            "summary": {
+                "results": 4, "quoted": 2, "avg_quote_delay_seconds": 1.25,
+                "max_quote_delay_seconds": 3.5,
+                "avg_round_trip_min_return": 0.08,
+                "min_round_trip_min_return": -0.04,
+                "max_round_trip_min_return": 0.20,
+                "api_key": "secret",
+            },
+            "phases": [
+                {"phase": "baseline_buy", "terminal_status": "quoted", "count": 2,
+                 "requestId": "hidden"},
+                {"phase": "baseline_buy", "terminal_status": "no_route", "count": 1},
+                {"phase": "target_sell", "terminal_status": "error", "count": 1},
+            ],
+            "recent": [{
+                "token_id": "solana:CA123", "phase": "baseline_buy",
+                "terminal_status": "quoted", "source_observed_at": "2026-09-01T01:00:00Z",
+                "requested_at": "2026-09-01T01:00:01Z",
+                "completed_at": "2026-09-01T01:00:02Z", "quote_delay_seconds": 2.0,
+                "router": "metis", "mode": "ExactIn",
+                "other_amount_threshold_raw": "39000000", "slippage_bps": 100,
+                "round_trip_min_return": 0.114285714,
+                "route_plan": [{
+                    "amm_key": "amm", "label": "Raydium", "input_mint": "USDC",
+                    "output_mint": "CA123", "in_amount_raw": "35000000",
+                    "out_amount_raw": "123", "fee_amount_raw": "1",
+                    "fee_mint": "USDC", "percent": 100,
+                    "transaction": "hidden", "requestId": "hidden", "taker": "hidden",
+                }],
+                "raw": {"transaction": "hidden"}, "api_key": "hidden",
+            }],
+            "decision_eligible": True,
+            "affects": "decision",
+        }
+
+    monkeypatch.setattr(
+        Store, "token_universe_jupiter_quote_summary_from_connection",
+        staticmethod(summary), raising=False,
+    )
+    quote = WebData(config_path).audit()["token_universe_jupiter_quote"]
+
+    assert quote["summary"] == {
+        "results": 4, "quoted": 2, "no_route": 1, "errors": 1,
+        "quote_only_protocol_invalid": 0, "avg_quote_delay_seconds": 1.25,
+        "max_quote_delay_seconds": 3.5, "avg_round_trip_min_return": 0.08,
+        "min_round_trip_min_return": -0.04, "max_round_trip_min_return": 0.20,
+    }
+    assert quote["phases"][0] == {
+        "phase": "baseline_buy", "terminal_status": "quoted", "count": 2,
+    }
+    assert quote["terminal_statuses"] == [
+        {"terminal_status": "error", "count": 1},
+        {"terminal_status": "no_route", "count": 1},
+        {"terminal_status": "quoted", "count": 2},
+    ]
+    assert quote["recent"] == [{
+        "token_id": "solana:CA123", "phase": "baseline_buy",
+        "terminal_status": "quoted", "source_observed_at": "2026-09-01T01:00:00Z",
+        "requested_at": "2026-09-01T01:00:01Z",
+        "completed_at": "2026-09-01T01:00:02Z", "quote_delay_seconds": 2.0,
+        "router": "metis", "mode": "ExactIn",
+        "other_amount_threshold_raw": "39000000", "slippage_bps": 100,
+        "round_trip_min_return": 0.114285714,
+        "route_plan": [{
+            "amm_key": "amm", "label": "Raydium", "input_mint": "USDC",
+            "output_mint": "CA123", "in_amount_raw": "35000000",
+            "out_amount_raw": "123", "fee_amount_raw": "1",
+            "fee_mint": "USDC", "percent": 100,
+        }],
+    }]
+    assert quote["decision_eligible"] is False and quote["affects"] == "none"
+    serialized = json.dumps(quote).lower()
+    assert '"raw":' not in serialized and "transaction" not in serialized
+    assert "requestid" not in serialized and "api_key" not in serialized and "taker" not in serialized
 
 
 def test_telegram_external_origin_handoff_is_forward_only_context_and_keeps_failures(
@@ -1750,6 +1839,12 @@ def test_candidate_ranking_api_is_persisted_bounded_sanitized_and_wait_is_truthf
     assert "data-testid='token-context-followup'" in app
     assert "data-testid='information-first-shadow'" in app
     assert "data-testid='information-first-ilg'" in app
+    assert "data-testid='token-universe-jupiter-quote'" in app
+    assert "data-testid='token-universe-jupiter-quote-evidence'" in app
+    assert "Solana Jupiter read-only quote coverage" in app
+    assert "no transaction is built, signed, or broadcast" in app
+    assert "AVG ROUND-TRIP MIN RETURN" in app
+    assert "quote-bound research, not a profit promise" in app
     assert "low activity is not “unpriced” and is not a buy signal" in app
     assert "first locally recorded same-surface activity crossing" in app
     assert "Token-context forward follow-through: learn what merits more research" in app

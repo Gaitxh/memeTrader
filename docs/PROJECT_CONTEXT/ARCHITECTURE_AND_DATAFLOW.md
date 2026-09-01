@@ -106,7 +106,7 @@ Trend Scout 主题通道基线 round-robin / 受限选择性分配
 | `src/memetrader/runtime.py` | 默认配置、配置校验、单实例、采集调度、浏览器桥、事件/Token 写入、评估与仓位监督 |
 | `src/memetrader/store.py` | SQLite WAL schema、去重、事件/Token/快照/决策/Paper/健康/Agent 用量持久化 |
 | `src/memetrader/models.py` | Observation、EventView、TokenCandidate、TokenSnapshot、CandidateDecision、Position 数据模型 |
-| `src/memetrader/collectors.py` | RSS、Bluesky、Mastodon、GeckoTerminal、DexScreener、PumpPortal 客户端 |
+| `src/memetrader/collectors.py` | RSS、Bluesky、Mastodon、GeckoTerminal、DexScreener、PumpPortal，以及无钱包/无 taker 的 Jupiter V2 只读报价客户端 |
 | `src/memetrader/autonomous_search.py` | Trend Scout、Source Discovery、Token Context 的 Codex 路由、预算、验证和动态源维护 |
 | `src/memetrader/strategy.py` | 聚类、时间回放门、安全检查、匹配/排名、WAIT/REJECT/CANDIDATE、Paper 仓位/退出 |
 | `src/memetrader/web.py` | 轻量 HTTP API、SQLite 短查询、健康、详情、白名单 Settings、本机 Devnet 钱包接口 |
@@ -132,6 +132,7 @@ Trend Scout 主题通道基线 round-robin / 受限选择性分配
 - `token_universe_funnel_registrations` / `token_universe_funnel_transitions`：注册后完整 cohort 的追加式证据 DAG；typed ID 将 discovery/hydration、Context admission/queue/dispatch/result、event lookup/relation、candidate evaluation、final decision 与 Paper attempt/fill 精确连接。`token_discovery_exposure_source_links` 另外冻结发现 exposure 与当轮外部链接的精确关系；成功 Paper attempt 与 fill 在同一 Store 事务中按顺序保存并互相回链。缺失不是拒绝，时间异常排除，禁止按 token+后来时间推断。
 - `token_universe_outcome_quality_registrations` / `token_universe_outcome_quality`：从独立注册点向前把 pair、route、quote、流动性、迁移、报价年龄和成本冻结为质量覆盖层；不回填 v1，不把跨池跳变当可成交回报，固定 `affects=none`。
 - `token_universe_fixed_target_execution_registrations` / `token_universe_fixed_target_execution_results`：注册后 baseline→固定 15/60/240 分钟目标的不可变 Paper 执行审计；EVM 双端安全字段未知就保持 `safety_unknown`，仅用冻结成本模型计算 `modeled_executable`，不冒充真实 route quote，不写决策或成交。
+- `token_universe_jupiter_quote_registrations` / `token_universe_jupiter_quote_results`：注册后 Solana baseline BUY 与固定目标 SELL 的 Jupiter V2 `/order` 只读路由证据；请求不含 taker，响应非空 transaction 会被拒绝，账本只保存清洗后的 route、最低输出、费用、价格冲击和完整时间序。SELL 使用 BUY 的最低输出数量，目标结果可计算报价下界往返回报；不签名、不广播、不进入策略或 Paper。
 - `missed_opportunity_audit_registrations` / `missed_opportunity_audits`：完整总体的不可变粗漏斗账本；保留缺基线、缺结果和低涨幅分母，`potential_miss` 只是审计候选而非确定策略错误。
 - `decisions`：action、score、match、canonical margin、理由、拒绝理由和 Paper 仓位金额。
 - `paper_account` / `positions` / `trades`：Paper 现金、持仓、退出和历史成交；新持仓/成交冻结最终 `decision_id/cohort_id`，并保存报价、执行价、报价/请求时间、滑点、手续费和已知 Token 税。
