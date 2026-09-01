@@ -21,6 +21,8 @@
 
 本机部署的项目数据统一保存在 `E:\memeTrader`。SQLite、日志、Web 控制台状态、测试产物以及 Runtime/Agent 的临时工作目录均位于项目目录；加载配置后，进程和它启动的子进程会把 `TEMP/TMP` 指向 `E:\memeTrader\data\tmp`，避免 memeTrader 持续写入系统盘。Codex、浏览器或 Windows 自身维护的应用缓存不属于本项目数据，仍由对应应用管理。
 
+活动 r6 较大时，Web `/api/health` 只做 SQLite 可读性、schema 完整性和 WAL 模式检查，避免每次页面刷新同步扫描整库；完整 `PRAGMA integrity_check` 由 `memetrader doctor --online` 和发布巡检执行。两者口径在 API 中明确分开，Web 的 `status=ok` 不冒充刚完成一次全库 integrity scan。
+
 ## 关键规则
 
 - 生产运行只使用本机从现在开始记录的 `observed_at`。
@@ -180,6 +182,8 @@ Audit 的 `token-universe-funnel-transitions/v1` 从自己的注册点向前，�
 Audit 的 `token-universe-outcome-quality/v1` 是部署后才生效的追加式质量覆盖层，保留上述 v1 原始结果不变。它把 provider、chain、DEX、pair、quote、流动性、报价年龄和 PumpFun→PumpSwap 迁移路径一起冻结，分别展示原始混合路径峰值、同 pair、同 route、迁移调整和满足流动性门后的成本估算；只有卖出能力、honeypot 和税费均已有当时安全证据时才显示“确认可执行净回报”。`NULL` 流动性不是零流动性，跨池跳变也不是可成交收益。覆盖层从自己的注册点向前运行，不回填旧结果，固定 `decision_eligible=false / affects=none`。
 
 `token-universe-fixed-target-execution/v1` 进一步建立严格前向的固定时点 Paper 执行审计：只比较注册后 cohort 的 baseline 与 15/60/240 分钟目标快照，不使用事后最高价。Runtime 仅在 EVM 快照达到冻结流动性门时前向请求 GoPlus/Honeypot 安全证据；税率、蜜罐或可卖出字段未知就保留 `safety_unknown`，不会按零处理。只有同 route、双端流动性合格且双端安全字段已知时，才按冻结的 Paper 金额、每侧 4% 不利滑点和场地费计算 `modeled_executable`。这仍不是聚合器真实 route quote、签名/广播交易或可实现利润；Solana 在接入只读聚合器报价前明确为 `unsupported_chain`。该层不写 Decision、Position 或 Trade，固定 `decision_eligible=false / affects=none`。
+
+Audit 的 `onchain-only-shadow/v1` 专门回答“链上先动而信息尚未被本机观察时，之后发生了什么”。它只接受本版本注册后每个 Token 第一次合格的 `onchain_momentum` transition，冻结精确触发快照；若触发前已有合格 Event 关系或 Token Context assessment 就不进入该 cohort。“信息未观察”只描述本机截至触发时的证据状态，不表示互联网全局没有相关信息。15 分钟是主终点，60/240 分钟是次要描述；无报价、无 pair、时间异常、安全未知和后来才发现语境都保留在分母，旧 Token 与已知赢家不回填。BSC 只有同 route、双来源安全证据一致且冻结成本通过时才显示 `modeled_only`，仍不是 router quote、成交或利润；Solana 在接入 trigger-anchored Jupiter 往返前只显示原始市场路径并标记 execution unsupported。样本至少达到 30 个主终态 Token、15 个独立日期及正/非正各 5 个前，研究保持未成熟；固定 `decision_eligible=false / affects=none`，不改变 Agent、Strategy、Paper 或 Live。
 
 Solana 的真实路由覆盖由独立的 `token-universe-jupiter-quote/v1` 前向账本承担。Runtime 对注册后的 Solana cohort 先用 Jupiter Swap V2 `/order` 做 `$35 USDC → Token` 基线只读报价，再在 15/60/240 分钟固定目标出现后，用基线买入的 `otherAmountThreshold`（而不是乐观 `outAmount`）做 `Token → USDC` 退出报价。请求固定省略 `taker/payer/receiver`，客户端拒绝任何非空 transaction，永不调用 `/execute`、`/build` 或 `/submit`；只保存白名单化的 AMM 路由、raw 数量、最低输出、400 bps 滑点、费用/价格冲击、请求时间和报价延迟。目标报价的最低 USDC 输出可与原始 `$35` 计算 `round_trip_min_return`，但它仍不含已验证链费、MEV 和部分成交，不是实际交易或利润承诺。该层每个 30 秒随访 tick 最多顺序请求三个报价，单主机请求仍至少间隔 2.1 秒并优先处理固定目标；调度器会扫描较大的到期集合寻找仍在时效内的任务，同时每个 tick 最多终结 12 个已过期 `not_requested` 缺口，避免旧任务占满 provider 槽位或长时间阻塞单进程。它不写 Decision、Position 或 Trade，固定 `decision_eligible=false / affects=none`。
 

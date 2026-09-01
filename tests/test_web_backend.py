@@ -606,6 +606,8 @@ def test_web_api_empty_database_is_safe_and_live_is_locked(tmp_path: Path):
     overview = web.overview()
     assert health["ok"] is True
     assert health["sqlite"]["schema_complete"] is True
+    assert health["sqlite"]["quick_check"] == "doctor_only"
+    assert health["sqlite"]["hot_path_check"] == "readable_schema_and_journal"
     assert health["live"] == {"enabled": False, "locked": True, "available": False}
     assert {key: overview["counts"][key] for key in ("observations", "events", "tokens", "decisions", "trades")} == {
         "observations": 0,
@@ -1089,6 +1091,12 @@ def test_web_sources_exposes_forward_token_discovery_without_sensitive_fields(tm
         max_liquidity_impact_pct=0.0025, slippage_rate=0.04,
         default_fee_bps=60, pump_fee_bps=125, max_tax_pct=10,
     )
+    store.register_onchain_only_shadow(
+        momentum_threshold=80, paper_stake_usd=35, min_liquidity_usd=12_000,
+        max_liquidity_impact_pct=0.0025, slippage_rate=0.04,
+        default_fee_bps=60, pump_fee_bps=125, max_tax_pct=10,
+        max_quote_delay_seconds=45,
+    )
     round_id = store.start_token_discovery_round(
         provider="dexscreener", surface="token_profiles", mode="poll", chain_scope="solana",
     )
@@ -1220,6 +1228,16 @@ def test_web_sources_exposes_forward_token_discovery_without_sensitive_fields(tm
     assert fixed_execution["affects"] == "none"
     fixed_execution_json = json.dumps(fixed_execution).lower()
     assert "raw_json" not in fixed_execution_json and "private_key" not in fixed_execution_json
+    onchain_shadow = WebData(config_path).audit()["onchain_only_shadow"]
+    assert onchain_shadow["status"] == "registered_waiting_forward_data"
+    assert onchain_shadow["summary"]["cohorts"] == 0
+    assert onchain_shadow["maturity"]["mature"] is False
+    assert onchain_shadow["definition"]["no_historical_backfill"] is True
+    assert onchain_shadow["decision_eligible"] is False
+    assert onchain_shadow["affects"] == "none"
+    onchain_shadow_json = json.dumps(onchain_shadow).lower()
+    assert "raw_json" not in onchain_shadow_json and "private_key" not in onchain_shadow_json
+    assert "bridge_token" not in onchain_shadow_json and "https://" not in onchain_shadow_json
     funnel = WebData(config_path).audit()["token_universe_funnel"]
     assert funnel["status"] == "collecting"
     assert funnel["summary"]["cohorts"] == 1
@@ -1924,6 +1942,11 @@ def test_candidate_ranking_api_is_persisted_bounded_sanitized_and_wait_is_truthf
     assert "data-testid='token-universe-jupiter-quote-evidence'" in app
     assert "Jupiter quote time-validity overlay" in app
     assert "data-testid='token-universe-jupiter-quote-validity'" in app
+    assert "data-testid='onchain-only-shadow'" in app
+    assert "On-chain first, context not yet observed" in app
+    assert "not globally absent" in app
+    assert "Historical tokens are not backfilled" in app
+    assert "Solana is market-path only and explicitly execution unsupported" in app
     assert "no transaction is built, signed, or broadcast" in app
     assert "AVG ROUND-TRIP MIN RETURN" in app
     assert "quote-bound research, not a profit promise" in app

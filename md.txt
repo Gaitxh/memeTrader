@@ -8440,7 +8440,7 @@ Agent 不负责不断刷新网页，只处理已经进入 SQLite 的批量信息
 >
 > </details>
 >
-> 设置成可以添加私钥(我提供了测试钱包私钥4M2A9qWgpMSFEZeWhZtKmTHD9TwEk7eFwdvmJB6ee1jD38G9zdzQoJ6MWfwvUsrb9WyWGRRFptPccg4ffTeW4epx，这个钱包没有钱)，然后这个系统可以读取真实账户信息（关于展示哪些也要进行设计），并完成交易，如果添加密钥后，相应信息也要进行更新。同时，该系统已消耗token(不同智能程度、不同推理强度可以单独计算)也要展示
+> 设置成可以添加私钥(我提供了测试钱包私钥[REDACTED_EXPOSED_TEST_WALLET_PRIVATE_KEY]，这个钱包没有钱)，然后这个系统可以读取真实账户信息（关于展示哪些也要进行设计），并完成交易，如果添加密钥后，相应信息也要进行更新。同时，该系统已消耗token(不同智能程度、不同推理强度可以单独计算)也要展示
 >
 > 可以做，但我会先把安全边界处理正确：你刚贴出的私钥已经出现在聊天记录里，应视为“已暴露”，我不会回显、写入代码、配置或 Git，也不会用它签名交易。网站会改成仅允许在本机地址录入新测试密钥，并用 Windows 本机加密存储；公开 URL 只能查看脱敏账户信息，不能录入、导出或调用私钥。
 >
@@ -8559,7 +8559,7 @@ Agent 不负责不断刷新网页，只处理已经进入 SQLite 的批量信息
 >
 > </details>
 >
-> “设置成可以添加私钥(我提供了测试钱包私钥4M2A9qWgpMSFEZeWhZtKmTHD9TwEk7eFwdvmJB6ee1jD38G9zdzQoJ6MWfwvUsrb9WyWGRRFptPccg4ffTeW4epx，这个钱包没有钱)，然后这个系统可以读取真实账户信息（关于展示哪些也要进行设计），并完成交易，如果添加密钥后，相应信息也要进行更新。同时，该系统已消耗token(不同智能程度、不同推理强度可以单独计算)也要展示”。你可以浏览，访问，没关系的，这是一个测试钱包，里面没钱的
+> “设置成可以添加私钥(我提供了测试钱包私钥[REDACTED_EXPOSED_TEST_WALLET_PRIVATE_KEY]，这个钱包没有钱)，然后这个系统可以读取真实账户信息（关于展示哪些也要进行设计），并完成交易，如果添加密钥后，相应信息也要进行更新。同时，该系统已消耗token(不同智能程度、不同推理强度可以单独计算)也要展示”。你可以浏览，访问，没关系的，这是一个测试钱包，里面没钱的
 >
 > 我明白，这是零余额测试钱包，而且你明确授权测试。即便如此，我也不会把私钥发送给搜索网站、区块浏览器、Agent 或任何第三方；链上读取其实只需要公钥，签名只应在你电脑本地完成。
 >
@@ -49068,7 +49068,7 @@ GitHub main 已推送：[commit 50aad72394822bc7202e61aed5d926621438e23b](https:
 > for pattern in (r'"private_key"\s*:',r'"bridge_token"\s*:',r'"telegram_bot_token"\s*:',r'"telegram_chat_id"\s*:'):
 >     if re.search(pattern,joined,re.I): violations.append(pattern)
 > print({'responses':len(responses),'characters_scanned':len(joined),'violations':violations})
-> '@ | .\.venv\Scripts\python.exe -; $diff=git diff --no-ext-diff; $hits=@(); foreach($needle in @('4M2A9qWgpMSFEZeWhZtKmTHD9TwEk7eFwdvmJB6ee1jD38G9zdzQoJ6MWfwvUsrb9WyWGRRFptPccg4ffTeW4epx','bridge-secret-must-never-be-returned','telegram-secret-must-never-be-returned')){if($diff.Contains($needle)){$hits+=$needle.Substring(0,[Math]::Min(12,$needle.Length))}}; [pscustomobject]@{DiffSecretMatches=$hits.Count} | Format-List`
+> '@ | .\.venv\Scripts\python.exe -; $diff=git diff --no-ext-diff; $hits=@(); foreach($needle in @('[REDACTED_EXPOSED_TEST_WALLET_PRIVATE_KEY]','bridge-secret-must-never-be-returned','telegram-secret-must-never-be-returned')){if($diff.Contains($needle)){$hits+=$needle.Substring(0,[Math]::Min(12,$needle.Length))}}; [pscustomobject]@{DiffSecretMatches=$hits.Count} | Format-List`
 >
 > - Wrote `E:/memeTrader/src/memetrader/store.py` (+6 -1)
 >
@@ -66040,7 +66040,7 @@ Agent 使用本机登录的 `Local Codex CLI`，不使用 API Key，并发上限
 >
 > - Wrote `E:/memeTrader/docs/PROJECT_CONTEXT/SNAPSHOT_2026-08-31.md` (+12 -0)
 >
-> - Ran `git diff --check; git status --short; git diff --stat; $needle='4M2A9qWgpMSFEZeWhZtKmTHD9TwEk7eFwdvmJB6ee1jD38G9zdzQoJ6MWfwvUsrb9WyWGRRFptPccg4ffTeW4epx'; $matches=rg -l -F --glob '!data/**' --glob '!config.json' --glob '!.git/**' $needle . 2>$null; if($matches){Write-Output 'exposed_wallet_secret_found=true'}else{Write-Output 'exposed_wallet_secret_found=false'}; $trackedIgnored=git ls-files config.json data '*.sqlite*' '*.log'; if($trackedIgnored){Write-Output 'forbidden_tracked_files_found=true'; $trackedIgnored}else{Write-Output 'forbidden_tracked_files_found=false'}`
+> - Ran `git diff --check; git status --short; git diff --stat; $needle='[REDACTED_EXPOSED_TEST_WALLET_PRIVATE_KEY]'; $matches=rg -l -F --glob '!data/**' --glob '!config.json' --glob '!.git/**' $needle . 2>$null; if($matches){Write-Output 'exposed_wallet_secret_found=true'}else{Write-Output 'exposed_wallet_secret_found=false'}; $trackedIgnored=git ls-files config.json data '*.sqlite*' '*.log'; if($trackedIgnored){Write-Output 'forbidden_tracked_files_found=true'; $trackedIgnored}else{Write-Output 'forbidden_tracked_files_found=false'}`
 >
 > - Ran `$cfg=Get-Content -Raw config.json|ConvertFrom-Json; $secrets=@($cfg.bridge.token,$cfg.notifications.telegram_bot_token,$cfg.notifications.ntfy_token,$cfg.notifications.webhook_secret,(Get-Content -Raw data\web_console\public_access_token.txt))|Where-Object{$_ -and ([string]$_).Length -ge 8}; $paths=@('health','overview','events','tokens','decisions','portfolio','agents','sources','audit','settings','wallet','notifications'); $payload=''; $ok=0; foreach($path in $paths){try{$body=(Invoke-WebRequest "http://127.0.0.1:8787/api/$path" -UseBasicParsing -TimeoutSec 20).Content;$payload+=$body;$ok++}catch{}}; $hits=0; foreach($secret in $secrets){if($payload.Contains([string]$secret)){$hits++}}; [pscustomobject]@{api_responses=$ok;secret_values_checked=$secrets.Count;secret_hits=$hits;payload_bytes=[Text.Encoding]::UTF8.GetByteCount($payload)}|ConvertTo-Json -Compress`
 >
@@ -83390,7 +83390,7 @@ ca9e0749e4efd11dd7a4967caa104513f0a9c172
 >
 > - Ran `.\.venv\Scripts\python.exe -m pytest -q tests/test_web_backend.py; node --check src\memetrader\web_static\app.js; git diff --check; rg -n "information-first cohort 尚未|独立 information-first cohort 尚未|information-first-shadow/v1.*尚未" README_CN.md docs || $true; git status --short; git diff --stat`
 > - Wrote `E:/memeTrader/docs/PROJECT_CONTEXT/SNAPSHOT_2026-08-31.md` (+9 -0)
-> - Ran `git diff --check; git diff --name-only; if (rg -n "4M2A9qWgpMSFEZeWhZtKmTHD9TwEk7eFwdvmJB6ee1jD38G9zdzQoJ6MWfwvUsrb9WyWGRRFptPccg4ffTeW4epx" README_CN.md docs src tests) { exit 1 } else { Write-Output 'No supplied private key in changed source/doc scope' }; git status --short`
+> - Ran `git diff --check; git diff --name-only; if (rg -n "[REDACTED_EXPOSED_TEST_WALLET_PRIVATE_KEY]" README_CN.md docs src tests) { exit 1 } else { Write-Output 'No supplied private key in changed source/doc scope' }; git status --short`
 >
 > </details>
 >
@@ -83644,7 +83644,7 @@ ca9e0749e4efd11dd7a4967caa104513f0a9c172
 >
 > <details><summary>Ran 3 commands</summary>
 >
-> - Ran `git diff --check; if (rg -n "4M2A9qWgpMSFEZeWhZtKmTHD9TwEk7eFwdvmJB6ee1jD38G9zdzQoJ6MWfwvUsrb9WyWGRRFptPccg4ffTeW4epx" README_CN.md docs src tests) { exit 1 } else { Write-Output 'No supplied private key in source/doc/test scope' }; git status --short; git diff --stat`
+> - Ran `git diff --check; if (rg -n "[REDACTED_EXPOSED_TEST_WALLET_PRIVATE_KEY]" README_CN.md docs src tests) { exit 1 } else { Write-Output 'No supplied private key in source/doc/test scope' }; git status --short; git diff --stat`
 > - Ran `git add docs/INFORMATION_FIRST_SHADOW_CN.md docs/INFORMATION_FIRST_X_REVIEW_20260831_CN.md docs/PROJECT_CONTEXT/ARCHITECTURE_AND_DATAFLOW.md docs/PROJECT_CONTEXT/REQUIREMENTS_ACCEPTANCE_2026-08-30.md docs/PROJECT_CONTEXT/SNAPSHOT_2026-08-31.md src/memetrader/runtime.py src/memetrader/store.py src/memetrader/web.py src/memetrader/web_static/app.js tests/test_core.py tests/test_runtime.py tests/test_web_backend.py; git commit -m "Add strict forward information lead timing"; git push origin main`
 > - Ran ``$localSha=git rev-parse HEAD; $remoteSha=(git ls-remote origin refs/heads/main).Split("`t")[0]; $status=git status --short; $health=Invoke-RestMethod http://127.0.0.1:8787/api/health -TimeoutSec 10; $sources=Invoke-RestMethod http://127.0.0.1:8787/api/sources -TimeoutSec 20; $token=[REDACTED_SECRET]'E:\memeTrader\data\web_console\public_access_token.txt').Trim(); $basic=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("memetrader:$token")); $publicStatus=(Invoke-WebRequest 'https://leaving-employees-employed-variations.trycloudflare.com/api/health' -Headers @{Authorization="Basic $basic"} -TimeoutSec 15).StatusCode; $listeners=@(); foreach($port in 8765,8787,8788){$row=Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue; $listeners += [pscustomobject]@{Port=$port;Count=@($row).Count}}; [pscustomobject]@{LocalSHA=$localSha;RemoteSHA=$remoteSha;Clean=[string]::IsNullOrWhiteSpace($status);Health=$health.ok;Mode=$health.mode;LiveEnabled=$health.live.enabled;LiveLocked=$health.live.locked;ILGStatus=$sources.information_first_shadow.ilg.status;ILGRegistered=$sources.information_first_shadow.ilg.summary.registered_cohorts;ILGPreRegistrationExcluded=$sources.information_first_shadow.ilg.summary.pre_registration_excluded;PublicHTTP=$publicStatus}; $listeners``
 >
@@ -95168,7 +95168,7 @@ dab3de1d8d30617b7524a73794b255a29befb0eb
 > <details><summary>Ran 7 commands</summary>
 >
 > - Ran `git add -- README_CN.md docs/PROJECT_CONTEXT/REQUIREMENT_LEDGER.md docs/PROJECT_CONTEXT/START_HERE.md docs/PROJECT_CONTEXT/CONSTRAINT_SUBSTITUTION_MATRIX.md docs/TELEGRAM_SOURCE_RESEARCH_20260830_CN.md src/memetrader/collectors.py src/memetrader/store.py src/memetrader/web.py src/memetrader/web_static/app.js src/memetrader/web_static/index.html tests/test_rss_security.py tests/test_web_backend.py; git diff --cached --check; git status --short; git diff --cached --name-only`
-> - Ran `$diff = git diff --cached; $patterns = @('4M2A9qWgpMSFEZeWhZtKmTHD9TwEk7eFwdvmJB6ee1jD38G9zdzQoJ6MWfwvUsrb9WyWGRRFptPccg4ffTeW4epx','BEGIN PRIVATE KEY','public_access_token.txt.*[=:].*[A-Za-z0-9_-]{24,}','bridge_token.*[=:].*[A-Za-z0-9_-]{24,}'); $hits=@(); foreach($pattern in $patterns){if($diff -match $pattern){$hits += $pattern}}; if($hits.Count){Write-Error ('staged secret pattern hit: '+($hits -join ',')); exit 1}; Write-Output 'staged_secret_scan=ok'`
+> - Ran `$diff = git diff --cached; $patterns = @('[REDACTED_EXPOSED_TEST_WALLET_PRIVATE_KEY]','BEGIN PRIVATE KEY','public_access_token.txt.*[=:].*[A-Za-z0-9_-]{24,}','bridge_token.*[=:].*[A-Za-z0-9_-]{24,}'); $hits=@(); foreach($pattern in $patterns){if($diff -match $pattern){$hits += $pattern}}; if($hits.Count){Write-Error ('staged secret pattern hit: '+($hits -join ',')); exit 1}; Write-Output 'staged_secret_scan=ok'`
 > - Ran `git commit -m "Add compliant external-origin handoff"`
 > - Ran `git push origin main`
 > - Ran `$local=(git rev-parse HEAD).Trim(); $remote=(git rev-parse origin/main).Trim(); $task=Get-ScheduledTask -TaskName 'memeTrader Paper Bot'; $ports=Get-NetTCPConnection -State Listen -LocalPort 8765,8787,8788 | Group-Object LocalPort | Sort-Object Name | ForEach-Object { "$($_.Name):$($_.Count):$((($_.Group|Select-Object -ExpandProperty OwningProcess -Unique)-join ','))" }; $health=Invoke-RestMethod http://127.0.0.1:8787/api/health; [pscustomobject]@{LocalSHA=$local;OriginSHA=$remote;Worktree=(if([string]::IsNullOrWhiteSpace((git status --porcelain))){'clean'}else{'dirty'});TaskState=$task.State;MultipleInstances=$task.Settings.MultipleInstances;Ports=($ports -join '; ');Health=$health.ok;SchemaComplete=$health.sqlite.schema_complete;LiveLocked=$health.live.locked} | Format-List`
@@ -95393,7 +95393,7 @@ dab3de1d8d30617b7524a73794b255a29befb0eb
 >
 > - Ran `.\.venv\Scripts\python.exe -m compileall -q src tests
 > git diff --check
-> git grep -n "4M2A9qWgpMSFEZeWhZtKmTHD9TwEk7eFwdvmJB6ee1jD38G9zdzQoJ6MWfwvUsrb9WyWGRRFptPccg4ffTeW4epx" -- .`
+> git grep -n "[REDACTED_EXPOSED_TEST_WALLET_PRIVATE_KEY]" -- .`
 >
 > </details>
 >

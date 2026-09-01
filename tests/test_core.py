@@ -2017,6 +2017,194 @@ def test_token_universe_fixed_target_execution_is_forward_fixed_route_and_append
     store.close()
 
 
+def test_onchain_only_shadow_is_trigger_anchored_append_only_and_strategy_neutral(tmp_path: Path):
+    store = Store(tmp_path / "onchain-only-shadow.sqlite3", initial_cash_usd=1000)
+    now = utcnow()
+    registration = store.register_onchain_only_shadow(
+        momentum_threshold=80, paper_stake_usd=35, min_liquidity_usd=12_000,
+        max_liquidity_impact_pct=0.0025, slippage_rate=0.04,
+        default_fee_bps=60, pump_fee_bps=125, max_tax_pct=10,
+        max_quote_delay_seconds=45,
+    )
+    assert int(registration["activation_transition_id"]) == 0
+    token = TokenCandidate(
+        chain="bsc", address="0x" + "A" * 40, name="Onchain Only", source="fixture"
+    )
+    store.upsert_token(token, seen_at=now)
+    round_id = store.start_token_discovery_round(
+        provider="fixture", surface="fixture", mode="poll", chain_scope="bsc",
+        started_at=now,
+    )
+    store.add_token_discovery_exposure(
+        round_id, token_id=token.token_id, chain="bsc", role="new_token",
+        first_local_discovery=True, new_token=True, observed_at=now,
+    )
+    store.finish_token_discovery_round(round_id, status="completed", returned_count=1)
+    safety_raw = {
+        "pair": {
+            "chainId": "bsc", "dexId": "pancakeswap", "pairAddress": "PAIR",
+            "baseToken": {"address": token.address}, "quoteToken": {"address": "0xquote"},
+        },
+        "goplus_evm": {"is_honeypot": "0", "buy_tax": "0", "sell_tax": "0"},
+        "honeypot_is": {
+            "honeypotResult": {"isHoneypot": False},
+            "simulationResult": {"buyTax": 0, "sellTax": 0},
+        },
+        "execution_safety_reports": ["goplus_evm", "honeypot_is"],
+        "execution_safety_checked_at": iso(now),
+        "execution_safety_disagreement": False,
+    }
+    baseline_id = store.add_snapshot(TokenSnapshot(
+        "bsc", token.address, 1.0, 20_000, 100_000, 30_000, 30, 10,
+        buy_tax_pct=0, sell_tax_pct=0, honeypot=False, sellable=True,
+        observed_at=now, ingested_at=now, provider="dexscreener", raw=safety_raw,
+    ))
+    transition_id = store.record_token_universe_funnel_transition(
+        token.token_id,
+        stage="context_trigger_evaluation", status="eligible",
+        reason_code="onchain_momentum", evaluation_key="onchain-only:first",
+        observed_at=now, ingested_at=now, source_table="token_context_trigger",
+        snapshot_id=baseline_id,
+        metadata={"trigger_kind": "onchain_momentum", "momentum_score": 88.0},
+    )
+    assert transition_id is not None
+    shadow_id = store.enroll_onchain_only_shadow(transition_id)
+    assert shadow_id is not None
+    cohort = store.db.execute(
+        "SELECT * FROM onchain_only_shadow_cohorts WHERE id=?", (shadow_id,)
+    ).fetchone()
+    assert cohort["baseline_status"] == "valid"
+    assert cohort["prior_eligible_event_relation_count"] == 0
+    assert cohort["prior_context_assessment_count"] == 0
+    trigger_at = parse_time(cohort["trigger_recorded_at"])
+    due = store.due_onchain_only_shadow_quotes(now=trigger_at + timedelta(minutes=15, seconds=1))
+    primary = next(item for item in due if item["horizon_minutes"] == 15)
+    quote_round = store.start_token_discovery_round(
+        provider="dexscreener", surface=primary["role"], mode="batch_quote",
+        chain_scope="bsc", started_at=trigger_at + timedelta(minutes=15, seconds=1),
+    )
+    attempt_id = store.start_token_discovery_quote_attempts(
+        quote_round, [primary], requested_at=trigger_at + timedelta(minutes=15, seconds=1),
+    )[(token.token_id, primary["role"])]
+    target_at = trigger_at + timedelta(minutes=15, seconds=2)
+    target_raw = json.loads(json.dumps(safety_raw))
+    target_raw["execution_safety_checked_at"] = iso(target_at)
+    with store.db:
+        cursor = store.db.execute(
+            """
+            INSERT INTO token_snapshots(
+                token_id,observed_at,ingested_at,recorded_at,provider,price_usd,liquidity_usd,
+                buy_tax_pct,sell_tax_pct,honeypot,sellable,raw_json
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                token.token_id, iso(target_at), iso(target_at), iso(target_at), "dexscreener",
+                2.0, 20_000, 0, 0, 0, 1, json.dumps(target_raw),
+            ),
+        )
+        target_id = int(cursor.lastrowid)
+    store.finish_token_discovery_quote_attempt(
+        attempt_id, status="success", reason_code="snapshot_persisted",
+        completed_at=target_at,
+    )
+    decisions_before = store.db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
+    trades_before = store.db.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
+    result_id = store.record_onchain_only_shadow_result(
+        primary, terminal_status="observed", quote_attempt_id=attempt_id,
+        target_snapshot_id=target_id, recorded_at=target_at,
+    )
+    result = store.db.execute(
+        "SELECT * FROM onchain_only_shadow_results WHERE id=?", (result_id,)
+    ).fetchone()
+    assert result["terminal_status"] == "observed"
+    assert result["route_status"] == "same_route"
+    assert result["raw_return"] == pytest.approx(1.0)
+    assert result["execution_evidence_status"] == "modeled_only_multi_source"
+    assert result["modeled_net_return"] is not None
+    assert result["decision_eligible"] == 0 and result["affects"] == "none"
+    assert store.db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == decisions_before
+    assert store.db.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == trades_before
+    summary = Store.onchain_only_shadow_summary_from_connection(store.db)
+    assert summary["status"] == "collecting"
+    assert summary["summary"]["cohorts"] == 1
+    assert summary["summary"]["primary_terminal"] == 1
+    assert summary["summary"]["primary_gte_25pct"] == 1
+    assert summary["maturity"]["mature"] is False
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute(
+            "UPDATE onchain_only_shadow_results SET raw_return=9 WHERE id=?", (result_id,)
+        )
+
+    future_token = TokenCandidate(
+        chain="solana", address="F" * 32, name="Future Baseline", source="fixture"
+    )
+    store.upsert_token(future_token, seen_at=now)
+    future_round = store.start_token_discovery_round(
+        provider="fixture", surface="fixture", mode="poll", chain_scope="solana",
+        started_at=now,
+    )
+    store.add_token_discovery_exposure(
+        future_round, token_id=future_token.token_id, chain="solana", role="new_token",
+        first_local_discovery=True, new_token=True, observed_at=now,
+    )
+    store.finish_token_discovery_round(future_round, status="completed", returned_count=1)
+    future_at = now + timedelta(minutes=5)
+    future_snapshot_id = store.add_snapshot(TokenSnapshot(
+        "solana", future_token.address, 1.0, 20_000, 100_000, 30_000, 30, 10,
+        observed_at=future_at, ingested_at=future_at, provider="fixture",
+    ))
+    future_transition_id = store.record_token_universe_funnel_transition(
+        future_token.token_id,
+        stage="context_trigger_evaluation", status="eligible",
+        reason_code="onchain_momentum", evaluation_key="onchain-only:future",
+        observed_at=now, ingested_at=now, source_table="token_context_trigger",
+        snapshot_id=future_snapshot_id,
+        metadata={"trigger_kind": "onchain_momentum", "momentum_score": 90.0},
+    )
+    future_shadow_id = store.enroll_onchain_only_shadow(future_transition_id)
+    assert future_shadow_id is not None
+    future_shadow = store.db.execute(
+        "SELECT * FROM onchain_only_shadow_cohorts WHERE id=?", (future_shadow_id,)
+    ).fetchone()
+    assert future_shadow["baseline_status"] == "time_order_invalid"
+    assert not any(
+        item["shadow_cohort_id"] == future_shadow_id
+        for item in store.due_onchain_only_shadow_quotes(now=now + timedelta(minutes=16))
+    )
+
+    assessed_token = TokenCandidate(
+        chain="solana", address="C" * 32, name="Prior Context", source="fixture"
+    )
+    store.upsert_token(assessed_token, seen_at=now)
+    assessed_round = store.start_token_discovery_round(
+        provider="fixture", surface="fixture", mode="poll", chain_scope="solana",
+        started_at=now,
+    )
+    store.add_token_discovery_exposure(
+        assessed_round, token_id=assessed_token.token_id, chain="solana", role="new_token",
+        first_local_discovery=True, new_token=True, observed_at=now,
+    )
+    store.finish_token_discovery_round(assessed_round, status="completed", returned_count=1)
+    assessed_snapshot_id = store.add_snapshot(TokenSnapshot(
+        "solana", assessed_token.address, 1.0, 20_000, 100_000, 30_000, 30, 10,
+        observed_at=now, ingested_at=now, provider="fixture",
+    ))
+    store.add_token_context_assessment(
+        assessed_token.token_id, trigger="fixture", status="no_context",
+        snapshot_observed_at=now, momentum_score=90, assessment={}, assessed_at=now,
+    )
+    assessed_transition_id = store.record_token_universe_funnel_transition(
+        assessed_token.token_id,
+        stage="context_trigger_evaluation", status="eligible",
+        reason_code="onchain_momentum", evaluation_key="onchain-only:prior-context",
+        observed_at=now, ingested_at=now, source_table="token_context_trigger",
+        snapshot_id=assessed_snapshot_id,
+        metadata={"trigger_kind": "onchain_momentum", "momentum_score": 90.0},
+    )
+    assert store.enroll_onchain_only_shadow(assessed_transition_id) is None
+    store.close()
+
+
 def test_token_universe_jupiter_quote_is_forward_baseline_buy_then_target_sell(tmp_path: Path):
     store = Store(tmp_path / "jupiter-quote.sqlite3", initial_cash_usd=1000)
     now = utcnow()

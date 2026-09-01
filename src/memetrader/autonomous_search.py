@@ -741,6 +741,7 @@ class AutonomousSearchAgent:
         momentum_score: float,
         event_relation: dict[str, Any] | None = None,
         snapshot_observed_at=None,
+        snapshot_id: int | None = None,
     ) -> dict[str, Any] | None:
         def finish(trigger: dict[str, Any] | None, reason: str) -> dict[str, Any] | None:
             value = trigger if isinstance(trigger, dict) else None
@@ -748,12 +749,13 @@ class AutonomousSearchAgent:
             evaluation_key = ":".join(
                 (
                     "snapshot", iso(evaluation_at),
+                    "snapshot_id", str(int(snapshot_id or 0)),
                     "decision", str((value or {}).get("decision_id") or 0),
                     "source_link", str((value or {}).get("source_link_id") or 0),
                     "observation", str((value or {}).get("observation_id") or 0),
                 )
             )
-            self.store.record_token_universe_funnel_transition(
+            transition_id = self.store.record_token_universe_funnel_transition(
                 token.token_id,
                 stage="context_trigger_evaluation",
                 status="eligible" if value is not None else "ineligible",
@@ -766,7 +768,7 @@ class AutonomousSearchAgent:
                     key: value.get(key)
                     for key in ("source_link_id", "observation_id", "event_id", "decision_id")
                     if value is not None and value.get(key) is not None
-                },
+                } | ({"snapshot_id": int(snapshot_id)} if snapshot_id is not None else {}),
                 source_link_id=int(value["source_link_id"])
                 if value is not None and value.get("source_link_id") is not None else None,
                 observation_id=int(value["observation_id"])
@@ -775,6 +777,7 @@ class AutonomousSearchAgent:
                 if value is not None and value.get("event_id") is not None else None,
                 decision_id=int(value["decision_id"])
                 if value is not None and value.get("decision_id") is not None else None,
+                snapshot_id=int(snapshot_id) if snapshot_id is not None else None,
                 metadata={
                     "trigger_kind": str((value or {}).get("kind") or ""),
                     "trigger_priority": (value or {}).get("priority"),
@@ -783,6 +786,12 @@ class AutonomousSearchAgent:
                     if snapshot_observed_at is not None else None,
                 },
             )
+            if value is not None and transition_id is not None:
+                value["transition_id"] = int(transition_id)
+                if reason == "onchain_momentum":
+                    shadow_cohort_id = self.store.enroll_onchain_only_shadow(transition_id)
+                    if shadow_cohort_id is not None:
+                        value["onchain_shadow_cohort_id"] = int(shadow_cohort_id)
             return value
 
         if not self.config.get("context_direct_trigger_enabled", True):
@@ -2496,11 +2505,16 @@ class AutonomousSearchAgent:
                 reason="context_search_disabled", trigger=None, now=now, quota=quota,
             )
             return []
-        trigger = self.resolve_token_context_trigger(
-            token,
-            momentum_score=momentum_score,
-            event_relation=event_relation,
-            snapshot_observed_at=snapshot.observed_at,
+        resolved_relation = event_relation if isinstance(event_relation, dict) else {}
+        trigger = (
+            dict(resolved_relation)
+            if resolved_relation.get("kind") and resolved_relation.get("transition_id")
+            else self.resolve_token_context_trigger(
+                token,
+                momentum_score=momentum_score,
+                event_relation=event_relation,
+                snapshot_observed_at=snapshot.observed_at,
+            )
         )
         if trigger is None:
             self._record_token_context_admission(

@@ -225,6 +225,9 @@ EXPECTED_TABLES = {
     "token_universe_outcome_quality",
     "token_universe_fixed_target_execution_registrations",
     "token_universe_fixed_target_execution_results",
+    "onchain_only_shadow_registrations",
+    "onchain_only_shadow_cohorts",
+    "onchain_only_shadow_results",
     "token_snapshots",
     "tokens",
     "trades",
@@ -1491,16 +1494,17 @@ class WebData:
                     str(row["name"])
                     for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
                 }
-                quick_check = str(connection.execute("PRAGMA quick_check(1)").fetchone()[0])
+                readable = int(connection.execute("SELECT 1").fetchone()[0]) == 1
                 journal_mode = str(connection.execute("PRAGMA journal_mode").fetchone()[0])
             return {
-                "status": "ok" if quick_check == "ok" else "error",
-                "ok": quick_check == "ok",
+                "status": "ok" if readable else "error",
+                "ok": readable,
                 "exists": True,
                 "schema_complete": EXPECTED_TABLES.issubset(tables),
                 "journal_mode": journal_mode,
                 "size_bytes": self.database.stat().st_size,
-                "quick_check": quick_check,
+                "quick_check": "doctor_only",
+                "hot_path_check": "readable_schema_and_journal",
             }
         except (OSError, sqlite3.Error):
             return {
@@ -5471,6 +5475,19 @@ class WebData:
             "terminal_statuses": [], "recent": [],
             "decision_eligible": False, "affects": "none",
         }
+        onchain_only_shadow = {
+            "status": "not_observed",
+            "version": Store.ONCHAIN_ONLY_SHADOW_VERSION,
+            "summary": {
+                "cohorts": 0, "valid_baselines": 0, "primary_terminal": 0,
+                "primary_observed": 0, "primary_positive": 0,
+                "primary_nonpositive": 0, "primary_gte_25pct": 0,
+                "primary_modeled_only": 0, "independent_trigger_dates": 0,
+            },
+            "horizons": [], "execution_statuses": [], "chains": [], "recent": [],
+            "maturity": {"mature": False},
+            "decision_eligible": False, "affects": "none",
+        }
         jupiter_quote = {
             "status": "not_observed",
             "version": Store.TOKEN_UNIVERSE_JUPITER_QUOTE_VERSION,
@@ -5591,6 +5608,9 @@ class WebData:
                 )
                 fixed_target_execution = (
                     Store.token_universe_fixed_target_execution_summary_from_connection(connection)
+                )
+                onchain_only_shadow = Store.onchain_only_shadow_summary_from_connection(
+                    connection
                 )
                 jupiter_summary = getattr(
                     Store, "token_universe_jupiter_quote_summary_from_connection", None
@@ -5873,6 +5893,7 @@ class WebData:
             "missed_opportunity_no_decision_attribution": no_decision_attribution,
             "token_universe_outcome_quality": outcome_quality,
             "token_universe_fixed_target_execution": fixed_target_execution,
+            "onchain_only_shadow": onchain_only_shadow,
             "token_universe_jupiter_quote": jupiter_quote,
             "token_universe_funnel": token_universe_funnel,
             "token_event_lookup_name_screen": event_lookup_name_screen,

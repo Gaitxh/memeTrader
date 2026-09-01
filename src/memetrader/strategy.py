@@ -587,15 +587,43 @@ class SafetyChecker:
         if snap.chain.lower() not in {"ethereum", "eth", "bsc", "base"}:
             return snap
         snap = await self._enrich_goplus_evm(snap)
-        required = (snap.honeypot, snap.sellable, snap.buy_tax_pct, snap.sell_tax_pct)
-        if snap.chain.lower() == "bsc" and any(value is None for value in required):
+        if snap.chain.lower() == "bsc":
             snap = await self._enrich_honeypot(snap)
         reports = [
             name for name in ("goplus_evm", "honeypot_is")
             if isinstance(snap.raw.get(name), dict)
         ]
+        normalized: dict[str, dict[str, Any]] = {}
+        goplus = snap.raw.get("goplus_evm")
+        if isinstance(goplus, dict):
+            normalized["goplus_evm"] = {
+                "honeypot": _risk_flag(goplus.get("is_honeypot"))
+                if "is_honeypot" in goplus else None,
+                "buy_tax_pct": _goplus_tax_pct(goplus.get("buy_tax")),
+                "sell_tax_pct": _goplus_tax_pct(goplus.get("sell_tax")),
+            }
+        honeypot = snap.raw.get("honeypot_is")
+        if isinstance(honeypot, dict):
+            result = honeypot.get("honeypotResult") or {}
+            simulation = honeypot.get("simulationResult") or {}
+            normalized["honeypot_is"] = {
+                "honeypot": bool(result.get("isHoneypot"))
+                if "isHoneypot" in result else None,
+                "buy_tax_pct": _safe_float(simulation.get("buyTax")),
+                "sell_tax_pct": _safe_float(simulation.get("sellTax")),
+            }
+        disagreement = False
+        if len(normalized) >= 2:
+            left, right = normalized["goplus_evm"], normalized["honeypot_is"]
+            if left["honeypot"] is not None and right["honeypot"] is not None:
+                disagreement = bool(left["honeypot"] != right["honeypot"])
+            for field in ("buy_tax_pct", "sell_tax_pct"):
+                if left[field] is not None and right[field] is not None:
+                    disagreement = disagreement or abs(float(left[field]) - float(right[field])) > 1.0
         snap.raw["execution_safety_checked_at"] = iso(utcnow())
         snap.raw["execution_safety_reports"] = reports
+        snap.raw["execution_safety_normalized"] = normalized
+        snap.raw["execution_safety_disagreement"] = bool(disagreement)
         return snap
 
     async def _enrich_goplus_solana(self, snap: TokenSnapshot) -> TokenSnapshot:

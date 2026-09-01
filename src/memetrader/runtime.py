@@ -1085,6 +1085,19 @@ class Runtime:
             pump_fee_bps=float(paper_config.get("pump_swap_fee_bps", 125)),
             max_tax_pct=float(config["safety"].get("max_tax_pct", 10)),
         )
+        self.store.register_onchain_only_shadow(
+            momentum_threshold=float(
+                (config.get("autonomous_search") or {}).get("context_min_momentum_score", 75)
+            ),
+            paper_stake_usd=float(paper_config.get("max_position_usd", 35)),
+            min_liquidity_usd=float(config["safety"].get("min_liquidity_usd", 12_000)),
+            max_liquidity_impact_pct=float(paper_config.get("max_liquidity_impact_pct", 0.0025)),
+            slippage_rate=float(paper_config.get("slippage_rate", 0.04)),
+            default_fee_bps=float(paper_config.get("fee_bps", 60)),
+            pump_fee_bps=float(paper_config.get("pump_swap_fee_bps", 125)),
+            max_tax_pct=float(config["safety"].get("max_tax_pct", 10)),
+            max_quote_delay_seconds=float(paper_config.get("max_quote_age_seconds", 45)),
+        )
         self.store.register_token_universe_jupiter_quote(
             usdc_input_amount_raw=round(float(paper_config.get("max_position_usd", 35)) * 1_000_000),
         )
@@ -1751,6 +1764,24 @@ class Runtime:
                             metadata={"provider": "dexscreener", "chain": str(chain)},
                         )
                         continue
+                    momentum = CandidateEvaluator._momentum_score(snapshot)
+                    required_liquidity = max(
+                        float(self.config["safety"].get("min_liquidity_usd", 12_000)),
+                        float(self.config["paper"].get("max_position_usd", 35))
+                        / max(
+                            0.000001,
+                            float(self.config["paper"].get("max_liquidity_impact_pct", 0.0025)),
+                        ),
+                    )
+                    if (
+                        snapshot.chain.lower() in {"ethereum", "eth", "bsc", "base"}
+                        and momentum >= float(
+                            self.config["autonomous_search"].get("context_min_momentum_score", 75)
+                        )
+                        and snapshot.liquidity_usd is not None
+                        and float(snapshot.liquidity_usd) >= required_liquidity
+                    ):
+                        snapshot = await self.safety.enrich_evm_execution_fields(snapshot)
                     created = self.store.upsert_token(token, seen_at=snapshot.observed_at)
                     snapshot_id = self.store.add_snapshot(snapshot)
                     self.store.mark_token_detail_hydration(token_id, "hydrated")
@@ -1784,11 +1815,11 @@ class Runtime:
                             ),
                         },
                     )
-                    momentum = CandidateEvaluator._momentum_score(snapshot)
                     trigger = self.autonomous_search.resolve_token_context_trigger(
                         token,
                         momentum_score=momentum,
                         snapshot_observed_at=snapshot.observed_at,
+                        snapshot_id=snapshot_id,
                     )
                     if trigger and str(trigger.get("kind") or "") != "onchain_momentum":
                         direct_context_candidates.append(
@@ -2099,11 +2130,28 @@ class Runtime:
             if not quoted:
                 continue
             quoted_token, snap = quoted
-            self.store.upsert_token(quoted_token)
-            self.store.add_snapshot(snap)
             transactions = (snap.buys_5m or 0) + (snap.sells_5m or 0)
             buy_ratio = (snap.buys_5m or 0) / transactions if transactions else 0.0
             momentum = CandidateEvaluator._momentum_score(snap)
+            required_liquidity = max(
+                float(self.config["safety"].get("min_liquidity_usd", 12_000)),
+                float(self.config["paper"].get("max_position_usd", 35))
+                / max(
+                    0.000001,
+                    float(self.config["paper"].get("max_liquidity_impact_pct", 0.0025)),
+                ),
+            )
+            if (
+                snap.chain.lower() in {"ethereum", "eth", "bsc", "base"}
+                and momentum >= float(
+                    self.config["autonomous_search"].get("context_min_momentum_score", 75)
+                )
+                and snap.liquidity_usd is not None
+                and float(snap.liquidity_usd) >= required_liquidity
+            ):
+                snap = await self.safety.enrich_evm_execution_fields(snap)
+            self.store.upsert_token(quoted_token)
+            snapshot_id = self.store.add_snapshot(snap)
             market_gate = (
                 (snap.liquidity_usd or 0) >= min_liquidity
                 and (snap.volume_5m_usd or 0) >= min_volume
@@ -2125,6 +2173,7 @@ class Runtime:
                 quoted_token,
                 momentum_score=momentum,
                 snapshot_observed_at=snap.observed_at,
+                snapshot_id=snapshot_id,
             )
             if not market_gate and trigger is None:
                 continue
@@ -2805,7 +2854,13 @@ class Runtime:
     async def token_universe_followup_once(self) -> None:
         """Actively quote only due full-universe forward checkpoints."""
         self.store.finalize_token_universe_forward_outcomes()
+        self.store.finalize_onchain_only_shadow_gaps()
         due = self.store.due_token_universe_quotes(limit=180)
+        due.extend(self.store.due_onchain_only_shadow_quotes(limit=60))
+        due.sort(key=lambda item: (
+            parse_time(item["deadline_at"]), parse_time(item["queue_due_at"]),
+            str(item.get("lane") or "universe"), int(item["cohort_id"]), str(item["role"]),
+        ))
         by_chain: dict[str, list[dict[str, Any]]] = {}
         for item in due:
             by_chain.setdefault(str(item["chain"]), []).append(item)
@@ -2849,6 +2904,13 @@ class Runtime:
                             error_type=type(exc).__name__, http_status=http_status,
                             completed_at=completed_at,
                         )
+                        if item.get("lane") == Store.ONCHAIN_ONLY_SHADOW_VERSION:
+                            self.store.record_onchain_only_shadow_result(
+                                item,
+                                terminal_status="error",
+                                quote_attempt_id=attempt_id,
+                                recorded_at=completed_at,
+                            )
                 self.store.finish_token_discovery_round(
                     round_id, status="error", requested_count=len(chunk),
                     error_type=type(exc).__name__,
@@ -2869,6 +2931,12 @@ class Runtime:
                         round_id, token_id=token_id, chain=chain,
                         role=role, no_pair=True,
                     )
+                    if item.get("lane") == Store.ONCHAIN_ONLY_SHADOW_VERSION:
+                        self.store.record_onchain_only_shadow_result(
+                            item,
+                            terminal_status="no_pair",
+                            quote_attempt_id=attempt_id,
+                        )
                     continue
                 token, snapshot = result
                 required_liquidity = max(
@@ -2886,7 +2954,7 @@ class Runtime:
                 ):
                     snapshot = await self.safety.enrich_evm_execution_fields(snapshot)
                 self.store.upsert_token(token, seen_at=snapshot.observed_at)
-                self.store.add_snapshot(snapshot)
+                snapshot_id = self.store.add_snapshot(snapshot)
                 if attempt_id is not None:
                     self.store.finish_token_discovery_quote_attempt(
                         attempt_id, status="success", reason_code="snapshot_persisted",
@@ -2896,12 +2964,20 @@ class Runtime:
                     role=role, snapshot_count=1,
                     observed_at=snapshot.observed_at,
                 )
+                if item.get("lane") == Store.ONCHAIN_ONLY_SHADOW_VERSION:
+                    self.store.record_onchain_only_shadow_result(
+                        item,
+                        terminal_status="observed",
+                        quote_attempt_id=attempt_id,
+                        target_snapshot_id=snapshot_id,
+                    )
             self.store.finish_token_discovery_round(
                 round_id, status="completed", requested_count=len(chunk),
                 returned_count=len(quoted),
                 duplicate_token_count=max(0, len(chunk) - len(quoted)),
             )
         self.store.finalize_token_universe_forward_outcomes()
+        self.store.finalize_onchain_only_shadow_gaps()
 
     async def token_universe_jupiter_quote_once(self) -> None:
         """Append one forward, quote-only Solana route leg without a wallet or transaction."""
