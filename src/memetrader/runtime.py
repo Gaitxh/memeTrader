@@ -1061,6 +1061,15 @@ class Runtime:
             max_quote_age_seconds=float(paper_config.get("max_quote_age_seconds", 45)),
             max_tax_pct=float(config["safety"].get("max_tax_pct", 10)),
         )
+        self.store.register_token_universe_fixed_target_execution(
+            paper_stake_usd=float(paper_config.get("max_position_usd", 35)),
+            min_liquidity_usd=float(config["safety"].get("min_liquidity_usd", 12_000)),
+            max_liquidity_impact_pct=float(paper_config.get("max_liquidity_impact_pct", 0.0025)),
+            slippage_rate=float(paper_config.get("slippage_rate", 0.04)),
+            default_fee_bps=float(paper_config.get("fee_bps", 60)),
+            pump_fee_bps=float(paper_config.get("pump_swap_fee_bps", 125)),
+            max_tax_pct=float(config["safety"].get("max_tax_pct", 10)),
+        )
         self.store.recover_interrupted_exposure_attempts()
         if not self.store.open_positions() and not self.store.trades():
             with self.store.db:
@@ -2763,6 +2772,7 @@ class Runtime:
         self.store.finalize_attention_experiment_outcomes()
         await self.token_universe_followup_once()
         self.store.finalize_token_universe_outcome_quality()
+        self.store.finalize_token_universe_fixed_target_execution()
         self.store.finalize_missed_opportunity_audits()
 
     async def token_universe_followup_once(self) -> None:
@@ -2834,6 +2844,20 @@ class Runtime:
                     )
                     continue
                 token, snapshot = result
+                required_liquidity = max(
+                    float(self.config["safety"].get("min_liquidity_usd", 12_000)),
+                    float(self.config["paper"].get("max_position_usd", 35))
+                    / max(
+                        0.000001,
+                        float(self.config["paper"].get("max_liquidity_impact_pct", 0.0025)),
+                    ),
+                )
+                if (
+                    snapshot.chain.lower() in {"ethereum", "eth", "bsc", "base"}
+                    and snapshot.liquidity_usd is not None
+                    and float(snapshot.liquidity_usd) >= required_liquidity
+                ):
+                    snapshot = await self.safety.enrich_evm_execution_fields(snapshot)
                 self.store.upsert_token(token, seen_at=snapshot.observed_at)
                 self.store.add_snapshot(snapshot)
                 if attempt_id is not None:

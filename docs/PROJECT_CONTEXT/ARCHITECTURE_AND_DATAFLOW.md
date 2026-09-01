@@ -131,6 +131,7 @@ Trend Scout 主题通道基线 round-robin / 受限选择性分配
 - `token_universe_forward_registrations` / `token_universe_forward_cohorts` / `token_universe_forward_outcomes`：完整新 Token 总体的首次发现、5 分钟内基准及 15/60/240 分钟前向结果；原始 v1 保留混合路径采样含义且不可改写。
 - `token_universe_funnel_registrations` / `token_universe_funnel_transitions`：注册后完整 cohort 的追加式证据 DAG；typed ID 将 discovery/hydration、Context admission/queue/dispatch/result、event lookup/relation、candidate evaluation、final decision 与 Paper attempt/fill 精确连接。`token_discovery_exposure_source_links` 另外冻结发现 exposure 与当轮外部链接的精确关系；成功 Paper attempt 与 fill 在同一 Store 事务中按顺序保存并互相回链。缺失不是拒绝，时间异常排除，禁止按 token+后来时间推断。
 - `token_universe_outcome_quality_registrations` / `token_universe_outcome_quality`：从独立注册点向前把 pair、route、quote、流动性、迁移、报价年龄和成本冻结为质量覆盖层；不回填 v1，不把跨池跳变当可成交回报，固定 `affects=none`。
+- `token_universe_fixed_target_execution_registrations` / `token_universe_fixed_target_execution_results`：注册后 baseline→固定 15/60/240 分钟目标的不可变 Paper 执行审计；EVM 双端安全字段未知就保持 `safety_unknown`，仅用冻结成本模型计算 `modeled_executable`，不冒充真实 route quote，不写决策或成交。
 - `missed_opportunity_audit_registrations` / `missed_opportunity_audits`：完整总体的不可变粗漏斗账本；保留缺基线、缺结果和低涨幅分母，`potential_miss` 只是审计候选而非确定策略错误。
 - `decisions`：action、score、match、canonical margin、理由、拒绝理由和 Paper 仓位金额。
 - `paper_account` / `positions` / `trades`：Paper 现金、持仓、退出和历史成交；新持仓/成交冻结最终 `decision_id/cohort_id`，并保存报价、执行价、报价/请求时间、滑点、手续费和已知 Token 税。

@@ -1631,6 +1631,116 @@ def test_token_universe_quality_overlay_does_not_treat_cross_pair_peak_as_same_p
     store.close()
 
 
+def test_token_universe_fixed_target_execution_is_forward_fixed_route_and_append_only(tmp_path: Path):
+    store = Store(tmp_path / "fixed-target-execution.sqlite3", initial_cash_usd=1000)
+    now = utcnow()
+
+    def enroll(chain: str, address: str, name: str) -> tuple[TokenCandidate, sqlite3.Row, datetime]:
+        token = TokenCandidate(chain=chain, address=address, name=name, source="fixture")
+        store.upsert_token(token, seen_at=now)
+        round_id = store.start_token_discovery_round(
+            provider="fixture", surface="fixture", mode="poll", chain_scope=chain,
+            started_at=now,
+        )
+        store.add_token_discovery_exposure(
+            round_id, token_id=token.token_id, chain=chain, role="new_token",
+            first_local_discovery=True, new_token=True, observed_at=now,
+        )
+        store.finish_token_discovery_round(round_id, status="completed", returned_count=1)
+        cohort = store.db.execute(
+            "SELECT * FROM token_universe_forward_cohorts WHERE token_id=?", (token.token_id,)
+        ).fetchone()
+        return token, cohort, parse_time(cohort["discovery_recorded_at"])
+
+    def snapshot(
+        token: TokenCandidate, when: datetime, *, price: float, pair: str,
+        safety: bool | None = True,
+    ) -> None:
+        raw = {"pair": {
+            "chainId": token.chain, "dexId": "pancakeswap", "pairAddress": pair,
+            "baseToken": {"address": token.address}, "quoteToken": {"address": "0xquote"},
+        }}
+        if token.chain == "bsc" and safety is not None:
+            raw["goplus_evm"] = {"fixture": True}
+            raw["execution_safety_checked_at"] = iso(when)
+        if token.chain == "solana" and safety is not None:
+            raw["goplus_solana"] = {"fixture": True}
+            raw["execution_safety_checked_at"] = iso(when)
+        stamp = iso(when)
+        store.db.execute(
+            """
+            INSERT INTO token_snapshots(
+                token_id,observed_at,ingested_at,recorded_at,provider,price_usd,liquidity_usd,
+                buy_tax_pct,sell_tax_pct,honeypot,sellable,raw_json
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                token.token_id, stamp, stamp, stamp, "dexscreener", price, 20_000,
+                0 if safety else None, 0 if safety else None,
+                0 if safety else None, 1 if safety else None, json.dumps(raw),
+            ),
+        )
+
+    legacy, _, _ = enroll("bsc", "0x" + "L" * 40, "Legacy")
+    registration = store.register_token_universe_fixed_target_execution(
+        paper_stake_usd=35, min_liquidity_usd=12_000,
+        max_liquidity_impact_pct=0.0025, slippage_rate=0.04,
+        default_fee_bps=60, pump_fee_bps=125, max_tax_pct=10,
+    )
+    assert int(registration["activation_cohort_id"]) == 1
+
+    executable, _, executable_at = enroll("bsc", "0x" + "A" * 40, "Executable")
+    unsupported, _, unsupported_at = enroll("solana", "S" * 32, "Unsupported")
+    mismatch, _, mismatch_at = enroll("bsc", "0x" + "M" * 40, "Mismatch")
+    unknown, _, unknown_at = enroll("bsc", "0x" + "U" * 40, "Unknown")
+    snapshot(executable, executable_at + timedelta(minutes=1), price=1.0, pair="PAIR-A")
+    snapshot(executable, executable_at + timedelta(minutes=15, seconds=10), price=2.0, pair="PAIR-A")
+    snapshot(unsupported, unsupported_at + timedelta(minutes=1), price=1.0, pair="PAIR-S")
+    snapshot(unsupported, unsupported_at + timedelta(minutes=15, seconds=10), price=2.0, pair="PAIR-S")
+    snapshot(mismatch, mismatch_at + timedelta(minutes=1), price=1.0, pair="PAIR-M1")
+    snapshot(mismatch, mismatch_at + timedelta(minutes=15, seconds=10), price=2.0, pair="PAIR-M2")
+    snapshot(unknown, unknown_at + timedelta(minutes=1), price=1.0, pair="PAIR-U", safety=None)
+    snapshot(unknown, unknown_at + timedelta(minutes=15, seconds=10), price=2.0, pair="PAIR-U", safety=None)
+    store.finalize_token_universe_forward_outcomes(now=now + timedelta(minutes=16))
+    decisions_before = store.db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
+    trades_before = store.db.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
+    positions_before = store.db.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
+    assert store.finalize_token_universe_fixed_target_execution() == {
+        "inserted": 4, "modeled_executable": 1,
+    }
+    rows = list(store.db.execute(
+        "SELECT * FROM token_universe_fixed_target_execution_results ORDER BY cohort_id"
+    ))
+    assert {row["terminal_status"] for row in rows} == {
+        "modeled_executable", "unsupported_chain", "route_mismatch", "safety_unknown",
+    }
+    modeled = next(row for row in rows if row["terminal_status"] == "modeled_executable")
+    assert modeled["baseline_snapshot_id"] is not None and modeled["target_snapshot_id"] is not None
+    assert modeled["buy_execution_price_usd"] == pytest.approx(1.04)
+    assert modeled["buy_fee_usd"] == pytest.approx(35 * 0.006)
+    assert modeled["acquired_quantity"] == pytest.approx(35 / 1.04)
+    assert modeled["sell_execution_price_usd"] == pytest.approx(1.92)
+    assert modeled["sell_net_usd"] == pytest.approx(
+        (35 / 1.04) * 1.92 * (1 - 0.006)
+    )
+    assert json.loads(modeled["safety_sources_json"]) == {
+        "entry": ["goplus_evm"], "target": ["goplus_evm"],
+    }
+    assert all(row["decision_eligible"] == 0 and row["affects"] == "none" for row in rows)
+    assert store.db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == decisions_before
+    assert store.db.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == trades_before
+    assert store.db.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == positions_before
+    summary = Store.token_universe_fixed_target_execution_summary_from_connection(store.db)
+    assert summary["summary"] == {"assessed_outcomes": 4, "modeled_executable": 1}
+    assert int(summary["activation_cohort_id"]) == 1
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute(
+            "UPDATE token_universe_fixed_target_execution_results SET terminal_status='route_mismatch' WHERE id=?",
+            (int(modeled["id"]),),
+        )
+    store.close()
+
+
 def test_runtime_restart_reclassifies_only_unfinished_exposure_attempts(tmp_path: Path):
     database = tmp_path / "interrupted-exposure.sqlite3"
     store = Store(database, initial_cash_usd=1000)

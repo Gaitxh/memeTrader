@@ -177,6 +177,8 @@ Audit 的 `token-universe-funnel-transitions/v1` 从自己的注册点向前，�
 
 Audit 的 `token-universe-outcome-quality/v1` 是部署后才生效的追加式质量覆盖层，保留上述 v1 原始结果不变。它把 provider、chain、DEX、pair、quote、流动性、报价年龄和 PumpFun→PumpSwap 迁移路径一起冻结，分别展示原始混合路径峰值、同 pair、同 route、迁移调整和满足流动性门后的成本估算；只有卖出能力、honeypot 和税费均已有当时安全证据时才显示“确认可执行净回报”。`NULL` 流动性不是零流动性，跨池跳变也不是可成交收益。覆盖层从自己的注册点向前运行，不回填旧结果，固定 `decision_eligible=false / affects=none`。
 
+`token-universe-fixed-target-execution/v1` 进一步建立严格前向的固定时点 Paper 执行审计：只比较注册后 cohort 的 baseline 与 15/60/240 分钟目标快照，不使用事后最高价。Runtime 仅在 EVM 快照达到冻结流动性门时前向请求 GoPlus/Honeypot 安全证据；税率、蜜罐或可卖出字段未知就保留 `safety_unknown`，不会按零处理。只有同 route、双端流动性合格且双端安全字段已知时，才按冻结的 Paper 金额、每侧 4% 不利滑点和场地费计算 `modeled_executable`。这仍不是聚合器真实 route quote、签名/广播交易或可实现利润；Solana 在接入只读聚合器报价前明确为 `unsupported_chain`。该层不写 Decision、Position 或 Trade，固定 `decision_eligible=false / affects=none`。
+
 Audit 的“完整总体漏检账本”使用 `missed-opportunity-audit/v1`，从自身注册后为上述每个新结果追加一条不可变审计记录；低涨幅、缺基线和缺结果同样留在分母。只有本机采样路径达到预注册的 +25% 层且目标时点前没有 Paper 买入时才标记为 `potential_miss`，再按 `no_entry_snapshot / no_outcome_snapshot / no_decision / wait / reject / candidate_no_paper_buy / paper_bought` 展示可证明的粗断点。它不是市场 ATH、可成交收益或已证明的策略错误，不回填注册前案例，不改写历史决策，也不影响策略、Agent、Paper 或 Live。
 
 同页的“账号选择性关注策略”会为每轮实际选中的公开账号保存完成、失败和零产出暴露。只有合格事件中的原始帖子 URL 能与平台和账号路径精确匹配时才归因；转述、同名人物和登录受阻均不猜测为账号命中。`watch-attention/v3-experiment-gated` 只用成熟相关性生成实验假设，实际倍率固定为 `1.00×`。`attention-experiment/v1` 可在一对同平台、同优先级、非 critical 的普通账号之间随机分配一个观察槽位：第 1 阶段固定每组 60 个 assignment，2:2 平衡区块在 Agent 调用前持久化，错误、调用前中止、零产出、跨组碰撞与 60 分钟缺失均保留在 ITT 分母。全部样本终结前不允许显示通过；通过后仍需独立时间顺序 holdout，不自动提高倍率。critical 固定且总槽位至少 40% 继续探索。

@@ -65,6 +65,7 @@ def test_followup_tick_finalizes_event_and_token_context_without_agent_or_quote(
         runtime.store.finalize_information_first_shadow_outcomes = lambda: calls.append("information_first")
         runtime.store.finalize_information_first_ilg_outcomes = lambda: calls.append("information_first_ilg")
         runtime.store.finalize_token_universe_outcome_quality = lambda: calls.append("outcome_quality")
+        runtime.store.finalize_token_universe_fixed_target_execution = lambda: calls.append("fixed_execution")
         runtime.store.finalize_missed_opportunity_audits = lambda: calls.append("missed_opportunity")
         async def universe():
             calls.append("token_universe")
@@ -72,7 +73,7 @@ def test_followup_tick_finalizes_event_and_token_context_without_agent_or_quote(
         await runtime.shadow_event_followup_once()
         assert calls == [
             "event", "token_context", "information_first", "information_first_ilg",
-            "token_universe", "outcome_quality", "missed_opportunity",
+            "token_universe", "outcome_quality", "fixed_execution", "missed_opportunity",
         ]
         await runtime.close()
 
@@ -130,6 +131,74 @@ def test_token_universe_followup_actively_quotes_due_baseline_without_trading(tm
         assert attempt["decision_eligible"] == 0 and attempt["affects"] == "none"
         assert runtime.dex.http is runtime.market_http
         assert runtime.dex.http is not runtime.http
+        assert runtime.store.db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == 0
+        assert runtime.store.db.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == 0
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_token_universe_followup_collects_forward_evm_execution_safety(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        runtime = Runtime(config, tmp_path)
+        token = TokenCandidate(
+            chain="bsc", address="0x" + "a" * 40,
+            name="Forward EVM Safety", symbol="FES", source="geckoterminal:bsc",
+        )
+        runtime.store.upsert_token(token)
+        round_id = runtime.store.start_token_discovery_round(
+            provider="geckoterminal", surface="new_pools", mode="poll", chain_scope="bsc",
+        )
+        runtime.store.add_token_discovery_exposure(
+            round_id, token_id=token.token_id, chain=token.chain, role="new_pool",
+            first_local_discovery=True, new_token=True,
+        )
+        runtime.store.finish_token_discovery_round(round_id, status="completed", returned_count=1)
+
+        async def batch_quote(chain, addresses):
+            assert chain == "bsc" and addresses == [token.address]
+            snapshot = TokenSnapshot(
+                chain="bsc", address=token.address, price_usd=0.01,
+                liquidity_usd=20_000, market_cap_usd=100_000,
+                volume_5m_usd=5_000, buys_5m=20, sells_5m=5,
+                observed_at=utcnow(), provider="dexscreener",
+                raw={"pair": {
+                    "chainId": "bsc", "dexId": "pancakeswap",
+                    "pairAddress": "0x" + "b" * 40,
+                    "baseToken": {"address": token.address},
+                    "quoteToken": {"address": "0x" + "c" * 40},
+                }},
+            )
+            return {token.token_id: (token, snapshot)}
+
+        safety_calls = []
+
+        async def enrich(snapshot):
+            safety_calls.append(snapshot.token_id)
+            snapshot.honeypot = False
+            snapshot.sellable = True
+            snapshot.buy_tax_pct = 1.0
+            snapshot.sell_tax_pct = 2.0
+            snapshot.raw["execution_safety_checked_at"] = iso(utcnow())
+            snapshot.raw["execution_safety_reports"] = ["goplus_evm", "honeypot_is"]
+            return snapshot
+
+        runtime.dex.batch_quote = batch_quote
+        runtime.safety.enrich_evm_execution_fields = enrich
+        await runtime.token_universe_followup_once()
+        snapshot = runtime.store.db.execute(
+            "SELECT * FROM token_snapshots WHERE token_id=? ORDER BY id DESC LIMIT 1",
+            (token.token_id,),
+        ).fetchone()
+        assert safety_calls == [token.token_id]
+        assert snapshot["honeypot"] == 0 and snapshot["sellable"] == 1
+        assert snapshot["buy_tax_pct"] == pytest.approx(1.0)
+        assert snapshot["sell_tax_pct"] == pytest.approx(2.0)
+        raw = json.loads(snapshot["raw_json"])
+        assert raw["execution_safety_reports"] == ["goplus_evm", "honeypot_is"]
         assert runtime.store.db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == 0
         assert runtime.store.db.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == 0
         await runtime.close()

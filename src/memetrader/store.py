@@ -63,6 +63,12 @@ class Store:
     TOKEN_UNIVERSE_OUTCOME_GRACE_MINUTES = 30
     MISSED_OPPORTUNITY_AUDIT_VERSION = "missed-opportunity-audit/v1"
     TOKEN_UNIVERSE_OUTCOME_QUALITY_VERSION = "token-universe-outcome-quality/v1"
+    TOKEN_UNIVERSE_FIXED_TARGET_EXECUTION_VERSION = "token-universe-fixed-target-execution/v1"
+    TOKEN_UNIVERSE_EVM_CHAINS = frozenset({
+        "arbitrum", "avalanche", "base", "blast", "bsc", "celo", "cronos",
+        "ethereum", "eth", "fantom", "linea", "mantle", "optimism", "polygon",
+        "scroll", "zksync",
+    })
     EVENT_ATTENTION_TRAJECTORY_VERSION = "event-attention-trajectory/v1"
     EVENT_CLAIM_ASSESSMENT_VERSION = "event-claim-assessment/v1"
     EVENT_CLAIM_RELATION_VERSION = "event-claim-relation/v1"
@@ -1360,6 +1366,89 @@ class Store:
                 CREATE TRIGGER IF NOT EXISTS token_universe_outcome_quality_no_delete
                 BEFORE DELETE ON token_universe_outcome_quality
                 BEGIN SELECT RAISE(ABORT,'token-universe outcome quality is immutable'); END;
+                CREATE TABLE IF NOT EXISTS token_universe_fixed_target_execution_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_cohort_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS token_universe_fixed_target_execution_results (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    outcome_id INTEGER NOT NULL UNIQUE,
+                    cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    chain TEXT NOT NULL,
+                    horizon_minutes INTEGER NOT NULL,
+                    target_at TEXT NOT NULL,
+                    baseline_snapshot_id INTEGER,
+                    target_snapshot_id INTEGER,
+                    entry_observed_at TEXT,
+                    entry_ingested_at TEXT,
+                    entry_recorded_at TEXT,
+                    target_observed_at TEXT,
+                    target_ingested_at TEXT,
+                    target_recorded_at TEXT,
+                    entry_route_json TEXT NOT NULL,
+                    target_route_json TEXT NOT NULL,
+                    safety_sources_json TEXT NOT NULL,
+                    entry_safety_observed_at TEXT,
+                    target_safety_observed_at TEXT,
+                    entry_price_usd REAL,
+                    target_price_usd REAL,
+                    entry_liquidity_usd REAL,
+                    target_liquidity_usd REAL,
+                    entry_buy_tax_pct REAL,
+                    entry_sell_tax_pct REAL,
+                    entry_honeypot INTEGER,
+                    entry_sellable INTEGER,
+                    target_buy_tax_pct REAL,
+                    target_sell_tax_pct REAL,
+                    target_honeypot INTEGER,
+                    target_sellable INTEGER,
+                    terminal_status TEXT NOT NULL CHECK(terminal_status IN (
+                        'unsupported_chain','baseline_missing','outcome_missing',
+                        'time_order_invalid','route_mismatch','insufficient_liquidity',
+                        'safety_unknown','known_non_executable','modeled_executable'
+                    )),
+                    paper_stake_usd REAL NOT NULL,
+                    buy_execution_price_usd REAL,
+                    buy_fee_bps REAL,
+                    buy_fee_usd REAL,
+                    buy_slippage_usd REAL,
+                    buy_tax_usd REAL,
+                    acquired_quantity REAL,
+                    sell_execution_price_usd REAL,
+                    sell_fee_bps REAL,
+                    sell_fee_usd REAL,
+                    sell_slippage_usd REAL,
+                    sell_tax_usd REAL,
+                    sell_gross_usd REAL,
+                    sell_net_usd REAL,
+                    modeled_pnl_usd REAL,
+                    modeled_net_return REAL,
+                    assessed_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    FOREIGN KEY(outcome_id) REFERENCES token_universe_forward_outcomes(id),
+                    FOREIGN KEY(cohort_id) REFERENCES token_universe_forward_cohorts(id)
+                );
+                CREATE INDEX IF NOT EXISTS token_universe_fixed_target_execution_status_idx
+                    ON token_universe_fixed_target_execution_results(
+                        definition_version,terminal_status,horizon_minutes,assessed_at
+                    );
+                CREATE TRIGGER IF NOT EXISTS token_universe_fixed_target_execution_registrations_no_update
+                BEFORE UPDATE ON token_universe_fixed_target_execution_registrations
+                BEGIN SELECT RAISE(ABORT,'token-universe fixed-target execution registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_universe_fixed_target_execution_registrations_no_delete
+                BEFORE DELETE ON token_universe_fixed_target_execution_registrations
+                BEGIN SELECT RAISE(ABORT,'token-universe fixed-target execution registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_universe_fixed_target_execution_results_no_update
+                BEFORE UPDATE ON token_universe_fixed_target_execution_results
+                BEGIN SELECT RAISE(ABORT,'token-universe fixed-target execution results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_universe_fixed_target_execution_results_no_delete
+                BEFORE DELETE ON token_universe_fixed_target_execution_results
+                BEGIN SELECT RAISE(ABORT,'token-universe fixed-target execution results are immutable'); END;
                 CREATE TABLE IF NOT EXISTS kv (
                     key TEXT PRIMARY KEY,
                     value_json TEXT NOT NULL,
@@ -9198,6 +9287,321 @@ class Store:
             "confirmed_tradable": confirmed_tradable,
         }
 
+    def register_token_universe_fixed_target_execution(
+        self,
+        *,
+        paper_stake_usd: float,
+        min_liquidity_usd: float,
+        max_liquidity_impact_pct: float,
+        slippage_rate: float,
+        default_fee_bps: float,
+        pump_fee_bps: float,
+        max_tax_pct: float,
+    ) -> sqlite3.Row:
+        """Freeze a forward-only fixed-target synthetic Paper execution audit."""
+        stake = max(0.01, float(paper_stake_usd))
+        impact = max(0.000001, float(max_liquidity_impact_pct))
+        definition = {
+            "version": self.TOKEN_UNIVERSE_FIXED_TARGET_EXECUTION_VERSION,
+            "source": self.TOKEN_UNIVERSE_FORWARD_VERSION,
+            "no_historical_backfill": True,
+            "denominator": "registered_after_activation_cohort_id_all_terminal_outcomes",
+            "entry": "v1_baseline_snapshot_id",
+            "exit": "v1_fixed_horizon_target_snapshot_id",
+            "canonical_peak_used": False,
+            "supported_chains": sorted(self.TOKEN_UNIVERSE_EVM_CHAINS),
+            "paper_stake_usd": stake,
+            "min_liquidity_usd": max(0.0, float(min_liquidity_usd)),
+            "max_liquidity_impact_pct": impact,
+            "required_liquidity_usd": max(max(0.0, float(min_liquidity_usd)), stake / impact),
+            "slippage_rate_each_side": max(0.0, min(0.49, float(slippage_rate))),
+            "default_fee_bps_each_side": max(0.0, float(default_fee_bps)),
+            "pump_fee_bps_each_side": max(0.0, float(pump_fee_bps)),
+            "max_tax_pct": max(0.0, float(max_tax_pct)),
+            "decision_eligible": False,
+            "affects": "none",
+        }
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO token_universe_fixed_target_execution_registrations("
+                "definition_version,registered_at,activation_cohort_id,definition_json) "
+                "VALUES(?,?,COALESCE((SELECT MAX(id) FROM token_universe_forward_cohorts),0),?)",
+                (
+                    self.TOKEN_UNIVERSE_FIXED_TARGET_EXECUTION_VERSION,
+                    iso(),
+                    self._json(definition),
+                ),
+            )
+            return self.db.execute(
+                "SELECT * FROM token_universe_fixed_target_execution_registrations "
+                "WHERE definition_version=?",
+                (self.TOKEN_UNIVERSE_FIXED_TARGET_EXECUTION_VERSION,),
+            ).fetchone()
+
+    @staticmethod
+    def _token_universe_fixed_target_safety_evidence(row: sqlite3.Row) -> dict[str, Any]:
+        try:
+            raw = json.loads(str(row["raw_json"] or "{}"))
+        except (TypeError, json.JSONDecodeError):
+            raw = {}
+        raw = raw if isinstance(raw, dict) else {}
+        reported = raw.get("execution_safety_reports")
+        sources = [
+            str(name)
+            for name in reported
+            if str(name) in {"goplus_evm", "honeypot_is", "goplus_solana", "rugcheck"}
+        ] if isinstance(reported, list) else [
+            name
+            for name in ("goplus_evm", "honeypot_is", "goplus_solana", "rugcheck")
+            if isinstance(raw.get(name), dict)
+        ]
+        return {
+            "sources": list(dict.fromkeys(sources)),
+            "observed_at": str(
+                raw.get("execution_safety_checked_at")
+                or raw.get("execution_safety_observed_at")
+                or ""
+            ) or None,
+        }
+
+    @staticmethod
+    def _token_universe_fixed_target_execution_math(
+        entry: dict[str, Any],
+        target: dict[str, Any],
+        definition: Mapping[str, Any],
+    ) -> dict[str, float]:
+        stake = float(definition["paper_stake_usd"])
+        slippage = float(definition["slippage_rate_each_side"])
+        default_fee = float(definition["default_fee_bps_each_side"])
+        pump_fee = float(definition["pump_fee_bps_each_side"])
+        buy_fee_bps = pump_fee if "pump" in str(entry.get("dex_id") or "") else default_fee
+        sell_fee_bps = pump_fee if "pump" in str(target.get("dex_id") or "") else default_fee
+        entry_price = float(entry["price_usd"])
+        target_price = float(target["price_usd"])
+        buy_execution = entry_price * (1.0 + slippage)
+        buy_tax = stake * float(entry["buy_tax_pct"]) / 100.0
+        quantity = (stake - buy_tax) / buy_execution
+        buy_fee = stake * buy_fee_bps / 10_000.0
+        buy_slippage = (stake / buy_execution) * (buy_execution - entry_price)
+        sell_execution = target_price * (1.0 - slippage)
+        sell_gross = quantity * sell_execution
+        sell_fee = sell_gross * sell_fee_bps / 10_000.0
+        sell_tax = sell_gross * float(target["sell_tax_pct"]) / 100.0
+        sell_slippage = quantity * (target_price - sell_execution)
+        sell_net = sell_gross - sell_fee - sell_tax
+        pnl = sell_net - stake - buy_fee
+        return {
+            "buy_execution_price_usd": buy_execution,
+            "buy_fee_bps": buy_fee_bps,
+            "buy_fee_usd": buy_fee,
+            "buy_slippage_usd": buy_slippage,
+            "buy_tax_usd": buy_tax,
+            "acquired_quantity": quantity,
+            "sell_execution_price_usd": sell_execution,
+            "sell_fee_bps": sell_fee_bps,
+            "sell_fee_usd": sell_fee,
+            "sell_slippage_usd": sell_slippage,
+            "sell_tax_usd": sell_tax,
+            "sell_gross_usd": sell_gross,
+            "sell_net_usd": sell_net,
+            "modeled_pnl_usd": pnl,
+            "modeled_net_return": pnl / (stake + buy_fee),
+        }
+
+    def finalize_token_universe_fixed_target_execution(self) -> dict[str, int]:
+        """Append terminal baseline-to-fixed-target synthetic execution records."""
+        assessed_at = iso()
+        inserted = modeled_executable = 0
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT * FROM token_universe_fixed_target_execution_registrations "
+                "WHERE definition_version=?",
+                (self.TOKEN_UNIVERSE_FIXED_TARGET_EXECUTION_VERSION,),
+            ).fetchone()
+            if registration is None:
+                return {"inserted": 0, "modeled_executable": 0}
+            definition = self._json_object(registration["definition_json"])
+            rows = self.db.execute(
+                """
+                SELECT o.*,c.token_id,c.chain,b.snapshot_id AS baseline_snapshot_id,
+                       b.status AS baseline_status
+                FROM token_universe_forward_outcomes o
+                JOIN token_universe_forward_cohorts c ON c.id=o.cohort_id
+                LEFT JOIN token_universe_forward_baselines b ON b.cohort_id=c.id
+                LEFT JOIN token_universe_fixed_target_execution_results x ON x.outcome_id=o.id
+                WHERE c.id>? AND c.definition_version=? AND x.id IS NULL
+                ORDER BY c.id,o.horizon_minutes,o.id
+                """,
+                (
+                    int(registration["activation_cohort_id"]),
+                    self.TOKEN_UNIVERSE_FORWARD_VERSION,
+                ),
+            ).fetchall()
+            for outcome in rows:
+                payload: dict[str, Any] = {
+                    "definition_version": self.TOKEN_UNIVERSE_FIXED_TARGET_EXECUTION_VERSION,
+                    "outcome_id": int(outcome["id"]),
+                    "cohort_id": int(outcome["cohort_id"]),
+                    "token_id": str(outcome["token_id"]),
+                    "chain": str(outcome["chain"]).lower(),
+                    "horizon_minutes": int(outcome["horizon_minutes"]),
+                    "target_at": str(outcome["target_at"]),
+                    "baseline_snapshot_id": outcome["baseline_snapshot_id"],
+                    "target_snapshot_id": outcome["outcome_snapshot_id"],
+                    "entry_observed_at": None, "entry_ingested_at": None, "entry_recorded_at": None,
+                    "target_observed_at": None, "target_ingested_at": None, "target_recorded_at": None,
+                    "entry_route_json": "{}", "target_route_json": "{}",
+                    "safety_sources_json": "{}",
+                    "entry_safety_observed_at": None, "target_safety_observed_at": None,
+                    "entry_price_usd": None, "target_price_usd": None,
+                    "entry_liquidity_usd": None, "target_liquidity_usd": None,
+                    "entry_buy_tax_pct": None, "entry_sell_tax_pct": None,
+                    "entry_honeypot": None, "entry_sellable": None,
+                    "target_buy_tax_pct": None, "target_sell_tax_pct": None,
+                    "target_honeypot": None, "target_sellable": None,
+                    "terminal_status": "baseline_missing",
+                    "paper_stake_usd": float(definition["paper_stake_usd"]),
+                    "buy_execution_price_usd": None, "buy_fee_bps": None, "buy_fee_usd": None,
+                    "buy_slippage_usd": None, "buy_tax_usd": None, "acquired_quantity": None,
+                    "sell_execution_price_usd": None, "sell_fee_bps": None, "sell_fee_usd": None,
+                    "sell_slippage_usd": None, "sell_tax_usd": None, "sell_gross_usd": None,
+                    "sell_net_usd": None, "modeled_pnl_usd": None, "modeled_net_return": None,
+                    "assessed_at": assessed_at,
+                }
+                if str(outcome["baseline_status"] or "") != "observed" or outcome["baseline_snapshot_id"] is None:
+                    pass
+                elif str(outcome["status"] or "") != "observed" or outcome["outcome_snapshot_id"] is None:
+                    payload["terminal_status"] = "outcome_missing"
+                else:
+                    entry_row = self.db.execute(
+                        "SELECT * FROM token_snapshots WHERE id=?", (int(outcome["baseline_snapshot_id"]),)
+                    ).fetchone()
+                    target_row = self.db.execute(
+                        "SELECT * FROM token_snapshots WHERE id=?", (int(outcome["outcome_snapshot_id"]),)
+                    ).fetchone()
+                    if entry_row is None:
+                        payload["terminal_status"] = "baseline_missing"
+                    elif target_row is None:
+                        payload["terminal_status"] = "outcome_missing"
+                    else:
+                        entry = self._token_universe_snapshot_route(entry_row)
+                        target = self._token_universe_snapshot_route(target_row)
+                        entry_safety = self._token_universe_fixed_target_safety_evidence(entry_row)
+                        target_safety = self._token_universe_fixed_target_safety_evidence(target_row)
+                        payload.update({
+                            "entry_observed_at": entry_row["observed_at"],
+                            "entry_ingested_at": entry_row["ingested_at"],
+                            "entry_recorded_at": entry_row["recorded_at"],
+                            "target_observed_at": target_row["observed_at"],
+                            "target_ingested_at": target_row["ingested_at"],
+                            "target_recorded_at": target_row["recorded_at"],
+                            "entry_route_json": self._json(entry),
+                            "target_route_json": self._json(target),
+                            "safety_sources_json": self._json({
+                                "entry": entry_safety["sources"],
+                                "target": target_safety["sources"],
+                            }),
+                            "entry_safety_observed_at": entry_safety["observed_at"],
+                            "target_safety_observed_at": target_safety["observed_at"],
+                            "entry_price_usd": entry.get("price_usd"),
+                            "target_price_usd": target.get("price_usd"),
+                            "entry_liquidity_usd": entry.get("liquidity_usd"),
+                            "target_liquidity_usd": target.get("liquidity_usd"),
+                            "entry_buy_tax_pct": entry.get("buy_tax_pct"),
+                            "entry_sell_tax_pct": entry.get("sell_tax_pct"),
+                            "entry_honeypot": entry.get("honeypot"),
+                            "entry_sellable": entry.get("sellable"),
+                            "target_buy_tax_pct": target.get("buy_tax_pct"),
+                            "target_sell_tax_pct": target.get("sell_tax_pct"),
+                            "target_honeypot": target.get("honeypot"),
+                            "target_sellable": target.get("sellable"),
+                        })
+                        try:
+                            entry_time_valid = (
+                                parse_time(entry_row["observed_at"]) <= parse_time(entry_row["ingested_at"])
+                                <= parse_time(entry_row["recorded_at"])
+                            )
+                            target_time_valid = (
+                                parse_time(target_row["observed_at"]) <= parse_time(target_row["ingested_at"])
+                                <= parse_time(target_row["recorded_at"])
+                            )
+                            chronological = (
+                                parse_time(entry_row["observed_at"]) <= parse_time(target_row["observed_at"])
+                                and parse_time(entry_row["recorded_at"]) <= parse_time(target_row["recorded_at"])
+                            )
+                        except (TypeError, ValueError):
+                            entry_time_valid = target_time_valid = chronological = False
+                        if not entry_time_valid or not target_time_valid or not chronological:
+                            payload["terminal_status"] = "time_order_invalid"
+                        elif payload["chain"] not in self.TOKEN_UNIVERSE_EVM_CHAINS:
+                            payload["terminal_status"] = "unsupported_chain"
+                        elif not entry.get("route_key") or entry.get("route_key") != target.get("route_key"):
+                            payload["terminal_status"] = "route_mismatch"
+                        elif (
+                            entry.get("liquidity_usd") is None or target.get("liquidity_usd") is None
+                            or min(float(entry["liquidity_usd"]), float(target["liquidity_usd"]))
+                            < float(definition["required_liquidity_usd"])
+                        ):
+                            payload["terminal_status"] = "insufficient_liquidity"
+                        else:
+                            safety_values = (
+                                entry.get("buy_tax_pct"), entry.get("sell_tax_pct"),
+                                entry.get("honeypot"), entry.get("sellable"),
+                                target.get("buy_tax_pct"), target.get("sell_tax_pct"),
+                                target.get("honeypot"), target.get("sellable"),
+                            )
+                            max_tax = float(definition["max_tax_pct"])
+                            if (
+                                not entry_safety["sources"] or not target_safety["sources"]
+                                or entry_safety["observed_at"] is None
+                                or target_safety["observed_at"] is None
+                            ):
+                                payload["terminal_status"] = "safety_unknown"
+                            else:
+                                try:
+                                    safety_time_valid = (
+                                        parse_time(entry_row["observed_at"])
+                                        <= parse_time(entry_safety["observed_at"])
+                                        <= parse_time(entry_row["recorded_at"])
+                                        and parse_time(target_row["observed_at"])
+                                        <= parse_time(target_safety["observed_at"])
+                                        <= parse_time(target_row["recorded_at"])
+                                    )
+                                except (TypeError, ValueError):
+                                    safety_time_valid = False
+                                unsafe = (
+                                    entry.get("honeypot") == 1 or target.get("honeypot") == 1
+                                    or entry.get("sellable") == 0 or target.get("sellable") == 0
+                                    or any(
+                                        float(value) > max_tax
+                                        for value in (
+                                            entry.get("buy_tax_pct"), entry.get("sell_tax_pct"),
+                                            target.get("buy_tax_pct"), target.get("sell_tax_pct"),
+                                        )
+                                        if value is not None
+                                    )
+                                )
+                                if not safety_time_valid:
+                                    payload["terminal_status"] = "time_order_invalid"
+                                elif unsafe:
+                                    payload["terminal_status"] = "known_non_executable"
+                                elif any(value is None for value in safety_values):
+                                    payload["terminal_status"] = "safety_unknown"
+                                else:
+                                    payload["terminal_status"] = "modeled_executable"
+                                    payload.update(self._token_universe_fixed_target_execution_math(
+                                        entry, target, definition,
+                                    ))
+                                    modeled_executable += 1
+                columns = tuple(payload)
+                self.db.execute(
+                    "INSERT INTO token_universe_fixed_target_execution_results("
+                    + ",".join(columns) + ") VALUES(" + ",".join("?" for _ in columns) + ")",
+                    tuple(payload[column] for column in columns),
+                )
+                inserted += 1
+        return {"inserted": inserted, "modeled_executable": modeled_executable}
+
     def due_token_universe_quotes(
         self,
         *,
@@ -10249,6 +10653,111 @@ class Store:
             "quality_classes": grouped("quality_status"),
             "recent": recent,
             "retrospective_v1_diagnostic_included": False,
+            "decision_eligible": False,
+            "affects": "none",
+            "as_of": iso(),
+        }
+
+    @classmethod
+    def token_universe_fixed_target_execution_summary_from_connection(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        recent_limit: int = 20,
+    ) -> dict[str, Any]:
+        required = {
+            "token_universe_fixed_target_execution_registrations",
+            "token_universe_fixed_target_execution_results",
+        }
+        tables = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        empty = {
+            "status": "not_observed",
+            "version": cls.TOKEN_UNIVERSE_FIXED_TARGET_EXECUTION_VERSION,
+            "summary": {"assessed_outcomes": 0, "modeled_executable": 0},
+            "terminal_statuses": [], "recent": [],
+            "decision_eligible": False, "affects": "none",
+        }
+        if not required.issubset(tables):
+            return empty
+        registration = connection.execute(
+            "SELECT * FROM token_universe_fixed_target_execution_registrations "
+            "WHERE definition_version=?",
+            (cls.TOKEN_UNIVERSE_FIXED_TARGET_EXECUTION_VERSION,),
+        ).fetchone()
+        if registration is None:
+            return empty
+        version = cls.TOKEN_UNIVERSE_FIXED_TARGET_EXECUTION_VERSION
+        summary = connection.execute(
+            """
+            SELECT COUNT(*) AS assessed_outcomes,
+                   SUM(CASE WHEN terminal_status='modeled_executable' THEN 1 ELSE 0 END)
+                       AS modeled_executable
+            FROM token_universe_fixed_target_execution_results
+            WHERE definition_version=?
+            """,
+            (version,),
+        ).fetchone()
+        statuses = [
+            {"terminal_status": str(row["terminal_status"]), "count": int(row["count"] or 0)}
+            for row in connection.execute(
+                """
+                SELECT terminal_status,COUNT(*) AS count
+                FROM token_universe_fixed_target_execution_results
+                WHERE definition_version=?
+                GROUP BY terminal_status ORDER BY count DESC,terminal_status
+                """,
+                (version,),
+            )
+        ]
+        recent = [
+            {
+                "token_id": str(row["token_id"]),
+                "chain": str(row["chain"]),
+                "horizon_minutes": int(row["horizon_minutes"]),
+                "target_at": str(row["target_at"]),
+                "terminal_status": str(row["terminal_status"]),
+                "paper_stake_usd": row["paper_stake_usd"],
+                "modeled_pnl_usd": row["modeled_pnl_usd"],
+                "modeled_net_return": row["modeled_net_return"],
+                "entry_safety": {
+                    "buy_tax_pct": row["entry_buy_tax_pct"],
+                    "sell_tax_pct": row["entry_sell_tax_pct"],
+                    "honeypot": row["entry_honeypot"],
+                    "sellable": row["entry_sellable"],
+                },
+                "target_safety": {
+                    "buy_tax_pct": row["target_buy_tax_pct"],
+                    "sell_tax_pct": row["target_sell_tax_pct"],
+                    "honeypot": row["target_honeypot"],
+                    "sellable": row["target_sellable"],
+                },
+                "safety_sources": cls._json_object(row["safety_sources_json"]),
+            }
+            for row in connection.execute(
+                """
+                SELECT * FROM token_universe_fixed_target_execution_results
+                WHERE definition_version=?
+                ORDER BY assessed_at DESC,id DESC LIMIT ?
+                """,
+                (version, max(1, min(100, int(recent_limit)))),
+            )
+        ]
+        total = int(summary["assessed_outcomes"] or 0)
+        return {
+            "status": "collecting" if total else "registered_waiting_forward_data",
+            "version": version,
+            "registered_at": str(registration["registered_at"]),
+            "activation_cohort_id": int(registration["activation_cohort_id"]),
+            "definition": cls._json_object(registration["definition_json"]),
+            "summary": {
+                "assessed_outcomes": total,
+                "modeled_executable": int(summary["modeled_executable"] or 0),
+            },
+            "terminal_statuses": statuses,
+            "recent": recent,
             "decision_eligible": False,
             "affects": "none",
             "as_of": iso(),

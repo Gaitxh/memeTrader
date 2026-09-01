@@ -223,6 +223,8 @@ EXPECTED_TABLES = {
     "missed_opportunity_audits",
     "token_universe_outcome_quality_registrations",
     "token_universe_outcome_quality",
+    "token_universe_fixed_target_execution_registrations",
+    "token_universe_fixed_target_execution_results",
     "token_snapshots",
     "tokens",
     "trades",
@@ -5418,6 +5420,13 @@ class WebData:
             "horizons": [], "route_classes": [], "quality_classes": [], "recent": [],
             "decision_eligible": False, "affects": "none",
         }
+        fixed_target_execution = {
+            "status": "not_observed",
+            "version": Store.TOKEN_UNIVERSE_FIXED_TARGET_EXECUTION_VERSION,
+            "summary": {"assessed_outcomes": 0, "modeled_executable": 0},
+            "terminal_statuses": [], "recent": [],
+            "decision_eligible": False, "affects": "none",
+        }
         token_universe_funnel = {
             "status": "not_observed",
             "version": Store.TOKEN_UNIVERSE_FUNNEL_VERSION,
@@ -5506,6 +5515,9 @@ class WebData:
                 )
                 outcome_quality = Store.token_universe_outcome_quality_summary_from_connection(
                     connection
+                )
+                fixed_target_execution = (
+                    Store.token_universe_fixed_target_execution_summary_from_connection(connection)
                 )
                 token_universe_funnel = Store.token_universe_funnel_summary_from_connection(
                     connection
@@ -5627,6 +5639,7 @@ class WebData:
             "recent_decision_evidence": recent_decisions,
             "missed_opportunity": missed_opportunity,
             "token_universe_outcome_quality": outcome_quality,
+            "token_universe_fixed_target_execution": fixed_target_execution,
             "token_universe_funnel": token_universe_funnel,
             "token_event_lookup_name_screen": event_lookup_name_screen,
             "agent_shadow_review": agent_shadow_review,

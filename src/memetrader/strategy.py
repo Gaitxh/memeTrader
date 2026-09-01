@@ -582,6 +582,22 @@ class SafetyChecker:
             snap = await self._enrich_honeypot(snap)
         return snap
 
+    async def enrich_evm_execution_fields(self, snap: TokenSnapshot) -> TokenSnapshot:
+        """Collect forward EVM tax/sellability evidence for execution research."""
+        if snap.chain.lower() not in {"ethereum", "eth", "bsc", "base"}:
+            return snap
+        snap = await self._enrich_goplus_evm(snap)
+        required = (snap.honeypot, snap.sellable, snap.buy_tax_pct, snap.sell_tax_pct)
+        if snap.chain.lower() == "bsc" and any(value is None for value in required):
+            snap = await self._enrich_honeypot(snap)
+        reports = [
+            name for name in ("goplus_evm", "honeypot_is")
+            if isinstance(snap.raw.get(name), dict)
+        ]
+        snap.raw["execution_safety_checked_at"] = iso(utcnow())
+        snap.raw["execution_safety_reports"] = reports
+        return snap
+
     async def _enrich_goplus_solana(self, snap: TokenSnapshot) -> TokenSnapshot:
         if snap.chain.lower() != "solana" or not self.config.get("goplus_solana", True):
             return snap

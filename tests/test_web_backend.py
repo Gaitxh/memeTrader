@@ -933,6 +933,11 @@ def test_web_sources_exposes_forward_token_discovery_without_sensitive_fields(tm
         default_fee_bps=60, pump_fee_bps=125,
         max_quote_age_seconds=45, max_tax_pct=10,
     )
+    store.register_token_universe_fixed_target_execution(
+        paper_stake_usd=35, min_liquidity_usd=12_000,
+        max_liquidity_impact_pct=0.0025, slippage_rate=0.04,
+        default_fee_bps=60, pump_fee_bps=125, max_tax_pct=10,
+    )
     round_id = store.start_token_discovery_round(
         provider="dexscreener", surface="token_profiles", mode="poll", chain_scope="solana",
     )
@@ -977,6 +982,7 @@ def test_web_sources_exposes_forward_token_discovery_without_sensitive_fields(tm
         )
     store.finalize_token_universe_forward_outcomes(now=discovered + timedelta(minutes=16))
     store.finalize_token_universe_outcome_quality()
+    store.finalize_token_universe_fixed_target_execution()
     store.finalize_missed_opportunity_audits()
     transition_id = store.record_token_universe_funnel_transition(
         str(cohort["token_id"]),
@@ -1034,6 +1040,16 @@ def test_web_sources_exposes_forward_token_discovery_without_sensitive_fields(tm
     quality_json = json.dumps(quality).lower()
     assert "raw_json" not in quality_json and "pair_transitions_json" not in quality_json
     assert "password" not in quality_json and "private_key" not in quality_json
+    fixed_execution = WebData(config_path).audit()["token_universe_fixed_target_execution"]
+    assert fixed_execution["summary"]["assessed_outcomes"] == 1
+    assert fixed_execution["summary"]["modeled_executable"] == 0
+    assert fixed_execution["terminal_statuses"] == [
+        {"terminal_status": "unsupported_chain", "count": 1}
+    ]
+    assert fixed_execution["decision_eligible"] is False
+    assert fixed_execution["affects"] == "none"
+    fixed_execution_json = json.dumps(fixed_execution).lower()
+    assert "raw_json" not in fixed_execution_json and "private_key" not in fixed_execution_json
     funnel = WebData(config_path).audit()["token_universe_funnel"]
     assert funnel["status"] == "collecting"
     assert funnel["summary"]["cohorts"] == 1
