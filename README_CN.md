@@ -19,6 +19,8 @@
 
 项目刻意保持简单：**一个 Python 进程、一个 SQLite 数据库、一个 JSON 配置、一个可选浏览器扩展**。默认不调用付费 API；会启用有严格频率和额度上限的自主搜索 Agent，但交易语义平局 Agent 默认关闭，系统不接触真实资金。
 
+本机部署的项目数据统一保存在 `E:\memeTrader`。SQLite、日志、Web 控制台状态、测试产物以及 Runtime/Agent 的临时工作目录均位于项目目录；加载配置后，进程和它启动的子进程会把 `TEMP/TMP` 指向 `E:\memeTrader\data\tmp`，避免 memeTrader 持续写入系统盘。Codex、浏览器或 Windows 自身维护的应用缓存不属于本项目数据，仍由对应应用管理。
+
 ## 关键规则
 
 - 生产运行只使用本机从现在开始记录的 `observed_at`。

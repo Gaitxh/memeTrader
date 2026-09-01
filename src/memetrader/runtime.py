@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import secrets
+import tempfile
 import threading
 import urllib.parse
 import urllib.request
@@ -399,8 +400,19 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
     return out
 
 
+def configure_project_temp(root: Path) -> Path:
+    """Keep memeTrader and its Agent subprocess temporary files beside the project."""
+    temp_root = (root / "data" / "tmp").resolve()
+    temp_root.mkdir(parents=True, exist_ok=True)
+    os.environ["TEMP"] = str(temp_root)
+    os.environ["TMP"] = str(temp_root)
+    tempfile.tempdir = str(temp_root)
+    return temp_root
+
+
 def load_config(path: str | Path) -> tuple[dict[str, Any], Path]:
     config_path = Path(path).resolve()
+    configure_project_temp(config_path.parent)
     payload = json.loads(config_path.read_text(encoding="utf-8")) if config_path.exists() else {}
     migrated = json.loads(json.dumps(payload))
 

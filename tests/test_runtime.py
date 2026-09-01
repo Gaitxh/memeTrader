@@ -1,8 +1,11 @@
 import asyncio
 import json
+import os
 import sqlite3
+import tempfile
 import urllib.parse
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 
@@ -31,6 +34,21 @@ def test_initial_config_has_private_token_and_live_locked():
     assert config["paper"]["slippage_rate"] == pytest.approx(0.04)
     assert config["paper"]["fee_bps"] == pytest.approx(60)
     assert config["paper"]["pump_swap_fee_bps"] == pytest.approx(125)
+
+
+def test_load_config_routes_process_temp_storage_beside_project(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(initial_config()), encoding="utf-8")
+
+    _, root = load_config(config_path)
+    expected = (root / "data" / "tmp").resolve()
+
+    assert expected.is_dir()
+    assert os.environ["TEMP"] == str(expected)
+    assert os.environ["TMP"] == str(expected)
+    assert tempfile.gettempdir() == str(expected)
+    with tempfile.TemporaryDirectory(prefix="memetrader-test-") as directory:
+        assert Path(directory).parent == expected
 
 
 def test_paper_fee_uses_pumpswap_cap_only_for_identified_venue(tmp_path):

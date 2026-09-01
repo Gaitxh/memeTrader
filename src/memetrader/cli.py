@@ -16,7 +16,7 @@ import httpx
 
 from .autonomous_search import CONTEXT_RESULT_KEY, REGISTRY_KEY, SOURCE_RESULT_KEY, TREND_RESULT_KEY
 from .models import Observation, parse_time
-from .runtime import Runtime, SingleInstance, initial_config, load_config
+from .runtime import Runtime, SingleInstance, configure_project_temp, initial_config, load_config
 from .store import Store
 from .strategy import EventEngine, replay_guard, token_snapshot_temporal_rejections
 
@@ -355,7 +355,8 @@ async def cmd_scout_trends(config_path: str, force: bool) -> int:
 def cmd_replay(fixture_path: str, decision_at: str) -> int:
     fixture = json.loads(Path(fixture_path).read_text(encoding="utf-8"))
     decision = parse_time(decision_at)
-    with tempfile.TemporaryDirectory(prefix="memetrader-replay-") as temp:
+    temp_root = configure_project_temp(Path(__file__).resolve().parents[2])
+    with tempfile.TemporaryDirectory(prefix="memetrader-replay-", dir=temp_root) as temp:
         store = Store(Path(temp) / "replay.sqlite3")
         engine = EventEngine(store)
         event_ids: list[int] = []

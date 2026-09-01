@@ -10,6 +10,7 @@ Run a simple personal-PC bot that discovers real-world/social events and related
 - Historical cases test identity matching, ambiguity, timing, and future-data rejection. Never use later ATH, final winner, exchange listing, current holder counts, or other outcomes as earlier decision features.
 - A fact is decision-eligible only when its local `observed_at` and `ingested_at` are not later than the decision time. A `feature` or `confirmation` first observed after the configured freshness window becomes identity-only; stale-only events are deferred until new evidence arrives instead of repeatedly querying DEX/API services.
 - Do not commit `config.json`, `data/`, logs, SQLite databases, browser/session material, API keys, wallet material, or private bridge tokens.
+- Keep every memeTrader database, log, runtime context, Web-console state, test artifact, and temporary Agent workspace under the project on `E:`. Do not create memeTrader storage on the Windows system drive; `load_config()` routes process and child-process temporary storage to `<project>\data\tmp`.
 - Free/public sources may fail or rate-limit. Preserve other collectors and record the failure; do not silently treat missing security data as safe.
 
 ## Agent-cost routing
