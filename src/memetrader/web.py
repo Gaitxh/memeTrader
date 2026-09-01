@@ -5409,6 +5409,13 @@ class WebData:
             "horizons": [], "breakpoints": [], "classes": [],
             "recent_potential_misses": [], "decision_eligible": False, "affects": "none",
         }
+        no_decision_attribution = {
+            "status": "not_observed",
+            "version": Store.MISSED_OPPORTUNITY_NO_DECISION_ATTRIBUTION_VERSION,
+            "summary": {"attributions": 0},
+            "statuses": [], "reason_codes": [], "recent": [],
+            "decision_eligible": False, "affects": "none",
+        }
         outcome_quality = {
             "status": "not_observed",
             "version": Store.TOKEN_UNIVERSE_OUTCOME_QUALITY_VERSION,
@@ -5526,6 +5533,11 @@ class WebData:
             if connection is not None:
                 missed_opportunity = Store.missed_opportunity_audit_summary_from_connection(
                     connection
+                )
+                no_decision_attribution = (
+                    Store.missed_opportunity_no_decision_attribution_summary_from_connection(
+                        connection
+                    )
                 )
                 outcome_quality = Store.token_universe_outcome_quality_summary_from_connection(
                     connection
@@ -5746,6 +5758,7 @@ class WebData:
             "observation_counts": counts,
             "recent_decision_evidence": recent_decisions,
             "missed_opportunity": missed_opportunity,
+            "missed_opportunity_no_decision_attribution": no_decision_attribution,
             "token_universe_outcome_quality": outcome_quality,
             "token_universe_fixed_target_execution": fixed_target_execution,
             "token_universe_jupiter_quote": jupiter_quote,

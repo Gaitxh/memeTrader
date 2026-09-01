@@ -1461,6 +1461,8 @@ def test_missed_opportunity_audit_registration_never_backfills_existing_outcomes
     raw = sqlite3.connect(database)
     raw.execute("DROP TRIGGER missed_opportunity_audit_registrations_no_delete")
     raw.execute("DELETE FROM missed_opportunity_audit_registrations")
+    raw.execute("DROP TRIGGER missed_opportunity_no_decision_attribution_registrations_no_delete")
+    raw.execute("DELETE FROM missed_opportunity_no_decision_attribution_registrations")
     raw.commit()
     raw.close()
 
@@ -1469,6 +1471,10 @@ def test_missed_opportunity_audit_registration_never_backfills_existing_outcomes
         "SELECT * FROM missed_opportunity_audit_registrations"
     ).fetchone()
     assert int(registration["activation_outcome_id"]) == old_outcome_id
+    attribution_registration = store.db.execute(
+        "SELECT * FROM missed_opportunity_no_decision_attribution_registrations"
+    ).fetchone()
+    assert int(attribution_registration["activation_cohort_id"]) == int(cohort["id"])
     assert store.finalize_missed_opportunity_audits()["inserted"] == 0
     when = iso(discovered + timedelta(minutes=60, seconds=10))
     store.db.execute(
@@ -1480,6 +1486,121 @@ def test_missed_opportunity_audit_registration_never_backfills_existing_outcomes
     assert store.finalize_missed_opportunity_audits() == {
         "inserted": 1, "potential_misses": 1,
     }
+    assert store.finalize_missed_opportunity_no_decision_attributions() == {"inserted": 0}
+    store.close()
+
+
+def test_missed_opportunity_no_decision_attribution_is_target_bounded_and_immutable(tmp_path: Path):
+    store = Store(tmp_path / "no-decision-attribution.sqlite3", initial_cash_usd=1000)
+
+    def enroll(address: str) -> tuple[TokenCandidate, object]:
+        token = TokenCandidate(chain="solana", address=address, name="Attribution", symbol="ATTR")
+        store.upsert_token(token)
+        round_id = store.start_token_discovery_round(
+            provider="pumpportal", surface="create", mode="stream_window", chain_scope="solana",
+        )
+        store.add_token_discovery_exposure(
+            round_id, token_id=token.token_id, chain=token.chain, role="create",
+            first_local_discovery=True, new_token=True,
+        )
+        store.finish_token_discovery_round(round_id, status="completed", returned_count=1)
+        cohort = store.db.execute(
+            "SELECT * FROM token_universe_forward_cohorts WHERE token_id=?", (token.token_id,)
+        ).fetchone()
+        discovered = parse_time(cohort["discovery_recorded_at"])
+        for minutes, price in ((1, 1.0), (15, 1.5)):
+            when = iso(discovered + timedelta(minutes=minutes, seconds=1))
+            store.db.execute(
+                "INSERT INTO token_snapshots(token_id,observed_at,ingested_at,recorded_at,provider,price_usd,raw_json) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (token.token_id, when, when, when, "fixture", price, "{}"),
+            )
+        return token, cohort
+
+    absent, _ = enroll("A" * 32)
+    cooldown, _ = enroll("B" * 32)
+    no_context, _ = enroll("C" * 32)
+    related, _ = enroll("D" * 32)
+    now = utcnow()
+    cooldown_admission = store.add_token_context_admission_attempt(
+        cooldown.token_id, outcome="skipped", reason="global_cooldown_active", trigger={},
+        snapshot_observed_at=now, momentum_score=0, quota_day=now.date().isoformat(),
+        daily_call_limit=1, calls_used_before=1, daily_token_budget=0,
+        tokens_used_before=0, token_reserve_per_call=0, evaluated_at=now,
+    )
+    store.record_token_universe_funnel_transition(
+        cooldown.token_id, stage="context_admission", status="skipped",
+        reason_code="global_cooldown_active", evaluation_key="fixture:cooldown",
+        observed_at=now, ingested_at=now, source_table="token_context_admission_attempts",
+        admission_id=cooldown_admission,
+    )
+    context_admission = store.add_token_context_admission_attempt(
+        no_context.token_id, outcome="admitted", reason="admitted", trigger={},
+        snapshot_observed_at=now, momentum_score=0, quota_day=now.date().isoformat(),
+        daily_call_limit=1, calls_used_before=0, daily_token_budget=0,
+        tokens_used_before=0, token_reserve_per_call=0, evaluated_at=now,
+    )
+    assessment_id = store.add_token_context_assessment(
+        no_context.token_id, trigger="fixture", status="no_context",
+        snapshot_observed_at=now, momentum_score=0, assessment={}, assessed_at=now,
+    )
+    store.record_token_universe_funnel_transition(
+        no_context.token_id, stage="agent_result", status="no_context",
+        reason_code="no_context", evaluation_key="fixture:no-context",
+        observed_at=now, ingested_at=now, source_table="token_context_assessments",
+        admission_id=context_admission, assessment_id=assessment_id, agent_run_id="fixture-run",
+    )
+    event_id = store.create_event("Fixture relation", ["fixture"], 70, now)
+    observation_id, _ = store.add_observation(Observation(
+        source="fixture", source_kind="news", title="Fixture relation", observed_at=now,
+        ingested_at=now, role="feature", source_item_id="attribution-related",
+        raw={"reverse_token_id": related.token_id},
+    ))
+    store.link_event_observation(event_id, observation_id)
+
+    absent_cohort = store.db.execute(
+        "SELECT id,discovery_recorded_at FROM token_universe_forward_cohorts WHERE token_id=?",
+        (absent.token_id,),
+    ).fetchone()
+    absent_target = parse_time(absent_cohort["discovery_recorded_at"]) + timedelta(minutes=15)
+    before_target = iso(absent_target - timedelta(seconds=1))
+    after_target = iso(absent_target + timedelta(seconds=1))
+    store.db.execute(
+        "INSERT INTO token_universe_funnel_transitions("
+        "definition_version,transition_key,evaluation_key,cohort_id,token_id,stage,status,"
+        "reason_code,observed_at,ingested_at,recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            store.TOKEN_UNIVERSE_FUNNEL_VERSION, "fixture:late-recording", "fixture:late",
+            int(absent_cohort["id"]), absent.token_id, "context_trigger_evaluation", "eligible",
+            "information_first_trigger", before_target, before_target, after_target,
+        ),
+    )
+
+    latest_discovery = max(
+        parse_time(row["discovery_recorded_at"])
+        for row in store.db.execute("SELECT discovery_recorded_at FROM token_universe_forward_cohorts")
+    )
+    store.finalize_token_universe_forward_outcomes(now=latest_discovery + timedelta(minutes=16))
+    assert store.finalize_missed_opportunity_audits() == {"inserted": 4, "potential_misses": 4}
+    assert store.finalize_missed_opportunity_no_decision_attributions() == {"inserted": 4}
+    rows = list(store.db.execute(
+        "SELECT token_id,status,reason_code,terminal_transition_id,decision_eligible,affects "
+        "FROM missed_opportunity_no_decision_attributions ORDER BY token_id"
+    ))
+    assert [(row["token_id"], row["status"]) for row in rows] == [
+        (absent.token_id, "metadata_hydration_not_observed"),
+        (cooldown.token_id, "context_admission_skipped"),
+        (no_context.token_id, "agent_result_no_context"),
+        (related.token_id, "event_related_candidate_not_evaluated"),
+    ]
+    assert rows[0]["terminal_transition_id"] is None
+    assert rows[1]["reason_code"] == "global_cooldown_active"
+    assert all(row["decision_eligible"] == 0 and row["affects"] == "none" for row in rows)
+    summary = store.missed_opportunity_no_decision_attribution_summary_from_connection(store.db)
+    assert summary["summary"]["attributions"] == 4
+    assert summary["decision_eligible"] is False and summary["affects"] == "none"
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute("UPDATE missed_opportunity_no_decision_attributions SET status='trigger_ineligible'")
     store.close()
 
 

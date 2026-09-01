@@ -2784,6 +2784,7 @@ class Runtime:
         self.store.finalize_token_universe_outcome_quality()
         self.store.finalize_token_universe_fixed_target_execution()
         self.store.finalize_missed_opportunity_audits()
+        self.store.finalize_missed_opportunity_no_decision_attributions()
 
     async def token_universe_followup_once(self) -> None:
         """Actively quote only due full-universe forward checkpoints."""

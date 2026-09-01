@@ -62,6 +62,7 @@ class Store:
     TOKEN_UNIVERSE_BASELINE_WINDOW_MINUTES = 5
     TOKEN_UNIVERSE_OUTCOME_GRACE_MINUTES = 30
     MISSED_OPPORTUNITY_AUDIT_VERSION = "missed-opportunity-audit/v1"
+    MISSED_OPPORTUNITY_NO_DECISION_ATTRIBUTION_VERSION = "missed-opportunity-no-decision-attribution/v1"
     TOKEN_UNIVERSE_OUTCOME_QUALITY_VERSION = "token-universe-outcome-quality/v1"
     TOKEN_UNIVERSE_FIXED_TARGET_EXECUTION_VERSION = "token-universe-fixed-target-execution/v1"
     TOKEN_UNIVERSE_JUPITER_QUOTE_VERSION = "token-universe-jupiter-quote/v1"
@@ -1291,6 +1292,83 @@ class Store:
                 CREATE TRIGGER IF NOT EXISTS missed_opportunity_audits_no_delete
                 BEFORE DELETE ON missed_opportunity_audits
                 BEGIN SELECT RAISE(ABORT,'missed-opportunity audits are immutable'); END;
+                CREATE TABLE IF NOT EXISTS missed_opportunity_no_decision_attribution_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_cohort_id INTEGER NOT NULL,
+                    activation_audit_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS missed_opportunity_no_decision_attributions (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    audit_id INTEGER NOT NULL UNIQUE,
+                    cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    target_at TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN (
+                        'metadata_hydration_not_observed',
+                        'metadata_hydration_result_not_observed','metadata_hydration_failed',
+                        'context_trigger_not_observed','trigger_ineligible',
+                        'eligible_trigger_unadmitted','context_admission_skipped',
+                        'agent_result_not_observed','agent_result_failed','agent_result_no_context',
+                        'assessment_without_event_relation',
+                        'event_lookup_result_not_observed','event_lookup_zero_yield',
+                        'event_lookup_failed','event_lookup_found_without_relation',
+                        'event_related_candidate_not_evaluated',
+                        'candidate_evaluated_no_decision'
+                    )),
+                    reason_code TEXT NOT NULL,
+                    terminal_transition_id INTEGER,
+                    classified_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    FOREIGN KEY(audit_id) REFERENCES missed_opportunity_audits(id),
+                    FOREIGN KEY(cohort_id) REFERENCES token_universe_forward_cohorts(id),
+                    FOREIGN KEY(terminal_transition_id) REFERENCES token_universe_funnel_transitions(id)
+                );
+                CREATE INDEX IF NOT EXISTS missed_opportunity_no_decision_attributions_status_idx
+                    ON missed_opportunity_no_decision_attributions(definition_version,status,target_at,id);
+                CREATE TRIGGER IF NOT EXISTS missed_opportunity_no_decision_attribution_registrations_no_update
+                BEFORE UPDATE ON missed_opportunity_no_decision_attribution_registrations
+                BEGIN SELECT RAISE(ABORT,'missed-opportunity no-decision attribution registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS missed_opportunity_no_decision_attribution_registrations_no_delete
+                BEFORE DELETE ON missed_opportunity_no_decision_attribution_registrations
+                BEGIN SELECT RAISE(ABORT,'missed-opportunity no-decision attribution registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS missed_opportunity_no_decision_attributions_no_update
+                BEFORE UPDATE ON missed_opportunity_no_decision_attributions
+                BEGIN SELECT RAISE(ABORT,'missed-opportunity no-decision attributions are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS missed_opportunity_no_decision_attributions_no_delete
+                BEFORE DELETE ON missed_opportunity_no_decision_attributions
+                BEGIN SELECT RAISE(ABORT,'missed-opportunity no-decision attributions are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS missed_opportunity_no_decision_attributions_insert_guard
+                BEFORE INSERT ON missed_opportunity_no_decision_attributions
+                WHEN NOT EXISTS (
+                    SELECT 1
+                    FROM missed_opportunity_no_decision_attribution_registrations r
+                    JOIN missed_opportunity_audits a ON a.id=NEW.audit_id
+                    JOIN token_universe_forward_cohorts c ON c.id=a.cohort_id
+                    WHERE r.definition_version=NEW.definition_version
+                      AND a.id>r.activation_audit_id
+                      AND a.cohort_id>r.activation_cohort_id
+                      AND a.cohort_id=NEW.cohort_id
+                      AND a.token_id=NEW.token_id
+                      AND a.target_at=NEW.target_at
+                      AND a.definition_version='missed-opportunity-audit/v1'
+                      AND a.audit_class='potential_miss'
+                      AND a.funnel_breakpoint='no_decision'
+                )
+                OR (NEW.terminal_transition_id IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM token_universe_funnel_transitions t
+                    WHERE t.id=NEW.terminal_transition_id
+                      AND t.definition_version='token-universe-funnel-transitions/v1'
+                      AND t.cohort_id=NEW.cohort_id
+                      AND t.status<>'excluded_time_order'
+                      AND t.observed_at<=NEW.target_at
+                      AND t.ingested_at<=NEW.target_at
+                      AND t.recorded_at<=NEW.target_at
+                ))
+                BEGIN SELECT RAISE(ABORT,'invalid missed-opportunity no-decision attribution'); END;
                 CREATE TABLE IF NOT EXISTS token_universe_outcome_quality_registrations (
                     definition_version TEXT PRIMARY KEY,
                     registered_at TEXT NOT NULL,
@@ -2087,6 +2165,17 @@ class Store:
                     self.MISSED_OPPORTUNITY_AUDIT_VERSION,
                     iso(),
                     self._json(self._missed_opportunity_audit_definition()),
+                ),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO missed_opportunity_no_decision_attribution_registrations("
+                "definition_version,registered_at,activation_cohort_id,activation_audit_id,definition_json) "
+                "VALUES(?,?,COALESCE((SELECT MAX(id) FROM token_universe_forward_cohorts),0),"
+                "COALESCE((SELECT MAX(id) FROM missed_opportunity_audits),0),?)",
+                (
+                    self.MISSED_OPPORTUNITY_NO_DECISION_ATTRIBUTION_VERSION,
+                    iso(),
+                    self._json(self._missed_opportunity_no_decision_attribution_definition()),
                 ),
             )
             self.db.execute(
@@ -8097,6 +8186,38 @@ class Store:
         }
 
     @classmethod
+    def _missed_opportunity_no_decision_attribution_definition(cls) -> dict[str, Any]:
+        return {
+            "version": cls.MISSED_OPPORTUNITY_NO_DECISION_ATTRIBUTION_VERSION,
+            "source": cls.MISSED_OPPORTUNITY_AUDIT_VERSION,
+            "cohort": "new_potential_miss_no_decision_audits_after_registration",
+            "no_historical_backfill": True,
+            "time_cap": "transition_observed_at_ingested_at_recorded_at_lte_outcome_target_at",
+            "absence_is_not_rejection": True,
+            "terminal_states": [
+                "metadata_hydration_not_observed",
+                "metadata_hydration_result_not_observed",
+                "metadata_hydration_failed",
+                "context_trigger_not_observed",
+                "trigger_ineligible",
+                "eligible_trigger_unadmitted",
+                "context_admission_skipped",
+                "agent_result_not_observed",
+                "agent_result_failed",
+                "agent_result_no_context",
+                "assessment_without_event_relation",
+                "event_lookup_result_not_observed",
+                "event_lookup_zero_yield",
+                "event_lookup_failed",
+                "event_lookup_found_without_relation",
+                "event_related_candidate_not_evaluated",
+                "candidate_evaluated_no_decision",
+            ],
+            "decision_eligible": False,
+            "affects": "none",
+        }
+
+    @classmethod
     def _token_universe_funnel_definition(cls) -> dict[str, Any]:
         return {
             "version": cls.TOKEN_UNIVERSE_FUNNEL_VERSION,
@@ -11309,6 +11430,219 @@ class Store:
                 )
                 inserted += 1
         return {"inserted": inserted, "potential_misses": potential_misses}
+
+    def finalize_missed_opportunity_no_decision_attributions(self) -> dict[str, int]:
+        """Freeze target-time-bounded funnel evidence for new no-decision potential misses."""
+        inserted = 0
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT * FROM missed_opportunity_no_decision_attribution_registrations "
+                "WHERE definition_version=?",
+                (self.MISSED_OPPORTUNITY_NO_DECISION_ATTRIBUTION_VERSION,),
+            ).fetchone()
+            if registration is None:
+                return {"inserted": 0}
+            audits = self.db.execute(
+                """
+                SELECT a.* FROM missed_opportunity_audits a
+                LEFT JOIN missed_opportunity_no_decision_attributions r ON r.audit_id=a.id
+                WHERE a.id>? AND a.cohort_id>?
+                  AND a.definition_version=?
+                  AND a.audit_class='potential_miss' AND a.funnel_breakpoint='no_decision'
+                  AND r.id IS NULL
+                ORDER BY a.id
+                """,
+                (
+                    int(registration["activation_audit_id"]),
+                    int(registration["activation_cohort_id"]),
+                    self.MISSED_OPPORTUNITY_AUDIT_VERSION,
+                ),
+            ).fetchall()
+            for audit in audits:
+                transitions = self.db.execute(
+                    """
+                    SELECT * FROM token_universe_funnel_transitions
+                    WHERE definition_version=? AND cohort_id=? AND status<>'excluded_time_order'
+                      AND observed_at<=? AND ingested_at<=? AND recorded_at<=?
+                    ORDER BY recorded_at DESC,id DESC
+                    """,
+                    (
+                        self.TOKEN_UNIVERSE_FUNNEL_VERSION,
+                        int(audit["cohort_id"]),
+                        str(audit["target_at"]), str(audit["target_at"]), str(audit["target_at"]),
+                    ),
+                ).fetchall()
+
+                def latest(stage: str, *, status: str | None = None):
+                    return next(
+                        (
+                            row for row in transitions
+                            if str(row["stage"]) == stage
+                            and (status is None or str(row["status"]) == status)
+                        ),
+                        None,
+                    )
+
+                candidate = next(
+                    (
+                        row for row in transitions
+                        if str(row["stage"]) in {"candidate_evaluator_call", "candidate_evaluation"}
+                    ),
+                    None,
+                )
+                relation = latest("event_token_relation", status="linked")
+                lookup_result = latest("event_lookup_result")
+                lookup_attempt = latest("event_lookup_attempt")
+                agent_result = latest("agent_result")
+                admitted = latest("context_admission", status="admitted")
+                skipped = latest("context_admission", status="skipped")
+                eligible_trigger = latest("context_trigger_evaluation", status="eligible")
+                trigger = latest("context_trigger_evaluation")
+                hydration_result = latest("metadata_hydration_result")
+                hydration_attempt = latest("metadata_hydration_attempt")
+                if candidate is not None:
+                    status, terminal = "candidate_evaluated_no_decision", candidate
+                elif relation is not None:
+                    status, terminal = "event_related_candidate_not_evaluated", relation
+                elif lookup_result is not None:
+                    lookup_status = str(lookup_result["status"])
+                    if lookup_status == "found":
+                        status = "event_lookup_found_without_relation"
+                    elif lookup_status == "error":
+                        status = "event_lookup_failed"
+                    else:
+                        status = "event_lookup_zero_yield"
+                    terminal = lookup_result
+                elif lookup_attempt is not None:
+                    status, terminal = "event_lookup_result_not_observed", lookup_attempt
+                elif agent_result is not None:
+                    result_status = str(agent_result["status"])
+                    if result_status == "agent_error":
+                        status = "agent_result_failed"
+                    elif result_status in {"no_context", "insufficient_reachable_sources"}:
+                        status = "agent_result_no_context"
+                    else:
+                        status = "assessment_without_event_relation"
+                    terminal = agent_result
+                elif admitted is not None:
+                    status, terminal = "agent_result_not_observed", admitted
+                elif skipped is not None:
+                    status, terminal = "context_admission_skipped", skipped
+                elif eligible_trigger is not None:
+                    status, terminal = "eligible_trigger_unadmitted", eligible_trigger
+                elif trigger is not None:
+                    status, terminal = "trigger_ineligible", trigger
+                elif hydration_result is not None:
+                    if str(hydration_result["status"]) in {"error", "no_pair"}:
+                        status = "metadata_hydration_failed"
+                    else:
+                        status = "context_trigger_not_observed"
+                    terminal = hydration_result
+                elif hydration_attempt is not None:
+                    status, terminal = "metadata_hydration_result_not_observed", hydration_attempt
+                else:
+                    status, terminal = "metadata_hydration_not_observed", None
+                reason = (
+                    str(terminal["reason_code"])
+                    if terminal is not None else "not_observed_before_target"
+                )
+                self.db.execute(
+                    """
+                    INSERT INTO missed_opportunity_no_decision_attributions(
+                        definition_version,audit_id,cohort_id,token_id,target_at,status,reason_code,
+                        terminal_transition_id,classified_at,decision_eligible,affects
+                    ) VALUES(?,?,?,?,?,?,?,?,?,0,'none')
+                    """,
+                    (
+                        self.MISSED_OPPORTUNITY_NO_DECISION_ATTRIBUTION_VERSION,
+                        int(audit["id"]), int(audit["cohort_id"]), str(audit["token_id"]),
+                        str(audit["target_at"]), status, reason,
+                        int(terminal["id"]) if terminal is not None else None, iso(),
+                    ),
+                )
+                inserted += 1
+        return {"inserted": inserted}
+
+    @classmethod
+    def missed_opportunity_no_decision_attribution_summary_from_connection(
+        cls, connection: sqlite3.Connection, *, recent_limit: int = 20,
+    ) -> dict[str, Any]:
+        required = {
+            "missed_opportunity_no_decision_attribution_registrations",
+            "missed_opportunity_no_decision_attributions",
+        }
+        tables = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        empty = {
+            "status": "not_observed",
+            "version": cls.MISSED_OPPORTUNITY_NO_DECISION_ATTRIBUTION_VERSION,
+            "definition": cls._missed_opportunity_no_decision_attribution_definition(),
+            "summary": {"attributions": 0}, "statuses": [], "reason_codes": [], "recent": [],
+            "decision_eligible": False, "affects": "none",
+        }
+        if not required.issubset(tables):
+            return empty
+        registration = connection.execute(
+            "SELECT * FROM missed_opportunity_no_decision_attribution_registrations "
+            "WHERE definition_version=?",
+            (cls.MISSED_OPPORTUNITY_NO_DECISION_ATTRIBUTION_VERSION,),
+        ).fetchone()
+        if registration is None:
+            return empty
+        rows = list(connection.execute(
+            "SELECT * FROM missed_opportunity_no_decision_attributions WHERE definition_version=? "
+            "ORDER BY id DESC LIMIT ?",
+            (cls.MISSED_OPPORTUNITY_NO_DECISION_ATTRIBUTION_VERSION,
+             max(1, min(100, int(recent_limit)))),
+        ))
+        total = int(connection.execute(
+            "SELECT COUNT(*) FROM missed_opportunity_no_decision_attributions WHERE definition_version=?",
+            (cls.MISSED_OPPORTUNITY_NO_DECISION_ATTRIBUTION_VERSION,),
+        ).fetchone()[0])
+        statuses = [
+            {"status": str(row["status"]), "count": int(row["count"])}
+            for row in connection.execute(
+                "SELECT status,COUNT(*) AS count FROM missed_opportunity_no_decision_attributions "
+                "WHERE definition_version=? GROUP BY status ORDER BY count DESC,status",
+                (cls.MISSED_OPPORTUNITY_NO_DECISION_ATTRIBUTION_VERSION,),
+            )
+        ]
+        reason_codes = [
+            {
+                "status": str(row["status"]),
+                "reason_code": str(row["reason_code"]),
+                "count": int(row["count"]),
+            }
+            for row in connection.execute(
+                "SELECT status,reason_code,COUNT(*) AS count "
+                "FROM missed_opportunity_no_decision_attributions "
+                "WHERE definition_version=? GROUP BY status,reason_code "
+                "ORDER BY count DESC,status,reason_code",
+                (cls.MISSED_OPPORTUNITY_NO_DECISION_ATTRIBUTION_VERSION,),
+            )
+        ]
+        return {
+            "status": "collecting" if total else "registered_waiting",
+            "version": cls.MISSED_OPPORTUNITY_NO_DECISION_ATTRIBUTION_VERSION,
+            "registered_at": str(registration["registered_at"]),
+            "activation_cohort_id": int(registration["activation_cohort_id"]),
+            "activation_audit_id": int(registration["activation_audit_id"]),
+            "definition": json.loads(str(registration["definition_json"])),
+            "summary": {"attributions": total}, "statuses": statuses,
+            "reason_codes": reason_codes,
+            "recent": [
+                {
+                    "audit_id": int(row["audit_id"]), "token_id": str(row["token_id"]),
+                    "target_at": str(row["target_at"]), "status": str(row["status"]),
+                    "reason_code": str(row["reason_code"]),
+                    "terminal_transition_id": row["terminal_transition_id"],
+                }
+                for row in rows
+            ],
+            "decision_eligible": False, "affects": "none", "as_of": iso(),
+        }
 
     @classmethod
     def missed_opportunity_audit_summary_from_connection(

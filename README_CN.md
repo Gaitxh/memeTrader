@@ -183,6 +183,8 @@ Solana 的真实路由覆盖由独立的 `token-universe-jupiter-quote/v1` 前�
 
 Audit 的“完整总体漏检账本”使用 `missed-opportunity-audit/v1`，从自身注册后为上述每个新结果追加一条不可变审计记录；低涨幅、缺基线和缺结果同样留在分母。只有本机采样路径达到预注册的 +25% 层且目标时点前没有 Paper 买入时才标记为 `potential_miss`，再按 `no_entry_snapshot / no_outcome_snapshot / no_decision / wait / reject / candidate_no_paper_buy / paper_bought` 展示可证明的粗断点。它不是市场 ATH、可成交收益或已证明的策略错误，不回填注册前案例，不改写历史决策，也不影响策略、Agent、Paper 或 Live。
 
+`missed-opportunity-no-decision-attribution/v1` 会继续拆解注册后的 `potential_miss + no_decision`：按同一 Token cohort 在固定目标时点前已经实际入库的 metadata hydration、Context 触发与准入、Agent 结果、事件反查/关系和候选评价，冻结当时最远可证明的阶段与明确 reason code。observation、ingestion、recording 任一时间晚于 `target_at` 的节点都不能倒灌；没有节点只表示未观察，不等于 REJECT。该层同样不可回填、不可修改，固定 `decision_eligible=false / affects=none`，只用于定位漏斗覆盖缺口。
+
 同页的“账号选择性关注策略”会为每轮实际选中的公开账号保存完成、失败和零产出暴露。只有合格事件中的原始帖子 URL 能与平台和账号路径精确匹配时才归因；转述、同名人物和登录受阻均不猜测为账号命中。`watch-attention/v3-experiment-gated` 只用成熟相关性生成实验假设，实际倍率固定为 `1.00×`。`attention-experiment/v1` 可在一对同平台、同优先级、非 critical 的普通账号之间随机分配一个观察槽位：第 1 阶段固定每组 60 个 assignment，2:2 平衡区块在 Agent 调用前持久化，错误、调用前中止、零产出、跨组碰撞与 60 分钟缺失均保留在 ITT 分母。全部样本终结前不允许显示通过；通过后仍需独立时间顺序 holdout，不自动提高倍率。critical 固定且总槽位至少 40% 继续探索。
 
 浏览器桥还会为与配置 URL、平台、handle 和 `entity_id` 完全一致的公开账号页建立 30 分钟前向暴露窗口，并把本机收到的原帖 Observation、事件 ID、同事件 60 分钟随访和同事件 Paper 平仓保存为可回链关系。X 首页、搜索页、登录页、同名账号、Telegram 手工发现和旧数据回填均不计入。Sources 页的“同源前向学习闭环”按不同单位诚实展示每一阶段，不把全库无关总数拼成转化率。

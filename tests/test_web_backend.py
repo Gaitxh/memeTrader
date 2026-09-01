@@ -695,6 +695,11 @@ def test_web_api_empty_database_is_safe_and_live_is_locked(tmp_path: Path):
     assert audit["missed_opportunity"]["summary"]["audited_outcomes"] == 0
     assert audit["missed_opportunity"]["decision_eligible"] is False
     assert audit["missed_opportunity"]["affects"] == "none"
+    attribution = audit["missed_opportunity_no_decision_attribution"]
+    assert attribution["status"] == "registered_waiting"
+    assert attribution["summary"]["attributions"] == 0
+    assert attribution["decision_eligible"] is False
+    assert attribution["affects"] == "none"
     jupiter_quote = audit["token_universe_jupiter_quote"]
     assert jupiter_quote["status"] == "not_observed"
     assert jupiter_quote["summary"]["results"] == 0
@@ -1083,6 +1088,7 @@ def test_web_sources_exposes_forward_token_discovery_without_sensitive_fields(tm
     assert store.record_token_event_lookup_name_screen(
         int(cohort["id"]), int(transition_id), searchable=False,
     ) is not None
+    assert store.finalize_missed_opportunity_no_decision_attributions() == {"inserted": 1}
     store.close()
 
     sources = WebData(config_path).sources()
@@ -1108,6 +1114,17 @@ def test_web_sources_exposes_forward_token_discovery_without_sensitive_fields(tm
     assert cohort["token_id"].lower() not in quote_json
     assert "password" not in quote_json and "private_key" not in quote_json
     assert "bridge_token" not in quote_json and "https://" not in quote_json
+    attribution = WebData(config_path).audit()["missed_opportunity_no_decision_attribution"]
+    assert attribution["status"] == "collecting"
+    assert attribution["summary"]["attributions"] == 1
+    assert attribution["statuses"] == [
+        {"status": "eligible_trigger_unadmitted", "count": 1}
+    ]
+    assert attribution["recent"][0]["terminal_transition_id"] == transition_id
+    assert attribution["decision_eligible"] is False and attribution["affects"] == "none"
+    attribution_json = json.dumps(attribution).lower()
+    assert "password" not in attribution_json and "private_key" not in attribution_json
+    assert "bridge_token" not in attribution_json and "https://" not in attribution_json
     universe = sources["token_universe_forward"]
     assert universe["status"] == "collecting"
     assert universe["summary"]["cohorts"] == 1
@@ -1878,6 +1895,7 @@ def test_candidate_ranking_api_is_persisted_bounded_sanitized_and_wait_is_truthf
     assert "It is not platform-wide mentions, replies, quotes, or repost velocity" in app
     assert "no future price was filled in" in app
     assert "no fake fills are generated" in app
+    assert "timeoutMs: page === 'audit' ? 60000 : 9000" in app
 
 
 def test_settings_are_allowlisted_atomic_and_never_expose_secrets(tmp_path: Path):
