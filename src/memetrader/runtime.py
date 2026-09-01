@@ -2895,7 +2895,8 @@ class Runtime:
         """Append one forward, quote-only Solana route leg without a wallet or transaction."""
         self.store.finalize_token_universe_jupiter_quote_validity_gaps()
         provider_requests = 0
-        for item in self.store.due_token_universe_jupiter_quotes(limit=180):
+        gap_records = 0
+        for item in self.store.due_token_universe_jupiter_quotes(limit=10_000):
             requested_at = utcnow()
             source_times = (
                 item.get("source_observed_at"), item.get("source_ingested_at"),
@@ -2913,6 +2914,9 @@ class Runtime:
                 not source_time_valid
                 or queue_delay > float(item["max_queue_delay_seconds"])
             ):
+                if gap_records >= 12:
+                    continue
+                gap_records += 1
                 self.store.record_token_universe_jupiter_quote_validity(
                     item, status="not_requested", evaluated_at=requested_at,
                 )
