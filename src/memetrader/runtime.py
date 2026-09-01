@@ -2894,7 +2894,8 @@ class Runtime:
     async def token_universe_jupiter_quote_once(self) -> None:
         """Append one forward, quote-only Solana route leg without a wallet or transaction."""
         self.store.finalize_token_universe_jupiter_quote_validity_gaps()
-        for item in self.store.due_token_universe_jupiter_quotes(limit=3):
+        provider_requests = 0
+        for item in self.store.due_token_universe_jupiter_quotes(limit=180):
             requested_at = utcnow()
             source_times = (
                 item.get("source_observed_at"), item.get("source_ingested_at"),
@@ -2916,6 +2917,9 @@ class Runtime:
                     item, status="not_requested", evaluated_at=requested_at,
                 )
                 continue
+            if provider_requests >= 3:
+                continue
+            provider_requests += 1
             status = "quoted"
             result: dict[str, Any] = {}
             error_type = ""

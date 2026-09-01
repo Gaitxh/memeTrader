@@ -187,7 +187,7 @@ def test_runtime_records_one_quote_only_jupiter_leg_without_trading(tmp_path):
         runtime.jupiter.quote = quote
         await runtime.token_universe_jupiter_quote_once()
         assert len(recorded) == 1
-        assert limits == [3]
+        assert limits == [180]
         item, payload = recorded[0]
         assert item["quote_key"] == due["quote_key"] and payload["status"] == "quoted"
         assert payload["out_amount_raw"] == "123456789"
@@ -208,6 +208,22 @@ def test_runtime_records_one_quote_only_jupiter_leg_without_trading(tmp_path):
         runtime.jupiter.quote = must_not_quote
         await runtime.token_universe_jupiter_quote_once()
         assert recorded[0][1]["status"] == "not_requested"
+        stale = [
+            {
+                **expired, "quote_key": f"jupiter-quote:{cohort_id}:0:baseline_buy",
+                "cohort_id": cohort_id,
+            }
+            for cohort_id in (4, 5, 6)
+        ]
+        runtime.store.due_token_universe_jupiter_quotes = (
+            lambda limit=1: [*stale, due][:limit]
+        )
+        recorded.clear()
+        runtime.jupiter.quote = quote
+        await runtime.token_universe_jupiter_quote_once()
+        assert [payload["status"] for _, payload in recorded] == [
+            "not_requested", "not_requested", "not_requested", "quoted",
+        ]
         assert runtime.store.db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == 0
         assert runtime.store.db.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == 0
         await runtime.close()
