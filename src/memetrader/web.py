@@ -5414,6 +5414,23 @@ class WebData:
             "version": Store.MISSED_OPPORTUNITY_NO_DECISION_ATTRIBUTION_VERSION,
             "summary": {"attributions": 0},
             "statuses": [], "reason_codes": [], "recent": [],
+            "quality_view": {
+                "source_version": Store.TOKEN_UNIVERSE_OUTCOME_QUALITY_VERSION,
+                "semantics": "read_only_join_of_immutable_rows_available_at_classification",
+                "threshold_return": 0.25,
+                "summary": {
+                    "raw_attributions": 0,
+                    "quality_available_at_classification": 0,
+                    "quality_missing_at_classification": 0,
+                    "raw_fixed_return_25": 0,
+                    "same_route_return_25": 0,
+                    "canonical_liquid_return_25": 0,
+                    "estimated_net_return_25": 0,
+                    "confirmed_executable_known": 0,
+                    "confirmed_executable_return_25": 0,
+                },
+                "breakpoints": [], "decision_eligible": False, "affects": "none",
+            },
             "decision_eligible": False, "affects": "none",
         }
         outcome_quality = {

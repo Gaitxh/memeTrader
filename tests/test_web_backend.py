@@ -1179,6 +1179,13 @@ def test_web_sources_exposes_forward_token_discovery_without_sensitive_fields(tm
     ]
     assert attribution["recent"][0]["terminal_transition_id"] == transition_id
     assert attribution["decision_eligible"] is False and attribution["affects"] == "none"
+    quality_view = attribution["quality_view"]
+    assert quality_view["summary"]["raw_attributions"] == 1
+    assert quality_view["summary"]["quality_available_at_classification"] == 1
+    assert quality_view["summary"]["quality_missing_at_classification"] == 0
+    assert quality_view["summary"]["raw_fixed_return_25"] == 1
+    assert quality_view["summary"]["confirmed_executable_known"] == 0
+    assert quality_view["decision_eligible"] is False and quality_view["affects"] == "none"
     attribution_json = json.dumps(attribution).lower()
     assert "password" not in attribution_json and "private_key" not in attribution_json
     assert "bridge_token" not in attribution_json and "https://" not in attribution_json

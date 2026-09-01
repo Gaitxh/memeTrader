@@ -12217,11 +12217,29 @@ class Store:
             str(row["name"])
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
+        quality_view = {
+            "source_version": cls.TOKEN_UNIVERSE_OUTCOME_QUALITY_VERSION,
+            "semantics": "read_only_join_of_immutable_rows_available_at_classification",
+            "threshold_return": 0.25,
+            "summary": {
+                "raw_attributions": 0,
+                "quality_available_at_classification": 0,
+                "quality_missing_at_classification": 0,
+                "raw_fixed_return_25": 0,
+                "same_route_return_25": 0,
+                "canonical_liquid_return_25": 0,
+                "estimated_net_return_25": 0,
+                "confirmed_executable_known": 0,
+                "confirmed_executable_return_25": 0,
+            },
+            "breakpoints": [], "decision_eligible": False, "affects": "none",
+        }
         empty = {
             "status": "not_observed",
             "version": cls.MISSED_OPPORTUNITY_NO_DECISION_ATTRIBUTION_VERSION,
             "definition": cls._missed_opportunity_no_decision_attribution_definition(),
             "summary": {"attributions": 0}, "statuses": [], "reason_codes": [], "recent": [],
+            "quality_view": quality_view,
             "decision_eligible": False, "affects": "none",
         }
         if not required.issubset(tables):
@@ -12243,6 +12261,76 @@ class Store:
             "SELECT COUNT(*) FROM missed_opportunity_no_decision_attributions WHERE definition_version=?",
             (cls.MISSED_OPPORTUNITY_NO_DECISION_ATTRIBUTION_VERSION,),
         ).fetchone()[0])
+        quality_view["summary"]["raw_attributions"] = total
+        quality_view["summary"]["quality_missing_at_classification"] = total
+        if {
+            "missed_opportunity_audits", "token_universe_outcome_quality",
+        }.issubset(tables):
+            joined_cte = """
+                WITH joined AS (
+                    SELECT a.status,a.reason_code,q.id AS quality_id,
+                           q.raw_fixed_horizon_return,q.same_route_return,
+                           q.canonical_liquid_pair_return,
+                           q.estimated_net_return_after_costs,
+                           q.net_executable_return_after_costs
+                    FROM missed_opportunity_no_decision_attributions a
+                    JOIN missed_opportunity_audits m
+                      ON m.id=a.audit_id AND m.definition_version=?
+                    LEFT JOIN token_universe_outcome_quality q
+                      ON q.outcome_id=m.outcome_id AND q.definition_version=?
+                     AND julianday(q.assessed_at)<=julianday(a.classified_at)
+                    WHERE a.definition_version=?
+                )
+            """
+            quality_params = (
+                cls.MISSED_OPPORTUNITY_AUDIT_VERSION,
+                cls.TOKEN_UNIVERSE_OUTCOME_QUALITY_VERSION,
+                cls.MISSED_OPPORTUNITY_NO_DECISION_ATTRIBUTION_VERSION,
+            )
+            aggregate_sql = """
+                SELECT COUNT(*) AS raw_attributions,
+                       SUM(CASE WHEN quality_id IS NOT NULL THEN 1 ELSE 0 END)
+                         AS quality_available_at_classification,
+                       SUM(CASE WHEN quality_id IS NULL THEN 1 ELSE 0 END)
+                         AS quality_missing_at_classification,
+                       SUM(CASE WHEN raw_fixed_horizon_return>=0.25 THEN 1 ELSE 0 END)
+                         AS raw_fixed_return_25,
+                       SUM(CASE WHEN same_route_return>=0.25 THEN 1 ELSE 0 END)
+                         AS same_route_return_25,
+                       SUM(CASE WHEN canonical_liquid_pair_return>=0.25 THEN 1 ELSE 0 END)
+                         AS canonical_liquid_return_25,
+                       SUM(CASE WHEN estimated_net_return_after_costs>=0.25 THEN 1 ELSE 0 END)
+                         AS estimated_net_return_25,
+                       SUM(CASE WHEN net_executable_return_after_costs IS NOT NULL THEN 1 ELSE 0 END)
+                         AS confirmed_executable_known,
+                       SUM(CASE WHEN net_executable_return_after_costs>=0.25 THEN 1 ELSE 0 END)
+                         AS confirmed_executable_return_25
+                FROM joined
+            """
+            aggregate = connection.execute(joined_cte + aggregate_sql, quality_params).fetchone()
+            for key in quality_view["summary"]:
+                quality_view["summary"][key] = int(aggregate[key] or 0)
+            quality_view["breakpoints"] = [
+                {
+                    "status": str(row["status"]),
+                    "reason_code": str(row["reason_code"]),
+                    **{
+                        key: int(row[key] or 0)
+                        for key in quality_view["summary"]
+                    },
+                }
+                for row in connection.execute(
+                    joined_cte
+                    + aggregate_sql.replace(
+                        "SELECT COUNT(*) AS raw_attributions",
+                        "SELECT status,reason_code,COUNT(*) AS raw_attributions",
+                    ).replace(
+                        "FROM joined", "FROM joined GROUP BY status,reason_code "
+                        "ORDER BY raw_attributions DESC,status,reason_code",
+                    ),
+                    quality_params,
+                )
+            ]
         statuses = [
             {"status": str(row["status"]), "count": int(row["count"])}
             for row in connection.execute(
@@ -12274,6 +12362,7 @@ class Store:
             "definition": json.loads(str(registration["definition_json"])),
             "summary": {"attributions": total}, "statuses": statuses,
             "reason_codes": reason_codes,
+            "quality_view": quality_view,
             "recent": [
                 {
                     "audit_id": int(row["audit_id"]), "token_id": str(row["token_id"]),

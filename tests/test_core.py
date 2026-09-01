@@ -1598,10 +1598,107 @@ def test_missed_opportunity_no_decision_attribution_is_target_bounded_and_immuta
     assert all(row["decision_eligible"] == 0 and row["affects"] == "none" for row in rows)
     summary = store.missed_opportunity_no_decision_attribution_summary_from_connection(store.db)
     assert summary["summary"]["attributions"] == 4
+    assert summary["quality_view"]["summary"] == {
+        "raw_attributions": 4,
+        "quality_available_at_classification": 0,
+        "quality_missing_at_classification": 4,
+        "raw_fixed_return_25": 0,
+        "same_route_return_25": 0,
+        "canonical_liquid_return_25": 0,
+        "estimated_net_return_25": 0,
+        "confirmed_executable_known": 0,
+        "confirmed_executable_return_25": 0,
+    }
     assert summary["decision_eligible"] is False and summary["affects"] == "none"
     with pytest.raises(sqlite3.IntegrityError):
         store.db.execute("UPDATE missed_opportunity_no_decision_attributions SET status='trigger_ineligible'")
     store.close()
+
+
+def test_no_decision_quality_view_excludes_quality_assessed_after_classification(tmp_path: Path):
+    connection = sqlite3.connect(tmp_path / "no-decision-quality-view.sqlite3")
+    connection.row_factory = sqlite3.Row
+    connection.executescript(
+        """
+        CREATE TABLE missed_opportunity_no_decision_attribution_registrations (
+            definition_version TEXT, registered_at TEXT, activation_cohort_id INTEGER,
+            activation_audit_id INTEGER, definition_json TEXT
+        );
+        CREATE TABLE missed_opportunity_no_decision_attributions (
+            id INTEGER PRIMARY KEY, definition_version TEXT, audit_id INTEGER,
+            cohort_id INTEGER, token_id TEXT, target_at TEXT, status TEXT,
+            reason_code TEXT, terminal_transition_id INTEGER, classified_at TEXT
+        );
+        CREATE TABLE missed_opportunity_audits (
+            id INTEGER PRIMARY KEY, definition_version TEXT, outcome_id INTEGER
+        );
+        CREATE TABLE token_universe_outcome_quality (
+            id INTEGER PRIMARY KEY, definition_version TEXT, outcome_id INTEGER,
+            raw_fixed_horizon_return REAL, same_route_return REAL,
+            canonical_liquid_pair_return REAL, estimated_net_return_after_costs REAL,
+            net_executable_return_after_costs REAL, assessed_at TEXT
+        );
+        """
+    )
+    connection.execute(
+        "INSERT INTO missed_opportunity_no_decision_attribution_registrations VALUES(?,?,?,?,?)",
+        (
+            Store.MISSED_OPPORTUNITY_NO_DECISION_ATTRIBUTION_VERSION,
+            "2026-09-01T00:00:00Z", 0, 0,
+            json.dumps(Store._missed_opportunity_no_decision_attribution_definition()),
+        ),
+    )
+    for audit_id, outcome_id in ((1, 11), (2, 12)):
+        connection.execute(
+            "INSERT INTO missed_opportunity_audits VALUES(?,?,?)",
+            (audit_id, Store.MISSED_OPPORTUNITY_AUDIT_VERSION, outcome_id),
+        )
+        connection.execute(
+            "INSERT INTO missed_opportunity_no_decision_attributions VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                audit_id, Store.MISSED_OPPORTUNITY_NO_DECISION_ATTRIBUTION_VERSION,
+                audit_id, audit_id, f"solana:token-{audit_id}",
+                "2026-09-01T00:09:00Z", "trigger_ineligible", "no_eligible_trigger",
+                None, "2026-09-01T00:10:00Z",
+            ),
+        )
+    connection.execute(
+        "INSERT INTO token_universe_outcome_quality VALUES(?,?,?,?,?,?,?,?,?)",
+        (
+            1, Store.TOKEN_UNIVERSE_OUTCOME_QUALITY_VERSION, 11,
+            0.30, 0.40, 0.35, 0.28, 0.26, "2026-09-01T00:09:59Z",
+        ),
+    )
+    connection.execute(
+        "INSERT INTO token_universe_outcome_quality VALUES(?,?,?,?,?,?,?,?,?)",
+        (
+            2, Store.TOKEN_UNIVERSE_OUTCOME_QUALITY_VERSION, 12,
+            9.0, 9.0, 9.0, 9.0, 9.0, "2026-09-01T00:10:01Z",
+        ),
+    )
+    view = Store.missed_opportunity_no_decision_attribution_summary_from_connection(
+        connection
+    )["quality_view"]
+    assert view["semantics"] == "read_only_join_of_immutable_rows_available_at_classification"
+    assert view["summary"] == {
+        "raw_attributions": 2,
+        "quality_available_at_classification": 1,
+        "quality_missing_at_classification": 1,
+        "raw_fixed_return_25": 1,
+        "same_route_return_25": 1,
+        "canonical_liquid_return_25": 1,
+        "estimated_net_return_25": 1,
+        "confirmed_executable_known": 1,
+        "confirmed_executable_return_25": 1,
+    }
+    assert view["breakpoints"] == [
+        {
+            "status": "trigger_ineligible", "reason_code": "no_eligible_trigger",
+            **view["summary"],
+        }
+    ]
+    assert view["decision_eligible"] is False and view["affects"] == "none"
+    connection.close()
 
 
 def test_token_universe_quality_overlay_is_forward_only_route_aware_and_immutable(tmp_path: Path):
