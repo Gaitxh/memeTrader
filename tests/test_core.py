@@ -1638,6 +1638,15 @@ def test_no_decision_quality_view_excludes_quality_assessed_after_classification
             canonical_liquid_pair_return REAL, estimated_net_return_after_costs REAL,
             net_executable_return_after_costs REAL, assessed_at TEXT
         );
+        CREATE TABLE token_universe_jupiter_quote_validity_results (
+            id INTEGER PRIMARY KEY, definition_version TEXT, outcome_id INTEGER,
+            phase TEXT, validity_status TEXT, included_in_round_trip INTEGER,
+            round_trip_min_return REAL, recorded_at TEXT
+        );
+        CREATE TABLE token_universe_fixed_target_execution_results (
+            id INTEGER PRIMARY KEY, definition_version TEXT, outcome_id INTEGER,
+            terminal_status TEXT, modeled_net_return REAL, assessed_at TEXT
+        );
         """
     )
     connection.execute(
@@ -1657,7 +1666,8 @@ def test_no_decision_quality_view_excludes_quality_assessed_after_classification
             "INSERT INTO missed_opportunity_no_decision_attributions VALUES(?,?,?,?,?,?,?,?,?,?)",
             (
                 audit_id, Store.MISSED_OPPORTUNITY_NO_DECISION_ATTRIBUTION_VERSION,
-                audit_id, audit_id, f"solana:token-{audit_id}",
+                audit_id, audit_id,
+                f"{'solana' if audit_id == 1 else 'bsc'}:token-{audit_id}",
                 "2026-09-01T00:09:00Z", "trigger_ineligible", "no_eligible_trigger",
                 None, "2026-09-01T00:10:00Z",
             ),
@@ -1667,6 +1677,34 @@ def test_no_decision_quality_view_excludes_quality_assessed_after_classification
         (
             1, Store.TOKEN_UNIVERSE_OUTCOME_QUALITY_VERSION, 11,
             0.30, 0.40, 0.35, 0.28, 0.26, "2026-09-01T00:09:59Z",
+        ),
+    )
+    connection.execute(
+        "INSERT INTO token_universe_jupiter_quote_validity_results VALUES(?,?,?,?,?,?,?,?)",
+        (
+            1, Store.TOKEN_UNIVERSE_JUPITER_QUOTE_VALIDITY_VERSION, 11,
+            "target_sell", "valid", 1, -0.10, "2026-09-01T00:09:58Z",
+        ),
+    )
+    connection.execute(
+        "INSERT INTO token_universe_jupiter_quote_validity_results VALUES(?,?,?,?,?,?,?,?)",
+        (
+            2, Store.TOKEN_UNIVERSE_JUPITER_QUOTE_VALIDITY_VERSION, 11,
+            "target_sell", "valid", 1, 9.0, "2026-09-01T00:10:01Z",
+        ),
+    )
+    connection.execute(
+        "INSERT INTO token_universe_fixed_target_execution_results VALUES(?,?,?,?,?,?)",
+        (
+            1, Store.TOKEN_UNIVERSE_FIXED_TARGET_EXECUTION_VERSION, 12,
+            "modeled_executable", 0.50, "2026-09-01T00:09:58Z",
+        ),
+    )
+    connection.execute(
+        "INSERT INTO token_universe_fixed_target_execution_results VALUES(?,?,?,?,?,?)",
+        (
+            2, Store.TOKEN_UNIVERSE_FIXED_TARGET_EXECUTION_VERSION, 12,
+            "modeled_executable", 9.0, "2026-09-01T00:10:01Z",
         ),
     )
     connection.execute(
@@ -1697,6 +1735,18 @@ def test_no_decision_quality_view_excludes_quality_assessed_after_classification
             **view["summary"],
         }
     ]
+    assert view["fixed_horizon_execution"]["summary"] == {
+        "raw_attributions": 2,
+        "execution_known": 2,
+        "execution_nonnegative": 1,
+        "execution_return_25": 1,
+        "jupiter_valid_round_trip_known": 1,
+        "jupiter_valid_round_trip_nonnegative": 0,
+        "jupiter_valid_round_trip_return_25": 0,
+        "evm_modeled_execution_known": 1,
+        "evm_modeled_execution_nonnegative": 1,
+        "evm_modeled_execution_return_25": 1,
+    }
     assert view["decision_eligible"] is False and view["affects"] == "none"
     connection.close()
 

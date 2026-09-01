@@ -12234,6 +12234,27 @@ class Store:
             },
             "breakpoints": [], "decision_eligible": False, "affects": "none",
         }
+        fixed_horizon_execution = {
+            "source_versions": {
+                "solana": cls.TOKEN_UNIVERSE_JUPITER_QUOTE_VALIDITY_VERSION,
+                "evm": cls.TOKEN_UNIVERSE_FIXED_TARGET_EXECUTION_VERSION,
+            },
+            "semantics": "read_only_fixed_horizon_execution_evidence_available_at_classification",
+            "summary": {
+                "raw_attributions": 0,
+                "execution_known": 0,
+                "execution_nonnegative": 0,
+                "execution_return_25": 0,
+                "jupiter_valid_round_trip_known": 0,
+                "jupiter_valid_round_trip_nonnegative": 0,
+                "jupiter_valid_round_trip_return_25": 0,
+                "evm_modeled_execution_known": 0,
+                "evm_modeled_execution_nonnegative": 0,
+                "evm_modeled_execution_return_25": 0,
+            },
+            "breakpoints": [], "decision_eligible": False, "affects": "none",
+        }
+        quality_view["fixed_horizon_execution"] = fixed_horizon_execution
         empty = {
             "status": "not_observed",
             "version": cls.MISSED_OPPORTUNITY_NO_DECISION_ATTRIBUTION_VERSION,
@@ -12329,6 +12350,94 @@ class Store:
                         "ORDER BY raw_attributions DESC,status,reason_code",
                     ),
                     quality_params,
+                )
+            ]
+        execution_tables = {
+            "missed_opportunity_audits",
+            "token_universe_jupiter_quote_validity_results",
+            "token_universe_fixed_target_execution_results",
+        }
+        if execution_tables.issubset(tables):
+            execution_cte = """
+                WITH execution_joined AS (
+                    SELECT a.status,a.reason_code,
+                           v.id AS jupiter_id,
+                           v.round_trip_min_return AS jupiter_return,
+                           x.id AS evm_id,
+                           x.modeled_net_return AS evm_return
+                    FROM missed_opportunity_no_decision_attributions a
+                    JOIN missed_opportunity_audits m
+                      ON m.id=a.audit_id AND m.definition_version=:audit_version
+                    LEFT JOIN token_universe_jupiter_quote_validity_results v
+                      ON a.token_id LIKE 'solana:%'
+                     AND v.outcome_id=m.outcome_id
+                     AND v.definition_version=:jupiter_version
+                     AND v.phase='target_sell'
+                     AND v.validity_status='valid'
+                     AND v.included_in_round_trip=1
+                     AND julianday(v.recorded_at)<=julianday(a.classified_at)
+                    LEFT JOIN token_universe_fixed_target_execution_results x
+                      ON a.token_id LIKE 'bsc:%'
+                     AND x.outcome_id=m.outcome_id
+                     AND x.definition_version=:fixed_version
+                     AND x.terminal_status='modeled_executable'
+                     AND julianday(x.assessed_at)<=julianday(a.classified_at)
+                    WHERE a.definition_version=:attribution_version
+                )
+            """
+            execution_aggregate_sql = """
+                SELECT COUNT(*) AS raw_attributions,
+                       SUM(CASE WHEN jupiter_id IS NOT NULL OR evm_id IS NOT NULL THEN 1 ELSE 0 END)
+                         AS execution_known,
+                       SUM(CASE WHEN COALESCE(jupiter_return,evm_return)>=0 THEN 1 ELSE 0 END)
+                         AS execution_nonnegative,
+                       SUM(CASE WHEN COALESCE(jupiter_return,evm_return)>=0.25 THEN 1 ELSE 0 END)
+                         AS execution_return_25,
+                       SUM(CASE WHEN jupiter_id IS NOT NULL THEN 1 ELSE 0 END)
+                         AS jupiter_valid_round_trip_known,
+                       SUM(CASE WHEN jupiter_return>=0 THEN 1 ELSE 0 END)
+                         AS jupiter_valid_round_trip_nonnegative,
+                       SUM(CASE WHEN jupiter_return>=0.25 THEN 1 ELSE 0 END)
+                         AS jupiter_valid_round_trip_return_25,
+                       SUM(CASE WHEN evm_id IS NOT NULL THEN 1 ELSE 0 END)
+                         AS evm_modeled_execution_known,
+                       SUM(CASE WHEN evm_return>=0 THEN 1 ELSE 0 END)
+                         AS evm_modeled_execution_nonnegative,
+                       SUM(CASE WHEN evm_return>=0.25 THEN 1 ELSE 0 END)
+                         AS evm_modeled_execution_return_25
+                FROM execution_joined
+            """
+            execution_params = {
+                "audit_version": cls.MISSED_OPPORTUNITY_AUDIT_VERSION,
+                "jupiter_version": cls.TOKEN_UNIVERSE_JUPITER_QUOTE_VALIDITY_VERSION,
+                "fixed_version": cls.TOKEN_UNIVERSE_FIXED_TARGET_EXECUTION_VERSION,
+                "attribution_version": cls.MISSED_OPPORTUNITY_NO_DECISION_ATTRIBUTION_VERSION,
+            }
+            aggregate = connection.execute(
+                execution_cte + execution_aggregate_sql, execution_params,
+            ).fetchone()
+            for key in fixed_horizon_execution["summary"]:
+                fixed_horizon_execution["summary"][key] = int(aggregate[key] or 0)
+            fixed_horizon_execution["breakpoints"] = [
+                {
+                    "status": str(row["status"]),
+                    "reason_code": str(row["reason_code"]),
+                    **{
+                        key: int(row[key] or 0)
+                        for key in fixed_horizon_execution["summary"]
+                    },
+                }
+                for row in connection.execute(
+                    execution_cte
+                    + execution_aggregate_sql.replace(
+                        "SELECT COUNT(*) AS raw_attributions",
+                        "SELECT status,reason_code,COUNT(*) AS raw_attributions",
+                    ).replace(
+                        "FROM execution_joined",
+                        "FROM execution_joined GROUP BY status,reason_code "
+                        "ORDER BY raw_attributions DESC,status,reason_code",
+                    ),
+                    execution_params,
                 )
             ]
         statuses = [

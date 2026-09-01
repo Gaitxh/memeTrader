@@ -187,6 +187,8 @@ Audit 的“完整总体漏检账本”使用 `missed-opportunity-audit/v1`，�
 
 `missed-opportunity-no-decision-attribution/v1` 会继续拆解注册后的 `potential_miss + no_decision`：按同一 Token cohort 在固定目标时点前已经实际入库的 metadata hydration、Context 触发与准入、Agent 结果、事件反查/关系和候选评价，冻结当时最远可证明的阶段与明确 reason code。observation、ingestion、recording 任一时间晚于 `target_at` 的节点都不能倒灌；没有节点只表示未观察，不等于 REJECT。该层同样不可回填、不可修改，固定 `decision_eligible=false / affects=none`，只用于定位漏斗覆盖缺口。
 
+Audit 还把上述归因与“归因冻结时已经存在”的固定时点执行证据只读连接：Solana 只计入通过 30 秒排队、45 秒总延迟门且 BUY/SELL 两腿均成功的 `token-universe-jupiter-quote-validity/v1` 往返；BSC 只计入安全字段完整并终结为 `modeled_executable` 的 `token-universe-fixed-target-execution/v1` 结果。页面分别显示执行证据已知、非负和 ≥25% 的动态分母。这些固定时点结果不是路径峰值，不会倒灌后来证据，也不改变 Decision、Paper 或 Live。
+
 该归因面板还提供只读 `quality_view`：只连接 `quality.assessed_at <= attribution.classified_at` 的不可变结果，不用后来才生成的质量证据重写归因。它依次分开 raw attribution、固定目标原始回报、同路由路径、规范流动性路径、扣双边成本后的估算，以及卖出能力/蜜罐/税率均已知时的确认可执行净值；缺失保持 unknown。分层同时按断点与 reason code 展示，仍不改变 Strategy、Paper 或 Live。
 
 同页的“账号选择性关注策略”会为每轮实际选中的公开账号保存完成、失败和零产出暴露。只有合格事件中的原始帖子 URL 能与平台和账号路径精确匹配时才归因；转述、同名人物和登录受阻均不猜测为账号命中。`watch-attention/v3-experiment-gated` 只用成熟相关性生成实验假设，实际倍率固定为 `1.00×`。`attention-experiment/v1` 可在一对同平台、同优先级、非 critical 的普通账号之间随机分配一个观察槽位：第 1 阶段固定每组 60 个 assignment，2:2 平衡区块在 Agent 调用前持久化，错误、调用前中止、零产出、跨组碰撞与 60 分钟缺失均保留在 ITT 分母。全部样本终结前不允许显示通过；通过后仍需独立时间顺序 holdout，不自动提高倍率。critical 固定且总槽位至少 40% 继续探索。

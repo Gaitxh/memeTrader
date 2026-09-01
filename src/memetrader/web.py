@@ -5430,6 +5430,26 @@ class WebData:
                     "confirmed_executable_return_25": 0,
                 },
                 "breakpoints": [], "decision_eligible": False, "affects": "none",
+                "fixed_horizon_execution": {
+                    "source_versions": {
+                        "solana": Store.TOKEN_UNIVERSE_JUPITER_QUOTE_VALIDITY_VERSION,
+                        "evm": Store.TOKEN_UNIVERSE_FIXED_TARGET_EXECUTION_VERSION,
+                    },
+                    "semantics": "read_only_fixed_horizon_execution_evidence_available_at_classification",
+                    "summary": {
+                        "raw_attributions": 0,
+                        "execution_known": 0,
+                        "execution_nonnegative": 0,
+                        "execution_return_25": 0,
+                        "jupiter_valid_round_trip_known": 0,
+                        "jupiter_valid_round_trip_nonnegative": 0,
+                        "jupiter_valid_round_trip_return_25": 0,
+                        "evm_modeled_execution_known": 0,
+                        "evm_modeled_execution_nonnegative": 0,
+                        "evm_modeled_execution_return_25": 0,
+                    },
+                    "breakpoints": [], "decision_eligible": False, "affects": "none",
+                },
             },
             "decision_eligible": False, "affects": "none",
         }
