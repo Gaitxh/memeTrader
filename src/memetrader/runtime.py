@@ -1926,6 +1926,22 @@ class Runtime:
             as_of=now,
             limit=candidate_pool_limit,
         )
+        screened_pending: list[dict[str, Any]] = []
+        for item in pending:
+            token = item["token"]
+            query = " ".join(part for part in [token.name, token.symbol] if part).strip()
+            searchable = len(query) >= 3 and is_context_searchable_token_name(
+                token.name or token.symbol
+            )
+            self.store.record_token_event_lookup_name_screen(
+                int(item["cohort_id"]),
+                int(item["eligible_transition_id"]),
+                searchable=searchable,
+                evaluated_at=now,
+            )
+            if searchable:
+                screened_pending.append(item)
+        pending = screened_pending
         pending_by_token = {item["token"].token_id: item for item in pending}
         recent_tokens = self.store.recent_tokens(minutes=180, limit=candidate_pool_limit)
         recent_tokens.sort(

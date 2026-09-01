@@ -1001,6 +1001,88 @@ def test_pending_event_lookup_tokens_are_forward_only_oldest_first_and_deduplica
     store.close()
 
 
+def test_token_event_lookup_name_screen_records_active_pending_without_strategy_effects(tmp_path: Path):
+    store = Store(tmp_path / "event-lookup-name-screen.sqlite3", initial_cash_usd=1000)
+    now = utcnow()
+
+    def enroll(address: str, name: str) -> tuple[TokenCandidate, int, int]:
+        token = TokenCandidate(chain="solana", address=address, name=name, source="fixture")
+        store.upsert_token(token, seen_at=now)
+        round_id = store.start_token_discovery_round(
+            provider="fixture", surface="fixture", mode="poll", chain_scope="solana",
+            started_at=now,
+        )
+        store.add_token_discovery_exposure(
+            round_id, token_id=token.token_id, chain=token.chain, role="new_token",
+            first_local_discovery=True, new_token=True, observed_at=now,
+        )
+        store.finish_token_discovery_round(round_id, status="completed", returned_count=1)
+        cohort_id = int(store.db.execute(
+            "SELECT id FROM token_universe_forward_cohorts WHERE token_id=?", (token.token_id,)
+        ).fetchone()["id"])
+        transition_id = store.record_token_universe_funnel_transition(
+            token.token_id,
+            stage="context_trigger_evaluation", status="eligible",
+            reason_code="onchain_momentum", evaluation_key=f"screen:{token.token_id}",
+            observed_at=now, ingested_at=now,
+            metadata={"trigger_kind": "onchain_momentum", "trigger_priority": 1},
+        )
+        assert transition_id is not None
+        return token, cohort_id, int(transition_id)
+
+    rejected, rejected_cohort, rejected_transition = enroll("U" * 32, "AI")
+    searchable, searchable_cohort, searchable_transition = enroll("V" * 32, "Searchable Topic")
+    assert [item["token"].token_id for item in store.pending_event_lookup_tokens(["solana"])] == [
+        rejected.token_id, searchable.token_id,
+    ]
+    decisions_before = store.db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
+    trades_before = store.db.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
+    registration = store.register_token_event_lookup_name_screen()
+    assert registration["definition_version"] == store.TOKEN_EVENT_LOOKUP_NAME_SCREEN_VERSION
+
+    rejected_id = store.record_token_event_lookup_name_screen(
+        rejected_cohort, rejected_transition,
+        searchable=is_context_searchable_token_name(rejected.name or rejected.symbol),
+    )
+    searchable_id = store.record_token_event_lookup_name_screen(
+        searchable_cohort, searchable_transition,
+        searchable=is_context_searchable_token_name(searchable.name or searchable.symbol),
+    )
+    assert rejected_id is not None and searchable_id is not None
+    assert store.record_token_event_lookup_name_screen(
+        rejected_cohort, rejected_transition, searchable=True,
+    ) == rejected_id
+    rows = list(store.db.execute(
+        "SELECT cohort_id,status,reason_code,decision_eligible,affects "
+        "FROM token_event_lookup_name_screen_results ORDER BY cohort_id"
+    ))
+    assert [(row["status"], row["reason_code"]) for row in rows] == [
+        ("rejected", "unsearchable_token_name"),
+        ("eligible", "searchable_name"),
+    ]
+    assert all(row["decision_eligible"] == 0 and row["affects"] == "none" for row in rows)
+    assert [item["token"].token_id for item in store.pending_event_lookup_tokens(["solana"])] == [
+        searchable.token_id
+    ]
+    assert store.db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == decisions_before
+    assert store.db.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == trades_before
+    summary = Store.token_event_lookup_name_screen_summary_from_connection(store.db)
+    assert summary["status"] == "collecting"
+    assert summary["summary"] == {"screened": 2, "eligible": 1, "rejected": 1}
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute(
+            "UPDATE token_event_lookup_name_screen_results SET status='eligible' WHERE id=?",
+            (rejected_id,),
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute(
+            "DELETE FROM token_event_lookup_name_screen_registrations "
+            "WHERE definition_version=?",
+            (store.TOKEN_EVENT_LOOKUP_NAME_SCREEN_VERSION,),
+        )
+    store.close()
+
+
 def test_token_universe_funnel_is_forward_only_append_only_and_dag_aware(tmp_path: Path):
     store = Store(tmp_path / "token-universe-funnel.sqlite3", initial_cash_usd=1000)
     now = utcnow()

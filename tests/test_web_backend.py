@@ -978,6 +978,16 @@ def test_web_sources_exposes_forward_token_discovery_without_sensitive_fields(tm
     store.finalize_token_universe_forward_outcomes(now=discovered + timedelta(minutes=16))
     store.finalize_token_universe_outcome_quality()
     store.finalize_missed_opportunity_audits()
+    transition_id = store.record_token_universe_funnel_transition(
+        str(cohort["token_id"]),
+        stage="context_trigger_evaluation", status="eligible",
+        reason_code="onchain_momentum", evaluation_key="web:name-screen",
+        metadata={"trigger_kind": "onchain_momentum", "trigger_priority": 1},
+    )
+    assert transition_id is not None
+    assert store.record_token_event_lookup_name_screen(
+        int(cohort["id"]), int(transition_id), searchable=False,
+    ) is not None
     store.close()
 
     sources = WebData(config_path).sources()
@@ -1027,13 +1037,19 @@ def test_web_sources_exposes_forward_token_discovery_without_sensitive_fields(tm
     funnel = WebData(config_path).audit()["token_universe_funnel"]
     assert funnel["status"] == "collecting"
     assert funnel["summary"]["cohorts"] == 1
-    assert funnel["summary"]["transition_attempts"] == 0
+    assert funnel["summary"]["transition_attempts"] == 1
     assert funnel["decision_eligible"] is False and funnel["affects"] == "none"
     funnel_json = json.dumps(funnel).lower()
     assert cohort["token_id"].lower() not in funnel_json
     assert "raw_json" not in funnel_json and "source_record_ids_json" not in funnel_json
     assert "password" not in funnel_json and "private_key" not in funnel_json
     assert "bridge_token" not in funnel_json and "https://" not in funnel_json
+    name_screen = WebData(config_path).audit()["token_event_lookup_name_screen"]
+    assert name_screen["summary"] == {"screened": 1, "eligible": 0, "rejected": 1}
+    assert name_screen["decision_eligible"] is False and name_screen["affects"] == "none"
+    name_screen_json = json.dumps(name_screen).lower()
+    assert cohort["token_id"].lower() not in name_screen_json
+    assert "password" not in name_screen_json and "private_key" not in name_screen_json
 
 
 def test_learning_closure_does_not_borrow_same_event_outcomes_from_other_source(tmp_path: Path):

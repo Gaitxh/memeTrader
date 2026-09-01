@@ -1733,6 +1733,91 @@ def test_reverse_news_prioritizes_oldest_persistent_pending_without_raising_caps
     asyncio.run(scenario())
 
 
+def test_reverse_news_records_unsearchable_pending_name_as_terminal_screen(tmp_path, monkeypatch):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        config["sources"]["rss"] = []
+        config["sources"]["gecko_networks"] = []
+        config["sources"]["pumpportal"]["enabled"] = False
+        config["autonomous_search"]["enabled"] = False
+        config["sources"]["reverse_google_news"].update(
+            {"queries_per_cycle": 1, "max_tokens_scanned_per_cycle": 10,
+             "candidate_pool_limit": 10, "min_independent_sources": 0}
+        )
+        runtime = Runtime(config, tmp_path)
+        observed_at = utcnow() - timedelta(seconds=5)
+        tokens = [
+            TokenCandidate(
+                chain="bsc", address="0x" + "1" * 40,
+                name="1", symbol="1", source="dexscreener",
+            ),
+            TokenCandidate(
+                chain="bsc", address="0x" + "2" * 40,
+                name="Searchable Narrative", symbol="SEARCH", source="dexscreener",
+            ),
+        ]
+        for index, token in enumerate(tokens):
+            seen = observed_at + timedelta(seconds=index)
+            runtime.store.upsert_token(token, seen_at=seen)
+            round_id = runtime.store.start_token_discovery_round(
+                provider="dexscreener", surface="new_pairs", mode="poll",
+                chain_scope="bsc", started_at=seen,
+            )
+            runtime.store.add_token_discovery_exposure(
+                round_id, token_id=token.token_id, chain=token.chain, role="new_pair",
+                first_local_discovery=True, new_token=True, observed_at=seen,
+            )
+            runtime.store.finish_token_discovery_round(
+                round_id, status="completed", returned_count=1,
+            )
+            runtime.store.record_token_universe_funnel_transition(
+                token.token_id,
+                stage="context_trigger_evaluation", status="eligible",
+                reason_code="onchain_momentum", evaluation_key=f"screen:{index}",
+                observed_at=seen, ingested_at=seen,
+                metadata={"trigger_kind": "onchain_momentum", "trigger_priority": 1},
+            )
+
+        class FakeDex:
+            def __init__(self):
+                self.calls = []
+
+            async def batch_quote(self, chain, addresses):
+                self.calls.append((chain, list(addresses)))
+                token = tokens[1]
+                snapshot = TokenSnapshot(chain, token.address, 1, 50_000, 100_000, 30_000, 100, 20)
+                return {token.token_id: (token, snapshot)}
+
+        class FakeRSS:
+            def __init__(self, http, name, url, kind):
+                pass
+
+            async def poll(self):
+                return []
+
+        runtime.dex = FakeDex()
+        monkeypatch.setattr("memetrader.runtime.RSSCollector", FakeRSS)
+        await runtime.reverse_news_once()
+
+        assert runtime.dex.calls == [("bsc", [tokens[1].address])]
+        screens = runtime.store.db.execute(
+            "SELECT status,reason_code,decision_eligible,affects "
+            "FROM token_event_lookup_name_screen_results ORDER BY cohort_id"
+        ).fetchall()
+        assert [tuple(row) for row in screens] == [
+            ("rejected", "unsearchable_token_name", 0, "none"),
+            ("eligible", "searchable_name", 0, "none"),
+        ]
+        assert runtime.store.pending_event_lookup_tokens(["bsc"]) == []
+        assert runtime.store.db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == 0
+        assert runtime.store.db.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == 0
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
 def test_reverse_news_keeps_one_current_slot_while_draining_pending(tmp_path, monkeypatch):
     async def scenario():
         config = initial_config()

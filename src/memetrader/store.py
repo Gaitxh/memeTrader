@@ -54,6 +54,8 @@ class Store:
     TOKEN_DISCOVERY_QUOTE_ATTEMPT_VERSION = "token-discovery-quote-attempt/v2"
     TOKEN_UNIVERSE_FORWARD_VERSION = "token-universe-forward-outcomes/v1"
     TOKEN_UNIVERSE_FUNNEL_VERSION = "token-universe-funnel-transitions/v1"
+    TOKEN_EVENT_LOOKUP_NAME_SCREEN_VERSION = "token-event-lookup-name-screen/v1"
+    TOKEN_EVENT_LOOKUP_NAME_SCREEN_WINDOW_MINUTES = 180
     AGENT_SHADOW_REVIEW_VERSION = "agent-shadow-review-trigger/v2"
     AGENT_SHADOW_REVIEW_WINDOW_MINUTES = 15
     TOKEN_UNIVERSE_HORIZONS_MINUTES = (15, 60, 240)
@@ -988,6 +990,46 @@ class Store:
                 CREATE TRIGGER IF NOT EXISTS token_universe_funnel_transitions_no_delete
                 BEFORE DELETE ON token_universe_funnel_transitions
                 BEGIN SELECT RAISE(ABORT,'token universe funnel transitions are immutable'); END;
+                CREATE TABLE IF NOT EXISTS token_event_lookup_name_screen_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS token_event_lookup_name_screen_results (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    cohort_id INTEGER NOT NULL UNIQUE,
+                    eligible_transition_id INTEGER NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('eligible','rejected')),
+                    reason_code TEXT NOT NULL CHECK(reason_code IN (
+                        'searchable_name','unsearchable_token_name'
+                    )),
+                    evaluated_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    CHECK(
+                        (status='eligible' AND reason_code='searchable_name') OR
+                        (status='rejected' AND reason_code='unsearchable_token_name')
+                    ),
+                    FOREIGN KEY(cohort_id) REFERENCES token_universe_forward_cohorts(id),
+                    FOREIGN KEY(eligible_transition_id) REFERENCES token_universe_funnel_transitions(id)
+                );
+                CREATE INDEX IF NOT EXISTS token_event_lookup_name_screen_results_status_idx
+                    ON token_event_lookup_name_screen_results(
+                        definition_version,status,evaluated_at,cohort_id
+                    );
+                CREATE TRIGGER IF NOT EXISTS token_event_lookup_name_screen_registrations_no_update
+                BEFORE UPDATE ON token_event_lookup_name_screen_registrations
+                BEGIN SELECT RAISE(ABORT,'token event lookup name screen registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_event_lookup_name_screen_registrations_no_delete
+                BEFORE DELETE ON token_event_lookup_name_screen_registrations
+                BEGIN SELECT RAISE(ABORT,'token event lookup name screen registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_event_lookup_name_screen_results_no_update
+                BEFORE UPDATE ON token_event_lookup_name_screen_results
+                BEGIN SELECT RAISE(ABORT,'token event lookup name screen results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_event_lookup_name_screen_results_no_delete
+                BEFORE DELETE ON token_event_lookup_name_screen_results
+                BEGIN SELECT RAISE(ABORT,'token event lookup name screen results are immutable'); END;
                 CREATE TABLE IF NOT EXISTS agent_shadow_review_registrations (
                     definition_version TEXT PRIMARY KEY,
                     registered_at TEXT NOT NULL,
@@ -1831,6 +1873,15 @@ class Store:
                     self.TOKEN_UNIVERSE_FUNNEL_VERSION,
                     iso(),
                     self._json(self._token_universe_funnel_definition()),
+                ),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO token_event_lookup_name_screen_registrations("
+                "definition_version,registered_at,definition_json) VALUES(?,?,?)",
+                (
+                    self.TOKEN_EVENT_LOOKUP_NAME_SCREEN_VERSION,
+                    iso(),
+                    self._json(self._token_event_lookup_name_screen_definition()),
                 ),
             )
             self.db.execute(
@@ -4221,6 +4272,180 @@ class Store:
         rows = self.db.execute("SELECT token_id FROM tokens WHERE last_seen_at>=? ORDER BY last_seen_at DESC LIMIT ?", (since, limit))
         return [token for row in rows if (token := self.token(row["token_id"])) is not None]
 
+    @classmethod
+    def _token_event_lookup_name_screen_definition(cls) -> dict[str, Any]:
+        return {
+            "version": cls.TOKEN_EVENT_LOOKUP_NAME_SCREEN_VERSION,
+            "source": cls.TOKEN_UNIVERSE_FUNNEL_VERSION,
+            "scope": "currently_active_eligible_never_attempted_event_lookup_pending",
+            "active_window_minutes": cls.TOKEN_EVENT_LOOKUP_NAME_SCREEN_WINDOW_MINUTES,
+            "registration": "forward_from_deployment_with_active_pending_first_observation",
+            "terminal_statuses": {
+                "eligible": "searchable_name",
+                "rejected": "unsearchable_token_name",
+            },
+            "decision_eligible": False,
+            "affects": "none",
+        }
+
+    def register_token_event_lookup_name_screen(self) -> sqlite3.Row:
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO token_event_lookup_name_screen_registrations("
+                "definition_version,registered_at,definition_json) VALUES(?,?,?)",
+                (
+                    self.TOKEN_EVENT_LOOKUP_NAME_SCREEN_VERSION,
+                    iso(),
+                    self._json(self._token_event_lookup_name_screen_definition()),
+                ),
+            )
+            return self.db.execute(
+                "SELECT * FROM token_event_lookup_name_screen_registrations "
+                "WHERE definition_version=?",
+                (self.TOKEN_EVENT_LOOKUP_NAME_SCREEN_VERSION,),
+            ).fetchone()
+
+    def record_token_event_lookup_name_screen(
+        self,
+        cohort_id: int,
+        eligible_transition_id: int,
+        *,
+        searchable: bool,
+        evaluated_at: Any = None,
+    ) -> int | None:
+        evaluated = parse_time(evaluated_at or utcnow())
+        now = utcnow()
+        if evaluated > now:
+            return None
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT registered_at FROM token_event_lookup_name_screen_registrations "
+                "WHERE definition_version=?",
+                (self.TOKEN_EVENT_LOOKUP_NAME_SCREEN_VERSION,),
+            ).fetchone()
+            if registration is None or evaluated < parse_time(registration["registered_at"]):
+                return None
+            transition = self.db.execute(
+                """
+                SELECT t.recorded_at,t.observed_at,t.ingested_at,c.discovery_recorded_at
+                FROM token_universe_funnel_transitions t
+                JOIN token_universe_forward_cohorts c ON c.id=t.cohort_id
+                WHERE t.id=? AND t.cohort_id=?
+                  AND t.definition_version=? AND t.stage='context_trigger_evaluation'
+                  AND t.status='eligible'
+                  AND c.definition_version=?
+                  AND c.discovery_recorded_at<=t.recorded_at
+                  AND t.observed_at<=t.ingested_at AND t.ingested_at<=t.recorded_at
+                  AND NOT EXISTS (
+                      SELECT 1 FROM token_universe_funnel_transitions lookup
+                      WHERE lookup.definition_version=t.definition_version
+                        AND lookup.cohort_id=t.cohort_id
+                        AND lookup.stage='event_lookup_attempt'
+                  )
+                """,
+                (
+                    int(eligible_transition_id), int(cohort_id),
+                    self.TOKEN_UNIVERSE_FUNNEL_VERSION,
+                    self.TOKEN_UNIVERSE_FORWARD_VERSION,
+                ),
+            ).fetchone()
+            if transition is None:
+                return None
+            recorded = parse_time(transition["recorded_at"])
+            if recorded > evaluated or recorded < evaluated - timedelta(
+                minutes=self.TOKEN_EVENT_LOOKUP_NAME_SCREEN_WINDOW_MINUTES
+            ):
+                return None
+            status = "eligible" if searchable else "rejected"
+            reason = "searchable_name" if searchable else "unsearchable_token_name"
+            self.db.execute(
+                """
+                INSERT OR IGNORE INTO token_event_lookup_name_screen_results(
+                    definition_version,cohort_id,eligible_transition_id,status,reason_code,
+                    evaluated_at,decision_eligible,affects
+                ) VALUES(?,?,?,?,?,?,0,'none')
+                """,
+                (
+                    self.TOKEN_EVENT_LOOKUP_NAME_SCREEN_VERSION, int(cohort_id),
+                    int(eligible_transition_id), status, reason, iso(evaluated),
+                ),
+            )
+            row = self.db.execute(
+                "SELECT id FROM token_event_lookup_name_screen_results WHERE cohort_id=?",
+                (int(cohort_id),),
+            ).fetchone()
+            return int(row["id"]) if row is not None else None
+
+    @classmethod
+    def token_event_lookup_name_screen_summary_from_connection(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        lookback_days: int = 90,
+    ) -> dict[str, Any]:
+        required = {
+            "token_event_lookup_name_screen_registrations",
+            "token_event_lookup_name_screen_results",
+        }
+        tables = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        empty = {
+            "status": "not_observed",
+            "version": cls.TOKEN_EVENT_LOOKUP_NAME_SCREEN_VERSION,
+            "definition": cls._token_event_lookup_name_screen_definition(),
+            "summary": {"screened": 0, "eligible": 0, "rejected": 0},
+            "reason_codes": [],
+            "decision_eligible": False,
+            "affects": "none",
+        }
+        if not required.issubset(tables):
+            return empty
+        registration = connection.execute(
+            "SELECT * FROM token_event_lookup_name_screen_registrations "
+            "WHERE definition_version=?",
+            (cls.TOKEN_EVENT_LOOKUP_NAME_SCREEN_VERSION,),
+        ).fetchone()
+        if registration is None:
+            return empty
+        start = max(
+            parse_time(registration["registered_at"]),
+            utcnow() - timedelta(days=max(1, min(3650, int(lookback_days)))),
+        )
+        rows = connection.execute(
+            """
+            SELECT status,reason_code,COUNT(*) AS count
+            FROM token_event_lookup_name_screen_results
+            WHERE definition_version=? AND evaluated_at>=?
+            GROUP BY status,reason_code ORDER BY status,reason_code
+            """,
+            (cls.TOKEN_EVENT_LOOKUP_NAME_SCREEN_VERSION, iso(start)),
+        ).fetchall()
+        summary = {
+            "screened": sum(int(row["count"] or 0) for row in rows),
+            "eligible": sum(int(row["count"] or 0) for row in rows if row["status"] == "eligible"),
+            "rejected": sum(int(row["count"] or 0) for row in rows if row["status"] == "rejected"),
+        }
+        return {
+            "status": "collecting" if summary["screened"] else "registered_waiting",
+            "version": cls.TOKEN_EVENT_LOOKUP_NAME_SCREEN_VERSION,
+            "registered_at": str(registration["registered_at"]),
+            "definition": cls._json_object(registration["definition_json"]),
+            "summary": summary,
+            "reason_codes": [
+                {
+                    "status": str(row["status"]),
+                    "reason_code": str(row["reason_code"]),
+                    "count": int(row["count"] or 0),
+                }
+                for row in rows
+            ],
+            "decision_eligible": False,
+            "affects": "none",
+            "as_of": iso(),
+        }
+
     def pending_event_lookup_tokens(
         self,
         chains: Iterable[str],
@@ -4271,6 +4496,13 @@ class Store:
                                 AND lookup.cohort_id=t.cohort_id
                                 AND lookup.stage='event_lookup_attempt'
                           )
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM token_event_lookup_name_screen_results screen
+                              WHERE screen.definition_version=?
+                                AND screen.cohort_id=t.cohort_id
+                                AND screen.status='rejected'
+                          )
                     )
                     SELECT * FROM eligible
                     WHERE eligible_rank=1
@@ -4283,6 +4515,7 @@ class Store:
                         *normalized_chains,
                         iso(since),
                         iso(cutoff),
+                        self.TOKEN_EVENT_LOOKUP_NAME_SCREEN_VERSION,
                         max(1, min(5000, int(limit))),
                     ),
                 )

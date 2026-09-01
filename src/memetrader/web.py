@@ -214,6 +214,8 @@ EXPECTED_TABLES = {
     "token_universe_forward_outcomes",
     "token_universe_funnel_registrations",
     "token_universe_funnel_transitions",
+    "token_event_lookup_name_screen_registrations",
+    "token_event_lookup_name_screen_results",
     "agent_shadow_review_registrations",
     "agent_shadow_review_inputs",
     "agent_shadow_review_results",
@@ -5425,6 +5427,13 @@ class WebData:
             "potential_opportunity_recall": [],
             "decision_eligible": False, "affects": "none",
         }
+        event_lookup_name_screen = {
+            "status": "not_observed",
+            "version": Store.TOKEN_EVENT_LOOKUP_NAME_SCREEN_VERSION,
+            "definition": Store._token_event_lookup_name_screen_definition(),
+            "summary": {"screened": 0, "eligible": 0, "rejected": 0},
+            "reason_codes": [], "decision_eligible": False, "affects": "none",
+        }
         agent_shadow_review = {
             "status": "not_registered",
             "version": Store.AGENT_SHADOW_REVIEW_VERSION,
@@ -5500,6 +5509,9 @@ class WebData:
                 )
                 token_universe_funnel = Store.token_universe_funnel_summary_from_connection(
                     connection
+                )
+                event_lookup_name_screen = (
+                    Store.token_event_lookup_name_screen_summary_from_connection(connection)
                 )
                 agent_shadow_review = Store.agent_shadow_review_summary_from_connection(
                     connection
@@ -5616,6 +5628,7 @@ class WebData:
             "missed_opportunity": missed_opportunity,
             "token_universe_outcome_quality": outcome_quality,
             "token_universe_funnel": token_universe_funnel,
+            "token_event_lookup_name_screen": event_lookup_name_screen,
             "agent_shadow_review": agent_shadow_review,
             "status": overall_status,
             "policy_enforced": True,
