@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+import time
 from datetime import timedelta
 from email.utils import format_datetime
 from pathlib import Path
@@ -16,11 +17,13 @@ from memetrader.autonomous_search import (
     TREND_EMPTY_STREAK_KEY,
     TREND_RESULT_KEY,
     AutonomousSearchAgent,
+    _canonical_social_url,
     _exact_watch_account_for_url,
     _public_http_url,
+    _x_post_published_at_from_url,
 )
 from memetrader.collectors import HttpClient, UnsafeFeedURL
-from memetrader.models import CandidateDecision, Observation, TokenCandidate, TokenSnapshot, iso, utcnow
+from memetrader.models import CandidateDecision, Observation, TokenCandidate, TokenSnapshot, iso, parse_time, utcnow
 from memetrader.runtime import Runtime, initial_config
 from memetrader.store import Store
 
@@ -58,6 +61,7 @@ def config(**overrides):
         "context_search_daily_limit": 2,
         "context_min_momentum_score": 75,
         "context_token_cooldown_minutes": 360,
+        "context_no_context_reuse_minutes": 30,
         "context_lookback_minutes": 180,
         "context_min_confidence": 0.78,
         "context_min_relevance": 0.72,
@@ -97,6 +101,22 @@ def test_exact_watch_account_match_never_inherits_same_platform_or_other_handle(
     assert _exact_watch_account_for_url(
         [account], "https://example.com/elonmusk/status/12345"
     ) is None
+
+
+def test_x_snowflake_url_exposes_original_post_time_without_network_access():
+    published_at = _x_post_published_at_from_url(
+        "https://x.com/elonmusk/status/1098658606264635394"
+    )
+    assert published_at is not None
+    assert published_at.year == 2019
+    assert _x_post_published_at_from_url("https://x.com/elonmusk/status/12345") is None
+    assert _x_post_published_at_from_url("https://example.com/elonmusk/status/1098658606264635394") is None
+
+
+def test_truth_social_post_url_variants_share_one_canonical_post():
+    assert _canonical_social_url(
+        "https://truthsocial.com/@realDonaldTrump/posts/117197448086615537"
+    ) == "https://truthsocial.com/@realDonaldTrump/117197448086615537"
 
 
 def test_agent_http_guard_blocks_redirect_before_telegram_request(tmp_path: Path):
@@ -765,7 +785,7 @@ def test_agent_paths_never_fetch_or_persist_telegram_results(tmp_path: Path):
         def token_search(prompt, task="token_context"):
             assert private_telegram_url not in prompt
             assert "https://x.com/public-event" in prompt
-            assert "untrusted project-party claims" in prompt
+            assert "untrusted evidence" in prompt
             return (
                 {
                     "event_found": True,
@@ -928,6 +948,241 @@ def test_token_context_global_cooldown_prevents_bursts(tmp_path: Path):
     asyncio.run(scenario())
 
 
+def test_token_context_global_cooldown_is_reserved_before_agent_finishes(tmp_path: Path):
+    async def scenario():
+        store = Store(tmp_path / "db.sqlite3")
+        agent = AutonomousSearchAgent(
+            store,
+            FakeHttp(),
+            config(context_global_cooldown_minutes=5, context_search_daily_limit=8),
+        )
+        calls = []
+
+        def search(prompt, task="token_context"):
+            calls.append(task)
+            time.sleep(0.1)
+            return {"event_found": False, "sources": []}, {"tokens_used": 25}
+
+        agent._run_codex_search = search
+        token_a = TokenCandidate(chain="solana", address="A" * 32, name="Viral Otter")
+        token_b = TokenCandidate(chain="solana", address="B" * 32, name="Dancing Beaver")
+        snapshot_a = TokenSnapshot(
+            "solana", token_a.address, 0.01, 50000, 500000, 20000, 100, 20
+        )
+        snapshot_b = TokenSnapshot(
+            "solana", token_b.address, 0.01, 50000, 500000, 20000, 100, 20
+        )
+
+        await asyncio.gather(
+            agent.search_token_context(token_a, snapshot_a, momentum_score=90),
+            agent.search_token_context(token_b, snapshot_b, momentum_score=90),
+        )
+
+        assert calls == ["token_context"]
+        reasons = sorted(
+            row["reason"]
+            for token in (token_a, token_b)
+            for row in store.token_context_admission_attempts(token.token_id)
+        )
+        assert reasons == ["admitted", "global_cooldown_active"]
+        store.close()
+
+    asyncio.run(scenario())
+
+
+def test_source_fact_single_flight_reuses_one_exact_post_for_two_tokens(tmp_path: Path):
+    async def scenario():
+        store = Store(tmp_path / "db.sqlite3")
+        agent = AutonomousSearchAgent(store, FakeHttp(), config(
+            context_search_daily_limit=8, context_global_cooldown_minutes=0,
+            context_token_cooldown_minutes=180,
+        ))
+        calls = []
+
+        async def search(prompt, task="token_context", **kwargs):
+            calls.append(task)
+            return {"event_found": False, "sources": []}, {"tokens_used": 1}
+
+        agent._search = search
+        body_hash = "a" * 64
+
+        def relation(index):
+            return {
+                "kind": "high_impact_account_post", "transition_id": index,
+                "url": "https://x.com/example/status/123",
+                "verification_status": "browser_exact_entity_observation",
+                "observation_id": 1, "source_revision_id": 1,
+                "source_content_sha256": body_hash, "decision_eligible": False,
+                "endorsement_inferred": False,
+            }
+
+        tokens = [
+            TokenCandidate(chain="solana", address="A" * 32, name="First", symbol="ONE"),
+            TokenCandidate(chain="solana", address="B" * 32, name="Second", symbol="TWO"),
+        ]
+        for index, token in enumerate(tokens, 1):
+            snapshot = TokenSnapshot("solana", token.address, 0.01, 50_000, 500_000, 20_000, 100, 20)
+            await agent.search_token_context(token, snapshot, momentum_score=90, event_relation=relation(index))
+
+        repeat_snapshot = TokenSnapshot(
+            "solana", tokens[1].address, 0.01, 50_000, 500_000, 20_000, 100, 20
+        )
+        await agent.search_token_context(
+            tokens[1], repeat_snapshot, momentum_score=90, event_relation=relation(3)
+        )
+
+        assert calls == ["token_context"]
+        assert all(store.token_context_assessments(token.token_id) for token in tokens)
+        assert len(store.token_context_assessments(tokens[1].token_id)) == 1
+        assert store.token_context_admission_attempts(tokens[1].token_id)[0]["reason"] == "token_cooldown_active"
+        reused_metadata = json.loads(
+            store.token_context_assessments(tokens[1].token_id)[0]["agent_metadata_json"]
+        )
+        assert reused_metadata["tokens_used"] == 0
+        assert reused_metadata["run_id"] == ""
+        assert "source_fact_origin_run_id" in reused_metadata
+        source_result = store.db.execute(
+            "SELECT completed_at,reusable_until FROM source_fact_results ORDER BY id LIMIT 1"
+        ).fetchone()
+        assert (
+            parse_time(source_result["reusable_until"])
+            - parse_time(source_result["completed_at"])
+        ) == timedelta(minutes=30)
+        bindings = list(store.db.execute("SELECT * FROM source_fact_token_bindings ORDER BY token_id"))
+        assert [row["token_id"] for row in bindings] == [token.token_id for token in tokens]
+        assert all(row["reused"] == 1 for row in bindings[1:])
+        store.close()
+
+    asyncio.run(scenario())
+
+
+def test_source_fact_uncertain_dispatch_recovers_after_error_retry_window(tmp_path: Path):
+    store = Store(tmp_path / "db.sqlite3")
+    started = utcnow()
+    first = store.claim_source_fact_attempt(
+        "exact:https://x.com/example/status/123:revision:1:content:" + "a" * 64,
+        claimed_at=started,
+        lease_seconds=120,
+        uncertain_retry_seconds=600,
+    )
+    assert first["status"] == "dispatch"
+
+    uncertain = store.claim_source_fact_attempt(
+        "exact:https://x.com/example/status/123:revision:1:content:" + "a" * 64,
+        claimed_at=started + timedelta(minutes=5),
+        lease_seconds=120,
+        uncertain_retry_seconds=600,
+    )
+    assert uncertain["status"] == "uncertain"
+    assert uncertain["attempt_id"] == first["attempt_id"]
+
+    recovered = store.claim_source_fact_attempt(
+        "exact:https://x.com/example/status/123:revision:1:content:" + "a" * 64,
+        claimed_at=started + timedelta(minutes=13),
+        lease_seconds=120,
+        uncertain_retry_seconds=600,
+    )
+    assert recovered["status"] == "dispatch"
+    assert recovered["attempt_id"] != first["attempt_id"]
+    assert store.db.execute("SELECT COUNT(*) FROM source_fact_attempts").fetchone()[0] == 2
+    store.close()
+
+
+def test_source_fact_exact_content_hash_change_requires_new_investigation(tmp_path: Path):
+    async def scenario():
+        store = Store(tmp_path / "db.sqlite3")
+        agent = AutonomousSearchAgent(store, FakeHttp(), config(
+            context_search_daily_limit=8, context_global_cooldown_minutes=0,
+            context_token_cooldown_minutes=0,
+        ))
+        calls = []
+
+        async def search(prompt, task="token_context", **kwargs):
+            calls.append(task)
+            return {"event_found": False, "sources": []}, {"tokens_used": 1}
+
+        agent._search = search
+        token = TokenCandidate(chain="solana", address="C" * 32, name="Changed", symbol="CHG")
+        snapshot = TokenSnapshot("solana", token.address, 0.01, 50_000, 500_000, 20_000, 100, 20)
+        for index, content_hash in enumerate(("a" * 64, "b" * 64), 1):
+            await agent.search_token_context(
+                token, snapshot, momentum_score=90,
+                event_relation={
+                    "kind": "high_impact_account_post", "transition_id": index,
+                    "url": "https://x.com/example/status/123",
+                    "verification_status": "browser_exact_entity_observation",
+                    "observation_id": index, "source_revision_id": index,
+                    "source_content_sha256": content_hash, "decision_eligible": False,
+                },
+            )
+
+        assert calls == ["token_context", "token_context"]
+        assert store.db.execute("SELECT COUNT(*) FROM source_fact_work_units").fetchone()[0] == 2
+        store.close()
+
+    asyncio.run(scenario())
+
+
+def test_reused_source_fact_does_not_copy_exact_binding_or_create_trade(tmp_path: Path):
+    async def scenario():
+        store = Store(tmp_path / "db.sqlite3")
+        agent = AutonomousSearchAgent(store, FakeHttp(), config(
+            context_search_daily_limit=8, context_global_cooldown_minutes=0,
+            context_token_cooldown_minutes=0,
+        ))
+        calls = []
+        first = TokenCandidate(chain="solana", address="D" * 32, name="Bound", symbol="BND")
+        second = TokenCandidate(chain="solana", address="E" * 32, name="Clone", symbol="CLN")
+        published = iso(utcnow())
+
+        async def search(prompt, task="token_context", **kwargs):
+            calls.append(task)
+            return {
+                "event_found": True, "event_title": "Observed event", "confidence": 0.95,
+                "claim_status": "confirmed_fact", "factual_confidence": 0.95,
+                "sources": [
+                    {"title": "Report A", "url": "https://one.example/story", "publisher": "One",
+                     "published_at": published, "summary": f"Event involving {first.address}", "relevance": 0.99},
+                    {"title": "Report B", "url": "https://two.example/story", "publisher": "Two",
+                     "published_at": published, "summary": f"Event involving {first.address}", "relevance": 0.99},
+                ],
+            }, {"tokens_used": 1}
+
+        async def verify(**kwargs):
+            subject = kwargs["subjects"][0]["subject_id"]
+            return {subject: {"record_id": 1, "status": "cross_source_supported",
+                              "claim_status": "confirmed_fact", "confidence": 0.95,
+                              "distinct_origin_support_domain_count": 2,
+                              "distinct_support_domain_count": 2, "model": "fixture",
+                              "reasoning_effort": "low"}}
+
+        agent._search = search
+        agent._verify_fact_subjects = verify
+        trigger = {"kind": "high_impact_account_post", "transition_id": 1,
+                   "url": "https://x.com/example/status/123",
+                   "verification_status": "browser_exact_entity_observation",
+                   "observation_id": 1, "source_revision_id": 1,
+                   "source_content_sha256": "f" * 64, "decision_eligible": False}
+        for token in (first, second):
+            snapshot = TokenSnapshot("solana", token.address, 0.01, 50_000, 500_000, 20_000, 100, 20)
+            await agent.search_token_context(token, snapshot, momentum_score=90, event_relation=trigger)
+
+        assert calls == ["token_context"]
+        second_assessment = json.loads(store.token_context_assessments(second.token_id)[0]["assessment_json"])
+        assert second_assessment["independent_reporting"]["exact_token_binding_eligible"] is False
+        binding_rows = list(store.db.execute(
+            "SELECT token_id,binding_status FROM source_fact_token_bindings ORDER BY token_id"
+        ))
+        assert [(row["token_id"], row["binding_status"]) for row in binding_rows] == [
+            (first.token_id, "exact"), (second.token_id, "unmapped")
+        ]
+        assert store.db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == 0
+        assert store.db.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == 0
+        store.close()
+
+    asyncio.run(scenario())
+
+
 def test_browser_verified_high_impact_post_triggers_context_without_momentum(tmp_path: Path):
     async def scenario():
         settings_path = tmp_path / "console_settings.json"
@@ -953,7 +1208,10 @@ def test_browser_verified_high_impact_post_triggers_context_without_momentum(tmp
         agent = AutonomousSearchAgent(
             store,
             FakeHttp(),
-            config(context_min_momentum_score=80),
+            config(
+                context_min_momentum_score=80,
+                context_low_information_exposure_only_enabled=True,
+            ),
             console_settings_path=settings_path,
         )
         prompts = []
@@ -976,13 +1234,21 @@ def test_browser_verified_high_impact_post_triggers_context_without_momentum(tmp
             }
         )
         snapshot = TokenSnapshot("solana", token.address, 0.01, 100, 1000, 10, 1, 1)
-        assert agent.resolve_token_context_trigger(token, momentum_score=5) is None
+        unverified_trigger = agent.resolve_token_context_trigger(token, momentum_score=5)
+        assert unverified_trigger is not None
+        assert unverified_trigger["kind"] == "high_impact_account_metadata_lead"
+        assert unverified_trigger["priority"] == 2
+        assert unverified_trigger["verification_status"] == "provider_metadata_unverified"
+        assert unverified_trigger["entity_id"] == "elon_musk"
+        assert unverified_trigger["decision_eligible"] is False
+        assert unverified_trigger["endorsement_inferred"] is False
         assert prompts == []
         store.add_observation(
             Observation(
-                source="browser:x:elonmusk",
+                source="x:elonmusk",
                 source_kind="social",
                 title="Exact locally received post",
+                text="Fresh locally observed launch context from the exact post.",
                 url="https://twitter.com/elonmusk/status/12345?ref_src=twsrc",
                 author="@elonmusk",
                 availability_proof="local_receive",
@@ -996,6 +1262,8 @@ def test_browser_verified_high_impact_post_triggers_context_without_momentum(tmp
         )
         assert await agent.search_token_context(token, snapshot, momentum_score=5) == []
         assert len(prompts) == 1 and "high_impact_account_post" in prompts[0]
+        assert "Fresh locally observed launch context from the exact post." in prompts[0]
+        assert "do not require a second live fetch" in prompts[0]
         run = store.token_context_assessments(token.token_id)[0]
         assessment = json.loads(run["assessment_json"])
         assert run["trigger"] == "high_impact_account_post"
@@ -1010,7 +1278,137 @@ def test_browser_verified_high_impact_post_triggers_context_without_momentum(tmp
     asyncio.run(scenario())
 
 
-def test_name_or_profile_imitation_cannot_bypass_context_momentum_gate(tmp_path: Path):
+def test_browser_verified_token_metadata_post_triggers_context_without_watch_account(tmp_path: Path):
+    async def scenario():
+        store = Store(tmp_path / "db.sqlite3")
+        agent = AutonomousSearchAgent(
+            store,
+            FakeHttp(),
+            config(
+                context_min_momentum_score=80,
+                context_low_information_exposure_only_enabled=True,
+            ),
+        )
+        prompts = []
+        agent._run_codex_search = lambda prompt, task="token_context": (
+            prompts.append(prompt) or {"event_found": False, "sources": []},
+            {"tokens_used": 10},
+        )
+        token = TokenCandidate(
+            chain="solana", address="M" * 32, name="Community token", symbol="COM"
+        )
+        url = "https://x.com/community_signal/status/12345"
+        store.upsert_token_source_link(
+            {
+                "token_id": token.token_id,
+                "provider": "pumpportal",
+                "discovery_surface": "launch_metadata",
+                "role": "identity",
+                "original_url": url,
+                "normalized_url": url,
+                "link_kind": "social_post",
+                "platform": "x",
+                "verification_status": "provider_metadata",
+            }
+        )
+        store.add_observation(
+            Observation(
+                source="x:community_signal",
+                source_kind="social",
+                title="Exact token-linked post",
+                text="A locally captured post directly linked from this token metadata.",
+                url=url + "/photo/1",
+                author="@community_signal",
+                availability_proof="local_receive",
+                role="identity",
+                source_item_id=url + "/photo/1",
+                raw={"browser": {"platform": "x"}},
+            )
+        )
+        snapshot = TokenSnapshot("solana", token.address, 0.01, 100, 1000, 10, 1, 1)
+        assert await agent.search_token_context(token, snapshot, momentum_score=5) == []
+        assert len(prompts) == 1
+        assessment = json.loads(
+            store.token_context_assessments(token.token_id)[0]["assessment_json"]
+        )
+        trigger = assessment["investigation_trigger"]
+        assert trigger["kind"] == "token_metadata_source_link"
+        assert trigger["verification_status"] == "browser_exact_entity_observation"
+        assert trigger["observation_id"] > 0
+        assert trigger["entity_id"] == "community_signal"
+        assert trigger["decision_eligible"] is False
+        store.close()
+
+    asyncio.run(scenario())
+
+
+def test_fresh_identity_metadata_link_triggers_research_without_momentum(tmp_path: Path):
+    store = Store(tmp_path / "db.sqlite3")
+    agent = AutonomousSearchAgent(
+        store,
+        FakeHttp(),
+        config(context_min_momentum_score=80, context_metadata_link_trigger_enabled=True),
+    )
+    token = TokenCandidate(chain="solana", address="L" * 32, name="Linked token")
+    observed_at = utcnow()
+    store.upsert_token_source_link(
+        {
+            "token_id": token.token_id,
+            "provider": "pumpportal",
+            "discovery_surface": "launch_metadata",
+            "role": "identity",
+            "original_url": "https://example.com/project",
+            "normalized_url": "https://example.com/project",
+            "link_kind": "website",
+            "platform": "",
+            "verification_status": "provider_metadata",
+        },
+        observed_at=observed_at,
+    )
+    trigger = agent.resolve_token_context_trigger(
+        token,
+        momentum_score=5,
+        snapshot_observed_at=observed_at + timedelta(seconds=1),
+    )
+    assert trigger is not None
+    assert trigger["kind"] == "token_metadata_source_link"
+    assert trigger["url"] == "https://example.com/project"
+    assert agent.token_context_source_key(trigger) == "metadata:https://example.com/project"
+    assert trigger["decision_eligible"] is False
+    assert trigger["endorsement_inferred"] is False
+    store.close()
+
+
+def test_post_entry_context_trigger_accepts_entry_available_snapshot(tmp_path: Path):
+    store = Store(tmp_path / "db.sqlite3")
+    agent = AutonomousSearchAgent(store, FakeHttp(), config())
+    token = TokenCandidate(chain="solana", address="P" * 32, name="Paired runner")
+    snapshot_at = utcnow() - timedelta(minutes=2)
+    opened_at = snapshot_at + timedelta(seconds=5)
+    investigation_at = opened_at + timedelta(minutes=1)
+    trigger = agent.resolve_token_context_trigger(
+        token,
+        momentum_score=75,
+        snapshot_observed_at=snapshot_at,
+        snapshot_id=1,
+        event_relation={
+            "kind": "post_entry_narrative_position",
+            "source_buy_trade_id": 11,
+            "shadow_cohort_id": 7,
+            "position_opened_at": iso(opened_at),
+            "position_status": "narrative_runner",
+            "context_snapshot_basis": "entry_trigger_snapshot",
+            "investigation_started_at": iso(investigation_at),
+        },
+    )
+    assert trigger is not None
+    assert trigger["kind"] == "post_entry_narrative_position"
+    assert trigger["context_snapshot_basis"] == "entry_trigger_snapshot"
+    assert parse_time(trigger["investigation_started_at"]) == investigation_at
+    store.close()
+
+
+def test_name_or_profile_imitation_only_triggers_untrusted_research(tmp_path: Path):
     async def scenario():
         settings_path = tmp_path / "console_settings.json"
         settings_path.write_text(
@@ -1031,7 +1429,10 @@ def test_name_or_profile_imitation_cannot_bypass_context_momentum_gate(tmp_path:
         agent = AutonomousSearchAgent(
             store,
             FakeHttp(),
-            config(context_min_momentum_score=80),
+            config(
+                context_min_momentum_score=80,
+                context_low_information_exposure_only_enabled=True,
+            ),
             console_settings_path=settings_path,
         )
         calls = []
@@ -1059,7 +1460,139 @@ def test_name_or_profile_imitation_cannot_bypass_context_momentum_gate(tmp_path:
         assert store.token_context_assessments(token.token_id) == []
         admission = store.token_context_admission_attempts(token.token_id)[0]
         assert admission["outcome"] == "skipped"
-        assert admission["reason"] == "no_eligible_trigger"
+        assert admission["reason"] == "exposure_only_unverified_provider_metadata_x"
+        assert agent.usage()["token_context"] == 0
+        assert store.db.execute("SELECT COUNT(1) FROM decisions").fetchone()[0] == 0
+        store.close()
+
+    asyncio.run(scenario())
+
+
+def test_unverified_high_impact_social_post_still_triggers_research(tmp_path: Path):
+    async def scenario():
+        settings_path = tmp_path / "console_settings.json"
+        settings_path.write_text(
+            json.dumps(
+                {
+                    "watch_accounts": [
+                        {
+                            "platform": "x", "handle": "@elonmusk",
+                            "url": "https://x.com/elonmusk", "entity_id": "elon_musk",
+                            "priority": 4, "enabled": True,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        store = Store(tmp_path / "db.sqlite3")
+        agent = AutonomousSearchAgent(
+            store,
+            FakeHttp(),
+            config(
+                context_min_momentum_score=80,
+                context_low_information_exposure_only_enabled=True,
+            ),
+            console_settings_path=settings_path,
+        )
+        calls = []
+        agent._run_codex_search = lambda prompt, task="token_context": (
+            calls.append(task) or {"event_found": False, "sources": []},
+            {"tokens_used": 1},
+        )
+        token = TokenCandidate(chain="solana", address="J" * 32, name="Linked post")
+        store.upsert_token_source_link(
+            {
+                "token_id": token.token_id,
+                "provider": "dexscreener",
+                "discovery_surface": "pair_info",
+                "role": "identity",
+                "original_url": "https://x.com/elonmusk/status/12345",
+                "normalized_url": "https://x.com/elonmusk/status/12345",
+                "link_kind": "social_post",
+                "platform": "x",
+                "verification_status": "provider_metadata",
+            }
+        )
+        snapshot = TokenSnapshot("solana", token.address, 0.01, 100, 1000, 10, 1, 1)
+        assert await agent.search_token_context(token, snapshot, momentum_score=5) == []
+        assert calls == ["token_context"]
+        admission = store.token_context_admission_attempts(token.token_id)[0]
+        assert admission["outcome"] == "admitted"
+        assert admission["trigger_kind"] == "high_impact_account_metadata_lead"
+        assessment = store.token_context_assessments(token.token_id)[0]
+        assert assessment["trigger"] == "high_impact_account_metadata_lead"
+        store.close()
+
+    asyncio.run(scenario())
+
+
+def test_unverified_generic_social_post_is_exposure_only_before_quota(tmp_path: Path):
+    async def scenario():
+        store = Store(tmp_path / "db.sqlite3")
+        agent = AutonomousSearchAgent(
+            store,
+            FakeHttp(),
+            config(
+                context_min_momentum_score=80,
+                context_low_information_exposure_only_enabled=True,
+            ),
+        )
+        calls = []
+        agent._run_codex_search = lambda prompt, task="token_context": (
+            calls.append(task) or {"event_found": False, "sources": []},
+            {"tokens_used": 1},
+        )
+        token = TokenCandidate(chain="solana", address="K" * 32, name="Linked post")
+        store.upsert_token_source_link(
+            {
+                "token_id": token.token_id,
+                "provider": "pumpportal",
+                "discovery_surface": "launch_metadata",
+                "role": "identity",
+                "original_url": "https://x.com/i/status/12345",
+                "normalized_url": "https://x.com/i/status/12345",
+                "link_kind": "social_post",
+                "platform": "x",
+                "verification_status": "provider_metadata",
+            }
+        )
+        snapshot = TokenSnapshot("solana", token.address, 0.01, 100, 1000, 10, 1, 1)
+        assert await agent.search_token_context(token, snapshot, momentum_score=5) == []
+        assert calls == []
+        admission = store.token_context_admission_attempts(token.token_id)[0]
+        assert admission["outcome"] == "skipped"
+        assert admission["reason"] == "exposure_only_unverified_provider_metadata_x"
+        assert agent.usage()["token_context"] == 0
+        store.close()
+
+    asyncio.run(scenario())
+
+
+def test_unseeded_onchain_context_is_exposure_only_before_quota(tmp_path: Path):
+    async def scenario():
+        store = Store(tmp_path / "db.sqlite3")
+        agent = AutonomousSearchAgent(
+            store,
+            FakeHttp(),
+            config(context_low_information_exposure_only_enabled=True),
+        )
+        calls = []
+        agent._run_codex_search = lambda prompt, task="token_context": (
+            calls.append(task) or {"event_found": False, "sources": []},
+            {"tokens_used": 1},
+        )
+        token = TokenCandidate(chain="solana", address="N" * 32, name="No seed")
+        store.upsert_token(token)
+        snapshot = TokenSnapshot("solana", token.address, 0.01, 50000, 500000, 20000, 100, 20)
+        assert await agent.search_token_context(token, snapshot, momentum_score=90) == []
+        assert calls == []
+        assert store.token_context_assessments(token.token_id) == []
+        admission = store.token_context_admission_attempts(token.token_id)[0]
+        assert admission["outcome"] == "skipped"
+        assert admission["reason"] == "exposure_only_no_metadata_seed"
+        assert admission["trigger_kind"] == "onchain_momentum"
+        assert agent.usage()["token_context"] == 0
         store.close()
 
     asyncio.run(scenario())
@@ -1268,6 +1801,202 @@ def test_token_context_search_requires_two_recent_reachable_sources(tmp_path: Pa
         assert assessment["independent_reporting"]["confirmation_ingested"] is False
         assert assessment["content_verifier"]["status"] == "invalid_output"
         assert assessment["decision_eligible"] is False
+        store.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("distinct_origin_count", "address_in_reports", "confirmation_expected"),
+    [(2, False, True), (2, True, True), (1, True, False)],
+)
+def test_fresh_independent_token_context_confirms_event_without_implicit_token_binding(
+    tmp_path: Path,
+    distinct_origin_count: int,
+    address_in_reports: bool,
+    confirmation_expected: bool,
+):
+    async def scenario():
+        store = Store(tmp_path / "db.sqlite3")
+        agent = AutonomousSearchAgent(store, FakeHttp(), config())
+        token = TokenCandidate(
+            chain="solana", address="A" * 32, name="Viral Otter", symbol="OTTER"
+        )
+        published = iso(utcnow())
+        address_text = f" Contract: {token.address}." if address_in_reports else ""
+
+        def fake_search(prompt, task="token_context"):
+            return (
+                {
+                    "event_found": True,
+                    "event_title": "A rescue otter becomes a current viral meme",
+                    "confidence": 0.92,
+                    "claim_status": "confirmed_fact",
+                    "factual_confidence": 0.91,
+                    "source_identity_confidence": 0.92,
+                    "attention_confidence": 0.84,
+                    "meme_catalyst_strength": 0.9,
+                    "correction_risk": 0.08,
+                    "sources": [
+                        {
+                            "title": "Original rescue otter report",
+                            "url": "https://publisher-a.example/story",
+                            "publisher": "Publisher A",
+                            "published_at": published,
+                            "summary": "The current rescue otter story is spreading." + address_text,
+                            "relevance": 0.95,
+                        },
+                        {
+                            "title": "Independent rescue otter report",
+                            "url": "https://publisher-b.example/story",
+                            "publisher": "Publisher B",
+                            "published_at": published,
+                            "summary": "A second origin confirms the current story." + address_text,
+                            "relevance": 0.93,
+                        },
+                    ],
+                },
+                {"tokens_used": 500},
+            )
+
+        async def fake_verify_fact_subjects(**kwargs):
+            subject_id = kwargs["subjects"][0]["subject_id"]
+            return {
+                subject_id: {
+                    "record_id": 1,
+                    "status": "cross_source_supported",
+                    "claim_status": "confirmed_fact",
+                    "confidence": 0.91,
+                    "distinct_support_domain_count": 2,
+                    "distinct_origin_support_domain_count": distinct_origin_count,
+                    "model": "gpt-5.6-terra",
+                    "reasoning_effort": "medium",
+                }
+            }
+
+        agent._run_codex_search = fake_search
+        agent._verify_fact_subjects = fake_verify_fact_subjects
+        snapshot = TokenSnapshot(
+            "solana", token.address, 0.01, 50000, 500000, 20000, 100, 20
+        )
+        observations = await agent.search_token_context(token, snapshot, momentum_score=90)
+        assert len(observations) == 2
+        assert all(
+            row.role == ("confirmation" if confirmation_expected else "identity")
+            for row in observations
+        )
+        assert all(row.raw["decision_eligible"] is confirmation_expected for row in observations)
+        exact_binding_expected = confirmation_expected and address_in_reports
+        if confirmation_expected:
+            expected_binding = (
+                "exact_token_binding" if exact_binding_expected else "event_confirmation_only"
+            )
+            assert all(
+                row.raw["token_context_binding_status"] == expected_binding
+                for row in observations
+            )
+        else:
+            assert all("token_context_binding_status" not in row.raw for row in observations)
+        assert all(
+            (row.raw.get("reverse_token_id") == token.token_id) is exact_binding_expected
+            for row in observations
+        )
+        run = store.token_context_assessments(token.token_id)[0]
+        assessment = json.loads(run["assessment_json"])
+        assert run["status"] == (
+            "cross_source_supported_confirmation"
+            if confirmation_expected
+            else "cross_source_supported_context_only"
+        )
+        assert assessment["decision_eligible"] is confirmation_expected
+        assert (
+            assessment["independent_reporting"]["confirmation_ingested"]
+            is confirmation_expected
+        )
+        assert (
+            assessment["independent_reporting"]["exact_token_binding_eligible"]
+            is exact_binding_expected
+        )
+        store.close()
+
+    asyncio.run(scenario())
+
+
+def test_post_entry_narrative_context_is_assessment_only(tmp_path: Path):
+    async def scenario():
+        store = Store(tmp_path / "post-entry-context.sqlite3")
+        agent = AutonomousSearchAgent(store, FakeHttp(), config())
+        token = TokenCandidate(
+            chain="solana", address="R" * 32, name="Runner Research", symbol="RUN"
+        )
+        now = utcnow()
+        agent._run_codex_search = lambda prompt, task="token_context": (
+            {
+                "event_found": True,
+                "event_title": "A current cross-platform narrative",
+                "confidence": 0.95,
+                "claim_status": "confirmed_fact",
+                "sources": [
+                    {
+                        "title": "Independent A",
+                        "url": "https://research-a.example/current",
+                        "publisher": "Research A",
+                        "published_at": iso(now),
+                        "summary": f"Current report names {token.address}.",
+                        "relevance": 0.95,
+                    },
+                    {
+                        "title": "Independent B",
+                        "url": "https://research-b.example/current",
+                        "publisher": "Research B",
+                        "published_at": iso(now),
+                        "summary": f"Independent report names {token.address}.",
+                        "relevance": 0.94,
+                    },
+                ],
+            },
+            {"tokens_used": 500},
+        )
+
+        async def fake_verify_fact_subjects(**kwargs):
+            subject_id = kwargs["subjects"][0]["subject_id"]
+            return {subject_id: {
+                "record_id": 1,
+                "status": "cross_source_supported",
+                "claim_status": "confirmed_fact",
+                "confidence": 0.95,
+                "distinct_support_domain_count": 2,
+                "distinct_origin_support_domain_count": 2,
+            }}
+
+        agent._verify_fact_subjects = fake_verify_fact_subjects
+        snapshot = TokenSnapshot(
+            "solana", token.address, 0.01, 50_000, 500_000, 20_000, 100, 20,
+            observed_at=now, ingested_at=now,
+        )
+        observations = await agent.search_token_context(
+            token,
+            snapshot,
+            momentum_score=90,
+            event_relation={
+                "kind": "post_entry_narrative_position",
+                "priority": 2,
+                "source_buy_trade_id": 11,
+                "shadow_cohort_id": 7,
+                "position_opened_at": iso(now - timedelta(minutes=1)),
+                "position_status": "baseline",
+                "transition_id": 999,
+                "decision_eligible": False,
+            },
+        )
+        assert observations == []
+        run = store.token_context_assessments(token.token_id)[0]
+        assessment = json.loads(run["assessment_json"])
+        assert run["status"] == "cross_source_supported_context_only"
+        assert assessment["decision_eligible"] is False
+        assert assessment["affects"] == "context_display_only"
+        assert assessment["independent_reporting"]["confirmation_ingested"] is False
+        assert assessment["independent_reporting"]["exact_token_binding_eligible"] is False
         store.close()
 
     asyncio.run(scenario())
@@ -1908,7 +2637,8 @@ def test_separate_fact_verifier_records_context_only_support(tmp_path: Path):
                 }
             ],
         )
-        assert result["subject-1"]["status"] == "cross_source_supported"
+        assert result["subject-1"]["status"] == "insufficient"
+        assert result["subject-1"]["distinct_origin_support_domain_count"] == 1
         assert result["subject-1"]["decision_eligible"] is False
         row = store.db.execute("SELECT * FROM agent_fact_verifications").fetchone()
         assert row["distinct_support_domain_count"] == 2

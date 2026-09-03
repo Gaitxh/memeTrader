@@ -15,7 +15,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from .collectors import DexScreenerClient, HttpClient
+from .collectors import (
+    DexScreenerClient,
+    HttpClient,
+    JupiterNoRouteError,
+    JupiterQuoteClient,
+    JupiterQuoteError,
+)
 from .models import CandidateDecision, EventView, Observation, ObservationRevisionHandoff, Position, TokenCandidate, TokenSnapshot, iso, parse_time, utcnow
 from .store import Store
 
@@ -391,6 +397,22 @@ class EventEngine:
         return max(jaccard, containment * 0.9)
 
     @staticmethod
+    def _source_identity_terms(obs: Observation, raw: dict[str, Any]) -> set[str]:
+        browser = raw.get("browser") if isinstance(raw.get("browser"), dict) else {}
+        author = str(obs.author or browser.get("author") or "").lstrip("@")
+        labels = [author, str(obs.source or "").split(":", 1)[-1]]
+        labels.append(str(raw.get("source_entity_id") or browser.get("source_entity_id") or ""))
+        if author:
+            prefix = re.match(
+                rf"^\s*(.*?)\s+@{re.escape(author)}\b",
+                str(obs.title or ""),
+                flags=re.IGNORECASE,
+            )
+            if prefix:
+                labels.append(prefix.group(1))
+        return terms(" ".join(labels))
+
+    @staticmethod
     def _attention(rows: list[Any], *, as_of=None) -> float:
         as_of = parse_time(as_of or utcnow())
         rows = [
@@ -454,6 +476,7 @@ class EventEngine:
                 return 0, False, False
         alias_list = extract_aliases(obs.title, obs.text)
         token_terms = terms(" ".join(alias_list))
+        token_terms.difference_update(self._source_identity_terms(obs, raw))
         best: tuple[float, EventView] | None = None
         for event in self.store.active_events(minutes=240, limit=150):
             similarity = self._similarity(token_terms, event)
@@ -667,14 +690,20 @@ class SafetyChecker:
         )
         return snap
 
-    async def check(self, snap: TokenSnapshot) -> tuple[bool, list[str]]:
+    async def check(
+        self, snap: TokenSnapshot, *, executable_route: bool = False
+    ) -> tuple[bool, list[str]]:
         snap = await self.enrich_evm(snap)
         snap = await self.enrich_solana(snap)
         cfg = self.config
         rejected: list[str] = []
         if snap.price_usd is None or snap.price_usd <= 0:
             rejected.append("missing_price")
-        if (snap.liquidity_usd or 0) < float(cfg.get("min_liquidity_usd", 12_000)):
+        if snap.liquidity_usd is None and not executable_route:
+            rejected.append("liquidity_unknown")
+        elif snap.liquidity_usd is not None and snap.liquidity_usd < float(
+            cfg.get("min_liquidity_usd", 12_000)
+        ):
             rejected.append("low_liquidity")
         if snap.market_cap_usd and snap.market_cap_usd > float(cfg.get("max_market_cap_usd", 25_000_000)):
             rejected.append("market_cap_too_high")
@@ -693,6 +722,8 @@ class SafetyChecker:
         if snap.sell_tax_pct is not None and snap.sell_tax_pct > max_tax:
             rejected.append("sell_tax_too_high")
         chain = snap.chain.lower()
+        if chain == "robinhood":
+            rejected.append("execution_safety_unsupported_chain")
         if chain in {"ethereum", "eth", "bsc", "base"}:
             goplus_report = snap.raw.get("goplus_evm")
             honeypot_report = snap.raw.get("honeypot_is")
@@ -837,8 +868,125 @@ class CandidateEvaluator:
     def __init__(
         self, store: Store, dex: DexScreenerClient, safety: SafetyChecker,
         config: dict[str, Any], agent: AgentRouter,
+        jupiter: JupiterQuoteClient | None = None,
+        paper_config: dict[str, Any] | None = None,
+        jupiter_lock: asyncio.Lock | None = None,
     ):
         self.store, self.dex, self.safety, self.config, self.agent = store, dex, safety, config, agent
+        self.jupiter = jupiter
+        self.paper_config = paper_config or {}
+        self.jupiter_lock = jupiter_lock
+
+    @staticmethod
+    def _is_pump_candidate(token: TokenCandidate, snap: TokenSnapshot) -> bool:
+        raw = snap.raw if isinstance(snap.raw, dict) else {}
+        pair = raw.get("pair") if isinstance(raw.get("pair"), dict) else {}
+        dex_id = str(pair.get("dexId") or pair.get("dex_id") or raw.get("dexId") or "")
+        return token.chain.lower() == "solana" and (
+            "pump" in dex_id.lower() or token.address.lower().endswith("pump")
+        )
+
+    async def _probe_event_context_route(
+        self,
+        *,
+        event_id: int,
+        token: TokenCandidate,
+        source_snapshot_id: int,
+        anchor_at: Any,
+    ) -> int | None:
+        if self.jupiter is None:
+            return None
+        notional = float(self.paper_config.get("max_position_usd", 35.0))
+        buy_input = round(notional * 1_000_000)
+        slippage_bps = round(float(self.paper_config.get("slippage_rate", 0.04)) * 10_000)
+        max_delay = float(self.paper_config.get("max_quote_age_seconds", 45.0))
+        probe_id = self.store.start_event_context_jupiter_route_probe(
+            event_id=event_id,
+            token_id=token.token_id,
+            source_snapshot_id=source_snapshot_id,
+            anchor_at=anchor_at,
+            input_notional_usd=notional,
+            buy_input_amount_raw=buy_input,
+            slippage_bps=slippage_bps,
+            max_total_delay_seconds=max_delay,
+        )
+
+        buy_quote: dict[str, Any] | None = None
+        phase = "buy"
+
+        async def quote_round_trip() -> tuple[dict[str, Any], dict[str, Any]]:
+            nonlocal buy_quote, phase
+            buy_quote = await self.jupiter.quote(
+                Store.JUPITER_USDC_MINT, token.address, buy_input,
+                slippage_bps=slippage_bps,
+            )
+            sell_input = int(buy_quote.get("other_amount_threshold") or 0)
+            if sell_input <= 0:
+                raise JupiterQuoteError("buy minimum output missing")
+            phase = "sell"
+            sell = await self.jupiter.quote(
+                token.address, Store.JUPITER_USDC_MINT, sell_input,
+                slippage_bps=slippage_bps,
+            )
+            return buy_quote, sell
+
+        try:
+            if self.jupiter_lock is None:
+                buy, sell = await quote_round_trip()
+            else:
+                async with self.jupiter_lock:
+                    buy, sell = await quote_round_trip()
+        except JupiterNoRouteError:
+            self.store.finish_event_context_jupiter_route_probe(
+                probe_id, status="no_route", reason=f"{phase}_route_unavailable",
+                buy_quote=buy_quote,
+            )
+            return None
+        except JupiterQuoteError as exc:
+            self.store.finish_event_context_jupiter_route_probe(
+                probe_id, status="invalid", reason=type(exc).__name__,
+                buy_quote=buy_quote,
+            )
+            return None
+        except Exception as exc:
+            self.store.finish_event_context_jupiter_route_probe(
+                probe_id, status="error", reason=type(exc).__name__,
+                buy_quote=buy_quote,
+            )
+            return None
+
+        anchor = parse_time(anchor_at)
+        buy_requested = parse_time(buy["requested_at"])
+        buy_completed = parse_time(buy["completed_at"])
+        sell_requested = parse_time(sell["requested_at"])
+        sell_completed = parse_time(sell["completed_at"])
+        total_delay = (sell_completed - anchor).total_seconds()
+        if not (
+            anchor <= buy_requested <= buy_completed <= sell_requested <= sell_completed
+            and 0 <= total_delay <= max_delay
+        ):
+            self.store.finish_event_context_jupiter_route_probe(
+                probe_id, status="stale", reason="route_probe_time_invalid",
+                buy_quote=buy, sell_quote=sell,
+            )
+            return None
+        sell_min = int(sell.get("other_amount_threshold") or 0)
+        round_trip = sell_min / buy_input - 1.0 if sell_min > 0 else -1.0
+        fee_rate = float(self.paper_config.get("pump_swap_fee_bps", 125.0)) / 10_000
+        slippage_rate = slippage_bps / 10_000
+        cost_floor = ((1.0 - slippage_rate) * (1.0 - fee_rate)) ** 2 - 1.0
+        if round_trip < cost_floor:
+            self.store.finish_event_context_jupiter_route_probe(
+                probe_id, status="poor_roundtrip", reason="round_trip_below_cost_floor",
+                buy_quote=buy, sell_quote=sell, round_trip_min_return=round_trip,
+            )
+            return None
+        self.store.finish_event_context_jupiter_route_probe(
+            probe_id, status="valid", reason="fresh_two_way_route",
+            buy_quote=buy, sell_quote=sell, round_trip_min_return=round_trip,
+            decision_eligible=True,
+        )
+        return probe_id
 
     @staticmethod
     def _ranking_snapshot_facts(snap: TokenSnapshot) -> dict[str, Any]:
@@ -998,6 +1146,8 @@ class CandidateEvaluator:
 
     @staticmethod
     def _match(event_text: str, aliases: list[str], token: TokenCandidate, direct_addresses: set[str]) -> float:
+        if not DexScreenerClient.metadata_is_usable(token.name, token.symbol):
+            return 0.0
         address_match = token.address.lower() in {a.lower() for a in direct_addresses}
         event_terms = terms(" ".join([event_text, *aliases]))
         # Provider/profile URLs are identity or promotional metadata, not lexical
@@ -1062,7 +1212,11 @@ class CandidateEvaluator:
         if token.created_at and token.created_at <= event.first_seen_at:
             delta = (event.first_seen_at - token.created_at).total_seconds() / 60.0
             score += max(0.0, 5.0 - min(5.0, delta / 30.0))
-        reasons.extend([f"liquidity={liquidity:.0f}", f"volume_5m={volume:.0f}", f"tx_5m={tx}"])
+        liquidity_reason = (
+            f"liquidity={liquidity:.0f}"
+            if snap.liquidity_usd is not None else "liquidity=unknown"
+        )
+        reasons.extend([liquidity_reason, f"volume_5m={volume:.0f}", f"tx_5m={tx}"])
         return min(100.0, score), reasons
 
     async def discover_and_decide(self, event: EventView) -> CandidateDecision | None:
@@ -1106,7 +1260,8 @@ class CandidateEvaluator:
             official_direct_addresses.update(groups["solana"])
         normalized_official_addresses = {address.lower() for address in official_direct_addresses}
         reverse_token_ids: set[str] = set()
-        agent_linked_token_ids: set[str] = set()
+        agent_link_origins: dict[str, set[str]] = {}
+        min_reverse_sources = int(self.config.get("min_reverse_independent_sources", 2))
         reverse_only = True
         for row in external:
             try:
@@ -1115,15 +1270,34 @@ class CandidateEvaluator:
                 row_raw = {}
             reverse_token_id = str(row_raw.get("reverse_token_id") or "")
             if reverse_token_id:
-                reverse_token_ids.add(reverse_token_id)
-                if (
+                is_token_context = (
                     str(row["availability_proof"]).lower() == "agent_search_verified"
-                    and str(row["role"]).lower() == "confirmation"
                     and str(row_raw.get("agent_task") or "") == "token_context"
-                ):
-                    agent_linked_token_ids.add(reverse_token_id)
+                )
+                exact_agent_binding = (
+                    is_token_context
+                    and str(row["role"]).lower() == "confirmation"
+                    and str(row_raw.get("token_context_binding_status") or "")
+                    == "exact_token_binding"
+                    and int(
+                        row_raw.get("fact_verification_distinct_origin_support_domains") or 0
+                    ) >= min_reverse_sources
+                    and reverse_token_id.split(":", 1)[-1].casefold()
+                    in f"{row['title']}\n{row['text']}".casefold()
+                )
+                if not is_token_context or exact_agent_binding:
+                    reverse_token_ids.add(reverse_token_id)
+                if exact_agent_binding:
+                    agent_link_origins.setdefault(reverse_token_id, set()).add(evidence_origin(row))
+                elif is_token_context:
+                    reverse_only = False
             else:
                 reverse_only = False
+        agent_linked_token_ids = {
+            token_id
+            for token_id, origins in agent_link_origins.items()
+            if len(origins) >= min_reverse_sources
+        }
         official_chain_hints = extract_chain_hints(
             "\n".join(
                 f"{row['title']} {row['text']}"
@@ -1169,7 +1343,11 @@ class CandidateEvaluator:
         # Exact CA evidence is queried first, only on address-compatible chains.
         exact_queries: list[tuple[str, str]] = []
         for address in list(address_groups["evm"])[:8]:
-            exact_queries.extend((chain, address) for chain in ("bsc", "base", "ethereum") if chain in allowed_chains)
+            exact_queries.extend(
+                (chain, address)
+                for chain in ("bsc", "base", "ethereum", "robinhood")
+                if chain in allowed_chains
+            )
         for address in list(address_groups["solana"])[:8]:
             if "solana" in allowed_chains:
                 exact_queries.append(("solana", address))
@@ -1219,6 +1397,9 @@ class CandidateEvaluator:
             if token.chain.lower() not in allowed_chains:
                 evaluated_candidates[token.token_id]["filter_reason"] = "chain_not_allowed"
                 continue
+            if not DexScreenerClient.metadata_is_usable(token.name, token.symbol):
+                evaluated_candidates[token.token_id]["filter_reason"] = "malformed_token_metadata"
+                continue
             agent_linked = token.token_id in agent_linked_token_ids
             if not direct_addresses and not agent_linked and not is_distinctive_token_name(token.name or token.symbol):
                 evaluated_candidates[token.token_id]["filter_reason"] = "non_distinctive_token_name"
@@ -1230,10 +1411,9 @@ class CandidateEvaluator:
                 evaluated_candidates[token.token_id]["filter_reason"] = "official_chain_mismatch"
                 continue
             if reverse_only and not direct_addresses:
-                min_sources = int(self.config.get("min_reverse_independent_sources", 2))
                 if (
                     token.token_id not in reverse_token_ids
-                    or source_count < min_sources
+                    or source_count < min_reverse_sources
                     or not is_distinctive_token_name(token.name or token.symbol)
                 ):
                     reverse_bootstrap_rejected = True
@@ -1343,6 +1523,40 @@ class CandidateEvaluator:
         min_score = float(self.config.get("min_candidate_score", 58.0))
         min_margin = float(self.config.get("min_canonical_margin", 4.0))
         margin = raw_margin
+        route_probe_id: int | None = None
+        route_probe_attempted = False
+        source_snapshot_id = evaluated_candidates.get(token.token_id, {}).get("snapshot_id")
+        total_tx = (snap.buys_5m or 0) + (snap.sells_5m or 0)
+        min_tx = int(getattr(self.safety, "config", {}).get("min_5m_transactions", 8))
+        token_specific_relation = (
+            token.address.lower() in {value.lower() for value in direct_addresses}
+            or token.token_id in agent_linked_token_ids
+        )
+        route_probe_applicable = (
+            source_snapshot_id is not None
+            and snap.liquidity_usd is None
+            and self._is_pump_candidate(token, snap)
+            and token_specific_relation
+            and total_tx >= min_tx
+            and score >= min_score
+            and (len(ranked) == 1 or raw_margin >= min_margin)
+        )
+        if route_probe_applicable:
+            route_probe_attempted = True
+            route_probe_id = await self._probe_event_context_route(
+                event_id=event.id,
+                token=token,
+                source_snapshot_id=int(source_snapshot_id),
+                anchor_at=utcnow(),
+            )
+            if route_probe_id is not None:
+                reasons = [
+                    *reasons,
+                    f"liquidity=unknown_route_capacity={float(self.paper_config.get('max_position_usd', 35.0)):.2f}",
+                    f"jupiter_capacity_probe_id={route_probe_id}",
+                    "jupiter_two_way_capacity_probe_only",
+                ]
+                ranked[0] = (score, match, token, snap, reasons)
         if agent_resolution:
             preferred, confidence, tier = agent_resolution
             reasons = [
@@ -1352,7 +1566,13 @@ class CandidateEvaluator:
                 f"raw_canonical_margin={raw_margin:.3f}",
             ]
         if score < min_score:
-            decision = CandidateDecision(event.id, token.token_id, "WAIT", score, match, margin, reasons, ["candidate_score_too_low"])
+            rejected_reasons = ["candidate_score_too_low"]
+            if len(ranked) > 1 and margin < min_margin:
+                rejected_reasons.append("canonical_token_ambiguous")
+            decision = CandidateDecision(
+                event.id, token.token_id, "WAIT", score, match, margin, reasons,
+                rejected_reasons, route_probe_id=route_probe_id,
+            )
             self._persist_ranking(
                 event,
                 evaluated_at=final_decision_at,
@@ -1375,12 +1595,30 @@ class CandidateEvaluator:
                 evaluated_candidates=evaluated_candidates,
             )
             return decision
-        ok, rejected_reasons = await self.safety.check(snap)
+        if route_probe_attempted and route_probe_id is None:
+            decision = CandidateDecision(
+                event.id, token.token_id, "WAIT", score, match, margin, reasons,
+                ["execution_route_unavailable"],
+            )
+            self._persist_ranking(
+                event,
+                evaluated_at=final_decision_at,
+                ranked=ranked,
+                decision=decision,
+                raw_canonical_margin=raw_margin,
+                tie_break=tie_break,
+                evaluated_candidates=evaluated_candidates,
+            )
+            return decision
+        if route_probe_id is None:
+            ok, rejected_reasons = await self.safety.check(snap)
+        else:
+            ok, rejected_reasons = await self.safety.check(snap, executable_route=True)
         # Persist the post-enrichment snapshot so an audit can see the exact
         # Honeypot/RugCheck information used by this decision.
         evaluated_candidates[token.token_id]["snapshot_id"] = self.store.add_snapshot(snap)
         if not ok:
-            decision = CandidateDecision(event.id, token.token_id, "REJECT", score, match, margin, reasons, rejected_reasons)
+            decision = CandidateDecision(event.id, token.token_id, "REJECT", score, match, margin, reasons, rejected_reasons, route_probe_id=route_probe_id)
             self._persist_ranking(
                 event,
                 evaluated_at=final_decision_at,
@@ -1392,7 +1630,7 @@ class CandidateEvaluator:
                 evaluated_candidates=evaluated_candidates,
             )
             return decision
-        decision = CandidateDecision(event.id, token.token_id, "CANDIDATE", score, match, margin, reasons)
+        decision = CandidateDecision(event.id, token.token_id, "CANDIDATE", score, match, margin, reasons, route_probe_id=route_probe_id)
         self._persist_ranking(
             event,
             evaluated_at=final_decision_at,
@@ -1419,17 +1657,33 @@ class PaperPolicy:
         snapshot: TokenSnapshot,
         score: float,
         daily_exposure_usd: float = 0.0,
+        executable_capacity_usd: float | None = None,
     ) -> float:
         cfg = self.config
-        if open_count >= int(cfg.get("max_open_positions", 4)):
+        max_open_positions = int(cfg.get("max_open_positions", 0))
+        if max_open_positions > 0 and open_count >= max_open_positions:
             return 0.0
         stop = abs(float(cfg.get("stop_loss_pct", -0.35)))
         risk_budget = equity_usd * float(cfg.get("risk_per_trade_pct", 0.006))
         by_risk = risk_budget / max(stop, 0.05)
         by_cash = cash_usd * float(cfg.get("max_cash_fraction", 0.12))
         by_token = float(cfg.get("max_position_usd", 250.0))
-        by_liquidity = (snapshot.liquidity_usd or 0.0) * float(cfg.get("max_liquidity_impact_pct", 0.003))
+        by_liquidity = (
+            float(executable_capacity_usd)
+            if snapshot.liquidity_usd is None and executable_capacity_usd is not None
+            else (snapshot.liquidity_usd or 0.0) * float(cfg.get("max_liquidity_impact_pct", 0.003))
+        )
         by_daily = max(0.0, float(cfg.get("max_daily_new_exposure_usd", math.inf)) - daily_exposure_usd)
+        fixed_notional = float(cfg.get("fixed_position_usd", 0) or 0)
+        if fixed_notional > 0:
+            fixed_fee = max(0.0, float(cfg.get("fixed_fee_usd_each_side", 0) or 0))
+            hard_capacity = min(
+                max(0.0, cash_usd - fixed_fee),
+                by_token,
+                by_liquidity,
+                by_daily,
+            )
+            return round(fixed_notional, 2) if fixed_notional <= hard_capacity else 0.0
         confidence = min(1.0, max(0.35, (score - 45.0) / 45.0))
         amount = min(by_risk, by_cash, by_token, by_liquidity, by_daily) * confidence
         minimum = float(cfg.get("min_position_usd", 20.0))

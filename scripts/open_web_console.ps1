@@ -1,3 +1,7 @@
+param(
+  [switch]$NoOpen
+)
+
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $runner = Join-Path $PSScriptRoot "run_web.ps1"
@@ -13,7 +17,15 @@ function Test-WebConsole {
   }
 }
 
-if (-not (Test-WebConsole)) {
+function Test-LoopbackListener {
+  return [bool](Get-NetTCPConnection `
+    -LocalAddress "127.0.0.1" `
+    -LocalPort 8787 `
+    -State Listen `
+    -ErrorAction SilentlyContinue)
+}
+
+if (-not (Test-WebConsole) -and -not (Test-LoopbackListener)) {
   Start-Process `
     -FilePath "powershell.exe" `
     -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$runner`"" `
@@ -33,4 +45,6 @@ if (-not (Test-WebConsole)) {
   }
 }
 
-Start-Process $siteUrl
+if (-not $NoOpen) {
+  Start-Process $siteUrl
+}

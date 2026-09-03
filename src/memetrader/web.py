@@ -41,6 +41,9 @@ from .autonomous_search import (
     TREND_WATCH_SELECTION_KEY,
     TREND_RESULT_KEY,
     TREND_RUN_KEY,
+    _canonical_social_url,
+    _exact_watch_account_for_url,
+    _x_post_published_at_from_url,
 )
 from .collectors import (
     FeedRedirectError,
@@ -185,11 +188,36 @@ EXPECTED_TABLES = {
     "information_first_ilg_registrations",
     "information_first_ilg_cohorts",
     "information_first_ilg_outcomes",
+    "kol_token_addressability_registrations",
+    "kol_token_addressability_admission_attempts",
+    "kol_token_addressability_cohorts",
+    "kol_token_addressability_milestones",
+    "kol_token_addressability_ambiguities",
+    "kol_token_addressability_route_registrations",
+    "kol_token_addressability_route_attempts",
+    "kol_token_addressability_route_results",
+    "kol_token_addressability_confirmation_results",
     "kv",
     "observations",
     "paper_account",
     "paper_account_snapshots",
     "paper_execution_attempts",
+    "onchain_paper_exploration_registrations",
+    "onchain_paper_exploration_account",
+    "onchain_paper_exploration_positions",
+    "onchain_paper_exploration_trades",
+    "onchain_paper_exit_challenger_registrations",
+    "onchain_paper_exit_challenger_positions",
+    "onchain_paper_exit_challenger_marks",
+    "onchain_paper_exit_challenger_quote_attempts",
+    "onchain_paper_exit_challenger_quote_results",
+    "onchain_paper_exit_challenger_account_snapshots",
+    "onchain_paper_narrative_runner_registrations",
+    "onchain_paper_narrative_runner_account",
+    "onchain_paper_narrative_runner_positions",
+    "onchain_paper_narrative_runner_trades",
+    "onchain_paper_narrative_context_registrations",
+    "onchain_paper_narrative_context_seeds",
     "paper_source_attribution_attempts",
     "positions",
     "source_health",
@@ -231,6 +259,9 @@ EXPECTED_TABLES = {
     "onchain_only_jupiter_quote_registrations",
     "onchain_only_jupiter_quote_attempts",
     "onchain_only_jupiter_quote_results",
+    "onchain_only_evm_route_quote_registrations",
+    "onchain_only_evm_route_quote_attempts",
+    "onchain_only_evm_route_quote_results",
     "token_snapshots",
     "tokens",
     "trades",
@@ -396,16 +427,18 @@ SETTING_SPECS: dict[str, tuple[str, float, float]] = {
     "safety.max_tax_pct": ("float", 0, 100),
     "safety.max_solana_risk_score": ("float", 0, 100),
     "paper.risk_per_trade_pct": ("float", 0.0001, 0.1),
+    "paper.fixed_position_usd": ("float", 0, 1_000_000),
     "paper.max_position_usd": ("float", 0, 1_000_000),
     "paper.min_position_usd": ("float", 0, 1_000_000),
     "paper.max_cash_fraction": ("float", 0, 1),
     "paper.max_liquidity_impact_pct": ("float", 0, 0.1),
     "paper.fee_bps": ("float", 0, 5000),
     "paper.pump_swap_fee_bps": ("float", 0, 5000),
+    "paper.fixed_fee_usd_each_side": ("float", 0, 10_000),
     "paper.slippage_rate": ("float", 0, 0.4999),
     "paper.max_quote_age_seconds": ("float", 1, 600),
     "paper.max_daily_new_exposure_usd": ("float", 0, 10_000_000),
-    "paper.max_open_positions": ("int", 1, 100),
+    "paper.max_open_positions": ("int", 0, 100),
     "paper.stop_loss_pct": ("float", -0.95, -0.0001),
     "paper.trailing_activate_pct": ("float", 0, 20),
     "paper.trailing_drawdown_pct": ("float", 0.0001, 0.9999),
@@ -435,6 +468,7 @@ SETTING_SPECS: dict[str, tuple[str, float, float]] = {
     "autonomous_search.source_discovery_token_reserve_per_call": ("int", 0, 10_000_000),
     "autonomous_search.context_global_cooldown_minutes": ("float", 1, 1440),
     "autonomous_search.context_token_cooldown_minutes": ("float", 1, 10080),
+    "autonomous_search.context_no_context_reuse_minutes": ("float", 1, 720),
     "autonomous_search.context_search_daily_limit": ("int", 0, 1000),
     "autonomous_search.context_min_momentum_score": ("float", 0, 100),
     "autonomous_search.context_direct_trigger_enabled": ("bool", 0, 1),
@@ -1524,25 +1558,111 @@ class WebData:
         enabled = bool(bridge.get("enabled", True))
         host = str(bridge.get("host") or "127.0.0.1")
         port = int(bridge.get("port") or 8765)
+        latest_heartbeat_at = None
+        latest_extension_version = None
+        latest_observation_at = None
+        with self.connect() as connection:
+            if connection is not None and self._table_exists(connection, "kv"):
+                for row in connection.execute(
+                    "SELECT value_json FROM kv WHERE key LIKE 'browser_platform_heartbeat:%'"
+                ):
+                    value = _json_load(row["value_json"], {})
+                    observed_at = value.get("observed_at") if isinstance(value, dict) else None
+                    if observed_at and (latest_heartbeat_at is None or str(observed_at) > latest_heartbeat_at):
+                        latest_heartbeat_at = str(observed_at)
+                        latest_extension_version = value.get("extension_version") or None
+            if connection is not None and self._table_exists(connection, "observations"):
+                row = connection.execute(
+                    "SELECT observed_at FROM observations "
+                    "WHERE availability_proof='local_receive' "
+                    "AND json_extract(raw_json,'$.browser') IS NOT NULL "
+                    "ORDER BY observed_at DESC,id DESC LIMIT 1"
+                ).fetchone()
+                latest_observation_at = str(row["observed_at"]) if row is not None else None
+        heartbeat_age = _minutes_since(latest_heartbeat_at)
+        observation_age = _minutes_since(latest_observation_at)
+        latest_activity_at = max(
+            (value for value in (latest_heartbeat_at, latest_observation_at) if value),
+            default=None,
+        )
+        activity_age = _minutes_since(latest_activity_at)
+        stale_after = float((self.config.get("source_stale_minutes") or {}).get("browser", 3))
+        collector_status = (
+            "not_observed"
+            if latest_activity_at is None
+            else ("active" if activity_age is not None and activity_age <= stale_after else "stale")
+        )
+        collector = {
+            "collector_active": collector_status == "active",
+            "collector_status": collector_status,
+            "latest_collector_heartbeat_at": latest_heartbeat_at,
+            "latest_collector_observation_at": latest_observation_at,
+            "latest_collector_activity_at": latest_activity_at,
+            "latest_collector_activity_source": (
+                "browser_observation"
+                if latest_observation_at == latest_activity_at
+                else "heartbeat"
+                if latest_heartbeat_at == latest_activity_at
+                else None
+            ),
+            "collector_extension_version": latest_extension_version,
+            "collector_heartbeat_minutes": heartbeat_age,
+            "collector_observation_minutes": observation_age,
+            "collector_activity_minutes": activity_age,
+            "collector_stale_after_minutes": stale_after,
+        }
         if not enabled:
-            return {"enabled": False, "reachable": None, "host": host, "port": port}
+            return {"enabled": False, "reachable": None, "status": "disabled", "host": host, "port": port, **collector}
         if not _is_loopback(host):
-            return {"enabled": True, "reachable": False, "host": host, "port": port, "reason": "non_loopback"}
+            return {"enabled": True, "reachable": False, "status": "error", "host": host, "port": port, "reason": "non_loopback", **collector}
         try:
-            connection = http.client.HTTPConnection(host, port, timeout=0.5)
+            connection = http.client.HTTPConnection(host, port, timeout=3.0)
             connection.request("GET", "/health")
             response = connection.getresponse()
             body = response.read(4096)
             connection.close()
             payload = _json_load(body.decode("utf-8", errors="replace"), {})
+            reachable = response.status == 200 and bool(payload.get("ok"))
+            status = "error" if not reachable else ("healthy" if collector_status == "active" else collector_status)
             return {
                 "enabled": True,
-                "reachable": response.status == 200 and bool(payload.get("ok")),
+                "reachable": reachable,
+                "status": status,
                 "host": host,
                 "port": port,
+                "reachability_basis": "health_endpoint",
+                "detail": (
+                    "Bridge service and browser collector are active"
+                    if status == "healthy"
+                    else (
+                        "Bridge service is reachable but no browser collector heartbeat has been observed"
+                        if status == "not_observed"
+                        else "Bridge service is reachable but the browser collector heartbeat is stale"
+                    )
+                ),
+                **collector,
             }
         except (OSError, TimeoutError, http.client.HTTPException):
-            return {"enabled": True, "reachable": False, "host": host, "port": port}
+            if collector_status == "active":
+                return {
+                    "enabled": True,
+                    "reachable": True,
+                    "status": "healthy",
+                    "host": host,
+                    "port": port,
+                    "reachability_basis": "recent_collector_activity",
+                    "detail": "Fresh browser data reached the Bridge while its health probe was busy",
+                    **collector,
+                }
+            return {
+                "enabled": True,
+                "reachable": False,
+                "status": "error",
+                "host": host,
+                "port": port,
+                "reachability_basis": "health_endpoint_failed",
+                **collector,
+            }
 
     @staticmethod
     def _scheduled_task_health() -> dict[str, Any]:
@@ -1667,7 +1787,10 @@ class WebData:
                     SELECT MAX(ingested_at) AS latest,
                            SUM(CASE WHEN ingested_at>=? THEN 1 ELSE 0 END) AS count_60s,
                            SUM(CASE WHEN ingested_at>=? THEN 1 ELSE 0 END) AS count_5m
-                    FROM observations WHERE {live_information}
+                    FROM (
+                        SELECT ingested_at,source_kind,capture_phase
+                        FROM observations ORDER BY id DESC LIMIT 20000
+                    ) WHERE {live_information}
                     """,
                     (cutoffs[60], cutoffs[300]),
                 ).fetchone()
@@ -1679,19 +1802,22 @@ class WebData:
                 )
             token_times: list[str] = []
             if connection is not None and self._table_exists(connection, "tokens"):
+                latest_row = connection.execute(
+                    "SELECT last_seen_at AS latest FROM tokens "
+                    "ORDER BY last_seen_at DESC LIMIT 1"
+                ).fetchone()
                 row = connection.execute(
                     """
-                    SELECT MAX(last_seen_at) AS latest,
-                           SUM(CASE WHEN first_seen_at>=? THEN 1 ELSE 0 END) AS new_60s,
+                    SELECT SUM(CASE WHEN first_seen_at>=? THEN 1 ELSE 0 END) AS new_60s,
                            SUM(CASE WHEN first_seen_at>=? THEN 1 ELSE 0 END) AS new_5m,
                            SUM(CASE WHEN last_seen_at>=? THEN 1 ELSE 0 END) AS updated_60s,
                            SUM(CASE WHEN last_seen_at>=? THEN 1 ELSE 0 END) AS updated_5m
-                    FROM tokens
+                    FROM tokens WHERE last_seen_at>=?
                     """,
-                    (cutoffs[60], cutoffs[300], cutoffs[60], cutoffs[300]),
+                    (cutoffs[60], cutoffs[300], cutoffs[60], cutoffs[300], cutoffs[300]),
                 ).fetchone()
-                if row and row["latest"]:
-                    token_times.append(str(row["latest"]))
+                if latest_row and latest_row["latest"]:
+                    token_times.append(str(latest_row["latest"]))
                 token_counts["new_tokens_60s"] = int(row["new_60s"] or 0)
                 token_counts["new_tokens_5m"] = int(row["new_5m"] or 0)
                 token_counts["token_updates_60s"] = int(row["updated_60s"] or 0)
@@ -1702,7 +1828,10 @@ class WebData:
                     SELECT MAX(observed_at) AS latest,
                            SUM(CASE WHEN observed_at>=? THEN 1 ELSE 0 END) AS count_60s,
                            SUM(CASE WHEN observed_at>=? THEN 1 ELSE 0 END) AS count_5m
-                    FROM token_snapshots
+                    FROM (
+                        SELECT observed_at FROM token_snapshots
+                        ORDER BY id DESC LIMIT 20000
+                    )
                     """,
                     (cutoffs[60], cutoffs[300]),
                 ).fetchone()
@@ -2003,6 +2132,9 @@ class WebData:
             }
         paper = self.config.get("paper") or {}
         max_quote_age_seconds = float(paper.get("max_quote_age_seconds", 45))
+        max_liquidity_impact_pct = max(
+            0.0, float(paper.get("max_liquidity_impact_pct", 0.0025))
+        )
         valuation_at = utcnow()
         tiers = list(paper.get("take_profit_tiers") or [])
         output: list[dict[str, Any]] = []
@@ -2017,9 +2149,19 @@ class WebData:
             quote_stale = quote_age_seconds is None or quote_age_seconds > max_quote_age_seconds
             quantity = float(row["quantity"])
             remaining_cost = float(row["remaining_cost_usd"])
-            market_value = (
+            liquidity = snapshot.get("liquidity_usd") if snapshot else None
+            capacity = (
+                max(0.0, float(liquidity)) * max_liquidity_impact_pct
+                if liquidity is not None else None
+            )
+            headline_value = (
                 quantity * float(current_price)
                 if current_price is not None and not quote_stale else None
+            )
+            market_value = (
+                min(headline_value, capacity)
+                if headline_value is not None and capacity is not None and capacity > 0
+                else None
             )
             unrealized = market_value - remaining_cost if market_value is not None else None
             unrealized_pct = unrealized / remaining_cost if unrealized is not None and remaining_cost else None
@@ -2047,6 +2189,15 @@ class WebData:
                     "quote_as_of": snapshot.get("observed_at") if snapshot else None,
                     "quote_age_seconds": quote_age_seconds,
                     "quote_stale": quote_stale,
+                    "liquidity_usd": liquidity,
+                    "mark_liquidity_capped": bool(
+                        market_value is not None and headline_value is not None
+                        and market_value < headline_value
+                    ),
+                    "valuation_status": (
+                        "indicative_dex_mark_capped_by_liquidity"
+                        if market_value is not None else "unpriced_zero_or_unknown_liquidity"
+                    ),
                     "highest_price": highest_price,
                     "cost_usd": float(row["cost_usd"]),
                     "remaining_cost_usd": remaining_cost,
@@ -2075,16 +2226,17 @@ class WebData:
         return output
 
     def _paper_account_curve(
-        self, connection: sqlite3.Connection, *, limit: int = 288,
+        self, connection: sqlite3.Connection, *, limit: int = 288, since: str | None = None,
     ) -> list[dict[str, Any]]:
         if not self._table_exists(connection, "paper_account_snapshots"):
             return []
-        rows = list(
-            connection.execute(
-                "SELECT * FROM paper_account_snapshots ORDER BY recorded_at DESC LIMIT ?",
-                (max(2, min(2016, int(limit))),),
-            )
-        )
+        rows = list(connection.execute(
+            "SELECT * FROM paper_account_snapshots "
+            + ("WHERE recorded_at>=? " if since else "")
+            + "ORDER BY recorded_at DESC LIMIT ?",
+            ((since, max(2, min(2016, int(limit)))) if since
+             else (max(2, min(2016, int(limit))),)),
+        ))
         return [
             {
                 "recorded_at": row["recorded_at"],
@@ -2100,11 +2252,17 @@ class WebData:
             for row in reversed(rows)
         ]
 
-    def _paper_execution_costs(self, connection: sqlite3.Connection) -> dict[str, Any]:
+    def _paper_execution_costs(
+        self, connection: sqlite3.Connection, *, since: str | None = None,
+    ) -> dict[str, Any]:
         paper = self.config.get("paper") or {}
         output = {
-            "model": "fixed_adverse_quote_adjustment_plus_fee_and_observed_tax",
+            "model": "fixed_adverse_quote_adjustment_plus_flat_fee_and_observed_tax",
             "configured_slippage_rate": float(paper.get("slippage_rate", 0)),
+            "configured_fixed_position_usd": float(paper.get("fixed_position_usd", 0)),
+            "configured_fixed_fee_usd_each_side": float(
+                paper.get("fixed_fee_usd_each_side", 0)
+            ),
             "configured_fee_bps": float(paper.get("fee_bps", 0)),
             "pump_swap_fee_bps": float(paper.get("pump_swap_fee_bps", paper.get("fee_bps", 0))),
             "max_quote_age_seconds": float(paper.get("max_quote_age_seconds", 45)),
@@ -2120,10 +2278,17 @@ class WebData:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(trades)")}
         if "slippage_usd" not in columns:
             output["legacy_cost_unknown_trade_count"] = int(
-                connection.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
+                connection.execute(
+                    "SELECT COUNT(*) FROM trades" + (" WHERE created_at>=?" if since else ""),
+                    ((since,) if since else ()),
+                ).fetchone()[0]
             )
             output["total_fee_usd"] = float(
-                connection.execute("SELECT COALESCE(SUM(fee_usd),0) FROM trades").fetchone()[0]
+                connection.execute(
+                    "SELECT COALESCE(SUM(fee_usd),0) FROM trades"
+                    + (" WHERE created_at>=?" if since else ""),
+                    ((since,) if since else ()),
+                ).fetchone()[0]
             )
             return output
         row = connection.execute(
@@ -2134,7 +2299,8 @@ class WebData:
                    SUM(CASE WHEN slippage_usd IS NOT NULL THEN 1 ELSE 0 END) AS recorded,
                    SUM(CASE WHEN slippage_usd IS NULL THEN 1 ELSE 0 END) AS legacy
             FROM trades
-            """
+            """ + (" WHERE created_at>=?" if since else ""),
+            ((since,) if since else ()),
         ).fetchone()
         output.update(
             {
@@ -3859,6 +4025,13 @@ class WebData:
                 row, snapshot, links, source_links, hydration, context_assessment, context_admission
             )
             payload["attached_links"] = source_links
+            payload["creator_launch_risk"] = (
+                Store.creator_launch_risk_for_token_from_connection(connection, token_id)
+                if self._table_exists(connection, "token_launch_facts")
+                and self._table_exists(connection, "creator_launch_risk_cohorts")
+                and self._table_exists(connection, "creator_launch_risk_registrations")
+                else None
+            )
             if self._table_exists(connection, "token_context_assessments"):
                 payload["context_assessment_count"] = int(
                     connection.execute(
@@ -4201,8 +4374,44 @@ class WebData:
         daily_exposure: float | None = None
         account_curve: list[dict[str, Any]] = []
         execution_costs: dict[str, Any] = {}
+        fair_epoch: dict[str, Any] | None = None
+        fair_started_at: str | None = None
+        onchain_exploration: dict[str, Any] = {
+            "status": "not_enabled", "simulated": True, "live": False,
+            "account": None, "positions": [], "trades": [],
+        }
+        onchain_exit_challenger: dict[str, Any] = {
+            "status": "not_enabled", "simulated": True, "live": False,
+            "account": None, "positions": [], "trades": [], "marks": [],
+        }
+        narrative_hold: dict[str, Any] = {
+            "status": "not_enabled", "simulated": True, "live": False,
+            "account": {}, "positions": [], "trades": [],
+            "pairing_summary": {"status": "not_enabled"},
+        }
+        event_route_execution: dict[str, Any] = {
+            "status": "not_enabled", "version": "", "attempts": [], "summary": {}
+        }
+        evm_route_research: dict[str, Any] = {
+            "status": "not_observed",
+            "summary": {"eligible_cohorts": 0, "attempts": 0, "results": 0, "quoted": 0},
+            "chains": [], "recent": [],
+            "fee_completeness": "quote_only_no_full_transaction_network_fee",
+            "economic_status": "cost_unknown",
+            "execution": False, "pnl": False,
+            "decision_eligible": False, "affects": "none",
+        }
         with self.connect() as connection:
+            ingestion_activity = self.ingestion_activity(connection)
             if connection is not None:
+                if self._table_exists(connection, "simulation_fair_start_epochs"):
+                    epoch_row = connection.execute(
+                        "SELECT * FROM simulation_fair_start_epochs "
+                        "ORDER BY started_at DESC LIMIT 1"
+                    ).fetchone()
+                    if epoch_row is not None:
+                        fair_epoch = dict(epoch_row)
+                        fair_started_at = str(epoch_row["started_at"])
                 if self._table_exists(connection, "paper_account"):
                     row = connection.execute("SELECT * FROM paper_account WHERE singleton=1").fetchone()
                     if row:
@@ -4214,6 +4423,8 @@ class WebData:
                 positions = self._position_payloads(connection)
                 if self._table_exists(connection, "trades"):
                     start = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+                    if fair_started_at and parse_time(fair_started_at) > start:
+                        start = parse_time(fair_started_at)
                     exposure_row = connection.execute(
                         "SELECT COALESCE(SUM(gross_usd),0) AS value FROM trades WHERE side='BUY' AND created_at>=?",
                         (iso(start),),
@@ -4268,7 +4479,12 @@ class WebData:
                             "created_at": row["created_at"],
                             "simulated": True,
                         }
-                        for row in connection.execute("SELECT * FROM trades ORDER BY id DESC LIMIT ?", (trade_limit,))
+                        for row in connection.execute(
+                            "SELECT * FROM trades "
+                            + ("WHERE created_at>=? " if fair_started_at else "")
+                            + "ORDER BY id DESC LIMIT ?",
+                            ((fair_started_at, trade_limit) if fair_started_at else (trade_limit,)),
+                        )
                     ]
                 if self._table_exists(connection, "paper_execution_attempts"):
                     execution_attempts = [
@@ -4288,11 +4504,46 @@ class WebData:
                             "simulated": True,
                         }
                         for row in connection.execute(
-                            "SELECT * FROM paper_execution_attempts ORDER BY id DESC LIMIT 100"
+                            "SELECT * FROM paper_execution_attempts "
+                            + ("WHERE requested_at>=? " if fair_started_at else "")
+                            + "ORDER BY id DESC LIMIT 100",
+                            ((fair_started_at,) if fair_started_at else ()),
                         )
                     ]
-                account_curve = self._paper_account_curve(connection)
-                execution_costs = self._paper_execution_costs(connection)
+                account_curve = self._paper_account_curve(connection, since=fair_started_at)
+                execution_costs = self._paper_execution_costs(
+                    connection, since=fair_started_at
+                )
+                onchain_exploration = Store.onchain_paper_exploration_summary_from_connection(
+                    connection,
+                    trade_limit=trade_limit,
+                    max_liquidity_impact_pct=float(
+                        (self.config.get("paper") or {}).get(
+                            "max_liquidity_impact_pct", 0.0025
+                        )
+                    ),
+                )
+                onchain_exit_challenger = (
+                    Store.onchain_paper_exit_challenger_summary_from_connection(
+                        connection, trade_limit=trade_limit
+                    )
+                )
+                narrative_hold = (
+                    Store.onchain_paper_narrative_runner_summary_from_connection(
+                        connection, trade_limit=trade_limit
+                    )
+                )
+                if self._table_exists(
+                    connection, "event_route_execution_challenger_registrations"
+                ):
+                    event_route_execution = (
+                        Store.event_route_execution_challenger_summary_from_connection(
+                            connection, limit=min(trade_limit, 100)
+                        )
+                    )
+                evm_route_research = (
+                    Store.onchain_only_evm_route_quote_summary_from_connection(connection)
+                )
         missing = sum(1 for row in positions if row["market_value_usd"] is None)
         known_marks = sum(float(row["market_value_usd"] or 0) for row in positions if row["market_value_usd"] is not None)
         account["known_marked_value_usd"] = known_marks
@@ -4302,6 +4553,12 @@ class WebData:
         )
         account["unrealized_pnl_usd"] = (
             sum(float(row["unrealized_pnl_usd"]) for row in positions) if not missing else None
+        )
+        account["total_pnl_usd"] = (
+            float(account["realized_pnl_usd"]) + float(account["unrealized_pnl_usd"])
+            if account["realized_pnl_usd"] is not None
+            and account["unrealized_pnl_usd"] is not None
+            else None
         )
         account["daily_exposure_usd"] = daily_exposure
         account["exposure_usd"] = daily_exposure
@@ -4324,11 +4581,70 @@ class WebData:
             "mode": "paper",
             "simulated": True,
             "live": {"enabled": False, "locked": True, "available": False},
+            "fair_comparison": fair_epoch,
+            "strategy_model": {
+                "version": "three-accounts-two-entry-logics/v1",
+                "cash_ledgers_are_additive": False,
+                "chain_execution_status": [
+                    {
+                        "chain": "solana",
+                        "discovery": "active",
+                        "paper": "amount_specific_jupiter_strategy2",
+                        "cost_basis": "minimum_output_plus_estimated_network_fee",
+                    },
+                    {
+                        "chain": "bsc",
+                        "discovery": "active",
+                        "paper": "disabled_until_route_and_cost_complete",
+                        "cost_basis": "quoter_research_only_network_fee_unknown",
+                    },
+                    {
+                        "chain": "base",
+                        "discovery": "research_only",
+                        "paper": "disabled",
+                        "cost_basis": "amount_specific_route_gas_and_l1_fee_pending",
+                    },
+                    {
+                        "chain": "robinhood",
+                        "discovery": "research_only",
+                        "paper": "disabled",
+                        "cost_basis": "stock_token_filter_route_gas_and_l1_fee_pending",
+                    },
+                ],
+                "strategies": [
+                    {
+                        "id": "information_plus_token",
+                        "entry_basis": ["information", "token"],
+                        "account_key": "account",
+                        "execution_challenger_key": "event_route_execution",
+                    },
+                    {
+                        "id": "token_only",
+                        "entry_basis": ["token"],
+                        "account_key": "onchain_exploration",
+                        "exit_comparison_key": "onchain_exit_challenger",
+                    },
+                    {
+                        "id": "narrative_hold",
+                        "entry_basis": ["token"],
+                        "account_key": "narrative_hold",
+                        "entry_source_strategy_id": "token_only",
+                        "entry_pairing": "exact",
+                        "agent_role": "post_entry_narrative_evidence_only",
+                    },
+                ],
+            },
             "account": account,
             "summary": account,
             "positions": positions,
             "trades": trades,
             "execution_attempts": execution_attempts,
+            "onchain_exploration": onchain_exploration,
+            "onchain_exit_challenger": onchain_exit_challenger,
+            "narrative_hold": narrative_hold,
+            "event_route_execution": event_route_execution,
+            "evm_route_research": evm_route_research,
+            "ingestion_activity": ingestion_activity,
             "as_of": iso(),
         }
 
@@ -5343,6 +5659,7 @@ class WebData:
                     "minutes_since_heartbeat": heartbeat_age,
                     "visible": heartbeat.get("visible"),
                     "selector_count": int(heartbeat.get("selector_count") or 0),
+                    "extension_version": heartbeat.get("extension_version"),
                     "page_url": _safe_url(heartbeat.get("page_url")),
                     "contains_credentials": False,
                 }
@@ -5491,6 +5808,17 @@ class WebData:
             "maturity": {"mature": False},
             "decision_eligible": False, "affects": "none",
         }
+        solana_holder_shadow = {
+            "status": "not_registered",
+            "version": Store.SOLANA_HOLDER_SHADOW_VERSION,
+            "definition": Store._solana_holder_shadow_definition(),
+            "summary": {
+                "cohorts": 0, "expected_results": 0, "results": 0,
+                "observed": 0, "error": 0, "unavailable": 0, "pending": 0,
+            },
+            "horizons": [], "recent": [],
+            "decision_eligible": False, "affects": "none",
+        }
         onchain_only_jupiter_quote = {
             "status": "not_observed",
             "version": Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
@@ -5504,6 +5832,18 @@ class WebData:
             "horizons": [], "statuses": [], "recent": [],
             "maturity": {"mature": False},
             "decision_eligible": False, "affects": "none",
+        }
+        kol_token_addressability = {
+            "status": "not_observed",
+            "version": Store.KOL_TOKEN_ADDRESSABILITY_VERSION,
+            "route_version": Store.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION,
+            "summary": {
+                "admission_attempts": 0, "cohorts": 0, "milestones": 0,
+                "ambiguities": 0, "route_attempts": 0, "route_results": 0,
+                "confirmation_results": 0,
+            },
+            "admission_reasons": {}, "route_statuses": {},
+            "confirmation_statuses": {}, "decision_eligible": False, "affects": "none",
         }
         jupiter_quote = {
             "status": "not_observed",
@@ -5628,6 +5968,9 @@ class WebData:
                 )
                 onchain_only_shadow = Store.onchain_only_shadow_summary_from_connection(
                     connection
+                )
+                kol_token_addressability = (
+                    Store.kol_token_addressability_summary_from_connection(connection)
                 )
                 raw_onchain_jupiter = (
                     Store.onchain_only_jupiter_quote_summary_from_connection(connection)
@@ -5874,6 +6217,9 @@ class WebData:
                 token_universe_funnel = Store.token_universe_funnel_summary_from_connection(
                     connection
                 )
+                solana_holder_shadow = Store.solana_holder_shadow_summary_from_connection(
+                    connection
+                )
                 event_lookup_name_screen = (
                     Store.token_event_lookup_name_screen_summary_from_connection(connection)
                 )
@@ -5994,7 +6340,9 @@ class WebData:
             "token_universe_outcome_quality": outcome_quality,
             "token_universe_fixed_target_execution": fixed_target_execution,
             "onchain_only_shadow": onchain_only_shadow,
+            "solana_holder_shadow": solana_holder_shadow,
             "onchain_only_jupiter_quote": onchain_only_jupiter_quote,
+            "kol_token_addressability": kol_token_addressability,
             "token_universe_jupiter_quote": jupiter_quote,
             "token_universe_funnel": token_universe_funnel,
             "token_event_lookup_name_screen": event_lookup_name_screen,
@@ -6099,8 +6447,111 @@ class WebData:
 
     def watchlist(self) -> dict[str, Any]:
         value = self.console_settings()
+        priority_post_requests: list[dict[str, Any]] = []
+        priority_now = utcnow()
+        priority_max_age = timedelta(minutes=int(
+            (self.config.get("autonomous_search") or {}).get("context_lookback_minutes", 180)
+        ))
+        enabled_platforms = {
+            str(item.get("platform") or "").lower()
+            for item in value.get("platforms", [])
+            if isinstance(item, dict) and item.get("enabled", True)
+        }
+        cutoff = iso(utcnow() - timedelta(minutes=15))
+        seen_posts: set[tuple[str, str]] = set()
+        with self.connect() as connection:
+            if connection is not None and self._table_exists(connection, "token_source_links"):
+                captured_posts: set[str] = set()
+                if self._table_exists(connection, "observations"):
+                    observation_cutoff = iso(priority_now - priority_max_age)
+                    for observation in connection.execute(
+                        """
+                        SELECT url
+                        FROM observations
+                        WHERE availability_proof='local_receive'
+                          AND observed_at>=?
+                          AND json_extract(raw_json,'$.browser') IS NOT NULL
+                        """,
+                        (observation_cutoff,),
+                    ):
+                        captured_url = _canonical_social_url(str(observation["url"] or ""))
+                        if captured_url:
+                            captured_posts.add(unquote(urlparse(captured_url).path).rstrip("/").casefold())
+                priority_candidates: dict[tuple[str, str], dict[str, Any]] = {}
+                for row in connection.execute(
+                    """
+                    SELECT id,token_id,normalized_url,platform,first_observed_at
+                    FROM token_source_links
+                    WHERE link_kind='social_post' AND first_observed_at>=?
+                      AND (token_id LIKE 'solana:%' OR token_id LIKE 'bsc:%')
+                    ORDER BY first_observed_at DESC,id DESC
+                    """,
+                    (cutoff,),
+                ):
+                    url = _canonical_social_url(str(row["normalized_url"] or ""))
+                    account = (
+                        _exact_watch_account_for_url(value.get("watch_accounts", []), url or "")
+                        if url else None
+                    )
+                    platform = str(
+                        (account or {}).get("platform") or row["platform"] or ""
+                    ).lower()
+                    if platform not in enabled_platforms:
+                        continue
+                    if account is not None and not account.get("enabled", True):
+                        continue
+                    published_at = _x_post_published_at_from_url(url)
+                    if account is None and published_at is None:
+                        continue
+                    if published_at is not None and not (
+                        priority_now - priority_max_age <= published_at <= priority_now
+                    ):
+                        continue
+                    post_key = (
+                        platform,
+                        unquote(urlparse(url).path).rstrip("/").casefold(),
+                    )
+                    if post_key[1] in captured_posts:
+                        continue
+                    existing = priority_candidates.get(post_key)
+                    if existing is not None:
+                        existing["_tokens"].add(str(row["token_id"] or ""))
+                        continue
+                    path_parts = [
+                        part for part in unquote(urlparse(url).path).split("/") if part
+                    ]
+                    handle = str((account or {}).get("handle") or "")
+                    if not handle and path_parts:
+                        handle = "@" + path_parts[0].lstrip("@")
+                    priority_candidates[post_key] = {
+                        "request": {
+                            "url": url,
+                            "platform": platform,
+                            "handle": handle,
+                            "entity_id": str((account or {}).get("entity_id") or ""),
+                            "source_link_id": int(row["id"]),
+                            "first_observed_at": str(row["first_observed_at"]),
+                            "decision_eligible": False,
+                            "affects": "browser_observation_priority_only",
+                        },
+                        "_watch": account is not None,
+                        "_priority": int((account or {}).get("priority") or 0),
+                        "_tokens": {str(row["token_id"] or "")},
+                    }
+                ranked = sorted(
+                    priority_candidates.values(),
+                    key=lambda item: (
+                        0 if item["_watch"] else 1,
+                        -int(item["_priority"]),
+                        -len(item["_tokens"]),
+                        str(item["request"]["first_observed_at"]),
+                    ),
+                )
+                for item in ranked[:12]:
+                    priority_post_requests.append(item["request"])
         return {
             **value,
+            "priority_post_requests": priority_post_requests,
             "storage": "data/web_console/console_settings.json",
             "contains_credentials": False,
             "as_of": iso(),

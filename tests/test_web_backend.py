@@ -51,6 +51,183 @@ def _config(tmp_path: Path) -> tuple[Path, dict]:
     return path, config
 
 
+def test_token_detail_exposes_forward_creator_launch_shadow_without_raw_payload(tmp_path: Path):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    observed_at = utcnow()
+    token = TokenCandidate(
+        chain="solana",
+        address="CreatorRiskWebMint",
+        name="Creator Risk Web",
+        symbol="CRW",
+        source="pumpportal:create",
+        first_seen_at=observed_at,
+        raw={
+            "mint": "CreatorRiskWebMint",
+            "txType": "create",
+            "pump_event_type": "create",
+            "traderPublicKey": "CreatorRiskWebWallet",
+            "signature": "CreatorRiskWebSignature",
+            "bondingCurveKey": "CreatorRiskWebCurve",
+            "pool": "pump",
+            "initialBuy": 50,
+            "solAmount": 0.1,
+            "marketCapSol": 20,
+            "must_not_be_returned": "raw-launch-secret",
+        },
+    )
+    store.upsert_token(token, seen_at=observed_at)
+    store.record_token_launch_fact(token, ingested_at=observed_at)
+    store.close()
+
+    payload = WebData(config_path).token_detail(token.token_id)
+    shadow = payload["creator_launch_risk"]
+    assert shadow["status"] == "observed"
+    assert shadow["launch"]["creator_address"] == "CreatorRiskWebWallet"
+    assert shadow["launch"]["provider_verified"] is False
+    assert shadow["risk_shadow"]["prior_launch_count"] == 0
+    serialized = json.dumps(shadow)
+    assert "raw-launch-secret" not in serialized
+    assert "raw_payload_hash" not in serialized
+    assert shadow["decision_eligible"] is False and shadow["affects"] == "none"
+
+
+def test_bridge_health_tolerates_a_responsive_local_bridge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    config_path, config = _config(tmp_path)
+    config["bridge"].update({"enabled": True, "host": "127.0.0.1", "port": 8765})
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    observed: dict[str, object] = {}
+
+    class FakeResponse:
+        status = 200
+
+        @staticmethod
+        def read(_limit: int) -> bytes:
+            return b'{"ok": true}'
+
+    class FakeConnection:
+        def __init__(self, host: str, port: int, timeout: float):
+            observed.update(host=host, port=port, timeout=timeout)
+
+        def request(self, method: str, path: str) -> None:
+            observed.update(method=method, path=path)
+
+        @staticmethod
+        def getresponse() -> FakeResponse:
+            return FakeResponse()
+
+        @staticmethod
+        def close() -> None:
+            return None
+
+    monkeypatch.setattr("memetrader.web.http.client.HTTPConnection", FakeConnection)
+
+    health = WebData(config_path)._bridge_health()
+
+    assert health["reachable"] is True
+    assert health["status"] == "not_observed"
+    assert health["collector_active"] is False
+    assert observed == {
+        "host": "127.0.0.1",
+        "port": 8765,
+        "timeout": 3.0,
+        "method": "GET",
+        "path": "/health",
+    }
+
+
+def test_bridge_health_distinguishes_service_reachability_from_fresh_collector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    config_path, config = _config(tmp_path)
+    config["bridge"].update({"enabled": True, "host": "127.0.0.1", "port": 8765})
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    store.set_kv(
+        "browser_platform_heartbeat:x",
+        {
+            "observed_at": iso(), "platform": "x", "access_state": "content_visible",
+            "extension_version": "0.6.6",
+        },
+    )
+
+    class FakeResponse:
+        status = 200
+
+        @staticmethod
+        def read(_limit: int) -> bytes:
+            return b'{"ok": true}'
+
+    class FakeConnection:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def request(self, *_args, **_kwargs) -> None:
+            pass
+
+        @staticmethod
+        def getresponse() -> FakeResponse:
+            return FakeResponse()
+
+        @staticmethod
+        def close() -> None:
+            return None
+
+    monkeypatch.setattr("memetrader.web.http.client.HTTPConnection", FakeConnection)
+
+    health = WebData(config_path)._bridge_health()
+
+    assert health["reachable"] is True
+    assert health["status"] == "healthy"
+    assert health["collector_active"] is True
+    assert health["latest_collector_heartbeat_at"] is not None
+    assert health["collector_extension_version"] == "0.6.6"
+
+    store.set_kv(
+        "browser_platform_heartbeat:x",
+        {"observed_at": iso(utcnow() - timedelta(minutes=10)), "platform": "x"},
+    )
+    stale = WebData(config_path)._bridge_health()
+    assert stale["reachable"] is True
+    assert stale["status"] == "stale"
+    assert stale["collector_active"] is False
+
+    store.add_observation(
+        Observation(
+            source="x:collector",
+            source_kind="social",
+            title="Fresh browser capture",
+            text="Visible content proves the collector is active.",
+            url="https://x.com/collector/status/1",
+            availability_proof="local_receive",
+            raw={"browser": {"platform": "x"}},
+        )
+    )
+    active_from_observation = WebData(config_path)._bridge_health()
+    assert active_from_observation["reachable"] is True
+    assert active_from_observation["status"] == "healthy"
+    assert active_from_observation["collector_active"] is True
+    assert active_from_observation["latest_collector_activity_source"] == (
+        "browser_observation"
+    )
+
+    class BusyConnection:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        @staticmethod
+        def request(*_args, **_kwargs):
+            raise TimeoutError
+
+    monkeypatch.setattr("memetrader.web.http.client.HTTPConnection", BusyConnection)
+    active_while_probe_busy = WebData(config_path)._bridge_health()
+    assert active_while_probe_busy["reachable"] is True
+    assert active_while_probe_busy["status"] == "healthy"
+    assert active_while_probe_busy["reachability_basis"] == (
+        "recent_collector_activity"
+    )
+
+
 def _seed(path: Path) -> tuple[int, str]:
     store = Store(path, initial_cash_usd=1000)
     now = utcnow()
@@ -712,6 +889,27 @@ def test_web_api_empty_database_is_safe_and_live_is_locked(tmp_path: Path):
     assert onchain_jupiter["summary"]["valid_round_trips"] == 0
     assert onchain_jupiter["decision_eligible"] is False
     assert onchain_jupiter["affects"] == "none"
+    addressability = audit["kol_token_addressability"]
+    assert addressability["status"] == "registered_waiting"
+    assert addressability["version"] == Store.KOL_TOKEN_ADDRESSABILITY_VERSION
+    assert addressability["summary"]["cohorts"] == 0
+    assert addressability["summary"]["route_results"] == 0
+    assert addressability["route_status"] == "registered_waiting"
+    assert addressability["route_disposition"] is None
+    assert addressability["route_versions"][-1]["version"] == (
+        Store.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION
+    )
+    assert addressability["route_versions"][-1]["status"] == "registered_waiting"
+    assert addressability["versions"][-1]["version"] == Store.KOL_TOKEN_ADDRESSABILITY_VERSION
+    assert addressability["versions"][-1]["summary"]["cohorts"] == 0
+    assert addressability["decision_eligible"] is False
+    assert addressability["affects"] == "none"
+    holder_shadow = audit["solana_holder_shadow"]
+    assert holder_shadow["status"] == "registered"
+    assert holder_shadow["summary"]["cohorts"] == 0
+    assert holder_shadow["decision_eligible"] is False
+    assert holder_shadow["affects"] == "none"
+    assert holder_shadow["definition"]["stored_data"].endswith("no_owner_addresses")
     shadow_review = audit["agent_shadow_review"]
     assert shadow_review["status"] == "registered_waiting"
     assert shadow_review["summary"]["inputs"] == 0
@@ -722,6 +920,44 @@ def test_web_api_empty_database_is_safe_and_live_is_locked(tmp_path: Path):
     assert substitutions["version"] == "constraint-substitution-matrix/v1"
     assert substitutions["illegal_or_unsafe_bypass_allowed"] is False
     assert any(item["id"] == "telegram_content_ingestion" for item in substitutions["items"])
+
+
+def test_web_audit_keeps_kol_addressability_versions_separate(tmp_path: Path):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    legacy_version = "kol-token-addressability-lag/v1-addressability-first"
+    now = iso()
+    with store.db:
+        store.db.execute(
+            "INSERT INTO kol_token_addressability_registrations("
+            "definition_version,registered_at,activation_observation_id,definition_json) "
+            "VALUES(?,?,0,?)",
+            (legacy_version, now, json.dumps({"version": legacy_version})),
+        )
+        store.db.execute(
+            """
+            INSERT INTO kol_token_addressability_cohorts(
+                cohort_key,definition_version,observation_id,event_id,platform,handle,
+                source_entity_id,configured_priority,signal_available_at,source_published_at,
+                source_observed_at,source_ingested_at,event_attention,seed_status,
+                identifiers_json,frozen_queries_json,definition_hash,
+                decision_eligible,affects,created_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'no_seed_at_signal','[]','[]','',0,'none',?)
+            """,
+            (
+                "legacy-cohort", legacy_version, 9000, 9000, "x", "@legacy", "legacy",
+                5, now, now, now, now, 22.0, now,
+            ),
+        )
+    store.close()
+
+    addressability = WebData(config_path).audit()["kol_token_addressability"]
+    assert addressability["version"] == Store.KOL_TOKEN_ADDRESSABILITY_VERSION
+    assert addressability["status"] == "registered_waiting"
+    assert addressability["summary"]["cohorts"] == 0
+    by_version = {item["version"]: item for item in addressability["versions"]}
+    assert by_version[legacy_version]["summary"]["cohorts"] == 1
+    assert by_version[Store.KOL_TOKEN_ADDRESSABILITY_VERSION]["summary"]["cohorts"] == 0
 
 
 def test_web_audit_jupiter_quote_is_aggregate_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -1115,6 +1351,26 @@ def test_web_paper_curve_costs_attempts_and_stale_valuation_are_truthful(tmp_pat
     store.close()
 
     portfolio = WebData(config_path).portfolio({})
+    assert [item["id"] for item in portfolio["strategy_model"]["strategies"]] == [
+        "information_plus_token", "token_only", "narrative_hold",
+    ]
+    assert portfolio["strategy_model"]["cash_ledgers_are_additive"] is False
+    assert portfolio["strategy_model"]["strategies"][0]["execution_challenger_key"] == (
+        "event_route_execution"
+    )
+    assert portfolio["strategy_model"]["strategies"][1]["exit_comparison_key"] == (
+        "onchain_exit_challenger"
+    )
+    assert portfolio["strategy_model"]["strategies"][2]["entry_pairing"] == "exact"
+    assert portfolio["narrative_hold"]["status"] == "not_enabled"
+    assert portfolio["event_route_execution"]["status"] == "not_enabled"
+    assert portfolio["evm_route_research"]["execution"] is False
+    assert portfolio["evm_route_research"]["pnl"] is False
+    bsc = next(
+        item for item in portfolio["strategy_model"]["chain_execution_status"]
+        if item["chain"] == "bsc"
+    )
+    assert bsc["paper"] == "disabled_until_route_and_cost_complete"
     assert len(portfolio["account"]["equity_curve"]) == 3
     assert portfolio["account"]["equity_usd"] is None
     assert portfolio["account"]["valuation_status"] == "incomplete"
@@ -1130,6 +1386,42 @@ def test_web_paper_curve_costs_attempts_and_stale_valuation_are_truthful(tmp_pat
     assert costs["total_recorded_tax_usd"] == pytest.approx(2)
     assert costs["route_and_chain_fees_modeled"] is False
     assert portfolio["execution_attempts"][0]["status"] == "filled"
+
+
+def test_web_portfolio_uses_latest_fair_epoch_without_deleting_old_trades(tmp_path: Path):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    now = utcnow()
+    with store.db:
+        store.db.execute(
+            "UPDATE paper_account SET cash_usd=980,realized_pnl_usd=-20,updated_at=?",
+            (iso(now - timedelta(minutes=1)),),
+        )
+        store.db.execute(
+            """
+            INSERT INTO trades(
+                token_id,event_id,side,quantity,price,gross_usd,fee_usd,reason,created_at
+            ) VALUES('solana:old',1,'SELL',1,1,1,0,'old-round',?)
+            """,
+            (iso(now - timedelta(minutes=1)),),
+        )
+    store.start_simulation_fair_epoch(
+        "fair-comparison/web", starting_cash_usd=1000, started_at=now
+    )
+    store.close()
+
+    portfolio = WebData(config_path).portfolio({})
+    assert portfolio["fair_comparison"]["epoch_id"] == "fair-comparison/web"
+    assert portfolio["account"]["cash_usd"] == pytest.approx(1000)
+    assert portfolio["account"]["realized_pnl_usd"] == pytest.approx(0)
+    assert portfolio["trades"] == []
+    assert portfolio["account"]["equity_curve"][0]["recorded_at"] >= iso(now)
+
+    connection = sqlite3.connect(tmp_path / "db.sqlite3")
+    try:
+        assert connection.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == 1
+    finally:
+        connection.close()
 
 
 def test_web_sources_exposes_masked_source_poll_learning(tmp_path: Path):
@@ -1444,6 +1736,8 @@ def test_web_exposes_forward_admission_reasons_and_keeps_legacy_candidate_uninst
     assert context["summary"]["attempts"] == 1
     assert context["summary"]["admitted"] == 0
     assert context["items"][0]["reason"] == "daily_call_limit_reached"
+    assert context["onchain_challenger"]["status"] == "registered"
+    assert context["onchain_challenger"]["affects"] == "none"
     shadow = sources["shadow_followup"]["admission"]["summary"]
     assert shadow["candidate_decisions"] == 1
     assert shadow["candidate_instrumented"] == 0
@@ -1659,6 +1953,8 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
 
     portfolio = web.portfolio({})
     assert portfolio["simulated"] is True
+    assert portfolio["ingestion_activity"]["status"] == "active"
+    assert portfolio["ingestion_activity"]["truth_source"] == "persisted_sqlite_activity"
     assert portfolio["positions"][0]["current_price"] == pytest.approx(0.01)
     assert portfolio["positions"][0]["quote_as_of"] is not None
     assert portfolio["positions"][0]["take_profit_index"] == 0
@@ -1671,6 +1967,10 @@ def test_web_api_exposes_real_evidence_wait_portfolio_agents_and_sources(tmp_pat
     assert portfolio["positions"][0]["narrative_stale"] is False
     assert portfolio["trades"][0]["simulated"] is True
     assert portfolio["account"]["equity_usd"] is not None
+    assert portfolio["account"]["total_pnl_usd"] == pytest.approx(
+        portfolio["account"]["realized_pnl_usd"]
+        + portfolio["account"]["unrealized_pnl_usd"]
+    )
 
     agents = web.agents()
     scout = next(item for item in agents["operations"] if item["kind"] == "trend_scout")
@@ -2018,6 +2318,12 @@ def test_candidate_ranking_api_is_persisted_bounded_sanitized_and_wait_is_truthf
     assert "data-testid='trend-attention-policy'" in app
     assert "data-testid='attention-experiment'" in app
     assert "data-testid='token-context-followup'" in app
+    assert "data-testid='token-context-onchain-challenger'" in app
+    assert "data-testid='solana-holder-shadow'" in app
+    assert "data-testid='creator-launch-risk-shadow'" in app
+    assert "Creator launch history · forward Shadow" in app
+    assert "not RPC verification" in app
+    assert "not people, independent buyers, or smart money" in app
     assert "data-testid='information-first-shadow'" in app
     assert "data-testid='information-first-ilg'" in app
     assert "data-testid='token-universe-jupiter-quote'" in app
@@ -2068,7 +2374,7 @@ def test_candidate_ranking_api_is_persisted_bounded_sanitized_and_wait_is_truthf
     assert "It is not platform-wide mentions, replies, quotes, or repost velocity" in app
     assert "no future price was filled in" in app
     assert "no fake fills are generated" in app
-    assert "timeoutMs: page === 'audit' ? 60000 : 9000" in app
+    assert "timeoutMs: page === 'audit' ? 60000 : page === 'sources' ? 30000 : 9000" in app
 
 
 def test_settings_are_allowlisted_atomic_and_never_expose_secrets(tmp_path: Path):
@@ -2120,6 +2426,11 @@ def test_settings_are_allowlisted_atomic_and_never_expose_secrets(tmp_path: Path
     assert learning_fraction["min"] == 0.4
     assert direct_context["type"] == "boolean"
     assert (direct_attention["min"], direct_attention["max"]) == (0, 100)
+    max_open_positions = next(
+        item for item in settings["schema"]["fields"]
+        if item["path"] == "paper.max_open_positions"
+    )
+    assert max_open_positions["min"] == 0
     assert settings["live_locked"] is True
     telegram_option = next(
         item
@@ -2224,6 +2535,202 @@ def test_settings_are_allowlisted_atomic_and_never_expose_secrets(tmp_path: Path
             }
         )
     assert "must-not-save" not in (tmp_path / "data" / "web_console" / "console_settings.json").read_text(encoding="utf-8")
+
+
+def test_watchlist_prioritizes_recent_exact_posts_from_configured_accounts(tmp_path: Path):
+    config_path, _config_value = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    token = TokenCandidate(
+        chain="solana", address="priority-post-token", name="Strait of Hormuz", symbol="HORMUZ"
+    )
+    store.upsert_token(token)
+    now = utcnow()
+    store.upsert_token_source_link(
+        {
+            "token_id": token.token_id,
+            "provider": "pumpportal",
+            "discovery_surface": "launch_metadata",
+            "role": "identity",
+            "original_url": "https://x.com/WhiteHouse/status/123",
+            "normalized_url": "https://x.com/WhiteHouse/status/123",
+            "link_kind": "social_post",
+            "label": "twitter",
+            "platform": "x",
+            "verification_status": "provider_metadata",
+        },
+        observed_at=now - timedelta(minutes=10),
+    )
+    for index in range(110):
+        store.upsert_token_source_link(
+            {
+                "token_id": token.token_id,
+                "provider": "pumpportal",
+                "discovery_surface": "launch_metadata",
+                "role": "identity",
+                "original_url": f"https://x.com/noise{index}/status/{index}",
+                "normalized_url": f"https://x.com/noise{index}/status/{index}",
+                "link_kind": "social_post",
+                "label": "twitter",
+                "platform": "x",
+                "verification_status": "provider_metadata",
+            },
+            observed_at=now,
+        )
+    store.upsert_token_source_link(
+        {
+            "token_id": token.token_id,
+            "provider": "pumpportal",
+            "discovery_surface": "launch_metadata",
+            "role": "identity",
+            "original_url": "https://x.com/DisabledAccount/status/456",
+            "normalized_url": "https://x.com/DisabledAccount/status/456",
+            "link_kind": "social_post",
+            "label": "twitter",
+            "platform": "x",
+            "verification_status": "provider_metadata",
+        },
+        observed_at=now,
+    )
+    store.upsert_token_source_link(
+        {
+            "token_id": token.token_id,
+            "provider": "pumpportal",
+            "discovery_surface": "launch_metadata",
+            "role": "identity",
+            "original_url": "https://x.com/elonmusk/status/1098658606264635394",
+            "normalized_url": "https://x.com/elonmusk/status/1098658606264635394",
+            "link_kind": "social_post",
+            "label": "twitter",
+            "platform": "x",
+            "verification_status": "provider_metadata",
+        },
+        observed_at=now,
+    )
+    store.close()
+    web = WebData(config_path)
+    web.patch_settings(
+        {
+            "console": {
+                "platforms": [{"platform": "x", "enabled": True}],
+                "watch_accounts": [
+                    {
+                        "platform": "x",
+                        "handle": "@WhiteHouse",
+                        "display_name": "The White House",
+                        "entity_id": "white_house",
+                        "url": "https://x.com/WhiteHouse",
+                        "enabled": True,
+                        "priority": 5,
+                    },
+                    {
+                        "platform": "x",
+                        "handle": "@DisabledAccount",
+                        "display_name": "Disabled Account",
+                        "entity_id": "disabled_account",
+                        "url": "https://x.com/DisabledAccount",
+                        "enabled": False,
+                        "priority": 5,
+                    },
+                    {
+                        "platform": "x",
+                        "handle": "@elonmusk",
+                        "display_name": "Elon Musk",
+                        "entity_id": "elon_musk",
+                        "url": "https://x.com/elonmusk",
+                        "enabled": True,
+                        "priority": 5,
+                    }
+                ],
+                "topics": [],
+            }
+        }
+    )
+    requests = web.watchlist()["priority_post_requests"]
+    assert requests == [
+        {
+            "url": "https://x.com/WhiteHouse/status/123",
+            "platform": "x",
+            "handle": "@WhiteHouse",
+            "entity_id": "white_house",
+            "source_link_id": requests[0]["source_link_id"],
+            "first_observed_at": requests[0]["first_observed_at"],
+            "decision_eligible": False,
+            "affects": "browser_observation_priority_only",
+        }
+    ]
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    store.add_observation(
+        Observation(
+            source="x:whitehouse",
+            source_kind="social",
+            title="Captured exact White House post",
+            url="https://x.com/WhiteHouse/status/123",
+            published_at=now - timedelta(minutes=11),
+            observed_at=now - timedelta(minutes=9),
+            ingested_at=now - timedelta(minutes=9),
+            availability_proof="local_receive",
+            source_item_id="https://x.com/WhiteHouse/status/123",
+            raw={"browser": {"platform": "x"}},
+        )
+    )
+    store.close()
+    assert web.watchlist()["priority_post_requests"] == []
+
+
+def test_watchlist_requests_recent_token_linked_x_post_without_watch_account(tmp_path: Path):
+    config_path, _config_value = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    token = TokenCandidate(
+        chain="solana", address="token-linked-post", name="Linked", symbol="LNK"
+    )
+    store.upsert_token(token)
+    now = utcnow()
+    status_id = int((now.timestamp() * 1000 - 1288834974657) * (1 << 22))
+    url = f"https://x.com/community_signal/status/{status_id}"
+    store.upsert_token_source_link(
+        {
+            "token_id": token.token_id,
+            "provider": "pumpportal",
+            "discovery_surface": "launch_metadata",
+            "role": "identity",
+            "original_url": url,
+            "normalized_url": url,
+            "link_kind": "social_post",
+            "label": "twitter",
+            "platform": "x",
+            "verification_status": "provider_metadata",
+        },
+        observed_at=now,
+    )
+    store.close()
+
+    web = WebData(config_path)
+    web.patch_settings(
+        {"console": {"platforms": [{"platform": "x", "enabled": True}],
+                     "watch_accounts": [], "topics": []}}
+    )
+    requests = web.watchlist()["priority_post_requests"]
+    assert len(requests) == 1
+    assert requests[0]["url"] == url
+    assert requests[0]["handle"] == "@community_signal"
+    assert requests[0]["entity_id"] == ""
+    assert requests[0]["decision_eligible"] is False
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    store.add_observation(
+        Observation(
+            source="x:community_signal",
+            source_kind="social",
+            title="Captured token-linked media post",
+            text="Exact locally captured post body.",
+            url=url + "/photo/1",
+            availability_proof="local_receive",
+            role="identity",
+            source_item_id=url + "/photo/1",
+            raw={"browser": {"platform": "x"}},
+        )
+    )
+    store.close()
+    assert web.watchlist()["priority_post_requests"] == []
 
 
 def test_notifications_missing_empty_malformed_and_strict_public_whitelist(tmp_path: Path):

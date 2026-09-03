@@ -1,0 +1,63 @@
+{
+  "schema_version": "external-winner-reference/v1",
+  "recorded_on": "2026-09-01",
+  "purpose": "Fixed external reference cohort for discovery-recall and pipeline-breakpoint analysis.",
+  "selection": "Retrospectively supplied examples of tokens observed to have strong daily gains.",
+  "allowed_uses": [
+    "measure whether and when the system discovered each token",
+    "locate discovery, evidence, decision, safety, and execution breakpoints",
+    "form hypotheses that must be tested on a complete forward token-universe denominator"
+  ],
+  "prohibited_uses": [
+    "backfill Paper decisions or trades",
+    "report hypothetical historical gains as system performance",
+    "tune strategy rules only against this winner-selected cohort",
+    "use post-outcome information in a forward decision"
+  ],
+  "audit_snapshot": {
+    "as_of": "2026-09-01T09:28:20Z",
+    "r6_before_robinhood_activation": {
+      "solana_found": 8,
+      "solana_total": 8,
+      "robinhood_found": 0,
+      "robinhood_total": 8,
+      "reference_decisions": 0,
+      "reference_trades": 0,
+      "note": "All Solana examples predated the complete token-universe ledger and are retained without backfill. Robinhood was not an allowed discovery chain."
+    },
+    "forward_robinhood_activation": {
+      "activation_time": "2026-09-01T09:26:50Z",
+      "collection_scope": "discovery, metadata, evidence, context, and shadow research",
+      "execution_scope": "blocked by execution_safety_unsupported_chain",
+      "naturally_collected_tokens": 104,
+      "forward_cohorts": 91,
+      "paper_decisions": 0,
+      "paper_trades": 0,
+      "reference_cases_naturally_rediscovered": 2,
+      "note": "No reference address was inserted into runtime tables. Rediscovery came from enabled forward collectors after activation."
+    }
+  },
+  "cases": [
+    {"chain": "solana", "address": "EEpng77ZPn9FbgbT4xsRjwuxNCcMBYq3HTwEscyTpump"},
+    {"chain": "solana", "address": "EVgwa5CHBVwk6sCTa4QJrVXYBKngZhYqh2a2ZGDApump"},
+    {"chain": "solana", "address": "FWB6zoW7jksVAX43yFy8MRELYawipwuUJXhcoiwPpump"},
+    {"chain": "solana", "address": "4GCmJ87xRchBREMVpgZWiyJPUgzkhkyzt8MbddsDULx7"},
+    {"chain": "solana", "address": "FnLox4hs8zB3YefUyBdwFtTmZm7cMaNSHr5utV4Yswrm"},
+    {"chain": "solana", "address": "4U4U8oXwDyVXGeTffMXds4NAgBgLFwq3wNvTCRTSpump"},
+    {"chain": "solana", "address": "7TBkWkqohDZEoCAh1ykErGKyZzgFUEjxTv75xQeAvTeP"},
+    {"chain": "solana", "address": "93ihpGjLVnhghXciSeFovXwKF762rwcigW12kSQBpump"},
+    {"chain": "robinhood", "address": "0x82effee58389561a3b9e93ccbaf1129d32ba35fa"},
+    {"chain": "robinhood", "address": "0xded852de9fe9ba9b6f27f39e8e81cf851a5c79cc"},
+    {"chain": "robinhood", "address": "0x9fe1a89c2b5a702dd2f5eb9f783a08e3d6cec737"},
+    {"chain": "robinhood", "address": "0xcc3dc6fc9918b9846d1ad5aaea740f8bed9a1e18"},
+    {"chain": "robinhood", "address": "0xd39c5ed5231c86d2df7c86c5825dec3e61d937a8"},
+    {"chain": "robinhood", "address": "0xcd1cca2b3d0a11b295c42fe765ea8f895c2d0901"},
+    {"chain": "robinhood", "address": "0xf5e42fcad8342a80c0ca400be26f54a455f41316"},
+    {"chain": "robinhood", "address": "0x13c80bee3671b203c35706ed0b569b8eafdb6c7d"},
+    {"chain": "solana", "address": "3dgGSHC49cbcmdjuZD6y1WDAtsP91v7j8Z1hTey9pump"},
+    {"chain": "solana", "address": "MukLDtJ8Cx9DxLbeyLRSWPSposTMWuwHANbuaudpump"},
+    {"chain": "solana", "address": "EYBMhikmdqUs6j5p9mv1tfPY3HszsCyYeRpwme6Bpump"},
+    {"chain": "solana", "address": "EysagjPWhigmXPUp1GFNCQ97eMqgDuPitZv54j7spump"},
+    {"chain": "solana", "address": "7WJ3ksZauPhEQJjcWbopPY5SrtRhSSHKR973fRR3pump"}
+  ]
+}

@@ -25,7 +25,8 @@ Agent 的自报 verdict 不直接成为最终状态。本机根据逐来源 stan
 ## 永久边界
 
 - 所有结果固定 `decision_eligible=false / affects=none`。
-- Trend Scout 与 Token Context 生成的 Observation 仍为 `identity/context-only`，不会变成 `feature/confirmation`。
+- Trend Scout 结果仍为 `identity/context-only`。Token Context 只有在正文核验达到 `cross_source_supported`、至少两个 `distinct_origin` 支持域、事实置信度达标且来源发布时间不超过 30 分钟时，才把对应新鲜来源提升为事件 `confirmation`；转载、shared wire、旧闻和来源不足仍保持 `identity/context-only`。
+- 事件真实与 Token 精确绑定分开处理：普通多源确认不会自动获得 `reverse_token_id` 或 96 分捷径。只有至少两个新鲜独立来源正文明确包含同一 chain/address 时，才标记 `exact_token_binding`；名称、symbol、项目网站或社交元数据不能代替 CA 绑定。
 - 核验结果不改变 WAIT/CANDIDATE、安全检查、canonical margin、Paper 仓位、退出或 Live。
 - Web 只返回安全的状态、来源 stance、正文依据摘要、模型、推理强度和 token；不返回 prompt、完整 run id、parent run id、subject id、claim hash、Cookie 或登录材料。
 - Mainnet Live 仍不可用。

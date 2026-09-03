@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import json
 import os
+import re
 import secrets
 import tempfile
 import threading
@@ -11,16 +14,23 @@ import urllib.parse
 import urllib.request
 from dataclasses import asdict
 from datetime import timedelta
+from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from .autonomous_search import AutonomousSearchAgent
+import httpx
+
+from .autonomous_search import AutonomousSearchAgent, _canonical_social_url, _same_social_url
 from .collectors import (
     BlueskySearchCollector,
     DexScreenerClient,
+    EvmRouteQuoteError,
+    EvmRouteQuoteProtocolError,
+    EvmUniswapV3QuoteClient,
     GeckoNewPoolsCollector,
     HttpClient,
     JupiterNoRouteError,
+    JupiterQuoteError,
     JupiterQuoteClient,
     JupiterQuoteProtocolError,
     MastodonCollector,
@@ -115,15 +125,28 @@ DEFAULT_CONFIG: dict[str, Any] = {
                 "enabled": True,
             },
         ],
-        "gecko_networks": ["solana", "bsc"],
+        "gecko_networks": ["solana"],
         "dexscreener_discovery": {
             "enabled": True,
+            "chains": ["solana"],
+            "surface_chains": ["solana"],
             "interval_seconds": 90,
             "max_items_per_surface": 40,
             "max_hydrations_per_cycle": 180,
             "active_token_minutes": 180,
         },
-        "pumpportal": {"enabled": True, "url": "wss://pumpportal.fun/api/data"},
+        "solana_holder_shadow": {
+            "enabled": True,
+            "interval_seconds": 300,
+        },
+        "pumpportal": {
+            "enabled": True,
+            "url": "wss://pumpportal.fun/api/data",
+            "metadata_enabled": True,
+            "metadata_queue_size": 512,
+            "metadata_workers": 1,
+            "metadata_max_response_bytes": 131_072,
+        },
         "reverse_google_news": {
             "enabled": True,
             "queries_per_cycle": 3,
@@ -153,7 +176,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "similarity": 0.28,
     },
     "candidate": {
-        "chains": ["solana", "bsc", "base"],
+        "chains": ["solana"],
         "min_match_score": 52.0,
         "min_candidate_score": 67.0,
         "min_canonical_margin": 5.0,
@@ -212,15 +235,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "starting_cash_usd": 1_000,
         "fee_bps": 60,
         "pump_swap_fee_bps": 125,
+        "fixed_fee_usd_each_side": 0.4,
         "slippage_rate": 0.04,
         "max_quote_age_seconds": 45,
         "risk_per_trade_pct": 0.005,
         "max_cash_fraction": 0.08,
-        "max_position_usd": 35,
+        "fixed_position_usd": 20,
+        "max_position_usd": 20,
         "min_position_usd": 3,
         "max_liquidity_impact_pct": 0.0025,
         "max_daily_new_exposure_usd": 100,
-        "max_open_positions": 3,
+        "max_open_positions": 0,
         "stop_loss_pct": -0.35,
         "trailing_activate_pct": 0.60,
         "trailing_drawdown_pct": 0.28,
@@ -343,6 +368,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "context_error_retry_minutes": 10,
         "context_min_momentum_score": 80,
         "context_direct_trigger_enabled": True,
+        "context_metadata_link_trigger_enabled": True,
+        "context_low_information_exposure_only_enabled": False,
+        "context_deferred_retry_enabled": False,
+        "context_deferred_retry_min_idle_minutes": 5,
+        "context_deferred_retry_interval_minutes": 5,
         "context_high_impact_min_priority": 4,
         "context_direct_event_min_attention": 55,
         "context_direct_event_min_match_score": 70,
@@ -513,6 +543,34 @@ def load_config(path: str | Path) -> tuple[dict[str, Any], Path]:
     if not isinstance(dex_discovery, dict):
         raise ValueError("sources.dexscreener_discovery must be an object")
     if dex_discovery.get("enabled", True):
+        raw_discovery_chains = dex_discovery.get("chains", [])
+        if not isinstance(raw_discovery_chains, list):
+            raise ValueError("sources.dexscreener_discovery.chains must be a list")
+        discovery_chains = list(dict.fromkeys(
+            str(chain).strip().lower()
+            for chain in raw_discovery_chains
+            if str(chain).strip()
+        ))
+        if not 1 <= len(discovery_chains) <= 16 or any(
+            len(chain) > 40 for chain in discovery_chains
+        ):
+            raise ValueError(
+                "sources.dexscreener_discovery.chains must contain between 1 and 16 bounded chain identifiers"
+            )
+        dex_discovery["chains"] = discovery_chains
+        raw_surface_chains = dex_discovery.get("surface_chains", [])
+        if not isinstance(raw_surface_chains, list):
+            raise ValueError("sources.dexscreener_discovery.surface_chains must be a list")
+        surface_chains = list(dict.fromkeys(
+            str(chain).strip().lower()
+            for chain in raw_surface_chains
+            if str(chain).strip()
+        ))
+        if len(surface_chains) > 16 or any(len(chain) > 40 for chain in surface_chains):
+            raise ValueError(
+                "sources.dexscreener_discovery.surface_chains must contain at most 16 bounded chain identifiers"
+            )
+        dex_discovery["surface_chains"] = surface_chains
         interval = float(dex_discovery.get("interval_seconds", 90))
         if not 30 <= interval <= 3600:
             raise ValueError("sources.dexscreener_discovery.interval_seconds must be between 30 and 3600")
@@ -622,10 +680,14 @@ def load_config(path: str | Path) -> tuple[dict[str, Any], Path]:
         raise ValueError("paper.fee_bps must be between 0 and 5000")
     if not 0 <= float(paper.get("pump_swap_fee_bps", paper["fee_bps"])) <= 5000:
         raise ValueError("paper.pump_swap_fee_bps must be between 0 and 5000")
+    if not 0 <= float(paper.get("fixed_fee_usd_each_side", 0)) <= 10_000:
+        raise ValueError("paper.fixed_fee_usd_each_side must be between 0 and 10000")
+    if not 0 <= float(paper.get("fixed_position_usd", 0)) <= 1_000_000:
+        raise ValueError("paper.fixed_position_usd must be between 0 and 1000000")
     if not 1 <= float(paper.get("max_quote_age_seconds", 45)) <= 600:
         raise ValueError("paper.max_quote_age_seconds must be between 1 and 600")
-    if int(paper["max_open_positions"]) < 1:
-        raise ValueError("paper.max_open_positions must be positive")
+    if int(paper["max_open_positions"]) < 0:
+        raise ValueError("paper.max_open_positions must be non-negative; 0 means unlimited")
     tiers = paper.get("take_profit_tiers") or []
     previous_return = -1.0
     for tier in tiers:
@@ -1057,6 +1119,14 @@ class BrowserBridge:
 
 
 class Runtime:
+    MAX_DIRECT_HIGH_IMPACT_CONTEXT_PER_CYCLE = 4
+    MAX_DIRECT_BROWSER_EXACT_CONTEXT_PER_CYCLE = 4
+    MAX_DIRECT_ONCHAIN_CONTEXT_PER_CYCLE = 1
+    DIRECT_CONTEXT_LANE_CURSOR_KEY = "token_context:hydration_fair_lane_cursor:v2"
+    DEFERRED_CONTEXT_RETRY_ACTIVATED_AT_KEY = "token_context:active_retry:activated_at:v1"
+    DEFERRED_CONTEXT_RETRY_RUN_KEY = "token_context:active_retry:last_run:v1"
+    INFORMATION_FIRST_ACTIVE_OUTCOME_REQUEST_TIMEOUT_SECONDS = 15.0
+
     def __init__(self, config: dict[str, Any], root: Path):
         self.config, self.root = config, root
         db_path = Path(str(config["database"]))
@@ -1064,6 +1134,9 @@ class Runtime:
         self.store = Store(
             db_path if db_path.is_absolute() else root / db_path,
             initial_cash_usd=starting_cash,
+        )
+        self.store.register_provider_post_ambiguity_shadow(
+            _watchlist_accounts(root / "data" / "web_console" / "console_settings.json")
         )
         paper_config = config["paper"]
         self.store.register_token_universe_outcome_quality(
@@ -1106,6 +1179,50 @@ class Runtime:
             max_queue_delay_seconds=30,
             max_total_delay_seconds=float(paper_config.get("max_quote_age_seconds", 45)),
         )
+        self.store.register_onchain_only_evm_route_quote(
+            EvmUniswapV3QuoteClient.public_network_definitions(),
+            paper_stake_usd=float(paper_config.get("max_position_usd", 35)),
+            slippage_bps=round(float(paper_config.get("slippage_rate", 0.04)) * 10_000),
+            max_queue_delay_seconds=30,
+            max_total_delay_seconds=float(paper_config.get("max_quote_age_seconds", 45)),
+        )
+        if str(config.get("mode") or "paper").lower() == "paper":
+            self.store.register_event_route_execution_challenger()
+            self.store.register_onchain_paper_exploration(
+                starting_cash_usd=starting_cash,
+                max_open_positions=int(paper_config.get("max_open_positions", 0)),
+                estimated_network_fee_usd_each_side=float(
+                    paper_config.get("fixed_fee_usd_each_side", 0.4)
+                ),
+            )
+            self.store.register_onchain_paper_exit_challenger(
+                starting_cash_usd=starting_cash,
+                position_scan_seconds=float(config.get("position_scan_seconds", 15)),
+                hard_stop_return=float(paper_config.get("stop_loss_pct", -0.35)),
+                trailing_activate_return=float(
+                    paper_config.get("trailing_activate_pct", 0.60)
+                ),
+                trailing_drawdown=float(paper_config.get("trailing_drawdown_pct", 0.28)),
+                emergency_liquidity_usd=float(
+                    paper_config.get("emergency_liquidity_usd", 3_000)
+                ),
+                slippage_bps=round(
+                    float(paper_config.get("slippage_rate", 0.04)) * 10_000
+                ),
+                max_quote_delay_seconds=float(
+                    paper_config.get("max_quote_age_seconds", 45)
+                ),
+                estimated_network_fee_usd_each_side=float(
+                    paper_config.get("fixed_fee_usd_each_side", 0.4)
+                ),
+                max_liquidity_impact_pct=float(
+                    paper_config.get("max_liquidity_impact_pct", 0.0025)
+                ),
+            )
+            self.store.register_onchain_paper_narrative_runner(
+                starting_cash_usd=starting_cash,
+            )
+            self.store.register_onchain_paper_narrative_context()
         self.store.register_token_universe_jupiter_quote(
             usdc_input_amount_raw=round(float(paper_config.get("max_position_usd", 35)) * 1_000_000),
         )
@@ -1114,6 +1231,8 @@ class Runtime:
             max_total_delay_seconds=float(paper_config.get("max_quote_age_seconds", 45)),
         )
         self.store.recover_interrupted_exposure_attempts()
+        self.store.recover_interrupted_event_context_route_probes()
+        self.store.recover_interrupted_event_route_execution_challenger_attempts()
         if not self.store.open_positions() and not self.store.trades():
             with self.store.db:
                 self.store.db.execute("UPDATE paper_account SET cash_usd=?,updated_at=? WHERE singleton=1", (starting_cash, iso()))
@@ -1126,8 +1245,17 @@ class Runtime:
         )
         self.market_http = HttpClient()
         self.jupiter_http = HttpClient(min_host_interval=2.1)
+        self.evm_route_http = HttpClient(min_host_interval=0.15)
         self.dex = DexScreenerClient(self.market_http)
         self.jupiter = JupiterQuoteClient(self.jupiter_http)
+        self.evm_route = EvmUniswapV3QuoteClient(self.evm_route_http)
+        self._evm_route_quote_lock = asyncio.Lock()
+        self._jupiter_quote_lock = asyncio.Lock()
+        self._jupiter_background_dispatch_lock = asyncio.Lock()
+        self._jupiter_background_epoch_started = 0.0
+        self._jupiter_background_epoch_requests = 0
+        self._jupiter_background_epoch_seconds = 5.0
+        self._dex_quote_lock = asyncio.Lock()
         self.events = EventEngine(
             self.store,
             similarity_threshold=float((config.get("events") or {}).get("similarity", 0.28)),
@@ -1146,21 +1274,209 @@ class Runtime:
             known_source_urls=known_source_urls,
             console_settings_path=root / "data" / "web_console" / "console_settings.json",
         )
-        self.evaluator = CandidateEvaluator(self.store, self.dex, self.safety, config["candidate"], self.agent)
+        if config["autonomous_search"].get("context_deferred_retry_enabled", False):
+            if not self.store.get_kv(self.DEFERRED_CONTEXT_RETRY_ACTIVATED_AT_KEY):
+                self.store.set_kv(self.DEFERRED_CONTEXT_RETRY_ACTIVATED_AT_KEY, iso())
+        self.evaluator = CandidateEvaluator(
+            self.store, self.dex, self.safety, config["candidate"], self.agent,
+            self.jupiter, config["paper"], self._jupiter_quote_lock,
+        )
         self.policy = PaperPolicy(config["paper"])
         self.notifier = Notifier(root, config["notifications"])
         self.bridge: BrowserBridge | None = None
         self._stop = asyncio.Event()
-        self._jupiter_quote_lock = asyncio.Lock()
+        self._dex_quote_failure_streak = 0
+        self._dex_quote_backoff_until = 0.0
+        self._dex_quote_backoff_base_seconds = 2.0
+        self._dex_quote_backoff_cap_seconds = 30.0
         self._record_paper_account_snapshot()
 
     async def close(self) -> None:
         if self.bridge:
             await self.bridge.close()
+        await self.evm_route_http.close()
         await self.jupiter_http.close()
         await self.market_http.close()
         await self.http.close()
         self.store.close()
+
+    def _dex_quote_low_priority_available(self) -> bool:
+        loop = asyncio.get_running_loop()
+        return (
+            not self._dex_quote_lock.locked()
+            and loop.time() >= self._dex_quote_backoff_until
+        )
+
+    async def _dex_batch_quote(
+        self,
+        chain: str,
+        addresses: list[str] | tuple[str, ...],
+    ) -> dict[str, tuple[TokenCandidate, TokenSnapshot]]:
+        """Serialize Dex quote batches and back off across lanes after transport failure."""
+        async with self._dex_quote_lock:
+            loop = asyncio.get_running_loop()
+            wait = self._dex_quote_backoff_until - loop.time()
+            if wait > 0:
+                await asyncio.sleep(wait)
+            try:
+                quoted = await self.dex.batch_quote(chain, addresses)
+            except httpx.TransportError as exc:
+                self._dex_quote_failure_streak += 1
+                base = min(
+                    self._dex_quote_backoff_cap_seconds,
+                    self._dex_quote_backoff_base_seconds
+                    * (2 ** min(self._dex_quote_failure_streak - 1, 4)),
+                )
+                digest = hashlib.sha256(
+                    f"dexscreener:{type(exc).__name__}:{self._dex_quote_failure_streak}".encode()
+                ).digest()
+                delay = base * (1.0 + int.from_bytes(digest[:2], "big") / 65535.0 * 0.2)
+                self._dex_quote_backoff_until = loop.time() + delay
+                raise
+            self._dex_quote_failure_streak = 0
+            self._dex_quote_backoff_until = 0.0
+            return quoted
+
+    async def solana_holder_shadow_once(self) -> None:
+        cfg = self.config["sources"].get("solana_holder_shadow") or {}
+        if not cfg.get("enabled", True):
+            return
+        self.store.enroll_solana_holder_shadow_cohorts()
+        due = self.store.due_solana_holder_shadow()
+        if due is None:
+            return
+        endpoint = "https://api.mainnet-beta.solana.com"
+        rpc_host = "api.mainnet-beta.solana.com"
+        allowed_programs = {
+            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+        }
+        requested_at = utcnow()
+        request_count = 0
+        response_bytes = 0
+        token_program = ""
+        slot = None
+
+        async def rpc(method: str, params: list[Any]) -> Any:
+            nonlocal request_count, response_bytes
+            request_count += 1
+            response = await self.http.client.post(
+                endpoint,
+                json={"jsonrpc": "2.0", "id": request_count, "method": method, "params": params},
+                headers={"Accept": "application/json"},
+            )
+            response_bytes += len(response.content)
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise RuntimeError("invalid_rpc_payload")
+            error = payload.get("error")
+            if isinstance(error, dict):
+                raise RuntimeError(f"rpc_error_{error.get('code', 'unknown')}")
+            return payload.get("result")
+
+        values: dict[str, Any] = {}
+        status = "observed"
+        reason = "holder_aggregate_observed"
+        try:
+            mint = str(due["mint_address"])
+            info = await rpc("getAccountInfo", [mint, {"encoding": "base64", "commitment": "confirmed"}])
+            if not isinstance(info, dict) or not isinstance(info.get("value"), dict):
+                raise RuntimeError("mint_account_missing")
+            token_program = str(info["value"].get("owner") or "")
+            if token_program not in allowed_programs:
+                raise RuntimeError("unsupported_token_program")
+            context = info.get("context") if isinstance(info.get("context"), dict) else {}
+            slot = int(context.get("slot")) if context.get("slot") is not None else None
+            consistency = {"commitment": "confirmed"}
+            if slot is not None:
+                consistency["minContextSlot"] = slot
+            supply_result = await rpc("getTokenSupply", [mint, consistency])
+            accounts_result = await rpc(
+                "getProgramAccounts",
+                [
+                    token_program,
+                    {
+                        **consistency,
+                        "encoding": "base64",
+                        "withContext": True,
+                        "filters": [{"memcmp": {"offset": 0, "bytes": mint}}],
+                        "dataSlice": {"offset": 32, "length": 40},
+                    },
+                ],
+            )
+            if not isinstance(supply_result, dict) or not isinstance(supply_result.get("value"), dict):
+                raise RuntimeError("invalid_supply_payload")
+            if not isinstance(accounts_result, dict) or not isinstance(accounts_result.get("value"), list):
+                raise RuntimeError("invalid_program_accounts_payload")
+            supply = int(str(supply_result["value"].get("amount") or "0"))
+            account_rows = accounts_result["value"]
+            owners: dict[bytes, int] = {}
+            nonzero_accounts = 0
+            for row in account_rows:
+                account = row.get("account") if isinstance(row, dict) else None
+                data = account.get("data") if isinstance(account, dict) else None
+                encoded = data[0] if isinstance(data, list) and data else None
+                if not isinstance(encoded, str):
+                    continue
+                raw = base64.b64decode(encoded, validate=True)
+                if len(raw) < 40:
+                    continue
+                amount = int.from_bytes(raw[32:40], "little")
+                if amount <= 0:
+                    continue
+                nonzero_accounts += 1
+                owner = raw[:32]
+                owners[owner] = owners.get(owner, 0) + amount
+            amounts = sorted(owners.values(), reverse=True)
+            owner_sum = sum(amounts)
+            dust_threshold = supply * 0.0001
+            dust_count = sum(amount < dust_threshold for amount in amounts) if supply > 0 else 0
+            account_context = (
+                accounts_result.get("context")
+                if isinstance(accounts_result.get("context"), dict) else {}
+            )
+            if account_context.get("slot") is not None:
+                slot = max(int(account_context["slot"]), int(slot or 0))
+            values = {
+                "token_account_count": len(account_rows),
+                "nonzero_token_account_count": nonzero_accounts,
+                "unique_owner_count": len(owners),
+                "supply_raw": supply,
+                "owner_balance_sum_raw": owner_sum,
+                "balance_coverage": round(owner_sum / supply, 8) if supply > 0 else None,
+                "top1_supply_share": round((amounts[0] if amounts else 0) / supply, 8)
+                if supply > 0 else None,
+                "top10_supply_share": round(sum(amounts[:10]) / supply, 8)
+                if supply > 0 else None,
+                "owners_below_1bp_count": dust_count,
+                "owners_below_1bp_rate": round(dust_count / len(owners), 8)
+                if owners else None,
+            }
+        except httpx.HTTPStatusError as exc:
+            status = "error"
+            reason = f"http_status_{exc.response.status_code}"
+        except httpx.TransportError as exc:
+            status = "error"
+            reason = type(exc).__name__
+        except (RuntimeError, ValueError, TypeError, binascii.Error) as exc:
+            reason = str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__
+            status = "unavailable" if reason in {
+                "mint_account_missing", "unsupported_token_program"
+            } else "error"
+        completed_at = utcnow()
+        self.store.add_solana_holder_shadow_result(
+            int(due["shadow_cohort_id"]),
+            horizon_minutes=int(due["horizon_minutes"]),
+            due_at=due["due_at"], requested_at=requested_at, completed_at=completed_at,
+            status=status, reason_code=reason, rpc_host=rpc_host,
+            token_program=token_program, slot=slot, rpc_request_count=request_count,
+            latency_seconds=(completed_at - requested_at).total_seconds(),
+            response_bytes=response_bytes, **values,
+        )
+        self.store.heartbeat("solana-holder-shadow", item=status == "observed")
+        if status == "error":
+            self._notify_source_error("solana-holder-shadow", RuntimeError(reason))
 
     def _record_paper_account_snapshot(self, *, force: bool = False) -> None:
         as_of = utcnow()
@@ -1210,6 +1526,10 @@ class Runtime:
 
     def _paper_fee_bps(self, snapshot: TokenSnapshot) -> float:
         paper = self.config["paper"]
+        fixed_fee = float(paper.get("fixed_fee_usd_each_side", 0) or 0)
+        fixed_notional = float(paper.get("fixed_position_usd", 0) or 0)
+        if fixed_fee > 0 and fixed_notional > 0:
+            return fixed_fee / fixed_notional * 10_000
         default_fee = float(paper.get("fee_bps", 60))
         raw = snapshot.raw if isinstance(snapshot.raw, dict) else {}
         pair = raw.get("pair") if isinstance(raw.get("pair"), dict) else {}
@@ -1272,10 +1592,54 @@ class Runtime:
             return result
         browser_item = obs.raw.get("browser") if isinstance(obs.raw, dict) else None
         if obs.availability_proof == "local_receive" and isinstance(browser_item, dict):
+            observation_id = self.store.observation_id_for(obs)
+            exact_url = _canonical_social_url(obs.url or obs.source_item_id)
+            handoff_count = 0
+            if observation_id is not None and exact_url:
+                matched_tokens: set[str] = set()
+                for link in self.store.recent_token_social_post_links(
+                    minutes=int(
+                        self.config["autonomous_search"].get("context_lookback_minutes", 180)
+                    ),
+                    chains=self.config.get("candidate", {}).get("chains", ("solana", "bsc")),
+                ):
+                    token_id = str(link["token_id"] or "")
+                    if token_id in matched_tokens or not _same_social_url(
+                        exact_url, str(link["normalized_url"] or "")
+                    ):
+                        continue
+                    matched_tokens.add(token_id)
+                    self.store.record_token_universe_funnel_transition(
+                        token_id,
+                        stage="context_trigger_evaluation",
+                        status="eligible",
+                        reason_code="browser_exact_token_metadata_post_captured",
+                        evaluation_key=(
+                            f"observation:{observation_id}:source_link:{int(link['id'])}:handoff"
+                        ),
+                        observed_at=obs.observed_at,
+                        ingested_at=obs.ingested_at,
+                        source_table="observations",
+                        source_record_ids={
+                            "observation_id": int(observation_id),
+                            "source_link_id": int(link["id"]),
+                        },
+                        source_link_id=int(link["id"]),
+                        observation_id=int(observation_id),
+                        metadata={
+                            "trigger_kind": "token_metadata_source_link",
+                            "verification_status": "browser_exact_entity_observation",
+                            "decision_eligible": False,
+                        },
+                    )
+                    if self.store.requeue_token_detail_hydration(
+                        token_id, enqueued_at=obs.observed_at
+                    ):
+                        handoff_count += 1
+            result["token_context_handoff_count"] = handoff_count
             account = resolve_watchlist_account(
                 browser_item, self.root / "data" / "web_console" / "console_settings.json"
             )
-            observation_id = self.store.observation_id_for(obs)
             if account is not None and observation_id is not None:
                 self.store.record_browser_watch_observation(
                     account,
@@ -1283,6 +1647,20 @@ class Runtime:
                     event_id=event_id,
                     observed_at=obs.observed_at,
                     decision_eligible=obs.role.lower() in {"feature", "confirmation"},
+                )
+                address_groups = extract_addresses(
+                    "\n".join((obs.title, obs.text, obs.url, obs.source_item_id))
+                )
+                result["kol_token_addressability_cohort_id"] = (
+                    self.store.create_kol_token_addressability_cohort(
+                        event_id,
+                        observation_id,
+                        account=account,
+                        identifiers={
+                            "solana": sorted(address_groups["solana"]),
+                            "evm": sorted(address_groups["evm"]),
+                        },
+                    )
                 )
         raw = obs.raw if isinstance(obs.raw, dict) else {}
         if raw.get("agent_task") == "trend_scout" and raw.get("watch_account_exact_match") is True:
@@ -1356,6 +1734,9 @@ class Runtime:
             selector_count = max(0, min(100_000, int(detail.get("selector_count", 0))))
         except (TypeError, ValueError):
             selector_count = 0
+        extension_version = str(detail.get("extension_version") or "").strip()
+        if not re.fullmatch(r"\d+(?:\.\d+){1,3}", extension_version):
+            extension_version = ""
         page_url = ""
         try:
             parsed = urllib.parse.urlsplit(str(detail.get("page_url") or ""))
@@ -1369,6 +1750,7 @@ class Runtime:
                 "platform": platform,
                 "visible": visible,
                 "selector_count": selector_count,
+                "extension_version": extension_version or None,
                 "page_url": page_url,
                 "access_state": access_state,
                 "observed_at": iso(),
@@ -1388,10 +1770,17 @@ class Runtime:
             )
 
     async def ingest_token(self, token: TokenCandidate) -> bool:
+        self.store.record_token_launch_fact(token)
         token_created = self.store.upsert_token(token)
-        if token.chain.lower() in {
-            str(chain).lower() for chain in self.config["candidate"].get("chains", [])
-        }:
+        discovery_cfg = self.config["sources"].get("dexscreener_discovery") or {}
+        hydration_chains = {
+            str(chain).lower()
+            for chain in [
+                *self.config["candidate"].get("chains", []),
+                *discovery_cfg.get("chains", []),
+            ]
+        }
+        if token.chain.lower() in hydration_chains:
             self.store.enqueue_token_detail_hydration(token.chain, token.address)
         self.store.heartbeat(token.source or "onchain", item=token_created)
         if token_created and self.config["notifications"].get("notify_new_tokens", False):
@@ -1579,24 +1968,81 @@ class Runtime:
             )
             self._notify_source_error(name, exc)
 
+    def _recent_token_context_source_keys(self, *, limit: int = 240) -> set[str]:
+        rows = self.store.db.execute(
+            "SELECT assessment_json FROM token_context_assessments ORDER BY id DESC LIMIT ?",
+            (max(1, int(limit)),),
+        ).fetchall()
+        keys: set[str] = set()
+        for row in rows:
+            try:
+                assessment = json.loads(row["assessment_json"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                continue
+            key = self.autonomous_search.token_context_source_key(
+                assessment.get("investigation_trigger")
+                if isinstance(assessment, dict) else None
+            )
+            if key:
+                keys.add(key)
+        return keys
+
+    def _source_fair_context_order(
+        self,
+        candidates: list[tuple[int, TokenCandidate, TokenSnapshot, float, dict[str, Any]]],
+        recent_source_keys: set[str],
+    ) -> list[tuple[int, TokenCandidate, TokenSnapshot, float, dict[str, Any]]]:
+        ordered = sorted(
+            candidates,
+            key=lambda item: (item[0], item[2].observed_at),
+            reverse=True,
+        )
+        unseen: list[tuple[int, TokenCandidate, TokenSnapshot, float, dict[str, Any]]] = []
+        seen_once: list[tuple[int, TokenCandidate, TokenSnapshot, float, dict[str, Any]]] = []
+        same_cycle_duplicates: list[
+            tuple[int, TokenCandidate, TokenSnapshot, float, dict[str, Any]]
+        ] = []
+        cycle_keys: set[str] = set()
+        for candidate in ordered:
+            key = self.autonomous_search.token_context_source_key(candidate[4])
+            if key and key in cycle_keys:
+                same_cycle_duplicates.append(candidate)
+                continue
+            if key:
+                cycle_keys.add(key)
+            if key and key not in recent_source_keys:
+                unseen.append(candidate)
+            else:
+                seen_once.append(candidate)
+        return [*unseen, *seen_once, *same_cycle_duplicates]
+
     async def poll_dexscreener_discovery_once(self) -> None:
         cfg = self.config["sources"].get("dexscreener_discovery") or {}
         if not cfg.get("enabled", True):
             return
-        allowed_chains = {str(chain).lower() for chain in self.config["candidate"].get("chains", [])}
+        candidate_chains = {
+            str(chain).lower() for chain in self.config["candidate"].get("chains", [])
+        }
+        surface_chains = {
+            *candidate_chains,
+            *(str(chain).lower() for chain in cfg.get("surface_chains", [])),
+        }
         max_items = int(cfg.get("max_items_per_surface", 40))
         max_hydrations = int(cfg.get("max_hydrations_per_cycle", 180))
         direct_context_candidates: list[tuple[int, TokenCandidate, TokenSnapshot, float, dict[str, Any]]] = []
+        onchain_context_candidates: list[
+            tuple[int, TokenCandidate, TokenSnapshot, float, dict[str, Any]]
+        ] = []
         for surface in self.dex.DISCOVERY_SURFACES:
             source = f"dexscreener:{surface}"
             round_id = self.store.start_token_discovery_round(
                 provider="dexscreener",
                 surface=str(surface),
                 mode="poll",
-                chain_scope=",".join(sorted(allowed_chains)),
+                chain_scope=",".join(sorted(surface_chains)),
             )
             try:
-                links = await self.dex.discover_surface(surface, allowed_chains, limit=max_items)
+                links = await self.dex.discover_surface(surface, surface_chains, limit=max_items)
             except Exception as exc:
                 self.store.finish_token_discovery_round(
                     round_id,
@@ -1612,7 +2058,7 @@ class Runtime:
                 token_id = str(link.get("token_id") or "")
                 chain = str(link.get("chain") or "").lower()
                 address = str(link.get("address") or "")
-                if not token_id or chain not in allowed_chains or not address:
+                if not token_id or chain not in surface_chains or not address:
                     continue
                 by_token.setdefault(token_id, []).append(link)
             first_discoveries = 0
@@ -1650,7 +2096,13 @@ class Runtime:
                 duplicate_token_count=max(0, len(by_token) - first_discoveries),
             )
 
-        due = self.store.due_token_detail_hydrations(limit=max_hydrations)
+        due = self.store.due_token_detail_hydrations(
+            limit=max_hydrations,
+            priority_social_account_urls=(
+                str(account.get("url") or "")
+                for account in self.autonomous_search._configured_high_impact_accounts()
+            ),
+        )
         if not due:
             return
         by_chain: dict[str, list[Any]] = {}
@@ -1683,7 +2135,7 @@ class Runtime:
                     )
                 try:
                     if hasattr(self.dex, "batch_quote"):
-                        quoted_by_token = await self.dex.batch_quote(
+                        quoted_by_token = await self._dex_batch_quote(
                             chain, [str(row["address"]) for row in chunk]
                         )
                     else:
@@ -1782,8 +2234,10 @@ class Runtime:
                             float(self.config["paper"].get("max_liquidity_impact_pct", 0.0025)),
                         ),
                     )
+                    is_candidate_chain = snapshot.chain.lower() in candidate_chains
                     if (
-                        snapshot.chain.lower() in {"ethereum", "eth", "bsc", "base"}
+                        is_candidate_chain
+                        and snapshot.chain.lower() in {"ethereum", "eth", "bsc", "base"}
                         and momentum >= float(
                             self.config["autonomous_search"].get("context_min_momentum_score", 75)
                         )
@@ -1819,21 +2273,28 @@ class Runtime:
                         metadata={
                             "provider": "dexscreener",
                             "chain": str(chain),
+                            "scope": "candidate" if is_candidate_chain else "research_only",
                             "source_link_count": len(
                                 self.store.token_source_links(token_id, limit=100)
                             ),
                         },
                     )
+                    if not is_candidate_chain:
+                        continue
                     trigger = self.autonomous_search.resolve_token_context_trigger(
                         token,
                         momentum_score=momentum,
                         snapshot_observed_at=snapshot.observed_at,
                         snapshot_id=snapshot_id,
                     )
-                    if trigger and str(trigger.get("kind") or "") != "onchain_momentum":
-                        direct_context_candidates.append(
-                            (int(trigger.get("priority") or 0), token, snapshot, momentum, trigger)
+                    if trigger:
+                        candidate = (
+                            int(trigger.get("priority") or 0), token, snapshot, momentum, trigger
                         )
+                        if str(trigger.get("kind") or "") == "onchain_momentum":
+                            onchain_context_candidates.append(candidate)
+                        else:
+                            direct_context_candidates.append(candidate)
                 self.store.finish_token_discovery_round(
                     round_id,
                     status="completed",
@@ -1842,11 +2303,91 @@ class Runtime:
                     duplicate_token_count=max(0, len(chunk) - len(quoted_by_token)),
                 )
 
-        if direct_context_candidates:
-            _, token, snapshot, momentum, trigger = max(
-                direct_context_candidates,
-                key=lambda item: (item[0], item[2].observed_at),
+        critical_kinds = {"high_impact_account_post", "fresh_high_attention_event_relation"}
+        recent_source_keys = self._recent_token_context_source_keys()
+        critical = self._source_fair_context_order(
+            [
+                item for item in direct_context_candidates
+                if item[0] >= 2 and str(item[4].get("kind") or "") in critical_kinds
+            ],
+            recent_source_keys,
+        )
+        metadata_leads = self._source_fair_context_order(
+            [
+                item for item in direct_context_candidates
+                if item[0] >= 2 and str(item[4].get("kind") or "") not in critical_kinds
+            ],
+            recent_source_keys,
+        )
+        high_impact = [*critical, *metadata_leads][
+            : self.MAX_DIRECT_HIGH_IMPACT_CONTEXT_PER_CYCLE
+        ]
+        critical = [
+            item for item in high_impact
+            if str(item[4].get("kind") or "") in critical_kinds
+        ]
+        metadata_leads = [item for item in high_impact if item not in critical]
+        ordinary = [item for item in direct_context_candidates if item[0] < 2]
+        exact_ordinary = self._source_fair_context_order(
+            [
+                item for item in ordinary
+                if str(item[4].get("verification_status") or "")
+                == "browser_exact_entity_observation"
+                and item[4].get("observation_id") is not None
+            ],
+            recent_source_keys,
+        )
+        other_ordinary = [item for item in ordinary if item not in exact_ordinary]
+        selected_exact_ordinary = exact_ordinary[
+            : self.MAX_DIRECT_BROWSER_EXACT_CONTEXT_PER_CYCLE
+        ]
+        for candidate in selected_exact_ordinary:
+            candidate[4]["selection_path"] = "hydration_browser_exact_post"
+        for _, token, _, _, _ in exact_ordinary[
+            self.MAX_DIRECT_BROWSER_EXACT_CONTEXT_PER_CYCLE :
+        ]:
+            self.store.requeue_token_detail_hydration(token.token_id, enqueued_at=utcnow())
+        selected_onchain = sorted(
+            onchain_context_candidates,
+            key=lambda item: (item[3], item[2].observed_at),
+            reverse=True,
+        )[: self.MAX_DIRECT_ONCHAIN_CONTEXT_PER_CYCLE]
+        lane_version = self.store.TOKEN_CONTEXT_ONCHAIN_ADMISSION_CHALLENGER_VERSION
+        for candidate in selected_onchain:
+            candidate[4]["selection_path"] = "hydration_onchain_challenger"
+            candidate[4]["challenger_version"] = lane_version
+            candidate[4]["lane_scheduler_version"] = lane_version
+        selected_context_candidates = list(critical)
+        if metadata_leads and selected_onchain:
+            cursor = int(self.store.get_kv(self.DIRECT_CONTEXT_LANE_CURSOR_KEY, 0) or 0)
+            onchain_first = cursor % 2 == 1
+            first, second = (
+                (selected_onchain, metadata_leads)
+                if onchain_first else (metadata_leads, selected_onchain)
             )
+            lane_preference = "onchain_first" if onchain_first else "metadata_lead_first"
+            for candidate in [*metadata_leads, *selected_onchain]:
+                candidate[4]["lane_scheduler_version"] = lane_version
+                candidate[4]["lane_preference"] = lane_preference
+            selected_context_candidates.extend(first)
+            selected_context_candidates.extend(second)
+            self.store.set_kv(self.DIRECT_CONTEXT_LANE_CURSOR_KEY, cursor + 1)
+        else:
+            selected_context_candidates.extend(metadata_leads)
+            selected_context_candidates.extend(selected_onchain)
+        selected_context_candidates.extend(selected_exact_ordinary)
+        if other_ordinary:
+            selected_context_candidates.append(
+                max(
+                    other_ordinary,
+                    key=lambda item: (item[0], item[2].observed_at),
+                )
+            )
+        seen_context_tokens: set[str] = set()
+        for _, token, snapshot, momentum, trigger in selected_context_candidates:
+            if token.token_id in seen_context_tokens:
+                continue
+            seen_context_tokens.add(token.token_id)
             await self._investigate_token_context(
                 token,
                 snapshot,
@@ -1954,12 +2495,14 @@ class Runtime:
         *,
         momentum_score: float,
         event_relation: dict[str, Any] | None = None,
+        retry_lane: bool = False,
     ) -> None:
         observations = await self.autonomous_search.search_token_context(
             token,
             snapshot,
             momentum_score=momentum_score,
             event_relation=event_relation,
+            retry_lane=retry_lane,
         )
         for observation in observations:
             await self.ingest_observation(observation)
@@ -1978,6 +2521,8 @@ class Runtime:
     async def reverse_news_once(self) -> None:
         cfg = self.config["sources"].get("reverse_google_news") or {}
         if not cfg.get("enabled", True):
+            return
+        if not self._dex_quote_low_priority_available():
             return
         max_queries = int(cfg.get("queries_per_cycle", 3))
         max_scanned = int(cfg.get("max_tokens_scanned_per_cycle", 10))
@@ -2079,7 +2624,7 @@ class Runtime:
                     requested_at=requested_at,
                 )
                 try:
-                    batch = await self.dex.batch_quote(
+                    batch = await self._dex_batch_quote(
                         chain, [token.address for token in chain_tokens]
                     )
                     quoted_by_token.update(batch)
@@ -2361,6 +2906,201 @@ class Runtime:
                 return True
         return False
 
+    async def _collect_event_route_execution_challenger(
+        self,
+        *,
+        decision_id: int,
+        event_id: int,
+        token: TokenCandidate,
+        capacity_probe_id: int,
+        baseline_snapshot_id: int | None,
+        position_usd: float,
+        snapshot: TokenSnapshot,
+        fee_bps: float,
+    ) -> None:
+        """Collect a strict-forward exact-size route comparison without filling Paper."""
+        raw_input = int(
+            (Decimal(str(position_usd)) * Decimal(1_000_000)).to_integral_value(
+                rounding=ROUND_DOWN
+            )
+        )
+        if raw_input <= 0:
+            return
+        slippage_bps = round(
+            float(self.config["paper"].get("slippage_rate", 0.04)) * 10_000
+        )
+        max_delay = float(self.config["paper"].get("max_quote_age_seconds", 45))
+        frozen_at = utcnow()
+        attempt_id = self.store.start_event_route_execution_challenger_attempt(
+            decision_id=decision_id,
+            event_id=event_id,
+            token_id=token.token_id,
+            capacity_probe_id=capacity_probe_id,
+            baseline_snapshot_id=baseline_snapshot_id,
+            intended_notional_usd=raw_input / 1_000_000,
+            buy_input_amount_raw=raw_input,
+            slippage_bps=slippage_bps,
+            max_total_delay_seconds=max_delay,
+            baseline_quote_price=snapshot.price_usd,
+            baseline_execution_price=(
+                float(snapshot.price_usd) * (1.0 + slippage_bps / 10_000)
+                if snapshot.price_usd is not None else None
+            ),
+            baseline_fee_bps=fee_bps,
+            baseline_buy_tax_pct=snapshot.buy_tax_pct,
+            baseline_sell_tax_pct=snapshot.sell_tax_pct,
+            frozen_at=frozen_at,
+        )
+        if attempt_id is None:
+            return
+
+        buy_quote: dict[str, Any] | None = None
+        phase = "buy"
+
+        async def quote_bundle() -> tuple[dict[str, Any], dict[str, Any]]:
+            nonlocal buy_quote, phase
+            buy_quote = await self.jupiter.quote(
+                Store.JUPITER_USDC_MINT,
+                token.address,
+                raw_input,
+                slippage_bps=slippage_bps,
+            )
+            sell_input = int(buy_quote.get("other_amount_threshold") or 0)
+            if sell_input <= 0:
+                raise JupiterQuoteError("exact-size buy minimum output missing")
+            phase = "sell"
+            sell_quote = await self.jupiter.quote(
+                token.address,
+                Store.JUPITER_USDC_MINT,
+                sell_input,
+                slippage_bps=slippage_bps,
+            )
+            return buy_quote, sell_quote
+
+        try:
+            async with self._jupiter_quote_lock:
+                buy, sell = await quote_bundle()
+        except JupiterNoRouteError:
+            self.store.finish_event_route_execution_challenger_attempt(
+                attempt_id,
+                quote_terminal_status="no_route",
+                validity_status="valid",
+                economic_status="not_applicable",
+                reason=f"{phase}_route_unavailable",
+                buy_quote=buy_quote,
+            )
+            return
+        except JupiterQuoteProtocolError as exc:
+            self.store.finish_event_route_execution_challenger_attempt(
+                attempt_id,
+                quote_terminal_status="protocol_invalid",
+                validity_status="invalid",
+                economic_status="not_applicable",
+                reason=type(exc).__name__,
+                buy_quote=buy_quote,
+            )
+            return
+        except JupiterQuoteError as exc:
+            self.store.finish_event_route_execution_challenger_attempt(
+                attempt_id,
+                quote_terminal_status="protocol_invalid",
+                validity_status="invalid",
+                economic_status="not_applicable",
+                reason=type(exc).__name__,
+                buy_quote=buy_quote,
+            )
+            return
+        except Exception as exc:
+            self.store.finish_event_route_execution_challenger_attempt(
+                attempt_id,
+                quote_terminal_status="error",
+                validity_status="invalid",
+                economic_status="not_applicable",
+                reason=type(exc).__name__,
+                buy_quote=buy_quote,
+            )
+            return
+
+        buy_requested = parse_time(buy["requested_at"])
+        buy_completed = parse_time(buy["completed_at"])
+        sell_requested = parse_time(sell["requested_at"])
+        sell_completed = parse_time(sell["completed_at"])
+        exact_match = (
+            str(buy.get("input_mint") or "") == Store.JUPITER_USDC_MINT
+            and str(buy.get("output_mint") or "") == token.address
+            and int(buy.get("in_amount") or 0) == raw_input
+            and int(buy.get("slippage_bps") or -1) == slippage_bps
+            and str(sell.get("input_mint") or "") == token.address
+            and str(sell.get("output_mint") or "") == Store.JUPITER_USDC_MINT
+            and int(sell.get("in_amount") or 0)
+            == int(buy.get("other_amount_threshold") or 0)
+            and int(sell.get("slippage_bps") or -1) == slippage_bps
+        )
+        total_delay = (sell_completed - parse_time(frozen_at)).total_seconds()
+        clocks_valid = (
+            parse_time(frozen_at)
+            <= buy_requested
+            <= buy_completed
+            <= sell_requested
+            <= sell_completed
+            and 0 <= total_delay <= max_delay
+        )
+        if not exact_match:
+            self.store.finish_event_route_execution_challenger_attempt(
+                attempt_id,
+                quote_terminal_status="quoted",
+                validity_status="mismatched",
+                economic_status="not_applicable",
+                reason="exact_size_route_identity_or_amount_mismatch",
+                buy_quote=buy,
+                sell_quote=sell,
+            )
+            return
+        if not clocks_valid:
+            self.store.finish_event_route_execution_challenger_attempt(
+                attempt_id,
+                quote_terminal_status="quoted",
+                validity_status="expired",
+                economic_status="not_applicable",
+                reason="exact_size_route_time_invalid",
+                buy_quote=buy,
+                sell_quote=sell,
+            )
+            return
+
+        sell_min = int(sell.get("other_amount_threshold") or 0)
+        round_trip = sell_min / raw_input - 1.0
+        route_only_cost = (raw_input - sell_min) / 1_000_000
+        fee_keys = (
+            "signature_fee_lamports",
+            "prioritization_fee_lamports",
+            "rent_fee_lamports",
+        )
+        fee_fields_present = all(
+            quote.get(key) is not None for quote in (buy, sell) for key in fee_keys
+        )
+        signature_fee_nonzero = all(
+            int(quote.get("signature_fee_lamports") or 0) > 0 for quote in (buy, sell)
+        )
+        fee_status = (
+            "lamports_present_native_usd_conversion_missing"
+            if fee_fields_present and signature_fee_nonzero
+            else "quote_fee_fields_incomplete_or_zero"
+        )
+        self.store.finish_event_route_execution_challenger_attempt(
+            attempt_id,
+            quote_terminal_status="quoted",
+            validity_status="valid",
+            economic_status="cost_unknown",
+            reason="fresh_exact_size_two_way_route_research_only",
+            buy_quote=buy,
+            sell_quote=sell,
+            round_trip_min_return=round_trip,
+            route_only_cost_usd=route_only_cost,
+            fee_completeness_status=fee_status,
+            network_fee_basis="native_fee_usd_conversion_not_yet_frozen",
+        )
+
     async def evaluate_events_once(self) -> None:
         threshold = float(self.config.get("event_min_attention", 35.0))
         candidate_cfg = self.config["candidate"]
@@ -2371,8 +3111,9 @@ class Runtime:
         ] or [60]
         max_events = int(candidate_cfg.get("max_events_per_cycle", 8))
         now = utcnow()
+        evaluated = 0
 
-        for event in self.store.active_events(minutes=480, limit=max_events):
+        for event in self.store.active_events(minutes=480, limit=max(100, max_events)):
             if event.attention < threshold and not self._event_has_official_direct_ca(event.id):
                 continue
 
@@ -2393,6 +3134,9 @@ class Runtime:
                 )
                 continue
 
+            if evaluated >= max_events:
+                break
+            evaluated += 1
             decision = await self.evaluator.discover_and_decide(event)
             attempt_key = f"event_decision_attempt:{event.id}"
             attempt = int(self.store.get_kv(attempt_key, 0))
@@ -2408,8 +3152,11 @@ class Runtime:
                 if decision.token_id else None
             )
             amount = 0.0
+            fee_bps = 0.0
             execution_requested_at = None
             execution_received_at = decision.created_at
+            execution_snapshot_id: int | None = None
+            route_challenger_ready = False
             pending_entry_attempt: dict[str, Any] | None = None
 
             if decision.action == "CANDIDATE" and decision.token_id:
@@ -2419,6 +3166,25 @@ class Runtime:
                 elif not candidate_cfg.get("allow_reentry", False) and self.store.has_bought_token(decision.token_id):
                     decision.action = "WAIT"
                     decision.rejected_reasons.append("token_already_traded")
+
+            if (
+                decision.action == "CANDIDATE"
+                and token is not None
+                and token.chain.lower() != "solana"
+            ):
+                decision.action = "WAIT"
+                decision.rejected_reasons.append(
+                    f"paper_amount_specific_route_unavailable_{token.chain.lower()}"
+                )
+                if self.config["mode"] == "paper":
+                    pending_entry_attempt = {
+                        "event_id": event.id,
+                        "token_id": token.token_id,
+                        "side": "BUY",
+                        "status": "rejected",
+                        "reason": "amount_specific_route_and_chain_fee_unavailable",
+                        "requested_at": decision.created_at,
+                    }
 
             if decision.action == "CANDIDATE" and token and snap:
                 execution_requested_at = utcnow()
@@ -2459,33 +3225,91 @@ class Runtime:
                     else:
                         token, snap = execution_token, execution_snapshot
                         self.store.upsert_token(token, seen_at=snap.observed_at)
-                        self.store.add_snapshot(snap)
+                        execution_snapshot_id = self.store.add_snapshot(snap)
 
             if decision.action == "CANDIDATE" and token and snap and snap.price_usd:
-                account = self.store.account()
-                positions = self.store.open_positions()
-                marked_values = []
-                for pos in positions:
-                    mark = self.store.latest_snapshot(pos.token_id, at_or_before=execution_received_at)
-                    marked_values.append((mark.price_usd if mark and mark.price_usd else pos.entry_price) * pos.quantity)
-                equity = account["cash_usd"] + sum(marked_values)
-                amount = self.policy.size(
-                    cash_usd=account["cash_usd"],
-                    equity_usd=equity,
-                    open_count=len(positions),
-                    snapshot=snap,
-                    score=decision.score,
-                    daily_exposure_usd=self.store.daily_buy_gross_usd(),
+                route_probe = (
+                    self.store.event_context_jupiter_route_probe(decision.route_probe_id)
+                    if decision.route_probe_id is not None else None
                 )
-                fee_bps = self._paper_fee_bps(snap)
-                fee_rate = fee_bps / 10_000
-                amount = min(amount, account["cash_usd"] / (1 + fee_rate))
-                decision.position_usd = amount
-                if amount < float(self.config["paper"].get("min_position_usd", 0)):
-                    decision.action = "WAIT"
-                    decision.rejected_reasons.append("position_size_below_all_in_cash_limit")
+                if route_probe is not None:
+                    sell_completed_at = route_probe["sell_completed_at"]
+                    probe_age = (
+                        (parse_time(execution_received_at) - parse_time(sell_completed_at)).total_seconds()
+                        if sell_completed_at else -1.0
+                    )
+                    route_probe_valid = (
+                        str(route_probe["status"]) == "valid"
+                        and int(route_probe["decision_eligible"]) == 1
+                        and int(route_probe["event_id"]) == int(event.id)
+                        and str(route_probe["token_id"]) == str(token.token_id)
+                        and 0 <= probe_age <= float(route_probe["max_total_delay_seconds"])
+                    )
+                    if not route_probe_valid:
+                        decision.action = "WAIT"
+                        decision.rejected_reasons.append("event_route_stale_or_mismatched")
+                        route_probe = None
+                if decision.action == "CANDIDATE":
+                    account = self.store.account()
+                    positions = self.store.open_positions()
+                    marked_values = []
+                    for pos in positions:
+                        mark = self.store.latest_snapshot(pos.token_id, at_or_before=execution_received_at)
+                        marked_values.append((mark.price_usd if mark and mark.price_usd else pos.entry_price) * pos.quantity)
+                    equity = account["cash_usd"] + sum(marked_values)
+                    amount = self.policy.size(
+                        cash_usd=account["cash_usd"],
+                        equity_usd=equity,
+                        open_count=len(positions),
+                        snapshot=snap,
+                        score=decision.score,
+                        daily_exposure_usd=self.store.daily_buy_gross_usd(),
+                        executable_capacity_usd=(
+                            float(route_probe["input_notional_usd"]) if route_probe is not None else None
+                        ),
+                    )
+                    fee_bps = self._paper_fee_bps(snap)
+                    fixed_fee = float(
+                        self.config["paper"].get("fixed_fee_usd_each_side", 0) or 0
+                    )
+                    if fixed_fee > 0:
+                        amount = min(amount, max(0.0, account["cash_usd"] - fixed_fee))
+                    else:
+                        fee_rate = fee_bps / 10_000
+                        amount = min(amount, account["cash_usd"] / (1 + fee_rate))
+                    decision.position_usd = amount
+                    if amount < float(self.config["paper"].get("min_position_usd", 0)):
+                        decision.action = "WAIT"
+                        decision.rejected_reasons.append("position_size_below_all_in_cash_limit")
+                    elif decision.route_probe_id is not None:
+                        route_challenger_ready = True
+                        decision.action = "WAIT"
+                        decision.rejected_reasons.append(
+                            "route_backed_paper_execution_not_implemented"
+                        )
+
+            decision.created_at = max(
+                parse_time(decision.created_at), parse_time(execution_received_at), utcnow()
+            )
 
             decision_id = self.store.add_decision(decision)
+            if (
+                route_challenger_ready
+                and self.config["mode"] == "paper"
+                and token is not None
+                and snap is not None
+                and decision.route_probe_id is not None
+            ):
+                await self._collect_event_route_execution_challenger(
+                    decision_id=decision_id,
+                    event_id=event.id,
+                    token=token,
+                    capacity_probe_id=decision.route_probe_id,
+                    baseline_snapshot_id=execution_snapshot_id,
+                    position_usd=decision.position_usd,
+                    snapshot=snap,
+                    fee_bps=fee_bps,
+                )
             cohort_id = self.store.create_shadow_event_cohort(
                 decision,
                 decision_id=decision_id,
@@ -2612,6 +3436,9 @@ class Runtime:
                     price=execution_price,
                     gross_usd=amount,
                     fee_bps=fee_bps,
+                    fixed_fee_usd=float(
+                        self.config["paper"].get("fixed_fee_usd_each_side", 0) or 0
+                    ),
                     reason="event_candidate",
                     quote_price=float(snap.price_usd),
                     tax_pct=snap.buy_tax_pct,
@@ -2820,6 +3647,9 @@ class Runtime:
                 price=execution_price,
                 fraction=fraction,
                 fee_bps=fee,
+                fixed_fee_usd=float(
+                    self.config["paper"].get("fixed_fee_usd_each_side", 0) or 0
+                ),
                 reason=reason,
                 quote_price=float(snap.price_usd),
                 tax_pct=snap.sell_tax_pct,
@@ -2848,6 +3678,8 @@ class Runtime:
 
     async def shadow_event_followup_once(self) -> None:
         self.store.process_agent_shadow_review_inputs()
+        self.store.finalize_token_context_deferred_admissions()
+        await self.retry_deferred_token_context_once()
         self.store.finalize_shadow_event_outcomes()
         self.store.finalize_token_context_outcomes()
         self.store.finalize_information_first_shadow_outcomes()
@@ -2862,6 +3694,274 @@ class Runtime:
         self.store.finalize_token_universe_fixed_target_execution()
         self.store.finalize_missed_opportunity_audits()
         self.store.finalize_missed_opportunity_no_decision_attributions()
+
+    async def _liquidity_survival_target_once(self, target: dict[str, Any]) -> None:
+        requested_at = utcnow()
+        deadline_at = parse_time(target["deadline_at"])
+        remaining = max(0.0, (deadline_at - requested_at).total_seconds())
+        if remaining <= 0:
+            return
+        try:
+            async with asyncio.timeout(min(15.0, remaining)):
+                quoted = await self.dex.quote(
+                    str(target["chain"]),
+                    str(target["token_id"]).split(":", 1)[1],
+                )
+        except TimeoutError:
+            completed_at = utcnow()
+            self.store.record_liquidity_survival_attempt(
+                int(target["id"]),
+                requested_at=requested_at,
+                completed_at=completed_at,
+                status="timeout",
+                reason="deadline_bounded_provider_timeout",
+            )
+            return
+        except Exception as exc:
+            completed_at = utcnow()
+            self.store.record_liquidity_survival_attempt(
+                int(target["id"]),
+                requested_at=requested_at,
+                completed_at=completed_at,
+                status="error",
+                reason=type(exc).__name__,
+            )
+            return
+        completed_at = utcnow()
+        if quoted is None:
+            self.store.record_liquidity_survival_attempt(
+                int(target["id"]),
+                requested_at=requested_at,
+                completed_at=completed_at,
+                status="no_pair",
+                reason="provider_returned_no_pair",
+            )
+            return
+        token, snapshot = quoted
+        pair = self.store._snapshot_pair_fields(snapshot)
+        observed_pair = str((pair or {}).get("pair_address") or "")
+        if observed_pair != str(target["pair_address"]):
+            self.store.record_liquidity_survival_attempt(
+                int(target["id"]),
+                requested_at=requested_at,
+                completed_at=completed_at,
+                status="pair_mismatch",
+                reason="exact_baseline_pair_not_returned_by_best_pair_quote",
+                observed_pair_address=observed_pair,
+            )
+            return
+        self.store.upsert_token(token, seen_at=snapshot.observed_at)
+        self.store.add_snapshot(snapshot)
+        self.store.record_liquidity_survival_attempt(
+            int(target["id"]),
+            requested_at=requested_at,
+            completed_at=completed_at,
+            status="observed",
+            reason="exact_same_pair_snapshot_persisted",
+            observed_pair_address=observed_pair,
+        )
+
+    async def liquidity_survival_once(self) -> None:
+        if not self.store.LIQUIDITY_SURVIVAL_ENABLED:
+            return
+        self.store.finalize_liquidity_survival_deadlines()
+        targets = self.store.due_liquidity_survival_targets(limit=4)
+        if targets:
+            await asyncio.gather(
+                *(self._liquidity_survival_target_once(target) for target in targets)
+            )
+        self.store.finalize_liquidity_survival_deadlines()
+
+    async def _information_first_active_outcome_target_once(
+        self, target: dict[str, Any]
+    ) -> None:
+        requested_at = utcnow()
+        deadline_at = parse_time(target["deadline_at"])
+        attempt_id = self.store.start_information_first_active_outcome_attempt(
+            int(target["id"]),
+            retry_index=int(target["retry_index"]),
+            scheduled_at=target["scheduled_at"],
+            requested_at=requested_at,
+        )
+        if attempt_id is None:
+            return
+        remaining_seconds = max(0.001, (deadline_at - requested_at).total_seconds())
+        request_timeout = min(
+            self.INFORMATION_FIRST_ACTIVE_OUTCOME_REQUEST_TIMEOUT_SECONDS,
+            remaining_seconds,
+        )
+        status, reason, snapshot = "http_error", "dexscreener_request_failed", None
+        try:
+            async with asyncio.timeout(request_timeout):
+                quoted = await self.dex.quote(str(target["chain"]), str(target["address"]))
+            if quoted is None:
+                status, reason = "no_pair", "dexscreener_no_pair_at_target"
+            else:
+                _, snapshot = quoted
+                if snapshot.price_usd is not None and float(snapshot.price_usd) > 0:
+                    status, reason = "observed_mark", "fresh_dexscreener_mark"
+                else:
+                    status, reason, snapshot = "provider_empty", "pair_without_positive_price", None
+        except TimeoutError:
+            status, reason = "timeout", "deadline_bounded_provider_timeout"
+        except httpx.TimeoutException:
+            status, reason = "timeout", "dexscreener_timeout"
+        except httpx.HTTPStatusError as exc:
+            status = "rate_limited" if exc.response.status_code == 429 else "http_error"
+            reason = f"dexscreener_http_{exc.response.status_code}"
+        except (TypeError, ValueError, json.JSONDecodeError):
+            status, reason = "protocol_invalid", "dexscreener_protocol_invalid"
+        except Exception as exc:
+            status, reason = "http_error", f"dexscreener_{type(exc).__name__}"
+        response_received_at = utcnow()
+        if response_received_at > deadline_at:
+            self.store.finalize_information_first_active_outcome_deadlines(
+                now=response_received_at
+            )
+        self.store.finish_information_first_active_outcome_attempt(
+            attempt_id,
+            status=status,
+            reason_code=reason,
+            response_received_at=response_received_at,
+            snapshot=snapshot,
+        )
+
+    async def information_first_active_outcome_once(self) -> None:
+        """Actively mark due future information-first cohorts without trading."""
+        self.store.finalize_information_first_active_outcome_deadlines()
+        targets = self.store.due_information_first_active_outcome_targets(limit=4)
+        if targets:
+            await asyncio.gather(
+                *(self._information_first_active_outcome_target_once(target) for target in targets)
+            )
+        self.store.finalize_information_first_active_outcome_deadlines()
+
+    async def retry_deferred_token_context_once(self) -> None:
+        cfg = self.config["autonomous_search"]
+        if not cfg.get("context_deferred_retry_enabled", False):
+            return
+        activated_at = self.store.get_kv(self.DEFERRED_CONTEXT_RETRY_ACTIVATED_AT_KEY)
+        if not activated_at:
+            return
+        now = utcnow()
+        last_retry = self.store.get_kv(self.DEFERRED_CONTEXT_RETRY_RUN_KEY)
+        retry_interval = max(
+            float(cfg.get("context_global_cooldown_minutes", 5)),
+            float(cfg.get("context_deferred_retry_interval_minutes", 5)),
+        )
+        if last_retry and now - parse_time(last_retry) < timedelta(minutes=retry_interval):
+            return
+        due = self.store.due_token_context_active_retries(
+            activated_at=activated_at,
+            now=now,
+            limit=1,
+        )
+        if not due:
+            return
+        intent = due[0]
+        token = self.store.token(str(intent["token_id"]))
+        snapshot = self.store.latest_snapshot(str(intent["token_id"]), at_or_before=now)
+        if token is None or snapshot is None:
+            return
+        relation = None
+        anchor = self.store.db.execute(
+            "SELECT * FROM token_context_admission_attempts WHERE id=?",
+            (int(intent["admission_id"]),),
+        ).fetchone()
+        if anchor is not None and intent.get("trigger_transition_id") is not None:
+            relation = {
+                "kind": str(intent["trigger_kind"]),
+                "priority": int(intent["trigger_priority"] or 0),
+                "transition_id": int(intent["trigger_transition_id"]),
+                "selection_path": "deferred_retry_lane",
+                "decision_eligible": False,
+                "endorsement_inferred": False,
+            }
+            for key in ("source_link_id", "event_id", "decision_id"):
+                if anchor[key] is not None:
+                    relation[key] = int(anchor[key])
+            for key in ("platform", "entity_id"):
+                if str(anchor[key] or ""):
+                    relation[key] = str(anchor[key])
+            trigger_transition = self.store.db.execute(
+                "SELECT observation_id,source_record_ids_json,metadata_json "
+                "FROM token_universe_funnel_transitions WHERE id=?",
+                (int(intent["trigger_transition_id"]),),
+            ).fetchone()
+            if trigger_transition is not None:
+                try:
+                    source_ids = json.loads(
+                        str(trigger_transition["source_record_ids_json"] or "{}")
+                    )
+                except (TypeError, json.JSONDecodeError):
+                    source_ids = {}
+                try:
+                    transition_metadata = json.loads(
+                        str(trigger_transition["metadata_json"] or "{}")
+                    )
+                except (TypeError, json.JSONDecodeError):
+                    transition_metadata = {}
+                for key in ("source_buy_trade_id", "shadow_cohort_id"):
+                    if source_ids.get(key) is not None:
+                        relation[key] = int(source_ids[key])
+                for key in ("context_snapshot_basis", "investigation_started_at"):
+                    if transition_metadata.get(key):
+                        relation[key] = str(transition_metadata[key])
+                if relation.get("source_buy_trade_id") is not None:
+                    position = self.store.db.execute(
+                        "SELECT opened_at,status FROM "
+                        "onchain_paper_narrative_runner_positions "
+                        "WHERE definition_version=? AND source_buy_trade_id=?",
+                        (
+                            Store.ONCHAIN_PAPER_NARRATIVE_RUNNER_VERSION,
+                            int(relation["source_buy_trade_id"]),
+                        ),
+                    ).fetchone()
+                    if position is not None:
+                        relation["position_opened_at"] = str(position["opened_at"])
+                        relation["position_status"] = str(position["status"])
+            if trigger_transition is not None and trigger_transition["observation_id"] is not None:
+                observation = self.store.db.execute(
+                    "SELECT * FROM observations WHERE id=?",
+                    (int(trigger_transition["observation_id"]),),
+                ).fetchone()
+                if observation is not None:
+                    relation.update({
+                        "observation_id": int(observation["id"]),
+                        "observed_title": str(observation["title"] or "")[:1000],
+                        "observed_text": str(observation["text"] or "")[:3000],
+                        "content_fingerprint": hashlib.sha256(
+                            str(observation["text"] or "").encode("utf-8")
+                        ).hexdigest(),
+                        "published_at": str(observation["published_at"] or ""),
+                        "observed_at": str(observation["observed_at"] or ""),
+                        "verification_status": "browser_exact_entity_observation",
+                    })
+            if anchor["source_link_id"] is not None:
+                source_link = self.store.db.execute(
+                    "SELECT * FROM token_source_links WHERE id=?",
+                    (int(anchor["source_link_id"]),),
+                ).fetchone()
+                if source_link is not None:
+                    relation.update({
+                        "link_kind": str(source_link["link_kind"] or ""),
+                        "url": str(source_link["normalized_url"] or ""),
+                    })
+                    if "verification_status" not in relation:
+                        relation["verification_status"] = str(
+                            source_link["verification_status"] or ""
+                        )
+        elif anchor is not None and anchor["decision_id"] is not None:
+            relation = {"decision_id": int(anchor["decision_id"])}
+        self.store.set_kv(self.DEFERRED_CONTEXT_RETRY_RUN_KEY, iso(now))
+        await self._investigate_token_context(
+            token,
+            snapshot,
+            momentum_score=CandidateEvaluator._momentum_score(snapshot),
+            event_relation=relation,
+            retry_lane=True,
+        )
+        self.store.heartbeat("autonomous-context-retry", item=True)
 
     async def token_universe_followup_once(self) -> None:
         """Actively quote only due full-universe forward checkpoints."""
@@ -2901,7 +4001,7 @@ class Runtime:
                 round_id, chunk, requested_at=requested_at,
             )
             try:
-                quoted = await self.dex.batch_quote(
+                quoted = await self._dex_batch_quote(
                     chain,
                     [str(item["token_id"]).split(":", 1)[1] for item in chunk],
                 )
@@ -2997,12 +4097,14 @@ class Runtime:
         budget: dict[str, int] | None = None,
         include_universe: bool = True,
         include_onchain: bool = True,
+        include_kol: bool = True,
     ) -> None:
-        async with self._jupiter_quote_lock:
+        async with self._jupiter_background_dispatch_lock:
             await self._token_universe_jupiter_quote_once_unlocked(
                 budget=budget,
                 include_universe=include_universe,
                 include_onchain=include_onchain,
+                include_kol=include_kol,
             )
 
     async def _token_universe_jupiter_quote_once_unlocked(
@@ -3011,6 +4113,7 @@ class Runtime:
         budget: dict[str, int] | None = None,
         include_universe: bool = True,
         include_onchain: bool = True,
+        include_kol: bool = True,
     ) -> None:
         """Share three quote-only requests across universe and trigger-anchored lanes."""
         shared = budget if budget is not None else {"provider_requests": 0, "gap_records": 0}
@@ -3018,11 +4121,15 @@ class Runtime:
         shared.setdefault("gap_records", 0)
         universe_tasks: list[dict[str, Any]] = []
         onchain_tasks: list[dict[str, Any]] = []
+        kol_tasks: list[dict[str, Any]] = []
         if include_universe:
             self.store.finalize_token_universe_jupiter_quote_validity_gaps(limit=12)
             universe_tasks = self.store.due_token_universe_jupiter_quotes(limit=10_000)
         if include_onchain:
             onchain_tasks = self.store.due_onchain_only_jupiter_quotes(limit=10_000)
+        if include_kol:
+            self.store.refresh_kol_token_addressability_evidence()
+            kol_tasks = self.store.due_kol_token_addressability_routes(limit=1)
         requestable: list[dict[str, Any]] = []
 
         def universe_preflight_reason(item: Mapping[str, Any], evaluated_at: Any) -> str | None:
@@ -3076,47 +4183,82 @@ class Runtime:
                 record_gap(item, reason, now)
             else:
                 requestable.append(dict(item))
+        for item in kol_tasks:
+            candidate = dict(item)
+            candidate["lane"] = Store.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION
+            requestable.append(candidate)
 
         requestable.sort(key=lambda item: (
-            parse_time(item["anchor_at"])
-            + timedelta(seconds=float(item["max_queue_delay_seconds"])),
-            0 if item.get("lane") == Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION else 1,
+            parse_time(item["deadline_at"])
+            if item.get("lane") == Store.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION
+            else parse_time(item["anchor_at"])
+                + timedelta(seconds=float(item["max_queue_delay_seconds"])),
+            0 if item.get("lane") == Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION
+            else 1 if item.get("lane") == Store.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION else 2,
             int(item.get("shadow_cohort_id") or item.get("cohort_id") or 0),
             str(item.get("phase") or ""),
         ))
+        kol_sent = False
         for item in requestable:
             if shared["provider_requests"] >= 3:
                 break
+            loop_now = asyncio.get_running_loop().time()
+            if (
+                loop_now - self._jupiter_background_epoch_started
+                >= self._jupiter_background_epoch_seconds
+            ):
+                self._jupiter_background_epoch_started = loop_now
+                self._jupiter_background_epoch_requests = 0
+            if self._jupiter_background_epoch_requests >= 3:
+                break
+            if item.get("lane") == Store.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION and kol_sent:
+                continue
             requested_at = utcnow()
-            if item.get("lane") == Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION:
+            if item.get("lane") == Store.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION:
+                reason = (
+                    "queue_delay_expired"
+                    if requested_at > parse_time(item["deadline_at"])
+                    else None
+                )
+            elif item.get("lane") == Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION:
                 reason = Store.onchain_only_jupiter_preflight_reason(
                     item, evaluated_at=requested_at
                 )
             else:
                 reason = universe_preflight_reason(item, requested_at)
             if reason:
-                record_gap(item, reason, requested_at)
+                if item.get("lane") != Store.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION:
+                    record_gap(item, reason, requested_at)
                 continue
             attempt_id = None
-            if item.get("lane") == Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION:
+            if item.get("lane") == Store.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION:
+                attempt_id = self.store.start_kol_token_addressability_route_attempt(
+                    item, requested_at=requested_at
+                )
+                if attempt_id is None:
+                    continue
+                kol_sent = True
+            elif item.get("lane") == Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION:
                 attempt_id = self.store.start_onchain_only_jupiter_quote_attempt(
                     item, requested_at=requested_at
                 )
                 if attempt_id is None:
                     continue
             shared["provider_requests"] += 1
+            self._jupiter_background_epoch_requests += 1
             status = "quoted"
             result: dict[str, Any] = {}
             error_type = ""
             try:
-                result = await self.jupiter.quote(
-                    str(item["input_mint"]),
-                    str(item["output_mint"]),
-                    int(item["input_amount_raw"]),
-                    slippage_bps=int(item.get("slippage_bps") or round(
-                        float(self.config["paper"].get("slippage_rate", 0.04)) * 10_000
-                    )),
-                )
+                async with self._jupiter_quote_lock:
+                    result = await self.jupiter.quote(
+                        str(item["input_mint"]),
+                        str(item["output_mint"]),
+                        int(item["input_amount_raw"]),
+                        slippage_bps=int(item.get("slippage_bps") or round(
+                            float(self.config["paper"].get("slippage_rate", 0.04)) * 10_000
+                        )),
+                    )
             except JupiterNoRouteError:
                 status = "no_route"
             except JupiterQuoteProtocolError as exc:
@@ -3134,6 +4276,8 @@ class Runtime:
                 "fee_bps": result.get("fee_bps"),
                 "platform_fee_bps": result.get("platform_fee_bps"),
                 "price_impact_pct": result.get("price_impact_pct"),
+                "price_impact_bps": result.get("price_impact_bps"),
+                "price_impact_source": result.get("price_impact_source"),
                 "signature_fee_lamports": result.get("signature_fee_lamports"),
                 "prioritization_fee_lamports": result.get("prioritization_fee_lamports"),
                 "rent_fee_lamports": result.get("rent_fee_lamports"),
@@ -3142,7 +4286,14 @@ class Runtime:
                 "time_taken_ms": result.get("time_taken_ms"),
                 "error_type": error_type,
             }
-            if item.get("lane") == Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION:
+            if item.get("lane") == Store.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION:
+                self.store.record_kol_token_addressability_route_result(
+                    item, attempt_id=int(attempt_id), status=status,
+                    evaluated_at=completed_at,
+                    completed_at=result.get("completed_at") or completed_at,
+                    result=result, error_type=error_type,
+                )
+            elif item.get("lane") == Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION:
                 self.store.record_onchain_only_jupiter_quote(
                     item,
                     **payload,
@@ -3162,7 +4313,436 @@ class Runtime:
         await self.token_universe_jupiter_quote_once(
             include_universe=False,
             include_onchain=True,
+            include_kol=True,
         )
+
+    async def onchain_only_evm_route_quote_once(self) -> None:
+        """Observe one post-registration EVM cohort without mutating any strategy."""
+        requestable: dict[str, Any] | None = None
+        for item in self.store.due_onchain_only_evm_route_quotes(limit=12):
+            evaluated_at = utcnow()
+            reason = Store.onchain_only_evm_route_preflight_reason(
+                item, evaluated_at=evaluated_at
+            )
+            if reason:
+                interrupted = reason == "request_evidence_missing"
+                self.store.record_onchain_only_evm_route_quote(
+                    item,
+                    status="interrupted_after_request" if interrupted else "not_requested",
+                    attempt_id=item.get("attempt_id") if interrupted else None,
+                    evaluated_at=evaluated_at,
+                )
+                continue
+            requestable = item
+            break
+        if requestable is None:
+            return
+        requested_at = utcnow()
+        attempt_id = self.store.start_onchain_only_evm_route_quote_attempt(
+            requestable, requested_at=requested_at
+        )
+        if attempt_id is None:
+            return
+        status = "quoted"
+        result: dict[str, Any] = {}
+        error_type = ""
+        try:
+            async with self._evm_route_quote_lock:
+                result = await self.evm_route.quote_round_trip(
+                    str(requestable["chain"]),
+                    str(requestable["output_token"]),
+                    int(requestable["input_amount_raw"]),
+                    slippage_bps=int(requestable["slippage_bps"]),
+                )
+            status = str(result["status"])
+        except EvmRouteQuoteProtocolError as exc:
+            status, error_type = "quote_only_protocol_invalid", type(exc).__name__
+        except EvmRouteQuoteError as exc:
+            status, error_type = "error", type(exc).__name__
+        except Exception as exc:
+            status, error_type = "error", type(exc).__name__
+        completed_at = parse_time(result.get("completed_at") or utcnow())
+        result_id = self.store.record_onchain_only_evm_route_quote(
+            requestable,
+            status=status,
+            result=result,
+            error_type=error_type,
+            attempt_id=attempt_id,
+            requested_at=requested_at,
+            completed_at=completed_at,
+        )
+        self.store.heartbeat(
+            f"uniswap-v3:{requestable['chain']}",
+            item=result_id is not None,
+            error=error_type if status in {"error", "quote_only_protocol_invalid"} else "",
+        )
+
+    async def onchain_paper_exit_challenger_once(self) -> None:
+        """Monitor paired Shadow positions locally and quote only triggered exits."""
+        self.store.enroll_onchain_paper_exit_challenger()
+        self.store.enroll_onchain_paper_narrative_runner()
+        for position in self.store.due_onchain_paper_exit_challenger_marks(limit=3):
+            snapshot_id = None
+            mark_reason = ""
+            try:
+                quoted = await self.dex.quote("solana", str(position["address"]))
+            except Exception as exc:
+                quoted = None
+                mark_reason = f"dexscreener_{type(exc).__name__}"
+            if quoted is not None:
+                token, snapshot = quoted
+                received_at = utcnow()
+                rejections = self._paper_quote_rejections(
+                    str(position["token_id"]), token, snapshot, received_at
+                )
+                if rejections:
+                    mark_reason = "dexscreener_temporal_rejected:" + ",".join(rejections)
+                else:
+                    self.store.upsert_token(token, seen_at=snapshot.observed_at)
+                    snapshot_id = self.store.add_snapshot(snapshot)
+            elif not mark_reason:
+                mark_reason = "dexscreener_pair_unavailable"
+            self.store.record_onchain_paper_exit_challenger_mark(
+                int(position["shadow_cohort_id"]),
+                snapshot_id=snapshot_id,
+                evaluated_at=utcnow(),
+                reason=mark_reason,
+            )
+
+        tasks = self.store.due_onchain_paper_exit_challenger_quotes(limit=1)
+        if not tasks:
+            self.store.sync_onchain_paper_narrative_runner()
+            self.store.record_onchain_paper_exit_challenger_account_snapshot()
+            return
+        async with self._jupiter_background_dispatch_lock:
+            loop_now = asyncio.get_running_loop().time()
+            if (
+                loop_now - self._jupiter_background_epoch_started
+                >= self._jupiter_background_epoch_seconds
+            ):
+                self._jupiter_background_epoch_started = loop_now
+                self._jupiter_background_epoch_requests = 0
+            if self._jupiter_background_epoch_requests >= 3:
+                self.store.sync_onchain_paper_narrative_runner()
+                self.store.record_onchain_paper_exit_challenger_account_snapshot()
+                return
+            item = tasks[0]
+            requested_at = utcnow()
+            attempt_id = self.store.start_onchain_paper_exit_challenger_quote_attempt(
+                item, requested_at=requested_at
+            )
+            if attempt_id is None:
+                self.store.sync_onchain_paper_narrative_runner()
+                self.store.record_onchain_paper_exit_challenger_account_snapshot()
+                return
+            self._jupiter_background_epoch_requests += 1
+            status = "quoted"
+            result: dict[str, Any] = {}
+            error_type = ""
+            try:
+                async with self._jupiter_quote_lock:
+                    result = await self.jupiter.quote(
+                        str(item["input_mint"]),
+                        str(item["output_mint"]),
+                        int(item["input_amount_raw"]),
+                        slippage_bps=int(item["slippage_bps"]),
+                    )
+            except JupiterNoRouteError:
+                status = "no_route"
+            except JupiterQuoteProtocolError as exc:
+                status, error_type = "quote_only_protocol_invalid", type(exc).__name__
+            except Exception as exc:
+                status, error_type = "error", type(exc).__name__
+            completed_at = result.get("completed_at") or utcnow()
+            self.store.record_onchain_paper_exit_challenger_quote_result(
+                item,
+                attempt_id=int(attempt_id),
+                status=status,
+                output_amount_raw=result.get("output_amount_raw"),
+                other_amount_threshold_raw=result.get("other_amount_threshold"),
+                slippage_bps=result.get("slippage_bps"),
+                signature_fee_lamports=result.get("signature_fee_lamports"),
+                prioritization_fee_lamports=result.get("prioritization_fee_lamports"),
+                rent_fee_lamports=result.get("rent_fee_lamports"),
+                router=str(result.get("router") or ""),
+                mode=str(result.get("mode") or ""),
+                fee_bps=result.get("fee_bps"),
+                platform_fee_bps=result.get("platform_fee_bps"),
+                price_impact_pct=result.get("price_impact_pct"),
+                price_impact_bps=result.get("price_impact_bps"),
+                price_impact_source=str(result.get("price_impact_source") or ""),
+                route_plan=result.get("route_plan") or [],
+                error_type=error_type,
+                completed_at=completed_at,
+            )
+        self.store.sync_onchain_paper_narrative_runner()
+        self.store.record_onchain_paper_exit_challenger_account_snapshot()
+
+    async def onchain_paper_narrative_context_once(self) -> None:
+        """Investigate each new Strategy 3 position once, without changing its exit."""
+        self.store.enroll_onchain_paper_narrative_runner()
+        due = self.store.due_onchain_paper_narrative_context(limit=8)
+        if not due:
+            return
+        for position in due:
+            source_buy_trade_id = int(position["source_buy_trade_id"])
+            existing_transition_id = position.get("context_trigger_transition_id")
+            if (
+                existing_transition_id is None
+                and str(position["status"]) not in {"baseline", "narrative_runner"}
+            ):
+                self.store.record_onchain_paper_narrative_context_seed(
+                    source_buy_trade_id=source_buy_trade_id,
+                    snapshot_id=None,
+                    trigger_transition_id=None,
+                    status="coverage_gap",
+                    reason_code="position_closed_before_context_trigger",
+                )
+                continue
+            token = self.store.token(str(position["token_id"]))
+            if token is None:
+                if existing_transition_id is None:
+                    self.store.record_onchain_paper_narrative_context_seed(
+                        source_buy_trade_id=source_buy_trade_id,
+                        snapshot_id=None,
+                        trigger_transition_id=None,
+                        status="coverage_gap",
+                        reason_code="token_record_unavailable",
+                    )
+                continue
+            triggered_at = utcnow()
+            frozen = self.store.post_entry_context_snapshot(
+                str(position["token_id"]),
+                opened_at=position["opened_at"],
+                at_or_before=triggered_at,
+                snapshot_id=(
+                    int(position["context_snapshot_id"])
+                    if existing_transition_id is not None
+                    and position.get("context_snapshot_id") is not None
+                    else None
+                ),
+                entry_snapshot_id=(
+                    int(position["entry_trigger_snapshot_id"])
+                    if existing_transition_id is None
+                    and position.get("entry_trigger_snapshot_id") is not None
+                    else None
+                ),
+            )
+            if frozen is None:
+                if existing_transition_id is None:
+                    self.store.record_onchain_paper_narrative_context_seed(
+                        source_buy_trade_id=source_buy_trade_id,
+                        snapshot_id=None,
+                        trigger_transition_id=None,
+                        status="coverage_gap",
+                        reason_code="no_temporally_valid_post_entry_snapshot",
+                    )
+                continue
+            snapshot_id, snapshot = frozen
+            snapshot_basis = (
+                "entry_trigger_snapshot"
+                if int(snapshot_id)
+                == int(position.get("entry_trigger_snapshot_id") or -1)
+                else "post_entry_snapshot"
+            )
+            momentum = CandidateEvaluator._momentum_score(snapshot)
+            if existing_transition_id is not None:
+                trigger = {
+                    "kind": "post_entry_narrative_position",
+                    "priority": 2,
+                    "source_buy_trade_id": source_buy_trade_id,
+                    "shadow_cohort_id": int(position["shadow_cohort_id"]),
+                    "position_opened_at": str(position["opened_at"]),
+                    "position_status": str(position["status"]),
+                    "selection_path": "strategy3_forward_post_entry_recovery",
+                    "context_snapshot_basis": snapshot_basis,
+                    "investigation_started_at": iso(triggered_at),
+                    "decision_eligible": False,
+                    "endorsement_inferred": False,
+                    "transition_id": int(existing_transition_id),
+                }
+            else:
+                trigger = self.autonomous_search.resolve_token_context_trigger(
+                    token,
+                    momentum_score=momentum,
+                    event_relation={
+                        "kind": "post_entry_narrative_position",
+                        "source_buy_trade_id": source_buy_trade_id,
+                        "shadow_cohort_id": int(position["shadow_cohort_id"]),
+                        "position_opened_at": str(position["opened_at"]),
+                        "position_status": str(position["status"]),
+                        "context_snapshot_basis": snapshot_basis,
+                        "investigation_started_at": iso(triggered_at),
+                    },
+                    snapshot_observed_at=snapshot.observed_at,
+                    snapshot_id=snapshot_id,
+                )
+                transition_id = (
+                    int(trigger["transition_id"])
+                    if trigger is not None and trigger.get("transition_id") is not None
+                    else None
+                )
+                self.store.record_onchain_paper_narrative_context_seed(
+                    source_buy_trade_id=source_buy_trade_id,
+                    snapshot_id=snapshot_id,
+                    trigger_transition_id=transition_id,
+                    status="triggered" if transition_id is not None else "coverage_gap",
+                    reason_code=(
+                        "post_entry_narrative_position"
+                        if transition_id is not None else "token_universe_lineage_unavailable"
+                    ),
+                )
+                if transition_id is None:
+                    continue
+            await self._investigate_token_context(
+                token,
+                snapshot,
+                momentum_score=momentum,
+                event_relation=trigger,
+            )
+            self.store.heartbeat("onchain-paper-narrative-context", item=True)
+            break
+
+    async def kol_token_addressability_route_once(self) -> None:
+        await self.token_universe_jupiter_quote_once(
+            include_universe=False, include_onchain=False, include_kol=True,
+        )
+
+    async def _hydrate_pump_metadata(
+        self, token: TokenCandidate, *, round_id: int, exposure_id: int
+    ) -> None:
+        cfg = self.config["sources"].get("pumpportal") or {}
+        raw_uri = token.raw.get("uri") if isinstance(token.raw, dict) else None
+        if not cfg.get("metadata_enabled", True) or not raw_uri:
+            return
+        attempted_at = utcnow()
+        evaluation_key = f"pump-metadata:{token.token_id}:{str(raw_uri)[:500]}"
+        self.store.record_token_universe_funnel_transition(
+            token.token_id,
+            stage="metadata_hydration_attempt",
+            status="attempted",
+            reason_code="launch_metadata_uri",
+            evaluation_key=evaluation_key + ":attempt",
+            observed_at=attempted_at,
+            ingested_at=attempted_at,
+            source_table="token_discovery_rounds",
+            source_record_ids={"round_id": round_id},
+            round_id=round_id,
+            metadata={"provider": "pumpportal"},
+        )
+        try:
+            metadata_uri = normalize_public_http_url(str(raw_uri))
+            response = await self.http.get_public_document(
+                metadata_uri,
+                maximum_bytes=int(cfg.get("metadata_max_response_bytes", 131_072)),
+                maximum_redirects=3,
+            )
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise ValueError("Pump metadata must be a JSON object")
+            links: list[tuple[str, Any]] = []
+            for field in ("website", "twitter", "telegram"):
+                if payload.get(field):
+                    links.append((field, payload.get(field)))
+            extensions = payload.get("extensions")
+            if isinstance(extensions, dict):
+                for field in ("website", "twitter", "telegram"):
+                    if extensions.get(field):
+                        links.append((field, extensions.get(field)))
+            source_links: list[dict[str, Any]] = []
+            social_urls: list[str] = []
+            seen: set[tuple[str, str]] = set()
+            for label, value in links:
+                link_kind, platform, normalized_url = DexScreenerClient._classify_link(
+                    value, label=label
+                )
+                if not normalized_url or (normalized_url, link_kind) in seen:
+                    continue
+                seen.add((normalized_url, link_kind))
+                social_urls.append(normalized_url)
+                source_links.append(
+                    {
+                        "token_id": token.token_id,
+                        "chain": token.chain.lower(),
+                        "address": token.address,
+                        "provider": "pumpportal",
+                        "discovery_surface": "launch_metadata",
+                        "role": "identity",
+                        "original_url": str(value)[:4000],
+                        "normalized_url": normalized_url[:4000],
+                        "link_kind": link_kind,
+                        "label": label,
+                        "platform": platform,
+                        "verification_status": "manual_only"
+                        if link_kind == "telegram_manual" else "provider_metadata",
+                        "raw": {"metadata_uri": metadata_uri, "field": label},
+                    }
+                )
+            description = str(payload.get("description") or "")[:5000]
+            token.name = token.name or str(payload.get("name") or "")[:300]
+            token.symbol = token.symbol or str(payload.get("symbol") or "")[:80]
+            token.social_urls = list(dict.fromkeys([*token.social_urls, *social_urls]))
+            token.raw = {
+                **token.raw,
+                "description": description,
+                "pump_metadata_uri": metadata_uri,
+                "token_source_links": source_links,
+            }
+            completed_at = utcnow()
+            source_link_fingerprints = [
+                self.store.upsert_token_source_link(link, observed_at=completed_at)[0]
+                for link in source_links
+            ]
+            self.store.upsert_token(token, seen_at=completed_at)
+            self.store.link_token_discovery_exposure_source_links(
+                exposure_id, source_link_fingerprints, observed_at=completed_at
+            )
+            source_link_id = None
+            if source_link_fingerprints:
+                fingerprint = source_link_fingerprints[0]
+                source_link_id = next(
+                    (
+                        int(row["id"])
+                        for row in self.store.token_source_links(token.token_id, limit=100)
+                        if str(row["fingerprint"]) == fingerprint
+                    ),
+                    None,
+                )
+            self.store.record_token_universe_funnel_transition(
+                token.token_id,
+                stage="metadata_hydration_result",
+                status="hydrated",
+                reason_code="metadata_links_found" if source_links else "metadata_parsed_no_links",
+                evaluation_key=evaluation_key + ":result",
+                observed_at=completed_at,
+                ingested_at=completed_at,
+                source_table="token_source_links" if source_links else "tokens",
+                source_record_ids={
+                    "round_id": round_id,
+                    "exposure_id": exposure_id,
+                    "source_link_id": source_link_id,
+                },
+                round_id=round_id,
+                source_link_id=source_link_id,
+                metadata={"provider": "pumpportal", "source_link_count": len(source_links)},
+            )
+            self.store.heartbeat("pumpportal:metadata", item=bool(source_links))
+        except Exception as exc:
+            completed_at = utcnow()
+            self.store.record_token_universe_funnel_transition(
+                token.token_id,
+                stage="metadata_hydration_result",
+                status="error",
+                reason_code=type(exc).__name__,
+                evaluation_key=evaluation_key + ":result",
+                observed_at=completed_at,
+                ingested_at=completed_at,
+                source_table="token_discovery_rounds",
+                source_record_ids={"round_id": round_id},
+                round_id=round_id,
+                metadata={"provider": "pumpportal"},
+            )
+            self.store.heartbeat("pumpportal:metadata", error=type(exc).__name__)
 
     async def pump_loop(self) -> None:
         cfg = self.config["sources"].get("pumpportal") or {}
@@ -3170,12 +4750,29 @@ class Runtime:
             return
         collector = PumpPortalCollector(str(cfg.get("url") or PumpPortalCollector.URL))
         queue: asyncio.Queue[TokenCandidate] = asyncio.Queue()
+        metadata_queue: asyncio.Queue[tuple[TokenCandidate, int, int]] = asyncio.Queue(
+            maxsize=max(1, int(cfg.get("metadata_queue_size", 512)))
+        )
 
         async def produce() -> None:
             async for token in collector.stream():
                 await queue.put(token)
 
         producer = asyncio.create_task(produce(), name="pumpportal_stream_reader")
+        async def hydrate_metadata() -> None:
+            while not self._stop.is_set():
+                token, round_id, exposure_id = await metadata_queue.get()
+                try:
+                    await self._hydrate_pump_metadata(
+                        token, round_id=round_id, exposure_id=exposure_id
+                    )
+                finally:
+                    metadata_queue.task_done()
+
+        metadata_workers = [
+            asyncio.create_task(hydrate_metadata(), name=f"pumpportal_metadata_{index + 1}")
+            for index in range(max(1, min(2, int(cfg.get("metadata_workers", 1)))))
+        ] if cfg.get("metadata_enabled", True) else []
         window_seconds = max(1.0, float(cfg.get("exposure_window_seconds", 60)))
         try:
             while not self._stop.is_set():
@@ -3206,7 +4803,7 @@ class Runtime:
                         first_local = not known_before and created
                         returned[surface] += 1
                         duplicates[surface] += int(not first_local)
-                        self.store.add_token_discovery_exposure(
+                        exposure_id = self.store.add_token_discovery_exposure(
                             round_ids[surface],
                             token_id=token.token_id,
                             chain=token.chain,
@@ -3215,6 +4812,36 @@ class Runtime:
                             new_token=created,
                             observed_at=token.first_seen_at,
                         )
+                        if (
+                            exposure_id is not None
+                            and first_local
+                            and surface == "create"
+                            and isinstance(token.raw, dict)
+                            and token.raw.get("uri")
+                            and metadata_workers
+                        ):
+                            try:
+                                metadata_queue.put_nowait(
+                                    (token, round_ids[surface], int(exposure_id))
+                                )
+                            except asyncio.QueueFull:
+                                skipped_at = utcnow()
+                                self.store.record_token_universe_funnel_transition(
+                                    token.token_id,
+                                    stage="metadata_hydration_attempt",
+                                    status="skipped",
+                                    reason_code="metadata_queue_full",
+                                    evaluation_key=f"pump-metadata:{token.token_id}:queue-full",
+                                    observed_at=skipped_at,
+                                    ingested_at=skipped_at,
+                                    source_table="token_discovery_rounds",
+                                    source_record_ids={
+                                        "round_id": round_ids[surface],
+                                        "exposure_id": int(exposure_id),
+                                    },
+                                    round_id=round_ids[surface],
+                                    metadata={"provider": "pumpportal"},
+                                )
                 except asyncio.CancelledError:
                     for surface, round_id in round_ids.items():
                         self.store.finish_token_discovery_round(
@@ -3234,7 +4861,12 @@ class Runtime:
                     )
         finally:
             producer.cancel()
-            await asyncio.gather(producer, return_exceptions=True)
+            for worker in metadata_workers:
+                worker.cancel()
+            await asyncio.gather(producer, *metadata_workers, return_exceptions=True)
+
+    async def provider_post_ambiguity_once(self) -> None:
+        self.store.finalize_provider_post_ambiguity_checkpoints()
 
     async def run_once(self) -> None:
         await self.poll_external_once()
@@ -3242,6 +4874,7 @@ class Runtime:
         await self.reverse_news_once()
         await self.evaluate_events_once()
         await self.shadow_event_followup_once()
+        self.store.finalize_provider_post_ambiguity_checkpoints()
         await self.onchain_only_jupiter_quote_once()
         await self.monitor_positions_once()
         await self.check_source_health_once(include_streams=False)
@@ -3303,6 +4936,29 @@ class Runtime:
                 name="dexscreener_discovery",
             ),
             asyncio.create_task(
+                self._periodic(
+                    "provider_post_ambiguity_finalizer",
+                    30,
+                    self.provider_post_ambiguity_once,
+                ),
+                name="provider_post_ambiguity_finalizer",
+            ),
+            asyncio.create_task(
+                self._periodic(
+                    "solana_holder_shadow",
+                    max(
+                        300,
+                        float(
+                            (self.config["sources"].get("solana_holder_shadow") or {}).get(
+                                "interval_seconds", 300
+                            )
+                        ),
+                    ),
+                    self.solana_holder_shadow_once,
+                ),
+                name="solana_holder_shadow",
+            ),
+            asyncio.create_task(
                 self._periodic("reverse_news", self.config.get("reverse_news_seconds", 45), self.reverse_news_once),
                 name="reverse_news",
             ),
@@ -3316,11 +4972,51 @@ class Runtime:
             ),
             asyncio.create_task(
                 self._periodic(
+                    "information_first_active_outcome",
+                    10,
+                    self.information_first_active_outcome_once,
+                ),
+                name="information_first_active_outcome",
+            ),
+            asyncio.create_task(
+                self._periodic(
+                    "liquidity_survival_shadow",
+                    10,
+                    self.liquidity_survival_once,
+                ),
+                name="liquidity_survival_shadow",
+            ),
+            asyncio.create_task(
+                self._periodic(
                     "onchain_only_jupiter_quote",
                     5,
                     self.onchain_only_jupiter_quote_once,
                 ),
                 name="onchain_only_jupiter_quote",
+            ),
+            asyncio.create_task(
+                self._periodic(
+                    "onchain_only_evm_route_quote",
+                    10,
+                    self.onchain_only_evm_route_quote_once,
+                ),
+                name="onchain_only_evm_route_quote",
+            ),
+            asyncio.create_task(
+                self._periodic(
+                    "onchain_paper_exit_challenger",
+                    self.config.get("position_scan_seconds", 15),
+                    self.onchain_paper_exit_challenger_once,
+                ),
+                name="onchain_paper_exit_challenger",
+            ),
+            asyncio.create_task(
+                self._periodic(
+                    "onchain_paper_narrative_context",
+                    30,
+                    self.onchain_paper_narrative_context_once,
+                ),
+                name="onchain_paper_narrative_context",
             ),
             asyncio.create_task(
                 self._periodic("position_monitor", self.config.get("position_scan_seconds", 15), self.monitor_positions_once),

@@ -166,3 +166,16 @@ websockets
 8. 对“新闻↔Token”和“主叙事选择”提供了什么真实增量？
 9. 是否会让个人电脑架构明显变复杂？
 10. 能否写出无网络、无真实资金的测试？
+
+## 2026-09-02 当前接入结论
+
+对 RSSHub、changedetection.io、twscrape、snscrape、Telethon 与 Huginn 的当前维护状态和本机适配成本重新核对后，结论是**现在不新增采集框架**。当前已观察到的断点是 X 作者归因、重点账号轮换新鲜度和既有 Trigger 的 admission，而不是缺少通用调度器；前两项已经在现有浏览器桥内修复，新增服务不会直接改善第三项。
+
+RSSHub 是唯一保留的候选，但只在出现一个明确的“公开、免登录、没有原生 RSS”的来源时做单路由、自托管试点，并把缓存与日志放在 `E:\memeTrader\data`。其 X 路由仍需要登录 token/Cookie，不能替代现有 X 桥。changedetection.io 仅适合未来少量静态无 RSS 页面；twscrape/snscrape 的 X 账号、Cloudflare 与维护风险过高；Telethon 需要 API ID/hash 和敏感 session，与当前 Telegram manual-only 边界不符；Huginn 的 Rails、数据库和 worker 会重复本项目已有架构。该结论避免为了“用了开源工具”而增加无增量依赖，不妨碍后续对具体来源做小规模验证。
+
+## 2026-09-02 多链扫链补充
+
+- `rpcpool/yellowstone-grpc` 与 `yellowstone-vixen` 是 Solana Geyser 流和程序解析的成熟参考；自建服务需要 validator/Geyser 资源，个人电脑阶段不替换已运行的 PumpPortal + DexScreener。只有现有 Solana 首次发现延迟成为被证实的主要损失时，才接一个现成 Yellowstone endpoint 做 challenger。
+- EVM 新池的最小机制是标准 JSON-RPC/WebSocket 监听已核验 DEX factory 的 `PairCreated/PoolCreated`，把区块号、交易哈希和日志索引作为首次可见证据，再用 DexScreener/GeckoTerminal 水合。`swiftnodes/memecoin-scanner` 可参考其事件和安全检查结构，但依赖第三方节点 API，不能原样成为生产依赖。
+- `ponder-sh/ponder`、Subsquid 和 Blockscout 都能提供更完整 EVM 索引思路，但 Ponder 需要 Postgres，完整 Blockscout/索引器也超出个人电脑 SQLite 架构。当前优先复用公开 GeckoTerminal/DexScreener/Robinhood RPC 或 Blockscout API，不引入 Redis/Postgres/Kafka。
+- Robinhood Chain 已有官方公共 RPC、Blockscout、Uniswap 与 DexScreener/GeckoTerminal 数据，但它以 ETH 支付 gas，且属于 Arbitrum L2；执行成本不能用 BSC 固定费率或 Solana Jupiter 报价代替。当前只进入 `research_only` 发现层。

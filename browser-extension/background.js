@@ -5,9 +5,19 @@ const DEFAULTS = {
   watchTerms: [],
   watchAccounts: [],
   watchAccountEntries: [],
+  priorityPostRequests: [],
   platformStates: {},
   officialAccounts: [],
   maxPostAgeMinutes: 30,
+  autoWatchEnabled: true,
+  autoWatchCriticalCursor: 0,
+  autoWatchNormalCursor: 0,
+  autoWatchLaneCursor: 0,
+  autoWatchTabId: null,
+  autoWatchCriticalTabId: null,
+  autoWatchNormalTabId: null,
+  priorityPostCursor: 0,
+  priorityPostTabId: null,
   pendingObservations: [],
   watchlistLastSyncAt: "",
   watchlistLastSyncError: ""
@@ -102,8 +112,12 @@ async function heartbeat(source, detail = {}) {
   if (!state.token) return;
   const platform = String(detail.platform || source || "browser").slice(0, 64);
   const accessStates = new Set(["content_visible", "login_prompt", "no_recent_items"]);
+  const extensionVersion = /^\d+(?:\.\d+){1,3}$/.test(String(detail.extension_version || ""))
+    ? String(detail.extension_version)
+    : "";
   const safeDetail = {
     platform,
+    ...(extensionVersion ? {extension_version: extensionVersion} : {}),
     visible: typeof detail.visible === "boolean" ? detail.visible : null,
     selector_count: Math.max(0, Number(detail.selector_count) || 0),
     page_url: String(detail.page_url || "").slice(0, 2048),
@@ -127,6 +141,93 @@ function platformName(value) {
 function sourceEntityId(value) {
   const entityId = String(value || "").trim();
   return /^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/.test(entityId) ? entityId : "";
+}
+
+function publicAccountUrl(item) {
+  const platform = platformName(item?.platform);
+  const handle = String(item?.handle || "").trim().replace(/^@/, "");
+  if (!handle || /[\s/?#]/.test(handle)) return "";
+  if (platform === "x") return `https://x.com/${encodeURIComponent(handle)}`;
+  if (platform === "bluesky") return `https://bsky.app/profile/${encodeURIComponent(handle)}`;
+  if (platform === "truth") return `https://truthsocial.com/@${encodeURIComponent(handle)}`;
+  return "";
+}
+
+async function rotateWatchAccounts() {
+  const state = await settings();
+  if (!state.autoWatchEnabled) return;
+  const lanes = ["critical", "normal", "critical"];
+  let laneIndex = Math.max(0, Number(state.autoWatchLaneCursor) || 0) % lanes.length;
+  let critical = lanes[laneIndex] === "critical";
+  let entries = (state.watchAccountEntries || []).filter((item) => {
+    if (!item || state.platformStates?.[platformName(item.platform)] === false) return false;
+    if (!publicAccountUrl(item)) return false;
+    return (item.watch_cadence === "critical") === critical;
+  });
+  if (!entries.length) {
+    critical = !critical;
+    entries = (state.watchAccountEntries || []).filter((item) => {
+      if (!item || state.platformStates?.[platformName(item.platform)] === false) return false;
+      if (!publicAccountUrl(item)) return false;
+      return (item.watch_cadence === "critical") === critical;
+    });
+  }
+  if (!entries.length) return;
+  const cursorKey = critical ? "autoWatchCriticalCursor" : "autoWatchNormalCursor";
+  const index = Math.max(0, Number(state[cursorKey]) || 0) % entries.length;
+  const target = entries[index];
+  const url = publicAccountUrl(target);
+  let tabId = Number(state.autoWatchTabId)
+    || Number(state.autoWatchCriticalTabId)
+    || Number(state.autoWatchNormalTabId)
+    || null;
+  try {
+    if (!tabId) throw new Error("missing rotation tab");
+    await chrome.tabs.update(tabId, {url, active: false});
+  } catch (_) {
+    const tab = await chrome.tabs.create({url, active: false});
+    tabId = tab.id || null;
+  }
+  await chrome.storage.local.set({
+    [cursorKey]: (index + 1) % entries.length,
+    autoWatchLaneCursor: (laneIndex + 1) % lanes.length,
+    autoWatchTabId: tabId,
+    [`${critical ? "autoWatchCritical" : "autoWatchNormal"}LastAt`]: new Date().toISOString(),
+    [`${critical ? "autoWatchCritical" : "autoWatchNormal"}LastAccount`]: `${target.platform}:${target.handle}`
+  });
+}
+
+async function rotatePriorityPosts() {
+  const state = await settings();
+  if (!state.autoWatchEnabled) return;
+  const requests = (state.priorityPostRequests || []).filter((item) => {
+    if (!item || state.platformStates?.[platformName(item.platform)] === false) return false;
+    const firstObservedAt = Date.parse(String(item.first_observed_at || ""));
+    if (!Number.isFinite(firstObservedAt) || Date.now() - firstObservedAt > 15 * 60 * 1000) return false;
+    try {
+      const parsed = new URL(String(item.url || ""));
+      return parsed.protocol === "https:" && ["x.com", "twitter.com", "bsky.app", "truthsocial.com"].includes(parsed.hostname.toLowerCase());
+    } catch (_) {
+      return false;
+    }
+  });
+  if (!requests.length) return;
+  const index = Math.max(0, Number(state.priorityPostCursor) || 0) % requests.length;
+  const target = requests[index];
+  let tabId = Number(state.priorityPostTabId) || null;
+  try {
+    if (!tabId) throw new Error("missing priority post tab");
+    await chrome.tabs.update(tabId, {url: target.url, active: false});
+  } catch (_) {
+    const tab = await chrome.tabs.create({url: target.url, active: false});
+    tabId = tab.id || null;
+  }
+  await chrome.storage.local.set({
+    priorityPostCursor: (index + 1) % requests.length,
+    priorityPostTabId: tabId,
+    priorityPostLastAt: new Date().toISOString(),
+    priorityPostLastUrl: target.url
+  });
 }
 
 async function syncWatchlist() {
@@ -154,17 +255,33 @@ async function syncWatchlist() {
       const platform = platformName(item.platform);
       const entityId = sourceEntityId(item.entity_id);
       if (platform === "telegram") continue;
-      if (handle && platform) watchAccountEntries.push({platform, handle, entity_id: entityId});
+      if (handle && platform) watchAccountEntries.push({
+        platform,
+        handle,
+        entity_id: entityId,
+        watch_cadence: item.watch_cadence === "critical" ? "critical" : "normal"
+      });
     }
     const watchTerms = (Array.isArray(payload.topics) ? payload.topics : [])
       .map((item) => String(item || "").trim().slice(0, 160))
       .filter(Boolean)
       .slice(0, 100);
+    const priorityPostRequests = (Array.isArray(payload.priority_post_requests) ? payload.priority_post_requests : [])
+      .filter((item) => item && typeof item === "object")
+      .slice(0, 12)
+      .map((item) => ({
+        url: String(item.url || "").slice(0, 2048),
+        platform: platformName(item.platform),
+        handle: String(item.handle || "").slice(0, 120),
+        entity_id: sourceEntityId(item.entity_id),
+        first_observed_at: String(item.first_observed_at || "")
+      }));
     await chrome.storage.local.set({
       platformStates,
       watchAccountEntries,
       watchAccounts: [...new Set(watchAccountEntries.map((item) => item.handle))],
       watchTerms,
+      priorityPostRequests,
       watchlistLastSyncAt: new Date().toISOString(),
       watchlistLastSyncError: ""
     });
@@ -185,7 +302,13 @@ async function initialize() {
   await chrome.storage.local.remove("queue");
   chrome.alarms.create("memetrader-flush", {periodInMinutes: 0.5});
   chrome.alarms.create("memetrader-watchlist-sync", {periodInMinutes: 2});
+  await chrome.alarms.clear("memetrader-auto-watch-critical");
+  await chrome.alarms.clear("memetrader-auto-watch-normal");
+  chrome.alarms.create("memetrader-auto-watch", {periodInMinutes: 0.5});
+  chrome.alarms.create("memetrader-priority-posts", {periodInMinutes: 0.5});
   await syncWatchlist();
+  await rotateWatchAccounts();
+  await rotatePriorityPosts();
 }
 
 chrome.runtime.onInstalled.addListener(initialize);
@@ -196,6 +319,8 @@ chrome.runtime.onStartup.addListener(() => {
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "memetrader-flush") flushQueue();
   if (alarm.name === "memetrader-watchlist-sync") syncWatchlist();
+  if (alarm.name === "memetrader-auto-watch") rotateWatchAccounts();
+  if (alarm.name === "memetrader-priority-posts") rotatePriorityPosts();
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

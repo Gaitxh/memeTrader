@@ -122,9 +122,9 @@
     const label = normalize(profile?.textContent || profileHref);
     if (label) return label.replace(/^@/, "");
     const match = permalink.match(
-      /(?:x\.com|twitter\.com|bsky\.app\/profile|threads\.net\/@|instagram\.com\/)([^/]+)/i
+      /(?:x\.com|twitter\.com)\/([^/?#]+)|bsky\.app\/profile\/([^/?#]+)|(?:threads\.net|instagram\.com)\/@?([^/?#]+)/i
     );
-    return match ? match[1].replace(/^@/, "") : "";
+    return match ? (match[1] || match[2] || match[3] || "").replace(/^@/, "") : "";
   }
 
   function findPublishedAt(node) {
@@ -138,6 +138,31 @@
     return parsed.toISOString();
   }
 
+  function xStatusIdentity(value) {
+    if (platform() !== "x") return null;
+    try {
+      const parsed = new URL(value, location.href);
+      const hostname = parsed.hostname.toLowerCase().replace(/^www\./, "");
+      if (hostname !== "x.com" && hostname !== "twitter.com") return null;
+      const match = parsed.pathname.match(/^\/([^/?#]+)\/status\/(\d+)\/?$/i);
+      return match ? {handle: accountKey(match[1]), statusId: match[2]} : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function xStatusPublishedAt(value) {
+    const identity = xStatusIdentity(value);
+    if (!identity) return null;
+    try {
+      const timestamp = Number((BigInt(identity.statusId) >> 22n) + 1288834974657n);
+      if (!Number.isFinite(timestamp) || timestamp > Date.now() + 5 * 60 * 1000) return null;
+      return new Date(timestamp).toISOString();
+    } catch (_) {
+      return null;
+    }
+  }
+
   function accountKey(value) {
     return String(value || "").trim().toLowerCase().replace(/^@/, "");
   }
@@ -147,6 +172,22 @@
     return (settings.watchAccountEntries || []).find(
       (item) => item && item.platform === platform() && authorKey === accountKey(item.handle)
     ) || null;
+  }
+
+  function xRepostAction(contentUrl, contentAuthor) {
+    const page = xStatusIdentity(safePageUrl());
+    const content = xStatusIdentity(contentUrl);
+    if (!page || !content || page.handle === content.handle) return null;
+    const account = matchedWatchAccount(page.handle);
+    if (!account) return null;
+    return {
+      actor: page.handle,
+      entityId: sourceEntityId(page.handle),
+      url: safePageUrl(),
+      publishedAt: xStatusPublishedAt(safePageUrl()),
+      contentAuthor: accountKey(contentAuthor || content.handle),
+      contentUrl
+    };
   }
 
   function sourceEntityId(author) {
@@ -190,12 +231,17 @@
     for (const node of nodes) {
       const text = normalize(node.innerText || node.textContent || "");
       if (text.length < 8 || text.length > 20000) continue;
-      const publishedAt = findPublishedAt(node);
+      let url = findPermalink(node);
+      let author = findAuthor(node, url);
+      const repost = xRepostAction(url, author);
+      let publishedAt = repost?.publishedAt || findPublishedAt(node);
+      if (repost) {
+        url = repost.url;
+        author = repost.actor;
+      }
       if (!isRecent(publishedAt, observedAt)) continue;
       lastRecentCount += 1;
-      const url = findPermalink(node);
-      const author = findAuthor(node, url);
-      const entityId = sourceEntityId(author);
+      const entityId = repost?.entityId || sourceEntityId(author);
       const fingerprint = hash(`${platform()}\n${url}\n${author}\n${text}`);
       if (seen.has(fingerprint)) continue;
       seen.add(fingerprint);
@@ -221,6 +267,11 @@
           priority: priority(text, author),
           page_url: safePageUrl(),
           platform: platform(),
+          ...(repost ? {
+            source_action: "repost",
+            content_author: repost.contentAuthor,
+            content_url: repost.contentUrl
+          } : {}),
           ...(entityId ? {source_entity_id: entityId} : {})
         }
       });
@@ -259,6 +310,7 @@
       source: platform(),
       detail: {
         platform: platform(),
+        extension_version: chrome.runtime.getManifest().version,
         visible: document.visibilityState === "visible",
         selector_count: platformEnabled() ? candidateNodes().length : 0,
         page_url: safePageUrl(),

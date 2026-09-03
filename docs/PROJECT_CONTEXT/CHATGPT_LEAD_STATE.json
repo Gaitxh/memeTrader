@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "updated_date": "2026-09-02",
+  "purpose": "Durable, compact state for the Lead ChatGPT reasoning/review layer. This is routing and continuity context, not trading evidence and not a replacement for current code/SQLite/authoritative plans.",
+  "north_star": {
+    "business_goal": "Continuously improve genuine forward, executable, cost-adjusted, risk-adjusted meme-token profitability without using future data or manufacturing trade count.",
+    "engineering_translation": "Improve the full chain Source/Token discovery -> Event<->Token evidence -> exact CA/canonical mapping -> executable Decision -> realistic Paper execution -> fixed-horizon learning, while controlling false positives, ambiguity, costs and tail risk.",
+    "anti_proxy_rule": "More UI, more Agent calls, more Decisions, more Paper trades, historical winners, or raw backtest return are not substitutes for forward net-EV evidence."
+  },
+  "authority_order": [
+    "latest explicit user instruction and safety constraints, whether expressed in the GXH ChatGPT project chats or the designated Codex thread/history",
+    "when user-intent sources appear to conflict: explicit supersession and later/specific instructions override older/general ones; otherwise preserve both and record a conflict instead of silently dropping either",
+    "E:/memeTrader/AGENTS.md frozen execution contract",
+    "docs/PROJECT_CONTEXT/CURRENT_OBJECTIVE_AND_PLAN.md",
+    "docs/PROJECT_CONTEXT/REQUIREMENT_LEDGER.md",
+    "current code, r6 SQLite, tests and running-process facts are authoritative for current implementation/runtime facts",
+    "CHATGPT/Codex/reviewer proposals only after verification and promotion"
+  ],
+  "drift_guard": {
+    "mandatory_question_before_scope_change": "Which currently observed end-to-end profitability bottleneck will this action change?",
+    "if_no_clear_answer": "Do not displace the active cycle. Preserve the idea in the governed idea lane instead.",
+    "scope_change_rule": "A supplementary request or attractive idea changes active scope only when it is explicitly superseding a frozen/current instruction or is promoted into CURRENT_OBJECTIVE_AND_PLAN.md / REQUIREMENT_LEDGER.md under the existing PROMOTE_NOW rule.",
+    "local_optimum_warning": "Codex's minimal-action policy is useful for implementation, but every local task remains subordinate to the active project objective and cycle."
+  },
+  "coordination_topology": {
+    "codex_role": "Sole active checkout writer/integrator for code, tests, SQLite-affecting operations, deployment and controlled restart.",
+    "lead_chatgpt_role": "Objective keeper; deep research, reasoning, causal/statistical review, trading-economics review, architecture challenge, alternative-path discovery, cross-review synthesis and drift detection.",
+    "reviewers": "Use distinct read-only roles only at material architecture/strategy/experiment/deployment gates; they report to Lead ChatGPT, not as competing writers.",
+    "codex_thread_id": "01a0514b-bbb5-7400-baf9-d9feb4dc603d",
+    "lead_chatgpt_conversation_id": "6a98135b-e2d4-83e9-bd0c-269e36451542",
+    "contact_card": "CHATGPT_CONTACT.md",
+    "fast_sync_pointer": "docs/PROJECT_CONTEXT/CHATGPT_CODEX_SYNC_STATE.json",
+    "durable_mailbox": "docs/PROJECT_CONTEXT/CHATGPT_CODEX_SYNC.md"
+  },
+  "current_cycle_hint": {
+    "source_of_truth": "Read active_cycle from CHATGPT_CODEX_SYNC_STATE.json on every injection; this copy is only a fallback.",
+    "cycle_id": "kol-token-addressability-lag",
+    "priority": "P0",
+    "status": "EXACT_POST_SOURCE_FACT_BINDING_AND_AMBIGUITY_FORWARD",
+    "objective": "Improve and measure exact/fresh post capture -> source-level fact investigation -> per-Token exact/ambiguous binding -> canonical/executable evidence, while keeping provider-post ambiguity separate and preventing identity/promotion or reused source facts from becoming Decision/Paper evidence.",
+    "scope_guard": "Do not displace this information-to-evidence P0 with UI, generic collaboration work, extra production Agent concurrency, Strategy relaxation, retrospective winners, or Live."
+  },
+  "memory_policy": {
+    "durable_root": "E:/memeTrader",
+    "rule": "All project-relevant Lead ChatGPT facts, conclusions, decisions, hypotheses, contradictions, open questions and handoffs that need to survive chat/context loss are distilled to files under E:/memeTrader.",
+    "raw_private_reasoning": "Do not persist private chain-of-thought. Persist decision-relevant conclusions, evidence pointers, uncertainty and falsifiable next checks instead.",
+    "state_file": "docs/PROJECT_CONTEXT/CHATGPT_LEAD_STATE.json",
+    "journal_file": "docs/PROJECT_CONTEXT/CHATGPT_LEAD_JOURNAL.md",
+    "recovered_user_requirements": "docs/PROJECT_CONTEXT/CHATGPT_RECOVERED_USER_REQUIREMENTS_2026-09-02.md",
+    "current_chat_requirements": "docs/PROJECT_CONTEXT/CHATGPT_CURRENT_CONVERSATION_REQUIREMENTS_2026-09-02.md",
+    "execution_efficiency_policy": "docs/PROJECT_CONTEXT/CHATGPT_CODEX_EXECUTION_EFFICIENCY_POLICY_2026-09-02.md",
+    "common_space": "docs/PROJECT_CONTEXT/COMMON_SPACE/"
+  },
+  "communication_design": {
+    "primary": "Event-driven direct bidirectional messaging between the exact Codex execution thread and designated Lead ChatGPT using Codex Desktop's own codex_app thread-management surface. User-authorized urgent correction may be sent as a priority steer to the existing thread without creating a second writer.",
+    "fallback": "Common Space + durable mailbox + fast pointer with attention_required provide durable visibility/recovery when direct delivery is unavailable; they are not evidence that a realtime message was delivered.",
+    "realtime_meaning": "Low-latency event-driven collaboration at decision points, material evidence changes, natural samples and deploy/restart gates; not continuous token-burning heartbeat chatter.",
+    "anti_forgetting_layer": "A global Codex hooks.json points to E:/memeTrader/scripts/codex_project_context_guard.cmd. The guard injects compact E:-resident context on every UserPromptSubmit and on SessionStart only for resume/compact, filtered to memeTrader/GXH mirror cwd. It also surfaces pending attention_required alerts.",
+    "common_space_design": "Detailed bilateral research/challenge lives in E:/memeTrader/docs/PROJECT_CONTEXT/COMMON_SPACE with side-owned notes and immutable directional alert cards. Realtime messages are short doorbells pointing to Common Space; accepted execution state still belongs to Objective/Requirement/Sync authority.",
+    "direct_thread_injection_boundary": "Direct ChatGPT->Codex delivery is now verified through the already-running Codex Desktop codex_app tool surface, not a competing Codex writer. Delivery claims require a unique MESSAGE_ID plus target-thread verification; processing claims additionally require explicit ACK/REPLY_TO. Do not fall back to codex exec resume while the main thread owns the writer lock."
+  },
+  "observed_local_diagnostics": {
+    "codex_version": "0.147.0",
+    "codex_model": "gpt-5.6-sol",
+    "hooks_feature": "stable/enabled",
+    "memories_feature": "stable/enabled",
+    "background_app_server_daemon": "not running at inspection time",
+    "available_codex_update_seen": "0.152.1",
+    "global_hooks_config_seen": "installed thin bootstrap pointing only to E:-resident GXH context guard",
+    "memeTrader_checkout": "dirty/active at inspection time",
+    "codex_processes_seen": 2,
+    "target_thread_user_messages_recovered": 139,
+    "target_thread_context_compactions": 99,
+    "target_thread_subagent_starts": 91,
+    "target_thread_review_audit_recheck_named_starts": 48,
+    "browser_watch_enabled_accounts_seen": 100,
+    "browser_watch_critical_accounts_seen": 4,
+    "browser_watch_normal_accounts_seen": 96,
+    "browser_watch_rotation_alarm_seconds": 30,
+    "browser_content_mutation_scan_delay_ms": 750,
+    "browser_content_fallback_scan_seconds": 60,
+    "browser_latency_interpretation": "The likely freshness bottleneck is account/profile coverage scheduling, not the 60-second fallback DOM scan. With a critical-normal-critical single-tab rotation, idealized revisit is roughly 3 minutes per critical account and about 144 minutes for a full 96-normal-account cycle.",
+    "codex_project_mirror_instruction_gap": "The designated Codex thread cwd is the C:/Users/51465/.codex/.chatgpt-projects/... GXH mirror. Its generated AGENTS.md explicitly said the ChatGPT project had no custom instructions, while E:/memeTrader/AGENTS.md contains the actual frozen contract. This is a plausible root cause for post-compaction drift.",
+    "global_hook_bootstrap": "C:/Users/51465/.codex/hooks.json now contains only two hook entries pointing to the E:-resident context guard. C: stores no detailed GXH project state in this bootstrap.",
+    "hook_probe": "One read-only ephemeral Codex probe completed without hook configuration/trust errors but consumed about 19k input tokens for a trivial reply; do not repeat model probes merely for reassurance. Active Desktop hot-reload of newly added hooks remains to be observed naturally on its next prompt/resume/compact.",
+    "direct_delivery_verified": "At 2026-09-02T13:58:52Z, MESSAGE_ID C2C-20260902-2149-LEAD-FORCE-SYNC-001 was accepted by Codex Desktop codex_app.send_message_to_thread for main thread 01a0514b-bbb5-7400-baf9-d9feb4dc603d and found verbatim in that thread's structured rollout. At 2026-09-02T14:00:12Z Codex explicitly ACKed the same MESSAGE_ID, confirmed all six E:-resident materials were read/reconciled, wrote COMMON_SPACE/.../CODEX.md, and cleared attention_required. Status: ACKED. Temporary transport handles are not durable project state and are intentionally not recorded here.",
+    "safety_interpretation": "Do not upgrade Codex, start a second implementation thread, or mutate business/runtime files merely to improve coordination while the active checkout is busy."
+  },
+  "next_coordination_actions": [
+    "Keep this state and the journal current after material Lead ChatGPT findings or handoffs.",
+    "Treat open-source/official/mature-community research as the default first move for generic tool and implementation blockers before custom-building a replacement.",
+    "Apply the development-side agent routing and stop rules from CHATGPT_CODEX_EXECUTION_EFFICIENCY_POLICY_2026-09-02.md; do not confuse them with production Trend/Source/Context Agent budgets.",
+    "Have Codex verify whether browser account coverage latency should be PROMOTE_NOW for the current P0; do not waste effort only shortening the 60-second fallback scan.",
+    "Observe the already-installed context guard naturally on the active Desktop thread's next prompt/resume/compact; do not run another costly probe just for reassurance.",
+    "For material corrections, use direct send_message_to_thread first with a unique MESSAGE_ID and verify DELIVERED in the exact target thread; point the short message to Common Space/E:-resident detail instead of pasting large context.",
+    "Require explicit ACK/REPLY_TO before marking a direct message processed; if ACK is absent, retain DELIVERED/WAITING_ACK rather than claiming Codex incorporated it."
+  ]
+}

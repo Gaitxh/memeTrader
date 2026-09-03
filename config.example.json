@@ -67,15 +67,24 @@
       }
     ],
     "gecko_networks": [
-      "solana",
-      "bsc"
+      "solana"
     ],
     "dexscreener_discovery": {
       "enabled": true,
+      "chains": [
+        "solana"
+      ],
+      "surface_chains": [
+        "solana"
+      ],
       "interval_seconds": 90,
       "max_items_per_surface": 40,
       "max_hydrations_per_cycle": 180,
       "active_token_minutes": 180
+    },
+    "solana_holder_shadow": {
+      "enabled": true,
+      "interval_seconds": 300
     },
     "pumpportal": {
       "enabled": true,
@@ -111,9 +120,7 @@
   },
   "candidate": {
     "chains": [
-      "solana",
-      "bsc",
-      "base"
+      "solana"
     ],
     "max_alias_queries": 4,
     "token_watch_minutes": 360,
@@ -178,14 +185,16 @@
     "starting_cash_usd": 1000,
     "fee_bps": 60,
     "pump_swap_fee_bps": 125,
+    "fixed_fee_usd_each_side": 0.4,
     "slippage_rate": 0.04,
     "risk_per_trade_pct": 0.005,
-    "max_position_usd": 35,
+    "fixed_position_usd": 20,
+    "max_position_usd": 20,
     "min_position_usd": 3,
     "max_cash_fraction": 0.08,
     "max_liquidity_impact_pct": 0.0025,
     "max_daily_new_exposure_usd": 100,
-    "max_open_positions": 3,
+    "max_open_positions": 0,
     "stop_loss_pct": -0.35,
     "trailing_activate_pct": 0.6,
     "trailing_drawdown_pct": 0.28,
@@ -327,8 +336,13 @@
     "token_context_token_reserve_per_call": 30000,
     "context_global_cooldown_minutes": 5,
     "context_error_retry_minutes": 10,
+    "context_no_context_reuse_minutes": 30,
     "context_min_momentum_score": 80,
     "context_direct_trigger_enabled": true,
+    "context_low_information_exposure_only_enabled": false,
+    "context_deferred_retry_enabled": false,
+    "context_deferred_retry_min_idle_minutes": 5,
+    "context_deferred_retry_interval_minutes": 5,
     "context_high_impact_min_priority": 4,
     "context_direct_event_min_attention": 55,
     "context_direct_event_min_match_score": 70,

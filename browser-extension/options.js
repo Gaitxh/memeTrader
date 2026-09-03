@@ -11,6 +11,11 @@ async function load() {
     platformStates: {},
     officialAccounts: [],
     maxPostAgeMinutes: 30,
+    autoWatchEnabled: true,
+    autoWatchCriticalLastAt: "",
+    autoWatchCriticalLastAccount: "",
+    autoWatchNormalLastAt: "",
+    autoWatchNormalLastAccount: "",
     pendingObservations: [],
     watchlistLastSyncAt: "",
     watchlistLastSyncError: ""
@@ -18,10 +23,14 @@ async function load() {
   document.getElementById("bridgeUrl").value = state.bridgeUrl;
   document.getElementById("token").value = state.token;
   document.getElementById("maxPostAgeMinutes").value = state.maxPostAgeMinutes;
+  document.getElementById("autoWatchEnabled").checked = state.autoWatchEnabled !== false;
   document.getElementById("watchTerms").value = (state.watchTerms || []).join("\n");
   document.getElementById("watchAccounts").value = (state.watchAccounts || []).join("\n");
   document.getElementById("officialAccounts").value = (state.officialAccounts || []).join("\n");
   document.getElementById("queueStatus").textContent = `待发送：${(state.pendingObservations || []).length} 条`;
+  document.getElementById("autoWatchStatus").textContent = state.autoWatchEnabled === false
+    ? "账号轮换：已关闭"
+    : `账号轮换：critical ${state.autoWatchCriticalLastAccount || "等待"} · normal ${state.autoWatchNormalLastAccount || "等待"}`;
   const syncStatus = document.getElementById("watchlistSyncStatus");
   syncStatus.textContent = state.watchlistLastSyncAt
     ? `网页关注清单：最后同步 ${new Date(state.watchlistLastSyncAt).toLocaleString()}${state.watchlistLastSyncError ? `；最近错误 ${state.watchlistLastSyncError}` : ""}`
@@ -41,6 +50,7 @@ document.getElementById("save").addEventListener("click", async () => {
     bridgeUrl: document.getElementById("bridgeUrl").value.trim().replace(/\/$/, ""),
     token: document.getElementById("token").value.trim(),
     maxPostAgeMinutes,
+    autoWatchEnabled: document.getElementById("autoWatchEnabled").checked,
     officialAccounts: lines(document.getElementById("officialAccounts").value)
   });
   const status = document.getElementById("status");

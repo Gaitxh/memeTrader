@@ -53,6 +53,14 @@ http://127.0.0.1:8787/
 
 启动脚本先检查现有 Web 进程，已有实例时直接复用。它只启动控制台，不会启动第二个交易机器人。
 
+需要在当前 Windows 用户每次登录后自动恢复本机控制台、受保护入口和 Quick Tunnel 时，安装独立计划任务：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install_web_scheduled_task.ps1
+```
+
+任务名为 `memeTrader Web Services`。它与 `memeTrader Paper Bot` 完全独立，只启动 `8787`、带口令保护的 `8788` 和 `cloudflared`；不调用 `memetrader run`，也不重启 Runtime 或浏览器桥。任务和启动器使用 `IgnoreNew`、本机命名互斥锁、端口健康检查和精确的 tunnel 进程检查复用已有实例。启动过程不打开浏览器或记事本，也不向任务输出访问口令；随机口令仍只保存在 Git 忽略的 `data\web_console` 本机文件中。
+
 ## 受保护的公开 HTTPS 地址
 
 双击：
@@ -83,7 +91,7 @@ Quick Tunnel 地址在隧道重建后会变化，适合个人临时远程查看�
 - **Live Events**：attention、独立来源数、freshness、来源角色、资格状态和原始链接，并显示平台、发布者和可验证的影响力维度。
 - **Token Discovery**：chain、CA、创建/首次观察、流动性、5m 量、买卖笔数、momentum、双向证据链，以及 Dex/Profile 项目附带链接的独立发现种子面板。
 - **Decisions**：事件、候选结果、match/candidate score、canonical margin、WAIT/CANDIDATE/REJECT、仓位金额与拒绝原因。
-- **Paper Portfolio**：所有金额和 PNL 均明确为 Paper/模拟；展示追加式账户曲线、报价完整性、逐笔报价/模拟执行价、滑点、手续费、已知 Token 税、执行失败尝试，以及止损、分批止盈、移动退出和叙事衰减状态。
+- **Paper Portfolio**：所有金额和 PNL 均明确为 Paper/模拟；首屏用三个策略 Tab 分开显示“信息 + Token”“纯链上基线”“同入场·买后叙事增强持有”三个不可相加账本。路线/公平性研究默认折叠，避免和现金、权益或 PNL 混淆。页面展示追加式账户曲线、报价完整性、逐笔报价/模拟执行价、滑点、手续费、已知 Token 税、执行失败尝试，以及止损、分批止盈、移动退出和叙事衰减状态。BSC/Base/Robinhood 的 Uniswap V3 指定金额报价固定标为 `RESEARCH ONLY / COST UNKNOWN / NOT EXECUTION / NOT PNL / AFFECTS NONE`。
 - **Agent Operations**：本机 Codex CLI 的模型、推理强度、回退、调用次数、tokens、预算、上次结果和下一次到期时间。
 - **Sources**：静态/动态 RSS、浏览器、PumpPortal、新池、Dex Profile/CTO/Ads/Boost、报价和安全来源的健康、产出时间、暂停原因；同时显示主题通道与具体账号的真实暴露/空结果、事件固定时点随访、完整新 Token 总体的 15/60/240 分钟前向结果，以及只影响账号观察轮换的前向来源学习。
 - **Audit**：r5 false-positive 排除、r6 Starlink 过期反查证据、future-data rejection、决策时刻证据资格，以及注册后完整新币总体的前向漏检漏斗。
@@ -105,7 +113,7 @@ Overview 的采集脉冲完全由已持久化数据计算。信息通道统计�
 
 事件详情中的“来源排名”依次考虑：当时决策用途、已知权威层级、来源角色、新鲜度、是否有可访问原始链接以及页面上可观察到的热度。每条来源独立展示平台、发布者、账号类型、官方/认证状态、已知关注者或覆盖、可见互动和本地策展优先级；没有证据的字段显示为“未知”，不能根据显示名或平台猜测。这个顺序只表示**证据优先级**，方便先审查最相关材料；它不是“权威真值排名”，也不会自动证明来源内容真实。`feature/confirmation` 与 `identity/promotion` 分组展示，后者明确为仅上下文；高影响力账号也不能让 identity/promotion 单独成为交易依据。全部来源仍可展开查看原始链接、发布时间、本机观察/入库时间、角色与时间线。
 
-Token 页顶部显示近期 Solana 新 Token 的 Dex 详情补全覆盖、等待/无 pair、错误和社交链接命中数。每个 Token 的 `pending / hydrated / no_pair / error` 与尝试次数来自 SQLite 持久化队列，不是前端动画。Token 详情把 DexScreener Profile、Community Takeover、Ads、Boost 和 pair info 的链接显示为“发现种子”。每条保留发现面、`identity/promotion`、平台、链接类型、提供方状态及本机首次/最后观察。`provider_metadata` 不等于 verified；Ads/Boost 永久是 promotion。
+Token 页顶部显示近期多链新 Token 的 Dex 详情补全覆盖、等待/无 pair、错误和社交链接命中数。每个 Token 的 `pending / hydrated / no_pair / error` 与尝试次数来自 SQLite 持久化队列，不是前端动画。Token 详情把 DexScreener Profile、Community Takeover、Ads、Boost 和 pair info 的链接显示为“发现种子”。每条保留发现面、`identity/promotion`、平台、链接类型、提供方状态及本机首次/最后观察。`provider_metadata` 不等于 verified；Ads/Boost 永久是 promotion。Base/Robinhood 当前属于 `research_only` 发现范围，不进入 Agent、Decision 或 Paper。
 
 Token Context Agent 调查显示项目附带社交声明、社区扩散、公众人物关联候选、可达报道、独立正文核验、调查触发与链上快照。调查可以由链上动量、精确高影响力账号原帖或新鲜高热事件高匹配关系启动；页面明确显示实际 trigger。名称、头像、主页和项目自报不能作为直接入口。社区“热度”不合成一个主观分数；页面分别展示可观察平台、可达域名与链上数值。公众人物候选始终写成待核验关联，不能显示为支持或背书。通过时间、可访问性和相关性门的来源会交给第二个独立 Agent 检查正文，但无论其结论如何，当前 Observation 仍全部 `CONTEXT ONLY`，不会进入决策链。事件详情另行展示逐来源 `supports / contradicts / context_only / inaccessible`、模型、推理强度和 token；不同域名只是独立来源下界，不是绝对事实。
 

@@ -38,12 +38,12 @@
 
 1. **登录态浏览器扩展**：被动读取你已打开页面中新渲染的公开帖子，支持 X、Truth Social、Bluesky、Reddit、Threads、Instagram、TikTok 和 YouTube。Telegram 项目内授权已记录，但当前官方 Content Licensing/API 条款仍阻止面向 AI 的抓取与聚合；因此只保留人工目录和外部原始来源，不自动读取、入库或送入 Agent。
 2. **PumpPortal 免费 WebSocket**：只订阅新 Token 和迁移事件，不使用付费交易流。
-3. **GeckoTerminal 新池**：分钟级发现 Solana、BSC 新池。
+3. **GeckoTerminal 新池**：分钟级发现 Solana、BSC、Base、Robinhood Chain 新池；Base/Robinhood 当前只进入研究观察层。
 4. **DexScreener 展示面发现**：每 90 秒读取官方 Token Profile、Community Takeover、Ads、Latest Boost 与 Top Boost 页面，保存 CA、发现面和项目附带链接；它补充项目方主动展示的 Token，不等于全量新币或新池流。
 
 ### 候选确认
 
-- DexScreener：关键词找币、按 CA 报价、流动性、成交和买卖方向；每个新观察到的 Solana Token 进入持久化详情补全队列，并通过官方最多 30 地址批量端点补全 pair info。项目网站、社交主页、帖子、搜索页、Telegram 人工入口和 Dex 页面按类型保存。Profile/Takeover 只作 `identity`，Ads/Boost 只作 `promotion`，均不是已验证新闻、独立确认或名人背书。
+- DexScreener：关键词找币、按 CA 报价、流动性、成交和买卖方向；四链新观察 Token 进入持久化详情补全队列，并通过官方最多 30 地址批量端点补全 pair info。项目网站、社交主页、帖子、搜索页、Telegram 人工入口和 Dex 页面按类型保存。Profile/Takeover 只作 `identity`，Ads/Boost 只作 `promotion`，均不是已验证新闻、独立确认或名人背书。Base/Robinhood 暂标记为 `research_only`，不会派发 Agent、生成 Decision 或进入 Paper；正式候选仍按 `candidate.chains` 控制。
 - GoPlus + Honeypot.is：EVM/BSC 候选的合约权限、可卖性、税率和 honeypot 交叉检查。默认至少要求一个 EVM 安全报告；显式要求交易模拟时 Honeypot.is 仍是硬门。
 - GoPlus + RugCheck：Solana 候选的权限和风险交叉检查，默认至少要求一个报告可用。
 - CoinDesk、Cointelegraph、BBC、Google News 专题 RSS 与 Mastodon 公共时间线：补足国际事件证据。
@@ -117,6 +117,10 @@ Web 控制台直接读取当前 `config.json` 指向的 SQLite，不复制策略
 
 Overview 与 Paper Portfolio 展示追加式账户时间曲线、现金/持仓市值/权益/当日 exposure、报价缺失区段、逐笔报价与模拟执行价、滑点、每笔场地费、已知 Token 税和模拟执行失败原因。当前每侧 4% 是早期 meme 的保守不利执行压力，不冒充必然发生的真实滑点；通用场地费估计为每笔 60 bps，报价明确识别为 PumpSwap 时使用 125 bps 保守上限。链费与 priority fee 没有可验证路由时明确保持未建模。零成交时显示真实的平坦现金状态，不生成假仓位或假成交。执行与未来 Live 的严格边界见 [Paper 前向执行与未来 Live 验收](docs/PAPER_FORWARD_EXECUTION_CN.md)。
 
+Portfolio 现在展示三个独立模拟账户、两种入场逻辑：① 新闻/热点/人物/社区与 Token 证据结合的综合策略；② 只按 Token 链上和市场数据入场的纯链上基线；③ 精确复制策略 2 新 BUY、只研究买后叙事能否改善持有/runner 的同入场对照。三个现金账本不可相加；策略 2/3 才是同入场可比实验，旧赢家不回填。纯链上策略内部的固定周期与动态止损/止盈仍只是退出对照。当前流动性为零、未知或没有可用容量时不会生成未实现 PNL；DEX 价格只能作为明确标注的非可执行参考，只有时点有效、特定数量的聚合器最低卖出输出才计为模拟成交。Token 后来流动性归零也不会反向抹除此前真实存在的可执行退出机会。
+
+BSC、Base 与 Robinhood Chain 已增加 future-only 的固定区块 Uniswap V3 指定金额 BUY→SELL 研究层，枚举 direct 和混合费率两跳路线，并在买卖两侧应用配置的不利滑点。该层仅验证 pool math，尚未覆盖完整 gas/L1 fee、Router 交易、allowance、Token transfer tax/blacklist；因此 Web 固定显示 `RESEARCH ONLY / COST UNKNOWN / NOT EXECUTION / NOT PNL / AFFECTS NONE`，三条链的 Paper 仍禁用。Solana 继续使用 Jupiter 指定金额最低输出与单列网络费语义。
+
 顶部可在“中文 / English”之间即时切换；选择只保存在当前浏览器本地，刷新后仍会保留。事件标题、Token 名称和来源原文不会被自动翻译。
 
 十一个工作区都会在页面可见且没有未保存表单时自动刷新当前页；Overview 约 10 秒、事件约 12 秒、Token/决策/组合/Wallet 约 15 秒、Agent/Sources 约 20 秒、Audit 约 30 秒、Settings 约 60 秒。当前采用低成本轮询，不需要 Redis、消息队列或额外 WebSocket 服务；切回浏览器标签时会立即取一次新快照，打开的事件/Token 详情也随当前页一起更新。
@@ -128,6 +132,8 @@ Token 页另显示详情补全队列的 `pending / hydrated / no_pair / error`�
 每次新的 Token Context 调查还会在当时存在本地正价格快照时冻结一个前向 cohort，并只用后来实际采集到的 15/60/240 分钟快照描述调查后的市场延续。`no_context`、Agent 错误、未核验候选和 missing 同样保留；历史调查和缺失窗口不回填。重复调查保留在审计账本，但标签成熟度每个 Token 只使用最早的前向 cohort，普通标签至少需要 30 个不同 Token，不能用同一价格路径重复抬高样本。未核验人物姓名不进入实体标签，只有浏览器精确原帖实体可被分组，且仍不代表背书。Token 详情显示单次随访，Sources 显示跨样本汇总；该账本固定不影响 Agent 调度、证据、候选、风控、Paper 或 Live。详见 [Token Context 前向结果学习](docs/TOKEN_CONTEXT_FORWARD_LEARNING_CN.md)。
 
 从 `token-context-admission/v1` 起，每次实际进入 Token Context 检查的 Token 还会前向记录 `admitted/skipped` 与稳定原因：无合格触发、错误退避、全局/同 Token 冷却、每日调用上限、Token 预留预算不足或成功准入。记录只含安全的触发类别、时间、计数和预算快照，不保存 prompt、Agent 原文、项目描述、密码、Cookie、Session 或 secret。Token 详情显示最近一次原因，Sources 显示跨 Token 汇总；跳过不是 `no_context`，也不是正面或负面信号。旧调用不回填原因。
+
+`token-context-onchain-admission-challenger/v2-fair-lanes` 对纯链上动量入口采用一个有界前向挑战者：每个 Dex metadata hydration 周期最多只选择最高动量的一个 Token。浏览器精确原帖和新鲜高热事件关系始终优先；`provider_metadata_unverified` 的高影响账号 metadata lead 与 on-chain challenger 在 hydration 周期间轮换先后，普通 metadata 排在两者之后。它不会绕过全局/同 Token 冷却、调用与 Token 上限、Agent 返回结构校验或最多两个生产 Agent 的限制；v1 账本保留不改，v2 选择、准入、跳过和 Agent 终态按新注册点前向观察。该路径只改善调查公平性，固定 `decision_eligible=false / affects=none`，不是买入信号，也不改变 Strategy、Paper、仓位或 Live 锁。
 
 双击：
 
@@ -147,6 +153,14 @@ powershell -ExecutionPolicy Bypass -File .\scripts\open_web_console.ps1
 http://127.0.0.1:8787/
 ```
 
+若要在当前 Windows 用户每次登录后独立恢复 `8787`、受保护的 `8788` 和 Cloudflare Quick Tunnel，可安装 Web 专用计划任务：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install_web_scheduled_task.ps1
+```
+
+任务名为 `memeTrader Web Services`，不会调用或复制 `memetrader run`，也不会重启 `memeTrader Paper Bot`。启动器只复用或启动缺失的 Web/tunnel 单实例，且不会向任务输出访问口令。
+
 需要临时远程查看时，可双击 `SHARE_WEB_CONSOLE.cmd`。它通过本机已安装的 Cloudflare Quick Tunnel 创建带随机访问口令的临时 HTTPS 地址；后端仍只监听 loopback，不开放路由器端口。地址和登录提示只写入 Git 忽略的 `data\web_console\PUBLIC_ACCESS.txt`。公开入口通过随机口令保护，只能读取数据并修改后端白名单内的安全设置；钱包区域始终脱敏只读，不能录入私钥、申请测试币或发送交易。它也不会返回 bridge token、平台登录、Codex 会话或任何 secret。
 
 Settings 只允许修改轮询频率、Agent 周期/预算、事件与候选阈值，以及本地平台、公开名人/账号和主题观察清单。Agent 并发仍遵守项目规则，只允许 `1–2`、默认 `2`；Live 页面只有 `LOCKED / Unavailable`，没有启用接口。自主搜索继续使用本机已登录的 Codex/ChatGPT agentic 额度，不要求 OpenAI API Key。
@@ -159,9 +173,9 @@ Wallet 只在 `127.0.0.1` 接受私钥录入和 Devnet 操作。私钥不会回�
 
 `event-attention-trajectory/v1` 从部署后为每个新关联 Observation 与事件当前 attention 原子追加一个不可更新、不可删除的本机记录点；旧事件不回填。事件列表、Overview 和详情显示累计分数曲线、本机 10 秒/30 秒/1 分钟/5 分钟新观察到达率下界、分数速度/加速度及覆盖状态，固定标记 `affects=none`。覆盖不足返回 `null/under_resolved`，不会填零或画假平线。当前采集仍没有全平台曝光分母、完整互动修订轨迹和稳定作者分母，因此全网 mention、reply/quote/repost、跨社区和完整跨平台扩散仍明确为 unavailable，绝不冒充已完成。
 
-`event-claim-assessment/v1` 从注册上线后的新 Observation 开始，另外追加不可更新、不可删除的事实状态账本，区分 `confirmed_fact / probable_report / unverified_rumor / false_claim / correction / retraction / satire / impersonation / promotion / unassessed / excluded_future`，并保留事实、身份、attention、Meme 催化和纠正风险五类置信度。事实状态、上面的本机传播轨迹和纠正/撤回状态在事件详情中分栏展示，三者都固定 `affects=none`。Trend Scout 与 Token Context 的 Agent 输出即使 URL、DNS、时间和独立域名检查通过，也只是 `identity/context-only` 的结构化待核验判断，不会再直接成为 `feature/confirmation` 决策证据；相邻评估可能来自不同来源，因此界面只称“评估标签变化”，不把它冒充同一 claim 的证实或推翻。旧事件不回填。
+`event-claim-assessment/v1` 从注册上线后的新 Observation 开始，另外追加不可更新、不可删除的事实状态账本，区分 `confirmed_fact / probable_report / unverified_rumor / false_claim / correction / retraction / satire / impersonation / promotion / unassessed / excluded_future`，并保留事实、身份、attention、Meme 催化和纠正风险五类置信度。事实状态、上面的本机传播轨迹和纠正/撤回状态在事件详情中分栏展示。Trend Scout 输出仍是 `identity/context-only`；Token Context 只有通过新鲜度、独立来源关系、正文事实置信度和来源数量四道门，才可把对应来源提升为事件 `confirmation`。事件确认不会自动绑定正在调查的 Token；只有多个新鲜独立正文明确包含同一 CA 才可获得 exact-token 路径。相邻评估可能来自不同来源，因此界面只称“评估标签变化”，不把它冒充同一 claim 的证实或推翻。旧事件不回填。
 
-`agent-fact-verification/v1` 为通过本地 URL、时间和可达性门的新 Trend/Token Context 候选启动第二个独立 Codex 上下文，检查精确来源正文是支持、反对还是仅提供语境。Trend 每轮批量一次，Token Context 每次最多一个；它不是新常驻循环，仍共享最多两个 Agent 槽位。调用按 `fact_verifier + model + reasoning_effort` 单独统计。不同域名支持只是独立来源下界，结果固定 `decision_eligible=false / affects=none`，原 Observation 仍是 identity/context-only，不改变策略或 Paper。详见 [docs/AGENT_FACT_VERIFIER_CN.md](docs/AGENT_FACT_VERIFIER_CN.md)。
+`agent-fact-verification/v1` 为通过本地 URL、时间和可达性门的新 Trend/Token Context 候选启动第二个独立 Codex 上下文，检查精确来源正文是支持、反对还是仅提供语境。Trend 每轮批量一次，Token Context 每次最多一个；它不是新常驻循环，仍共享最多两个 Agent 槽位。调用按 `fact_verifier + model + reasoning_effort` 单独统计。事实核验记录本身固定 `decision_eligible=false / affects=none`；Token Context 仅在至少两个 `distinct_origin` 正文支持、事实置信度达标且不超过 30 分钟时，才由后续确定性资格门生成事件 confirmation。没有精确 CA 的确认不会获得 Token 精确绑定。详见 [docs/AGENT_FACT_VERIFIER_CN.md](docs/AGENT_FACT_VERIFIER_CN.md)。
 
 `source-item-revision/v1` 另行从部署时刻向前保存原始来源条目的不可变版本链。RSS/Atom 使用 `guid / id / link`，Bluesky 使用 post URI，Mastodon 使用 status ID/URI，浏览器桥使用永久链接作为稳定身份；连续相同抓取不追加，正文/标题/来源时间变化、来源明确删除、明确撤回、明确纠正和再次出现分别记录。只有平台或发布方的明确标记可形成删除/撤回；轮询缺项、429、403/404、页面虚拟滚动和 DOM 节点消失都不能生成删除 tombstone。删除、撤回、事实为假是三个独立含义，origin 与 transport 未被证明分离时保持 `unknown`。版本账本固定 `decision_eligible=false / affects=none`，不增加 Observation、attention、候选分数或仓位；旧条目只在部署后再次真实抓取时建立 baseline，不做历史回填。纠正后的市场反转结果仍待前向样本，因此不能把工程核验器称为绝对事实裁判。
 
@@ -185,11 +199,15 @@ Audit 的 `token-universe-outcome-quality/v1` 是部署后才生效的追加式�
 
 Audit 的 `onchain-only-shadow/v1` 专门回答“链上先动而信息尚未被本机观察时，之后发生了什么”。它只接受本版本注册后每个 Token 第一次合格的 `onchain_momentum` transition，冻结精确触发快照；若触发前已有合格 Event 关系或 Token Context assessment 就不进入该 cohort。“信息未观察”只描述本机截至触发时的证据状态，不表示互联网全局没有相关信息。15 分钟是主终点，60/240 分钟是次要描述；无报价、无 pair、时间异常、安全未知和后来才发现语境都保留在分母，旧 Token 与已知赢家不回填。BSC 只有同 route、双来源安全证据一致且冻结成本通过时才显示 `modeled_only`，仍不是 router quote、成交或利润；该表中的 Solana 仍只显示原始市场路径，另由 trigger-anchored Jupiter 覆盖层验证路由下界。样本至少达到 30 个主终态 Token、15 个独立日期及正/非正各 5 个前，研究保持未成熟；固定 `decision_eligible=false / affects=none`，不改变 Agent、Strategy、Paper 或 Live。
 
+`solana-holder-breadth-shadow/v1` 以 0.2% 确定性前向抽样验证持有人宽度数据是否可用：对注册后新 Solana Token 在 0/15/60/240 分钟低频读取公共 RPC，只保存正余额 Token 账户 owner 的聚合数量、Top1/Top10 供应占比、低于 1bp 的尘埃比例和请求成本，不保存地址。这里的 owner 不等于真人、独立买家或聪明钱；池、托管、空投和女巫地址都会放大计数。该层固定 `decision_eligible=false / affects=none`，不增加 Agent，也不改变 Strategy/Paper。详见 [Solana 持有人宽度前向 Shadow](docs/SOLANA_HOLDER_BREADTH_SHADOW_CN.md)。
+
 Solana 的真实路由覆盖由独立的 `token-universe-jupiter-quote/v1` 前向账本承担。Runtime 对注册后的 Solana cohort 先用 Jupiter Swap V2 `/order` 做 `$35 USDC → Token` 基线只读报价，再在 15/60/240 分钟固定目标出现后，用基线买入的 `otherAmountThreshold`（而不是乐观 `outAmount`）做 `Token → USDC` 退出报价。请求固定省略 `taker/payer/receiver`，客户端拒绝任何非空 transaction，永不调用 `/execute`、`/build` 或 `/submit`；只保存白名单化的 AMM 路由、raw 数量、最低输出、400 bps 滑点、费用/价格冲击、请求时间和报价延迟。目标报价的最低 USDC 输出可与原始 `$35` 计算 `round_trip_min_return`，但它仍不含已验证链费、MEV 和部分成交，不是实际交易或利润承诺。该层每个 30 秒随访 tick 最多顺序请求三个报价，单主机请求仍至少间隔 2.1 秒并优先处理固定目标；调度器会扫描较大的到期集合寻找仍在时效内的任务，同时每个 tick 最多终结 12 个已过期 `not_requested` 缺口，避免旧任务占满 provider 槽位或长时间阻塞单进程。它不写 Decision、Position 或 Trade，固定 `decision_eligible=false / affects=none`。
 
 `token-universe-jupiter-quote-validity/v1` 从自己的注册点开始为上述原始报价增加不可变时效分母，而不改写旧 v1。基线报价以 baseline 快照的本机 `source_recorded_at` 为锚点；15/60/240 分钟目标卖出以预先冻结的 `target_at` 为锚点，不能用后来才入库的目标快照重新开始计时。请求排队最多 30 秒、从锚点到响应完成最多 45 秒；请求前已过期就不访问 Jupiter，响应后才过期则仅保留原始诊断报价。只有两腿均在时效内且均成功报价时，覆盖层才计算 `round_trip_min_return`。旧 v1 结果完整保留并明确标为 `legacy validity unknown`，不进入时效有效往返回报；该层仍固定 `decision_eligible=false / affects=none`，不改变 Strategy、Paper 或 Live。
 
 `onchain-only-shadow-jupiter-quote/v1` 则专门绑定上述链上动量触发时刻，而不是 Token discovery 或后来 Dex 快照。它只接受本版本注册后自然产生的 Solana cohort：触发后 30 秒内请求固定 `$35 USDC → Token`，再在触发后 15/60/240 分钟用 BUY 的最低输出数量请求 `Token → USDC`；两腿均在 45 秒总延迟内才计算最低输出往返回报。Runtime 每 5 秒检查该小型前向队列，Jupiter 请求仍经单一互斥入口且每轮最多三个；旧的完整 Token universe Jupiter 队列继续在 30 秒随访中运行。所有 attempt 都在请求前落库，进程中断、过期、no-route、错误和协议拒绝保留为终态；请求不含钱包或 taker，不签名、不广播。Audit 只返回白名单聚合，明确这是 quote-only 下界而非成交、Paper 收益或真实利润，并固定 `decision_eligible=false / affects=none`。
+
+`onchain-paper-exploration/v1` 使用同一份触发时 Jupiter 前向报价建立完全独立的链上 Paper 账户，解决主新闻策略样本稀疏时无法观察模拟执行的问题。它只接受注册后新的有效 baseline，以 `$35`、400 bps 最低输出和每侧估算 `$0.01` 网络费开仓，最多同时三仓；在首个有效的 15/60/240 分钟目标报价退出，若一直没有有效路由则在 240 分钟按保守归零终结。网络费即使高于卖出回收额也完整计入，净现金流允许为负。该账户不写主 `positions/trades/account`，不改变 Candidate、Strategy 或 Agent，也不能启用 Live；页面明确标为独立模拟探索，不与主 Paper 或真实利润合并。
 
 Audit 的“完整总体漏检账本”使用 `missed-opportunity-audit/v1`，从自身注册后为上述每个新结果追加一条不可变审计记录；低涨幅、缺基线和缺结果同样留在分母。只有本机采样路径达到预注册的 +25% 层且目标时点前没有 Paper 买入时才标记为 `potential_miss`，再按 `no_entry_snapshot / no_outcome_snapshot / no_decision / wait / reject / candidate_no_paper_buy / paper_bought` 展示可证明的粗断点。它不是市场 ATH、可成交收益或已证明的策略错误，不回填注册前案例，不改写历史决策，也不影响策略、Agent、Paper 或 Live。
 
@@ -220,9 +238,9 @@ OKX Web3 Meme Pump 可提供 launchpad 阶段、社交、开发者、bundle 和�
 2. Chrome/Edge → 扩展管理 → 开发人员模式 → “加载已解压的扩展”；
 3. 选择 `E:\memeTrader\browser-extension`；
 4. 在扩展选项中填入 `config.json` 内的 `bridge.token`；
-5. 打开需要长期观察的公开页面。
+5. 在扩展选项确认“自动轮换重点账号页面”已开启；普通 Chrome/Edge 保持登录并运行。
 
-扩展把待发送帖子保存在 `chrome.storage.local`。浏览器 Service Worker 休眠或机器人短暂离线时，队列不会立刻丢失；恢复后会补发。扩展每 30 秒发送页面心跳。
+扩展使用两个不激活的后台标签页，每分钟分别轮换一个 critical 和普通重点账号公开页面；它不自动滚动、关注、点赞、回复或发帖，也不读取登录凭据。待发送帖子保存在 `chrome.storage.local`，浏览器 Service Worker 休眠或机器人短暂离线时不会立刻丢失，恢复后会补发。扩展每 30 秒发送页面心跳。
 
 ## 机器人怎样买入
 

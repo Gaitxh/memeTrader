@@ -57,6 +57,22 @@ class JupiterQuoteProtocolError(JupiterQuoteError):
     pass
 
 
+class EvmRouteQuoteError(RuntimeError):
+    pass
+
+
+class EvmRouteQuoteProtocolError(EvmRouteQuoteError):
+    pass
+
+
+class EvmRouteRpcError(EvmRouteQuoteError):
+    pass
+
+
+class EvmRouteExecutionReverted(EvmRouteRpcError):
+    pass
+
+
 class FeedRedirectError(RuntimeError):
     pass
 
@@ -865,6 +881,11 @@ class DexScreenerClient:
         "youtube.com": "youtube",
         "youtu.be": "youtube",
     }
+
+    @staticmethod
+    def metadata_is_usable(name: str, symbol: str) -> bool:
+        """Reject provider payloads that concatenate an asset catalogue into one token."""
+        return len(str(name or "").strip()) <= 160 and len(str(symbol or "").strip()) <= 64
     TELEGRAM_HOSTS = {"t.me", "telegram.me"}
 
     def __init__(self, http: HttpClient):
@@ -1041,7 +1062,9 @@ class DexScreenerClient:
         base = pair.get("baseToken") or {}
         address = str(base.get("address") or "")
         chain = DexScreenerClient._chain(str(pair.get("chainId") or ""))
-        if not address or not chain:
+        name = str(base.get("name") or "")
+        symbol = str(base.get("symbol") or "")
+        if not address or not chain or not DexScreenerClient.metadata_is_usable(name, symbol):
             return None
         info = pair.get("info") or {}
         source_links = DexScreenerClient._pair_source_links(pair, chain, address)
@@ -1058,7 +1081,7 @@ class DexScreenerClient:
             except Exception:
                 pass
         return TokenCandidate(
-            chain=chain, address=address, name=str(base.get("name") or ""), symbol=str(base.get("symbol") or ""),
+            chain=chain, address=address, name=name, symbol=symbol,
             created_at=created_at, source="dexscreener", url=str(pair.get("url") or ""),
             social_urls=list(dict.fromkeys(social_urls)), raw={"pair": pair, "token_source_links": source_links},
         )
@@ -1228,7 +1251,7 @@ class JupiterQuoteClient:
                 message = (message + " " + str(exc)).casefold()
                 if exc.response.status_code == 400 and (
                     "no route" in message or "no_route" in message or "no route found" in message
-                    or "find any route" in message
+                    or "find any route" in message or "failed to get quotes" in message
                 ):
                     raise JupiterNoRouteError("Jupiter returned no route") from exc
             raise JupiterQuoteError(f"Jupiter quote failed with HTTP {exc.response.status_code}") from exc
@@ -1255,6 +1278,28 @@ class JupiterQuoteClient:
         def text(value: Any) -> str | None:
             return str(value) if value is not None else None
 
+        price_impact_bps: float | None = None
+        price_impact_source = ""
+        raw_price_impact = payload.get("priceImpact")
+        raw_price_impact_pct = payload.get("priceImpactPct")
+        try:
+            if raw_price_impact is not None:
+                parsed_impact = float(raw_price_impact)
+                if not math.isfinite(parsed_impact):
+                    raise ValueError("non-finite price impact")
+                # Swap V2 priceImpact is expressed in percentage points.
+                price_impact_bps = parsed_impact * 100.0
+                price_impact_source = "priceImpact_percentage_points"
+            elif raw_price_impact_pct is not None:
+                parsed_impact = float(raw_price_impact_pct)
+                if not math.isfinite(parsed_impact):
+                    raise ValueError("non-finite price impact")
+                # Deprecated priceImpactPct is a decimal ratio.
+                price_impact_bps = parsed_impact * 10_000.0
+                price_impact_source = "priceImpactPct_decimal_ratio"
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise JupiterQuoteProtocolError("Jupiter price impact is invalid") from exc
+
         route_plan: list[dict[str, Any]] = []
         for item in payload.get("routePlan") or []:
             if not isinstance(item, dict) or not isinstance(item.get("swapInfo"), dict):
@@ -1275,7 +1320,11 @@ class JupiterQuoteClient:
             "mode": text(payload.get("mode") or payload.get("swapMode")),
             "router": text(payload.get("router")),
             "slippage_bps": payload.get("slippageBps"),
-            "price_impact_pct": text(payload.get("priceImpact") or payload.get("priceImpactPct")),
+            "price_impact_pct": text(
+                raw_price_impact if raw_price_impact is not None else raw_price_impact_pct
+            ),
+            "price_impact_bps": price_impact_bps,
+            "price_impact_source": price_impact_source,
             "fee_bps": payload.get("feeBps"),
             "signature_fee_lamports": payload.get("signatureFeeLamports"),
             "prioritization_fee_lamports": payload.get("prioritizationFeeLamports"),
@@ -1290,6 +1339,355 @@ class JupiterQuoteClient:
             "time_taken_ms": payload.get("totalTime")
             if payload.get("totalTime") is not None
             else ((float(payload["timeTaken"]) * 1000) if payload.get("timeTaken") is not None else None),
+        }
+
+
+class EvmUniswapV3QuoteClient:
+    """Read-only exact-input Uniswap V3 QuoterV2 observer for EVM research lanes."""
+
+    QUOTE_EXACT_INPUT_SELECTOR = "cdca1753"
+    GET_POOL_SELECTOR = "1698ee82"
+    NETWORKS = {
+        "bsc": {
+            "chain_id": 56,
+            "rpc_url": "https://bsc-dataseed.bnbchain.org",
+            "factory": "0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7",
+            "quoter": "0x78D78E420Da98ad378D7799bE8f4AF69033EB077",
+            "accounting_token": "0x55d398326f99059ff775485246999027b3197955",
+            "accounting_symbol": "USDT",
+            "accounting_decimals": 18,
+            "wrapped_native": "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
+            "native_symbol": "BNB",
+        },
+        "base": {
+            "chain_id": 8453,
+            "rpc_url": "https://mainnet.base.org",
+            "factory": "0x33128a8fC17869897dcE68Ed026d694621f6FDfD",
+            "quoter": "0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a",
+            "accounting_token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "accounting_symbol": "USDC",
+            "accounting_decimals": 6,
+            "wrapped_native": "0x4200000000000000000000000000000000000006",
+            "native_symbol": "ETH",
+        },
+        "robinhood": {
+            "chain_id": 4663,
+            "rpc_url": "https://rpc.mainnet.chain.robinhood.com",
+            "factory": "0x1f7d7550b1b028f7571e69a784071f0205fd2efa",
+            "quoter": "0x33e885ed0ec9bf04ecfb19341582aadcb4c8a9e7",
+            "accounting_token": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+            "accounting_symbol": "USDG",
+            "accounting_decimals": 6,
+            "wrapped_native": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+            "native_symbol": "ETH",
+        },
+    }
+    FEE_TIERS = (100, 500, 3000, 10000)
+
+    def __init__(self, http: HttpClient):
+        self.http = http
+        self._lock = asyncio.Lock()
+        self._request_id = 0
+        self._last_request_started = 0.0
+
+    @classmethod
+    def public_network_definitions(cls) -> dict[str, dict[str, Any]]:
+        return {
+            chain: {**values, "fee_tiers": list(cls.FEE_TIERS)}
+            for chain, values in cls.NETWORKS.items()
+        }
+
+    @staticmethod
+    def _address(value: Any) -> str:
+        address = str(value or "").strip()
+        if not re.fullmatch(r"0x[0-9a-fA-F]{40}", address):
+            raise ValueError("valid EVM address required")
+        return "0x" + address[2:].lower()
+
+    @staticmethod
+    def _word(value: int) -> str:
+        number = int(value)
+        if number < 0 or number >= 2**256:
+            raise ValueError("ABI integer outside uint256")
+        return f"{number:064x}"
+
+    @classmethod
+    def _get_pool_data(cls, token_a: str, token_b: str, fee: int) -> str:
+        return "0x" + cls.GET_POOL_SELECTOR + token_a[2:].rjust(64, "0") + token_b[2:].rjust(64, "0") + cls._word(fee)
+
+    @classmethod
+    def _quote_data(cls, path: bytes, amount_in: int) -> str:
+        encoded_path = path.hex()
+        padded_length = ((len(encoded_path) + 63) // 64) * 64
+        return (
+            "0x" + cls.QUOTE_EXACT_INPUT_SELECTOR
+            + cls._word(64) + cls._word(amount_in) + cls._word(len(path))
+            + encoded_path.ljust(padded_length, "0")
+        )
+
+    @staticmethod
+    def _path_bytes(edges: list[tuple[str, int, str]]) -> bytes:
+        if not edges:
+            raise ValueError("at least one route edge required")
+        raw = bytes.fromhex(edges[0][0][2:])
+        current = edges[0][0]
+        for token_in, fee, token_out in edges:
+            if token_in != current or int(fee) < 0 or int(fee) >= 2**24:
+                raise ValueError("invalid contiguous Uniswap V3 path")
+            raw += int(fee).to_bytes(3, "big") + bytes.fromhex(token_out[2:])
+            current = token_out
+        return raw
+
+    async def _rpc(self, network: dict[str, Any], method: str, params: list[Any]) -> Any:
+        async with self._lock:
+            interval = max(0.0, float(self.http.min_host_interval))
+            wait = interval - (time.monotonic() - self._last_request_started)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._last_request_started = time.monotonic()
+            self._request_id += 1
+            request_id = self._request_id
+            try:
+                response = await self.http.client.post(
+                    str(network["rpc_url"]),
+                    json={"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
+                )
+                response.raise_for_status()
+            except Exception as exc:
+                raise EvmRouteQuoteError(f"EVM RPC {method} failed") from exc
+            try:
+                payload = response.json()
+            except Exception as exc:
+                raise EvmRouteQuoteProtocolError("EVM RPC returned malformed JSON") from exc
+        if not isinstance(payload, dict) or payload.get("id") != request_id:
+            raise EvmRouteQuoteProtocolError("EVM RPC response identity mismatch")
+        if isinstance(payload.get("error"), dict):
+            error = payload["error"]
+            message = str(error.get("message") or "EVM RPC error")
+            normalized = message.lower()
+            if method == "eth_call" and (
+                "revert" in normalized or "execution reverted" in normalized
+            ):
+                raise EvmRouteExecutionReverted(message)
+            raise EvmRouteRpcError(message)
+        if "result" not in payload:
+            raise EvmRouteQuoteProtocolError("EVM RPC result missing")
+        return payload["result"]
+
+    async def _call(
+        self,
+        network: dict[str, Any],
+        to: str,
+        data: str,
+        block_tag: str,
+        *,
+        allow_revert: bool = False,
+    ) -> str | None:
+        try:
+            result = await self._rpc(network, "eth_call", [{"to": to, "data": data}, block_tag])
+        except EvmRouteExecutionReverted:
+            if allow_revert:
+                return None
+            raise
+        if not isinstance(result, str) or not result.startswith("0x"):
+            raise EvmRouteQuoteProtocolError("eth_call returned invalid data")
+        return result
+
+    async def _pool(
+        self,
+        network: dict[str, Any],
+        token_a: str,
+        token_b: str,
+        fee: int,
+        block_tag: str,
+    ) -> str | None:
+        result = await self._call(
+            network,
+            str(network["factory"]),
+            self._get_pool_data(token_a, token_b, fee),
+            block_tag,
+        )
+        assert result is not None
+        body = result[2:]
+        if len(body) < 64:
+            raise EvmRouteQuoteProtocolError("factory getPool result too short")
+        address = "0x" + body[-40:].lower()
+        return None if int(address, 16) == 0 else address
+
+    async def _quote_path(
+        self,
+        network: dict[str, Any],
+        edges: list[tuple[str, int, str]],
+        amount_in: int,
+        block_tag: str,
+    ) -> tuple[int, int] | None:
+        result = await self._call(
+            network,
+            str(network["quoter"]),
+            self._quote_data(self._path_bytes(edges), amount_in),
+            block_tag,
+            allow_revert=True,
+        )
+        if result is None:
+            return None
+        body = result[2:]
+        if len(body) < 256 or len(body) % 64:
+            raise EvmRouteQuoteProtocolError("QuoterV2 result shape invalid")
+        amount_out = int(body[0:64], 16)
+        gas_estimate = int(body[192:256], 16)
+        if amount_out <= 0 or gas_estimate <= 0:
+            raise EvmRouteQuoteProtocolError("QuoterV2 returned non-positive output")
+        return amount_out, gas_estimate
+
+    async def quote_round_trip(
+        self,
+        chain: str,
+        token_address: str,
+        input_amount_raw: int,
+        *,
+        slippage_bps: int = 400,
+    ) -> dict[str, Any]:
+        chain = str(chain).strip().lower()
+        if chain not in self.NETWORKS:
+            raise ValueError("unsupported EVM route research chain")
+        network = dict(self.NETWORKS[chain])
+        token = self._address(token_address)
+        stable = self._address(network["accounting_token"])
+        wrapped = self._address(network["wrapped_native"])
+        amount_in = int(input_amount_raw)
+        slippage = int(slippage_bps)
+        if amount_in <= 0 or slippage < 0 or slippage >= 10_000:
+            raise ValueError("positive amount and valid slippage required")
+        if token in {stable, wrapped}:
+            raise ValueError("target token must differ from route base assets")
+
+        requested_at = iso(utcnow())
+        chain_id = int(await self._rpc(network, "eth_chainId", []), 16)
+        if chain_id != int(network["chain_id"]):
+            raise EvmRouteQuoteProtocolError("EVM RPC chain mismatch")
+        block_tag = str(await self._rpc(network, "eth_blockNumber", []))
+        block = await self._rpc(network, "eth_getBlockByNumber", [block_tag, False])
+        if not isinstance(block, dict) or not block.get("hash") or not block.get("timestamp"):
+            raise EvmRouteQuoteProtocolError("EVM block context missing")
+        for address in (network["factory"], network["quoter"]):
+            code = await self._rpc(network, "eth_getCode", [address, block_tag])
+            if not isinstance(code, str) or code in {"0x", "0x0"}:
+                raise EvmRouteQuoteProtocolError("official Uniswap contract code missing")
+
+        pool_cache: dict[tuple[str, str, int], str | None] = {}
+
+        async def route_pools(edges: list[tuple[str, int, str]]) -> list[str] | None:
+            pools: list[str] = []
+            for token_in, fee, token_out in edges:
+                key = (token_in, token_out, int(fee))
+                if key not in pool_cache:
+                    pool_cache[key] = await self._pool(
+                        network, token_in, token_out, int(fee), block_tag
+                    )
+                if pool_cache[key] is None:
+                    return None
+                pools.append(str(pool_cache[key]))
+            return pools
+
+        paired: list[dict[str, Any]] = []
+        buy_pool_seen = False
+        buy_quote_seen = False
+        candidates: list[list[tuple[str, int, str]]] = [
+            [(stable, fee, token)] for fee in self.FEE_TIERS
+        ]
+        candidates.extend(
+            [(stable, first_fee, wrapped), (wrapped, second_fee, token)]
+            for first_fee in self.FEE_TIERS
+            for second_fee in self.FEE_TIERS
+        )
+        for edges in candidates:
+                pools = await route_pools(edges)
+                if pools is None:
+                    continue
+                buy_pool_seen = True
+                buy = await self._quote_path(network, edges, amount_in, block_tag)
+                if buy is None:
+                    continue
+                buy_quote_seen = True
+                buy_output, buy_gas = buy
+                minimum = buy_output * (10_000 - slippage) // 10_000
+                if minimum <= 0:
+                    continue
+                reverse = [(out_token, edge_fee, in_token) for in_token, edge_fee, out_token in reversed(edges)]
+                sell = await self._quote_path(network, reverse, minimum, block_tag)
+                if sell is None:
+                    continue
+                sell_output, sell_gas = sell
+                sell_minimum = sell_output * (10_000 - slippage) // 10_000
+                if sell_minimum <= 0:
+                    continue
+                paired.append({
+                    "buy_output_raw": str(buy_output),
+                    "buy_minimum_output_raw": str(minimum),
+                    "sell_output_raw": str(sell_output),
+                    "sell_minimum_output_raw": str(sell_minimum),
+                    "buy_quoter_gas_estimate": buy_gas,
+                    "sell_quoter_gas_estimate": sell_gas,
+                    "buy_path": [
+                        {"token_in": a, "token_out": b, "fee_tier": f, "pool": pools[index]}
+                        for index, (a, f, b) in enumerate(edges)
+                    ],
+                    "sell_path": [
+                        {"token_in": a, "token_out": b, "fee_tier": f, "pool": pools[-1-index]}
+                        for index, (a, f, b) in enumerate(reverse)
+                    ],
+                })
+
+        final_block = await self._rpc(network, "eth_getBlockByNumber", [block_tag, False])
+        if (
+            not isinstance(final_block, dict)
+            or str(final_block.get("hash") or "").lower()
+            != str(block["hash"]).lower()
+        ):
+            raise EvmRouteQuoteProtocolError("EVM fixed block hash changed during quote")
+        completed_at = iso(utcnow())
+        best = max(paired, key=lambda item: int(item["sell_output_raw"])) if paired else None
+        status = (
+            "quoted" if best is not None
+            else "sell_quote_unavailable" if buy_quote_seen
+            else "buy_quote_unavailable" if buy_pool_seen
+            else "no_official_pool"
+        )
+        return {
+            "provider": "uniswap_v3_quoter_v2",
+            "chain": chain,
+            "chain_id": chain_id,
+            "requested_at": requested_at,
+            "completed_at": completed_at,
+            "block_number": int(block_tag, 16),
+            "block_hash": str(block["hash"]),
+            "block_timestamp": iso(datetime.fromtimestamp(int(str(block["timestamp"]), 16), tz=utcnow().tzinfo)),
+            "input_token": stable,
+            "accounting_symbol": str(network["accounting_symbol"]),
+            "accounting_decimals": int(network["accounting_decimals"]),
+            "output_token": token,
+            "input_amount_raw": str(amount_in),
+            "slippage_bps": slippage,
+            "status": status,
+            "buy_output_raw": best["buy_output_raw"] if best else None,
+            "buy_minimum_output_raw": best["buy_minimum_output_raw"] if best else None,
+            "sell_output_raw": best["sell_output_raw"] if best else None,
+            "sell_minimum_output_raw": best["sell_minimum_output_raw"] if best else None,
+            "buy_quoter_gas_estimate": best["buy_quoter_gas_estimate"] if best else None,
+            "sell_quoter_gas_estimate": best["sell_quoter_gas_estimate"] if best else None,
+            "buy_path": best["buy_path"] if best else [],
+            "sell_path": best["sell_path"] if best else [],
+            "immediate_round_trip_stable_ratio": (
+                int(best["sell_minimum_output_raw"]) / amount_in if best else None
+            ),
+            "venue_fee_semantics": "uniswap_v3_fee_tier_embedded_in_amount_out",
+            "fee_completeness": "quote_only_no_full_transaction_network_fee",
+            "economic_status": "cost_unknown",
+            "execution_scope": "pool_math_quote_only",
+            "transfer_semantics_checked": False,
+            "router_transaction_simulated": False,
+            "decision_eligible": False,
+            "affects": "none",
         }
 
 
@@ -1309,6 +1707,7 @@ class PumpPortalCollector:
                     await ws.send(json.dumps({"method": "subscribeMigration"}))
                     async for raw in ws:
                         item = json.loads(raw)
+                        received_at = utcnow()
                         address = str(item.get("mint") or item.get("tokenAddress") or "")
                         if not address:
                             continue
@@ -1321,6 +1720,7 @@ class PumpPortalCollector:
                             address=address,
                             name=str(item.get("name") or ""),
                             symbol=str(item.get("symbol") or ""),
+                            first_seen_at=received_at,
                             source=source,
                             url=f"https://pump.fun/coin/{address}",
                             raw={**item, "pump_event_type": event_type},

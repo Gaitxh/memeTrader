@@ -276,12 +276,12 @@ def cmd_doctor(config_path: str, online: bool) -> int:
                                 "error": type(exc).__name__,
                             }
                         )
-            if safety_cfg.get("require_evm_security_report", True):
-                configured_evm_chains = {
-                    str(chain).lower()
-                    for chain in config["candidate"].get("chains", [])
-                    if str(chain).lower() in {"ethereum", "eth", "bsc", "base"}
-                }
+            configured_evm_chains = {
+                str(chain).lower()
+                for chain in config["candidate"].get("chains", [])
+                if str(chain).lower() in {"ethereum", "eth", "bsc", "base"}
+            }
+            if safety_cfg.get("require_evm_security_report", True) and configured_evm_chains:
                 coverage: dict[str, bool] = {}
                 for chain in configured_evm_chains:
                     if chain == "bsc":

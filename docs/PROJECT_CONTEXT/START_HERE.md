@@ -1,29 +1,45 @@
 # START HERE — memeTrader 项目上下文
 
-最后更新：2026-09-01（Asia/Shanghai）
+最后更新：2026-09-02（Asia/Shanghai）
 
 这个目录是给后续开发者和 Agent 使用的**版本控制内项目记忆**。它保存产品意图、架构、安全边界、已实现状态、未完成事项和运行手册，但绝不保存密码、Cookie、Session、验证码、私钥、钱包材料、Bridge Token、公开入口口令、数据库内容或日志。
 
 ## 权威顺序
 
-发生冲突时，按以下顺序判断：
+发生冲突时先区分“用户意图”与“当前事实”。用户意图以 GXH ChatGPT 项目聊天和指定 Codex thread/history 中最新明确指令为共同权威来源；显式 supersession、较晚/更具体指令优先，仍无法消解时保留冲突。执行与事实按以下顺序判断：
 
-1. 根目录 [AGENTS.md](../../AGENTS.md) 的安全和工程规则；
-2. 当前工作区代码、测试和被 Git 忽略的本机 `config.json`；
-3. `config.json -> database` 指向的当前 SQLite；
-4. 本目录中最新的日期快照；
-5. 旧版验收文档和聊天摘要。
+1. 最新明确用户指令与安全约束；
+2. 根目录 [AGENTS.md](../../AGENTS.md) 的冻结安全和工程规则；
+3. [CURRENT_OBJECTIVE_AND_PLAN.md](CURRENT_OBJECTIVE_AND_PLAN.md) 与 [REQUIREMENT_LEDGER.md](REQUIREMENT_LEDGER.md) 的当前 active scope / supersession；
+4. 当前工作区代码、测试和被 Git 忽略的本机 `config.json`；
+5. `config.json -> database` 指向的当前 SQLite、进程和真实运行状态；
+6. `CHATGPT_CODEX_SYNC_STATE.json` / Lead state / Common Space 只负责路由、连续性和协作细节，不能覆盖更高层 authority；
+7. 本目录日期快照、旧版验收文档和聊天摘要。
 
 不要用本目录覆盖运行事实。本目录解释“为什么”和“当前应当怎样继续”，运行状态仍应通过 Web `/api/health`、计划任务、当前配置和 SQLite 只读查询确认。
+
+其中 `AGENTS.md -> Frozen execution contract` 是本聊天反复确认的长期执行契约：后续不得用容易完成的 UI、文档、审计或重复验证，替代对信息覆盖、Event↔Token、候选调度、Paper 执行和前向学习中最高影响真实断点的处理。
 
 ## 必读地图
 
 - [REQUIREMENT_LEDGER.md](REQUIREMENT_LEDGER.md)：长期逐项需求台账；区分 DONE、PARTIAL、CONTINUOUS、BLOCKED、SUPERSEDED，保存当前证据、断点和下一步。
+- [CURRENT_OBJECTIVE_AND_PLAN.md](CURRENT_OBJECTIVE_AND_PLAN.md)：当前最终目的、真实主断点、冻结不变量、P0–P3 优先级和长期完成判定；执行中先读此文件避免方向漂移。
+- [../../CHATGPT_CONTACT.md](../../CHATGPT_CONTACT.md)：Codex 主动唤醒、联系和续接主协调 ChatGPT 的最小联系卡；端点以快速同步指针为准。
+- [CHATGPT_CODEX_SYNC_STATE.json](CHATGPT_CODEX_SYNC_STATE.json)：当前 active cycle、`attention_required`、open-group/alert 路由的快速可变指针；每次 substantial cycle 与上下文恢复先读。
+- [CHATGPT_LEAD_STATE.json](CHATGPT_LEAD_STATE.json)：Lead ChatGPT 的 E 盘耐久北极星、协作拓扑、已恢复要求与最新关键诊断。
+- [CHATGPT_CURRENT_CONVERSATION_REQUIREMENTS_2026-09-02.md](CHATGPT_CURRENT_CONVERSATION_REQUIREMENTS_2026-09-02.md)：本次 GXH ChatGPT 聊天新增/强化的权威用户意图；与 Codex 历史互补。
+- [CHATGPT_RECOVERED_USER_REQUIREMENTS_2026-09-02.md](CHATGPT_RECOVERED_USER_REQUIREMENTS_2026-09-02.md)：从指定 Codex thread 的 139 条 userMessage 恢复并脱敏后的长期需求谱系。
+- [CHATGPT_CODEX_EXECUTION_EFFICIENCY_POLICY_2026-09-02.md](CHATGPT_CODEX_EXECUTION_EFFICIENCY_POLICY_2026-09-02.md)：Codex 开发子 Agent 成本、review/test 停止规则、open-source-first 与任务复杂度路由。
+- [CHATGPT_LEAD_ROLLOVER_STATE.json](CHATGPT_LEAD_ROLLOVER_STATE.json)：Lead chat 达到上下文上限/失效时的新 chat boot read set、单 coordinator rebind 和 checkpoint。
+- [COMMON_SPACE/README.md](COMMON_SPACE/README.md)：ChatGPT ↔ Codex 共同研究区；详细想法/反证/方案放 side-owned notes，实时消息只发 alert pointer，不成为第二套执行计划。
+- [CHATGPT_CODEX_BIDIRECTIONAL_CHANNEL.md](CHATGPT_CODEX_BIDIRECTIONAL_CHANNEL.md)：双向收发、关联 ID、直接回读、故障转移、多聊天与历史建议治理的详细运行手册。
 - [PRODUCT_AND_REQUIREMENTS.md](PRODUCT_AND_REQUIREMENTS.md)：产品目的、非目标、完整需求和界面语义。
 - [REQUIREMENTS_ACCEPTANCE_2026-08-30.md](REQUIREMENTS_ACCEPTANCE_2026-08-30.md)：本轮对整段需求的逐项验收，区分已实现、部分实现、未实现、明确跳过和人工步骤。
 - [ARCHITECTURE_AND_DATAFLOW.md](ARCHITECTURE_AND_DATAFLOW.md)：组件、数据流、关键代码路径、SQLite 表和实时更新方式。
 - [SAFETY_AND_INVARIANTS.md](SAFETY_AND_INVARIANTS.md)：Paper/Live、时间门、账号、Agent、钱包和公开 URL 的硬边界。
+- [../SOLANA_HOLDER_BREADTH_SHADOW_CN.md](../SOLANA_HOLDER_BREADTH_SHADOW_CN.md)：Solana holder 聚合数据的低频前向可用性实验、误读边界和升级门。
 - [SNAPSHOT_2026-09-01.md](SNAPSHOT_2026-09-01.md)：最新 P0-A/P0-B 前向证据、Paper/非收益边界和未成熟自然样本断点。
+- [CHATGPT_REVIEW_HANDOFF_KOL_LOW_ATTENTION_PROBE_2026-09-02.md](CHATGPT_REVIEW_HANDOFF_KOL_LOW_ATTENTION_PROBE_2026-09-02.md)：三路最高强度 ChatGPT 独立复核已完成；原始“ticker/叙事词→Dex 候选→事后涨幅”方案为 `NO-GO`，修订后的前向 addressability-first 探针为 `MODIFIED_GO`，统一使用 `@笔记本mcp20260902`。
 - [SNAPSHOT_2026-08-31.md](SNAPSHOT_2026-08-31.md)：上一份全量需求复核、首笔 Paper 闭环审计、学习缺口和推进历史。
 - [SNAPSHOT_2026-08-30.md](SNAPSHOT_2026-08-30.md)：上一阶段实现、运行和未完成状态。
 - [OPERATIONS_AND_VALIDATION.md](OPERATIONS_AND_VALIDATION.md)：Windows 常驻、Web、浏览器采集、验证与发布检查。
@@ -41,7 +57,7 @@
 
 ## 一句话产品定义
 
-memeTrader 是一个运行在个人 Windows 电脑上的、仅前向证据驱动的 meme-token 研究与 Paper 交易系统：它把新闻/社交事件与新 Token/新池双向关联，通过确定性评分、安全门和 Paper 风控做出 `WAIT / REJECT / CANDIDATE` 决策，并在深色双语 Web 控制台中实时、可审计地展示全过程。
+memeTrader 是一个运行在个人 Windows 电脑上的、仅前向证据驱动的 meme-token 研究与 Paper 交易系统。它的商业目的不是生成更多报告或更复杂的界面，而是在控制风险和执行成本后，提高真实前向赚钱概率：更早发现尚未充分定价的叙事机会，正确关联可交易 Token，真实模拟买卖，并从固定时点结果持续学习。系统把新闻/社交事件与新 Token/新池双向关联，通过确定性评分、安全门和 Paper 风控做出 `WAIT / REJECT / CANDIDATE` 决策，并在深色双语 Web 控制台中实时、可审计地展示全过程；任何收益都必须由前向 Paper/实际成交证据证明，不能承诺或用回填结果代替。
 
 ## 当前不可突破的状态
 

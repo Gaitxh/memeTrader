@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import socket
 from datetime import datetime, timezone
 from pathlib import Path
@@ -286,3 +287,19 @@ def test_extension_manifest_does_not_inject_telegram_pages():
     )
     assert "t.me" not in manifest
     assert "telegram.me" not in manifest
+
+
+def test_extension_x_permalink_fallback_extracts_author():
+    content = (Path(__file__).parents[1] / "browser-extension" / "content.js").read_text(
+        encoding="utf-8"
+    )
+    regex_literal = next(
+        line.strip()
+        for line in content.splitlines()
+        if line.strip().startswith(r"/(?:x\.com|twitter\.com)")
+    )
+    pattern = regex_literal.removeprefix("/").removesuffix("/i").replace(r"\/", "/")
+    match = re.search(pattern, "https://x.com/lookonchain/status/2094768306066694457", re.I)
+
+    assert match is not None
+    assert next(group for group in match.groups() if group) == "lookonchain"

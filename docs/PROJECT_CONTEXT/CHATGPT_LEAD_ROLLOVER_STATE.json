@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "updated_date": "2026-09-02",
+  "purpose": "Minimal durable checkpoint for replacing the designated Lead ChatGPT when a chat is near context limits, visibly degraded, unavailable, or explicitly superseded. E:/memeTrader remains the continuity source; chat memory is never the sole source.",
+  "status": "ACTIVE_LEAD_HEALTHY",
+  "generation": 2,
+  "current_lead_conversation_id": "6a98135b-e2d4-83e9-bd0c-269e36451542",
+  "superseded_lead_conversation_ids": ["6a97a9c9-b0a4-83e8-b0d0-4840f4930990"],
+  "codex_execution_thread_id": "01a0514b-bbb5-7400-baf9-d9feb4dc603d",
+  "project_id": "g-p-6a6ae7ab5ba88191a99ff26a42f446e8",
+  "rollover_triggers": [
+    "Lead ChatGPT explicitly reports context-limit/continuity risk",
+    "current Lead chat becomes visibly slow/degraded enough to impair useful work",
+    "direct read/send proves the current Lead chat is unavailable or 404",
+    "user explicitly asks to replace the Lead chat"
+  ],
+  "do_not_rollover_for": [
+    "one slow response",
+    "one MCP timeout",
+    "a temporary network error",
+    "a normal long reasoning turn",
+    "a desire to run parallel implementation"
+  ],
+  "mandatory_boot_read_set": [
+    "E:/memeTrader/AGENTS.md",
+    "E:/memeTrader/docs/PROJECT_CONTEXT/CURRENT_OBJECTIVE_AND_PLAN.md",
+    "E:/memeTrader/docs/PROJECT_CONTEXT/REQUIREMENT_LEDGER.md",
+    "E:/memeTrader/docs/PROJECT_CONTEXT/CHATGPT_LEAD_STATE.json",
+    "E:/memeTrader/docs/PROJECT_CONTEXT/CHATGPT_RECOVERED_USER_REQUIREMENTS_2026-09-02.md",
+    "E:/memeTrader/docs/PROJECT_CONTEXT/CHATGPT_CURRENT_CONVERSATION_REQUIREMENTS_2026-09-02.md",
+    "E:/memeTrader/docs/PROJECT_CONTEXT/CHATGPT_CODEX_EXECUTION_EFFICIENCY_POLICY_2026-09-02.md",
+    "E:/memeTrader/docs/PROJECT_CONTEXT/COMMON_SPACE/README.md",
+    "E:/memeTrader/docs/PROJECT_CONTEXT/COMMON_SPACE/STATE/CHATGPT.json",
+    "E:/memeTrader/docs/PROJECT_CONTEXT/CHATGPT_CODEX_SYNC_STATE.json",
+    "E:/memeTrader/docs/PROJECT_CONTEXT/CHATGPT_CODEX_SYNC.md",
+    "E:/memeTrader/docs/PROJECT_CONTEXT/CHATGPT_LEAD_JOURNAL.md"
+  ],
+  "bootstrap_contract": [
+    "New Lead is read-only toward active business-code implementation unless explicitly taking ownership at a clean boundary.",
+    "New Lead must identify the current active cycle from CHATGPT_CODEX_SYNC_STATE.json, not from this rollover file if they differ.",
+    "New Lead must restate internally the North Star: genuine forward, executable, cost-adjusted, risk-adjusted profitability; no future-data/backfilled winners; Live locked.",
+    "New Lead must preserve the recovered historical user requirements and efficiency rules; it must not restart completed work or turn historical ideas into active scope without promotion.",
+    "New Lead must verify the Codex execution thread id and current workspace facts before sending implementation-facing advice.",
+    "Only after successful boot validation may the routing pointer/contact card be rebound from old Lead id to new Lead id. Until then the old binding remains authoritative.",
+    "After rebind, the old Lead is SUPERSEDED and must not continue issuing implementation-facing instructions."
+  ],
+  "minimal_handoff_fields": [
+    "generation",
+    "old_lead_conversation_id",
+    "reason",
+    "fact_cutoff_utc",
+    "active_cycle_id",
+    "active_cycle_status",
+    "one_sentence_objective",
+    "completed_delta",
+    "open_blockers_or_questions",
+    "next_expected_step",
+    "mandatory_boot_read_set"
+  ],
+  "current_checkpoint": {
+    "fact_cutoff_utc": "2026-09-02T00:00:00Z",
+    "active_cycle_id": "READ_FROM_CHATGPT_CODEX_SYNC_STATE",
+    "active_cycle_status": "READ_FROM_CHATGPT_CODEX_SYNC_STATE",
+    "one_sentence_objective": "Continue the current highest-value strict-forward memeTrader cycle without losing the profitability objective or recovered user constraints.",
+    "completed_delta": [
+      "Recovered one full chronological pass of all 139 user messages from the target Codex thread and distilled them to E: without secrets.",
+      "Created Lead durable state/journal and a development-side agent-cost/efficiency policy.",
+      "Identified browser account coverage latency as a stronger freshness candidate than the 60-second fallback content scan.",
+      "Created the E:-resident Common Space and current-chat requirements record; forced Lead->Codex MESSAGE_ID C2C-20260902-2149-LEAD-FORCE-SYNC-001 was directly delivered and explicitly ACKed, and Codex wrote its Common Space acknowledgement.",
+      "Installed the global Codex hook bootstrap pointing to the E:-resident project-context guard. A single read-only ephemeral probe completed without hook configuration/trust errors; do not repeat the costly model probe just for reassurance."
+    ],
+    "open_blockers_or_questions": [
+      "Codex should verify whether browser account coverage latency is PROMOTE_NOW for current P0 using live observation denominators.",
+      "Codex ACKed and adopted the development-side agent routing/stop rules and open-source-first rule; verify behavior through subsequent execution rather than repeated acknowledgement tests.",
+      "Observe whether the already-installed context guard appears naturally on the active Desktop Codex thread's next prompt/resume/compact; active-session hot reload is not yet proven.",
+      "Do not let communication/control-plane work displace the active memeTrader economic bottleneck."
+    ],
+    "next_expected_step": "Continue the active information-to-evidence P0. Use direct MESSAGE_ID-verified doorbells for material Lead/Codex corrections and Common Space for detail; browser coverage latency remains a candidate to quantify, not an automatic scope replacement."
+  }
+}

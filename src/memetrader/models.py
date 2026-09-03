@@ -147,6 +147,7 @@ class CandidateDecision:
     rejected_reasons: list[str] = field(default_factory=list)
     position_usd: float = 0.0
     created_at: datetime = field(default_factory=utcnow)
+    route_probe_id: int | None = None
 
     def __post_init__(self) -> None:
         self.created_at = parse_time(self.created_at)

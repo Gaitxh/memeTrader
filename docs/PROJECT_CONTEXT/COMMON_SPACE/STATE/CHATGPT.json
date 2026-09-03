@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "writer": "Lead ChatGPT",
+  "updated_date": "2026-09-02",
+  "lead_conversation_id": "6a98135b-e2d4-83e9-bd0c-269e36451542",
+  "codex_thread_id": "01a0514b-bbb5-7400-baf9-d9feb4dc603d",
+  "north_star": "Improve genuine forward, executable, cost-adjusted, risk-adjusted meme-token profitability without future-data leakage or manufactured trade count.",
+  "active_cycle_source": "docs/PROJECT_CONTEXT/CHATGPT_CODEX_SYNC_STATE.json",
+  "current_collaboration_focus": [
+    "Prevent Codex forgetting/drift by E:-resident durable state and compact context guard.",
+    "Use Common Space for detailed bilateral research/challenge; direct messages are short doorbells.",
+    "Reduce development-side subagent/review cost and unnecessary defensive work.",
+    "Treat official docs/mature OSS/upstream issues/community experience as first-line research for generic tooling/implementation blockers.",
+    "Verify whether browser account/profile coverage latency is a current P0 cause of missed/stale exact social capture before changing timers blindly.",
+    "Keep Lead rollover safe so a new ChatGPT chat can inherit from E: without creating dual coordinators."
+  ],
+  "recent_findings": [
+    "One chronological pass recovered all 139 structured user messages from the designated Codex thread; Codex history and current GXH ChatGPT chats are complementary user-intent authority sources.",
+    "The target Codex thread has 99 context compactions and 91 distinct subagent starts; 48 started paths are conservatively named audit/review/recheck, consistent with the user's efficiency concern.",
+    "Current browser extension is event-driven faster than one minute on-page, but one account tab rotates 100 enabled accounts; idealized full normal-pool revisit is roughly 144 minutes. Coverage scheduling is a stronger freshness candidate than the 60-second fallback scan."
+  ],
+  "open_questions": [
+    "Will live observation denominators confirm account coverage latency materially contributes to missed exact X/KOL posts?",
+    "Direct ChatGPT->Codex same-thread delivery is now verified through Codex Desktop codex_app.send_message_to_thread with MESSAGE_ID delivery/ACK checks; keep testing its usefulness only through real material messages, not synthetic pings.",
+    "Will the E:-resident context guard naturally appear after future prompt/resume/compact events without creating duplicate context?",
+    "Which current Codex task should be changed, if any, after it reads the recovered requirements and efficiency policy?"
+  ],
+  "do_not_do": [
+    "Do not let collaboration infrastructure displace the active memeTrader economic bottleneck.",
+    "Do not enable a second code writer or second Lead coordinator.",
+    "Do not copy secrets/raw private reasoning into Common Space.",
+    "Do not promote Common Space proposals without existing governance."
+  ]
+}

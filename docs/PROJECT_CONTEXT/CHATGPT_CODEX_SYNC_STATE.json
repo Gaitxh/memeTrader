@@ -1,0 +1,178 @@
+{
+  "schema_version": 1,
+  "purpose": "Fast routing pointer for ChatGPT-Codex coordination; not an evidence ledger or product requirement.",
+  "protocol_version": "SYNC_V2",
+  "authoritative_files": {
+    "objective": "docs/PROJECT_CONTEXT/CURRENT_OBJECTIVE_AND_PLAN.md",
+    "requirements": "docs/PROJECT_CONTEXT/REQUIREMENT_LEDGER.md",
+    "mailbox": "docs/PROJECT_CONTEXT/CHATGPT_CODEX_SYNC.md",
+    "project_rules": "AGENTS.md"
+  },
+  "coordination_mode": {
+    "execution_owner": "Codex thread 01a0514b-bbb5-7400-baf9-d9feb4dc603d",
+    "review_coordinator": {
+      "designation": "C2C-20260902-2158-LEAD-G2",
+      "conversation_id": "6a98135b-e2d4-83e9-bd0c-269e36451542",
+      "title": "current active Lead ChatGPT"
+    },
+    "independent_reviewers": "send distinct findings to the designated coordinator or a role-stamped review artifact; do not create competing implementation instructions",
+    "direct_channel": "Codex may use codex_app.send_message_to_thread for compact event-driven SYNC_ACK; durable decisions and unresolved conflicts still belong in the mailbox/pointer.",
+    "large_logs_or_diffs_in_mailbox": false
+  },
+  "direct_contact": {
+    "protocol_version": "GXH-C2C/1",
+    "contact_card": "CHATGPT_CONTACT.md",
+    "detailed_runbook": "docs/PROJECT_CONTEXT/CHATGPT_CODEX_BIDIRECTIONAL_CHANNEL.md",
+    "lead_chatgpt_project": "GXH coin",
+    "lead_chatgpt_conversation_id": "6a98135b-e2d4-83e9-bd0c-269e36451542",
+    "codex_execution_thread_id": "01a0514b-bbb5-7400-baf9-d9feb4dc603d",
+    "primary_transport": "codex_app.send_message_to_thread",
+    "direct_reply_transport": "codex_app.read_thread on the same exact conversation/thread id",
+    "wake_semantics": "One compact message resumes the designated Lead ChatGPT conversation; do not start a second Codex writer.",
+    "last_verified_event": "Bidirectional generation-2 binding verified on 2026-09-02: Lead->Codex forced MESSAGE_ID C2C-20260902-2149-LEAD-FORCE-SYNC-001 was delivered and ACKed; Codex then directly sent the ACK back to Lead conversation 6a98135b-e2d4-83e9-bd0c-269e36451542. CONTACT_REBIND MESSAGE_ID C2C-20260902-2203-LEAD-REBIND-G2 was then delivered and explicitly ACKed with the same active Lead id at 2026-09-02T14:08:19Z.",
+    "durable_reply_paths": [
+      "docs/PROJECT_CONTEXT/CHATGPT_CODEX_SYNC.md",
+      "docs/PROJECT_CONTEXT/CHATGPT_CODEX_SYNC_STATE.json"
+    ],
+    "rebind_rule": "If the target is invalid or the chat is full, record CONTACT_REBIND_REQUIRED once, use the installed codex-with-chatgpt skill to create or rebind one Chat conversation inside GXH coin, validate it, then update this ID and CHATGPT_CONTACT.md.",
+    "message_size_guidance_bytes": 2048
+  },
+  "active_cycle": {
+    "priority": "P0",
+    "cycle_id": "memetrader-system-research-20260903",
+    "status": "STRATEGY3_CURRENT_VERSION_RETRY_AND_EXIT_MARK_FAIRNESS_FORWARD_OBSERVED",
+    "objective": "Collect timely Strategy-3 post-entry assessments and paired executable exits while completing amount-specific execution evidence and creator launch-history outcomes strictly forward; no research layer may alter Paper before maturity.",
+    "scope_guard": "One writer, Live locked, no future/backfill, no gate relaxation, new research affects none, no extra Agent concurrency.",
+    "fact_cutoff_utc": "2026-09-03T02:50:15Z",
+    "live_forward_snapshot": "The prior admission 10791/assessment 1032 was corrected to frozen context v1. Active retry now requires current context-version exact seed lineage; current-v2 seed 12 naturally produced admission 10846 and assessment 1044/no_context. Exit marks serve never-marked positions before the stalest prior mark, and exit quotes serve unattempted pending marks before rotating retries. Cohorts 2130/2137/2138/2139 received first marks; previously unattempted 2110/2112/2113/2117 received first Jupiter sell attempts with no-route or uneconomic terminal truth. Runtime and 8765/8787/8788 remain healthy, Paper unchanged, Live locked."
+  },
+  "review_artifacts": {
+    "collaboration_protocol": {
+      "path": "docs/PROJECT_CONTEXT/CHATGPT_CODEX_COLLABORATION_PROTOCOL_2026-09-02.md",
+      "routing_status": "ACK_IMPLEMENTED"
+    },
+    "implementation_review": {
+      "path": "docs/PROJECT_CONTEXT/CHATGPT_ACTIVE_IMPLEMENTATION_REVIEW_2026-09-02.md",
+      "routing_status": "CODEX_VERIFIED_BASE_V3_DEPLOYED"
+    },
+    "route_review": {
+      "path": "docs/PROJECT_CONTEXT/CHATGPT_ACTIVE_ROUTE_REVIEW_2026-09-02.md",
+      "routing_status": "CODEX_VERIFIED_P0_IMPLEMENTED_ROUTE_V2_DEPLOYED"
+    },
+    "live_boundary_update": {
+      "path": "docs/PROJECT_CONTEXT/CHATGPT_LIVE_BOUNDARY_UPDATE_2026-09-02.md",
+      "routing_status": "FACT_SNAPSHOT_SUPERSEDED_BY_URGENT_HOLD"
+    },
+    "reporting_review": {
+      "path": "docs/PROJECT_CONTEXT/CHATGPT_ACTIVE_REPORTING_REVIEW_2026-09-02.md",
+      "routing_status": "CODEX_VERIFIED_MULTI_VERSION_ISOLATION"
+    },
+    "urgent_post_restart_hold": {
+      "path": "docs/PROJECT_CONTEXT/CHATGPT_URGENT_POST_RESTART_HOLD_2026-09-02.md",
+      "routing_status": "RESOLVED_ROUTE_V1_ABANDONED_ROUTE_V2_FORWARD_REGISTERED"
+    }
+  },
+  "open_groups": [
+    {
+      "group_id": "LEAD-CORRECTION-20260902-001",
+      "status": "ACKED_BY_CODEX_2026-09-02",
+      "blocks_release": false,
+      "artifact": "docs/PROJECT_CONTEXT/COMMON_SPACE/ALERTS/CHATGPT_TO_CODEX/C2C-20260902-LEAD-CORRECTION-001.md",
+      "reason": "Current GXH ChatGPT conversation and recovered Codex history add/restore material anti-drift, agent-cost, open-source-first, Lead-rollover and browser-coverage findings. Codex is currently writer-locked/busy; do not create a competing writer merely to deliver the alert."
+    },
+    {
+      "group_id": "MEMETRADER-SYSTEM-RESEARCH-20260903-001",
+      "status": "ACK_IMPLEMENTED_P0_A_B_C_AND_P0_D_V3_FORWARD_ACTIVE",
+      "blocks_release": false,
+      "artifact": "docs/PROJECT_CONTEXT/COMMON_SPACE/ALERTS/CHATGPT_TO_CODEX/C2C-20260903-MEMETRADER-SYSTEM-RESEARCH-IMPL-001.md",
+      "reason": "User explicitly requested comprehensive system research followed by Codex implementation. Detailed research and ordered implementation contract are durable under docs/PROJECT_CONTEXT; direct MESSAGE_ID C2C-20260903-MEMETRADER-SYSTEM-RESEARCH-IMPL-001 returned success but had not yet appeared in read_thread at the first delivery check. Codex must read both referenced files at the next checkpoint and execute the ordered handoff."
+    },
+    {
+      "group_id": "MULTICHAIN-STRATEGY3-LEARNING-20260903-002",
+      "status": "ATTENTION_REQUIRED_USER_SUPERSESSION_AND_RELEASE_GATE",
+      "blocks_release": true,
+      "artifact": "docs/PROJECT_CONTEXT/COMMON_SPACE/ALERTS/CHATGPT_TO_CODEX/C2C-20260903-MULTICHAIN-STRATEGY3-LEARNING-GATE-002.md",
+      "reason": "Newest user instruction restores BSC/Base/Robinhood implementation alongside Solana and requires chain-aware simulation costs. Lead also found current-source restart signature mismatch, Jupiter v2 zero-attempt dispatch despite new cohorts, and Strategy-3 control contamination from dynamic-exit baseline. Read at the current pytest checkpoint before any controlled restart."
+    }
+  ],
+  "unresolved_conflicts": [
+    {
+      "conflict_id": "ROUTE-V1-DEPLOYMENT-GATE",
+      "status": "RESOLVED_ROUTE_V1_ABANDONED_ROUTE_V2_DEPLOYED",
+      "position_a": "CHATGPT_URGENT_POST_RESTART_HOLD says route-v1 was registered before listed route/reporting blockers were closed and further route release should remain held.",
+      "position_b": "Current code and live SQLite show route v1 had zero attempts/results/confirmations; it is incompatible with base v3 and has been abandoned before first attempt without mutating its registration.",
+      "resolution_owner": "Codex",
+      "blocks_further_route_release_until_resolved": false,
+      "required_current_evidence": [
+        "live route-v1 registration definition_json and immutable row counts",
+        "current compatible-base-version/hash enforcement",
+        "request-before-response-after-deadline and late-pair-vs-queue tests",
+        "surface-unmapped reporting semantics",
+        "bounded/fair Jupiter scheduling evidence",
+        "multi-version Web summary regression"
+      ],
+      "resolution_rule": "Do not delete either historical position. Append one disposition explaining which parts are ACK_IMPLEMENTED, ACK_DEFERRED, REJECT, or SUPERSEDED and why."
+    }
+  ],
+  "idea_intake_rule": {
+    "required_fields": [
+      "source_reference",
+      "dedupe_key",
+      "bottleneck_changed",
+      "current_evidence",
+      "expected_information_or_ev_gain",
+      "falsifiable_forward_test",
+      "cost_and_risk",
+      "displacement_cost",
+      "frozen_rule_impact",
+      "disposition"
+    ],
+    "allowed_dispositions": [
+      "PROMOTE_NOW",
+      "NEXT_CYCLE",
+      "PRESERVE_CANDIDATE",
+      "REJECT",
+      "SUPERSEDED"
+    ],
+    "scope_change_rule": "Only PROMOTE_NOW items incorporated into CURRENT_OBJECTIVE_AND_PLAN.md or REQUIREMENT_LEDGER.md may alter active execution scope.",
+    "lanes": {
+      "FROZEN_CONTRACT": "Latest explicit user instruction, safety constraints, AGENTS.md frozen rules, and immutable registered definitions; only specific later user supersession may change them.",
+      "ACTIVE_PLAN": "One primary causal bottleneck/cycle, plus only urgent safety or production-contamination blockers.",
+      "IDEA_INBOX": "Preserved historical suggestions and reviewer proposals with no execution authority until promoted."
+    }
+  },
+  "message_envelope": {
+    "required_for_material_sync": [
+      "MESSAGE_ID",
+      "CYCLE_ID",
+      "FACT_CUTOFF_UTC",
+      "DELTA_SINCE",
+      "ISSUE_ID",
+      "DECISION_REQUESTED",
+      "OWNER",
+      "BLOCKS_RELEASE",
+      "NEXT_SYNC_EVENT"
+    ],
+    "optional_collision_fields": [
+      "READ_SET",
+      "WRITE_SET"
+    ],
+    "fact_classes": {
+      "IMMUTABLE": "registrations, activation boundaries, frozen hashes, append-only rows",
+      "SNAPSHOT": "latest ids/counts/PIDs/health; stale after relevant write, restart, or deployment"
+    },
+    "dedupe_rule": "Do not create another implementation-facing item for the same cycle_id + issue_id unless materially new evidence has a later fact cutoff.",
+    "delta_only": true,
+    "interrupt_only_for": [
+      "release-blocking correctness, safety, or causality issue",
+      "evidence changing causal hypothesis or priority",
+      "user priority or frozen-rule change",
+      "controlled deploy or restart boundary",
+      "first material natural sample or terminal changing interpretation"
+    ]
+  },
+  "last_codex_reply_id": "C2C-20260903-STRATEGY3-CURRENT-VERSION-AND-MARK-FAIRNESS",
+  "attention_required": true,
+  "checkpoint_rule": "Read this pointer at the start/end of a substantial cycle and before deploy/release. Open only referenced mailbox items. Do not interrupt every edit. After replying, update last_codex_reply_id, resolved/open groups, active_cycle.status, and attention_required.",
+  "staleness_rule": "Current code, SQLite, tests, processes, CURRENT_OBJECTIVE_AND_PLAN.md, and REQUIREMENT_LEDGER.md override this pointer when facts conflict."
+}

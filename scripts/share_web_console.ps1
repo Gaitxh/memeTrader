@@ -42,7 +42,15 @@ function Test-ProtectedConsole {
   }
 }
 
-if (-not (Test-ProtectedConsole)) {
+function Test-ProtectedListener {
+  return [bool](Get-NetTCPConnection `
+    -LocalAddress "127.0.0.1" `
+    -LocalPort $port `
+    -State Listen `
+    -ErrorAction SilentlyContinue)
+}
+
+if (-not (Test-ProtectedConsole) -and -not (Test-ProtectedListener)) {
   Start-Process `
     -FilePath "powershell.exe" `
     -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$runner`" -Port $port -AccessTokenFile `"$tokenPath`"" `

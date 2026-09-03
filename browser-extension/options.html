@@ -17,11 +17,14 @@
   <label>本地桥令牌<input id="token" type="password" autocomplete="off"></label>
   <label>最大帖子年龄（分钟）<input id="maxPostAgeMinutes" type="number" min="1" max="240" value="30"></label>
   <p class="hint">首次打开页面和后续新增内容都只转发这个时间窗口内的帖子，避免旧页面污染实时信号。</p>
+  <label><input id="autoWatchEnabled" type="checkbox" style="width:auto;margin-right:8px">自动轮换重点账号页面</label>
+  <p class="hint">使用两个不激活的后台标签页：critical 与普通账号各每分钟轮换一个。只打开公开资料页，不滚动、点赞、关注、发帖或读取登录凭据。</p>
   <label>同步的主题词（只读）<textarea id="watchTerms" readonly></textarea></label>
   <label>同步的重点账号（只读）<textarea id="watchAccounts" readonly></textarea></label>
   <label>你已人工核验的官方账号（每行一个）<textarea id="officialAccounts"></textarea></label>
   <button id="save">保存</button><span id="status"></span>
   <p id="queueStatus" class="hint"></p>
+  <p id="autoWatchStatus" class="hint"></p>
   <p class="hint">令牌位于 E:\memeTrader\config.json 的 bridge.token。账号名不要包含平台 URL；可带或不带 @。</p>
   <script src="options.js"></script>
 </body>

@@ -7,10 +7,13 @@ import re
 import sqlite3
 import threading
 from dataclasses import asdict
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+from solders.pubkey import Pubkey
 
 from .models import (
     CandidateDecision,
@@ -32,6 +35,11 @@ class Store:
     SHADOW_EVENT_ADMISSION_VERSION = "shadow-event-admission/v2-all-actions"
     SHADOW_EVENT_HORIZONS_MINUTES = (15, 60, 240)
     TOKEN_CONTEXT_ADMISSION_VERSION = "token-context-admission/v1"
+    TOKEN_CONTEXT_DEFERRED_ADMISSION_VERSION = "token-context-deferred-admission/v1"
+    TOKEN_CONTEXT_DEFERRED_ADMISSION_WINDOW_MINUTES = 180
+    TOKEN_CONTEXT_ONCHAIN_ADMISSION_CHALLENGER_VERSION = (
+        "token-context-onchain-admission-challenger/v2-fair-lanes"
+    )
     TOKEN_CONTEXT_OUTCOME_VERSION = "token-context-outcome/v1"
     TOKEN_CONTEXT_OUTCOME_HORIZONS_MINUTES = (15, 60, 240)
     INFORMATION_FIRST_SHADOW_VERSION = "information-first-shadow/v1"
@@ -39,11 +47,25 @@ class Store:
     INFORMATION_FIRST_SHADOW_QUIET_MARKET_CAP_USD = 1_000_000.0
     INFORMATION_FIRST_SHADOW_QUIET_VOLUME_5M_USD = 20_000.0
     INFORMATION_FIRST_SHADOW_QUIET_TRANSACTIONS_5M = 30
+    INFORMATION_FIRST_ACTIVE_OUTCOME_VERSION = "information-first-active-outcome-sampler/v2"
+    INFORMATION_FIRST_ACTIVE_OUTCOME_RETRY_SECONDS = (0, 30, 120, 240)
+    INFORMATION_FIRST_ACTIVE_OUTCOME_DEADLINE_SECONDS = 300
     INFORMATION_FIRST_ILG_VERSION = "information-first-ilg/v1"
     INFORMATION_FIRST_ILG_WINDOW_MINUTES = 240
     INFORMATION_FIRST_ILG_TERMINAL_GRACE_MINUTES = 30
     INFORMATION_FIRST_ILG_VOLUME_5M_USD = 20_000.0
     INFORMATION_FIRST_ILG_TRANSACTIONS_5M = 30
+    KOL_TOKEN_ADDRESSABILITY_VERSION = "kol-token-addressability-lag/v3-immutable-attention"
+    KOL_TOKEN_ADDRESSABILITY_MIN_PRIORITY = 4
+    KOL_TOKEN_ADDRESSABILITY_MAX_ATTENTION = 35.0
+    KOL_TOKEN_ADDRESSABILITY_MAX_SOURCE_AGE_MINUTES = 10
+    KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION = "kol-token-addressability-route/v2-compatible-deadline-edf"
+    KOL_TOKEN_ADDRESSABILITY_ROUTE_DEADLINE_SECONDS = 600
+    KOL_TOKEN_ADDRESSABILITY_CONFIRMATION_WINDOW_MINUTES = 30
+    KOL_TOKEN_ADDRESSABILITY_USDC_INPUT_AMOUNT_RAW = 35_000_000
+    KOL_TOKEN_ADDRESSABILITY_SLIPPAGE_BPS = 400
+    PROVIDER_POST_AMBIGUITY_VERSION = "provider-post-ambiguity-shadow/v1"
+    PROVIDER_POST_AMBIGUITY_CHECKPOINT_SECONDS = (0, 30, 60, 120, 300, 10_800)
     WATCH_ATTENTION_POLICY_VERSION = "watch-attention/v3-experiment-gated"
     TREND_ATTENTION_POLICY_VERSION = "trend-attention/v2-experiment-gated"
     ATTENTION_EXPERIMENT_VERSION = "attention-experiment/v1"
@@ -51,6 +73,15 @@ class Store:
     PAPER_SOURCE_ATTRIBUTION_VERSION = "paper-source-attribution/v2-decision-cohort"
     SOURCE_POLL_EXPOSURE_VERSION = "source-poll-exposure/v1"
     TOKEN_DISCOVERY_EXPOSURE_VERSION = "token-discovery-exposure/v1"
+    TOKEN_LAUNCH_FACT_VERSION = "token-launch-facts/v1"
+    CREATOR_LAUNCH_RISK_VERSION = "creator-launch-risk-shadow/v1-local-history-lower-bound"
+    TOKEN_MARKET_SURFACE_VERSION = "token-market-surface/v2-bonding-curves"
+    LIQUIDITY_SURVIVAL_VERSION = "liquidity-survival-shadow/v3-version-isolated"
+    LIQUIDITY_SURVIVAL_ENABLED = True
+    LIQUIDITY_SURVIVAL_HORIZONS_MINUTES = (1, 5, 15, 60)
+    LIQUIDITY_SURVIVAL_BASELINE_USD = 12_000.0
+    LIQUIDITY_SURVIVAL_TARGET_GRACE_SECONDS = 60
+    LIQUIDITY_SURVIVAL_RETRY_SECONDS = 10
     TOKEN_DISCOVERY_QUOTE_ATTEMPT_VERSION = "token-discovery-quote-attempt/v2"
     TOKEN_UNIVERSE_FORWARD_VERSION = "token-universe-forward-outcomes/v1"
     TOKEN_UNIVERSE_FUNNEL_VERSION = "token-universe-funnel-transitions/v1"
@@ -67,8 +98,28 @@ class Store:
     TOKEN_UNIVERSE_FIXED_TARGET_EXECUTION_VERSION = "token-universe-fixed-target-execution/v1"
     TOKEN_UNIVERSE_JUPITER_QUOTE_VERSION = "token-universe-jupiter-quote/v1"
     TOKEN_UNIVERSE_JUPITER_QUOTE_VALIDITY_VERSION = "token-universe-jupiter-quote-validity/v1"
-    ONCHAIN_ONLY_SHADOW_VERSION = "onchain-only-shadow/v1"
-    ONCHAIN_ONLY_JUPITER_QUOTE_VERSION = "onchain-only-shadow-jupiter-quote/v1"
+    ONCHAIN_ONLY_SHADOW_VERSION = "onchain-only-shadow/v2-20usdc"
+    ONCHAIN_ONLY_JUPITER_QUOTE_VERSION = "onchain-only-shadow-jupiter-quote/v2-20usdc-400bps"
+    ONCHAIN_ONLY_EVM_ROUTE_QUOTE_VERSION = (
+        "onchain-only-shadow-evm-uniswap-v3-quote/v1-forward-only"
+    )
+    EVM_ROUTE_RESEARCH_CHAINS = frozenset({"bsc", "base", "robinhood"})
+    EVENT_CONTEXT_JUPITER_ROUTE_VERSION = "event-context-jupiter-route/v1"
+    EVENT_ROUTE_EXECUTION_CHALLENGER_VERSION = (
+        "event-route-execution-challenger/v1-entry-preflight"
+    )
+    ONCHAIN_PAPER_EXPLORATION_VERSION = "onchain-paper-exploration/v4-20usdc-flat040"
+    ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION = "onchain-paper-exit-challenger/v4-20usdc-flat040"
+    ONCHAIN_PAPER_NARRATIVE_RUNNER_VERSION = (
+        "onchain-paper-narrative-runner/v2-20usdc-flat040"
+    )
+    ONCHAIN_PAPER_NARRATIVE_CONTEXT_VERSION = (
+        "onchain-paper-narrative-context/v3-20usdc-entry-snapshot"
+    )
+    SOLANA_HOLDER_SHADOW_VERSION = "solana-holder-breadth-shadow/v1"
+    SOLANA_HOLDER_SHADOW_HORIZONS_MINUTES = (0, 15, 60, 240)
+    SOLANA_HOLDER_SHADOW_SAMPLE_MODULUS = 1000
+    SOLANA_HOLDER_SHADOW_SAMPLE_BUCKETS = 2
     JUPITER_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
     TOKEN_UNIVERSE_EVM_CHAINS = frozenset({
         "arbitrum", "avalanche", "base", "blast", "bsc", "celo", "cronos",
@@ -80,6 +131,7 @@ class Store:
     EVENT_CLAIM_RELATION_VERSION = "event-claim-relation/v1"
     AGENT_FACT_VERIFICATION_VERSION = "agent-fact-verification/v1"
     SOURCE_ITEM_REVISION_VERSION = "source-item-revision/v1"
+    SOURCE_FACT_SINGLE_FLIGHT_VERSION = "source-fact-single-flight/v1"
     OBSERVATION_PROVENANCE_VERSION = "observation-provenance/v1"
     TELEGRAM_EXTERNAL_HANDOFF_VERSION = "telegram-manual-external-origin-handoff/v1"
     EVENT_CLAIM_STATUSES = {
@@ -347,6 +399,126 @@ class Store:
                 CREATE TRIGGER IF NOT EXISTS source_item_revisions_no_delete
                 BEFORE DELETE ON source_item_revisions
                 BEGIN SELECT RAISE(ABORT,'source item revisions are immutable'); END;
+                CREATE TABLE IF NOT EXISTS source_fact_single_flight_registrations (
+                    version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_assessment_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS source_fact_work_units (
+                    id INTEGER PRIMARY KEY,
+                    version TEXT NOT NULL,
+                    source_version_key TEXT NOT NULL UNIQUE,
+                    source_revision_id INTEGER,
+                    claim_sha256 TEXT NOT NULL,
+                    trigger TEXT NOT NULL DEFAULT '',
+                    requested_at TEXT NOT NULL,
+                    available_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    recorded_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    FOREIGN KEY(source_revision_id) REFERENCES source_item_revisions(id)
+                );
+                CREATE TABLE IF NOT EXISTS source_fact_attempts (
+                    id INTEGER PRIMARY KEY,
+                    version TEXT NOT NULL,
+                    work_unit_id INTEGER NOT NULL,
+                    attempt_key TEXT NOT NULL UNIQUE,
+                    run_id TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    lease_until TEXT NOT NULL,
+                    finished_at TEXT,
+                    state TEXT NOT NULL CHECK(state IN ('dispatch','inflight','uncertain','completed')),
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    recorded_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    FOREIGN KEY(work_unit_id) REFERENCES source_fact_work_units(id)
+                );
+                CREATE INDEX IF NOT EXISTS source_fact_attempts_work_unit_idx
+                    ON source_fact_attempts(work_unit_id,started_at DESC,id DESC);
+                CREATE TABLE IF NOT EXISTS source_fact_results (
+                    id INTEGER PRIMARY KEY,
+                    version TEXT NOT NULL,
+                    work_unit_id INTEGER NOT NULL,
+                    attempt_id INTEGER NOT NULL UNIQUE,
+                    result_key TEXT NOT NULL UNIQUE,
+                    status TEXT NOT NULL,
+                    claim_status TEXT NOT NULL,
+                    confidence REAL,
+                    completed_at TEXT NOT NULL,
+                    available_at TEXT NOT NULL,
+                    reusable_until TEXT NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    audit_json TEXT NOT NULL DEFAULT '{}',
+                    fact_verification_json TEXT NOT NULL DEFAULT '{}',
+                    recorded_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    FOREIGN KEY(work_unit_id) REFERENCES source_fact_work_units(id),
+                    FOREIGN KEY(attempt_id) REFERENCES source_fact_attempts(id)
+                );
+                CREATE INDEX IF NOT EXISTS source_fact_results_reusable_idx
+                    ON source_fact_results(work_unit_id,reusable_until DESC,id DESC);
+                CREATE TABLE IF NOT EXISTS source_fact_token_bindings (
+                    id INTEGER PRIMARY KEY,
+                    version TEXT NOT NULL,
+                    work_unit_id INTEGER NOT NULL,
+                    result_id INTEGER,
+                    token_id TEXT NOT NULL,
+                    admission_id INTEGER,
+                    assessment_id INTEGER,
+                    reused INTEGER NOT NULL DEFAULT 0 CHECK(reused IN (0,1)),
+                    binding_status TEXT NOT NULL CHECK(binding_status IN (
+                        'exact','ambiguous','unmapped','excluded_temporal'
+                    )),
+                    binding_kind TEXT NOT NULL,
+                    evidence_basis TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    ingested_at TEXT NOT NULL,
+                    available_at TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    binding_fingerprint TEXT NOT NULL UNIQUE,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    FOREIGN KEY(work_unit_id) REFERENCES source_fact_work_units(id),
+                    FOREIGN KEY(result_id) REFERENCES source_fact_results(id)
+                );
+                CREATE INDEX IF NOT EXISTS source_fact_token_bindings_token_idx
+                    ON source_fact_token_bindings(token_id,available_at DESC,id DESC);
+                CREATE TRIGGER IF NOT EXISTS source_fact_single_flight_registrations_no_update
+                BEFORE UPDATE ON source_fact_single_flight_registrations
+                BEGIN SELECT RAISE(ABORT,'source fact registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS source_fact_single_flight_registrations_no_delete
+                BEFORE DELETE ON source_fact_single_flight_registrations
+                BEGIN SELECT RAISE(ABORT,'source fact registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS source_fact_work_units_no_update
+                BEFORE UPDATE ON source_fact_work_units
+                BEGIN SELECT RAISE(ABORT,'source fact work units are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS source_fact_work_units_no_delete
+                BEFORE DELETE ON source_fact_work_units
+                BEGIN SELECT RAISE(ABORT,'source fact work units are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS source_fact_attempts_no_update
+                BEFORE UPDATE ON source_fact_attempts
+                BEGIN SELECT RAISE(ABORT,'source fact attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS source_fact_attempts_no_delete
+                BEFORE DELETE ON source_fact_attempts
+                BEGIN SELECT RAISE(ABORT,'source fact attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS source_fact_results_no_update
+                BEFORE UPDATE ON source_fact_results
+                BEGIN SELECT RAISE(ABORT,'source fact results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS source_fact_results_no_delete
+                BEFORE DELETE ON source_fact_results
+                BEGIN SELECT RAISE(ABORT,'source fact results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS source_fact_token_bindings_no_update
+                BEFORE UPDATE ON source_fact_token_bindings
+                BEGIN SELECT RAISE(ABORT,'source fact token bindings are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS source_fact_token_bindings_no_delete
+                BEFORE DELETE ON source_fact_token_bindings
+                BEGIN SELECT RAISE(ABORT,'source fact token bindings are immutable'); END;
                 CREATE TABLE IF NOT EXISTS observation_provenance_registrations (
                     definition_version TEXT PRIMARY KEY,
                     registered_at TEXT NOT NULL,
@@ -459,6 +631,268 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS tokens_last_seen_idx ON tokens(last_seen_at);
 
+                CREATE TABLE IF NOT EXISTS token_launch_facts (
+                    id INTEGER PRIMARY KEY,
+                    event_fingerprint TEXT NOT NULL UNIQUE,
+                    token_id TEXT NOT NULL,
+                    chain TEXT NOT NULL,
+                    launch_provider TEXT NOT NULL,
+                    launch_surface TEXT NOT NULL,
+                    launch_event_type TEXT NOT NULL,
+                    address TEXT NOT NULL,
+                    creator_address TEXT NOT NULL,
+                    create_signature TEXT NOT NULL,
+                    bonding_curve_key TEXT NOT NULL,
+                    pool_label TEXT NOT NULL,
+                    initial_buy_token_amount REAL,
+                    initial_quote_amount REAL,
+                    initial_market_cap_native REAL,
+                    initial_virtual_quote_reserve REAL,
+                    initial_virtual_token_reserve REAL,
+                    token_pairing TEXT NOT NULL,
+                    source_observed_at TEXT NOT NULL,
+                    ingested_at TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    raw_payload_hash TEXT NOT NULL,
+                    definition_version TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none')
+                );
+                CREATE INDEX IF NOT EXISTS token_launch_facts_token_idx
+                    ON token_launch_facts(token_id,source_observed_at,id);
+                CREATE TRIGGER IF NOT EXISTS token_launch_facts_no_update
+                BEFORE UPDATE ON token_launch_facts
+                BEGIN SELECT RAISE(ABORT,'token launch facts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_launch_facts_no_delete
+                BEFORE DELETE ON token_launch_facts
+                BEGIN SELECT RAISE(ABORT,'token launch facts are immutable'); END;
+
+                CREATE TABLE IF NOT EXISTS creator_launch_risk_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_launch_fact_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none')
+                );
+                CREATE TABLE IF NOT EXISTS creator_launch_risk_cohorts (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    launch_fact_id INTEGER NOT NULL UNIQUE,
+                    token_id TEXT NOT NULL,
+                    creator_address TEXT NOT NULL,
+                    history_cutoff_at TEXT NOT NULL,
+                    local_history_started_at TEXT,
+                    history_left_censored INTEGER NOT NULL DEFAULT 1
+                        CHECK(history_left_censored=1),
+                    prior_launch_count INTEGER NOT NULL,
+                    prior_launch_24h_count INTEGER NOT NULL,
+                    seconds_since_prior_launch REAL,
+                    prior_240m_terminal_count INTEGER NOT NULL,
+                    prior_240m_observed_count INTEGER NOT NULL,
+                    prior_240m_positive_raw_count INTEGER NOT NULL,
+                    prior_liquidity_60m_terminal_count INTEGER NOT NULL,
+                    prior_liquidity_60m_survived_count INTEGER NOT NULL,
+                    prior_liquidity_60m_collapse_count INTEGER NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    FOREIGN KEY(launch_fact_id) REFERENCES token_launch_facts(id)
+                );
+                CREATE INDEX IF NOT EXISTS creator_launch_risk_creator_idx
+                    ON creator_launch_risk_cohorts(creator_address,history_cutoff_at,id);
+                CREATE TRIGGER IF NOT EXISTS creator_launch_risk_registrations_no_update
+                BEFORE UPDATE ON creator_launch_risk_registrations
+                BEGIN SELECT RAISE(ABORT,'creator launch risk registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS creator_launch_risk_registrations_no_delete
+                BEFORE DELETE ON creator_launch_risk_registrations
+                BEGIN SELECT RAISE(ABORT,'creator launch risk registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS creator_launch_risk_cohorts_no_update
+                BEFORE UPDATE ON creator_launch_risk_cohorts
+                BEGIN SELECT RAISE(ABORT,'creator launch risk cohorts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS creator_launch_risk_cohorts_no_delete
+                BEFORE DELETE ON creator_launch_risk_cohorts
+                BEGIN SELECT RAISE(ABORT,'creator launch risk cohorts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS creator_launch_risk_cohorts_insert_guard
+                BEFORE INSERT ON creator_launch_risk_cohorts
+                WHEN NOT EXISTS (
+                    SELECT 1
+                    FROM creator_launch_risk_registrations r
+                    JOIN token_launch_facts f ON f.id=NEW.launch_fact_id
+                    WHERE r.definition_version=NEW.definition_version
+                      AND f.id>r.activation_launch_fact_id
+                      AND f.definition_version='token-launch-facts/v1'
+                      AND f.launch_event_type='create'
+                      AND lower(f.chain)='solana'
+                      AND f.token_id=NEW.token_id
+                      AND f.creator_address=NEW.creator_address
+                      AND f.recorded_at=NEW.history_cutoff_at
+                      AND NEW.recorded_at>=NEW.history_cutoff_at
+                )
+                BEGIN SELECT RAISE(ABORT,'invalid creator launch risk cohort'); END;
+
+                CREATE TABLE IF NOT EXISTS token_market_surfaces (
+                    id INTEGER PRIMARY KEY,
+                    descriptor_fingerprint TEXT NOT NULL UNIQUE,
+                    token_id TEXT NOT NULL,
+                    chain TEXT NOT NULL,
+                    dex_id TEXT NOT NULL,
+                    pair_address TEXT NOT NULL,
+                    base_mint TEXT NOT NULL,
+                    quote_mint TEXT NOT NULL,
+                    launchpad TEXT NOT NULL,
+                    surface_type TEXT NOT NULL,
+                    canonical_status TEXT NOT NULL,
+                    pool_creator TEXT NOT NULL,
+                    lp_position_owner TEXT NOT NULL,
+                    liquidity_control TEXT NOT NULL,
+                    migration_lineage TEXT NOT NULL,
+                    pair_created_at TEXT,
+                    provider TEXT NOT NULL,
+                    source_observed_at TEXT NOT NULL,
+                    ingested_at TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    raw_payload_hash TEXT NOT NULL,
+                    definition_version TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none')
+                );
+                CREATE INDEX IF NOT EXISTS token_market_surfaces_token_idx
+                    ON token_market_surfaces(token_id,source_observed_at,id);
+                CREATE INDEX IF NOT EXISTS token_market_surfaces_pair_idx
+                    ON token_market_surfaces(chain,dex_id,pair_address);
+                CREATE TRIGGER IF NOT EXISTS token_market_surfaces_no_update
+                BEFORE UPDATE ON token_market_surfaces
+                BEGIN SELECT RAISE(ABORT,'token market surfaces are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_market_surfaces_no_delete
+                BEFORE DELETE ON token_market_surfaces
+                BEGIN SELECT RAISE(ABORT,'token market surfaces are immutable'); END;
+
+                CREATE TABLE IF NOT EXISTS liquidity_survival_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_snapshot_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none')
+                );
+                CREATE TABLE IF NOT EXISTS liquidity_survival_cohorts (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    token_id TEXT NOT NULL,
+                    chain TEXT NOT NULL,
+                    dex_id TEXT NOT NULL,
+                    pair_address TEXT NOT NULL,
+                    market_surface_id INTEGER NOT NULL,
+                    market_surface_version TEXT NOT NULL,
+                    surface_type TEXT NOT NULL,
+                    canonical_status TEXT NOT NULL,
+                    liquidity_control TEXT NOT NULL,
+                    baseline_snapshot_id INTEGER NOT NULL UNIQUE,
+                    baseline_observed_at TEXT NOT NULL,
+                    baseline_ingested_at TEXT NOT NULL,
+                    baseline_recorded_at TEXT NOT NULL,
+                    baseline_liquidity_usd REAL NOT NULL,
+                    baseline_price_usd REAL,
+                    baseline_base_reserve REAL,
+                    baseline_quote_reserve REAL,
+                    baseline_volume_5m_usd REAL,
+                    baseline_buys_5m INTEGER,
+                    baseline_sells_5m INTEGER,
+                    provider TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    UNIQUE(definition_version,chain,dex_id,pair_address)
+                );
+                CREATE TABLE IF NOT EXISTS liquidity_survival_targets (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    cohort_id INTEGER NOT NULL,
+                    horizon_minutes INTEGER NOT NULL,
+                    target_at TEXT NOT NULL,
+                    deadline_at TEXT NOT NULL,
+                    registered_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    UNIQUE(definition_version,cohort_id,horizon_minutes)
+                );
+                CREATE INDEX IF NOT EXISTS liquidity_survival_targets_due_idx
+                    ON liquidity_survival_targets(target_at,deadline_at,id);
+                CREATE TABLE IF NOT EXISTS liquidity_survival_attempts (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    target_id INTEGER NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    completed_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    observed_pair_address TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none')
+                );
+                CREATE INDEX IF NOT EXISTS liquidity_survival_attempts_target_idx
+                    ON liquidity_survival_attempts(target_id,recorded_at,id);
+                CREATE TABLE IF NOT EXISTS liquidity_survival_outcomes (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    target_id INTEGER NOT NULL UNIQUE,
+                    cohort_id INTEGER NOT NULL,
+                    horizon_minutes INTEGER NOT NULL,
+                    target_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    failure_mode TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    outcome_snapshot_id INTEGER,
+                    observed_at TEXT,
+                    ingested_at TEXT,
+                    liquidity_usd REAL,
+                    liquidity_ratio REAL,
+                    price_usd REAL,
+                    base_reserve REAL,
+                    quote_reserve REAL,
+                    volume_5m_usd REAL,
+                    buys_5m INTEGER,
+                    sells_5m INTEGER,
+                    provider TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none')
+                );
+                CREATE INDEX IF NOT EXISTS liquidity_survival_outcomes_cohort_idx
+                    ON liquidity_survival_outcomes(cohort_id,horizon_minutes,id);
+                CREATE TRIGGER IF NOT EXISTS liquidity_survival_registrations_no_update
+                BEFORE UPDATE ON liquidity_survival_registrations
+                BEGIN SELECT RAISE(ABORT,'liquidity survival registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS liquidity_survival_registrations_no_delete
+                BEFORE DELETE ON liquidity_survival_registrations
+                BEGIN SELECT RAISE(ABORT,'liquidity survival registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS liquidity_survival_cohorts_no_update
+                BEFORE UPDATE ON liquidity_survival_cohorts
+                BEGIN SELECT RAISE(ABORT,'liquidity survival cohorts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS liquidity_survival_cohorts_no_delete
+                BEFORE DELETE ON liquidity_survival_cohorts
+                BEGIN SELECT RAISE(ABORT,'liquidity survival cohorts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS liquidity_survival_targets_no_update
+                BEFORE UPDATE ON liquidity_survival_targets
+                BEGIN SELECT RAISE(ABORT,'liquidity survival targets are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS liquidity_survival_targets_no_delete
+                BEFORE DELETE ON liquidity_survival_targets
+                BEGIN SELECT RAISE(ABORT,'liquidity survival targets are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS liquidity_survival_attempts_no_update
+                BEFORE UPDATE ON liquidity_survival_attempts
+                BEGIN SELECT RAISE(ABORT,'liquidity survival attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS liquidity_survival_attempts_no_delete
+                BEFORE DELETE ON liquidity_survival_attempts
+                BEGIN SELECT RAISE(ABORT,'liquidity survival attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS liquidity_survival_outcomes_no_update
+                BEFORE UPDATE ON liquidity_survival_outcomes
+                BEGIN SELECT RAISE(ABORT,'liquidity survival outcomes are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS liquidity_survival_outcomes_no_delete
+                BEFORE DELETE ON liquidity_survival_outcomes
+                BEGIN SELECT RAISE(ABORT,'liquidity survival outcomes are immutable'); END;
+
                 CREATE TABLE IF NOT EXISTS token_snapshots (
                     id INTEGER PRIMARY KEY,
                     token_id TEXT NOT NULL,
@@ -504,6 +938,9 @@ class Store:
                     ON token_source_links(token_id, last_observed_at DESC);
                 CREATE INDEX IF NOT EXISTS token_source_links_url_idx
                     ON token_source_links(normalized_url);
+                CREATE INDEX IF NOT EXISTS token_source_links_social_first_idx
+                    ON token_source_links(first_observed_at DESC, id DESC)
+                    WHERE link_kind='social_post';
 
                 CREATE TABLE IF NOT EXISTS token_detail_hydration (
                     token_id TEXT PRIMARY KEY,
@@ -547,6 +984,8 @@ class Store:
                     entity_id TEXT NOT NULL DEFAULT '',
                     event_id INTEGER,
                     decision_id INTEGER,
+                    trigger_transition_id INTEGER,
+                    source_link_id INTEGER,
                     snapshot_observed_at TEXT NOT NULL,
                     momentum_score REAL NOT NULL,
                     next_eligible_at TEXT,
@@ -561,6 +1000,73 @@ class Store:
                     ON token_context_admission_attempts(token_id,evaluated_at DESC,id DESC);
                 CREATE INDEX IF NOT EXISTS token_context_admission_attempts_reason_idx
                     ON token_context_admission_attempts(reason,evaluated_at DESC);
+                CREATE TABLE IF NOT EXISTS token_context_deferred_admission_registrations (
+                    version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_admission_id INTEGER NOT NULL,
+                    activation_trigger_transition_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS token_context_onchain_admission_challenger_registrations (
+                    version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_admission_id INTEGER NOT NULL,
+                    activation_trigger_transition_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS token_context_deferred_admission_cohorts (
+                    id INTEGER PRIMARY KEY,
+                    version TEXT NOT NULL,
+                    episode_key TEXT NOT NULL UNIQUE,
+                    admission_id INTEGER NOT NULL UNIQUE,
+                    token_id TEXT NOT NULL,
+                    trigger_transition_id INTEGER NOT NULL,
+                    source_link_id INTEGER,
+                    source_link_fingerprint TEXT NOT NULL DEFAULT '',
+                    source_link_first_observed_at TEXT,
+                    source_link_kind TEXT NOT NULL DEFAULT '',
+                    source_link_provider TEXT NOT NULL DEFAULT '',
+                    source_link_platform TEXT NOT NULL DEFAULT '',
+                    source_link_verification_status TEXT NOT NULL DEFAULT '',
+                    trigger_kind TEXT NOT NULL,
+                    trigger_priority INTEGER NOT NULL,
+                    reason TEXT NOT NULL,
+                    deferred_at TEXT NOT NULL,
+                    projected_next_eligible_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    lineage_status TEXT NOT NULL CHECK(lineage_status IN (
+                        'exact_trigger_transition','exact_trigger_and_source_link'
+                    )),
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    FOREIGN KEY(admission_id) REFERENCES token_context_admission_attempts(id),
+                    FOREIGN KEY(trigger_transition_id) REFERENCES token_universe_funnel_transitions(id),
+                    FOREIGN KEY(source_link_id) REFERENCES token_source_links(id)
+                );
+                CREATE INDEX IF NOT EXISTS token_context_deferred_admission_cohorts_due_idx
+                    ON token_context_deferred_admission_cohorts(expires_at,deferred_at,id);
+                CREATE TABLE IF NOT EXISTS token_context_deferred_admission_results (
+                    id INTEGER PRIMARY KEY,
+                    version TEXT NOT NULL,
+                    cohort_id INTEGER NOT NULL UNIQUE,
+                    outcome TEXT NOT NULL CHECK(outcome IN (
+                        'later_admitted','expired_without_admission'
+                    )),
+                    reason_code TEXT NOT NULL,
+                    followup_admission_id INTEGER,
+                    match_kind TEXT NOT NULL,
+                    followup_attempt_count INTEGER NOT NULL,
+                    last_skip_reason TEXT NOT NULL DEFAULT '',
+                    resolved_at TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    FOREIGN KEY(cohort_id) REFERENCES token_context_deferred_admission_cohorts(id),
+                    FOREIGN KEY(followup_admission_id) REFERENCES token_context_admission_attempts(id)
+                );
+                CREATE INDEX IF NOT EXISTS token_context_deferred_admission_results_outcome_idx
+                    ON token_context_deferred_admission_results(outcome,resolved_at,id);
                 CREATE TABLE IF NOT EXISTS token_context_outcome_cohorts (
                     id INTEGER PRIMARY KEY,
                     cohort_key TEXT NOT NULL UNIQUE,
@@ -618,8 +1124,113 @@ class Store:
                     reasons_json TEXT NOT NULL,
                     rejected_reasons_json TEXT NOT NULL,
                     position_usd REAL NOT NULL,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    route_probe_id INTEGER
                 );
+                CREATE TABLE IF NOT EXISTS event_context_jupiter_route_probes (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    event_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    source_snapshot_id INTEGER NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN (
+                        'pending','valid','no_route','error','invalid','stale','poor_roundtrip'
+                    )),
+                    reason TEXT NOT NULL DEFAULT '',
+                    anchor_at TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    buy_requested_at TEXT,
+                    buy_completed_at TEXT,
+                    sell_requested_at TEXT,
+                    sell_completed_at TEXT,
+                    input_notional_usd REAL NOT NULL,
+                    buy_input_amount_raw TEXT NOT NULL,
+                    buy_output_amount_raw TEXT,
+                    buy_min_output_amount_raw TEXT,
+                    sell_input_amount_raw TEXT,
+                    sell_output_amount_raw TEXT,
+                    sell_min_output_amount_raw TEXT,
+                    slippage_bps INTEGER NOT NULL,
+                    round_trip_min_return REAL,
+                    max_total_delay_seconds REAL NOT NULL,
+                    buy_quote_json TEXT NOT NULL DEFAULT '{}',
+                    sell_quote_json TEXT NOT NULL DEFAULT '{}',
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible IN (0,1)),
+                    decision_id INTEGER,
+                    recorded_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(source_snapshot_id) REFERENCES token_snapshots(id)
+                );
+                CREATE INDEX IF NOT EXISTS event_context_jupiter_route_lookup_idx
+                    ON event_context_jupiter_route_probes(event_id,token_id,started_at DESC,id DESC);
+
+                CREATE TABLE IF NOT EXISTS event_route_execution_challenger_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_decision_id INTEGER NOT NULL,
+                    activation_route_probe_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS event_route_execution_challenger_attempts (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    decision_id INTEGER NOT NULL UNIQUE,
+                    event_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    capacity_probe_id INTEGER NOT NULL,
+                    source_snapshot_id INTEGER NOT NULL,
+                    baseline_snapshot_id INTEGER,
+                    quote_terminal_status TEXT NOT NULL CHECK(quote_terminal_status IN (
+                        'pending','quoted','no_route','error','protocol_invalid','interrupted'
+                    )),
+                    validity_status TEXT NOT NULL CHECK(validity_status IN (
+                        'pending','valid','invalid','expired','mismatched'
+                    )),
+                    economic_status TEXT NOT NULL CHECK(economic_status IN (
+                        'pending','cost_unknown','quoted_but_uneconomic','economic','not_applicable'
+                    )),
+                    paper_effect TEXT NOT NULL CHECK(paper_effect IN (
+                        'pending','no_fill_research_only'
+                    )),
+                    reason TEXT NOT NULL DEFAULT '',
+                    frozen_at TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    intended_notional_usd REAL NOT NULL,
+                    buy_input_amount_raw TEXT NOT NULL,
+                    buy_output_amount_raw TEXT,
+                    buy_min_output_amount_raw TEXT,
+                    sell_input_amount_raw TEXT,
+                    sell_output_amount_raw TEXT,
+                    sell_min_output_amount_raw TEXT,
+                    slippage_bps INTEGER NOT NULL,
+                    max_total_delay_seconds REAL NOT NULL,
+                    buy_requested_at TEXT,
+                    buy_completed_at TEXT,
+                    sell_requested_at TEXT,
+                    sell_completed_at TEXT,
+                    round_trip_min_return REAL,
+                    route_only_cost_usd REAL,
+                    baseline_quote_price REAL,
+                    baseline_execution_price REAL,
+                    baseline_fee_bps REAL,
+                    baseline_buy_tax_pct REAL,
+                    baseline_sell_tax_pct REAL,
+                    fee_completeness_status TEXT NOT NULL DEFAULT 'not_evaluated',
+                    network_fee_basis TEXT NOT NULL DEFAULT '',
+                    buy_quote_json TEXT NOT NULL DEFAULT '{}',
+                    sell_quote_json TEXT NOT NULL DEFAULT '{}',
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    recorded_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(decision_id) REFERENCES decisions(id),
+                    FOREIGN KEY(capacity_probe_id) REFERENCES event_context_jupiter_route_probes(id),
+                    FOREIGN KEY(source_snapshot_id) REFERENCES token_snapshots(id)
+                );
+                CREATE INDEX IF NOT EXISTS event_route_execution_challenger_lookup_idx
+                    ON event_route_execution_challenger_attempts(
+                        definition_version,quote_terminal_status,id
+                    );
 
                 CREATE TABLE IF NOT EXISTS paper_account (
                     singleton INTEGER PRIMARY KEY CHECK(singleton=1),
@@ -699,6 +1310,376 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS paper_account_snapshots_recorded_idx
                     ON paper_account_snapshots(recorded_at DESC);
+
+                CREATE TABLE IF NOT EXISTS simulation_fair_start_epochs (
+                    epoch_id TEXT PRIMARY KEY,
+                    started_at TEXT NOT NULL,
+                    starting_cash_usd REAL NOT NULL,
+                    prior_cash_usd REAL NOT NULL,
+                    prior_realized_pnl_usd REAL NOT NULL,
+                    prior_trade_count INTEGER NOT NULL,
+                    exploration_version TEXT NOT NULL,
+                    exit_challenger_version TEXT NOT NULL,
+                    affects TEXT NOT NULL DEFAULT 'paper_only'
+                );
+                CREATE TRIGGER IF NOT EXISTS simulation_fair_start_epochs_no_update
+                BEFORE UPDATE ON simulation_fair_start_epochs
+                BEGIN SELECT RAISE(ABORT,'simulation fair-start epochs are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS simulation_fair_start_epochs_no_delete
+                BEFORE DELETE ON simulation_fair_start_epochs
+                BEGIN SELECT RAISE(ABORT,'simulation fair-start epochs are immutable'); END;
+
+                CREATE TABLE IF NOT EXISTS onchain_paper_exploration_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_quote_result_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS onchain_paper_exploration_account (
+                    definition_version TEXT PRIMARY KEY,
+                    starting_cash_usd REAL NOT NULL,
+                    cash_usd REAL NOT NULL,
+                    realized_pnl_usd REAL NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS onchain_paper_exploration_positions (
+                    definition_version TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    baseline_quote_result_id INTEGER NOT NULL UNIQUE,
+                    stake_usd REAL NOT NULL,
+                    acquired_amount_raw TEXT NOT NULL,
+                    entry_network_fee_usd REAL NOT NULL,
+                    opened_at TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('open','closed','written_off')),
+                    exit_quote_result_id INTEGER,
+                    exit_horizon_minutes INTEGER,
+                    exit_usdc REAL,
+                    realized_pnl_usd REAL,
+                    closed_at TEXT,
+                    close_reason TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY(definition_version,shadow_cohort_id)
+                );
+                CREATE INDEX IF NOT EXISTS onchain_paper_exploration_positions_status_idx
+                    ON onchain_paper_exploration_positions(definition_version,status,opened_at);
+                CREATE TABLE IF NOT EXISTS onchain_paper_exploration_trades (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    quote_result_id INTEGER NOT NULL,
+                    side TEXT NOT NULL CHECK(side IN ('BUY','SELL')),
+                    horizon_minutes INTEGER NOT NULL,
+                    gross_usd REAL NOT NULL,
+                    network_fee_usd REAL NOT NULL,
+                    net_cash_flow_usd REAL NOT NULL,
+                    realized_pnl_usd REAL,
+                    reason TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(definition_version,quote_result_id,side)
+                );
+                CREATE INDEX IF NOT EXISTS onchain_paper_exploration_trades_created_idx
+                    ON onchain_paper_exploration_trades(definition_version,created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS onchain_paper_exploration_execution_assessments (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    quote_result_id INTEGER NOT NULL UNIQUE,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    phase TEXT NOT NULL CHECK(phase IN ('entry','exit')),
+                    horizon_minutes INTEGER NOT NULL,
+                    quote_status TEXT NOT NULL,
+                    economic_status TEXT NOT NULL CHECK(economic_status IN (
+                        'economic','quoted_but_uneconomic','cost_unknown','not_applicable'
+                    )),
+                    paper_effect TEXT NOT NULL CHECK(paper_effect IN (
+                        'entry_admitted','entry_rejected','simulated_fill',
+                        'exit_deferred','terminal_writeoff'
+                    )),
+                    gross_usd REAL,
+                    network_fee_usd REAL,
+                    net_cash_flow_usd REAL,
+                    reason TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS onchain_paper_exploration_assessments_status_idx
+                    ON onchain_paper_exploration_execution_assessments(
+                        definition_version,phase,economic_status,paper_effect,recorded_at
+                    );
+                CREATE TRIGGER IF NOT EXISTS onchain_paper_exploration_assessments_no_update
+                BEFORE UPDATE ON onchain_paper_exploration_execution_assessments
+                BEGIN SELECT RAISE(ABORT,'onchain Paper execution assessments are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_paper_exploration_assessments_no_delete
+                BEFORE DELETE ON onchain_paper_exploration_execution_assessments
+                BEGIN SELECT RAISE(ABORT,'onchain Paper execution assessments are immutable'); END;
+
+                CREATE TABLE IF NOT EXISTS onchain_paper_exit_challenger_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_exploration_buy_trade_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS onchain_paper_exit_challenger_positions (
+                    definition_version TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    source_buy_trade_id INTEGER NOT NULL UNIQUE,
+                    baseline_quote_result_id INTEGER NOT NULL,
+                    entry_snapshot_id INTEGER NOT NULL,
+                    entry_signal_price_usd REAL,
+                    initial_amount_raw TEXT NOT NULL,
+                    remaining_amount_raw TEXT NOT NULL,
+                    stake_usd REAL NOT NULL,
+                    entry_network_fee_usd REAL NOT NULL,
+                    realized_proceeds_usd REAL NOT NULL DEFAULT 0,
+                    allocated_cost_usd REAL NOT NULL DEFAULT 0,
+                    realized_pnl_usd REAL NOT NULL DEFAULT 0,
+                    highest_signal_price_usd REAL,
+                    next_tp_index INTEGER NOT NULL DEFAULT 0,
+                    pending_mark_id INTEGER,
+                    status TEXT NOT NULL CHECK(status IN ('open','closed','written_off','ineligible')),
+                    opened_at TEXT NOT NULL,
+                    closed_at TEXT,
+                    close_reason TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY(definition_version,shadow_cohort_id)
+                );
+                CREATE INDEX IF NOT EXISTS onchain_paper_exit_challenger_positions_status_idx
+                    ON onchain_paper_exit_challenger_positions(definition_version,status,opened_at);
+                CREATE TABLE IF NOT EXISTS onchain_paper_exit_challenger_marks (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    snapshot_id INTEGER,
+                    observed_at TEXT,
+                    ingested_at TEXT,
+                    recorded_at TEXT NOT NULL,
+                    provider TEXT NOT NULL DEFAULT '',
+                    pair_address TEXT NOT NULL DEFAULT '',
+                    price_usd REAL,
+                    liquidity_usd REAL,
+                    volume_5m_usd REAL,
+                    buys_5m INTEGER,
+                    sells_5m INTEGER,
+                    highest_signal_price_usd REAL,
+                    drawdown_from_peak REAL,
+                    remaining_amount_raw TEXT NOT NULL DEFAULT '0',
+                    marked_value_usd REAL,
+                    realized_pnl_usd REAL NOT NULL DEFAULT 0,
+                    unrealized_pnl_usd REAL,
+                    total_pnl_usd REAL,
+                    action TEXT NOT NULL CHECK(action IN (
+                        'HOLD','PENDING','LIQUIDITY_EXIT','HARD_STOP','TRAILING',
+                        'INACTIVITY_EXIT','TAKE_PROFIT','TERMINAL'
+                    )),
+                    sell_fraction REAL NOT NULL DEFAULT 0,
+                    sell_amount_raw TEXT NOT NULL DEFAULT '0',
+                    tp_index INTEGER,
+                    reason TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'challenger_only' CHECK(affects='challenger_only')
+                );
+                CREATE INDEX IF NOT EXISTS onchain_paper_exit_challenger_marks_due_idx
+                    ON onchain_paper_exit_challenger_marks(definition_version,shadow_cohort_id,recorded_at DESC,id DESC);
+                CREATE TABLE IF NOT EXISTS onchain_paper_exit_challenger_quote_attempts (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    quote_key TEXT NOT NULL UNIQUE,
+                    mark_id INTEGER NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    attempt_seq INTEGER NOT NULL,
+                    input_mint TEXT NOT NULL,
+                    output_mint TEXT NOT NULL,
+                    input_amount_raw TEXT NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    UNIQUE(definition_version,mark_id,attempt_seq)
+                );
+                CREATE TABLE IF NOT EXISTS onchain_paper_exit_challenger_quote_results (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    attempt_id INTEGER NOT NULL UNIQUE,
+                    mark_id INTEGER NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    quote_terminal_status TEXT NOT NULL CHECK(quote_terminal_status IN (
+                        'quoted','no_route','error','quote_only_protocol_invalid','interrupted_after_request'
+                    )),
+                    validity_status TEXT NOT NULL CHECK(validity_status IN ('valid','invalid','total_delay_expired')),
+                    input_amount_raw TEXT NOT NULL,
+                    output_amount_raw TEXT,
+                    other_amount_threshold_raw TEXT,
+                    requested_at TEXT NOT NULL,
+                    completed_at TEXT NOT NULL,
+                    total_delay_seconds REAL NOT NULL,
+                    slippage_bps INTEGER,
+                    signature_fee_lamports INTEGER,
+                    prioritization_fee_lamports INTEGER,
+                    rent_fee_lamports INTEGER,
+                    router TEXT NOT NULL DEFAULT '',
+                    mode TEXT NOT NULL DEFAULT '',
+                    fee_bps REAL,
+                    platform_fee_bps REAL,
+                    price_impact_pct REAL,
+                    price_impact_bps REAL,
+                    price_impact_source TEXT NOT NULL DEFAULT '',
+                    economic_status TEXT NOT NULL DEFAULT 'not_applicable' CHECK(economic_status IN (
+                        'economic','quoted_but_uneconomic','cost_unknown','not_applicable'
+                    )),
+                    route_json TEXT NOT NULL DEFAULT '[]',
+                    error_type TEXT NOT NULL DEFAULT '',
+                    gross_usdc REAL,
+                    network_fee_usd REAL NOT NULL DEFAULT 0,
+                    net_proceeds_usd REAL,
+                    realized_pnl_usd REAL,
+                    remaining_amount_raw TEXT NOT NULL,
+                    position_status TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS onchain_paper_exit_challenger_results_time_idx
+                    ON onchain_paper_exit_challenger_quote_results(definition_version,recorded_at DESC,id DESC);
+                CREATE TABLE IF NOT EXISTS onchain_paper_exit_challenger_account_snapshots (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    cash_usd REAL NOT NULL,
+                    marked_value_usd REAL,
+                    equity_usd REAL,
+                    realized_pnl_usd REAL NOT NULL,
+                    unrealized_pnl_usd REAL,
+                    total_pnl_usd REAL,
+                    open_position_count INTEGER NOT NULL,
+                    priced_position_count INTEGER NOT NULL,
+                    valuation_status TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS onchain_paper_exit_challenger_account_snapshots_time_idx
+                    ON onchain_paper_exit_challenger_account_snapshots(
+                        definition_version,recorded_at DESC,id DESC
+                    );
+                CREATE TRIGGER IF NOT EXISTS onchain_paper_exit_challenger_marks_no_update
+                BEFORE UPDATE ON onchain_paper_exit_challenger_marks
+                BEGIN SELECT RAISE(ABORT,'onchain Paper exit challenger marks are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_paper_exit_challenger_marks_no_delete
+                BEFORE DELETE ON onchain_paper_exit_challenger_marks
+                BEGIN SELECT RAISE(ABORT,'onchain Paper exit challenger marks are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_paper_exit_challenger_attempts_no_update
+                BEFORE UPDATE ON onchain_paper_exit_challenger_quote_attempts
+                BEGIN SELECT RAISE(ABORT,'onchain Paper exit challenger attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_paper_exit_challenger_attempts_no_delete
+                BEFORE DELETE ON onchain_paper_exit_challenger_quote_attempts
+                BEGIN SELECT RAISE(ABORT,'onchain Paper exit challenger attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_paper_exit_challenger_results_no_update
+                BEFORE UPDATE ON onchain_paper_exit_challenger_quote_results
+                BEGIN SELECT RAISE(ABORT,'onchain Paper exit challenger results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_paper_exit_challenger_results_no_delete
+                BEFORE DELETE ON onchain_paper_exit_challenger_quote_results
+                BEGIN SELECT RAISE(ABORT,'onchain Paper exit challenger results are immutable'); END;
+
+                CREATE TABLE IF NOT EXISTS onchain_paper_narrative_runner_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_exploration_buy_trade_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS onchain_paper_narrative_runner_account (
+                    definition_version TEXT PRIMARY KEY,
+                    starting_cash_usd REAL NOT NULL,
+                    cash_usd REAL NOT NULL,
+                    realized_pnl_usd REAL NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS onchain_paper_narrative_runner_positions (
+                    definition_version TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    source_buy_trade_id INTEGER NOT NULL UNIQUE,
+                    baseline_quote_result_id INTEGER NOT NULL,
+                    initial_amount_raw TEXT NOT NULL,
+                    remaining_amount_raw TEXT NOT NULL,
+                    stake_usd REAL NOT NULL,
+                    entry_network_fee_usd REAL NOT NULL,
+                    realized_proceeds_usd REAL NOT NULL DEFAULT 0,
+                    allocated_cost_usd REAL NOT NULL DEFAULT 0,
+                    realized_pnl_usd REAL NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL CHECK(status IN (
+                        'baseline','narrative_runner','closed','written_off'
+                    )),
+                    opened_at TEXT NOT NULL,
+                    closed_at TEXT,
+                    close_reason TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY(definition_version,shadow_cohort_id)
+                );
+                CREATE INDEX IF NOT EXISTS onchain_paper_narrative_runner_positions_status_idx
+                    ON onchain_paper_narrative_runner_positions(
+                        definition_version,status,opened_at
+                    );
+                CREATE TABLE IF NOT EXISTS onchain_paper_narrative_runner_trades (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    source_buy_trade_id INTEGER NOT NULL,
+                    source_exit_quote_result_id INTEGER UNIQUE,
+                    side TEXT NOT NULL CHECK(side IN ('BUY','SELL','WRITEOFF')),
+                    amount_raw TEXT NOT NULL,
+                    gross_usd REAL NOT NULL,
+                    network_fee_usd REAL NOT NULL,
+                    net_cash_flow_usd REAL NOT NULL,
+                    realized_pnl_usd REAL,
+                    reason TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(definition_version,source_buy_trade_id,side,source_exit_quote_result_id)
+                );
+                CREATE INDEX IF NOT EXISTS onchain_paper_narrative_runner_trades_created_idx
+                    ON onchain_paper_narrative_runner_trades(
+                        definition_version,created_at DESC,id DESC
+                    );
+                CREATE TABLE IF NOT EXISTS onchain_paper_narrative_context_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_source_buy_trade_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS onchain_paper_narrative_context_seeds (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    source_buy_trade_id INTEGER NOT NULL UNIQUE,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    position_opened_at TEXT NOT NULL,
+                    snapshot_id INTEGER,
+                    trigger_transition_id INTEGER UNIQUE,
+                    status TEXT NOT NULL CHECK(status IN ('triggered','coverage_gap')),
+                    reason_code TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none')
+                );
+                CREATE INDEX IF NOT EXISTS onchain_paper_narrative_context_seeds_status_idx
+                    ON onchain_paper_narrative_context_seeds(
+                        definition_version,status,recorded_at,id
+                    );
+                CREATE TRIGGER IF NOT EXISTS onchain_paper_narrative_runner_registrations_no_update
+                BEFORE UPDATE ON onchain_paper_narrative_runner_registrations
+                BEGIN SELECT RAISE(ABORT,'onchain narrative runner registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_paper_narrative_runner_registrations_no_delete
+                BEFORE DELETE ON onchain_paper_narrative_runner_registrations
+                BEGIN SELECT RAISE(ABORT,'onchain narrative runner registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_paper_narrative_runner_trades_no_update
+                BEFORE UPDATE ON onchain_paper_narrative_runner_trades
+                BEGIN SELECT RAISE(ABORT,'onchain narrative runner trades are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_paper_narrative_runner_trades_no_delete
+                BEFORE DELETE ON onchain_paper_narrative_runner_trades
+                BEGIN SELECT RAISE(ABORT,'onchain narrative runner trades are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_paper_narrative_context_registrations_no_update
+                BEFORE UPDATE ON onchain_paper_narrative_context_registrations
+                BEGIN SELECT RAISE(ABORT,'onchain narrative context registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_paper_narrative_context_registrations_no_delete
+                BEFORE DELETE ON onchain_paper_narrative_context_registrations
+                BEGIN SELECT RAISE(ABORT,'onchain narrative context registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_paper_narrative_context_seeds_no_update
+                BEFORE UPDATE ON onchain_paper_narrative_context_seeds
+                BEGIN SELECT RAISE(ABORT,'onchain narrative context seeds are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_paper_narrative_context_seeds_no_delete
+                BEFORE DELETE ON onchain_paper_narrative_context_seeds
+                BEGIN SELECT RAISE(ABORT,'onchain narrative context seeds are immutable'); END;
 
                 CREATE TABLE IF NOT EXISTS source_utility_outcomes (
                     id INTEGER PRIMARY KEY,
@@ -843,6 +1824,114 @@ class Store:
                 CREATE TRIGGER IF NOT EXISTS token_discovery_exposure_source_links_no_delete
                 BEFORE DELETE ON token_discovery_exposure_source_links
                 BEGIN SELECT RAISE(ABORT,'token discovery exposure/source links are immutable'); END;
+                CREATE TABLE IF NOT EXISTS provider_post_ambiguity_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_exposure_link_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS provider_post_ambiguity_admissions (
+                    id INTEGER PRIMARY KEY,
+                    admission_key TEXT NOT NULL UNIQUE,
+                    definition_version TEXT NOT NULL,
+                    exposure_source_link_id INTEGER NOT NULL,
+                    exposure_id INTEGER NOT NULL,
+                    source_link_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    evaluated_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none')
+                );
+                CREATE TABLE IF NOT EXISTS provider_post_ambiguity_episodes (
+                    id INTEGER PRIMARY KEY,
+                    episode_key TEXT NOT NULL UNIQUE,
+                    definition_version TEXT NOT NULL,
+                    status_id TEXT NOT NULL,
+                    claimed_handle TEXT NOT NULL,
+                    post_published_at TEXT NOT NULL,
+                    t0_at TEXT NOT NULL,
+                    final_maturity_at TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    UNIQUE(definition_version,status_id)
+                );
+                CREATE INDEX IF NOT EXISTS provider_post_ambiguity_episodes_due_idx
+                    ON provider_post_ambiguity_episodes(definition_version,t0_at,id);
+                CREATE TABLE IF NOT EXISTS provider_post_ambiguity_memberships (
+                    id INTEGER PRIMARY KEY,
+                    membership_key TEXT NOT NULL UNIQUE,
+                    definition_version TEXT NOT NULL,
+                    episode_id INTEGER NOT NULL,
+                    exposure_source_link_id INTEGER NOT NULL,
+                    exposure_id INTEGER NOT NULL,
+                    source_link_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    chain TEXT NOT NULL,
+                    address TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    discovery_surface TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    verification_status TEXT NOT NULL,
+                    candidate_recorded_at TEXT NOT NULL,
+                    arrival_lag_ms INTEGER NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    UNIQUE(definition_version,episode_id,chain,address)
+                );
+                CREATE INDEX IF NOT EXISTS provider_post_ambiguity_memberships_episode_idx
+                    ON provider_post_ambiguity_memberships(episode_id,candidate_recorded_at,id);
+                CREATE TABLE IF NOT EXISTS provider_post_ambiguity_checkpoints (
+                    id INTEGER PRIMARY KEY,
+                    checkpoint_key TEXT NOT NULL UNIQUE,
+                    definition_version TEXT NOT NULL,
+                    episode_id INTEGER NOT NULL,
+                    offset_seconds INTEGER NOT NULL,
+                    target_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    member_count INTEGER NOT NULL,
+                    members_json TEXT NOT NULL,
+                    set_hash TEXT NOT NULL,
+                    finalized_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    UNIQUE(definition_version,episode_id,offset_seconds)
+                );
+                CREATE INDEX IF NOT EXISTS provider_post_ambiguity_checkpoints_episode_idx
+                    ON provider_post_ambiguity_checkpoints(episode_id,offset_seconds,id);
+                CREATE TRIGGER IF NOT EXISTS provider_post_ambiguity_registrations_no_update
+                BEFORE UPDATE ON provider_post_ambiguity_registrations
+                BEGIN SELECT RAISE(ABORT,'provider post ambiguity registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS provider_post_ambiguity_registrations_no_delete
+                BEFORE DELETE ON provider_post_ambiguity_registrations
+                BEGIN SELECT RAISE(ABORT,'provider post ambiguity registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS provider_post_ambiguity_admissions_no_update
+                BEFORE UPDATE ON provider_post_ambiguity_admissions
+                BEGIN SELECT RAISE(ABORT,'provider post ambiguity admissions are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS provider_post_ambiguity_admissions_no_delete
+                BEFORE DELETE ON provider_post_ambiguity_admissions
+                BEGIN SELECT RAISE(ABORT,'provider post ambiguity admissions are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS provider_post_ambiguity_episodes_no_update
+                BEFORE UPDATE ON provider_post_ambiguity_episodes
+                BEGIN SELECT RAISE(ABORT,'provider post ambiguity episodes are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS provider_post_ambiguity_episodes_no_delete
+                BEFORE DELETE ON provider_post_ambiguity_episodes
+                BEGIN SELECT RAISE(ABORT,'provider post ambiguity episodes are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS provider_post_ambiguity_memberships_no_update
+                BEFORE UPDATE ON provider_post_ambiguity_memberships
+                BEGIN SELECT RAISE(ABORT,'provider post ambiguity memberships are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS provider_post_ambiguity_memberships_no_delete
+                BEFORE DELETE ON provider_post_ambiguity_memberships
+                BEGIN SELECT RAISE(ABORT,'provider post ambiguity memberships are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS provider_post_ambiguity_checkpoints_no_update
+                BEFORE UPDATE ON provider_post_ambiguity_checkpoints
+                BEGIN SELECT RAISE(ABORT,'provider post ambiguity checkpoints are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS provider_post_ambiguity_checkpoints_no_delete
+                BEFORE DELETE ON provider_post_ambiguity_checkpoints
+                BEGIN SELECT RAISE(ABORT,'provider post ambiguity checkpoints are immutable'); END;
                 CREATE TABLE IF NOT EXISTS token_discovery_quote_attempt_registrations (
                     definition_version TEXT PRIMARY KEY,
                     registered_at TEXT NOT NULL,
@@ -990,6 +2079,14 @@ class Store:
                     ON token_universe_funnel_transitions(cohort_id,stage,recorded_at,id);
                 CREATE INDEX IF NOT EXISTS token_universe_funnel_transitions_stage_idx
                     ON token_universe_funnel_transitions(stage,status,recorded_at,id);
+                CREATE INDEX IF NOT EXISTS token_universe_funnel_transitions_exact_browser_token_idx
+                    ON token_universe_funnel_transitions(token_id,recorded_at)
+                    WHERE stage='context_trigger_evaluation'
+                      AND status='eligible'
+                      AND reason_code='browser_exact_token_metadata_post_captured';
+                CREATE INDEX IF NOT EXISTS token_universe_forward_cohorts_solana_due_idx
+                    ON token_universe_forward_cohorts(definition_version,discovery_recorded_at,id)
+                    WHERE lower(chain)='solana';
                 CREATE TRIGGER IF NOT EXISTS token_universe_funnel_registrations_no_update
                 BEFORE UPDATE ON token_universe_funnel_registrations
                 BEGIN SELECT RAISE(ABORT,'token universe funnel registrations are immutable'); END;
@@ -1002,6 +2099,76 @@ class Store:
                 CREATE TRIGGER IF NOT EXISTS token_universe_funnel_transitions_no_delete
                 BEFORE DELETE ON token_universe_funnel_transitions
                 BEGIN SELECT RAISE(ABORT,'token universe funnel transitions are immutable'); END;
+                CREATE TABLE IF NOT EXISTS solana_holder_shadow_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_cohort_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS solana_holder_shadow_cohorts (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    universe_cohort_id INTEGER NOT NULL UNIQUE,
+                    token_id TEXT NOT NULL,
+                    mint_address TEXT NOT NULL,
+                    discovery_recorded_at TEXT NOT NULL,
+                    sample_bucket INTEGER NOT NULL,
+                    enrolled_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    FOREIGN KEY(universe_cohort_id) REFERENCES token_universe_forward_cohorts(id)
+                );
+                CREATE TABLE IF NOT EXISTS solana_holder_shadow_results (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    horizon_minutes INTEGER NOT NULL CHECK(horizon_minutes IN (0,15,60,240)),
+                    due_at TEXT NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    completed_at TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('observed','error','unavailable')),
+                    reason_code TEXT NOT NULL,
+                    rpc_host TEXT NOT NULL,
+                    token_program TEXT NOT NULL DEFAULT '',
+                    slot INTEGER,
+                    rpc_request_count INTEGER NOT NULL,
+                    latency_seconds REAL NOT NULL,
+                    response_bytes INTEGER NOT NULL DEFAULT 0,
+                    token_account_count INTEGER,
+                    nonzero_token_account_count INTEGER,
+                    unique_owner_count INTEGER,
+                    supply_raw TEXT,
+                    owner_balance_sum_raw TEXT,
+                    balance_coverage REAL,
+                    top1_supply_share REAL,
+                    top10_supply_share REAL,
+                    owners_below_1bp_count INTEGER,
+                    owners_below_1bp_rate REAL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    UNIQUE(definition_version,shadow_cohort_id,horizon_minutes),
+                    FOREIGN KEY(shadow_cohort_id) REFERENCES solana_holder_shadow_cohorts(id)
+                );
+                CREATE INDEX IF NOT EXISTS solana_holder_shadow_results_due_idx
+                    ON solana_holder_shadow_results(shadow_cohort_id,horizon_minutes,due_at);
+                CREATE TRIGGER IF NOT EXISTS solana_holder_shadow_registrations_no_update
+                BEFORE UPDATE ON solana_holder_shadow_registrations
+                BEGIN SELECT RAISE(ABORT,'solana holder shadow registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS solana_holder_shadow_registrations_no_delete
+                BEFORE DELETE ON solana_holder_shadow_registrations
+                BEGIN SELECT RAISE(ABORT,'solana holder shadow registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS solana_holder_shadow_cohorts_no_update
+                BEFORE UPDATE ON solana_holder_shadow_cohorts
+                BEGIN SELECT RAISE(ABORT,'solana holder shadow cohorts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS solana_holder_shadow_cohorts_no_delete
+                BEFORE DELETE ON solana_holder_shadow_cohorts
+                BEGIN SELECT RAISE(ABORT,'solana holder shadow cohorts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS solana_holder_shadow_results_no_update
+                BEFORE UPDATE ON solana_holder_shadow_results
+                BEGIN SELECT RAISE(ABORT,'solana holder shadow results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS solana_holder_shadow_results_no_delete
+                BEFORE DELETE ON solana_holder_shadow_results
+                BEGIN SELECT RAISE(ABORT,'solana holder shadow results are immutable'); END;
                 CREATE TABLE IF NOT EXISTS token_event_lookup_name_screen_registrations (
                     definition_version TEXT PRIMARY KEY,
                     registered_at TEXT NOT NULL,
@@ -1750,6 +2917,8 @@ class Store:
                     fee_bps REAL,
                     platform_fee_bps REAL,
                     price_impact_pct REAL,
+                    price_impact_bps REAL,
+                    price_impact_source TEXT NOT NULL DEFAULT '',
                     context_slot INTEGER,
                     time_taken_ms REAL,
                     route_json TEXT NOT NULL DEFAULT '[]',
@@ -1768,6 +2937,14 @@ class Store:
                 CREATE INDEX IF NOT EXISTS onchain_only_jupiter_quote_results_status_idx
                     ON onchain_only_jupiter_quote_results(
                         definition_version,phase,validity_status,quote_terminal_status,recorded_at
+                    );
+                CREATE INDEX IF NOT EXISTS onchain_only_jupiter_quote_attempts_lookup_idx
+                    ON onchain_only_jupiter_quote_attempts(
+                        definition_version,phase,horizon_minutes,shadow_cohort_id
+                    );
+                CREATE INDEX IF NOT EXISTS onchain_only_jupiter_quote_results_lookup_idx
+                    ON onchain_only_jupiter_quote_results(
+                        definition_version,phase,horizon_minutes,shadow_cohort_id
                     );
                 CREATE TRIGGER IF NOT EXISTS onchain_only_jupiter_quote_registrations_no_update
                 BEFORE UPDATE ON onchain_only_jupiter_quote_registrations
@@ -1794,7 +2971,7 @@ class Store:
                     FROM onchain_only_jupiter_quote_registrations reg
                     JOIN onchain_only_shadow_cohorts c
                       ON c.id=NEW.shadow_cohort_id
-                     AND c.definition_version='onchain-only-shadow/v1'
+                     AND c.definition_version=json_extract(reg.definition_json,'$.source')
                     WHERE reg.definition_version=NEW.definition_version
                       AND c.id>reg.activation_shadow_cohort_id
                       AND lower(c.chain)='solana'
@@ -1831,7 +3008,7 @@ class Store:
                     FROM onchain_only_jupiter_quote_registrations reg
                     JOIN onchain_only_shadow_cohorts c
                       ON c.id=NEW.shadow_cohort_id
-                     AND c.definition_version='onchain-only-shadow/v1'
+                     AND c.definition_version=json_extract(reg.definition_json,'$.source')
                     WHERE reg.definition_version=NEW.definition_version
                       AND c.id>reg.activation_shadow_cohort_id
                       AND lower(c.chain)='solana'
@@ -1889,6 +3066,206 @@ class Store:
                       )
                 )
                 BEGIN SELECT RAISE(ABORT,'invalid onchain-only Jupiter result'); END;
+                CREATE TABLE IF NOT EXISTS onchain_only_evm_route_quote_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_shadow_cohort_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS onchain_only_evm_route_quote_attempts (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    quote_key TEXT NOT NULL UNIQUE,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    baseline_snapshot_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    chain TEXT NOT NULL CHECK(lower(chain) IN ('bsc','base','robinhood')),
+                    anchor_at TEXT NOT NULL,
+                    input_token TEXT NOT NULL,
+                    output_token TEXT NOT NULL,
+                    input_amount_raw TEXT NOT NULL,
+                    slippage_bps INTEGER NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    FOREIGN KEY(shadow_cohort_id) REFERENCES onchain_only_shadow_cohorts(id),
+                    FOREIGN KEY(baseline_snapshot_id) REFERENCES token_snapshots(id)
+                );
+                CREATE TABLE IF NOT EXISTS onchain_only_evm_route_quote_results (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    quote_key TEXT NOT NULL UNIQUE,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    attempt_id INTEGER UNIQUE,
+                    baseline_snapshot_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    chain TEXT NOT NULL CHECK(lower(chain) IN ('bsc','base','robinhood')),
+                    anchor_at TEXT NOT NULL,
+                    provider TEXT NOT NULL DEFAULT 'uniswap_v3_quoter_v2',
+                    chain_id INTEGER,
+                    block_number INTEGER,
+                    block_hash TEXT,
+                    block_timestamp TEXT,
+                    input_token TEXT NOT NULL,
+                    output_token TEXT NOT NULL,
+                    accounting_symbol TEXT NOT NULL,
+                    accounting_decimals INTEGER NOT NULL,
+                    input_amount_raw TEXT NOT NULL,
+                    slippage_bps INTEGER NOT NULL,
+                    buy_output_raw TEXT,
+                    buy_minimum_output_raw TEXT,
+                    sell_output_raw TEXT,
+                    sell_minimum_output_raw TEXT,
+                    buy_path_json TEXT NOT NULL DEFAULT '[]',
+                    sell_path_json TEXT NOT NULL DEFAULT '[]',
+                    buy_quoter_gas_estimate INTEGER,
+                    sell_quoter_gas_estimate INTEGER,
+                    quote_terminal_status TEXT NOT NULL CHECK(quote_terminal_status IN (
+                        'not_requested','quoted','no_official_pool','buy_quote_unavailable',
+                        'sell_quote_unavailable','error','quote_only_protocol_invalid',
+                        'interrupted_after_request'
+                    )),
+                    validity_status TEXT NOT NULL CHECK(validity_status IN (
+                        'valid','trigger_baseline_invalid','queue_delay_expired',
+                        'total_delay_expired','request_evidence_missing'
+                    )),
+                    requested_at TEXT,
+                    completed_at TEXT,
+                    queue_delay_seconds REAL,
+                    request_duration_seconds REAL,
+                    total_delay_seconds REAL,
+                    max_queue_delay_seconds REAL NOT NULL,
+                    max_total_delay_seconds REAL NOT NULL,
+                    immediate_round_trip_stable_ratio REAL,
+                    venue_fee_semantics TEXT NOT NULL,
+                    fee_completeness TEXT NOT NULL CHECK(
+                        fee_completeness='quote_only_no_full_transaction_network_fee'
+                    ),
+                    economic_status TEXT NOT NULL CHECK(economic_status='cost_unknown'),
+                    execution_scope TEXT NOT NULL CHECK(execution_scope='pool_math_quote_only'),
+                    transfer_semantics_checked INTEGER NOT NULL DEFAULT 0
+                        CHECK(transfer_semantics_checked=0),
+                    router_transaction_simulated INTEGER NOT NULL DEFAULT 0
+                        CHECK(router_transaction_simulated=0),
+                    error_type TEXT NOT NULL DEFAULT '',
+                    recorded_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    FOREIGN KEY(shadow_cohort_id) REFERENCES onchain_only_shadow_cohorts(id),
+                    FOREIGN KEY(attempt_id) REFERENCES onchain_only_evm_route_quote_attempts(id),
+                    FOREIGN KEY(baseline_snapshot_id) REFERENCES token_snapshots(id)
+                );
+                CREATE INDEX IF NOT EXISTS onchain_only_evm_route_quote_attempts_lookup_idx
+                    ON onchain_only_evm_route_quote_attempts(
+                        definition_version,chain,shadow_cohort_id
+                    );
+                CREATE INDEX IF NOT EXISTS onchain_only_evm_route_quote_results_status_idx
+                    ON onchain_only_evm_route_quote_results(
+                        definition_version,chain,validity_status,quote_terminal_status,recorded_at
+                    );
+                CREATE TRIGGER IF NOT EXISTS onchain_only_evm_route_quote_registrations_no_update
+                BEFORE UPDATE ON onchain_only_evm_route_quote_registrations
+                BEGIN SELECT RAISE(ABORT,'onchain-only EVM route registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_only_evm_route_quote_registrations_no_delete
+                BEFORE DELETE ON onchain_only_evm_route_quote_registrations
+                BEGIN SELECT RAISE(ABORT,'onchain-only EVM route registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_only_evm_route_quote_attempts_no_update
+                BEFORE UPDATE ON onchain_only_evm_route_quote_attempts
+                BEGIN SELECT RAISE(ABORT,'onchain-only EVM route attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_only_evm_route_quote_attempts_no_delete
+                BEFORE DELETE ON onchain_only_evm_route_quote_attempts
+                BEGIN SELECT RAISE(ABORT,'onchain-only EVM route attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_only_evm_route_quote_results_no_update
+                BEFORE UPDATE ON onchain_only_evm_route_quote_results
+                BEGIN SELECT RAISE(ABORT,'onchain-only EVM route results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_only_evm_route_quote_results_no_delete
+                BEFORE DELETE ON onchain_only_evm_route_quote_results
+                BEGIN SELECT RAISE(ABORT,'onchain-only EVM route results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_only_evm_route_quote_attempts_insert_guard
+                BEFORE INSERT ON onchain_only_evm_route_quote_attempts
+                WHEN NOT EXISTS (
+                    SELECT 1
+                    FROM onchain_only_evm_route_quote_registrations reg
+                    JOIN onchain_only_shadow_cohorts c
+                      ON c.id=NEW.shadow_cohort_id
+                     AND c.definition_version=json_extract(reg.definition_json,'$.source')
+                    WHERE reg.definition_version=NEW.definition_version
+                      AND c.id>reg.activation_shadow_cohort_id
+                      AND c.baseline_status='valid'
+                      AND lower(c.chain)=lower(NEW.chain)
+                      AND lower(c.chain) IN ('bsc','base','robinhood')
+                      AND c.token_id=NEW.token_id
+                      AND c.trigger_snapshot_id=NEW.baseline_snapshot_id
+                      AND c.trigger_recorded_at=NEW.anchor_at
+                      AND NEW.requested_at>=NEW.anchor_at
+                      AND lower(substr(c.token_id,instr(c.token_id,':')+1))=lower(NEW.output_token)
+                      AND lower(NEW.input_token)=lower(json_extract(
+                          reg.definition_json,'$.networks.' || lower(c.chain) || '.accounting_token'
+                      ))
+                      AND NEW.input_amount_raw=json_extract(
+                          reg.definition_json,'$.input_amount_raw_by_chain.' || lower(c.chain)
+                      )
+                      AND NEW.slippage_bps=CAST(json_extract(
+                          reg.definition_json,'$.slippage_bps'
+                      ) AS INTEGER)
+                )
+                BEGIN SELECT RAISE(ABORT,'invalid onchain-only EVM route attempt'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_only_evm_route_quote_results_insert_guard
+                BEFORE INSERT ON onchain_only_evm_route_quote_results
+                WHEN NOT EXISTS (
+                    SELECT 1
+                    FROM onchain_only_evm_route_quote_registrations reg
+                    JOIN onchain_only_shadow_cohorts c
+                      ON c.id=NEW.shadow_cohort_id
+                     AND c.definition_version=json_extract(reg.definition_json,'$.source')
+                    WHERE reg.definition_version=NEW.definition_version
+                      AND c.id>reg.activation_shadow_cohort_id
+                      AND lower(c.chain)=lower(NEW.chain)
+                      AND c.token_id=NEW.token_id
+                      AND c.trigger_snapshot_id=NEW.baseline_snapshot_id
+                      AND c.trigger_recorded_at=NEW.anchor_at
+                      AND lower(substr(c.token_id,instr(c.token_id,':')+1))=lower(NEW.output_token)
+                      AND lower(NEW.input_token)=lower(json_extract(
+                          reg.definition_json,'$.networks.' || lower(c.chain) || '.accounting_token'
+                      ))
+                      AND NEW.input_amount_raw=json_extract(
+                          reg.definition_json,'$.input_amount_raw_by_chain.' || lower(c.chain)
+                      )
+                      AND NEW.slippage_bps=CAST(json_extract(
+                          reg.definition_json,'$.slippage_bps'
+                      ) AS INTEGER)
+                      AND (
+                        (NEW.quote_terminal_status='not_requested' AND NEW.attempt_id IS NULL
+                         AND NEW.requested_at IS NULL AND NEW.completed_at IS NULL)
+                        OR
+                        (NEW.quote_terminal_status<>'not_requested' AND EXISTS (
+                            SELECT 1 FROM onchain_only_evm_route_quote_attempts a
+                            WHERE a.id=NEW.attempt_id AND a.quote_key=NEW.quote_key
+                              AND a.shadow_cohort_id=c.id
+                              AND a.baseline_snapshot_id=NEW.baseline_snapshot_id
+                              AND a.token_id=NEW.token_id AND lower(a.chain)=lower(NEW.chain)
+                              AND a.anchor_at=NEW.anchor_at
+                              AND lower(a.input_token)=lower(NEW.input_token)
+                              AND lower(a.output_token)=lower(NEW.output_token)
+                              AND a.input_amount_raw=NEW.input_amount_raw
+                              AND a.slippage_bps=NEW.slippage_bps
+                        ))
+                      )
+                      AND (
+                        NEW.quote_terminal_status<>'quoted'
+                        OR (
+                            NEW.chain_id IS NOT NULL AND NEW.block_number IS NOT NULL
+                            AND length(NEW.block_hash)>2 AND NEW.block_timestamp IS NOT NULL
+                            AND length(NEW.buy_output_raw)>0
+                            AND length(NEW.buy_minimum_output_raw)>0
+                            AND length(NEW.sell_output_raw)>0
+                            AND length(NEW.sell_minimum_output_raw)>0
+                            AND NEW.immediate_round_trip_stable_ratio IS NOT NULL
+                            AND NEW.immediate_round_trip_stable_ratio>0
+                        )
+                      )
+                )
+                BEGIN SELECT RAISE(ABORT,'invalid onchain-only EVM route result'); END;
                 CREATE TABLE IF NOT EXISTS token_universe_jupiter_quote_registrations (
                     definition_version TEXT PRIMARY KEY,
                     registered_at TEXT NOT NULL,
@@ -2396,6 +3773,123 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS information_first_shadow_outcomes_horizon_idx
                     ON information_first_shadow_outcomes(horizon_minutes,status,evaluated_at);
+                CREATE TABLE IF NOT EXISTS information_first_active_outcome_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_shadow_cohort_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS information_first_active_outcome_targets (
+                    id INTEGER PRIMARY KEY,
+                    target_key TEXT NOT NULL UNIQUE,
+                    definition_version TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    chain TEXT NOT NULL,
+                    address TEXT NOT NULL,
+                    horizon_minutes INTEGER NOT NULL,
+                    target_at TEXT NOT NULL,
+                    deadline_at TEXT NOT NULL,
+                    registered_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    UNIQUE(definition_version,shadow_cohort_id,horizon_minutes),
+                    FOREIGN KEY(shadow_cohort_id) REFERENCES information_first_shadow_cohorts(id)
+                );
+                CREATE INDEX IF NOT EXISTS information_first_active_outcome_targets_due_idx
+                    ON information_first_active_outcome_targets(target_at,deadline_at,id);
+                CREATE TABLE IF NOT EXISTS information_first_active_outcome_attempts (
+                    id INTEGER PRIMARY KEY,
+                    attempt_key TEXT NOT NULL UNIQUE,
+                    definition_version TEXT NOT NULL,
+                    target_id INTEGER NOT NULL,
+                    retry_index INTEGER NOT NULL,
+                    scheduled_at TEXT NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    UNIQUE(target_id,retry_index),
+                    FOREIGN KEY(target_id) REFERENCES information_first_active_outcome_targets(id)
+                );
+                CREATE TABLE IF NOT EXISTS information_first_active_outcome_results (
+                    id INTEGER PRIMARY KEY,
+                    result_key TEXT NOT NULL UNIQUE,
+                    definition_version TEXT NOT NULL,
+                    target_id INTEGER NOT NULL,
+                    attempt_id INTEGER NOT NULL UNIQUE,
+                    status TEXT NOT NULL,
+                    reason_code TEXT NOT NULL,
+                    response_received_at TEXT NOT NULL,
+                    latency_ms REAL NOT NULL,
+                    observed_at TEXT,
+                    provider TEXT,
+                    price_usd REAL,
+                    liquidity_usd REAL,
+                    market_cap_usd REAL,
+                    volume_5m_usd REAL,
+                    buys_5m INTEGER,
+                    sells_5m INTEGER,
+                    recorded_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    FOREIGN KEY(target_id) REFERENCES information_first_active_outcome_targets(id),
+                    FOREIGN KEY(attempt_id) REFERENCES information_first_active_outcome_attempts(id)
+                );
+                CREATE INDEX IF NOT EXISTS information_first_active_outcome_results_target_idx
+                    ON information_first_active_outcome_results(target_id,id);
+                CREATE TABLE IF NOT EXISTS information_first_active_outcome_terminals (
+                    id INTEGER PRIMARY KEY,
+                    target_id INTEGER NOT NULL UNIQUE,
+                    definition_version TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    reason_code TEXT NOT NULL,
+                    winning_result_id INTEGER,
+                    response_received_at TEXT,
+                    observed_at TEXT,
+                    provider TEXT,
+                    price_usd REAL,
+                    liquidity_usd REAL,
+                    market_cap_usd REAL,
+                    volume_5m_usd REAL,
+                    buys_5m INTEGER,
+                    sells_5m INTEGER,
+                    finalized_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    FOREIGN KEY(target_id) REFERENCES information_first_active_outcome_targets(id),
+                    FOREIGN KEY(winning_result_id) REFERENCES information_first_active_outcome_results(id)
+                );
+                CREATE TRIGGER IF NOT EXISTS information_first_active_outcome_registrations_no_update
+                BEFORE UPDATE ON information_first_active_outcome_registrations
+                BEGIN SELECT RAISE(ABORT,'information-first active outcome registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS information_first_active_outcome_registrations_no_delete
+                BEFORE DELETE ON information_first_active_outcome_registrations
+                BEGIN SELECT RAISE(ABORT,'information-first active outcome registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS information_first_active_outcome_targets_no_update
+                BEFORE UPDATE ON information_first_active_outcome_targets
+                BEGIN SELECT RAISE(ABORT,'information-first active outcome targets are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS information_first_active_outcome_targets_no_delete
+                BEFORE DELETE ON information_first_active_outcome_targets
+                BEGIN SELECT RAISE(ABORT,'information-first active outcome targets are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS information_first_active_outcome_attempts_no_update
+                BEFORE UPDATE ON information_first_active_outcome_attempts
+                BEGIN SELECT RAISE(ABORT,'information-first active outcome attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS information_first_active_outcome_attempts_no_delete
+                BEFORE DELETE ON information_first_active_outcome_attempts
+                BEGIN SELECT RAISE(ABORT,'information-first active outcome attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS information_first_active_outcome_results_no_update
+                BEFORE UPDATE ON information_first_active_outcome_results
+                BEGIN SELECT RAISE(ABORT,'information-first active outcome results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS information_first_active_outcome_results_no_delete
+                BEFORE DELETE ON information_first_active_outcome_results
+                BEGIN SELECT RAISE(ABORT,'information-first active outcome results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS information_first_active_outcome_terminals_no_update
+                BEFORE UPDATE ON information_first_active_outcome_terminals
+                BEGIN SELECT RAISE(ABORT,'information-first active outcome terminals are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS information_first_active_outcome_terminals_no_delete
+                BEFORE DELETE ON information_first_active_outcome_terminals
+                BEGIN SELECT RAISE(ABORT,'information-first active outcome terminals are immutable'); END;
                 CREATE TABLE IF NOT EXISTS information_first_ilg_registrations (
                     definition_version TEXT PRIMARY KEY,
                     registered_at TEXT NOT NULL,
@@ -2483,12 +3977,359 @@ class Store:
                 CREATE TRIGGER IF NOT EXISTS information_first_ilg_outcomes_no_delete
                 BEFORE DELETE ON information_first_ilg_outcomes
                 BEGIN SELECT RAISE(ABORT,'information-first ILG outcomes are immutable'); END;
+                CREATE TABLE IF NOT EXISTS kol_token_addressability_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_observation_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS kol_token_addressability_admission_attempts (
+                    id INTEGER PRIMARY KEY,
+                    admission_key TEXT NOT NULL UNIQUE,
+                    definition_version TEXT NOT NULL,
+                    observation_id INTEGER NOT NULL,
+                    event_id INTEGER NOT NULL,
+                    attempted_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    cohort_id INTEGER,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none')
+                );
+                CREATE TABLE IF NOT EXISTS kol_token_addressability_cohorts (
+                    id INTEGER PRIMARY KEY,
+                    cohort_key TEXT NOT NULL UNIQUE,
+                    definition_version TEXT NOT NULL,
+                    observation_id INTEGER NOT NULL UNIQUE,
+                    event_id INTEGER NOT NULL,
+                    platform TEXT NOT NULL,
+                    handle TEXT NOT NULL,
+                    source_entity_id TEXT NOT NULL,
+                    configured_priority INTEGER NOT NULL,
+                    signal_available_at TEXT NOT NULL,
+                    source_published_at TEXT NOT NULL,
+                    source_observed_at TEXT NOT NULL,
+                    source_ingested_at TEXT NOT NULL,
+                    event_attention REAL NOT NULL,
+                    attention_point_id INTEGER,
+                    attention_definition_version TEXT,
+                    attention_recorded_at TEXT,
+                    attention_coverage_mode TEXT,
+                    seed_status TEXT NOT NULL CHECK(seed_status IN (
+                        'explicit_identifier_at_signal','no_seed_at_signal'
+                    )),
+                    identifiers_json TEXT NOT NULL,
+                    frozen_queries_json TEXT NOT NULL,
+                    definition_hash TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS kol_token_addressability_cohorts_signal_idx
+                    ON kol_token_addressability_cohorts(signal_available_at,id);
+                CREATE TABLE IF NOT EXISTS kol_token_addressability_milestones (
+                    id INTEGER PRIMARY KEY,
+                    milestone_key TEXT NOT NULL UNIQUE,
+                    definition_version TEXT NOT NULL,
+                    cohort_id INTEGER NOT NULL,
+                    milestone TEXT NOT NULL CHECK(milestone IN (
+                        'signal','explicit_identifier','local_token_discovery','dex_pair_available'
+                    )),
+                    status TEXT NOT NULL CHECK(status IN ('observed','missing_at_signal')),
+                    available_at TEXT NOT NULL,
+                    chain TEXT NOT NULL,
+                    identifier TEXT NOT NULL,
+                    token_id TEXT,
+                    provider TEXT,
+                    surface_key TEXT,
+                    evidence_json TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    recorded_at TEXT NOT NULL,
+                    FOREIGN KEY(cohort_id) REFERENCES kol_token_addressability_cohorts(id)
+                );
+                CREATE INDEX IF NOT EXISTS kol_token_addressability_milestones_cohort_idx
+                    ON kol_token_addressability_milestones(cohort_id,milestone,available_at,id);
+                CREATE TABLE IF NOT EXISTS kol_token_addressability_ambiguities (
+                    id INTEGER PRIMARY KEY,
+                    ambiguity_key TEXT NOT NULL UNIQUE,
+                    definition_version TEXT NOT NULL,
+                    cohort_id INTEGER NOT NULL,
+                    identifier TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status='ambiguous_evm_chain_at_signal'),
+                    evidence_json TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    recorded_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS kol_token_addressability_route_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_cohort_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS kol_token_addressability_route_attempts (
+                    id INTEGER PRIMARY KEY,
+                    attempt_key TEXT NOT NULL UNIQUE,
+                    definition_version TEXT NOT NULL,
+                    cohort_id INTEGER NOT NULL,
+                    milestone_id INTEGER NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    input_mint TEXT NOT NULL,
+                    output_mint TEXT NOT NULL,
+                    input_amount_raw TEXT NOT NULL,
+                    slippage_bps INTEGER NOT NULL,
+                    surface_key TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none')
+                );
+                CREATE TABLE IF NOT EXISTS kol_token_addressability_route_results (
+                    id INTEGER PRIMARY KEY,
+                    result_key TEXT NOT NULL UNIQUE,
+                    definition_version TEXT NOT NULL,
+                    cohort_id INTEGER NOT NULL,
+                    milestone_id INTEGER,
+                    attempt_id INTEGER,
+                    identifier TEXT NOT NULL,
+                    token_id TEXT,
+                    status TEXT NOT NULL CHECK(status IN (
+                        'quoted_surface_match','quoted_surface_unmapped','no_route','error',
+                        'quote_only_protocol_invalid','no_seed_at_signal','unsupported_chain',
+                        'ambiguous_chain','dex_pair_missing_by_deadline','queue_delay_expired',
+                        'interrupted_after_request'
+                    )),
+                    evaluated_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    output_amount_raw TEXT,
+                    other_amount_threshold_raw TEXT,
+                    router TEXT,
+                    route_plan_json TEXT NOT NULL,
+                    surface_key TEXT,
+                    surface_match_status TEXT NOT NULL,
+                    error_type TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none')
+                );
+                CREATE INDEX IF NOT EXISTS kol_token_addressability_route_results_cohort_idx
+                    ON kol_token_addressability_route_results(cohort_id,id);
+                CREATE TABLE IF NOT EXISTS kol_token_addressability_confirmation_results (
+                    id INTEGER PRIMARY KEY,
+                    result_key TEXT NOT NULL UNIQUE,
+                    definition_version TEXT NOT NULL,
+                    cohort_id INTEGER NOT NULL,
+                    identifier TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN (
+                        'observed','late','missing_by_deadline','no_seed_at_signal'
+                    )),
+                    observation_id INTEGER,
+                    source_origin TEXT,
+                    available_at TEXT NOT NULL,
+                    evaluated_at TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none')
+                );
+                CREATE INDEX IF NOT EXISTS kol_token_addressability_confirmation_results_cohort_idx
+                    ON kol_token_addressability_confirmation_results(cohort_id,id);
+                CREATE TRIGGER IF NOT EXISTS kol_token_addressability_registrations_no_update
+                BEFORE UPDATE ON kol_token_addressability_registrations
+                BEGIN SELECT RAISE(ABORT,'KOL token addressability registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS kol_token_addressability_registrations_no_delete
+                BEFORE DELETE ON kol_token_addressability_registrations
+                BEGIN SELECT RAISE(ABORT,'KOL token addressability registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS kol_token_addressability_admissions_no_update
+                BEFORE UPDATE ON kol_token_addressability_admission_attempts
+                BEGIN SELECT RAISE(ABORT,'KOL token addressability admissions are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS kol_token_addressability_admissions_no_delete
+                BEFORE DELETE ON kol_token_addressability_admission_attempts
+                BEGIN SELECT RAISE(ABORT,'KOL token addressability admissions are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS kol_token_addressability_cohorts_no_update
+                BEFORE UPDATE ON kol_token_addressability_cohorts
+                BEGIN SELECT RAISE(ABORT,'KOL token addressability cohorts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS kol_token_addressability_cohorts_no_delete
+                BEFORE DELETE ON kol_token_addressability_cohorts
+                BEGIN SELECT RAISE(ABORT,'KOL token addressability cohorts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS kol_token_addressability_milestones_no_update
+                BEFORE UPDATE ON kol_token_addressability_milestones
+                BEGIN SELECT RAISE(ABORT,'KOL token addressability milestones are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS kol_token_addressability_milestones_no_delete
+                BEFORE DELETE ON kol_token_addressability_milestones
+                BEGIN SELECT RAISE(ABORT,'KOL token addressability milestones are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS kol_token_addressability_ambiguities_no_update
+                BEFORE UPDATE ON kol_token_addressability_ambiguities
+                BEGIN SELECT RAISE(ABORT,'KOL token addressability ambiguities are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS kol_token_addressability_ambiguities_no_delete
+                BEFORE DELETE ON kol_token_addressability_ambiguities
+                BEGIN SELECT RAISE(ABORT,'KOL token addressability ambiguities are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS kol_token_addressability_route_registrations_no_update
+                BEFORE UPDATE ON kol_token_addressability_route_registrations
+                BEGIN SELECT RAISE(ABORT,'KOL token route registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS kol_token_addressability_route_registrations_no_delete
+                BEFORE DELETE ON kol_token_addressability_route_registrations
+                BEGIN SELECT RAISE(ABORT,'KOL token route registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS kol_token_addressability_route_attempts_no_update
+                BEFORE UPDATE ON kol_token_addressability_route_attempts
+                BEGIN SELECT RAISE(ABORT,'KOL token route attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS kol_token_addressability_route_attempts_no_delete
+                BEFORE DELETE ON kol_token_addressability_route_attempts
+                BEGIN SELECT RAISE(ABORT,'KOL token route attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS kol_token_addressability_route_results_no_update
+                BEFORE UPDATE ON kol_token_addressability_route_results
+                BEGIN SELECT RAISE(ABORT,'KOL token route results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS kol_token_addressability_route_results_no_delete
+                BEFORE DELETE ON kol_token_addressability_route_results
+                BEGIN SELECT RAISE(ABORT,'KOL token route results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS kol_token_addressability_confirmation_results_no_update
+                BEFORE UPDATE ON kol_token_addressability_confirmation_results
+                BEGIN SELECT RAISE(ABORT,'KOL token confirmation results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS kol_token_addressability_confirmation_results_no_delete
+                BEFORE DELETE ON kol_token_addressability_confirmation_results
+                BEGIN SELECT RAISE(ABORT,'KOL token confirmation results are immutable'); END;
                 CREATE TRIGGER IF NOT EXISTS token_snapshots_no_update
                 BEFORE UPDATE ON token_snapshots
                 BEGIN SELECT RAISE(ABORT,'token snapshots are immutable'); END;
                 CREATE TRIGGER IF NOT EXISTS token_snapshots_no_delete
                 BEFORE DELETE ON token_snapshots
                 BEGIN SELECT RAISE(ABORT,'token snapshots are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_context_deferred_admission_registrations_no_update
+                BEFORE UPDATE ON token_context_deferred_admission_registrations
+                BEGIN SELECT RAISE(ABORT,'token context deferred admission registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_context_deferred_admission_registrations_no_delete
+                BEFORE DELETE ON token_context_deferred_admission_registrations
+                BEGIN SELECT RAISE(ABORT,'token context deferred admission registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_context_onchain_admission_challenger_registrations_no_update
+                BEFORE UPDATE ON token_context_onchain_admission_challenger_registrations
+                BEGIN SELECT RAISE(ABORT,'token context onchain admission challenger registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_context_onchain_admission_challenger_registrations_no_delete
+                BEFORE DELETE ON token_context_onchain_admission_challenger_registrations
+                BEGIN SELECT RAISE(ABORT,'token context onchain admission challenger registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_context_admission_attempts_no_update
+                BEFORE UPDATE ON token_context_admission_attempts
+                BEGIN SELECT RAISE(ABORT,'token context admission attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_context_admission_attempts_no_delete
+                BEFORE DELETE ON token_context_admission_attempts
+                BEGIN SELECT RAISE(ABORT,'token context admission attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_context_deferred_admission_cohorts_insert_guard
+                BEFORE INSERT ON token_context_deferred_admission_cohorts
+                WHEN NEW.version<>'token-context-deferred-admission/v1'
+                  OR NEW.decision_eligible<>0 OR NEW.affects<>'none'
+                  OR NOT EXISTS (
+                    SELECT 1
+                    FROM token_context_admission_attempts a
+                    JOIN token_context_deferred_admission_registrations r
+                      ON r.version=NEW.version
+                    JOIN token_universe_funnel_transitions t
+                      ON t.id=NEW.trigger_transition_id
+                    WHERE a.id=NEW.admission_id
+                      AND a.id>r.activation_admission_id
+                      AND t.id>r.activation_trigger_transition_id
+                      AND a.token_id=NEW.token_id
+                      AND a.outcome='skipped'
+                      AND a.reason IN ('global_cooldown_active','error_retry_active')
+                      AND a.reason=NEW.reason
+                      AND a.trigger_kind=NEW.trigger_kind
+                      AND COALESCE(a.trigger_priority,0)=NEW.trigger_priority
+                      AND a.trigger_transition_id=NEW.trigger_transition_id
+                      AND a.source_link_id IS NEW.source_link_id
+                      AND a.evaluated_at=NEW.deferred_at
+                      AND a.next_eligible_at=NEW.projected_next_eligible_at
+                      AND a.evaluated_at>=r.registered_at
+                      AND t.recorded_at>=r.registered_at
+                      AND t.recorded_at<=a.evaluated_at
+                      AND t.token_id=a.token_id
+                      AND t.stage='context_trigger_evaluation'
+                      AND t.status='eligible'
+                      AND t.reason_code=a.trigger_kind
+                      AND t.source_link_id IS NEW.source_link_id
+                      AND ABS((julianday(NEW.expires_at)-julianday(NEW.deferred_at))*1440.0-180.0)<0.001
+                  )
+                  OR (
+                    NEW.source_link_id IS NOT NULL AND NOT EXISTS (
+                      SELECT 1 FROM token_source_links l
+                      WHERE l.id=NEW.source_link_id AND l.token_id=NEW.token_id
+                        AND l.fingerprint=NEW.source_link_fingerprint
+                        AND l.first_observed_at=NEW.source_link_first_observed_at
+                        AND l.link_kind=NEW.source_link_kind
+                        AND l.provider=NEW.source_link_provider
+                        AND l.platform=NEW.source_link_platform
+                        AND l.verification_status=NEW.source_link_verification_status
+                    )
+                  )
+                  OR (
+                    NEW.source_link_id IS NULL AND (
+                      NEW.source_link_fingerprint<>'' OR NEW.source_link_first_observed_at IS NOT NULL
+                      OR NEW.source_link_kind<>'' OR NEW.source_link_provider<>''
+                      OR NEW.source_link_platform<>'' OR NEW.source_link_verification_status<>''
+                      OR NEW.lineage_status<>'exact_trigger_transition'
+                    )
+                  )
+                  OR (
+                    NEW.source_link_id IS NOT NULL
+                    AND NEW.lineage_status<>'exact_trigger_and_source_link'
+                  )
+                BEGIN SELECT RAISE(ABORT,'invalid token context deferred admission cohort'); END;
+                CREATE TRIGGER IF NOT EXISTS token_context_deferred_admission_cohorts_no_update
+                BEFORE UPDATE ON token_context_deferred_admission_cohorts
+                BEGIN SELECT RAISE(ABORT,'token context deferred admission cohorts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_context_deferred_admission_cohorts_no_delete
+                BEFORE DELETE ON token_context_deferred_admission_cohorts
+                BEGIN SELECT RAISE(ABORT,'token context deferred admission cohorts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_context_deferred_admission_results_no_update
+                BEFORE UPDATE ON token_context_deferred_admission_results
+                BEGIN SELECT RAISE(ABORT,'token context deferred admission results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_context_deferred_admission_results_no_delete
+                BEFORE DELETE ON token_context_deferred_admission_results
+                BEGIN SELECT RAISE(ABORT,'token context deferred admission results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_context_deferred_admission_results_insert_guard
+                BEFORE INSERT ON token_context_deferred_admission_results
+                WHEN NEW.version<>'token-context-deferred-admission/v1'
+                  OR NEW.decision_eligible<>0 OR NEW.affects<>'none'
+                  OR NOT EXISTS (
+                    SELECT 1 FROM token_context_deferred_admission_cohorts c
+                    WHERE c.id=NEW.cohort_id AND c.version=NEW.version
+                  )
+                  OR (
+                    NEW.outcome='later_admitted' AND NOT EXISTS (
+                      SELECT 1
+                      FROM token_context_deferred_admission_cohorts c
+                      JOIN token_context_admission_attempts anchor ON anchor.id=c.admission_id
+                      JOIN token_context_admission_attempts followup ON followup.id=NEW.followup_admission_id
+                      WHERE c.id=NEW.cohort_id
+                        AND followup.id>anchor.id AND followup.token_id=c.token_id
+                        AND followup.outcome='admitted'
+                        AND followup.evaluated_at>=c.projected_next_eligible_at
+                        AND followup.evaluated_at<c.expires_at
+                        AND followup.evaluated_at=NEW.resolved_at
+                        AND followup.trigger_kind=anchor.trigger_kind
+                        AND followup.source_link_id IS anchor.source_link_id
+                        AND followup.event_id IS anchor.event_id
+                        AND followup.decision_id IS anchor.decision_id
+                    )
+                  )
+                  OR (
+                    NEW.outcome='expired_without_admission' AND (
+                      NEW.followup_admission_id IS NOT NULL
+                      OR NEW.match_kind<>'window_expired'
+                      OR NEW.resolved_at<>(SELECT expires_at FROM token_context_deferred_admission_cohorts WHERE id=NEW.cohort_id)
+                      OR EXISTS (
+                        SELECT 1
+                        FROM token_context_deferred_admission_cohorts c
+                        JOIN token_context_admission_attempts anchor ON anchor.id=c.admission_id
+                        JOIN token_context_admission_attempts followup
+                          ON followup.token_id=c.token_id AND followup.id>anchor.id
+                        WHERE c.id=NEW.cohort_id
+                          AND followup.outcome='admitted'
+                          AND followup.evaluated_at>=c.projected_next_eligible_at
+                          AND followup.evaluated_at<c.expires_at
+                          AND followup.trigger_kind=anchor.trigger_kind
+                          AND followup.source_link_id IS anchor.source_link_id
+                          AND followup.event_id IS anchor.event_id
+                          AND followup.decision_id IS anchor.decision_id
+                      )
+                    )
+                  )
+                BEGIN SELECT RAISE(ABORT,'invalid token context deferred admission result'); END;
                 """
             )
             columns = {row["name"] for row in self.db.execute("PRAGMA table_info(observations)")}
@@ -2503,6 +4344,66 @@ class Store:
                 self.db.execute("ALTER TABLE token_snapshots ADD COLUMN ingested_at TEXT")
             if "recorded_at" not in snapshot_columns:
                 self.db.execute("ALTER TABLE token_snapshots ADD COLUMN recorded_at TEXT")
+            addressability_columns = {
+                row["name"]
+                for row in self.db.execute("PRAGMA table_info(kol_token_addressability_cohorts)")
+            }
+            if addressability_columns and "definition_hash" not in addressability_columns:
+                self.db.execute(
+                    "ALTER TABLE kol_token_addressability_cohorts "
+                    "ADD COLUMN definition_hash TEXT NOT NULL DEFAULT ''"
+                )
+            for column, definition in (
+                ("attention_point_id", "INTEGER"),
+                ("attention_definition_version", "TEXT"),
+                ("attention_recorded_at", "TEXT"),
+                ("attention_coverage_mode", "TEXT"),
+            ):
+                if addressability_columns and column not in addressability_columns:
+                    self.db.execute(
+                        f"ALTER TABLE kol_token_addressability_cohorts ADD COLUMN {column} {definition}"
+                    )
+            route_attempt_columns = {
+                row["name"]
+                for row in self.db.execute(
+                    "PRAGMA table_info(kol_token_addressability_route_attempts)"
+                )
+            }
+            for column, definition in (
+                ("deadline_at", "TEXT"),
+                ("compatible_base_definition_version", "TEXT"),
+                ("compatible_base_definition_hash", "TEXT"),
+            ):
+                if route_attempt_columns and column not in route_attempt_columns:
+                    self.db.execute(
+                        f"ALTER TABLE kol_token_addressability_route_attempts "
+                        f"ADD COLUMN {column} {definition}"
+                    )
+            route_result_columns = {
+                row["name"]
+                for row in self.db.execute(
+                    "PRAGMA table_info(kol_token_addressability_route_results)"
+                )
+            }
+            for column in (
+                "terminal_status_v2", "pair_timing_status", "request_timing_status",
+                "response_timing_status", "surface_relation",
+            ):
+                if route_result_columns and column not in route_result_columns:
+                    self.db.execute(
+                        f"ALTER TABLE kol_token_addressability_route_results "
+                        f"ADD COLUMN {column} TEXT"
+                    )
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS kol_route_attempts_version_cohort_output_idx "
+                "ON kol_token_addressability_route_attempts("
+                "definition_version,cohort_id,output_mint,id)"
+            )
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS kol_route_results_version_cohort_identifier_idx "
+                "ON kol_token_addressability_route_results("
+                "definition_version,cohort_id,identifier,id)"
+            )
             jupiter_result_columns = {
                 row["name"]
                 for row in self.db.execute("PRAGMA table_info(token_universe_jupiter_quote_results)")
@@ -2522,11 +4423,72 @@ class Store:
                     self.db.execute(
                         f"ALTER TABLE token_universe_jupiter_quote_results ADD COLUMN {column} {definition}"
                     )
+            onchain_jupiter_columns = {
+                row["name"] for row in self.db.execute(
+                    "PRAGMA table_info(onchain_only_jupiter_quote_results)"
+                )
+            }
+            for column, definition in (
+                ("price_impact_bps", "REAL"),
+                ("price_impact_source", "TEXT NOT NULL DEFAULT ''"),
+            ):
+                if onchain_jupiter_columns and column not in onchain_jupiter_columns:
+                    self.db.execute(
+                        "ALTER TABLE onchain_only_jupiter_quote_results "
+                        f"ADD COLUMN {column} {definition}"
+                    )
+            exit_quote_columns = {
+                row["name"] for row in self.db.execute(
+                    "PRAGMA table_info(onchain_paper_exit_challenger_quote_results)"
+                )
+            }
+            for column, definition in (
+                ("price_impact_bps", "REAL"),
+                ("price_impact_source", "TEXT NOT NULL DEFAULT ''"),
+                ("economic_status", "TEXT NOT NULL DEFAULT 'not_applicable'"),
+            ):
+                if exit_quote_columns and column not in exit_quote_columns:
+                    self.db.execute(
+                        "ALTER TABLE onchain_paper_exit_challenger_quote_results "
+                        f"ADD COLUMN {column} {definition}"
+                    )
             discovery_exposure_columns = {
                 row["name"] for row in self.db.execute("PRAGMA table_info(token_discovery_exposures)")
             }
             if "recorded_at" not in discovery_exposure_columns:
                 self.db.execute("ALTER TABLE token_discovery_exposures ADD COLUMN recorded_at TEXT")
+            admission_columns = {
+                row["name"] for row in self.db.execute("PRAGMA table_info(token_context_admission_attempts)")
+            }
+            for name in ("trigger_transition_id", "source_link_id"):
+                if name not in admission_columns:
+                    self.db.execute(
+                        f"ALTER TABLE token_context_admission_attempts ADD COLUMN {name} INTEGER"
+                    )
+            self.db.execute(
+                "INSERT OR IGNORE INTO token_context_deferred_admission_registrations("
+                "version,registered_at,activation_admission_id,activation_trigger_transition_id,"
+                "definition_json) VALUES(?,?,COALESCE((SELECT MAX(id) FROM "
+                "token_context_admission_attempts),0),COALESCE((SELECT MAX(id) FROM "
+                "token_universe_funnel_transitions WHERE stage='context_trigger_evaluation'),0),?)",
+                (
+                    self.TOKEN_CONTEXT_DEFERRED_ADMISSION_VERSION,
+                    iso(),
+                    self._json(self._token_context_deferred_admission_definition()),
+                ),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO token_context_onchain_admission_challenger_registrations("
+                "version,registered_at,activation_admission_id,activation_trigger_transition_id,"
+                "definition_json) VALUES(?,?,COALESCE((SELECT MAX(id) FROM "
+                "token_context_admission_attempts),0),COALESCE((SELECT MAX(id) FROM "
+                "token_universe_funnel_transitions WHERE stage='context_trigger_evaluation'),0),?)",
+                (
+                    self.TOKEN_CONTEXT_ONCHAIN_ADMISSION_CHALLENGER_VERSION,
+                    iso(),
+                    self._json(self._token_context_onchain_admission_challenger_definition()),
+                ),
+            )
             self.db.execute(
                 "INSERT OR IGNORE INTO token_discovery_quote_attempt_registrations("
                 "definition_version,registered_at,activation_round_id,definition_json) "
@@ -2547,6 +4509,27 @@ class Store:
                 ),
             )
             self.db.execute(
+                "INSERT OR IGNORE INTO creator_launch_risk_registrations("
+                "definition_version,registered_at,activation_launch_fact_id,definition_json) "
+                "VALUES(?,?,COALESCE((SELECT MAX(id) FROM token_launch_facts),0),?)",
+                (
+                    self.CREATOR_LAUNCH_RISK_VERSION,
+                    iso(),
+                    self._json(self._creator_launch_risk_definition()),
+                ),
+            )
+            if self.LIQUIDITY_SURVIVAL_ENABLED:
+                self.db.execute(
+                    "INSERT OR IGNORE INTO liquidity_survival_registrations("
+                    "definition_version,registered_at,activation_snapshot_id,definition_json) "
+                    "VALUES(?,?,COALESCE((SELECT MAX(id) FROM token_snapshots),0),?)",
+                    (
+                        self.LIQUIDITY_SURVIVAL_VERSION,
+                        iso(),
+                        self._json(self._liquidity_survival_definition()),
+                    ),
+                )
+            self.db.execute(
                 "INSERT OR IGNORE INTO token_universe_funnel_registrations("
                 "definition_version,registered_at,activation_cohort_id,definition_json) "
                 "VALUES(?,?,COALESCE((SELECT MAX(id) FROM token_universe_forward_cohorts),0),?)",
@@ -2554,6 +4537,16 @@ class Store:
                     self.TOKEN_UNIVERSE_FUNNEL_VERSION,
                     iso(),
                     self._json(self._token_universe_funnel_definition()),
+                ),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO solana_holder_shadow_registrations("
+                "definition_version,registered_at,activation_cohort_id,definition_json) "
+                "VALUES(?,?,COALESCE((SELECT MAX(id) FROM token_universe_forward_cohorts),0),?)",
+                (
+                    self.SOLANA_HOLDER_SHADOW_VERSION,
+                    iso(),
+                    self._json(self._solana_holder_shadow_definition()),
                 ),
             )
             self.db.execute(
@@ -2607,12 +4600,42 @@ class Store:
                 ),
             )
             self.db.execute(
+                "INSERT OR IGNORE INTO information_first_active_outcome_registrations("
+                "definition_version,registered_at,activation_shadow_cohort_id,definition_json) "
+                "VALUES(?,?,COALESCE((SELECT MAX(id) FROM information_first_shadow_cohorts),0),?)",
+                (
+                    self.INFORMATION_FIRST_ACTIVE_OUTCOME_VERSION,
+                    iso(),
+                    self._json(self._information_first_active_outcome_definition()),
+                ),
+            )
+            self.db.execute(
                 "INSERT OR IGNORE INTO information_first_ilg_registrations("
                 "definition_version,registered_at,definition_json) VALUES(?,?,?)",
                 (
                     self.INFORMATION_FIRST_ILG_VERSION,
                     iso(),
                     self._json(self._information_first_ilg_definition()),
+                ),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO kol_token_addressability_registrations("
+                "definition_version,registered_at,activation_observation_id,definition_json) "
+                "VALUES(?,?,COALESCE((SELECT MAX(id) FROM observations),0),?)",
+                (
+                    self.KOL_TOKEN_ADDRESSABILITY_VERSION,
+                    iso(),
+                    self._json(self._kol_token_addressability_definition()),
+                ),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO kol_token_addressability_route_registrations("
+                "definition_version,registered_at,activation_cohort_id,definition_json) "
+                "VALUES(?,?,COALESCE((SELECT MAX(id) FROM kol_token_addressability_cohorts),0),?)",
+                (
+                    self.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION,
+                    iso(),
+                    self._json(self._kol_token_addressability_route_definition()),
                 ),
             )
             self.db.execute(
@@ -2711,6 +4734,23 @@ class Store:
                 ),
             )
             self.db.execute(
+                "INSERT OR IGNORE INTO source_fact_single_flight_registrations("
+                "version,registered_at,activation_assessment_id,definition_json) VALUES(?,?,?,?)",
+                (
+                    self.SOURCE_FACT_SINGLE_FLIGHT_VERSION,
+                    iso(),
+                    int(self.db.execute("SELECT COALESCE(MAX(id),0) FROM token_context_assessments").fetchone()[0]),
+                    self._json({
+                        "append_only": True,
+                        "no_backfill": True,
+                        "scope": "new_forward_source_fact_work_units_only",
+                        "single_flight": True,
+                        "expired_inflight": "uncertain_no_automatic_retry",
+                        "decision_effect": "none",
+                    }),
+                ),
+            )
+            self.db.execute(
                 "INSERT OR IGNORE INTO telegram_external_handoff_registrations("
                 "definition_version,registered_at,definition_json) VALUES(?,?,?)",
                 (
@@ -2733,6 +4773,11 @@ class Store:
             event_columns = {row["name"] for row in self.db.execute("PRAGMA table_info(events)")}
             if "topic" not in event_columns:
                 self.db.execute("ALTER TABLE events ADD COLUMN topic TEXT NOT NULL DEFAULT 'unknown'")
+            decision_columns = {
+                row["name"] for row in self.db.execute("PRAGMA table_info(decisions)")
+            }
+            if "route_probe_id" not in decision_columns:
+                self.db.execute("ALTER TABLE decisions ADD COLUMN route_probe_id INTEGER")
             lane_columns = {
                 row["name"] for row in self.db.execute("PRAGMA table_info(trend_lane_run_lanes)")
             }
@@ -3035,6 +5080,177 @@ class Store:
             ),
         )
         return self.db.execute("SELECT changes()").fetchone()[0] > 0
+
+    def source_revision_for_observation_as_of(
+        self, observation_id: int, *, as_of=None
+    ) -> sqlite3.Row | None:
+        """Return the latest temporally usable immutable revision for an observation."""
+        cutoff = parse_time(as_of or utcnow())
+        with self._lock:
+            return self.db.execute(
+                """
+                SELECT * FROM source_item_revisions
+                WHERE definition_version=? AND capture_observation_id=?
+                  AND recorded_at<=? AND capture_observed_at<=?
+                  AND capture_ingested_at<=?
+                  AND COALESCE(temporal_exclusion_reason,'')=''
+                ORDER BY recorded_at DESC,id DESC LIMIT 1
+                """,
+                (self.SOURCE_ITEM_REVISION_VERSION, int(observation_id),
+                 iso(cutoff), iso(cutoff), iso(cutoff)),
+            ).fetchone()
+
+    def lookup_reusable_source_fact(self, source_key: str, *, as_of=None):
+        cutoff = parse_time(as_of or utcnow())
+        with self._lock:
+            return self.db.execute(
+                """
+                SELECT r.*,w.source_version_key,w.source_revision_id
+                FROM source_fact_results r
+                JOIN source_fact_work_units w ON w.id=r.work_unit_id
+                WHERE r.version=? AND w.source_version_key=? AND r.reusable_until>?
+                ORDER BY r.available_at DESC,r.id DESC LIMIT 1
+                """,
+                (self.SOURCE_FACT_SINGLE_FLIGHT_VERSION, str(source_key), iso(cutoff)),
+            ).fetchone()
+
+    def claim_source_fact_attempt(
+        self, source_key: str, *, source_revision_id: int | None = None,
+        trigger: Any = "", claimed_at=None, lease_seconds: int = 120,
+        uncertain_retry_seconds: int = 600,
+        run_id: str = "", payload: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        claimed = parse_time(claimed_at or utcnow())
+        key = str(source_key)[:512]
+        with self._lock, self.db:
+            work = self.db.execute(
+                "SELECT * FROM source_fact_work_units WHERE source_version_key=?", (key,)
+            ).fetchone()
+            if work is None:
+                cur = self.db.execute(
+                    """INSERT INTO source_fact_work_units(
+                       version,source_version_key,source_revision_id,claim_sha256,trigger,
+                       requested_at,available_at,status,payload_json,recorded_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                    (self.SOURCE_FACT_SINGLE_FLIGHT_VERSION, key, source_revision_id,
+                     hashlib.sha256(key.encode()).hexdigest(), str(trigger or "")[:256],
+                     iso(claimed), iso(claimed), "registered",
+                     self._bounded_json(dict(payload or {})), iso(claimed)),
+                )
+                work = self.db.execute(
+                    "SELECT * FROM source_fact_work_units WHERE id=?", (cur.lastrowid,)
+                ).fetchone()
+            reusable = self.lookup_reusable_source_fact(key, as_of=claimed)
+            if reusable is not None:
+                return {"status": "reused", "result_id": int(reusable["id"]),
+                        "attempt_id": None, "work_unit_id": int(work["id"])}
+            latest = self.db.execute(
+                "SELECT * FROM source_fact_attempts WHERE work_unit_id=? ORDER BY id DESC LIMIT 1",
+                (int(work["id"]),),
+            ).fetchone()
+            if latest is not None:
+                has_result = self.db.execute(
+                    "SELECT id FROM source_fact_results WHERE attempt_id=?", (int(latest["id"]),)
+                ).fetchone() is not None
+                if not has_result and latest["state"] in {"uncertain", "dispatch", "inflight"}:
+                    retry_at = parse_time(latest["lease_until"]) + timedelta(
+                        seconds=max(0, int(uncertain_retry_seconds))
+                    )
+                    if retry_at > claimed:
+                        status = (
+                            "inflight"
+                            if latest["state"] in {"dispatch", "inflight"}
+                            and parse_time(latest["lease_until"]) > claimed
+                            else "uncertain"
+                        )
+                        return {"status": status, "result_id": None,
+                                "attempt_id": int(latest["id"]), "work_unit_id": int(work["id"])}
+            attempt_key = hashlib.sha256(
+                f"{self.SOURCE_FACT_SINGLE_FLIGHT_VERSION}|{key}|{iso(claimed)}".encode()
+            ).hexdigest()
+            cur = self.db.execute(
+                """INSERT INTO source_fact_attempts(
+                   version,work_unit_id,attempt_key,run_id,started_at,lease_until,state,
+                   metadata_json,recorded_at)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                (self.SOURCE_FACT_SINGLE_FLIGHT_VERSION, int(work["id"]), attempt_key,
+                 str(run_id or attempt_key)[:128], iso(claimed),
+                 iso(claimed + timedelta(seconds=max(1, int(lease_seconds)))), "dispatch",
+                 self._bounded_json({"trigger": trigger, "payload": dict(payload or {})}), iso(claimed)),
+            )
+            return {"status": "dispatch", "result_id": None,
+                    "attempt_id": int(cur.lastrowid), "work_unit_id": int(work["id"])}
+
+    def complete_source_fact_attempt(
+        self, attempt_id: int, *, status: str, result: Mapping[str, Any] | None = None,
+        completed_at=None, reusable_until=None,
+    ) -> int:
+        done = parse_time(completed_at or utcnow())
+        payload = dict(result or {})
+        reusable = parse_time(reusable_until or (done + timedelta(hours=1)))
+        with self._lock, self.db:
+            attempt = self.db.execute(
+                "SELECT * FROM source_fact_attempts WHERE id=?", (int(attempt_id),)
+            ).fetchone()
+            if attempt is None:
+                raise ValueError("unknown source fact attempt")
+            existing = self.db.execute(
+                "SELECT id FROM source_fact_results WHERE attempt_id=?", (int(attempt_id),)
+            ).fetchone()
+            if existing is not None:
+                return int(existing["id"])
+            result_key = hashlib.sha256(
+                f"{self.SOURCE_FACT_SINGLE_FLIGHT_VERSION}|{attempt_id}|{iso(done)}".encode()
+            ).hexdigest()
+            cur = self.db.execute(
+                """INSERT INTO source_fact_results(
+                   version,work_unit_id,attempt_id,result_key,status,claim_status,confidence,
+                   completed_at,available_at,reusable_until,payload_json,metadata_json,
+                   audit_json,fact_verification_json,recorded_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (self.SOURCE_FACT_SINGLE_FLIGHT_VERSION, int(attempt["work_unit_id"]), int(attempt_id),
+                 result_key, str(status)[:80], str(payload.get("claim_status") or "")[:80],
+                 payload.get("confidence"), iso(done), iso(done), iso(reusable),
+                 self._bounded_json(payload.get("payload") or payload),
+                 self._bounded_json(payload.get("metadata") or {}),
+                 self._bounded_json(payload.get("audit") or {}),
+                 self._bounded_json(payload.get("fact_verification") or {}), iso(done)),
+            )
+            return int(cur.lastrowid)
+
+    def add_source_fact_token_binding(
+        self, source_fact_result_id: int, token_id: str, *, admission_id: int | None = None,
+        assessment_id: int | None = None, reused: bool = False, binding_status: str = "exact",
+        binding_kind: str = "source_fact", evidence_basis: str = "",
+        observed_at=None, ingested_at=None, available_at=None,
+    ) -> int:
+        now = parse_time(available_at or utcnow())
+        observed = parse_time(observed_at or now)
+        ingested = parse_time(ingested_at or now)
+        with self._lock, self.db:
+            result = self.db.execute(
+                "SELECT work_unit_id FROM source_fact_results WHERE id=?", (int(source_fact_result_id),)
+            ).fetchone()
+            if result is None:
+                raise ValueError("unknown source fact result")
+            material = f"{self.SOURCE_FACT_SINGLE_FLIGHT_VERSION}|{source_fact_result_id}|{token_id}|{binding_status}|{binding_kind}"
+            fp = hashlib.sha256(material.encode()).hexdigest()
+            cur = self.db.execute(
+                """INSERT OR IGNORE INTO source_fact_token_bindings(
+                   version,work_unit_id,result_id,token_id,admission_id,assessment_id,reused,
+                   binding_status,binding_kind,evidence_basis,observed_at,ingested_at,
+                   available_at,recorded_at,binding_fingerprint)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (self.SOURCE_FACT_SINGLE_FLIGHT_VERSION, int(result["work_unit_id"]),
+                 int(source_fact_result_id), str(token_id)[:256], admission_id, assessment_id,
+                 int(bool(reused)), str(binding_status), str(binding_kind), str(evidence_basis)[:1000],
+                 iso(observed), iso(ingested), iso(now), iso(now), fp),
+            )
+            if cur.rowcount:
+                return int(cur.lastrowid)
+            return int(self.db.execute(
+                "SELECT id FROM source_fact_token_bindings WHERE binding_fingerprint=?", (fp,)
+            ).fetchone()["id"])
 
     def start_telegram_external_handoff(
         self,
@@ -3692,7 +5908,10 @@ class Store:
                 """
                 SELECT * FROM observations
                 WHERE availability_proof='local_receive'
-                  AND source LIKE 'browser:%'
+                  AND (
+                    source LIKE 'browser:%'
+                    OR json_type(raw_json,'$.browser')='object'
+                  )
                   AND observed_at>=? AND observed_at<=?
                 ORDER BY observed_at DESC LIMIT ?
                 """,
@@ -3955,7 +6174,7 @@ class Store:
     def active_events(self, minutes: int = 180, limit: int = 100) -> list[EventView]:
         since = iso(utcnow() - timedelta(minutes=minutes))
         rows = self.db.execute(
-            "SELECT * FROM events WHERE status='active' AND last_seen_at>=? ORDER BY attention DESC,last_seen_at DESC LIMIT ?",
+            "SELECT * FROM events WHERE status='active' AND last_seen_at>=? ORDER BY last_seen_at DESC,attention DESC LIMIT ?",
             (since, limit),
         )
         return [
@@ -3984,6 +6203,7 @@ class Store:
         if token.first_seen_at is None:
             token.first_seen_at = parse_time(now)
         with self._lock, self.db:
+            self._record_token_market_surface_locked(token, observed_at=now)
             existed = self.db.execute("SELECT 1 FROM tokens WHERE token_id=?", (token.token_id,)).fetchone() is not None
             self.db.execute(
                 """
@@ -4009,6 +6229,424 @@ class Store:
                 self._enqueue_token_detail_hydration_locked(token.chain, token.address, enqueued_at=now)
             return not existed
 
+    @staticmethod
+    def _market_surface_type(dex_id: str, labels: set[str]) -> str:
+        label_text = " ".join(sorted(labels))
+        if dex_id in {"pumpfun", "meteoradbc", "meteora-dbc"}:
+            return "bonding_curve"
+        if "clmm" in label_text or "concentrated" in label_text:
+            return "CLMM"
+        if "v4" in label_text:
+            return "v4"
+        if "v3" in label_text:
+            return "v3"
+        if "v2" in label_text:
+            return "v2"
+        if dex_id in {"pumpswap", "pump-amm"}:
+            return "CPMM"
+        if dex_id == "raydium" and any(value in label_text for value in ("cpmm", "amm")):
+            return "CPMM"
+        return "unknown"
+
+    def _record_token_market_surface_locked(self, token: TokenCandidate, *, observed_at) -> int | None:
+        raw = token.raw if isinstance(token.raw, dict) else {}
+        pair = raw.get("pair") if isinstance(raw.get("pair"), dict) else None
+        if pair is None:
+            return None
+        dex_id = str(pair.get("dexId") or "").strip().lower()
+        if dex_id == "pump-amm":
+            dex_id = "pumpswap"
+        pair_address = str(pair.get("pairAddress") or "").strip()
+        if not dex_id or not pair_address:
+            return None
+        base = pair.get("baseToken") if isinstance(pair.get("baseToken"), dict) else {}
+        quote = pair.get("quoteToken") if isinstance(pair.get("quoteToken"), dict) else {}
+        labels_raw = pair.get("labels") or []
+        if isinstance(labels_raw, str):
+            labels_raw = [labels_raw]
+        labels = {str(value).strip().lower() for value in labels_raw if str(value).strip()}
+
+        surface_type = self._market_surface_type(dex_id, labels)
+        base_mint = str(base.get("address") or token.address)
+        quote_mint = str(quote.get("address") or "")
+        if dex_id == "pumpswap":
+            canonical_status = "unknown"
+            liquidity_control = "unknown"
+            migration_lineage = ""
+        else:
+            canonical_status = "not_applicable"
+            liquidity_control = "nft_position" if surface_type in {"CLMM", "v3", "v4"} else "unknown"
+            migration_lineage = ""
+        created_raw = pair.get("pairCreatedAt")
+        pair_created_at = None
+        if created_raw not in {None, ""}:
+            try:
+                pair_created_at = iso(datetime.fromtimestamp(float(created_raw) / 1000, tz=timezone.utc))
+            except (TypeError, ValueError, OSError):
+                pair_created_at = None
+        launchpad = "pump" if dex_id == "pumpswap" else dex_id
+        pool_creator = str(pair.get("poolCreator") or pair.get("creator") or "")
+        lp_owner = str(pair.get("lpOwner") or pair.get("positionOwner") or "")
+        provider = "dexscreener"
+        raw_text = self._json(raw)
+        raw_hash = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+        structural = {
+            "token_id": token.token_id,
+            "chain": token.chain.lower(),
+            "dex_id": dex_id,
+            "pair_address": pair_address,
+            "base_mint": base_mint,
+            "quote_mint": quote_mint,
+            "launchpad": launchpad,
+            "surface_type": surface_type,
+            "canonical_status": canonical_status,
+            "pool_creator": pool_creator,
+            "lp_position_owner": lp_owner,
+            "liquidity_control": liquidity_control,
+            "migration_lineage": migration_lineage,
+            "pair_created_at": pair_created_at,
+            "provider": provider,
+        }
+        fingerprint = hashlib.sha256(
+            f"{self.TOKEN_MARKET_SURFACE_VERSION}|{self._json(structural)}".encode("utf-8")
+        ).hexdigest()
+        source_observed = parse_time(token.first_seen_at or observed_at or utcnow())
+        self.db.execute(
+            """
+            INSERT OR IGNORE INTO token_market_surfaces(
+                descriptor_fingerprint,token_id,chain,dex_id,pair_address,
+                base_mint,quote_mint,launchpad,surface_type,canonical_status,
+                pool_creator,lp_position_owner,liquidity_control,migration_lineage,
+                pair_created_at,provider,source_observed_at,ingested_at,recorded_at,
+                raw_payload_hash,definition_version
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                fingerprint,
+                structural["token_id"],
+                structural["chain"],
+                structural["dex_id"],
+                structural["pair_address"],
+                structural["base_mint"],
+                structural["quote_mint"],
+                structural["launchpad"],
+                structural["surface_type"],
+                structural["canonical_status"],
+                structural["pool_creator"],
+                structural["lp_position_owner"],
+                structural["liquidity_control"],
+                structural["migration_lineage"],
+                structural["pair_created_at"],
+                structural["provider"],
+                iso(source_observed),
+                iso(parse_time(observed_at or utcnow())),
+                iso(),
+                raw_hash,
+                self.TOKEN_MARKET_SURFACE_VERSION,
+            ),
+        )
+        row = self.db.execute(
+            "SELECT id FROM token_market_surfaces WHERE descriptor_fingerprint=?",
+            (fingerprint,),
+        ).fetchone()
+        return int(row["id"]) if row is not None else None
+
+    @classmethod
+    def _creator_launch_risk_definition(cls) -> dict[str, Any]:
+        return {
+            "version": cls.CREATOR_LAUNCH_RISK_VERSION,
+            "source": cls.TOKEN_LAUNCH_FACT_VERSION,
+            "append_only": True,
+            "no_historical_backfill": True,
+            "provider_semantics": "pumpportal_create_observation_not_rpc_verified",
+            "history_scope": "local_observations_available_before_each_launch",
+            "history_is_lower_bound": True,
+            "features": [
+                "prior_launch_count",
+                "prior_launch_24h_count",
+                "seconds_since_prior_launch",
+                "prior_240m_terminal_observed_and_positive_raw_counts",
+                "prior_liquidity_60m_terminal_survived_and_collapse_counts",
+            ],
+            "creator_is": "provider_reported_trader_public_key_on_create",
+            "creator_is_not": "rpc_verified_economic_entity_or_related_wallet_cluster",
+            "decision_eligible": False,
+            "affects": "none",
+        }
+
+    def _record_creator_launch_risk_cohort_locked(self, launch_fact_id: int) -> int | None:
+        registration = self.db.execute(
+            "SELECT * FROM creator_launch_risk_registrations WHERE definition_version=?",
+            (self.CREATOR_LAUNCH_RISK_VERSION,),
+        ).fetchone()
+        fact = self.db.execute(
+            "SELECT * FROM token_launch_facts WHERE id=?", (int(launch_fact_id),)
+        ).fetchone()
+        if (
+            registration is None
+            or fact is None
+            or int(fact["id"]) <= int(registration["activation_launch_fact_id"])
+            or str(fact["launch_event_type"]) != "create"
+            or str(fact["chain"]).lower() != "solana"
+            or not str(fact["creator_address"])
+        ):
+            return None
+        existing = self.db.execute(
+            "SELECT id FROM creator_launch_risk_cohorts WHERE launch_fact_id=?",
+            (int(fact["id"]),),
+        ).fetchone()
+        if existing is not None:
+            return int(existing["id"])
+
+        cutoff = parse_time(fact["recorded_at"])
+        launch_observed_at = parse_time(fact["source_observed_at"])
+        prior_24h = launch_observed_at - timedelta(hours=24)
+        prior = self.db.execute(
+            """
+            SELECT COUNT(*) AS launch_count,
+                   SUM(source_observed_at>=?) AS launch_24h_count,
+                   MAX(source_observed_at) AS latest_at,
+                   MIN(recorded_at) AS earliest_at
+            FROM token_launch_facts
+            WHERE definition_version=? AND launch_event_type='create'
+              AND creator_address=? AND id<? AND recorded_at<?
+            """,
+            (
+                iso(prior_24h), self.TOKEN_LAUNCH_FACT_VERSION,
+                str(fact["creator_address"]), int(fact["id"]), iso(cutoff),
+            ),
+        ).fetchone()
+        history_start = self.db.execute(
+            "SELECT MIN(recorded_at) FROM token_launch_facts WHERE definition_version=?",
+            (self.TOKEN_LAUNCH_FACT_VERSION,),
+        ).fetchone()[0]
+        latest_prior = parse_time(prior["latest_at"]) if prior["latest_at"] else None
+
+        outcome = self.db.execute(
+            """
+            SELECT COUNT(*) AS terminal_count,
+                   SUM(r.terminal_status='observed') AS observed_count,
+                   SUM(r.terminal_status='observed' AND r.raw_return>0) AS positive_count
+            FROM onchain_only_shadow_results r
+            JOIN onchain_only_shadow_cohorts c ON c.id=r.cohort_id
+            JOIN token_launch_facts p ON p.token_id=c.token_id
+            WHERE r.definition_version=? AND r.horizon_minutes=240
+              AND r.recorded_at<=? AND p.definition_version=?
+              AND p.launch_event_type='create' AND p.creator_address=?
+              AND p.id<? AND p.recorded_at<?
+            """,
+            (
+                self.ONCHAIN_ONLY_SHADOW_VERSION, iso(cutoff),
+                self.TOKEN_LAUNCH_FACT_VERSION, str(fact["creator_address"]),
+                int(fact["id"]), iso(cutoff),
+            ),
+        ).fetchone()
+        liquidity = self.db.execute(
+            """
+            SELECT COUNT(*) AS terminal_count,
+                   SUM(o.status='observed' AND o.failure_mode='survived') AS survived_count,
+                   SUM(o.status='observed' AND o.failure_mode='liquidity_collapse_unclassified')
+                       AS collapse_count
+            FROM liquidity_survival_outcomes o
+            JOIN liquidity_survival_cohorts c ON c.id=o.cohort_id
+            JOIN token_launch_facts p ON p.token_id=c.token_id
+            WHERE o.definition_version=? AND o.horizon_minutes=60
+              AND o.recorded_at<=? AND p.definition_version=?
+              AND p.launch_event_type='create' AND p.creator_address=?
+              AND p.id<? AND p.recorded_at<?
+            """,
+            (
+                self.LIQUIDITY_SURVIVAL_VERSION, iso(cutoff),
+                self.TOKEN_LAUNCH_FACT_VERSION, str(fact["creator_address"]),
+                int(fact["id"]), iso(cutoff),
+            ),
+        ).fetchone()
+        self.db.execute(
+            """
+            INSERT OR IGNORE INTO creator_launch_risk_cohorts(
+                definition_version,launch_fact_id,token_id,creator_address,
+                history_cutoff_at,local_history_started_at,history_left_censored,
+                prior_launch_count,prior_launch_24h_count,seconds_since_prior_launch,
+                prior_240m_terminal_count,prior_240m_observed_count,
+                prior_240m_positive_raw_count,prior_liquidity_60m_terminal_count,
+                prior_liquidity_60m_survived_count,prior_liquidity_60m_collapse_count,
+                recorded_at,decision_eligible,affects
+            ) VALUES(?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,0,'none')
+            """,
+            (
+                self.CREATOR_LAUNCH_RISK_VERSION, int(fact["id"]), str(fact["token_id"]),
+                str(fact["creator_address"]), iso(cutoff), history_start,
+                int(prior["launch_count"] or 0), int(prior["launch_24h_count"] or 0),
+                (launch_observed_at - latest_prior).total_seconds() if latest_prior else None,
+                int(outcome["terminal_count"] or 0), int(outcome["observed_count"] or 0),
+                int(outcome["positive_count"] or 0), int(liquidity["terminal_count"] or 0),
+                int(liquidity["survived_count"] or 0), int(liquidity["collapse_count"] or 0),
+                iso(),
+            ),
+        )
+        row = self.db.execute(
+            "SELECT id FROM creator_launch_risk_cohorts WHERE launch_fact_id=?",
+            (int(fact["id"]),),
+        ).fetchone()
+        return int(row["id"]) if row is not None else None
+
+    def record_token_launch_fact(
+        self,
+        token: TokenCandidate,
+        *,
+        observed_at=None,
+        ingested_at=None,
+    ) -> int | None:
+        if token.source not in {"pumpportal:create", "pumpportal:migration"}:
+            return None
+        raw = token.raw if isinstance(token.raw, dict) else {}
+        event_type = str(
+            raw.get("pump_event_type") or raw.get("txType") or raw.get("eventType") or "create"
+        ).strip().lower()
+        event_type = "migration" if "migrat" in event_type else "create"
+        launch_surface = str(raw.get("pool") or ("pump-amm" if event_type == "migration" else "pump"))
+        raw_text = self._json(raw)
+        raw_hash = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+        signature = str(raw.get("signature") or "").strip()
+        fingerprint = hashlib.sha256(
+            "|".join(
+                (
+                    self.TOKEN_LAUNCH_FACT_VERSION,
+                    "pumpportal",
+                    event_type,
+                    token.token_id,
+                    signature or raw_hash,
+                )
+            ).encode("utf-8")
+        ).hexdigest()
+        observed = parse_time(token.first_seen_at or observed_at or utcnow())
+        ingested = parse_time(ingested_at or observed_at or utcnow())
+
+        def number(key: str) -> float | None:
+            value = raw.get(key)
+            if value is None or value == "":
+                return None
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        values = (
+            fingerprint,
+            token.token_id,
+            token.chain.lower(),
+            "pumpportal",
+            launch_surface,
+            event_type,
+            token.address,
+            str(raw.get("traderPublicKey") or ""),
+            signature,
+            str(raw.get("bondingCurveKey") or ""),
+            str(raw.get("pool") or ""),
+            number("initialBuy"),
+            number("solAmount"),
+            number("marketCapSol"),
+            number("vSolInBondingCurve"),
+            number("vTokensInBondingCurve"),
+            "SOL",
+            iso(observed),
+            iso(ingested),
+            iso(),
+            raw_hash,
+            self.TOKEN_LAUNCH_FACT_VERSION,
+        )
+        with self._lock, self.db:
+            self.db.execute(
+                """
+                INSERT OR IGNORE INTO token_launch_facts(
+                    event_fingerprint,token_id,chain,launch_provider,launch_surface,
+                    launch_event_type,address,creator_address,create_signature,
+                    bonding_curve_key,pool_label,initial_buy_token_amount,
+                    initial_quote_amount,initial_market_cap_native,
+                    initial_virtual_quote_reserve,initial_virtual_token_reserve,
+                    token_pairing,source_observed_at,ingested_at,recorded_at,
+                    raw_payload_hash,definition_version
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                values,
+            )
+            row = self.db.execute(
+                "SELECT id FROM token_launch_facts WHERE event_fingerprint=?",
+                (fingerprint,),
+            ).fetchone()
+            fact_id = int(row["id"]) if row is not None else None
+            if fact_id is not None:
+                self._record_creator_launch_risk_cohort_locked(fact_id)
+            return fact_id
+
+    @classmethod
+    def creator_launch_risk_for_token_from_connection(
+        cls,
+        connection: sqlite3.Connection,
+        token_id: str,
+    ) -> dict[str, Any] | None:
+        fact = connection.execute(
+            """
+            SELECT * FROM token_launch_facts
+            WHERE token_id=? AND definition_version=? AND launch_event_type='create'
+            ORDER BY source_observed_at,id LIMIT 1
+            """,
+            (str(token_id), cls.TOKEN_LAUNCH_FACT_VERSION),
+        ).fetchone()
+        if fact is None:
+            return None
+        cohort = connection.execute(
+            "SELECT * FROM creator_launch_risk_cohorts WHERE launch_fact_id=?",
+            (int(fact["id"]),),
+        ).fetchone()
+        registration = connection.execute(
+            "SELECT * FROM creator_launch_risk_registrations WHERE definition_version=?",
+            (cls.CREATOR_LAUNCH_RISK_VERSION,),
+        ).fetchone()
+        launch = {
+            "launch_fact_id": int(fact["id"]),
+            "source": str(fact["launch_provider"]),
+            "verification": "provider_observed_not_rpc_verified",
+            "provider_verified": False,
+            "provider_semantics": "provider_observed_not_rpc_verified",
+            "creator_address": str(fact["creator_address"]),
+            "create_signature": str(fact["create_signature"]),
+            "bonding_curve_key": str(fact["bonding_curve_key"]),
+            "launch_surface": str(fact["launch_surface"]),
+            "pool_label": str(fact["pool_label"]),
+            "initial_buy_token_amount": fact["initial_buy_token_amount"],
+            "initial_quote_amount": fact["initial_quote_amount"],
+            "initial_market_cap_native": fact["initial_market_cap_native"],
+            "source_observed_at": str(fact["source_observed_at"]),
+            "ingested_at": str(fact["ingested_at"]),
+            "recorded_at": str(fact["recorded_at"]),
+        }
+        risk = None if cohort is None else {
+            key: cohort[key]
+            for key in (
+                "history_cutoff_at", "local_history_started_at", "history_left_censored",
+                "prior_launch_count", "prior_launch_24h_count", "seconds_since_prior_launch",
+                "prior_240m_terminal_count", "prior_240m_observed_count",
+                "prior_240m_positive_raw_count", "prior_liquidity_60m_terminal_count",
+                "prior_liquidity_60m_survived_count", "prior_liquidity_60m_collapse_count",
+                "recorded_at",
+            )
+        }
+        if risk is not None:
+            risk["history_left_censored"] = bool(risk["history_left_censored"])
+        return {
+            "status": "observed" if cohort is not None else "pre_registration_excluded",
+            "version": cls.CREATOR_LAUNCH_RISK_VERSION,
+            "registered_at": str(registration["registered_at"]) if registration else None,
+            "launch": launch,
+            "risk_shadow": risk,
+            "interpretation": (
+                "local_creator_history_lower_bound_not_rpc_verified_not_entity_clustered"
+            ),
+            "decision_eligible": False,
+            "affects": "none",
+        }
+
     def _enqueue_token_detail_hydration_locked(self, chain: str, address: str, *, enqueued_at=None) -> None:
         normalized_chain = str(chain).strip().lower()
         normalized_address = str(address).strip()
@@ -4032,18 +6670,111 @@ class Store:
         with self._lock, self.db:
             self._enqueue_token_detail_hydration_locked(chain, address, enqueued_at=enqueued_at)
 
-    def due_token_detail_hydrations(self, *, limit: int = 30, now=None) -> list[sqlite3.Row]:
-        due_at = iso(parse_time(now or utcnow()))
+    def requeue_token_detail_hydration(self, token_id: str, *, enqueued_at=None) -> bool:
+        queued = parse_time(enqueued_at or utcnow())
+        with self._lock, self.db:
+            row = self.db.execute(
+                "SELECT token_id FROM token_detail_hydration WHERE token_id=?",
+                (str(token_id),),
+            ).fetchone()
+            if row is None:
+                token = self.db.execute(
+                    "SELECT chain,address FROM tokens WHERE token_id=?", (str(token_id),)
+                ).fetchone()
+                if token is None:
+                    return False
+                self._enqueue_token_detail_hydration_locked(
+                    str(token["chain"]), str(token["address"]), enqueued_at=queued
+                )
+                return True
+            self.db.execute(
+                """
+                UPDATE token_detail_hydration
+                SET status='pending',enqueued_at=?,next_attempt_at=?,last_error=''
+                WHERE token_id=?
+                """,
+                (iso(queued), iso(queued), str(token_id)),
+            )
+            return True
+
+    def recent_token_social_post_links(
+        self, *, minutes: int = 180, limit: int = 5000,
+        chains: Iterable[str] = ("solana", "bsc"),
+    ) -> list[sqlite3.Row]:
+        now = utcnow()
+        prefixes = tuple(
+            f"{str(chain).strip().lower()}:%" for chain in chains if str(chain).strip()
+        )
+        if not prefixes:
+            return []
+        chain_sql = " OR ".join("token_id LIKE ?" for _ in prefixes)
         with self._lock:
             return list(
                 self.db.execute(
-                    """
+                    f"""
+                    SELECT * FROM token_source_links
+                    WHERE link_kind='social_post' AND role='identity'
+                      AND first_observed_at>=? AND first_observed_at<=?
+                      AND ({chain_sql})
+                    ORDER BY first_observed_at DESC,id DESC LIMIT ?
+                    """,
+                    (
+                        iso(now - timedelta(minutes=max(1, int(minutes)))),
+                        iso(now), *prefixes, max(1, min(20_000, int(limit))),
+                    ),
+                )
+            )
+
+    def due_token_detail_hydrations(
+        self,
+        *,
+        limit: int = 30,
+        now=None,
+        priority_social_account_urls: Iterable[str] = (),
+    ) -> list[sqlite3.Row]:
+        due_at = iso(parse_time(now or utcnow()))
+        priority_patterns = tuple(
+            dict.fromkeys(
+                f"{str(url).strip().rstrip('/').lower()}/%"
+                for url in priority_social_account_urls
+                if str(url).strip().lower().startswith(("https://", "http://"))
+            )
+        )
+        priority_order = ""
+        priority_params: tuple[Any, ...] = ()
+        if priority_patterns:
+            matches = " OR ".join("LOWER(link.normalized_url) LIKE ?" for _ in priority_patterns)
+            priority_order = f"""
+                CASE WHEN EXISTS(
+                    SELECT 1 FROM token_source_links AS link
+                    WHERE link.token_id=token_detail_hydration.token_id
+                      AND link.link_kind='social_post'
+                      AND ({matches})
+                ) THEN 0 ELSE 1 END,
+            """
+            priority_params = priority_patterns
+        with self._lock:
+            return list(
+                self.db.execute(
+                    f"""
                     SELECT * FROM token_detail_hydration
                     WHERE status IN ('pending','no_pair','error')
                       AND (next_attempt_at IS NULL OR next_attempt_at<=?)
-                    ORDER BY enqueued_at,attempts,token_id LIMIT ?
+                    ORDER BY
+                      CASE WHEN EXISTS(
+                        SELECT 1 FROM token_universe_funnel_transitions AS handoff
+                        WHERE handoff.token_id=token_detail_hydration.token_id
+                          AND handoff.stage='context_trigger_evaluation'
+                          AND handoff.status='eligible'
+                          AND handoff.reason_code='browser_exact_token_metadata_post_captured'
+                          AND (
+                            token_detail_hydration.last_attempt_at IS NULL
+                            OR handoff.recorded_at>token_detail_hydration.last_attempt_at
+                          )
+                      ) THEN 0 ELSE 1 END,
+                      {priority_order} enqueued_at,attempts,token_id LIMIT ?
                     """,
-                    (due_at, max(0, min(300, int(limit)))),
+                    (due_at, *priority_params, max(0, min(300, int(limit)))),
                 )
             )
 
@@ -4090,6 +6821,1080 @@ class Store:
             "SELECT * FROM token_detail_hydration WHERE token_id=?", (str(token_id),)
         ).fetchone()
 
+    @classmethod
+    def _solana_holder_shadow_definition(cls) -> dict[str, Any]:
+        return {
+            "version": cls.SOLANA_HOLDER_SHADOW_VERSION,
+            "scope": "new_solana_token_universe_cohorts_after_registration",
+            "sampling": {
+                "method": "sha256_version_and_token_id_bucket",
+                "modulus": cls.SOLANA_HOLDER_SHADOW_SAMPLE_MODULUS,
+                "included_buckets": list(range(cls.SOLANA_HOLDER_SHADOW_SAMPLE_BUCKETS)),
+            },
+            "horizons_minutes": list(cls.SOLANA_HOLDER_SHADOW_HORIZONS_MINUTES),
+            "source": "official_public_solana_json_rpc",
+            "collection": (
+                "getAccountInfo_mint_owner_then_getTokenSupply_and_"
+                "getProgramAccounts_mint_filter_owner_amount_slice"
+            ),
+            "holder_definition": (
+                "distinct_token_account_owner_bytes_with_positive_balance_at_confirmed_slot"
+            ),
+            "holder_is_not": [
+                "unique_human", "unique_buyer", "smart_money", "independent_wallet",
+            ],
+            "stored_data": "aggregate_counts_and_concentration_only_no_owner_addresses",
+            "dust_threshold_supply_share": 0.0001,
+            "append_only": True,
+            "no_historical_backfill": True,
+            "active_strategy": False,
+            "decision_eligible": False,
+            "affects": "none",
+        }
+
+    def enroll_solana_holder_shadow_cohorts(self, *, limit: int = 2000) -> dict[str, int]:
+        registration = self.db.execute(
+            "SELECT * FROM solana_holder_shadow_registrations WHERE definition_version=?",
+            (self.SOLANA_HOLDER_SHADOW_VERSION,),
+        ).fetchone()
+        if registration is None:
+            return {"scanned": 0, "enrolled": 0, "scan_after": 0}
+        activation = int(registration["activation_cohort_id"] or 0)
+        cursor_key = f"solana_holder_shadow_scan_after:{self.SOLANA_HOLDER_SHADOW_VERSION}"
+        scan_after = max(activation, int(self.get_kv(cursor_key, activation) or activation))
+        rows = list(
+            self.db.execute(
+                """
+                SELECT c.id,c.token_id,c.discovery_recorded_at,t.address
+                FROM token_universe_forward_cohorts c
+                JOIN tokens t ON t.token_id=c.token_id
+                WHERE c.id>? AND lower(c.chain)='solana'
+                ORDER BY c.id LIMIT ?
+                """,
+                (scan_after, max(1, min(10000, int(limit)))),
+            )
+        )
+        enrolled = 0
+        with self._lock, self.db:
+            for row in rows:
+                token_id = str(row["token_id"])
+                address = str(row["address"] or "")
+                if not re.fullmatch(r"[1-9A-HJ-NP-Za-km-z]{32,64}", address):
+                    continue
+                digest = hashlib.sha256(
+                    f"{self.SOLANA_HOLDER_SHADOW_VERSION}\n{token_id}".encode("utf-8")
+                ).digest()
+                bucket = int.from_bytes(digest[:8], "big") % self.SOLANA_HOLDER_SHADOW_SAMPLE_MODULUS
+                if bucket >= self.SOLANA_HOLDER_SHADOW_SAMPLE_BUCKETS:
+                    continue
+                cursor = self.db.execute(
+                    """
+                    INSERT OR IGNORE INTO solana_holder_shadow_cohorts(
+                        definition_version,universe_cohort_id,token_id,mint_address,
+                        discovery_recorded_at,sample_bucket,enrolled_at,decision_eligible,affects
+                    ) VALUES(?,?,?,?,?,?,?,0,'none')
+                    """,
+                    (
+                        self.SOLANA_HOLDER_SHADOW_VERSION, int(row["id"]), token_id,
+                        address, str(row["discovery_recorded_at"]), bucket, iso(),
+                    ),
+                )
+                enrolled += int(bool(cursor.rowcount))
+            if rows:
+                scan_after = int(rows[-1]["id"])
+                self.db.execute(
+                    "INSERT INTO kv(key,value_json,updated_at) VALUES(?,?,?) "
+                    "ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,"
+                    "updated_at=excluded.updated_at",
+                    (cursor_key, self._json(scan_after), iso()),
+                )
+        return {"scanned": len(rows), "enrolled": enrolled, "scan_after": scan_after}
+
+    def due_solana_holder_shadow(self, *, now=None) -> dict[str, Any] | None:
+        current = parse_time(now or utcnow())
+        row = self.db.execute(
+            """
+            WITH horizons(horizon_minutes) AS (VALUES(0),(15),(60),(240))
+            SELECT c.*,h.horizon_minutes
+            FROM solana_holder_shadow_cohorts c CROSS JOIN horizons h
+            WHERE c.definition_version=?
+              AND julianday(?)>=julianday(c.discovery_recorded_at)+(h.horizon_minutes/1440.0)
+              AND NOT EXISTS (
+                  SELECT 1 FROM solana_holder_shadow_results r
+                  WHERE r.definition_version=c.definition_version
+                    AND r.shadow_cohort_id=c.id
+                    AND r.horizon_minutes=h.horizon_minutes
+              )
+            ORDER BY julianday(c.discovery_recorded_at)+(h.horizon_minutes/1440.0),c.id
+            LIMIT 1
+            """,
+            (self.SOLANA_HOLDER_SHADOW_VERSION, iso(current)),
+        ).fetchone()
+        if row is None:
+            return None
+        horizon = int(row["horizon_minutes"])
+        return {
+            "shadow_cohort_id": int(row["id"]),
+            "universe_cohort_id": int(row["universe_cohort_id"]),
+            "token_id": str(row["token_id"]),
+            "mint_address": str(row["mint_address"]),
+            "horizon_minutes": horizon,
+            "due_at": iso(parse_time(row["discovery_recorded_at"]) + timedelta(minutes=horizon)),
+        }
+
+    def add_solana_holder_shadow_result(
+        self,
+        shadow_cohort_id: int,
+        *,
+        horizon_minutes: int,
+        due_at: Any,
+        requested_at: Any,
+        completed_at: Any,
+        status: str,
+        reason_code: str,
+        rpc_host: str,
+        token_program: str = "",
+        slot: int | None = None,
+        rpc_request_count: int = 0,
+        latency_seconds: float = 0.0,
+        response_bytes: int = 0,
+        token_account_count: int | None = None,
+        nonzero_token_account_count: int | None = None,
+        unique_owner_count: int | None = None,
+        supply_raw: int | str | None = None,
+        owner_balance_sum_raw: int | str | None = None,
+        balance_coverage: float | None = None,
+        top1_supply_share: float | None = None,
+        top10_supply_share: float | None = None,
+        owners_below_1bp_count: int | None = None,
+        owners_below_1bp_rate: float | None = None,
+    ) -> int | None:
+        safe_status = status if status in {"observed", "error", "unavailable"} else "error"
+        with self._lock, self.db:
+            self.db.execute(
+                """
+                INSERT OR IGNORE INTO solana_holder_shadow_results(
+                    definition_version,shadow_cohort_id,horizon_minutes,due_at,
+                    requested_at,completed_at,status,reason_code,rpc_host,token_program,
+                    slot,rpc_request_count,latency_seconds,response_bytes,
+                    token_account_count,nonzero_token_account_count,unique_owner_count,
+                    supply_raw,owner_balance_sum_raw,balance_coverage,top1_supply_share,
+                    top10_supply_share,owners_below_1bp_count,owners_below_1bp_rate,
+                    decision_eligible,affects
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'none')
+                """,
+                (
+                    self.SOLANA_HOLDER_SHADOW_VERSION, int(shadow_cohort_id),
+                    int(horizon_minutes), iso(parse_time(due_at)), iso(parse_time(requested_at)),
+                    iso(parse_time(completed_at)), safe_status,
+                    re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(reason_code))[:120] or "unknown",
+                    str(rpc_host)[:160], str(token_program)[:100], slot,
+                    max(0, int(rpc_request_count)), max(0.0, float(latency_seconds)),
+                    max(0, int(response_bytes)), token_account_count,
+                    nonzero_token_account_count, unique_owner_count,
+                    str(supply_raw) if supply_raw is not None else None,
+                    str(owner_balance_sum_raw) if owner_balance_sum_raw is not None else None,
+                    balance_coverage, top1_supply_share, top10_supply_share,
+                    owners_below_1bp_count, owners_below_1bp_rate,
+                ),
+            )
+            row = self.db.execute(
+                "SELECT id FROM solana_holder_shadow_results WHERE definition_version=? "
+                "AND shadow_cohort_id=? AND horizon_minutes=?",
+                (
+                    self.SOLANA_HOLDER_SHADOW_VERSION, int(shadow_cohort_id),
+                    int(horizon_minutes),
+                ),
+            ).fetchone()
+            return int(row["id"]) if row is not None else None
+
+    @classmethod
+    def solana_holder_shadow_summary_from_connection(
+        cls, connection: sqlite3.Connection
+    ) -> dict[str, Any]:
+        empty = {
+            "status": "not_registered",
+            "version": cls.SOLANA_HOLDER_SHADOW_VERSION,
+            "definition": cls._solana_holder_shadow_definition(),
+            "summary": {
+                "cohorts": 0, "expected_results": 0, "results": 0,
+                "observed": 0, "error": 0, "unavailable": 0, "pending": 0,
+            },
+            "horizons": [], "recent": [],
+            "decision_eligible": False, "affects": "none",
+        }
+        tables = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        required = {
+            "solana_holder_shadow_registrations", "solana_holder_shadow_cohorts",
+            "solana_holder_shadow_results",
+        }
+        if not required.issubset(tables):
+            return empty
+        registration = connection.execute(
+            "SELECT * FROM solana_holder_shadow_registrations WHERE definition_version=?",
+            (cls.SOLANA_HOLDER_SHADOW_VERSION,),
+        ).fetchone()
+        if registration is None:
+            return empty
+        cohorts = int(connection.execute(
+            "SELECT COUNT(*) FROM solana_holder_shadow_cohorts WHERE definition_version=?",
+            (cls.SOLANA_HOLDER_SHADOW_VERSION,),
+        ).fetchone()[0])
+        rows = list(connection.execute(
+            "SELECT r.*,c.token_id FROM solana_holder_shadow_results r "
+            "JOIN solana_holder_shadow_cohorts c ON c.id=r.shadow_cohort_id "
+            "WHERE r.definition_version=? ORDER BY r.completed_at DESC,r.id DESC",
+            (cls.SOLANA_HOLDER_SHADOW_VERSION,),
+        ))
+        expected = cohorts * len(cls.SOLANA_HOLDER_SHADOW_HORIZONS_MINUTES)
+        status_counts = {
+            status: sum(str(row["status"]) == status for row in rows)
+            for status in ("observed", "error", "unavailable")
+        }
+        horizons = []
+        for horizon in cls.SOLANA_HOLDER_SHADOW_HORIZONS_MINUTES:
+            values = [row for row in rows if int(row["horizon_minutes"]) == horizon]
+            horizons.append({
+                "horizon_minutes": horizon,
+                "results": len(values),
+                "observed": sum(str(row["status"]) == "observed" for row in values),
+                "error": sum(str(row["status"]) == "error" for row in values),
+                "unavailable": sum(str(row["status"]) == "unavailable" for row in values),
+                "pending": max(0, cohorts - len(values)),
+            })
+        recent = [
+            {
+                "id": int(row["id"]), "token_id": str(row["token_id"]),
+                "horizon_minutes": int(row["horizon_minutes"]),
+                "due_at": str(row["due_at"]), "completed_at": str(row["completed_at"]),
+                "status": str(row["status"]), "reason_code": str(row["reason_code"]),
+                "slot": row["slot"], "rpc_request_count": int(row["rpc_request_count"]),
+                "latency_seconds": float(row["latency_seconds"]),
+                "response_bytes": int(row["response_bytes"]),
+                "token_account_count": row["token_account_count"],
+                "nonzero_token_account_count": row["nonzero_token_account_count"],
+                "unique_owner_count": row["unique_owner_count"],
+                "balance_coverage": row["balance_coverage"],
+                "top1_supply_share": row["top1_supply_share"],
+                "top10_supply_share": row["top10_supply_share"],
+                "owners_below_1bp_count": row["owners_below_1bp_count"],
+                "owners_below_1bp_rate": row["owners_below_1bp_rate"],
+            }
+            for row in rows[:20]
+        ]
+        return {
+            "status": "collecting" if cohorts else "registered",
+            "version": cls.SOLANA_HOLDER_SHADOW_VERSION,
+            "registered_at": str(registration["registered_at"]),
+            "activation_cohort_id": int(registration["activation_cohort_id"]),
+            "definition": json.loads(str(registration["definition_json"])),
+            "summary": {
+                "cohorts": cohorts, "expected_results": expected, "results": len(rows),
+                **status_counts, "pending": max(0, expected - len(rows)),
+            },
+            "horizons": horizons, "recent": recent,
+            "decision_eligible": False, "affects": "none", "as_of": iso(),
+        }
+
+    @classmethod
+    def _token_context_deferred_admission_definition(cls) -> dict[str, Any]:
+        return {
+            "version": cls.TOKEN_CONTEXT_DEFERRED_ADMISSION_VERSION,
+            "source": cls.TOKEN_CONTEXT_ADMISSION_VERSION,
+            "scope": ["global_cooldown_active", "error_retry_active"],
+            "registration": "forward_only_after_activation_admission_id",
+            "activation_guards": ["admission_id", "trigger_transition_id", "registered_at"],
+            "followup_window_minutes": cls.TOKEN_CONTEXT_DEFERRED_ADMISSION_WINDOW_MINUTES,
+            "eligibility_interval": "[projected_next_eligible_at, expires_at)",
+            "resolution": "matching_natural_admission_within_frozen_window_or_expiry",
+            "matching": {
+                "metadata_or_high_impact": "same_token_trigger_kind_and_exact_source_link",
+                "event_relation": "same_token_trigger_kind_event_and_decision",
+                "onchain": "same_token_and_trigger_kind",
+            },
+            "causal_scope": "observational_persistence_after_recorded_admission_skip_not_counterfactual_queue_benefit",
+            "coverage_exclusion": "eligible_triggers_never_reaching_admission_are_outside_this_ledger",
+            "active_retry": False,
+            "agent_dispatch": False,
+            "no_historical_backfill": True,
+            "decision_eligible": False,
+            "affects": "none",
+        }
+
+    @classmethod
+    def _token_context_onchain_admission_challenger_definition(cls) -> dict[str, Any]:
+        return {
+            "version": cls.TOKEN_CONTEXT_ONCHAIN_ADMISSION_CHALLENGER_VERSION,
+            "scope": "onchain_momentum",
+            "selection": "highest_momentum_then_newest_snapshot",
+            "maximum_selected_per_hydration_cycle": 1,
+            "hydration_lane_order": {
+                "always_first": [
+                    "high_impact_account_post", "fresh_high_attention_event_relation",
+                ],
+                "alternating_preference": [
+                    "high_impact_account_metadata_lead", "onchain_momentum",
+                ],
+                "after_fair_lanes": ["token_metadata_source_link"],
+            },
+            "fairness_state": "advance_once_per_hydration_cycle_when_both_fair_lanes_exist",
+            "existing_controls": [
+                "global_cooldown", "single_token_cooldown", "daily_calls",
+                "daily_tokens", "structured_result_validation", "maximum_two_agent_processes",
+            ],
+            "changes_strategy": False,
+            "changes_position_size": False,
+            "agent_dispatch_only_after_existing_admission": True,
+            "no_historical_backfill": True,
+            "decision_eligible": False,
+            "affects": "none",
+        }
+
+    def enroll_token_context_deferred_admission(
+        self,
+        admission_id: int,
+        *,
+        trigger: Mapping[str, Any] | None,
+    ) -> int | None:
+        trigger = trigger if isinstance(trigger, Mapping) else {}
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT * FROM token_context_deferred_admission_registrations "
+                "WHERE version=?",
+                (self.TOKEN_CONTEXT_DEFERRED_ADMISSION_VERSION,),
+            ).fetchone()
+            admission = self.db.execute(
+                "SELECT * FROM token_context_admission_attempts WHERE id=?",
+                (int(admission_id),),
+            ).fetchone()
+            if (
+                registration is None
+                or admission is None
+                or int(admission["id"]) <= int(registration["activation_admission_id"] or 0)
+                or str(admission["outcome"]) != "skipped"
+                or str(admission["reason"]) not in {"global_cooldown_active", "error_retry_active"}
+                or not admission["next_eligible_at"]
+            ):
+                return None
+            transition_id = admission["trigger_transition_id"]
+            try:
+                transition_id = int(transition_id) if transition_id is not None else None
+            except (TypeError, ValueError):
+                transition_id = None
+            transition = self.db.execute(
+                "SELECT * FROM token_universe_funnel_transitions WHERE id=?",
+                (transition_id,),
+            ).fetchone() if transition_id is not None else None
+            if (
+                transition is None
+                or transition_id <= int(registration["activation_trigger_transition_id"] or 0)
+                or str(transition["token_id"]) != str(admission["token_id"])
+                or str(transition["stage"]) != "context_trigger_evaluation"
+                or str(transition["status"]) != "eligible"
+                or str(transition["reason_code"]) != str(admission["trigger_kind"])
+                or parse_time(transition["recorded_at"]) < parse_time(registration["registered_at"])
+                or parse_time(transition["recorded_at"]) > parse_time(admission["evaluated_at"])
+            ):
+                return None
+            source_link_id = admission["source_link_id"]
+            try:
+                source_link_id = int(source_link_id) if source_link_id is not None else None
+            except (TypeError, ValueError):
+                source_link_id = None
+            if transition["source_link_id"] != source_link_id:
+                return None
+            source_link = None
+            if source_link_id is not None:
+                source_link = self.db.execute(
+                    "SELECT * FROM token_source_links WHERE id=?", (source_link_id,)
+                ).fetchone()
+                if source_link is None or str(source_link["token_id"]) != str(admission["token_id"]):
+                    return None
+            lineage_status = (
+                "exact_trigger_and_source_link"
+                if source_link_id is not None else "exact_trigger_transition"
+            )
+            deferred_at = parse_time(admission["evaluated_at"])
+            expires_at = deferred_at + timedelta(
+                minutes=self.TOKEN_CONTEXT_DEFERRED_ADMISSION_WINDOW_MINUTES
+            )
+            identity = (
+                f"source_link:{source_link_id}"
+                if source_link_id is not None
+                else f"event:{admission['event_id'] or 0}:decision:{admission['decision_id'] or 0}"
+                if admission["event_id"] is not None or admission["decision_id"] is not None
+                else f"trigger_kind:{admission['trigger_kind']}"
+            )
+            episode_key = hashlib.sha256(
+                "\n".join((
+                    self.TOKEN_CONTEXT_DEFERRED_ADMISSION_VERSION,
+                    str(admission["token_id"]), str(admission["reason"]), identity,
+                    str(admission["next_eligible_at"]),
+                )).encode("utf-8", errors="ignore")
+            ).hexdigest()
+            cursor = self.db.execute(
+                """
+                INSERT OR IGNORE INTO token_context_deferred_admission_cohorts(
+                    version,episode_key,admission_id,token_id,trigger_transition_id,source_link_id,
+                    source_link_fingerprint,source_link_first_observed_at,source_link_kind,
+                    source_link_provider,source_link_platform,source_link_verification_status,
+                    trigger_kind,trigger_priority,reason,deferred_at,projected_next_eligible_at,
+                    expires_at,recorded_at,lineage_status,decision_eligible,affects
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'none')
+                """,
+                (
+                    self.TOKEN_CONTEXT_DEFERRED_ADMISSION_VERSION,
+                    episode_key, int(admission["id"]), str(admission["token_id"]), transition_id,
+                    source_link_id, str(source_link["fingerprint"] if source_link else ""),
+                    str(source_link["first_observed_at"]) if source_link else None,
+                    str(source_link["link_kind"] if source_link else ""),
+                    str(source_link["provider"] if source_link else ""),
+                    str(source_link["platform"] if source_link else ""),
+                    str(source_link["verification_status"] if source_link else ""),
+                    str(admission["trigger_kind"] or "")[:120],
+                    int(admission["trigger_priority"] or 0), str(admission["reason"]),
+                    iso(deferred_at), str(admission["next_eligible_at"]),
+                    iso(expires_at), iso(), lineage_status,
+                ),
+            )
+            if cursor.rowcount:
+                return int(cursor.lastrowid)
+            row = self.db.execute(
+                "SELECT id FROM token_context_deferred_admission_cohorts "
+                "WHERE admission_id=? OR episode_key=? ORDER BY id LIMIT 1",
+                (int(admission_id), episode_key),
+            ).fetchone()
+            return int(row["id"]) if row is not None else None
+
+    def finalize_token_context_deferred_admissions(
+        self, *, now: Any = None, limit: int = 500
+    ) -> dict[str, int]:
+        current = parse_time(now or utcnow())
+        result = {
+            "resolved": 0,
+            "later_admitted": 0,
+            "expired_without_admission": 0,
+        }
+        with self._lock, self.db:
+            cohorts = list(
+                self.db.execute(
+                    """
+                    SELECT c.* FROM token_context_deferred_admission_cohorts c
+                    LEFT JOIN token_context_deferred_admission_results r ON r.cohort_id=c.id
+                    WHERE r.id IS NULL ORDER BY c.expires_at,c.id LIMIT ?
+                    """,
+                    (max(1, min(5000, int(limit))),),
+                )
+            )
+            for cohort in cohorts:
+                anchor = self.db.execute(
+                    "SELECT * FROM token_context_admission_attempts WHERE id=?",
+                    (int(cohort["admission_id"]),),
+                ).fetchone()
+                followup = self.db.execute(
+                    """
+                    SELECT * FROM token_context_admission_attempts
+                    WHERE token_id=? AND id>? AND outcome='admitted'
+                      AND evaluated_at>=? AND evaluated_at<?
+                      AND trigger_kind=? AND source_link_id IS ?
+                      AND event_id IS ? AND decision_id IS ?
+                    ORDER BY evaluated_at,id LIMIT 1
+                    """,
+                    (
+                        str(cohort["token_id"]), int(cohort["admission_id"]),
+                        str(cohort["projected_next_eligible_at"]), str(cohort["expires_at"]),
+                        str(anchor["trigger_kind"]), anchor["source_link_id"],
+                        anchor["event_id"], anchor["decision_id"],
+                    ),
+                ).fetchone()
+                if followup is not None:
+                    outcome = "later_admitted"
+                    reason = "matching_natural_admission"
+                    resolved_at = str(followup["evaluated_at"])
+                    followup_id = int(followup["id"])
+                    match_kind = (
+                        "exact_source_link" if cohort["source_link_id"] is not None
+                        else "exact_event_decision"
+                        if anchor["event_id"] is not None or anchor["decision_id"] is not None
+                        else "same_trigger_kind"
+                    )
+                elif current >= parse_time(cohort["expires_at"]):
+                    outcome = "expired_without_admission"
+                    reason = "context_window_expired_without_matching_admission"
+                    resolved_at = str(cohort["expires_at"])
+                    followup_id = None
+                    match_kind = "window_expired"
+                else:
+                    continue
+                followup_attempts = list(
+                    self.db.execute(
+                        """
+                        SELECT reason FROM token_context_admission_attempts
+                        WHERE token_id=? AND id>? AND evaluated_at>=? AND evaluated_at<?
+                          AND trigger_kind=? AND source_link_id IS ?
+                          AND event_id IS ? AND decision_id IS ?
+                        ORDER BY evaluated_at,id
+                        """,
+                        (
+                            str(cohort["token_id"]), int(cohort["admission_id"]),
+                            str(cohort["projected_next_eligible_at"]), str(cohort["expires_at"]),
+                            str(anchor["trigger_kind"]), anchor["source_link_id"],
+                            anchor["event_id"], anchor["decision_id"],
+                        ),
+                    )
+                )
+                last_skip_reason = next(
+                    (str(row["reason"]) for row in reversed(followup_attempts)
+                     if str(row["reason"]) != "admitted"),
+                    "",
+                )
+                cursor = self.db.execute(
+                    """
+                    INSERT OR IGNORE INTO token_context_deferred_admission_results(
+                        version,cohort_id,outcome,reason_code,followup_admission_id,
+                        match_kind,followup_attempt_count,last_skip_reason,resolved_at,
+                        recorded_at,decision_eligible,affects
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,0,'none')
+                    """,
+                    (
+                        self.TOKEN_CONTEXT_DEFERRED_ADMISSION_VERSION,
+                        int(cohort["id"]), outcome, reason, followup_id, match_kind,
+                        len(followup_attempts), last_skip_reason, resolved_at, iso(),
+                    ),
+                )
+                if cursor.rowcount:
+                    result["resolved"] += 1
+                    result[outcome] += 1
+        return result
+
+    def due_token_context_active_retries(
+        self,
+        *,
+        activated_at: Any,
+        now: Any = None,
+        limit: int = 1,
+    ) -> list[dict[str, Any]]:
+        """Return post-activation deferred intents that may compete for a retry slot."""
+        current = parse_time(now or utcnow())
+        activation = parse_time(activated_at)
+        with self._lock:
+            rows = list(
+                self.db.execute(
+                    """
+                    SELECT c.*
+                    FROM token_context_deferred_admission_cohorts c
+                    JOIN token_context_admission_attempts anchor
+                      ON anchor.id=c.admission_id
+                    LEFT JOIN token_context_deferred_admission_results r ON r.cohort_id=c.id
+                    WHERE r.id IS NULL
+                      AND c.recorded_at>=?
+                      AND c.projected_next_eligible_at<=?
+                      AND c.expires_at>?
+                      AND c.trigger_kind<>'onchain_momentum'
+                      AND (
+                        c.trigger_kind<>'post_entry_narrative_position'
+                        OR EXISTS (
+                          SELECT 1
+                          FROM token_universe_funnel_transitions origin
+                          JOIN onchain_paper_narrative_context_seeds seed
+                            ON seed.definition_version=?
+                           AND seed.trigger_transition_id=origin.id
+                           AND seed.source_buy_trade_id=CAST(json_extract(
+                             origin.source_record_ids_json,'$.source_buy_trade_id'
+                           ) AS INTEGER)
+                          JOIN onchain_paper_narrative_runner_positions p
+                            ON p.definition_version=?
+                           AND p.source_buy_trade_id=seed.source_buy_trade_id
+                           AND p.status IN ('baseline','narrative_runner')
+                          WHERE origin.id=c.trigger_transition_id
+                        )
+                      )
+                      AND NOT EXISTS (
+                        SELECT 1 FROM token_context_admission_attempts a
+                        WHERE a.token_id=c.token_id AND a.id>c.admission_id
+                          AND a.outcome IN ('admitted','reused')
+                          AND (
+                            (c.trigger_kind='post_entry_narrative_position'
+                             AND a.trigger_transition_id=c.trigger_transition_id)
+                            OR
+                            (c.trigger_kind<>'post_entry_narrative_position'
+                             AND a.trigger_kind=anchor.trigger_kind
+                             AND a.source_link_id IS anchor.source_link_id
+                             AND a.event_id IS anchor.event_id
+                             AND a.decision_id IS anchor.decision_id)
+                          )
+                      )
+                      AND NOT EXISTS (
+                        SELECT 1 FROM token_context_admission_attempts a
+                        WHERE a.token_id=c.token_id AND a.id>c.admission_id
+                          AND a.outcome='skipped'
+                          AND a.next_eligible_at>?
+                          AND (
+                            a.reason='token_cooldown_active'
+                            OR (
+                              a.reason IN ('global_cooldown_active','error_retry_active')
+                              AND (
+                                (c.trigger_kind='post_entry_narrative_position'
+                                 AND a.trigger_transition_id=c.trigger_transition_id)
+                                OR
+                                (c.trigger_kind<>'post_entry_narrative_position'
+                                 AND a.trigger_kind=anchor.trigger_kind
+                                 AND a.source_link_id IS anchor.source_link_id
+                                 AND a.event_id IS anchor.event_id
+                                 AND a.decision_id IS anchor.decision_id)
+                              )
+                            )
+                          )
+                      )
+                    ORDER BY c.projected_next_eligible_at,c.id
+                    LIMIT 500
+                    """,
+                    (
+                        iso(activation), iso(current), iso(current),
+                        self.ONCHAIN_PAPER_NARRATIVE_CONTEXT_VERSION,
+                        self.ONCHAIN_PAPER_NARRATIVE_RUNNER_VERSION,
+                        iso(current),
+                    ),
+                )
+            )
+        ranked: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            deferred_at = parse_time(row["deferred_at"])
+            signal_at = parse_time(row["source_link_first_observed_at"] or deferred_at)
+            expires_at = parse_time(row["expires_at"])
+            waiting_minutes = max(0.0, (current - deferred_at).total_seconds() / 60.0)
+            signal_age_minutes = max(0.0, (current - signal_at).total_seconds() / 60.0)
+            time_to_expiry_minutes = max(0.0, (expires_at - current).total_seconds() / 60.0)
+            kind = str(row["trigger_kind"])
+            base = {
+                "high_impact_account_post": 100.0,
+                "fresh_high_attention_event_relation": 90.0,
+                "post_entry_narrative_position": 85.0,
+                "high_impact_account_metadata_lead": 80.0,
+                "token_metadata_source_link": 50.0,
+            }.get(kind, float(row["trigger_priority"] or 0) * 20.0)
+            item["retry_score"] = (
+                base
+                + min(30.0, waiting_minutes / 6.0)
+                + max(0.0, 20.0 - signal_age_minutes / 9.0)
+                + (25.0 if time_to_expiry_minutes < 30.0 else 0.0)
+            )
+            item["waiting_minutes"] = waiting_minutes
+            item["signal_age_minutes"] = signal_age_minutes
+            item["time_to_expiry_minutes"] = time_to_expiry_minutes
+            ranked.append(item)
+        ranked.sort(
+            key=lambda item: (
+                float(item["retry_score"]),
+                int(item["trigger_priority"]),
+                -float(item["time_to_expiry_minutes"]),
+                -int(item["id"]),
+            ),
+            reverse=True,
+        )
+        return ranked[: max(1, min(20, int(limit)))]
+
+    @staticmethod
+    def token_context_deferred_admission_summary_from_connection(
+        connection: sqlite3.Connection, *, lookback_days: int = 90
+    ) -> dict[str, Any]:
+        empty = {
+            "status": "not_registered",
+            "version": Store.TOKEN_CONTEXT_DEFERRED_ADMISSION_VERSION,
+            "summary": {
+                "cohorts": 0, "pending": 0, "later_admitted": 0,
+                "expired_without_admission": 0,
+                "exact_trigger_lineage": 0, "source_linked": 0,
+            },
+            "items": [],
+            "mode": "forward_append_only_observation",
+            "active_retry": False,
+            "affects": "none",
+        }
+        tables = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        required = {
+            "token_context_deferred_admission_registrations",
+            "token_context_deferred_admission_cohorts",
+            "token_context_deferred_admission_results",
+        }
+        if not required.issubset(tables):
+            return empty
+        registration = connection.execute(
+            "SELECT * FROM token_context_deferred_admission_registrations WHERE version=?",
+            (Store.TOKEN_CONTEXT_DEFERRED_ADMISSION_VERSION,),
+        ).fetchone()
+        if registration is None:
+            return empty
+        start = iso(utcnow() - timedelta(days=max(1, min(3650, int(lookback_days)))))
+        rows = list(
+            connection.execute(
+                """
+                SELECT c.*,r.outcome,r.reason_code,r.followup_admission_id,r.match_kind,
+                       r.followup_attempt_count,r.last_skip_reason,r.resolved_at
+                FROM token_context_deferred_admission_cohorts c
+                LEFT JOIN token_context_deferred_admission_results r ON r.cohort_id=c.id
+                WHERE c.deferred_at>=? ORDER BY c.deferred_at DESC,c.id DESC
+                """,
+                (start,),
+            )
+        )
+        summary = dict(empty["summary"])
+        summary["cohorts"] = len(rows)
+        summary["pending"] = sum(row["outcome"] is None for row in rows)
+        for outcome in ("later_admitted", "expired_without_admission"):
+            summary[outcome] = sum(str(row["outcome"] or "") == outcome for row in rows)
+        summary["exact_trigger_lineage"] = sum(
+            str(row["lineage_status"]).startswith("exact_trigger") for row in rows
+        )
+        summary["source_linked"] = sum(row["source_link_id"] is not None for row in rows)
+        items = [
+            {
+                "id": int(row["id"]), "admission_id": int(row["admission_id"]),
+                "token_id": str(row["token_id"]),
+                "trigger_transition_id": row["trigger_transition_id"],
+                "source_link_id": row["source_link_id"],
+                "trigger_kind": str(row["trigger_kind"]),
+                "trigger_priority": int(row["trigger_priority"]),
+                "reason": str(row["reason"]), "deferred_at": str(row["deferred_at"]),
+                "projected_next_eligible_at": str(row["projected_next_eligible_at"]),
+                "expires_at": str(row["expires_at"]),
+                "lineage_status": str(row["lineage_status"]),
+                "source_link": {
+                    "fingerprint": str(row["source_link_fingerprint"]),
+                    "first_observed_at": row["source_link_first_observed_at"],
+                    "link_kind": str(row["source_link_kind"]),
+                    "provider": str(row["source_link_provider"]),
+                    "platform": str(row["source_link_platform"]),
+                    "verification_status": str(row["source_link_verification_status"]),
+                },
+                "outcome": str(row["outcome"] or "pending"),
+                "outcome_reason": str(row["reason_code"] or ""),
+                "followup_admission_id": row["followup_admission_id"],
+                "match_kind": str(row["match_kind"] or ""),
+                "followup_attempt_count": int(row["followup_attempt_count"] or 0),
+                "last_skip_reason": str(row["last_skip_reason"] or ""),
+                "resolved_at": row["resolved_at"],
+            }
+            for row in rows[:30]
+        ]
+        return {
+            "status": "observed" if rows else "registered",
+            "version": Store.TOKEN_CONTEXT_DEFERRED_ADMISSION_VERSION,
+            "registered_at": str(registration["registered_at"]),
+            "activation_admission_id": int(registration["activation_admission_id"]),
+            "activation_trigger_transition_id": int(
+                registration["activation_trigger_transition_id"]
+            ),
+            "summary": summary,
+            "items": items,
+            "mode": "forward_append_only_observation",
+            "active_retry": False,
+            "affects": "none",
+            "as_of": iso(),
+        }
+
+    @staticmethod
+    def token_context_trigger_coverage_summary_from_connection(
+        connection: sqlite3.Connection,
+    ) -> dict[str, Any]:
+        fields = {
+            "transitions": 0,
+            "episodes": 0,
+            "repeat_transitions": 0,
+            "exact_linked_transitions": 0,
+            "episodes_with_admission_attempt": 0,
+            "episodes_without_admission_attempt": 0,
+            "episodes_unadmitted_over_5m": 0,
+            "admitted_attempts": 0,
+            "skipped_attempts": 0,
+            "attempt_coverage_rate": None,
+            "oldest_unadmitted_seconds": None,
+        }
+        empty = {
+            "status": "not_registered",
+            "version": Store.TOKEN_CONTEXT_DEFERRED_ADMISSION_VERSION,
+            "summary": dict(fields),
+            "items": [],
+            "mode": "forward_read_only_existing_ledgers",
+            "decision_eligible": False,
+            "affects": "none",
+        }
+        tables = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        required = {
+            "token_context_deferred_admission_registrations",
+            "token_universe_funnel_transitions",
+            "token_context_admission_attempts",
+        }
+        if not required.issubset(tables):
+            return empty
+        registration = connection.execute(
+            "SELECT * FROM token_context_deferred_admission_registrations WHERE version=?",
+            (Store.TOKEN_CONTEXT_DEFERRED_ADMISSION_VERSION,),
+        ).fetchone()
+        if registration is None:
+            return empty
+
+        transitions = list(
+            connection.execute(
+                """
+                SELECT id,token_id,reason_code,recorded_at,source_link_id,event_id,
+                       decision_id,metadata_json
+                FROM token_universe_funnel_transitions
+                WHERE id>? AND stage='context_trigger_evaluation' AND status='eligible'
+                ORDER BY id
+                """,
+                (int(registration["activation_trigger_transition_id"]),),
+            )
+        )
+        episodes: dict[tuple[Any, ...], dict[str, Any]] = {}
+        transition_episode: dict[int, tuple[Any, ...]] = {}
+        for row in transitions:
+            try:
+                metadata = json.loads(str(row["metadata_json"] or "{}"))
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            kind = str(metadata.get("trigger_kind") or row["reason_code"] or "unknown")
+            key = (
+                str(row["token_id"]), kind, row["source_link_id"],
+                row["event_id"], row["decision_id"],
+            )
+            transition_id = int(row["id"])
+            transition_episode[transition_id] = key
+            episode = episodes.setdefault(
+                key,
+                {
+                    "trigger_kind": kind,
+                    "first_recorded_at": str(row["recorded_at"]),
+                    "transition_ids": [],
+                    "admission_attempts": [],
+                    "exact_transition_ids": set(),
+                },
+            )
+            episode["transition_ids"].append(transition_id)
+
+        admissions = list(
+            connection.execute(
+                """
+                SELECT id,token_id,evaluated_at,outcome,trigger_kind,source_link_id,
+                       event_id,decision_id,trigger_transition_id
+                FROM token_context_admission_attempts
+                WHERE id>? AND evaluated_at>=?
+                ORDER BY id
+                """,
+                (
+                    int(registration["activation_admission_id"]),
+                    str(registration["registered_at"]),
+                ),
+            )
+        )
+        for row in admissions:
+            transition_id = row["trigger_transition_id"]
+            key = transition_episode.get(int(transition_id)) if transition_id is not None else None
+            exact = key is not None
+            if key is None:
+                candidate = (
+                    str(row["token_id"]), str(row["trigger_kind"] or "unknown"),
+                    row["source_link_id"], row["event_id"], row["decision_id"],
+                )
+                if candidate in episodes:
+                    key = candidate
+            if key is None:
+                continue
+            episode = episodes[key]
+            if parse_time(row["evaluated_at"]) < parse_time(episode["first_recorded_at"]):
+                continue
+            episode["admission_attempts"].append(row)
+            if exact:
+                episode["exact_transition_ids"].add(int(transition_id))
+
+        current = utcnow()
+
+        def summarize(values: list[dict[str, Any]]) -> dict[str, Any]:
+            result = dict(fields)
+            result["transitions"] = sum(len(value["transition_ids"]) for value in values)
+            result["episodes"] = len(values)
+            result["repeat_transitions"] = result["transitions"] - result["episodes"]
+            result["exact_linked_transitions"] = sum(
+                len(value["exact_transition_ids"]) for value in values
+            )
+            result["episodes_with_admission_attempt"] = sum(
+                bool(value["admission_attempts"]) for value in values
+            )
+            result["episodes_without_admission_attempt"] = (
+                result["episodes"] - result["episodes_with_admission_attempt"]
+            )
+            result["admitted_attempts"] = sum(
+                str(row["outcome"]) == "admitted"
+                for value in values for row in value["admission_attempts"]
+            )
+            result["skipped_attempts"] = sum(
+                str(row["outcome"]) != "admitted"
+                for value in values for row in value["admission_attempts"]
+            )
+            unadmitted_ages = [
+                max(0.0, (current - parse_time(value["first_recorded_at"])).total_seconds())
+                for value in values if not value["admission_attempts"]
+            ]
+            result["episodes_unadmitted_over_5m"] = sum(
+                seconds >= 300 for seconds in unadmitted_ages
+            )
+            result["oldest_unadmitted_seconds"] = (
+                round(max(unadmitted_ages), 1) if unadmitted_ages else None
+            )
+            result["attempt_coverage_rate"] = (
+                round(result["episodes_with_admission_attempt"] / result["episodes"], 4)
+                if result["episodes"] else None
+            )
+            return result
+
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for episode in episodes.values():
+            grouped.setdefault(str(episode["trigger_kind"]), []).append(episode)
+        items = [
+            {"trigger_kind": kind, **summarize(values)}
+            for kind, values in sorted(
+                grouped.items(), key=lambda item: (-len(item[1]), item[0])
+            )
+        ]
+        return {
+            "status": "observed" if episodes else "registered",
+            "version": Store.TOKEN_CONTEXT_DEFERRED_ADMISSION_VERSION,
+            "registered_at": str(registration["registered_at"]),
+            "activation_admission_id": int(registration["activation_admission_id"]),
+            "activation_trigger_transition_id": int(
+                registration["activation_trigger_transition_id"]
+            ),
+            "summary": summarize(list(episodes.values())),
+            "items": items,
+            "mode": "forward_read_only_existing_ledgers",
+            "decision_eligible": False,
+            "affects": "none",
+            "as_of": iso(current),
+        }
+
+    @staticmethod
+    def token_context_onchain_admission_challenger_summary_from_connection(
+        connection: sqlite3.Connection,
+    ) -> dict[str, Any]:
+        version = Store.TOKEN_CONTEXT_ONCHAIN_ADMISSION_CHALLENGER_VERSION
+        empty = {
+            "status": "not_registered",
+            "version": version,
+            "summary": {
+                "onchain_trigger_transitions": 0,
+                "onchain_trigger_tokens": 0,
+                "selected_attempts": 0,
+                "admitted": 0,
+                "skipped": 0,
+                "assessment_results": 0,
+            },
+            "result_statuses": [],
+            "decision_eligible": False,
+            "affects": "none",
+        }
+        tables = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        required = {
+            "token_context_onchain_admission_challenger_registrations",
+            "token_context_admission_attempts",
+            "token_universe_funnel_transitions",
+        }
+        if not required.issubset(tables):
+            return empty
+        registration = connection.execute(
+            "SELECT * FROM token_context_onchain_admission_challenger_registrations "
+            "WHERE version=?",
+            (version,),
+        ).fetchone()
+        if registration is None:
+            return empty
+        trigger_rows = list(
+            connection.execute(
+                """
+                SELECT id,token_id FROM token_universe_funnel_transitions
+                WHERE id>? AND recorded_at>=? AND stage='context_trigger_evaluation'
+                  AND status='eligible' AND reason_code='onchain_momentum'
+                """,
+                (
+                    int(registration["activation_trigger_transition_id"]),
+                    str(registration["registered_at"]),
+                ),
+            )
+        )
+        admission_rows = list(
+            connection.execute(
+                """
+                SELECT a.id,a.outcome,t.metadata_json
+                FROM token_context_admission_attempts a
+                JOIN token_universe_funnel_transitions t ON t.admission_id=a.id
+                WHERE a.id>? AND a.evaluated_at>=? AND a.trigger_kind='onchain_momentum'
+                  AND t.stage='context_admission'
+                ORDER BY a.id
+                """,
+                (
+                    int(registration["activation_admission_id"]),
+                    str(registration["registered_at"]),
+                ),
+            )
+        )
+        selected = []
+        for row in admission_rows:
+            try:
+                metadata = json.loads(str(row["metadata_json"] or "{}"))
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            if str(metadata.get("challenger_version") or "") == version:
+                selected.append(row)
+        selected_ids = {int(row["id"]) for row in selected}
+        status_counts: dict[str, int] = {}
+        if selected_ids:
+            placeholders = ",".join("?" for _ in selected_ids)
+            for row in connection.execute(
+                f"SELECT status,COUNT(*) count FROM token_universe_funnel_transitions "
+                f"WHERE stage='agent_result' AND admission_id IN ({placeholders}) "
+                "GROUP BY status",
+                tuple(sorted(selected_ids)),
+            ):
+                status_counts[str(row["status"] or "unknown")] = int(row["count"])
+        summary = {
+            "onchain_trigger_transitions": len(trigger_rows),
+            "onchain_trigger_tokens": len({str(row["token_id"]) for row in trigger_rows}),
+            "selected_attempts": len(selected),
+            "admitted": sum(str(row["outcome"]) == "admitted" for row in selected),
+            "skipped": sum(str(row["outcome"]) != "admitted" for row in selected),
+            "assessment_results": sum(status_counts.values()),
+        }
+        return {
+            "status": "observed" if selected else "registered",
+            "version": version,
+            "registered_at": str(registration["registered_at"]),
+            "activation_admission_id": int(registration["activation_admission_id"]),
+            "activation_trigger_transition_id": int(
+                registration["activation_trigger_transition_id"]
+            ),
+            "definition": json.loads(str(registration["definition_json"])),
+            "summary": summary,
+            "result_statuses": [
+                {"status": status, "count": count}
+                for status, count in sorted(status_counts.items())
+            ],
+            "decision_eligible": False,
+            "affects": "none",
+            "as_of": iso(),
+        }
+
     def add_token_context_admission_attempt(
         self,
         token_id: str,
@@ -4115,10 +7920,11 @@ class Store:
                 INSERT INTO token_context_admission_attempts(
                     version,token_id,evaluated_at,outcome,reason,trigger_kind,
                     trigger_priority,platform,entity_id,event_id,decision_id,
+                    trigger_transition_id,source_link_id,
                     snapshot_observed_at,momentum_score,next_eligible_at,quota_day,
                     daily_call_limit,calls_used_before,daily_token_budget,
                     tokens_used_before,token_reserve_per_call
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     self.TOKEN_CONTEXT_ADMISSION_VERSION,
@@ -4132,6 +7938,10 @@ class Store:
                     str(trigger.get("entity_id") or "")[:160],
                     int(trigger["event_id"]) if trigger.get("event_id") is not None else None,
                     int(trigger["decision_id"]) if trigger.get("decision_id") is not None else None,
+                    int(trigger["transition_id"])
+                    if trigger.get("transition_id") is not None else None,
+                    int(trigger["source_link_id"])
+                    if trigger.get("source_link_id") is not None else None,
                     iso(parse_time(snapshot_observed_at)),
                     float(momentum_score),
                     iso(parse_time(next_eligible_at)) if next_eligible_at else None,
@@ -4183,6 +7993,20 @@ class Store:
         }
         if "token_context_admission_attempts" not in tables:
             return empty
+        deferred = Store.token_context_deferred_admission_summary_from_connection(
+            connection, lookback_days=lookback_days
+        )
+        empty["deferred"] = deferred
+        trigger_coverage = Store.token_context_trigger_coverage_summary_from_connection(
+            connection
+        )
+        empty["trigger_coverage"] = trigger_coverage
+        onchain_challenger = (
+            Store.token_context_onchain_admission_challenger_summary_from_connection(
+                connection
+            )
+        )
+        empty["onchain_challenger"] = onchain_challenger
         start = iso(utcnow() - timedelta(days=max(1, min(3650, int(lookback_days)))))
         rows = list(
             connection.execute(
@@ -4214,6 +8038,8 @@ class Store:
                 "entity_id": str(row["entity_id"] or ""),
                 "event_id": row["event_id"],
                 "decision_id": row["decision_id"],
+                "trigger_transition_id": row["trigger_transition_id"],
+                "source_link_id": row["source_link_id"],
                 "snapshot_observed_at": str(row["snapshot_observed_at"]),
                 "momentum_score": float(row["momentum_score"] or 0.0),
                 "next_eligible_at": row["next_eligible_at"],
@@ -4248,6 +8074,9 @@ class Store:
                 "tracking_started_at": min(str(row["evaluated_at"]) for row in rows),
             },
             "mode": "forward_append_only_observation",
+            "deferred": deferred,
+            "trigger_coverage": trigger_coverage,
+            "onchain_challenger": onchain_challenger,
             "affects": "none",
             "as_of": iso(),
         }
@@ -4929,8 +8758,273 @@ class Store:
                     """,
                     (int(exposure_id), int(link["id"]), observed, recorded),
                 )
-                inserted += int(cursor.rowcount > 0)
+                if cursor.rowcount > 0:
+                    inserted += 1
+                    exposure_link_id = int(cursor.lastrowid)
+                    self._enroll_provider_post_ambiguity_locked(exposure_link_id)
         return inserted
+
+    def register_provider_post_ambiguity_shadow(
+        self,
+        watch_accounts: Iterable[Mapping[str, Any]],
+    ) -> sqlite3.Row:
+        roster = []
+        for item in watch_accounts:
+            if not isinstance(item, Mapping) or item.get("enabled", True) is False:
+                continue
+            if str(item.get("platform") or "").strip().lower() != "x":
+                continue
+            handle = str(item.get("handle") or "").strip().casefold().lstrip("@")
+            try:
+                priority = max(1, min(5, int(item.get("priority", 3))))
+            except (TypeError, ValueError):
+                priority = 3
+            if handle and priority >= self.KOL_TOKEN_ADDRESSABILITY_MIN_PRIORITY:
+                roster.append({"handle": handle, "priority": priority})
+        roster = sorted({(row["handle"], row["priority"]) for row in roster})
+        frozen_roster = [{"handle": handle, "priority": priority} for handle, priority in roster]
+        definition = {
+            "version": self.PROVIDER_POST_AMBIGUITY_VERSION,
+            "phase": "local_only_fanout_census",
+            "activation": "exposure_source_link_id_strictly_after_registration",
+            "episode_identity": "x_snowflake_status_id",
+            "availability_clock": "token_discovery_exposure_source_links.recorded_at",
+            "membership_identity": ["status_id", "chain", "canonical_address"],
+            "post_age_window_seconds": [-300, 10_800],
+            "checkpoint_seconds": list(self.PROVIDER_POST_AMBIGUITY_CHECKPOINT_SECONDS),
+            "watch_roster": frozen_roster,
+            "watch_roster_hash": hashlib.sha256(
+                self._json(frozen_roster).encode("utf-8")
+            ).hexdigest(),
+            "eligible_roles": ["identity", "promotion"],
+            "eligible_verification_statuses": ["provider_metadata"],
+            "supported_chains": ["solana"],
+            "network_requests": False,
+            "selects_canonical": False,
+            "computes_pnl": False,
+            "append_only": True,
+            "no_historical_backfill": True,
+            "decision_eligible": False,
+            "affects": "none",
+        }
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO provider_post_ambiguity_registrations("
+                "definition_version,registered_at,activation_exposure_link_id,definition_json) "
+                "VALUES(?,?,COALESCE((SELECT MAX(id) FROM token_discovery_exposure_source_links),0),?)",
+                (self.PROVIDER_POST_AMBIGUITY_VERSION, iso(), self._json(definition)),
+            )
+            row = self.db.execute(
+                "SELECT * FROM provider_post_ambiguity_registrations WHERE definition_version=?",
+                (self.PROVIDER_POST_AMBIGUITY_VERSION,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("provider post ambiguity registration missing")
+        return row
+
+    @staticmethod
+    def _x_status_identity(value: Any) -> tuple[str, str, datetime] | None:
+        try:
+            parsed = urlparse(str(value or "").strip())
+        except Exception:
+            return None
+        host = (parsed.hostname or "").casefold().removeprefix("www.")
+        if parsed.scheme not in {"http", "https"} or host not in {"x.com", "twitter.com"}:
+            return None
+        match = re.fullmatch(r"/([^/]+)/status/(\d+)/?", parsed.path, re.I)
+        if match is None:
+            return None
+        handle, status_id = match.group(1).casefold(), match.group(2)
+        try:
+            published_ms = (int(status_id) >> 22) + 1_288_834_974_657
+            published_at = datetime.fromtimestamp(published_ms / 1000, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+        return handle, status_id, published_at
+
+    def _enroll_provider_post_ambiguity_locked(self, exposure_link_id: int) -> int | None:
+        registration = self.db.execute(
+            "SELECT * FROM provider_post_ambiguity_registrations WHERE definition_version=?",
+            (self.PROVIDER_POST_AMBIGUITY_VERSION,),
+        ).fetchone()
+        if registration is None or int(exposure_link_id) <= int(registration["activation_exposure_link_id"]):
+            return None
+        row = self.db.execute(
+            """
+            SELECT xl.id AS exposure_source_link_id,xl.exposure_id,xl.source_link_id,
+                   xl.recorded_at AS link_recorded_at,e.token_id,t.chain,t.address,
+                   l.provider,l.discovery_surface,l.role,l.verification_status,
+                   l.normalized_url,l.original_url
+            FROM token_discovery_exposure_source_links xl
+            JOIN token_discovery_exposures e ON e.id=xl.exposure_id
+            JOIN token_source_links l ON l.id=xl.source_link_id
+            LEFT JOIN tokens t ON t.token_id=e.token_id
+            WHERE xl.id=?
+            """,
+            (int(exposure_link_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        admission_key = f"{self.PROVIDER_POST_AMBIGUITY_VERSION}:{int(exposure_link_id)}"
+        evaluated_at = iso()
+        definition = self._json_object(registration["definition_json"])
+        identity = self._x_status_identity(row["normalized_url"] or row["original_url"])
+        status, reason = "skipped", "not_exact_x_status"
+        if identity is not None:
+            handle, status_id, published_at = identity
+            roster = {
+                str(item.get("handle") or "").casefold(): int(item.get("priority") or 0)
+                for item in definition.get("watch_roster", []) if isinstance(item, Mapping)
+            }
+            candidate_at = parse_time(row["link_recorded_at"])
+            lag_seconds = (candidate_at - published_at).total_seconds()
+            chain = str(row["chain"] or "").casefold()
+            address = str(row["address"] or "")
+            if handle not in roster:
+                reason = "claimed_handle_not_in_frozen_roster"
+            elif str(row["role"] or "") not in set(definition.get("eligible_roles") or []):
+                reason = "role_ineligible"
+            elif str(row["verification_status"] or "") not in set(
+                definition.get("eligible_verification_statuses") or []
+            ):
+                reason = "verification_ineligible"
+            elif lag_seconds < -300:
+                reason = "future_or_negative_clock"
+            elif lag_seconds > 10_800:
+                reason = "late_reference"
+            elif chain != "solana":
+                reason = "unsupported_chain"
+            elif self._canonical_solana_address(address) != address:
+                reason = "invalid_canonical_address"
+            else:
+                status, reason = "admitted", "eligible_provider_post_membership"
+        self.db.execute(
+            "INSERT OR IGNORE INTO provider_post_ambiguity_admissions("
+            "admission_key,definition_version,exposure_source_link_id,exposure_id,source_link_id,"
+            "token_id,status,reason,evaluated_at,decision_eligible,affects) "
+            "VALUES(?,?,?,?,?,?,?,?,?,0,'none')",
+            (
+                admission_key, self.PROVIDER_POST_AMBIGUITY_VERSION,
+                int(row["exposure_source_link_id"]), int(row["exposure_id"]),
+                int(row["source_link_id"]), str(row["token_id"]), status, reason, evaluated_at,
+            ),
+        )
+        if status != "admitted" or identity is None:
+            return None
+        handle, status_id, published_at = identity
+        candidate_at = parse_time(row["link_recorded_at"])
+        episode_key = hashlib.sha256(
+            f"{self.PROVIDER_POST_AMBIGUITY_VERSION}\n{status_id}".encode("utf-8")
+        ).hexdigest()
+        self.db.execute(
+            "INSERT OR IGNORE INTO provider_post_ambiguity_episodes("
+            "episode_key,definition_version,status_id,claimed_handle,post_published_at,t0_at,"
+            "final_maturity_at,recorded_at,decision_eligible,affects) "
+            "VALUES(?,?,?,?,?,?,?,?,0,'none')",
+            (
+                episode_key, self.PROVIDER_POST_AMBIGUITY_VERSION, status_id, handle,
+                iso(published_at), iso(candidate_at), iso(candidate_at + timedelta(seconds=10_800)),
+                evaluated_at,
+            ),
+        )
+        episode = self.db.execute(
+            "SELECT * FROM provider_post_ambiguity_episodes WHERE definition_version=? AND status_id=?",
+            (self.PROVIDER_POST_AMBIGUITY_VERSION, status_id),
+        ).fetchone()
+        if episode is None:
+            return None
+        membership_key = hashlib.sha256(
+            f"{self.PROVIDER_POST_AMBIGUITY_VERSION}\n{int(episode['id'])}\nsolana\n{row['address']}".encode("utf-8")
+        ).hexdigest()
+        cursor = self.db.execute(
+            "INSERT OR IGNORE INTO provider_post_ambiguity_memberships("
+            "membership_key,definition_version,episode_id,exposure_source_link_id,exposure_id,"
+            "source_link_id,token_id,chain,address,provider,discovery_surface,role,verification_status,"
+            "candidate_recorded_at,arrival_lag_ms,recorded_at,decision_eligible,affects) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'none')",
+            (
+                membership_key, self.PROVIDER_POST_AMBIGUITY_VERSION, int(episode["id"]),
+                int(row["exposure_source_link_id"]), int(row["exposure_id"]), int(row["source_link_id"]),
+                str(row["token_id"]), "solana", str(row["address"]), str(row["provider"]),
+                str(row["discovery_surface"]), str(row["role"]), str(row["verification_status"]),
+                iso(candidate_at), round((candidate_at - parse_time(episode["t0_at"])).total_seconds() * 1000),
+                evaluated_at,
+            ),
+        )
+        return int(cursor.lastrowid) if cursor.rowcount > 0 else None
+
+    def finalize_provider_post_ambiguity_checkpoints(
+        self,
+        *,
+        now: Any = None,
+        limit: int = 12,
+    ) -> dict[str, int]:
+        evaluated_at = parse_time(now or utcnow())
+        finalized = 0
+        episodes_checked = 0
+        with self._lock, self.db:
+            episodes = list(
+                self.db.execute(
+                    """
+                    SELECT e.* FROM provider_post_ambiguity_episodes e
+                    WHERE e.definition_version=? AND EXISTS (
+                        SELECT 1 FROM provider_post_ambiguity_memberships m WHERE m.episode_id=e.id
+                    ) AND EXISTS (
+                        SELECT 1 FROM json_each(?) offsets
+                        WHERE datetime(e.t0_at,'+' || offsets.value || ' seconds')<=datetime(?)
+                          AND NOT EXISTS (
+                              SELECT 1 FROM provider_post_ambiguity_checkpoints c
+                              WHERE c.episode_id=e.id AND c.offset_seconds=offsets.value
+                          )
+                    )
+                    ORDER BY e.id LIMIT ?
+                    """,
+                    (
+                        self.PROVIDER_POST_AMBIGUITY_VERSION,
+                        self._json(list(self.PROVIDER_POST_AMBIGUITY_CHECKPOINT_SECONDS)),
+                        iso(evaluated_at), max(1, min(100, int(limit))),
+                    ),
+                )
+            )
+            for episode in episodes:
+                episodes_checked += 1
+                t0 = parse_time(episode["t0_at"])
+                for offset in self.PROVIDER_POST_AMBIGUITY_CHECKPOINT_SECONDS:
+                    target = t0 + timedelta(seconds=offset)
+                    if target > evaluated_at:
+                        continue
+                    exists = self.db.execute(
+                        "SELECT 1 FROM provider_post_ambiguity_checkpoints "
+                        "WHERE episode_id=? AND offset_seconds=?",
+                        (int(episode["id"]), int(offset)),
+                    ).fetchone()
+                    if exists is not None:
+                        continue
+                    members = [
+                        f"{row['chain']}:{row['address']}"
+                        for row in self.db.execute(
+                            "SELECT chain,address FROM provider_post_ambiguity_memberships "
+                            "WHERE episode_id=? AND candidate_recorded_at<=? ORDER BY chain,address",
+                            (int(episode["id"]), iso(target)),
+                        )
+                    ]
+                    stable = self._json(members)
+                    checkpoint_key = hashlib.sha256(
+                        f"{self.PROVIDER_POST_AMBIGUITY_VERSION}\n{int(episode['id'])}\n{offset}".encode("utf-8")
+                    ).hexdigest()
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO provider_post_ambiguity_checkpoints("
+                        "checkpoint_key,definition_version,episode_id,offset_seconds,target_at,status,"
+                        "member_count,members_json,set_hash,finalized_at,decision_eligible,affects) "
+                        "VALUES(?,?,?,?,?,'mature',?,?,?,?,0,'none')",
+                        (
+                            checkpoint_key, self.PROVIDER_POST_AMBIGUITY_VERSION, int(episode["id"]),
+                            int(offset), iso(target), len(members), stable,
+                            hashlib.sha256(stable.encode("utf-8")).hexdigest(), iso(evaluated_at),
+                        ),
+                    )
+                    finalized += 1
+        return {"episodes_checked": episodes_checked, "checkpoints_finalized": finalized}
 
     def upsert_token_source_link(self, link: Mapping[str, Any], *, observed_at=None) -> tuple[str, bool]:
         with self._lock, self.db:
@@ -5272,7 +9366,356 @@ class Store:
                     None if snap.sellable is None else int(snap.sellable), self._json(snap.raw),
                 ),
             )
+            snapshot_id = int(cursor.lastrowid)
+            self._observe_liquidity_survival_snapshot_locked(
+                snapshot_id,
+                snap,
+                ingested_at=ingested_at,
+                recorded_at=recorded_at,
+            )
+            return snapshot_id
+
+    @classmethod
+    def _liquidity_survival_definition(cls) -> dict[str, Any]:
+        return {
+            "append_only": True,
+            "no_historical_backfill": True,
+            "admission": "first_post_registration_exact_pair_snapshot_at_or_above_fixed_liquidity",
+            "baseline_liquidity_usd": cls.LIQUIDITY_SURVIVAL_BASELINE_USD,
+            "horizons_minutes": list(cls.LIQUIDITY_SURVIVAL_HORIZONS_MINUTES),
+            "target_grace_seconds": cls.LIQUIDITY_SURVIVAL_TARGET_GRACE_SECONDS,
+            "pair_identity": "chain+dex_id+pair_address",
+            "excluded_surface_types": ["bonding_curve"],
+            "liquidity_drop_without_onchain_lp_evidence": "liquidity_collapse_unclassified",
+            "decision_effect": "none",
+        }
+
+    @staticmethod
+    def _snapshot_pair_fields(snap: TokenSnapshot) -> dict[str, Any] | None:
+        raw = snap.raw if isinstance(snap.raw, dict) else {}
+        pair = raw.get("pair") if isinstance(raw.get("pair"), dict) else None
+        if pair is None:
+            return None
+        dex_id = str(pair.get("dexId") or "").strip().lower()
+        if dex_id == "pump-amm":
+            dex_id = "pumpswap"
+        pair_address = str(pair.get("pairAddress") or "").strip()
+        if not dex_id or not pair_address:
+            return None
+        liquidity = pair.get("liquidity") if isinstance(pair.get("liquidity"), dict) else {}
+
+        def number(value: Any) -> float | None:
+            if value is None or value == "":
+                return None
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        return {
+            "dex_id": dex_id,
+            "pair_address": pair_address,
+            "base_reserve": number(liquidity.get("base")),
+            "quote_reserve": number(liquidity.get("quote")),
+        }
+
+    def _observe_liquidity_survival_snapshot_locked(
+        self,
+        snapshot_id: int,
+        snap: TokenSnapshot,
+        *,
+        ingested_at: datetime,
+        recorded_at: datetime,
+    ) -> None:
+        if not self.LIQUIDITY_SURVIVAL_ENABLED:
+            return
+        pair = self._snapshot_pair_fields(snap)
+        if pair is None:
+            return
+        observed = parse_time(snap.observed_at)
+        ingested = parse_time(ingested_at)
+        recorded = parse_time(recorded_at)
+        if observed > ingested or ingested > recorded:
+            return
+        registration = self.db.execute(
+            "SELECT * FROM liquidity_survival_registrations WHERE definition_version=?",
+            (self.LIQUIDITY_SURVIVAL_VERSION,),
+        ).fetchone()
+        if registration is None or snapshot_id <= int(registration["activation_snapshot_id"]):
+            return
+        if recorded < parse_time(registration["registered_at"]):
+            return
+        surface = self.db.execute(
+            """
+            SELECT * FROM token_market_surfaces
+            WHERE definition_version=? AND chain=? AND dex_id=? AND pair_address=?
+            ORDER BY source_observed_at DESC,id DESC LIMIT 1
+            """,
+            (
+                self.TOKEN_MARKET_SURFACE_VERSION,
+                snap.chain.lower(),
+                pair["dex_id"],
+                pair["pair_address"],
+            ),
+        ).fetchone()
+        if surface is None or str(surface["surface_type"]) == "bonding_curve":
+            return
+        cohort = self.db.execute(
+            """
+            SELECT * FROM liquidity_survival_cohorts
+            WHERE definition_version=? AND chain=? AND dex_id=? AND pair_address=?
+            """,
+            (
+                self.LIQUIDITY_SURVIVAL_VERSION,
+                snap.chain.lower(),
+                pair["dex_id"],
+                pair["pair_address"],
+            ),
+        ).fetchone()
+        if cohort is not None:
+            targets = list(
+                self.db.execute(
+                    """
+                    SELECT t.* FROM liquidity_survival_targets t
+                    LEFT JOIN liquidity_survival_outcomes o ON o.target_id=t.id
+                    WHERE t.cohort_id=? AND o.id IS NULL
+                    ORDER BY t.horizon_minutes
+                    """,
+                    (int(cohort["id"]),),
+                )
+            )
+            for target in targets:
+                target_at = parse_time(target["target_at"])
+                deadline_at = parse_time(target["deadline_at"])
+                if observed < target_at or recorded > deadline_at:
+                    continue
+                liquidity = float(snap.liquidity_usd) if snap.liquidity_usd is not None else None
+                ratio = (
+                    liquidity / float(cohort["baseline_liquidity_usd"])
+                    if liquidity is not None and float(cohort["baseline_liquidity_usd"]) > 0
+                    else None
+                )
+                failure_mode = (
+                    "liquidity_collapse_unclassified"
+                    if ratio is not None and ratio <= 0.10
+                    else "survived"
+                )
+                self.db.execute(
+                    """
+                    INSERT OR IGNORE INTO liquidity_survival_outcomes(
+                        definition_version,target_id,cohort_id,horizon_minutes,target_at,
+                        status,failure_mode,reason,outcome_snapshot_id,observed_at,ingested_at,
+                        liquidity_usd,liquidity_ratio,price_usd,base_reserve,quote_reserve,
+                        volume_5m_usd,buys_5m,sells_5m,provider,recorded_at
+                    ) VALUES(?,?,?,?,?,'observed',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        self.LIQUIDITY_SURVIVAL_VERSION,
+                        int(target["id"]),
+                        int(cohort["id"]),
+                        int(target["horizon_minutes"]),
+                        str(target["target_at"]),
+                        failure_mode,
+                        "same_pair_first_valid_post_target_snapshot",
+                        snapshot_id,
+                        iso(observed),
+                        iso(ingested),
+                        liquidity,
+                        ratio,
+                        snap.price_usd,
+                        pair["base_reserve"],
+                        pair["quote_reserve"],
+                        snap.volume_5m_usd,
+                        snap.buys_5m,
+                        snap.sells_5m,
+                        snap.provider,
+                        iso(recorded),
+                    ),
+                )
+            return
+        if snap.liquidity_usd is None or float(snap.liquidity_usd) < self.LIQUIDITY_SURVIVAL_BASELINE_USD:
+            return
+        cursor = self.db.execute(
+            """
+            INSERT OR IGNORE INTO liquidity_survival_cohorts(
+                definition_version,token_id,chain,dex_id,pair_address,market_surface_id,
+                market_surface_version,surface_type,canonical_status,liquidity_control,
+                baseline_snapshot_id,baseline_observed_at,baseline_ingested_at,
+                baseline_recorded_at,baseline_liquidity_usd,baseline_price_usd,
+                baseline_base_reserve,baseline_quote_reserve,baseline_volume_5m_usd,
+                baseline_buys_5m,baseline_sells_5m,provider,recorded_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                self.LIQUIDITY_SURVIVAL_VERSION,
+                f"{snap.chain.lower()}:{snap.address}",
+                snap.chain.lower(),
+                pair["dex_id"],
+                pair["pair_address"],
+                int(surface["id"]),
+                str(surface["definition_version"]),
+                str(surface["surface_type"]),
+                str(surface["canonical_status"]),
+                str(surface["liquidity_control"]),
+                snapshot_id,
+                iso(observed),
+                iso(ingested),
+                iso(recorded),
+                float(snap.liquidity_usd),
+                snap.price_usd,
+                pair["base_reserve"],
+                pair["quote_reserve"],
+                snap.volume_5m_usd,
+                snap.buys_5m,
+                snap.sells_5m,
+                snap.provider,
+                iso(recorded),
+            ),
+        )
+        if cursor.rowcount != 1:
+            return
+        cohort_id = int(cursor.lastrowid)
+        for horizon in self.LIQUIDITY_SURVIVAL_HORIZONS_MINUTES:
+            target_at = observed + timedelta(minutes=horizon)
+            self.db.execute(
+                """
+                INSERT INTO liquidity_survival_targets(
+                    definition_version,cohort_id,horizon_minutes,target_at,deadline_at,registered_at
+                ) VALUES(?,?,?,?,?,?)
+                """,
+                (
+                    self.LIQUIDITY_SURVIVAL_VERSION,
+                    cohort_id,
+                    horizon,
+                    iso(target_at),
+                    iso(target_at + timedelta(seconds=self.LIQUIDITY_SURVIVAL_TARGET_GRACE_SECONDS)),
+                    iso(recorded),
+                ),
+            )
+
+    def due_liquidity_survival_targets(self, *, now: Any = None, limit: int = 4) -> list[dict[str, Any]]:
+        current = parse_time(now or utcnow())
+        retry_before = current - timedelta(seconds=self.LIQUIDITY_SURVIVAL_RETRY_SECONDS)
+        with self._lock:
+            rows = list(
+                self.db.execute(
+                    """
+                    SELECT t.*,c.token_id,c.chain,c.dex_id,c.pair_address
+                    FROM liquidity_survival_targets t
+                    JOIN liquidity_survival_cohorts c ON c.id=t.cohort_id
+                    LEFT JOIN liquidity_survival_outcomes o ON o.target_id=t.id
+                    WHERE t.definition_version=? AND o.id IS NULL
+                      AND t.target_at<=? AND t.deadline_at>=?
+                      AND COALESCE((SELECT MAX(a.recorded_at) FROM liquidity_survival_attempts a
+                                    WHERE a.target_id=t.id),'')<=?
+                    ORDER BY t.target_at,t.id LIMIT ?
+                    """,
+                    (
+                        self.LIQUIDITY_SURVIVAL_VERSION,
+                        iso(current), iso(current), iso(retry_before), max(1, int(limit)),
+                    ),
+                )
+            )
+        return [dict(row) for row in rows]
+
+    def record_liquidity_survival_attempt(
+        self,
+        target_id: int,
+        *,
+        requested_at: Any,
+        completed_at: Any,
+        status: str,
+        reason: str,
+        observed_pair_address: str = "",
+    ) -> int:
+        with self._lock, self.db:
+            target = self.db.execute(
+                "SELECT definition_version FROM liquidity_survival_targets WHERE id=?",
+                (int(target_id),),
+            ).fetchone()
+            if target is None or str(target["definition_version"]) != self.LIQUIDITY_SURVIVAL_VERSION:
+                raise ValueError("liquidity survival target version mismatch")
+            cursor = self.db.execute(
+                """
+                INSERT INTO liquidity_survival_attempts(
+                    definition_version,target_id,requested_at,completed_at,status,reason,
+                    observed_pair_address,recorded_at
+                ) VALUES(?,?,?,?,?,?,?,?)
+                """,
+                (
+                    self.LIQUIDITY_SURVIVAL_VERSION,
+                    int(target_id),
+                    iso(parse_time(requested_at)),
+                    iso(parse_time(completed_at)),
+                    str(status)[:80],
+                    str(reason)[:500],
+                    str(observed_pair_address)[:300],
+                    iso(),
+                ),
+            )
             return int(cursor.lastrowid)
+
+    def finalize_liquidity_survival_deadlines(self, *, now: Any = None) -> int:
+        current = parse_time(now or utcnow())
+        inserted = 0
+        with self._lock, self.db:
+            targets = list(
+                self.db.execute(
+                    """
+                    SELECT t.* FROM liquidity_survival_targets t
+                    LEFT JOIN liquidity_survival_outcomes o ON o.target_id=t.id
+                    WHERE t.definition_version=? AND o.id IS NULL AND t.deadline_at<?
+                    ORDER BY t.deadline_at,t.id
+                    """,
+                    (self.LIQUIDITY_SURVIVAL_VERSION, iso(current)),
+                )
+            )
+            for target in targets:
+                statuses = [
+                    str(row["status"])
+                    for row in self.db.execute(
+                        "SELECT status FROM liquidity_survival_attempts WHERE target_id=? ORDER BY id",
+                        (int(target["id"]),),
+                    )
+                ]
+                if any(status in {"no_pair", "pair_mismatch"} for status in statuses):
+                    status, failure_mode, reason = (
+                        "provider_unobservable",
+                        "provider_unobservable",
+                        "exact_baseline_pair_not_returned",
+                    )
+                elif any(status in {"error", "timeout"} for status in statuses):
+                    status, failure_mode, reason = "error", "missing/error", "provider_attempt_error"
+                elif statuses:
+                    status, failure_mode, reason = (
+                        "error",
+                        "missing/error",
+                        "observed_snapshot_not_accepted",
+                    )
+                else:
+                    status, failure_mode, reason = "missing", "missing/error", "scheduler_missed_deadline"
+                cursor = self.db.execute(
+                    """
+                    INSERT OR IGNORE INTO liquidity_survival_outcomes(
+                        definition_version,target_id,cohort_id,horizon_minutes,target_at,
+                        status,failure_mode,reason,provider,recorded_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        self.LIQUIDITY_SURVIVAL_VERSION,
+                        int(target["id"]),
+                        int(target["cohort_id"]),
+                        int(target["horizon_minutes"]),
+                        str(target["target_at"]),
+                        status,
+                        failure_mode,
+                        reason,
+                        "dexscreener",
+                        iso(current),
+                    ),
+                )
+                inserted += int(cursor.rowcount == 1)
+        return inserted
 
     def latest_snapshot(self, token_id: str, *, at_or_before: Any = None) -> TokenSnapshot | None:
         cutoff = iso(parse_time(at_or_before)) if at_or_before is not None else iso()
@@ -5296,20 +9739,88 @@ class Store:
             provider=row["provider"], raw=json.loads(row["raw_json"]),
         )
 
+    def post_entry_context_snapshot(
+        self,
+        token_id: str,
+        *,
+        opened_at: Any,
+        at_or_before: Any = None,
+        snapshot_id: int | None = None,
+        entry_snapshot_id: int | None = None,
+    ) -> tuple[int, TokenSnapshot] | None:
+        """Return a post-entry snapshot, or the exact snapshot available at entry."""
+        opened = iso(parse_time(opened_at))
+        cutoff = iso(parse_time(at_or_before or utcnow()))
+        exact = " AND id=?" if snapshot_id is not None else ""
+        params: list[Any] = [str(token_id), opened, cutoff, cutoff]
+        if snapshot_id is not None:
+            params.append(int(snapshot_id))
+        row = self.db.execute(
+            f"""
+            SELECT * FROM token_snapshots
+            WHERE token_id=? AND observed_at>=? AND observed_at<=?
+              AND ingested_at IS NOT NULL AND recorded_at IS NOT NULL
+              AND observed_at<=ingested_at AND ingested_at<=recorded_at
+              AND recorded_at<=?{exact}
+            ORDER BY recorded_at DESC,id DESC LIMIT 1
+            """,
+            params,
+        ).fetchone()
+        if row is None and snapshot_id is None and entry_snapshot_id is not None:
+            row = self.db.execute(
+                """
+                SELECT * FROM token_snapshots
+                WHERE id=? AND token_id=?
+                  AND ingested_at IS NOT NULL AND recorded_at IS NOT NULL
+                  AND observed_at<=ingested_at AND ingested_at<=recorded_at
+                  AND recorded_at<=? AND recorded_at<=?
+                LIMIT 1
+                """,
+                (int(entry_snapshot_id), str(token_id), opened, cutoff),
+            ).fetchone()
+        if row is None:
+            return None
+        chain, address = str(token_id).split(":", 1)
+        snapshot = TokenSnapshot(
+            chain=chain, address=address, price_usd=row["price_usd"],
+            liquidity_usd=row["liquidity_usd"], market_cap_usd=row["market_cap_usd"],
+            volume_5m_usd=row["volume_5m_usd"], buys_5m=row["buys_5m"],
+            sells_5m=row["sells_5m"], buyers_5m=row["buyers_5m"], holders=row["holders"],
+            buy_tax_pct=row["buy_tax_pct"], sell_tax_pct=row["sell_tax_pct"],
+            honeypot=None if row["honeypot"] is None else bool(row["honeypot"]),
+            sellable=None if row["sellable"] is None else bool(row["sellable"]),
+            observed_at=parse_time(row["observed_at"]),
+            ingested_at=parse_time(row["ingested_at"]), provider=row["provider"],
+            raw=json.loads(row["raw_json"]),
+        )
+        return int(row["id"]), snapshot
+
     def add_decision(self, decision: CandidateDecision) -> int:
         with self._lock, self.db:
             cur = self.db.execute(
                 """
                 INSERT INTO decisions(event_id,token_id,action,score,match_score,canonical_margin,reasons_json,
-                    rejected_reasons_json,position_usd,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)
+                    rejected_reasons_json,position_usd,created_at,route_probe_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     decision.event_id, decision.token_id, decision.action, decision.score, decision.match_score,
                     decision.canonical_margin, self._json(decision.reasons), self._json(decision.rejected_reasons),
-                    decision.position_usd, iso(decision.created_at),
+                    decision.position_usd, iso(decision.created_at), decision.route_probe_id,
                 ),
             )
             decision_id = int(cur.lastrowid)
+            if decision.route_probe_id is not None:
+                linked = self.db.execute(
+                    "UPDATE event_context_jupiter_route_probes SET decision_id=?,updated_at=? "
+                    "WHERE id=? AND event_id=? AND token_id=? AND status='valid' "
+                    "AND decision_eligible=1 AND decision_id IS NULL",
+                    (
+                        decision_id, iso(), int(decision.route_probe_id),
+                        int(decision.event_id), str(decision.token_id),
+                    ),
+                )
+                if linked.rowcount != 1:
+                    raise ValueError("event-context Jupiter route probe cannot bind to decision")
             if decision.token_id:
                 self.record_token_universe_funnel_transition(
                     decision.token_id,
@@ -5338,6 +9849,399 @@ class Store:
                 )
             return decision_id
 
+    def start_event_context_jupiter_route_probe(
+        self,
+        *,
+        event_id: int,
+        token_id: str,
+        source_snapshot_id: int,
+        anchor_at: Any,
+        input_notional_usd: float,
+        buy_input_amount_raw: int,
+        slippage_bps: int,
+        max_total_delay_seconds: float,
+    ) -> int:
+        anchor = parse_time(anchor_at)
+        started_at = utcnow()
+        with self._lock, self.db:
+            snapshot = self.db.execute(
+                "SELECT token_id,observed_at,ingested_at,recorded_at FROM token_snapshots WHERE id=?",
+                (int(source_snapshot_id),),
+            ).fetchone()
+            if snapshot is None or str(snapshot["token_id"]) != str(token_id):
+                raise ValueError("route probe snapshot token mismatch")
+            observed = parse_time(snapshot["observed_at"])
+            ingested = parse_time(snapshot["ingested_at"])
+            recorded = parse_time(snapshot["recorded_at"])
+            if not (observed <= ingested <= recorded <= anchor <= started_at):
+                raise ValueError("route probe snapshot time invalid")
+            cursor = self.db.execute(
+                """
+                INSERT INTO event_context_jupiter_route_probes(
+                    definition_version,event_id,token_id,source_snapshot_id,status,anchor_at,
+                    started_at,input_notional_usd,buy_input_amount_raw,slippage_bps,
+                    max_total_delay_seconds,recorded_at,updated_at
+                ) VALUES(?,?,?,?,'pending',?,?,?,?,?,?,?,?)
+                """,
+                (
+                    self.EVENT_CONTEXT_JUPITER_ROUTE_VERSION, int(event_id), str(token_id),
+                    int(source_snapshot_id), iso(anchor), iso(started_at),
+                    float(input_notional_usd), str(int(buy_input_amount_raw)), int(slippage_bps),
+                    float(max_total_delay_seconds), iso(started_at), iso(started_at),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def recover_interrupted_event_context_route_probes(self, *, now: Any = None) -> int:
+        current = parse_time(now or utcnow())
+        recovered = 0
+        with self._lock, self.db:
+            rows = list(self.db.execute(
+                "SELECT id,started_at,max_total_delay_seconds "
+                "FROM event_context_jupiter_route_probes WHERE status='pending'"
+            ))
+            for row in rows:
+                expires = parse_time(row["started_at"]) + timedelta(
+                    seconds=float(row["max_total_delay_seconds"])
+                )
+                if expires >= current:
+                    continue
+                cursor = self.db.execute(
+                    "UPDATE event_context_jupiter_route_probes SET status='stale',"
+                    "reason='interrupted_or_expired',updated_at=? WHERE id=? AND status='pending'",
+                    (iso(current), int(row["id"])),
+                )
+                recovered += int(cursor.rowcount)
+        return recovered
+
+    def finish_event_context_jupiter_route_probe(
+        self,
+        probe_id: int,
+        *,
+        status: str,
+        reason: str = "",
+        buy_quote: Mapping[str, Any] | None = None,
+        sell_quote: Mapping[str, Any] | None = None,
+        round_trip_min_return: float | None = None,
+        decision_eligible: bool = False,
+    ) -> None:
+        allowed = {"valid", "no_route", "error", "invalid", "stale", "poor_roundtrip"}
+        if status not in allowed:
+            raise ValueError("invalid event-context Jupiter route status")
+        buy = dict(buy_quote or {})
+        sell = dict(sell_quote or {})
+        now = utcnow()
+        with self._lock, self.db:
+            cursor = self.db.execute(
+                """
+                UPDATE event_context_jupiter_route_probes SET
+                    status=?,reason=?,buy_requested_at=?,buy_completed_at=?,sell_requested_at=?,
+                    sell_completed_at=?,buy_output_amount_raw=?,buy_min_output_amount_raw=?,
+                    sell_input_amount_raw=?,sell_output_amount_raw=?,sell_min_output_amount_raw=?,
+                    round_trip_min_return=?,buy_quote_json=?,sell_quote_json=?,decision_eligible=?,
+                    updated_at=?
+                WHERE id=? AND status='pending'
+                """,
+                (
+                    status, str(reason)[:240], buy.get("requested_at"), buy.get("completed_at"),
+                    sell.get("requested_at"), sell.get("completed_at"),
+                    buy.get("out_amount") or buy.get("output_amount_raw"),
+                    buy.get("other_amount_threshold"), sell.get("in_amount"),
+                    sell.get("out_amount") or sell.get("output_amount_raw"),
+                    sell.get("other_amount_threshold"), round_trip_min_return,
+                    self._bounded_json(buy), self._bounded_json(sell),
+                    int(bool(decision_eligible)), iso(now), int(probe_id),
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("event-context Jupiter route probe is not pending")
+
+    def event_context_jupiter_route_probe(self, probe_id: int) -> sqlite3.Row | None:
+        return self.db.execute(
+            "SELECT * FROM event_context_jupiter_route_probes WHERE id=?", (int(probe_id),)
+        ).fetchone()
+
+    def register_event_route_execution_challenger(self) -> sqlite3.Row:
+        definition = {
+            "version": self.EVENT_ROUTE_EXECUTION_CHALLENGER_VERSION,
+            "scope": "future_route_backed_event_decisions_after_registration",
+            "phase": "exact_final_size_buy_and_immediate_sell_preflight",
+            "capacity_probe_is_not_fill": True,
+            "buy_quantity_authority": "jupiter_other_amount_threshold_raw",
+            "route_costs_and_slippage": "included_in_jupiter_minimum_output",
+            "network_fee": "strict_cost_complete_required_before_any_fill_or_pnl",
+            "paper_effect": "no_fill_research_only",
+            "no_historical_backfill": True,
+            "decision_eligible": False,
+            "affects": "none",
+            "simulated": True,
+            "live_execution": False,
+        }
+        with self._lock, self.db:
+            self.db.execute(
+                """
+                INSERT OR IGNORE INTO event_route_execution_challenger_registrations(
+                    definition_version,registered_at,activation_decision_id,
+                    activation_route_probe_id,definition_json
+                ) VALUES(?, ?, COALESCE((SELECT MAX(id) FROM decisions),0),
+                    COALESCE((SELECT MAX(id) FROM event_context_jupiter_route_probes),0), ?)
+                """,
+                (
+                    self.EVENT_ROUTE_EXECUTION_CHALLENGER_VERSION,
+                    iso(),
+                    self._json(definition),
+                ),
+            )
+            return self.db.execute(
+                "SELECT * FROM event_route_execution_challenger_registrations "
+                "WHERE definition_version=?",
+                (self.EVENT_ROUTE_EXECUTION_CHALLENGER_VERSION,),
+            ).fetchone()
+
+    def start_event_route_execution_challenger_attempt(
+        self,
+        *,
+        decision_id: int,
+        event_id: int,
+        token_id: str,
+        capacity_probe_id: int,
+        baseline_snapshot_id: int | None,
+        intended_notional_usd: float,
+        buy_input_amount_raw: int,
+        slippage_bps: int,
+        max_total_delay_seconds: float,
+        baseline_quote_price: float | None,
+        baseline_execution_price: float | None,
+        baseline_fee_bps: float | None,
+        baseline_buy_tax_pct: float | None,
+        baseline_sell_tax_pct: float | None,
+        frozen_at: Any = None,
+    ) -> int | None:
+        frozen = parse_time(frozen_at or utcnow())
+        version = self.EVENT_ROUTE_EXECUTION_CHALLENGER_VERSION
+        if intended_notional_usd <= 0 or int(buy_input_amount_raw) <= 0:
+            raise ValueError("challenger notional and raw input must be positive")
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT * FROM event_route_execution_challenger_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if registration is None:
+                return None
+            decision = self.db.execute(
+                "SELECT * FROM decisions WHERE id=?", (int(decision_id),)
+            ).fetchone()
+            probe = self.db.execute(
+                "SELECT * FROM event_context_jupiter_route_probes WHERE id=?",
+                (int(capacity_probe_id),),
+            ).fetchone()
+            if decision is None or probe is None:
+                return None
+            if (
+                int(decision_id) <= int(registration["activation_decision_id"])
+                or int(capacity_probe_id) <= int(registration["activation_route_probe_id"])
+                or int(decision["event_id"]) != int(event_id)
+                or str(decision["token_id"]) != str(token_id)
+                or int(decision["route_probe_id"] or 0) != int(capacity_probe_id)
+                or str(decision["action"]) != "WAIT"
+                or "route_backed_paper_execution_not_implemented"
+                not in set(self._json_list(decision["rejected_reasons_json"]))
+                or str(probe["status"]) != "valid"
+                or int(probe["decision_eligible"]) != 1
+                or int(probe["decision_id"] or 0) != int(decision_id)
+                or int(probe["event_id"]) != int(event_id)
+                or str(probe["token_id"]) != str(token_id)
+                or int(buy_input_amount_raw) > int(probe["buy_input_amount_raw"])
+            ):
+                return None
+            source_snapshot_id = int(probe["source_snapshot_id"])
+            source_snapshot = self.db.execute(
+                "SELECT observed_at,ingested_at,recorded_at FROM token_snapshots WHERE id=?",
+                (source_snapshot_id,),
+            ).fetchone()
+            if source_snapshot is None:
+                return None
+            source_times = [
+                parse_time(source_snapshot["observed_at"]),
+                parse_time(source_snapshot["ingested_at"]),
+                parse_time(source_snapshot["recorded_at"]),
+            ]
+            decision_at = parse_time(decision["created_at"])
+            if not (source_times[0] <= source_times[1] <= source_times[2] <= decision_at <= frozen):
+                return None
+            if baseline_snapshot_id is not None:
+                baseline = self.db.execute(
+                    "SELECT token_id,observed_at,ingested_at,recorded_at FROM token_snapshots WHERE id=?",
+                    (int(baseline_snapshot_id),),
+                ).fetchone()
+                if baseline is None or str(baseline["token_id"]) != str(token_id):
+                    return None
+                baseline_times = [
+                    parse_time(baseline["observed_at"]),
+                    parse_time(baseline["ingested_at"]),
+                    parse_time(baseline["recorded_at"]),
+                ]
+                if not (
+                    baseline_times[0] <= baseline_times[1] <= baseline_times[2] <= frozen
+                ):
+                    return None
+            existing = self.db.execute(
+                "SELECT id FROM event_route_execution_challenger_attempts WHERE decision_id=?",
+                (int(decision_id),),
+            ).fetchone()
+            if existing is not None:
+                return None
+            now = utcnow()
+            cursor = self.db.execute(
+                """
+                INSERT INTO event_route_execution_challenger_attempts(
+                    definition_version,decision_id,event_id,token_id,capacity_probe_id,
+                    source_snapshot_id,baseline_snapshot_id,quote_terminal_status,
+                    validity_status,economic_status,paper_effect,reason,frozen_at,started_at,
+                    intended_notional_usd,buy_input_amount_raw,slippage_bps,
+                    max_total_delay_seconds,baseline_quote_price,baseline_execution_price,
+                    baseline_fee_bps,baseline_buy_tax_pct,baseline_sell_tax_pct,
+                    recorded_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,'pending','pending','pending','pending','',?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    version, int(decision_id), int(event_id), str(token_id),
+                    int(capacity_probe_id), source_snapshot_id,
+                    int(baseline_snapshot_id) if baseline_snapshot_id is not None else None,
+                    iso(frozen), iso(now), float(intended_notional_usd),
+                    str(int(buy_input_amount_raw)), int(slippage_bps),
+                    float(max_total_delay_seconds), baseline_quote_price,
+                    baseline_execution_price, baseline_fee_bps, baseline_buy_tax_pct,
+                    baseline_sell_tax_pct, iso(now), iso(now),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def finish_event_route_execution_challenger_attempt(
+        self,
+        attempt_id: int,
+        *,
+        quote_terminal_status: str,
+        validity_status: str,
+        economic_status: str,
+        reason: str,
+        buy_quote: Mapping[str, Any] | None = None,
+        sell_quote: Mapping[str, Any] | None = None,
+        round_trip_min_return: float | None = None,
+        route_only_cost_usd: float | None = None,
+        fee_completeness_status: str = "not_evaluated",
+        network_fee_basis: str = "",
+    ) -> None:
+        terminals = {"quoted", "no_route", "error", "protocol_invalid", "interrupted"}
+        validities = {"valid", "invalid", "expired", "mismatched"}
+        economics = {"cost_unknown", "quoted_but_uneconomic", "economic", "not_applicable"}
+        if quote_terminal_status not in terminals:
+            raise ValueError("invalid challenger quote terminal status")
+        if validity_status not in validities or economic_status not in economics:
+            raise ValueError("invalid challenger validity/economic status")
+        buy = dict(buy_quote or {})
+        sell = dict(sell_quote or {})
+        now = utcnow()
+        with self._lock, self.db:
+            cursor = self.db.execute(
+                """
+                UPDATE event_route_execution_challenger_attempts SET
+                    quote_terminal_status=?,validity_status=?,economic_status=?,
+                    paper_effect='no_fill_research_only',reason=?,
+                    buy_requested_at=?,buy_completed_at=?,sell_requested_at=?,
+                    sell_completed_at=?,buy_output_amount_raw=?,buy_min_output_amount_raw=?,
+                    sell_input_amount_raw=?,sell_output_amount_raw=?,
+                    sell_min_output_amount_raw=?,round_trip_min_return=?,route_only_cost_usd=?,
+                    fee_completeness_status=?,network_fee_basis=?,buy_quote_json=?,
+                    sell_quote_json=?,updated_at=?
+                WHERE id=? AND quote_terminal_status='pending'
+                """,
+                (
+                    quote_terminal_status, validity_status, economic_status,
+                    str(reason)[:240], buy.get("requested_at"), buy.get("completed_at"),
+                    sell.get("requested_at"), sell.get("completed_at"),
+                    buy.get("out_amount") or buy.get("output_amount_raw"),
+                    buy.get("other_amount_threshold"), sell.get("in_amount"),
+                    sell.get("out_amount") or sell.get("output_amount_raw"),
+                    sell.get("other_amount_threshold"), round_trip_min_return,
+                    route_only_cost_usd, str(fee_completeness_status)[:80],
+                    str(network_fee_basis)[:160], self._bounded_json(buy),
+                    self._bounded_json(sell), iso(now), int(attempt_id),
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("event route challenger attempt is not pending")
+
+    def recover_interrupted_event_route_execution_challenger_attempts(
+        self, *, now: Any = None
+    ) -> int:
+        current = parse_time(now or utcnow())
+        with self._lock, self.db:
+            cursor = self.db.execute(
+                """
+                UPDATE event_route_execution_challenger_attempts SET
+                    quote_terminal_status='interrupted',validity_status='invalid',
+                    economic_status='not_applicable',paper_effect='no_fill_research_only',
+                    reason='interrupted_before_terminal_result',updated_at=?
+                WHERE quote_terminal_status='pending'
+                """,
+                (iso(current),),
+            )
+            return int(cursor.rowcount)
+
+    @classmethod
+    def event_route_execution_challenger_summary_from_connection(
+        cls, connection: sqlite3.Connection, *, limit: int = 30
+    ) -> dict[str, Any]:
+        version = cls.EVENT_ROUTE_EXECUTION_CHALLENGER_VERSION
+        registration = connection.execute(
+            "SELECT * FROM event_route_execution_challenger_registrations "
+            "WHERE definition_version=?", (version,),
+        ).fetchone()
+        if registration is None:
+            return {"status": "not_enabled", "version": version, "attempts": [], "summary": {}}
+        counts = {
+            str(row["quote_terminal_status"]): int(row["count"])
+            for row in connection.execute(
+                "SELECT quote_terminal_status,COUNT(*) AS count "
+                "FROM event_route_execution_challenger_attempts "
+                "WHERE definition_version=? GROUP BY quote_terminal_status",
+                (version,),
+            )
+        }
+        economic_counts = {
+            str(row["economic_status"]): int(row["count"])
+            for row in connection.execute(
+                "SELECT economic_status,COUNT(*) AS count "
+                "FROM event_route_execution_challenger_attempts "
+                "WHERE definition_version=? GROUP BY economic_status",
+                (version,),
+            )
+        }
+        attempts = [
+            dict(row) for row in connection.execute(
+                "SELECT * FROM event_route_execution_challenger_attempts "
+                "WHERE definition_version=? ORDER BY id DESC LIMIT ?",
+                (version, max(1, int(limit))),
+            )
+        ]
+        return {
+            "status": "active_forward_collection",
+            "version": version,
+            "registered_at": registration["registered_at"],
+            "activation_decision_id": int(registration["activation_decision_id"]),
+            "activation_route_probe_id": int(registration["activation_route_probe_id"]),
+            "definition": cls._json_object(registration["definition_json"]),
+            "summary": {
+                "attempts": sum(counts.values()),
+                "terminal_counts": counts,
+                "economic_counts": economic_counts,
+                "fills": 0,
+                "affects": "none",
+            },
+            "attempts": attempts,
+        }
+
     def decisions(self, limit: int = 30) -> list[sqlite3.Row]:
         return list(self.db.execute("SELECT * FROM decisions ORDER BY id DESC LIMIT ?", (limit,)))
 
@@ -5357,6 +10261,77 @@ class Store:
     def account(self) -> dict[str, float]:
         row = self.db.execute("SELECT cash_usd,realized_pnl_usd FROM paper_account WHERE singleton=1").fetchone()
         return {"cash_usd": float(row["cash_usd"]), "realized_pnl_usd": float(row["realized_pnl_usd"])}
+
+    def start_simulation_fair_epoch(
+        self,
+        epoch_id: str,
+        *,
+        starting_cash_usd: float,
+        started_at: Any = None,
+    ) -> dict[str, Any]:
+        """Start a fresh Paper comparison without deleting any earlier evidence."""
+        key = str(epoch_id).strip()[:160]
+        if not key:
+            raise ValueError("epoch_id is required")
+        cash = max(0.01, float(starting_cash_usd))
+        started = parse_time(started_at or utcnow())
+        with self._lock, self.db:
+            existing = self.db.execute(
+                "SELECT * FROM simulation_fair_start_epochs WHERE epoch_id=?", (key,)
+            ).fetchone()
+            if existing is not None:
+                return {**dict(existing), "status": "already_started"}
+            open_count = int(self.db.execute("SELECT COUNT(*) FROM positions").fetchone()[0])
+            if open_count:
+                return {
+                    "epoch_id": key,
+                    "status": "blocked_open_positions",
+                    "open_position_count": open_count,
+                }
+            account = self.db.execute(
+                "SELECT cash_usd,realized_pnl_usd FROM paper_account WHERE singleton=1"
+            ).fetchone()
+            trade_count = int(self.db.execute("SELECT COUNT(*) FROM trades").fetchone()[0])
+            self.db.execute(
+                """
+                INSERT INTO simulation_fair_start_epochs(
+                    epoch_id,started_at,starting_cash_usd,prior_cash_usd,
+                    prior_realized_pnl_usd,prior_trade_count,exploration_version,
+                    exit_challenger_version,affects
+                ) VALUES(?,?,?,?,?,?,?,?, 'paper_only')
+                """,
+                (
+                    key, iso(started), cash, float(account["cash_usd"]),
+                    float(account["realized_pnl_usd"]), trade_count,
+                    self.ONCHAIN_PAPER_EXPLORATION_VERSION,
+                    self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION,
+                ),
+            )
+            self.db.execute(
+                "UPDATE paper_account SET cash_usd=?,realized_pnl_usd=0,updated_at=? "
+                "WHERE singleton=1",
+                (cash, iso(started)),
+            )
+            self.db.execute(
+                """
+                INSERT INTO paper_account_snapshots(
+                    recorded_at,cash_usd,marked_value_usd,equity_usd,
+                    daily_exposure_usd,open_position_count,priced_position_count,quote_as_of
+                ) VALUES(?,?,0,?,0,0,0,NULL)
+                """,
+                (iso(started), cash, cash),
+            )
+            return {
+                **dict(self.db.execute(
+                    "SELECT * FROM simulation_fair_start_epochs WHERE epoch_id=?", (key,)
+                ).fetchone()),
+                "status": "started",
+            }
+
+    def latest_simulation_fair_epoch(self) -> sqlite3.Row | None:
+        return self.db.execute(
+            "SELECT * FROM simulation_fair_start_epochs ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()
 
     def record_paper_account_snapshot(
         self,
@@ -5486,6 +10461,7 @@ class Store:
     def paper_buy(
         self, *, event_id: int, token: TokenCandidate, price: float, gross_usd: float,
         fee_bps: float, reason: str, quote_price: float | None = None,
+        fixed_fee_usd: float | None = None,
         tax_pct: float | None = None, quote_observed_at: Any = None,
         quote_provider: str = "", execution_attempted_at: Any = None,
         decision_id: int | None = None, cohort_id: int | None = None,
@@ -5494,7 +10470,11 @@ class Store:
     ) -> Position:
         if price <= 0 or gross_usd <= 0:
             raise ValueError("price and gross_usd must be positive")
-        fee = gross_usd * fee_bps / 10_000
+        fee = (
+            max(0.0, float(fixed_fee_usd))
+            if fixed_fee_usd is not None else gross_usd * fee_bps / 10_000
+        )
+        recorded_fee_bps = fee / gross_usd * 10_000
         debit = gross_usd + fee
         normalized_tax_pct = (
             min(100.0, max(0.0, float(tax_pct))) if tax_pct is not None else None
@@ -5555,7 +10535,7 @@ class Store:
                 ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (token.token_id,event_id,decision_id,cohort_id,"BUY",quantity,price,quote_price,gross_usd,fee,
-                 fee_bps,slippage_rate,slippage_usd,normalized_tax_pct,
+                 recorded_fee_bps,slippage_rate,slippage_usd,normalized_tax_pct,
                  tax if normalized_tax_pct is not None else None,
                  iso(parse_time(quote_observed_at)) if quote_observed_at else None,
                  str(quote_provider or ""),
@@ -5636,6 +10616,7 @@ class Store:
     def paper_sell(
         self, token_id: str, *, price: float, fraction: float, fee_bps: float,
         reason: str, quote_price: float | None = None, tax_pct: float | None = None,
+        fixed_fee_usd: float | None = None,
         quote_observed_at: Any = None, quote_provider: str = "",
         execution_attempted_at: Any = None,
         record_execution_attempt: bool = False,
@@ -5648,7 +10629,11 @@ class Store:
             raise ValueError("invalid sell")
         quantity = position.quantity * fraction
         gross = quantity * price
-        fee = gross * fee_bps / 10_000
+        fee = (
+            max(0.0, float(fixed_fee_usd))
+            if fixed_fee_usd is not None else gross * fee_bps / 10_000
+        )
+        recorded_fee_bps = fee / gross * 10_000
         normalized_tax_pct = (
             min(100.0, max(0.0, float(tax_pct))) if tax_pct is not None else None
         )
@@ -5697,7 +10682,7 @@ class Store:
                 (
                  token_id,position.event_id,position.decision_id,position.cohort_id,
                  "SELL",quantity,price,quote_price,gross,fee,
-                 fee_bps,slippage_rate,slippage_usd,normalized_tax_pct,
+                 recorded_fee_bps,slippage_rate,slippage_usd,normalized_tax_pct,
                  tax if normalized_tax_pct is not None else None,
                  iso(parse_time(quote_observed_at)) if quote_observed_at else None,
                  str(quote_provider or ""),
@@ -6739,9 +11724,1382 @@ class Store:
             "cohorts_completed": completed_count,
         }
 
+    @classmethod
+    def _kol_token_addressability_definition(cls) -> dict[str, Any]:
+        return {
+            "version": cls.KOL_TOKEN_ADDRESSABILITY_VERSION,
+            "activation": "observation_id_strictly_after_registration",
+            "eligible_episode": {
+                "capture_phase": "live",
+                "availability_proof": "local_receive",
+                "roles": ["feature", "confirmation"],
+                "minimum_configured_priority": cls.KOL_TOKEN_ADDRESSABILITY_MIN_PRIORITY,
+                "maximum_event_attention": cls.KOL_TOKEN_ADDRESSABILITY_MAX_ATTENTION,
+                "event_attention_operator": "lt",
+                "maximum_source_age_minutes": cls.KOL_TOKEN_ADDRESSABILITY_MAX_SOURCE_AGE_MINUTES,
+            },
+            "event_attention_point": {
+                "table": "event_attention_points",
+                "definition_version": cls.EVENT_ATTENTION_TRAJECTORY_VERSION,
+                "coverage_mode": "local_new_observation_arrivals_only",
+                "join_key": ["event_id", "observation_id"],
+                "required_trigger_decision_eligible": True,
+                "required_exclusion_reason": None,
+                "signal_clock": "max_observed_ingested_attention_recorded",
+            },
+            "main_denominator_includes": [
+                "explicit_identifier_at_signal", "no_seed_at_signal",
+            ],
+            "query_policy": "exact_identifier_only_no_ticker_or_alias_search",
+            "evm_chain_hints": {
+                "ethereum": ["ethereum", " eth "],
+                "bsc": ["bsc", "bnb chain", "bnbchain"],
+                "base": ["base chain", "on base", "base ca"],
+                "arbitrum": ["arbitrum"],
+                "optimism": ["optimism"],
+                "polygon": ["polygon"],
+                "avalanche": ["avalanche", "avax"],
+            },
+            "ambiguous_evm_policy": "retain_in_denominator_no_unique_addressability",
+            "append_only": True,
+            "no_historical_backfill": True,
+            "decision_eligible": False,
+            "affects": "none",
+        }
+
+    @staticmethod
+    def _canonical_solana_address(value: Any) -> str | None:
+        address = str(value or "").strip()
+        if not re.fullmatch(r"[1-9A-HJ-NP-Za-km-z]{32,44}", address):
+            return None
+        try:
+            canonical = str(Pubkey.from_string(address))
+        except ValueError:
+            return None
+        return canonical if canonical == address else None
+
+    @classmethod
+    def _extract_canonical_solana_addresses(cls, value: Any) -> set[str]:
+        text = str(value or "")
+        candidates = re.findall(
+            r"(?<![1-9A-HJ-NP-Za-km-z])([1-9A-HJ-NP-Za-km-z]{32,44})"
+            r"(?![1-9A-HJ-NP-Za-km-z])",
+            text,
+        )
+        return {
+            canonical for candidate in candidates
+            if (canonical := cls._canonical_solana_address(candidate)) is not None
+        }
+
+    def _kol_token_addressability_route_definition(self) -> dict[str, Any]:
+        base_registration = self.db.execute(
+            "SELECT definition_json FROM kol_token_addressability_registrations "
+            "WHERE definition_version=?",
+            (self.KOL_TOKEN_ADDRESSABILITY_VERSION,),
+        ).fetchone()
+        base_definition_json = str(base_registration["definition_json"]) if base_registration else ""
+        return {
+            "version": self.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION,
+            "compatible_base_definition_version": self.KOL_TOKEN_ADDRESSABILITY_VERSION,
+            "compatible_base_definition_hash": hashlib.sha256(
+                base_definition_json.encode("utf-8")
+            ).hexdigest(),
+            "activation": "cohort_id_strictly_after_registration",
+            "router": "jupiter_quote_only",
+            "input_mint": self.JUPITER_USDC_MINT,
+            "input_amount_raw": str(self.KOL_TOKEN_ADDRESSABILITY_USDC_INPUT_AMOUNT_RAW),
+            "slippage_bps": self.KOL_TOKEN_ADDRESSABILITY_SLIPPAGE_BPS,
+            "route_deadline_seconds_after_signal": (
+                self.KOL_TOKEN_ADDRESSABILITY_ROUTE_DEADLINE_SECONDS
+            ),
+            "confirmation_window_minutes": (
+                self.KOL_TOKEN_ADDRESSABILITY_CONFIRMATION_WINDOW_MINUTES
+            ),
+            "surface_policy": [
+                "single_hop_exact", "multi_hop_includes_frozen_pair", "unmapped",
+            ],
+            "canonical_identifier_policy": "solana_pubkey_32_bytes_exact_boundary",
+            "timing_policy": [
+                "pair_timely", "dex_pair_late", "dex_pair_missing_by_deadline",
+                "request_timely", "queue_delay_expired", "response_timely",
+                "route_response_late", "clock_invalid",
+            ],
+            "scheduler_policy": "shared_background_edf_three_requests_per_epoch",
+            "attempt_first": True,
+            "append_only": True,
+            "no_historical_backfill": True,
+            "decision_eligible": False,
+            "affects": "none",
+        }
+
+    def create_kol_token_addressability_cohort(
+        self,
+        event_id: int,
+        observation_id: int,
+        *,
+        account: Mapping[str, Any],
+        identifiers: Mapping[str, Iterable[str]] | None = None,
+        recorded_at: Any = None,
+    ) -> int | None:
+        """Freeze one post-signal addressability episode without network I/O.
+
+        No-seed episodes are retained in the same main denominator. Only exact
+        identifiers available in the triggering observation are frozen; ticker,
+        alias, later price, and later token popularity are never consulted.
+        """
+        recorded = parse_time(recorded_at or utcnow())
+        recorded_text = iso(recorded)
+        admission_key = f"{self.KOL_TOKEN_ADDRESSABILITY_VERSION}:{int(observation_id)}"
+        with self._lock, self.db:
+            prior = self.db.execute(
+                "SELECT cohort_id FROM kol_token_addressability_admission_attempts "
+                "WHERE admission_key=?",
+                (admission_key,),
+            ).fetchone()
+            if prior is not None:
+                return int(prior["cohort_id"]) if prior["cohort_id"] else None
+
+            def record_admission(status: str, reason: str, cohort_id: int | None = None) -> None:
+                self.db.execute(
+                    """
+                    INSERT INTO kol_token_addressability_admission_attempts(
+                        admission_key,definition_version,observation_id,event_id,attempted_at,
+                        status,reason,cohort_id,decision_eligible,affects
+                    ) VALUES(?,?,?,?,?,?,?,?,0,'none')
+                    """,
+                    (
+                        admission_key, self.KOL_TOKEN_ADDRESSABILITY_VERSION,
+                        int(observation_id), int(event_id), recorded_text,
+                        status, reason, cohort_id,
+                    ),
+                )
+
+            registration = self.db.execute(
+                "SELECT * FROM kol_token_addressability_registrations WHERE definition_version=?",
+                (self.KOL_TOKEN_ADDRESSABILITY_VERSION,),
+            ).fetchone()
+            if registration is None:
+                record_admission("skipped", "registration_missing")
+                return None
+            try:
+                definition = json.loads(str(registration["definition_json"]))
+                episode = definition["eligible_episode"]
+                attention_contract = definition["event_attention_point"]
+                if (
+                    definition.get("version") != self.KOL_TOKEN_ADDRESSABILITY_VERSION
+                    or definition.get("query_policy") != "exact_identifier_only_no_ticker_or_alias_search"
+                    or episode.get("event_attention_operator") != "lt"
+                    or not isinstance(episode.get("roles"), list)
+                    or not isinstance(definition.get("evm_chain_hints"), dict)
+                    or attention_contract.get("definition_version")
+                        != self.EVENT_ATTENTION_TRAJECTORY_VERSION
+                    or attention_contract.get("coverage_mode")
+                        != "local_new_observation_arrivals_only"
+                    or attention_contract.get("join_key") != ["event_id", "observation_id"]
+                    or attention_contract.get("required_trigger_decision_eligible") is not True
+                    or attention_contract.get("required_exclusion_reason") is not None
+                    or attention_contract.get("signal_clock")
+                        != "max_observed_ingested_attention_recorded"
+                ):
+                    raise ValueError("unsupported frozen definition")
+                required_capture_phase = str(episode["capture_phase"]).casefold()
+                required_availability = str(episode["availability_proof"]).casefold()
+                allowed_roles = {str(value).casefold() for value in episode["roles"]}
+                minimum_priority = int(episode["minimum_configured_priority"])
+                maximum_attention = float(episode["maximum_event_attention"])
+                maximum_source_age_minutes = float(episode["maximum_source_age_minutes"])
+                attention_definition_version = str(attention_contract["definition_version"])
+                attention_coverage_mode = str(attention_contract["coverage_mode"])
+                evm_chain_hints = {
+                    str(chain).casefold(): [str(value).casefold() for value in values]
+                    for chain, values in definition["evm_chain_hints"].items()
+                    if isinstance(values, list)
+                }
+                if not allowed_roles or not evm_chain_hints:
+                    raise ValueError("empty frozen definition")
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                record_admission("skipped", "registration_definition_invalid")
+                return None
+            if int(observation_id) <= int(registration["activation_observation_id"]):
+                record_admission("skipped", "before_activation_observation")
+                return None
+            row = self.db.execute(
+                """
+                SELECT o.*,ap.id AS attention_point_id,
+                       ap.definition_version AS attention_definition_version,
+                       ap.recorded_at AS attention_recorded_at,
+                       ap.attention AS event_attention,
+                       ap.trigger_role AS attention_trigger_role,
+                       ap.trigger_decision_eligible AS attention_trigger_decision_eligible,
+                       ap.exclusion_reason AS attention_exclusion_reason,
+                       ap.coverage_mode AS attention_coverage_mode
+                FROM observations o
+                JOIN event_observations eo ON eo.observation_id=o.id
+                JOIN event_attention_points ap
+                  ON ap.event_id=eo.event_id AND ap.observation_id=o.id
+                 AND ap.definition_version=?
+                WHERE o.id=? AND eo.event_id=?
+                """,
+                (attention_definition_version, int(observation_id), int(event_id)),
+            ).fetchone()
+            if row is None:
+                record_admission("skipped", "immutable_attention_point_missing")
+                return None
+            try:
+                priority = int(account.get("priority") or 0)
+            except (TypeError, ValueError):
+                priority = 0
+            if priority < minimum_priority:
+                record_admission("skipped", "configured_priority_below_minimum")
+                return None
+            if str(row["capture_phase"] or "").casefold() != required_capture_phase:
+                record_admission("skipped", "capture_phase_not_live")
+                return None
+            if str(row["availability_proof"] or "").casefold() != required_availability:
+                record_admission("skipped", "availability_not_local_receive")
+                return None
+            if str(row["role"] or "").casefold() not in allowed_roles:
+                record_admission("skipped", "role_not_decision_information")
+                return None
+            if (
+                str(row["attention_coverage_mode"] or "") != attention_coverage_mode
+                or int(row["attention_trigger_decision_eligible"] or 0) != 1
+                or row["attention_exclusion_reason"] is not None
+                or str(row["attention_trigger_role"] or "").casefold() not in allowed_roles
+            ):
+                record_admission("skipped", "immutable_attention_point_ineligible")
+                return None
+            observed = parse_time(row["observed_at"])
+            ingested = parse_time(row["ingested_at"])
+            attention_recorded = parse_time(row["attention_recorded_at"])
+            signal = max(observed, ingested, attention_recorded)
+            if (
+                observed > ingested
+                or ingested > attention_recorded
+                or attention_recorded < parse_time(registration["registered_at"])
+                or signal > recorded + timedelta(seconds=5)
+            ):
+                record_admission("skipped", "invalid_local_time_order")
+                return None
+            if not row["published_at"]:
+                record_admission("skipped", "source_published_at_missing")
+                return None
+            published = parse_time(row["published_at"])
+            source_age = signal - published
+            if source_age < timedelta(minutes=-5):
+                record_admission("skipped", "source_published_in_future")
+                return None
+            if source_age > timedelta(minutes=maximum_source_age_minutes):
+                record_admission("skipped", "source_too_old_at_signal")
+                return None
+            attention = float(row["event_attention"])
+            if attention >= maximum_attention:
+                record_admission("skipped", "event_attention_above_low_attention_gate")
+                return None
+
+            frozen_identifiers: list[dict[str, str]] = []
+            supplied = identifiers if isinstance(identifiers, Mapping) else {}
+            for value in supplied.get("solana", []):
+                address = self._canonical_solana_address(value)
+                if address is not None:
+                    frozen_identifiers.append({"chain": "solana", "address": address})
+            lead_text = " " + "\n".join(str(row[key] or "") for key in (
+                "title", "text", "url", "source_item_id"
+            )).casefold() + " "
+            matched_evm_chains = sorted({
+                chain for chain, hints in evm_chain_hints.items()
+                if any(hint and hint in lead_text for hint in hints)
+            })
+            for value in supplied.get("evm", []):
+                address = str(value or "").strip().lower()
+                if re.fullmatch(r"0x[0-9a-f]{40}", address):
+                    frozen_identifiers.append({
+                        "chain": matched_evm_chains[0] if len(matched_evm_chains) == 1 else "evm_ambiguous",
+                        "address": address,
+                    })
+            frozen_identifiers = [
+                dict(item) for item in {
+                    (item["chain"], item["address"]): item for item in frozen_identifiers
+                }.values()
+            ]
+            frozen_identifiers.sort(key=lambda item: (item["chain"], item["address"]))
+            seed_status = (
+                "explicit_identifier_at_signal" if frozen_identifiers else "no_seed_at_signal"
+            )
+            frozen_queries = [
+                {"kind": "exact_ca", "chain": item["chain"], "value": item["address"]}
+                for item in frozen_identifiers
+            ]
+            cohort_key = hashlib.sha256(
+                f"{self.KOL_TOKEN_ADDRESSABILITY_VERSION}\n{int(observation_id)}".encode("utf-8")
+            ).hexdigest()
+            cursor = self.db.execute(
+                """
+                INSERT INTO kol_token_addressability_cohorts(
+                    cohort_key,definition_version,observation_id,event_id,platform,handle,
+                    source_entity_id,configured_priority,signal_available_at,source_published_at,
+                    source_observed_at,source_ingested_at,event_attention,seed_status,
+                    attention_point_id,attention_definition_version,attention_recorded_at,
+                    attention_coverage_mode,identifiers_json,frozen_queries_json,definition_hash,
+                    decision_eligible,affects,created_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'none',?)
+                """,
+                (
+                    cohort_key, self.KOL_TOKEN_ADDRESSABILITY_VERSION, int(observation_id),
+                    int(event_id), str(account.get("platform") or "")[:80],
+                    str(account.get("handle") or "")[:120],
+                    str(account.get("entity_id") or "")[:120], priority, iso(signal),
+                    iso(published), iso(observed), iso(ingested), attention, seed_status,
+                    int(row["attention_point_id"]), attention_definition_version,
+                    iso(attention_recorded), attention_coverage_mode,
+                    self._json(frozen_identifiers), self._json(frozen_queries),
+                    hashlib.sha256(str(registration["definition_json"]).encode("utf-8")).hexdigest(),
+                    recorded_text,
+                ),
+            )
+            cohort_id = int(cursor.lastrowid)
+
+            for item in frozen_identifiers:
+                if item["chain"] != "evm_ambiguous":
+                    continue
+                ambiguity_key = hashlib.sha256(
+                    f"{self.KOL_TOKEN_ADDRESSABILITY_VERSION}\n{cohort_id}\n"
+                    f"{item['address']}\nambiguous-chain".encode("utf-8")
+                ).hexdigest()
+                self.db.execute(
+                    """
+                    INSERT INTO kol_token_addressability_ambiguities(
+                        ambiguity_key,definition_version,cohort_id,identifier,status,
+                        evidence_json,decision_eligible,affects,recorded_at
+                    ) VALUES(?,?,?,?,'ambiguous_evm_chain_at_signal',?,0,'none',?)
+                    """,
+                    (
+                        ambiguity_key, self.KOL_TOKEN_ADDRESSABILITY_VERSION, cohort_id,
+                        item["address"], self._json({"matched_chain_hints": matched_evm_chains}),
+                        recorded_text,
+                    ),
+                )
+
+            def add_milestone(
+                milestone: str,
+                status: str,
+                available_at: Any,
+                *,
+                chain: str = "",
+                identifier: str = "",
+                token_id: str | None = None,
+                provider: str | None = None,
+                surface_key: str | None = None,
+                evidence: Mapping[str, Any] | None = None,
+            ) -> None:
+                key = hashlib.sha256(
+                    f"{self.KOL_TOKEN_ADDRESSABILITY_VERSION}\n{cohort_id}\n{milestone}\n"
+                    f"{chain}\n{identifier}\n{token_id or ''}\n{surface_key or ''}".encode("utf-8")
+                ).hexdigest()
+                self.db.execute(
+                    """
+                    INSERT INTO kol_token_addressability_milestones(
+                        milestone_key,definition_version,cohort_id,milestone,status,available_at,
+                        chain,identifier,token_id,provider,surface_key,evidence_json,
+                        decision_eligible,affects,recorded_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0,'none',?)
+                    """,
+                    (
+                        key, self.KOL_TOKEN_ADDRESSABILITY_VERSION, cohort_id, milestone, status,
+                        iso(available_at), chain, identifier, token_id, provider, surface_key,
+                        self._json(evidence or {}), recorded_text,
+                    ),
+                )
+
+            add_milestone(
+                "signal", "observed", signal,
+                evidence={"observation_id": int(observation_id), "event_id": int(event_id)},
+            )
+            if not frozen_identifiers:
+                add_milestone(
+                    "explicit_identifier", "missing_at_signal", signal,
+                    evidence={"denominator_status": "no_seed_at_signal"},
+                )
+            for item in frozen_identifiers:
+                identifier = item["address"]
+                chain_hint = item["chain"]
+                add_milestone(
+                    "explicit_identifier", "observed", signal,
+                    chain=chain_hint, identifier=identifier,
+                    evidence={"basis": "trigger_observation_exact_ca"},
+                )
+                if chain_hint == "solana":
+                    tokens = list(self.db.execute(
+                        "SELECT * FROM tokens WHERE chain='solana' AND address=? ORDER BY token_id",
+                        (identifier,),
+                    ))
+                elif chain_hint in self.TOKEN_UNIVERSE_EVM_CHAINS:
+                    tokens = list(self.db.execute(
+                        "SELECT * FROM tokens WHERE lower(chain)=? AND lower(address)=? "
+                        "ORDER BY token_id",
+                        (chain_hint, identifier),
+                    ))
+                else:
+                    tokens = []
+                for token in tokens:
+                    snapshots = list(self.db.execute(
+                        """
+                        SELECT * FROM token_snapshots
+                        WHERE token_id=? AND recorded_at<=?
+                          AND observed_at<=ingested_at AND ingested_at<=recorded_at
+                        ORDER BY recorded_at,id
+                        """,
+                        (str(token["token_id"]), recorded_text),
+                    ))
+                    if not snapshots:
+                        continue
+                    first_snapshot = snapshots[0]
+                    local_available = max(signal, parse_time(first_snapshot["recorded_at"]))
+                    add_milestone(
+                        "local_token_discovery", "observed", local_available,
+                        chain=str(token["chain"]), identifier=identifier,
+                        token_id=str(token["token_id"]), provider=str(first_snapshot["provider"]),
+                        evidence={
+                            "basis": "token_snapshots.recorded_at",
+                            "snapshot_id": int(first_snapshot["id"]),
+                        },
+                    )
+                    for snapshot in snapshots:
+                        surface = self._information_first_snapshot_surface(snapshot)
+                        if surface is None:
+                            continue
+                        snapshot_available = max(
+                            signal,
+                            parse_time(snapshot["recorded_at"]),
+                        )
+                        add_milestone(
+                            "dex_pair_available", "observed", snapshot_available,
+                            chain=str(token["chain"]), identifier=identifier,
+                            token_id=str(token["token_id"]), provider=str(snapshot["provider"]),
+                            surface_key=surface["key"],
+                            evidence={
+                                "snapshot_id": int(snapshot["id"]),
+                                "pair_address": surface["pair_address"],
+                                "dex_id": surface["dex_id"],
+                            },
+                        )
+                        break
+            record_admission("created", seed_status, cohort_id)
+            return cohort_id
+
+    def _validated_kol_route_registration_locked(
+        self,
+    ) -> tuple[sqlite3.Row, dict[str, Any]] | None:
+        registration = self.db.execute(
+            "SELECT * FROM kol_token_addressability_route_registrations "
+            "WHERE definition_version=?",
+            (self.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION,),
+        ).fetchone()
+        base_registration = self.db.execute(
+            "SELECT * FROM kol_token_addressability_registrations "
+            "WHERE definition_version=?",
+            (self.KOL_TOKEN_ADDRESSABILITY_VERSION,),
+        ).fetchone()
+        if registration is None or base_registration is None:
+            return None
+        try:
+            definition = json.loads(str(registration["definition_json"]))
+            expected_base_hash = hashlib.sha256(
+                str(base_registration["definition_json"]).encode("utf-8")
+            ).hexdigest()
+            if (
+                definition.get("version") != self.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION
+                or definition.get("compatible_base_definition_version")
+                    != self.KOL_TOKEN_ADDRESSABILITY_VERSION
+                or definition.get("compatible_base_definition_hash") != expected_base_hash
+                or definition != self._kol_token_addressability_route_definition()
+            ):
+                return None
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return None
+        return registration, definition
+
+    def refresh_kol_token_addressability_evidence(self, *, now: Any = None) -> dict[str, int]:
+        """Append later local discovery, pair and exact independent-confirmation evidence."""
+        evaluated = parse_time(now or utcnow())
+        evaluated_text = iso(evaluated)
+        counts = {"local_token": 0, "dex_pair": 0, "confirmation": 0, "terminal": 0}
+        with self._lock, self.db:
+            validated = self._validated_kol_route_registration_locked()
+            route_definition = validated[1] if validated is not None else None
+            confirmation_window_minutes = (
+                int(route_definition["confirmation_window_minutes"])
+                if route_definition is not None else 0
+            )
+            if validated is None:
+                cohorts = []
+            else:
+                registration, route_definition = validated
+                cohorts = list(self.db.execute(
+                    """
+                    SELECT c.* FROM kol_token_addressability_cohorts c
+                    WHERE c.id>? AND c.definition_version=? AND c.definition_hash=?
+                      AND (
+                        NOT EXISTS (
+                          SELECT 1 FROM kol_token_addressability_route_results r
+                          WHERE r.definition_version=? AND r.cohort_id=c.id
+                        )
+                        OR NOT EXISTS (
+                          SELECT 1 FROM kol_token_addressability_confirmation_results cr
+                          WHERE cr.definition_version=? AND cr.cohort_id=c.id
+                        )
+                      )
+                    ORDER BY c.id LIMIT 12
+                    """,
+                    (
+                        int(registration["activation_cohort_id"]),
+                        self.KOL_TOKEN_ADDRESSABILITY_VERSION,
+                        str(route_definition["compatible_base_definition_hash"]),
+                        self.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION,
+                        self.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION,
+                    ),
+                ))
+
+            def add_milestone(
+                cohort_id: int, milestone: str, available_at: Any, *, chain: str,
+                identifier: str, token_id: str, provider: str, surface_key: str = "",
+                evidence: Mapping[str, Any] | None = None,
+            ) -> bool:
+                key = hashlib.sha256(
+                    f"{self.KOL_TOKEN_ADDRESSABILITY_VERSION}\n{cohort_id}\n{milestone}\n"
+                    f"{chain}\n{identifier}\n{token_id}\n{surface_key}".encode("utf-8")
+                ).hexdigest()
+                cursor = self.db.execute(
+                    """
+                    INSERT OR IGNORE INTO kol_token_addressability_milestones(
+                        milestone_key,definition_version,cohort_id,milestone,status,available_at,
+                        chain,identifier,token_id,provider,surface_key,evidence_json,
+                        decision_eligible,affects,recorded_at
+                    ) VALUES(?,?,?,?, 'observed',?,?,?,?,?,?,?,0,'none',?)
+                    """,
+                    (
+                        key, self.KOL_TOKEN_ADDRESSABILITY_VERSION, cohort_id, milestone,
+                        iso(available_at), chain, identifier, token_id, provider,
+                        surface_key or None, self._json(evidence or {}), evaluated_text,
+                    ),
+                )
+                return cursor.rowcount == 1
+
+            for cohort in cohorts:
+                signal = parse_time(cohort["signal_available_at"])
+                identifiers = json.loads(str(cohort["identifiers_json"] or "[]"))
+                identifiers = identifiers if isinstance(identifiers, list) else []
+                for item in identifiers:
+                    if not isinstance(item, dict):
+                        continue
+                    chain_hint = str(item.get("chain") or "")
+                    identifier = str(item.get("address") or "")
+                    if chain_hint == "solana":
+                        tokens = list(self.db.execute(
+                            "SELECT * FROM tokens WHERE token_id=? AND chain='solana' AND address=? "
+                            "ORDER BY token_id LIMIT 1",
+                            (f"solana:{identifier}", identifier),
+                        ))
+                    elif chain_hint in self.TOKEN_UNIVERSE_EVM_CHAINS:
+                        tokens = list(self.db.execute(
+                            "SELECT * FROM tokens WHERE lower(chain)=? AND lower(address)=? "
+                            "ORDER BY token_id LIMIT 1",
+                            (chain_hint, identifier.casefold()),
+                        ))
+                    else:
+                        tokens = []
+                    for token in tokens:
+                        snapshots = list(self.db.execute(
+                            """
+                            SELECT * FROM token_snapshots
+                            WHERE token_id=? AND recorded_at<=?
+                              AND observed_at<=ingested_at AND ingested_at<=recorded_at
+                            ORDER BY recorded_at,id LIMIT 20
+                            """,
+                            (str(token["token_id"]), evaluated_text),
+                        ))
+                        if not snapshots:
+                            continue
+                        first_snapshot = snapshots[0]
+                        token_available = max(signal, parse_time(first_snapshot["recorded_at"]))
+                        if add_milestone(
+                            int(cohort["id"]), "local_token_discovery", token_available,
+                            chain=str(token["chain"]), identifier=identifier,
+                            token_id=str(token["token_id"]), provider=str(first_snapshot["provider"]),
+                            evidence={
+                                "basis": "token_snapshots.recorded_at",
+                                "snapshot_id": int(first_snapshot["id"]),
+                            },
+                        ):
+                            counts["local_token"] += 1
+                        for snapshot in snapshots:
+                            surface = self._information_first_snapshot_surface(snapshot)
+                            if surface is None:
+                                continue
+                            available = max(
+                                signal,
+                                parse_time(snapshot["recorded_at"]),
+                            )
+                            if add_milestone(
+                                int(cohort["id"]), "dex_pair_available", available,
+                                chain=str(token["chain"]), identifier=identifier,
+                                token_id=str(token["token_id"]), provider=str(snapshot["provider"]),
+                                surface_key=surface["key"], evidence={
+                                    "snapshot_id": int(snapshot["id"]),
+                                    "pair_address": surface["pair_address"],
+                                    "dex_id": surface["dex_id"],
+                                },
+                            ):
+                                counts["dex_pair"] += 1
+                            break
+
+                if route_definition is None:
+                    continue
+                trigger = self.db.execute(
+                    "SELECT * FROM observations WHERE id=?", (int(cohort["observation_id"]),)
+                ).fetchone()
+                trigger_origin = self._information_first_source_facts(trigger)[0] if trigger else ""
+                deadline = signal + timedelta(
+                    minutes=confirmation_window_minutes
+                )
+                if not identifiers:
+                    key = hashlib.sha256(
+                        f"{self.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION}\n{int(cohort['id'])}\n"
+                        "no-seed-confirmation".encode("utf-8")
+                    ).hexdigest()
+                    cursor = self.db.execute(
+                        """
+                        INSERT OR IGNORE INTO kol_token_addressability_confirmation_results(
+                            result_key,definition_version,cohort_id,identifier,status,observation_id,
+                            source_origin,available_at,evaluated_at,evidence_json,decision_eligible,affects
+                        ) VALUES(?,?,?,'','no_seed_at_signal',NULL,NULL,?,?,?,0,'none')
+                        """,
+                        (key, self.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION, int(cohort["id"]),
+                         iso(signal), evaluated_text, self._json({"seed_status": "no_seed_at_signal"})),
+                    )
+                    counts["terminal"] += int(cursor.rowcount == 1)
+                    continue
+                event_rows = list(self.db.execute(
+                    """
+                    SELECT o.* FROM observations o
+                    JOIN event_observations eo ON eo.observation_id=o.id
+                    WHERE eo.event_id=? AND o.id<>? AND o.observed_at<=? AND o.ingested_at<=?
+                      AND lower(o.role) IN ('feature','confirmation')
+                      AND lower(o.availability_proof) IN ('local_poll','local_receive')
+                    ORDER BY max(o.observed_at,o.ingested_at),o.id LIMIT 100
+                    """,
+                    (int(cohort["event_id"]), int(cohort["observation_id"]), evaluated_text, evaluated_text),
+                ))
+                for item in identifiers:
+                    identifier = str(item.get("address") or "")
+                    matched_timely = False
+                    for candidate in event_rows:
+                        origin = self._information_first_source_facts(candidate)[0]
+                        if not origin or origin == trigger_origin:
+                            continue
+                        haystack = "\n".join(str(candidate[key] or "") for key in (
+                            "title", "text", "url", "source_item_id"
+                        ))
+                        exact = (
+                            identifier in self._extract_canonical_solana_addresses(haystack)
+                            if str(item.get("chain") or "") == "solana"
+                            else bool(re.search(
+                                rf"(?<![0-9a-f]){re.escape(identifier.casefold())}(?![0-9a-f])",
+                                haystack.casefold(),
+                            ))
+                        )
+                        if not exact:
+                            continue
+                        available = max(parse_time(candidate["observed_at"]), parse_time(candidate["ingested_at"]))
+                        status = "observed" if available <= deadline else "late"
+                        key = hashlib.sha256(
+                            f"{self.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION}\n{int(cohort['id'])}\n"
+                            f"{identifier}\n{int(candidate['id'])}".encode("utf-8")
+                        ).hexdigest()
+                        cursor = self.db.execute(
+                            """
+                            INSERT OR IGNORE INTO kol_token_addressability_confirmation_results(
+                                result_key,definition_version,cohort_id,identifier,status,observation_id,
+                                source_origin,available_at,evaluated_at,evidence_json,decision_eligible,affects
+                            ) VALUES(?,?,?,?,?,?,?,?,?,?,0,'none')
+                            """,
+                            (
+                                key, self.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION, int(cohort["id"]),
+                                identifier, status, int(candidate["id"]), origin, iso(available),
+                                evaluated_text, self._json({"basis": "independent_event_observation_exact_ca"}),
+                            ),
+                        )
+                        counts["confirmation"] += int(cursor.rowcount == 1)
+                        matched_timely = matched_timely or status == "observed"
+                    if not matched_timely and evaluated >= deadline:
+                        key = hashlib.sha256(
+                            f"{self.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION}\n{int(cohort['id'])}\n"
+                            f"{identifier}\nmissing-confirmation".encode("utf-8")
+                        ).hexdigest()
+                        cursor = self.db.execute(
+                            """
+                            INSERT OR IGNORE INTO kol_token_addressability_confirmation_results(
+                                result_key,definition_version,cohort_id,identifier,status,observation_id,
+                                source_origin,available_at,evaluated_at,evidence_json,decision_eligible,affects
+                            ) VALUES(?,?,?,?, 'missing_by_deadline',NULL,NULL,?,?,?,0,'none')
+                            """,
+                            (
+                                key, self.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION, int(cohort["id"]),
+                                identifier, iso(deadline), evaluated_text,
+                                self._json({"window_minutes": confirmation_window_minutes}),
+                            ),
+                        )
+                        counts["terminal"] += int(cursor.rowcount == 1)
+        return counts
+
+    def due_kol_token_addressability_routes(
+        self, *, now: Any = None, limit: int = 1
+    ) -> list[dict[str, Any]]:
+        evaluated = parse_time(now or utcnow())
+        evaluated_text = iso(evaluated)
+        due: list[dict[str, Any]] = []
+        with self._lock, self.db:
+            validated = self._validated_kol_route_registration_locked()
+            if validated is None:
+                return due
+            registration, definition = validated
+            compatible_hash = str(definition["compatible_base_definition_hash"])
+            cohorts = list(self.db.execute(
+                """
+                SELECT c.* FROM kol_token_addressability_cohorts c
+                WHERE c.id>? AND c.definition_version=? AND c.definition_hash=?
+                  AND (
+                    (json_array_length(c.identifiers_json)=0 AND NOT EXISTS (
+                      SELECT 1 FROM kol_token_addressability_route_results r
+                      WHERE r.definition_version=? AND r.cohort_id=c.id
+                    ))
+                    OR EXISTS (
+                      SELECT 1 FROM json_each(c.identifiers_json) j
+                      WHERE NOT EXISTS (
+                        SELECT 1 FROM kol_token_addressability_route_results r
+                        WHERE r.definition_version=? AND r.cohort_id=c.id
+                          AND r.identifier=json_extract(j.value,'$.address')
+                      )
+                    )
+                  )
+                ORDER BY c.signal_available_at,c.id LIMIT 24
+                """,
+                (
+                    int(registration["activation_cohort_id"]),
+                    self.KOL_TOKEN_ADDRESSABILITY_VERSION, compatible_hash,
+                    self.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION,
+                    self.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION,
+                ),
+            ))
+            for cohort in cohorts:
+                identifiers = json.loads(str(cohort["identifiers_json"] or "[]"))
+                identifiers = identifiers if isinstance(identifiers, list) else []
+                if not identifiers:
+                    self._record_kol_route_terminal(
+                        cohort, "", "no_seed_at_signal", evaluated=evaluated,
+                        evidence={"seed_status": "no_seed_at_signal"},
+                    )
+                    continue
+                deadline = parse_time(cohort["signal_available_at"]) + timedelta(
+                    seconds=int(definition["route_deadline_seconds_after_signal"])
+                )
+                for identifier_item in identifiers:
+                    identifier = str(identifier_item.get("address") or "")
+                    chain = str(identifier_item.get("chain") or "")
+                    if self.db.execute(
+                        "SELECT 1 FROM kol_token_addressability_route_results "
+                        "WHERE definition_version=? AND cohort_id=? AND identifier=? LIMIT 1",
+                        (
+                            self.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION,
+                            int(cohort["id"]), identifier,
+                        ),
+                    ).fetchone():
+                        continue
+                    attempt = self.db.execute(
+                        "SELECT * FROM kol_token_addressability_route_attempts "
+                        "WHERE definition_version=? AND cohort_id=? AND output_mint=? "
+                        "ORDER BY id DESC LIMIT 1",
+                        (
+                            self.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION,
+                            int(cohort["id"]), identifier,
+                        ),
+                    ).fetchone()
+                    if attempt is not None:
+                        if evaluated - parse_time(attempt["requested_at"]) >= timedelta(minutes=2):
+                            self._record_kol_route_terminal(
+                                cohort, identifier, "interrupted_after_request", evaluated=evaluated,
+                                attempt_id=int(attempt["id"]), evidence={"attempt_id": int(attempt["id"])},
+                            )
+                        continue
+                    if chain == "evm_ambiguous":
+                        self._record_kol_route_terminal(
+                            cohort, identifier, "ambiguous_chain", evaluated=evaluated,
+                            evidence={"chain": chain},
+                        )
+                        continue
+                    if chain != "solana":
+                        self._record_kol_route_terminal(
+                            cohort, identifier, "unsupported_chain", evaluated=evaluated,
+                            evidence={"chain": chain},
+                        )
+                        continue
+                    if self._canonical_solana_address(identifier) != identifier:
+                        self._record_kol_route_terminal(
+                            cohort, identifier, "quote_only_protocol_invalid", evaluated=evaluated,
+                            evidence={"terminal_status_v2": "canonical_identifier_invalid"},
+                            terminal_status_v2="canonical_identifier_invalid",
+                        )
+                        continue
+                    pair = self.db.execute(
+                        """
+                        SELECT * FROM kol_token_addressability_milestones
+                        WHERE definition_version=? AND cohort_id=?
+                          AND milestone='dex_pair_available' AND identifier=?
+                          AND token_id=?
+                        ORDER BY available_at,id LIMIT 1
+                        """,
+                        (
+                            self.KOL_TOKEN_ADDRESSABILITY_VERSION,
+                            int(cohort["id"]), identifier, f"solana:{identifier}",
+                        ),
+                    ).fetchone()
+                    if pair is None:
+                        if evaluated >= deadline:
+                            self._record_kol_route_terminal(
+                                cohort, identifier, "dex_pair_missing_by_deadline", evaluated=evaluated,
+                                evidence={"deadline": iso(deadline)},
+                            )
+                        continue
+                    pair_available = parse_time(pair["available_at"])
+                    if pair_available > deadline:
+                        self._record_kol_route_terminal(
+                            cohort, identifier, "dex_pair_missing_by_deadline", evaluated=evaluated,
+                            milestone_id=int(pair["id"]), token_id=str(pair["token_id"] or ""),
+                            surface_key=str(pair["surface_key"] or ""),
+                            evidence={
+                                "deadline": iso(deadline),
+                                "pair_available_at": iso(pair_available),
+                                "terminal_status_v2": "dex_pair_late",
+                            },
+                            terminal_status_v2="dex_pair_late",
+                            pair_timing_status="dex_pair_late",
+                        )
+                        continue
+                    if evaluated > deadline:
+                        self._record_kol_route_terminal(
+                            cohort, identifier, "queue_delay_expired", evaluated=evaluated,
+                            milestone_id=int(pair["id"]), token_id=str(pair["token_id"] or ""),
+                            surface_key=str(pair["surface_key"] or ""),
+                            evidence={
+                                "deadline": iso(deadline),
+                                "pair_available_at": iso(pair_available),
+                                "terminal_status_v2": "queue_delay_expired",
+                            },
+                            terminal_status_v2="queue_delay_expired",
+                            pair_timing_status="pair_timely",
+                            request_timing_status="request_late_or_not_requested",
+                        )
+                        continue
+                    due.append({
+                        "definition_version": self.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION,
+                        "cohort_id": int(cohort["id"]), "milestone_id": int(pair["id"]),
+                        "identifier": identifier, "token_id": str(pair["token_id"] or ""),
+                        "input_mint": str(definition["input_mint"]), "output_mint": identifier,
+                        "input_amount_raw": str(definition["input_amount_raw"]),
+                        "slippage_bps": int(definition["slippage_bps"]),
+                        "surface_key": str(pair["surface_key"] or ""), "deadline_at": iso(deadline),
+                        "signal_at": str(cohort["signal_available_at"]),
+                        "pair_available_at": str(pair["available_at"]),
+                        "compatible_base_definition_version": self.KOL_TOKEN_ADDRESSABILITY_VERSION,
+                        "compatible_base_definition_hash": compatible_hash,
+                    })
+                    if len(due) >= max(1, int(limit)):
+                        return due
+        return due
+
+    def start_kol_token_addressability_route_attempt(
+        self, task: Mapping[str, Any], *, requested_at: Any = None
+    ) -> int | None:
+        requested = parse_time(requested_at or utcnow())
+        if requested > parse_time(task["deadline_at"]):
+            return None
+        attempt_key = hashlib.sha256(
+            f"{self.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION}\n{int(task['cohort_id'])}\n"
+            f"{str(task['identifier'])}".encode("utf-8")
+        ).hexdigest()
+        with self._lock, self.db:
+            validated = self._validated_kol_route_registration_locked()
+            if validated is None:
+                return None
+            registration, definition = validated
+            cohort = self.db.execute(
+                "SELECT * FROM kol_token_addressability_cohorts WHERE id=?",
+                (int(task["cohort_id"]),),
+            ).fetchone()
+            milestone = self.db.execute(
+                "SELECT * FROM kol_token_addressability_milestones WHERE id=?",
+                (int(task["milestone_id"]),),
+            ).fetchone()
+            identifier = self._canonical_solana_address(task.get("identifier"))
+            expected_hash = str(definition["compatible_base_definition_hash"])
+            if (
+                cohort is None or milestone is None or identifier is None
+                or int(cohort["id"]) <= int(registration["activation_cohort_id"])
+                or str(cohort["definition_version"])
+                    != str(definition["compatible_base_definition_version"])
+                or str(cohort["definition_hash"]) != expected_hash
+                or int(milestone["cohort_id"]) != int(cohort["id"])
+                or str(milestone["definition_version"])
+                    != str(definition["compatible_base_definition_version"])
+                or str(milestone["milestone"]) != "dex_pair_available"
+                or str(milestone["identifier"]) != identifier
+                or str(milestone["token_id"] or "") != f"solana:{identifier}"
+                or str(task.get("token_id") or "") != f"solana:{identifier}"
+                or str(task.get("input_mint") or "") != str(definition["input_mint"])
+                or str(task.get("output_mint") or "") != identifier
+                or str(task.get("input_amount_raw") or "")
+                    != str(definition["input_amount_raw"])
+                or int(task.get("slippage_bps") or -1) != int(definition["slippage_bps"])
+                or str(task.get("surface_key") or "") != str(milestone["surface_key"] or "")
+                or parse_time(task["pair_available_at"]) > parse_time(task["deadline_at"])
+            ):
+                return None
+            cursor = self.db.execute(
+                """
+                INSERT OR IGNORE INTO kol_token_addressability_route_attempts(
+                    attempt_key,definition_version,cohort_id,milestone_id,requested_at,input_mint,
+                    output_mint,input_amount_raw,slippage_bps,surface_key,deadline_at,
+                    compatible_base_definition_version,compatible_base_definition_hash,
+                    decision_eligible,affects
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,0,'none')
+                """,
+                (
+                    attempt_key, self.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION,
+                    int(task["cohort_id"]), int(task["milestone_id"]), iso(requested),
+                    str(task["input_mint"]), str(task["output_mint"]),
+                    str(task["input_amount_raw"]), int(task["slippage_bps"]),
+                    str(task["surface_key"]), str(task["deadline_at"]),
+                    self.KOL_TOKEN_ADDRESSABILITY_VERSION, expected_hash,
+                ),
+            )
+            return int(cursor.lastrowid) if cursor.rowcount == 1 else None
+
+    def record_kol_token_addressability_route_result(
+        self, task: Mapping[str, Any], *, attempt_id: int, status: str,
+        evaluated_at: Any = None, completed_at: Any = None,
+        result: Mapping[str, Any] | None = None, error_type: str = "",
+    ) -> int | None:
+        evaluated = parse_time(evaluated_at or utcnow())
+        completed = parse_time(completed_at or evaluated)
+        result = result if isinstance(result, Mapping) else {}
+        route_plan = result.get("route_plan") if isinstance(result.get("route_plan"), list) else []
+        pair_address = ""
+        try:
+            pair_address = str(json.loads(str(task["surface_key"]))[3]).casefold()
+        except (IndexError, TypeError, ValueError, json.JSONDecodeError):
+            pass
+        amm_keys = {
+            str(item.get("amm_key") or "").casefold()
+            for item in route_plan if isinstance(item, Mapping)
+        }
+        single_hop_exact = (
+            len(route_plan) == 1
+            and isinstance(route_plan[0], Mapping)
+            and str(route_plan[0].get("amm_key") or "").casefold() == pair_address
+            and int(route_plan[0].get("percent") or 0) == 100
+            and str(route_plan[0].get("input_mint") or "") == str(task["input_mint"])
+            and str(route_plan[0].get("output_mint") or "") == str(task["output_mint"])
+        )
+        surface_relation = (
+            "single_hop_exact" if single_hop_exact
+            else "multi_hop_includes_frozen_pair"
+            if pair_address and pair_address in amm_keys
+            else "unmapped"
+        )
+        surface_match = "exact" if single_hop_exact else "unmapped"
+        final_status = status
+        if status == "quoted":
+            final_status = "quoted_surface_match" if surface_match == "exact" else "quoted_surface_unmapped"
+        result_key = hashlib.sha256(
+            f"{self.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION}\n{int(task['cohort_id'])}\n"
+            f"{str(task['identifier'])}\nresult".encode("utf-8")
+        ).hexdigest()
+        with self._lock, self.db:
+            validated = self._validated_kol_route_registration_locked()
+            if validated is None:
+                return None
+            registration, definition = validated
+            attempt = self.db.execute(
+                "SELECT * FROM kol_token_addressability_route_attempts WHERE id=?",
+                (int(attempt_id),),
+            ).fetchone()
+            cohort = self.db.execute(
+                "SELECT * FROM kol_token_addressability_cohorts WHERE id=?",
+                (int(task["cohort_id"]),),
+            ).fetchone()
+            milestone = self.db.execute(
+                "SELECT * FROM kol_token_addressability_milestones WHERE id=?",
+                (int(task["milestone_id"]),),
+            ).fetchone()
+            expected_hash = str(definition["compatible_base_definition_hash"])
+            identifier = self._canonical_solana_address(task.get("identifier"))
+            if (
+                attempt is None or cohort is None or milestone is None or identifier is None
+                or str(attempt["definition_version"])
+                    != self.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION
+                or int(attempt["cohort_id"]) != int(task["cohort_id"])
+                or int(attempt["milestone_id"]) != int(task["milestone_id"])
+                or str(attempt["output_mint"]) != identifier
+                or str(attempt["input_mint"]) != str(task["input_mint"])
+                or str(attempt["input_amount_raw"]) != str(task["input_amount_raw"])
+                or int(attempt["slippage_bps"]) != int(task["slippage_bps"])
+                or str(attempt["surface_key"]) != str(task["surface_key"])
+                or str(attempt["compatible_base_definition_version"] or "")
+                    != self.KOL_TOKEN_ADDRESSABILITY_VERSION
+                or str(attempt["compatible_base_definition_hash"] or "") != expected_hash
+                or int(cohort["id"]) <= int(registration["activation_cohort_id"])
+                or str(cohort["definition_version"])
+                    != self.KOL_TOKEN_ADDRESSABILITY_VERSION
+                or str(cohort["definition_hash"]) != expected_hash
+                or int(milestone["cohort_id"]) != int(cohort["id"])
+                or str(milestone["definition_version"])
+                    != self.KOL_TOKEN_ADDRESSABILITY_VERSION
+                or str(milestone["identifier"]) != identifier
+                or str(milestone["token_id"] or "") != f"solana:{identifier}"
+                or str(task.get("token_id") or "") != f"solana:{identifier}"
+            ):
+                return None
+            requested = parse_time(attempt["requested_at"])
+            deadline = parse_time(attempt["deadline_at"])
+            terminal_status_v2 = final_status
+            response_timing_status = "response_timely"
+            if completed < requested:
+                final_status = "quote_only_protocol_invalid"
+                terminal_status_v2 = "clock_invalid"
+                response_timing_status = "clock_invalid"
+            elif completed > deadline:
+                terminal_status_v2 = "route_response_late"
+                response_timing_status = "response_late"
+            elif status == "quoted":
+                terminal_status_v2 = "route_quoted_timely"
+            if status == "quoted" and (
+                str(result.get("input_mint") or "") != str(task["input_mint"])
+                or str(result.get("output_mint") or "") != identifier
+                or str(result.get("in_amount") or "") != str(task["input_amount_raw"])
+                or int(result.get("slippage_bps") or -1) != int(task["slippage_bps"])
+            ):
+                final_status = "quote_only_protocol_invalid"
+                terminal_status_v2 = "quote_request_lineage_invalid"
+            cursor = self.db.execute(
+                """
+                INSERT OR IGNORE INTO kol_token_addressability_route_results(
+                    result_key,definition_version,cohort_id,milestone_id,attempt_id,identifier,
+                    token_id,status,evaluated_at,completed_at,output_amount_raw,
+                    other_amount_threshold_raw,router,route_plan_json,surface_key,
+                    surface_match_status,error_type,evidence_json,terminal_status_v2,
+                    pair_timing_status,request_timing_status,response_timing_status,
+                    surface_relation,decision_eligible,affects
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'none')
+                """,
+                (
+                    result_key, self.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION,
+                    int(task["cohort_id"]), int(task["milestone_id"]), int(attempt_id),
+                    str(task["identifier"]), str(task.get("token_id") or "") or None,
+                    final_status, iso(evaluated), iso(completed),
+                    result.get("output_amount_raw"), result.get("other_amount_threshold"),
+                    str(result.get("router") or "") or None, self._json(route_plan),
+                    str(task.get("surface_key") or "") or None, surface_match,
+                    str(error_type or "")[:120], self._json({
+                        "requested_at": str(result.get("requested_at") or attempt["requested_at"]),
+                        "completed_at": str(result.get("completed_at") or iso(completed)),
+                        "deadline_at": str(attempt["deadline_at"]),
+                        "pair_address": pair_address,
+                    }), terminal_status_v2, "pair_timely", "request_timely",
+                    response_timing_status, surface_relation,
+                ),
+            )
+            return int(cursor.lastrowid) if cursor.rowcount == 1 else None
+
+    def _record_kol_route_terminal(
+        self, cohort: sqlite3.Row, identifier: str, status: str, *, evaluated: Any,
+        milestone_id: int | None = None, attempt_id: int | None = None,
+        token_id: str = "", surface_key: str = "", evidence: Mapping[str, Any] | None = None,
+        terminal_status_v2: str | None = None, pair_timing_status: str | None = None,
+        request_timing_status: str | None = None,
+        response_timing_status: str | None = None,
+    ) -> int | None:
+        key = hashlib.sha256(
+            f"{self.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION}\n{int(cohort['id'])}\n"
+            f"{identifier}\nresult".encode("utf-8")
+        ).hexdigest()
+        cursor = self.db.execute(
+            """
+            INSERT OR IGNORE INTO kol_token_addressability_route_results(
+                result_key,definition_version,cohort_id,milestone_id,attempt_id,identifier,
+                token_id,status,evaluated_at,completed_at,output_amount_raw,
+                other_amount_threshold_raw,router,route_plan_json,surface_key,
+                surface_match_status,error_type,evidence_json,terminal_status_v2,
+                pair_timing_status,request_timing_status,response_timing_status,
+                surface_relation,decision_eligible,affects
+            ) VALUES(?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL,'[]',?,'not_applicable','',?,?,?,?,?,NULL,0,'none')
+            """,
+            (
+                key, self.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION, int(cohort["id"]),
+                milestone_id, attempt_id, identifier, token_id or None, status, iso(evaluated),
+                surface_key or None, self._json(evidence or {}),
+                terminal_status_v2 or status, pair_timing_status,
+                request_timing_status, response_timing_status,
+            ),
+        )
+        return int(cursor.lastrowid) if cursor.rowcount == 1 else None
+
+    @classmethod
+    def kol_token_addressability_summary_from_connection(
+        cls, connection: sqlite3.Connection,
+    ) -> dict[str, Any]:
+        connection.row_factory = sqlite3.Row
+        registration = connection.execute(
+            "SELECT * FROM kol_token_addressability_registrations WHERE definition_version=?",
+            (cls.KOL_TOKEN_ADDRESSABILITY_VERSION,),
+        ).fetchone()
+        route_registration = connection.execute(
+            "SELECT * FROM kol_token_addressability_route_registrations WHERE definition_version=?",
+            (cls.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION,),
+        ).fetchone()
+
+        def count(table: str, version: str | None = None) -> int:
+            if version is None:
+                return int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            return int(connection.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE definition_version=?", (version,),
+            ).fetchone()[0])
+
+        def grouped(table: str, column: str, version: str | None = None) -> dict[str, int]:
+            where = " WHERE definition_version=?" if version is not None else ""
+            params = (version,) if version is not None else ()
+            return {
+                str(row[0]): int(row[1])
+                for row in connection.execute(
+                    f"SELECT {column},COUNT(*) FROM {table}{where} "
+                    f"GROUP BY {column} ORDER BY {column}",
+                    params,
+                )
+            }
+
+        def grouped_non_null(table: str, column: str, version: str) -> dict[str, int]:
+            return {
+                str(row[0]): int(row[1])
+                for row in connection.execute(
+                    f"SELECT {column},COUNT(*) FROM {table} "
+                    f"WHERE definition_version=? AND {column} IS NOT NULL "
+                    f"GROUP BY {column} ORDER BY {column}",
+                    (version,),
+                )
+            }
+
+        cohorts = count("kol_token_addressability_cohorts", cls.KOL_TOKEN_ADDRESSABILITY_VERSION)
+        definition_valid = False
+        if registration is not None:
+            try:
+                definition = json.loads(str(registration["definition_json"]))
+                attention_contract = definition["event_attention_point"]
+                definition_valid = (
+                    definition.get("version") == cls.KOL_TOKEN_ADDRESSABILITY_VERSION
+                    and attention_contract.get("definition_version")
+                        == cls.EVENT_ATTENTION_TRAJECTORY_VERSION
+                    and attention_contract.get("join_key") == ["event_id", "observation_id"]
+                )
+            except (KeyError, TypeError, json.JSONDecodeError):
+                definition_valid = False
+        if registration is None:
+            status = "not_registered"
+        elif not definition_valid:
+            status = "definition_invalid"
+        else:
+            status = "observed" if cohorts else "registered_waiting"
+        route_status = "not_registered"
+        route_disposition = None
+        if route_registration is not None:
+            try:
+                route_definition = json.loads(str(route_registration["definition_json"]))
+                expected_hash = hashlib.sha256(
+                    str(registration["definition_json"]).encode("utf-8")
+                ).hexdigest() if registration is not None else ""
+                if route_definition.get("version") != cls.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION:
+                    route_status = "definition_invalid"
+                elif (
+                    route_definition.get("compatible_base_definition_version")
+                        != cls.KOL_TOKEN_ADDRESSABILITY_VERSION
+                    or route_definition.get("compatible_base_definition_hash") != expected_hash
+                ):
+                    route_status = "incompatible"
+                    if (
+                        count(
+                            "kol_token_addressability_route_attempts",
+                            cls.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION,
+                        ) == 0
+                        and count(
+                            "kol_token_addressability_route_results",
+                            cls.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION,
+                        ) == 0
+                    ):
+                        route_disposition = "registered_abandoned_before_first_attempt"
+                else:
+                    route_rows = count(
+                        "kol_token_addressability_route_results",
+                        cls.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION,
+                    )
+                    route_status = "observed" if route_rows else "registered_waiting"
+            except (TypeError, json.JSONDecodeError):
+                route_status = "definition_invalid"
+        versions = []
+        registration_rows = list(connection.execute(
+            "SELECT * FROM kol_token_addressability_registrations ORDER BY registered_at,definition_version"
+        ))
+        for item in registration_rows:
+            version = str(item["definition_version"])
+            version_cohorts = count("kol_token_addressability_cohorts", version)
+            version_status = "observed" if version_cohorts else "registered_waiting"
+            if version != cls.KOL_TOKEN_ADDRESSABILITY_VERSION and version_cohorts == 0:
+                version_status = "registered_abandoned_before_first_cohort"
+            versions.append({
+                "version": version,
+                "registered_at": str(item["registered_at"]),
+                "activation_observation_id": int(item["activation_observation_id"]),
+                "definition_hash": hashlib.sha256(
+                    str(item["definition_json"]).encode("utf-8")
+                ).hexdigest(),
+                "status": version_status,
+                "summary": {
+                    "admission_attempts": count(
+                        "kol_token_addressability_admission_attempts", version
+                    ),
+                    "cohorts": version_cohorts,
+                    "milestones": count("kol_token_addressability_milestones", version),
+                    "ambiguities": count("kol_token_addressability_ambiguities", version),
+                },
+            })
+        route_versions = []
+        for item in connection.execute(
+            "SELECT * FROM kol_token_addressability_route_registrations "
+            "ORDER BY registered_at,definition_version"
+        ):
+            version = str(item["definition_version"])
+            attempts = count("kol_token_addressability_route_attempts", version)
+            results = count("kol_token_addressability_route_results", version)
+            confirmations = count("kol_token_addressability_confirmation_results", version)
+            if version == cls.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION:
+                version_status = route_disposition or route_status
+            elif attempts == 0 and results == 0 and confirmations == 0:
+                version_status = "registered_abandoned_before_first_attempt"
+            else:
+                version_status = "observed_legacy"
+            route_versions.append({
+                "version": version,
+                "registered_at": str(item["registered_at"]),
+                "activation_cohort_id": int(item["activation_cohort_id"]),
+                "definition_hash": hashlib.sha256(
+                    str(item["definition_json"]).encode("utf-8")
+                ).hexdigest(),
+                "status": version_status,
+                "summary": {
+                    "attempts": attempts, "results": results,
+                    "confirmations": confirmations,
+                },
+            })
+        return {
+            "status": status,
+            "version": cls.KOL_TOKEN_ADDRESSABILITY_VERSION,
+            "route_version": cls.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION,
+            "route_status": route_status,
+            "route_disposition": route_disposition,
+            "registered_at": str(registration["registered_at"]) if registration else None,
+            "activation_observation_id": (
+                int(registration["activation_observation_id"]) if registration else None
+            ),
+            "route_registered_at": (
+                str(route_registration["registered_at"]) if route_registration else None
+            ),
+            "route_activation_cohort_id": (
+                int(route_registration["activation_cohort_id"]) if route_registration else None
+            ),
+            "summary": {
+                "admission_attempts": count(
+                    "kol_token_addressability_admission_attempts",
+                    cls.KOL_TOKEN_ADDRESSABILITY_VERSION,
+                ),
+                "cohorts": cohorts,
+                "milestones": count(
+                    "kol_token_addressability_milestones", cls.KOL_TOKEN_ADDRESSABILITY_VERSION,
+                ),
+                "ambiguities": count(
+                    "kol_token_addressability_ambiguities", cls.KOL_TOKEN_ADDRESSABILITY_VERSION,
+                ),
+                "route_attempts": count(
+                    "kol_token_addressability_route_attempts",
+                    cls.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION,
+                ),
+                "route_results": count(
+                    "kol_token_addressability_route_results",
+                    cls.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION,
+                ),
+                "confirmation_results": count(
+                    "kol_token_addressability_confirmation_results",
+                    cls.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION,
+                ),
+            },
+            "admission_reasons": grouped(
+                "kol_token_addressability_admission_attempts", "reason",
+                cls.KOL_TOKEN_ADDRESSABILITY_VERSION,
+            ),
+            "route_statuses": grouped(
+                "kol_token_addressability_route_results", "status",
+                cls.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION,
+            ),
+            "route_terminal_statuses": grouped_non_null(
+                "kol_token_addressability_route_results", "terminal_status_v2",
+                cls.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION,
+            ),
+            "route_surface_relations": grouped_non_null(
+                "kol_token_addressability_route_results", "surface_relation",
+                cls.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION,
+            ),
+            "confirmation_statuses": grouped(
+                "kol_token_addressability_confirmation_results", "status",
+                cls.KOL_TOKEN_ADDRESSABILITY_ROUTE_VERSION,
+            ),
+            "legacy_base_versions": grouped(
+                "kol_token_addressability_cohorts", "definition_version"
+            ),
+            "versions": versions,
+            "route_versions": route_versions,
+            "decision_eligible": False,
+            "affects": "none",
+            "production_writes": [],
+        }
+
     @staticmethod
     def _information_first_label(value: Any) -> str:
         return re.sub(r"\s+", " ", str(value or "").strip().casefold())[:160]
+
+    @classmethod
+    def _information_first_active_outcome_definition(cls) -> dict[str, Any]:
+        return {
+            "version": cls.INFORMATION_FIRST_ACTIVE_OUTCOME_VERSION,
+            "activation": "shadow_cohort_id_strictly_after_registration",
+            "horizons_minutes": list(cls.INFORMATION_FIRST_SHADOW_HORIZONS_MINUTES),
+            "retry_offsets_seconds": list(cls.INFORMATION_FIRST_ACTIVE_OUTCOME_RETRY_SECONDS),
+            "deadline_seconds": cls.INFORMATION_FIRST_ACTIVE_OUTCOME_DEADLINE_SECONDS,
+            "provider": "dexscreener",
+            "semantics": "descriptive_mark_not_executable_pnl",
+            "writes_generic_token_snapshots": False,
+            "uses_jupiter": False,
+            "uses_agent": False,
+            "append_only": True,
+            "no_historical_backfill": True,
+            "decision_eligible": False,
+            "affects": "none",
+        }
 
     @classmethod
     def _information_first_ilg_definition(cls) -> dict[str, Any]:
@@ -7163,6 +13521,7 @@ class Store:
                 ),
             )
             cohort_id = int(cursor.lastrowid)
+            self._enroll_information_first_active_outcomes_locked(cohort_id)
             self._create_information_first_ilg_cohort(cohort_id, enrolled_at=captured)
             record_admission(
                 "created_baseline_missing" if entry is None else "created",
@@ -7170,6 +13529,275 @@ class Store:
                 cohort_id,
             )
             return cohort_id
+
+    def _enroll_information_first_active_outcomes_locked(self, shadow_cohort_id: int) -> int:
+        registration = self.db.execute(
+            "SELECT * FROM information_first_active_outcome_registrations "
+            "WHERE definition_version=?",
+            (self.INFORMATION_FIRST_ACTIVE_OUTCOME_VERSION,),
+        ).fetchone()
+        if (
+            registration is None
+            or int(shadow_cohort_id) <= int(registration["activation_shadow_cohort_id"])
+        ):
+            return 0
+        cohort = self.db.execute(
+            "SELECT c.*,t.chain,t.address FROM information_first_shadow_cohorts c "
+            "JOIN tokens t ON t.token_id=c.token_id WHERE c.id=? AND c.version=?",
+            (int(shadow_cohort_id), self.INFORMATION_FIRST_SHADOW_VERSION),
+        ).fetchone()
+        if cohort is None or str(cohort["chain"] or "").casefold() not in {"solana", "bsc"}:
+            return 0
+        signal = parse_time(cohort["signal_available_at"])
+        recorded_at = iso()
+        inserted = 0
+        for horizon in self.INFORMATION_FIRST_SHADOW_HORIZONS_MINUTES:
+            target = signal + timedelta(minutes=int(horizon))
+            deadline = target + timedelta(
+                seconds=self.INFORMATION_FIRST_ACTIVE_OUTCOME_DEADLINE_SECONDS
+            )
+            target_key = hashlib.sha256(
+                f"{self.INFORMATION_FIRST_ACTIVE_OUTCOME_VERSION}\n{int(shadow_cohort_id)}\n{int(horizon)}".encode(
+                    "utf-8"
+                )
+            ).hexdigest()
+            cursor = self.db.execute(
+                "INSERT OR IGNORE INTO information_first_active_outcome_targets("
+                "target_key,definition_version,shadow_cohort_id,token_id,chain,address,"
+                "horizon_minutes,target_at,deadline_at,registered_at,decision_eligible,affects) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,0,'none')",
+                (
+                    target_key,
+                    self.INFORMATION_FIRST_ACTIVE_OUTCOME_VERSION,
+                    int(shadow_cohort_id),
+                    str(cohort["token_id"]),
+                    str(cohort["chain"]).casefold(),
+                    str(cohort["address"]),
+                    int(horizon),
+                    iso(target),
+                    iso(deadline),
+                    recorded_at,
+                ),
+            )
+            inserted += int(cursor.rowcount > 0)
+        return inserted
+
+    def due_information_first_active_outcome_targets(
+        self, *, now: Any = None, limit: int = 4
+    ) -> list[dict[str, Any]]:
+        evaluated = parse_time(now or utcnow())
+        due: list[dict[str, Any]] = []
+        with self._lock:
+            rows = list(
+                self.db.execute(
+                    """
+                    SELECT t.*,COUNT(a.id) AS attempt_count
+                    FROM information_first_active_outcome_targets t
+                    LEFT JOIN information_first_active_outcome_attempts a ON a.target_id=t.id
+                    LEFT JOIN information_first_active_outcome_terminals z ON z.target_id=t.id
+                    WHERE t.definition_version=? AND z.id IS NULL
+                      AND t.target_at<=? AND t.deadline_at>=?
+                    GROUP BY t.id ORDER BY t.target_at,t.id
+                    """,
+                    (
+                        self.INFORMATION_FIRST_ACTIVE_OUTCOME_VERSION,
+                        iso(evaluated),
+                        iso(evaluated),
+                    ),
+                )
+            )
+        for row in rows:
+            retry_index = int(row["attempt_count"])
+            if retry_index >= len(self.INFORMATION_FIRST_ACTIVE_OUTCOME_RETRY_SECONDS):
+                continue
+            scheduled = parse_time(row["target_at"]) + timedelta(
+                seconds=self.INFORMATION_FIRST_ACTIVE_OUTCOME_RETRY_SECONDS[retry_index]
+            )
+            if scheduled > evaluated:
+                continue
+            item = dict(row)
+            item["retry_index"] = retry_index
+            item["scheduled_at"] = iso(scheduled)
+            due.append(item)
+            if len(due) >= max(1, min(50, int(limit))):
+                break
+        return due
+
+    def start_information_first_active_outcome_attempt(
+        self,
+        target_id: int,
+        *,
+        retry_index: int,
+        scheduled_at: Any,
+        requested_at: Any = None,
+    ) -> int | None:
+        requested = parse_time(requested_at or utcnow())
+        scheduled = parse_time(scheduled_at)
+        attempt_key = hashlib.sha256(
+            f"{self.INFORMATION_FIRST_ACTIVE_OUTCOME_VERSION}\n{int(target_id)}\n{int(retry_index)}".encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        with self._lock, self.db:
+            target = self.db.execute(
+                "SELECT t.* FROM information_first_active_outcome_targets t "
+                "LEFT JOIN information_first_active_outcome_terminals z ON z.target_id=t.id "
+                "WHERE t.id=? AND t.definition_version=? AND z.id IS NULL",
+                (int(target_id), self.INFORMATION_FIRST_ACTIVE_OUTCOME_VERSION),
+            ).fetchone()
+            if (
+                target is None
+                or scheduled > requested
+                or requested > parse_time(target["deadline_at"])
+            ):
+                return None
+            self.db.execute(
+                "INSERT OR IGNORE INTO information_first_active_outcome_attempts("
+                "attempt_key,definition_version,target_id,retry_index,scheduled_at,requested_at,"
+                "recorded_at,decision_eligible,affects) VALUES(?,?,?,?,?,?,?,0,'none')",
+                (
+                    attempt_key,
+                    self.INFORMATION_FIRST_ACTIVE_OUTCOME_VERSION,
+                    int(target_id),
+                    int(retry_index),
+                    iso(scheduled),
+                    iso(requested),
+                    iso(),
+                ),
+            )
+            row = self.db.execute(
+                "SELECT id FROM information_first_active_outcome_attempts WHERE attempt_key=?",
+                (attempt_key,),
+            ).fetchone()
+        return int(row["id"]) if row is not None else None
+
+    def finish_information_first_active_outcome_attempt(
+        self,
+        attempt_id: int,
+        *,
+        status: str,
+        reason_code: str,
+        response_received_at: Any = None,
+        snapshot: TokenSnapshot | None = None,
+    ) -> int:
+        allowed = {
+            "observed_mark", "no_pair", "rate_limited", "http_error", "timeout",
+            "protocol_invalid", "provider_empty", "late_response",
+        }
+        status = str(status).strip().casefold()
+        if status not in allowed:
+            raise ValueError("invalid information-first active outcome status")
+        received = parse_time(response_received_at or utcnow())
+        with self._lock, self.db:
+            row = self.db.execute(
+                "SELECT a.*,t.deadline_at FROM information_first_active_outcome_attempts a "
+                "JOIN information_first_active_outcome_targets t ON t.id=a.target_id WHERE a.id=?",
+                (int(attempt_id),),
+            ).fetchone()
+            if row is None:
+                raise ValueError("information-first active outcome attempt missing")
+            existing = self.db.execute(
+                "SELECT id FROM information_first_active_outcome_results WHERE attempt_id=?",
+                (int(attempt_id),),
+            ).fetchone()
+            if existing is not None:
+                return int(existing["id"])
+            if received > parse_time(row["deadline_at"]):
+                status, reason_code = "late_response", "response_after_frozen_deadline"
+                snapshot = None
+            requested = parse_time(row["requested_at"])
+            result_key = hashlib.sha256(
+                f"{self.INFORMATION_FIRST_ACTIVE_OUTCOME_VERSION}\n{int(attempt_id)}".encode("utf-8")
+            ).hexdigest()
+            cursor = self.db.execute(
+                "INSERT INTO information_first_active_outcome_results("
+                "result_key,definition_version,target_id,attempt_id,status,reason_code,"
+                "response_received_at,latency_ms,observed_at,provider,price_usd,liquidity_usd,"
+                "market_cap_usd,volume_5m_usd,buys_5m,sells_5m,recorded_at,decision_eligible,affects) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'none')",
+                (
+                    result_key,
+                    self.INFORMATION_FIRST_ACTIVE_OUTCOME_VERSION,
+                    int(row["target_id"]),
+                    int(attempt_id),
+                    status,
+                    str(reason_code)[:160],
+                    iso(received),
+                    max(0.0, (received - requested).total_seconds() * 1000),
+                    iso(snapshot.observed_at) if snapshot is not None else None,
+                    str(snapshot.provider) if snapshot is not None else None,
+                    snapshot.price_usd if snapshot is not None else None,
+                    snapshot.liquidity_usd if snapshot is not None else None,
+                    snapshot.market_cap_usd if snapshot is not None else None,
+                    snapshot.volume_5m_usd if snapshot is not None else None,
+                    snapshot.buys_5m if snapshot is not None else None,
+                    snapshot.sells_5m if snapshot is not None else None,
+                    iso(),
+                ),
+            )
+            result_id = int(cursor.lastrowid)
+            if status in {"observed_mark", "no_pair", "late_response"}:
+                self.db.execute(
+                    "INSERT OR IGNORE INTO information_first_active_outcome_terminals("
+                    "target_id,definition_version,status,reason_code,winning_result_id,"
+                    "response_received_at,observed_at,provider,price_usd,liquidity_usd,market_cap_usd,"
+                    "volume_5m_usd,buys_5m,sells_5m,finalized_at,decision_eligible,affects) "
+                    "SELECT target_id,definition_version,status,reason_code,id,response_received_at,"
+                    "observed_at,provider,price_usd,liquidity_usd,market_cap_usd,volume_5m_usd,"
+                    "buys_5m,sells_5m,?,0,'none' FROM information_first_active_outcome_results WHERE id=?",
+                    (iso(received), result_id),
+                )
+        return result_id
+
+    def finalize_information_first_active_outcome_deadlines(
+        self, *, now: Any = None
+    ) -> dict[str, int]:
+        evaluated = parse_time(now or utcnow())
+        finalized = 0
+        with self._lock, self.db:
+            targets = list(
+                self.db.execute(
+                    "SELECT t.* FROM information_first_active_outcome_targets t "
+                    "LEFT JOIN information_first_active_outcome_terminals z ON z.target_id=t.id "
+                    "WHERE t.definition_version=? AND z.id IS NULL AND t.deadline_at<=? "
+                    "ORDER BY t.deadline_at,t.id",
+                    (self.INFORMATION_FIRST_ACTIVE_OUTCOME_VERSION, iso(evaluated)),
+                )
+            )
+            for target in targets:
+                attempt_count = int(
+                    self.db.execute(
+                        "SELECT COUNT(*) FROM information_first_active_outcome_attempts WHERE target_id=?",
+                        (int(target["id"]),),
+                    ).fetchone()[0]
+                )
+                last_result = self.db.execute(
+                    "SELECT * FROM information_first_active_outcome_results WHERE target_id=? "
+                    "ORDER BY id DESC LIMIT 1",
+                    (int(target["id"]),),
+                ).fetchone()
+                if attempt_count == 0:
+                    status, reason = "scheduler_missed_deadline", "no_request_before_deadline"
+                else:
+                    status = "terminal_missing"
+                    reason = (
+                        f"last_{last_result['status']}:{last_result['reason_code']}"
+                        if last_result is not None else "attempt_without_result"
+                    )
+                cursor = self.db.execute(
+                    "INSERT OR IGNORE INTO information_first_active_outcome_terminals("
+                    "target_id,definition_version,status,reason_code,finalized_at,"
+                    "decision_eligible,affects) VALUES(?,?,?,?,?,0,'none')",
+                    (
+                        int(target["id"]),
+                        self.INFORMATION_FIRST_ACTIVE_OUTCOME_VERSION,
+                        status,
+                        reason[:160],
+                        iso(evaluated),
+                    ),
+                )
+                finalized += int(cursor.rowcount > 0)
+        return {"targets_checked": len(targets), "targets_finalized": finalized}
 
     def finalize_information_first_shadow_outcomes(
         self,
@@ -8226,6 +14854,7 @@ class Store:
             "version": cls.TOKEN_DISCOVERY_QUOTE_ATTEMPT_VERSION,
             "scope": "post_registration_token_universe_dexscreener_batch_quotes",
             "unit": "one_requested_token_per_batch_round",
+            "request_unit": "one_provider_batch_round",
             "terminal_statuses": ["success", "no_pair", "error", "interrupted"],
             "error_retry": "bounded_exponential_with_deterministic_jitter",
             "deadline_miss": "completed_at_after_deadline",
@@ -11074,6 +17703,8 @@ class Store:
         fee_bps: float | None = None,
         platform_fee_bps: float | None = None,
         price_impact_pct: float | None = None,
+        price_impact_bps: float | None = None,
+        price_impact_source: str = "",
         context_slot: int | None = None,
         time_taken_ms: float | None = None,
         route_plan: Iterable[Mapping[str, Any]] | None = None,
@@ -11265,6 +17896,8 @@ class Store:
                 "fee_bps": fee_bps,
                 "platform_fee_bps": platform_fee_bps,
                 "price_impact_pct": price_impact_pct,
+                "price_impact_bps": price_impact_bps,
+                "price_impact_source": clean(price_impact_source, 80),
                 "context_slot": int(context_slot) if context_slot is not None else None,
                 "time_taken_ms": time_taken_ms,
                 "route_json": self._json(normalized_route),
@@ -11286,7 +17919,3005 @@ class Store:
                 "SELECT id FROM onchain_only_jupiter_quote_results WHERE quote_key=?",
                 (str(task["quote_key"]),),
             ).fetchone()
+            result_id = int(row["id"]) if row is not None else None
+            if result_id is not None:
+                self._apply_onchain_paper_exploration_quote_locked(result_id)
+            return result_id
+
+    def register_onchain_only_evm_route_quote(
+        self,
+        networks: Mapping[str, Mapping[str, Any]],
+        *,
+        paper_stake_usd: float = 35,
+        slippage_bps: int = 400,
+        max_queue_delay_seconds: float = 30,
+        max_total_delay_seconds: float = 45,
+    ) -> sqlite3.Row:
+        """Freeze a no-key, fixed-block EVM Quoter research overlay."""
+        stake = Decimal(str(paper_stake_usd))
+        if stake <= 0:
+            raise ValueError("paper_stake_usd must be positive")
+        clean_networks: dict[str, dict[str, Any]] = {}
+        amounts: dict[str, str] = {}
+        address_pattern = re.compile(r"0x[0-9a-fA-F]{40}")
+        for chain in sorted(self.EVM_ROUTE_RESEARCH_CHAINS):
+            item = networks.get(chain)
+            if not isinstance(item, Mapping):
+                raise ValueError(f"missing EVM route network definition: {chain}")
+            normalized = {
+                "chain_id": int(item["chain_id"]),
+                "rpc_url": str(item["rpc_url"]).strip(),
+                "factory": str(item["factory"]).strip().lower(),
+                "quoter": str(item["quoter"]).strip().lower(),
+                "accounting_token": str(item["accounting_token"]).strip().lower(),
+                "accounting_symbol": str(item["accounting_symbol"]).strip()[:20],
+                "accounting_decimals": int(item["accounting_decimals"]),
+                "wrapped_native": str(item["wrapped_native"]).strip().lower(),
+                "native_symbol": str(item["native_symbol"]).strip()[:20],
+                "fee_tiers": sorted({int(value) for value in item.get("fee_tiers", ())}),
+            }
+            if (
+                normalized["chain_id"] <= 0
+                or not normalized["rpc_url"].startswith("https://")
+                or normalized["accounting_decimals"] < 0
+                or normalized["accounting_decimals"] > 36
+                or not normalized["fee_tiers"]
+                or any(
+                    address_pattern.fullmatch(normalized[name]) is None
+                    for name in ("factory", "quoter", "accounting_token", "wrapped_native")
+                )
+            ):
+                raise ValueError(f"invalid EVM route network definition: {chain}")
+            clean_networks[chain] = normalized
+            amounts[chain] = str(int(stake * (10 ** normalized["accounting_decimals"])))
+        queue_limit = max(1.0, float(max_queue_delay_seconds))
+        total_limit = max(queue_limit, float(max_total_delay_seconds))
+        definition = {
+            "version": self.ONCHAIN_ONLY_EVM_ROUTE_QUOTE_VERSION,
+            "source": self.ONCHAIN_ONLY_SHADOW_VERSION,
+            "provider": "uniswap_v3_quoter_v2",
+            "no_historical_backfill": True,
+            "networks": clean_networks,
+            "paper_stake_usd": float(stake),
+            "input_amount_raw_by_chain": amounts,
+            "slippage_bps": max(1, min(5_000, int(slippage_bps))),
+            "max_queue_delay_seconds": queue_limit,
+            "max_total_delay_seconds": total_limit,
+            "execution_scope": "pool_math_quote_only",
+            "venue_fee_semantics": "uniswap_v3_fee_tier_embedded_in_amount_out",
+            "fee_completeness": "quote_only_no_full_transaction_network_fee",
+            "economic_status": "cost_unknown",
+            "transfer_semantics_checked": False,
+            "router_transaction_simulated": False,
+            "decision_eligible": False,
+            "affects": "none",
+        }
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO onchain_only_evm_route_quote_registrations("
+                "definition_version,registered_at,activation_shadow_cohort_id,definition_json) "
+                "VALUES(?,?,COALESCE((SELECT MAX(id) FROM onchain_only_shadow_cohorts),0),?)",
+                (
+                    self.ONCHAIN_ONLY_EVM_ROUTE_QUOTE_VERSION,
+                    iso(),
+                    self._json(definition),
+                ),
+            )
+            return self.db.execute(
+                "SELECT * FROM onchain_only_evm_route_quote_registrations "
+                "WHERE definition_version=?",
+                (self.ONCHAIN_ONLY_EVM_ROUTE_QUOTE_VERSION,),
+            ).fetchone()
+
+    @staticmethod
+    def _onchain_only_evm_route_quote_key(shadow_cohort_id: int) -> str:
+        return f"onchain-evm-route:{int(shadow_cohort_id)}"
+
+    @staticmethod
+    def onchain_only_evm_route_preflight_reason(
+        task: Mapping[str, Any],
+        *,
+        evaluated_at: Any = None,
+    ) -> str | None:
+        explicit = str(task.get("preflight_reason") or "")
+        if explicit:
+            return explicit
+        anchor = parse_time(task["anchor_at"])
+        evaluated = parse_time(evaluated_at or utcnow())
+        if evaluated < anchor:
+            return "queue_delay_expired"
+        if (evaluated - anchor).total_seconds() > float(task["max_queue_delay_seconds"]):
+            return "queue_delay_expired"
+        return None
+
+    def due_onchain_only_evm_route_quotes(
+        self,
+        *,
+        now: Any = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        current = parse_time(now or utcnow())
+        with self._lock:
+            registration = self.db.execute(
+                "SELECT * FROM onchain_only_evm_route_quote_registrations "
+                "WHERE definition_version=?",
+                (self.ONCHAIN_ONLY_EVM_ROUTE_QUOTE_VERSION,),
+            ).fetchone()
+            if registration is None:
+                return []
+            definition = self._json_object(registration["definition_json"])
+            rows = self.db.execute(
+                """
+                SELECT c.*,a.id AS attempt_id
+                FROM onchain_only_shadow_cohorts c
+                LEFT JOIN onchain_only_evm_route_quote_attempts a
+                  ON a.definition_version=? AND a.shadow_cohort_id=c.id
+                LEFT JOIN onchain_only_evm_route_quote_results r
+                  ON r.definition_version=? AND r.shadow_cohort_id=c.id
+                WHERE c.definition_version=? AND c.id>?
+                  AND lower(c.chain) IN ('bsc','base','robinhood')
+                  AND r.id IS NULL
+                ORDER BY c.trigger_recorded_at,c.id
+                """,
+                (
+                    self.ONCHAIN_ONLY_EVM_ROUTE_QUOTE_VERSION,
+                    self.ONCHAIN_ONLY_EVM_ROUTE_QUOTE_VERSION,
+                    self.ONCHAIN_ONLY_SHADOW_VERSION,
+                    int(registration["activation_shadow_cohort_id"]),
+                ),
+            ).fetchall()
+            tasks: list[dict[str, Any]] = []
+            for row in rows:
+                chain = str(row["chain"]).lower()
+                token_id = str(row["token_id"])
+                if chain not in self.EVM_ROUTE_RESEARCH_CHAINS or ":" not in token_id:
+                    continue
+                network = definition["networks"][chain]
+                tasks.append({
+                    "lane": self.ONCHAIN_ONLY_EVM_ROUTE_QUOTE_VERSION,
+                    "quote_key": self._onchain_only_evm_route_quote_key(int(row["id"])),
+                    "shadow_cohort_id": int(row["id"]),
+                    "attempt_id": int(row["attempt_id"]) if row["attempt_id"] else None,
+                    "baseline_snapshot_id": int(row["trigger_snapshot_id"]),
+                    "token_id": token_id,
+                    "chain": chain,
+                    "anchor_at": str(row["trigger_recorded_at"]),
+                    "input_token": str(network["accounting_token"]),
+                    "output_token": token_id.split(":", 1)[1].lower(),
+                    "accounting_symbol": str(network["accounting_symbol"]),
+                    "accounting_decimals": int(network["accounting_decimals"]),
+                    "input_amount_raw": str(definition["input_amount_raw_by_chain"][chain]),
+                    "slippage_bps": int(definition["slippage_bps"]),
+                    "max_queue_delay_seconds": float(definition["max_queue_delay_seconds"]),
+                    "max_total_delay_seconds": float(definition["max_total_delay_seconds"]),
+                    "preflight_reason": (
+                        "request_evidence_missing" if row["attempt_id"] is not None
+                        else "trigger_baseline_invalid"
+                        if str(row["baseline_status"]) != "valid" else None
+                    ),
+                })
+            tasks.sort(key=lambda item: (
+                parse_time(item["anchor_at"])
+                + timedelta(seconds=float(item["max_queue_delay_seconds"])),
+                int(item["shadow_cohort_id"]),
+            ))
+            return tasks[:max(1, int(limit))]
+
+    def start_onchain_only_evm_route_quote_attempt(
+        self,
+        task: Mapping[str, Any],
+        *,
+        requested_at: Any = None,
+    ) -> int | None:
+        requested = parse_time(requested_at or utcnow())
+        if self.onchain_only_evm_route_preflight_reason(task, evaluated_at=requested):
+            return None
+        values = {
+            "definition_version": self.ONCHAIN_ONLY_EVM_ROUTE_QUOTE_VERSION,
+            "quote_key": str(task["quote_key"]),
+            "shadow_cohort_id": int(task["shadow_cohort_id"]),
+            "baseline_snapshot_id": int(task["baseline_snapshot_id"]),
+            "token_id": str(task["token_id"]),
+            "chain": str(task["chain"]).lower(),
+            "anchor_at": str(task["anchor_at"]),
+            "input_token": str(task["input_token"]).lower(),
+            "output_token": str(task["output_token"]).lower(),
+            "input_amount_raw": str(task["input_amount_raw"]),
+            "slippage_bps": int(task["slippage_bps"]),
+            "requested_at": iso(requested),
+        }
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO onchain_only_evm_route_quote_attempts("
+                + ",".join(values)
+                + ",decision_eligible,affects) VALUES("
+                + ",".join(f":{name}" for name in values)
+                + ",0,'none')",
+                values,
+            )
+            row = self.db.execute(
+                "SELECT id FROM onchain_only_evm_route_quote_attempts WHERE quote_key=?",
+                (str(task["quote_key"]),),
+            ).fetchone()
             return int(row["id"]) if row is not None else None
+
+    def record_onchain_only_evm_route_quote(
+        self,
+        task: Mapping[str, Any],
+        *,
+        status: str,
+        result: Mapping[str, Any] | None = None,
+        error_type: str = "",
+        attempt_id: int | None = None,
+        requested_at: Any = None,
+        completed_at: Any = None,
+        evaluated_at: Any = None,
+    ) -> int | None:
+        statuses = {
+            "not_requested", "quoted", "no_official_pool",
+            "buy_quote_unavailable", "sell_quote_unavailable", "error",
+            "quote_only_protocol_invalid", "interrupted_after_request",
+        }
+        if status not in statuses:
+            raise ValueError("invalid onchain-only EVM route quote status")
+        payload = dict(result or {})
+        requested = parse_time(requested_at) if requested_at is not None else None
+        completed = parse_time(completed_at) if completed_at is not None else None
+        evaluated = parse_time(evaluated_at or completed_at or requested_at or utcnow())
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT * FROM onchain_only_evm_route_quote_registrations "
+                "WHERE definition_version=?",
+                (self.ONCHAIN_ONLY_EVM_ROUTE_QUOTE_VERSION,),
+            ).fetchone()
+            if (
+                registration is None
+                or int(task["shadow_cohort_id"])
+                <= int(registration["activation_shadow_cohort_id"])
+            ):
+                return None
+            definition = self._json_object(registration["definition_json"])
+            chain = str(task["chain"]).lower()
+            network = (definition.get("networks") or {}).get(chain) or {}
+            if (
+                chain not in self.EVM_ROUTE_RESEARCH_CHAINS
+                or str(task["input_amount_raw"])
+                != str((definition.get("input_amount_raw_by_chain") or {}).get(chain))
+                or str(task["input_token"]).lower()
+                != str(network.get("accounting_token") or "").lower()
+                or int(task["slippage_bps"]) != int(definition.get("slippage_bps") or 0)
+            ):
+                raise ValueError("EVM route task does not match frozen registration")
+            if self.db.execute(
+                "SELECT 1 FROM onchain_only_evm_route_quote_results WHERE quote_key=?",
+                (str(task["quote_key"]),),
+            ).fetchone() is not None:
+                return None
+            attempt_id = attempt_id or task.get("attempt_id")
+            attempt = None
+            if attempt_id is not None:
+                attempt = self.db.execute(
+                    "SELECT * FROM onchain_only_evm_route_quote_attempts WHERE id=?",
+                    (int(attempt_id),),
+                ).fetchone()
+                if attempt is None or str(attempt["quote_key"]) != str(task["quote_key"]):
+                    raise ValueError("invalid onchain-only EVM route attempt")
+                requested = requested or parse_time(attempt["requested_at"])
+            if status == "not_requested" and attempt is not None:
+                raise ValueError("not_requested result cannot reference an attempt")
+            if status != "not_requested" and attempt is None:
+                raise ValueError("provider result requires a persisted attempt")
+            if status not in {"not_requested", "interrupted_after_request"} and (
+                requested is None or completed is None
+            ):
+                raise ValueError("requested and completed timestamps are required")
+            anchor = parse_time(task["anchor_at"])
+            preflight = self.onchain_only_evm_route_preflight_reason(
+                task, evaluated_at=requested or evaluated
+            )
+            validity = (
+                "request_evidence_missing"
+                if status == "interrupted_after_request" else preflight or "valid"
+            )
+            queue_at = requested or evaluated
+            queue_delay = max(0.0, (queue_at - anchor).total_seconds())
+            request_duration = (
+                (completed - requested).total_seconds()
+                if requested is not None and completed is not None else None
+            )
+            total_delay = (
+                (completed - anchor).total_seconds() if completed is not None else None
+            )
+            if validity == "valid" and (
+                requested is None or completed is None or requested > completed
+            ):
+                validity = "request_evidence_missing"
+            if validity == "valid" and (
+                total_delay is None
+                or total_delay > float(task["max_total_delay_seconds"])
+            ):
+                validity = "total_delay_expired"
+            integer_field = lambda name: (
+                str(int(payload[name])) if payload.get(name) is not None else None
+            )
+            buy_output = integer_field("buy_output_raw")
+            buy_minimum = integer_field("buy_minimum_output_raw")
+            sell_output = integer_field("sell_output_raw")
+            sell_minimum = integer_field("sell_minimum_output_raw")
+            ratio = payload.get("immediate_round_trip_stable_ratio")
+            if status == "quoted" and (
+                buy_output is None or int(buy_output) <= 0
+                or buy_minimum is None or not 0 < int(buy_minimum) <= int(buy_output)
+                or sell_output is None or int(sell_output) <= 0
+                or sell_minimum is None or not 0 < int(sell_minimum) <= int(sell_output)
+                or ratio is None or float(ratio) <= 0
+            ):
+                raise ValueError("quoted EVM route result requires valid bidirectional output")
+            if status == "quoted" and (
+                int(payload.get("chain_id") or 0) != int(network.get("chain_id") or -1)
+                or completed is None
+                or payload.get("block_timestamp") is None
+                or parse_time(payload["block_timestamp"]) > completed
+            ):
+                raise ValueError("quoted EVM route result has invalid fixed-block provenance")
+            if status != "quoted":
+                buy_output = buy_minimum = sell_output = sell_minimum = None
+                ratio = None
+            clean_error = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(error_type or ""))[:80]
+            values = {
+                "definition_version": self.ONCHAIN_ONLY_EVM_ROUTE_QUOTE_VERSION,
+                "quote_key": str(task["quote_key"]),
+                "shadow_cohort_id": int(task["shadow_cohort_id"]),
+                "attempt_id": int(attempt_id) if attempt_id is not None else None,
+                "baseline_snapshot_id": int(task["baseline_snapshot_id"]),
+                "token_id": str(task["token_id"]),
+                "chain": str(task["chain"]).lower(),
+                "anchor_at": iso(anchor),
+                "provider": "uniswap_v3_quoter_v2",
+                "chain_id": int(payload["chain_id"]) if payload.get("chain_id") is not None else None,
+                "block_number": int(payload["block_number"]) if payload.get("block_number") is not None else None,
+                "block_hash": str(payload.get("block_hash") or "")[:80] or None,
+                "block_timestamp": str(payload.get("block_timestamp") or "")[:80] or None,
+                "input_token": str(task["input_token"]).lower(),
+                "output_token": str(task["output_token"]).lower(),
+                "accounting_symbol": str(task["accounting_symbol"])[:20],
+                "accounting_decimals": int(task["accounting_decimals"]),
+                "input_amount_raw": str(task["input_amount_raw"]),
+                "slippage_bps": int(task["slippage_bps"]),
+                "buy_output_raw": buy_output,
+                "buy_minimum_output_raw": buy_minimum,
+                "sell_output_raw": sell_output,
+                "sell_minimum_output_raw": sell_minimum,
+                "buy_path_json": self._json(payload.get("buy_path") or []),
+                "sell_path_json": self._json(payload.get("sell_path") or []),
+                "buy_quoter_gas_estimate": int(payload["buy_quoter_gas_estimate"]) if payload.get("buy_quoter_gas_estimate") is not None else None,
+                "sell_quoter_gas_estimate": int(payload["sell_quoter_gas_estimate"]) if payload.get("sell_quoter_gas_estimate") is not None else None,
+                "quote_terminal_status": status,
+                "validity_status": validity,
+                "requested_at": iso(requested) if requested is not None else None,
+                "completed_at": iso(completed) if completed is not None else None,
+                "queue_delay_seconds": queue_delay,
+                "request_duration_seconds": request_duration,
+                "total_delay_seconds": total_delay,
+                "max_queue_delay_seconds": float(task["max_queue_delay_seconds"]),
+                "max_total_delay_seconds": float(task["max_total_delay_seconds"]),
+                "immediate_round_trip_stable_ratio": float(ratio) if ratio is not None else None,
+                "venue_fee_semantics": "uniswap_v3_fee_tier_embedded_in_amount_out",
+                "fee_completeness": "quote_only_no_full_transaction_network_fee",
+                "economic_status": "cost_unknown",
+                "execution_scope": "pool_math_quote_only",
+                "transfer_semantics_checked": 0,
+                "router_transaction_simulated": 0,
+                "error_type": clean_error,
+                "recorded_at": iso(),
+            }
+            columns = list(values)
+            self.db.execute(
+                "INSERT OR IGNORE INTO onchain_only_evm_route_quote_results("
+                + ",".join(columns)
+                + ",decision_eligible,affects) VALUES("
+                + ",".join(f":{name}" for name in columns)
+                + ",0,'none')",
+                values,
+            )
+            row = self.db.execute(
+                "SELECT id FROM onchain_only_evm_route_quote_results WHERE quote_key=?",
+                (str(task["quote_key"]),),
+            ).fetchone()
+            return int(row["id"]) if row is not None else None
+
+    def register_onchain_paper_exploration(
+        self,
+        *,
+        starting_cash_usd: float,
+        max_open_positions: int = 0,
+        estimated_network_fee_usd_each_side: float = 0.01,
+    ) -> sqlite3.Row:
+        """Enable a separate, forward-only Paper ledger backed by Jupiter quotes."""
+        definition = {
+            "version": self.ONCHAIN_PAPER_EXPLORATION_VERSION,
+            "source": self.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+            "no_historical_backfill": True,
+            "entry": "new_valid_baseline_minimum_output_after_registration",
+            "exit": "first_valid_15_60_240m_minimum_output_or_240m_writeoff",
+            "max_open_positions": max(0, int(max_open_positions)),
+            "estimated_network_fee_usd_each_side": max(
+                0.0, float(estimated_network_fee_usd_each_side)
+            ),
+            "fee_model": "flat_usdc_per_economic_fill",
+            "fixed_execution_fee_usd_each_side": max(
+                0.0, float(estimated_network_fee_usd_each_side)
+            ),
+            "maximum_adverse_price_impact_bps": -1_000.0,
+            "minimum_positive_net_exit_usd": 0.0,
+            "route_fees_and_slippage": "included_in_jupiter_minimum_output",
+            "economic_execution": (
+                "entry_requires_normalized_price_impact_within_frozen_limit; "
+                "exit requires minimum USDC output above network cost"
+            ),
+            "simulated": True,
+            "live_execution": False,
+            "affects_main_strategy": False,
+        }
+        starting_cash = max(0.01, float(starting_cash_usd))
+        self._onchain_paper_max_open_positions = max(0, int(max_open_positions))
+        with self._lock, self.db:
+            self.db.execute(
+                """
+                INSERT OR IGNORE INTO onchain_paper_exploration_registrations(
+                    definition_version,registered_at,activation_quote_result_id,definition_json
+                ) VALUES(?,?,COALESCE((
+                    SELECT MAX(id) FROM onchain_only_jupiter_quote_results
+                ),0),?)
+                """,
+                (self.ONCHAIN_PAPER_EXPLORATION_VERSION, iso(), self._json(definition)),
+            )
+            self.db.execute(
+                """
+                INSERT OR IGNORE INTO onchain_paper_exploration_account(
+                    definition_version,starting_cash_usd,cash_usd,realized_pnl_usd,updated_at
+                ) VALUES(?,?,?,?,?)
+                """,
+                (
+                    self.ONCHAIN_PAPER_EXPLORATION_VERSION,
+                    starting_cash,
+                    starting_cash,
+                    0.0,
+                    iso(),
+                ),
+            )
+            return self.db.execute(
+                "SELECT * FROM onchain_paper_exploration_registrations "
+                "WHERE definition_version=?",
+                (self.ONCHAIN_PAPER_EXPLORATION_VERSION,),
+            ).fetchone()
+
+    def _record_onchain_paper_execution_assessment_locked(
+        self,
+        *,
+        result_id: int,
+        cohort_id: int,
+        phase: str,
+        horizon_minutes: int,
+        quote_status: str,
+        economic_status: str,
+        paper_effect: str,
+        reason: str,
+        gross_usd: float | None = None,
+        network_fee_usd: float | None = None,
+        net_cash_flow_usd: float | None = None,
+    ) -> None:
+        self.db.execute(
+            """
+            INSERT OR IGNORE INTO onchain_paper_exploration_execution_assessments(
+                definition_version,quote_result_id,shadow_cohort_id,phase,horizon_minutes,
+                quote_status,economic_status,paper_effect,gross_usd,network_fee_usd,
+                net_cash_flow_usd,reason,recorded_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                self.ONCHAIN_PAPER_EXPLORATION_VERSION, int(result_id), int(cohort_id),
+                str(phase), int(horizon_minutes), str(quote_status), str(economic_status),
+                str(paper_effect), gross_usd, network_fee_usd, net_cash_flow_usd,
+                str(reason)[:240], iso(),
+            ),
+        )
+
+    def _apply_onchain_paper_exploration_quote_locked(self, result_id: int) -> None:
+        version = self.ONCHAIN_PAPER_EXPLORATION_VERSION
+        registration = self.db.execute(
+            "SELECT * FROM onchain_paper_exploration_registrations "
+            "WHERE definition_version=?",
+            (version,),
+        ).fetchone()
+        if registration is None or int(result_id) <= int(registration["activation_quote_result_id"]):
+            return
+        result = self.db.execute(
+            """
+            SELECT q.*,c.token_id
+            FROM onchain_only_jupiter_quote_results q
+            JOIN onchain_only_shadow_cohorts c ON c.id=q.shadow_cohort_id
+            WHERE q.id=? AND q.definition_version=?
+            """,
+            (int(result_id), self.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION),
+        ).fetchone()
+        if result is None:
+            return
+        definition = self._json_object(registration["definition_json"])
+        network_fee = float(definition["estimated_network_fee_usd_each_side"])
+        cohort_id = int(result["shadow_cohort_id"])
+        token_id = str(result["token_id"])
+        phase = str(result["phase"])
+        valid_quote = (
+            str(result["validity_status"]) == "valid"
+            and str(result["quote_terminal_status"]) == "quoted"
+            and result["other_amount_threshold_raw"] is not None
+            and int(result["other_amount_threshold_raw"]) > 0
+        )
+        position = self.db.execute(
+            "SELECT * FROM onchain_paper_exploration_positions "
+            "WHERE definition_version=? AND shadow_cohort_id=?",
+            (version, cohort_id),
+        ).fetchone()
+        if phase == "baseline_buy":
+            if position is not None:
+                return
+            impact = result["price_impact_bps"]
+            max_adverse = float(definition["maximum_adverse_price_impact_bps"])
+            if not valid_quote:
+                self._record_onchain_paper_execution_assessment_locked(
+                    result_id=result_id, cohort_id=cohort_id, phase="entry", horizon_minutes=0,
+                    quote_status=str(result["quote_terminal_status"]),
+                    economic_status="not_applicable", paper_effect="entry_rejected",
+                    reason="entry_quote_not_structurally_valid",
+                )
+                return
+            if impact is None:
+                self._record_onchain_paper_execution_assessment_locked(
+                    result_id=result_id, cohort_id=cohort_id, phase="entry", horizon_minutes=0,
+                    quote_status="quoted", economic_status="cost_unknown",
+                    paper_effect="entry_rejected", reason="normalized_price_impact_missing",
+                )
+                return
+            if float(impact) < max_adverse:
+                self._record_onchain_paper_execution_assessment_locked(
+                    result_id=result_id, cohort_id=cohort_id, phase="entry", horizon_minutes=0,
+                    quote_status="quoted", economic_status="quoted_but_uneconomic",
+                    paper_effect="entry_rejected", reason="price_impact_below_frozen_limit",
+                )
+                return
+            open_count = int(self.db.execute(
+                "SELECT COUNT(*) FROM onchain_paper_exploration_positions "
+                "WHERE definition_version=? AND status='open'", (version,),
+            ).fetchone()[0])
+            max_open_positions = int(getattr(
+                self, "_onchain_paper_max_open_positions",
+                definition.get("max_open_positions", 0),
+            ))
+            stake = int(result["input_amount_raw"]) / 1_000_000.0
+            debit = stake + network_fee
+            account = self.db.execute(
+                "SELECT * FROM onchain_paper_exploration_account WHERE definition_version=?",
+                (version,),
+            ).fetchone()
+            if max_open_positions > 0 and open_count >= max_open_positions:
+                reject_reason = "maximum_open_positions_reached"
+            elif account is None or float(account["cash_usd"]) + 1e-9 < debit:
+                reject_reason = "insufficient_paper_cash"
+            else:
+                reject_reason = ""
+            if reject_reason:
+                self._record_onchain_paper_execution_assessment_locked(
+                    result_id=result_id, cohort_id=cohort_id, phase="entry", horizon_minutes=0,
+                    quote_status="quoted", economic_status="economic",
+                    paper_effect="entry_rejected", reason=reject_reason,
+                    gross_usd=stake, network_fee_usd=network_fee,
+                    net_cash_flow_usd=-debit,
+                )
+                return
+            opened_at = str(result["recorded_at"])
+            self.db.execute(
+                "UPDATE onchain_paper_exploration_account "
+                "SET cash_usd=cash_usd-?,updated_at=? WHERE definition_version=?",
+                (debit, opened_at, version),
+            )
+            self.db.execute(
+                """
+                INSERT INTO onchain_paper_exploration_positions(
+                    definition_version,shadow_cohort_id,token_id,baseline_quote_result_id,
+                    stake_usd,acquired_amount_raw,entry_network_fee_usd,opened_at,status
+                ) VALUES(?,?,?,?,?,?,?,?, 'open')
+                """,
+                (
+                    version, cohort_id, token_id, int(result["id"]), stake,
+                    str(result["other_amount_threshold_raw"]), network_fee, opened_at,
+                ),
+            )
+            self.db.execute(
+                """
+                INSERT OR IGNORE INTO onchain_paper_exploration_trades(
+                    definition_version,shadow_cohort_id,token_id,quote_result_id,side,
+                    horizon_minutes,gross_usd,network_fee_usd,net_cash_flow_usd,
+                    realized_pnl_usd,reason,created_at
+                ) VALUES(?,?,?,?, 'BUY',0,?,?,?,NULL,?,?)
+                """,
+                (
+                    version, cohort_id, token_id, int(result["id"]), stake,
+                    network_fee, -debit, "jupiter_minimum_output_entry", opened_at,
+                ),
+            )
+            self._record_onchain_paper_execution_assessment_locked(
+                result_id=result_id, cohort_id=cohort_id, phase="entry", horizon_minutes=0,
+                quote_status="quoted", economic_status="economic",
+                paper_effect="entry_admitted", reason="normalized_price_impact_within_limit",
+                gross_usd=stake, network_fee_usd=network_fee, net_cash_flow_usd=-debit,
+            )
+            return
+        if phase != "target_sell" or position is None or str(position["status"]) != "open":
+            return
+        if (
+            result["baseline_result_id"] is None
+            or int(result["baseline_result_id"]) != int(position["baseline_quote_result_id"])
+        ):
+            return
+        horizon = int(result["horizon_minutes"])
+        gross = (
+            int(result["other_amount_threshold_raw"]) / 1_000_000.0
+            if valid_quote else None
+        )
+        credit = gross - network_fee if gross is not None else None
+        economic = bool(
+            valid_quote and credit is not None
+            and credit > float(definition["minimum_positive_net_exit_usd"])
+        )
+        if economic:
+            economic_status = "economic"
+            effect = "simulated_fill"
+            reason = f"first_economic_jupiter_exit_{horizon}m"
+        elif valid_quote:
+            economic_status = "quoted_but_uneconomic"
+            effect = "exit_deferred"
+            reason = "minimum_output_not_above_network_cost"
+        else:
+            economic_status = "not_applicable"
+            effect = "exit_deferred"
+            reason = "exit_quote_not_structurally_valid"
+        if not economic and horizon < max(self.TOKEN_UNIVERSE_HORIZONS_MINUTES):
+            self._record_onchain_paper_execution_assessment_locked(
+                result_id=result_id, cohort_id=cohort_id, phase="exit",
+                horizon_minutes=horizon, quote_status=str(result["quote_terminal_status"]),
+                economic_status=economic_status, paper_effect=effect, reason=reason,
+                gross_usd=gross, network_fee_usd=network_fee if valid_quote else None,
+                net_cash_flow_usd=credit,
+            )
+            return
+        closed_at = str(result["recorded_at"])
+        if economic:
+            final_credit = float(credit)
+            final_gross = float(gross)
+            final_fee = network_fee
+            status = "closed"
+            final_effect = "simulated_fill"
+        else:
+            final_credit = final_gross = final_fee = 0.0
+            status = "written_off"
+            final_effect = "terminal_writeoff"
+            reason = "no_economic_jupiter_exit_by_240m_writeoff"
+        cost = float(position["stake_usd"]) + float(position["entry_network_fee_usd"])
+        pnl = final_credit - cost
+        self.db.execute(
+            "UPDATE onchain_paper_exploration_account "
+            "SET cash_usd=cash_usd+?,realized_pnl_usd=realized_pnl_usd+?,updated_at=? "
+            "WHERE definition_version=?", (final_credit, pnl, closed_at, version),
+        )
+        self.db.execute(
+            """
+            UPDATE onchain_paper_exploration_positions
+            SET status=?,exit_quote_result_id=?,exit_horizon_minutes=?,exit_usdc=?,
+                realized_pnl_usd=?,closed_at=?,close_reason=?
+            WHERE definition_version=? AND shadow_cohort_id=? AND status='open'
+            """,
+            (
+                status, int(result["id"]), horizon, final_credit, pnl, closed_at, reason,
+                version, cohort_id,
+            ),
+        )
+        self.db.execute(
+            """
+            INSERT OR IGNORE INTO onchain_paper_exploration_trades(
+                definition_version,shadow_cohort_id,token_id,quote_result_id,side,
+                horizon_minutes,gross_usd,network_fee_usd,net_cash_flow_usd,
+                realized_pnl_usd,reason,created_at
+            ) VALUES(?,?,?,?, 'SELL',?,?,?,?,?,?,?)
+            """,
+            (
+                version, cohort_id, token_id, int(result["id"]), horizon, final_gross,
+                final_fee, final_credit, pnl, reason, closed_at,
+            ),
+        )
+        self._record_onchain_paper_execution_assessment_locked(
+            result_id=result_id, cohort_id=cohort_id, phase="exit",
+            horizon_minutes=horizon, quote_status=str(result["quote_terminal_status"]),
+            economic_status=("economic" if economic else economic_status),
+            paper_effect=final_effect, reason=reason, gross_usd=gross,
+            network_fee_usd=network_fee if valid_quote else None,
+            net_cash_flow_usd=credit,
+        )
+
+    @classmethod
+    def onchain_paper_exploration_summary_from_connection(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        trade_limit: int = 100,
+        max_liquidity_impact_pct: float = 0.0025,
+    ) -> dict[str, Any]:
+        version = cls.ONCHAIN_PAPER_EXPLORATION_VERSION
+        tables = {str(row[0]) for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        required = {
+            "onchain_paper_exploration_registrations",
+            "onchain_paper_exploration_account",
+            "onchain_paper_exploration_positions",
+            "onchain_paper_exploration_trades",
+        }
+        if not required.issubset(tables):
+            return {"status": "not_enabled", "simulated": True, "live": False,
+                    "account": None, "positions": [], "trades": []}
+        registration = connection.execute(
+            "SELECT * FROM onchain_paper_exploration_registrations "
+            "WHERE definition_version=?", (version,),
+        ).fetchone()
+        account = connection.execute(
+            "SELECT * FROM onchain_paper_exploration_account WHERE definition_version=?",
+            (version,),
+        ).fetchone()
+        if registration is None or account is None:
+            return {"status": "not_enabled", "simulated": True, "live": False,
+                    "account": None, "positions": [], "trades": []}
+        positions = [dict(row) for row in connection.execute(
+            "SELECT * FROM onchain_paper_exploration_positions "
+            "WHERE definition_version=? ORDER BY opened_at DESC", (version,),
+        )]
+        valuation_at = utcnow()
+        liquidity_impact = max(0.0, float(max_liquidity_impact_pct))
+        for position in positions:
+            position.update({
+                "entry_signal_price_usd": None,
+                "current_price_usd": None,
+                "mark_as_of": None,
+                "market_value_usd": None,
+                "unrealized_pnl_usd": None,
+                "unrealized_pnl_pct": None,
+                "indicative_market_value_usd": None,
+                "indicative_unrealized_pnl_usd": None,
+                "indicative_unrealized_pnl_pct": None,
+                "mark_liquidity_capped": False,
+                "valuation_basis": None,
+                "valuation_status": "unpriced_no_amount_specific_sell_quote",
+            })
+            if position["status"] != "open":
+                continue
+            entry_snapshot = connection.execute(
+                """
+                SELECT s.*
+                FROM onchain_only_jupiter_quote_results q
+                JOIN token_snapshots s ON s.id=q.baseline_snapshot_id
+                WHERE q.id=? AND q.phase='baseline_buy'
+                """,
+                (int(position["baseline_quote_result_id"]),),
+            ).fetchone()
+            current_snapshot = connection.execute(
+                """
+                SELECT * FROM token_snapshots
+                WHERE token_id=? AND observed_at<=?
+                ORDER BY observed_at DESC,id DESC LIMIT 1
+                """,
+                (str(position["token_id"]), iso(valuation_at)),
+            ).fetchone()
+            if entry_snapshot is None or current_snapshot is None:
+                continue
+            observed = parse_time(current_snapshot["observed_at"])
+            ingested = parse_time(current_snapshot["ingested_at"] or current_snapshot["observed_at"])
+            recorded = parse_time(
+                current_snapshot["recorded_at"]
+                or current_snapshot["ingested_at"]
+                or current_snapshot["observed_at"]
+            )
+            entry_price = float(entry_snapshot["price_usd"] or 0.0)
+            current_price = float(current_snapshot["price_usd"] or 0.0)
+            if not (observed <= ingested <= recorded <= valuation_at) or entry_price <= 0 or current_price <= 0:
+                continue
+            headline_value = float(position["stake_usd"]) * current_price / entry_price
+            liquidity = current_snapshot["liquidity_usd"]
+            capacity = (
+                max(0.0, float(liquidity)) * liquidity_impact
+                if liquidity is not None else None
+            )
+            remaining_cost = float(position["stake_usd"]) + float(position["entry_network_fee_usd"])
+            indicative_value = (
+                min(headline_value, capacity)
+                if capacity is not None and capacity > 0 else None
+            )
+            indicative_unrealized = (
+                indicative_value - remaining_cost if indicative_value is not None else None
+            )
+            position.update({
+                "entry_signal_price_usd": entry_price,
+                "current_price_usd": current_price,
+                "mark_as_of": str(current_snapshot["observed_at"]),
+                "indicative_market_value_usd": indicative_value,
+                "indicative_unrealized_pnl_usd": indicative_unrealized,
+                "indicative_unrealized_pnl_pct": (
+                    indicative_unrealized / remaining_cost
+                    if indicative_unrealized is not None and remaining_cost else None
+                ),
+                "mark_liquidity_capped": (
+                    indicative_value is not None and indicative_value < headline_value
+                ),
+                "valuation_basis": "non_executable_dex_price_capped_by_liquidity_capacity",
+                "valuation_status": (
+                    "indicative_only_non_executable"
+                    if indicative_value is not None else "unpriced_zero_or_unknown_liquidity"
+                ),
+            })
+        trades = [dict(row) for row in connection.execute(
+            "SELECT * FROM onchain_paper_exploration_trades "
+            "WHERE definition_version=? ORDER BY id DESC LIMIT ?",
+            (version, max(1, int(trade_limit))),
+        )]
+        all_trades = [dict(row) for row in connection.execute(
+            "SELECT * FROM onchain_paper_exploration_trades "
+            "WHERE definition_version=? ORDER BY id ASC",
+            (version,),
+        )]
+        assessments = []
+        if "onchain_paper_exploration_execution_assessments" in tables:
+            assessments = [dict(row) for row in connection.execute(
+                "SELECT * FROM onchain_paper_exploration_execution_assessments "
+                "WHERE definition_version=? ORDER BY id DESC LIMIT ?",
+                (version, max(1, int(trade_limit))),
+            )]
+        assessment_counts: dict[str, int] = {}
+        if "onchain_paper_exploration_execution_assessments" in tables:
+            for row in connection.execute(
+                "SELECT economic_status,paper_effect,COUNT(*) AS count "
+                "FROM onchain_paper_exploration_execution_assessments "
+                "WHERE definition_version=? GROUP BY economic_status,paper_effect",
+                (version,),
+            ):
+                assessment_counts[
+                    f"{row['economic_status']}:{row['paper_effect']}"
+                ] = int(row["count"])
+        open_cost = sum(
+            float(row["stake_usd"]) + float(row["entry_network_fee_usd"])
+            for row in positions if row["status"] == "open"
+        )
+        starting_cash = float(account["starting_cash_usd"])
+        running_cash = starting_cash
+        running_realized_pnl = 0.0
+        cash_peak = starting_cash
+        max_cash_drawdown = 0.0
+        cash_curve = [{
+            "recorded_at": registration["registered_at"],
+            "cash_usd": starting_cash,
+            "realized_pnl_usd": 0.0,
+            "side": "START",
+        }]
+        for trade in all_trades:
+            running_cash += float(trade["net_cash_flow_usd"])
+            if trade["realized_pnl_usd"] is not None:
+                running_realized_pnl += float(trade["realized_pnl_usd"])
+            cash_peak = max(cash_peak, running_cash)
+            max_cash_drawdown = max(max_cash_drawdown, cash_peak - running_cash)
+            cash_curve.append({
+                "recorded_at": trade["created_at"],
+                "cash_usd": running_cash,
+                "realized_pnl_usd": running_realized_pnl,
+                "side": trade["side"],
+            })
+        closed_pnls = sorted(
+            float(row["realized_pnl_usd"])
+            for row in positions
+            if row["status"] != "open" and row["realized_pnl_usd"] is not None
+        )
+        closed_count = len(closed_pnls)
+        midpoint = closed_count // 2
+        median_closed_pnl = (
+            None if not closed_pnls else closed_pnls[midpoint]
+            if closed_count % 2 else (closed_pnls[midpoint - 1] + closed_pnls[midpoint]) / 2
+        )
+        winning_count = sum(1 for value in closed_pnls if value > 0)
+        losing_count = sum(1 for value in closed_pnls if value < 0)
+        open_count = sum(1 for row in positions if row["status"] == "open")
+        open_positions = [row for row in positions if row["status"] == "open"]
+        indicative_positions = [
+            row for row in open_positions if row["indicative_market_value_usd"] is not None
+        ]
+        indicative_value = sum(
+            float(row["indicative_market_value_usd"]) for row in indicative_positions
+        )
+        indicative_unrealized = sum(
+            float(row["indicative_unrealized_pnl_usd"]) for row in indicative_positions
+        )
+        fully_marked = not open_positions
+        current_cash = float(account["cash_usd"])
+        realized_pnl = float(account["realized_pnl_usd"])
+        account_payload = dict(account)
+        account_payload.update({
+            "reserved_open_cost_usd": open_cost,
+            "equity_lower_bound_usd": current_cash,
+            "marked_value_usd": 0.0 if fully_marked else None,
+            "known_marked_value_usd": 0.0,
+            "equity_usd": current_cash if fully_marked else None,
+            "unrealized_pnl_usd": 0.0 if fully_marked else None,
+            "known_unrealized_pnl_usd": 0.0,
+            "total_pnl_usd": realized_pnl if fully_marked else None,
+            "indicative_marked_value_usd": indicative_value,
+            "indicative_unrealized_pnl_usd": indicative_unrealized,
+            "indicative_position_count": len(indicative_positions),
+            "equity_is_fully_marked": fully_marked,
+            "valuation_status": (
+                "cash_only_no_open_positions" if fully_marked
+                else "incomplete_no_amount_specific_sell_marks"
+            ),
+            "priced_position_count": 0,
+            "unpriced_position_count": len(open_positions),
+            "mark_as_of": min(
+                (str(row["mark_as_of"]) for row in indicative_positions), default=None
+            ),
+            "valuation_basis": "amount_specific_sell_quote_required_for_account_pnl",
+            "pnl_is_executable": fully_marked,
+            "open_position_count": open_count,
+            "closed_position_count": closed_count,
+            "trade_count": len(all_trades),
+            "buy_count": sum(1 for row in all_trades if row["side"] == "BUY"),
+            "sell_count": sum(1 for row in all_trades if row["side"] == "SELL"),
+            "winning_position_count": winning_count,
+            "losing_position_count": losing_count,
+            "break_even_position_count": closed_count - winning_count - losing_count,
+            "win_rate": winning_count / closed_count if closed_count else None,
+            "average_closed_pnl_usd": (
+                sum(closed_pnls) / closed_count if closed_count else None
+            ),
+            "median_closed_pnl_usd": median_closed_pnl,
+            "max_cash_drawdown_usd": max_cash_drawdown,
+            "max_cash_drawdown_pct": (
+                max_cash_drawdown / starting_cash if starting_cash > 0 else None
+            ),
+            "total_network_fee_usd": sum(
+                float(row["network_fee_usd"]) for row in all_trades
+            ),
+            "cash_curve": cash_curve,
+        })
+        return {
+            "status": "running", "simulated": True, "live": False,
+            "definition": cls._json_object(registration["definition_json"]),
+            "registered_at": registration["registered_at"],
+            "activation_quote_result_id": int(registration["activation_quote_result_id"]),
+            "account": account_payload, "positions": positions, "trades": trades,
+            "execution_assessments": assessments,
+            "execution_assessment_counts": assessment_counts,
+        }
+
+    def register_onchain_paper_exit_challenger(
+        self,
+        *,
+        starting_cash_usd: float,
+        position_scan_seconds: float = 15,
+        hard_stop_return: float = -0.35,
+        trailing_activate_return: float = 0.60,
+        trailing_drawdown: float = 0.28,
+        emergency_liquidity_usd: float = 3_000,
+        zero_activity_grace_minutes: float = 5,
+        max_hold_minutes: float = 240,
+        slippage_bps: int = 400,
+        quote_retry_seconds: float = 15,
+        max_quote_delay_seconds: float = 45,
+        estimated_network_fee_usd_each_side: float = 0.01,
+        max_liquidity_impact_pct: float = 0.0025,
+    ) -> sqlite3.Row:
+        """Freeze a forward-only dynamic exit policy paired to new exploration BUYs."""
+        definition = {
+            "version": self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION,
+            "source": self.ONCHAIN_PAPER_EXPLORATION_VERSION,
+            "no_historical_backfill": True,
+            "entry": "same_new_exploration_buy_after_registration",
+            "price_trigger": "new_local_dexscreener_observation",
+            "execution": "first_timely_amount_specific_jupiter_minimum_output_after_trigger",
+            "starting_cash_usd": max(0.01, float(starting_cash_usd)),
+            "position_scan_seconds": max(5.0, float(position_scan_seconds)),
+            "hard_stop_return": min(-0.01, float(hard_stop_return)),
+            "trailing_activate_return": max(0.01, float(trailing_activate_return)),
+            "trailing_drawdown": min(0.99, max(0.01, float(trailing_drawdown))),
+            "emergency_liquidity_usd": max(0.0, float(emergency_liquidity_usd)),
+            "zero_activity_grace_minutes": max(0.0, float(zero_activity_grace_minutes)),
+            "max_hold_minutes": max(1.0, float(max_hold_minutes)),
+            "take_profit": [
+                {"return": 0.80, "fraction_of_remaining": 0.20},
+                {"return": 1.80, "fraction_of_remaining": 0.25},
+                {"return": 3.50, "fraction_of_remaining": 0.35},
+                {"return": 7.00, "fraction_of_remaining": 1.00},
+            ],
+            "priority": [
+                "terminal", "liquidity", "hard_stop", "trailing",
+                "inactivity", "take_profit",
+            ],
+            "slippage_bps": max(1, min(5_000, int(slippage_bps))),
+            "quote_retry_seconds": max(1.0, float(quote_retry_seconds)),
+            "max_quote_delay_seconds": max(1.0, float(max_quote_delay_seconds)),
+            "estimated_network_fee_usd_each_side": max(
+                0.0, float(estimated_network_fee_usd_each_side)
+            ),
+            "fee_model": "flat_usdc_per_economic_fill",
+            "fixed_execution_fee_usd_each_side": max(
+                0.0, float(estimated_network_fee_usd_each_side)
+            ),
+            "max_liquidity_impact_pct": max(0.0, float(max_liquidity_impact_pct)),
+            "route_fees_and_slippage": "included_in_jupiter_minimum_output",
+            "simulated": True,
+            "live_execution": False,
+            "decision_eligible": False,
+            "affects_main_strategy": False,
+        }
+        version = self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION
+        with self._lock, self.db:
+            self.db.execute(
+                """
+                INSERT OR IGNORE INTO onchain_paper_exit_challenger_registrations(
+                    definition_version,registered_at,activation_exploration_buy_trade_id,
+                    definition_json
+                ) VALUES(?,?,COALESCE((
+                    SELECT MAX(id) FROM onchain_paper_exploration_trades WHERE side='BUY'
+                ),0),?)
+                """,
+                (version, iso(), self._json(definition)),
+            )
+            return self.db.execute(
+                "SELECT * FROM onchain_paper_exit_challenger_registrations "
+                "WHERE definition_version=?",
+                (version,),
+            ).fetchone()
+
+    def enroll_onchain_paper_exit_challenger(self) -> dict[str, int]:
+        """Pair challenger positions only with exploration BUYs created after activation."""
+        version = self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION
+        inserted = ineligible = 0
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT * FROM onchain_paper_exit_challenger_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if registration is None:
+                return {"inserted": 0, "ineligible": 0}
+            rows = self.db.execute(
+                """
+                SELECT t.id AS source_buy_trade_id,t.shadow_cohort_id,t.token_id,
+                       t.created_at AS opened_at,p.baseline_quote_result_id,p.stake_usd,
+                       p.acquired_amount_raw,p.entry_network_fee_usd,
+                       c.trigger_snapshot_id,s.price_usd,s.observed_at,
+                       COALESCE(s.ingested_at,s.observed_at) AS ingested_at,
+                       COALESCE(s.recorded_at,s.ingested_at,s.observed_at) AS snapshot_recorded_at,
+                       a.requested_at
+                FROM onchain_paper_exploration_trades t
+                JOIN onchain_paper_exploration_positions p
+                  ON p.definition_version=t.definition_version
+                 AND p.shadow_cohort_id=t.shadow_cohort_id
+                JOIN onchain_only_shadow_cohorts c ON c.id=t.shadow_cohort_id
+                JOIN token_snapshots s ON s.id=c.trigger_snapshot_id
+                JOIN onchain_only_jupiter_quote_results q
+                  ON q.id=p.baseline_quote_result_id
+                JOIN onchain_only_jupiter_quote_attempts a ON a.id=q.attempt_id
+                LEFT JOIN onchain_paper_exit_challenger_positions x
+                  ON x.definition_version=? AND x.source_buy_trade_id=t.id
+                WHERE t.side='BUY' AND t.id>? AND x.source_buy_trade_id IS NULL
+                ORDER BY t.id
+                """,
+                (version, int(registration["activation_exploration_buy_trade_id"])),
+            ).fetchall()
+            for row in rows:
+                observed = parse_time(row["observed_at"])
+                ingested_at = parse_time(row["ingested_at"])
+                recorded_at = parse_time(row["snapshot_recorded_at"])
+                requested_at = parse_time(row["requested_at"])
+                entry_price = float(row["price_usd"] or 0.0)
+                amount_raw = int(row["acquired_amount_raw"] or 0)
+                eligible = bool(
+                    entry_price > 0
+                    and amount_raw > 0
+                    and observed <= ingested_at <= recorded_at <= requested_at
+                )
+                status = "open" if eligible else "ineligible"
+                self.db.execute(
+                    """
+                    INSERT OR IGNORE INTO onchain_paper_exit_challenger_positions(
+                        definition_version,shadow_cohort_id,token_id,source_buy_trade_id,
+                        baseline_quote_result_id,entry_snapshot_id,entry_signal_price_usd,
+                        initial_amount_raw,remaining_amount_raw,stake_usd,
+                        entry_network_fee_usd,highest_signal_price_usd,status,opened_at,
+                        close_reason
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        version, int(row["shadow_cohort_id"]), str(row["token_id"]),
+                        int(row["source_buy_trade_id"]), int(row["baseline_quote_result_id"]),
+                        int(row["trigger_snapshot_id"]), entry_price if eligible else None,
+                        str(amount_raw), str(amount_raw), float(row["stake_usd"]),
+                        float(row["entry_network_fee_usd"]), entry_price if eligible else None,
+                        status, str(row["opened_at"]),
+                        "" if eligible else "entry_snapshot_not_strictly_asof",
+                    ),
+                )
+                changed = int(self.db.execute("SELECT changes()").fetchone()[0])
+                inserted += changed
+                ineligible += changed if not eligible else 0
+        return {"inserted": inserted, "ineligible": ineligible}
+
+    def due_onchain_paper_exit_challenger_marks(
+        self, *, now: Any = None, limit: int = 3
+    ) -> list[dict[str, Any]]:
+        current = parse_time(now or utcnow())
+        version = self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION
+        with self._lock:
+            registration = self.db.execute(
+                "SELECT * FROM onchain_paper_exit_challenger_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if registration is None:
+                return []
+            definition = self._json_object(registration["definition_json"])
+            cutoff = current - timedelta(seconds=float(definition["position_scan_seconds"]))
+            rows = self.db.execute(
+                """
+                SELECT p.*,MAX(m.recorded_at) AS last_mark_at
+                FROM onchain_paper_exit_challenger_positions p
+                LEFT JOIN onchain_paper_exit_challenger_marks m
+                  ON m.definition_version=p.definition_version
+                 AND m.shadow_cohort_id=p.shadow_cohort_id
+                WHERE p.definition_version=? AND p.status='open'
+                GROUP BY p.definition_version,p.shadow_cohort_id
+                HAVING last_mark_at IS NULL OR last_mark_at<=?
+                ORDER BY last_mark_at IS NOT NULL,last_mark_at,
+                         p.opened_at,p.shadow_cohort_id
+                LIMIT ?
+                """,
+                (version, iso(cutoff), max(1, int(limit))),
+            ).fetchall()
+            return [
+                {
+                    **dict(row),
+                    "chain": str(row["token_id"]).split(":", 1)[0],
+                    "address": str(row["token_id"]).split(":", 1)[1],
+                }
+                for row in rows if ":" in str(row["token_id"])
+            ]
+
+    def record_onchain_paper_exit_challenger_mark(
+        self,
+        shadow_cohort_id: int,
+        *,
+        snapshot_id: int | None = None,
+        evaluated_at: Any = None,
+        reason: str = "",
+    ) -> dict[str, Any] | None:
+        current = parse_time(evaluated_at or utcnow())
+        version = self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT * FROM onchain_paper_exit_challenger_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            position = self.db.execute(
+                "SELECT * FROM onchain_paper_exit_challenger_positions "
+                "WHERE definition_version=? AND shadow_cohort_id=? AND status='open'",
+                (version, int(shadow_cohort_id)),
+            ).fetchone()
+            if registration is None or position is None:
+                return None
+            definition = self._json_object(registration["definition_json"])
+            elapsed_minutes = max(
+                0.0, (current - parse_time(position["opened_at"])).total_seconds() / 60.0
+            )
+            snapshot = None
+            temporal_valid = False
+            pair_address = ""
+            if snapshot_id is not None:
+                snapshot = self.db.execute(
+                    "SELECT * FROM token_snapshots WHERE id=? AND token_id=?",
+                    (int(snapshot_id), str(position["token_id"])),
+                ).fetchone()
+            if snapshot is not None:
+                observed = parse_time(snapshot["observed_at"])
+                ingested = parse_time(snapshot["ingested_at"] or snapshot["observed_at"])
+                recorded = parse_time(
+                    snapshot["recorded_at"] or snapshot["ingested_at"] or snapshot["observed_at"]
+                )
+                temporal_valid = bool(observed <= ingested <= recorded <= current)
+                raw = self._json_object(snapshot["raw_json"])
+                pair = raw.get("pair") if isinstance(raw.get("pair"), dict) else {}
+                pair_address = str(pair.get("pairAddress") or pair.get("pair_address") or "")[:160]
+            price = (
+                float(snapshot["price_usd"])
+                if snapshot is not None and snapshot["price_usd"] is not None and temporal_valid
+                else None
+            )
+            prior_high = float(position["highest_signal_price_usd"] or 0.0)
+            high = max(prior_high, float(price or 0.0)) or None
+            drawdown = (
+                float(price) / float(high) - 1.0 if price is not None and high else None
+            )
+            action = "HOLD"
+            fraction = 0.0
+            tp_index: int | None = None
+            mark_reason = reason or "monitor"
+            pending = None
+            if position["pending_mark_id"] is not None:
+                pending = self.db.execute(
+                    "SELECT * FROM onchain_paper_exit_challenger_marks WHERE id=?",
+                    (int(position["pending_mark_id"]),),
+                ).fetchone()
+            if elapsed_minutes >= float(definition["max_hold_minutes"]):
+                action, fraction, mark_reason = "TERMINAL", 1.0, "max_hold_terminal"
+            elif pending is not None:
+                action, mark_reason = "PENDING", f"awaiting_{str(pending['action']).lower()}_quote"
+            elif not temporal_valid or price is None or price <= 0:
+                mark_reason = reason or "price_observation_unavailable_or_temporally_invalid"
+            else:
+                entry_price = float(position["entry_signal_price_usd"] or 0.0)
+                raw_return = price / entry_price - 1.0 if entry_price > 0 else -1.0
+                liquidity = snapshot["liquidity_usd"]
+                if (
+                    liquidity is not None
+                    and float(liquidity) < float(definition["emergency_liquidity_usd"])
+                ):
+                    action, fraction, mark_reason = (
+                        "LIQUIDITY_EXIT", 1.0, "liquidity_below_frozen_floor"
+                    )
+                elif raw_return <= float(definition["hard_stop_return"]):
+                    action, fraction, mark_reason = "HARD_STOP", 1.0, "hard_stop_triggered"
+                elif (
+                    high is not None
+                    and high / entry_price - 1.0 >= float(definition["trailing_activate_return"])
+                    and drawdown is not None
+                    and drawdown <= -float(definition["trailing_drawdown"])
+                ):
+                    action, fraction, mark_reason = "TRAILING", 1.0, "trailing_drawdown_triggered"
+                elif (
+                    elapsed_minutes >= float(definition["zero_activity_grace_minutes"])
+                    and snapshot["volume_5m_usd"] is not None
+                    and snapshot["buys_5m"] is not None
+                    and snapshot["sells_5m"] is not None
+                    and float(snapshot["volume_5m_usd"]) <= 0
+                    and int(snapshot["buys_5m"]) + int(snapshot["sells_5m"]) <= 0
+                ):
+                    action, fraction, mark_reason = (
+                        "INACTIVITY_EXIT", 1.0, "zero_volume_and_transactions_after_grace"
+                    )
+                else:
+                    levels = list(definition["take_profit"])
+                    index = int(position["next_tp_index"])
+                    if index < len(levels) and raw_return >= float(levels[index]["return"]):
+                        action = "TAKE_PROFIT"
+                        fraction = float(levels[index]["fraction_of_remaining"])
+                        tp_index = index
+                        mark_reason = f"take_profit_{index + 1}_triggered"
+            remaining = int(position["remaining_amount_raw"])
+            total_cost = float(position["stake_usd"]) + float(position["entry_network_fee_usd"])
+            unallocated_cost = max(0.0, total_cost - float(position["allocated_cost_usd"]))
+            headline_marked_value = (
+                float(position["stake_usd"])
+                * remaining / max(1, int(position["initial_amount_raw"]))
+                * float(price) / float(position["entry_signal_price_usd"])
+                if price is not None and float(position["entry_signal_price_usd"] or 0.0) > 0
+                else None
+            )
+            liquidity = (
+                float(snapshot["liquidity_usd"])
+                if snapshot is not None and snapshot["liquidity_usd"] is not None
+                else None
+            )
+            capacity = (
+                max(0.0, liquidity) * float(definition["max_liquidity_impact_pct"])
+                if liquidity is not None else None
+            )
+            marked_value = (
+                min(float(headline_marked_value), capacity)
+                if headline_marked_value is not None and capacity is not None and capacity > 0
+                else None
+            )
+            unrealized_pnl = (
+                marked_value - unallocated_cost if marked_value is not None else None
+            )
+            realized_pnl = float(position["realized_pnl_usd"])
+            total_pnl = (
+                realized_pnl + unrealized_pnl if unrealized_pnl is not None else None
+            )
+            sell_amount = (
+                min(remaining, max(1, math.floor(remaining * fraction)))
+                if fraction > 0 and remaining > 0 else 0
+            )
+            self.db.execute(
+                """
+                INSERT INTO onchain_paper_exit_challenger_marks(
+                    definition_version,shadow_cohort_id,snapshot_id,observed_at,ingested_at,
+                    recorded_at,provider,pair_address,price_usd,liquidity_usd,volume_5m_usd,
+                    buys_5m,sells_5m,highest_signal_price_usd,drawdown_from_peak,
+                    remaining_amount_raw,marked_value_usd,realized_pnl_usd,
+                    unrealized_pnl_usd,total_pnl_usd,action,sell_fraction,
+                    sell_amount_raw,tp_index,reason
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    version, int(shadow_cohort_id), int(snapshot_id) if snapshot is not None else None,
+                    str(snapshot["observed_at"]) if snapshot is not None else None,
+                    str(snapshot["ingested_at"] or snapshot["observed_at"]) if snapshot is not None else None,
+                    iso(current), str(snapshot["provider"] or "") if snapshot is not None else "",
+                    pair_address, price,
+                    float(snapshot["liquidity_usd"]) if snapshot is not None and snapshot["liquidity_usd"] is not None else None,
+                    float(snapshot["volume_5m_usd"]) if snapshot is not None and snapshot["volume_5m_usd"] is not None else None,
+                    int(snapshot["buys_5m"]) if snapshot is not None and snapshot["buys_5m"] is not None else None,
+                    int(snapshot["sells_5m"]) if snapshot is not None and snapshot["sells_5m"] is not None else None,
+                    high, drawdown, str(remaining), marked_value, realized_pnl,
+                    unrealized_pnl, total_pnl, action, fraction, str(sell_amount),
+                    tp_index, mark_reason,
+                ),
+            )
+            mark_id = int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+            if temporal_valid and high is not None:
+                self.db.execute(
+                    "UPDATE onchain_paper_exit_challenger_positions "
+                    "SET highest_signal_price_usd=? WHERE definition_version=? AND shadow_cohort_id=?",
+                    (high, version, int(shadow_cohort_id)),
+                )
+            if sell_amount > 0:
+                self.db.execute(
+                    "UPDATE onchain_paper_exit_challenger_positions SET pending_mark_id=? "
+                    "WHERE definition_version=? AND shadow_cohort_id=? AND status='open'",
+                    (mark_id, version, int(shadow_cohort_id)),
+                )
+            return dict(self.db.execute(
+                "SELECT * FROM onchain_paper_exit_challenger_marks WHERE id=?", (mark_id,)
+            ).fetchone())
+
+    def due_onchain_paper_exit_challenger_quotes(
+        self, *, now: Any = None, limit: int = 3
+    ) -> list[dict[str, Any]]:
+        current = parse_time(now or utcnow())
+        version = self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION
+        with self._lock:
+            registration = self.db.execute(
+                "SELECT * FROM onchain_paper_exit_challenger_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if registration is None:
+                return []
+            definition = self._json_object(registration["definition_json"])
+            positions = self.db.execute(
+                """
+                SELECT p.*,m.action,m.sell_amount_raw,m.recorded_at AS triggered_at,
+                       (
+                         SELECT MAX(COALESCE(r2.completed_at,a2.requested_at))
+                         FROM onchain_paper_exit_challenger_quote_attempts a2
+                         LEFT JOIN onchain_paper_exit_challenger_quote_results r2
+                           ON r2.attempt_id=a2.id
+                         WHERE a2.definition_version=p.definition_version
+                           AND a2.mark_id=m.id
+                       ) AS last_attempt_at
+                FROM onchain_paper_exit_challenger_positions p
+                JOIN onchain_paper_exit_challenger_marks m ON m.id=p.pending_mark_id
+                WHERE p.definition_version=? AND p.status='open'
+                ORDER BY last_attempt_at IS NOT NULL,last_attempt_at,
+                    CASE m.action
+                    WHEN 'TERMINAL' THEN 0 WHEN 'LIQUIDITY_EXIT' THEN 1
+                    WHEN 'HARD_STOP' THEN 2 WHEN 'TRAILING' THEN 3
+                    WHEN 'INACTIVITY_EXIT' THEN 4 ELSE 5 END,
+                    m.recorded_at,p.shadow_cohort_id
+                """,
+                (version,),
+            ).fetchall()
+            tasks: list[dict[str, Any]] = []
+            for row in positions:
+                mark_id = int(row["pending_mark_id"])
+                successful = self.db.execute(
+                    "SELECT 1 FROM onchain_paper_exit_challenger_quote_results "
+                    "WHERE definition_version=? AND mark_id=? "
+                    "AND economic_status='economic'",
+                    (version, mark_id),
+                ).fetchone()
+                if successful is not None:
+                    continue
+                last = self.db.execute(
+                    """
+                    SELECT a.*,r.completed_at FROM onchain_paper_exit_challenger_quote_attempts a
+                    LEFT JOIN onchain_paper_exit_challenger_quote_results r ON r.attempt_id=a.id
+                    WHERE a.definition_version=? AND a.mark_id=?
+                    ORDER BY a.attempt_seq DESC LIMIT 1
+                    """,
+                    (version, mark_id),
+                ).fetchone()
+                next_seq = 1
+                if last is not None:
+                    next_seq = int(last["attempt_seq"]) + 1
+                    anchor = parse_time(last["completed_at"] or last["requested_at"])
+                    wait_seconds = (
+                        float(definition["quote_retry_seconds"])
+                        if last["completed_at"] is not None
+                        else float(definition["max_quote_delay_seconds"])
+                    )
+                    if (current - anchor).total_seconds() < wait_seconds:
+                        continue
+                address = str(row["token_id"]).split(":", 1)[1]
+                tasks.append({
+                    "lane": version,
+                    "quote_key": f"onchain-exit:{int(row['shadow_cohort_id'])}:{mark_id}:{next_seq}",
+                    "mark_id": mark_id,
+                    "shadow_cohort_id": int(row["shadow_cohort_id"]),
+                    "attempt_seq": next_seq,
+                    "action": str(row["action"]),
+                    "triggered_at": str(row["triggered_at"]),
+                    "input_mint": address,
+                    "output_mint": self.JUPITER_USDC_MINT,
+                    "input_amount_raw": str(row["sell_amount_raw"]),
+                    "slippage_bps": int(definition["slippage_bps"]),
+                    "max_total_delay_seconds": float(definition["max_quote_delay_seconds"]),
+                })
+                if len(tasks) >= max(1, int(limit)):
+                    break
+            return tasks
+
+    def start_onchain_paper_exit_challenger_quote_attempt(
+        self, task: Mapping[str, Any], *, requested_at: Any = None
+    ) -> int | None:
+        requested = parse_time(requested_at or utcnow())
+        version = self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION
+        with self._lock, self.db:
+            position = self.db.execute(
+                "SELECT * FROM onchain_paper_exit_challenger_positions "
+                "WHERE definition_version=? AND shadow_cohort_id=? AND status='open'",
+                (version, int(task["shadow_cohort_id"])),
+            ).fetchone()
+            mark = self.db.execute(
+                "SELECT * FROM onchain_paper_exit_challenger_marks WHERE id=?",
+                (int(task["mark_id"]),),
+            ).fetchone()
+            if (
+                position is None or mark is None
+                or int(position["pending_mark_id"] or 0) != int(task["mark_id"])
+                or requested < parse_time(mark["recorded_at"])
+                or int(task["input_amount_raw"]) <= 0
+                or int(task["input_amount_raw"]) > int(position["remaining_amount_raw"])
+            ):
+                return None
+            self.db.execute(
+                """
+                INSERT OR IGNORE INTO onchain_paper_exit_challenger_quote_attempts(
+                    definition_version,quote_key,mark_id,shadow_cohort_id,attempt_seq,
+                    input_mint,output_mint,input_amount_raw,requested_at
+                ) VALUES(?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    version, str(task["quote_key"]), int(task["mark_id"]),
+                    int(task["shadow_cohort_id"]), int(task["attempt_seq"]),
+                    str(task["input_mint"]), str(task["output_mint"]),
+                    str(task["input_amount_raw"]), iso(requested),
+                ),
+            )
+            row = self.db.execute(
+                "SELECT id FROM onchain_paper_exit_challenger_quote_attempts WHERE quote_key=?",
+                (str(task["quote_key"]),),
+            ).fetchone()
+            return int(row["id"]) if row is not None else None
+
+    def record_onchain_paper_exit_challenger_quote_result(
+        self,
+        task: Mapping[str, Any],
+        *,
+        attempt_id: int,
+        status: str,
+        output_amount_raw: int | str | None = None,
+        other_amount_threshold_raw: int | str | None = None,
+        slippage_bps: int | None = None,
+        signature_fee_lamports: int | None = None,
+        prioritization_fee_lamports: int | None = None,
+        rent_fee_lamports: int | None = None,
+        router: str = "",
+        mode: str = "",
+        fee_bps: float | None = None,
+        platform_fee_bps: float | None = None,
+        price_impact_pct: float | None = None,
+        price_impact_bps: float | None = None,
+        price_impact_source: str = "",
+        route_plan: Iterable[Mapping[str, Any]] | None = None,
+        error_type: str = "",
+        completed_at: Any = None,
+    ) -> int | None:
+        statuses = {
+            "quoted", "no_route", "error", "quote_only_protocol_invalid",
+            "interrupted_after_request",
+        }
+        if status not in statuses:
+            raise ValueError("invalid onchain Paper exit challenger quote status")
+        completed = parse_time(completed_at or utcnow())
+        version = self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION
+        with self._lock, self.db:
+            if self.db.execute(
+                "SELECT 1 FROM onchain_paper_exit_challenger_quote_results WHERE attempt_id=?",
+                (int(attempt_id),),
+            ).fetchone() is not None:
+                return None
+            attempt = self.db.execute(
+                "SELECT * FROM onchain_paper_exit_challenger_quote_attempts WHERE id=?",
+                (int(attempt_id),),
+            ).fetchone()
+            registration = self.db.execute(
+                "SELECT * FROM onchain_paper_exit_challenger_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if attempt is None or registration is None:
+                return None
+            mark = self.db.execute(
+                "SELECT * FROM onchain_paper_exit_challenger_marks WHERE id=?",
+                (int(attempt["mark_id"]),),
+            ).fetchone()
+            position = self.db.execute(
+                "SELECT * FROM onchain_paper_exit_challenger_positions "
+                "WHERE definition_version=? AND shadow_cohort_id=? AND status='open'",
+                (version, int(attempt["shadow_cohort_id"])),
+            ).fetchone()
+            if mark is None or position is None:
+                return None
+            definition = self._json_object(registration["definition_json"])
+            requested = parse_time(attempt["requested_at"])
+            total_delay = (completed - requested).total_seconds()
+            threshold = int(other_amount_threshold_raw or 0)
+            valid = bool(
+                status == "quoted"
+                and threshold > 0
+                and completed >= requested
+                and requested >= parse_time(mark["recorded_at"])
+                and total_delay <= float(definition["max_quote_delay_seconds"])
+            )
+            validity = (
+                "valid" if valid else "total_delay_expired"
+                if total_delay > float(definition["max_quote_delay_seconds"])
+                else "invalid"
+            )
+            remaining_before = int(position["remaining_amount_raw"])
+            gross = threshold / 1_000_000.0 if valid else None
+            network_fee = (
+                float(definition["estimated_network_fee_usd_each_side"]) if valid else 0.0
+            )
+            net = gross - network_fee if gross is not None else None
+            economic = bool(valid and net is not None and net > 0.0)
+            economic_status = (
+                "economic" if economic else "quoted_but_uneconomic"
+                if valid else "not_applicable"
+            )
+            total_cost = float(position["stake_usd"]) + float(position["entry_network_fee_usd"])
+            allocated_before = float(position["allocated_cost_usd"])
+            sold = min(remaining_before, int(attempt["input_amount_raw"])) if economic else 0
+            cost_delta = total_cost * sold / int(position["initial_amount_raw"]) if economic else 0.0
+            pnl_delta = (float(net) - cost_delta) if economic and net is not None else None
+            remaining_after = remaining_before - sold
+            next_tp = int(position["next_tp_index"])
+            position_status = "open"
+            close_reason = ""
+            closed_at_value = None
+            pending_mark_id = position["pending_mark_id"]
+            realized_pnl = float(position["realized_pnl_usd"])
+            realized_proceeds = float(position["realized_proceeds_usd"])
+            allocated_cost = allocated_before
+            if economic:
+                realized_pnl += float(pnl_delta or 0.0)
+                realized_proceeds += float(net or 0.0)
+                allocated_cost += cost_delta
+                pending_mark_id = None
+                if str(mark["action"]) == "TAKE_PROFIT" and remaining_after > 0:
+                    next_tp += 1
+                else:
+                    remaining_after = 0
+                    position_status = "closed"
+                    close_reason = str(mark["reason"])
+                    closed_at_value = iso(completed)
+            elif str(mark["action"]) == "TERMINAL":
+                unallocated = max(0.0, total_cost - allocated_before)
+                pnl_delta = -unallocated
+                realized_pnl += pnl_delta
+                allocated_cost = total_cost
+                remaining_after = 0
+                pending_mark_id = None
+                position_status = "written_off"
+                close_reason = "terminal_without_executable_jupiter_exit"
+                closed_at_value = iso(completed)
+            self.db.execute(
+                """
+                INSERT INTO onchain_paper_exit_challenger_quote_results(
+                    definition_version,attempt_id,mark_id,shadow_cohort_id,
+                    quote_terminal_status,validity_status,input_amount_raw,output_amount_raw,
+                    other_amount_threshold_raw,requested_at,completed_at,total_delay_seconds,
+                    slippage_bps,signature_fee_lamports,prioritization_fee_lamports,
+                    rent_fee_lamports,router,mode,fee_bps,platform_fee_bps,price_impact_pct,
+                    price_impact_bps,price_impact_source,economic_status,
+                    route_json,error_type,gross_usdc,network_fee_usd,net_proceeds_usd,
+                    realized_pnl_usd,remaining_amount_raw,position_status,recorded_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    version, int(attempt_id), int(mark["id"]), int(attempt["shadow_cohort_id"]),
+                    status, validity, str(attempt["input_amount_raw"]),
+                    str(output_amount_raw) if output_amount_raw is not None else None,
+                    str(other_amount_threshold_raw) if other_amount_threshold_raw is not None else None,
+                    str(attempt["requested_at"]), iso(completed), total_delay,
+                    int(slippage_bps) if slippage_bps is not None else None,
+                    int(signature_fee_lamports) if signature_fee_lamports is not None else None,
+                    int(prioritization_fee_lamports) if prioritization_fee_lamports is not None else None,
+                    int(rent_fee_lamports) if rent_fee_lamports is not None else None,
+                    str(router or "")[:80], str(mode or "")[:40], fee_bps,
+                    platform_fee_bps, price_impact_pct, price_impact_bps,
+                    str(price_impact_source or "")[:80], economic_status,
+                    self._json(list(route_plan or [])), str(error_type or "")[:80],
+                    gross, network_fee, net, pnl_delta, str(remaining_after),
+                    position_status, iso(),
+                ),
+            )
+            result_id = int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+            self.db.execute(
+                """
+                UPDATE onchain_paper_exit_challenger_positions
+                SET remaining_amount_raw=?,realized_proceeds_usd=?,allocated_cost_usd=?,
+                    realized_pnl_usd=?,next_tp_index=?,pending_mark_id=?,status=?,
+                    closed_at=?,close_reason=?
+                WHERE definition_version=? AND shadow_cohort_id=? AND status='open'
+                """,
+                (
+                    str(remaining_after), realized_proceeds, allocated_cost, realized_pnl,
+                    next_tp, pending_mark_id, position_status, closed_at_value, close_reason,
+                    version, int(attempt["shadow_cohort_id"]),
+                ),
+            )
+            self._apply_onchain_paper_narrative_runner_exit_result_locked(result_id)
+            return result_id
+
+    def record_onchain_paper_exit_challenger_account_snapshot(
+        self, *, recorded_at: Any = None
+    ) -> dict[str, Any] | None:
+        """Persist dynamic realized/unrealized/total PNL without claiming an executable mark."""
+        current = parse_time(recorded_at or utcnow())
+        version = self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT * FROM onchain_paper_exit_challenger_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if registration is None:
+                return None
+            definition = self._json_object(registration["definition_json"])
+            positions = self.db.execute(
+                "SELECT * FROM onchain_paper_exit_challenger_positions "
+                "WHERE definition_version=? AND status!='ineligible'", (version,),
+            ).fetchall()
+            starting_cash = float(definition["starting_cash_usd"])
+            entry_debits = sum(
+                float(row["stake_usd"]) + float(row["entry_network_fee_usd"])
+                for row in positions
+            )
+            proceeds = float(self.db.execute(
+                "SELECT COALESCE(SUM(net_proceeds_usd),0) "
+                "FROM onchain_paper_exit_challenger_quote_results "
+                "WHERE definition_version=? AND economic_status='economic'",
+                (version,),
+            ).fetchone()[0] or 0.0)
+            cash = starting_cash - entry_debits + proceeds
+            realized = sum(float(row["realized_pnl_usd"]) for row in positions)
+            open_positions = [row for row in positions if row["status"] == "open"]
+            marked_value = 0.0
+            unrealized = 0.0
+            priced = 0
+            for position in open_positions:
+                mark = self.db.execute(
+                    "SELECT * FROM onchain_paper_exit_challenger_marks "
+                    "WHERE definition_version=? AND shadow_cohort_id=? "
+                    "ORDER BY id DESC LIMIT 1",
+                    (version, int(position["shadow_cohort_id"])),
+                ).fetchone()
+                if (
+                    mark is None or mark["marked_value_usd"] is None
+                    or mark["unrealized_pnl_usd"] is None
+                    or str(mark["remaining_amount_raw"]) != str(position["remaining_amount_raw"])
+                ):
+                    continue
+                marked_value += float(mark["marked_value_usd"])
+                unrealized += float(mark["unrealized_pnl_usd"])
+                priced += 1
+            complete = priced == len(open_positions)
+            payload = {
+                "definition_version": version,
+                "recorded_at": iso(current),
+                "cash_usd": cash,
+                "marked_value_usd": marked_value if complete else None,
+                "equity_usd": cash + marked_value if complete else None,
+                "realized_pnl_usd": realized,
+                "unrealized_pnl_usd": unrealized if complete else None,
+                "total_pnl_usd": realized + unrealized if complete else None,
+                "open_position_count": len(open_positions),
+                "priced_position_count": priced,
+                "valuation_status": (
+                    "complete_dex_mark_not_executable" if complete
+                    else "incomplete_missing_fresh_mark"
+                ),
+            }
+            latest = self.db.execute(
+                "SELECT * FROM onchain_paper_exit_challenger_account_snapshots "
+                "WHERE definition_version=? ORDER BY id DESC LIMIT 1",
+                (version,),
+            ).fetchone()
+            comparable = (
+                "cash_usd", "marked_value_usd", "equity_usd", "realized_pnl_usd",
+                "unrealized_pnl_usd", "total_pnl_usd", "open_position_count",
+                "priced_position_count", "valuation_status",
+            )
+            if latest is not None and all(latest[key] == payload[key] for key in comparable):
+                return dict(latest)
+            self.db.execute(
+                """
+                INSERT INTO onchain_paper_exit_challenger_account_snapshots(
+                    definition_version,recorded_at,cash_usd,marked_value_usd,equity_usd,
+                    realized_pnl_usd,unrealized_pnl_usd,total_pnl_usd,
+                    open_position_count,priced_position_count,valuation_status
+                ) VALUES(:definition_version,:recorded_at,:cash_usd,:marked_value_usd,
+                    :equity_usd,:realized_pnl_usd,:unrealized_pnl_usd,:total_pnl_usd,
+                    :open_position_count,:priced_position_count,:valuation_status)
+                """,
+                payload,
+            )
+            return payload
+
+    @classmethod
+    def onchain_paper_exit_challenger_summary_from_connection(
+        cls, connection: sqlite3.Connection, *, trade_limit: int = 100
+    ) -> dict[str, Any]:
+        version = cls.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION
+        tables = {str(row[0]) for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        required = {
+            "onchain_paper_exit_challenger_registrations",
+            "onchain_paper_exit_challenger_positions",
+            "onchain_paper_exit_challenger_marks",
+            "onchain_paper_exit_challenger_quote_attempts",
+            "onchain_paper_exit_challenger_quote_results",
+            "onchain_paper_exit_challenger_account_snapshots",
+        }
+        if not required.issubset(tables):
+            return {
+                "status": "not_enabled", "simulated": True, "live": False,
+                "account": None, "positions": [], "trades": [], "marks": [],
+            }
+        registration = connection.execute(
+            "SELECT * FROM onchain_paper_exit_challenger_registrations "
+            "WHERE definition_version=?", (version,),
+        ).fetchone()
+        if registration is None:
+            return {
+                "status": "not_enabled", "simulated": True, "live": False,
+                "account": None, "positions": [], "trades": [], "marks": [],
+            }
+        definition = cls._json_object(registration["definition_json"])
+        positions = [dict(row) for row in connection.execute(
+            "SELECT * FROM onchain_paper_exit_challenger_positions "
+            "WHERE definition_version=? ORDER BY opened_at DESC", (version,),
+        )]
+        results = [dict(row) for row in connection.execute(
+            "SELECT r.*,m.action,m.reason AS trigger_reason,p.token_id "
+            "FROM onchain_paper_exit_challenger_quote_results r "
+            "JOIN onchain_paper_exit_challenger_marks m ON m.id=r.mark_id "
+            "JOIN onchain_paper_exit_challenger_positions p "
+            "ON p.definition_version=r.definition_version "
+            "AND p.shadow_cohort_id=r.shadow_cohort_id "
+            "WHERE r.definition_version=? ORDER BY r.id", (version,),
+        )]
+        marks = [dict(row) for row in connection.execute(
+            "SELECT * FROM onchain_paper_exit_challenger_marks "
+            "WHERE definition_version=? ORDER BY id DESC LIMIT 200", (version,),
+        )]
+        performance_curve = [dict(row) for row in connection.execute(
+            "SELECT * FROM onchain_paper_exit_challenger_account_snapshots "
+            "WHERE definition_version=? ORDER BY id", (version,),
+        )]
+        events: list[dict[str, Any]] = []
+        for position in positions:
+            if position["status"] == "ineligible":
+                continue
+            debit = float(position["stake_usd"]) + float(position["entry_network_fee_usd"])
+            events.append({
+                "recorded_at": position["opened_at"], "token_id": position["token_id"],
+                "side": "BUY", "gross_usd": float(position["stake_usd"]),
+                "network_fee_usd": float(position["entry_network_fee_usd"]),
+                "net_cash_flow_usd": -debit, "realized_pnl_usd": None,
+                "reason": "paired_jupiter_minimum_output_entry",
+            })
+        for result in results:
+            if result["validity_status"] == "valid":
+                events.append({
+                    "recorded_at": result["recorded_at"], "token_id": result["token_id"],
+                    "side": "SELL", "gross_usd": result["gross_usdc"],
+                    "network_fee_usd": result["network_fee_usd"],
+                    "net_cash_flow_usd": result["net_proceeds_usd"],
+                    "realized_pnl_usd": result["realized_pnl_usd"],
+                    "reason": str(result["trigger_reason"]),
+                })
+            elif result["position_status"] == "written_off":
+                events.append({
+                    "recorded_at": result["recorded_at"], "token_id": result["token_id"],
+                    "side": "WRITEOFF", "gross_usd": 0.0, "network_fee_usd": 0.0,
+                    "net_cash_flow_usd": 0.0,
+                    "realized_pnl_usd": result["realized_pnl_usd"],
+                    "reason": "terminal_without_executable_jupiter_exit",
+                })
+        events.sort(key=lambda row: str(row["recorded_at"]))
+        starting_cash = float(definition["starting_cash_usd"])
+        running_cash = starting_cash
+        running_realized = 0.0
+        peak = starting_cash
+        max_drawdown = 0.0
+        cash_curve = [{
+            "recorded_at": registration["registered_at"], "cash_usd": starting_cash,
+            "realized_pnl_usd": 0.0, "side": "START",
+        }]
+        for event in events:
+            running_cash += float(event["net_cash_flow_usd"] or 0.0)
+            if event["realized_pnl_usd"] is not None:
+                running_realized += float(event["realized_pnl_usd"])
+            peak = max(peak, running_cash)
+            max_drawdown = max(max_drawdown, peak - running_cash)
+            cash_curve.append({
+                "recorded_at": event["recorded_at"], "cash_usd": running_cash,
+                "realized_pnl_usd": running_realized, "side": event["side"],
+            })
+        completed = [
+            row for row in positions if row["status"] in {"closed", "written_off"}
+        ]
+        pnls = sorted(float(row["realized_pnl_usd"]) for row in completed)
+        midpoint = len(pnls) // 2
+        median_pnl = (
+            None if not pnls else pnls[midpoint]
+            if len(pnls) % 2 else (pnls[midpoint - 1] + pnls[midpoint]) / 2
+        )
+        open_positions = [row for row in positions if row["status"] == "open"]
+        attempts = int(connection.execute(
+            "SELECT COUNT(*) FROM onchain_paper_exit_challenger_quote_attempts "
+            "WHERE definition_version=?", (version,),
+        ).fetchone()[0])
+        valid_sells = sum(1 for row in results if row["validity_status"] == "valid")
+        latest_performance = performance_curve[-1] if performance_curve else None
+        account = {
+            "starting_cash_usd": starting_cash,
+            "cash_usd": (
+                float(latest_performance["cash_usd"]) if latest_performance else running_cash
+            ),
+            "realized_pnl_usd": (
+                float(latest_performance["realized_pnl_usd"])
+                if latest_performance else sum(
+                    float(row["realized_pnl_usd"]) for row in positions
+                    if row["status"] != "ineligible"
+                )
+            ),
+            "unrealized_pnl_usd": (
+                latest_performance["unrealized_pnl_usd"] if latest_performance else None
+            ),
+            "total_pnl_usd": (
+                latest_performance["total_pnl_usd"] if latest_performance else None
+            ),
+            "marked_value_usd": (
+                latest_performance["marked_value_usd"] if latest_performance else None
+            ),
+            "equity_lower_bound_usd": (
+                float(latest_performance["cash_usd"])
+                if latest_performance else running_cash
+            ),
+            "equity_usd": latest_performance["equity_usd"] if latest_performance else None,
+            "equity_is_fully_marked": bool(
+                latest_performance
+                and int(latest_performance["open_position_count"])
+                == int(latest_performance["priced_position_count"])
+            ),
+            "valuation_status": (
+                latest_performance["valuation_status"]
+                if latest_performance else "not_yet_snapshotted"
+            ),
+            "open_position_count": len(open_positions),
+            "closed_position_count": len(completed),
+            "written_off_position_count": sum(
+                1 for row in completed if row["status"] == "written_off"
+            ),
+            "ineligible_position_count": sum(
+                1 for row in positions if row["status"] == "ineligible"
+            ),
+            "winning_position_count": sum(1 for value in pnls if value > 0),
+            "losing_position_count": sum(1 for value in pnls if value < 0),
+            "win_rate": (
+                sum(1 for value in pnls if value > 0) / len(pnls) if pnls else None
+            ),
+            "average_closed_pnl_usd": sum(pnls) / len(pnls) if pnls else None,
+            "median_closed_pnl_usd": median_pnl,
+            "buy_count": sum(1 for row in events if row["side"] == "BUY"),
+            "sell_count": valid_sells,
+            "writeoff_count": sum(1 for row in events if row["side"] == "WRITEOFF"),
+            "quote_attempt_count": attempts,
+            "no_route_count": sum(1 for row in results if row["quote_terminal_status"] == "no_route"),
+            "error_count": sum(
+                1 for row in results if row["quote_terminal_status"] in {
+                    "error", "quote_only_protocol_invalid", "interrupted_after_request"
+                }
+            ),
+            "take_profit_fill_count": sum(
+                1 for row in results
+                if row["validity_status"] == "valid" and row["action"] == "TAKE_PROFIT"
+            ),
+            "protective_exit_fill_count": sum(
+                1 for row in results
+                if row["validity_status"] == "valid" and row["action"] in {
+                    "LIQUIDITY_EXIT", "HARD_STOP", "TRAILING", "INACTIVITY_EXIT"
+                }
+            ),
+            "total_network_fee_usd": sum(
+                float(row["entry_network_fee_usd"])
+                for row in positions if row["status"] != "ineligible"
+            ) + sum(float(row["network_fee_usd"] or 0.0) for row in results),
+            "max_cash_drawdown_usd": max_drawdown,
+            "max_cash_drawdown_pct": max_drawdown / starting_cash if starting_cash else None,
+            "cash_curve": cash_curve,
+            "performance_curve": performance_curve,
+            "pnl_is_executable": not open_positions,
+        }
+        return {
+            "status": "running", "simulated": True, "live": False,
+            "definition": definition, "registered_at": registration["registered_at"],
+            "activation_exploration_buy_trade_id": int(
+                registration["activation_exploration_buy_trade_id"]
+            ),
+            "account": account, "positions": positions,
+            "trades": list(reversed(events[-max(1, int(trade_limit)):])), "marks": marks,
+        }
+
+    def register_onchain_paper_narrative_runner(
+        self, *, starting_cash_usd: float
+    ) -> sqlite3.Row:
+        """Freeze strategy 3 after the current strategy 2 BUY frontier."""
+        version = self.ONCHAIN_PAPER_NARRATIVE_RUNNER_VERSION
+        starting_cash = max(0.01, float(starting_cash_usd))
+        definition = {
+            "version": version,
+            "source_entry": self.ONCHAIN_PAPER_EXPLORATION_VERSION,
+            "source_baseline_exit": self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION,
+            "no_historical_backfill": True,
+            "entry": "exact_new_strategy2_buy_after_registration",
+            "entry_fields": [
+                "token_id", "opened_at", "stake_usd", "initial_amount_raw",
+                "entry_network_fee_usd", "baseline_quote_result_id",
+            ],
+            "initial_state": "baseline",
+            "narrative_runner_activation": "disabled_until_mature_forward_evidence",
+            "baseline_exit": "existing_dynamic_exit_challenger",
+            "max_hold_minutes": 240,
+            "priority": [
+                "safety", "liquidity", "hard_stop", "dynamic_exit", "narrative",
+            ],
+            "execution": "source_amount_specific_jupiter_minimum_output",
+            "route_fees_and_slippage": "included_in_jupiter_minimum_output",
+            "network_fee": "deducted_per_economic_exit",
+            "simulated": True,
+            "live_execution": False,
+            "decision_eligible": False,
+            "affects_main_strategy": False,
+        }
+        with self._lock, self.db:
+            self.db.execute(
+                """
+                INSERT OR IGNORE INTO onchain_paper_narrative_runner_registrations(
+                    definition_version,registered_at,
+                    activation_exploration_buy_trade_id,definition_json
+                ) VALUES(?,?,COALESCE((
+                    SELECT MAX(id) FROM onchain_paper_exploration_trades
+                    WHERE definition_version=? AND side='BUY'
+                ),0),?)
+                """,
+                (
+                    version, iso(), self.ONCHAIN_PAPER_EXPLORATION_VERSION,
+                    self._json(definition),
+                ),
+            )
+            self.db.execute(
+                """
+                INSERT OR IGNORE INTO onchain_paper_narrative_runner_account(
+                    definition_version,starting_cash_usd,cash_usd,
+                    realized_pnl_usd,updated_at
+                ) VALUES(?,?,?,?,?)
+                """,
+                (version, starting_cash, starting_cash, 0.0, iso()),
+            )
+            return self.db.execute(
+                "SELECT * FROM onchain_paper_narrative_runner_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+
+    def register_onchain_paper_narrative_context(self) -> sqlite3.Row:
+        """Freeze the post-entry investigation frontier without backfilling positions."""
+        version = self.ONCHAIN_PAPER_NARRATIVE_CONTEXT_VERSION
+        definition = {
+            "version": version,
+            "source_strategy": self.ONCHAIN_PAPER_NARRATIVE_RUNNER_VERSION,
+            "registration": "after_current_strategy2_buy_frontier",
+            "minimum_post_entry_delay_seconds": 60,
+            "selection": "oldest_unseeded_forward_position_first",
+            "snapshot_selection": (
+                "latest_fully_available_post_entry_snapshot_else_exact_"
+                "onchain_entry_trigger_snapshot"
+            ),
+            "trigger": "post_entry_narrative_position",
+            "agent_task": "existing_token_context",
+            "records": [
+                "admission", "skip_reason", "assessment", "verified_sources",
+                "community_spread", "public_figure_linkage",
+            ],
+            "narrative_runner_activation": "disabled_until_mature_forward_evidence",
+            "changes_position": False,
+            "changes_exit": False,
+            "no_historical_backfill": True,
+            "decision_eligible": False,
+            "affects": "none",
+        }
+        with self._lock, self.db:
+            self.db.execute(
+                """
+                INSERT OR IGNORE INTO onchain_paper_narrative_context_registrations(
+                    definition_version,registered_at,
+                    activation_source_buy_trade_id,definition_json
+                ) VALUES(?,?,COALESCE((
+                    SELECT MAX(id)
+                    FROM onchain_paper_exploration_trades
+                    WHERE definition_version=?
+                      AND side='BUY'
+                ),0),?)
+                """,
+                (
+                    version, iso(), self.ONCHAIN_PAPER_EXPLORATION_VERSION,
+                    self._json(definition),
+                ),
+            )
+            return self.db.execute(
+                "SELECT * FROM onchain_paper_narrative_context_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+
+    def due_onchain_paper_narrative_context(
+        self, *, now: Any = None, limit: int = 1
+    ) -> list[dict[str, Any]]:
+        """Return only strategy 3 positions created beyond the frozen context frontier."""
+        version = self.ONCHAIN_PAPER_NARRATIVE_CONTEXT_VERSION
+        evaluated = parse_time(now or utcnow())
+        with self._lock:
+            registration = self.db.execute(
+                "SELECT * FROM onchain_paper_narrative_context_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if registration is None:
+                return []
+            definition = self._json_object(registration["definition_json"])
+            delay = max(
+                0, int(definition.get("minimum_post_entry_delay_seconds") or 0)
+            )
+            rows = self.db.execute(
+                """
+                SELECT p.*,c.trigger_snapshot_id AS entry_trigger_snapshot_id,
+                       s.id AS context_seed_id,
+                       s.snapshot_id AS context_snapshot_id,
+                       s.trigger_transition_id AS context_trigger_transition_id,
+                       s.status AS context_seed_status
+                FROM onchain_paper_narrative_runner_positions p
+                LEFT JOIN onchain_only_shadow_cohorts c
+                  ON c.id=p.shadow_cohort_id
+                 AND c.definition_version=?
+                LEFT JOIN onchain_paper_narrative_context_seeds s
+                  ON s.definition_version=?
+                 AND s.source_buy_trade_id=p.source_buy_trade_id
+                WHERE p.definition_version=? AND p.source_buy_trade_id>?
+                  AND p.opened_at<=?
+                  AND (
+                    s.id IS NULL OR (
+                      s.status='triggered' AND NOT EXISTS (
+                        SELECT 1 FROM token_context_admission_attempts a
+                        WHERE a.trigger_transition_id=s.trigger_transition_id
+                      )
+                    )
+                  )
+                ORDER BY p.opened_at,p.source_buy_trade_id
+                LIMIT ?
+                """,
+                (
+                    self.ONCHAIN_ONLY_SHADOW_VERSION,
+                    version, self.ONCHAIN_PAPER_NARRATIVE_RUNNER_VERSION,
+                    int(registration["activation_source_buy_trade_id"]),
+                    iso(evaluated - timedelta(seconds=delay)), max(1, int(limit)),
+                ),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def record_onchain_paper_narrative_context_seed(
+        self,
+        *,
+        source_buy_trade_id: int,
+        snapshot_id: int | None,
+        trigger_transition_id: int | None,
+        status: str,
+        reason_code: str,
+        recorded_at: Any = None,
+    ) -> int | None:
+        """Append the exact Strategy 3 position-to-context trigger lineage."""
+        version = self.ONCHAIN_PAPER_NARRATIVE_CONTEXT_VERSION
+        status = str(status)
+        if status not in {"triggered", "coverage_gap"}:
+            raise ValueError("invalid narrative context seed status")
+        if status == "triggered" and (
+            trigger_transition_id is None or snapshot_id is None
+        ):
+            raise ValueError("triggered narrative context seed requires snapshot and transition")
+        seed_recorded_at = parse_time(recorded_at or utcnow())
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT * FROM onchain_paper_narrative_context_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            position = self.db.execute(
+                "SELECT * FROM onchain_paper_narrative_runner_positions "
+                "WHERE definition_version=? AND source_buy_trade_id=?",
+                (self.ONCHAIN_PAPER_NARRATIVE_RUNNER_VERSION, int(source_buy_trade_id)),
+            ).fetchone()
+            entry_cohort = self.db.execute(
+                "SELECT trigger_snapshot_id FROM onchain_only_shadow_cohorts "
+                "WHERE definition_version=? AND id=?",
+                (
+                    self.ONCHAIN_ONLY_SHADOW_VERSION,
+                    int(position["shadow_cohort_id"]) if position is not None else -1,
+                ),
+            ).fetchone()
+            if (
+                registration is None or position is None
+                or int(source_buy_trade_id)
+                <= int(registration["activation_source_buy_trade_id"])
+            ):
+                return None
+            if trigger_transition_id is not None:
+                transition = self.db.execute(
+                    "SELECT * FROM token_universe_funnel_transitions WHERE id=?",
+                    (int(trigger_transition_id),),
+                ).fetchone()
+                snapshot = self.db.execute(
+                    "SELECT * FROM token_snapshots WHERE id=?",
+                    (int(snapshot_id),),
+                ).fetchone()
+                source_ids = self._json_object(
+                    transition["source_record_ids_json"] if transition is not None else "{}"
+                )
+                metadata = self._json_object(
+                    transition["metadata_json"] if transition is not None else "{}"
+                )
+                matches = bool(
+                    transition is not None and snapshot is not None
+                    and str(transition["token_id"]) == str(position["token_id"])
+                    and str(snapshot["token_id"]) == str(position["token_id"])
+                    and str(transition["stage"]) == "context_trigger_evaluation"
+                    and str(transition["status"]) == "eligible"
+                    and str(transition["reason_code"]) == "post_entry_narrative_position"
+                    and int(transition["snapshot_id"] or 0) == int(snapshot_id)
+                    and int(source_ids.get("source_buy_trade_id") or 0)
+                    == int(source_buy_trade_id)
+                    and int(source_ids.get("shadow_cohort_id") or 0)
+                    == int(position["shadow_cohort_id"])
+                    and int(metadata.get("source_buy_trade_id") or 0)
+                    == int(source_buy_trade_id)
+                    and int(metadata.get("shadow_cohort_id") or 0)
+                    == int(position["shadow_cohort_id"])
+                )
+                if not matches:
+                    raise ValueError("narrative context transition lineage mismatch")
+                opened = parse_time(position["opened_at"])
+                observed = parse_time(snapshot["observed_at"])
+                ingested = parse_time(snapshot["ingested_at"])
+                snapshot_recorded = parse_time(snapshot["recorded_at"])
+                transition_observed = parse_time(transition["observed_at"])
+                transition_ingested = parse_time(transition["ingested_at"])
+                transition_recorded = parse_time(transition["recorded_at"])
+                snapshot_basis = str(metadata.get("context_snapshot_basis") or "")
+                post_entry_lineage = (
+                    snapshot_basis == "post_entry_snapshot"
+                    and opened <= observed <= ingested <= snapshot_recorded
+                )
+                entry_fallback_lineage = (
+                    snapshot_basis == "entry_trigger_snapshot"
+                    and observed <= ingested <= snapshot_recorded <= opened
+                    and entry_cohort is not None
+                    and int(snapshot_id) == int(entry_cohort["trigger_snapshot_id"])
+                )
+                if not (
+                    (post_entry_lineage or entry_fallback_lineage)
+                    and snapshot_recorded <= transition_ingested
+                    <= transition_recorded <= seed_recorded_at
+                    and transition_observed == observed
+                ):
+                    raise ValueError("narrative context temporal lineage mismatch")
+            cursor = self.db.execute(
+                """
+                INSERT OR IGNORE INTO onchain_paper_narrative_context_seeds(
+                    definition_version,source_buy_trade_id,shadow_cohort_id,
+                    token_id,position_opened_at,snapshot_id,trigger_transition_id,
+                    status,reason_code,recorded_at,decision_eligible,affects
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,0,'none')
+                """,
+                (
+                    version, int(source_buy_trade_id),
+                    int(position["shadow_cohort_id"]), str(position["token_id"]),
+                    str(position["opened_at"]),
+                    int(snapshot_id) if snapshot_id is not None else None,
+                    int(trigger_transition_id)
+                    if trigger_transition_id is not None else None,
+                    status, str(reason_code)[:120],
+                    iso(seed_recorded_at),
+                ),
+            )
+            if int(cursor.rowcount or 0) != 1:
+                row = self.db.execute(
+                    "SELECT id FROM onchain_paper_narrative_context_seeds "
+                    "WHERE definition_version=? AND source_buy_trade_id=?",
+                    (version, int(source_buy_trade_id)),
+                ).fetchone()
+                return int(row["id"]) if row is not None else None
+            return int(cursor.lastrowid)
+
+    def enroll_onchain_paper_narrative_runner(self) -> dict[str, int]:
+        """Clone only exact strategy 2 BUYs created beyond the frozen frontier."""
+        version = self.ONCHAIN_PAPER_NARRATIVE_RUNNER_VERSION
+        inserted = rejected = 0
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT * FROM onchain_paper_narrative_runner_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if registration is None:
+                return {"inserted": 0, "rejected": 0}
+            rows = self.db.execute(
+                """
+                SELECT t.id AS source_buy_trade_id,t.shadow_cohort_id,t.token_id,
+                       t.quote_result_id,t.gross_usd,t.network_fee_usd,
+                       t.net_cash_flow_usd,t.created_at,
+                       p.baseline_quote_result_id,p.stake_usd,
+                       p.acquired_amount_raw,p.entry_network_fee_usd,p.opened_at
+                FROM onchain_paper_exploration_trades t
+                JOIN onchain_paper_exploration_positions p
+                  ON p.definition_version=t.definition_version
+                 AND p.shadow_cohort_id=t.shadow_cohort_id
+                LEFT JOIN onchain_paper_narrative_runner_positions n
+                  ON n.definition_version=? AND n.source_buy_trade_id=t.id
+                WHERE t.definition_version=? AND t.side='BUY' AND t.id>?
+                  AND n.source_buy_trade_id IS NULL
+                ORDER BY t.id
+                """,
+                (
+                    version, self.ONCHAIN_PAPER_EXPLORATION_VERSION,
+                    int(registration["activation_exploration_buy_trade_id"]),
+                ),
+            ).fetchall()
+            for row in rows:
+                stake = float(row["stake_usd"])
+                entry_fee = float(row["entry_network_fee_usd"])
+                debit = stake + entry_fee
+                exact = bool(
+                    str(row["token_id"])
+                    and int(row["quote_result_id"])
+                    == int(row["baseline_quote_result_id"])
+                    and str(row["created_at"]) == str(row["opened_at"])
+                    and abs(float(row["gross_usd"]) - stake) <= 1e-9
+                    and abs(float(row["network_fee_usd"]) - entry_fee) <= 1e-9
+                    and abs(float(row["net_cash_flow_usd"]) + debit) <= 1e-9
+                    and int(row["acquired_amount_raw"] or 0) > 0
+                )
+                if not exact:
+                    rejected += 1
+                    continue
+                self.db.execute(
+                    """
+                    INSERT OR IGNORE INTO onchain_paper_narrative_runner_positions(
+                        definition_version,shadow_cohort_id,token_id,
+                        source_buy_trade_id,baseline_quote_result_id,
+                        initial_amount_raw,remaining_amount_raw,stake_usd,
+                        entry_network_fee_usd,status,opened_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,'baseline',?)
+                    """,
+                    (
+                        version, int(row["shadow_cohort_id"]), str(row["token_id"]),
+                        int(row["source_buy_trade_id"]),
+                        int(row["baseline_quote_result_id"]),
+                        str(row["acquired_amount_raw"]), str(row["acquired_amount_raw"]),
+                        stake, entry_fee, str(row["opened_at"]),
+                    ),
+                )
+                changed = int(self.db.execute("SELECT changes()").fetchone()[0])
+                if not changed:
+                    continue
+                inserted += 1
+                self.db.execute(
+                    "UPDATE onchain_paper_narrative_runner_account "
+                    "SET cash_usd=cash_usd-?,updated_at=? WHERE definition_version=?",
+                    (debit, str(row["opened_at"]), version),
+                )
+                self.db.execute(
+                    """
+                    INSERT INTO onchain_paper_narrative_runner_trades(
+                        definition_version,shadow_cohort_id,token_id,
+                        source_buy_trade_id,source_exit_quote_result_id,side,
+                        amount_raw,gross_usd,network_fee_usd,net_cash_flow_usd,
+                        realized_pnl_usd,reason,created_at
+                    ) VALUES(?,?,?,?,NULL,'BUY',?,?,?,?,NULL,?,?)
+                    """,
+                    (
+                        version, int(row["shadow_cohort_id"]), str(row["token_id"]),
+                        int(row["source_buy_trade_id"]), str(row["acquired_amount_raw"]),
+                        stake, entry_fee, -debit,
+                        "exact_paired_strategy2_jupiter_minimum_output_entry",
+                        str(row["opened_at"]),
+                    ),
+                )
+            self._sync_onchain_paper_narrative_runner_locked()
+        return {"inserted": inserted, "rejected": rejected}
+
+    def _apply_onchain_paper_narrative_runner_exit_result_locked(
+        self, result_id: int
+    ) -> bool:
+        version = self.ONCHAIN_PAPER_NARRATIVE_RUNNER_VERSION
+        result = self.db.execute(
+            "SELECT * FROM onchain_paper_exit_challenger_quote_results "
+            "WHERE id=? AND definition_version=?",
+            (int(result_id), self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION),
+        ).fetchone()
+        if result is None:
+            return False
+        position = self.db.execute(
+            "SELECT * FROM onchain_paper_narrative_runner_positions "
+            "WHERE definition_version=? AND shadow_cohort_id=? AND status='baseline'",
+            (version, int(result["shadow_cohort_id"])),
+        ).fetchone()
+        if position is None or self.db.execute(
+            "SELECT 1 FROM onchain_paper_narrative_runner_trades "
+            "WHERE source_exit_quote_result_id=?", (int(result_id),),
+        ).fetchone() is not None:
+            return False
+        source = self.db.execute(
+            "SELECT * FROM onchain_paper_exit_challenger_positions "
+            "WHERE definition_version=? AND source_buy_trade_id=?",
+            (
+                self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION,
+                int(position["source_buy_trade_id"]),
+            ),
+        ).fetchone()
+        exact_source = bool(
+            source is not None
+            and int(source["shadow_cohort_id"]) == int(position["shadow_cohort_id"])
+            and str(source["token_id"]) == str(position["token_id"])
+            and int(source["baseline_quote_result_id"])
+            == int(position["baseline_quote_result_id"])
+            and str(source["initial_amount_raw"]) == str(position["initial_amount_raw"])
+            and abs(float(source["stake_usd"]) - float(position["stake_usd"])) <= 1e-9
+            and abs(
+                float(source["entry_network_fee_usd"])
+                - float(position["entry_network_fee_usd"])
+            ) <= 1e-9
+            and str(source["opened_at"]) == str(position["opened_at"])
+        )
+        if not exact_source:
+            return False
+        economic = bool(
+            str(result["validity_status"]) == "valid"
+            and str(result["economic_status"]) == "economic"
+            and result["gross_usdc"] is not None
+            and result["net_proceeds_usd"] is not None
+            and float(result["net_proceeds_usd"]) > 0
+        )
+        remaining_before = int(position["remaining_amount_raw"])
+        total_cost = float(position["stake_usd"]) + float(
+            position["entry_network_fee_usd"]
+        )
+        if economic:
+            sold = min(remaining_before, int(result["input_amount_raw"]))
+            remaining_after = remaining_before - sold
+            if sold <= 0 or remaining_after != int(result["remaining_amount_raw"]):
+                return False
+            gross = float(result["gross_usdc"])
+            network_fee = float(result["network_fee_usd"] or 0.0)
+            net = float(result["net_proceeds_usd"])
+            cost_delta = total_cost * sold / int(position["initial_amount_raw"])
+            pnl_delta = net - cost_delta
+            target_status = str(result["position_status"])
+            if target_status not in {"open", "closed"}:
+                return False
+            status = "closed" if target_status == "closed" else "baseline"
+            closed_at = str(result["completed_at"]) if status == "closed" else None
+            close_reason = str(source["close_reason"] or "") if status == "closed" else ""
+            allocated_cost = float(position["allocated_cost_usd"]) + cost_delta
+            realized_proceeds = float(position["realized_proceeds_usd"]) + net
+            realized_pnl = float(position["realized_pnl_usd"]) + pnl_delta
+            side = "SELL"
+            reason = "paired_dynamic_jupiter_minimum_output_exit"
+        elif str(result["position_status"]) == "written_off":
+            sold = remaining_before
+            remaining_after = 0
+            gross = network_fee = net = 0.0
+            cost_delta = max(0.0, total_cost - float(position["allocated_cost_usd"]))
+            pnl_delta = -cost_delta
+            allocated_cost = total_cost
+            realized_proceeds = float(position["realized_proceeds_usd"])
+            realized_pnl = float(position["realized_pnl_usd"]) + pnl_delta
+            status = "written_off"
+            closed_at = str(result["completed_at"])
+            close_reason = "terminal_without_executable_jupiter_exit"
+            side = "WRITEOFF"
+            reason = close_reason
+        else:
+            return False
+        self.db.execute(
+            """
+            UPDATE onchain_paper_narrative_runner_positions
+            SET remaining_amount_raw=?,realized_proceeds_usd=?,allocated_cost_usd=?,
+                realized_pnl_usd=?,status=?,closed_at=?,close_reason=?
+            WHERE definition_version=? AND shadow_cohort_id=? AND status='baseline'
+            """,
+            (
+                str(remaining_after), realized_proceeds, allocated_cost, realized_pnl,
+                status, closed_at, close_reason, version,
+                int(position["shadow_cohort_id"]),
+            ),
+        )
+        self.db.execute(
+            "UPDATE onchain_paper_narrative_runner_account "
+            "SET cash_usd=cash_usd+?,realized_pnl_usd=realized_pnl_usd+?,updated_at=? "
+            "WHERE definition_version=?",
+            (net, pnl_delta, str(result["completed_at"]), version),
+        )
+        self.db.execute(
+            """
+            INSERT INTO onchain_paper_narrative_runner_trades(
+                definition_version,shadow_cohort_id,token_id,source_buy_trade_id,
+                source_exit_quote_result_id,side,amount_raw,gross_usd,
+                network_fee_usd,net_cash_flow_usd,realized_pnl_usd,reason,created_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                version, int(position["shadow_cohort_id"]), str(position["token_id"]),
+                int(position["source_buy_trade_id"]), int(result_id), side, str(sold),
+                gross, network_fee, net, pnl_delta, reason, str(result["completed_at"]),
+            ),
+        )
+        return True
+
+    def _sync_onchain_paper_narrative_runner_locked(self) -> dict[str, int]:
+        result_ids = [
+            int(row["id"])
+            for row in self.db.execute(
+                """
+                SELECT r.id
+                FROM onchain_paper_exit_challenger_quote_results r
+                JOIN onchain_paper_narrative_runner_positions p
+                  ON p.definition_version=?
+                 AND p.shadow_cohort_id=r.shadow_cohort_id
+                 AND p.status='baseline'
+                LEFT JOIN onchain_paper_narrative_runner_trades t
+                  ON t.source_exit_quote_result_id=r.id
+                WHERE r.definition_version=? AND t.id IS NULL
+                ORDER BY r.id
+                """,
+                (
+                    self.ONCHAIN_PAPER_NARRATIVE_RUNNER_VERSION,
+                    self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION,
+                ),
+            )
+        ]
+        applied = sum(
+            self._apply_onchain_paper_narrative_runner_exit_result_locked(result_id)
+            for result_id in result_ids
+        )
+        return {"examined": len(result_ids), "applied": int(applied)}
+
+    def sync_onchain_paper_narrative_runner(self) -> dict[str, int]:
+        with self._lock, self.db:
+            return self._sync_onchain_paper_narrative_runner_locked()
+
+    def onchain_paper_narrative_runner_account(self) -> dict[str, Any] | None:
+        with self._lock:
+            row = self.db.execute(
+                "SELECT * FROM onchain_paper_narrative_runner_account "
+                "WHERE definition_version=?",
+                (self.ONCHAIN_PAPER_NARRATIVE_RUNNER_VERSION,),
+            ).fetchone()
+            return dict(row) if row is not None else None
+
+    def onchain_paper_narrative_runner_positions(
+        self, *, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            return [
+                dict(row) for row in self.db.execute(
+                    "SELECT * FROM onchain_paper_narrative_runner_positions "
+                    "WHERE definition_version=? ORDER BY opened_at DESC LIMIT ?",
+                    (
+                        self.ONCHAIN_PAPER_NARRATIVE_RUNNER_VERSION,
+                        max(1, int(limit)),
+                    ),
+                )
+            ]
+
+    def onchain_paper_narrative_runner_trades(
+        self, *, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            return [
+                dict(row) for row in self.db.execute(
+                    "SELECT * FROM onchain_paper_narrative_runner_trades "
+                    "WHERE definition_version=? ORDER BY id DESC LIMIT ?",
+                    (
+                        self.ONCHAIN_PAPER_NARRATIVE_RUNNER_VERSION,
+                        max(1, int(limit)),
+                    ),
+                )
+            ]
+
+    def onchain_paper_narrative_runner_pairing_summary(self) -> dict[str, Any]:
+        version = self.ONCHAIN_PAPER_NARRATIVE_RUNNER_VERSION
+        with self._lock:
+            registration = self.db.execute(
+                "SELECT * FROM onchain_paper_narrative_runner_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if registration is None:
+                return {"status": "not_enabled", "definition_version": version}
+            activation = int(registration["activation_exploration_buy_trade_id"])
+            source_count = int(self.db.execute(
+                "SELECT COUNT(*) FROM onchain_paper_exploration_trades "
+                "WHERE definition_version=? AND side='BUY' AND id>?",
+                (self.ONCHAIN_PAPER_EXPLORATION_VERSION, activation),
+            ).fetchone()[0])
+            paired_count = int(self.db.execute(
+                "SELECT COUNT(*) FROM onchain_paper_narrative_runner_positions "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()[0])
+            exact_count = int(self.db.execute(
+                """
+                SELECT COUNT(*)
+                FROM onchain_paper_narrative_runner_positions n
+                JOIN onchain_paper_exploration_trades t
+                  ON t.id=n.source_buy_trade_id AND t.side='BUY'
+                JOIN onchain_paper_exploration_positions p
+                  ON p.definition_version=t.definition_version
+                 AND p.shadow_cohort_id=t.shadow_cohort_id
+                WHERE n.definition_version=? AND t.definition_version=?
+                  AND t.id>?
+                  AND n.shadow_cohort_id=t.shadow_cohort_id
+                  AND n.token_id=t.token_id
+                  AND n.baseline_quote_result_id=p.baseline_quote_result_id
+                  AND n.initial_amount_raw=p.acquired_amount_raw
+                  AND ABS(n.stake_usd-p.stake_usd)<=0.000000001
+                  AND ABS(n.entry_network_fee_usd-p.entry_network_fee_usd)<=0.000000001
+                  AND n.opened_at=p.opened_at
+                """,
+                (version, self.ONCHAIN_PAPER_EXPLORATION_VERSION, activation),
+            ).fetchone()[0])
+            statuses = {
+                str(row["status"]): int(row["count"])
+                for row in self.db.execute(
+                    "SELECT status,COUNT(*) AS count "
+                    "FROM onchain_paper_narrative_runner_positions "
+                    "WHERE definition_version=? GROUP BY status", (version,),
+                )
+            }
+            backfilled = int(self.db.execute(
+                "SELECT COUNT(*) FROM onchain_paper_narrative_runner_positions "
+                "WHERE definition_version=? AND source_buy_trade_id<=?",
+                (version, activation),
+            ).fetchone()[0])
+            dynamic_pairs = int(self.db.execute(
+                """
+                SELECT COUNT(*)
+                FROM onchain_paper_narrative_runner_positions n
+                JOIN onchain_paper_exit_challenger_positions x
+                  ON x.definition_version=?
+                 AND x.source_buy_trade_id=n.source_buy_trade_id
+                WHERE n.definition_version=?
+                """,
+                (self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION, version),
+            ).fetchone()[0])
+            return {
+                "status": "running",
+                "definition_version": version,
+                "registered_at": str(registration["registered_at"]),
+                "activation_exploration_buy_trade_id": activation,
+                "eligible_source_buy_count": source_count,
+                "paired_position_count": paired_count,
+                "exact_pairing_count": exact_count,
+                "missing_pair_count": max(0, source_count - paired_count),
+                "dynamic_exit_pair_count": dynamic_pairs,
+                "backfilled_position_count": backfilled,
+                "status_counts": statuses,
+                "runner_activation_count": int(statuses.get("narrative_runner", 0)),
+                "narrative_evidence_status": "not_mature_not_enabled",
+                "simulated": True,
+                "live": False,
+            }
+
+    @classmethod
+    def onchain_paper_narrative_runner_summary_from_connection(
+        cls, connection: sqlite3.Connection, *, trade_limit: int = 100
+    ) -> dict[str, Any]:
+        """Read strategy 3 for Web without opening a second writable Store."""
+        version = cls.ONCHAIN_PAPER_NARRATIVE_RUNNER_VERSION
+        tables = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        required = {
+            "onchain_paper_narrative_runner_registrations",
+            "onchain_paper_narrative_runner_account",
+            "onchain_paper_narrative_runner_positions",
+            "onchain_paper_narrative_runner_trades",
+        }
+        if not required.issubset(tables):
+            return {
+                "status": "not_enabled", "simulated": True, "live": False,
+                "definition": {"version": version},
+                "account": {}, "positions": [], "trades": [],
+                "pairing_summary": {"status": "not_enabled"},
+            }
+        registration = connection.execute(
+            "SELECT * FROM onchain_paper_narrative_runner_registrations "
+            "WHERE definition_version=?", (version,),
+        ).fetchone()
+        if registration is None:
+            return {
+                "status": "not_enabled", "simulated": True, "live": False,
+                "definition": {"version": version},
+                "account": {}, "positions": [], "trades": [],
+                "pairing_summary": {"status": "not_enabled"},
+            }
+        activation = int(registration["activation_exploration_buy_trade_id"])
+        account_row = connection.execute(
+            "SELECT * FROM onchain_paper_narrative_runner_account "
+            "WHERE definition_version=?", (version,),
+        ).fetchone()
+        positions = [dict(row) for row in connection.execute(
+            "SELECT * FROM onchain_paper_narrative_runner_positions "
+            "WHERE definition_version=? ORDER BY opened_at DESC LIMIT ?",
+            (version, max(1, int(trade_limit))),
+        )]
+        trades = [dict(row) for row in connection.execute(
+            "SELECT * FROM onchain_paper_narrative_runner_trades "
+            "WHERE definition_version=? ORDER BY id DESC LIMIT ?",
+            (version, max(1, int(trade_limit))),
+        )]
+        status_counts = {
+            str(row["status"]): int(row["count"])
+            for row in connection.execute(
+                "SELECT status,COUNT(*) AS count "
+                "FROM onchain_paper_narrative_runner_positions "
+                "WHERE definition_version=? GROUP BY status", (version,),
+            )
+        }
+        source_count = int(connection.execute(
+            "SELECT COUNT(*) FROM onchain_paper_exploration_trades "
+            "WHERE definition_version=? AND side='BUY' AND id>?",
+            (cls.ONCHAIN_PAPER_EXPLORATION_VERSION, activation),
+        ).fetchone()[0])
+        paired_count = sum(status_counts.values())
+        exact_count = int(connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM onchain_paper_narrative_runner_positions n
+            JOIN onchain_paper_exploration_trades t
+              ON t.id=n.source_buy_trade_id AND t.side='BUY'
+            JOIN onchain_paper_exploration_positions p
+              ON p.definition_version=t.definition_version
+             AND p.shadow_cohort_id=t.shadow_cohort_id
+            WHERE n.definition_version=? AND t.definition_version=? AND t.id>?
+              AND n.shadow_cohort_id=t.shadow_cohort_id
+              AND n.token_id=t.token_id
+              AND n.baseline_quote_result_id=p.baseline_quote_result_id
+              AND n.initial_amount_raw=p.acquired_amount_raw
+              AND ABS(n.stake_usd-p.stake_usd)<=0.000000001
+              AND ABS(n.entry_network_fee_usd-p.entry_network_fee_usd)<=0.000000001
+              AND n.opened_at=p.opened_at
+            """,
+            (version, cls.ONCHAIN_PAPER_EXPLORATION_VERSION, activation),
+        ).fetchone()[0])
+        backfilled = int(connection.execute(
+            "SELECT COUNT(*) FROM onchain_paper_narrative_runner_positions "
+            "WHERE definition_version=? AND source_buy_trade_id<=?",
+            (version, activation),
+        ).fetchone()[0])
+        context_summary: dict[str, Any] = {
+            "status": "not_enabled",
+            "eligible_positions": 0,
+            "pre_registration_excluded": 0,
+            "seeded_positions": 0,
+            "triggered_positions": 0,
+            "coverage_gaps": 0,
+            "dispatch_pending": 0,
+            "attempted_positions": 0,
+            "admitted_positions": 0,
+            "assessed_positions": 0,
+            "pending_positions": 0,
+            "snapshot_basis_counts": {},
+            "prior_versions": [],
+            "decision_eligible": False,
+            "affects": "none",
+        }
+        context_by_buy: dict[int, dict[str, Any]] = {}
+        context_tables = {
+            "onchain_paper_narrative_context_registrations",
+            "onchain_paper_narrative_context_seeds",
+            "token_context_admission_attempts",
+            "token_context_assessments",
+            "token_universe_funnel_transitions",
+        }
+        if context_tables.issubset(tables):
+            context_version = cls.ONCHAIN_PAPER_NARRATIVE_CONTEXT_VERSION
+            prior_versions = [dict(row) for row in connection.execute(
+                """
+                SELECT r.definition_version,r.registered_at,
+                       COUNT(s.id) AS seeded_positions,
+                       SUM(CASE WHEN s.status='triggered' THEN 1 ELSE 0 END)
+                           AS triggered_positions,
+                       SUM(CASE WHEN s.status='coverage_gap' THEN 1 ELSE 0 END)
+                           AS coverage_gaps
+                FROM onchain_paper_narrative_context_registrations r
+                LEFT JOIN onchain_paper_narrative_context_seeds s
+                  ON s.definition_version=r.definition_version
+                WHERE r.definition_version<>?
+                GROUP BY r.definition_version,r.registered_at
+                ORDER BY r.registered_at DESC
+                """,
+                (context_version,),
+            )]
+            context_summary.update({
+                "version": context_version,
+                "prior_versions": prior_versions,
+            })
+            context_registration = connection.execute(
+                "SELECT * FROM onchain_paper_narrative_context_registrations "
+                "WHERE definition_version=?", (context_version,),
+            ).fetchone()
+            if context_registration is not None:
+                context_activation = int(
+                    context_registration["activation_source_buy_trade_id"]
+                )
+                eligible_positions = int(connection.execute(
+                    "SELECT COUNT(*) FROM onchain_paper_narrative_runner_positions "
+                    "WHERE definition_version=? AND source_buy_trade_id>?",
+                    (cls.ONCHAIN_PAPER_NARRATIVE_RUNNER_VERSION, context_activation),
+                ).fetchone()[0])
+                pre_registration_excluded = int(connection.execute(
+                    "SELECT COUNT(*) FROM onchain_paper_narrative_runner_positions "
+                    "WHERE definition_version=? AND source_buy_trade_id<=?",
+                    (cls.ONCHAIN_PAPER_NARRATIVE_RUNNER_VERSION, context_activation),
+                ).fetchone()[0])
+                seeds = list(connection.execute(
+                    "SELECT * FROM onchain_paper_narrative_context_seeds "
+                    "WHERE definition_version=? ORDER BY id",
+                    (context_version,),
+                ))
+                admitted_positions = assessed_positions = attempted_positions = 0
+                dispatch_pending = 0
+                admission_reasons: dict[str, int] = {}
+                snapshot_basis_counts: dict[str, int] = {}
+                for seed in seeds:
+                    item: dict[str, Any] = {
+                        "status": str(seed["status"]),
+                        "reason": str(seed["reason_code"]),
+                        "recorded_at": str(seed["recorded_at"]),
+                        "trigger_transition_id": seed["trigger_transition_id"],
+                        "admission_outcome": None,
+                        "admission_reason": None,
+                        "admission_evaluated_at": None,
+                        "assessment_id": None,
+                        "assessment_status": None,
+                        "assessed_at": None,
+                        "community_status": "unknown",
+                        "public_figure_status": "not_observed",
+                        "independent_source_count": 0,
+                        "content_verifier_status": "not_run",
+                        "decision_eligible": False,
+                        "affects": "none",
+                    }
+                    transition_id = seed["trigger_transition_id"]
+                    if transition_id is not None:
+                        transition_row = connection.execute(
+                            "SELECT metadata_json FROM token_universe_funnel_transitions "
+                            "WHERE id=?",
+                            (int(transition_id),),
+                        ).fetchone()
+                        if transition_row is not None:
+                            transition_metadata = cls._json_object(
+                                transition_row["metadata_json"]
+                            )
+                            snapshot_basis = str(
+                                transition_metadata.get("context_snapshot_basis")
+                                or "unknown"
+                            )
+                            item["context_snapshot_basis"] = snapshot_basis
+                            snapshot_basis_counts[snapshot_basis] = (
+                                snapshot_basis_counts.get(snapshot_basis, 0) + 1
+                            )
+                    admissions = []
+                    if transition_id is not None:
+                        admissions = list(connection.execute(
+                            "SELECT * FROM token_context_admission_attempts "
+                            "WHERE trigger_transition_id=? ORDER BY id",
+                            (int(transition_id),),
+                        ))
+                    if admissions:
+                        attempted_positions += 1
+                        if any(
+                            str(row["outcome"]) in {"admitted", "reused"}
+                            for row in admissions
+                        ):
+                            admitted_positions += 1
+                        latest = admissions[-1]
+                        reason_key = (
+                            f"{str(latest['outcome'])}:{str(latest['reason'])}"
+                        )
+                        admission_reasons[reason_key] = (
+                            admission_reasons.get(reason_key, 0) + 1
+                        )
+                        item.update({
+                            "admission_outcome": str(latest["outcome"]),
+                            "admission_reason": str(latest["reason"]),
+                            "admission_evaluated_at": str(latest["evaluated_at"]),
+                        })
+                        assessment_transition = connection.execute(
+                            "SELECT assessment_id FROM token_universe_funnel_transitions "
+                            "WHERE stage='agent_result' AND admission_id IN ("
+                            + ",".join("?" for _ in admissions)
+                            + ") AND assessment_id IS NOT NULL "
+                            "ORDER BY id DESC LIMIT 1",
+                            tuple(int(row["id"]) for row in admissions),
+                        ).fetchone()
+                        if assessment_transition is not None:
+                            assessment = connection.execute(
+                                "SELECT * FROM token_context_assessments WHERE id=?",
+                                (int(assessment_transition["assessment_id"]),),
+                            ).fetchone()
+                            if assessment is not None:
+                                assessed_positions += 1
+                                payload = cls._json_object(
+                                    assessment["assessment_json"]
+                                )
+                                community = payload.get("community_amplification")
+                                community = community if isinstance(community, dict) else {}
+                                figure = payload.get("public_figure_linkage")
+                                figure = figure if isinstance(figure, dict) else {}
+                                reporting = payload.get("independent_reporting")
+                                reporting = reporting if isinstance(reporting, dict) else {}
+                                verifier = payload.get("content_verifier")
+                                verifier = verifier if isinstance(verifier, dict) else {}
+                                domains = reporting.get("domains")
+                                domains = domains if isinstance(domains, list) else []
+                                item.update({
+                                    "assessment_id": int(assessment["id"]),
+                                    "assessment_status": str(assessment["status"]),
+                                    "assessed_at": str(assessment["assessed_at"]),
+                                    "community_status": str(
+                                        community.get("status") or "unknown"
+                                    ),
+                                    "public_figure_status": str(
+                                        figure.get("status") or "not_observed"
+                                    ),
+                                    "independent_source_count": len(domains),
+                                    "content_verifier_status": str(
+                                        verifier.get("status") or "not_run"
+                                    ),
+                                })
+                    elif str(seed["status"]) == "triggered":
+                        dispatch_pending += 1
+                    context_by_buy[int(seed["source_buy_trade_id"])] = item
+                seeded = len(seeds)
+                unseeded = max(0, eligible_positions - seeded)
+                context_summary = {
+                    "status": "collecting_forward_only",
+                    "version": context_version,
+                    "registered_at": str(context_registration["registered_at"]),
+                    "activation_source_buy_trade_id": context_activation,
+                    "eligible_positions": eligible_positions,
+                    "pre_registration_excluded": pre_registration_excluded,
+                    "seeded_positions": seeded,
+                    "triggered_positions": sum(
+                        str(row["status"]) == "triggered" for row in seeds
+                    ),
+                    "coverage_gaps": sum(
+                        str(row["status"]) == "coverage_gap" for row in seeds
+                    ),
+                    "dispatch_pending": dispatch_pending,
+                    "attempted_positions": attempted_positions,
+                    "admitted_positions": admitted_positions,
+                    "assessed_positions": assessed_positions,
+                    "unseeded_positions": unseeded,
+                    "pending_positions": unseeded + dispatch_pending,
+                    "admission_reason_counts": admission_reasons,
+                    "snapshot_basis_counts": snapshot_basis_counts,
+                    "prior_versions": prior_versions,
+                    "narrative_runner_activation": "disabled_until_mature_forward_evidence",
+                    "decision_eligible": False,
+                    "affects": "none",
+                }
+                for position in positions:
+                    source_buy_id = int(position["source_buy_trade_id"])
+                    if source_buy_id in context_by_buy:
+                        position["post_entry_context"] = context_by_buy[source_buy_id]
+                    elif source_buy_id <= context_activation:
+                        position["post_entry_context"] = {
+                            "status": "pre_registration_not_backfilled",
+                            "decision_eligible": False,
+                            "affects": "none",
+                        }
+                    else:
+                        position["post_entry_context"] = {
+                            "status": "pending",
+                            "decision_eligible": False,
+                            "affects": "none",
+                        }
+        account = dict(account_row) if account_row is not None else {}
+        open_count = int(status_counts.get("baseline", 0)) + int(
+            status_counts.get("narrative_runner", 0)
+        )
+        closed_count = int(status_counts.get("closed", 0)) + int(
+            status_counts.get("written_off", 0)
+        )
+        cash = float(account.get("cash_usd") or 0.0)
+        realized = float(account.get("realized_pnl_usd") or 0.0)
+        account.update({
+            "open_position_count": open_count,
+            "closed_position_count": closed_count,
+            "written_off_position_count": int(status_counts.get("written_off", 0)),
+            "runner_position_count": int(status_counts.get("narrative_runner", 0)),
+            "trade_count": len(trades),
+            "equity_lower_bound_usd": cash,
+            "equity_usd": cash if open_count == 0 else None,
+            "unrealized_pnl_usd": 0.0 if open_count == 0 else None,
+            "total_pnl_usd": realized if open_count == 0 else None,
+            "pnl_is_executable": open_count == 0,
+        })
+        pairing_summary = {
+            "status": "running",
+            "eligible_source_buy_count": source_count,
+            "paired_entries": paired_count,
+            "cloned_entries": paired_count,
+            "exact_pairing_count": exact_count,
+            "mismatches": max(0, paired_count - exact_count),
+            "missing_pair_count": max(0, source_count - paired_count),
+            "backfilled_position_count": backfilled,
+            "runner_activations": int(status_counts.get("narrative_runner", 0)),
+            "narrative_evidence_status": (
+                "collecting_forward_only"
+                if context_summary["status"] == "collecting_forward_only"
+                else "not_mature_not_enabled"
+            ),
+        }
+        return {
+            "status": "running", "simulated": True, "live": False,
+            "definition": cls._json_object(registration["definition_json"]),
+            "registered_at": str(registration["registered_at"]),
+            "activation_exploration_buy_trade_id": activation,
+            "account": account, "positions": positions, "trades": trades,
+            "pairing_summary": pairing_summary,
+            "context_evidence": context_summary,
+        }
 
     def register_token_universe_jupiter_quote(
         self,
@@ -11414,13 +21045,13 @@ class Store:
                  AND v.phase='baseline_buy'
                 WHERE c.id>? AND c.definition_version=? AND lower(c.chain)='solana' AND r.id IS NULL
                   AND (?=0 OR v.id IS NULL)
-                ORDER BY c.discovery_recorded_at,c.id
+                ORDER BY c.discovery_recorded_at,c.id LIMIT ?
                 """,
                 (
                     self.TOKEN_UNIVERSE_JUPITER_QUOTE_VERSION,
                     self.TOKEN_UNIVERSE_JUPITER_QUOTE_VALIDITY_VERSION,
                     activation, self.TOKEN_UNIVERSE_FORWARD_VERSION,
-                    int(validity_registration is not None),
+                    int(validity_registration is not None), max(1, int(limit)),
                 ),
             ).fetchall()
             baseline_due: list[dict[str, Any]] = []
@@ -11472,12 +21103,12 @@ class Store:
                  AND sell_valid.outcome_id=o.id AND sell_valid.phase='target_sell'
                 WHERE c.id>? AND c.definition_version=? AND lower(c.chain)='solana'
                   AND o.status='observed' AND sell_valid.id IS NULL
-                ORDER BY o.target_at,o.id
+                ORDER BY o.target_at,o.id LIMIT ?
                 """
                 target_params = (
                     self.TOKEN_UNIVERSE_JUPITER_QUOTE_VALIDITY_VERSION,
                     self.TOKEN_UNIVERSE_JUPITER_QUOTE_VALIDITY_VERSION,
-                    activation, self.TOKEN_UNIVERSE_FORWARD_VERSION,
+                    activation, self.TOKEN_UNIVERSE_FORWARD_VERSION, max(1, int(limit)),
                 )
             else:
                 target_sql = """
@@ -11500,12 +21131,12 @@ class Store:
                 WHERE c.id>? AND c.definition_version=? AND lower(c.chain)='solana'
                   AND o.status='observed' AND sell.id IS NULL
                   AND s.observed_at<=s.ingested_at AND s.ingested_at<=s.recorded_at
-                ORDER BY o.target_at,o.id
+                ORDER BY o.target_at,o.id LIMIT ?
                 """
                 target_params = (
                     self.TOKEN_UNIVERSE_JUPITER_QUOTE_VERSION,
                     self.TOKEN_UNIVERSE_JUPITER_QUOTE_VERSION,
-                    activation, self.TOKEN_UNIVERSE_FORWARD_VERSION,
+                    activation, self.TOKEN_UNIVERSE_FORWARD_VERSION, max(1, int(limit)),
                 )
             rows = self.db.execute(target_sql, target_params).fetchall()
             target_due: list[dict[str, Any]] = []
@@ -13578,6 +23209,176 @@ class Store:
         }
 
     @classmethod
+    def onchain_only_evm_route_quote_summary_from_connection(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        recent_limit: int = 20,
+    ) -> dict[str, Any]:
+        required = {
+            "onchain_only_evm_route_quote_registrations",
+            "onchain_only_evm_route_quote_attempts",
+            "onchain_only_evm_route_quote_results",
+            "onchain_only_shadow_cohorts",
+        }
+        tables = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        empty = {
+            "status": "not_observed",
+            "version": cls.ONCHAIN_ONLY_EVM_ROUTE_QUOTE_VERSION,
+            "summary": {
+                "eligible_cohorts": 0, "attempts": 0, "results": 0,
+                "quoted": 0, "no_official_pool": 0,
+                "buy_quote_unavailable": 0, "sell_quote_unavailable": 0,
+                "rpc_errors": 0, "protocol_invalid": 0,
+            },
+            "chains": [], "recent": [],
+            "fee_completeness": "quote_only_no_full_transaction_network_fee",
+            "economic_status": "cost_unknown",
+            "execution_scope": "pool_math_quote_only",
+            "execution": False, "pnl": False,
+            "decision_eligible": False, "affects": "none",
+        }
+        if not required.issubset(tables):
+            return empty
+        registration = connection.execute(
+            "SELECT * FROM onchain_only_evm_route_quote_registrations "
+            "WHERE definition_version=?",
+            (cls.ONCHAIN_ONLY_EVM_ROUTE_QUOTE_VERSION,),
+        ).fetchone()
+        if registration is None:
+            return empty
+        version = cls.ONCHAIN_ONLY_EVM_ROUTE_QUOTE_VERSION
+        activation = int(registration["activation_shadow_cohort_id"])
+        eligible = int(connection.execute(
+            "SELECT COUNT(*) FROM onchain_only_shadow_cohorts "
+            "WHERE definition_version=? AND id>? AND baseline_status='valid' "
+            "AND lower(chain) IN ('bsc','base','robinhood')",
+            (cls.ONCHAIN_ONLY_SHADOW_VERSION, activation),
+        ).fetchone()[0])
+        summary_row = connection.execute(
+            """
+            SELECT COUNT(*) AS results,
+                   SUM(quote_terminal_status='quoted' AND validity_status='valid') AS quoted,
+                   SUM(quote_terminal_status='no_official_pool') AS no_official_pool,
+                   SUM(quote_terminal_status='buy_quote_unavailable') AS buy_quote_unavailable,
+                   SUM(quote_terminal_status='sell_quote_unavailable') AS sell_quote_unavailable,
+                   SUM(quote_terminal_status='error') AS rpc_errors,
+                   SUM(quote_terminal_status='quote_only_protocol_invalid') AS protocol_invalid
+            FROM onchain_only_evm_route_quote_results WHERE definition_version=?
+            """,
+            (version,),
+        ).fetchone()
+        attempts = int(connection.execute(
+            "SELECT COUNT(*) FROM onchain_only_evm_route_quote_attempts WHERE definition_version=?",
+            (version,),
+        ).fetchone()[0])
+        summary = {
+            "eligible_cohorts": eligible,
+            "attempts": attempts,
+            "results": int(summary_row["results"] or 0),
+            "pending": max(0, eligible - int(summary_row["results"] or 0)),
+            "quoted": int(summary_row["quoted"] or 0),
+            "no_official_pool": int(summary_row["no_official_pool"] or 0),
+            "buy_quote_unavailable": int(summary_row["buy_quote_unavailable"] or 0),
+            "sell_quote_unavailable": int(summary_row["sell_quote_unavailable"] or 0),
+            "rpc_errors": int(summary_row["rpc_errors"] or 0),
+            "protocol_invalid": int(summary_row["protocol_invalid"] or 0),
+        }
+        chains = [
+            {
+                "chain": str(row["chain"]),
+                "eligible_cohorts": int(row["eligible_cohorts"] or 0),
+                "results": int(row["results"] or 0),
+                "quoted": int(row["quoted"] or 0),
+                "no_official_pool": int(row["no_official_pool"] or 0),
+                "unavailable": int(row["unavailable"] or 0),
+                "errors": int(row["errors"] or 0),
+            }
+            for row in connection.execute(
+                """
+                WITH eligible AS (
+                    SELECT lower(chain) AS chain,COUNT(*) AS eligible_cohorts
+                    FROM onchain_only_shadow_cohorts
+                    WHERE definition_version=? AND id>? AND baseline_status='valid'
+                      AND lower(chain) IN ('bsc','base','robinhood')
+                    GROUP BY lower(chain)
+                ), results AS (
+                    SELECT lower(chain) AS chain,COUNT(*) AS results,
+                           SUM(quote_terminal_status='quoted' AND validity_status='valid') AS quoted,
+                           SUM(quote_terminal_status='no_official_pool') AS no_official_pool,
+                           SUM(quote_terminal_status IN (
+                               'buy_quote_unavailable','sell_quote_unavailable'
+                           )) AS unavailable,
+                           SUM(quote_terminal_status IN (
+                               'error','quote_only_protocol_invalid','interrupted_after_request'
+                           )) AS errors
+                    FROM onchain_only_evm_route_quote_results
+                    WHERE definition_version=? GROUP BY lower(chain)
+                )
+                SELECT e.chain,e.eligible_cohorts,COALESCE(r.results,0) AS results,
+                       COALESCE(r.quoted,0) AS quoted,
+                       COALESCE(r.no_official_pool,0) AS no_official_pool,
+                       COALESCE(r.unavailable,0) AS unavailable,
+                       COALESCE(r.errors,0) AS errors
+                FROM eligible e LEFT JOIN results r ON r.chain=e.chain ORDER BY e.chain
+                """,
+                (cls.ONCHAIN_ONLY_SHADOW_VERSION, activation, version),
+            )
+        ]
+        recent = []
+        for row in connection.execute(
+            "SELECT * FROM onchain_only_evm_route_quote_results "
+            "WHERE definition_version=? ORDER BY id DESC LIMIT ?",
+            (version, max(1, min(100, int(recent_limit)))),
+        ):
+            decimals = int(row["accounting_decimals"])
+            input_usd = int(row["input_amount_raw"]) / (10 ** decimals)
+            recovered_usd = (
+                int(row["sell_minimum_output_raw"]) / (10 ** decimals)
+                if row["sell_minimum_output_raw"] is not None else None
+            )
+            recent.append({
+                "token_id": str(row["token_id"]),
+                "chain": str(row["chain"]),
+                "quote_terminal_status": str(row["quote_terminal_status"]),
+                "validity_status": str(row["validity_status"]),
+                "block_number": row["block_number"],
+                "input_amount_usd": input_usd,
+                "minimum_recovered_usd_before_network_fee": recovered_usd,
+                "immediate_round_trip_stable_ratio": row["immediate_round_trip_stable_ratio"],
+                "buy_path": json.loads(str(row["buy_path_json"])),
+                "sell_path": json.loads(str(row["sell_path_json"])),
+                "fee_completeness": str(row["fee_completeness"]),
+                "economic_status": str(row["economic_status"]),
+                "recorded_at": str(row["recorded_at"]),
+                "decision_eligible": False,
+                "affects": "none",
+            })
+        definition = cls._json_object(registration["definition_json"])
+        return {
+            "status": "collecting" if eligible else "registered_waiting_forward_data",
+            "version": version,
+            "registered_at": str(registration["registered_at"]),
+            "activation_shadow_cohort_id": activation,
+            "paper_stake_usd": definition.get("paper_stake_usd"),
+            "slippage_bps": definition.get("slippage_bps"),
+            "summary": summary,
+            "chains": chains,
+            "recent": recent,
+            "fee_completeness": "quote_only_no_full_transaction_network_fee",
+            "economic_status": "cost_unknown",
+            "execution_scope": "pool_math_quote_only",
+            "execution": False,
+            "pnl": False,
+            "decision_eligible": False,
+            "affects": "none",
+            "as_of": iso(),
+        }
+
+    @classmethod
     def token_universe_jupiter_quote_summary_from_connection(
         cls,
         connection: sqlite3.Connection,
@@ -14070,11 +23871,19 @@ class Store:
             "breakpoints": [], "decision_eligible": False, "affects": "none",
         }
         quality_view["fixed_horizon_execution"] = fixed_horizon_execution
+        relation_role_breakdown = {
+            "total": 0,
+            "decision_eligible": 0,
+            "context_only": 0,
+            "unknown": 0,
+            "roles": [],
+        }
         empty = {
             "status": "not_observed",
             "version": cls.MISSED_OPPORTUNITY_NO_DECISION_ATTRIBUTION_VERSION,
             "definition": cls._missed_opportunity_no_decision_attribution_definition(),
             "summary": {"attributions": 0}, "statuses": [], "reason_codes": [], "recent": [],
+            "relation_role_breakdown": relation_role_breakdown,
             "quality_view": quality_view,
             "decision_eligible": False, "affects": "none",
         }
@@ -14087,9 +23896,26 @@ class Store:
         ).fetchone()
         if registration is None:
             return empty
+        relation_tables = {
+            "token_universe_funnel_transitions", "observations",
+        }
+        if relation_tables.issubset(tables):
+            recent_sql = """
+                SELECT a.*,o.role AS terminal_observation_role
+                FROM missed_opportunity_no_decision_attributions a
+                LEFT JOIN token_universe_funnel_transitions t
+                  ON t.id=a.terminal_transition_id
+                LEFT JOIN observations o ON o.id=t.observation_id
+                WHERE a.definition_version=? ORDER BY a.id DESC LIMIT ?
+            """
+        else:
+            recent_sql = (
+                "SELECT a.*,NULL AS terminal_observation_role "
+                "FROM missed_opportunity_no_decision_attributions a "
+                "WHERE a.definition_version=? ORDER BY a.id DESC LIMIT ?"
+            )
         rows = list(connection.execute(
-            "SELECT * FROM missed_opportunity_no_decision_attributions WHERE definition_version=? "
-            "ORDER BY id DESC LIMIT ?",
+            recent_sql,
             (cls.MISSED_OPPORTUNITY_NO_DECISION_ATTRIBUTION_VERSION,
              max(1, min(100, int(recent_limit)))),
         ))
@@ -14099,6 +23925,34 @@ class Store:
         ).fetchone()[0])
         quality_view["summary"]["raw_attributions"] = total
         quality_view["summary"]["quality_missing_at_classification"] = total
+        if relation_tables.issubset(tables):
+            role_rows = list(connection.execute(
+                """
+                SELECT COALESCE(o.role,'unknown') AS role,COUNT(*) AS count
+                FROM missed_opportunity_no_decision_attributions a
+                JOIN token_universe_funnel_transitions t
+                  ON t.id=a.terminal_transition_id
+                LEFT JOIN observations o ON o.id=t.observation_id
+                WHERE a.definition_version=?
+                  AND a.status='event_related_candidate_not_evaluated'
+                GROUP BY COALESCE(o.role,'unknown') ORDER BY count DESC,role
+                """,
+                (cls.MISSED_OPPORTUNITY_NO_DECISION_ATTRIBUTION_VERSION,),
+            ))
+            relation_role_breakdown["roles"] = [
+                {"role": str(row["role"]), "count": int(row["count"] or 0)}
+                for row in role_rows
+            ]
+            for row in role_rows:
+                role = str(row["role"])
+                count = int(row["count"] or 0)
+                relation_role_breakdown["total"] += count
+                if role in {"feature", "confirmation"}:
+                    relation_role_breakdown["decision_eligible"] += count
+                elif role in {"identity", "promotion"}:
+                    relation_role_breakdown["context_only"] += count
+                else:
+                    relation_role_breakdown["unknown"] += count
         if {
             "missed_opportunity_audits", "token_universe_outcome_quality",
         }.issubset(tables):
@@ -14286,6 +24140,7 @@ class Store:
             "definition": json.loads(str(registration["definition_json"])),
             "summary": {"attributions": total}, "statuses": statuses,
             "reason_codes": reason_codes,
+            "relation_role_breakdown": relation_role_breakdown,
             "quality_view": quality_view,
             "recent": [
                 {
@@ -14293,6 +24148,7 @@ class Store:
                     "target_at": str(row["target_at"]), "status": str(row["status"]),
                     "reason_code": str(row["reason_code"]),
                     "terminal_transition_id": row["terminal_transition_id"],
+                    "relation_role": row["terminal_observation_role"],
                 }
                 for row in rows
             ],
@@ -14596,6 +24452,8 @@ class Store:
                 "interrupted": 0, "running": 0, "repeat_attempts": 0,
                 "deadline_misses": 0, "retry_window_exhausted": 0,
                 "backoff_active": 0,
+                "request_rounds": 0, "request_error_rounds": 0,
+                "token_errors_per_error_round": None,
             },
             "items": [],
             "decision_eligible": False,
@@ -14606,7 +24464,8 @@ class Store:
         start = iso(utcnow() - timedelta(hours=max(1, min(24 * 90, int(lookback_hours)))))
         rows = connection.execute(
             """
-            SELECT a.*,r.provider,r.surface,r.chain_scope
+            SELECT a.*,r.provider,r.surface,r.chain_scope,
+                   r.status AS request_status,r.error_type AS request_error_type
             FROM token_discovery_quote_attempts a
             JOIN token_discovery_rounds r ON r.id=a.round_id
             WHERE a.definition_version=? AND a.requested_at>=?
@@ -14641,6 +24500,10 @@ class Store:
             ).append(row)
         items: list[dict[str, Any]] = []
         for key, group in grouped.items():
+            request_rows = {int(row["round_id"]): row for row in group}
+            request_error_rounds = sum(
+                str(row["request_status"]) == "error" for row in request_rows.values()
+            )
             statuses = {name: sum(str(row["status"]) == name for row in group) for name in (
                 "success", "no_pair", "error", "interrupted", "running"
             )}
@@ -14654,6 +24517,12 @@ class Store:
             items.append({
                 "provider": key[0], "surface": key[1], "chain_scope": key[2], "role": key[3],
                 "attempts": len(group), **statuses,
+                "request_rounds": len(request_rows),
+                "request_error_rounds": request_error_rounds,
+                "token_errors_per_error_round": (
+                    round(statuses["error"] / request_error_rounds, 3)
+                    if request_error_rounds else None
+                ),
                 "repeat_attempts": sum(int(row["retry_index"] or 0) > 0 for row in group),
                 "deadline_misses": sum(bool(row["deadline_miss"]) for row in group),
                 "retry_window_exhausted": sum(retry_window_exhausted(row) for row in group),
@@ -14667,6 +24536,10 @@ class Store:
                 ],
             })
         current = iso()
+        request_rows = {int(row["round_id"]): row for row in rows}
+        request_error_rounds = sum(
+            str(row["request_status"]) == "error" for row in request_rows.values()
+        )
         latest = connection.execute(
             """
             SELECT a.status,a.retry_after_at FROM token_discovery_quote_attempts a
@@ -14695,6 +24568,12 @@ class Store:
             "deadline_misses": sum(bool(row["deadline_miss"]) for row in rows),
             "retry_window_exhausted": sum(retry_window_exhausted(row) for row in rows),
             "backoff_active": backoff_active,
+            "request_rounds": len(request_rows),
+            "request_error_rounds": request_error_rounds,
+            "token_errors_per_error_round": (
+                round(sum(str(row["status"]) == "error" for row in rows) / request_error_rounds, 3)
+                if request_error_rounds else None
+            ),
             "latency_p50_ms": percentile(
                 [float(row["latency_ms"]) for row in rows if row["latency_ms"] is not None], 0.50
             ),
