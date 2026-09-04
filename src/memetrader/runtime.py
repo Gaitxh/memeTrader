@@ -5632,6 +5632,17 @@ class Runtime:
                 self.store.heartbeat(
                     heartbeat_name, error=type(exc).__name__,
                 )
+                self.store.apply_chain_meme_trader_market_mark_batch(
+                    [
+                        {
+                            "kind": "failure",
+                            "token_id": str(item["token_id"]),
+                            "failure_kind": type(exc).__name__,
+                        }
+                        for item in chunk
+                    ],
+                    recorded_at=utcnow(),
+                )
                 return 0
             received_at = utcnow()
             outcomes = []

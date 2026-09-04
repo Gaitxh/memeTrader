@@ -2386,7 +2386,8 @@ def test_active_market_mark_batches_are_bounded_and_one_failure_does_not_stop_ch
         assert len(calls) == 5
         assert max_inflight == 4
         assert refreshed == 91
-        assert len(applied) == 91
+        assert len(applied) == 121
+        assert sum(item["kind"] == "failure" for item in applied) == 30
 
     asyncio.run(scenario())
 
