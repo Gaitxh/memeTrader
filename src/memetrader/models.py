@@ -6,6 +6,19 @@ from typing import Any
 
 UTC = timezone.utc
 
+# EVM addresses are case-insensitive.  Solana addresses are base58 and must
+# retain their exact case because changing it changes the token identity.
+EVM_CHAINS = frozenset({
+    "bsc", "binance-smart-chain", "base", "ethereum", "robinhood",
+    "polygon", "arbitrum", "optimism", "avalanche", "linea", "zksync",
+    "scroll", "mantle", "opbnb", "fantom", "celo", "blast",
+})
+
+
+def canonical_token_address(chain: str, address: str) -> str:
+    value = str(address or "").strip()
+    return value.lower() if str(chain or "").strip().lower() in EVM_CHAINS else value
+
 
 def utcnow() -> datetime:
     return datetime.now(UTC)
@@ -86,6 +99,8 @@ class TokenCandidate:
     raw: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        self.chain = str(self.chain).strip().lower()
+        self.address = canonical_token_address(self.chain, self.address)
         if self.created_at is not None:
             self.created_at = parse_time(self.created_at)
         if self.first_seen_at is not None:
@@ -93,7 +108,7 @@ class TokenCandidate:
 
     @property
     def token_id(self) -> str:
-        return f"{self.chain.lower()}:{self.address}"
+        return f"{self.chain}:{self.address}"
 
     @property
     def token_key(self) -> str:
@@ -122,13 +137,15 @@ class TokenSnapshot:
     raw: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        self.chain = str(self.chain).strip().lower()
+        self.address = canonical_token_address(self.chain, self.address)
         self.observed_at = parse_time(self.observed_at)
         if self.ingested_at is not None:
             self.ingested_at = parse_time(self.ingested_at)
 
     @property
     def token_id(self) -> str:
-        return f"{self.chain.lower()}:{self.address}"
+        return f"{self.chain}:{self.address}"
 
     @property
     def token_key(self) -> str:

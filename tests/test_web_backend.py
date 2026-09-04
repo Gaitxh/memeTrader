@@ -493,6 +493,11 @@ def test_chain_web_reports_distinct_tokens_holding_duration_and_trade_markers(
         received = utcnow()
         market_observed = received + timedelta(seconds=observed_offset)
         mark_store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+        with mark_store.db:
+            mark_store.db.execute(
+                "DELETE FROM chain_meme_trader_market_marks WHERE token_id=?",
+                (token.token_id,),
+            )
         mark_store.upsert_chain_meme_trader_market_mark(
             token,
             TokenSnapshot(
@@ -764,6 +769,108 @@ def test_compact_chain_web_excludes_contaminated_pnl_and_pre_correction_curve(
     assert strategy["curve"]
     assert all(point["total_pnl_usd"] == 0.0 for point in strategy["curve"])
     assert live["recent_activity"] == []
+
+
+def test_chain_web_uses_latest_append_only_market_fill_resolution(tmp_path: Path):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    registration = store.register_chain_meme_trader_v22()
+    store.activate_chain_meme_trader_v22()
+    version = Store.CHAIN_MEME_TRADER_V22_VERSION
+    arm_id = Store._json_object(registration["definition_json"])["policies"][0]["arm_id"]
+    token = TokenCandidate("solana", "EffectiveWebMint", "Effective", "EFF")
+    opened_at = utcnow() - timedelta(minutes=2)
+    raw_closed_at = opened_at + timedelta(seconds=60)
+    effective_closed_at = opened_at + timedelta(seconds=5)
+    store.upsert_token(token, seen_at=opened_at)
+    with store.db:
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_trades("
+            "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+            "net_cash_flow_usd,reason,created_at) VALUES(?,?,?,?, 'BUY',20,-20,'fixture',?)",
+            (version, arm_id, 991_002, token.token_id, iso(opened_at)),
+        )
+        buy_trade_id = int(store.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_trades("
+            "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+            "net_cash_flow_usd,realized_pnl_usd,reason,created_at) "
+            "VALUES(?,?,?,?, 'SELL',25,25,5,'fixture_raw_sell',?)",
+            (version, arm_id, 991_002, token.token_id, iso(raw_closed_at)),
+        )
+        sell_trade_id = int(store.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_positions("
+            "definition_version,arm_id,shadow_cohort_id,token_id,source_buy_trade_id,"
+            "baseline_quote_result_id,entry_snapshot_id,entry_signal_price_usd,"
+            "entry_execution_price_usd,paper_quantity_tokens,remaining_quantity_tokens,"
+            "amount_raw,initial_amount_raw,stake_usd,highest_signal_price_usd,status,"
+            "realized_pnl_usd,opened_at,closed_at,close_reason) "
+            "VALUES(?,?,?,?,?,-1,-1,1,1.04,19.230769,0,'0','1000',20,1,'closed',5,?,?,?)",
+            (
+                version, arm_id, 991_002, token.token_id, buy_trade_id,
+                iso(opened_at), iso(raw_closed_at), "fixture_raw_sell",
+            ),
+        )
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_market_fill_corrections("
+            "source_trade_id,definition_version,arm_id,shadow_cohort_id,token_id,"
+            "source_fill_id,source_mark_id,original_gross_usd,post_liquidity_usd,"
+            "max_market_gross_usd,replacement_outcome,replacement_gross_usd,"
+            "cash_adjustment_usd,realized_adjustment_usd,replacement_observed_at,"
+            "reason,evidence_json,recorded_at) "
+            "VALUES(?,?,?,?,?,-1,-1,25,10,10,'WRITEOFF',0,-25,-25,?,?,?,?)",
+            (
+                sell_trade_id, version, arm_id, 991_002, token.token_id,
+                iso(raw_closed_at), "legacy_capacity", "{}", iso(raw_closed_at),
+            ),
+        )
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_market_fill_correction_supersessions("
+            "source_trade_id,replacement_outcome,replacement_gross_usd,cash_adjustment_usd,"
+            "realized_adjustment_usd,replacement_observed_at,reason,evidence_json,recorded_at) "
+            "VALUES(?,'UNRESOLVED',NULL,-25,-5,NULL,'legacy_unresolved','{}',?)",
+            (sell_trade_id, iso(raw_closed_at + timedelta(seconds=1))),
+        )
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_market_fill_correction_resolutions("
+            "source_trade_id,revision,replacement_outcome,replacement_gross_usd,"
+            "cash_adjustment_usd,realized_adjustment_usd,replacement_observed_at,"
+            "reason,evidence_json,recorded_at) "
+            "VALUES(?,2,'SELL',25,0,0,?,'capacity_rule_retracted','{}',?)",
+            (
+                sell_trade_id, iso(effective_closed_at),
+                iso(raw_closed_at + timedelta(seconds=2)),
+            ),
+        )
+    store.close()
+
+    web = ChainWebData(config_path)
+    compact = web.state(compact=True, arm_id=arm_id)
+    strategy = next(item for item in compact["strategies"] if item["arm_id"] == arm_id)
+    assert strategy["account"]["capital_neutral_realized_pnl_usd"] == 5.0
+    assert strategy["account"]["terminal_position_count"] == 1
+    assert strategy["curve"][-1]["synthetic_effective_point"] is True
+    assert strategy["curve"][-1]["total_pnl_usd"] == 5.0
+
+    detail = web.token_detail(token.token_id)
+    assert detail["positions"][0]["status"] == "closed"
+    assert detail["positions"][0]["closed_at"] == iso(effective_closed_at)
+    sell = next(item for item in detail["trades"] if item["id"] == sell_trade_id)
+    assert sell["side"] == "SELL"
+    assert sell["gross_usd"] == 25.0
+    assert sell["created_at"] == iso(effective_closed_at)
+    assert next(item for item in detail["trade_markers"] if item["side"] == "SELL")[
+        "created_at"
+    ] == iso(effective_closed_at)
+
+    full = web.state()
+    registry = next(
+        item for item in full["strategy_registry"]
+        if item["definition_version"] == version and item["arm_id"] == arm_id
+    )
+    assert registry["terminal_count"] == 1
+    assert registry["realized_pnl_usd"] == 5.0
 
 
 def test_chain_meme_trader_web_switches_to_active_v6_matrix(tmp_path: Path):

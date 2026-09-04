@@ -22,7 +22,10 @@ from typing import Any, AsyncIterator, Callable, Iterable, Mapping
 import httpx
 import websockets
 
-from .models import Observation, TokenCandidate, TokenSnapshot, iso, parse_time, utcnow
+from .models import (
+    Observation, TokenCandidate, TokenSnapshot, canonical_token_address, iso,
+    parse_time, utcnow,
+)
 
 
 RSS_CACHE_KEY_PREFIX = "rss_http_cache:v1:"
@@ -1991,7 +1994,8 @@ class DexScreenerClient:
                 candidate
                 and snap
                 and candidate.chain.lower() == self._chain(chain).lower()
-                and candidate.address.lower() == str(address).lower()
+                and canonical_token_address(candidate.chain, candidate.address)
+                == canonical_token_address(self._chain(chain), address)
             ):
                 ranked.append(((snap.liquidity_usd or 0.0), candidate, snap))
         if not ranked:
@@ -2012,7 +2016,10 @@ class DexScreenerClient:
         by_token: dict[str, tuple[TokenCandidate, TokenSnapshot]] = {}
         for offset in range(0, len(unique), 30):
             chunk = unique[offset : offset + 30]
-            requested = {value.lower(): value for value in chunk}
+            requested = {
+                canonical_token_address(normalized_chain, value): value
+                for value in chunk
+            }
             joined = urllib.parse.quote(",".join(chunk), safe=",")
             response = await self.http.get(
                 f"{self.BASE}/tokens/v1/{normalized_chain}/{joined}",
@@ -2025,11 +2032,16 @@ class DexScreenerClient:
                 candidate, snap = self._candidate(pair), self._snapshot(pair)
                 if not candidate or not snap or candidate.chain.lower() != normalized_chain:
                     continue
-                requested_address = requested.get(candidate.address.lower())
+                requested_address = requested.get(
+                    canonical_token_address(normalized_chain, candidate.address)
+                )
                 if requested_address is None:
                     continue
-                candidate.address = requested_address
-                snap.address = requested_address
+                canonical_address = canonical_token_address(
+                    normalized_chain, requested_address,
+                )
+                candidate.address = canonical_address
+                snap.address = canonical_address
                 current = by_token.get(candidate.token_id)
                 if current is None or (snap.liquidity_usd or 0.0) > (current[1].liquidity_usd or 0.0):
                     by_token[candidate.token_id] = (candidate, snap)

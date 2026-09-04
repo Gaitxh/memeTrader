@@ -2177,6 +2177,149 @@ def test_market_marks_batch_addresses_by_chain_before_quoting():
     asyncio.run(scenario())
 
 
+def test_market_marks_preserve_legacy_mixed_case_evm_position_identity(tmp_path):
+    async def scenario():
+        store = Store(tmp_path / "legacy-evm-market-mark.sqlite3", initial_cash_usd=1000)
+        registration = store.register_chain_meme_trader_v20()
+        store.activate_chain_meme_trader_v20()
+        version = Store.CHAIN_MEME_TRADER_V20_VERSION
+        policy = next(
+            item for item in json.loads(registration["definition_json"])["policies"]
+            if item.get("zero_activity_grace_minutes") is not None
+        )
+        mixed_address = "0xAbCdEf1234567890AbCdEf1234567890AbCdEf12"
+        quoted_token = TokenCandidate(
+            "bsc", mixed_address, "Legacy EVM", "LEVM", source="dexscreener",
+        )
+        canonical_token_id = quoted_token.token_id
+        legacy_token_id = f"bsc:{mixed_address}"
+        opened_at = utcnow() - timedelta(
+            minutes=float(policy["zero_activity_grace_minutes"]) + 1.0
+        )
+        store.upsert_token(quoted_token, seen_at=opened_at)
+        with store.db:
+            store.db.execute(
+                "UPDATE tokens SET token_id=?,address=? WHERE token_id=?",
+                (legacy_token_id, mixed_address, canonical_token_id),
+            )
+            store.db.execute(
+                "INSERT INTO chain_meme_trader_v6_cohorts("
+                "definition_version,token_id,entry_family,source_snapshot_id,pair_address,"
+                "decided_at,episode_no,feature_json) VALUES(?,?,?,?,?,?,1,'{}')",
+                (version, legacy_token_id, "broad_launch", 1, "pair-legacy", iso(opened_at)),
+            )
+            cohort_id = int(store.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+            quantity = 20.0 / 1.04
+            amount_raw = str(round(quantity * 1_000_000_000))
+            store.db.execute(
+                "INSERT INTO chain_meme_trader_positions("
+                "definition_version,arm_id,shadow_cohort_id,token_id,source_buy_trade_id,"
+                "baseline_quote_result_id,entry_snapshot_id,entry_signal_price_usd,"
+                "entry_execution_price_usd,paper_quantity_tokens,remaining_quantity_tokens,"
+                "amount_raw,initial_amount_raw,stake_usd,highest_signal_price_usd,status,opened_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,20,1,'open',?)",
+                (
+                    version, policy["arm_id"], cohort_id, legacy_token_id, cohort_id,
+                    1, 1, 1.0, 1.04, quantity, quantity, amount_raw, amount_raw,
+                    iso(opened_at),
+                ),
+            )
+            store.db.execute(
+                "INSERT INTO chain_meme_trader_trades("
+                "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+                "net_cash_flow_usd,reason,created_at) "
+                "VALUES(?,?,?,?, 'BUY',20,-20,'fixture',?)",
+                (version, policy["arm_id"], cohort_id, legacy_token_id, iso(opened_at)),
+            )
+
+        runtime = Runtime.__new__(Runtime)
+        runtime.store = store
+        runtime.config = {"paper": {"max_quote_age_seconds": 45}}
+
+        async def batch_quote(chain, addresses, *, fresh=False, high_priority=False):
+            assert chain == "bsc"
+            assert addresses == [mixed_address]
+            assert fresh is True and high_priority is True
+            observed_at = utcnow()
+            snapshot = TokenSnapshot(
+                "bsc", mixed_address.lower(), 2.0, 10_000, 100_000, 0.0, 0, 0,
+                observed_at=observed_at, ingested_at=observed_at,
+                provider="dexscreener",
+                raw={"pair": {"pairAddress": "pair-legacy"}},
+            )
+            return {quoted_token.token_id: (quoted_token, snapshot)}
+
+        runtime._dex_batch_quote = batch_quote
+        targets = store.chain_meme_trader_market_mark_targets(
+            definition_versions=[version],
+        )
+        assert targets[0]["token_id"] == legacy_token_id
+        for _ in range(2):
+            assert await runtime._refresh_chain_meme_market_marks(
+                targets, heartbeat_name="legacy-evm", high_priority=True,
+            ) == 1
+            store.evaluate_chain_meme_trader_market_marks(
+                definition_version=version,
+            )
+
+        mark = store.db.execute(
+            "SELECT token_id,address,sample_sequence FROM chain_meme_trader_market_marks "
+            "WHERE token_id=?", (legacy_token_id,),
+        ).fetchone()
+        assert (mark["token_id"], mark["address"]) == (legacy_token_id, mixed_address)
+        assert mark["sample_sequence"] == 2
+        assert store.db.execute(
+            "SELECT 1 FROM chain_meme_trader_market_marks WHERE token_id=?",
+            (canonical_token_id,),
+        ).fetchone() is None
+        position = store.db.execute(
+            "SELECT status FROM chain_meme_trader_positions WHERE definition_version=? "
+            "AND arm_id=? AND shadow_cohort_id=?",
+            (version, policy["arm_id"], cohort_id),
+        ).fetchone()
+        assert position["status"] == "closed"
+        assert store.db.execute(
+            "SELECT token_id FROM chain_meme_trader_trades WHERE definition_version=? "
+            "AND arm_id=? AND shadow_cohort_id=? AND side='SELL'",
+            (version, policy["arm_id"], cohort_id),
+        ).fetchone()["token_id"] == legacy_token_id
+
+        future = TokenCandidate("robinhood", mixed_address, "Future", "FUT")
+        store.upsert_token(future)
+        assert future.token_id == f"robinhood:{mixed_address.lower()}"
+        assert store.token(future.token_id) is not None
+        store.close()
+
+    asyncio.run(scenario())
+
+
+def test_paper_quote_identity_is_chain_aware_and_solana_case_sensitive():
+    runtime = Runtime.__new__(Runtime)
+    runtime.config = {"paper": {"max_quote_age_seconds": 45}}
+    observed_at = utcnow()
+    mixed = "0xAbCdEf1234567890AbCdEf1234567890AbCdEf12"
+    evm_token = TokenCandidate("bsc", mixed.lower(), "EVM")
+    evm_snapshot = TokenSnapshot(
+        "bsc", mixed.lower(), 1.0, 10_000, 100_000, 10, 1, 1,
+        observed_at=observed_at, ingested_at=observed_at,
+    )
+    assert "quote_token_mismatch" not in runtime._paper_quote_rejections(
+        f"bsc:{mixed}", evm_token, evm_snapshot, observed_at,
+    )
+    assert "quote_token_mismatch" in runtime._paper_quote_rejections(
+        f"robinhood:{mixed}", evm_token, evm_snapshot, observed_at,
+    )
+
+    solana_token = TokenCandidate("solana", "AbCd", "Solana")
+    solana_snapshot = TokenSnapshot(
+        "solana", "AbCd", 1.0, 10_000, 100_000, 10, 1, 1,
+        observed_at=observed_at, ingested_at=observed_at,
+    )
+    assert "quote_token_mismatch" in runtime._paper_quote_rejections(
+        "solana:abcd", solana_token, solana_snapshot, observed_at,
+    )
+
+
 def test_active_market_mark_batches_are_bounded_and_one_failure_does_not_stop_chain():
     async def scenario():
         runtime = Runtime.__new__(Runtime)

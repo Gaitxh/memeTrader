@@ -39,7 +39,7 @@ class ChainWebData:
         self.wallets = SolanaLiveWalletManager(root, self.database)
         self._cache_lock = threading.Lock()
         self._state_cache: dict[tuple[bool, str | None], tuple[float, dict[str, Any]]] = {}
-        self._universe_cache: tuple[tuple[float, str, int], dict[str, Any]] | None = None
+        self._universe_cache: tuple[tuple[Any, ...], dict[str, Any]] | None = None
         self._last_web_error_record_at: dict[str, float] = {}
         self.strategy_universe_path = (
             root / "docs" / "PROJECT_CONTEXT" /
@@ -421,24 +421,19 @@ class ChainWebData:
             corrections_by_trade = {
                 int(row["source_trade_id"]): row for row in corrections
             }
-            contaminations = self._rows(
-                connection,
-                "SELECT arm_id,shadow_cohort_id,recorded_at FROM "
-                "chain_meme_trader_accounting_contaminations "
-                "WHERE definition_version=?",
-                (active_version,),
+            contaminations = (
+                Store._chain_meme_trader_accounting_contaminations_from_connection(
+                    connection, active_version,
+                )
             )
             contaminated_positions = {
                 (str(row["arm_id"]), int(row["shadow_cohort_id"]))
                 for row in contaminations
             }
-            accounting_effective_after = max(
-                (
-                    str(row.get("recorded_at") or "")
-                    for row in [*corrections, *contaminations]
-                    if row.get("recorded_at")
-                ),
-                default=None,
+            accounting_effective_after = (
+                Store._chain_meme_trader_accounting_effective_after_from_connection(
+                    connection, active_version,
+                )
             )
             account_columns = {
                 str(row["name"])
@@ -535,14 +530,24 @@ class ChainWebData:
                     "written_off_count": 0, "win_count": 0,
                 }
             )
-            terminal_rows_by_arm: dict[str, list[float]] = {}
+            terminal_rows_by_arm: dict[str, list[tuple[str, float]]] = {}
+            effective_realized_by_arm: dict[str, float] = defaultdict(float)
+            effective_unrealized_by_arm: dict[str, float] = defaultdict(float)
+            priced_open_by_arm: dict[str, int] = defaultdict(int)
             effective_open_token_ids: set[str] = set()
-            for row in connection.execute(
-                "SELECT arm_id,shadow_cohort_id,token_id,status,realized_pnl_usd "
-                "FROM chain_meme_trader_positions WHERE definition_version=? "
-                "AND status<>'ineligible' ORDER BY COALESCE(closed_at,opened_at),rowid",
+            for row in self._rows(
+                connection,
+                "SELECT p.arm_id,p.shadow_cohort_id,p.token_id,p.status,p.stake_usd,"
+                "p.amount_raw,p.initial_amount_raw,p.entry_signal_price_usd,"
+                "p.entry_execution_price_usd,p.allocated_cost_usd,p.realized_pnl_usd,"
+                "p.opened_at,p.closed_at,m.pair_address,m.price_usd,m.liquidity_usd,"
+                "m.status AS market_status,m.observed_at AS market_observed_at,"
+                "m.recorded_at AS market_recorded_at,m.last_success_at "
+                "FROM chain_meme_trader_positions p LEFT JOIN "
+                "chain_meme_trader_market_marks m ON m.token_id=p.token_id "
+                "WHERE p.definition_version=? AND p.status<>'ineligible'",
                 (active_version,),
-            ).fetchall():
+            ):
                 arm = str(row["arm_id"])
                 key = (arm, int(row["shadow_cohort_id"]))
                 if key in contaminated_positions:
@@ -559,6 +564,7 @@ class ChainWebData:
                     effective_pnl += float(
                         correction["realized_adjustment_usd"] or 0.0
                     )
+                effective_realized_by_arm[arm] += effective_pnl
                 stats = position_stats[arm]
                 stats["position_count"] += 1
                 if effective_status == "open":
@@ -567,7 +573,62 @@ class ChainWebData:
                 elif effective_status in {"closed", "written_off"}:
                     stats[f"{effective_status}_count"] += 1
                     stats["win_count"] += int(effective_pnl > 0.0)
-                    terminal_rows_by_arm.setdefault(arm, []).append(effective_pnl)
+                    effective_closed_at = (
+                        str(correction.get("replacement_observed_at") or row["closed_at"] or "")
+                        if correction is not None else str(row["closed_at"] or "")
+                    )
+                    terminal_rows_by_arm.setdefault(arm, []).append(
+                        (effective_closed_at, effective_pnl)
+                    )
+                if effective_status == "open":
+                    market_at = row.get("last_success_at") or row.get("market_recorded_at")
+                    market_age = (
+                        (current - parse_time(market_at)).total_seconds()
+                        if market_at else None
+                    )
+                    observed_age = (
+                        (current - parse_time(row["market_observed_at"])).total_seconds()
+                        if row.get("market_observed_at") else None
+                    )
+                    fresh_market = bool(
+                        row.get("market_status") == "VISIBLE"
+                        and row.get("pair_address")
+                        and float(row.get("price_usd") or 0.0) > 0.0
+                        and market_age is not None and 0.0 <= market_age <= 15.0
+                        and observed_age is not None and 0.0 <= observed_age <= 15.0
+                    )
+                    entry_price = float(
+                        row.get("entry_execution_price_usd")
+                        or row.get("entry_signal_price_usd") or 0.0
+                    )
+                    initial_raw = int(
+                        row.get("initial_amount_raw") or row.get("amount_raw") or 0
+                    )
+                    if fresh_market and entry_price > 0.0 and initial_raw > 0:
+                        remaining_fraction = max(
+                            0.0,
+                            min(1.0, int(row.get("amount_raw") or 0) / initial_raw),
+                        )
+                        remaining_cost = max(
+                            0.0,
+                            float(row.get("stake_usd") or 0.0)
+                            - float(row.get("allocated_cost_usd") or 0.0),
+                        )
+                        indicative_value = (
+                            0.0
+                            if row.get("liquidity_usd") is not None
+                            and float(row["liquidity_usd"]) < 1.0
+                            else max(
+                                0.0,
+                                float(row.get("stake_usd") or 0.0)
+                                * remaining_fraction
+                                * float(row.get("price_usd") or 0.0)
+                                / entry_price
+                                * (1.0 - int(definition.get("slippage_bps") or 400) / 10_000.0),
+                            )
+                        )
+                        effective_unrealized_by_arm[arm] += indicative_value - remaining_cost
+                        priced_open_by_arm[arm] += 1
             effective_open_position_count = sum(
                 stats["open_count"] for stats in position_stats.values()
             )
@@ -621,7 +682,28 @@ class ChainWebData:
                     int(account["closed_position_count"])
                     + int(account["written_off_position_count"])
                 )
-                total_pnl = account.get("indicative_total_pnl_usd")
+                realized_pnl = effective_realized_by_arm.get(policy_arm_id, 0.0)
+                open_count = int(account["open_position_count"])
+                indicative_complete = priced_open_by_arm.get(policy_arm_id, 0) == open_count
+                unrealized_pnl = (
+                    effective_unrealized_by_arm.get(policy_arm_id, 0.0)
+                    if indicative_complete else None
+                )
+                total_pnl = (
+                    realized_pnl + unrealized_pnl
+                    if unrealized_pnl is not None else None
+                )
+                account.update({
+                    "realized_pnl_usd": realized_pnl,
+                    "indicative_unrealized_pnl_usd": unrealized_pnl,
+                    "indicative_total_pnl_usd": total_pnl,
+                    "indicative_position_count": priced_open_by_arm.get(policy_arm_id, 0),
+                    "indicative_is_complete": indicative_complete,
+                    "valuation_status": (
+                        "complete_market_mark" if indicative_complete
+                        else "partial_market_mark_unknown"
+                    ),
+                })
                 account["capital_model"] = capital_model
                 account["capital_neutral_realized_pnl_usd"] = account.get(
                     "realized_pnl_usd"
@@ -636,7 +718,12 @@ class ChainWebData:
                     if terminal_count > 0 else None
                 )
                 account["account_return_fraction"] = None
-                terminal_pnls = terminal_rows_by_arm.get(policy_arm_id, [])
+                terminal_pnls = [
+                    value for _closed_at, value in sorted(
+                        terminal_rows_by_arm.get(policy_arm_id, []),
+                        key=lambda item: item[0],
+                    )
+                ]
                 winning_pnls = [value for value in terminal_pnls if value > 0.0]
                 losing_pnls = [value for value in terminal_pnls if value < 0.0]
                 average_win = (
@@ -692,6 +779,22 @@ class ChainWebData:
                     else "early" if terminal_count > 0 or admitted > 0
                     else "waiting"
                 )
+                curve = curves_by_arm.get(policy_arm_id, [])
+                if accounting_effective_after:
+                    curve_limit = (
+                        self.LIVE_DETAIL_CURVE_POINTS
+                        if arm_id == policy_arm_id else self.LIVE_SPARKLINE_POINTS
+                    )
+                    curve = [
+                        *curve[-max(0, curve_limit - 1):],
+                        {
+                            "recorded_at": current_iso,
+                            "realized_pnl_usd": realized_pnl,
+                            "unrealized_pnl_usd": unrealized_pnl,
+                            "total_pnl_usd": total_pnl,
+                            "synthetic_effective_point": True,
+                        },
+                    ]
                 strategies.append({
                     **{
                         key: policy.get(key)
@@ -703,7 +806,7 @@ class ChainWebData:
                     "eligible_opportunity_count": admitted + rejected,
                     "maturity": maturity,
                     "account": account,
-                    "curve": curves_by_arm.get(policy_arm_id, []),
+                    "curve": curve,
                 })
 
             open_rows = (
@@ -796,11 +899,7 @@ class ChainWebData:
                             / entry_price
                             * (1.0 - slippage),
                         )
-                        capacity = Store._chain_meme_trader_market_capacity_usd(
-                            liquidity, int(definition.get("slippage_bps") or 400),
-                        )
-                        if capacity is None or candidate_value <= capacity:
-                            indicative_value = candidate_value
+                        indicative_value = candidate_value
                 holding_seconds = (
                     current - parse_time(row["opened_at"])
                 ).total_seconds()
@@ -994,11 +1093,55 @@ class ChainWebData:
                 age_seconds = None
             recent_activity = self._rows(
                 connection,
-                "SELECT arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+                "SELECT id,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
                 "realized_pnl_usd,reason,created_at FROM chain_meme_trader_trades "
                 "WHERE definition_version=? ORDER BY id DESC LIMIT 80",
                 (active_version,),
             )
+            active_corrections = {
+                int(row["source_trade_id"]): row
+                for row in (
+                    Store._chain_meme_trader_market_fill_corrections_from_connection(
+                        connection, active_version,
+                    )
+                )
+            }
+            active_contaminations = {
+                (str(row["arm_id"]), int(row["shadow_cohort_id"]))
+                for row in (
+                    Store._chain_meme_trader_accounting_contaminations_from_connection(
+                        connection, active_version,
+                    )
+                )
+            }
+            effective_recent_activity = []
+            for item in recent_activity:
+                position_key = (
+                    str(item["arm_id"]), int(item["shadow_cohort_id"]),
+                )
+                if position_key in active_contaminations:
+                    continue
+                correction = active_corrections.get(int(item["id"]))
+                if correction is not None:
+                    outcome = str(correction["replacement_outcome"])
+                    item.update({
+                        "side": outcome,
+                        "gross_usd": (
+                            float(correction["replacement_gross_usd"] or 0.0)
+                            if outcome == "SELL" else 0.0
+                        ),
+                        "realized_pnl_usd": (
+                            float(item.get("realized_pnl_usd") or 0.0)
+                            + float(correction["realized_adjustment_usd"] or 0.0)
+                        ),
+                        "reason": str(correction["reason"]),
+                        "created_at": (
+                            correction.get("replacement_observed_at")
+                            or item["created_at"]
+                        ),
+                    })
+                effective_recent_activity.append(item)
+            recent_activity = effective_recent_activity
             recent_decisions = self._rows(
                 connection,
                 "SELECT arm_id,shadow_cohort_id,token_id,status,reason,decided_at "
@@ -1186,40 +1329,100 @@ class ChainWebData:
                 item["written_off_count"] = int(positions[2] or 0)
                 item["current"] = definition_version == active_version
                 versions.append(item)
-            position_stats = {
-                (str(row["definition_version"]), str(row["arm_id"])): dict(row)
-                for row in connection.execute(
-                    "SELECT definition_version,arm_id,COUNT(*) AS position_count,"
-                    "SUM(CASE WHEN status='open' THEN 1 ELSE 0 END) AS open_count,"
-                    "SUM(CASE WHEN status='closed' THEN 1 ELSE 0 END) AS closed_count,"
-                    "SUM(CASE WHEN status='written_off' THEN 1 ELSE 0 END) AS written_off_count,"
-                    "COALESCE(SUM(CASE WHEN status IN ('closed','written_off') "
-                    "THEN realized_pnl_usd ELSE 0 END),0) AS realized_pnl_usd,"
-                    "SUM(CASE WHEN status IN ('closed','written_off') "
-                    "AND realized_pnl_usd>0 THEN 1 ELSE 0 END) AS win_count "
-                    "FROM chain_meme_trader_positions GROUP BY definition_version,arm_id"
-                ).fetchall()
-            }
+            correction_by_version: dict[
+                str, dict[tuple[str, int], dict[str, Any]]
+            ] = {}
+            correction_trade_by_version: dict[str, dict[int, dict[str, Any]]] = {}
+            contamination_by_version: dict[str, set[tuple[str, int]]] = {}
+            for version_item in versions:
+                definition_version = str(version_item["definition_version"])
+                version_corrections = (
+                    Store._chain_meme_trader_market_fill_corrections_from_connection(
+                        connection, definition_version,
+                    )
+                )
+                correction_by_version[definition_version] = {
+                    (str(row["arm_id"]), int(row["shadow_cohort_id"])): row
+                    for row in version_corrections
+                }
+                correction_trade_by_version[definition_version] = {
+                    int(row["source_trade_id"]): row for row in version_corrections
+                }
+                contamination_by_version[definition_version] = {
+                    (str(row["arm_id"]), int(row["shadow_cohort_id"]))
+                    for row in (
+                        Store._chain_meme_trader_accounting_contaminations_from_connection(
+                            connection, definition_version,
+                        )
+                    )
+                }
+            position_stats: dict[tuple[str, str], dict[str, Any]] = defaultdict(
+                lambda: {
+                    "position_count": 0, "open_count": 0, "closed_count": 0,
+                    "written_off_count": 0, "realized_pnl_usd": 0.0,
+                    "win_count": 0,
+                }
+            )
             terminal_pnls: dict[tuple[str, str], list[float]] = defaultdict(list)
             terminal_blocks: dict[tuple[str, str], set[str]] = defaultdict(set)
             for row in connection.execute(
-                "SELECT definition_version,arm_id,realized_pnl_usd,closed_at "
-                "FROM chain_meme_trader_positions WHERE status IN ('closed','written_off')"
+                "SELECT definition_version,arm_id,shadow_cohort_id,status,"
+                "realized_pnl_usd,closed_at FROM chain_meme_trader_positions "
+                "WHERE status<>'ineligible'"
             ).fetchall():
-                key = (str(row["definition_version"]), str(row["arm_id"]))
-                terminal_pnls[key].append(float(row["realized_pnl_usd"] or 0.0))
-                if row["closed_at"]:
-                    terminal_blocks[key].add(str(row["closed_at"])[:10])
-            trade_cash_flow = {
-                (str(row["definition_version"]), str(row["arm_id"])): float(
-                    row["net_cash_flow_usd"] or 0.0
+                definition_version = str(row["definition_version"])
+                arm = str(row["arm_id"])
+                position_key = (arm, int(row["shadow_cohort_id"]))
+                if position_key in contamination_by_version.get(definition_version, set()):
+                    continue
+                key = (definition_version, arm)
+                correction = correction_by_version.get(definition_version, {}).get(
+                    position_key
                 )
-                for row in connection.execute(
-                    "SELECT definition_version,arm_id,"
-                    "COALESCE(SUM(net_cash_flow_usd),0) AS net_cash_flow_usd "
-                    "FROM chain_meme_trader_trades GROUP BY definition_version,arm_id"
-                ).fetchall()
-            }
+                effective_status = str(row["status"])
+                effective_pnl = float(row["realized_pnl_usd"] or 0.0)
+                effective_closed_at = row["closed_at"]
+                if correction is not None:
+                    effective_status = {
+                        "SELL": "closed", "WRITEOFF": "written_off",
+                        "UNRESOLVED": "open",
+                    }[str(correction["replacement_outcome"])]
+                    effective_pnl += float(
+                        correction["realized_adjustment_usd"] or 0.0
+                    )
+                    effective_closed_at = (
+                        correction.get("replacement_observed_at")
+                        or effective_closed_at
+                    )
+                stats = position_stats[key]
+                stats["position_count"] += 1
+                stats[f"{effective_status}_count"] += 1
+                if effective_status in {"closed", "written_off"}:
+                    stats["realized_pnl_usd"] += effective_pnl
+                    stats["win_count"] += int(effective_pnl > 0.0)
+                    terminal_pnls[key].append(effective_pnl)
+                    if effective_closed_at:
+                        terminal_blocks[key].add(str(effective_closed_at)[:10])
+            trade_cash_flow: dict[tuple[str, str], float] = defaultdict(float)
+            for row in connection.execute(
+                "SELECT id,definition_version,arm_id,shadow_cohort_id,"
+                "net_cash_flow_usd FROM chain_meme_trader_trades"
+            ).fetchall():
+                definition_version = str(row["definition_version"])
+                arm = str(row["arm_id"])
+                position_key = (arm, int(row["shadow_cohort_id"]))
+                if position_key in contamination_by_version.get(definition_version, set()):
+                    continue
+                correction = correction_trade_by_version.get(definition_version, {}).get(
+                    int(row["id"])
+                )
+                trade_cash_flow[(definition_version, arm)] += (
+                    float(row["net_cash_flow_usd"] or 0.0)
+                    + (
+                        float(correction["cash_adjustment_usd"] or 0.0)
+                        if correction is not None else 0.0
+                    )
+                )
             decision_stats = {
                 (str(row["definition_version"]), str(row["arm_id"])): dict(row)
                 for row in connection.execute(
@@ -1872,7 +2075,19 @@ class ChainWebData:
                 "WHERE definition_version=?",
                 (active_version,),
             ).fetchone()[0]) if has_additions is not None else 0
-            cache_key = (modified_at, active_version, addition_frontier)
+            accounting_frontier = (
+                Store._chain_meme_trader_accounting_effective_after_from_connection(
+                    connection, active_version,
+                )
+            )
+            result_frontier = int(connection.execute(
+                "SELECT COALESCE(MAX(id),0) FROM chain_meme_trader_account_snapshots "
+                "WHERE definition_version=?", (active_version,),
+            ).fetchone()[0])
+            cache_key = (
+                modified_at, active_version, addition_frontier,
+                accounting_frontier, result_frontier,
+            )
             with self._cache_lock:
                 if self._universe_cache is not None and self._universe_cache[0] == cache_key:
                     return self._universe_cache[1]
@@ -1886,6 +2101,10 @@ class ChainWebData:
                 )
                 if definition_row is not None else {}
             )
+        active_results = {
+            str(item.get("arm_id") or ""): item
+            for item in self.state(compact=True).get("strategies", [])
+        }
         report = json.loads(self.strategy_universe_path.read_text(encoding="utf-8"))
         instances_by_hash: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for item in report.get("instances", []):
@@ -1916,6 +2135,8 @@ class ChainWebData:
             canonical_id = str(family.get("canonical_id") or "")
             active_policy = active_policy_by_canonical.get(canonical_id) or {}
             active_arm_id = str(active_policy.get("arm_id") or "")
+            active_result = active_results.get(active_arm_id) or {}
+            active_account = active_result.get("account") or {}
             forward_enabled = bool(
                 active_policy.get("forward_enabled", bool(active_policy))
             )
@@ -1957,6 +2178,14 @@ class ChainWebData:
                 "fidelity_status": fidelity_status,
                 "fidelity_note": str(active_policy.get("fidelity_note") or ""),
                 "forward_enabled": forward_enabled,
+                "realtime_account": active_account or None,
+                "realtime_terminal_count": active_account.get("terminal_position_count"),
+                "realtime_realized_pnl_usd": active_account.get(
+                    "capital_neutral_realized_pnl_usd"
+                ),
+                "realtime_total_pnl_usd": active_account.get(
+                    "capital_neutral_total_pnl_usd"
+                ),
                 "historical_terminal_projected_sum": historical_terminal,
                 "historical_realized_pnl_projected_sum_usd": historical_pnl,
                 "historical_metric_warning": (
@@ -1982,6 +2211,8 @@ class ChainWebData:
                 )
             )
             forward_enabled = bool(active_policy.get("forward_enabled", True))
+            active_result = active_results.get(arm_id) or {}
+            active_account = active_result.get("account") or {}
             families.append({
                 "canonical_id": canonical_id,
                 "behavior_contract_hash": fingerprint,
@@ -2011,6 +2242,14 @@ class ChainWebData:
                 ),
                 "fidelity_note": str(active_policy.get("fidelity_note") or ""),
                 "forward_enabled": forward_enabled,
+                "realtime_account": active_account or None,
+                "realtime_terminal_count": active_account.get("terminal_position_count"),
+                "realtime_realized_pnl_usd": active_account.get(
+                    "capital_neutral_realized_pnl_usd"
+                ),
+                "realtime_total_pnl_usd": active_account.get(
+                    "capital_neutral_total_pnl_usd"
+                ),
                 "historical_terminal_projected_sum": 0,
                 "historical_realized_pnl_projected_sum_usd": 0.0,
                 "historical_metric_warning": "new forward strategy; no historical backfill",
@@ -2126,6 +2365,24 @@ class ChainWebData:
             ).fetchone()
             definition = Store._json_object(registration["definition_json"]) if registration else {}
             slippage = int(definition.get("slippage_bps") or 400) / 10_000.0
+            corrections = Store._chain_meme_trader_market_fill_corrections_from_connection(
+                connection, active_version,
+            )
+            corrections_by_position = {
+                (str(row["arm_id"]), int(row["shadow_cohort_id"])): row
+                for row in corrections
+            }
+            corrections_by_trade = {
+                int(row["source_trade_id"]): row for row in corrections
+            }
+            contaminated_positions = {
+                (str(row["arm_id"]), int(row["shadow_cohort_id"]))
+                for row in (
+                    Store._chain_meme_trader_accounting_contaminations_from_connection(
+                        connection, active_version,
+                    )
+                )
+            }
             snapshot_rows = self._rows(
                 connection,
                 "SELECT id,observed_at,ingested_at,provider,price_usd,liquidity_usd,"
@@ -2261,7 +2518,7 @@ class ChainWebData:
                 and float(market.get("price_usd") or 0.0) > 0.0
                 and (
                     market.get("liquidity_usd") is None
-                    or float(market["liquidity_usd"]) > 0.0
+                    or float(market["liquidity_usd"]) >= 0.0
                 )
                 and market_age is not None
                 and 0.0 <= market_age <= 15.0
@@ -2311,6 +2568,34 @@ class ChainWebData:
                 if market.get("is_fresh") else 0.0
             )
             for position in positions:
+                position_key = (
+                    str(position["arm_id"]), int(position["shadow_cohort_id"]),
+                )
+                correction = corrections_by_position.get(position_key)
+                if correction is not None:
+                    position["recorded_status"] = position["status"]
+                    position["raw_closed_at"] = position["closed_at"]
+                    position["recorded_realized_pnl_usd"] = position["realized_pnl_usd"]
+                    outcome = str(correction["replacement_outcome"])
+                    position["status"] = {
+                        "SELL": "closed", "WRITEOFF": "written_off",
+                        "UNRESOLVED": "open",
+                    }[outcome]
+                    position["realized_pnl_usd"] = (
+                        float(position.get("realized_pnl_usd") or 0.0)
+                        + float(correction["realized_adjustment_usd"] or 0.0)
+                    )
+                    position["closed_at"] = (
+                        None if outcome == "UNRESOLVED" else
+                        correction.get("replacement_observed_at")
+                        or position["closed_at"]
+                    )
+                    position["accounting_status"] = "MARKET_FILL_CORRECTED"
+                    position["market_fill_correction"] = dict(correction)
+                contaminated = position_key in contaminated_positions
+                if contaminated:
+                    position["accounting_status"] = "ACCOUNTING_CONTAMINATED"
+                    position["formal_metrics_eligible"] = False
                 terminal_at = position.get("closed_at") or current
                 holding_seconds = (
                     parse_time(terminal_at) - parse_time(position["opened_at"])
@@ -2324,7 +2609,8 @@ class ChainWebData:
                 position["indicative_value_usd"] = None
                 position["indicative_unrealized_pnl_usd"] = None
                 if (
-                    str(position.get("status")) == "open"
+                    not contaminated
+                    and str(position.get("status")) == "open"
                     and latest_price > 0.0
                     and float(
                         position.get("entry_execution_price_usd")
@@ -2340,28 +2626,82 @@ class ChainWebData:
                         position.get("entry_execution_price_usd")
                         or position.get("entry_signal_price_usd")
                     )
-                    position["indicative_value_usd"] = max(
-                        0.0,
-                        float(position["stake_usd"]) * remaining_fraction * latest_price
-                        / entry_price * (1.0 - slippage),
-                    )
                     remaining_cost = max(
                         0.0,
                         float(position["stake_usd"])
                         - float(position.get("allocated_cost_usd") or 0.0),
+                    )
+                    position["indicative_value_usd"] = (
+                        0.0
+                        if market.get("liquidity_usd") is not None
+                        and float(market["liquidity_usd"]) < 1.0
+                        else max(
+                            0.0,
+                            float(position["stake_usd"]) * remaining_fraction * latest_price
+                            / entry_price * (1.0 - slippage),
+                        )
                     )
                     position["indicative_unrealized_pnl_usd"] = (
                         float(position["indicative_value_usd"]) - remaining_cost
                     )
             trades = self._rows(
                 connection,
-                "SELECT arm_id,shadow_cohort_id,side,gross_usd,net_cash_flow_usd,"
+                "SELECT id,arm_id,shadow_cohort_id,side,gross_usd,net_cash_flow_usd,"
                 "realized_pnl_usd,reason,created_at FROM chain_meme_trader_trades "
                 "WHERE definition_version=? AND token_id=? ORDER BY id",
                 (active_version, token_id),
             )
+            effective_trades = []
+            for trade in trades:
+                position_key = (
+                    str(trade["arm_id"]), int(trade["shadow_cohort_id"]),
+                )
+                trade.update({
+                    "raw_side": trade["side"],
+                    "raw_gross_usd": trade["gross_usd"],
+                    "raw_net_cash_flow_usd": trade["net_cash_flow_usd"],
+                    "raw_realized_pnl_usd": trade["realized_pnl_usd"],
+                    "raw_reason": trade["reason"],
+                    "raw_created_at": trade["created_at"],
+                })
+                correction = corrections_by_trade.get(int(trade["id"]))
+                if correction is not None:
+                    outcome = str(correction["replacement_outcome"])
+                    trade.update({
+                        "side": outcome,
+                        "gross_usd": (
+                            float(correction["replacement_gross_usd"] or 0.0)
+                            if outcome == "SELL" else 0.0
+                        ),
+                        "net_cash_flow_usd": (
+                            float(trade.get("net_cash_flow_usd") or 0.0)
+                            + float(correction["cash_adjustment_usd"] or 0.0)
+                        ),
+                        "realized_pnl_usd": (
+                            float(trade.get("realized_pnl_usd") or 0.0)
+                            + float(correction["realized_adjustment_usd"] or 0.0)
+                        ),
+                        "reason": str(correction["reason"]),
+                        "created_at": (
+                            correction.get("replacement_observed_at")
+                            or trade["created_at"]
+                        ),
+                        "accounting_status": "MARKET_FILL_CORRECTED",
+                        "market_fill_correction": dict(correction),
+                    })
+                if position_key in contaminated_positions:
+                    trade.update({
+                        "side": "EXCLUDED", "gross_usd": None,
+                        "net_cash_flow_usd": None, "realized_pnl_usd": None,
+                        "accounting_status": "ACCOUNTING_CONTAMINATED",
+                        "formal_metrics_eligible": False,
+                    })
+                effective_trades.append(trade)
+            trades = effective_trades
             unique_trade_rows: dict[tuple[str, str, str, str], dict[str, Any]] = {}
             for trade in trades:
+                if str(trade.get("side")) == "EXCLUDED":
+                    continue
                 unique_trade_rows[(
                     str(trade.get("shadow_cohort_id") or ""),
                     str(trade.get("side") or ""),

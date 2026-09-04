@@ -24,6 +24,7 @@ from .models import (
     Position,
     TokenCandidate,
     TokenSnapshot,
+    canonical_token_address,
     iso,
     parse_time,
     utcnow,
@@ -2695,6 +2696,7 @@ class Store:
                     principal_recovered_at TEXT,
                     principal_recovery_proceeds_usd REAL,
                     highest_signal_price_usd REAL NOT NULL,
+                    highest_economic_value_usd REAL,
                     status TEXT NOT NULL CHECK(status IN (
                         'open','closed','written_off','ineligible'
                     )),
@@ -3016,6 +3018,28 @@ class Store:
                 CREATE TRIGGER IF NOT EXISTS chain_meme_trader_market_fill_correction_supersessions_no_delete
                 BEFORE DELETE ON chain_meme_trader_market_fill_correction_supersessions
                 BEGIN SELECT RAISE(ABORT,'market fill correction supersessions are immutable'); END;
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_market_fill_correction_resolutions (
+                    id INTEGER PRIMARY KEY,
+                    source_trade_id INTEGER NOT NULL,
+                    revision INTEGER NOT NULL,
+                    replacement_outcome TEXT NOT NULL CHECK(replacement_outcome IN (
+                        'SELL','WRITEOFF','UNRESOLVED'
+                    )),
+                    replacement_gross_usd REAL,
+                    cash_adjustment_usd REAL NOT NULL,
+                    realized_adjustment_usd REAL NOT NULL,
+                    replacement_observed_at TEXT,
+                    reason TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    UNIQUE(source_trade_id,revision)
+                );
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_market_fill_correction_resolutions_no_update
+                BEFORE UPDATE ON chain_meme_trader_market_fill_correction_resolutions
+                BEGIN SELECT RAISE(ABORT,'market fill correction resolutions are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_market_fill_correction_resolutions_no_delete
+                BEFORE DELETE ON chain_meme_trader_market_fill_correction_resolutions
+                BEGIN SELECT RAISE(ABORT,'market fill correction resolutions are immutable'); END;
                 CREATE TABLE IF NOT EXISTS chain_meme_trader_accounting_contaminations (
                     definition_version TEXT NOT NULL,
                     arm_id TEXT NOT NULL,
@@ -3036,6 +3060,27 @@ class Store:
                 CREATE TRIGGER IF NOT EXISTS chain_meme_trader_accounting_contaminations_no_delete
                 BEFORE DELETE ON chain_meme_trader_accounting_contaminations
                 BEGIN SELECT RAISE(ABORT,'accounting contaminations are immutable'); END;
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_accounting_contamination_resolutions (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    arm_id TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    source_buy_trade_id INTEGER NOT NULL,
+                    revision INTEGER NOT NULL,
+                    resolution_status TEXT NOT NULL CHECK(resolution_status IN (
+                        'ACTIVE','RESOLVED'
+                    )),
+                    reason TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    UNIQUE(definition_version,arm_id,shadow_cohort_id,revision)
+                );
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_accounting_contamination_resolutions_no_update
+                BEFORE UPDATE ON chain_meme_trader_accounting_contamination_resolutions
+                BEGIN SELECT RAISE(ABORT,'accounting contamination resolutions are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_accounting_contamination_resolutions_no_delete
+                BEFORE DELETE ON chain_meme_trader_accounting_contamination_resolutions
+                BEGIN SELECT RAISE(ABORT,'accounting contamination resolutions are immutable'); END;
                 CREATE TABLE IF NOT EXISTS chain_meme_trader_postbuy_research_registrations (
                     research_version TEXT PRIMARY KEY,
                     definition_version TEXT NOT NULL,
@@ -6363,6 +6408,7 @@ class Store:
                 ("principal_recovered", "INTEGER NOT NULL DEFAULT 0"),
                 ("principal_recovered_at", "TEXT"),
                 ("principal_recovery_proceeds_usd", "REAL"),
+                ("highest_economic_value_usd", "REAL"),
                 ("entry_reason", "TEXT NOT NULL DEFAULT ''"),
                 ("last_fixed_horizon_minutes", "INTEGER NOT NULL DEFAULT 0"),
                 ("entry_fill_id", "INTEGER"),
@@ -25393,7 +25439,11 @@ class Store:
                     if not (
                         token_chain in allowed_chains
                         and str(pair.get("chainId") or "").lower() == token_chain
-                        and str(base.get("address") or "") == token_id.split(":", 1)[1]
+                        and canonical_token_address(
+                            token_chain, str(base.get("address") or ""),
+                        ) == canonical_token_address(
+                            token_chain, token_id.split(":", 1)[1],
+                        )
                         and pair_created_ms > 0 and pair_created <= snapshot_observed
                         and age_seconds >= 0 and price > 0
                         and (
@@ -28117,10 +28167,15 @@ class Store:
 
     def upsert_chain_meme_trader_market_mark(
         self, token: TokenCandidate, snapshot: TokenSnapshot, *, recorded_at: Any = None,
+        target_token_id: str | None = None, target_chain: str | None = None,
+        target_address: str | None = None,
         _in_transaction: bool = False,
     ) -> None:
         """Keep every live mark while sampling a lighter Token chart history."""
         mark_at = parse_time(recorded_at or utcnow())
+        mark_token_id = str(target_token_id or token.token_id)
+        mark_chain = str(target_chain or token.chain).lower()
+        mark_address = str(target_address or token.address)
         pair = snapshot.raw.get("pair") if isinstance(snapshot.raw, Mapping) else {}
         pair_address = str(pair.get("pairAddress") or "") if isinstance(pair, Mapping) else ""
         provider = snapshot.provider or token.source or "dex-market-mark"
@@ -28131,7 +28186,7 @@ class Store:
                     "SELECT pair_address FROM chain_meme_trader_v6_cohorts "
                     "WHERE token_id=? AND pair_address IS NOT NULL AND pair_address!='' "
                     "ORDER BY id DESC LIMIT 1",
-                    (token.token_id,),
+                    (mark_token_id,),
                 ).fetchone()
                 pair_address = (
                     str(known_pair["pair_address"] or "")
@@ -28158,7 +28213,7 @@ class Store:
                 "WHERE chain_meme_trader_market_marks.observed_at IS NULL "
                 "OR excluded.observed_at>chain_meme_trader_market_marks.observed_at",
                 (
-                    token.token_id, token.chain.lower(), token.address, pair_address or None,
+                    mark_token_id, mark_chain, mark_address, pair_address or None,
                     provider,
                     float(snapshot.price_usd or 0.0), snapshot.liquidity_usd,
                     snapshot.volume_5m_usd, snapshot.buys_5m, snapshot.sells_5m,
@@ -28169,7 +28224,7 @@ class Store:
                 return
             latest_history = self.db.execute(
                 "SELECT status,recorded_at FROM chain_meme_trader_market_mark_history "
-                "WHERE token_id=? ORDER BY id DESC LIMIT 1", (token.token_id,),
+                "WHERE token_id=? ORDER BY id DESC LIMIT 1", (mark_token_id,),
             ).fetchone()
             if (
                 latest_history is None
@@ -28182,7 +28237,7 @@ class Store:
                     "volume_5m_usd,buys_5m,sells_5m,observed_at,recorded_at,status,"
                     "failure_kind) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'VISIBLE','')",
                     (
-                        token.token_id, token.chain.lower(), token.address,
+                        mark_token_id, mark_chain, mark_address,
                         pair_address or None, provider, float(snapshot.price_usd or 0.0),
                         snapshot.liquidity_usd, snapshot.volume_5m_usd,
                         snapshot.buys_5m, snapshot.sells_5m,
@@ -28290,11 +28345,20 @@ class Store:
                         snapshot, TokenSnapshot
                     ):
                         continue
-                    self.upsert_token(
-                        token, seen_at=snapshot.observed_at, _in_transaction=True,
+                    target_token_id = str(
+                        outcome.get("target_token_id") or token.token_id
                     )
+                    if target_token_id == token.token_id:
+                        self.upsert_token(
+                            token, seen_at=snapshot.observed_at, _in_transaction=True,
+                        )
                     self.upsert_chain_meme_trader_market_mark(
                         token, snapshot, recorded_at=batch_at,
+                        target_token_id=target_token_id,
+                        target_chain=str(outcome.get("target_chain") or token.chain),
+                        target_address=str(
+                            outcome.get("target_address") or token.address
+                        ),
                         _in_transaction=True,
                     )
                     refreshed += 1
@@ -28316,18 +28380,6 @@ class Store:
         return refreshed
 
     @staticmethod
-    def _chain_meme_trader_market_capacity_usd(
-        liquidity_usd: Any, _slippage_bps: int,
-    ) -> float | None:
-        """Reject only recovery exceeding the entire reported pool liquidity."""
-        if liquidity_usd is None:
-            return None
-        liquidity = float(liquidity_usd)
-        if not math.isfinite(liquidity) or liquidity <= 0.0:
-            return 0.0
-        return liquidity
-
-    @staticmethod
     def _chain_meme_trader_market_fill_corrections_from_connection(
         connection: sqlite3.Connection, version: str,
     ) -> list[dict[str, Any]]:
@@ -28339,7 +28391,12 @@ class Store:
         if "chain_meme_trader_market_fill_corrections" not in tables:
             return []
         corrections = {
-            int(row["source_trade_id"]): dict(row)
+            int(row["source_trade_id"]): {
+                **dict(row),
+                "base_recorded_at": row["recorded_at"],
+                "resolution_revision": 0,
+                "resolution_kind": "base_correction",
+            }
             for row in connection.execute(
                 "SELECT * FROM chain_meme_trader_market_fill_corrections "
                 "WHERE definition_version=? ORDER BY source_trade_id",
@@ -28356,9 +28413,178 @@ class Store:
             ):
                 target = corrections.get(int(row["source_trade_id"]))
                 if target is not None:
-                    target.update(dict(row))
+                    target.update({
+                        key: row[key] for key in (
+                            "replacement_outcome", "replacement_gross_usd",
+                            "cash_adjustment_usd", "realized_adjustment_usd",
+                            "replacement_observed_at", "reason", "evidence_json",
+                            "recorded_at",
+                        )
+                    })
                     target["superseded"] = True
+                    target["resolution_revision"] = 1
+                    target["resolution_kind"] = "legacy_supersession"
+        if "chain_meme_trader_market_fill_correction_resolutions" in tables:
+            for row in connection.execute(
+                "SELECT r.* FROM chain_meme_trader_market_fill_correction_resolutions r "
+                "JOIN chain_meme_trader_market_fill_corrections c "
+                "ON c.source_trade_id=r.source_trade_id JOIN ("
+                "SELECT source_trade_id,MAX(revision) AS revision FROM "
+                "chain_meme_trader_market_fill_correction_resolutions "
+                "GROUP BY source_trade_id) latest ON latest.source_trade_id=r.source_trade_id "
+                "AND latest.revision=r.revision WHERE c.definition_version=? "
+                "ORDER BY r.source_trade_id",
+                (version,),
+            ):
+                target = corrections.get(int(row["source_trade_id"]))
+                if (
+                    target is None
+                    or int(row["revision"])
+                    <= int(target.get("resolution_revision") or 0)
+                ):
+                    continue
+                target.update({
+                    key: row[key] for key in (
+                        "replacement_outcome", "replacement_gross_usd",
+                        "cash_adjustment_usd", "realized_adjustment_usd",
+                        "replacement_observed_at", "reason", "evidence_json",
+                        "recorded_at",
+                    )
+                })
+                target["superseded"] = True
+                target["resolution_revision"] = int(row["revision"])
+                target["resolution_kind"] = "revision_resolution"
         return list(corrections.values())
+
+    @staticmethod
+    def _chain_meme_trader_accounting_contaminations_from_connection(
+        connection: sqlite3.Connection, version: str, *, active_only: bool = True,
+    ) -> list[dict[str, Any]]:
+        tables = {
+            str(row[0]) for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        if "chain_meme_trader_accounting_contaminations" not in tables:
+            return []
+        rows = {
+            (str(row["arm_id"]), int(row["shadow_cohort_id"])): {
+                **dict(row),
+                "base_recorded_at": row["recorded_at"],
+                "resolution_status": "ACTIVE",
+                "resolution_revision": 0,
+            }
+            for row in connection.execute(
+                "SELECT * FROM chain_meme_trader_accounting_contaminations "
+                "WHERE definition_version=? ORDER BY source_buy_trade_id",
+                (version,),
+            )
+        }
+        if "chain_meme_trader_accounting_contamination_resolutions" in tables:
+            for row in connection.execute(
+                "SELECT r.* FROM chain_meme_trader_accounting_contamination_resolutions r "
+                "JOIN (SELECT definition_version,arm_id,shadow_cohort_id,MAX(revision) "
+                "AS revision FROM chain_meme_trader_accounting_contamination_resolutions "
+                "GROUP BY definition_version,arm_id,shadow_cohort_id) latest "
+                "ON latest.definition_version=r.definition_version "
+                "AND latest.arm_id=r.arm_id "
+                "AND latest.shadow_cohort_id=r.shadow_cohort_id "
+                "AND latest.revision=r.revision WHERE r.definition_version=? "
+                "ORDER BY r.arm_id,r.shadow_cohort_id",
+                (version,),
+            ):
+                key = (str(row["arm_id"]), int(row["shadow_cohort_id"]))
+                target = rows.get(key)
+                if target is None:
+                    continue
+                target.update({
+                    "resolution_status": str(row["resolution_status"]),
+                    "resolution_revision": int(row["revision"]),
+                    "reason": str(row["reason"]),
+                    "evidence_json": str(row["evidence_json"]),
+                    "recorded_at": str(row["recorded_at"]),
+                })
+        resolved = list(rows.values())
+        if active_only:
+            resolved = [
+                row for row in resolved
+                if str(row["resolution_status"]) == "ACTIVE"
+            ]
+        return resolved
+
+    @classmethod
+    def _chain_meme_trader_accounting_effective_after_from_connection(
+        cls, connection: sqlite3.Connection, version: str,
+    ) -> str | None:
+        rows: list[Mapping[str, Any]] = [
+            *cls._chain_meme_trader_market_fill_corrections_from_connection(
+                connection, version,
+            ),
+            *cls._chain_meme_trader_accounting_contaminations_from_connection(
+                connection, version, active_only=False,
+            ),
+        ]
+        return max(
+            (str(row["recorded_at"]) for row in rows if row.get("recorded_at")),
+            default=None,
+        )
+
+    def _append_chain_meme_trader_market_fill_correction_resolution(
+        self, *, source_trade_id: int, replacement_outcome: str,
+        replacement_gross_usd: float | None, cash_adjustment_usd: float,
+        realized_adjustment_usd: float, replacement_observed_at: str | None,
+        reason: str, evidence: Mapping[str, Any], recorded_at: str,
+    ) -> int:
+        latest_revision = int(self.db.execute(
+            "SELECT COALESCE(MAX(revision),0) FROM "
+            "chain_meme_trader_market_fill_correction_resolutions "
+            "WHERE source_trade_id=?", (int(source_trade_id),),
+        ).fetchone()[0])
+        legacy_supersession = self.db.execute(
+            "SELECT 1 FROM chain_meme_trader_market_fill_correction_supersessions "
+            "WHERE source_trade_id=?", (int(source_trade_id),),
+        ).fetchone()
+        revision = max(latest_revision, 1 if legacy_supersession is not None else 0) + 1
+        self.db.execute(
+            "INSERT INTO chain_meme_trader_market_fill_correction_resolutions("
+            "source_trade_id,revision,replacement_outcome,replacement_gross_usd,"
+            "cash_adjustment_usd,realized_adjustment_usd,replacement_observed_at,"
+            "reason,evidence_json,recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                int(source_trade_id), revision, replacement_outcome,
+                replacement_gross_usd, float(cash_adjustment_usd),
+                float(realized_adjustment_usd), replacement_observed_at, reason,
+                self._json(dict(evidence)), recorded_at,
+            ),
+        )
+        return 1
+
+    def _append_chain_meme_trader_accounting_contamination_resolution(
+        self, *, row: Mapping[str, Any], resolution_status: str,
+        reason: str, evidence: Mapping[str, Any], recorded_at: str,
+    ) -> int:
+        revision = 1 + int(self.db.execute(
+            "SELECT COALESCE(MAX(revision),0) FROM "
+            "chain_meme_trader_accounting_contamination_resolutions WHERE "
+            "definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+            (
+                str(row["definition_version"]), str(row["arm_id"]),
+                int(row["shadow_cohort_id"]),
+            ),
+        ).fetchone()[0])
+        self.db.execute(
+            "INSERT INTO chain_meme_trader_accounting_contamination_resolutions("
+            "definition_version,arm_id,shadow_cohort_id,source_buy_trade_id,revision,"
+            "resolution_status,reason,evidence_json,recorded_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
+            (
+                str(row["definition_version"]), str(row["arm_id"]),
+                int(row["shadow_cohort_id"]), int(row["source_buy_trade_id"]),
+                revision, resolution_status, reason,
+                self._json(dict(evidence)), recorded_at,
+            ),
+        )
+        return 1
 
     def _settle_chain_meme_trader_market_exit(
         self, *, version: str, mark_id: int, completed_at: str,
@@ -28398,8 +28624,6 @@ class Store:
             reason = (
                 "dex_pool_liquidity_below_1_usd_writeoff"
                 if "terminal_dust_pool" in evidence
-                else "market_capacity_insufficient_over_60_seconds_writeoff"
-                if "terminal_capacity_insufficient" in evidence
                 else "dex_pair_missing_over_60_seconds_writeoff"
             )
             self.db.execute(
@@ -28457,54 +28681,21 @@ class Store:
             post_confirmation.get("liquidity_usd")
             if isinstance(post_confirmation, Mapping) else None
         )
-        capacity = self._chain_meme_trader_market_capacity_usd(
-            post_liquidity, int(definition["slippage_bps"]),
-        )
-        if capacity is not None and gross > capacity:
-            capacity_state = trigger_evidence.get("capacity_insufficient")
-            if not isinstance(capacity_state, Mapping):
-                capacity_state = {}
-            post_sequence = int(mark["market_post_sequence"] or 0)
-            last_sequence = int(capacity_state.get("last_sample_sequence") or 0)
-            sample_count = int(capacity_state.get("sample_count") or 0)
-            first_at = capacity_state.get("first_observed_at")
-            if post_sequence > last_sequence:
-                sample_count += 1
-                first_at = first_at or post_recorded_at
-            capacity_state = {
-                "first_observed_at": first_at,
-                "last_observed_at": post_recorded_at,
-                "last_sample_sequence": max(last_sequence, post_sequence),
-                "sample_count": sample_count,
-                "gross_usd": gross,
-                "liquidity_usd": float(post_liquidity),
-                "max_market_gross_usd": capacity,
-                "capacity_formula": "liquidity_usd",
+        if post_liquidity is not None and float(post_liquidity) < 1.0:
+            trigger_evidence["terminal_dust_pool"] = {
+                **dict(post_confirmation or {}),
+                "confirmed_at": post_recorded_at,
             }
-            trigger_evidence["capacity_insufficient"] = capacity_state
-            elapsed = (
-                parse_time(post_recorded_at) - parse_time(first_at)
-            ).total_seconds()
-            if sample_count >= 2 and elapsed > 60.0:
-                trigger_evidence["terminal_capacity_insufficient"] = {
-                    **capacity_state, "confirmed_at": post_recorded_at,
-                }
-                self.db.execute(
-                    "UPDATE chain_meme_trader_marks SET action='RUG_EXIT',"
-                    "reason=reason||':market_capacity_insufficient_over_60_seconds',"
-                    "trigger_evidence_json=? WHERE id=? AND status='pending'",
-                    (self._json(trigger_evidence), int(mark_id)),
-                )
-                return self._settle_chain_meme_trader_market_exit(
-                    version=version, mark_id=mark_id,
-                    completed_at=post_recorded_at, definition=definition,
-                )
             self.db.execute(
-                "UPDATE chain_meme_trader_marks SET trigger_evidence_json=? "
-                "WHERE id=? AND status='pending'",
+                "UPDATE chain_meme_trader_marks SET action='RUG_EXIT',"
+                "reason=reason||':dex_pool_liquidity_below_1_usd',"
+                "trigger_evidence_json=? WHERE id=? AND status='pending'",
                 (self._json(trigger_evidence), int(mark_id)),
             )
-            return 0
+            return self._settle_chain_meme_trader_market_exit(
+                version=version, mark_id=mark_id,
+                completed_at=post_recorded_at, definition=definition,
+            )
         synthetic_fill_id = -int(mark_id)
         self.db.execute(
             "INSERT OR IGNORE INTO chain_meme_trader_fills("
@@ -28544,6 +28735,17 @@ class Store:
         principal_recovered_at = position["principal_recovered_at"]
         principal_recovery_proceeds = position["principal_recovery_proceeds_usd"]
         high_after_fill = float(position["highest_signal_price_usd"] or post_price)
+        post_fill_economic_value = (
+            new_proceeds
+            + float(position["stake_usd"])
+            * max(0.0, min(1.0, new_amount / initial_amount))
+            * post_price / entry_price
+            * (1.0 - int(definition["slippage_bps"]) / 10_000.0)
+        )
+        high_economic_after_fill = max(
+            float(position["highest_economic_value_usd"] or post_fill_economic_value),
+            post_fill_economic_value,
+        )
         principal_target_fill = bool(
             not closes
             and str(policy.get("exit_family") or "") == "principal_lock_runner"
@@ -28562,18 +28764,21 @@ class Store:
                 # post-trigger fill.  A pre-fill price high cannot be combined
                 # with proceeds that did not exist at that earlier time.
                 high_after_fill = post_price
+                high_economic_after_fill = post_fill_economic_value
         self.db.execute(
             "UPDATE chain_meme_trader_positions SET amount_raw=?,remaining_quantity_tokens=?,"
             "realized_proceeds_usd=?,"
             "allocated_cost_usd=?,next_tp_index=?,principal_recovered=?,"
             "principal_recovered_at=?,principal_recovery_proceeds_usd=?,"
-            "highest_signal_price_usd=?,status=?,pending_mark_id=NULL,"
+            "highest_signal_price_usd=?,highest_economic_value_usd=?,"
+            "status=?,pending_mark_id=NULL,"
             "realized_pnl_usd=?,closed_at=?,close_reason=?,last_fill_id=? "
             "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
             (
                 str(new_amount), remaining_quantity, new_proceeds, new_allocated, next_tp,
                 principal_recovered, principal_recovered_at,
                 principal_recovery_proceeds, high_after_fill,
+                high_economic_after_fill,
                 "closed" if closes else "open", cumulative_pnl,
                 completed_at if closes else None, reason if closes else "", fill_id,
                 version, str(position["arm_id"]), int(position["shadow_cohort_id"]),
@@ -28615,7 +28820,7 @@ class Store:
     def record_chain_meme_trader_market_capacity_corrections(
         self, *, definition_version: str | None = None, recorded_at: Any = None,
     ) -> int:
-        """Append accounting corrections for historical impossible market fills."""
+        """Resolve legacy capacity corrections under the current pool-visible rule."""
         version = definition_version or self.CHAIN_MEME_TRADER_ACTIVE_VERSION
         correction_at = iso(recorded_at or utcnow())
         with self._lock, self.db:
@@ -28624,20 +28829,22 @@ class Store:
                 return 0
             definition = self._json_object(registration["definition_json"])
             slippage_bps = int(definition["slippage_bps"])
+            effective_by_trade = {
+                int(row["source_trade_id"]): row
+                for row in self._chain_meme_trader_market_fill_corrections_from_connection(
+                    self.db, version,
+                )
+            }
             rows = self.db.execute(
                 "SELECT t.*,f.id AS source_fill_id,f.intent_id,m.id AS source_mark_id,"
                 "m.market_post_price_usd,m.market_post_recorded_at,"
-                "m.market_post_pair_address,m.trigger_evidence_json,"
-                "c.source_trade_id AS correction_trade_id,"
-                "COALESCE(s.replacement_outcome,c.replacement_outcome) "
-                "AS existing_replacement_outcome "
+                "m.market_pair_address,m.market_post_pair_address,m.trigger_evidence_json,"
+                "c.source_trade_id AS correction_trade_id "
                 "FROM chain_meme_trader_trades t "
                 "JOIN chain_meme_trader_fills f ON f.id=t.execution_fill_id "
                 "JOIN chain_meme_trader_marks m ON m.id=-f.intent_id "
                 "LEFT JOIN chain_meme_trader_market_fill_corrections c "
                 "ON c.source_trade_id=t.id "
-                "LEFT JOIN chain_meme_trader_market_fill_correction_supersessions s "
-                "ON s.source_trade_id=t.id "
                 "WHERE t.definition_version=? AND t.side='SELL' "
                 "AND f.adapter='dexscreener-market-paper/v1' "
                 "ORDER BY t.id",
@@ -28658,206 +28865,117 @@ class Store:
                 )
                 if liquidity is None or post_price <= 0.0 or not post_at_value:
                     continue
-                capacity = self._chain_meme_trader_market_capacity_usd(
-                    liquidity, slippage_bps,
-                )
                 original_gross = float(row["gross_usd"] or 0.0)
                 source_dust_pool = float(liquidity) < 1.0
-                if (
-                    capacity is None
-                    or (not source_dust_pool and original_gross <= capacity)
-                ):
-                    continue
-                first_at = parse_time(post_at_value)
-                pair_address = str(
+                post_at = iso(parse_time(post_at_value))
+                post_pair = str(
                     post.get("pair_address")
                     or row["market_post_pair_address"] or ""
                 )
-                low_capacity_samples = 1
-                replacement_outcome = "UNRESOLVED"
-                replacement_gross: float | None = None
-                replacement_observed_at: str | None = None
-                terminal_frame: dict[str, Any] | None = None
-                history_rows = self.db.execute(
-                    "SELECT id,pair_address,price_usd,liquidity_usd,observed_at,"
-                    "recorded_at,status FROM chain_meme_trader_market_mark_history "
-                    "WHERE token_id=? AND recorded_at>? ORDER BY recorded_at,id",
-                    (str(row["token_id"]), iso(first_at)),
-                ).fetchall()
-                if source_dust_pool:
-                    replacement_outcome = "WRITEOFF"
-                    replacement_observed_at = iso(first_at)
-                    terminal_frame = {
-                        "price_usd": post_price,
-                        "liquidity_usd": float(liquidity),
-                        "max_market_gross_usd": capacity,
-                        "observed_at": iso(first_at),
-                        "dust_pool_immediate": True,
-                    }
-                for history in history_rows if not source_dust_pool else ():
-                    if (
-                        str(history["status"] or "") != "VISIBLE"
-                        or str(history["pair_address"] or "") != pair_address
-                        or float(history["price_usd"] or 0.0) <= 0.0
-                        or history["liquidity_usd"] is None
-                    ):
-                        continue
-                    observed = parse_time(
-                        history["observed_at"] or history["recorded_at"]
-                    )
-                    candidate_gross = (
-                        original_gross * float(history["price_usd"]) / post_price
-                    )
-                    candidate_capacity = self._chain_meme_trader_market_capacity_usd(
-                        history["liquidity_usd"], slippage_bps,
-                    )
-                    elapsed_seconds = (observed - first_at).total_seconds()
-                    if float(history["liquidity_usd"]) < 1.0:
-                        replacement_outcome = "WRITEOFF"
-                        replacement_observed_at = iso(observed)
-                        terminal_frame = {
-                            "history_id": int(history["id"]),
-                            "price_usd": float(history["price_usd"]),
-                            "liquidity_usd": float(history["liquidity_usd"]),
-                            "max_market_gross_usd": candidate_capacity,
-                            "observed_at": iso(observed),
-                            "dust_pool_immediate": True,
-                        }
-                        break
-                    if low_capacity_samples >= 2 and elapsed_seconds > 60.0:
-                        replacement_outcome = "WRITEOFF"
-                        replacement_observed_at = iso(observed)
-                        terminal_frame = {
-                            "history_id": int(history["id"]),
-                            "price_usd": float(history["price_usd"]),
-                            "liquidity_usd": float(history["liquidity_usd"]),
-                            "max_market_gross_usd": candidate_capacity,
-                            "observed_at": iso(observed),
-                            "low_capacity_samples": low_capacity_samples,
-                            "late_recovery_ignored": bool(
-                                candidate_capacity is not None
-                                and candidate_gross <= candidate_capacity
-                            ),
-                        }
-                        break
-                    if (
-                        candidate_capacity is not None
-                        and candidate_gross <= candidate_capacity
-                    ):
-                        replacement_outcome = "SELL"
-                        replacement_gross = candidate_gross
-                        replacement_observed_at = iso(observed)
-                        terminal_frame = {
-                            "history_id": int(history["id"]),
-                            "price_usd": float(history["price_usd"]),
-                            "liquidity_usd": float(history["liquidity_usd"]),
-                            "max_market_gross_usd": candidate_capacity,
-                            "observed_at": iso(observed),
-                        }
-                        break
-                    low_capacity_samples += 1
-                    if low_capacity_samples >= 2 and elapsed_seconds > 60.0:
-                        replacement_outcome = "WRITEOFF"
-                        replacement_observed_at = iso(observed)
-                        terminal_frame = {
-                            "history_id": int(history["id"]),
-                            "price_usd": float(history["price_usd"]),
-                            "liquidity_usd": float(history["liquidity_usd"]),
-                            "max_market_gross_usd": candidate_capacity,
-                            "observed_at": iso(observed),
-                            "low_capacity_samples": low_capacity_samples,
-                        }
-                        break
-                original_realized = float(row["realized_pnl_usd"] or 0.0)
-                if replacement_outcome == "SELL":
-                    cash_adjustment = float(replacement_gross) - original_gross
-                    realized_adjustment = cash_adjustment
-                elif replacement_outcome == "WRITEOFF":
-                    cash_adjustment = -original_gross
-                    realized_adjustment = -original_gross
-                else:
-                    cash_adjustment = -original_gross
-                    realized_adjustment = -original_realized
                 correction_evidence = {
-                    "capacity_formula": "liquidity_usd",
                     "dust_pool_writeoff_below_usd": 1.0,
                     "slippage_bps": slippage_bps,
                     "source_post_confirmation": dict(post),
-                    "low_capacity_samples": low_capacity_samples,
-                    "terminal_frame": terminal_frame,
+                    "same_pool_before_after": bool(
+                        post_pair
+                        and post_pair == str(row["market_pair_address"] or "")
+                    ),
                     "original_trade_preserved": True,
                 }
-                if row["correction_trade_id"] is not None:
+                effective = effective_by_trade.get(int(row["id"]))
+                if source_dust_pool:
+                    desired_outcome = "WRITEOFF"
+                    desired_gross = 0.0
+                    desired_cash_adjustment = -original_gross
+                    desired_realized_adjustment = -original_gross
+                    desired_reason = "dex_pool_liquidity_below_1_usd_corrected"
+                    correction_evidence["terminal_frame"] = {
+                        "price_usd": post_price,
+                        "liquidity_usd": float(liquidity),
+                        "observed_at": post_at,
+                        "dust_pool_immediate": True,
+                    }
+                else:
                     if (
-                        str(row["existing_replacement_outcome"] or "")
-                        != replacement_outcome
+                        row["correction_trade_id"] is None
+                        or not correction_evidence["same_pool_before_after"]
                     ):
-                        self.db.execute(
-                            "INSERT OR IGNORE INTO "
-                            "chain_meme_trader_market_fill_correction_supersessions("
-                            "source_trade_id,replacement_outcome,replacement_gross_usd,"
-                            "cash_adjustment_usd,realized_adjustment_usd,"
-                            "replacement_observed_at,reason,evidence_json,recorded_at) "
-                            "VALUES(?,?,?,?,?,?,?,?,?)",
-                            (
-                                int(row["id"]), replacement_outcome,
-                                replacement_gross, cash_adjustment,
-                                realized_adjustment, replacement_observed_at,
-                                (
-                                    "dex_pool_liquidity_below_1_usd_corrected"
-                                    if terminal_frame
-                                    and terminal_frame.get("dust_pool_immediate")
-                                    else "late_recovery_after_capacity_timeout_corrected"
-                                ),
-                                self._json(correction_evidence), correction_at,
-                            ),
-                        )
-                        inserted += int(
-                            self.db.execute("SELECT changes()").fetchone()[0]
-                        )
-                    continue
-                self.db.execute(
-                    "INSERT OR IGNORE INTO chain_meme_trader_market_fill_corrections("
-                    "source_trade_id,definition_version,arm_id,shadow_cohort_id,"
-                    "token_id,source_fill_id,source_mark_id,original_gross_usd,"
-                    "post_liquidity_usd,max_market_gross_usd,replacement_outcome,"
-                    "replacement_gross_usd,cash_adjustment_usd,realized_adjustment_usd,"
-                    "replacement_observed_at,reason,evidence_json,recorded_at) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (
-                        int(row["id"]), version, str(row["arm_id"]),
-                        int(row["shadow_cohort_id"]), str(row["token_id"]),
-                        int(row["source_fill_id"]), int(row["source_mark_id"]),
-                        original_gross, float(liquidity), capacity,
-                        replacement_outcome, replacement_gross, cash_adjustment,
-                        realized_adjustment, replacement_observed_at,
+                        continue
+                    desired_outcome = "SELL"
+                    desired_gross = original_gross
+                    desired_cash_adjustment = 0.0
+                    desired_realized_adjustment = 0.0
+                    desired_reason = "same_pool_visible_non_dust_original_sell_restored"
+                    correction_evidence["legacy_capacity_veto_removed"] = True
+                if row["correction_trade_id"] is None:
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO chain_meme_trader_market_fill_corrections("
+                        "source_trade_id,definition_version,arm_id,shadow_cohort_id,"
+                        "token_id,source_fill_id,source_mark_id,original_gross_usd,"
+                        "post_liquidity_usd,max_market_gross_usd,replacement_outcome,"
+                        "replacement_gross_usd,cash_adjustment_usd,realized_adjustment_usd,"
+                        "replacement_observed_at,reason,evidence_json,recorded_at) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (
-                            "historical_dex_pool_liquidity_below_1_usd"
-                            if terminal_frame
-                            and terminal_frame.get("dust_pool_immediate")
-                            else "historical_market_fill_exceeded_fixed_slippage_capacity"
+                            int(row["id"]), version, str(row["arm_id"]),
+                            int(row["shadow_cohort_id"]), str(row["token_id"]),
+                            int(row["source_fill_id"]), int(row["source_mark_id"]),
+                            original_gross, float(liquidity), float(liquidity),
+                            desired_outcome, desired_gross,
+                            desired_cash_adjustment, desired_realized_adjustment,
+                            post_at, "historical_dex_pool_liquidity_below_1_usd",
+                            self._json(correction_evidence), correction_at,
                         ),
-                        self._json(correction_evidence), correction_at,
-                    ),
+                    )
+                    changed = int(self.db.execute("SELECT changes()").fetchone()[0])
+                    inserted += changed
+                    if changed:
+                        effective_by_trade[int(row["id"])] = {
+                            "replacement_outcome": desired_outcome,
+                            "replacement_gross_usd": desired_gross,
+                            "cash_adjustment_usd": desired_cash_adjustment,
+                            "realized_adjustment_usd": desired_realized_adjustment,
+                            "replacement_observed_at": post_at,
+                        }
+                    continue
+                if effective is not None and (
+                    str(effective["replacement_outcome"]) == desired_outcome
+                    and abs(float(effective["replacement_gross_usd"] or 0.0) - desired_gross)
+                    <= 1e-9
+                    and abs(float(effective["cash_adjustment_usd"] or 0.0)
+                            - desired_cash_adjustment) <= 1e-9
+                    and abs(float(effective["realized_adjustment_usd"] or 0.0)
+                            - desired_realized_adjustment) <= 1e-9
+                    and str(effective["replacement_observed_at"] or "") == post_at
+                ):
+                    continue
+                inserted += self._append_chain_meme_trader_market_fill_correction_resolution(
+                    source_trade_id=int(row["id"]),
+                    replacement_outcome=desired_outcome,
+                    replacement_gross_usd=desired_gross,
+                    cash_adjustment_usd=desired_cash_adjustment,
+                    realized_adjustment_usd=desired_realized_adjustment,
+                    replacement_observed_at=post_at,
+                    reason=desired_reason,
+                    evidence=correction_evidence,
+                    recorded_at=correction_at,
                 )
-                inserted += int(self.db.execute("SELECT changes()").fetchone()[0])
-            historical_cash_gate_through = self.db.execute(
-                "SELECT MAX(recorded_at) FROM "
-                "chain_meme_trader_market_fill_corrections "
-                "WHERE definition_version=?",
-                (version,),
-            ).fetchone()[0]
+            historical_cash_gate_through = (
+                self._chain_meme_trader_accounting_effective_after_from_connection(
+                    self.db, version,
+                )
+            )
             if historical_cash_gate_through is not None:
                 self._record_chain_meme_trader_accounting_contaminations(
                     version=version,
-                    historical_cash_gate_through=str(historical_cash_gate_through),
+                    historical_cash_gate_through=historical_cash_gate_through,
                 )
             return inserted
 
     def _record_chain_meme_trader_accounting_contaminations(
         self, *, version: str, historical_cash_gate_through: str,
     ) -> int:
-        """Replay the historical cash gate and mark impossible descendant entries."""
+        """Replay the legacy cash gate and append contamination state changes."""
         registration = self._chain_meme_trader_registration(version)
         if registration is None:
             return 0
@@ -28869,14 +28987,12 @@ class Store:
                 self.db, version,
             )
         }
-        contaminated = {
-            (str(row["arm_id"]), int(row["shadow_cohort_id"]))
-            for row in self.db.execute(
-                "SELECT arm_id,shadow_cohort_id FROM "
-                "chain_meme_trader_accounting_contaminations "
-                "WHERE definition_version=?",
-                (version,),
-            )
+        existing_rows = self._chain_meme_trader_accounting_contaminations_from_connection(
+            self.db, version, active_only=False,
+        )
+        existing_by_key = {
+            (str(row["arm_id"]), int(row["shadow_cohort_id"])): row
+            for row in existing_rows
         }
         funding = self.db.execute(
             "SELECT activation_snapshot_id FROM "
@@ -28887,7 +29003,7 @@ class Store:
             int(funding["activation_snapshot_id"]) if funding is not None else None
         )
         cash_by_arm: dict[str, float] = {}
-        inserted = 0
+        expected: dict[tuple[str, int], dict[str, Any]] = {}
         for trade in self.db.execute(
             "SELECT t.* FROM chain_meme_trader_trades t LEFT JOIN "
             "chain_meme_trader_v6_cohorts c ON c.definition_version=t.definition_version "
@@ -28902,7 +29018,7 @@ class Store:
             arm_id = str(trade["arm_id"])
             key = (arm_id, int(trade["shadow_cohort_id"]))
             cash = cash_by_arm.setdefault(arm_id, starting_cash)
-            if key in contaminated:
+            if key in expected:
                 continue
             net_flow = float(trade["net_cash_flow_usd"] or 0.0)
             correction = corrections.get(int(trade["id"]))
@@ -28916,21 +29032,44 @@ class Store:
                     "historical_cash_gate_through": historical_cash_gate_through,
                     "raw_trade_preserved": True,
                 }
+                expected[key] = evidence
+                continue
+            cash_by_arm[arm_id] = cash + net_flow
+        inserted = 0
+        resolution_at = iso()
+        for key, evidence in expected.items():
+            existing = existing_by_key.get(key)
+            if existing is None:
                 self.db.execute(
                     "INSERT OR IGNORE INTO chain_meme_trader_accounting_contaminations("
                     "definition_version,arm_id,shadow_cohort_id,source_buy_trade_id,"
                     "reason,evidence_json,recorded_at) VALUES(?,?,?,?,?,?,?)",
                     (
-                        version, arm_id, int(trade["shadow_cohort_id"]),
-                        int(trade["id"]),
+                        version, key[0], key[1], int(evidence["source_buy_trade_id"]),
                         "historical_buy_depended_on_invalid_market_fill_cash",
-                        self._json(evidence), iso(),
+                        self._json(evidence), resolution_at,
                     ),
                 )
                 inserted += int(self.db.execute("SELECT changes()").fetchone()[0])
-                contaminated.add(key)
+            elif str(existing["resolution_status"]) == "RESOLVED":
+                inserted += self._append_chain_meme_trader_accounting_contamination_resolution(
+                    row=existing, resolution_status="ACTIVE",
+                    reason="historical_cash_replay_again_requires_exclusion",
+                    evidence=evidence, recorded_at=resolution_at,
+                )
+        for key, existing in existing_by_key.items():
+            if key in expected or str(existing["resolution_status"]) == "RESOLVED":
                 continue
-            cash_by_arm[arm_id] = cash + net_flow
+            inserted += self._append_chain_meme_trader_accounting_contamination_resolution(
+                row=existing, resolution_status="RESOLVED",
+                reason="legacy_capacity_correction_removed_descendant_is_valid",
+                evidence={
+                    "historical_cash_gate_through": historical_cash_gate_through,
+                    "effective_correction_replay": True,
+                    "raw_contamination_preserved": True,
+                },
+                recorded_at=resolution_at,
+            )
         return inserted
 
     def evaluate_chain_meme_trader_market_marks(
@@ -29195,15 +29334,6 @@ class Store:
                         high = max(
                             float(position["highest_signal_price_usd"] or 0.0), mark_price,
                         )
-                        self.db.execute(
-                            "UPDATE chain_meme_trader_positions SET highest_signal_price_usd=?,"
-                            "last_evaluated_at=? WHERE definition_version=? AND arm_id=? "
-                            "AND shadow_cohort_id=? AND status='open'",
-                            (
-                                high, iso(current), version, arm_id,
-                                int(position["shadow_cohort_id"]),
-                            ),
-                        )
                         sell_factor = 1.0 - int(definition["slippage_bps"]) / 10_000.0
                         initial_amount = max(
                             1, int(position["initial_amount_raw"] or position["amount_raw"] or 1),
@@ -29222,14 +29352,6 @@ class Store:
                             ) / stake - 1.0
                             if entry_price > 0 else None
                         )
-                        high_economic_return = (
-                            (
-                                realized_proceeds
-                                + stake * remaining_fraction
-                                * high * sell_factor / entry_price
-                            ) / stake - 1.0
-                            if entry_price > 0 else None
-                        )
                         current_economic_value = (
                             realized_proceeds
                             + stake * remaining_fraction
@@ -29237,10 +29359,28 @@ class Store:
                             if entry_price > 0 else None
                         )
                         high_economic_value = (
-                            realized_proceeds
-                            + stake * remaining_fraction
-                            * high * sell_factor / entry_price
-                            if entry_price > 0 else None
+                            max(
+                                float(
+                                    position["highest_economic_value_usd"]
+                                    or current_economic_value or 0.0
+                                ),
+                                float(current_economic_value or 0.0),
+                            )
+                            if current_economic_value is not None else None
+                        )
+                        high_economic_return = (
+                            high_economic_value / stake - 1.0
+                            if high_economic_value is not None else None
+                        )
+                        self.db.execute(
+                            "UPDATE chain_meme_trader_positions SET "
+                            "highest_signal_price_usd=?,highest_economic_value_usd=?,"
+                            "last_evaluated_at=? WHERE definition_version=? AND arm_id=? "
+                            "AND shadow_cohort_id=? AND status='open'",
+                            (
+                                high, high_economic_value, iso(current), version, arm_id,
+                                int(position["shadow_cohort_id"]),
+                            ),
                         )
                         drawdown = (
                             current_economic_value / high_economic_value - 1.0
@@ -29813,12 +29953,9 @@ class Store:
                 + float(row["realized_adjustment_usd"] or 0.0)
             )
         contaminations_by_arm: dict[str, set[int]] = {}
-        for row in self.db.execute(
-            "SELECT arm_id,shadow_cohort_id FROM "
-            "chain_meme_trader_accounting_contaminations "
-            "WHERE definition_version=?",
-            (version,),
-        ).fetchall():
+        for row in self._chain_meme_trader_accounting_contaminations_from_connection(
+            self.db, version,
+        ):
             contaminations_by_arm.setdefault(str(row["arm_id"]), set()).add(
                 int(row["shadow_cohort_id"])
             )
@@ -29977,11 +30114,6 @@ class Store:
                         float(position["stake_usd"]) * remaining_fraction
                         * float(mark["price_usd"]) / entry_price * slippage_factor,
                     )
-                    capacity = self._chain_meme_trader_market_capacity_usd(
-                        liquidity, int(definition["slippage_bps"]),
-                    )
-                    if capacity is not None and recovery > capacity:
-                        continue
                 indicative_value += recovery
                 indicative_unrealized += recovery - remaining_cost
                 indicative_priced += 1
@@ -30186,20 +30318,14 @@ class Store:
                 + float(row["realized_adjustment_usd"] or 0.0)
             )
         contamination_rows = (
-            connection.execute(
-                "SELECT * FROM chain_meme_trader_accounting_contaminations "
-                "WHERE definition_version=? ORDER BY source_buy_trade_id",
-                (version,),
-            ).fetchall()
-            if "chain_meme_trader_accounting_contaminations" in tables else []
+            cls._chain_meme_trader_accounting_contaminations_from_connection(
+                connection, version,
+            )
         )
-        curve_effective_after = max(
-            (
-                str(row["recorded_at"])
-                for row in [*correction_rows, *contamination_rows]
-                if row["recorded_at"]
-            ),
-            default=None,
+        curve_effective_after = (
+            cls._chain_meme_trader_accounting_effective_after_from_connection(
+                connection, version,
+            )
         )
         contaminations_by_position = {
             (str(row["arm_id"]), int(row["shadow_cohort_id"])): row
@@ -30360,6 +30486,10 @@ class Store:
                     )
                     if position["effective_status"] == "unresolved":
                         position["closed_at"] = None
+                    else:
+                        position["closed_at"] = correction.get(
+                            "replacement_observed_at"
+                        ) or row["closed_at"]
                     position["accounting_status"] = "MARKET_FILL_CAPACITY_CORRECTED"
                     position["market_fill_correction"] = dict(correction)
                 contamination = arm_contaminations.get(
@@ -30469,7 +30599,6 @@ class Store:
                 indicative_value = None
                 indicative_pnl = None
                 indicative_source = None
-                market_capacity_insufficient = False
                 dust_pool_full_loss = False
                 indicative_mark_age = (
                     (
@@ -30564,19 +30693,8 @@ class Store:
                         indicative_source = "dex_pool_below_1_usd_full_loss"
                         dust_pool_full_loss = True
                     else:
-                        market_capacity = cls._chain_meme_trader_market_capacity_usd(
-                            mark_liquidity, int(definition["slippage_bps"]),
-                        )
-                        if (
-                            market_capacity is not None
-                            and indicative_value > market_capacity
-                        ):
-                            indicative_value = None
-                            market_capacity_insufficient = True
-                            fresh_visible_market_mark = False
-                        else:
-                            indicative_pnl = indicative_value - remaining_cost
-                            indicative_source = "dex_price_mark_4pct_haircut"
+                        indicative_pnl = indicative_value - remaining_cost
+                        indicative_source = "dex_price_mark_4pct_haircut"
                 elif (
                     not market_only_valuation
                     and
@@ -30603,8 +30721,8 @@ class Store:
                     )
                 holding_seconds = (
                     (
-                        parse_time(row["closed_at"])
-                        if row["closed_at"] else summary_at
+                        parse_time(position["closed_at"])
+                        if position.get("closed_at") else summary_at
                     ) - parse_time(row["opened_at"])
                 ).total_seconds()
                 position.update({
@@ -30620,8 +30738,6 @@ class Store:
                     "indicative_sellability": (
                         "DUST_POOL_WRITEOFF"
                         if dust_pool_full_loss
-                        else "INSUFFICIENT_POOL_CAPACITY"
-                        if market_capacity_insufficient
                         else "MARK_SELLABLE" if fresh_visible_market_mark
                         else "PAIR_MISSING"
                         if indicative_mark_status == "MISSING"

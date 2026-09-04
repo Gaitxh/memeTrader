@@ -66,6 +66,22 @@ from memetrader.strategy import (
 )
 
 
+def test_token_identity_is_case_insensitive_only_for_evm_chains():
+    bsc_upper = TokenCandidate("BSC", "0xAbCd", "BSC", "BSC")
+    bsc_lower = TokenSnapshot(
+        "bsc", "0xabcd", 1.0, 10.0, 100.0, 5.0, 1, 0,
+    )
+    robinhood = TokenCandidate("Robinhood", "0xDeF0", "R", "R")
+    solana_upper = TokenCandidate("solana", "AbCd", "SOL", "SOL")
+    solana_lower = TokenCandidate("solana", "abcd", "SOL", "SOL")
+
+    assert bsc_upper.token_id == bsc_lower.token_id == "bsc:0xabcd"
+    assert robinhood.token_id == "robinhood:0xdef0"
+    assert solana_upper.token_id == "solana:AbCd"
+    assert solana_lower.token_id == "solana:abcd"
+    assert solana_upper.token_id != solana_lower.token_id
+
+
 def test_source_poll_exposure_summary_includes_zero_yield_and_errors_without_raw_queries(tmp_path: Path):
     store = Store(tmp_path / "poll-exposure.sqlite3", initial_cash_usd=1000)
     completed = store.start_source_poll_attempt(
@@ -8117,7 +8133,7 @@ def test_chain_meme_market_mark_requires_post_open_and_fresh_structural_evidence
     store.close()
 
 
-def test_chain_meme_market_exit_rejects_screen_value_above_pool_capacity(
+def test_chain_meme_market_exit_sells_when_same_pool_visible_above_reported_liquidity(
     tmp_path: Path,
 ):
     store = Store(tmp_path / "market-pool-capacity.sqlite3", initial_cash_usd=1000)
@@ -8149,19 +8165,19 @@ def test_chain_meme_market_exit_rejects_screen_value_above_pool_capacity(
         created = store.evaluate_chain_meme_trader_market_marks(
             definition_version=version, now=observed_at,
         )
-    assert created == 0
+    assert created == 1
     position = store.db.execute(
         "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
         "AND arm_id=? AND shadow_cohort_id=?",
         (version, policy["arm_id"], cohort_id),
     ).fetchone()
-    assert position["status"] == "open"
-    assert position["pending_mark_id"] is not None
+    assert position["status"] == "closed"
+    assert position["pending_mark_id"] is None
     assert store.db.execute(
         "SELECT COUNT(*) FROM chain_meme_trader_trades WHERE definition_version=? "
         "AND arm_id=? AND shadow_cohort_id=? AND side='SELL'",
         (version, policy["arm_id"], cohort_id),
-    ).fetchone()[0] == 0
+    ).fetchone()[0] == 1
 
     account_at = trigger_at + timedelta(seconds=1)
     store.record_chain_meme_trader_account_snapshots(
@@ -8171,8 +8187,9 @@ def test_chain_meme_market_exit_rejects_screen_value_above_pool_capacity(
         "SELECT * FROM chain_meme_trader_account_snapshots WHERE definition_version=? "
         "AND arm_id=? ORDER BY id DESC LIMIT 1", (version, policy["arm_id"]),
     ).fetchone()
-    assert account["indicative_equity_usd"] is None
-    assert account["valuation_status"] == "partial_market_mark_unknown"
+    expected_gross = 20.0 * 2.0 / 1.04 * 0.96
+    assert account["indicative_equity_usd"] == pytest.approx(980.0 + expected_gross)
+    assert account["indicative_total_pnl_usd"] == pytest.approx(expected_gross - 20.0)
     summary = Store.chain_meme_trader_summary_from_connection(store.db)
     strategy = next(
         item for item in summary["strategies"] if item["arm_id"] == policy["arm_id"]
@@ -8181,36 +8198,12 @@ def test_chain_meme_market_exit_rejects_screen_value_above_pool_capacity(
         item for item in strategy["positions"]
         if item["shadow_cohort_id"] == cohort_id
     )
-    assert detail["indicative_value_usd"] is None
-    assert detail["indicative_sellability"] == "INSUFFICIENT_POOL_CAPACITY"
-
-    terminal_at = trigger_at + timedelta(seconds=62)
-    store.upsert_chain_meme_trader_market_mark(
-        token,
-        TokenSnapshot(
-            "solana", token.address, 2.0, 10.0, 100_000, 0.0, 0, 0,
-            observed_at=terminal_at, ingested_at=terminal_at,
-            provider="dexscreener", raw={"pair": {"pairAddress": "pair-A"}},
-        ),
-        recorded_at=terminal_at,
-    )
-    assert store.evaluate_chain_meme_trader_market_marks(
-        definition_version=version, now=terminal_at,
-    ) == 1
-    terminal = store.db.execute(
-        "SELECT status,close_reason FROM chain_meme_trader_positions "
-        "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
-        (version, policy["arm_id"], cohort_id),
-    ).fetchone()
-    assert terminal["status"] == "written_off"
-    assert terminal["close_reason"] == (
-        "market_capacity_insufficient_over_60_seconds_writeoff"
-    )
+    assert detail["status"] == "closed"
     store.close()
 
 
-def test_chain_meme_market_capacity_recovers_before_writeoff(tmp_path: Path):
-    store = Store(tmp_path / "market-capacity-recovery.sqlite3", initial_cash_usd=1000)
+def test_chain_meme_market_exit_post_confirmation_below_one_is_writeoff(tmp_path: Path):
+    store = Store(tmp_path / "market-post-dust-writeoff.sqlite3", initial_cash_usd=1000)
     registration = store.register_chain_meme_trader_v20()
     store.activate_chain_meme_trader_v20()
     version = Store.CHAIN_MEME_TRADER_V20_VERSION
@@ -8227,8 +8220,7 @@ def test_chain_meme_market_capacity_recovers_before_writeoff(tmp_path: Path):
     )
     for price, liquidity, at in (
         (2.0, 10.0, trigger_at),
-        (2.0, 10.0, trigger_at + timedelta(seconds=1)),
-        (1.0, 1_000.0, trigger_at + timedelta(seconds=2)),
+        (2.0, 0.99, trigger_at + timedelta(seconds=1)),
     ):
         store.upsert_chain_meme_trader_market_mark(
             token,
@@ -8248,7 +8240,13 @@ def test_chain_meme_market_capacity_recovers_before_writeoff(tmp_path: Path):
         "AND arm_id=? AND shadow_cohort_id=?",
         (version, policy["arm_id"], cohort_id),
     ).fetchone()
-    assert position["status"] == "closed"
+    assert position["status"] == "written_off"
+    writeoff = store.db.execute(
+        "SELECT close_reason FROM chain_meme_trader_positions WHERE "
+        "definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+        (version, policy["arm_id"], cohort_id),
+    ).fetchone()
+    assert writeoff["close_reason"] == "dex_pool_liquidity_below_1_usd_writeoff"
     store.close()
 
 
@@ -8520,6 +8518,256 @@ def test_chain_meme_historical_impossible_fill_gets_append_only_writeoff_correct
         abs(float(point.get("cash_usd") or 0.0)) < 10_000.0
         for point in corrected_strategy["curve"]
     )
+    store.close()
+
+
+def test_chain_meme_non_dust_capacity_correction_is_revisioned_and_uncontaminated(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "market-capacity-resolution.sqlite3", initial_cash_usd=1000)
+    registration = store.register_chain_meme_trader_v20()
+    store.activate_chain_meme_trader_v20()
+    version = Store.CHAIN_MEME_TRADER_V20_VERSION
+    policy = json.loads(registration["definition_json"])["policies"][0]
+    source_at = utcnow() - timedelta(minutes=3)
+    token, cohort_id = _seed_chain_market_position(
+        store, version=version, policy=policy,
+        opened_at=source_at - timedelta(seconds=1),
+    )
+    position = store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND arm_id=? AND shadow_cohort_id=?",
+        (version, policy["arm_id"], cohort_id),
+    ).fetchone()
+    sold_amount = int(position["amount_raw"])
+    gross = 20.0 * 2.0 / 1.04 * 0.96
+    evidence = {"post_confirmation": {
+        "sample_sequence": 2, "pair_address": "pair-A", "price_usd": 2.0,
+        "liquidity_usd": 10.0, "observed_at": iso(source_at),
+        "recorded_at": iso(source_at),
+    }}
+    with store.db:
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_marks("
+            "definition_version,arm_id,shadow_cohort_id,recorded_at,action,reason,"
+            "sell_amount_raw,market_pre_sequence,market_pair_address,"
+            "market_post_sequence,market_post_pair_address,market_post_price_usd,"
+            "market_post_recorded_at,trigger_evidence_json,status) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'filled')",
+            (
+                version, policy["arm_id"], cohort_id, iso(source_at),
+                "INACTIVITY_EXIT", "fixture_legacy_capacity", str(sold_amount),
+                1, "pair-A", 2, "pair-A", 2.0, iso(source_at), json.dumps(evidence),
+            ),
+        )
+        mark_id = int(store.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_fills("
+            "definition_version,intent_id,result_id,attempt_id,execution_mode,adapter,"
+            "arm_id,shadow_cohort_id,token_id,side,input_amount_raw,output_amount_raw,"
+            "gross_usd,filled_at) VALUES(?,?,?,?,'paper',"
+            "'dexscreener-market-paper/v1',?,?,?,'SELL',?,?,?,?)",
+            (
+                version, -mark_id, -mark_id, -mark_id, policy["arm_id"], cohort_id,
+                token.token_id, str(sold_amount), str(round(gross * 1_000_000)),
+                gross, iso(source_at),
+            ),
+        )
+        fill_id = int(store.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+        raw_closed_at = source_at + timedelta(seconds=30)
+        store.db.execute(
+            "UPDATE chain_meme_trader_positions SET amount_raw='0',"
+            "remaining_quantity_tokens=0,realized_proceeds_usd=?,allocated_cost_usd=20,"
+            "status='closed',realized_pnl_usd=?,closed_at=?,last_fill_id=? WHERE "
+            "definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+            (
+                gross, gross - 20.0, iso(raw_closed_at), fill_id,
+                version, policy["arm_id"], cohort_id,
+            ),
+        )
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_trades("
+            "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+            "net_cash_flow_usd,realized_pnl_usd,reason,created_at,execution_fill_id) "
+            "VALUES(?,?,?,?, 'SELL',?,?,?,?,?,?)",
+            (
+                version, policy["arm_id"], cohort_id, token.token_id, gross, gross,
+                gross - 20.0, "fixture_legacy_capacity", iso(raw_closed_at), fill_id,
+            ),
+        )
+        trade_id = int(store.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_market_fill_corrections("
+            "source_trade_id,definition_version,arm_id,shadow_cohort_id,token_id,"
+            "source_fill_id,source_mark_id,original_gross_usd,post_liquidity_usd,"
+            "max_market_gross_usd,replacement_outcome,replacement_gross_usd,"
+            "cash_adjustment_usd,realized_adjustment_usd,replacement_observed_at,"
+            "reason,evidence_json,recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                trade_id, version, policy["arm_id"], cohort_id, token.token_id,
+                fill_id, mark_id, gross, 10.0, 10.0, "WRITEOFF", 0.0,
+                -gross, -gross, iso(source_at + timedelta(seconds=61)),
+                "legacy_capacity_writeoff", "{}", iso(source_at + timedelta(seconds=90)),
+            ),
+        )
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_market_fill_correction_supersessions("
+            "source_trade_id,replacement_outcome,replacement_gross_usd,"
+            "cash_adjustment_usd,realized_adjustment_usd,replacement_observed_at,"
+            "reason,evidence_json,recorded_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (
+                trade_id, "UNRESOLVED", None, -gross, -(gross - 20.0), None,
+                "legacy_unresolved", "{}", iso(source_at + timedelta(seconds=91)),
+            ),
+        )
+        descendant_cohort_id = cohort_id + 1000
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_trades("
+            "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+            "net_cash_flow_usd,realized_pnl_usd,reason,created_at) "
+            "VALUES(?,?,?,?, 'BUY',1000,-1000,NULL,'fixture_descendant',?)",
+            (
+                version, policy["arm_id"], descendant_cohort_id, token.token_id,
+                iso(source_at + timedelta(seconds=100)),
+            ),
+        )
+        descendant_trade_id = int(
+            store.db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        )
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_accounting_contaminations("
+            "definition_version,arm_id,shadow_cohort_id,source_buy_trade_id,reason,"
+            "evidence_json,recorded_at) VALUES(?,?,?,?,?,?,?)",
+            (
+                version, policy["arm_id"], descendant_cohort_id,
+                descendant_trade_id, "legacy_capacity_descendant", "{}",
+                iso(source_at + timedelta(seconds=101)),
+            ),
+        )
+
+    assert store.record_chain_meme_trader_market_capacity_corrections(
+        definition_version=version, recorded_at=source_at + timedelta(seconds=120),
+    ) == 1
+    resolution = store.db.execute(
+        "SELECT * FROM chain_meme_trader_market_fill_correction_resolutions "
+        "WHERE source_trade_id=?", (trade_id,),
+    ).fetchone()
+    assert resolution["revision"] == 2
+    assert resolution["replacement_outcome"] == "SELL"
+    assert resolution["replacement_gross_usd"] == pytest.approx(gross)
+    assert resolution["cash_adjustment_usd"] == 0.0
+    assert resolution["realized_adjustment_usd"] == 0.0
+    assert resolution["replacement_observed_at"] == iso(source_at)
+    assert store.db.execute(
+        "SELECT replacement_outcome FROM chain_meme_trader_market_fill_corrections "
+        "WHERE source_trade_id=?", (trade_id,),
+    ).fetchone()[0] == "WRITEOFF"
+    assert store._chain_meme_trader_accounting_contaminations_from_connection(
+        store.db, version,
+    ) == []
+    contamination_resolution = store.db.execute(
+        "SELECT resolution_status FROM "
+        "chain_meme_trader_accounting_contamination_resolutions WHERE "
+        "definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+        (version, policy["arm_id"], descendant_cohort_id),
+    ).fetchone()
+    assert contamination_resolution["resolution_status"] == "RESOLVED"
+
+    summary = Store.chain_meme_trader_summary_from_connection(store.db)
+    strategy = next(
+        item for item in summary["strategies"] if item["arm_id"] == policy["arm_id"]
+    )
+    corrected_position = next(
+        item for item in strategy["positions"]
+        if item["shadow_cohort_id"] == cohort_id
+    )
+    assert corrected_position["status"] == "closed"
+    assert corrected_position["raw_closed_at"] == iso(raw_closed_at)
+    assert corrected_position["closed_at"] == iso(source_at)
+    assert corrected_position["realized_pnl_usd"] == pytest.approx(gross - 20.0)
+    descendant = next(
+        item for item in strategy["trades"] if item["id"] == descendant_trade_id
+    )
+    assert descendant["side"] == "BUY"
+    assert descendant["gross_usd"] == pytest.approx(1000.0)
+    assert store.record_chain_meme_trader_market_capacity_corrections(
+        definition_version=version,
+    ) == 0
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_market_fill_correction_resolutions "
+        "WHERE source_trade_id=?", (trade_id,),
+    ).fetchone()[0] == 1
+    store.close()
+
+
+def test_chain_meme_partial_exit_trailing_uses_actual_economic_high_water(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "market-partial-economic-high.sqlite3", initial_cash_usd=1000)
+    registration = store.register_chain_meme_trader_v20()
+    store.activate_chain_meme_trader_v20()
+    version = Store.CHAIN_MEME_TRADER_V20_VERSION
+    policy = next(
+        item for item in json.loads(registration["definition_json"])["policies"]
+        if item.get("exit_family") == "balanced_harvest"
+    )
+    first_at = utcnow() - timedelta(seconds=2)
+    token, cohort_id = _seed_chain_market_position(
+        store, version=version, policy=policy,
+        opened_at=first_at - timedelta(minutes=1),
+    )
+    position = store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND arm_id=? AND shadow_cohort_id=?",
+        (version, policy["arm_id"], cohort_id),
+    ).fetchone()
+    initial_amount = int(position["initial_amount_raw"])
+    remaining_amount = initial_amount // 2
+    actual_pre_fill_high = 20.0 * 3.0 / 1.04 * 0.96
+    with store.db:
+        store.db.execute(
+            "UPDATE chain_meme_trader_positions SET amount_raw=?,"
+            "remaining_quantity_tokens=paper_quantity_tokens/2,"
+            "realized_proceeds_usd=15,allocated_cost_usd=10,realized_pnl_usd=5,"
+            "highest_signal_price_usd=3,highest_economic_value_usd=? WHERE "
+            "definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+            (
+                str(remaining_amount), actual_pre_fill_high,
+                version, policy["arm_id"], cohort_id,
+            ),
+        )
+    for at in (first_at, first_at + timedelta(seconds=1)):
+        store.upsert_chain_meme_trader_market_mark(
+            token,
+            TokenSnapshot(
+                "solana", token.address, 2.0, 50_000.0, 100_000.0,
+                10_000.0, 20, 10, observed_at=at, ingested_at=at,
+                provider="dexscreener", raw={"pair": {"pairAddress": "pair-A"}},
+            ),
+            recorded_at=at,
+        )
+        settled = store.evaluate_chain_meme_trader_market_marks(
+            definition_version=version, now=at,
+        )
+    assert settled == 1
+    mark = store.db.execute(
+        "SELECT action,trigger_evidence_json FROM chain_meme_trader_marks WHERE "
+        "definition_version=? AND arm_id=? AND shadow_cohort_id=? ORDER BY id DESC LIMIT 1",
+        (version, policy["arm_id"], cohort_id),
+    ).fetchone()
+    assert mark["action"] == "TRAILING_EXIT"
+    pre_trigger = json.loads(mark["trigger_evidence_json"])["pre_trigger"]
+    assert pre_trigger["high_economic_return"] == pytest.approx(
+        actual_pre_fill_high / 20.0 - 1.0
+    )
+    assert pre_trigger["drawdown"] < -float(policy["trailing_drawdown"])
+    closed = store.db.execute(
+        "SELECT status,highest_economic_value_usd FROM chain_meme_trader_positions "
+        "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+        (version, policy["arm_id"], cohort_id),
+    ).fetchone()
+    assert closed["status"] == "closed"
+    assert closed["highest_economic_value_usd"] == pytest.approx(actual_pre_fill_high)
     store.close()
 
 
@@ -11965,7 +12213,7 @@ def test_dexscreener_rejects_concatenated_catalogue_metadata():
     ) == 0.0
 
 
-def test_dexscreener_batch_quote_preserves_caller_evm_address_casing():
+def test_dexscreener_batch_quote_canonicalizes_evm_address_casing():
     requested_address = "0xAbCdEf1234567890AbCdEf1234567890AbCdEf12"
 
     class Response:
@@ -11987,10 +12235,30 @@ def test_dexscreener_batch_quote_preserves_caller_evm_address_casing():
     result = asyncio.run(
         DexScreenerClient(Http()).batch_quote("bsc", [requested_address])
     )
-    token_id = f"bsc:{requested_address}"
+    token_id = f"bsc:{requested_address.lower()}"
     assert list(result) == [token_id]
-    assert result[token_id][0].address == requested_address
-    assert result[token_id][1].address == requested_address
+    assert result[token_id][0].address == requested_address.lower()
+    assert result[token_id][1].address == requested_address.lower()
+
+
+def test_dexscreener_batch_quote_keeps_solana_address_matching_case_sensitive():
+    class Response:
+        def json(self):
+            return [{
+                "chainId": "solana", "dexId": "raydium", "pairAddress": "pair",
+                "baseToken": {"address": "abcd", "name": "Case", "symbol": "CASE"},
+                "quoteToken": {"address": "quote"}, "priceUsd": "0.01",
+                "liquidity": {"usd": 50_000}, "volume": {"m5": 1_000},
+                "txns": {"m5": {"buys": 12, "sells": 3}},
+            }]
+
+    class Http:
+        async def get(self, url, **kwargs):
+            return Response()
+
+    assert asyncio.run(
+        DexScreenerClient(Http()).batch_quote("solana", ["AbCd"])
+    ) == {}
 
 
 def test_jupiter_quote_is_normalized_and_never_exposes_transaction():

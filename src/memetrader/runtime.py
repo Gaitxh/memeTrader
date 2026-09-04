@@ -50,7 +50,17 @@ from .collectors import (
     normalize_loopback_socks5_proxy_url,
     normalize_public_http_url,
 )
-from .models import CandidateDecision, Observation, ObservationRevisionHandoff, TokenCandidate, TokenSnapshot, iso, parse_time, utcnow
+from .models import (
+    CandidateDecision,
+    Observation,
+    ObservationRevisionHandoff,
+    TokenCandidate,
+    TokenSnapshot,
+    canonical_token_address,
+    iso,
+    parse_time,
+    utcnow,
+)
 from .store import Store
 from .strategy import (
     AgentRouter,
@@ -1673,7 +1683,14 @@ class Runtime:
         reasons = token_snapshot_temporal_rejections(
             token, snapshot, received_at, require_first_seen=False
         )
-        if token.token_id != expected_token_id:
+        expected_chain, separator, expected_address = str(expected_token_id).partition(":")
+        same_identity = (
+            bool(separator)
+            and token.chain.lower() == expected_chain.lower()
+            and canonical_token_address(token.chain, token.address)
+            == canonical_token_address(expected_chain, expected_address)
+        )
+        if not same_identity:
             reasons.append("quote_token_mismatch")
         if snapshot.price_usd is None or float(snapshot.price_usd) <= 0:
             reasons.append("quote_price_unavailable")
@@ -5618,13 +5635,20 @@ class Runtime:
             received_at = utcnow()
             outcomes = []
             for item in chunk:
-                result = quoted.get(str(item["token_id"]))
+                target_token_id = str(item["token_id"])
+                target_chain = str(item["chain"]).strip().lower()
+                target_address = str(item["address"])
+                effective_token_id = (
+                    f"{target_chain}:"
+                    f"{canonical_token_address(target_chain, target_address)}"
+                )
+                result = quoted.get(target_token_id) or quoted.get(effective_token_id)
                 if result is None:
                     outcomes.append({
                         "kind": "missing",
-                        "token_id": str(item["token_id"]),
-                        "chain": str(item["chain"]),
-                        "address": str(item["address"]),
+                        "token_id": target_token_id,
+                        "chain": target_chain,
+                        "address": target_address,
                     })
                     continue
                 token, snapshot = result
@@ -5641,23 +5665,26 @@ class Runtime:
                 ):
                     outcomes.append({
                         "kind": "missing",
-                        "token_id": str(item["token_id"]),
-                        "chain": str(item["chain"]),
-                        "address": str(item["address"]),
+                        "token_id": target_token_id,
+                        "chain": target_chain,
+                        "address": target_address,
                     })
                     continue
                 rejections = self._paper_quote_rejections(
-                    str(item["token_id"]), token, snapshot, received_at,
+                    target_token_id, token, snapshot, received_at,
                 )
                 if rejections:
                     outcomes.append({
                         "kind": "failure",
-                        "token_id": str(item["token_id"]),
+                        "token_id": target_token_id,
                         "failure_kind": "DATA_REJECTED:" + ",".join(rejections),
                     })
                     continue
                 outcomes.append({
                     "kind": "visible", "token": token, "snapshot": snapshot,
+                    "target_token_id": target_token_id,
+                    "target_chain": target_chain,
+                    "target_address": target_address,
                 })
             return self.store.apply_chain_meme_trader_market_mark_batch(
                 outcomes, recorded_at=received_at,
