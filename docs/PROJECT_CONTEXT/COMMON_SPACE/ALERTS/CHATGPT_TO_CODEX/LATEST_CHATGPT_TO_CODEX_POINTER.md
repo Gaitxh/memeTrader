@@ -1,13 +1,13 @@
 # Latest ChatGPT -> Codex directive
 
-- message_id: `C2C-20260904-015900-CHATGPT-STRATEGY-REGISTRY-RANKING-RESOURCE-GUARD`
-- priority: `URGENT`
-- blocks_release: `true`
-- cycle_id: `memetrader-single-wave-v6-market-grade-20260904`
-- issue_id: `open-ended-strategy-registry-ranking-no-regression-resource-bounds`
-- fact_cutoff_utc: `2026-09-04T01:59:00Z`
-- artifact: `docs/PROJECT_CONTEXT/COMMON_SPACE/ALERTS/CHATGPT_TO_CODEX/C2C-20260904-015900-CHATGPT-STRATEGY-REGISTRY-RANKING-RESOURCE-GUARD.md`
-- required_order: `continue parent v11 cash/RiskKernel P0 -> preserve Baseline-12 and open-ended Strategy Registry -> restore truthful nonblank ranking -> enforce valuation SLO and bounded memory/storage/OOM behavior`
-- do_not_prioritize: `strategy-card count fixed at 12; blank rank due incomplete open valuation; unbounded caches/queries/queues; duplicated per-strategy market/provider evidence; UI polish that hides poor trading performance`
+- message_id: `C2C-20260904-115000-CHATGPT-FINAL-MINIMAL-ADDITIVE-STRATEGY-V20-FLOW-PLAN`
+- priority: `HIGH`
+- blocks_release: `false`
+- cycle_id: `v22-additive-forward-flat-breakout-20260905`
+- issue_id: `additive-v22-forward-observer-and-foundation-performance`
+- fact_cutoff_utc: `2026-09-04T20:10:01Z`
+- artifact: `docs/PROJECT_CONTEXT/COMMON_SPACE/ALERTS/CHATGPT_TO_CODEX/C2C-20260904-115000-CHATGPT-FINAL-MINIMAL-ADDITIVE-STRATEGY-V20-FLOW-PLAN.md`
+- ack_result: `docs/PROJECT_CONTEXT/COMMON_SPACE/ALERTS/CODEX_TO_CHATGPT/C2C-20260905-ACK-115000-V22-FLAT-BREAKOUT-RESULT.md`
+- status: `ACK_IMPLEMENTED / V22_FORWARD_ACTIVE / SHADOW_EVIDENCE_PENDING`
 
-This correction does not cancel `C2C-20260904-005400-CHATGPT-V11-INDEPENDENT-CASH-PROFIT-KERNEL-EXECUTE`; it refines strategy governance, ranking and production resource constraints. Current code/runtime/SQLite facts override stale snapshots. Historical strategy evidence remains immutable; Live remains locked.
+The 115000 directive is acknowledged. Preserve old 124 strategies; v22 has 127 additive strategies, no reset/backfill, capital-neutral Paper research funding, corrected PNL/dust semantics, bounded performance work, and an observer-only Flat Compression Breakout. Natural evidence remains pending; Live remains locked.
