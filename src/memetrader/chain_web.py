@@ -25,6 +25,10 @@ from .store import Store
 class ChainWebData:
     """Data boundary for the independent ChainMemeTrader console."""
 
+    LIVE_SPARKLINE_POINTS = 12
+    LIVE_DETAIL_CURVE_POINTS = 300
+    STATE_CACHE_MAX_ENTRIES = 16
+
     def __init__(self, config_path: str | Path):
         config, root = load_config(config_path)
         self.config = config
@@ -318,6 +322,10 @@ class ChainWebData:
         now = time.monotonic()
         cache_key = (compact, str(arm_id or "").strip() or None)
         with self._cache_lock:
+            for key, (created_at, _) in list(self._state_cache.items()):
+                key_ttl = 1.0 if key[0] else 10.0
+                if now - created_at > key_ttl:
+                    del self._state_cache[key]
             cached = self._state_cache.get(cache_key)
             if cached is not None and now - cached[0] <= ttl:
                 return cached[1]
@@ -327,6 +335,12 @@ class ChainWebData:
         )
         with self._cache_lock:
             self._state_cache[cache_key] = (time.monotonic(), payload)
+            while len(self._state_cache) > self.STATE_CACHE_MAX_ENTRIES:
+                oldest_key = min(
+                    self._state_cache,
+                    key=lambda key: self._state_cache[key][0],
+                )
+                del self._state_cache[oldest_key]
         return payload
 
     def _compact_state_uncached(self, *, arm_id: str | None = None) -> dict[str, Any]:
@@ -369,7 +383,7 @@ class ChainWebData:
                 ),
                 "heartbeat_at": heartbeat_at,
                 "heartbeat_age_seconds": heartbeat_age,
-                "refresh_seconds": 2,
+                "refresh_seconds": 5,
                 "chain": "Solana / BSC / Robinhood",
                 "paper_only": locked_by_config,
                 "live_locked": locked_by_config,
@@ -429,7 +443,13 @@ class ChainWebData:
                 "SELECT recorded_at,arm_id,indicative_equity_usd,"
                 "executable_equity_usd FROM chain_meme_trader_account_snapshots "
                 "WHERE definition_version=? ORDER BY id DESC LIMIT ?",
-                (active_version, max(120, len(policies) * 120)),
+                (
+                    active_version,
+                    max(
+                        self.LIVE_SPARKLINE_POINTS,
+                        len(policies) * self.LIVE_SPARKLINE_POINTS,
+                    ),
+                ),
             ).fetchall()
             curves_by_arm: dict[str, list[dict[str, Any]]] = {}
             for row in reversed(curve_rows):
@@ -439,8 +459,24 @@ class ChainWebData:
                     "indicative_equity_usd": row["indicative_equity_usd"],
                     "executable_equity_usd": row["executable_equity_usd"],
                 })
-                if len(curve) > 120:
-                    del curve[:-120]
+                if len(curve) > self.LIVE_SPARKLINE_POINTS:
+                    del curve[:-self.LIVE_SPARKLINE_POINTS]
+            if arm_id:
+                focused_curve_rows = connection.execute(
+                    "SELECT recorded_at,arm_id,indicative_equity_usd,"
+                    "executable_equity_usd FROM chain_meme_trader_account_snapshots "
+                    "WHERE definition_version=? AND arm_id=? "
+                    "ORDER BY id DESC LIMIT ?",
+                    (active_version, arm_id, self.LIVE_DETAIL_CURVE_POINTS),
+                ).fetchall()
+                curves_by_arm[arm_id] = [
+                    {
+                        "recorded_at": row["recorded_at"],
+                        "indicative_equity_usd": row["indicative_equity_usd"],
+                        "executable_equity_usd": row["executable_equity_usd"],
+                    }
+                    for row in reversed(focused_curve_rows)
+                ]
             latest_snapshot_at = max(
                 (
                     str(item.get("recorded_at") or "")
@@ -1553,7 +1589,7 @@ class ChainWebData:
                 "latest_account_snapshot_at": (
                     latest_snapshot["recorded_at"] if latest_snapshot else None
                 ),
-                "refresh_seconds": 2,
+                "refresh_seconds": 5,
                 "chain": "Solana / BSC / Robinhood",
                 "paper_only": not self.live_enabled,
                 "live_locked": not self.live_enabled,

@@ -720,7 +720,7 @@ function renderLive(data,focusedArm=null){
   });
   state={...state,...data,system:{...(state?.system||{}),...(data.system||{})},discovery:{...(state?.discovery||{}),...(data.discovery||{})},trading:{...(state?.trading||{}),...(data.trading||{})},strategies:mergedStrategies}; const strategies=mergedStrategies;
   if(universe&&Number(universe.families?.length||0)!==strategies.length)refreshUniverse();
-  renderRuntime(state);renderDiscoveryBeacon(state);renderSummary(state,strategies);renderLeaders(state);renderUniverse();renderOverviewStrategies();renderRisk(state.recent_risk||[]);renderActivity(state.recent_activity||[],strategies);renderDiscoveries(state);renderHealth(state.source_health||[],state);populateWalletStrategies();renderWallets();if(lastPage==='wallets')refreshWallets();if(activeTokenId&&Date.now()-tokenDetailRefreshedAt>=4000)openToken(activeTokenId,false);
+  renderRuntime(state);renderDiscoveryBeacon(state);renderSummary(state,strategies);renderLeaders(state);renderUniverse();renderOverviewStrategies();renderRisk(state.recent_risk||[]);renderActivity(state.recent_activity||[],strategies);renderDiscoveries(state);renderHealth(state.source_health||[],state);populateWalletStrategies();renderWallets();if(lastPage==='wallets')refreshWallets();if(activeTokenId&&Date.now()-tokenDetailRefreshedAt>=10000)openToken(activeTokenId,false);
 }
 
 async function refreshUniverse(){
@@ -737,7 +737,7 @@ async function refreshLive(){
   clearTimeout(liveTimer);
   try{const focusedArm=selectedStrategyArm(),query=focusedArm?`?arm_id=${encodeURIComponent(focusedArm)}`:'';const response=await fetch(`/api/live${query}`,{cache:'no-store'});if(!response.ok)throw new Error(`HTTP ${response.status}`);renderLive(await response.json(),focusedArm);}
   catch(error){const el=$('#runtime');el.className='runtime stale';el.innerHTML=`<span class="pulse"></span><strong>实时读取失败</strong><small>${esc(error.message)}</small>`;}
-  liveTimer=setTimeout(refreshLive,document.visibilityState==='visible'?2000:15000);
+  liveTimer=setTimeout(refreshLive,document.visibilityState==='visible'?5000:30000);
 }
 
 window.addEventListener('hashchange',()=>{route();if(lastPage==='wallets')refreshWallets(true);});document.addEventListener('visibilitychange',()=>{clearTimeout(liveTimer);if(!state)refreshFull();refreshLive();});

@@ -111,6 +111,38 @@ def test_direct_private_feed_url_is_rejected_before_request():
     assert calls == 0
 
 
+def test_http_client_ttl_cache_prunes_expired_entries_and_bounds_size(monkeypatch):
+    clock = [100.0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"url": str(request.url)}, request=request)
+
+    monkeypatch.setattr("memetrader.collectors.time.monotonic", lambda: clock[0])
+
+    async def scenario():
+        http = HttpClient(
+            transport=httpx.MockTransport(handler), min_host_interval=0,
+        )
+        try:
+            for index in range(HttpClient.MAX_CACHE_ENTRIES):
+                await http.get(
+                    "https://public.example/cache",
+                    params={"index": index}, ttl=1,
+                )
+            assert len(http._cache) == HttpClient.MAX_CACHE_ENTRIES
+            clock[0] = 102.0
+            await http.get(
+                "https://public.example/cache",
+                params={"index": "fresh"}, ttl=1,
+            )
+            assert len(http._cache) == 1
+            assert next(iter(http._cache.values()))[0] == pytest.approx(103.0)
+        finally:
+            await http.close()
+
+    run(scenario())
+
+
 def test_runtime_config_rejects_private_static_feed_and_invalid_limits(tmp_path: Path):
     config = initial_config()
     config["sources"]["rss"] = [{"name": "private", "url": "http://10.0.0.2/feed"}]

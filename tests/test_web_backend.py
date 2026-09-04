@@ -107,10 +107,11 @@ def test_chain_meme_trader_api_and_static_page_preserve_forward_contract(tmp_pat
     store.record_chain_meme_trader_account_snapshots(
         definition_version=Store.CHAIN_MEME_TRADER_V19_VERSION,
     )
-    store.record_chain_meme_trader_account_snapshots(
-        now=observed_at + timedelta(seconds=61),
-        definition_version=Store.CHAIN_MEME_TRADER_V19_VERSION,
-    )
+    for offset in range(1, 15):
+        store.record_chain_meme_trader_account_snapshots(
+            now=observed_at + timedelta(seconds=offset * 61),
+            definition_version=Store.CHAIN_MEME_TRADER_V19_VERSION,
+        )
     store.heartbeat("chain-meme-trader", item=True)
     store.close()
 
@@ -170,7 +171,7 @@ def test_chain_meme_trader_api_and_static_page_preserve_forward_contract(tmp_pat
     assert "fetch(`/api/live${query}`" in app
     assert "fetch('/api/strategy-universe'" in app
     assert "function renderUniverse()" in app
-    assert "document.visibilityState==='visible'?2000:15000" in app
+    assert "document.visibilityState==='visible'?5000:30000" in app
     assert "fullTimer=setTimeout(refreshFull" not in app
     assert "池与持仓监控" in app
     assert "持仓约 2 秒" in index
@@ -204,7 +205,9 @@ def test_chain_meme_trader_api_and_static_page_preserve_forward_contract(tmp_pat
         assert "strategy_registry" not in live
         assert "positions" not in live["strategies"][0]
         assert "open_positions" not in live
-        assert len(live["strategies"][0]["curve"]) == 2
+        assert len(live["strategies"][0]["curve"]) == (
+            ChainWebData.LIVE_SPARKLINE_POINTS
+        )
         assert live["strategies"][0]["account"]["metric_sample_status"] == "no_closed_results"
         assert live["strategies"][0]["account"]["expectancy_usd"] is None
         assert len(live_response.content) < len(response.content)
@@ -214,6 +217,12 @@ def test_chain_meme_trader_api_and_static_page_preserve_forward_contract(tmp_pat
         ).json()
         assert focused_live["requested_arm_id"] == live["strategies"][0]["arm_id"]
         assert focused_live["open_positions"] == []
+        focused_strategy = next(
+            item for item in focused_live["strategies"]
+            if item["arm_id"] == live["strategies"][0]["arm_id"]
+        )
+        assert len(focused_strategy["curve"]) == 15
+        assert len(focused_strategy["curve"]) > len(live["strategies"][0]["curve"])
         universe_response = httpx.get(f"http://127.0.0.1:{port}/api/strategy-universe")
         assert universe_response.status_code == 200
         assert len(universe_response.json()["families"]) == 124
@@ -230,6 +239,29 @@ def test_chain_meme_trader_api_and_static_page_preserve_forward_contract(tmp_pat
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_chain_web_state_cache_prunes_expired_entries_and_has_a_fixed_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    config_path, _ = _config(tmp_path)
+    Store(tmp_path / "db.sqlite3", initial_cash_usd=1000).close()
+    web = ChainWebData(config_path)
+    monkeypatch.setattr(
+        web,
+        "_compact_state_uncached",
+        lambda *, arm_id=None: {"arm_id": arm_id},
+    )
+
+    for index in range(web.STATE_CACHE_MAX_ENTRIES + 5):
+        web.state(compact=True, arm_id=f"arm-{index}")
+    assert len(web._state_cache) == web.STATE_CACHE_MAX_ENTRIES
+
+    with web._cache_lock:
+        for key, (_, payload) in list(web._state_cache.items()):
+            web._state_cache[key] = (0.0, payload)
+    web.state(compact=True, arm_id="fresh-arm")
+    assert list(web._state_cache) == [(True, "fresh-arm")]
 
 
 def test_strategy_universe_refreshes_for_additive_strategy_versions(tmp_path: Path):

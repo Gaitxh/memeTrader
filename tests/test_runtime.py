@@ -4895,6 +4895,38 @@ def test_periodic_loops_do_not_block_each_other(tmp_path):
     asyncio.run(scenario())
 
 
+def test_chain_meme_market_lanes_keep_active_fast_and_carry_slow():
+    async def scenario():
+        runtime = Runtime.__new__(Runtime)
+        runtime.chain_meme_trader_only = True
+        runtime.config = {"bridge": {"enabled": False}, "sources": {}}
+        runtime._stop = asyncio.Event()
+        intervals = []
+
+        async def noop():
+            return None
+
+        async def periodic(name, interval, action):
+            intervals.append((name, interval))
+            if len(intervals) == 4:
+                runtime._stop.set()
+
+        runtime._periodic = periodic
+        runtime.pump_loop = noop
+        runtime.chain_meme_v22_vault_shadow_loop = noop
+        await runtime.run_forever()
+
+        assert runtime.CHAIN_MEME_ACCOUNT_SNAPSHOT_INTERVAL_SECONDS == 10.0
+        assert intervals[1:4] == [
+            ("chain_meme_trader", 1),
+            ("chain_meme_market_marks", 1.0),
+            ("chain_meme_carried_market_marks", 15.0),
+        ]
+        assert intervals[2][1] < intervals[3][1]
+
+    asyncio.run(scenario())
+
+
 def test_disabled_rss_source_is_not_reported_stale(tmp_path):
     async def scenario():
         config = initial_config()

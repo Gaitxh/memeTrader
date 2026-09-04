@@ -1164,6 +1164,9 @@ class Runtime:
     MAX_DIRECT_HIGH_IMPACT_CONTEXT_PER_CYCLE = 4
     MAX_DIRECT_BROWSER_EXACT_CONTEXT_PER_CYCLE = 4
     MAX_DIRECT_ONCHAIN_CONTEXT_PER_CYCLE = 1
+    CHAIN_MEME_ACCOUNT_SNAPSHOT_INTERVAL_SECONDS = 10.0
+    CHAIN_MEME_ACTIVE_MARK_INTERVAL_SECONDS = 1.0
+    CHAIN_MEME_CARRIED_MARK_INTERVAL_SECONDS = 15.0
     DIRECT_CONTEXT_LANE_CURSOR_KEY = "token_context:hydration_fair_lane_cursor:v2"
     DEFERRED_CONTEXT_RETRY_ACTIVATED_AT_KEY = "token_context:active_retry:activated_at:v1"
     DEFERRED_CONTEXT_RETRY_RUN_KEY = "token_context:active_retry:last_run:v1"
@@ -5532,7 +5535,10 @@ class Runtime:
         if not self.chain_meme_trader_only:
             self.store.record_chain_meme_trader_account_snapshots()
         snapshot_clock = asyncio.get_running_loop().time()
-        if snapshot_clock - self._last_chain_account_snapshot_monotonic >= 5.0:
+        if (
+            snapshot_clock - self._last_chain_account_snapshot_monotonic
+            >= self.CHAIN_MEME_ACCOUNT_SNAPSHOT_INTERVAL_SECONDS
+        ):
             self.store.record_chain_meme_trader_account_snapshots(
                 definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
             )
@@ -6466,14 +6472,16 @@ class Runtime:
                 ),
                 asyncio.create_task(
                     self._periodic(
-                        "chain_meme_market_marks", 1,
+                        "chain_meme_market_marks",
+                        self.CHAIN_MEME_ACTIVE_MARK_INTERVAL_SECONDS,
                         self.chain_meme_market_marks_once,
                     ),
                     name="chain_meme_market_marks",
                 ),
                 asyncio.create_task(
                     self._periodic(
-                        "chain_meme_carried_market_marks", 15,
+                        "chain_meme_carried_market_marks",
+                        self.CHAIN_MEME_CARRIED_MARK_INTERVAL_SECONDS,
                         self.chain_meme_carried_market_marks_once,
                     ),
                     name="chain_meme_carried_market_marks",
@@ -6654,14 +6662,16 @@ class Runtime:
                 ),
                 asyncio.create_task(
                     self._periodic(
-                        "chain_meme_market_marks", 1,
+                        "chain_meme_market_marks",
+                        self.CHAIN_MEME_ACTIVE_MARK_INTERVAL_SECONDS,
                         self.chain_meme_market_marks_once,
                     ),
                     name="chain_meme_market_marks",
                 ),
                 asyncio.create_task(
                     self._periodic(
-                        "chain_meme_carried_market_marks", 15,
+                        "chain_meme_carried_market_marks",
+                        self.CHAIN_MEME_CARRIED_MARK_INTERVAL_SECONDS,
                         self.chain_meme_carried_market_marks_once,
                     ),
                     name="chain_meme_carried_market_marks",

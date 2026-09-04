@@ -1095,6 +1095,8 @@ def _published(value: Any) -> datetime | None:
 class HttpClient:
     """Small host-aware client for free public endpoints."""
 
+    MAX_CACHE_ENTRIES = 512
+
     def __init__(
         self,
         *,
@@ -1134,14 +1136,35 @@ class HttpClient:
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._cache: dict[str, tuple[float, Any]] = {}
 
+    def _prune_cache(self, now: float) -> None:
+        if len(self._cache) < self.MAX_CACHE_ENTRIES:
+            return
+        expired = [
+            key for key, (expires_at, _) in self._cache.items()
+            if expires_at <= now
+        ]
+        for key in expired:
+            self._cache.pop(key, None)
+        overflow = len(self._cache) - self.MAX_CACHE_ENTRIES
+        if overflow > 0:
+            for key, _ in sorted(
+                self._cache.items(), key=lambda item: item[1][0]
+            )[:overflow]:
+                self._cache.pop(key, None)
+
     async def close(self) -> None:
         await self.client.aclose()
         await self.feed_client.aclose()
 
     async def get(self, url: str, *, params: dict[str, Any] | None = None, ttl: float = 0, headers: dict[str, str] | None = None) -> httpx.Response:
         key = url + "?" + urllib.parse.urlencode(sorted((params or {}).items()), doseq=True)
+        now = time.monotonic()
         cached = self._cache.get(key)
-        if ttl and cached and cached[0] > time.monotonic():
+        if cached is not None and cached[0] <= now:
+            self._cache.pop(key, None)
+            cached = None
+        self._prune_cache(now)
+        if ttl and cached and cached[0] > now:
             response = httpx.Response(200, request=httpx.Request("GET", url), json=cached[1])
             return response
         host = urllib.parse.urlparse(url).netloc.lower()
@@ -1162,7 +1185,10 @@ class HttpClient:
         response.raise_for_status()
         if ttl:
             try:
-                self._cache[key] = (time.monotonic() + ttl, response.json())
+                now = time.monotonic()
+                self._prune_cache(now)
+                self._cache[key] = (now + ttl, response.json())
+                self._prune_cache(now)
             except Exception:
                 pass
         return response
