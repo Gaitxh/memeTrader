@@ -2929,6 +2929,77 @@ class Store:
                     ON chain_meme_trader_fills(
                         definition_version,arm_id,filled_at,id
                     );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_market_fill_corrections (
+                    source_trade_id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    arm_id TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    source_fill_id INTEGER NOT NULL,
+                    source_mark_id INTEGER NOT NULL,
+                    original_gross_usd REAL NOT NULL,
+                    post_liquidity_usd REAL NOT NULL,
+                    max_market_gross_usd REAL NOT NULL,
+                    replacement_outcome TEXT NOT NULL CHECK(replacement_outcome IN (
+                        'SELL','WRITEOFF','UNRESOLVED'
+                    )),
+                    replacement_gross_usd REAL,
+                    cash_adjustment_usd REAL NOT NULL,
+                    realized_adjustment_usd REAL NOT NULL,
+                    replacement_observed_at TEXT,
+                    reason TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_market_fill_corrections_arm_idx
+                    ON chain_meme_trader_market_fill_corrections(
+                        definition_version,arm_id,shadow_cohort_id
+                    );
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_market_fill_corrections_no_update
+                BEFORE UPDATE ON chain_meme_trader_market_fill_corrections
+                BEGIN SELECT RAISE(ABORT,'market fill corrections are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_market_fill_corrections_no_delete
+                BEFORE DELETE ON chain_meme_trader_market_fill_corrections
+                BEGIN SELECT RAISE(ABORT,'market fill corrections are immutable'); END;
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_market_fill_correction_supersessions (
+                    source_trade_id INTEGER PRIMARY KEY,
+                    replacement_outcome TEXT NOT NULL CHECK(replacement_outcome IN (
+                        'SELL','WRITEOFF','UNRESOLVED'
+                    )),
+                    replacement_gross_usd REAL,
+                    cash_adjustment_usd REAL NOT NULL,
+                    realized_adjustment_usd REAL NOT NULL,
+                    replacement_observed_at TEXT,
+                    reason TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL
+                );
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_market_fill_correction_supersessions_no_update
+                BEFORE UPDATE ON chain_meme_trader_market_fill_correction_supersessions
+                BEGIN SELECT RAISE(ABORT,'market fill correction supersessions are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_market_fill_correction_supersessions_no_delete
+                BEFORE DELETE ON chain_meme_trader_market_fill_correction_supersessions
+                BEGIN SELECT RAISE(ABORT,'market fill correction supersessions are immutable'); END;
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_accounting_contaminations (
+                    definition_version TEXT NOT NULL,
+                    arm_id TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    source_buy_trade_id INTEGER NOT NULL,
+                    reason TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    PRIMARY KEY(definition_version,arm_id,shadow_cohort_id)
+                );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_accounting_contaminations_arm_idx
+                    ON chain_meme_trader_accounting_contaminations(
+                        definition_version,arm_id,source_buy_trade_id
+                    );
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_accounting_contaminations_no_update
+                BEFORE UPDATE ON chain_meme_trader_accounting_contaminations
+                BEGIN SELECT RAISE(ABORT,'accounting contaminations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_accounting_contaminations_no_delete
+                BEFORE DELETE ON chain_meme_trader_accounting_contaminations
+                BEGIN SELECT RAISE(ABORT,'accounting contaminations are immutable'); END;
                 CREATE TABLE IF NOT EXISTS chain_meme_trader_postbuy_research_registrations (
                     research_version TEXT PRIMARY KEY,
                     definition_version TEXT NOT NULL,
@@ -24005,8 +24076,27 @@ class Store:
     def register_chain_meme_trader_v21(self) -> sqlite3.Row:
         """Register the preserved v20 catalogue plus one additive runner."""
         version = self.CHAIN_MEME_TRADER_V21_VERSION
+        corrected_market_formula = (
+            "stake_usd*remaining_raw/initial_raw*current_price/"
+            "entry_execution_price_usd*0.96"
+        )
         self.register_chain_meme_trader_v20()
         with self._lock, self.db:
+            for field_path, corrected_value in (
+                ("market_mark_formula", corrected_market_formula),
+                ("market_mark_formula_basis", "entry_execution_price_usd"),
+            ):
+                self.db.execute(
+                    "INSERT OR IGNORE INTO chain_meme_trader_definition_errata("
+                    "definition_version,field_path,corrected_value_json,reason,recorded_at) "
+                    "VALUES(?,?,?,?,?)",
+                    (
+                        version, field_path, self._json(corrected_value),
+                        "contract_text_corrected_to_match_existing_execution_kernel;"
+                        "strategy_behavior_unchanged",
+                        iso(),
+                    ),
+                )
             existing = self.db.execute(
                 "SELECT * FROM chain_meme_trader_v6_registrations "
                 "WHERE definition_version=?", (version,),
@@ -24026,6 +24116,8 @@ class Store:
                 "strategy_count": len(policies),
                 "policies": policies,
                 "additive_strategy_count": 1,
+                "market_mark_formula": corrected_market_formula,
+                "market_mark_formula_basis": "entry_execution_price_usd",
                 "strategy_logic_changed": True,
                 "reset_reason": "additive_principal_lock_runner_clean_forward",
                 "automatic_learning": False,
@@ -24093,8 +24185,27 @@ class Store:
     def register_chain_meme_trader_v22(self) -> sqlite3.Row:
         """Register v21 unchanged plus two filtered, multi-chain challengers."""
         version = self.CHAIN_MEME_TRADER_V22_VERSION
+        corrected_market_formula = (
+            "stake_usd*remaining_raw/initial_raw*current_price/"
+            "entry_execution_price_usd*0.96"
+        )
         self.register_chain_meme_trader_v21()
         with self._lock, self.db:
+            for field_path, corrected_value in (
+                ("market_mark_formula", corrected_market_formula),
+                ("market_mark_formula_basis", "entry_execution_price_usd"),
+            ):
+                self.db.execute(
+                    "INSERT OR IGNORE INTO chain_meme_trader_definition_errata("
+                    "definition_version,field_path,corrected_value_json,reason,recorded_at) "
+                    "VALUES(?,?,?,?,?)",
+                    (
+                        version, field_path, self._json(corrected_value),
+                        "contract_text_corrected_to_match_existing_execution_kernel;"
+                        "strategy_behavior_unchanged",
+                        iso(),
+                    ),
+                )
             existing = self.db.execute(
                 "SELECT * FROM chain_meme_trader_v6_registrations "
                 "WHERE definition_version=?", (version,),
@@ -24125,6 +24236,8 @@ class Store:
                 "slippage_bps": 400,
                 "additional_fee_usd_each_fill": 0.0,
                 "starting_cash_usd_each_arm": 1000.0,
+                "market_mark_formula": corrected_market_formula,
+                "market_mark_formula_basis": "entry_execution_price_usd",
                 "strategy_logic_changed": True,
                 "reset_reason": "additive_first_mover_and_mature_control_clean_forward",
                 "automatic_learning": False,
@@ -27739,7 +27852,9 @@ class Store:
                 "sample_sequence=chain_meme_trader_market_marks.sample_sequence+1,"
                 "first_missing_at=NULL,failure_kind='',"
                 "last_attempt_at=excluded.last_attempt_at,"
-                "last_success_at=excluded.last_success_at",
+                "last_success_at=excluded.last_success_at "
+                "WHERE chain_meme_trader_market_marks.observed_at IS NULL "
+                "OR excluded.observed_at>chain_meme_trader_market_marks.observed_at",
                 (
                     token.token_id, token.chain.lower(), token.address, pair_address or None,
                     provider,
@@ -27748,6 +27863,8 @@ class Store:
                     iso(snapshot.observed_at), iso(mark_at), iso(mark_at), iso(mark_at),
                 ),
             )
+            if int(self.db.execute("SELECT changes()").fetchone()[0]) == 0:
+                return
             latest_history = self.db.execute(
                 "SELECT status,recorded_at FROM chain_meme_trader_market_mark_history "
                 "WHERE token_id=? ORDER BY id DESC LIMIT 1", (token.token_id,),
@@ -27896,6 +28013,51 @@ class Store:
                     )
         return refreshed
 
+    @staticmethod
+    def _chain_meme_trader_market_capacity_usd(
+        liquidity_usd: Any, _slippage_bps: int,
+    ) -> float | None:
+        """Reject only recovery exceeding the entire reported pool liquidity."""
+        if liquidity_usd is None:
+            return None
+        liquidity = float(liquidity_usd)
+        if not math.isfinite(liquidity) or liquidity <= 0.0:
+            return 0.0
+        return liquidity
+
+    @staticmethod
+    def _chain_meme_trader_market_fill_corrections_from_connection(
+        connection: sqlite3.Connection, version: str,
+    ) -> list[dict[str, Any]]:
+        tables = {
+            str(row[0]) for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        if "chain_meme_trader_market_fill_corrections" not in tables:
+            return []
+        corrections = {
+            int(row["source_trade_id"]): dict(row)
+            for row in connection.execute(
+                "SELECT * FROM chain_meme_trader_market_fill_corrections "
+                "WHERE definition_version=? ORDER BY source_trade_id",
+                (version,),
+            )
+        }
+        if "chain_meme_trader_market_fill_correction_supersessions" in tables:
+            for row in connection.execute(
+                "SELECT s.* FROM chain_meme_trader_market_fill_correction_supersessions s "
+                "JOIN chain_meme_trader_market_fill_corrections c "
+                "ON c.source_trade_id=s.source_trade_id "
+                "WHERE c.definition_version=? ORDER BY s.source_trade_id",
+                (version,),
+            ):
+                target = corrections.get(int(row["source_trade_id"]))
+                if target is not None:
+                    target.update(dict(row))
+                    target["superseded"] = True
+        return list(corrections.values())
+
     def _settle_chain_meme_trader_market_exit(
         self, *, version: str, mark_id: int, completed_at: str,
         definition: Mapping[str, Any],
@@ -27930,7 +28092,14 @@ class Store:
                 float(position["realized_proceeds_usd"] or 0.0)
                 - float(position["stake_usd"])
             )
-            reason = "dex_pair_missing_over_60_seconds_writeoff"
+            evidence = self._json_object(mark["trigger_evidence_json"])
+            reason = (
+                "dex_pool_liquidity_below_1_usd_writeoff"
+                if "terminal_dust_pool" in evidence
+                else "market_capacity_insufficient_over_60_seconds_writeoff"
+                if "terminal_capacity_insufficient" in evidence
+                else "dex_pair_missing_over_60_seconds_writeoff"
+            )
             self.db.execute(
                 "UPDATE chain_meme_trader_positions SET status='written_off',amount_raw='0',"
                 "remaining_quantity_tokens=0,"
@@ -27980,6 +28149,60 @@ class Store:
             * post_price / entry_price
             * (1.0 - int(definition["slippage_bps"]) / 10_000.0),
         )
+        trigger_evidence = self._json_object(mark["trigger_evidence_json"])
+        post_confirmation = trigger_evidence.get("post_confirmation")
+        post_liquidity = (
+            post_confirmation.get("liquidity_usd")
+            if isinstance(post_confirmation, Mapping) else None
+        )
+        capacity = self._chain_meme_trader_market_capacity_usd(
+            post_liquidity, int(definition["slippage_bps"]),
+        )
+        if capacity is not None and gross > capacity:
+            capacity_state = trigger_evidence.get("capacity_insufficient")
+            if not isinstance(capacity_state, Mapping):
+                capacity_state = {}
+            post_sequence = int(mark["market_post_sequence"] or 0)
+            last_sequence = int(capacity_state.get("last_sample_sequence") or 0)
+            sample_count = int(capacity_state.get("sample_count") or 0)
+            first_at = capacity_state.get("first_observed_at")
+            if post_sequence > last_sequence:
+                sample_count += 1
+                first_at = first_at or post_recorded_at
+            capacity_state = {
+                "first_observed_at": first_at,
+                "last_observed_at": post_recorded_at,
+                "last_sample_sequence": max(last_sequence, post_sequence),
+                "sample_count": sample_count,
+                "gross_usd": gross,
+                "liquidity_usd": float(post_liquidity),
+                "max_market_gross_usd": capacity,
+                "capacity_formula": "liquidity_usd",
+            }
+            trigger_evidence["capacity_insufficient"] = capacity_state
+            elapsed = (
+                parse_time(post_recorded_at) - parse_time(first_at)
+            ).total_seconds()
+            if sample_count >= 2 and elapsed > 60.0:
+                trigger_evidence["terminal_capacity_insufficient"] = {
+                    **capacity_state, "confirmed_at": post_recorded_at,
+                }
+                self.db.execute(
+                    "UPDATE chain_meme_trader_marks SET action='RUG_EXIT',"
+                    "reason=reason||':market_capacity_insufficient_over_60_seconds',"
+                    "trigger_evidence_json=? WHERE id=? AND status='pending'",
+                    (self._json(trigger_evidence), int(mark_id)),
+                )
+                return self._settle_chain_meme_trader_market_exit(
+                    version=version, mark_id=mark_id,
+                    completed_at=post_recorded_at, definition=definition,
+                )
+            self.db.execute(
+                "UPDATE chain_meme_trader_marks SET trigger_evidence_json=? "
+                "WHERE id=? AND status='pending'",
+                (self._json(trigger_evidence), int(mark_id)),
+            )
+            return 0
         synthetic_fill_id = -int(mark_id)
         self.db.execute(
             "INSERT OR IGNORE INTO chain_meme_trader_fills("
@@ -28087,6 +28310,313 @@ class Store:
         )
         return 1
 
+    def record_chain_meme_trader_market_capacity_corrections(
+        self, *, definition_version: str | None = None, recorded_at: Any = None,
+    ) -> int:
+        """Append accounting corrections for historical impossible market fills."""
+        version = definition_version or self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        correction_at = iso(recorded_at or utcnow())
+        with self._lock, self.db:
+            registration = self._chain_meme_trader_registration(version)
+            if registration is None:
+                return 0
+            definition = self._json_object(registration["definition_json"])
+            slippage_bps = int(definition["slippage_bps"])
+            rows = self.db.execute(
+                "SELECT t.*,f.id AS source_fill_id,f.intent_id,m.id AS source_mark_id,"
+                "m.market_post_price_usd,m.market_post_recorded_at,"
+                "m.market_post_pair_address,m.trigger_evidence_json,"
+                "c.source_trade_id AS correction_trade_id,"
+                "COALESCE(s.replacement_outcome,c.replacement_outcome) "
+                "AS existing_replacement_outcome "
+                "FROM chain_meme_trader_trades t "
+                "JOIN chain_meme_trader_fills f ON f.id=t.execution_fill_id "
+                "JOIN chain_meme_trader_marks m ON m.id=-f.intent_id "
+                "LEFT JOIN chain_meme_trader_market_fill_corrections c "
+                "ON c.source_trade_id=t.id "
+                "LEFT JOIN chain_meme_trader_market_fill_correction_supersessions s "
+                "ON s.source_trade_id=t.id "
+                "WHERE t.definition_version=? AND t.side='SELL' "
+                "AND f.adapter='dexscreener-market-paper/v1' "
+                "ORDER BY t.id",
+                (version,),
+            ).fetchall()
+            inserted = 0
+            for row in rows:
+                evidence = self._json_object(row["trigger_evidence_json"])
+                post = evidence.get("post_confirmation")
+                if not isinstance(post, Mapping):
+                    continue
+                liquidity = post.get("liquidity_usd")
+                post_price = float(
+                    post.get("price_usd") or row["market_post_price_usd"] or 0.0
+                )
+                post_at_value = (
+                    post.get("recorded_at") or row["market_post_recorded_at"]
+                )
+                if liquidity is None or post_price <= 0.0 or not post_at_value:
+                    continue
+                capacity = self._chain_meme_trader_market_capacity_usd(
+                    liquidity, slippage_bps,
+                )
+                original_gross = float(row["gross_usd"] or 0.0)
+                source_dust_pool = float(liquidity) < 1.0
+                if (
+                    capacity is None
+                    or (not source_dust_pool and original_gross <= capacity)
+                ):
+                    continue
+                first_at = parse_time(post_at_value)
+                pair_address = str(
+                    post.get("pair_address")
+                    or row["market_post_pair_address"] or ""
+                )
+                low_capacity_samples = 1
+                replacement_outcome = "UNRESOLVED"
+                replacement_gross: float | None = None
+                replacement_observed_at: str | None = None
+                terminal_frame: dict[str, Any] | None = None
+                history_rows = self.db.execute(
+                    "SELECT id,pair_address,price_usd,liquidity_usd,observed_at,"
+                    "recorded_at,status FROM chain_meme_trader_market_mark_history "
+                    "WHERE token_id=? AND recorded_at>? ORDER BY recorded_at,id",
+                    (str(row["token_id"]), iso(first_at)),
+                ).fetchall()
+                if source_dust_pool:
+                    replacement_outcome = "WRITEOFF"
+                    replacement_observed_at = iso(first_at)
+                    terminal_frame = {
+                        "price_usd": post_price,
+                        "liquidity_usd": float(liquidity),
+                        "max_market_gross_usd": capacity,
+                        "observed_at": iso(first_at),
+                        "dust_pool_immediate": True,
+                    }
+                for history in history_rows if not source_dust_pool else ():
+                    if (
+                        str(history["status"] or "") != "VISIBLE"
+                        or str(history["pair_address"] or "") != pair_address
+                        or float(history["price_usd"] or 0.0) <= 0.0
+                        or history["liquidity_usd"] is None
+                    ):
+                        continue
+                    observed = parse_time(
+                        history["observed_at"] or history["recorded_at"]
+                    )
+                    candidate_gross = (
+                        original_gross * float(history["price_usd"]) / post_price
+                    )
+                    candidate_capacity = self._chain_meme_trader_market_capacity_usd(
+                        history["liquidity_usd"], slippage_bps,
+                    )
+                    elapsed_seconds = (observed - first_at).total_seconds()
+                    if float(history["liquidity_usd"]) < 1.0:
+                        replacement_outcome = "WRITEOFF"
+                        replacement_observed_at = iso(observed)
+                        terminal_frame = {
+                            "history_id": int(history["id"]),
+                            "price_usd": float(history["price_usd"]),
+                            "liquidity_usd": float(history["liquidity_usd"]),
+                            "max_market_gross_usd": candidate_capacity,
+                            "observed_at": iso(observed),
+                            "dust_pool_immediate": True,
+                        }
+                        break
+                    if low_capacity_samples >= 2 and elapsed_seconds > 60.0:
+                        replacement_outcome = "WRITEOFF"
+                        replacement_observed_at = iso(observed)
+                        terminal_frame = {
+                            "history_id": int(history["id"]),
+                            "price_usd": float(history["price_usd"]),
+                            "liquidity_usd": float(history["liquidity_usd"]),
+                            "max_market_gross_usd": candidate_capacity,
+                            "observed_at": iso(observed),
+                            "low_capacity_samples": low_capacity_samples,
+                            "late_recovery_ignored": bool(
+                                candidate_capacity is not None
+                                and candidate_gross <= candidate_capacity
+                            ),
+                        }
+                        break
+                    if (
+                        candidate_capacity is not None
+                        and candidate_gross <= candidate_capacity
+                    ):
+                        replacement_outcome = "SELL"
+                        replacement_gross = candidate_gross
+                        replacement_observed_at = iso(observed)
+                        terminal_frame = {
+                            "history_id": int(history["id"]),
+                            "price_usd": float(history["price_usd"]),
+                            "liquidity_usd": float(history["liquidity_usd"]),
+                            "max_market_gross_usd": candidate_capacity,
+                            "observed_at": iso(observed),
+                        }
+                        break
+                    low_capacity_samples += 1
+                    if low_capacity_samples >= 2 and elapsed_seconds > 60.0:
+                        replacement_outcome = "WRITEOFF"
+                        replacement_observed_at = iso(observed)
+                        terminal_frame = {
+                            "history_id": int(history["id"]),
+                            "price_usd": float(history["price_usd"]),
+                            "liquidity_usd": float(history["liquidity_usd"]),
+                            "max_market_gross_usd": candidate_capacity,
+                            "observed_at": iso(observed),
+                            "low_capacity_samples": low_capacity_samples,
+                        }
+                        break
+                original_realized = float(row["realized_pnl_usd"] or 0.0)
+                if replacement_outcome == "SELL":
+                    cash_adjustment = float(replacement_gross) - original_gross
+                    realized_adjustment = cash_adjustment
+                elif replacement_outcome == "WRITEOFF":
+                    cash_adjustment = -original_gross
+                    realized_adjustment = -original_gross
+                else:
+                    cash_adjustment = -original_gross
+                    realized_adjustment = -original_realized
+                correction_evidence = {
+                    "capacity_formula": "liquidity_usd",
+                    "dust_pool_writeoff_below_usd": 1.0,
+                    "slippage_bps": slippage_bps,
+                    "source_post_confirmation": dict(post),
+                    "low_capacity_samples": low_capacity_samples,
+                    "terminal_frame": terminal_frame,
+                    "original_trade_preserved": True,
+                }
+                if row["correction_trade_id"] is not None:
+                    if (
+                        str(row["existing_replacement_outcome"] or "")
+                        != replacement_outcome
+                    ):
+                        self.db.execute(
+                            "INSERT OR IGNORE INTO "
+                            "chain_meme_trader_market_fill_correction_supersessions("
+                            "source_trade_id,replacement_outcome,replacement_gross_usd,"
+                            "cash_adjustment_usd,realized_adjustment_usd,"
+                            "replacement_observed_at,reason,evidence_json,recorded_at) "
+                            "VALUES(?,?,?,?,?,?,?,?,?)",
+                            (
+                                int(row["id"]), replacement_outcome,
+                                replacement_gross, cash_adjustment,
+                                realized_adjustment, replacement_observed_at,
+                                (
+                                    "dex_pool_liquidity_below_1_usd_corrected"
+                                    if terminal_frame
+                                    and terminal_frame.get("dust_pool_immediate")
+                                    else "late_recovery_after_capacity_timeout_corrected"
+                                ),
+                                self._json(correction_evidence), correction_at,
+                            ),
+                        )
+                        inserted += int(
+                            self.db.execute("SELECT changes()").fetchone()[0]
+                        )
+                    continue
+                self.db.execute(
+                    "INSERT OR IGNORE INTO chain_meme_trader_market_fill_corrections("
+                    "source_trade_id,definition_version,arm_id,shadow_cohort_id,"
+                    "token_id,source_fill_id,source_mark_id,original_gross_usd,"
+                    "post_liquidity_usd,max_market_gross_usd,replacement_outcome,"
+                    "replacement_gross_usd,cash_adjustment_usd,realized_adjustment_usd,"
+                    "replacement_observed_at,reason,evidence_json,recorded_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        int(row["id"]), version, str(row["arm_id"]),
+                        int(row["shadow_cohort_id"]), str(row["token_id"]),
+                        int(row["source_fill_id"]), int(row["source_mark_id"]),
+                        original_gross, float(liquidity), capacity,
+                        replacement_outcome, replacement_gross, cash_adjustment,
+                        realized_adjustment, replacement_observed_at,
+                        (
+                            "historical_dex_pool_liquidity_below_1_usd"
+                            if terminal_frame
+                            and terminal_frame.get("dust_pool_immediate")
+                            else "historical_market_fill_exceeded_fixed_slippage_capacity"
+                        ),
+                        self._json(correction_evidence), correction_at,
+                    ),
+                )
+                inserted += int(self.db.execute("SELECT changes()").fetchone()[0])
+            historical_cash_gate_through = self.db.execute(
+                "SELECT MAX(recorded_at) FROM "
+                "chain_meme_trader_market_fill_corrections "
+                "WHERE definition_version=?",
+                (version,),
+            ).fetchone()[0]
+            if historical_cash_gate_through is not None:
+                self._record_chain_meme_trader_accounting_contaminations(
+                    version=version,
+                    historical_cash_gate_through=str(historical_cash_gate_through),
+                )
+            return inserted
+
+    def _record_chain_meme_trader_accounting_contaminations(
+        self, *, version: str, historical_cash_gate_through: str,
+    ) -> int:
+        """Replay the historical cash gate and mark impossible descendant entries."""
+        registration = self._chain_meme_trader_registration(version)
+        if registration is None:
+            return 0
+        definition = self._json_object(registration["definition_json"])
+        starting_cash = float(definition["starting_cash_usd_each_arm"])
+        corrections = {
+            int(row["source_trade_id"]): row
+            for row in self._chain_meme_trader_market_fill_corrections_from_connection(
+                self.db, version,
+            )
+        }
+        contaminated = {
+            (str(row["arm_id"]), int(row["shadow_cohort_id"]))
+            for row in self.db.execute(
+                "SELECT arm_id,shadow_cohort_id FROM "
+                "chain_meme_trader_accounting_contaminations "
+                "WHERE definition_version=?",
+                (version,),
+            )
+        }
+        cash_by_arm: dict[str, float] = {}
+        inserted = 0
+        for trade in self.db.execute(
+            "SELECT * FROM chain_meme_trader_trades WHERE definition_version=? "
+            "AND created_at<=? ORDER BY arm_id,created_at,id",
+            (version, historical_cash_gate_through),
+        ).fetchall():
+            arm_id = str(trade["arm_id"])
+            key = (arm_id, int(trade["shadow_cohort_id"]))
+            cash = cash_by_arm.setdefault(arm_id, starting_cash)
+            if key in contaminated:
+                continue
+            net_flow = float(trade["net_cash_flow_usd"] or 0.0)
+            correction = corrections.get(int(trade["id"]))
+            if correction is not None:
+                net_flow += float(correction["cash_adjustment_usd"] or 0.0)
+            if str(trade["side"]) == "BUY" and cash + net_flow < -1e-9:
+                evidence = {
+                    "available_cash_before_usd": cash,
+                    "required_cash_usd": -net_flow,
+                    "source_buy_trade_id": int(trade["id"]),
+                    "historical_cash_gate_through": historical_cash_gate_through,
+                    "raw_trade_preserved": True,
+                }
+                self.db.execute(
+                    "INSERT OR IGNORE INTO chain_meme_trader_accounting_contaminations("
+                    "definition_version,arm_id,shadow_cohort_id,source_buy_trade_id,"
+                    "reason,evidence_json,recorded_at) VALUES(?,?,?,?,?,?,?)",
+                    (
+                        version, arm_id, int(trade["shadow_cohort_id"]),
+                        int(trade["id"]),
+                        "historical_buy_depended_on_invalid_market_fill_cash",
+                        self._json(evidence), iso(),
+                    ),
+                )
+                inserted += int(self.db.execute("SELECT changes()").fetchone()[0])
+                contaminated.add(key)
+                continue
+            cash_by_arm[arm_id] = cash + net_flow
+        return inserted
+
     def evaluate_chain_meme_trader_market_marks(
         self, *, definition_version: str | None = None, now: Any = None,
     ) -> int:
@@ -28106,10 +28636,12 @@ class Store:
                 "m.status AS mark_status,m.consecutive_misses,m.recorded_at AS mark_recorded_at,"
                 "m.observed_at AS mark_observed_at,"
                 "m.last_success_at AS mark_last_success_at,m.first_missing_at,"
+                "m.last_attempt_at AS mark_last_attempt_at,"
                 "m.failure_kind AS mark_failure_kind,m.sample_sequence,"
                 "pm.action AS pending_action,pm.reason AS pending_reason,"
                 "pm.recorded_at AS pending_recorded_at,"
                 "pm.market_pre_sequence,pm.market_pair_address AS pending_pair_address,"
+                "pm.market_post_sequence AS pending_post_sequence,"
                 "pm.trigger_evidence_json AS pending_trigger_evidence_json "
                 "FROM chain_meme_trader_positions p LEFT JOIN chain_meme_trader_market_marks m "
                 "ON m.token_id=p.token_id LEFT JOIN chain_meme_trader_marks pm "
@@ -28135,6 +28667,40 @@ class Store:
                     (current - parse_time(position["first_missing_at"])).total_seconds()
                     if position["first_missing_at"] is not None else 0.0
                 )
+                last_attempt_age = (
+                    (current - parse_time(position["mark_last_attempt_at"])).total_seconds()
+                    if position["mark_last_attempt_at"] is not None else None
+                )
+                terminal_missing = bool(
+                    mark_status == "MISSING"
+                    and misses >= 2
+                    and missing_seconds > 60.0
+                    and str(position["mark_failure_kind"] or "")
+                    == "NO_VISIBLE_POOL_OR_PRICE"
+                    and last_attempt_age is not None
+                    and 0.0 <= last_attempt_age <= 15.0
+                )
+                dust_mark_at = (
+                    parse_time(mark_recorded_at)
+                    if mark_recorded_at is not None else None
+                )
+                dust_observed_at = (
+                    parse_time(position["mark_observed_at"])
+                    if position["mark_observed_at"] is not None else None
+                )
+                fresh_visible_dust = bool(
+                    mark_status == "VISIBLE"
+                    and position["mark_pair_address"]
+                    and float(position["mark_price_usd"] or 0.0) > 0.0
+                    and position["mark_liquidity_usd"] is not None
+                    and 0.0 <= float(position["mark_liquidity_usd"]) < 1.0
+                    and dust_mark_at is not None
+                    and dust_observed_at is not None
+                    and parse_time(position["opened_at"])
+                    <= dust_observed_at <= dust_mark_at <= current
+                    and 0.0 <= (current - dust_mark_at).total_seconds() <= 15.0
+                    and 0.0 <= (current - dust_observed_at).total_seconds() <= 15.0
+                )
                 market_only_exit = str(definition.get("sell_execution") or "") == (
                     "dexscreener_market_mark_only"
                 )
@@ -28142,10 +28708,29 @@ class Store:
                     if not market_only_exit:
                         continue
                     pending_id = int(position["pending_mark_id"])
-                    if (
-                        mark_status == "MISSING" and misses >= 2
-                        and missing_seconds > 60.0
-                    ):
+                    if fresh_visible_dust:
+                        pending_evidence = self._json_object(
+                            position["pending_trigger_evidence_json"]
+                        )
+                        pending_evidence["terminal_dust_pool"] = {
+                            "sample_sequence": int(position["sample_sequence"] or 0),
+                            "pair_address": str(position["mark_pair_address"]),
+                            "price_usd": float(position["mark_price_usd"]),
+                            "liquidity_usd": float(position["mark_liquidity_usd"]),
+                            "observed_at": iso(dust_observed_at),
+                            "recorded_at": iso(dust_mark_at),
+                        }
+                        self.db.execute(
+                            "UPDATE chain_meme_trader_marks SET action='RUG_EXIT',"
+                            "reason=reason||':dex_pool_liquidity_below_1_usd',"
+                            "trigger_evidence_json=? WHERE id=?",
+                            (self._json(pending_evidence), pending_id),
+                        )
+                        created += self._settle_chain_meme_trader_market_exit(
+                            version=version, mark_id=pending_id,
+                            completed_at=iso(dust_mark_at), definition=definition,
+                        )
+                    elif terminal_missing:
                         pending_evidence = self._json_object(
                             position["pending_trigger_evidence_json"]
                         )
@@ -28182,14 +28767,17 @@ class Store:
                         )
                         post_sequence = int(position["sample_sequence"] or 0)
                         pre_sequence = int(position["market_pre_sequence"] or 0)
+                        prior_post_sequence = int(
+                            position["pending_post_sequence"] or 0
+                        )
                         current_pair = str(position["mark_pair_address"] or "")
                         pending_pair = str(position["pending_pair_address"] or "")
                         if (
                             post_mark_at > parse_time(position["pending_recorded_at"])
-                            and post_sequence > pre_sequence
-                            and post_mark_at <= current
+                            and post_sequence > max(pre_sequence, prior_post_sequence)
+                            and parse_time(position["opened_at"])
+                            <= post_observed_at <= post_mark_at <= current
                             and (current - post_mark_at).total_seconds() <= 15.0
-                            and post_observed_at <= current
                             and 0.0 <= (
                                 current - post_observed_at
                             ).total_seconds() <= 15.0
@@ -28245,10 +28833,19 @@ class Store:
                                     ),
                                 )
                     continue
-                if (
-                    mark_status == "MISSING" and misses >= 2
-                    and missing_seconds > 60.0
-                ):
+                if fresh_visible_dust:
+                    action, reason = "RUG_EXIT", "dex_pool_liquidity_below_1_usd"
+                    trigger_evidence = {
+                        "terminal_dust_pool": {
+                            "sample_sequence": int(position["sample_sequence"] or 0),
+                            "pair_address": str(position["mark_pair_address"]),
+                            "price_usd": float(position["mark_price_usd"]),
+                            "liquidity_usd": float(position["mark_liquidity_usd"]),
+                            "observed_at": iso(dust_observed_at),
+                            "recorded_at": iso(dust_mark_at),
+                        }
+                    }
+                elif terminal_missing:
                     action, reason = "RUG_EXIT", "dex_pair_missing_over_60_seconds"
                     trigger_evidence = {
                         "terminal_missing": {
@@ -28461,6 +29058,10 @@ class Store:
                             current - parse_time(position["mark_recorded_at"])
                         ).total_seconds() <= 15.0
                         and position["mark_observed_at"] is not None
+                        and parse_time(position["opened_at"])
+                        <= parse_time(position["mark_observed_at"])
+                        <= parse_time(position["mark_recorded_at"])
+                        <= current
                         and 0.0 <= (
                             current - parse_time(position["mark_observed_at"])
                         ).total_seconds() <= 15.0
@@ -28861,6 +29462,72 @@ class Store:
                 (version,),
             ).fetchall()
         }
+        realized_by_arm = {
+            str(row["arm_id"]): float(row["realized_usd"] or 0.0)
+            for row in self.db.execute(
+                "SELECT arm_id,COALESCE(SUM(realized_pnl_usd),0.0) AS realized_usd "
+                "FROM chain_meme_trader_trades WHERE definition_version=? GROUP BY arm_id",
+                (version,),
+            ).fetchall()
+        }
+        effective_corrections = (
+            self._chain_meme_trader_market_fill_corrections_from_connection(
+                self.db, version,
+            )
+        )
+        corrections_by_trade = {
+            int(row["source_trade_id"]): row for row in effective_corrections
+        }
+        corrections_by_arm: dict[str, dict[int, Mapping[str, Any]]] = {}
+        for row in effective_corrections:
+            arm_id = str(row["arm_id"])
+            corrections_by_arm.setdefault(arm_id, {})[
+                int(row["shadow_cohort_id"])
+            ] = row
+            net_flow_by_arm[arm_id] = (
+                net_flow_by_arm.get(arm_id, 0.0)
+                + float(row["cash_adjustment_usd"] or 0.0)
+            )
+            realized_by_arm[arm_id] = (
+                realized_by_arm.get(arm_id, 0.0)
+                + float(row["realized_adjustment_usd"] or 0.0)
+            )
+        contaminations_by_arm: dict[str, set[int]] = {}
+        for row in self.db.execute(
+            "SELECT arm_id,shadow_cohort_id FROM "
+            "chain_meme_trader_accounting_contaminations "
+            "WHERE definition_version=?",
+            (version,),
+        ).fetchall():
+            contaminations_by_arm.setdefault(str(row["arm_id"]), set()).add(
+                int(row["shadow_cohort_id"])
+            )
+        for trade in self.db.execute(
+            "SELECT * FROM chain_meme_trader_trades WHERE definition_version=?",
+            (version,),
+        ).fetchall():
+            arm_id = str(trade["arm_id"])
+            if int(trade["shadow_cohort_id"]) not in contaminations_by_arm.get(
+                arm_id, set()
+            ):
+                continue
+            correction = corrections_by_trade.get(int(trade["id"]))
+            net_flow_by_arm[arm_id] = (
+                net_flow_by_arm.get(arm_id, 0.0)
+                - float(trade["net_cash_flow_usd"] or 0.0)
+                - (
+                    float(correction["cash_adjustment_usd"] or 0.0)
+                    if correction is not None else 0.0
+                )
+            )
+            realized_by_arm[arm_id] = (
+                realized_by_arm.get(arm_id, 0.0)
+                - float(trade["realized_pnl_usd"] or 0.0)
+                - (
+                    float(correction["realized_adjustment_usd"] or 0.0)
+                    if correction is not None else 0.0
+                )
+            )
         ledger_trade_frontier_id = int(self.db.execute(
             "SELECT COALESCE(MAX(id),0) FROM chain_meme_trader_trades "
             "WHERE definition_version=?",
@@ -28896,10 +29563,39 @@ class Store:
         inserted = 0
         for arm_id in policy_ids:
             positions = positions_by_arm.get(arm_id, [])
-            open_positions = [row for row in positions if str(row["status"]) == "open"]
-            closed = sum(1 for row in positions if str(row["status"]) == "closed")
-            written = sum(1 for row in positions if str(row["status"]) == "written_off")
-            realized = sum(float(row["realized_pnl_usd"] or 0.0) for row in positions)
+            arm_corrections = corrections_by_arm.get(arm_id, {})
+            corrected_cohorts = set(arm_corrections)
+            contaminated_cohorts = contaminations_by_arm.get(arm_id, set())
+            open_positions = [
+                row for row in positions
+                if str(row["status"]) == "open"
+                and int(row["shadow_cohort_id"]) not in corrected_cohorts
+                and int(row["shadow_cohort_id"]) not in contaminated_cohorts
+            ]
+            closed = sum(
+                1 for row in positions if str(row["status"]) == "closed"
+                and int(row["shadow_cohort_id"]) not in corrected_cohorts
+                and int(row["shadow_cohort_id"]) not in contaminated_cohorts
+            ) + sum(
+                1 for cohort_id, row in arm_corrections.items()
+                if cohort_id not in contaminated_cohorts
+                and str(row["replacement_outcome"]) == "SELL"
+            )
+            written = sum(
+                1 for row in positions if str(row["status"]) == "written_off"
+                and int(row["shadow_cohort_id"]) not in corrected_cohorts
+                and int(row["shadow_cohort_id"]) not in contaminated_cohorts
+            ) + sum(
+                1 for cohort_id, row in arm_corrections.items()
+                if cohort_id not in contaminated_cohorts
+                and str(row["replacement_outcome"]) == "WRITEOFF"
+            )
+            unresolved = sum(
+                1 for cohort_id, row in arm_corrections.items()
+                if cohort_id not in contaminated_cohorts
+                and str(row["replacement_outcome"]) == "UNRESOLVED"
+            )
+            realized = realized_by_arm.get(arm_id, 0.0)
             cash = starting_cash + net_flow_by_arm.get(arm_id, 0.0)
             indicative_value = 0.0
             indicative_unrealized = 0.0
@@ -28909,21 +29605,30 @@ class Store:
                 if mark is None or str(mark["status"] or "") != "VISIBLE":
                     continue
                 mark_at_value = mark["last_success_at"] or mark["recorded_at"]
+                mark_at = (
+                    parse_time(mark_at_value) if mark_at_value is not None else None
+                )
+                mark_observed_at = (
+                    parse_time(mark["observed_at"])
+                    if mark["observed_at"] is not None else None
+                )
                 mark_age = (
-                    (current - parse_time(mark_at_value)).total_seconds()
-                    if mark_at_value is not None else None
+                    (current - mark_at).total_seconds()
+                    if mark_at is not None else None
                 )
                 observed_age = (
-                    (current - parse_time(mark["observed_at"])).total_seconds()
-                    if mark["observed_at"] is not None else None
+                    (current - mark_observed_at).total_seconds()
+                    if mark_observed_at is not None else None
                 )
                 liquidity = mark["liquidity_usd"]
                 if not (
                     mark["pair_address"]
                     and float(mark["price_usd"] or 0.0) > 0.0
-                    and (liquidity is None or float(liquidity) > 0.0)
+                    and (liquidity is None or float(liquidity) >= 0.0)
                     and mark_age is not None and 0.0 <= mark_age <= 15.0
                     and observed_age is not None and 0.0 <= observed_age <= 15.0
+                    and parse_time(position["opened_at"])
+                    <= mark_observed_at <= mark_at <= current
                 ):
                     continue
                 entry_price = float(
@@ -28939,20 +29644,28 @@ class Store:
                     0.0,
                     min(1.0, int(position["amount_raw"] or 0) / initial_raw),
                 )
-                recovery = max(
-                    0.0,
-                    float(position["stake_usd"]) * remaining_fraction
-                    * float(mark["price_usd"]) / entry_price * slippage_factor,
-                )
                 remaining_cost = max(
                     0.0,
                     float(position["stake_usd"])
                     - float(position["allocated_cost_usd"] or 0.0),
                 )
+                if liquidity is not None and float(liquidity) < 1.0:
+                    recovery = 0.0
+                else:
+                    recovery = max(
+                        0.0,
+                        float(position["stake_usd"]) * remaining_fraction
+                        * float(mark["price_usd"]) / entry_price * slippage_factor,
+                    )
+                    capacity = self._chain_meme_trader_market_capacity_usd(
+                        liquidity, int(definition["slippage_bps"]),
+                    )
+                    if capacity is not None and recovery > capacity:
+                        continue
                 indicative_value += recovery
                 indicative_unrealized += recovery - remaining_cost
                 indicative_priced += 1
-            open_count = len(open_positions)
+            open_count = len(open_positions) + unresolved
             indicative_complete = indicative_priced == open_count
             no_open_positions = open_count == 0
             payload = (
@@ -29130,6 +29843,76 @@ class Store:
         definition = cls.chain_meme_trader_effective_definition_from_connection(
             connection, version, registration["definition_json"],
         )
+        correction_rows = cls._chain_meme_trader_market_fill_corrections_from_connection(
+            connection, version,
+        )
+        corrections_by_trade = {
+            int(row["source_trade_id"]): row for row in correction_rows
+        }
+        corrections_by_position: dict[tuple[str, int], sqlite3.Row] = {
+            (str(row["arm_id"]), int(row["shadow_cohort_id"])): row
+            for row in correction_rows
+        }
+        correction_cash_by_arm: dict[str, float] = {}
+        correction_realized_by_arm: dict[str, float] = {}
+        for row in correction_rows:
+            arm = str(row["arm_id"])
+            correction_cash_by_arm[arm] = (
+                correction_cash_by_arm.get(arm, 0.0)
+                + float(row["cash_adjustment_usd"] or 0.0)
+            )
+            correction_realized_by_arm[arm] = (
+                correction_realized_by_arm.get(arm, 0.0)
+                + float(row["realized_adjustment_usd"] or 0.0)
+            )
+        contamination_rows = (
+            connection.execute(
+                "SELECT * FROM chain_meme_trader_accounting_contaminations "
+                "WHERE definition_version=? ORDER BY source_buy_trade_id",
+                (version,),
+            ).fetchall()
+            if "chain_meme_trader_accounting_contaminations" in tables else []
+        )
+        curve_effective_after = max(
+            (
+                str(row["recorded_at"])
+                for row in [*correction_rows, *contamination_rows]
+                if row["recorded_at"]
+            ),
+            default=None,
+        )
+        contaminations_by_position = {
+            (str(row["arm_id"]), int(row["shadow_cohort_id"])): row
+            for row in contamination_rows
+        }
+        contaminated_net_by_arm: dict[str, float] = {}
+        contaminated_realized_by_arm: dict[str, float] = {}
+        if contaminations_by_position:
+            for trade in connection.execute(
+                "SELECT * FROM chain_meme_trader_trades WHERE definition_version=?",
+                (version,),
+            ):
+                key = (str(trade["arm_id"]), int(trade["shadow_cohort_id"]))
+                if key not in contaminations_by_position:
+                    continue
+                correction = corrections_by_trade.get(int(trade["id"]))
+                arm = key[0]
+                contaminated_net_by_arm[arm] = (
+                    contaminated_net_by_arm.get(arm, 0.0)
+                    + float(trade["net_cash_flow_usd"] or 0.0)
+                    + (
+                        float(correction["cash_adjustment_usd"] or 0.0)
+                        if correction is not None else 0.0
+                    )
+                )
+                contaminated_realized_by_arm[arm] = (
+                    contaminated_realized_by_arm.get(arm, 0.0)
+                    + float(trade["realized_pnl_usd"] or 0.0)
+                    + (
+                        float(correction["realized_adjustment_usd"] or 0.0)
+                        if correction is not None else 0.0
+                    )
+                )
         strategies = []
         market_only_valuation = str(definition.get("sell_execution") or "") == (
             "dexscreener_market_mark_only"
@@ -29163,17 +29946,36 @@ class Store:
         unique_held_token_ids: set[str] = set()
         for policy in definition["policies"]:
             arm_id = str(policy["arm_id"])
+            arm_corrections = {
+                cohort_id: row
+                for (candidate_arm, cohort_id), row in corrections_by_position.items()
+                if candidate_arm == arm_id
+            }
+            arm_contaminations = {
+                cohort_id: row
+                for (candidate_arm, cohort_id), row
+                in contaminations_by_position.items()
+                if candidate_arm == arm_id
+            }
             latest = connection.execute("SELECT * FROM chain_meme_trader_account_snapshots WHERE definition_version=? AND arm_id=? ORDER BY id DESC LIMIT 1", (version, arm_id)).fetchone()
             curve_where = (
                 "definition_version=? AND arm_id=? AND ledger_trade_frontier_id IS NOT NULL"
                 if has_ledger_frontier and version == cls.CHAIN_MEME_TRADER_ACTIVE_VERSION
                 else "definition_version=? AND arm_id=?"
             )
-            curve = [dict(row) for row in connection.execute(
+            raw_curve = [dict(row) for row in connection.execute(
                 "SELECT * FROM chain_meme_trader_account_snapshots WHERE "
                 f"{curve_where} ORDER BY id DESC LIMIT ?",
                 (version, arm_id, max(1, int(curve_limit))),
             )][::-1]
+            curve = raw_curve
+            excluded_accounting_curve_points = 0
+            if curve_effective_after:
+                curve = [
+                    row for row in raw_curve
+                    if str(row["recorded_at"]) >= curve_effective_after
+                ]
+                excluded_accounting_curve_points = len(raw_curve) - len(curve)
             legacy_curve_points = (
                 int(connection.execute(
                     "SELECT COUNT(*) FROM chain_meme_trader_account_snapshots "
@@ -29198,6 +30000,40 @@ class Store:
             direct_position_count = 0
             for row in position_rows:
                 position = dict(row)
+                correction = arm_corrections.get(int(row["shadow_cohort_id"]))
+                if correction is not None:
+                    position["recorded_status"] = str(row["status"])
+                    position["raw_closed_at"] = row["closed_at"]
+                    position["recorded_realized_pnl_usd"] = float(
+                        row["realized_pnl_usd"] or 0.0
+                    )
+                    position["realized_pnl_usd"] = (
+                        float(row["realized_pnl_usd"] or 0.0)
+                        + float(correction["realized_adjustment_usd"] or 0.0)
+                    )
+                    position["effective_status"] = (
+                        "written_off"
+                        if str(correction["replacement_outcome"]) == "WRITEOFF"
+                        else "closed"
+                        if str(correction["replacement_outcome"]) == "SELL"
+                        else "unresolved"
+                    )
+                    position["status"] = (
+                        "open"
+                        if position["effective_status"] == "unresolved"
+                        else position["effective_status"]
+                    )
+                    if position["effective_status"] == "unresolved":
+                        position["closed_at"] = None
+                    position["accounting_status"] = "MARKET_FILL_CAPACITY_CORRECTED"
+                    position["market_fill_correction"] = dict(correction)
+                contamination = arm_contaminations.get(
+                    int(row["shadow_cohort_id"])
+                )
+                if contamination is not None:
+                    position["accounting_status"] = "ACCOUNTING_CONTAMINATED"
+                    position["formal_metrics_eligible"] = False
+                    position["accounting_contamination"] = dict(contamination)
                 key = (int(row["shadow_cohort_id"]), str(row["amount_raw"]))
                 if key not in quote_cache and not market_only_valuation:
                     quote_cache[key] = connection.execute(
@@ -29298,6 +30134,8 @@ class Store:
                 indicative_value = None
                 indicative_pnl = None
                 indicative_source = None
+                market_capacity_insufficient = False
+                dust_pool_full_loss = False
                 indicative_mark_age = (
                     (
                         summary_at - parse_time(
@@ -29325,6 +30163,18 @@ class Store:
                     str(indicative_snapshot["status"])
                     if indicative_snapshot is not None else None
                 )
+                indicative_mark_at = (
+                    parse_time(
+                        indicative_snapshot["last_success_at"]
+                        or indicative_snapshot["recorded_at"]
+                    )
+                    if indicative_snapshot is not None else None
+                )
+                indicative_observed_at = (
+                    parse_time(indicative_snapshot["observed_at"])
+                    if indicative_snapshot is not None
+                    and indicative_snapshot["observed_at"] is not None else None
+                )
                 fresh_visible_market_mark = bool(
                     indicative_snapshot is not None
                     and indicative_mark_status == "VISIBLE"
@@ -29332,10 +30182,14 @@ class Store:
                     and float(indicative_snapshot["price_usd"] or 0.0) > 0.0
                     and (
                         indicative_snapshot["liquidity_usd"] is None
-                        or float(indicative_snapshot["liquidity_usd"]) > 0.0
+                        or float(indicative_snapshot["liquidity_usd"]) >= 0.0
                     )
                     and indicative_mark_age is not None
                     and 0.0 <= indicative_mark_age <= 15.0
+                    and indicative_observed_at is not None
+                    and indicative_mark_at is not None
+                    and parse_time(row["opened_at"])
+                    <= indicative_observed_at <= indicative_mark_at <= summary_at
                 )
                 if (
                     fresh_visible_market_mark
@@ -29360,12 +30214,34 @@ class Store:
                         * current_price / entry_price
                         * (1.0 - int(definition["slippage_bps"]) / 10_000.0),
                     )
-                    indicative_pnl = indicative_value - max(
+                    mark_liquidity = indicative_snapshot["liquidity_usd"]
+                    remaining_cost = max(
                         0.0,
                         float(row["stake_usd"])
                         - float(row["allocated_cost_usd"] or 0.0),
                     )
-                    indicative_source = "dex_price_mark_4pct_haircut"
+                    if (
+                        mark_liquidity is not None
+                        and float(mark_liquidity) < 1.0
+                    ):
+                        indicative_value = 0.0
+                        indicative_pnl = -remaining_cost
+                        indicative_source = "dex_pool_below_1_usd_full_loss"
+                        dust_pool_full_loss = True
+                    else:
+                        market_capacity = cls._chain_meme_trader_market_capacity_usd(
+                            mark_liquidity, int(definition["slippage_bps"]),
+                        )
+                        if (
+                            market_capacity is not None
+                            and indicative_value > market_capacity
+                        ):
+                            indicative_value = None
+                            market_capacity_insufficient = True
+                            fresh_visible_market_mark = False
+                        else:
+                            indicative_pnl = indicative_value - remaining_cost
+                            indicative_source = "dex_price_mark_4pct_haircut"
                 elif (
                     not market_only_valuation
                     and
@@ -29407,8 +30283,11 @@ class Store:
                     "indicative_unrealized_pnl_usd": indicative_pnl,
                     "indicative_source": indicative_source,
                     "indicative_sellability": (
-                        "MARK_SELLABLE"
-                        if fresh_visible_market_mark
+                        "DUST_POOL_WRITEOFF"
+                        if dust_pool_full_loss
+                        else "INSUFFICIENT_POOL_CAPACITY"
+                        if market_capacity_insufficient
+                        else "MARK_SELLABLE" if fresh_visible_market_mark
                         else "PAIR_MISSING"
                         if indicative_mark_status == "MISSING"
                         else "STALE_MARK"
@@ -29508,9 +30387,15 @@ class Store:
                         "valid" if holding_seconds >= 0.0 else "invalid_future_opened_at"
                     ),
                     "terminal_return_fraction": (
-                        float(row["realized_pnl_usd"] or 0.0)
+                        float(position["realized_pnl_usd"] or 0.0)
                         / float(row["stake_usd"])
-                        if str(row["status"]) in {"closed", "written_off"}
+                        if (
+                            correction is None
+                            and str(row["status"]) in {"closed", "written_off"}
+                            or correction is not None
+                            and str(correction["replacement_outcome"])
+                            in {"SELL", "WRITEOFF"}
+                        )
                         and float(row["stake_usd"] or 0.0) > 0.0 else None
                     ),
                 })
@@ -29525,11 +30410,14 @@ class Store:
                     and str(row["status"]) == "open"
                     else None
                 )
-                if position["executable_value_usd"] is not None:
+                if (
+                    contamination is None
+                    and position["executable_value_usd"] is not None
+                ):
                     priced_recovery += float(position["executable_value_usd"])
                     priced_unrealized += float(position["executable_unrealized_pnl_usd"])
                     priced_position_count += 1
-                if indicative_value is not None:
+                if contamination is None and indicative_value is not None:
                     indicative_recovery += indicative_value
                     indicative_unrealized += float(indicative_pnl)
                     indicative_position_count += 1
@@ -29541,26 +30429,126 @@ class Store:
                         direct_unrealized += float(indicative_pnl)
                         direct_position_count += 1
                 positions.append(position)
-            trades = [dict(row) for row in connection.execute("SELECT * FROM chain_meme_trader_trades WHERE definition_version=? AND arm_id=? ORDER BY id DESC LIMIT ?", (version, arm_id, trade_limit))]
+            trades = []
+            for trade_row in connection.execute(
+                "SELECT * FROM chain_meme_trader_trades WHERE definition_version=? "
+                "AND arm_id=? ORDER BY id DESC LIMIT ?",
+                (version, arm_id, trade_limit),
+            ):
+                trade = dict(trade_row)
+                trade.update({
+                    "raw_side": trade["side"],
+                    "raw_gross_usd": trade["gross_usd"],
+                    "raw_net_cash_flow_usd": trade["net_cash_flow_usd"],
+                    "raw_realized_pnl_usd": trade["realized_pnl_usd"],
+                    "raw_reason": trade["reason"],
+                })
+                correction = corrections_by_trade.get(int(trade_row["id"]))
+                if correction is not None:
+                    outcome = str(correction["replacement_outcome"])
+                    effective_gross = (
+                        float(correction["replacement_gross_usd"] or 0.0)
+                        if outcome == "SELL" else 0.0
+                    )
+                    effective_net = (
+                        float(trade_row["net_cash_flow_usd"] or 0.0)
+                        + float(correction["cash_adjustment_usd"] or 0.0)
+                    )
+                    effective_realized = (
+                        float(trade_row["realized_pnl_usd"] or 0.0)
+                        + float(correction["realized_adjustment_usd"] or 0.0)
+                    )
+                    trade.update({
+                        "side": outcome,
+                        "gross_usd": effective_gross,
+                        "net_cash_flow_usd": effective_net,
+                        "realized_pnl_usd": effective_realized,
+                        "reason": str(correction["reason"]),
+                        "effective_outcome": outcome,
+                        "effective_gross_usd": effective_gross,
+                        "effective_net_cash_flow_usd": effective_net,
+                        "effective_realized_pnl_usd": effective_realized,
+                        "formal_metrics_eligible": outcome != "UNRESOLVED",
+                    })
+                    trade["accounting_status"] = "MARKET_FILL_CAPACITY_CORRECTED"
+                    trade["market_fill_correction"] = dict(correction)
+                contamination = arm_contaminations.get(
+                    int(trade_row["shadow_cohort_id"])
+                )
+                if contamination is not None:
+                    trade.update({
+                        "side": "EXCLUDED",
+                        "gross_usd": None,
+                        "net_cash_flow_usd": None,
+                        "realized_pnl_usd": None,
+                        "effective_outcome": "EXCLUDED",
+                        "effective_gross_usd": None,
+                        "effective_net_cash_flow_usd": None,
+                        "effective_realized_pnl_usd": None,
+                        "reason": str(contamination["reason"]),
+                    })
+                    trade["accounting_status"] = "ACCOUNTING_CONTAMINATED"
+                    trade["formal_metrics_eligible"] = False
+                    trade["accounting_contamination"] = dict(contamination)
+                trades.append(trade)
             account = dict(latest) if latest is not None else {"cash_usd": starting_cash, "executable_equity_usd": starting_cash, "realized_pnl_usd": 0.0, "executable_unrealized_pnl_usd": 0.0, "executable_total_pnl_usd": 0.0, "open_position_count": 0, "closed_position_count": 0, "written_off_position_count": 0, "priced_position_count": 0, "valuation_status": "complete_exact_jupiter"}
             current_positions = [row for row in position_rows if str(row["status"]) != "ineligible"]
-            open_position_count = sum(1 for row in current_positions if str(row["status"]) == "open")
+            corrected_cohorts = set(arm_corrections)
+            contaminated_cohorts = set(arm_contaminations)
+            unresolved_position_count = sum(
+                1 for row in arm_corrections.values()
+                if str(row["replacement_outcome"]) == "UNRESOLVED"
+            )
+            open_position_count = sum(
+                1 for row in current_positions if str(row["status"]) == "open"
+                and int(row["shadow_cohort_id"]) not in corrected_cohorts
+                and int(row["shadow_cohort_id"]) not in contaminated_cohorts
+            ) + unresolved_position_count
             open_position_count_all += open_position_count
             unique_held_token_ids.update(
                 str(row["token_id"])
-                for row in current_positions if str(row["status"]) == "open"
+                for row in current_positions
+                if (
+                    str(row["status"]) == "open"
+                    and int(row["shadow_cohort_id"]) not in corrected_cohorts
+                    or int(row["shadow_cohort_id"]) in corrected_cohorts
+                    and str(arm_corrections[int(row["shadow_cohort_id"])]["replacement_outcome"])
+                    == "UNRESOLVED"
+                )
             )
-            closed_position_count = sum(1 for row in current_positions if str(row["status"]) == "closed")
+            closed_position_count = sum(
+                1 for row in current_positions if str(row["status"]) == "closed"
+                and int(row["shadow_cohort_id"]) not in corrected_cohorts
+                and int(row["shadow_cohort_id"]) not in contaminated_cohorts
+            ) + sum(
+                1 for row in arm_corrections.values()
+                if str(row["replacement_outcome"]) == "SELL"
+            )
             written_off_position_count = sum(
                 1 for row in current_positions if str(row["status"]) == "written_off"
+                and int(row["shadow_cohort_id"]) not in corrected_cohorts
+                and int(row["shadow_cohort_id"]) not in contaminated_cohorts
+            ) + sum(
+                1 for row in arm_corrections.values()
+                if str(row["replacement_outcome"]) == "WRITEOFF"
             )
-            realized_pnl = sum(float(row["realized_pnl_usd"] or 0.0) for row in current_positions)
+            raw_realized_pnl = sum(
+                float(row["realized_pnl_usd"] or 0.0) for row in current_positions
+            )
+            realized_pnl = (
+                raw_realized_pnl + correction_realized_by_arm.get(arm_id, 0.0)
+                - contaminated_realized_by_arm.get(arm_id, 0.0)
+            )
             net_cash_flow = connection.execute(
                 "SELECT COALESCE(SUM(net_cash_flow_usd),0.0) FROM "
                 "chain_meme_trader_trades WHERE definition_version=? AND arm_id=?",
                 (version, arm_id),
             ).fetchone()[0]
-            cash = starting_cash + float(net_cash_flow or 0.0)
+            cash = (
+                starting_cash + float(net_cash_flow or 0.0)
+                + correction_cash_by_arm.get(arm_id, 0.0)
+                - contaminated_net_by_arm.get(arm_id, 0.0)
+            )
             complete = priced_position_count == open_position_count
             has_priced_open_position = priced_position_count > 0
             indicative_complete = indicative_position_count == open_position_count
@@ -29575,6 +30563,14 @@ class Store:
                 "open_position_count": open_position_count,
                 "closed_position_count": closed_position_count,
                 "written_off_position_count": written_off_position_count,
+                "market_fill_correction_count": len(arm_corrections),
+                "accounting_contaminated_position_count": len(arm_contaminations),
+                "unresolved_corrected_position_count": unresolved_position_count,
+                "accounting_status": (
+                    "CAUSAL_REPLAY_EXCLUDES_CONTAMINATED_DESCENDANTS"
+                    if arm_contaminations else "CORRECTED"
+                    if arm_corrections else "RECORDED"
+                ),
                 "priced_position_count": priced_position_count,
                 "unpriced_position_count": open_position_count - priced_position_count,
                 "priced_executable_recovery_usd": (
@@ -29623,8 +30619,19 @@ class Store:
                 ),
                 "win_count": sum(
                     1 for row in current_positions
-                    if str(row["status"]) in {"closed", "written_off"}
+                    if int(row["shadow_cohort_id"]) not in corrected_cohorts
+                    and int(row["shadow_cohort_id"]) not in contaminated_cohorts
+                    and str(row["status"]) in {"closed", "written_off"}
                     and float(row["realized_pnl_usd"] or 0.0) > 0.0
+                ) + sum(
+                    1 for row in current_positions
+                    if int(row["shadow_cohort_id"]) in corrected_cohorts
+                    and int(row["shadow_cohort_id"]) not in contaminated_cohorts
+                    and str(arm_corrections[int(row["shadow_cohort_id"])]["replacement_outcome"])
+                    == "SELL"
+                    and float(row["realized_pnl_usd"] or 0.0)
+                    + float(arm_corrections[int(row["shadow_cohort_id"])]["realized_adjustment_usd"] or 0.0)
+                    > 0.0
                 ),
                 "valuation_status": (
                     "complete_market_mark"
@@ -29652,6 +30659,19 @@ class Store:
                 / float(account["terminal_position_count"])
                 if account["terminal_position_count"] > 0 else None
             )
+            if curve_effective_after:
+                current_curve_point = {
+                    key: value for key, value in account.items()
+                    if key not in {"summary_at"}
+                }
+                current_curve_point.update({
+                    "recorded_at": iso(summary_at),
+                    "synthetic_effective_point": True,
+                })
+                curve = [
+                    *curve[-max(0, int(curve_limit) - 1):],
+                    current_curve_point,
+                ]
             decisions = connection.execute(
                 "SELECT status,reason,COUNT(*) AS count FROM "
                 "chain_meme_trader_entry_decisions WHERE definition_version=? "
@@ -29683,11 +30703,24 @@ class Store:
             strategies.append({
                 **policy, "account": account, "curve": curve,
                 "curve_accounting_status": (
-                    "ledger_frontier_verified" if has_ledger_frontier
+                    "effective_after_accounting_correction"
+                    if curve_effective_after
+                    else "ledger_frontier_verified" if has_ledger_frontier
                     else "legacy_event_time_only"
                 ),
-                "excluded_legacy_curve_points": legacy_curve_points,
+                "excluded_legacy_curve_points": (
+                    legacy_curve_points + excluded_accounting_curve_points
+                ),
+                "raw_curve_preserved_in_ledger": bool(
+                    excluded_accounting_curve_points
+                ),
                 "positions": positions, "trades": trades,
+                "market_fill_corrections": [
+                    dict(row) for row in arm_corrections.values()
+                ],
+                "accounting_contaminations": [
+                    dict(row) for row in arm_contaminations.values()
+                ],
                 "entry_decisions": {
                     "admitted": admitted, "rejected": rejected,
                     "reasons": [dict(row) for row in decisions],

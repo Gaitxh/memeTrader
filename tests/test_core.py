@@ -7166,6 +7166,31 @@ def test_chain_meme_v22_appends_two_filtered_multichain_strategies(tmp_path: Pat
     store.close()
 
 
+def test_chain_meme_v21_v22_effective_metadata_corrects_existing_formula_basis(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "formula-basis-errata.sqlite3", initial_cash_usd=1000)
+    store.register_chain_meme_trader_v22()
+    for version in (
+        Store.CHAIN_MEME_TRADER_V21_VERSION,
+        Store.CHAIN_MEME_TRADER_V22_VERSION,
+    ):
+        row = store.db.execute(
+            "SELECT definition_json FROM chain_meme_trader_v6_registrations "
+            "WHERE definition_version=?", (version,),
+        ).fetchone()
+        stale = json.loads(row["definition_json"])
+        stale["market_mark_formula_basis"] = "entry_signal_price_usd"
+        effective = Store.chain_meme_trader_effective_definition_from_connection(
+            store.db, version, json.dumps(stale),
+        )
+        assert effective["market_mark_formula_basis"] == "entry_execution_price_usd"
+        assert effective["market_mark_formula"].endswith(
+            "entry_execution_price_usd*0.96"
+        )
+    store.close()
+
+
 def test_chain_meme_v22_reuses_historical_momentum_score_for_bsc(tmp_path: Path):
     store = Store(tmp_path / "crosschain-shadow-momentum-v22.sqlite3", initial_cash_usd=1000)
     store.activate_chain_meme_trader_v22()
@@ -7823,6 +7848,539 @@ def _seed_chain_market_position(
             (version, policy["arm_id"], cohort_id, token.token_id, iso(opened_at)),
         )
     return token, cohort_id
+
+
+def test_chain_meme_market_mark_rejects_out_of_order_observation(tmp_path: Path):
+    store = Store(tmp_path / "market-mark-monotonic.sqlite3", initial_cash_usd=1000)
+    token = TokenCandidate(
+        chain="solana", address=str(Pubkey.new_unique()), name="Monotonic",
+        symbol="MONO", source="dexscreener",
+    )
+    newer_at = utcnow()
+    store.upsert_token(token, seen_at=newer_at)
+    store.upsert_chain_meme_trader_market_mark(
+        token,
+        TokenSnapshot(
+            "solana", token.address, 2.0, 10_000, 100_000, 100, 3, 1,
+            observed_at=newer_at, ingested_at=newer_at, provider="dexscreener",
+            raw={"pair": {"pairAddress": "pair-new"}},
+        ),
+        recorded_at=newer_at,
+    )
+    store.upsert_chain_meme_trader_market_mark(
+        token,
+        TokenSnapshot(
+            "solana", token.address, 1.0, 5_000, 50_000, 50, 1, 2,
+            observed_at=newer_at - timedelta(seconds=1),
+            ingested_at=newer_at + timedelta(seconds=1), provider="dexscreener",
+            raw={"pair": {"pairAddress": "pair-old"}},
+        ),
+        recorded_at=newer_at + timedelta(seconds=1),
+    )
+    mark = store.db.execute(
+        "SELECT * FROM chain_meme_trader_market_marks WHERE token_id=?",
+        (token.token_id,),
+    ).fetchone()
+    assert mark["price_usd"] == pytest.approx(2.0)
+    assert mark["pair_address"] == "pair-new"
+    assert mark["observed_at"] == iso(newer_at)
+    assert mark["recorded_at"] == iso(newer_at)
+    assert mark["sample_sequence"] == 1
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_market_mark_history WHERE token_id=?",
+        (token.token_id,),
+    ).fetchone()[0] == 1
+    store.close()
+
+
+def test_chain_meme_market_mark_requires_post_open_and_fresh_structural_evidence(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "market-evidence-order.sqlite3", initial_cash_usd=1000)
+    registration = store.register_chain_meme_trader_v20()
+    store.activate_chain_meme_trader_v20()
+    version = Store.CHAIN_MEME_TRADER_V20_VERSION
+    policy = next(
+        item for item in json.loads(registration["definition_json"])["policies"]
+        if item.get("hard_stop_return") is not None
+    )
+    now = utcnow()
+    opened_at = now - timedelta(seconds=1)
+    token, cohort_id = _seed_chain_market_position(
+        store, version=version, policy=policy, opened_at=opened_at,
+    )
+    store.upsert_chain_meme_trader_market_mark(
+        token,
+        TokenSnapshot(
+            "solana", token.address, 0.1, 10_000, 100_000, 100, 1, 3,
+            observed_at=opened_at - timedelta(seconds=1), ingested_at=now,
+            provider="dexscreener", raw={"pair": {"pairAddress": "pair-A"}},
+        ),
+        recorded_at=now,
+    )
+    assert store.evaluate_chain_meme_trader_market_marks(
+        definition_version=version, now=now,
+    ) == 0
+    store.record_chain_meme_trader_account_snapshots(
+        definition_version=version, now=now,
+    )
+    account = store.db.execute(
+        "SELECT * FROM chain_meme_trader_account_snapshots WHERE definition_version=? "
+        "AND arm_id=? ORDER BY id DESC LIMIT 1", (version, policy["arm_id"]),
+    ).fetchone()
+    assert account["valuation_status"] == "partial_market_mark_unknown"
+    assert account["indicative_equity_usd"] is None
+    summary = Store.chain_meme_trader_summary_from_connection(store.db)
+    strategy = next(
+        item for item in summary["strategies"] if item["arm_id"] == policy["arm_id"]
+    )
+    position = next(
+        item for item in strategy["positions"]
+        if item["shadow_cohort_id"] == cohort_id
+    )
+    assert position["indicative_value_usd"] is None
+
+    first_missing_at = now + timedelta(seconds=1)
+    store.record_chain_meme_trader_market_mark_miss(
+        token_id=token.token_id, chain="solana", address=token.address,
+        recorded_at=first_missing_at,
+    )
+    store.record_chain_meme_trader_market_mark_miss(
+        token_id=token.token_id, chain="solana", address=token.address,
+        recorded_at=first_missing_at + timedelta(seconds=1),
+    )
+    stale_terminal_at = first_missing_at + timedelta(seconds=60, milliseconds=1)
+    assert store.evaluate_chain_meme_trader_market_marks(
+        definition_version=version, now=stale_terminal_at,
+    ) == 0
+    store.record_chain_meme_trader_market_mark_failure(
+        token_id=token.token_id, failure_kind="HTTP_TIMEOUT",
+        recorded_at=stale_terminal_at,
+    )
+    assert store.evaluate_chain_meme_trader_market_marks(
+        definition_version=version, now=stale_terminal_at,
+    ) == 0
+    fresh_structural_at = stale_terminal_at + timedelta(seconds=1)
+    store.record_chain_meme_trader_market_mark_miss(
+        token_id=token.token_id, chain="solana", address=token.address,
+        recorded_at=fresh_structural_at,
+    )
+    assert store.evaluate_chain_meme_trader_market_marks(
+        definition_version=version, now=fresh_structural_at,
+    ) == 1
+    written = store.db.execute(
+        "SELECT status FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND arm_id=? AND shadow_cohort_id=?",
+        (version, policy["arm_id"], cohort_id),
+    ).fetchone()
+    assert written["status"] == "written_off"
+    store.close()
+
+
+def test_chain_meme_market_exit_rejects_screen_value_above_pool_capacity(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "market-pool-capacity.sqlite3", initial_cash_usd=1000)
+    registration = store.register_chain_meme_trader_v20()
+    store.activate_chain_meme_trader_v20()
+    version = Store.CHAIN_MEME_TRADER_V20_VERSION
+    policy = next(
+        item for item in json.loads(registration["definition_json"])["policies"]
+        if item.get("zero_activity_grace_minutes") is not None
+    )
+    trigger_at = utcnow() - timedelta(seconds=2)
+    opened_at = trigger_at - timedelta(
+        minutes=float(policy["zero_activity_grace_minutes"]) + 0.1
+    )
+    token, cohort_id = _seed_chain_market_position(
+        store, version=version, policy=policy, opened_at=opened_at,
+        entry_signal_price=1.0, entry_execution_price=1.04,
+    )
+    for observed_at in (trigger_at, trigger_at + timedelta(seconds=1)):
+        store.upsert_chain_meme_trader_market_mark(
+            token,
+            TokenSnapshot(
+                "solana", token.address, 2.0, 10.0, 100_000, 0.0, 0, 0,
+                observed_at=observed_at, ingested_at=observed_at,
+                provider="dexscreener", raw={"pair": {"pairAddress": "pair-A"}},
+            ),
+            recorded_at=observed_at,
+        )
+        created = store.evaluate_chain_meme_trader_market_marks(
+            definition_version=version, now=observed_at,
+        )
+    assert created == 0
+    position = store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND arm_id=? AND shadow_cohort_id=?",
+        (version, policy["arm_id"], cohort_id),
+    ).fetchone()
+    assert position["status"] == "open"
+    assert position["pending_mark_id"] is not None
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_trades WHERE definition_version=? "
+        "AND arm_id=? AND shadow_cohort_id=? AND side='SELL'",
+        (version, policy["arm_id"], cohort_id),
+    ).fetchone()[0] == 0
+
+    account_at = trigger_at + timedelta(seconds=1)
+    store.record_chain_meme_trader_account_snapshots(
+        definition_version=version, now=account_at,
+    )
+    account = store.db.execute(
+        "SELECT * FROM chain_meme_trader_account_snapshots WHERE definition_version=? "
+        "AND arm_id=? ORDER BY id DESC LIMIT 1", (version, policy["arm_id"]),
+    ).fetchone()
+    assert account["indicative_equity_usd"] is None
+    assert account["valuation_status"] == "partial_market_mark_unknown"
+    summary = Store.chain_meme_trader_summary_from_connection(store.db)
+    strategy = next(
+        item for item in summary["strategies"] if item["arm_id"] == policy["arm_id"]
+    )
+    detail = next(
+        item for item in strategy["positions"]
+        if item["shadow_cohort_id"] == cohort_id
+    )
+    assert detail["indicative_value_usd"] is None
+    assert detail["indicative_sellability"] == "INSUFFICIENT_POOL_CAPACITY"
+
+    terminal_at = trigger_at + timedelta(seconds=62)
+    store.upsert_chain_meme_trader_market_mark(
+        token,
+        TokenSnapshot(
+            "solana", token.address, 2.0, 10.0, 100_000, 0.0, 0, 0,
+            observed_at=terminal_at, ingested_at=terminal_at,
+            provider="dexscreener", raw={"pair": {"pairAddress": "pair-A"}},
+        ),
+        recorded_at=terminal_at,
+    )
+    assert store.evaluate_chain_meme_trader_market_marks(
+        definition_version=version, now=terminal_at,
+    ) == 1
+    terminal = store.db.execute(
+        "SELECT status,close_reason FROM chain_meme_trader_positions "
+        "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+        (version, policy["arm_id"], cohort_id),
+    ).fetchone()
+    assert terminal["status"] == "written_off"
+    assert terminal["close_reason"] == (
+        "market_capacity_insufficient_over_60_seconds_writeoff"
+    )
+    store.close()
+
+
+def test_chain_meme_market_capacity_recovers_before_writeoff(tmp_path: Path):
+    store = Store(tmp_path / "market-capacity-recovery.sqlite3", initial_cash_usd=1000)
+    registration = store.register_chain_meme_trader_v20()
+    store.activate_chain_meme_trader_v20()
+    version = Store.CHAIN_MEME_TRADER_V20_VERSION
+    policy = next(
+        item for item in json.loads(registration["definition_json"])["policies"]
+        if item.get("zero_activity_grace_minutes") is not None
+    )
+    trigger_at = utcnow() - timedelta(seconds=4)
+    token, cohort_id = _seed_chain_market_position(
+        store, version=version, policy=policy,
+        opened_at=trigger_at - timedelta(
+            minutes=float(policy["zero_activity_grace_minutes"]) + 0.1
+        ),
+    )
+    for price, liquidity, at in (
+        (2.0, 10.0, trigger_at),
+        (2.0, 10.0, trigger_at + timedelta(seconds=1)),
+        (1.0, 1_000.0, trigger_at + timedelta(seconds=2)),
+    ):
+        store.upsert_chain_meme_trader_market_mark(
+            token,
+            TokenSnapshot(
+                "solana", token.address, price, liquidity, 100_000, 0.0, 0, 0,
+                observed_at=at, ingested_at=at, provider="dexscreener",
+                raw={"pair": {"pairAddress": "pair-A"}},
+            ),
+            recorded_at=at,
+        )
+        created = store.evaluate_chain_meme_trader_market_marks(
+            definition_version=version, now=at,
+        )
+    assert created == 1
+    position = store.db.execute(
+        "SELECT status FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND arm_id=? AND shadow_cohort_id=?",
+        (version, policy["arm_id"], cohort_id),
+    ).fetchone()
+    assert position["status"] == "closed"
+    store.close()
+
+
+def test_chain_meme_fresh_visible_pool_below_one_usd_is_immediate_writeoff(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "market-dust-pool-writeoff.sqlite3", initial_cash_usd=1000)
+    registration = store.register_chain_meme_trader_v20()
+    store.activate_chain_meme_trader_v20()
+    version = Store.CHAIN_MEME_TRADER_V20_VERSION
+    policy = json.loads(registration["definition_json"])["policies"][0]
+    observed_at = utcnow()
+    token, cohort_id = _seed_chain_market_position(
+        store, version=version, policy=policy,
+        opened_at=observed_at - timedelta(seconds=1),
+        entry_signal_price=1.0, entry_execution_price=1.04,
+    )
+    store.upsert_chain_meme_trader_market_mark(
+        token,
+        TokenSnapshot(
+            "solana", token.address, 5.12, 0.05, 100_000, 0.0, 1, 1,
+            observed_at=observed_at, ingested_at=observed_at,
+            provider="dexscreener", raw={"pair": {"pairAddress": "pair-A"}},
+        ),
+        recorded_at=observed_at,
+    )
+
+    store.record_chain_meme_trader_account_snapshots(
+        definition_version=version, now=observed_at,
+    )
+    account = store.db.execute(
+        "SELECT * FROM chain_meme_trader_account_snapshots WHERE definition_version=? "
+        "AND arm_id=? ORDER BY id DESC LIMIT 1", (version, policy["arm_id"]),
+    ).fetchone()
+    assert account["indicative_equity_usd"] == pytest.approx(980.0)
+    assert account["indicative_total_pnl_usd"] == pytest.approx(-20.0)
+    summary = Store.chain_meme_trader_summary_from_connection(store.db)
+    strategy = next(
+        item for item in summary["strategies"] if item["arm_id"] == policy["arm_id"]
+    )
+    detail = next(
+        item for item in strategy["positions"]
+        if item["shadow_cohort_id"] == cohort_id
+    )
+    assert detail["indicative_value_usd"] == 0.0
+    assert detail["indicative_unrealized_pnl_usd"] == pytest.approx(-20.0)
+    assert detail["indicative_sellability"] == "DUST_POOL_WRITEOFF"
+
+    assert store.evaluate_chain_meme_trader_market_marks(
+        definition_version=version, now=observed_at,
+    ) == 1
+    position = store.db.execute(
+        "SELECT status,close_reason FROM chain_meme_trader_positions "
+        "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+        (version, policy["arm_id"], cohort_id),
+    ).fetchone()
+    assert position["status"] == "written_off"
+    assert position["close_reason"] == "dex_pool_liquidity_below_1_usd_writeoff"
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_trades WHERE definition_version=? "
+        "AND arm_id=? AND shadow_cohort_id=? AND side='WRITEOFF'",
+        (version, policy["arm_id"], cohort_id),
+    ).fetchone()[0] == 1
+    store.close()
+
+
+def test_chain_meme_historical_impossible_fill_gets_append_only_writeoff_correction(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "market-capacity-correction.sqlite3", initial_cash_usd=1000)
+    registration = store.register_chain_meme_trader_v20()
+    store.activate_chain_meme_trader_v20()
+    version = Store.CHAIN_MEME_TRADER_V20_VERSION
+    policy = json.loads(registration["definition_json"])["policies"][0]
+    source_at = utcnow() - timedelta(minutes=2)
+    token, cohort_id = _seed_chain_market_position(
+        store, version=version, policy=policy,
+        opened_at=source_at - timedelta(minutes=1),
+    )
+    position = store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND arm_id=? AND shadow_cohort_id=?",
+        (version, policy["arm_id"], cohort_id),
+    ).fetchone()
+    sold_amount = int(position["amount_raw"])
+    gross = 20.0 * 2.0 / 1.04 * 0.96
+    evidence = {
+        "post_confirmation": {
+            "sample_sequence": 2,
+            "pair_address": "pair-A",
+            "price_usd": 2.0,
+            "liquidity_usd": 0.5,
+            "observed_at": iso(source_at),
+            "recorded_at": iso(source_at),
+        }
+    }
+    with store.db:
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_marks("
+            "definition_version,arm_id,shadow_cohort_id,recorded_at,action,reason,"
+            "sell_amount_raw,market_pre_sequence,market_pair_address,"
+            "market_post_sequence,market_post_pair_address,market_post_price_usd,"
+            "market_post_recorded_at,trigger_evidence_json,status) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'filled')",
+            (
+                version, policy["arm_id"], cohort_id, iso(source_at),
+                "INACTIVITY_EXIT", "fixture_bad_fill", str(sold_amount), 1,
+                "pair-A", 2, "pair-A", 2.0, iso(source_at), json.dumps(evidence),
+            ),
+        )
+        mark_id = int(store.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_fills("
+            "definition_version,intent_id,result_id,attempt_id,execution_mode,adapter,"
+            "arm_id,shadow_cohort_id,token_id,side,input_amount_raw,output_amount_raw,"
+            "gross_usd,filled_at) VALUES(?,?,?,?, 'paper',"
+            "'dexscreener-market-paper/v1',?,?,?,'SELL',?,?,?,?)",
+            (
+                version, -mark_id, -mark_id, -mark_id, policy["arm_id"], cohort_id,
+                token.token_id, str(sold_amount), str(round(gross * 1_000_000)),
+                gross, iso(source_at),
+            ),
+        )
+        fill_id = int(store.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+        store.db.execute(
+            "UPDATE chain_meme_trader_positions SET amount_raw='0',"
+            "remaining_quantity_tokens=0,realized_proceeds_usd=?,allocated_cost_usd=20,"
+            "status='closed',realized_pnl_usd=?,closed_at=?,last_fill_id=? "
+            "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+            (
+                gross, gross - 20.0, iso(source_at), fill_id,
+                version, policy["arm_id"], cohort_id,
+            ),
+        )
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_trades("
+            "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+            "net_cash_flow_usd,realized_pnl_usd,reason,created_at,execution_fill_id) "
+            "VALUES(?,?,?,?, 'SELL',?,?,?,?,?,?)",
+            (
+                version, policy["arm_id"], cohort_id, token.token_id, gross, gross,
+                gross - 20.0, "fixture_bad_fill", iso(source_at), fill_id,
+            ),
+        )
+        bad_trade_id = int(store.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+        descendant_cohort_id = cohort_id + 1000
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_trades("
+            "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+            "net_cash_flow_usd,realized_pnl_usd,reason,created_at) "
+            "VALUES(?,?,?,?, 'BUY',1000,-1000,NULL,'fixture_false_cash_descendant',?)",
+            (
+                version, policy["arm_id"], descendant_cohort_id, token.token_id,
+                iso(source_at + timedelta(seconds=70)),
+            ),
+        )
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_market_fill_corrections("
+            "source_trade_id,definition_version,arm_id,shadow_cohort_id,token_id,"
+            "source_fill_id,source_mark_id,original_gross_usd,post_liquidity_usd,"
+            "max_market_gross_usd,replacement_outcome,replacement_gross_usd,"
+            "cash_adjustment_usd,realized_adjustment_usd,replacement_observed_at,"
+            "reason,evidence_json,recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                -999, version, "fixture-old-arm", -999, token.token_id, -999, -999,
+                0.0, 1.0, 1.0, "UNRESOLVED", None, 0.0, 0.0, None,
+                "fixture_older_correction", "{}", iso(source_at - timedelta(seconds=1)),
+            ),
+        )
+    for seconds in (30, 61):
+        at = source_at + timedelta(seconds=seconds)
+        store.upsert_chain_meme_trader_market_mark(
+            token,
+            TokenSnapshot(
+                "solana", token.address, 2.0, 10.0, 100_000, 0.0, 0, 0,
+                observed_at=at, ingested_at=at, provider="dexscreener",
+                raw={"pair": {"pairAddress": "pair-A"}},
+            ),
+            recorded_at=at,
+        )
+    assert store.record_chain_meme_trader_account_snapshots(
+        definition_version=version, now=source_at + timedelta(seconds=80),
+    ) > 0
+    assert store.record_chain_meme_trader_market_capacity_corrections(
+        definition_version=version,
+        recorded_at=source_at + timedelta(seconds=120),
+    ) == 1
+    assert store.record_chain_meme_trader_market_capacity_corrections(
+        definition_version=version,
+    ) == 0
+    correction = store.db.execute(
+        "SELECT * FROM chain_meme_trader_market_fill_corrections "
+        "WHERE source_trade_id=?", (bad_trade_id,),
+    ).fetchone()
+    assert correction["replacement_outcome"] == "WRITEOFF"
+    assert correction["replacement_observed_at"] == iso(source_at)
+    assert json.loads(correction["evidence_json"])["terminal_frame"][
+        "dust_pool_immediate"
+    ] is True
+    assert correction["cash_adjustment_usd"] == pytest.approx(-gross)
+    assert correction["realized_adjustment_usd"] == pytest.approx(-gross)
+    contamination = store.db.execute(
+        "SELECT * FROM chain_meme_trader_accounting_contaminations "
+        "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+        (version, policy["arm_id"], descendant_cohort_id),
+    ).fetchone()
+    assert contamination["reason"] == (
+        "historical_buy_depended_on_invalid_market_fill_cash"
+    )
+    raw_trade = store.db.execute(
+        "SELECT gross_usd FROM chain_meme_trader_trades WHERE id=?", (bad_trade_id,),
+    ).fetchone()
+    assert raw_trade["gross_usd"] == pytest.approx(gross)
+
+    summary = Store.chain_meme_trader_summary_from_connection(store.db)
+    strategy = next(
+        item for item in summary["strategies"] if item["arm_id"] == policy["arm_id"]
+    )
+    assert strategy["account"]["cash_usd"] == pytest.approx(980.0)
+    assert strategy["account"]["realized_pnl_usd"] == pytest.approx(-20.0)
+    assert strategy["account"]["written_off_position_count"] == 1
+    corrected_position = next(
+        item for item in strategy["positions"]
+        if item["shadow_cohort_id"] == cohort_id
+    )
+    assert corrected_position["recorded_realized_pnl_usd"] == pytest.approx(
+        gross - 20.0
+    )
+    assert corrected_position["status"] == "written_off"
+    assert corrected_position["recorded_status"] == "closed"
+    assert corrected_position["realized_pnl_usd"] == pytest.approx(-20.0)
+    assert corrected_position["effective_status"] == "written_off"
+    corrected_trade = next(
+        item for item in strategy["trades"] if item["id"] == bad_trade_id
+    )
+    assert corrected_trade["side"] == "WRITEOFF"
+    assert corrected_trade["gross_usd"] == 0.0
+    assert corrected_trade["realized_pnl_usd"] == pytest.approx(-20.0)
+    assert corrected_trade["raw_gross_usd"] == pytest.approx(gross)
+    assert corrected_trade["accounting_status"] == "MARKET_FILL_CAPACITY_CORRECTED"
+    contaminated_trade = next(
+        item for item in strategy["trades"]
+        if item["shadow_cohort_id"] == descendant_cohort_id
+    )
+    assert contaminated_trade["side"] == "EXCLUDED"
+    assert contaminated_trade["gross_usd"] is None
+    assert contaminated_trade["raw_gross_usd"] == 1000.0
+    assert contaminated_trade["formal_metrics_eligible"] is False
+    store.record_chain_meme_trader_account_snapshots(
+        definition_version=version, now=utcnow(),
+    )
+    persisted_account = store.db.execute(
+        "SELECT * FROM chain_meme_trader_account_snapshots "
+        "WHERE definition_version=? AND arm_id=? ORDER BY id DESC LIMIT 1",
+        (version, policy["arm_id"]),
+    ).fetchone()
+    assert persisted_account["cash_usd"] == pytest.approx(980.0)
+    assert persisted_account["realized_pnl_usd"] == pytest.approx(-20.0)
+    corrected_summary = Store.chain_meme_trader_summary_from_connection(store.db)
+    corrected_strategy = next(
+        item for item in corrected_summary["strategies"]
+        if item["arm_id"] == policy["arm_id"]
+    )
+    assert corrected_strategy["curve_accounting_status"] == (
+        "effective_after_accounting_correction"
+    )
+    assert corrected_strategy["raw_curve_preserved_in_ledger"] is True
+    assert all(
+        abs(float(point.get("cash_usd") or 0.0)) < 10_000.0
+        for point in corrected_strategy["curve"]
+    )
+    store.close()
 
 
 def test_chain_meme_market_entry_uses_real_quantity_and_two_sided_slippage_identity(
