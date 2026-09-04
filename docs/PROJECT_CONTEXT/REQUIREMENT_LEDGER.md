@@ -116,3 +116,5 @@
 | CHAIN-APPEND-ONLY-001 | 旧策略持续运行；新策略从部署时点增量加入；不重置、不回填、不清历史或开放仓 | CONTINUOUS / IMPLEMENTED | v22 保留旧 124 并运行 127 个策略；多次受控重启前后策略、交易和开放仓连续 | 不同 forward age 正常；比较必须标成熟度，不能只按累计 PNL |
 | CHAIN-TWO-HOUR-CYCLE-001 | 每两小时执行结果复盘、系统健康检查、成功/失败/错失分析；只有足够证据才新增独立策略 | CONTINUOUS / ACTIVE | `memeTrader 两小时复盘与增量策略循环` heartbeat 已启用 | 不强制每轮造策略；系统缺陷先修，污染结果不得评价策略；新策略永远 append-only |
 | CHAIN-HELD-MARK-001 | 后台持仓行情、计算和退出优先于 Web 刷新；同 Token 去重采集并公平覆盖全部开放持仓 | CONTINUOUS / IMPLEMENTED | `128ecae`–`e4aa02d`：开放持仓优先、LRU 轮转、30 Token 批量、4 批有界并发、失败让位、批次健康心跳；无 mark 开放 Token 237→0 | DexScreener 超时不是撤池；池流动性 `<1 USD` 才立即全损；其他池消失遵循既定超过 60 秒/前后采样语义 |
+| CHAIN-ACCOUNTING-001 | PNL、终局、回撤、持仓数量与污染排除必须来自同一有效账本语义 | CONTINUOUS / IMPLEMENTED | `eefe591`：污染与修正交集不进入正式统计；回撤改用完整 realized terminal 序列；持仓展示真实 Token quantity；池 `<1 USD` 仍按剩余全损 | 不删除污染历史；不以截断 UI 曲线计算正式回撤；不把 synthetic `amount_raw` 当真实币数 |
+| CHAIN-WEB-PRIORITY-001 | Web 刷新与后台行情/计算解耦，全部资源优先保证持仓行情、判断和退出 | CONTINUOUS / IMPLEMENTED | `0cc9f5c`、`cc718f4`、`02bd5dc`：轻量 health、按本轮刷新 Token 评估退出、6 秒 compact cache；热缓存约 42ms | 冷 `/api/live` 仍约 2.8–4.1 秒；旧 `/api/state` 为重型历史接口且当前 UI 不调用，不得反向拖慢后台 |
