@@ -27,6 +27,7 @@ class ChainWebData:
 
     LIVE_SPARKLINE_POINTS = 12
     LIVE_DETAIL_CURVE_POINTS = 300
+    LIVE_OPEN_POSITION_LIMIT = 200
     STATE_CACHE_MAX_ENTRIES = 16
 
     def __init__(self, config_path: str | Path):
@@ -330,7 +331,7 @@ class ChainWebData:
                 return cached[1]
         payload = (
             self._compact_state_uncached(arm_id=cache_key[1])
-            if compact else self._state_uncached()
+            if compact else self._state_uncached(arm_id=cache_key[1])
         )
         with self._cache_lock:
             self._state_cache[cache_key] = (time.monotonic(), payload)
@@ -829,25 +830,30 @@ class ChainWebData:
                     "curve": curve,
                 })
 
-            open_rows = (
-                self._rows(
-                    connection,
-                    "SELECT p.arm_id,p.shadow_cohort_id,p.token_id,p.stake_usd,"
-                    "p.amount_raw,p.initial_amount_raw,p.entry_signal_price_usd,"
-                    "p.entry_execution_price_usd,"
-                    "p.allocated_cost_usd,p.realized_pnl_usd,"
-                    "p.status,p.opened_at,p.last_evaluated_at,m.pair_address,"
-                    "m.provider AS market_provider,m.price_usd,m.liquidity_usd,"
-                    "m.status AS market_status,m.consecutive_misses,"
-                    "m.observed_at AS market_observed_at,"
-                    "m.recorded_at AS market_recorded_at,m.last_success_at "
-                    "FROM chain_meme_trader_positions p LEFT JOIN "
-                    "chain_meme_trader_market_marks m ON m.token_id=p.token_id "
-                    "WHERE p.definition_version=? AND p.status<>'ineligible' AND p.arm_id=? "
-                    "ORDER BY p.opened_at DESC",
-                    (active_version, arm_id),
-                )
-                if arm_id else []
+            open_filter = (
+                "p.status<>'ineligible' AND p.arm_id=?"
+                if arm_id else "p.status='open'"
+            )
+            open_values: tuple[Any, ...] = (
+                (active_version, arm_id, self.LIVE_OPEN_POSITION_LIMIT)
+                if arm_id else (active_version, self.LIVE_OPEN_POSITION_LIMIT)
+            )
+            open_rows = self._rows(
+                connection,
+                "SELECT p.arm_id,p.shadow_cohort_id,p.token_id,p.stake_usd,"
+                "p.amount_raw,p.initial_amount_raw,p.entry_signal_price_usd,"
+                "p.entry_execution_price_usd,"
+                "p.allocated_cost_usd,p.realized_pnl_usd,"
+                "p.status,p.opened_at,p.closed_at,p.close_reason,p.last_evaluated_at,"
+                "m.pair_address,m.provider AS market_provider,m.price_usd,m.liquidity_usd,"
+                "m.status AS market_status,m.consecutive_misses,"
+                "m.observed_at AS market_observed_at,"
+                "m.recorded_at AS market_recorded_at,m.last_success_at "
+                "FROM chain_meme_trader_positions p LEFT JOIN "
+                "chain_meme_trader_market_marks m ON m.token_id=p.token_id "
+                f"WHERE p.definition_version=? AND {open_filter} "
+                "ORDER BY p.opened_at DESC LIMIT ?",
+                open_values,
             )
             slippage = int(definition.get("slippage_bps") or 400) / 10_000.0
             open_positions: list[dict[str, Any]] = []
@@ -934,6 +940,7 @@ class ChainWebData:
                         "valid" if holding_seconds >= 0.0 else "invalid_future_opened_at"
                     ),
                     "stake_usd": row["stake_usd"],
+                    "amount_raw": row["amount_raw"],
                     "realized_pnl_usd": row["realized_pnl_usd"],
                     "price_usd": row["price_usd"],
                     "liquidity_usd": row["liquidity_usd"],
@@ -947,11 +954,132 @@ class ChainWebData:
                         indicative_value - remaining_cost
                         if indicative_value is not None else None
                     ),
+                    "indicative_source": (
+                        "dex_pool_below_1_usd_full_loss"
+                        if fresh_market and row.get("liquidity_usd") is not None
+                        and float(row["liquidity_usd"]) < 1.0
+                        else "dex_price_mark_4pct_haircut" if fresh_market else None
+                    ),
+                    "indicative_price_usd": row["price_usd"],
+                    "indicative_liquidity_usd": row["liquidity_usd"],
+                    "indicative_market_status": row["market_status"],
+                    "indicative_mark_age_seconds": market_age,
+                    "indicative_mark_at": market_at,
+                    "indicative_sellability": (
+                        "DUST_POOL_WRITEOFF"
+                        if fresh_market and row.get("liquidity_usd") is not None
+                        and float(row["liquidity_usd"]) < 1.0
+                        else "MARK_SELLABLE" if fresh_market
+                        else "PAIR_MISSING" if row.get("market_status") == "MISSING"
+                        else "STALE_MARK" if row.get("market_status") == "VISIBLE"
+                        else "AWAITING_MARK"
+                    ),
                 })
+            if arm_id:
+                detail = Store.chain_meme_trader_summary_from_connection(
+                    connection,
+                    trade_limit=100,
+                    curve_limit=self.LIVE_DETAIL_CURVE_POINTS,
+                    arm_id=arm_id,
+                )
+                detail_strategy = next(iter(detail.get("strategies") or []), None)
+                if detail_strategy is not None:
+                    strategies = [
+                        ({
+                            **strategy,
+                            "positions": detail_strategy.get("positions") or [],
+                            "trades": detail_strategy.get("trades") or [],
+                        }
+                         if str(strategy.get("arm_id") or "") == arm_id else strategy)
+                        for strategy in strategies
+                    ]
             pending_marks = connection.execute(
                 "SELECT COUNT(*) FROM chain_meme_trader_marks WHERE definition_version=? "
                 "AND status IN ('pending','retry','quoting')", (active_version,),
             ).fetchone()[0]
+            held_monitor = connection.execute(
+                "SELECT COUNT(*) AS state_count,"
+                "SUM(CASE WHEN s.risk_state='HEALTHY' THEN 1 ELSE 0 END) AS healthy_count,"
+                "SUM(CASE WHEN s.risk_state='ALERT' THEN 1 ELSE 0 END) AS alert_count,"
+                "MAX(s.observed_at) AS latest_observed_at "
+                "FROM onchain_held_account_states s "
+                "JOIN onchain_held_account_targets t ON t.id=s.target_id "
+                "WHERE t.monitor_version=? AND t.position_definition_version=?",
+                (Store.ONCHAIN_HELD_ACCOUNT_MONITOR_VERSION, active_version),
+            ).fetchone()
+            recent_decisions = self._rows(
+                connection,
+                "SELECT arm_id,shadow_cohort_id,token_id,status,reason,decided_at "
+                "FROM chain_meme_trader_entry_decisions WHERE definition_version=? "
+                "ORDER BY id DESC LIMIT 30",
+                (active_version,),
+            )
+            recent_intents = self._rows(
+                connection,
+                "SELECT id,arm_id,shadow_cohort_id,token_id,side,status,reason,"
+                "created_at,next_attempt_at,completed_at FROM chain_meme_trader_order_intents "
+                "WHERE definition_version=? ORDER BY id DESC LIMIT 30",
+                (active_version,),
+            )
+            recent_attempts = self._rows(
+                connection,
+                "SELECT a.id,a.side,a.shadow_cohort_id,a.adapter,a.input_amount_raw,"
+                "a.intent_ids_json,a.requested_at,r.terminal_status,r.validity_status,"
+                "r.completed_at FROM chain_meme_trader_execution_attempts a "
+                "LEFT JOIN chain_meme_trader_execution_results r ON r.attempt_id=a.id "
+                "WHERE a.definition_version=? ORDER BY a.id DESC LIMIT 30",
+                (active_version,),
+            )
+            recent_fills = self._rows(
+                connection,
+                "SELECT id,arm_id,shadow_cohort_id,token_id,side,input_amount_raw,"
+                "output_amount_raw,gross_usd,adapter,filled_at "
+                "FROM chain_meme_trader_fills WHERE definition_version=? "
+                "ORDER BY id DESC LIMIT 30",
+                (active_version,),
+            )
+            intent_counts = {
+                str(row["status"]): int(row["count"])
+                for row in connection.execute(
+                    "SELECT status,COUNT(*) AS count FROM chain_meme_trader_order_intents "
+                    "WHERE definition_version=? GROUP BY status",
+                    (active_version,),
+                )
+            }
+            oldest_ready_buy = connection.execute(
+                "SELECT MIN(created_at) AS created_at FROM chain_meme_trader_order_intents "
+                "WHERE definition_version=? AND side='BUY' AND status IN ('ready','retry')",
+                (active_version,),
+            ).fetchone()
+            zero_attempt_counts = connection.execute(
+                "SELECT "
+                "SUM(CASE WHEN i.status IN ('ready','retry') THEN 1 ELSE 0 END) AS waiting,"
+                "SUM(CASE WHEN i.status='failed' THEN 1 ELSE 0 END) AS failed "
+                "FROM chain_meme_trader_order_intents i "
+                "WHERE i.definition_version=? AND i.side='BUY' AND NOT EXISTS ("
+                "SELECT 1 FROM chain_meme_trader_execution_attempts a,"
+                "json_each(a.intent_ids_json) j WHERE a.definition_version=i.definition_version "
+                "AND CAST(j.value AS INTEGER)=i.id)",
+                (active_version,),
+            ).fetchone()
+            execution_capacity = {
+                "ready_buy_count": int(intent_counts.get("ready", 0))
+                + int(intent_counts.get("retry", 0)),
+                "oldest_ready_buy_age_seconds": (
+                    max(
+                        0.0,
+                        (current - parse_time(oldest_ready_buy["created_at"])).total_seconds(),
+                    )
+                    if oldest_ready_buy and oldest_ready_buy["created_at"] else None
+                ),
+                "zero_attempt_waiting_buy_count": int(zero_attempt_counts["waiting"] or 0),
+                "zero_attempt_failed_buy_count": int(zero_attempt_counts["failed"] or 0),
+                "buy_queue_delay_p95_seconds": None,
+                "signal_to_execution_sla_seconds": float(
+                    definition.get("max_signal_to_execution_start_seconds", 45.0)
+                ),
+                "emergency_sell_preempts": True,
+            }
             health = self._rows(
                 connection,
                 "SELECT source,last_ok_at,last_item_at,last_error_at,last_error "
@@ -1029,6 +1157,14 @@ class ChainWebData:
                 "ORDER BY id DESC LIMIT 12",
             )
             error_summary = self._error_summary_from_connection(connection)
+            wal_path = Path(f"{self.database}-wal")
+            disk = shutil.disk_usage(self.database.parent)
+            storage = {
+                "database_bytes": self.database.stat().st_size,
+                "wal_bytes": wal_path.stat().st_size if wal_path.exists() else 0,
+                "free_bytes": disk.free,
+                "total_bytes": disk.total,
+            }
         return {
             "status": "running",
             "version": active_version,
@@ -1045,31 +1181,43 @@ class ChainWebData:
                 "open_position_count": effective_open_position_count,
                 "unique_held_token_count": len(effective_open_token_ids),
                 "pending_exit_quotes": int(pending_marks or 0),
+                "held_account_states": int(held_monitor["state_count"] or 0),
+                "held_account_healthy": int(held_monitor["healthy_count"] or 0),
+                "held_account_alerts": int(held_monitor["alert_count"] or 0),
+                "held_account_latest_at": held_monitor["latest_observed_at"],
+                "storage": storage,
             },
             "strategies": strategies,
             "source_health": health,
             "recent_activity": effective_recent_activity,
+            "recent_decisions": recent_decisions,
             "recent_risk": recent_risk,
             "discovery": {
                 "rounds": discovery_rounds,
                 "tokens": discoveries,
                 "latest_at": discoveries[0].get("observed_at") if discoveries else None,
             },
-            "trading": {"exit_queue": exit_queue},
+            "trading": {
+                "intents": recent_intents,
+                "attempts": recent_attempts,
+                "fills": recent_fills,
+                "intent_counts": intent_counts,
+                "execution_capacity": execution_capacity,
+                "exit_queue": exit_queue,
+            },
             "error_summary": error_summary,
-            **({
-                "requested_arm_id": arm_id,
-                "open_positions": open_positions,
-            } if arm_id else {}),
+            "open_positions": open_positions,
+            **({"requested_arm_id": arm_id} if arm_id else {}),
         }
 
-    def _state_uncached(self) -> dict[str, Any]:
+    def _state_uncached(self, *, arm_id: str | None = None) -> dict[str, Any]:
         current = utcnow()
         with self._connect() as connection:
             summary = Store.chain_meme_trader_summary_from_connection(
                 connection,
                 trade_limit=200,
                 curve_limit=240,
+                arm_id=arm_id,
             )
             active_version = str(summary.get("version") or Store.CHAIN_MEME_TRADER_VERSION)
             exit_challenger = (
@@ -2913,7 +3061,10 @@ class ChainWebHandler(BaseHTTPRequestHandler):
             return
         if route == "/api/state":
             try:
-                self._send_json(self.server.data.state())
+                arm_id = str(
+                    parse_qs(parsed.query).get("arm_id", [""])[0]
+                ).strip() or None
+                self._send_json(self.server.data.state(arm_id=arm_id))
             except (OSError, sqlite3.Error, ValueError) as exc:
                 self.server.data.record_web_error(route, exc)
                 self._send_json(

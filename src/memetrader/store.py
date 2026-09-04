@@ -30646,7 +30646,7 @@ class Store:
     @classmethod
     def chain_meme_trader_summary_from_connection(
         cls, connection: sqlite3.Connection, *, trade_limit: int = 200,
-        curve_limit: int = 240,
+        curve_limit: int = 240, arm_id: str | None = None,
     ) -> dict[str, Any]:
         summary_at = parse_time(utcnow())
         tables = {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -30766,7 +30766,11 @@ class Store:
         previous_total_pnl: float | None = None
         open_position_count_all = 0
         unique_held_token_ids: set[str] = set()
-        for policy in definition["policies"]:
+        policies = [
+            policy for policy in definition["policies"]
+            if arm_id is None or str(policy.get("arm_id") or "") == arm_id
+        ]
+        for policy in policies:
             arm_id = str(policy["arm_id"])
             arm_corrections = {
                 cohort_id: row

@@ -169,6 +169,8 @@ def test_chain_meme_trader_api_and_static_page_preserve_forward_contract(tmp_pat
     assert payload["exit_challenger"]["status"] == "not_registered"
     assert payload["trading"]["intent_counts"] == {}
     assert "fetch(`/api/live${query}`" in app
+    assert "fetch('/api/live'" in app
+    assert "fetch('/api/state'" not in app
     assert "fetch('/api/strategy-universe'" in app
     assert "function renderUniverse()" in app
     assert "document.visibilityState==='visible'?5000:30000" in app
@@ -209,7 +211,7 @@ def test_chain_meme_trader_api_and_static_page_preserve_forward_contract(tmp_pat
         live = live_response.json()
         assert "strategy_registry" not in live
         assert "positions" not in live["strategies"][0]
-        assert "open_positions" not in live
+        assert live["open_positions"] == []
         assert len(live["strategies"][0]["curve"]) == (
             ChainWebData.LIVE_SPARKLINE_POINTS
         )
@@ -516,7 +518,7 @@ def test_chain_web_reports_distinct_tokens_holding_duration_and_trade_markers(
     assert len(state["open_positions"]) == len(positions)
     assert all(item["holding_seconds"] >= 0.0 for item in state["open_positions"])
     compact = web.state(compact=True)
-    assert "open_positions" not in compact
+    assert len(compact["open_positions"]) == len(positions)
     assert compact["system"]["open_position_count"] == len(positions)
     focused = web.state(compact=True, arm_id=positions[0]["arm_id"])
     assert focused["requested_arm_id"] == positions[0]["arm_id"]
@@ -530,6 +532,12 @@ def test_chain_web_reports_distinct_tokens_holding_duration_and_trade_markers(
         20.0 * 0.96 / 1.04 - 20.0
     )
     assert focused["open_positions"][0]["market_is_fresh"] is True
+    focused_strategy = next(
+        item for item in focused["strategies"]
+        if item["arm_id"] == positions[0]["arm_id"]
+    )
+    assert len(focused_strategy["positions"]) == 1
+    assert focused_strategy["trades"]
 
     detail = web.token_detail(token.token_id)
     assert len(detail["positions"]) == len(positions)

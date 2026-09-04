@@ -285,7 +285,7 @@ function renderUniverseDetail(family){
   const target=$('#strategy-detail'); if(!target||!family)return;
   selectedCanonical=family.canonical_id||family.behavior_contract_hash;
   const live=liveMetricForFamily(family), members=family.members||[], strategy=live.strategy||{};
-  const trades=(strategy.trades||[]).slice(-30).reverse();
+  const trades=(strategy.trades||[]).slice(0,30);
   const positions=(strategy.positions||[]).slice(0,30);
   const canRun=live.status==='ACTIVE_FORWARD',notional=state?.definition?.policy_notional_usd,slippageBps=state?.definition?.slippage_bps;
   const positionCards=positions.map(item=>{
@@ -338,7 +338,7 @@ function renderUniverse(){
   $('#universe-count').textContent=`显示 ${rows.length} / ${families.length} · ${time(state?.generated_at||universe.generated_at)} 刷新`;
   $('#universe-refresh').textContent=`${active} 个前向运行 · ${replicas} 个历史规则 · ${successors} 个 DexScreener 继承策略`;
   $('#canonical-universe tbody').innerHTML=rows.map((f,index)=>{const live=liveMetricForFamily(f),id=f.canonical_id||f.behavior_contract_hash;return `<tr class="strategy-row ${selectedCanonical===id?'selected':''}" data-canonical="${esc(id)}"><td>${index+1}</td><td><strong>${esc(strategyLabel(f))}</strong><small>唯一编号 #${String(strategyIndex(f)).padStart(3,'0')}</small></td><td><span class="status-pill ${live.status==='ACTIVE_FORWARD'?'closed':'retry'}">${esc(fidelityLabel(f))}</span></td><td><span class="maturity ${esc(live.maturity)}">${esc(maturityText(live.maturity))}</span><small>运行 ${esc(elapsedText(live.forwardAgeSeconds))}</small></td><td>${esc(readable(f.entry_family,entryLabels))}</td><td>${esc(readable(f.exit_family,exitLabels))}</td><td class="${pnlClass(live.pnl)}">${live.pnl==null?'价格待更新':money(live.pnl)}${strategyMetrics(live)}</td><td class="${pnlClass(live.realizedPnl)}">${live.realizedPnl==null?'—':money(live.realizedPnl)}</td><td class="${pnlClass(live.unrealizedPnl)}">${live.unrealizedPnl==null?'价格待更新':money(live.unrealizedPnl)}</td><td>${strategySparkline(live.strategy)}</td><td>${live.open}</td><td>${live.terminal}</td><td>${live.winRate==null?'等待样本':percent(live.winRate)}</td><td>${time(live.updatedAt)}</td></tr>`;}).join('')||'<tr><td colspan="14" class="empty">没有符合当前筛选条件的策略</td></tr>';
-  $$('#canonical-universe tbody tr[data-canonical]').forEach(row=>row.addEventListener('click',()=>{const family=families.find(f=>(f.canonical_id||`C-${f.behavior_contract_hash}`)===row.dataset.canonical);renderUniverseDetail(family);}));
+  $$('#canonical-universe tbody tr[data-canonical]').forEach(row=>row.addEventListener('click',()=>{const family=families.find(f=>(f.canonical_id||`C-${f.behavior_contract_hash}`)===row.dataset.canonical);renderUniverseDetail(family);refreshLive();}));
   const selected=families.find(f=>(f.canonical_id||f.behavior_contract_hash)===selectedCanonical)||rows[0]||families[0];
   if(selected)renderUniverseDetail(selected);
 }
@@ -414,7 +414,7 @@ function renderStrategyPool(data){
 }
 
 function renderTrading(data,strategies){
-  const t=data.trading||{},counts=t.intent_counts||{},capacity=t.execution_capacity||{},positions=strategies.flatMap(s=>(s.positions||[]).filter(p=>p.status==='open').map(p=>({...p,strategy_name:strategyLabelForArm(s.arm_id)})));
+  const t=data.trading||{},counts=t.intent_counts||{},capacity=t.execution_capacity||{},positions=(data.open_positions||strategies.flatMap(s=>(s.positions||[]).filter(p=>p.status==='open'))).map(p=>({...p,strategy_name:strategyLabelForArm(p.arm_id)}));
   const participation=strategies.reduce((a,s)=>{const x=s.entry_participation||{};a.projected+=Number(x.projected||0);a.skipped+=Number(x.skipped_cash_unavailable_at_fill||0);return a;},{projected:0,skipped:0});
   $('#trading-summary').innerHTML=[
     ['READY 买入',capacity.ready_buy_count||0,capacity.oldest_ready_buy_age_seconds==null?'队列为空':`最老 ${Math.round(capacity.oldest_ready_buy_age_seconds)} 秒 · SLA ${Math.round(capacity.signal_to_execution_sla_seconds||0)} 秒`],
@@ -722,7 +722,7 @@ function renderLive(data,focusedArm=null){
   const hasFocusedPositions=Boolean(focusedArm)&&Array.isArray(data.open_positions);
   const mergedStrategies=(data.strategies||[]).map(strategy=>{
     const prior=previous.get(strategy.arm_id)||{},merged={...prior,...strategy};
-    if(hasFocusedPositions&&strategy.arm_id===focusedArm){
+    if(hasFocusedPositions&&strategy.arm_id===focusedArm&&!Array.isArray(strategy.positions)){
       const terminal=(prior.positions||[]).filter(position=>position.status==='closed'||position.status==='written_off');
       const open=data.open_positions.filter(position=>position.arm_id===focusedArm).map(position=>({...position,status:'open'}));
       const unique=new Map([...open,...terminal].map(position=>[`${position.shadow_cohort_id}|${position.token_id}`,position]));
@@ -742,8 +742,10 @@ async function refreshUniverse(){
 
 async function refreshFull(){
   clearTimeout(fullTimer);
-  try{const response=await fetch('/api/state',{cache:'no-store'});if(!response.ok)throw new Error(`HTTP ${response.status}`);render(await response.json());}
+  clearTimeout(liveTimer);
+  try{const response=await fetch('/api/live',{cache:'no-store'});if(!response.ok)throw new Error(`HTTP ${response.status}`);render(await response.json());}
   catch(error){const el=$('#runtime');el.className='runtime stale';el.innerHTML=`<span class="pulse"></span><strong>读取失败</strong><small>${esc(error.message)}</small>`;}
+  liveTimer=setTimeout(refreshLive,document.visibilityState==='visible'?5000:30000);
 }
 async function refreshLive(){
   clearTimeout(liveTimer);
@@ -752,7 +754,7 @@ async function refreshLive(){
   liveTimer=setTimeout(refreshLive,document.visibilityState==='visible'?5000:30000);
 }
 
-window.addEventListener('hashchange',()=>{route();if(lastPage==='wallets')refreshWallets(true);});document.addEventListener('visibilitychange',()=>{clearTimeout(liveTimer);if(!state)refreshFull();refreshLive();});
+window.addEventListener('hashchange',()=>{route();if(lastPage==='wallets')refreshWallets(true);});document.addEventListener('visibilitychange',()=>{clearTimeout(liveTimer);if(!state){refreshFull();return;}refreshLive();});
 $('#drawer-close').addEventListener('click',()=>closeDrawer());$('#scrim').addEventListener('click',()=>closeDrawer());
 document.body.addEventListener('click',event=>{
   const wallet=event.target.closest('[data-wallet-detail]');if(wallet){openWalletDetail(wallet.dataset.walletDetail);return;}
@@ -793,4 +795,4 @@ document.body.addEventListener('click',async event=>{
 $('#toggle-strategies')?.addEventListener('click',()=>{showAllStrategies=!showAllStrategies;if(state)renderStrategyRegistry(state);});
 $('#toggle-strategy-pool')?.addEventListener('click',()=>{showAllStrategyPool=!showAllStrategyPool;if(state)renderStrategyPool(state);});
 ['#universe-search','#universe-state','#universe-class','#universe-version','#universe-sort'].forEach(selector=>$(selector)?.addEventListener(selector==='#universe-search'?'input':'change',renderUniverse));
-bindTokenLinks();route();refreshUniverse();refreshFull();refreshLive();
+bindTokenLinks();route();refreshUniverse();refreshFull();
