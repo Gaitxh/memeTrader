@@ -134,14 +134,18 @@ class SolanaLiveWalletManager:
     def _strategy_exists(self, strategy_id: str, version: str) -> bool:
         if version != self._active_version():
             return False
+        from .store import Store
+
         with self._connect_db() as connection:
             row = connection.execute(
                 "SELECT definition_json FROM chain_meme_trader_registrations WHERE definition_version=?",
                 (version,),
             ).fetchone()
-        if row is None:
-            return False
-        definition = json.loads(str(row["definition_json"]))
+            if row is None:
+                return False
+            definition = Store.chain_meme_trader_effective_definition_from_connection(
+                connection, version, row["definition_json"],
+            )
         return any(
             str(policy.get("arm_id")) == strategy_id
             and bool(policy.get("forward_enabled", True))

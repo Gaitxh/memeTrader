@@ -7321,6 +7321,146 @@ def test_chain_meme_v22_applies_policy_filters_during_asof_enrollment(tmp_path: 
     store.close()
 
 
+def test_chain_meme_v22_funding_and_policy_additions_start_at_their_own_frontiers(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "additive-funding-v22.sqlite3", initial_cash_usd=1000)
+    store.activate_chain_meme_trader_v22()
+    version = Store.CHAIN_MEME_TRADER_V22_VERSION
+
+    def add_flash_snapshot() -> tuple[TokenCandidate, int]:
+        observed = utcnow()
+        address = str(Pubkey.new_unique())
+        token = TokenCandidate(
+            chain="solana", address=address, name="Forward boundary",
+            symbol="BOUND", source="dexscreener",
+        )
+        store.upsert_token(token, seen_at=observed)
+        pair = {
+            "chainId": "solana", "dexId": "pumpfun",
+            "pairAddress": f"pool-{address}",
+            "pairCreatedAt": round((observed - timedelta(seconds=60)).timestamp() * 1000),
+            "priceUsd": "1.0",
+            "baseToken": {"address": address, "name": token.name, "symbol": token.symbol},
+            "quoteToken": {"address": SOLANA_WRAPPED_SOL_MINT},
+            "txns": {
+                "m5": {"buys": 30, "sells": 20},
+                "h1": {"buys": 30, "sells": 20},
+            },
+            "volume": {"m5": 900.0, "h1": 900.0},
+        }
+        snapshot_id = store.add_snapshot(TokenSnapshot(
+            "solana", address, 1.0, 10_000, 100_000, 900.0, 30, 20,
+            observed_at=observed, ingested_at=observed,
+            provider="dexscreener", raw={"pair": pair},
+        ))
+        return token, snapshot_id
+
+    _, pre_addition_snapshot_id = add_flash_snapshot()
+    registration = store.db.execute(
+        "SELECT definition_json FROM chain_meme_trader_v6_registrations "
+        "WHERE definition_version=?", (version,),
+    ).fetchone()
+    definition = store._chain_meme_trader_effective_definition(
+        version, registration["definition_json"],
+    )
+    source_policy = next(
+        policy for policy in definition["policies"]
+        if policy["arm_id"] == "broad_flash_tail_first_mover_v1"
+    )
+    appended_policy = dict(source_policy)
+    for field in (
+        "stage", "behavior_contract_hash", "forward_started_at",
+        "forward_activation_snapshot_id", "runtime_addition_id",
+    ):
+        appended_policy.pop(field, None)
+    appended_policy.update({
+        "arm_id": "test_forward_addition_v1",
+        "canonical_id": "test-forward-addition-v1",
+        "name": "Test forward addition",
+    })
+    addition = store.append_chain_meme_trader_policy(appended_policy)
+    funding = store.activate_chain_meme_trader_unconstrained_paper_funding()
+    assert int(addition["activation_snapshot_id"]) == pre_addition_snapshot_id
+    assert int(funding["activation_snapshot_id"]) == pre_addition_snapshot_id
+
+    with store.db:
+        for arm_id, cohort_id in (
+            (source_policy["arm_id"], -1),
+            (appended_policy["arm_id"], -2),
+        ):
+            store.db.execute(
+                "INSERT INTO chain_meme_trader_trades("
+                "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+                "net_cash_flow_usd,reason,created_at,recorded_at) "
+                "VALUES(?,?,?,'synthetic:funding-boundary','BUY',1000,-1000,?,?,?)",
+                (version, arm_id, cohort_id, "test_cash_exhaustion", iso(), iso()),
+            )
+
+    post_addition_token, post_addition_snapshot_id = add_flash_snapshot()
+    assert post_addition_snapshot_id > pre_addition_snapshot_id
+    assert store.enroll_chain_meme_trader_v6(
+        definition_version=version,
+    ) == {"evaluated": 2, "admitted": 2, "rejected": 0, "intents": 0}
+
+    def decision(arm_id: str, snapshot_id: int):
+        return store.db.execute(
+            "SELECT d.status FROM chain_meme_trader_entry_decisions d JOIN "
+            "chain_meme_trader_v6_cohorts c ON c.id=d.shadow_cohort_id "
+            "AND c.definition_version=d.definition_version "
+            "WHERE d.definition_version=? AND d.arm_id=? AND c.source_snapshot_id=?",
+            (version, arm_id, snapshot_id),
+        ).fetchone()
+
+    assert decision(source_policy["arm_id"], pre_addition_snapshot_id)["status"] == "rejected"
+    assert decision(appended_policy["arm_id"], pre_addition_snapshot_id) is None
+    assert decision(source_policy["arm_id"], post_addition_snapshot_id)["status"] == "admitted"
+    assert decision(appended_policy["arm_id"], post_addition_snapshot_id)["status"] == "admitted"
+    outcome = store.db.execute(
+        "SELECT available_cash_usd,funding_mode FROM "
+        "chain_meme_trader_entry_participant_outcomes o JOIN "
+        "chain_meme_trader_v6_cohorts c ON c.id=o.shadow_cohort_id "
+        "AND c.definition_version=o.definition_version "
+        "WHERE o.definition_version=? AND o.arm_id=? AND c.source_snapshot_id=?",
+        (version, appended_policy["arm_id"], post_addition_snapshot_id),
+    ).fetchone()
+    assert outcome["available_cash_usd"] == pytest.approx(0.0)
+    assert outcome["funding_mode"] == "unconstrained_research_notional"
+
+    mark_at = utcnow()
+    store.upsert_chain_meme_trader_market_mark(
+        post_addition_token,
+        TokenSnapshot(
+            "solana", post_addition_token.address, 0.5, 10_000, 50_000, 100, 2, 1,
+            observed_at=mark_at, ingested_at=mark_at, provider="dexscreener",
+            raw={"pair": {"pairAddress": f"pool-{post_addition_token.address}"}},
+        ),
+        recorded_at=mark_at,
+    )
+    assert store.evaluate_chain_meme_trader_market_marks(
+        definition_version=version, now=mark_at,
+    ) > 0
+    assert store.db.execute(
+        "SELECT action FROM chain_meme_trader_marks WHERE definition_version=? "
+        "AND arm_id=? ORDER BY id DESC LIMIT 1",
+        (version, appended_policy["arm_id"]),
+    ).fetchone()["action"] == "HARD_STOP"
+    assert store.record_chain_meme_trader_account_snapshots(
+        definition_version=version, now=mark_at,
+    ) == 128
+    summary = store.chain_meme_trader_summary_from_connection(store.db)
+    appended = next(
+        item for item in summary["strategies"]
+        if item["arm_id"] == appended_policy["arm_id"]
+    )
+    assert summary["capital_model"] == "unconstrained_research_notional"
+    assert appended["forward_activation_snapshot_id"] == pre_addition_snapshot_id
+    assert appended["maturity"] == "early"
+    assert appended["account"]["account_return_fraction"] is None
+    assert appended["account"]["capital_neutral_total_pnl_usd"] is not None
+    store.close()
+
+
 def test_chain_meme_v21_principal_runner_recovers_principal_then_trails_runner(
     tmp_path: Path,
 ):

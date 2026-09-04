@@ -136,6 +136,39 @@ def test_live_wallet_binds_one_strategy_and_mirrors_only_new_forward_trade(tmp_p
     assert len(manager.snapshot()["wallets"]) == 2
 
 
+def test_live_wallet_accepts_appended_strategy_but_keeps_real_balance_gate(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(live_module, "_dpapi_protect", lambda value: bytes(reversed(value)))
+    monkeypatch.setattr(live_module, "_dpapi_unprotect", lambda value: bytes(reversed(value)))
+    database = tmp_path / "forward.sqlite3"
+    store = Store(database, initial_cash_usd=1000)
+    registration = store.register_chain_meme_trader_v22()
+    store.activate_chain_meme_trader_v22()
+    source = Store._json_object(registration["definition_json"])["policies"][-1]
+    appended = dict(source)
+    for field in ("stage", "behavior_contract_hash"):
+        appended.pop(field, None)
+    appended.update({
+        "arm_id": "wallet_additive_forward_v1",
+        "canonical_id": "wallet-additive-forward-v1",
+        "name": "Wallet additive forward",
+    })
+    store.append_chain_meme_trader_policy(appended)
+    store.close()
+
+    manager = SolanaLiveWalletManager(tmp_path, database)
+    balances = {"status": "ok", "sol": 1.0, "usdc": 0.0}
+    monkeypatch.setattr(manager, "_balances", lambda wallet, refresh=False: balances)
+    manager.connect(str(Keypair()), "Added strategy", appended["arm_id"])
+    wallet_id = manager.snapshot()["wallets"][0]["id"]
+    with pytest.raises(live_module.LiveWalletError, match="USDC 不足 20"):
+        manager.set_enabled(wallet_id, True)
+    balances["usdc"] = 100.0
+    manager.set_enabled(wallet_id, True)
+    assert manager.snapshot()["wallets"][0]["enabled"] is True
+
+
 def test_live_wallet_detail_is_safe_and_lists_recent_operations_newest_first(tmp_path, monkeypatch):
     monkeypatch.setattr(live_module, "_dpapi_protect", lambda value: bytes(reversed(value)))
     monkeypatch.setattr(live_module, "_dpapi_unprotect", lambda value: bytes(reversed(value)))

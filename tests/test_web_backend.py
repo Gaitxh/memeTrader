@@ -174,12 +174,14 @@ def test_chain_meme_trader_api_and_static_page_preserve_forward_contract(tmp_pat
     assert "document.visibilityState==='visible'?5000:30000" in app
     assert "fullTimer=setTimeout(refreshFull" not in app
     assert "池与持仓监控" in app
-    assert "持仓约 2 秒" in index
+    assert "页面可见时 5 秒刷新" in index
+    assert "可见 5 秒 / 隐藏 30 秒" in index
+    assert "后台持仓行情优先" in app
     assert "同一个 Token 不会按 ${families.length} 个策略重复访问" in app
     assert "连续无池/价格超过 1 分钟才全损" in app
     assert 'id="overview-strategies"' in index
-    assert "账户实时曲线" in app
-    assert "indicative_total_pnl_usd" in app
+    assert "PNL 曲线" in index
+    assert "capital_neutral_total_pnl_usd" in app
     assert "profit_loss_ratio" in app
     assert "strategyMetrics" in app
     assert "总资产实时曲线" not in index
@@ -330,6 +332,39 @@ def test_strategy_universe_refreshes_for_additive_strategy_versions(tmp_path: Pa
         ["broad_flash_tail_first_mover_v1"],
         ["broad_mature_continuity_control_v1"],
     ]
+
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    registration = store.db.execute(
+        "SELECT definition_json FROM chain_meme_trader_v6_registrations "
+        "WHERE definition_version=?", (Store.CHAIN_MEME_TRADER_V22_VERSION,),
+    ).fetchone()
+    source = Store._json_object(registration["definition_json"])["policies"][-1]
+    appended = dict(source)
+    for field in ("stage", "behavior_contract_hash"):
+        appended.pop(field, None)
+    appended.update({
+        "arm_id": "web_additive_forward_v1",
+        "canonical_id": "web-additive-forward-v1",
+        "name": "Web additive forward",
+    })
+    store.append_chain_meme_trader_policy(appended)
+    assert store.record_chain_meme_trader_account_snapshots(
+        definition_version=Store.CHAIN_MEME_TRADER_V22_VERSION,
+    ) == 1
+    store.close()
+
+    universe = web_data.strategy_universe()
+    assert universe["summary"]["behavior_contract_families"] == 128
+    assert universe["families"][-1]["active_arm_ids"] == ["web_additive_forward_v1"]
+    live = ChainWebData(config_path).state(compact=True)
+    appended_live = next(
+        item for item in live["strategies"]
+        if item["arm_id"] == "web_additive_forward_v1"
+    )
+    assert len(live["strategies"]) == 128
+    assert appended_live["maturity"] == "waiting"
+    assert appended_live["account"]["capital_neutral_total_pnl_usd"] == 0.0
+    assert appended_live["account"]["account_return_fraction"] is None
 
 
 def test_chain_web_reports_distinct_tokens_holding_duration_and_trade_markers(
@@ -652,6 +687,83 @@ def test_chain_web_leaderboard_contains_only_current_active_forward_strategies(
         for item in leaderboard
     )
     assert len({item["arm_id"] for item in leaderboard}) == len(leaderboard)
+
+
+def test_compact_chain_web_excludes_contaminated_pnl_and_pre_correction_curve(
+    tmp_path: Path,
+):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    registration = store.register_chain_meme_trader_v22()
+    store.activate_chain_meme_trader_v22()
+    version = Store.CHAIN_MEME_TRADER_V22_VERSION
+    arm_id = Store._json_object(registration["definition_json"])["policies"][0]["arm_id"]
+    cohort_id = 991_001
+    token_id = "solana:compact-contamination"
+    opened_at = utcnow() - timedelta(seconds=120)
+    closed_at = opened_at + timedelta(seconds=5)
+    raw_pnl = 2_000_000.0
+    with store.db:
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_trades("
+            "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+            "net_cash_flow_usd,reason,created_at,recorded_at) "
+            "VALUES(?,?,?,?, 'BUY',20,-20,'fixture',?,?)",
+            (version, arm_id, cohort_id, token_id, iso(opened_at), iso(opened_at)),
+        )
+        buy_trade_id = int(store.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_trades("
+            "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+            "net_cash_flow_usd,realized_pnl_usd,reason,created_at,recorded_at) "
+            "VALUES(?,?,?,?, 'SELL',?,?,?,?,?,?)",
+            (
+                version, arm_id, cohort_id, token_id, raw_pnl + 20.0,
+                raw_pnl + 20.0, raw_pnl, "fixture", iso(closed_at), iso(closed_at),
+            ),
+        )
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_positions("
+            "definition_version,arm_id,shadow_cohort_id,token_id,source_buy_trade_id,"
+            "baseline_quote_result_id,entry_snapshot_id,entry_signal_price_usd,"
+            "entry_execution_price_usd,paper_quantity_tokens,remaining_quantity_tokens,"
+            "amount_raw,initial_amount_raw,stake_usd,highest_signal_price_usd,status,"
+            "realized_pnl_usd,opened_at,closed_at,close_reason) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,'0','1000',20,1,'closed',?,?,?,?)",
+            (
+                version, arm_id, cohort_id, token_id, buy_trade_id, -1, -1, 1.0,
+                1.04, 20.0 / 1.04, 0.0, raw_pnl, iso(opened_at), iso(closed_at),
+                "fixture",
+            ),
+        )
+    assert store.record_chain_meme_trader_account_snapshots(
+        definition_version=version, now=opened_at + timedelta(seconds=10),
+    ) == 127
+    contamination_at = opened_at + timedelta(seconds=20)
+    with store.db:
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_accounting_contaminations("
+            "definition_version,arm_id,shadow_cohort_id,source_buy_trade_id,reason,"
+            "evidence_json,recorded_at) VALUES(?,?,?,?,?,'{}',?)",
+            (
+                version, arm_id, cohort_id, buy_trade_id,
+                "fixture_contaminated_descendant", iso(contamination_at),
+            ),
+        )
+    assert store.record_chain_meme_trader_account_snapshots(
+        definition_version=version, now=opened_at + timedelta(seconds=40),
+    ) == 1
+    store.close()
+
+    live = ChainWebData(config_path).state(compact=True)
+    strategy = next(item for item in live["strategies"] if item["arm_id"] == arm_id)
+    assert strategy["account"]["capital_neutral_realized_pnl_usd"] == 0.0
+    assert strategy["account"]["capital_neutral_total_pnl_usd"] == 0.0
+    assert strategy["account"]["terminal_position_count"] == 0
+    assert strategy["maturity"] == "waiting"
+    assert strategy["curve"]
+    assert all(point["total_pnl_usd"] == 0.0 for point in strategy["curve"])
+    assert live["recent_activity"] == []
 
 
 def test_chain_meme_trader_web_switches_to_active_v6_matrix(tmp_path: Path):

@@ -2404,6 +2404,30 @@ class Store:
                     recorded_at TEXT NOT NULL,
                     PRIMARY KEY(definition_version,field_path)
                 );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_paper_funding_activations (
+                    definition_version TEXT PRIMARY KEY,
+                    mode TEXT NOT NULL CHECK(mode='unconstrained_research_notional'),
+                    activated_at TEXT NOT NULL,
+                    activation_snapshot_id INTEGER NOT NULL,
+                    activation_evaluation_id INTEGER NOT NULL,
+                    activation_cohort_id INTEGER NOT NULL,
+                    activation_entry_fill_id INTEGER NOT NULL,
+                    activation_trade_id INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_policy_additions (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    arm_id TEXT NOT NULL,
+                    canonical_id TEXT NOT NULL,
+                    registered_at TEXT NOT NULL,
+                    activated_at TEXT NOT NULL,
+                    activation_snapshot_id INTEGER NOT NULL,
+                    activation_evaluation_id INTEGER NOT NULL,
+                    behavior_contract_hash TEXT NOT NULL,
+                    policy_json TEXT NOT NULL,
+                    UNIQUE(definition_version,arm_id),
+                    UNIQUE(definition_version,canonical_id)
+                );
                 CREATE TABLE IF NOT EXISTS chain_meme_trader_v6_activations (
                     definition_version TEXT PRIMARY KEY,
                     activated_at TEXT NOT NULL,
@@ -2493,6 +2517,18 @@ class Store:
                 CREATE TRIGGER IF NOT EXISTS chain_meme_trader_v6_activation_no_delete
                 BEFORE DELETE ON chain_meme_trader_v6_activations
                 BEGIN SELECT RAISE(ABORT,'v6 activations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_paper_funding_no_update
+                BEFORE UPDATE ON chain_meme_trader_paper_funding_activations
+                BEGIN SELECT RAISE(ABORT,'paper funding activations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_paper_funding_no_delete
+                BEFORE DELETE ON chain_meme_trader_paper_funding_activations
+                BEGIN SELECT RAISE(ABORT,'paper funding activations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_policy_additions_no_update
+                BEFORE UPDATE ON chain_meme_trader_policy_additions
+                BEGIN SELECT RAISE(ABORT,'policy additions are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_policy_additions_no_delete
+                BEFORE DELETE ON chain_meme_trader_policy_additions
+                BEGIN SELECT RAISE(ABORT,'policy additions are immutable'); END;
                 CREATE TRIGGER IF NOT EXISTS chain_meme_trader_v6_entry_fill_no_update
                 BEFORE UPDATE ON chain_meme_trader_v6_entry_fills
                 BEGIN SELECT RAISE(ABORT,'v6 entry fills are immutable'); END;
@@ -6442,6 +6478,20 @@ class Store:
                         "ALTER TABLE chain_meme_trader_account_snapshots "
                         f"ADD COLUMN {column} {definition}"
                     )
+            participant_outcome_columns = {
+                row["name"] for row in self.db.execute(
+                    "PRAGMA table_info(chain_meme_trader_entry_participant_outcomes)"
+                )
+            }
+            if (
+                participant_outcome_columns
+                and "funding_mode" not in participant_outcome_columns
+            ):
+                self.db.execute(
+                    "ALTER TABLE chain_meme_trader_entry_participant_outcomes "
+                    "ADD COLUMN funding_mode TEXT NOT NULL "
+                    "DEFAULT 'legacy_cash_limited'"
+                )
             market_mark_columns = {
                 row["name"] for row in self.db.execute(
                     "PRAGMA table_info(chain_meme_trader_market_marks)"
@@ -6934,33 +6984,136 @@ class Store:
     def chain_meme_trader_effective_definition_from_connection(
         cls, connection: sqlite3.Connection, definition_version: str, raw_json: Any,
     ) -> dict[str, Any]:
-        """Overlay explicit metadata errata without mutating an immutable contract row."""
+        """Overlay immutable errata and forward additions on a frozen contract."""
         definition = cls._json_object(raw_json)
-        has_errata = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' "
-            "AND name='chain_meme_trader_definition_errata'"
-        ).fetchone()
-        if has_errata is None:
-            return definition
-        for row in connection.execute(
-            "SELECT field_path,corrected_value_json,reason,recorded_at FROM "
-            "chain_meme_trader_definition_errata WHERE definition_version=? "
-            "ORDER BY field_path",
-            (str(definition_version),),
-        ).fetchall():
-            field = str(row["field_path"] or "")
-            if not field or "." in field:
-                continue
-            try:
-                definition[field] = json.loads(str(row["corrected_value_json"]))
-            except (TypeError, ValueError, json.JSONDecodeError):
-                continue
-            definition.setdefault("metadata_errata", []).append({
-                "field": field,
-                "reason": str(row["reason"]),
-                "recorded_at": str(row["recorded_at"]),
-            })
+        tables = {
+            str(row[0]) for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if "chain_meme_trader_definition_errata" in tables:
+            for row in connection.execute(
+                "SELECT field_path,corrected_value_json,reason,recorded_at FROM "
+                "chain_meme_trader_definition_errata WHERE definition_version=? "
+                "ORDER BY field_path",
+                (str(definition_version),),
+            ).fetchall():
+                field = str(row["field_path"] or "")
+                if not field or "." in field:
+                    continue
+                try:
+                    definition[field] = json.loads(str(row["corrected_value_json"]))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                definition.setdefault("metadata_errata", []).append({
+                    "field": field,
+                    "reason": str(row["reason"]),
+                    "recorded_at": str(row["recorded_at"]),
+                })
+        activation = None
+        if "chain_meme_trader_v6_activations" in tables:
+            activation = connection.execute(
+                "SELECT activated_at,activation_snapshot_id FROM "
+                "chain_meme_trader_v6_activations WHERE definition_version=?",
+                (str(definition_version),),
+            ).fetchone()
+        policies = [dict(item) for item in definition.get("policies", [])]
+        if activation is not None:
+            for policy in policies:
+                policy.setdefault("forward_started_at", str(activation["activated_at"]))
+                policy.setdefault(
+                    "forward_activation_snapshot_id",
+                    int(activation["activation_snapshot_id"]),
+                )
+        additions: list[dict[str, Any]] = []
+        if "chain_meme_trader_policy_additions" in tables:
+            for row in connection.execute(
+                "SELECT * FROM chain_meme_trader_policy_additions "
+                "WHERE definition_version=? ORDER BY id",
+                (str(definition_version),),
+            ).fetchall():
+                policy = cls._json_object(row["policy_json"])
+                policy.update({
+                    "arm_id": str(row["arm_id"]),
+                    "canonical_id": str(row["canonical_id"]),
+                    "behavior_contract_hash": str(row["behavior_contract_hash"]),
+                    "forward_started_at": str(row["activated_at"]),
+                    "forward_activation_snapshot_id": int(
+                        row["activation_snapshot_id"]
+                    ),
+                    "runtime_addition_id": int(row["id"]),
+                })
+                policies.append(policy)
+                additions.append({
+                    "id": int(row["id"]),
+                    "arm_id": str(row["arm_id"]),
+                    "activated_at": str(row["activated_at"]),
+                    "activation_snapshot_id": int(row["activation_snapshot_id"]),
+                })
+        definition["policies"] = policies
+        definition["strategy_count"] = len(policies)
+        definition["runtime_policy_additions"] = additions
+        if "chain_meme_trader_paper_funding_activations" in tables:
+            funding = connection.execute(
+                "SELECT * FROM chain_meme_trader_paper_funding_activations "
+                "WHERE definition_version=?",
+                (str(definition_version),),
+            ).fetchone()
+            if funding is not None:
+                definition["paper_funding"] = dict(funding)
+                definition["capital_model"] = str(funding["mode"])
         return definition
+
+    def _chain_meme_trader_effective_definition(
+        self, definition_version: str, raw_json: Any,
+    ) -> dict[str, Any]:
+        return self.chain_meme_trader_effective_definition_from_connection(
+            self.db, definition_version, raw_json,
+        )
+
+    @staticmethod
+    def _chain_meme_trader_policy_active_for_snapshot(
+        policy: Mapping[str, Any], snapshot: Mapping[str, Any],
+    ) -> bool:
+        frontier = policy.get("forward_activation_snapshot_id")
+        started_at = policy.get("forward_started_at")
+        if frontier is None or started_at is None:
+            return True
+        if int(snapshot["source_snapshot_id"]) <= int(frontier):
+            return False
+        activation_time = parse_time(started_at)
+        return bool(
+            parse_time(snapshot["observed_at"]) >= activation_time
+            and parse_time(
+                snapshot["recorded_at"]
+                or snapshot["ingested_at"]
+                or snapshot["observed_at"]
+            ) >= activation_time
+        )
+
+    def _chain_meme_trader_paper_funding_mode_for_snapshot(
+        self, definition_version: str, snapshot: Mapping[str, Any],
+    ) -> str:
+        row = self.db.execute(
+            "SELECT * FROM chain_meme_trader_paper_funding_activations "
+            "WHERE definition_version=?",
+            (str(definition_version),),
+        ).fetchone()
+        if row is None:
+            return "legacy_cash_limited"
+        if int(snapshot["source_snapshot_id"]) <= int(row["activation_snapshot_id"]):
+            return "legacy_cash_limited"
+        activation_time = parse_time(row["activated_at"])
+        if (
+            parse_time(snapshot["observed_at"]) < activation_time
+            or parse_time(
+                snapshot["recorded_at"]
+                or snapshot["ingested_at"]
+                or snapshot["observed_at"]
+            ) < activation_time
+        ):
+            return "legacy_cash_limited"
+        return str(row["mode"])
 
     @staticmethod
     def _json_list(value: Any) -> list[Any]:
@@ -24302,6 +24455,129 @@ class Store:
                 "WHERE definition_version=?", (version,),
             ).fetchone()
 
+    def activate_chain_meme_trader_unconstrained_paper_funding(
+        self, *, definition_version: str | None = None, activated_at: Any = None,
+    ) -> sqlite3.Row:
+        """Remove only the future Paper cash veto without resetting an epoch."""
+        version = definition_version or self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        with self._lock, self.db:
+            active = self.db.execute(
+                "SELECT definition_version FROM chain_meme_trader_v6_activations "
+                "WHERE entry_execution_enabled=1 ORDER BY activated_at DESC,rowid DESC LIMIT 1"
+            ).fetchone()
+            if active is None or str(active["definition_version"]) != version:
+                raise ValueError("paper funding can only activate on the current forward epoch")
+            existing = self.db.execute(
+                "SELECT * FROM chain_meme_trader_paper_funding_activations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if existing is not None:
+                return existing
+            current = iso(activated_at or utcnow())
+            frontiers = {
+                "snapshot": int(self.db.execute(
+                    "SELECT COALESCE(MAX(id),0) FROM token_snapshots"
+                ).fetchone()[0]),
+                "evaluation": int(self.db.execute(
+                    "SELECT COALESCE(MAX(id),0) FROM chain_meme_trader_v6_entry_evaluations "
+                    "WHERE definition_version=?", (version,),
+                ).fetchone()[0]),
+                "cohort": int(self.db.execute(
+                    "SELECT COALESCE(MAX(id),0) FROM chain_meme_trader_v6_cohorts "
+                    "WHERE definition_version=?", (version,),
+                ).fetchone()[0]),
+                "entry_fill": int(self.db.execute(
+                    "SELECT COALESCE(MAX(id),0) FROM chain_meme_trader_v6_entry_fills "
+                    "WHERE definition_version=?", (version,),
+                ).fetchone()[0]),
+                "trade": int(self.db.execute(
+                    "SELECT COALESCE(MAX(id),0) FROM chain_meme_trader_trades "
+                    "WHERE definition_version=?", (version,),
+                ).fetchone()[0]),
+            }
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_paper_funding_activations("
+                "definition_version,mode,activated_at,activation_snapshot_id,"
+                "activation_evaluation_id,activation_cohort_id,activation_entry_fill_id,"
+                "activation_trade_id) VALUES(?,'unconstrained_research_notional',?,?,?,?,?,?)",
+                (
+                    version, current, frontiers["snapshot"], frontiers["evaluation"],
+                    frontiers["cohort"], frontiers["entry_fill"], frontiers["trade"],
+                ),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_paper_funding_activations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+
+    def append_chain_meme_trader_policy(
+        self, policy: Mapping[str, Any], *, definition_version: str | None = None,
+        activated_at: Any = None,
+    ) -> sqlite3.Row:
+        """Append one independently-aged policy to the current epoch, without backfill."""
+        version = definition_version or self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        with self._lock, self.db:
+            active = self.db.execute(
+                "SELECT definition_version FROM chain_meme_trader_v6_activations "
+                "WHERE entry_execution_enabled=1 ORDER BY activated_at DESC,rowid DESC LIMIT 1"
+            ).fetchone()
+            registration = self._chain_meme_trader_registration(version)
+            if (
+                active is None
+                or str(active["definition_version"]) != version
+                or registration is None
+            ):
+                raise ValueError("policies can only be appended to the current forward epoch")
+            candidate = dict(policy)
+            arm_id = str(candidate.get("arm_id") or "").strip()
+            canonical_id = str(candidate.get("canonical_id") or "").strip()
+            if not arm_id or not canonical_id:
+                raise ValueError("appended policy requires arm_id and canonical_id")
+            definition = self._chain_meme_trader_effective_definition(
+                version, registration["definition_json"],
+            )
+            if any(str(item.get("arm_id") or "") == arm_id for item in definition["policies"]):
+                raise ValueError(f"strategy arm already exists: {arm_id}")
+            if any(
+                str(item.get("canonical_id") or "") == canonical_id
+                for item in definition["policies"]
+            ):
+                raise ValueError(f"strategy canonical id already exists: {canonical_id}")
+            candidate.setdefault(
+                "stage",
+                max((int(item.get("stage") or 0) for item in definition["policies"]), default=0)
+                + 1,
+            )
+            candidate.setdefault("forward_enabled", True)
+            candidate.setdefault("fidelity_status", "ADDITIVE_FORWARD")
+            candidate.setdefault("no_historical_backfill", True)
+            behavior_hash = self.chain_meme_trader_behavior_hash(
+                candidate, definition_version=version,
+            )
+            candidate["behavior_contract_hash"] = behavior_hash
+            current = iso(activated_at or utcnow())
+            snapshot_frontier = int(self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM token_snapshots"
+            ).fetchone()[0])
+            evaluation_frontier = int(self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM chain_meme_trader_v6_entry_evaluations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()[0])
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_policy_additions("
+                "definition_version,arm_id,canonical_id,registered_at,activated_at,"
+                "activation_snapshot_id,activation_evaluation_id,behavior_contract_hash,"
+                "policy_json) VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    version, arm_id, canonical_id, current, current, snapshot_frontier,
+                    evaluation_frontier, behavior_hash, self._json(candidate),
+                ),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_policy_additions "
+                "WHERE definition_version=? AND arm_id=?", (version, arm_id),
+            ).fetchone()
+
     def register_chain_meme_v21_vault_shadow(
         self, *, observer_version: str | None = None,
         position_definition_version: str | None = None,
@@ -24890,6 +25166,7 @@ class Store:
         self, *, version: str, cohort_id: int, token_id: str, snapshot_id: int,
         market_price: float, filled_at: str, reason: str,
         definition: Mapping[str, Any],
+        funding_mode: str = "legacy_cash_limited",
     ) -> int:
         """Project one visible DEX price into eligible Paper accounts."""
         required_cash = float(definition["policy_notional_usd"])
@@ -24937,15 +25214,18 @@ class Store:
             arm_id = str(decision["arm_id"])
             net_flow = net_flow_by_arm.get(arm_id, 0.0)
             available_cash = float(definition["starting_cash_usd_each_arm"]) + net_flow
-            if available_cash + 1e-9 < required_cash:
+            if (
+                funding_mode == "legacy_cash_limited"
+                and available_cash + 1e-9 < required_cash
+            ):
                 self.db.execute(
                     "INSERT OR IGNORE INTO chain_meme_trader_entry_participant_outcomes("
                     "definition_version,shadow_cohort_id,arm_id,entry_decision_id,entry_fill_id,"
-                    "outcome,available_cash_usd,recorded_at) "
-                    "VALUES(?,?,?,?,?,'skipped_cash_unavailable_at_fill',?,?)",
+                    "outcome,available_cash_usd,recorded_at,funding_mode) "
+                    "VALUES(?,?,?,?,?,'skipped_cash_unavailable_at_fill',?,?,?)",
                     (
                         version, int(cohort_id), arm_id, int(decision["id"]),
-                        int(entry_fill["id"]), available_cash, filled_at,
+                        int(entry_fill["id"]), available_cash, filled_at, funding_mode,
                     ),
                 )
                 continue
@@ -24980,11 +25260,11 @@ class Store:
             self.db.execute(
                 "INSERT OR IGNORE INTO chain_meme_trader_entry_participant_outcomes("
                 "definition_version,shadow_cohort_id,arm_id,entry_decision_id,entry_fill_id,"
-                "outcome,available_cash_usd,recorded_at) "
-                "VALUES(?,?,?,?,?,'projected',?,?)",
+                "outcome,available_cash_usd,recorded_at,funding_mode) "
+                "VALUES(?,?,?,?,?,'projected',?,?,?)",
                 (
                     version, int(cohort_id), arm_id, int(decision["id"]),
-                    int(entry_fill["id"]), available_cash, filled_at,
+                    int(entry_fill["id"]), available_cash, filled_at, funding_mode,
                 ),
             )
             projected += 1
@@ -25006,7 +25286,9 @@ class Store:
             ).fetchone()
             if registration is None:
                 return {"evaluated": 0, "admitted": 0, "rejected": 0, "intents": 0}
-            definition = self._json_object(registration["definition_json"])
+            definition = self._chain_meme_trader_effective_definition(
+                version, registration["definition_json"],
+            )
             rows = self.db.execute(
                 "SELECT s.id AS source_snapshot_id,s.* FROM token_snapshots s "
                 "WHERE s.id>? AND s.recorded_at>=? AND NOT EXISTS(SELECT 1 FROM "
@@ -25029,6 +25311,8 @@ class Store:
                 token_id = str(row["token_id"])
                 snapshot_id = int(row["source_snapshot_id"])
                 family = None
+                funding_mode = "legacy_cash_limited"
+                snapshot_policies: list[Mapping[str, Any]] = []
                 eligible_policy_ids: set[str] = set()
                 reason = "entry_family_not_matched"
                 features: dict[str, Any] = {"source_snapshot_id": snapshot_id}
@@ -25057,6 +25341,13 @@ class Store:
                         definition["max_signal_to_execution_start_seconds"]
                     ):
                         raise ValueError("entry_snapshot_too_old")
+                    funding_mode = self._chain_meme_trader_paper_funding_mode_for_snapshot(
+                        version, row,
+                    )
+                    snapshot_policies = [
+                        policy for policy in policies
+                        if self._chain_meme_trader_policy_active_for_snapshot(policy, row)
+                    ]
                     raw = self._json_object(row["raw_json"])
                     pair = raw.get("pair") if isinstance(raw.get("pair"), Mapping) else raw
                     txns = pair.get("txns") if isinstance(pair.get("txns"), Mapping) else {}
@@ -25205,7 +25496,7 @@ class Store:
                                 and float(shadow_row["momentum_score"] or 0.0) >= 80.0
                                 and float(row["liquidity_usd"] or 0.0) >= 14_000.0
                             )
-                        for policy in policies:
+                        for policy in snapshot_policies:
                             if not bool(policy.get("forward_enabled", True)):
                                 continue
                             policy_entry = str(policy.get("entry_family") or "")
@@ -25302,7 +25593,7 @@ class Store:
                             ).fetchall()
                         }
                         family_arms = [
-                            str(policy["arm_id"]) for policy in policies
+                            str(policy["arm_id"]) for policy in snapshot_policies
                             if (
                                 str(policy["arm_id"]) in eligible_policy_ids
                                 if historical_fidelity else
@@ -25322,8 +25613,11 @@ class Store:
                             )
                             arm_available_cash[arm_id] = available_cash
                             arm_pending_reservations[arm_id] = pending_arm_count
-                            if available_cash + 1e-9 >= float(
-                                definition["policy_notional_usd"]
+                            if (
+                                funding_mode != "legacy_cash_limited"
+                                or available_cash + 1e-9 >= float(
+                                    definition["policy_notional_usd"]
+                                )
                             ):
                                 participating_arm_ids.append(arm_id)
                         shared_available_cash = (
@@ -25332,7 +25626,10 @@ class Store:
                         if pending_buy_count >= int(definition["max_pending_buy_intents"]):
                             family = None
                             reason = "entry_quote_capacity_full"
-                        elif not participating_arm_ids:
+                        elif (
+                            funding_mode == "legacy_cash_limited"
+                            and not participating_arm_ids
+                        ):
                             family = None
                             reason = "all_entry_accounts_cash_below_20usdc"
                     features.update({
@@ -25366,8 +25663,12 @@ class Store:
                         "arm_available_cash_usd": arm_available_cash,
                         "arm_pending_reservations": arm_pending_reservations,
                         "participating_arm_ids": participating_arm_ids,
+                        "paper_funding_mode": funding_mode,
+                        "cash_gate_applied": funding_mode == "legacy_cash_limited",
                         "execution_capacity_policy": (
                             "max_8_pending_with_independent_arm_cash_reservation/v2"
+                            if funding_mode == "legacy_cash_limited"
+                            else "max_8_pending_unconstrained_research_notional/v1"
                         ),
                     })
                 except (KeyError, TypeError, ValueError, OverflowError) as exc:
@@ -25393,7 +25694,7 @@ class Store:
                         ),
                     )
                     cohort_id = int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
-                    for policy in policies:
+                    for policy in snapshot_policies:
                         policy_matches = (
                             str(policy["arm_id"]) in eligible_policy_ids
                             if bool(definition.get("historical_fidelity_mode")) else
@@ -25427,6 +25728,7 @@ class Store:
                             filled_at=iso(decision_at),
                             reason=reason,
                             definition=definition,
+                            funding_mode=funding_mode,
                         )
                     else:
                         self.db.execute(
@@ -28576,12 +28878,26 @@ class Store:
                 (version,),
             )
         }
+        funding = self.db.execute(
+            "SELECT activation_snapshot_id FROM "
+            "chain_meme_trader_paper_funding_activations WHERE definition_version=?",
+            (version,),
+        ).fetchone()
+        funding_snapshot_frontier = (
+            int(funding["activation_snapshot_id"]) if funding is not None else None
+        )
         cash_by_arm: dict[str, float] = {}
         inserted = 0
         for trade in self.db.execute(
-            "SELECT * FROM chain_meme_trader_trades WHERE definition_version=? "
-            "AND created_at<=? ORDER BY arm_id,created_at,id",
-            (version, historical_cash_gate_through),
+            "SELECT t.* FROM chain_meme_trader_trades t LEFT JOIN "
+            "chain_meme_trader_v6_cohorts c ON c.definition_version=t.definition_version "
+            "AND c.id=t.shadow_cohort_id WHERE t.definition_version=? "
+            "AND t.created_at<=? AND (? IS NULL OR "
+            "COALESCE(c.source_snapshot_id,0)<=?) ORDER BY t.arm_id,t.created_at,t.id",
+            (
+                version, historical_cash_gate_through, funding_snapshot_frontier,
+                funding_snapshot_frontier,
+            ),
         ).fetchall():
             arm_id = str(trade["arm_id"])
             key = (arm_id, int(trade["shadow_cohort_id"]))
@@ -28627,7 +28943,9 @@ class Store:
             registration = self._chain_meme_trader_registration(version)
             if registration is None:
                 return 0
-            definition = self._json_object(registration["definition_json"])
+            definition = self._chain_meme_trader_effective_definition(
+                version, registration["definition_json"],
+            )
             policies = {str(item["arm_id"]): item for item in definition["policies"]}
             positions = self.db.execute(
                 "SELECT p.*,m.price_usd AS mark_price_usd,m.liquidity_usd AS mark_liquidity_usd,"
@@ -29189,7 +29507,9 @@ class Store:
             registration = self._chain_meme_trader_registration(version)
             if registration is None:
                 return 0
-            definition = self._json_object(registration["definition_json"])
+            definition = self._chain_meme_trader_effective_definition(
+                version, registration["definition_json"],
+            )
             market_only_valuation = str(definition.get("sell_execution") or "") == (
                 "dexscreener_market_mark_only"
             )
@@ -29917,6 +30237,7 @@ class Store:
         market_only_valuation = str(definition.get("sell_execution") or "") == (
             "dexscreener_market_mark_only"
         )
+        capital_model = str(definition.get("capital_model") or "legacy_cash_limited")
         starting_cash = float(definition["starting_cash_usd_each_arm"])
         quote_cache: dict[tuple[int, str], sqlite3.Row | None] = {}
         local_surface_cache: dict[tuple[int, str], sqlite3.Row | None] = {}
@@ -29968,6 +30289,20 @@ class Store:
                 f"{curve_where} ORDER BY id DESC LIMIT ?",
                 (version, arm_id, max(1, int(curve_limit))),
             )][::-1]
+            curve_total_field = (
+                "indicative_total_pnl_usd"
+                if market_only_valuation else "executable_total_pnl_usd"
+            )
+            for point in raw_curve:
+                point["capital_neutral_realized_pnl_usd"] = point.get(
+                    "realized_pnl_usd"
+                )
+                point["capital_neutral_unrealized_pnl_usd"] = point.get(
+                    "indicative_unrealized_pnl_usd"
+                    if market_only_valuation
+                    else "executable_unrealized_pnl_usd"
+                )
+                point["capital_neutral_total_pnl_usd"] = point.get(curve_total_field)
             curve = raw_curve
             excluded_accounting_curve_points = 0
             if curve_effective_after:
@@ -30649,8 +30984,18 @@ class Store:
             )
             account["account_return_fraction"] = (
                 float(total_for_return) / starting_cash
-                if total_for_return is not None and starting_cash > 0.0 else None
+                if (
+                    capital_model == "legacy_cash_limited"
+                    and total_for_return is not None and starting_cash > 0.0
+                ) else None
             )
+            account["capital_model"] = capital_model
+            account["capital_neutral_realized_pnl_usd"] = realized_pnl
+            account["capital_neutral_unrealized_pnl_usd"] = account.get(
+                "indicative_unrealized_pnl_usd"
+                if market_only_valuation else "executable_unrealized_pnl_usd"
+            )
+            account["capital_neutral_total_pnl_usd"] = total_for_return
             account["terminal_position_count"] = (
                 closed_position_count + written_off_position_count
             )
@@ -30680,6 +31025,21 @@ class Store:
             ).fetchall()
             admitted = sum(int(row["count"]) for row in decisions if row["status"] == "admitted")
             rejected = sum(int(row["count"]) for row in decisions if row["status"] == "rejected")
+            forward_started_at = str(
+                policy.get("forward_started_at")
+                or registration["registered_at"]
+            )
+            forward_age_seconds = max(
+                0.0,
+                (summary_at - parse_time(forward_started_at)).total_seconds(),
+            )
+            terminal_count = closed_position_count + written_off_position_count
+            maturity = (
+                "mature" if terminal_count >= 30
+                else "provisional" if terminal_count >= 10
+                else "early" if terminal_count > 0 or admitted > 0
+                else "waiting"
+            )
             participant_outcomes = {"projected": 0, "skipped_cash_unavailable_at_fill": 0}
             if "chain_meme_trader_entry_participant_outcomes" in tables:
                 participant_outcomes.update({
@@ -30725,6 +31085,10 @@ class Store:
                     "admitted": admitted, "rejected": rejected,
                     "reasons": [dict(row) for row in decisions],
                 },
+                "forward_started_at": forward_started_at,
+                "forward_age_seconds": forward_age_seconds,
+                "eligible_opportunity_count": admitted + rejected,
+                "maturity": maturity,
                 "entry_participation": participant_outcomes,
                 "delta_vs_previous_stage_usd": delta,
             })
@@ -30743,6 +31107,7 @@ class Store:
             ),
             "activation": dict(activation) if activation is not None else None,
             "simulated": True, "live": False, "definition": definition,
+            "capital_model": capital_model,
             "open_position_count": open_position_count_all,
             "unique_held_token_count": len(unique_held_token_ids),
             "strategies": strategies,
