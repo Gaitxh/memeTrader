@@ -1401,7 +1401,7 @@ class Runtime:
         self._chain_meme_normal_slot = 0
         self._wsol_usdc_conversion: dict[str, Any] | None = None
         self._wsol_usdc_conversion_at = 0.0
-        self._dex_quote_lock = asyncio.Semaphore(2)
+        self._dex_quote_lock = asyncio.Semaphore(4)
         self._chain_meme_active_idle_event = asyncio.Event()
         self._chain_meme_active_idle_event.set()
         self.events = EventEngine(
@@ -5697,10 +5697,10 @@ class Runtime:
             return refreshed_count
 
         refreshed = 0
-        for start in range(0, len(batches), 2):
+        for start in range(0, len(batches), 4):
             refreshed += sum(await asyncio.gather(*(
                 refresh_batch(chain, chunk)
-                for chain, chunk in batches[start:start + 2]
+                for chain, chunk in batches[start:start + 4]
             )))
         return refreshed
 

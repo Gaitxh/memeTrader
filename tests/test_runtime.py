@@ -2378,15 +2378,15 @@ def test_active_market_mark_batches_are_bounded_and_one_failure_does_not_stop_ch
                 "chain": "solana",
                 "address": f"S{index}",
             }
-            for index in range(61)
+            for index in range(121)
         ]
         refreshed = await runtime._refresh_chain_meme_market_marks(
             targets, heartbeat_name="marks", high_priority=True,
         )
-        assert len(calls) == 3
-        assert max_inflight == 2
-        assert refreshed == 31
-        assert len(applied) == 31
+        assert len(calls) == 5
+        assert max_inflight == 4
+        assert refreshed == 91
+        assert len(applied) == 91
 
     asyncio.run(scenario())
 
