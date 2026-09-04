@@ -2731,6 +2731,10 @@ class Store:
                     ON chain_meme_trader_entry_decisions(
                         definition_version,arm_id,status,decided_at,id
                     );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_entry_decisions_status_idx
+                    ON chain_meme_trader_entry_decisions(
+                        definition_version,status,id DESC
+                    );
                 CREATE TABLE IF NOT EXISTS chain_meme_trader_marks (
                     id INTEGER PRIMARY KEY,
                     definition_version TEXT NOT NULL,
@@ -2841,6 +2845,10 @@ class Store:
                 CREATE INDEX IF NOT EXISTS chain_meme_trader_account_snapshots_arm_idx
                     ON chain_meme_trader_account_snapshots(
                         definition_version,arm_id,recorded_at,id
+                    );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_account_snapshots_latest_idx
+                    ON chain_meme_trader_account_snapshots(
+                        definition_version,arm_id,id DESC
                     );
                 CREATE TABLE IF NOT EXISTS chain_meme_trader_market_marks (
                     token_id TEXT PRIMARY KEY,
@@ -28013,12 +28021,6 @@ class Store:
                 value = arm_values.get(arm_id)
                 if not isinstance(value, Mapping):
                     continue
-                self.db.execute(
-                    "UPDATE chain_meme_trader_positions SET last_evaluated_at=? "
-                    "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=? "
-                    "AND status='open'",
-                    (iso(decision_at), version, arm_id, int(position["shadow_cohort_id"])),
-                )
                 if position["pending_mark_id"] is not None:
                     continue
                 elapsed = max(
@@ -29372,16 +29374,32 @@ class Store:
                             high_economic_value / stake - 1.0
                             if high_economic_value is not None else None
                         )
-                        self.db.execute(
-                            "UPDATE chain_meme_trader_positions SET "
-                            "highest_signal_price_usd=?,highest_economic_value_usd=?,"
-                            "last_evaluated_at=? WHERE definition_version=? AND arm_id=? "
-                            "AND shadow_cohort_id=? AND status='open'",
-                            (
-                                high, high_economic_value, iso(current), version, arm_id,
-                                int(position["shadow_cohort_id"]),
-                            ),
+                        recorded_signal_high = float(
+                            position["highest_signal_price_usd"] or 0.0
                         )
+                        recorded_economic_high = (
+                            float(position["highest_economic_value_usd"])
+                            if position["highest_economic_value_usd"] is not None
+                            else None
+                        )
+                        if (
+                            high > recorded_signal_high
+                            or high_economic_value is not None
+                            and (
+                                recorded_economic_high is None
+                                or high_economic_value > recorded_economic_high
+                            )
+                        ):
+                            self.db.execute(
+                                "UPDATE chain_meme_trader_positions SET "
+                                "highest_signal_price_usd=?,highest_economic_value_usd=? "
+                                "WHERE definition_version=? AND arm_id=? "
+                                "AND shadow_cohort_id=? AND status='open'",
+                                (
+                                    high, high_economic_value, version, arm_id,
+                                    int(position["shadow_cohort_id"]),
+                                ),
+                            )
                         drawdown = (
                             current_economic_value / high_economic_value - 1.0
                             if current_economic_value is not None
@@ -29905,39 +29923,41 @@ class Store:
         policy_ids = [str(item["arm_id"]) for item in definition["policies"]]
         starting_cash = float(definition["starting_cash_usd_each_arm"])
         slippage_factor = 1.0 - int(definition["slippage_bps"]) / 10_000.0
-        positions_by_arm: dict[str, list[sqlite3.Row]] = {
-            arm_id: [] for arm_id in policy_ids
-        }
-        for row in self.db.execute(
-            "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
-            "AND status!='ineligible' ORDER BY arm_id,opened_at",
-            (version,),
-        ).fetchall():
-            positions_by_arm.setdefault(str(row["arm_id"]), []).append(row)
-        net_flow_by_arm = {
-            str(row["arm_id"]): float(row["net_flow_usd"] or 0.0)
+        position_counts_by_arm = {
+            str(row["arm_id"]): {
+                "open": int(row["open_count"] or 0),
+                "closed": int(row["closed_count"] or 0),
+                "written_off": int(row["written_off_count"] or 0),
+            }
             for row in self.db.execute(
-                "SELECT arm_id,COALESCE(SUM(net_cash_flow_usd),0.0) AS net_flow_usd "
-                "FROM chain_meme_trader_trades WHERE definition_version=? GROUP BY arm_id",
+                "SELECT arm_id,"
+                "SUM(CASE WHEN status='open' THEN 1 ELSE 0 END) AS open_count,"
+                "SUM(CASE WHEN status='closed' THEN 1 ELSE 0 END) AS closed_count,"
+                "SUM(CASE WHEN status='written_off' THEN 1 ELSE 0 END) "
+                "AS written_off_count FROM chain_meme_trader_positions "
+                "WHERE definition_version=? AND status!='ineligible' GROUP BY arm_id",
                 (version,),
             ).fetchall()
+        }
+        trade_totals = self.db.execute(
+            "SELECT arm_id,COALESCE(SUM(net_cash_flow_usd),0.0) AS net_flow_usd,"
+            "COALESCE(SUM(realized_pnl_usd),0.0) AS realized_usd "
+            "FROM chain_meme_trader_trades WHERE definition_version=? GROUP BY arm_id",
+            (version,),
+        ).fetchall()
+        net_flow_by_arm = {
+            str(row["arm_id"]): float(row["net_flow_usd"] or 0.0)
+            for row in trade_totals
         }
         realized_by_arm = {
             str(row["arm_id"]): float(row["realized_usd"] or 0.0)
-            for row in self.db.execute(
-                "SELECT arm_id,COALESCE(SUM(realized_pnl_usd),0.0) AS realized_usd "
-                "FROM chain_meme_trader_trades WHERE definition_version=? GROUP BY arm_id",
-                (version,),
-            ).fetchall()
+            for row in trade_totals
         }
         effective_corrections = (
             self._chain_meme_trader_market_fill_corrections_from_connection(
                 self.db, version,
             )
         )
-        corrections_by_trade = {
-            int(row["source_trade_id"]): row for row in effective_corrections
-        }
         corrections_by_arm: dict[str, dict[int, Mapping[str, Any]]] = {}
         for row in effective_corrections:
             arm_id = str(row["arm_id"])
@@ -29953,38 +29973,113 @@ class Store:
                 + float(row["realized_adjustment_usd"] or 0.0)
             )
         contaminations_by_arm: dict[str, set[int]] = {}
-        for row in self._chain_meme_trader_accounting_contaminations_from_connection(
-            self.db, version,
-        ):
+        active_contaminations = (
+            self._chain_meme_trader_accounting_contaminations_from_connection(
+                self.db, version,
+            )
+        )
+        for row in active_contaminations:
             contaminations_by_arm.setdefault(str(row["arm_id"]), set()).add(
                 int(row["shadow_cohort_id"])
             )
-        for trade in self.db.execute(
-            "SELECT * FROM chain_meme_trader_trades WHERE definition_version=?",
-            (version,),
-        ).fetchall():
-            arm_id = str(trade["arm_id"])
-            if int(trade["shadow_cohort_id"]) not in contaminations_by_arm.get(
-                arm_id, set()
-            ):
+        contaminated_keys = {
+            (str(row["arm_id"]), int(row["shadow_cohort_id"]))
+            for row in active_contaminations
+        }
+        sorted_contaminated_keys = sorted(contaminated_keys)
+        for start in range(0, len(sorted_contaminated_keys), 400):
+            key_chunk = sorted_contaminated_keys[start:start + 400]
+            key_filter = " OR ".join(
+                "(arm_id=? AND shadow_cohort_id=?)" for _ in key_chunk
+            )
+            values: list[Any] = [version]
+            for key in key_chunk:
+                values.extend(key)
+            for row in self.db.execute(
+                "SELECT arm_id,COALESCE(SUM(net_cash_flow_usd),0.0) "
+                "AS net_flow_usd,COALESCE(SUM(realized_pnl_usd),0.0) "
+                "AS realized_usd FROM chain_meme_trader_trades "
+                f"WHERE definition_version=? AND ({key_filter}) GROUP BY arm_id",
+                tuple(values),
+            ).fetchall():
+                arm_id = str(row["arm_id"])
+                net_flow_by_arm[arm_id] = (
+                    net_flow_by_arm.get(arm_id, 0.0)
+                    - float(row["net_flow_usd"] or 0.0)
+                )
+                realized_by_arm[arm_id] = (
+                    realized_by_arm.get(arm_id, 0.0)
+                    - float(row["realized_usd"] or 0.0)
+                )
+        for row in effective_corrections:
+            key = (str(row["arm_id"]), int(row["shadow_cohort_id"]))
+            if key not in contaminated_keys:
                 continue
-            correction = corrections_by_trade.get(int(trade["id"]))
+            arm_id = key[0]
             net_flow_by_arm[arm_id] = (
                 net_flow_by_arm.get(arm_id, 0.0)
-                - float(trade["net_cash_flow_usd"] or 0.0)
-                - (
-                    float(correction["cash_adjustment_usd"] or 0.0)
-                    if correction is not None else 0.0
-                )
+                - float(row["cash_adjustment_usd"] or 0.0)
             )
             realized_by_arm[arm_id] = (
                 realized_by_arm.get(arm_id, 0.0)
-                - float(trade["realized_pnl_usd"] or 0.0)
-                - (
-                    float(correction["realized_adjustment_usd"] or 0.0)
-                    if correction is not None else 0.0
-                )
+                - float(row["realized_adjustment_usd"] or 0.0)
             )
+        corrected_keys = {
+            (str(row["arm_id"]), int(row["shadow_cohort_id"]))
+            for row in effective_corrections
+        }
+        affected_keys = sorted(corrected_keys | contaminated_keys)
+        affected_statuses: dict[tuple[str, int], str] = {}
+        for start in range(0, len(affected_keys), 400):
+            key_chunk = affected_keys[start:start + 400]
+            key_filter = " OR ".join(
+                "(arm_id=? AND shadow_cohort_id=?)" for _ in key_chunk
+            )
+            values: list[Any] = [version]
+            for key in key_chunk:
+                values.extend(key)
+            for row in self.db.execute(
+                "SELECT arm_id,shadow_cohort_id,status FROM "
+                "chain_meme_trader_positions WHERE definition_version=? AND "
+                f"({key_filter})",
+                tuple(values),
+            ).fetchall():
+                affected_statuses[(
+                    str(row["arm_id"]), int(row["shadow_cohort_id"]),
+                )] = str(row["status"])
+        for key, status in affected_statuses.items():
+            if status in {"open", "closed", "written_off"}:
+                counts = position_counts_by_arm.setdefault(
+                    key[0], {"open": 0, "closed": 0, "written_off": 0},
+                )
+                counts[status] -= 1
+        for arm_id, arm_corrections in corrections_by_arm.items():
+            for cohort_id, row in arm_corrections.items():
+                if cohort_id in contaminations_by_arm.get(arm_id, set()):
+                    continue
+                effective_status = {
+                    "SELL": "closed",
+                    "WRITEOFF": "written_off",
+                    "UNRESOLVED": "open",
+                }[str(row["replacement_outcome"])]
+                counts = position_counts_by_arm.setdefault(
+                    arm_id, {"open": 0, "closed": 0, "written_off": 0},
+                )
+                counts[effective_status] += 1
+        open_positions_by_arm: dict[str, list[sqlite3.Row]] = {
+            arm_id: [] for arm_id in policy_ids
+        }
+        for row in self.db.execute(
+            "SELECT arm_id,shadow_cohort_id,token_id,opened_at,amount_raw,"
+            "initial_amount_raw,stake_usd,allocated_cost_usd,"
+            "entry_execution_price_usd,entry_signal_price_usd FROM "
+            "chain_meme_trader_positions WHERE definition_version=? "
+            "AND status='open' ORDER BY arm_id,opened_at",
+            (version,),
+        ).fetchall():
+            key = (str(row["arm_id"]), int(row["shadow_cohort_id"]))
+            if key not in corrected_keys and key not in contaminated_keys:
+                open_positions_by_arm.setdefault(key[0], []).append(row)
         ledger_trade_frontier_id = int(self.db.execute(
             "SELECT COALESCE(MAX(id),0) FROM chain_meme_trader_trades "
             "WHERE definition_version=?",
@@ -29992,8 +30087,8 @@ class Store:
         ).fetchone()[0])
         token_ids = {
             str(row["token_id"])
-            for rows in positions_by_arm.values()
-            for row in rows if str(row["status"]) == "open"
+            for rows in open_positions_by_arm.values()
+            for row in rows
         }
         marks_by_token: dict[str, sqlite3.Row] = {}
         if token_ids:
@@ -30019,34 +30114,14 @@ class Store:
         }
         inserted = 0
         for arm_id in policy_ids:
-            positions = positions_by_arm.get(arm_id, [])
             arm_corrections = corrections_by_arm.get(arm_id, {})
-            corrected_cohorts = set(arm_corrections)
             contaminated_cohorts = contaminations_by_arm.get(arm_id, set())
-            open_positions = [
-                row for row in positions
-                if str(row["status"]) == "open"
-                and int(row["shadow_cohort_id"]) not in corrected_cohorts
-                and int(row["shadow_cohort_id"]) not in contaminated_cohorts
-            ]
-            closed = sum(
-                1 for row in positions if str(row["status"]) == "closed"
-                and int(row["shadow_cohort_id"]) not in corrected_cohorts
-                and int(row["shadow_cohort_id"]) not in contaminated_cohorts
-            ) + sum(
-                1 for cohort_id, row in arm_corrections.items()
-                if cohort_id not in contaminated_cohorts
-                and str(row["replacement_outcome"]) == "SELL"
+            open_positions = open_positions_by_arm.get(arm_id, [])
+            counts = position_counts_by_arm.get(
+                arm_id, {"open": 0, "closed": 0, "written_off": 0},
             )
-            written = sum(
-                1 for row in positions if str(row["status"]) == "written_off"
-                and int(row["shadow_cohort_id"]) not in corrected_cohorts
-                and int(row["shadow_cohort_id"]) not in contaminated_cohorts
-            ) + sum(
-                1 for cohort_id, row in arm_corrections.items()
-                if cohort_id not in contaminated_cohorts
-                and str(row["replacement_outcome"]) == "WRITEOFF"
-            )
+            closed = max(0, int(counts["closed"]))
+            written = max(0, int(counts["written_off"]))
             unresolved = sum(
                 1 for cohort_id, row in arm_corrections.items()
                 if cohort_id not in contaminated_cohorts

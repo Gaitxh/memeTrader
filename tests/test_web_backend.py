@@ -183,6 +183,9 @@ def test_chain_meme_trader_api_and_static_page_preserve_forward_contract(tmp_pat
     assert "PNL 曲线" in index
     assert "capital_neutral_total_pnl_usd" in app
     assert "profit_loss_ratio" in app
+    assert "profit_factor" in app
+    assert "收益因子" in app
+    assert "实时曲线最大回撤" in app
     assert "strategyMetrics" in app
     assert "总资产实时曲线" not in index
     assert "UNKNOWN" in app
@@ -212,6 +215,9 @@ def test_chain_meme_trader_api_and_static_page_preserve_forward_contract(tmp_pat
         )
         assert live["strategies"][0]["account"]["metric_sample_status"] == "no_closed_results"
         assert live["strategies"][0]["account"]["expectancy_usd"] is None
+        assert live["strategies"][0]["account"]["profit_factor"] is None
+        assert live["strategies"][0]["account"]["profit_factor_status"] == "no_closed_results"
+        assert live["strategies"][0]["account"]["max_drawdown_usd"] == 0.0
         assert len(live_response.content) < len(response.content)
         focused_live = httpx.get(
             f"http://127.0.0.1:{port}/api/live",
@@ -264,6 +270,58 @@ def test_chain_web_state_cache_prunes_expired_entries_and_has_a_fixed_bound(
             web._state_cache[key] = (0.0, payload)
     web.state(compact=True, arm_id="fresh-arm")
     assert list(web._state_cache) == [(True, "fresh-arm")]
+
+
+def test_chain_web_profit_factor_and_drawdown_use_effective_results_and_own_curve(
+    tmp_path: Path,
+):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    registration = store.register_chain_meme_trader_v20()
+    store.activate_chain_meme_trader_v20()
+    version = Store.CHAIN_MEME_TRADER_V20_VERSION
+    arm_id = Store._json_object(registration["definition_json"])["policies"][0]["arm_id"]
+    observed = utcnow()
+    with store.db:
+        for offset, pnl in enumerate((8.0, -5.0), start=1):
+            store.db.execute(
+                "INSERT INTO chain_meme_trader_positions("
+                "definition_version,arm_id,shadow_cohort_id,token_id,source_buy_trade_id,"
+                "baseline_quote_result_id,entry_snapshot_id,entry_signal_price_usd,"
+                "entry_execution_price_usd,paper_quantity_tokens,remaining_quantity_tokens,"
+                "amount_raw,initial_amount_raw,stake_usd,highest_signal_price_usd,status,"
+                "realized_pnl_usd,opened_at,closed_at,close_reason) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,'0','1000',20,1,'closed',?,?,?,?)",
+                (
+                    version, arm_id, 992_000 + offset,
+                    f"solana:metric-{offset}", -992_000 - offset, -1, -1,
+                    1.0, 1.04, 20.0 / 1.04, 0.0, pnl,
+                    iso(observed), iso(observed + timedelta(microseconds=offset)),
+                    "fixture",
+                ),
+            )
+        for offset, total_pnl in enumerate((0.0, 10.0, 4.0, 12.0, 3.0), start=1):
+            recorded_at = iso(observed + timedelta(microseconds=10 + offset))
+            store.db.execute(
+                "INSERT INTO chain_meme_trader_account_snapshots("
+                "definition_version,arm_id,recorded_at,cash_usd,realized_pnl_usd,"
+                "indicative_unrealized_pnl_usd,indicative_total_pnl_usd,"
+                "indicative_position_count,indicative_is_complete,open_position_count,"
+                "closed_position_count,written_off_position_count,priced_position_count,"
+                "valuation_status,ledger_trade_frontier_id) "
+                "VALUES(?,?,?,?,?,0,?,0,1,0,2,0,0,'complete_market_mark',0)",
+                (version, arm_id, recorded_at, 1000.0 + total_pnl, total_pnl, total_pnl),
+            )
+    store.close()
+
+    live = ChainWebData(config_path).state(compact=True, arm_id=arm_id)
+    account = next(
+        item["account"] for item in live["strategies"] if item["arm_id"] == arm_id
+    )
+    assert account["profit_factor"] == pytest.approx(1.6)
+    assert account["profit_factor_status"] == "available"
+    assert account["max_drawdown_usd"] == pytest.approx(9.0)
+    assert account["max_drawdown_fraction"] == pytest.approx(0.75)
 
 
 def test_strategy_universe_refreshes_for_additive_strategy_versions(tmp_path: Path):
@@ -915,7 +973,7 @@ def test_chain_meme_trader_web_switches_to_active_v6_matrix(tmp_path: Path):
     assert 'id="reverseability-table"' in (static / "index.html").read_text(encoding="utf-8")
     app = (static / "app.js").read_text(encoding="utf-8")
     assert "renderReverseability(data)" in app
-    assert "实际参与 / Fill时跳过" in app
+    assert "实际参与 / 历史现金门跳过" in app
     assert "renderStrategyPool(data)" in app
     assert "renderStages(strategies)" not in app
     assert "renderStrategyRegistry(data)" in app

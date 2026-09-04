@@ -4192,6 +4192,7 @@ def test_chain_meme_trader_v6_entry_matrix_is_forward_and_shares_one_buy(
     registration = store.register_chain_meme_trader_v6()
     assert int(registration["code_snapshot_frontier"]) == historical
     activation = store.activate_chain_meme_trader_v6()
+    now = utcnow()
     stopped = store.db.execute(
         "SELECT * FROM chain_meme_trader_primary_stops WHERE definition_version=?",
         (Store.CHAIN_MEME_TRADER_VERSION,),

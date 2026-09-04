@@ -718,6 +718,22 @@ class ChainWebData:
                     if terminal_count > 0 else None
                 )
                 account["account_return_fraction"] = None
+                curve = list(curves_by_arm.get(policy_arm_id, []))
+                if accounting_effective_after:
+                    curve_limit = (
+                        self.LIVE_DETAIL_CURVE_POINTS
+                        if arm_id == policy_arm_id else self.LIVE_SPARKLINE_POINTS
+                    )
+                    curve = [
+                        *curve[-max(0, curve_limit - 1):],
+                        {
+                            "recorded_at": current_iso,
+                            "realized_pnl_usd": realized_pnl,
+                            "unrealized_pnl_usd": unrealized_pnl,
+                            "total_pnl_usd": total_pnl,
+                            "synthetic_effective_point": True,
+                        },
+                    ]
                 terminal_pnls = [
                     value for _closed_at, value in sorted(
                         terminal_rows_by_arm.get(policy_arm_id, []),
@@ -732,12 +748,26 @@ class ChainWebData:
                 average_loss = (
                     abs(sum(losing_pnls) / len(losing_pnls)) if losing_pnls else None
                 )
-                running = peak = 0.0
+                profit_factor = (
+                    sum(winning_pnls) / abs(sum(losing_pnls))
+                    if losing_pnls else None
+                )
+                curve_pnls = [
+                    float(point["total_pnl_usd"])
+                    for point in curve if point.get("total_pnl_usd") is not None
+                ]
+                peak = 0.0
                 max_drawdown = 0.0
-                for value in terminal_pnls:
-                    running += value
-                    peak = max(peak, running)
-                    max_drawdown = max(max_drawdown, peak - running)
+                max_drawdown_fraction: float | None = None
+                for value in curve_pnls:
+                    peak = max(peak, value)
+                    drawdown = max(0.0, peak - value)
+                    max_drawdown = max(max_drawdown, drawdown)
+                    if peak > 0.0:
+                        fraction = drawdown / peak
+                        max_drawdown_fraction = max(
+                            max_drawdown_fraction or 0.0, fraction,
+                        )
                 tail_count = (
                     max(1, (len(terminal_pnls) + 9) // 10) if terminal_pnls else 0
                 )
@@ -753,11 +783,17 @@ class ChainWebData:
                         if average_win is not None and average_loss not in {None, 0.0}
                         else None
                     ),
+                    "profit_factor": profit_factor,
+                    "profit_factor_status": (
+                        "no_closed_results" if not terminal_pnls
+                        else "no_losses" if not losing_pnls
+                        else "available"
+                    ),
                     "expectancy_usd": (
                         sum(terminal_pnls) / len(terminal_pnls) if terminal_pnls else None
                     ),
-                    "max_drawdown_usd": max_drawdown if terminal_pnls else None,
-                    "max_drawdown_fraction": None,
+                    "max_drawdown_usd": max_drawdown if curve_pnls else None,
+                    "max_drawdown_fraction": max_drawdown_fraction,
                     "tail_return_usd": (
                         sum(sorted(terminal_pnls)[:tail_count]) / tail_count
                         if terminal_pnls else None
@@ -779,22 +815,6 @@ class ChainWebData:
                     else "early" if terminal_count > 0 or admitted > 0
                     else "waiting"
                 )
-                curve = curves_by_arm.get(policy_arm_id, [])
-                if accounting_effective_after:
-                    curve_limit = (
-                        self.LIVE_DETAIL_CURVE_POINTS
-                        if arm_id == policy_arm_id else self.LIVE_SPARKLINE_POINTS
-                    )
-                    curve = [
-                        *curve[-max(0, curve_limit - 1):],
-                        {
-                            "recorded_at": current_iso,
-                            "realized_pnl_usd": realized_pnl,
-                            "unrealized_pnl_usd": unrealized_pnl,
-                            "total_pnl_usd": total_pnl,
-                            "synthetic_effective_point": True,
-                        },
-                    ]
                 strategies.append({
                     **{
                         key: policy.get(key)

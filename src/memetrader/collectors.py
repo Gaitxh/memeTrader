@@ -1162,17 +1162,24 @@ class HttpClient:
     async def _reserve_host_request_start(
         self, host: str, *, not_before: float = 0.0,
     ) -> None:
-        """Space request starts without serializing network response time."""
+        """Space request starts without serializing normal response time."""
         async with self._locks[host]:
-            now = time.monotonic()
-            wait = max(
-                0.0,
-                self.min_host_interval - (now - self._last[host]),
-                float(not_before) - now,
+            await self._reserve_locked_host_request_start(
+                host, not_before=not_before,
             )
-            if wait > 0:
-                await asyncio.sleep(wait)
-            self._last[host] = time.monotonic()
+
+    async def _reserve_locked_host_request_start(
+        self, host: str, *, not_before: float = 0.0,
+    ) -> None:
+        now = time.monotonic()
+        wait = max(
+            0.0,
+            self.min_host_interval - (now - self._last[host]),
+            float(not_before) - now,
+        )
+        if wait > 0:
+            await asyncio.sleep(wait)
+        self._last[host] = time.monotonic()
 
     async def get(self, url: str, *, params: dict[str, Any] | None = None, ttl: float = 0, headers: dict[str, str] | None = None) -> httpx.Response:
         key = url + "?" + urllib.parse.urlencode(sorted((params or {}).items()), doseq=True)
@@ -1190,10 +1197,11 @@ class HttpClient:
         response = await self.client.get(url, params=params, headers=headers)
         if response.status_code == 429:
             retry = min(15.0, float(response.headers.get("Retry-After", "2") or 2))
-            await self._reserve_host_request_start(
-                host, not_before=time.monotonic() + retry,
-            )
-            response = await self.client.get(url, params=params, headers=headers)
+            async with self._locks[host]:
+                await self._reserve_locked_host_request_start(
+                    host, not_before=time.monotonic() + retry,
+                )
+                response = await self.client.get(url, params=params, headers=headers)
         response.raise_for_status()
         if ttl:
             try:

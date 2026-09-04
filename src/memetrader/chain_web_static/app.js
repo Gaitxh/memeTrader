@@ -192,6 +192,8 @@ function liveMetricForFamily(family){
     realizedPnl:(account.capital_neutral_realized_pnl_usd??account.realized_pnl_usd)==null?null:Number(account.capital_neutral_realized_pnl_usd??account.realized_pnl_usd),
     unrealizedPnl:unrealizedPnl==null?null:Number(unrealizedPnl),
     profitLossRatio:account.profit_loss_ratio,
+    profitFactor:account.profit_factor,
+    profitFactorStatus:account.profit_factor_status,
     expectancy:account.expectancy_usd,
     maxDrawdown:account.max_drawdown_usd,
     maxDrawdownFraction:account.max_drawdown_fraction,
@@ -211,8 +213,9 @@ function liveMetricForFamily(family){
 function strategyMetrics(live){
   const value=(v,format=money)=>v==null?'—':format(v);
   const sample=live.metricSampleCount?`${live.metricSampleCount} 笔${live.metricSampleStatus==='insufficient_sample'?'，样本不足':''}`:'暂无闭仓样本';
-  const drawdown=live.maxDrawdown==null?'—':`${money(live.maxDrawdown)}${live.maxDrawdownFraction==null?'':` / ${percent(-Number(live.maxDrawdownFraction))}`}`;
-  return `<small class="strategy-metrics">已实现 ${value(live.realizedPnl)} · 盈亏比 ${value(live.profitLossRatio, v=>Number(v).toFixed(2))} · 单笔期望 ${value(live.expectancy)} · 闭仓最大回撤 ${drawdown} · 最差 10% 均值 ${value(live.tailReturn)}（${sample}）</small>`;
+  const factor=live.profitFactor==null?(live.profitFactorStatus==='no_losses'?'暂无亏损样本':'—'):Number(live.profitFactor).toFixed(2);
+  const drawdown=live.maxDrawdown==null?'—':`${money(live.maxDrawdown)}${live.maxDrawdownFraction==null?'':` / ${(Number(live.maxDrawdownFraction)*100).toFixed(1)}%`}`;
+  return `<small class="strategy-metrics">已实现 ${value(live.realizedPnl)} · 盈亏比 ${value(live.profitLossRatio, v=>Number(v).toFixed(2))} · 收益因子 ${factor} · 单笔期望 ${value(live.expectancy)} · 实时曲线最大回撤 ${drawdown} · 最差 10% 均值 ${value(live.tailReturn)}（${sample}）</small>`;
 }
 
 function fidelityLabel(family){
