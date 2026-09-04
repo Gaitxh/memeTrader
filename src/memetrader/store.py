@@ -28421,8 +28421,9 @@ class Store:
     def chain_meme_trader_market_mark_targets(
         self, *, definition_version: str | None = None,
         definition_versions: Iterable[str] | None = None,
+        limit: int = 600,
     ) -> list[dict[str, Any]]:
-        """Return one bounded, de-duplicated watch row per relevant token."""
+        """Return the least-recently attempted held-token watch targets first."""
         versions = list(dict.fromkeys(
             list(definition_versions) if definition_versions is not None
             else [definition_version] if definition_version is not None else [
@@ -28445,12 +28446,16 @@ class Store:
             "SELECT t.token_id,t.chain,t.address,"
             "GROUP_CONCAT(DISTINCT watched.reason) AS watch_reason "
             "FROM watched JOIN tokens t ON t.token_id=watched.token_id "
-            "GROUP BY t.token_id,t.chain,t.address ORDER BY t.token_id LIMIT 600"
+            "LEFT JOIN chain_meme_trader_market_marks m ON m.token_id=t.token_id "
+            "GROUP BY t.token_id,t.chain,t.address,m.last_attempt_at "
+            "ORDER BY MAX(CASE WHEN watched.reason='OPEN_POSITION' THEN 1 ELSE 0 END) DESC,"
+            "CASE WHEN m.last_attempt_at IS NULL THEN 0 ELSE 1 END,"
+            "m.last_attempt_at,t.token_id LIMIT ?"
         )
         with self._lock:
             return [
                 dict(row) for row in self.db.execute(
-                    query, tuple(versions + versions + versions),
+                    query, tuple(versions + versions + versions + [max(1, int(limit))]),
                 ).fetchall()
             ]
 

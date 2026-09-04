@@ -6471,6 +6471,57 @@ def test_chain_meme_market_mark_prices_open_position_without_liquidity(tmp_path:
     store.close()
 
 
+def test_chain_meme_market_mark_targets_rotate_across_all_open_tokens(tmp_path: Path):
+    store = Store(tmp_path / "market-mark-fairness.sqlite3", initial_cash_usd=1000)
+    store.register_chain_meme_trader_v6()
+    store.activate_chain_meme_trader_v6()
+    version = Store.CHAIN_MEME_TRADER_V6_VERSION
+    observed = utcnow()
+    tokens = [
+        TokenCandidate("solana", str(Pubkey.new_unique()), f"Token {index}", f"T{index}")
+        for index in range(5)
+    ]
+    with store.db:
+        for index, token in enumerate(tokens):
+            store.upsert_token(token, seen_at=observed, _in_transaction=True)
+            store.db.execute(
+                "INSERT INTO chain_meme_trader_v6_cohorts("
+                "definition_version,token_id,entry_family,source_snapshot_id,pair_address,"
+                "decided_at,episode_no,feature_json) VALUES(?,?,?,?,?,?,?,?)",
+                (version, token.token_id, "broad_launch", index + 1, "pair", iso(observed), 1, "{}"),
+            )
+            cohort_id = int(store.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+            store.db.execute(
+                "INSERT INTO chain_meme_trader_positions("
+                "definition_version,arm_id,shadow_cohort_id,token_id,source_buy_trade_id,"
+                "baseline_quote_result_id,entry_snapshot_id,entry_signal_price_usd,amount_raw,"
+                "initial_amount_raw,stake_usd,highest_signal_price_usd,status,opened_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,20,1,'open',?)",
+                (
+                    version, "broad_launch__fast_escape", cohort_id, token.token_id,
+                    index + 1, index + 1, index + 1, 1.0, "100", "100", iso(observed),
+                ),
+            )
+
+    first = store.chain_meme_trader_market_mark_targets(
+        definition_versions=[version], limit=3,
+    )
+    assert len(first) == 3
+    for item in first:
+        store.record_chain_meme_trader_market_mark_miss(
+            token_id=item["token_id"], chain=item["chain"], address=item["address"],
+            recorded_at=observed,
+        )
+    second = store.chain_meme_trader_market_mark_targets(
+        definition_versions=[version], limit=3,
+    )
+    assert len(second) == 3
+    assert {item["token_id"] for item in first + second} == {
+        token.token_id for token in tokens
+    }
+    store.close()
+
+
 def test_chain_meme_v12_uses_market_marks_and_one_shot_sell_fallback(tmp_path: Path):
     store = Store(tmp_path / "market-mark-v12.sqlite3", initial_cash_usd=1000)
     store.register_chain_meme_trader_v6()
