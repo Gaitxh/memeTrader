@@ -175,6 +175,9 @@ class Store:
     CHAIN_MEME_V22_VAULT_SHADOW_VERSION = (
         "chain-meme-v22-vault-flow-shadow/v1-runner-only-no-authority"
     )
+    FLAT_BREAKOUT_SHADOW_VERSION = (
+        "chain-meme-trader/flat-compression-breakout-shadow/v1-observer-only"
+    )
     PUMPSWAP_PROGRAM_ID = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
     CHAIN_MEME_TRADER_ACTIVE_VERSION = CHAIN_MEME_TRADER_V22_VERSION
     CHAIN_MEME_TRADER_STAGE4_EXEC_DECAY_VERSION = (
@@ -2429,6 +2432,28 @@ class Store:
                     UNIQUE(definition_version,arm_id),
                     UNIQUE(definition_version,canonical_id)
                 );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_flat_breakout_shadow_registrations (
+                    observer_version TEXT PRIMARY KEY,
+                    activated_at TEXT NOT NULL,
+                    activation_snapshot_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_flat_breakout_shadow (
+                    id INTEGER PRIMARY KEY,
+                    observer_version TEXT NOT NULL,
+                    token_id TEXT NOT NULL,
+                    pair_address TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    ingested_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    feature_json TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    UNIQUE(observer_version,token_id,pair_address,observed_at)
+                );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_flat_breakout_shadow_latest_idx
+                    ON chain_meme_trader_flat_breakout_shadow(
+                        observer_version,token_id,pair_address,id DESC
+                    );
                 CREATE TABLE IF NOT EXISTS chain_meme_trader_v6_activations (
                     definition_version TEXT PRIMARY KEY,
                     activated_at TEXT NOT NULL,
@@ -23051,6 +23076,250 @@ class Store:
             )
             policies.append(policy)
         return policies
+
+    def register_flat_compression_breakout_shadow(self) -> sqlite3.Row:
+        """Freeze an observer-only activation point outside the strategy registry."""
+        activated_at = utcnow()
+        definition = {
+            "observer_version": self.FLAT_BREAKOUT_SHADOW_VERSION,
+            "mode": "observer_only",
+            "minimum_token_age_seconds": 21_600,
+            "flat_price_change_h1_abs_max_pct": 10.0,
+            "quiet_prior55_trades_max": 2,
+            "quiet_prior55_volume_usd_max": 200.0,
+            "near_trigger_m5_trades_min": 3,
+            "near_trigger_m5_volume_usd_min": 300.0,
+            "breakout_m5_trades_min": 10,
+            "breakout_m5_volume_usd_min": 1_000.0,
+            "ordinary_refresh_seconds": 60,
+            "near_trigger_refresh_seconds": 5,
+            "confirmation": "two_independent_post_flat_visible_samples",
+            "decision_eligible": False,
+            "affects": "none",
+        }
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO "
+                "chain_meme_trader_flat_breakout_shadow_registrations("
+                "observer_version,activated_at,activation_snapshot_id,definition_json) "
+                "VALUES(?,?,(SELECT COALESCE(MAX(id),0) FROM token_snapshots),?)",
+                (
+                    self.FLAT_BREAKOUT_SHADOW_VERSION,
+                    iso(activated_at), self._json(definition),
+                ),
+            )
+            return self.db.execute(
+                "SELECT * FROM "
+                "chain_meme_trader_flat_breakout_shadow_registrations "
+                "WHERE observer_version=?",
+                (self.FLAT_BREAKOUT_SHADOW_VERSION,),
+            ).fetchone()
+
+    def due_flat_compression_breakout_shadow_targets(
+        self, *, limit: int = 30, now: Any = None,
+    ) -> list[dict[str, Any]]:
+        """Return one low-priority DEX batch; held tokens are refreshed elsewhere."""
+        current = parse_time(now or utcnow())
+        with self._lock:
+            registration = self.db.execute(
+                "SELECT * FROM "
+                "chain_meme_trader_flat_breakout_shadow_registrations "
+                "WHERE observer_version=?",
+                (self.FLAT_BREAKOUT_SHADOW_VERSION,),
+            ).fetchone()
+            if registration is None:
+                return []
+            return [
+                dict(row) for row in self.db.execute(
+                    "WITH latest_eval AS ("
+                    "SELECT token_id,MAX(id) AS evaluation_id FROM "
+                    "chain_meme_trader_v6_entry_evaluations WHERE "
+                    "definition_version=? AND "
+                    "COALESCE(json_extract(feature_json,'$.pair_address'),'')!='' "
+                    "GROUP BY token_id), latest_observation AS ("
+                    "SELECT token_id,pair_address,MAX(id) AS observation_id FROM "
+                    "chain_meme_trader_flat_breakout_shadow WHERE "
+                    "observer_version=? GROUP BY token_id,pair_address) "
+                    "SELECT t.token_id,t.chain,t.address,"
+                    "json_extract(e.feature_json,'$.pair_address') AS pair_address,"
+                    "json_extract(e.feature_json,'$.pair_created_at') AS pair_created_at,"
+                    "o.status AS observer_state FROM latest_eval le "
+                    "JOIN chain_meme_trader_v6_entry_evaluations e "
+                    "ON e.id=le.evaluation_id JOIN tokens t ON t.token_id=e.token_id "
+                    "LEFT JOIN latest_observation lo ON lo.token_id=e.token_id AND "
+                    "lo.pair_address=json_extract(e.feature_json,'$.pair_address') "
+                    "LEFT JOIN chain_meme_trader_flat_breakout_shadow o "
+                    "ON o.id=lo.observation_id LEFT JOIN chain_meme_trader_market_marks m "
+                    "ON m.token_id=e.token_id WHERE "
+                    "julianday(?) - julianday(json_extract(e.feature_json,'$.pair_created_at'))"
+                    ">=0.25 AND NOT EXISTS(SELECT 1 FROM chain_meme_trader_positions p "
+                    "WHERE p.token_id=e.token_id AND p.status='open') AND "
+                    "(m.last_attempt_at IS NULL OR "
+                    "m.last_attempt_at<=CASE WHEN o.status IN "
+                    "('near_trigger','breakout_confirmation_pending',"
+                    "'shadow_breakout_candidate') THEN ? ELSE ? END) "
+                    "ORDER BY CASE WHEN o.status IN "
+                    "('near_trigger','breakout_confirmation_pending',"
+                    "'shadow_breakout_candidate') THEN 0 ELSE 1 END,"
+                    "COALESCE(m.last_attempt_at,''),e.id DESC LIMIT ?",
+                    (
+                        self.CHAIN_MEME_TRADER_ACTIVE_VERSION,
+                        self.FLAT_BREAKOUT_SHADOW_VERSION,
+                        iso(current),
+                        iso(current - timedelta(seconds=5)),
+                        iso(current - timedelta(seconds=60)),
+                        max(1, min(30, int(limit))),
+                    ),
+                ).fetchall()
+            ]
+
+    def observe_flat_compression_breakout_market_batch(
+        self, outcomes: Iterable[Mapping[str, Any]], *, recorded_at: Any = None,
+        evaluated_at: Any = None,
+    ) -> int:
+        """Record only Shadow state changes from fresh shared DEX responses."""
+        recorded = parse_time(recorded_at or utcnow())
+        decision_at = parse_time(evaluated_at or utcnow())
+        inserted = 0
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT * FROM "
+                "chain_meme_trader_flat_breakout_shadow_registrations "
+                "WHERE observer_version=?",
+                (self.FLAT_BREAKOUT_SHADOW_VERSION,),
+            ).fetchone()
+            if registration is None:
+                return 0
+            activated_at = parse_time(registration["activated_at"])
+            for outcome in outcomes:
+                if str(outcome.get("kind") or "") != "visible":
+                    continue
+                snapshot = outcome.get("snapshot")
+                if not isinstance(snapshot, TokenSnapshot):
+                    continue
+                raw = snapshot.raw if isinstance(snapshot.raw, Mapping) else {}
+                pair = raw.get("pair") if isinstance(raw.get("pair"), Mapping) else raw
+                pair_address = str(pair.get("pairAddress") or "").strip()
+                token_id = str(
+                    outcome.get("target_token_id")
+                    or getattr(outcome.get("token"), "token_id", "")
+                )
+                if not pair_address or not token_id:
+                    continue
+                try:
+                    observed = parse_time(snapshot.observed_at)
+                    ingested = parse_time(snapshot.ingested_at or snapshot.observed_at)
+                    pair_created = datetime.fromtimestamp(
+                        int(pair.get("pairCreatedAt")) / 1000.0,
+                        tz=timezone.utc,
+                    )
+                    if not (
+                        activated_at <= observed <= ingested <= recorded <= decision_at
+                        and pair_created <= observed
+                    ):
+                        continue
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                age_seconds = (observed - pair_created).total_seconds()
+                if age_seconds < 21_600:
+                    continue
+                txns = pair.get("txns") if isinstance(pair.get("txns"), Mapping) else {}
+                volumes = pair.get("volume") if isinstance(pair.get("volume"), Mapping) else {}
+                changes = (
+                    pair.get("priceChange")
+                    if isinstance(pair.get("priceChange"), Mapping) else {}
+                )
+                m5 = txns.get("m5") if isinstance(txns.get("m5"), Mapping) else {}
+                h1 = txns.get("h1") if isinstance(txns.get("h1"), Mapping) else {}
+                required = (
+                    m5.get("buys"), m5.get("sells"), h1.get("buys"),
+                    h1.get("sells"), volumes.get("m5"), volumes.get("h1"),
+                    changes.get("h1"),
+                )
+                status = "insufficient_mature_observation"
+                features: dict[str, Any] = {
+                    "observer_only": True,
+                    "decision_eligible": False,
+                    "affects": "none",
+                    "age_seconds": age_seconds,
+                    "pair_address": pair_address,
+                }
+                latest = self.db.execute(
+                    "SELECT * FROM chain_meme_trader_flat_breakout_shadow "
+                    "WHERE observer_version=? AND token_id=? AND pair_address=? "
+                    "ORDER BY id DESC LIMIT 1",
+                    (self.FLAT_BREAKOUT_SHADOW_VERSION, token_id, pair_address),
+                ).fetchone()
+                if all(value is not None for value in required):
+                    m5_trades = int(m5["buys"]) + int(m5["sells"])
+                    h1_trades = int(h1["buys"]) + int(h1["sells"])
+                    m5_volume = float(volumes["m5"])
+                    h1_volume = float(volumes["h1"])
+                    prior55_trades = h1_trades - m5_trades
+                    prior55_volume = h1_volume - m5_volume
+                    price_change_h1 = float(changes["h1"])
+                    valid_aggregate = (
+                        prior55_trades >= 0 and prior55_volume >= -1e-9
+                    )
+                    quiet = (
+                        valid_aggregate and prior55_trades <= 2
+                        and prior55_volume <= 200.0
+                    )
+                    breakout = quiet and m5_trades >= 10 and m5_volume >= 1_000.0
+                    near = quiet and not breakout and (
+                        m5_trades >= 3 or m5_volume >= 300.0
+                    )
+                    flat = quiet and not near and abs(price_change_h1) <= 10.0
+                    previous_state = str(latest["status"]) if latest is not None else ""
+                    previous_at = (
+                        parse_time(latest["observed_at"])
+                        if latest is not None else None
+                    )
+                    recent_independent = bool(
+                        previous_at is not None and previous_at < observed
+                        and (observed - previous_at).total_seconds() <= 180.0
+                    )
+                    if breakout and recent_independent:
+                        if previous_state in {
+                            "breakout_confirmation_pending",
+                            "shadow_breakout_candidate",
+                        }:
+                            status = "shadow_breakout_candidate"
+                        elif previous_state in {"flat_watch", "near_trigger"}:
+                            status = "breakout_confirmation_pending"
+                    elif near and recent_independent and previous_state in {
+                        "flat_watch", "near_trigger",
+                    }:
+                        status = "near_trigger"
+                    elif flat:
+                        status = "flat_watch"
+                    elif valid_aggregate:
+                        status = "mature_observation_no_breakout"
+                    features.update({
+                        "price_usd": float(snapshot.price_usd or 0.0),
+                        "liquidity_usd": snapshot.liquidity_usd,
+                        "price_change_h1_pct": price_change_h1,
+                        "m5_trades": m5_trades,
+                        "m5_volume_usd": m5_volume,
+                        "prior55_trades": prior55_trades,
+                        "prior55_volume_usd": prior55_volume,
+                        "previous_state": previous_state,
+                        "quiet_prior55": quiet,
+                    })
+                if latest is not None and str(latest["status"]) == status:
+                    continue
+                cursor = self.db.execute(
+                    "INSERT OR IGNORE INTO chain_meme_trader_flat_breakout_shadow "
+                    "(observer_version,token_id,pair_address,observed_at,ingested_at,"
+                    "status,feature_json,recorded_at) VALUES(?,?,?,?,?,?,?,?)",
+                    (
+                        self.FLAT_BREAKOUT_SHADOW_VERSION, token_id, pair_address,
+                        iso(observed), iso(ingested), status, self._json(features),
+                        iso(recorded),
+                    ),
+                )
+                inserted += int(cursor.rowcount == 1)
+        return inserted
 
     @classmethod
     def chain_meme_trader_decision_behavior(

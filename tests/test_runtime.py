@@ -5163,7 +5163,7 @@ def test_chain_meme_market_lanes_keep_active_fast_and_carry_slow():
 
         async def periodic(name, interval, action):
             intervals.append((name, interval))
-            if len(intervals) == 4:
+            if len(intervals) == 5:
                 runtime._stop.set()
 
         runtime._periodic = periodic
@@ -5172,12 +5172,13 @@ def test_chain_meme_market_lanes_keep_active_fast_and_carry_slow():
         await runtime.run_forever()
 
         assert runtime.CHAIN_MEME_ACCOUNT_SNAPSHOT_INTERVAL_SECONDS == 10.0
-        assert intervals[1:4] == [
+        assert intervals[1:5] == [
             ("chain_meme_trader", 1),
             ("chain_meme_market_marks", 1.0),
+            ("flat_compression_breakout_shadow", 5),
             ("chain_meme_carried_market_marks", 15.0),
         ]
-        assert intervals[2][1] < intervals[3][1]
+        assert intervals[2][1] < intervals[4][1]
 
     asyncio.run(scenario())
 

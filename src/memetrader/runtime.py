@@ -1335,6 +1335,7 @@ class Runtime:
                     self.store.register_chain_meme_trader_stage4_v2()
                     self.store.register_chain_meme_trader_postbuy_research()
                     self.store.register_route_preflight_deferred_retry_shadow()
+                self.store.register_flat_compression_breakout_shadow()
             self.store.register_onchain_paper_narrative_runner(
                 starting_cash_usd=starting_cash,
             )
@@ -5605,7 +5606,7 @@ class Runtime:
 
     async def _refresh_chain_meme_market_marks(
         self, targets: list[dict[str, Any]], *, heartbeat_name: str,
-        high_priority: bool = False,
+        high_priority: bool = False, observe_flat_breakout: bool = False,
     ) -> int:
         """Refresh a de-duplicated target set with fresh 30-token DEX batches."""
         targets_by_chain: dict[str, list[dict[str, Any]]] = {}
@@ -5686,9 +5687,14 @@ class Runtime:
                     "target_chain": target_chain,
                     "target_address": target_address,
                 })
-            return self.store.apply_chain_meme_trader_market_mark_batch(
+            refreshed_count = self.store.apply_chain_meme_trader_market_mark_batch(
                 outcomes, recorded_at=received_at,
             )
+            if observe_flat_breakout:
+                self.store.observe_flat_compression_breakout_market_batch(
+                    outcomes, recorded_at=received_at,
+                )
+            return refreshed_count
 
         refreshed = 0
         for start in range(0, len(batches), 2):
@@ -5728,6 +5734,25 @@ class Runtime:
             self.store.heartbeat("chain-meme-market-marks", item=refreshed > 0)
         finally:
             idle.set()
+
+    async def flat_compression_breakout_shadow_once(self) -> None:
+        """Refresh one non-held mature-token batch after the held-token lane."""
+        targets = self.store.due_flat_compression_breakout_shadow_targets(
+            limit=30,
+        )
+        if not targets:
+            self.store.heartbeat("flat-compression-breakout-shadow", item=False)
+            return
+        refreshed = await self._refresh_chain_meme_market_marks(
+            targets,
+            heartbeat_name="flat-compression-breakout-shadow",
+            high_priority=False,
+            observe_flat_breakout=True,
+        )
+        self.store.heartbeat(
+            "flat-compression-breakout-shadow", item=refreshed > 0,
+            error_detail=f"targets={len(targets)};refreshed={refreshed}",
+        )
 
     async def chain_meme_carried_market_marks_once(self) -> None:
         """Maintain older open positions without slowing the active strategy lane."""
@@ -6544,6 +6569,13 @@ class Runtime:
                 ),
                 asyncio.create_task(
                     self._periodic(
+                        "flat_compression_breakout_shadow", 5,
+                        self.flat_compression_breakout_shadow_once,
+                    ),
+                    name="flat_compression_breakout_shadow",
+                ),
+                asyncio.create_task(
+                    self._periodic(
                         "chain_meme_carried_market_marks",
                         self.CHAIN_MEME_CARRIED_MARK_INTERVAL_SECONDS,
                         self.chain_meme_carried_market_marks_once,
@@ -6731,6 +6763,13 @@ class Runtime:
                         self.chain_meme_market_marks_once,
                     ),
                     name="chain_meme_market_marks",
+                ),
+                asyncio.create_task(
+                    self._periodic(
+                        "flat_compression_breakout_shadow", 5,
+                        self.flat_compression_breakout_shadow_once,
+                    ),
+                    name="flat_compression_breakout_shadow",
                 ),
                 asyncio.create_task(
                     self._periodic(
