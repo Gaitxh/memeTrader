@@ -2995,13 +2995,38 @@ class ChainWebData:
 
     def health(self) -> dict[str, Any]:
         try:
-            state = self.state(compact=True)
+            current = utcnow()
+            with self._connect() as connection:
+                heartbeat = connection.execute(
+                    "SELECT last_item_at,last_ok_at FROM source_health "
+                    "WHERE source='chain-meme-trader'"
+                ).fetchone()
+                active = connection.execute(
+                    "SELECT definition_version FROM chain_meme_trader_v6_activations "
+                    "WHERE entry_execution_enabled=1 "
+                    "ORDER BY activated_at DESC,rowid DESC LIMIT 1"
+                ).fetchone()
         except (OSError, sqlite3.Error, ValueError) as exc:
             return {"ok": False, "error": type(exc).__name__, "detail": str(exc)}
+        heartbeat_at = (
+            heartbeat["last_item_at"] or heartbeat["last_ok_at"]
+            if heartbeat is not None else None
+        )
+        heartbeat_age = (
+            (current - parse_time(heartbeat_at)).total_seconds()
+            if heartbeat_at else None
+        )
         return {
-            "ok": state.get("status") in {"running", "not_enabled"},
-            "runtime_status": state["system"]["runtime_status"],
-            "version": state.get("version"),
+            "ok": True,
+            "runtime_status": (
+                "running"
+                if heartbeat_age is not None and 0.0 <= heartbeat_age <= 30.0
+                else "stale"
+            ),
+            "version": (
+                str(active["definition_version"])
+                if active is not None else Store.CHAIN_MEME_TRADER_VERSION
+            ),
         }
 
 

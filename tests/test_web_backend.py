@@ -127,6 +127,10 @@ def test_chain_meme_trader_api_and_static_page_preserve_forward_contract(tmp_pat
     shutil.copy2(source_universe, target_universe)
 
     web_data = ChainWebData(config_path)
+    health = web_data.health()
+    assert health["ok"] is True
+    assert health["runtime_status"] == "running"
+    assert health["version"] == Store.CHAIN_MEME_TRADER_V19_VERSION
     payload = web_data.state()
     assert payload["system"]["runtime_status"] == "running"
     assert len(payload["strategies"]) == 124
