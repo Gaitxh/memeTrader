@@ -28,7 +28,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-memetrader = ["web_static/*"]
+memetrader = ["web_static/*", "chain_web_static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

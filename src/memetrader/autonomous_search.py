@@ -781,6 +781,7 @@ class AutonomousSearchAgent:
                     "source_link", str((value or {}).get("source_link_id") or 0),
                     "observation", str((value or {}).get("observation_id") or 0),
                     "source_buy", str((value or {}).get("source_buy_trade_id") or 0),
+                    "source_fill", str((value or {}).get("source_fill_id") or 0),
                 )
             )
             transition_id = self.store.record_token_universe_funnel_transition(
@@ -796,7 +797,7 @@ class AutonomousSearchAgent:
                     key: value.get(key)
                     for key in (
                         "source_link_id", "observation_id", "event_id", "decision_id",
-                        "source_buy_trade_id", "shadow_cohort_id",
+                        "source_buy_trade_id", "source_fill_id", "shadow_cohort_id",
                     )
                     if value is not None and value.get(key) is not None
                 } | ({"snapshot_id": int(snapshot_id)} if snapshot_id is not None else {}),
@@ -814,6 +815,7 @@ class AutonomousSearchAgent:
                     "trigger_priority": (value or {}).get("priority"),
                     "momentum_score": float(momentum_score),
                     "source_buy_trade_id": (value or {}).get("source_buy_trade_id"),
+                    "source_fill_id": (value or {}).get("source_fill_id"),
                     "shadow_cohort_id": (value or {}).get("shadow_cohort_id"),
                     "context_snapshot_basis": (value or {}).get(
                         "context_snapshot_basis"
@@ -831,6 +833,38 @@ class AutonomousSearchAgent:
                     shadow_cohort_id = self.store.enroll_onchain_only_shadow(transition_id)
                     if shadow_cohort_id is not None:
                         value["onchain_shadow_cohort_id"] = int(shadow_cohort_id)
+                elif (
+                    snapshot_id is not None
+                    and float(momentum_score)
+                    >= float(self.config.get("context_min_momentum_score", 75))
+                ):
+                    # Information metadata may choose the Agent investigation route, but
+                    # it must not consume an otherwise valid, independent on-chain signal.
+                    momentum_transition_id = self.store.record_token_universe_funnel_transition(
+                        token.token_id,
+                        stage="context_trigger_evaluation",
+                        status="eligible",
+                        reason_code="onchain_momentum",
+                        evaluation_key=f"{evaluation_key}:parallel:onchain_momentum",
+                        observed_at=evaluation_at,
+                        ingested_at=utcnow(),
+                        source_table="token_context_trigger",
+                        source_record_ids={"snapshot_id": int(snapshot_id)},
+                        snapshot_id=int(snapshot_id),
+                        metadata={
+                            "trigger_kind": "onchain_momentum",
+                            "trigger_priority": 1,
+                            "momentum_score": float(momentum_score),
+                            "parallel_trigger_transition_id": int(transition_id),
+                            "snapshot_observed_at": iso(evaluation_at),
+                        },
+                    )
+                    if momentum_transition_id is not None:
+                        shadow_cohort_id = self.store.enroll_onchain_only_shadow(
+                            momentum_transition_id
+                        )
+                        if shadow_cohort_id is not None:
+                            value["onchain_shadow_cohort_id"] = int(shadow_cohort_id)
             return value
 
         relation = event_relation if isinstance(event_relation, dict) else {}
@@ -851,6 +885,7 @@ class AutonomousSearchAgent:
                     "kind": "post_entry_narrative_position",
                     "priority": 2,
                     "source_buy_trade_id": source_buy_trade_id,
+                    "source_fill_id": int(relation.get("source_fill_id") or 0) or None,
                     "shadow_cohort_id": shadow_cohort_id,
                     "position_opened_at": iso(position_opened_at),
                     "position_status": str(relation.get("position_status") or "baseline"),
@@ -1366,6 +1401,11 @@ class AutonomousSearchAgent:
         fact_verification = source_fact_result.get("fact_verification")
         fact_verification = fact_verification if isinstance(fact_verification, dict) else {}
         research_only = str(trigger.get("kind") or "") == "post_entry_narrative_position"
+        research_cutoff_at = (
+            parse_time(trigger.get("investigation_started_at"))
+            if research_only and trigger.get("investigation_started_at")
+            else assessed_at
+        )
         verified = self._without_token_project_sources(
             self._source_fact_observations(source_fact_result, observed_at=assessed_at),
             metadata_seeds,
@@ -1378,7 +1418,7 @@ class AutonomousSearchAgent:
         fresh_verified = [
             observation for observation in verified
             if observation.published_at is not None
-            and timedelta(0) <= assessed_at - observation.published_at <= confirmation_max_age
+            and timedelta(0) <= research_cutoff_at - observation.published_at <= confirmation_max_age
         ]
         fact_confidence = _as_float(fact_verification.get("confidence"), default=-1.0)
         confirmation_eligible = (
@@ -3143,6 +3183,11 @@ class AutonomousSearchAgent:
             )
             return []
         research_only = str(trigger.get("kind") or "") == "post_entry_narrative_position"
+        research_cutoff_at = (
+            parse_time(trigger.get("investigation_started_at"))
+            if research_only and trigger.get("investigation_started_at")
+            else now
+        )
         if retry_lane:
             trigger = dict(trigger)
             trigger["selection_path"] = "deferred_retry_lane"
@@ -3226,9 +3271,14 @@ class AutonomousSearchAgent:
             return []
         global_cooldown = timedelta(minutes=float(self.config.get("context_global_cooldown_minutes", 5)))
         last_global = self.store.get_kv(CONTEXT_RUN_KEY)
+        deadline_aware_watch = (
+            str(trigger.get("kind") or "") == "pre_entry_token_watch"
+            or research_only
+        )
         if (
             not source_fact_reused
             and not retry_lane
+            and not deadline_aware_watch
             and last_global
             and now - parse_time(last_global) < global_cooldown
         ):
@@ -3395,7 +3445,8 @@ class AutonomousSearchAgent:
             "The investigation trigger below only prioritizes research; it is not proof, endorsement, or decision evidence. A direct "
             "high-impact-account post or fresh high-attention event relation may trigger this investigation before on-chain momentum, "
             "but its content and relevance must still be verified. "
-            "Return exact JSON only: "
+            "For post-entry research, do not use a source published after investigation_trigger.investigation_started_at; "
+            "that timestamp is the frozen research cutoff, not a suggestion. Return exact JSON only: "
             '{"event_found":true,"event_title":"...","confidence":0.0,"claim_status":"confirmed_fact|probable_report|'
             'unverified_rumor|false_claim|correction|retraction|satire|impersonation|promotion|unassessed",'
             '"factual_confidence":0.0,"source_identity_confidence":0.0,"attention_confidence":0.0,'
@@ -3639,8 +3690,12 @@ class AutonomousSearchAgent:
                 published = parse_time(item.get("published_at"))
             except Exception:
                 continue
-            age = now - published
-            if age < timedelta(minutes=-5) or age > max_age:
+            age = research_cutoff_at - published
+            if (
+                (research_only and age < timedelta(0))
+                or age < timedelta(minutes=-5)
+                or age > max_age
+            ):
                 continue
             try:
                 response = await self.http.get(url, ttl=60, headers={"Range": "bytes=0-8191"})

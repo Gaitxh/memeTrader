@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import socket
 import sqlite3
 import threading
@@ -9,7 +10,10 @@ from pathlib import Path
 
 import httpx
 import pytest
+from solders.keypair import Keypair
+from solders.pubkey import Pubkey
 
+import memetrader.live_wallets as live_module
 from memetrader.autonomous_search import (
     REGISTRY_KEY,
     TREND_LANE_SELECTION_KEY,
@@ -17,6 +21,7 @@ from memetrader.autonomous_search import (
     TREND_RUN_KEY,
     TREND_WATCH_SELECTION_KEY,
 )
+from memetrader.chain_web import ChainWebData, create_server as create_chain_server
 from memetrader.models import CandidateDecision, Observation, TokenCandidate, TokenSnapshot, iso, parse_time, utcnow
 from memetrader.runtime import initial_config
 from memetrader.store import Store
@@ -90,6 +95,501 @@ def test_token_detail_exposes_forward_creator_launch_shadow_without_raw_payload(
     assert "raw-launch-secret" not in serialized
     assert "raw_payload_hash" not in serialized
     assert shadow["decision_eligible"] is False and shadow["affects"] == "none"
+
+
+def test_chain_meme_trader_api_and_static_page_preserve_forward_contract(tmp_path: Path):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    store.register_chain_meme_trader()
+    store.register_chain_meme_trader_v19()
+    store.activate_chain_meme_trader_v19()
+    store.record_chain_meme_trader_account_snapshots(
+        definition_version=Store.CHAIN_MEME_TRADER_V19_VERSION,
+    )
+    store.heartbeat("chain-meme-trader", item=True)
+    store.close()
+
+    source_universe = (
+        Path(__file__).parents[1] / "docs" / "PROJECT_CONTEXT" /
+        "CHAIN_MEME_TRADER_HISTORICAL_STRATEGY_UNIVERSE_2026-09-04.json"
+    )
+    target_universe = (
+        tmp_path / "docs" / "PROJECT_CONTEXT" /
+        "CHAIN_MEME_TRADER_HISTORICAL_STRATEGY_UNIVERSE_2026-09-04.json"
+    )
+    target_universe.parent.mkdir(parents=True)
+    shutil.copy2(source_universe, target_universe)
+
+    web_data = ChainWebData(config_path)
+    payload = web_data.state()
+    assert payload["system"]["runtime_status"] == "running"
+    assert len(payload["strategies"]) == 124
+    assert payload["definition"]["strategy_count"] == 124
+    assert payload["leaderboard"] == []
+    assert [item["stage"] for item in payload["strategies"]] == list(range(1, 125))
+    assert payload["definition"]["policy_notional_usd"] == 20.0
+    assert payload["definition"]["slippage_bps"] == 400
+    assert payload["definition"]["additional_fee_usd_each_fill"] == 0.0
+    assert payload["definition"]["no_historical_backfill"] is True
+    assert payload["definition"]["confirmed_pool_removed_and_no_route"] == (
+        "writeoff_remaining_position"
+    )
+
+    static = Path(__file__).parents[1] / "src" / "memetrader" / "chain_web_static"
+    index = (static / "index.html").read_text(encoding="utf-8")
+    app = (static / "app.js").read_text(encoding="utf-8")
+    assert "ChainMemeTrader" in index
+    assert 'id="canonical-universe"' in index
+    assert 'id="strategy-detail"' in index
+    assert 'id="universe-summary"' in index
+    assert "历史策略与实时结果" in index
+    assert 'data-page="overview"' in index
+    assert 'data-page="trading"' in index
+    assert 'data-page="wallets"' in index
+    assert "一个钱包绑定一个策略" in index
+    assert "只有成交后才形成持仓" in index
+    assert payload["system"]["execution_kernel"] == "order-intent-fill/v1"
+    assert payload["system"]["paper_only"] is True
+    assert payload["system"]["live_locked"] is True
+    assert payload["system"]["live_adapter_status"] == "locked_by_config"
+    assert payload["system"]["open_position_count"] == 0
+    assert payload["system"]["unique_held_token_count"] == 0
+    assert payload["system"]["held_account_states"] == 0
+    assert payload["system"]["held_account_alerts"] == 0
+    assert payload["system"]["storage"]["database_bytes"] > 0
+    assert payload["system"]["storage"]["free_bytes"] > 0
+    assert payload["postbuy_research"]["affects_trading"] is False
+    assert payload["postbuy_research"]["cases"] == 0
+    assert payload["exit_challenger"]["status"] == "not_registered"
+    assert payload["trading"]["intent_counts"] == {}
+    assert "fetch(`/api/live${query}`" in app
+    assert "fetch('/api/strategy-universe'" in app
+    assert "function renderUniverse()" in app
+    assert "document.visibilityState==='visible'?2000:15000" in app
+    assert "fullTimer=setTimeout(refreshFull" not in app
+    assert "池与持仓监控" in app
+    assert "持仓约 2 秒" in index
+    assert "同一个 Token 不会重复访问 124 次" in app
+    assert "连续无池/价格超过 1 分钟才全损" in app
+    assert 'id="overview-strategies"' in index
+    assert "账户实时曲线" in app
+    assert "indicative_total_pnl_usd" in app
+    assert "总资产实时曲线" not in index
+    assert "UNKNOWN" in app
+    strategy_universe = web_data.strategy_universe()
+    assert strategy_universe["status"] == "ok"
+    assert len(strategy_universe["families"]) == 124
+    assert strategy_universe["provider_requests_triggered"] == 0
+    assert strategy_universe["summary"]["active_forward_families"] == 124
+    assert strategy_universe["summary"]["frozen_history_families"] == 0
+
+    port = _free_port()
+    server = create_chain_server(config_path, "127.0.0.1", port)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        response = httpx.get(f"http://127.0.0.1:{port}/api/state")
+        assert response.status_code == 200
+        assert len(response.json()["strategies"]) == 124
+        live_response = httpx.get(f"http://127.0.0.1:{port}/api/live")
+        assert live_response.status_code == 200
+        live = live_response.json()
+        assert "strategy_registry" not in live
+        assert "positions" not in live["strategies"][0]
+        assert "open_positions" not in live
+        assert len(live_response.content) < len(response.content)
+        focused_live = httpx.get(
+            f"http://127.0.0.1:{port}/api/live",
+            params={"arm_id": live["strategies"][0]["arm_id"]},
+        ).json()
+        assert focused_live["requested_arm_id"] == live["strategies"][0]["arm_id"]
+        assert focused_live["open_positions"] == []
+        universe_response = httpx.get(f"http://127.0.0.1:{port}/api/strategy-universe")
+        assert universe_response.status_code == 200
+        assert len(universe_response.json()["families"]) == 124
+        wallet_response = httpx.get(f"http://127.0.0.1:{port}/api/wallets")
+        assert wallet_response.status_code == 200
+        assert wallet_response.json()["wallets"] == []
+        live_enable = httpx.post(
+            f"http://127.0.0.1:{port}/api/wallets/live",
+            json={"wallet_id": "missing-wallet", "enabled": True},
+        )
+        assert live_enable.status_code == 400
+        assert "全局配置锁定" in live_enable.json()["error"]
+    finally:
+        server.shutdown()
+    server.server_close()
+    thread.join(timeout=2)
+
+
+def test_chain_web_reports_distinct_tokens_holding_duration_and_trade_markers(
+    tmp_path: Path,
+):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    store.register_chain_meme_trader_v20()
+    store.activate_chain_meme_trader_v20()
+    version = Store.CHAIN_MEME_TRADER_V20_VERSION
+    observed = utcnow()
+    token = TokenCandidate(
+        chain="solana", address=str(Pubkey.new_unique()), name="Web Marker",
+        symbol="WEBM", source="dexscreener",
+    )
+    store.upsert_token(token, seen_at=observed)
+    store.add_snapshot(TokenSnapshot(
+        "solana", token.address, 1.0, 10_000, 100_000, 250, 2, 1,
+        observed_at=observed, ingested_at=observed, provider="dexscreener",
+        raw={"pair": {
+            "chainId": "solana", "dexId": "pumpfun", "pairAddress": "web-pair",
+            "pairCreatedAt": round((observed - timedelta(minutes=1)).timestamp() * 1000),
+            "priceUsd": "1.0",
+            "baseToken": {
+                "address": token.address, "name": token.name, "symbol": token.symbol,
+            },
+            "quoteToken": {"address": "So11111111111111111111111111111111111111112"},
+            "txns": {
+                "m5": {"buys": 2, "sells": 1},
+                "h1": {"buys": 2, "sells": 1},
+            },
+            "volume": {"m5": 250.0, "h1": 250.0},
+        }},
+    ))
+    assert store.enroll_chain_meme_trader_v6(
+        definition_version=version,
+    )["admitted"] == 1
+    store.upsert_chain_meme_trader_market_mark(
+        token,
+        TokenSnapshot(
+            "solana", token.address, 1.0, 10_000, 100_000, 250, 2, 1,
+            observed_at=observed, ingested_at=observed, provider="dexscreener",
+            raw={"pair": {"pairAddress": "web-pair"}},
+        ),
+        recorded_at=observed,
+    )
+    positions = store.db.execute(
+        "SELECT arm_id,shadow_cohort_id FROM chain_meme_trader_positions "
+        "WHERE definition_version=? AND token_id=? ORDER BY arm_id",
+        (version, token.token_id),
+    ).fetchall()
+    assert len(positions) > 1
+    first_buy = store.db.execute(
+        "SELECT * FROM chain_meme_trader_trades WHERE definition_version=? "
+        "AND token_id=? AND side='BUY' ORDER BY id LIMIT 1",
+        (version, token.token_id),
+    ).fetchone()
+    sold_at = iso(observed)
+    with store.db:
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_trades("
+            "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+            "net_cash_flow_usd,realized_pnl_usd,reason,created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                version, first_buy["arm_id"], first_buy["shadow_cohort_id"],
+                token.token_id, "BUY", first_buy["gross_usd"],
+                first_buy["net_cash_flow_usd"], first_buy["realized_pnl_usd"],
+                first_buy["reason"], first_buy["created_at"],
+            ),
+        )
+        for index, position in enumerate(positions[:2]):
+            store.db.execute(
+                "INSERT INTO chain_meme_trader_trades("
+                "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+                "net_cash_flow_usd,realized_pnl_usd,reason,created_at) "
+                "VALUES(?,?,?,?, 'SELL',?,?,?,'fixture_sell',?)",
+                (
+                    version, position["arm_id"], position["shadow_cohort_id"],
+                    token.token_id, 10.0 + index, 10.0 + index, -10.0 + index,
+                    sold_at,
+                ),
+            )
+    store.heartbeat("chain-meme-trader", item=True)
+    store.close()
+
+    web = ChainWebData(config_path)
+    state = web.state()
+    assert state["system"]["open_position_count"] == len(positions)
+    assert state["system"]["unique_held_token_count"] == 1
+    assert len(state["open_positions"]) == len(positions)
+    assert all(item["holding_seconds"] >= 0.0 for item in state["open_positions"])
+    compact = web.state(compact=True)
+    assert "open_positions" not in compact
+    assert compact["system"]["open_position_count"] == len(positions)
+    focused = web.state(compact=True, arm_id=positions[0]["arm_id"])
+    assert focused["requested_arm_id"] == positions[0]["arm_id"]
+    assert len(focused["open_positions"]) == 1
+    assert focused["open_positions"][0]["arm_id"] == positions[0]["arm_id"]
+    assert focused["open_positions"][0]["status"] == "open"
+    assert focused["open_positions"][0]["indicative_value_usd"] == pytest.approx(
+        20.0 * 0.96 / 1.04
+    )
+    assert focused["open_positions"][0]["indicative_unrealized_pnl_usd"] == pytest.approx(
+        20.0 * 0.96 / 1.04 - 20.0
+    )
+    assert focused["open_positions"][0]["market_is_fresh"] is True
+
+    detail = web.token_detail(token.token_id)
+    assert len(detail["positions"]) == len(positions)
+    assert all(item["holding_seconds"] >= 0.0 for item in detail["positions"])
+    assert detail["positions"][0]["indicative_value_usd"] == pytest.approx(
+        20.0 * 0.96 / 1.04
+    )
+    buy_markers = [item for item in detail["trade_markers"] if item["side"] == "BUY"]
+    sell_markers = [item for item in detail["trade_markers"] if item["side"] == "SELL"]
+    assert len(buy_markers) == 1
+    assert buy_markers[0]["strategy_count"] == len(positions)
+    assert set(buy_markers[0]["arm_ids"]) == {item["arm_id"] for item in positions}
+    assert buy_markers[0]["gross_usd_total"] == pytest.approx(20.0 * len(positions))
+    assert len(sell_markers) == 1
+    assert sell_markers[0]["strategy_count"] == 2
+    assert sell_markers[0]["gross_usd_total"] == pytest.approx(21.0)
+
+    for observed_offset in (-60, 60):
+        received = utcnow()
+        market_observed = received + timedelta(seconds=observed_offset)
+        mark_store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+        mark_store.upsert_chain_meme_trader_market_mark(
+            token,
+            TokenSnapshot(
+                "solana", token.address, 1.0, 10_000, 100_000, 250, 2, 1,
+                observed_at=market_observed, ingested_at=received,
+                provider="dexscreener", raw={"pair": {"pairAddress": "web-pair"}},
+            ),
+            recorded_at=received,
+        )
+        mark_store.close()
+        stale_web = ChainWebData(config_path)
+        stale_position = stale_web.state(
+            compact=True, arm_id=positions[0]["arm_id"],
+        )["open_positions"][0]
+        assert stale_position["market_is_fresh"] is False
+        assert stale_position["indicative_value_usd"] is None
+        stale_detail = stale_web.token_detail(token.token_id)
+        assert stale_detail["market"]["is_fresh"] is False
+        assert all(
+            item["indicative_value_usd"] is None
+            for item in stale_detail["positions"]
+        )
+
+
+def test_chain_web_wallet_views_join_paper_state_without_live_signer_material(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(live_module, "_dpapi_protect", lambda value: bytes(reversed(value)))
+    monkeypatch.setattr(live_module, "_dpapi_unprotect", lambda value: bytes(reversed(value)))
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    store.register_chain_meme_trader_v20()
+    store.activate_chain_meme_trader_v20()
+    version = Store.CHAIN_MEME_TRADER_V20_VERSION
+    observed = utcnow()
+    token = TokenCandidate(
+        chain="solana", address=str(Pubkey.new_unique()), name="Wallet Web",
+        symbol="WWEB", source="dexscreener",
+    )
+    snapshot = TokenSnapshot(
+        "solana", token.address, 1.0, 10_000, 100_000, 250, 2, 1,
+        observed_at=observed, ingested_at=observed, provider="dexscreener",
+        raw={"pair": {
+            "chainId": "solana", "dexId": "pumpfun", "pairAddress": "wallet-web-pair",
+            "pairCreatedAt": round((observed - timedelta(minutes=1)).timestamp() * 1000),
+            "priceUsd": "1.0",
+            "baseToken": {"address": token.address, "name": token.name, "symbol": token.symbol},
+            "quoteToken": {"address": "So11111111111111111111111111111111111111112"},
+            "txns": {"m5": {"buys": 2, "sells": 1}, "h1": {"buys": 2, "sells": 1}},
+            "volume": {"m5": 250.0, "h1": 250.0},
+        }},
+    )
+    store.upsert_token(token, seen_at=observed)
+    store.add_snapshot(snapshot)
+    assert store.enroll_chain_meme_trader_v6(definition_version=version)["admitted"] == 1
+    store.upsert_chain_meme_trader_market_mark(token, snapshot, recorded_at=observed)
+    store.record_chain_meme_trader_account_snapshots(definition_version=version, now=observed)
+    strategy_id = str(store.db.execute(
+        "SELECT arm_id FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND token_id=? ORDER BY arm_id LIMIT 1", (version, token.token_id),
+    ).fetchone()["arm_id"])
+    store.heartbeat("chain-meme-trader", item=True)
+    store.close()
+
+    web = ChainWebData(config_path)
+    monkeypatch.setattr(
+        web.wallets, "_balances",
+        lambda wallet, refresh=False: {"status": "ok", "sol": 1.0, "usdc": 100.0},
+    )
+    keypair = Keypair()
+    web.wallets.connect(str(keypair), "Wallet overview", strategy_id)
+    wallet_id = web.wallets.snapshot()["wallets"][0]["id"]
+    vault_ciphertext = web.wallets._vault_path(wallet_id).read_text(encoding="ascii")
+    web.wallets._append_execution({
+        "wallet_id": wallet_id, "paper_trade_id": 11, "side": "BUY",
+        "status": "confirmed", "amount_raw": 20_000_000,
+        "signature": "must-not-reach-wallet-detail",
+    })
+
+    overview = web.wallet_state()
+    wallet = overview["wallets"][0]
+    assert wallet["strategy"]["arm_id"] == strategy_id
+    assert wallet["strategy"]["open_position_count"] >= 1
+    detail = web.wallet_detail(wallet_id)
+    assert detail["wallet"]["strategy_id"] == strategy_id
+    assert detail["paper"]["open_positions"]
+    assert detail["paper"]["trades"]
+    assert detail["live_executions"] == [{
+        "recorded_at": detail["live_executions"][0]["recorded_at"],
+        "paper_trade_id": 11, "side": "BUY", "status": "confirmed",
+        "amount_raw": 20_000_000,
+    }]
+    serialized = json.dumps(detail)
+    assert str(keypair) not in serialized
+    assert vault_ciphertext not in serialized
+    assert "must-not-reach-wallet-detail" not in serialized
+    assert "signature" not in serialized
+
+
+def test_chain_web_error_views_expose_safe_case_lifecycle_only(tmp_path: Path):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    case_id = store.record_system_error(
+        area="runtime", component="chain-meme-market-marks", error_type="TimeoutError",
+        message_safe="secret=must-not-reach-web", severity="high",
+        context_safe={"source": "chain-meme-market-marks", "operation": "batch_quote"},
+    )
+    assert store.record_system_error(
+        area="runtime", component="chain-meme-market-marks", error_type="TimeoutError",
+        message_safe="secret=must-not-reach-web", severity="high",
+        context_safe={"source": "chain-meme-market-marks", "operation": "batch_quote"},
+    ) == case_id
+    store.close()
+
+    web = ChainWebData(config_path)
+    errors = web.error_state()
+    assert errors["summary"] == {
+        "open": 1, "high": 1, "new": 1, "in_progress": 0,
+        "latest_at": errors["summary"]["latest_at"],
+    }
+    assert errors["cases"][0]["id"] == case_id
+    assert errors["cases"][0]["occurrence_count"] == 2
+    assert "fingerprint" not in json.dumps(errors)
+    assert "must-not-reach-web" not in json.dumps(errors)
+
+    before = web.error_detail(case_id)
+    assert before["status"] == "ok"
+    assert len(before["occurrences"]) == 2
+    assert before["occurrences"][0]["context"]["operation"] == "batch_quote"
+    web.record_web_error(
+        "/api/live", ConnectionAbortedError(10053, "client cancelled request")
+    )
+    assert web.error_state()["summary"]["open"] == 1
+    updated = web.update_error({
+        "id": case_id, "status": "fixed", "note": "signature=must-not-reach-web",
+        "evidence": "private_key=must-not-reach-web", "report_path": "reports/fix.md",
+    })
+    assert updated["case"]["status"] == "fixed"
+    assert updated["repair_reports"][0]["action"] == "fixed"
+    assert updated["repair_reports"][0]["report_path"] == "reports/fix.md"
+    assert "must-not-reach-web" not in json.dumps(updated)
+    with pytest.raises(ValueError, match="invalid error case status"):
+        web.update_error({"id": case_id, "status": "auto_fix"})
+
+
+def test_chain_web_leaderboard_contains_only_current_active_forward_strategies(
+    tmp_path: Path,
+):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    store.register_chain_meme_trader_v19()
+    store.activate_chain_meme_trader_v19()
+    v20 = json.loads(store.register_chain_meme_trader_v20()["definition_json"])
+    store.activate_chain_meme_trader_v20()
+
+    historical = json.loads(store.db.execute(
+        "SELECT definition_json FROM chain_meme_trader_registrations "
+        "WHERE definition_version=?", (Store.CHAIN_MEME_TRADER_V18_VERSION,),
+    ).fetchone()[0])
+    historical_policy = next(
+        policy for policy in historical["policies"]
+        if policy.get("forward_enabled") is False
+    )
+    with store.db:
+        now = iso(utcnow())
+        for version, policy, pnl, source_id in (
+            (Store.CHAIN_MEME_TRADER_V18_VERSION, historical_policy, 500.0, 1),
+            (Store.CHAIN_MEME_TRADER_V20_VERSION, v20["policies"][0], 1.0, 2),
+        ):
+            store.db.execute(
+                "INSERT INTO chain_meme_trader_positions("
+                "definition_version,arm_id,shadow_cohort_id,token_id,source_buy_trade_id,"
+                "baseline_quote_result_id,entry_snapshot_id,entry_signal_price_usd,"
+                "entry_execution_price_usd,paper_quantity_tokens,remaining_quantity_tokens,"
+                "amount_raw,initial_amount_raw,stake_usd,highest_signal_price_usd,status,"
+                "realized_pnl_usd,opened_at,closed_at,close_reason) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,'0','1000000000',20,1,'closed',?,?,?,?)",
+                (
+                    version, policy["arm_id"], source_id,
+                    f"solana:leaderboard-{source_id}", source_id, source_id, source_id,
+                    1.0, 1.04, 20.0 / 1.04, 0.0, pnl, now, now, "fixture",
+                ),
+            )
+    store.close()
+
+    leaderboard = ChainWebData(config_path).state()["leaderboard"]
+    assert leaderboard
+    assert all(item["current"] is True for item in leaderboard)
+    assert all(item["status"] == "ACTIVE_FORWARD" for item in leaderboard)
+    assert all(
+        item["definition_version"] == Store.CHAIN_MEME_TRADER_V20_VERSION
+        for item in leaderboard
+    )
+    assert len({item["arm_id"] for item in leaderboard}) == len(leaderboard)
+
+
+def test_chain_meme_trader_web_switches_to_active_v6_matrix(tmp_path: Path):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    store.register_chain_meme_trader()
+    store.register_chain_meme_trader_v6()
+    store.activate_chain_meme_trader_v6()
+    store.register_chain_meme_trader_immediate_reverseability()
+    store.record_chain_meme_trader_account_snapshots(
+        definition_version=Store.CHAIN_MEME_TRADER_V6_VERSION,
+    )
+    store.heartbeat("chain-meme-trader", item=True)
+    store.close()
+
+    payload = ChainWebData(config_path).state()
+    assert payload["version"] == Store.CHAIN_MEME_TRADER_V6_VERSION
+    assert len(payload["strategies"]) == 12
+    assert len(payload["strategy_registry"]) == 24
+    assert payload["strategy_registry_stats"]["raw_strategy_count"] == 24
+    assert all(item["behavior_hash"] for item in payload["strategy_registry"])
+    assert all(item["family_hash"] for item in payload["strategy_registry"])
+    assert {item["entry_family"] for item in payload["strategies"]} == {
+        "broad_launch", "flow_burst", "reawakening",
+    }
+    assert {item["exit_family"] for item in payload["strategies"]} == {
+        "fast_escape", "balanced_harvest", "peak_guard", "postbuy_research",
+    }
+    assert payload["definition"]["additional_fee_usd_each_fill"] == 0.0
+    assert payload["definition"]["no_historical_backfill"] is True
+    assert payload["trading"]["intent_counts"] == {}
+    assert payload["trading"]["entry_participant_outcomes"] == []
+    assert payload["strategies"][0]["entry_participation"] == {
+        "projected": 0,
+        "skipped_cash_unavailable_at_fill": 0,
+    }
+    assert payload["immediate_reverseability"]["eligible_entry_fills"] == 0
+    assert payload["immediate_reverseability"]["decision_eligible"] is False
+    assert payload["immediate_reverseability"]["affects"] == "none"
+    assert [row["seconds"] for row in payload["immediate_reverseability"]["horizons"]] == [15, 30, 60]
+    static = Path(__file__).parents[1] / "src" / "memetrader" / "chain_web_static"
+    assert 'id="reverseability-table"' in (static / "index.html").read_text(encoding="utf-8")
+    app = (static / "app.js").read_text(encoding="utf-8")
+    assert "renderReverseability(data)" in app
+    assert "实际参与 / Fill时跳过" in app
+    assert "renderStrategyPool(data)" in app
+    assert "renderStages(strategies)" not in app
+    assert "renderStrategyRegistry(data)" in app
 
 
 def test_bridge_health_tolerates_a_responsive_local_bridge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -1352,9 +1852,14 @@ def test_web_paper_curve_costs_attempts_and_stale_valuation_are_truthful(tmp_pat
 
     portfolio = WebData(config_path).portfolio({})
     assert [item["id"] for item in portfolio["strategy_model"]["strategies"]] == [
-        "information_plus_token", "token_only", "narrative_hold",
+        "information_plus_token", "token_only", "token_then_information",
     ]
     assert portfolio["strategy_model"]["cash_ledgers_are_additive"] is False
+    lifecycle = portfolio["strategy_model"]["promotion_lifecycle"]
+    assert lifecycle["stages"][0] == "COLLECTING"
+    assert lifecycle["stages"][-2:] == ["PROMOTABLE", "REJECTED"]
+    assert lifecycle["single_trade_online_rewrite"] is False
+    assert lifecycle["winner_backfill"] is False
     assert portfolio["strategy_model"]["strategies"][0]["execution_challenger_key"] == (
         "event_route_execution"
     )
@@ -1362,15 +1867,70 @@ def test_web_paper_curve_costs_attempts_and_stale_valuation_are_truthful(tmp_pat
         "onchain_exit_challenger"
     )
     assert portfolio["strategy_model"]["strategies"][2]["entry_pairing"] == "exact"
+    assert "activated_at" in portfolio["strategy_model"]["strategies"][1][
+        "activation"
+    ]
+    assert portfolio["strategy_model"]["strategies"][2]["policy_arms"][0][
+        "post_entry_information_affects"
+    ] == "none"
+    arms = {
+        arm["arm_id"]: arm
+        for strategy in portfolio["strategy_model"]["strategies"]
+        for arm in strategy["policy_arms"]
+    }
+    assert arms["s1-current-paper-baseline"]["policy_role"] == "current_paper_baseline"
+    assert arms["s2-fixed-horizon"]["promotion_state"] == "NOT_APPLICABLE_BASELINE"
+    assert arms["s2-dynamic-exit-challenger"]["promotion_state"] == "FORWARD_COMPARISON"
+    assert arms["s3-causal-control"]["policy_role"] == "causal_control"
+    assert all(
+        item["exit_architecture"]["dynamic_exit_required"] is True
+        for item in portfolio["strategy_model"]["strategies"]
+    )
+    assert portfolio["strategy_model"]["strategies"][1]["policy_arms"][0][
+        "exit_mode"
+    ] == "fixed_comparison_baseline"
+    assert portfolio["strategy_model"]["strategies"][1]["policy_arms"][1][
+        "exit_mode"
+    ] == "dynamic"
+    assert portfolio["strategy_model"]["strategies"][2]["planned_policy_arms"][0][
+        "research_state"
+    ] == "not_preregistered"
+    assert portfolio["strategy_model"]["strategies"][2]["planned_policy_arms"][0][
+        "promotion_state"
+    ] == "POLICY_CANDIDATE"
+    watch = portfolio["strategy_model"]["research_observers"][0]
+    assert watch["id"] == "token_information_watch"
+    assert watch["top_level_strategy"] is False
+    assert watch["entry_enabled"] is False
+    assert watch["affects"] == "none"
+    assert portfolio["token_information_watch"]["role"] == "research_observer_only"
+    assert portfolio["token_information_confirmation_paper"]["status"] == "not_enabled"
     assert portfolio["narrative_hold"]["status"] == "not_enabled"
     assert portfolio["event_route_execution"]["status"] == "not_enabled"
     assert portfolio["evm_route_research"]["execution"] is False
     assert portfolio["evm_route_research"]["pnl"] is False
+    assert portfolio["evm_route_research"]["aggregator_price"]["status"] == (
+        "not_registered"
+    )
+    assert "api_key" not in json.dumps(portfolio["evm_route_research"])
     bsc = next(
         item for item in portfolio["strategy_model"]["chain_execution_status"]
         if item["chain"] == "bsc"
     )
     assert bsc["paper"] == "disabled_until_route_and_cost_complete"
+    assert bsc["valuation_authority"] == "research_only"
+    assert bsc["cost_components"]["network_fee"] == "UNKNOWN_BNB_GAS"
+    assert "sell_transfer_and_tax_checks" in bsc["promotion_blockers"]
+    robinhood = next(
+        item for item in portfolio["strategy_model"]["chain_execution_status"]
+        if item["chain"] == "robinhood"
+    )
+    assert robinhood["execution_profile_version"] == (
+        "robinhood-4663-route-research/v2"
+    )
+    assert "official_stock_token_rwa_exact_address_exclusion" in (
+        robinhood["promotion_blockers"]
+    )
     assert len(portfolio["account"]["equity_curve"]) == 3
     assert portfolio["account"]["equity_usd"] is None
     assert portfolio["account"]["valuation_status"] == "incomplete"

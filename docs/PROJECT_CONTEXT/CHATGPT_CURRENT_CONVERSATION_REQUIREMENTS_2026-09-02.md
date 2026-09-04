@@ -184,3 +184,14 @@
 - ChatGPT→Codex same-thread 低延迟 transport 的安全官方入口。当前 Desktop 内部有 `codex_app.send_message_to_thread`，但本 ChatGPT tool surface 未暴露；不要用第二 CLI/app-server 冒充，因为近期上游存在 active-writer 冲突且 `turn/start` 可意外 steer active turn；
 - 用 live 前向分母确认 browser coverage latency 是否应 PROMOTE_NOW；
 - 确保任何协作基础设施工作完成最小闭环后立即停止，不继续挤占交易主线。
+
+## 13. 新聊天必须直接继承，避免重复解释
+
+用户于 2026-09-03 明确要求：因为单个 ChatGPT 聊天存在长度上限，项目必须保证在 GXH coin 中打开新聊天后可以直接继承当前最新目标、需求、研究、策略架构、Codex 协作状态和执行指针；不要反复要求用户重述，也不要在每个新聊天重复强调此前已经固化的整套背景。
+
+执行含义：
+
+- E:\memeTrader 是跨聊天耐久来源；新增 `CHATGPT_CURRENT_HANDOFF_2026-09-03.md` 作为当前最小续接入口，并加入 rollover mandatory boot read set。
+- 用户在新 GXH chat 中只输入 `继续` 应足以启动恢复：读取 handoff、`CHATGPT_CODEX_SYNC_STATE.json` 和必要的当前代码/SQLite事实后直接推进。
+- 除非用户明确要求“回顾/总结”，新 Lead 不应先输出长篇历史复述；恢复动作应主要在内部/工具层完成，然后从当前最高价值未解决任务继续。
+- 每轮 material 新结论、用户 supersession、执行交接和关键 blocker 必须增量写回 E:，而不是等聊天临近上限才总结。

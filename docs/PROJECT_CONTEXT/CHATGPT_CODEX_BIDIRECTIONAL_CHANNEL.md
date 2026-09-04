@@ -1,9 +1,9 @@
 # ChatGPT ↔ Codex 双向通信运行手册
 
 状态：`ACTIVE / DETAILED_COMPANION`
-协议：`GXH-C2C/1`
+协议：`GXH_C2C_V3`
 快速联系卡：[`../../CHATGPT_CONTACT.md`](../../CHATGPT_CONTACT.md)
-更新时间：`2026-09-02T05:55:20Z`
+更新时间：`2026-09-03T08:48:19Z`
 
 发生冲突时，以根目录 `CHATGPT_CONTACT.md` 的当前端点和 `CHATGPT_CODEX_SYNC_STATE.json` 的当前路由为准；本文只补充详细状态机、故障转移、多聊天和需求治理规则，不建立第二套协议。
 
@@ -72,25 +72,32 @@ read_thread(
 
 需要独立 reviewer 时，仍以 `QUESTION` 或 `DEPLOY_GATE` 发给主协调 ChatGPT，由主协调者决定是否开启角色化 reviewer；Codex 不并行创建互相竞争的实施指令。
 
-普通消息使用以下最小信封：
+正式双向消息使用同一信封：
 
 ```text
-[GXH_SYNC_V2]
+[GXH_C2C_V3]
 MESSAGE_ID: C2C-YYYYMMDD-HHMMSS-CODEX
 REPLY_TO: <message id, or NONE>
-TYPE: QUESTION | CHECKPOINT | BLOCKER | DEPLOY_GATE | NATURAL_SAMPLE | HANDOFF
+TYPE: QUESTION | RESEARCH | REVIEW | IMPLEMENT | CHECKPOINT | NATURAL_SAMPLE | BLOCKER | DEPLOY_GATE | ACK | RESULT
+PRIORITY: NORMAL | HIGH | URGENT
 CYCLE_ID: <active cycle>
 FACT_CUTOFF_UTC: <timestamp>
-DELTA_SINCE: <prior message/checkpoint>
 ISSUE_ID: <stable dedupe key>
-DECISION_REQUESTED: <one precise question or ACK_ONLY>
-OWNER: Codex
+SENDER: CODEX
+TARGET: CHATGPT_LEAD
 BLOCKS_RELEASE: true | false
-ARTIFACT_POINTERS: <small list of paths, methods and test ids; no pasted logs/diffs>
-NEXT_SYNC_EVENT: <event that warrants another message>
 
-DELTA:
-<compact IMMUTABLE facts, current SNAPSHOT when needed, uncertainty, and the smallest useful question>
+ARTIFACT_POINTERS:
+- <small list of paths, methods and test ids; no pasted logs/diffs>
+
+SUMMARY:
+<only new facts>
+
+ACTION_REQUESTED:
+<one precise question or ACK_ONLY>
+
+NEXT_SYNC_EVENT: <event that warrants another message>
+SENSITIVE_DATA: NONE
 ```
 
 `IMMUTABLE` 指 registration、activation、definition hash 和 append-only 行；`SNAPSHOT` 指当前 ID、计数、PID 和 health，相关写入、部署或重启后必须重新读取。敏感数据一律不发送。
@@ -111,23 +118,26 @@ SENSITIVE_DATA: NONE
 ChatGPT 在同一会话中回答，并带回：
 
 ```text
-[GXH_SYNC_V2]
+[GXH_C2C_V3]
 MESSAGE_ID: <new ChatGPT message id>
 REPLY_TO: <Codex MESSAGE_ID>
-TYPE: REVIEW_RESPONSE | CHANNEL_ACK | BLOCKER_ACK
-DISPOSITION: ACK_IMPLEMENTED | ACK_DEFERRED | REJECT | SUPERSEDED | NEEDS_CODEX_VERIFICATION
-FACT_BASIS: SOURCE_DERIVED | INFERENCE | CURRENT_WORKSPACE_READ
-FINDINGS: <delta only>
-CODEX_VERIFICATION_REQUIRED: <specific checks>
-SCOPE_CHANGE: none | proposed
+TYPE: ACK
+SENDER: CHATGPT
+TARGET: CODEX_THREAD
+ISSUE_ID: <same issue id>
+ACK_STATUS: RECEIVED | PROCESSING | DEFERRED | BLOCKED | REJECTED
+UNDERSTANDING: <one-sentence understanding>
+NEXT_ACTION: <next action>
 NEXT_SYNC_EVENT: <event>
 ```
+
+研究或执行完成后另发 `TYPE: RESULT`，沿用同一 `ISSUE_ID` 并 `REPLY_TO` 原请求；必须给出 `DISPOSITION`、结果、验证证据、真正变化、未变化边界、开放项和下一建议动作。ACK 不等于 RESULT。
 
 Codex 通过 `read_thread` 收取，不需要用户复制粘贴。
 
 ### ChatGPT 主动发现的新问题或需要唤醒 Codex
 
-主协调 ChatGPT 可以使用 Codex Desktop 当前暴露的 `codex_app.send_message_to_thread`，向同步指针中的精确 Codex 执行线程 ID 发送同一 `[GXH_SYNC_V2]` / `[GXH_PRIORITY_STEER]` 信封。这会把消息交给现有主线程，不启动第二个 Codex、不创建第二个 writer，也不要求用户复制粘贴。用户已明确授权在必要时强制提醒/插队，因此方向偏移、遗漏高优先级用户规则或明显更优路径可使用 `PRIORITY: URGENT / USER-AUTHORIZED INTERRUPT`；普通局部意见仍按事件驱动门槛发送。Common Space、mailbox 和 `attention_required` 只提供耐久可见性，**不等同于实时送达**。
+主协调 ChatGPT 可以使用 Codex Desktop 当前暴露的 `codex_app.send_message_to_thread`，向同步指针中的精确 Codex 执行线程 ID 发送同一 `[GXH_C2C_V3]` 信封。这会把消息交给现有主线程，不启动第二个 Codex、不创建第二个 writer，也不要求用户复制粘贴。用户已明确授权在必要时强制提醒/插队，因此方向偏移、遗漏高优先级用户规则或明显更优路径可使用 `PRIORITY: URGENT`；普通局部意见仍按事件驱动门槛发送。Common Space、mailbox 和 `attention_required` 只提供耐久可见性，**不等同于实时送达**。
 
 同时，ChatGPT 将需要持久保存的决定或未解决冲突追加到：
 
@@ -141,19 +151,28 @@ Codex 在重大周期开始/结束、部署前和 `attention_required=true` 时�
 每条需要回答的消息按以下状态处理：
 
 ```text
-DRAFT → RPC_ACCEPTED → DELIVERED → WAITING_ACK → ACKED/REPLIED → CODEX_VERIFIED
-      → DURABLE_DECISION | DEFERRED | REJECTED | SUPERSEDED
+CREATED → SEND_ACCEPTED → DELIVERED → ACKNOWLEDGED → PROCESSING
+        → RESULT_SENT → RESULT_ACKNOWLEDGED → CLOSED
 ```
+
+异常状态为 `SEND_FAILED`、`DELIVERY_UNVERIFIED`、`ACK_TIMEOUT`、`BLOCKED`、`SUPERSEDED`、`REJECTED`。
 
 规则：
 
-- `RPC_ACCEPTED` 只表示 `send_message_to_thread` 返回成功；只有在目标 thread 的 `read_thread`/结构化 rollout 中找到相同唯一 `MESSAGE_ID`，才能标记 `DELIVERED`。
-- `DELIVERED` 仍不表示 Codex 已理解或执行；只有出现显式 `ACK/REPLY_TO` 或等价回执才能标记 `ACKED/REPLIED`。因此不得再把“写入 E 盘”“attention_required=true”或工具返回 success 叙述成“Codex 已处理”。
+- `SEND_ACCEPTED` 只表示发送工具返回成功；只有在目标 thread 的 `read_thread`/结构化 rollout 中找到相同唯一 `MESSAGE_ID`，才能标记 `DELIVERED`。
+- `DELIVERED` 仍不表示接收方已理解或执行；只有显式 `TYPE: ACK` 且 `REPLY_TO` 正确，才能标记 `ACKNOWLEDGED`。
+- `ACK_STATUS: PROCESSING` 可把确认与开始处理合并；长推理期间无回复保持 `DELIVERED / WAITING_ACK`，不得重复发送。
+- 完成必须由 `TYPE: RESULT`、正确 `REPLY_TO` 和真实验证证据表示；原发送方读到结果后标记 `RESULT_ACKNOWLEDGED`。只有验收满足且无 blocker 才能 `CLOSED`。
+- 同一 `MESSAGE_ID` 最多正常发送一次；明确重试必须生成新 ID 并带 `RETRY_OF`。
 - 发送一次后等待同一会话回答；页面慢、模型仍生成或一次读取无结果不等于失败。
 - 收到回答后先核对当前代码/SQLite/测试，不因模型自述直接采纳。
 - 只有被核验并写入权威计划/需求台账的结论才有执行权。
 - 纯通信 ACK 不创建产品需求。
 - 大日志、完整 diff、数据库 dump、聊天历史和敏感配置永远不进入消息体；只发文件/方法/测试指针。
+
+`QUESTION`、`RESEARCH`、`REVIEW`、`IMPLEMENT`、`BLOCKER`、`DEPLOY_GATE` 和 `RESULT` 必须 ACK；会改变决策的 `NATURAL_SAMPLE` 必须 ACK；`CHECKPOINT` 可选。优先级仅按事实使用：`URGENT` 限 future-data/账本污染/错误 Paper PNL/Live 或安全风险、错误版本采样及必然失败的下一次部署；`HIGH` 在当前小步骤后处理；`NORMAL` 不打断 coherent task。
+
+主动协作由事件触发：多个高影响方案、连续两次局部修复失败、长期零交易或异常经济结果、策略/Policy Arm/动态退出/仓位/链执行设计、晋级成熟门、因果污染风险、OSS/官方数据源取舍、新前向证据推翻假设或疑似局部最优。机械低风险代码修改无需调用 Lead。详细事实先写 Common Space，消息只发 delta 和指针；Codex等待研究时继续不冲突 tranche。根因明确、实现完成、最小测试通过且前向观察启动后，停止无新增证据的往返审查。
 
 ## 7. 会话失效、上下文上限与 Lead 换代
 

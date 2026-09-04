@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import sqlite3
@@ -14,6 +15,7 @@ from solders.pubkey import Pubkey
 from memetrader.collectors import (
     DexScreenerClient,
     EvmRouteQuoteError,
+    EvmZeroXPriceClient,
     EvmUniswapV3QuoteClient,
     JupiterNoRouteError,
     JupiterQuoteError,
@@ -21,9 +23,27 @@ from memetrader.collectors import (
     JupiterQuoteClient,
     MastodonCollector,
     PumpPortalCollector,
+    PUMPSWAP_FEE_CONFIG_DECODER_V1,
+    PUMPSWAP_FEE_CONFIG_PDA,
+    PUMPSWAP_GLOBAL_CONFIG_DECODER_V1,
+    PUMPSWAP_GLOBAL_CONFIG_PDA,
+    PUMPSWAP_POOL_DECODER_V2,
+    PUMPSWAP_SELL_BASE_INPUT_V1,
+    PUMP_AMM_PROGRAM_ID,
+    PUMP_PROGRAM_ID,
+    PUMP_FEE_PROGRAM_ID,
+    RobinhoodStockTokenRegistryClient,
+    SolanaHeldAccountCollector,
+    SOLANA_USDC_MINT,
+    SOLANA_WRAPPED_SOL_MINT,
+    pump_bonding_curve_sell_quote_v1,
+    decode_pumpswap_fee_config_account,
+    decode_pumpswap_global_config_account,
+    decode_pumpswap_pool_account,
+    pumpswap_sell_base_input_v1,
 )
 from memetrader.models import CandidateDecision, EventView, Observation, ObservationRevisionHandoff, Position, TokenCandidate, TokenSnapshot, iso, parse_time, utcnow
-from memetrader.runtime import load_config
+from memetrader.runtime import Runtime, load_config
 from memetrader.store import Store
 from memetrader.strategy import (
     CandidateEvaluator,
@@ -2841,6 +2861,70 @@ def test_token_universe_jupiter_quote_is_forward_baseline_buy_then_target_sell(t
     store.close()
 
 
+def test_onchain_route_guards_migrate_from_legacy_shadow_version(tmp_path: Path):
+    database = tmp_path / "onchain-jupiter-trigger-migration.sqlite3"
+    store = Store(database, initial_cash_usd=1000)
+    for trigger_name in (
+        "onchain_only_jupiter_quote_attempts_insert_guard",
+        "onchain_only_jupiter_quote_results_insert_guard",
+        "onchain_only_evm_route_quote_attempts_insert_guard",
+        "onchain_only_evm_route_quote_results_insert_guard",
+    ):
+        sql = store.db.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+            (trigger_name,),
+        ).fetchone()[0]
+        legacy_sql = sql.replace(
+            "c.definition_version=json_extract(reg.definition_json,'$.source')",
+            "c.definition_version='onchain-only-shadow/v1'",
+        )
+        store.db.execute(f"DROP TRIGGER {trigger_name}")
+        store.db.execute(legacy_sql)
+    store.close()
+
+    reopened = Store(database, initial_cash_usd=1000)
+    trigger_sql = "\n".join(
+        row[0]
+        for row in reopened.db.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' "
+            "AND name IN (?,?,?,?) ORDER BY name",
+            (
+                "onchain_only_jupiter_quote_attempts_insert_guard",
+                "onchain_only_jupiter_quote_results_insert_guard",
+                "onchain_only_evm_route_quote_attempts_insert_guard",
+                "onchain_only_evm_route_quote_results_insert_guard",
+            ),
+        )
+    )
+    assert "onchain-only-shadow/v1" not in trigger_sql
+    assert "json_extract(reg.definition_json,'$.source')" in trigger_sql
+    reopened.close()
+
+
+def test_token_information_watch_confirmation_rule_is_exact_and_deterministic():
+    confirmed = {
+        "independent_reporting": {
+            "exact_token_binding_eligible": True,
+            "status": "cross_source_supported_lower_bound",
+        },
+        "content_verifier": {
+            "status": "cross_source_supported",
+            "claim_status": "confirmed_fact",
+            "confidence": 0.80,
+            "distinct_origin_support_domain_count": 2,
+        },
+    }
+    assert Store.token_information_watch_assessment_state(confirmed)[0] == "CONFIRMED"
+    one_origin = json.loads(json.dumps(confirmed))
+    one_origin["content_verifier"]["distinct_origin_support_domain_count"] = 1
+    assert Store.token_information_watch_assessment_state(one_origin)[0] == "INFO_PENDING"
+    negative = json.loads(json.dumps(confirmed))
+    negative["content_verifier"]["claim_status"] = "retraction"
+    assert Store.token_information_watch_assessment_state(negative) == (
+        "REJECTED_NEGATIVE_INFORMATION", "retraction"
+    )
+
+
 def test_onchain_only_jupiter_quote_is_trigger_anchored_forward_and_attempt_first(
     tmp_path: Path,
 ):
@@ -3133,6 +3217,12 @@ def test_onchain_only_jupiter_quote_is_trigger_anchored_forward_and_attempt_firs
         "quoted_but_uneconomic:exit_deferred"
     ] == 1
 
+    watch_registration = store.register_token_information_watch(
+        decision_window_seconds=120
+    )
+    watch_frontier = int(watch_registration["activation_trigger_transition_id"])
+    assert json.loads(watch_registration["definition_json"])["buy_enabled"] is False
+
     _, writeoff_shadow_id, writeoff_at = enroll(
         "W" * 32, recorded_at=now - timedelta(milliseconds=1500)
     )
@@ -3145,13 +3235,39 @@ def test_onchain_only_jupiter_quote_is_trigger_anchored_forward_and_attempt_firs
     writeoff_attempt_id = store.start_onchain_only_jupiter_quote_attempt(
         writeoff_baseline, requested_at=writeoff_requested,
     )
-    store.record_onchain_only_jupiter_quote(
+    writeoff_baseline_id = store.record_onchain_only_jupiter_quote(
         writeoff_baseline, status="quoted", attempt_id=writeoff_attempt_id,
         out_amount_raw="1000000000", other_amount_threshold_raw="900000000",
         slippage_bps=400, price_impact_bps=0.0,
         price_impact_source="fixture", requested_at=writeoff_requested,
         completed_at=writeoff_requested + timedelta(seconds=1),
     )
+    assert store.enroll_token_information_watches() == {"inserted": 1}
+    watch = store.db.execute(
+        "SELECT * FROM token_information_watch_cohorts WHERE shadow_cohort_id=?",
+        (writeoff_shadow_id,),
+    ).fetchone()
+    assert watch is not None
+    assert parse_time(watch["decision_deadline_at"]) - parse_time(
+        watch["watch_started_at"]
+    ) == timedelta(seconds=120)
+    assert store.due_token_information_watches(
+        now=parse_time(watch["watch_started_at"]) + timedelta(seconds=1)
+    )[0]["token_id"] == str(watch["token_id"])
+    assert store.finalize_token_information_watches(
+        now=parse_time(watch["decision_deadline_at"]) + timedelta(seconds=1)
+    ) == {"inserted": 1}
+    states = [
+        str(row[0]) for row in store.db.execute(
+            "SELECT state FROM token_information_watch_transitions "
+            "WHERE watch_cohort_id=? ORDER BY id", (int(watch["id"]),)
+        )
+    ]
+    assert states == ["WATCH_CREATED", "EXPIRED_NO_ASSESSMENT"]
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM token_information_watch_cohorts "
+        "WHERE trigger_transition_id<=?", (watch_frontier,)
+    ).fetchone()[0] == 0
     for horizon in (15, 60, 240):
         missing_target = next(
             item for item in store.due_onchain_only_jupiter_quotes(
@@ -3258,7 +3374,9 @@ def test_onchain_paper_exit_challenger_is_forward_amount_specific_and_isolated(
         starting_cash_usd=1000, quote_retry_seconds=15,
         max_quote_delay_seconds=45,
     )
+    monitor_registration = store.register_onchain_paper_position_monitor()
     assert int(registration["activation_exploration_buy_trade_id"]) == 0
+    assert int(monitor_registration["activation_source_buy_trade_id"]) == 0
 
     now = utcnow()
     token = TokenCandidate(
@@ -3316,6 +3434,36 @@ def test_onchain_paper_exit_challenger_is_forward_amount_specific_and_isolated(
     assert position["status"] == "open"
     assert position["remaining_amount_raw"] == "900000000"
 
+    valuation_at = utcnow() - timedelta(seconds=2)
+    valuation_task = store.due_onchain_paper_position_monitor_quotes(
+        now=valuation_at,
+    )[0]
+    assert valuation_task["input_amount_raw"] == "900000000"
+    assert valuation_task["monitor_state"] == "ENTRY_HOT"
+    valuation_attempt = store.start_onchain_paper_position_monitor_quote_attempt(
+        valuation_task, requested_at=valuation_at,
+    )
+    valuation_result = store.record_onchain_paper_position_monitor_quote_result(
+        attempt_id=valuation_attempt, status="quoted",
+        output_amount_raw="19000000", other_amount_threshold_raw="18000000",
+        slippage_bps=400, completed_at=valuation_at + timedelta(seconds=1),
+    )
+    assert valuation_result is not None
+    position_after_valuation = store.db.execute(
+        "SELECT * FROM onchain_paper_exit_challenger_positions WHERE shadow_cohort_id=?",
+        (shadow_id,),
+    ).fetchone()
+    assert position_after_valuation["status"] == "open"
+    assert position_after_valuation["remaining_amount_raw"] == "900000000"
+    executable_account = store.record_onchain_paper_position_monitor_account_snapshot(
+        recorded_at=valuation_at + timedelta(seconds=1),
+    )
+    assert executable_account["valuation_status"] == (
+        "complete_exact_remaining_jupiter_minimum_output"
+    )
+    assert executable_account["executable_value_usd"] == pytest.approx(17.6)
+    assert executable_account["executable_unrealized_pnl_usd"] == pytest.approx(-17.41)
+
     mark_time = utcnow()
     stop_snapshot_id = store.add_snapshot(TokenSnapshot(
         "solana", token.address, 0.50, 20_000, 50_000, 1_000, 2, 8,
@@ -3334,6 +3482,15 @@ def test_onchain_paper_exit_challenger_is_forward_amount_specific_and_isolated(
     assert marked_account["unrealized_pnl_usd"] == pytest.approx(-17.51)
     assert marked_account["total_pnl_usd"] == pytest.approx(-17.51)
     assert marked_account["equity_usd"] == pytest.approx(982.49)
+    open_summary = Store.onchain_paper_exit_challenger_summary_from_connection(store.db)
+    assert open_summary["account"]["unrealized_pnl_usd"] is None
+    assert open_summary["account"]["total_pnl_usd"] is None
+    assert open_summary["account"]["equity_usd"] is None
+    assert open_summary["account"]["indicative_unrealized_pnl_usd"] == pytest.approx(-17.51)
+    assert open_summary["account"]["indicative_total_pnl_usd"] == pytest.approx(-17.51)
+    assert open_summary["account"]["valuation_status"] == (
+        "indicative_only_open_positions_no_executable_quote"
+    )
     task = store.due_onchain_paper_exit_challenger_quotes(now=utcnow())[0]
     assert task["input_amount_raw"] == "900000000"
     first_requested = utcnow()
@@ -3344,6 +3501,16 @@ def test_onchain_paper_exit_challenger_is_forward_amount_specific_and_isolated(
         task, attempt_id=first_attempt_id, status="no_route",
         completed_at=first_requested + timedelta(seconds=1),
     )
+    no_route_account = store.record_onchain_paper_position_monitor_account_snapshot(
+        recorded_at=first_requested + timedelta(seconds=1),
+    )
+    assert no_route_account["valuation_status"] == (
+        "incomplete_exact_remaining_quotes"
+    )
+    assert no_route_account["executable_value_usd"] is None
+    assert no_route_account["executable_unrealized_pnl_usd"] is None
+    assert no_route_account["executable_total_pnl_usd"] is None
+    assert no_route_account["no_route_position_count"] == 1
     position = store.db.execute(
         "SELECT * FROM onchain_paper_exit_challenger_positions WHERE shadow_cohort_id=?",
         (shadow_id,),
@@ -3585,7 +3752,4040 @@ def test_exit_quote_scheduler_serves_unattempted_marks_before_retries(
     store.close()
 
 
-def test_onchain_narrative_runner_pairs_only_new_exact_buys_and_requires_economic_exit(
+def test_adaptive_exit_quote_scheduler_caps_dead_route_and_rearms_on_recovery(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "exit-quote-adaptive.sqlite3", initial_cash_usd=1000)
+    store.register_onchain_paper_exit_challenger(
+        starting_cash_usd=1000, quote_retry_seconds=15,
+        max_quote_delay_seconds=45,
+    )
+    scheduler = store.register_onchain_paper_exit_quote_scheduler()
+    assert store._json_object(scheduler["definition_json"])["retry_schedule_seconds"] == [
+        15, 30, 60, 120, 300,
+    ]
+    now = utcnow() - timedelta(hours=2)
+    token = TokenCandidate(
+        chain="solana", address="R" * 32, name="Recoverable Route", source="fixture"
+    )
+    store.upsert_token(token, seen_at=now)
+    with store.db:
+        dead_snapshot_id = int(store.db.execute(
+            """
+            INSERT INTO token_snapshots(
+                token_id,observed_at,ingested_at,recorded_at,provider,price_usd,
+                liquidity_usd,market_cap_usd,volume_5m_usd,buys_5m,sells_5m,raw_json
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?, '{}')
+            """,
+            (token.token_id, iso(now), iso(now), iso(now), "dexscreener",
+             0.5, 0.0, 100_000.0, 0.0, 0, 0),
+        ).lastrowid)
+        store.db.execute(
+            """
+            INSERT INTO onchain_paper_exit_challenger_positions(
+                definition_version,shadow_cohort_id,token_id,source_buy_trade_id,
+                baseline_quote_result_id,entry_snapshot_id,entry_signal_price_usd,
+                initial_amount_raw,remaining_amount_raw,stake_usd,entry_network_fee_usd,
+                highest_signal_price_usd,status,opened_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?, 'open',?)
+            """,
+            (
+                Store.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION, 1, token.token_id, 1, 1,
+                dead_snapshot_id, 1.0, "1000", "1000", 20.0, 0.4, 1.0, iso(now),
+            ),
+        )
+    mark = store.record_onchain_paper_exit_challenger_mark(
+        1, snapshot_id=dead_snapshot_id, evaluated_at=now + timedelta(seconds=1)
+    )
+    assert mark["action"] == "LIQUIDITY_EXIT"
+
+    cursor = now + timedelta(seconds=1)
+    expected_waits = [15, 30, 60, 120, 300]
+    for attempt_seq in range(1, 7):
+        task = store.due_onchain_paper_exit_challenger_quotes(now=cursor)[0]
+        assert task["attempt_seq"] == attempt_seq
+        attempt_id = store.start_onchain_paper_exit_challenger_quote_attempt(
+            task, requested_at=cursor
+        )
+        completed = cursor + timedelta(seconds=1)
+        store.record_onchain_paper_exit_challenger_quote_result(
+            task, attempt_id=attempt_id, status="no_route", completed_at=completed
+        )
+        if attempt_seq <= len(expected_waits):
+            assert store.due_onchain_paper_exit_challenger_quotes(
+                now=completed + timedelta(seconds=expected_waits[attempt_seq - 1] - 1)
+            ) == []
+            cursor = completed + timedelta(seconds=expected_waits[attempt_seq - 1])
+
+    assert store.due_onchain_paper_exit_challenger_quotes(
+        now=cursor + timedelta(hours=1)
+    ) == []
+    recovered_at = utcnow()
+    recovered_snapshot_id = store.add_snapshot(TokenSnapshot(
+        "solana", token.address, 0.5, 10_000, 100_000, 500, 2, 1,
+        observed_at=recovered_at, ingested_at=recovered_at, provider="dexscreener",
+    ))
+    rearmed = store.record_onchain_paper_exit_challenger_mark(
+        1, snapshot_id=recovered_snapshot_id,
+        evaluated_at=recovered_at + timedelta(seconds=1),
+    )
+    assert rearmed["action"] == "HARD_STOP"
+    due = store.due_onchain_paper_exit_challenger_quotes(
+        now=recovered_at + timedelta(seconds=1)
+    )
+    assert len(due) == 1
+    assert due[0]["attempt_seq"] == 1
+    assert due[0]["mark_id"] == rearmed["id"]
+    store.close()
+
+
+def test_exact_held_account_rug_alert_requires_fresh_full_size_no_route(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "held-account-rug.sqlite3", initial_cash_usd=1000)
+    store.register_onchain_paper_exit_challenger(
+        starting_cash_usd=1000, quote_retry_seconds=15,
+        max_quote_delay_seconds=45,
+    )
+    store.register_onchain_paper_exit_quote_scheduler()
+    store.register_onchain_held_account_monitor()
+    now = utcnow()
+    token_id = f"solana:{'R' * 32}"
+    with store.db:
+        store.db.execute(
+            "INSERT INTO onchain_paper_exit_challenger_positions("
+            "definition_version,shadow_cohort_id,token_id,source_buy_trade_id,"
+            "baseline_quote_result_id,entry_snapshot_id,initial_amount_raw,"
+            "remaining_amount_raw,stake_usd,entry_network_fee_usd,status,opened_at) "
+            "VALUES(?,?,?,?,?,?,'1000','1000',20,0.4,'open',?)",
+            (
+                Store.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION, 1, token_id,
+                1, 1, 1, iso(now - timedelta(minutes=1)),
+            ),
+        )
+        target_id = int(store.db.execute(
+            "INSERT INTO onchain_held_account_targets("
+            "monitor_version,position_definition_version,shadow_cohort_id,"
+            "source_buy_trade_id,token_id,surface_observation_id,pool_address,"
+            "base_mint,quote_mint,lp_mint,base_vault,quote_vault,account_kind,"
+            "pubkey,expected_mint,expected_program_owner,registered_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                Store.ONCHAIN_HELD_ACCOUNT_MONITOR_VERSION,
+                Store.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION, 1, 1, token_id, 1,
+                "POOL", "R" * 32, Store.JUPITER_USDC_MINT, "LP", "BASE", "QUOTE",
+                "base_vault", "BASE", "R" * 32,
+                "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", iso(now),
+            ),
+        ).lastrowid)
+        quote_target_id = int(store.db.execute(
+            "INSERT INTO onchain_held_account_targets("
+            "monitor_version,position_definition_version,shadow_cohort_id,"
+            "source_buy_trade_id,token_id,surface_observation_id,pool_address,"
+            "base_mint,quote_mint,lp_mint,base_vault,quote_vault,account_kind,"
+            "pubkey,expected_mint,expected_program_owner,registered_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                Store.ONCHAIN_HELD_ACCOUNT_MONITOR_VERSION,
+                Store.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION, 1, 1, token_id, 1,
+                "POOL", "R" * 32, Store.JUPITER_USDC_MINT, "LP", "BASE", "QUOTE",
+                "quote_vault", "QUOTE", Store.JUPITER_USDC_MINT,
+                "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", iso(now),
+            ),
+        ).lastrowid)
+
+    healthy = store.record_onchain_held_account_update({
+        "id": target_id, "pubkey": "BASE", "slot": 100, "data_hash": "h1",
+        "observed_at": now,
+        "decoded": {"status": "verified", "amount_raw": 1000},
+    })
+    assert healthy["risk_state"] == "HEALTHY"
+    quote_healthy = store.record_onchain_held_account_update({
+        "id": quote_target_id, "pubkey": "QUOTE", "slot": 100,
+        "data_hash": "q1", "observed_at": now,
+        "decoded": {"status": "verified", "amount_raw": 1000},
+    })
+    assert quote_healthy["risk_state"] == "HEALTHY"
+    alert = store.record_onchain_held_account_update({
+        "id": target_id, "pubkey": "BASE", "slot": 101, "data_hash": "h2",
+        "observed_at": now + timedelta(seconds=1),
+        "decoded": {"status": "verified", "amount_raw": 50},
+    })
+    assert alert["risk_reason"] == "base_vault_depleted_90pct"
+    task = store.due_onchain_paper_exit_challenger_quotes(
+        now=now + timedelta(seconds=2)
+    )[0]
+    assert task["reason"].startswith("onchain_rug_alert:")
+    assert task["input_amount_raw"] == "1000"
+    attempt_id = store.start_onchain_paper_exit_challenger_quote_attempt(
+        task, requested_at=now + timedelta(seconds=2)
+    )
+    store.record_onchain_paper_exit_challenger_quote_result(
+        task, attempt_id=attempt_id, status="no_route",
+        completed_at=now + timedelta(seconds=3),
+    )
+    position = store.db.execute(
+        "SELECT * FROM onchain_paper_exit_challenger_positions WHERE shadow_cohort_id=1"
+    ).fetchone()
+    assert position["status"] == "open"
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM onchain_confirmed_rug_terminals"
+    ).fetchone()[0] == 0
+    joint = store.record_onchain_held_account_update({
+        "id": quote_target_id, "pubkey": "QUOTE", "slot": 102,
+        "data_hash": "q2", "observed_at": now + timedelta(seconds=4),
+        "decoded": {"status": "verified", "amount_raw": 50},
+    })
+    assert joint["risk_reason"] == "joint_vaults_depleted_90pct_baseline"
+    task = store.due_onchain_paper_exit_challenger_quotes(
+        now=now + timedelta(seconds=20)
+    )[0]
+    attempt_id = store.start_onchain_paper_exit_challenger_quote_attempt(
+        task, requested_at=now + timedelta(seconds=20)
+    )
+    store.record_onchain_paper_exit_challenger_quote_result(
+        task, attempt_id=attempt_id, status="no_route",
+        completed_at=now + timedelta(seconds=21),
+    )
+    position = store.db.execute(
+        "SELECT * FROM onchain_paper_exit_challenger_positions WHERE shadow_cohort_id=1"
+    ).fetchone()
+    assert position["status"] == "written_off"
+    assert position["close_reason"] == "confirmed_rug_dead_no_economic_exit"
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM onchain_confirmed_rug_terminals"
+    ).fetchone()[0] == 1
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM onchain_dead_market_surfaces"
+    ).fetchone()[0] == 1
+    assert store.due_onchain_paper_exit_challenger_quotes(
+        now=now + timedelta(hours=1)
+    ) == []
+    assert store.record_onchain_held_account_update({
+        "id": target_id, "pubkey": "BASE", "slot": 102, "data_hash": "h3",
+        "observed_at": now + timedelta(seconds=22),
+        "decoded": {"status": "verified", "amount_raw": 2000},
+    }) is None
+    store.close()
+
+
+def _forward_chain_meme_trader_fixture(
+    tmp_path: Path, name: str, *, sell_surface_relation: str = "contains_surface",
+    surface_facts: dict | None = None, execute_entry: bool = True,
+):
+    store = Store(tmp_path / name, initial_cash_usd=1000)
+    store.register_onchain_only_shadow(
+        momentum_threshold=80, paper_stake_usd=20, min_liquidity_usd=12_000,
+        max_liquidity_impact_pct=0.0025, slippage_rate=0.04,
+        default_fee_bps=0, pump_fee_bps=0, max_tax_pct=10,
+        max_quote_delay_seconds=45,
+    )
+    store.register_onchain_only_jupiter_quote(
+        usdc_input_amount_raw=20_000_000, max_queue_delay_seconds=30,
+        max_total_delay_seconds=45,
+    )
+    store.register_onchain_paper_exploration(
+        starting_cash_usd=1000, max_open_positions=0,
+        estimated_network_fee_usd_each_side=0.4,
+    )
+    now = utcnow()
+
+    def add_source_buy(address: str, observed_at):
+        token = TokenCandidate(
+            chain="solana", address=address, name="ChainMemeTrader", source="fixture"
+        )
+        store.upsert_token(token, seen_at=observed_at)
+        round_id = store.start_token_discovery_round(
+            provider="fixture", surface="fixture", mode="poll", chain_scope="solana",
+            started_at=observed_at,
+        )
+        store.add_token_discovery_exposure(
+            round_id, token_id=token.token_id, chain="solana", role="new_token",
+            first_local_discovery=True, new_token=True, observed_at=observed_at,
+        )
+        store.finish_token_discovery_round(
+            round_id, status="completed", returned_count=1
+        )
+        snapshot_id = store.add_snapshot(TokenSnapshot(
+            "solana", token.address, 1.0, 20_000, 100_000, 30_000, 30, 10,
+            observed_at=observed_at, ingested_at=observed_at, provider="fixture",
+        ))
+        transition_id = store.record_token_universe_funnel_transition(
+            token.token_id, stage="context_trigger_evaluation", status="eligible",
+            reason_code="onchain_momentum", evaluation_key=f"chain-meme:{address}",
+            observed_at=observed_at, ingested_at=observed_at,
+            source_table="token_context_trigger", snapshot_id=snapshot_id,
+            metadata={"trigger_kind": "onchain_momentum", "momentum_score": 90.0},
+        )
+        cohort_id = store.enroll_onchain_only_shadow(transition_id)
+        cohort = store.db.execute(
+            "SELECT trigger_recorded_at FROM onchain_only_shadow_cohorts WHERE id=?",
+            (cohort_id,),
+        ).fetchone()
+        trigger_at = parse_time(cohort["trigger_recorded_at"])
+        task = next(
+            item for item in store.due_onchain_only_jupiter_quotes(now=trigger_at)
+            if item["shadow_cohort_id"] == cohort_id and item["phase"] == "baseline_buy"
+        )
+        requested_at = trigger_at + timedelta(seconds=1)
+        attempt_id = store.start_onchain_only_jupiter_quote_attempt(
+            task, requested_at=requested_at
+        )
+        result_id = store.record_onchain_only_jupiter_quote(
+            task, status="quoted", attempt_id=attempt_id,
+            out_amount_raw="1000000000", other_amount_threshold_raw="900000000",
+            slippage_bps=400, price_impact_bps=0.0,
+            price_impact_source="fixture", requested_at=requested_at,
+            completed_at=trigger_at + timedelta(seconds=2),
+        )
+        return token, int(cohort_id), int(result_id)
+
+    old_token, old_cohort_id, old_result_id = add_source_buy(
+        "A" * 32, now - timedelta(seconds=8)
+    )
+    store.register_pretrade_rug_safety()
+    store.register_route_surface_observations()
+    registration = store.register_chain_meme_trader()
+    assert int(registration["activation_exploration_buy_trade_id"]) == old_result_id
+    new_token, new_cohort_id, result_id = add_source_buy(
+        "B" * 32, now - timedelta(seconds=4)
+    )
+    result = store.db.execute(
+        "SELECT * FROM onchain_only_jupiter_quote_results WHERE id=?", (result_id,),
+    ).fetchone()
+    completed = parse_time(result["completed_at"])
+    trigger_snapshot_id = int(result["baseline_snapshot_id"])
+    assessed_snapshot_id = store.add_snapshot(TokenSnapshot(
+        "solana", new_token.address, 1.0, 20_000, 100_000, 30_000, 30, 10,
+        observed_at=completed, ingested_at=completed, provider="fixture",
+    ))
+    classification = {
+        "route_verifiability": "exact_onchain_legs",
+        "surface_relation": "contains_surface",
+    }
+    store.record_execution_route_observation(
+        lane=Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+        quote_key=str(result["quote_key"]), token_id=new_token.token_id,
+        direction="BUY", classification=classification,
+        observed_at=completed + timedelta(milliseconds=100),
+    )
+    store.record_execution_route_observation(
+        lane=Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+        quote_key=str(result["quote_key"]), token_id=new_token.token_id,
+        direction="SELL", classification={
+            **classification, "surface_relation": sell_surface_relation,
+            "quoted_net_recovery_ratio": 0.98,
+            "stress_min_recovery_ratio": 0.95,
+        }, observed_at=completed + timedelta(milliseconds=200),
+    )
+    store.record_market_surface_safety(
+        lane=Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+        quote_key=str(result["quote_key"]), token_id=new_token.token_id,
+        trigger_snapshot_id=trigger_snapshot_id,
+        assessed_snapshot_id=assessed_snapshot_id,
+        assessment={"status": "PASS", "reasons": [], "facts": surface_facts or {}},
+        observed_at=completed + timedelta(milliseconds=300),
+    )
+    store.record_pretrade_rug_safety_assessment(
+        lane=Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+        quote_key=str(result["quote_key"]), token_id=new_token.token_id,
+        trigger_snapshot_id=trigger_snapshot_id,
+        assessed_snapshot_id=assessed_snapshot_id,
+        assessment={"status": "PASS", "reasons": [], "facts": {}},
+        observed_at=completed + timedelta(milliseconds=300),
+        assessed_at=completed + timedelta(milliseconds=400),
+    )
+    migration = TokenCandidate(
+        chain="solana", address=new_token.address, name="ChainMemeTrader",
+        source="pumpportal:migration", first_seen_at=completed - timedelta(seconds=60),
+        raw={"pump_event_type": "migration", "signature": "migration-signature",
+             "pool": "pump-amm"},
+    )
+    store.record_token_launch_fact(
+        migration, observed_at=migration.first_seen_at, ingested_at=migration.first_seen_at,
+    )
+    assert store.enroll_chain_meme_trader() == {"inserted": 12, "rejected": 0}
+    if execute_entry:
+        execution = store.due_chain_meme_trader_execution(now=utcnow())
+        assert execution is not None and execution["side"] == "BUY"
+        assert len(execution["intent_ids"]) == 12
+        execution_attempt_id = store.start_chain_meme_trader_execution(
+            execution, requested_at=utcnow(),
+        )
+        execution_result_id = store.record_chain_meme_trader_execution_result(
+            execution_attempt_id, status="quoted", output_amount_raw="1000000000",
+            other_amount_threshold_raw="900000000", slippage_bps=400,
+            completed_at=utcnow(),
+        )
+        assert store.settle_chain_meme_trader_execution_result(execution_result_id) == 12
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_positions WHERE shadow_cohort_id=?",
+        (old_cohort_id,),
+    ).fetchone()[0] == 0
+    return store, new_token, new_cohort_id, now
+
+
+def test_chain_meme_trader_v6_entry_matrix_is_forward_and_shares_one_buy(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "chain-meme-v6.sqlite3", initial_cash_usd=1000)
+    now = utcnow()
+
+    def add_market_snapshot(
+        address: str, *, age_minutes: float, m5_trades: int,
+        h1_trades: int, m5_volume: float, h1_volume: float,
+        future_pair: bool = False,
+    ) -> int:
+        observed = now
+        created = observed + timedelta(hours=1) if future_pair else (
+            observed - timedelta(minutes=age_minutes)
+        )
+        token = TokenCandidate(
+            chain="solana", address=address, name="v6", source="fixture",
+        )
+        store.upsert_token(token, seen_at=observed)
+        m5_buys = m5_trades // 2
+        pair = {
+            "chainId": "solana",
+            "dexId": "pumpfun",
+            "pairAddress": f"pool-{address}",
+            "pairCreatedAt": round(created.timestamp() * 1000),
+            "priceUsd": "1.0",
+            "baseToken": {"address": address, "name": "v6", "symbol": "V6"},
+            "quoteToken": {"address": "So11111111111111111111111111111111111111112"},
+            "txns": {
+                "m5": {"buys": m5_buys, "sells": m5_trades - m5_buys},
+                "h1": {"buys": h1_trades // 2, "sells": h1_trades - h1_trades // 2},
+            },
+            "volume": {"m5": m5_volume, "h1": h1_volume},
+        }
+        snapshot_id = store.add_snapshot(TokenSnapshot(
+            "solana", address, 1.0, None, 100_000, m5_volume,
+            m5_buys, m5_trades - m5_buys, observed_at=observed,
+            ingested_at=observed, provider="fixture", raw={"pair": pair},
+        ))
+        return int(snapshot_id)
+
+    historical = add_market_snapshot(
+        "A" * 32, age_minutes=1, m5_trades=3, h1_trades=3,
+        m5_volume=50, h1_volume=50,
+    )
+    registration = store.register_chain_meme_trader_v6()
+    assert int(registration["code_snapshot_frontier"]) == historical
+    activation = store.activate_chain_meme_trader_v6()
+    stopped = store.db.execute(
+        "SELECT * FROM chain_meme_trader_primary_stops WHERE definition_version=?",
+        (Store.CHAIN_MEME_TRADER_VERSION,),
+    ).fetchone()
+    assert stopped["stopped_at"] == activation["activated_at"]
+    assert store.enroll_chain_meme_trader() == {"inserted": 0, "rejected": 0}
+
+    broad_snapshot = add_market_snapshot(
+        "B" * 32, age_minutes=1, m5_trades=3, h1_trades=3,
+        m5_volume=50, h1_volume=50,
+    )
+    add_market_snapshot(
+        "C" * 32, age_minutes=60, m5_trades=8, h1_trades=19,
+        m5_volume=1000, h1_volume=2000,
+    )
+    add_market_snapshot(
+        "D" * 32, age_minutes=480, m5_trades=10, h1_trades=12,
+        m5_volume=1000, h1_volume=1200,
+    )
+    add_market_snapshot(
+        "E" * 32, age_minutes=1, m5_trades=100, h1_trades=100,
+        m5_volume=10_000, h1_volume=10_000, future_pair=True,
+    )
+    enrolled = store.enroll_chain_meme_trader_v6()
+    assert enrolled == {"evaluated": 4, "admitted": 3, "rejected": 1, "intents": 3}
+    assert store.enroll_chain_meme_trader_v6() == {
+        "evaluated": 0, "admitted": 0, "rejected": 0, "intents": 0,
+    }
+    assert [row[0] for row in store.db.execute(
+        "SELECT entry_family FROM chain_meme_trader_v6_cohorts ORDER BY id"
+    )] == ["broad_launch", "flow_burst", "reawakening"]
+    rejected = store.db.execute(
+        "SELECT * FROM chain_meme_trader_v6_entry_evaluations "
+        "WHERE status='rejected'"
+    ).fetchone()
+    assert rejected["reason"] == "invalid_exact_asof_market_snapshot"
+    broad_cohort = store.db.execute(
+        "SELECT id FROM chain_meme_trader_v6_cohorts WHERE source_snapshot_id=?",
+        (broad_snapshot,),
+    ).fetchone()[0]
+    for letter in "FGHJKLM":
+        add_market_snapshot(
+            letter * 32, age_minutes=1, m5_trades=3, h1_trades=3,
+            m5_volume=50, h1_volume=50,
+        )
+    capacity = store.enroll_chain_meme_trader_v6()
+    assert capacity == {
+        "evaluated": 7, "admitted": 5, "rejected": 2, "intents": 5,
+    }
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_order_intents WHERE "
+        "definition_version=? AND side='BUY' "
+        "AND status IN ('ready','retry','submitted')",
+        (Store.CHAIN_MEME_TRADER_V6_VERSION,),
+    ).fetchone()[0] == 8
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_v6_entry_evaluations WHERE "
+        "definition_version=? AND reason='entry_quote_capacity_full'",
+        (Store.CHAIN_MEME_TRADER_V6_VERSION,),
+    ).fetchone()[0] == 2
+    task = store.due_chain_meme_trader_execution(
+        definition_version=Store.CHAIN_MEME_TRADER_V6_VERSION,
+    )
+    assert task["side"] == "BUY"
+    assert task["shadow_cohort_id"] == broad_cohort
+    assert len(task["intent_ids"]) == 1
+    attempt_id = store.start_chain_meme_trader_execution(task, requested_at=utcnow())
+    result_id = store.record_chain_meme_trader_execution_result(
+        attempt_id, status="quoted", output_amount_raw="1000000000",
+        other_amount_threshold_raw="900000000", slippage_bps=400,
+        completed_at=utcnow(),
+    )
+    assert store.settle_chain_meme_trader_execution_result(result_id) == 4
+    positions = store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND shadow_cohort_id=? ORDER BY arm_id",
+        (Store.CHAIN_MEME_TRADER_V6_VERSION, broad_cohort),
+    ).fetchall()
+    assert len(positions) == 4
+    assert {row["amount_raw"] for row in positions} == {"900000000"}
+    entry_fills = store.db.execute(
+        "SELECT * FROM chain_meme_trader_v6_entry_fills WHERE entry_cohort_id=?",
+        (broad_cohort,),
+    ).fetchall()
+    assert len(entry_fills) == 1
+    assert {int(row["source_entry_fill_id"]) for row in positions} == {
+        int(entry_fills[0]["id"])
+    }
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_fills WHERE definition_version=? AND side='BUY'",
+        (Store.CHAIN_MEME_TRADER_V6_VERSION,),
+    ).fetchone()[0] == 0
+
+    valuation = store.due_chain_meme_trader_quote(
+        definition_version=Store.CHAIN_MEME_TRADER_V6_VERSION,
+    )
+    quote_attempt = store.start_chain_meme_trader_quote(
+        valuation, requested_at=utcnow(),
+    )
+    quote_result = store.record_chain_meme_trader_quote_result(
+        quote_attempt, status="quoted", output_amount_raw="10500000",
+        other_amount_threshold_raw="10000000", slippage_bps=400,
+        completed_at=utcnow(),
+    )
+    frame_id = store.record_chain_meme_trader_position_equity_frame(
+        quote_result, definition_version=Store.CHAIN_MEME_TRADER_V6_VERSION,
+    )
+    assert frame_id is not None
+    assert store.evaluate_chain_meme_trader_v6_frame(frame_id) == 4
+    assert {
+        row["action"] for row in store.db.execute(
+            "SELECT action FROM chain_meme_trader_marks WHERE definition_version=? "
+            "AND shadow_cohort_id=?",
+            (Store.CHAIN_MEME_TRADER_V6_VERSION, broad_cohort),
+        )
+    } == {"HARD_STOP"}
+    with store.db:
+        store.db.execute(
+            "UPDATE chain_meme_trader_order_intents SET status='cancelled' "
+            "WHERE definition_version=? AND side='BUY' AND status IN ('ready','retry')",
+            (Store.CHAIN_MEME_TRADER_V6_VERSION,),
+        )
+    execution_at = utcnow()
+    for attempt_no in range(6):
+        task = store.due_chain_meme_trader_execution(
+            now=execution_at, definition_version=Store.CHAIN_MEME_TRADER_V6_VERSION,
+        )
+        assert task is not None and task["side"] == "SELL"
+        attempt_id = store.start_chain_meme_trader_execution(
+            task, requested_at=execution_at,
+        )
+        result_id = store.record_chain_meme_trader_execution_result(
+            attempt_id, status="no_route",
+            completed_at=execution_at + timedelta(seconds=1),
+        )
+        assert store.settle_chain_meme_trader_execution_result(result_id) == 0
+        execution_at += timedelta(minutes=10 + attempt_no)
+    assert {
+        row["status"] for row in store.db.execute(
+            "SELECT status FROM chain_meme_trader_positions WHERE definition_version=? "
+            "AND shadow_cohort_id=?",
+            (Store.CHAIN_MEME_TRADER_V6_VERSION, broad_cohort),
+        )
+    } == {"open"}
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_trades WHERE definition_version=? "
+        "AND shadow_cohort_id=? AND side='WRITEOFF'",
+        (Store.CHAIN_MEME_TRADER_V6_VERSION, broad_cohort),
+    ).fetchone()[0] == 0
+    store.close()
+
+
+def _route_preflight_deferred_retry_fixture(tmp_path: Path):
+    store = Store(tmp_path / "deferred-retry.sqlite3", initial_cash_usd=1000)
+    store.register_onchain_only_shadow(
+        momentum_threshold=80, paper_stake_usd=20, min_liquidity_usd=12_000,
+        max_liquidity_impact_pct=0.0025, slippage_rate=0.04,
+        default_fee_bps=0, pump_fee_bps=0, max_tax_pct=10,
+        max_quote_delay_seconds=45,
+    )
+    store.register_onchain_only_jupiter_quote(
+        usdc_input_amount_raw=20_000_000, slippage_bps=400,
+        max_queue_delay_seconds=30, max_total_delay_seconds=45,
+    )
+    now = utcnow()
+
+    def add_buy(address: str, observed_at: datetime):
+        token = TokenCandidate(
+            chain="solana", address=address, name="Deferred Retry", source="fixture",
+        )
+        store.upsert_token(token, seen_at=observed_at)
+        round_id = store.start_token_discovery_round(
+            provider="fixture", surface="fixture", mode="poll", chain_scope="solana",
+            started_at=observed_at,
+        )
+        store.add_token_discovery_exposure(
+            round_id, token_id=token.token_id, chain="solana", role="new_token",
+            first_local_discovery=True, new_token=True, observed_at=observed_at,
+        )
+        store.finish_token_discovery_round(
+            round_id, status="completed", returned_count=1,
+        )
+        snapshot_id = store.add_snapshot(TokenSnapshot(
+            "solana", address, 1.0, 20_000, 100_000, 30_000, 30, 10,
+            observed_at=observed_at, ingested_at=observed_at, provider="fixture",
+        ))
+        transition_id = store.record_token_universe_funnel_transition(
+            token.token_id, stage="context_trigger_evaluation", status="eligible",
+            reason_code="onchain_momentum", evaluation_key=f"deferred:{address}",
+            observed_at=observed_at, ingested_at=observed_at,
+            source_table="fixture", snapshot_id=snapshot_id,
+            metadata={"trigger_kind": "onchain_momentum", "momentum_score": 90.0},
+        )
+        cohort_id = int(store.enroll_onchain_only_shadow(transition_id))
+        cohort = store.db.execute(
+            "SELECT trigger_recorded_at FROM onchain_only_shadow_cohorts WHERE id=?",
+            (cohort_id,),
+        ).fetchone()
+        trigger_at = parse_time(cohort["trigger_recorded_at"])
+        task = next(
+            item for item in store.due_onchain_only_jupiter_quotes(now=trigger_at)
+            if item["shadow_cohort_id"] == cohort_id and item["phase"] == "baseline_buy"
+        )
+        requested_at = trigger_at
+        attempt_id = store.start_onchain_only_jupiter_quote_attempt(
+            task, requested_at=requested_at,
+        )
+        result_id = store.record_onchain_only_jupiter_quote(
+            task, status="quoted", attempt_id=attempt_id,
+            out_amount_raw="1000000000", other_amount_threshold_raw="900000000",
+            slippage_bps=400, price_impact_bps=0.0,
+            requested_at=requested_at, completed_at=trigger_at,
+        )
+        return token, cohort_id, int(result_id), snapshot_id
+
+    old_token, _, old_result_id, old_snapshot_id = add_buy(
+        "A" * 32, now - timedelta(seconds=12),
+    )
+    store.register_pretrade_rug_safety()
+    store.register_route_surface_observations()
+    store.register_chain_meme_trader()
+    old_assessed_id = store.add_snapshot(TokenSnapshot(
+        "solana", old_token.address, 1.0, 20_000, 100_000, 30_000, 30, 10,
+        observed_at=now - timedelta(seconds=8), ingested_at=now - timedelta(seconds=8),
+        provider="fixture+safety",
+    ))
+    historical_assessment_id = store.record_pretrade_rug_safety_assessment(
+        lane=Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+        quote_key=str(store.db.execute(
+            "SELECT quote_key FROM onchain_only_jupiter_quote_results WHERE id=?",
+            (old_result_id,),
+        ).fetchone()["quote_key"]),
+        token_id=old_token.token_id, trigger_snapshot_id=old_snapshot_id,
+        assessed_snapshot_id=old_assessed_id,
+        assessment={
+            "status": "WAIT", "reasons": ["exact_size_sell_preflight_deferred"],
+            "facts": {"exact_sell_preflight": {
+                "status": "budget_deferred", "input_amount_raw": 900_000_000,
+            }},
+        },
+        observed_at=now - timedelta(seconds=8),
+    )
+    registration = store.register_route_preflight_deferred_retry_shadow()
+    assert int(registration["activation_pretrade_assessment_id"]) == historical_assessment_id
+
+    def add_deferred(address: str, observed_at: datetime, *, custody_unknown: bool):
+        token, cohort_id, result_id, trigger_snapshot_id = add_buy(address, observed_at)
+        result = store.db.execute(
+            "SELECT * FROM onchain_only_jupiter_quote_results WHERE id=?", (result_id,),
+        ).fetchone()
+        completed = parse_time(result["completed_at"])
+        assessed_id = store.add_snapshot(TokenSnapshot(
+            "solana", address, 1.0, 20_000, 100_000, 30_000, 30, 10,
+            observed_at=completed, ingested_at=completed, provider="fixture+safety",
+        ))
+        store.record_execution_route_observation(
+            lane=Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+            quote_key=str(result["quote_key"]), token_id=token.token_id, direction="BUY",
+            classification={
+                "route_verifiability": "exact_onchain_legs",
+                "surface_relation": "contains_surface",
+            }, observed_at=completed + timedelta(milliseconds=100),
+        )
+        store.record_market_surface_safety(
+            lane=Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+            quote_key=str(result["quote_key"]), token_id=token.token_id,
+            trigger_snapshot_id=trigger_snapshot_id, assessed_snapshot_id=assessed_id,
+            assessment={
+                "status": "WAIT" if custody_unknown else "PASS",
+                "reasons": ["pool_custody_unknown"] if custody_unknown else [],
+                "facts": {"pool_address": "POOL"},
+            }, observed_at=completed + timedelta(milliseconds=200),
+        )
+        reasons = ["exact_size_sell_preflight_deferred"]
+        if custody_unknown:
+            reasons.append("pool_custody_unknown")
+        store.record_pretrade_rug_safety_assessment(
+            lane=Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+            quote_key=str(result["quote_key"]), token_id=token.token_id,
+            trigger_snapshot_id=trigger_snapshot_id, assessed_snapshot_id=assessed_id,
+            assessment={
+                "status": "WAIT", "reasons": reasons,
+                "facts": {
+                    "pool_address": "POOL",
+                    "exact_sell_preflight": {
+                        "status": "budget_deferred", "input_amount_raw": 900_000_000,
+                    },
+                },
+            }, observed_at=completed + timedelta(milliseconds=200),
+            assessed_at=completed + timedelta(milliseconds=300),
+        )
+        return token, cohort_id
+
+    eligible_token, eligible_cohort_id = add_deferred(
+        "B" * 32, now - timedelta(seconds=4), custody_unknown=False,
+    )
+    _, blocked_cohort_id = add_deferred(
+        "C" * 32, now - timedelta(seconds=3), custody_unknown=True,
+    )
+    store.enroll_chain_meme_trader()
+    return store, eligible_token, eligible_cohort_id, blocked_cohort_id, historical_assessment_id
+
+
+def test_chain_meme_trader_independent_cash_keeps_solvent_arms_trading(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "chain-meme-v11-cash.sqlite3", initial_cash_usd=1000)
+    store.register_chain_meme_trader_v6()
+    activation = store.activate_chain_meme_trader_v6()
+    version = Store.CHAIN_MEME_TRADER_V6_VERSION
+    low_cash_arm = "broad_launch__fast_escape"
+    now = parse_time(activation["activated_at"])
+    with store.db:
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_trades("
+            "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+            "net_cash_flow_usd,reason,created_at) "
+            "VALUES(?,?,?,?, 'BUY',985,-985,'fixture_prior_loss',?)",
+            (version, low_cash_arm, 0, "solana:fixture", iso(now)),
+        )
+    address = "I" * 32
+    token = TokenCandidate(
+        chain="solana", address=address, name="Independent cash", source="fixture",
+    )
+    store.upsert_token(token, seen_at=now)
+    pair = {
+        "chainId": "solana", "dexId": "pumpfun", "pairAddress": f"pool-{address}",
+        "pairCreatedAt": round((now - timedelta(minutes=1)).timestamp() * 1000),
+        "priceUsd": "1.0",
+        "baseToken": {"address": address, "name": "Independent cash", "symbol": "IC"},
+        "quoteToken": {"address": "So11111111111111111111111111111111111111112"},
+        "txns": {"m5": {"buys": 2, "sells": 1}, "h1": {"buys": 2, "sells": 1}},
+        "volume": {"m5": 250, "h1": 250},
+    }
+    snapshot_id = store.add_snapshot(TokenSnapshot(
+        "solana", address, 1.0, None, 100_000, 250, 2, 1,
+        observed_at=now, ingested_at=now, provider="fixture", raw={"pair": pair},
+    ))
+
+    assert store.enroll_chain_meme_trader_v6() == {
+        "evaluated": 1, "admitted": 1, "rejected": 0, "intents": 1,
+    }
+    cohort = store.db.execute(
+        "SELECT * FROM chain_meme_trader_v6_cohorts "
+        "WHERE definition_version=? AND source_snapshot_id=?",
+        (version, int(snapshot_id)),
+    ).fetchone()
+    decisions = store.db.execute(
+        "SELECT arm_id,status,reason FROM chain_meme_trader_entry_decisions "
+        "WHERE definition_version=? AND shadow_cohort_id=? ORDER BY arm_id",
+        (version, int(cohort["id"])),
+    ).fetchall()
+    assert len(decisions) == 4
+    assert [row["arm_id"] for row in decisions if row["status"] == "admitted"] == [
+        "broad_launch__balanced_harvest",
+        "broad_launch__peak_guard",
+        "broad_launch__postbuy_research",
+    ]
+    rejected = [row for row in decisions if row["status"] == "rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["arm_id"] == low_cash_arm
+    assert rejected[0]["reason"] == "entry_cash_below_20usdc"
+    features = json.loads(cohort["feature_json"])
+    assert low_cash_arm not in features["participating_arm_ids"]
+    assert features["execution_capacity_policy"].endswith("/v2")
+
+    task = store.due_chain_meme_trader_execution(
+        now=now + timedelta(seconds=1), definition_version=version,
+    )
+    assert task is not None and task["side"] == "BUY"
+    assert len(task["intent_ids"]) == 1
+    attempt_id = store.start_chain_meme_trader_execution(
+        task, requested_at=now + timedelta(seconds=1),
+    )
+    result_id = store.record_chain_meme_trader_execution_result(
+        attempt_id, status="quoted", output_amount_raw="1000000000",
+        other_amount_threshold_raw="900000000", slippage_bps=400,
+        completed_at=now + timedelta(seconds=2),
+    )
+    with store.db:
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_trades("
+            "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+            "net_cash_flow_usd,reason,created_at) "
+            "VALUES(?,?,?,?, 'BUY',985,-985,'fixture_fill_race',?)",
+            (
+                version, "broad_launch__balanced_harvest", -1,
+                "solana:fixture-race", iso(now + timedelta(seconds=1)),
+            ),
+        )
+    assert store.settle_chain_meme_trader_execution_result(result_id) == 2
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_v6_entry_fills "
+        "WHERE definition_version=? AND entry_cohort_id=?",
+        (version, int(cohort["id"])),
+    ).fetchone()[0] == 1
+    projected = store.db.execute(
+        "SELECT arm_id FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND shadow_cohort_id=? ORDER BY arm_id",
+        (version, int(cohort["id"])),
+    ).fetchall()
+    assert [row["arm_id"] for row in projected] == [
+        "broad_launch__peak_guard",
+        "broad_launch__postbuy_research",
+    ]
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_entry_participant_outcomes "
+        "WHERE definition_version=? AND shadow_cohort_id=? AND outcome='projected'",
+        (version, int(cohort["id"])),
+    ).fetchone()[0] == 2
+    skipped = store.db.execute(
+        "SELECT arm_id,available_cash_usd FROM "
+        "chain_meme_trader_entry_participant_outcomes WHERE definition_version=? "
+        "AND shadow_cohort_id=? AND outcome='skipped_cash_unavailable_at_fill'",
+        (version, int(cohort["id"])),
+    ).fetchone()
+    assert skipped["arm_id"] == "broad_launch__balanced_harvest"
+    assert skipped["available_cash_usd"] == pytest.approx(15.0)
+
+
+def test_route_preflight_deferred_retry_shadow_is_future_only_and_gate_preserving(
+    tmp_path: Path,
+):
+    store, _, eligible_cohort_id, blocked_cohort_id, historical_id = (
+        _route_preflight_deferred_retry_fixture(tmp_path)
+    )
+    assert store.enroll_route_preflight_deferred_retry_shadow() == {
+        "enrolled": 1, "blocked": 1,
+    }
+    assert store.enroll_route_preflight_deferred_retry_shadow() == {
+        "enrolled": 0, "blocked": 0,
+    }
+    cases = store.db.execute(
+        "SELECT * FROM route_preflight_deferred_retry_shadow_cases ORDER BY id"
+    ).fetchall()
+    assert len(cases) == 2
+    assert all(int(row["source_assessment_id"]) > historical_id for row in cases)
+    eligible = next(row for row in cases if int(row["shadow_cohort_id"]) == eligible_cohort_id)
+    blocked = next(row for row in cases if int(row["shadow_cohort_id"]) == blocked_cohort_id)
+    assert eligible["enrollment_status"] == "eligible"
+    assert eligible["input_amount_raw"] == "900000000"
+    assert eligible["slippage_bps"] == 400
+    assert blocked["enrollment_status"] == "other_gate_blocked"
+    assert "pool_custody_unknown" in json.loads(blocked["blocking_reasons_json"])
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM route_preflight_deferred_retry_shadow_attempts"
+    ).fetchone()[0] == 0
+    blocked_result = store.db.execute(
+        "SELECT * FROM route_preflight_deferred_retry_shadow_results WHERE case_id=?",
+        (int(blocked["id"]),),
+    ).fetchone()
+    assert blocked_result["quote_terminal_status"] == "not_dispatched_other_gate_blocked"
+    assert blocked_result["decision_eligible"] == 0
+    assert blocked_result["affects"] == "none"
+    with pytest.raises(sqlite3.DatabaseError, match="immutable"):
+        store.db.execute(
+            "UPDATE route_preflight_deferred_retry_shadow_cases SET token_id='changed' "
+            "WHERE id=?", (int(eligible["id"]),),
+        )
+    store.close()
+
+
+def test_route_preflight_deferred_retry_shadow_dispatches_once_after_priority_work(
+    tmp_path: Path,
+):
+    store, token, eligible_cohort_id, _, _ = _route_preflight_deferred_retry_fixture(tmp_path)
+    store.enroll_route_preflight_deferred_retry_shadow()
+    case = store.db.execute(
+        "SELECT * FROM route_preflight_deferred_retry_shadow_cases "
+        "WHERE shadow_cohort_id=?", (eligible_cohort_id,),
+    ).fetchone()
+
+    class FakeJupiter:
+        calls: list[tuple[str, str, int, int]] = []
+
+        async def quote(self, input_mint, output_mint, input_amount_raw, *, slippage_bps):
+            self.calls.append((input_mint, output_mint, input_amount_raw, slippage_bps))
+            return {
+                "output_amount_raw": 19_500_000,
+                "other_amount_threshold": 19_000_000,
+                "slippage_bps": 400,
+                "router": "fixture",
+                "route_plan": [{
+                    "amm_key": "POOL", "input_mint": input_mint,
+                    "output_mint": output_mint, "in_amount": str(input_amount_raw),
+                    "out_amount": "19500000",
+                }],
+            }
+
+    async def scenario():
+        runtime = object.__new__(Runtime)
+        runtime.store = store
+        runtime.jupiter = FakeJupiter()
+        runtime.safety = SafetyChecker
+        runtime._critical_onchain_exit_event = asyncio.Event()
+        runtime._jupiter_quote_lock = asyncio.Lock()
+        runtime._jupiter_background_dispatch_lock = asyncio.Lock()
+        runtime._jupiter_background_epoch_started = 0.0
+        runtime._jupiter_background_epoch_requests = 0
+        runtime._jupiter_background_epoch_seconds = 5.0
+        runtime._critical_onchain_exit_event.set()
+        assert await runtime._dispatch_route_preflight_deferred_retry_shadow_once() is True
+        assert runtime.jupiter.calls == []
+        runtime._critical_onchain_exit_event.clear()
+        protected_counts = {
+            table: store.db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in (
+                "chain_meme_trader_entry_decisions", "chain_meme_trader_positions",
+                "chain_meme_trader_trades", "chain_meme_trader_fills",
+            )
+        }
+        assert runtime._route_preflight_deferred_retry_has_priority_work() is False
+        assert await runtime._dispatch_route_preflight_deferred_retry_shadow_once() is True
+        assert runtime.jupiter.calls == [
+            (token.address, Store.JUPITER_USDC_MINT, 900_000_000, 400)
+        ]
+        assert await runtime._dispatch_route_preflight_deferred_retry_shadow_once() is False
+        assert len(runtime.jupiter.calls) == 1
+        assert protected_counts == {
+            table: store.db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in protected_counts
+        }
+
+    asyncio.run(scenario())
+    result = store.db.execute(
+        "SELECT * FROM route_preflight_deferred_retry_shadow_results WHERE case_id=?",
+        (int(case["id"]),),
+    ).fetchone()
+    assert result["quote_terminal_status"] == "quoted"
+    assert result["route_status"] == "PASS"
+    assert result["route_recovered"] == 1
+    assert result["full_envelope_pass"] == 1
+    assert result["decision_eligible"] == 0
+    assert result["affects"] == "none"
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM route_preflight_deferred_retry_shadow_attempts WHERE case_id=?",
+        (int(case["id"]),),
+    ).fetchone()[0] == 1
+    store.close()
+
+
+def test_chain_meme_trader_admission_requires_next_quote_fill(tmp_path: Path):
+    store, _, cohort_id, _ = _forward_chain_meme_trader_fixture(
+        tmp_path, "chain-meme-intent-only.sqlite3", execute_entry=False,
+    )
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_entry_decisions "
+        "WHERE shadow_cohort_id=? AND status='admitted'", (cohort_id,),
+    ).fetchone()[0] == 12
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_order_intents "
+        "WHERE shadow_cohort_id=? AND status='ready'", (cohort_id,),
+    ).fetchone()[0] == 12
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_positions WHERE shadow_cohort_id=?",
+        (cohort_id,),
+    ).fetchone()[0] == 0
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_trades WHERE shadow_cohort_id=?",
+        (cohort_id,),
+    ).fetchone()[0] == 0
+    task = store.due_chain_meme_trader_execution(now=utcnow())
+    attempt_id = store.start_chain_meme_trader_execution(task, requested_at=utcnow())
+    result_id = store.record_chain_meme_trader_execution_result(
+        attempt_id, status="no_route", completed_at=utcnow(),
+    )
+    assert store.settle_chain_meme_trader_execution_result(result_id) == 0
+    assert store.settle_chain_meme_trader_execution_result(result_id) == 0
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_order_intents "
+        "WHERE shadow_cohort_id=? AND status='failed'", (cohort_id,),
+    ).fetchone()[0] == 12
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_positions WHERE shadow_cohort_id=?",
+        (cohort_id,),
+    ).fetchone()[0] == 0
+    store.close()
+
+
+def test_chain_meme_trader_stage4_executable_decay_is_same_fill_and_forward_only(
+    tmp_path: Path,
+):
+    store, _, cohort_id, _ = _forward_chain_meme_trader_fixture(
+        tmp_path, "chain-meme-stage4-exec-decay.sqlite3", execute_entry=False,
+    )
+    registration = store.register_chain_meme_trader_executable_decay()
+    assert int(registration["activation_source_buy_fill_id"]) == 0
+
+    buy_task = store.due_chain_meme_trader_execution(now=utcnow())
+    buy_attempt = store.start_chain_meme_trader_execution(
+        buy_task, requested_at=utcnow(),
+    )
+    buy_result = store.record_chain_meme_trader_execution_result(
+        buy_attempt, status="quoted", output_amount_raw="1000000000",
+        other_amount_threshold_raw="900000000", slippage_bps=400,
+        completed_at=utcnow(),
+    )
+    assert store.settle_chain_meme_trader_execution_result(buy_result) == 12
+    source_fill = store.db.execute(
+        "SELECT * FROM chain_meme_trader_fills WHERE definition_version=? "
+        "AND arm_id='stage_04_dynamic_v1' AND shadow_cohort_id=? AND side='BUY'",
+        (Store.CHAIN_MEME_TRADER_VERSION, cohort_id),
+    ).fetchone()
+    assert store.enroll_chain_meme_trader_executable_decay() == 1
+    assert store.enroll_chain_meme_trader_executable_decay() == 0
+
+    version = Store.CHAIN_MEME_TRADER_STAGE4_EXEC_DECAY_VERSION
+    position = store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND shadow_cohort_id=?", (version, cohort_id),
+    ).fetchone()
+    assert position["amount_raw"] == source_fill["output_amount_raw"]
+    assert position["opened_at"] == source_fill["filled_at"]
+    assert int(position["entry_fill_id"]) == int(source_fill["id"])
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_fills WHERE definition_version=? "
+        "AND side='BUY'", (version,),
+    ).fetchone()[0] == 0
+
+    quote_at = parse_time(position["opened_at"]) + timedelta(seconds=1)
+    result_ids = []
+    for gross_usdc in (28.0, 30.0, 25.5):
+        task = store.due_chain_meme_trader_quote(
+            now=quote_at, definition_version=version,
+        )
+        assert task is not None and task["input_amount_raw"] == position["amount_raw"]
+        attempt_id = store.start_chain_meme_trader_quote(task, requested_at=quote_at)
+        result_id = store.record_chain_meme_trader_quote_result(
+            attempt_id, status="quoted", output_amount_raw=str(int(gross_usdc * 1_000_000)),
+            other_amount_threshold_raw=str(int(gross_usdc * 1_000_000)),
+            slippage_bps=400, completed_at=quote_at + timedelta(seconds=1),
+        )
+        result_ids.append(result_id)
+        quote_at += timedelta(seconds=16)
+
+    assert store.evaluate_chain_meme_trader_executable_decay_quote(result_ids[0]) == 0
+    assert store.evaluate_chain_meme_trader_executable_decay_quote(result_ids[1]) == 0
+    assert store.evaluate_chain_meme_trader_executable_decay_quote(result_ids[2]) == 1
+    assert store.evaluate_chain_meme_trader_executable_decay_quote(result_ids[2]) == 0
+    mark = store.db.execute(
+        "SELECT * FROM chain_meme_trader_marks WHERE definition_version=?",
+        (version,),
+    ).fetchone()
+    assert mark["action"] == "EXECUTABLE_DECAY_EXIT"
+    assert mark["sell_amount_raw"] == position["amount_raw"]
+
+    sell_task = store.due_chain_meme_trader_execution(
+        now=quote_at, definition_version=version,
+    )
+    assert sell_task is not None and sell_task["side"] == "SELL"
+    sell_attempt = store.start_chain_meme_trader_execution(
+        sell_task, requested_at=quote_at,
+    )
+    sell_result = store.record_chain_meme_trader_execution_result(
+        sell_attempt, status="quoted", output_amount_raw="25400000",
+        other_amount_threshold_raw="25400000", slippage_bps=400,
+        completed_at=quote_at + timedelta(seconds=1),
+    )
+    assert store.settle_chain_meme_trader_execution_result(sell_result) == 1
+    assert store.settle_chain_meme_trader_execution_result(sell_result) == 0
+    assert store.db.execute(
+        "SELECT status FROM chain_meme_trader_positions WHERE definition_version=?",
+        (version,),
+    ).fetchone()[0] == "closed"
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_fills WHERE definition_version=? "
+        "AND side='SELL'", (version,),
+    ).fetchone()[0] == 1
+    assert len(Store.chain_meme_trader_summary_from_connection(store.db)["strategies"]) == 12
+    store.close()
+
+
+def test_chain_meme_trader_stage4_v1_stop_blocks_only_future_enrollment(
+    tmp_path: Path,
+):
+    store, _, cohort_id, _ = _forward_chain_meme_trader_fixture(
+        tmp_path, "chain-meme-stage4-exec-decay-stop.sqlite3", execute_entry=False,
+    )
+    store.register_chain_meme_trader_executable_decay()
+    stop = store.register_chain_meme_trader_executable_decay_stop()
+    assert int(stop["source_buy_fill_frontier"]) == 0
+
+    buy_task = store.due_chain_meme_trader_execution(now=utcnow())
+    buy_attempt = store.start_chain_meme_trader_execution(
+        buy_task, requested_at=utcnow(),
+    )
+    buy_result = store.record_chain_meme_trader_execution_result(
+        buy_attempt, status="quoted", output_amount_raw="1000000000",
+        other_amount_threshold_raw="900000000", slippage_bps=400,
+        completed_at=utcnow(),
+    )
+    assert store.settle_chain_meme_trader_execution_result(buy_result) == 12
+    assert store.enroll_chain_meme_trader_executable_decay() == 0
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_positions "
+        "WHERE definition_version=? AND shadow_cohort_id=?",
+        (Store.CHAIN_MEME_TRADER_STAGE4_EXEC_DECAY_VERSION, cohort_id),
+    ).fetchone()[0] == 0
+    summary = Store.chain_meme_trader_executable_decay_summary_from_connection(store.db)
+    assert summary["status"] == "enrollment_stopped"
+    assert summary["enrollment_stop"]["reason"] == (
+        "v1_missing_common_safety_envelope_retired_before_v2"
+    )
+    store.close()
+
+
+def _open_stage4_v2_pair(tmp_path: Path, name: str):
+    store, token, cohort_id, _ = _forward_chain_meme_trader_fixture(
+        tmp_path, name, execute_entry=False,
+    )
+    registration = store.register_chain_meme_trader_stage4_v2()
+    assert int(registration["activation_source_buy_fill_id"]) == 0
+    buy_task = store.due_chain_meme_trader_execution(now=utcnow())
+    buy_attempt = store.start_chain_meme_trader_execution(
+        buy_task, requested_at=utcnow(),
+    )
+    buy_result = store.record_chain_meme_trader_execution_result(
+        buy_attempt, status="quoted", output_amount_raw="1000000000",
+        other_amount_threshold_raw="900000000", slippage_bps=400,
+        completed_at=utcnow(),
+    )
+    assert store.settle_chain_meme_trader_execution_result(buy_result) == 12
+    source_fill = store.db.execute(
+        "SELECT * FROM chain_meme_trader_fills WHERE definition_version=? "
+        "AND arm_id='stage_04_dynamic_v1' AND shadow_cohort_id=? AND side='BUY'",
+        (Store.CHAIN_MEME_TRADER_VERSION, cohort_id),
+    ).fetchone()
+    assert store.enroll_chain_meme_trader_stage4_v2() == 2
+    assert store.enroll_chain_meme_trader_stage4_v2() == 0
+    return store, token, cohort_id, source_fill
+
+
+def test_chain_meme_trader_exact_quote_is_shared_with_stage4_v2_peer(
+    tmp_path: Path,
+):
+    store, _, cohort_id, _ = _open_stage4_v2_pair(
+        tmp_path, "chain-meme-shared-quote.sqlite3",
+    )
+    requested = utcnow()
+    task = store.due_chain_meme_trader_quote(
+        now=requested, definition_version=Store.CHAIN_MEME_TRADER_VERSION,
+    )
+    assert task is not None and task["shadow_cohort_id"] == cohort_id
+    peers = store.chain_meme_trader_quote_peer_tasks(task, (
+        Store.CHAIN_MEME_TRADER_VERSION,
+        Store.CHAIN_MEME_TRADER_STAGE4_EXEC_EQUITY_V2_VERSION,
+    ))
+    assert [row["definition_version"] for row in peers] == [
+        Store.CHAIN_MEME_TRADER_STAGE4_EXEC_EQUITY_V2_VERSION
+    ]
+    primary_attempt = store.start_chain_meme_trader_quote(task, requested_at=requested)
+    peer_attempt = store.start_chain_meme_trader_quote(peers[0], requested_at=requested)
+    completed = requested + timedelta(seconds=1)
+    for attempt_id in (primary_attempt, peer_attempt):
+        result_id = store.record_chain_meme_trader_quote_result(
+            attempt_id, status="quoted", output_amount_raw="21000000",
+            other_amount_threshold_raw="20000000", slippage_bps=400,
+            completed_at=completed,
+        )
+        assert result_id is not None
+        if attempt_id == peer_attempt:
+            frame_id = store.record_chain_meme_trader_position_equity_frame(result_id)
+            assert frame_id is not None
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_quote_results WHERE shadow_cohort_id=?",
+        (cohort_id,),
+    ).fetchone()[0] == 2
+    store.close()
+
+
+def test_chain_meme_trader_stage4_v2_is_forward_paired_and_trailing_only(
+    tmp_path: Path,
+):
+    store, token, cohort_id, source_fill = _open_stage4_v2_pair(
+        tmp_path, "chain-meme-stage4-v2.sqlite3",
+    )
+    version = Store.CHAIN_MEME_TRADER_STAGE4_EXEC_EQUITY_V2_VERSION
+    positions = store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND shadow_cohort_id=? ORDER BY arm_id", (version, cohort_id),
+    ).fetchall()
+    assert len(positions) == 2
+    assert {row["amount_raw"] for row in positions} == {source_fill["output_amount_raw"]}
+    assert {row["opened_at"] for row in positions} == {source_fill["filled_at"]}
+    assert {int(row["entry_fill_id"]) for row in positions} == {int(source_fill["id"])}
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_fills WHERE definition_version=? "
+        "AND side='BUY'", (version,),
+    ).fetchone()[0] == 0
+
+    definition = json.loads(store.db.execute(
+        "SELECT definition_json FROM chain_meme_trader_executable_decay_registrations "
+        "WHERE definition_version=?", (version,),
+    ).fetchone()[0])
+    control, challenger = definition["policies"]
+    treatment_keys = {"arm_id", "name", "trailing_activate_return", "trailing_drawdown"}
+    assert {
+        key: value for key, value in control.items() if key not in treatment_keys
+    } == {
+        key: value for key, value in challenger.items() if key not in treatment_keys
+    }
+    assert (control["trailing_activate_return"], control["trailing_drawdown"]) == (
+        0.60, 0.28,
+    )
+    assert (
+        challenger["trailing_activate_return"], challenger["trailing_drawdown"]
+    ) == (0.40, 0.15)
+
+    quote_at = parse_time(source_fill["filled_at"]) + timedelta(seconds=2)
+
+    def frame(
+        gross_usdc: float | None, *, status: str = "quoted", delay_seconds: int = 1,
+    ):
+        nonlocal quote_at
+        snapshot_id = store.add_snapshot(TokenSnapshot(
+            "solana", token.address, 1.0, 20_000, 100_000, 10_000, 20, 5,
+            observed_at=utcnow(), ingested_at=utcnow(), provider="fixture",
+        ))
+        task = store.due_chain_meme_trader_quote(
+            now=quote_at, definition_version=version,
+        )
+        assert task is not None
+        attempt_id = store.start_chain_meme_trader_quote(task, requested_at=quote_at)
+        raw = None if gross_usdc is None else str(int(gross_usdc * 1_000_000))
+        completed_at = quote_at + timedelta(seconds=delay_seconds)
+        result_id = store.record_chain_meme_trader_quote_result(
+            attempt_id, status=status, output_amount_raw=raw,
+            other_amount_threshold_raw=raw, slippage_bps=400,
+            completed_at=completed_at,
+        )
+        frame_id = store.record_chain_meme_trader_position_equity_frame(
+            result_id, snapshot_id=snapshot_id,
+        )
+        quote_at = completed_at + timedelta(seconds=16)
+        return result_id, frame_id
+
+    _, first_frame = frame(40.0)
+    assert store.evaluate_chain_meme_trader_stage4_v2_frame(first_frame) == 2
+    marks = store.db.execute(
+        "SELECT * FROM chain_meme_trader_marks WHERE definition_version=? "
+        "ORDER BY arm_id", (version,),
+    ).fetchall()
+    assert {row["action"] for row in marks} == {"TAKE_PROFIT_1"}
+    shared_sell = store.due_chain_meme_trader_execution(
+        now=quote_at, definition_version=version,
+    )
+    assert shared_sell["side"] == "SELL" and len(shared_sell["intent_ids"]) == 2
+    sell_attempt = store.start_chain_meme_trader_execution(
+        shared_sell, requested_at=quote_at,
+    )
+    sell_result = store.record_chain_meme_trader_execution_result(
+        sell_attempt, status="quoted", output_amount_raw="8000000",
+        other_amount_threshold_raw="8000000", slippage_bps=400,
+        completed_at=quote_at + timedelta(seconds=1),
+    )
+    assert store.settle_chain_meme_trader_execution_result(sell_result) == 2
+
+    _, unknown_frame = frame(None, status="no_route")
+    unknown = store.db.execute(
+        "SELECT * FROM chain_meme_trader_position_equity_frames WHERE id=?",
+        (unknown_frame,),
+    ).fetchone()
+    assert unknown["valuation_status"] == "UNKNOWN_NO_ROUTE"
+    assert unknown["remaining_min_executable_recovery_usd"] is None
+    assert all(
+        value["total_executable_equity_usd"] is None
+        and value["economic_return"] is None
+        for value in json.loads(unknown["arm_values_json"]).values()
+    )
+    assert store.evaluate_chain_meme_trader_stage4_v2_frame(unknown_frame) == 0
+    store.record_chain_meme_trader_account_snapshots(
+        now=parse_time(unknown["completed_at"]) + timedelta(seconds=1),
+        definition_version=version,
+    )
+    fresh_no_route_accounts = store.db.execute(
+        "SELECT * FROM chain_meme_trader_account_snapshots "
+        "WHERE definition_version=? ORDER BY id", (version,),
+    ).fetchall()
+    assert fresh_no_route_accounts
+    assert all(row["executable_equity_usd"] is None for row in fresh_no_route_accounts)
+    assert all(
+        row["executable_unrealized_pnl_usd"] is None
+        for row in fresh_no_route_accounts
+    )
+    for status, gross, delay, expected in (
+        ("quoted", None, 1, "UNKNOWN_MISSING"),
+        ("error", None, 1, "UNKNOWN_ERROR"),
+        ("quoted", 25.0, 60, "UNKNOWN_STALE"),
+    ):
+        _, other_unknown_frame = frame(
+            gross, status=status, delay_seconds=delay,
+        )
+        other_unknown = store.db.execute(
+            "SELECT * FROM chain_meme_trader_position_equity_frames WHERE id=?",
+            (other_unknown_frame,),
+        ).fetchone()
+        assert other_unknown["valuation_status"] == expected
+        assert other_unknown["remaining_min_executable_recovery_usd"] is None
+        assert store.evaluate_chain_meme_trader_stage4_v2_frame(
+            other_unknown_frame
+        ) == 0
+    store.record_chain_meme_trader_account_snapshots(
+        now=quote_at, definition_version=version,
+    )
+    assert {
+        row["executable_equity_usd"] for row in store.db.execute(
+            "SELECT * FROM chain_meme_trader_account_snapshots "
+            "WHERE definition_version=?", (version,),
+        ).fetchall()
+    } == {None}
+
+    _, decay_frame = frame(25.0)
+    assert store.evaluate_chain_meme_trader_stage4_v2_frame(decay_frame) == 1
+    trailing = store.db.execute(
+        "SELECT * FROM chain_meme_trader_marks WHERE definition_version=? "
+        "AND action='TRAILING_EXIT'", (version,),
+    ).fetchone()
+    assert trailing["arm_id"] == "stage_04_exec_decay_challenger_v2"
+    assert "equity_frame=" in trailing["reason"]
+    assert store.db.execute(
+        "SELECT pending_mark_id FROM chain_meme_trader_positions "
+        "WHERE definition_version=? AND arm_id='stage_04_exec_equity_control_v2'",
+        (version,),
+    ).fetchone()[0] is None
+    with pytest.raises(sqlite3.DatabaseError, match="immutable"):
+        store.db.execute(
+            "UPDATE chain_meme_trader_position_equity_frames "
+            "SET valuation_status='UNKNOWN_ERROR' WHERE id=?", (decay_frame,),
+        )
+    store.close()
+
+
+def test_chain_meme_trader_stage4_v2_exact_risk_is_shared_and_terminal(
+    tmp_path: Path,
+):
+    store, token, cohort_id, _ = _open_stage4_v2_pair(
+        tmp_path, "chain-meme-stage4-v2-risk.sqlite3",
+    )
+    version = Store.CHAIN_MEME_TRADER_STAGE4_EXEC_EQUITY_V2_VERSION
+    observed_at = iso(utcnow())
+    with store.db:
+        store.db.execute(
+            "INSERT INTO onchain_held_account_risk_events("
+            "monitor_version,target_id,position_definition_version,shadow_cohort_id,"
+            "token_id,pool_address,slot,data_hash,account_kind,event_type,risk_state,"
+            "risk_reason,previous_decoded_json,decoded_json,observed_at,recorded_at) "
+            "VALUES(?,?,?,?,?,?,1,'v2-risk','pool','account_change','ALERT',"
+            "'pool_identity_changed','{}','{}',?,?)",
+            (
+                Store.ONCHAIN_HELD_ACCOUNT_MONITOR_VERSION, 999, version, cohort_id,
+                token.token_id, "pool", observed_at, observed_at,
+            ),
+        )
+    assert store.sync_chain_meme_trader_rug_alerts() == 2
+    marks = store.db.execute(
+        "SELECT * FROM chain_meme_trader_marks WHERE definition_version=?",
+        (version,),
+    ).fetchall()
+    assert len(marks) == 2 and {row["action"] for row in marks} == {"RUG_EXIT"}
+    task = store.due_chain_meme_trader_execution(
+        now=utcnow(), definition_version=version,
+    )
+    assert len(task["intent_ids"]) == 2
+    attempt_id = store.start_chain_meme_trader_execution(task, requested_at=utcnow())
+    result_id = store.record_chain_meme_trader_execution_result(
+        attempt_id, status="no_route", completed_at=utcnow(),
+    )
+    assert store.settle_chain_meme_trader_execution_result(result_id) == 2
+    positions = store.db.execute(
+        "SELECT status,realized_pnl_usd FROM chain_meme_trader_positions "
+        "WHERE definition_version=?", (version,),
+    ).fetchall()
+    assert {row["status"] for row in positions} == {"written_off"}
+    assert {row["realized_pnl_usd"] for row in positions} == {-20.0}
+    store.close()
+
+
+@pytest.mark.parametrize(
+    "case,gross,liquidity,volume,buys,sells,elapsed_minutes,expected_action",
+    (
+        ("hard", 12.0, 20_000, 10_000, 20, 5, 1, "HARD_STOP"),
+        ("liquidity", 20.0, 1_000, 10_000, 20, 5, 1, "LIQUIDITY_EXIT"),
+        ("inactivity", 20.0, 20_000, 0, 0, 0, 6, "INACTIVITY_EXIT"),
+        ("max-hold", None, 20_000, 10_000, 20, 5, 241, "TIME_EXIT"),
+    ),
+)
+def test_chain_meme_trader_stage4_v2_common_exit_envelope(
+    tmp_path: Path, case: str, gross: float | None, liquidity: float,
+    volume: float, buys: int, sells: int, elapsed_minutes: int,
+    expected_action: str,
+):
+    store, token, cohort_id, source_fill = _open_stage4_v2_pair(
+        tmp_path, f"chain-meme-stage4-v2-{case}.sqlite3",
+    )
+    version = Store.CHAIN_MEME_TRADER_STAGE4_EXEC_EQUITY_V2_VERSION
+    snapshot_id = store.add_snapshot(TokenSnapshot(
+        "solana", token.address, 1.0, liquidity, 100_000, volume, buys, sells,
+        observed_at=utcnow(), ingested_at=utcnow(), provider="fixture",
+    ))
+    requested_at = parse_time(source_fill["filled_at"]) + timedelta(
+        minutes=elapsed_minutes,
+    )
+    task = store.due_chain_meme_trader_quote(
+        now=requested_at, definition_version=version,
+    )
+    attempt_id = store.start_chain_meme_trader_quote(task, requested_at=requested_at)
+    raw = None if gross is None else str(int(gross * 1_000_000))
+    result_id = store.record_chain_meme_trader_quote_result(
+        attempt_id, status="no_route" if gross is None else "quoted",
+        output_amount_raw=raw, other_amount_threshold_raw=raw, slippage_bps=400,
+        completed_at=requested_at + timedelta(seconds=1),
+    )
+    frame_id = store.record_chain_meme_trader_position_equity_frame(
+        result_id, snapshot_id=snapshot_id,
+    )
+    assert store.evaluate_chain_meme_trader_stage4_v2_frame(frame_id) == 2
+    marks = store.db.execute(
+        "SELECT action FROM chain_meme_trader_marks WHERE definition_version=?",
+        (version,),
+    ).fetchall()
+    assert {row["action"] for row in marks} == {expected_action}
+    store.close()
+
+
+def test_chain_meme_trader_postbuy_research_is_future_only_and_shared(tmp_path: Path):
+    historical, _, _, _ = _forward_chain_meme_trader_fixture(
+        tmp_path, "chain-meme-postbuy-historical.sqlite3", execute_entry=True,
+    )
+    registration = historical.register_chain_meme_trader_postbuy_research()
+    assert int(registration["activation_buy_fill_id"]) == historical.db.execute(
+        "SELECT MAX(id) FROM chain_meme_trader_fills WHERE side='BUY'"
+    ).fetchone()[0]
+    assert historical.due_chain_meme_trader_postbuy_research(
+        now=utcnow() + timedelta(minutes=5)
+    ) == []
+    historical.close()
+
+    store, token, cohort_id, _ = _forward_chain_meme_trader_fixture(
+        tmp_path, "chain-meme-postbuy-forward.sqlite3", execute_entry=False,
+    )
+    registration = store.register_chain_meme_trader_postbuy_research()
+    assert int(registration["activation_buy_fill_id"]) == 0
+    task = store.due_chain_meme_trader_execution(now=utcnow())
+    attempt_id = store.start_chain_meme_trader_execution(task, requested_at=utcnow())
+    result_id = store.record_chain_meme_trader_execution_result(
+        attempt_id, status="quoted", output_amount_raw="1000000000",
+        other_amount_threshold_raw="900000000", slippage_bps=400,
+        completed_at=utcnow(),
+    )
+    assert store.settle_chain_meme_trader_execution_result(result_id) == 12
+    first_fill = store.db.execute(
+        "SELECT MIN(id) AS id,MIN(filled_at) AS filled_at FROM chain_meme_trader_fills "
+        "WHERE shadow_cohort_id=? AND side='BUY'", (cohort_id,),
+    ).fetchone()
+    cutoff = parse_time(first_fill["filled_at"]) + timedelta(seconds=31)
+    due = store.due_chain_meme_trader_postbuy_research(now=cutoff)
+    assert len(due) == 1
+    assert int(due[0]["first_buy_fill_id"]) == int(first_fill["id"])
+    assert due[0]["token_id"] == token.token_id
+    case_id = store.record_chain_meme_trader_postbuy_research_case(
+        shadow_cohort_id=cohort_id,
+        token_id=token.token_id,
+        first_buy_fill_id=int(first_fill["id"]),
+        entry_snapshot_id=int(due[0]["entry_snapshot_id"]),
+        position_opened_at=due[0]["position_opened_at"],
+        research_cutoff_at=cutoff,
+        snapshot_id=None,
+        trigger_transition_id=None,
+        status="coverage_gap",
+        reason_code="fixture_coverage_gap",
+    )
+    assert case_id is not None
+    assert store.complete_chain_meme_trader_postbuy_research(
+        case_id, terminal_status="coverage_gap:fixture", completed_at=cutoff,
+    ) is not None
+    assert store.due_chain_meme_trader_postbuy_research(
+        now=cutoff + timedelta(minutes=5)
+    ) == []
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_postbuy_research_cases"
+    ).fetchone()[0] == 1
+    store.close()
+
+
+def test_chain_meme_trader_all_stages_share_exact_held_accounts(
+    tmp_path: Path,
+):
+    mint = "B" * 32
+    token_program = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+    store, _, cohort_id, _ = _forward_chain_meme_trader_fixture(
+        tmp_path,
+        "chain-meme-held-targets.sqlite3",
+        surface_facts={
+            "solana_pool_rpc": {
+                "status": "verified",
+                "canonical_migration_structure": True,
+                "program_owner": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+                "pool_address": "POOL",
+                "base_mint": mint,
+                "quote_mint": Store.JUPITER_USDC_MINT,
+                "lp_mint": "LP",
+                "base_vault": "BASE",
+                "quote_vault": "QUOTE",
+            },
+            "solana_token_rpc": {"program_owner": token_program},
+        },
+    )
+    store.register_onchain_held_account_monitor()
+    assert store.enroll_onchain_held_account_targets() == 5
+    targets = store.onchain_held_account_targets()
+    assert len(targets) == 5
+    assert {row["position_definition_version"] for row in targets} == {
+        Store.CHAIN_MEME_TRADER_VERSION
+    }
+    assert {row["shadow_cohort_id"] for row in targets} == {cohort_id}
+    assert {row["account_kind"] for row in targets} == {
+        "pool", "base_vault", "quote_vault", "token_mint", "lp_mint"
+    }
+    lp_target = next(row for row in targets if row["account_kind"] == "lp_mint")
+    assert lp_target["expected_program_owner"] == token_program
+    pool_target = next(row for row in targets if row["account_kind"] == "pool")
+    assert pool_target["decoder_version"] == PUMPSWAP_POOL_DECODER_V2
+    store.close()
+
+
+def test_held_account_monitor_keeps_stage4_v1_only_open_position_covered(
+    tmp_path: Path,
+):
+    store, _, cohort_id, _ = _forward_chain_meme_trader_fixture(
+        tmp_path,
+        "chain-meme-held-v1-only.sqlite3",
+        execute_entry=False,
+        surface_facts={
+            "solana_pool_rpc": {
+                "status": "verified", "canonical_migration_structure": True,
+                "program_owner": SafetyChecker.PUMPSWAP_PROGRAM,
+                "pool_address": "POOL", "base_mint": "B" * 32,
+                "quote_mint": Store.JUPITER_USDC_MINT, "lp_mint": "LP",
+                "base_vault": "BASE", "quote_vault": "QUOTE",
+            },
+            "solana_token_rpc": {"program_owner": SafetyChecker.SPL_TOKEN_PROGRAM},
+        },
+    )
+    store.register_chain_meme_trader_executable_decay()
+    buy_task = store.due_chain_meme_trader_execution(now=utcnow())
+    buy_attempt = store.start_chain_meme_trader_execution(
+        buy_task, requested_at=utcnow(),
+    )
+    buy_result = store.record_chain_meme_trader_execution_result(
+        buy_attempt, status="quoted", output_amount_raw="1000000000",
+        other_amount_threshold_raw="900000000", slippage_bps=400,
+        completed_at=utcnow(),
+    )
+    assert store.settle_chain_meme_trader_execution_result(buy_result) == 12
+    assert store.enroll_chain_meme_trader_executable_decay() == 1
+    with store.db:
+        store.db.execute(
+            "UPDATE chain_meme_trader_positions SET status='closed' "
+            "WHERE definition_version=? AND shadow_cohort_id=?",
+            (Store.CHAIN_MEME_TRADER_VERSION, cohort_id),
+        )
+    store.register_onchain_held_account_monitor()
+    assert store.enroll_onchain_held_account_targets() == 5
+    target = next(
+        item for item in store.onchain_held_account_targets()
+        if item["account_kind"] == "token_mint"
+    )
+    outcome = store.record_onchain_held_account_update({
+        **target,
+        "slot": 1,
+        "data_hash": "fresh-v1",
+        "decoded": {
+            "status": "verified", "mint_authority": None,
+            "freeze_authority": None,
+        },
+        "observed_at": parse_time(target["registered_at"]) + timedelta(seconds=1),
+    })
+    assert outcome is not None
+    assert outcome["risk_state"] == "HEALTHY"
+    store.close()
+
+
+def test_chain_meme_trader_jupiter_stage_accepts_real_sell_route_on_another_pool(
+    tmp_path: Path,
+):
+    store, _, cohort_id, _ = _forward_chain_meme_trader_fixture(
+        tmp_path, "chain-meme-cross-pool.sqlite3",
+        sell_surface_relation="excludes_surface",
+    )
+    decision = store.db.execute(
+        "SELECT status,reason FROM chain_meme_trader_entry_decisions "
+        "WHERE shadow_cohort_id=? AND arm_id='stage_02_jupiter_v1'",
+        (cohort_id,),
+    ).fetchone()
+    assert dict(decision) == {"status": "admitted", "reason": "two_way_route_pass"}
+
+
+def test_chain_meme_trader_is_forward_fair_and_zero_extra_fee(tmp_path: Path):
+    store, token, cohort_id, now = _forward_chain_meme_trader_fixture(
+        tmp_path, "chain-meme-forward.sqlite3"
+    )
+    positions = store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE shadow_cohort_id=?",
+        (cohort_id,),
+    ).fetchall()
+    assert len(positions) == 12
+    assert {float(row["stake_usd"]) for row in positions} == {20.0}
+    buys = store.db.execute(
+        "SELECT * FROM chain_meme_trader_trades WHERE side='BUY'"
+    ).fetchall()
+    assert len(buys) == 12
+    assert {float(row["net_cash_flow_usd"]) for row in buys} == {-20.0}
+
+    mark_at = utcnow()
+    with store.db:
+        store.db.execute(
+            "UPDATE chain_meme_trader_positions SET opened_at=? WHERE shadow_cohort_id=?",
+            (iso(mark_at - timedelta(minutes=16)), cohort_id),
+        )
+    snapshot_id = store.add_snapshot(TokenSnapshot(
+        "solana", token.address, 0.50, 20_000, 50_000, 1_000, 20, 10,
+        observed_at=mark_at, ingested_at=mark_at, provider="dexscreener",
+    ))
+    assert store.record_chain_meme_trader_evaluation(
+        cohort_id, snapshot_id=snapshot_id, evaluated_at=mark_at + timedelta(seconds=1)
+    ) == 12
+    task = store.due_chain_meme_trader_execution(now=mark_at + timedelta(seconds=2))
+    assert task["side"] == "SELL"
+    assert len(task["intent_ids"]) == 12
+    assert task["slippage_bps"] == 400
+    attempt_id = store.start_chain_meme_trader_execution(
+        task, requested_at=mark_at + timedelta(seconds=2)
+    )
+    result_id = store.record_chain_meme_trader_execution_result(
+        attempt_id, status="quoted", output_amount_raw="26000000",
+        other_amount_threshold_raw="25000000", slippage_bps=400,
+        completed_at=mark_at + timedelta(seconds=3),
+    )
+    assert result_id is not None
+    assert store.settle_chain_meme_trader_execution_result(result_id) == 12
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_positions "
+        "WHERE shadow_cohort_id=? AND status='closed'", (cohort_id,),
+    ).fetchone()[0] == 12
+    sells = store.db.execute(
+        "SELECT * FROM chain_meme_trader_trades WHERE side='SELL'"
+    ).fetchall()
+    assert len(sells) == 12
+    assert {float(row["net_cash_flow_usd"]) for row in sells} == {25.0}
+    assert {float(row["realized_pnl_usd"]) for row in sells} == {5.0}
+    store.record_chain_meme_trader_account_snapshots(
+        now=mark_at + timedelta(seconds=3)
+    )
+    summary = Store.chain_meme_trader_summary_from_connection(store.db)
+    assert len(summary["strategies"]) == 12
+    assert all(
+        item["account"]["executable_total_pnl_usd"] == pytest.approx(5.0)
+        for item in summary["strategies"]
+    )
+    store.close()
+
+
+def test_chain_meme_trader_no_route_is_unknown_not_zero_pnl(tmp_path: Path):
+    store, _, _, _ = _forward_chain_meme_trader_fixture(
+        tmp_path, "chain-meme-no-route-valuation.sqlite3"
+    )
+    task = store.due_chain_meme_trader_quote(now=utcnow())
+    assert task is not None and task["quote_kind"] == "valuation"
+    attempt_id = store.start_chain_meme_trader_quote(task, requested_at=utcnow())
+    assert attempt_id is not None
+    result_id = store.record_chain_meme_trader_quote_result(
+        attempt_id, status="no_route", completed_at=utcnow()
+    )
+    assert result_id is not None
+    assert store.db.execute(
+        "SELECT gross_usdc FROM chain_meme_trader_quote_results WHERE id=?",
+        (result_id,),
+    ).fetchone()["gross_usdc"] is None
+
+    summary = Store.chain_meme_trader_summary_from_connection(store.db)
+    assert all(item["account"]["executable_total_pnl_usd"] is None for item in summary["strategies"])
+    assert all(item["account"]["unpriced_position_count"] == 1 for item in summary["strategies"])
+    assert all(item["account"]["priced_total_pnl_subtotal_usd"] is None for item in summary["strategies"])
+    assert all(item["account"]["priced_executable_recovery_usd"] is None for item in summary["strategies"])
+    assert all(item["positions"][0]["valuation_status"] == "unknown_no_route" for item in summary["strategies"])
+    assert all(item["positions"][0]["executable_value_usd"] is None for item in summary["strategies"])
+    assert all(item["positions"][0]["executable_unrealized_pnl_usd"] is None for item in summary["strategies"])
+    store.close()
+
+
+def test_chain_meme_trader_confirmed_pool_removal_no_route_is_full_writeoff(
+    tmp_path: Path,
+):
+    store, token, cohort_id, now = _forward_chain_meme_trader_fixture(
+        tmp_path, "chain-meme-rug.sqlite3"
+    )
+    with store.db:
+        store.db.execute(
+            "INSERT INTO onchain_held_account_risk_events("
+            "monitor_version,target_id,position_definition_version,shadow_cohort_id,"
+            "token_id,pool_address,slot,data_hash,account_kind,event_type,risk_state,"
+            "risk_reason,previous_decoded_json,decoded_json,observed_at,recorded_at) "
+            "VALUES('superseded-monitor',?,?,?,?,?,?,?,?,?, 'ALERT',?,?,?,?,?)",
+            (
+                99, Store.CHAIN_MEME_TRADER_VERSION, cohort_id, token.token_id,
+                "old-pool", 100, "old", "base_vault", "account_change",
+                "joint_vaults_depleted_90pct_baseline", "{}", "{}", iso(now), iso(now),
+            ),
+        )
+    assert store.sync_chain_meme_trader_rug_alerts() == 0
+    with store.db:
+        store.db.execute(
+            "INSERT INTO onchain_held_account_risk_events("
+            "monitor_version,target_id,position_definition_version,shadow_cohort_id,"
+            "token_id,pool_address,slot,data_hash,account_kind,event_type,risk_state,"
+            "risk_reason,previous_decoded_json,decoded_json,observed_at,recorded_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?, 'ALERT',?,?,?,?,?)",
+            (
+                Store.ONCHAIN_HELD_ACCOUNT_MONITOR_VERSION, 1,
+                Store.CHAIN_MEME_TRADER_VERSION, cohort_id, token.token_id,
+                "exact-pool", 101, "removed", "base_vault", "account_change",
+                    "joint_vaults_depleted_90pct_baseline", "{}", "{}", iso(now), iso(now),
+            ),
+        )
+    assert store.sync_chain_meme_trader_rug_alerts() == 12
+    task = store.due_chain_meme_trader_execution(now=now + timedelta(seconds=1))
+    assert task["side"] == "SELL"
+    assert len(task["intent_ids"]) == 12
+    attempt_id = store.start_chain_meme_trader_execution(
+        task, requested_at=now + timedelta(seconds=1)
+    )
+    result_id = store.record_chain_meme_trader_execution_result(
+        attempt_id, status="no_route", completed_at=now + timedelta(seconds=2)
+    )
+    assert store.settle_chain_meme_trader_execution_result(result_id) == 12
+    rows = store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE shadow_cohort_id=?",
+        (cohort_id,),
+    ).fetchall()
+    assert {row["status"] for row in rows} == {"written_off"}
+    assert {float(row["realized_pnl_usd"]) for row in rows} == {-20.0}
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_trades WHERE side='WRITEOFF'"
+    ).fetchone()[0] == 12
+    store.record_chain_meme_trader_account_snapshots(
+        now=now + timedelta(seconds=2)
+    )
+    accounts = Store.chain_meme_trader_summary_from_connection(store.db)["strategies"]
+    assert all(
+        item["account"]["executable_equity_usd"] == pytest.approx(980.0)
+        for item in accounts
+    )
+    store.close()
+
+
+def test_chain_meme_trader_fixed_stage_no_route_without_rug_is_unknown(tmp_path: Path):
+    store, token, cohort_id, _ = _forward_chain_meme_trader_fixture(
+        tmp_path, "chain-meme-fixed-no-route.sqlite3"
+    )
+    with store.db:
+        store.db.execute(
+            "UPDATE chain_meme_trader_positions SET status='ineligible' "
+            "WHERE shadow_cohort_id=? AND arm_id NOT IN "
+            "('stage_01_shadow_v1','stage_03_fixed_paper_v1')",
+            (cohort_id,),
+        )
+    def no_route_at(minutes: int) -> None:
+        when = utcnow()
+        with store.db:
+            store.db.execute(
+                "UPDATE chain_meme_trader_positions SET opened_at=? "
+                "WHERE shadow_cohort_id=? AND status='open'",
+                (iso(when - timedelta(minutes=minutes + 1)), cohort_id),
+            )
+        snapshot_id = store.add_snapshot(TokenSnapshot(
+            "solana", token.address, 1.0, 20_000, 10_000, 1_000, 10, 5,
+            observed_at=when, ingested_at=when, provider="dexscreener",
+        ))
+        store.record_chain_meme_trader_evaluation(
+            cohort_id, snapshot_id=snapshot_id, evaluated_at=utcnow(),
+        )
+        task = store.due_chain_meme_trader_execution(now=utcnow())
+        attempt_id = store.start_chain_meme_trader_execution(
+            task, requested_at=utcnow(),
+        )
+        result_id = store.record_chain_meme_trader_execution_result(
+            attempt_id, status="no_route", completed_at=utcnow(),
+        )
+        store.settle_chain_meme_trader_execution_result(result_id)
+
+    no_route_at(15)
+    stage1 = store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE arm_id='stage_01_shadow_v1'"
+    ).fetchone()
+    stage3 = store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE arm_id='stage_03_fixed_paper_v1'"
+    ).fetchone()
+    assert stage1["status"] == "open"
+    assert stage3["status"] == "open"
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_trades WHERE shadow_cohort_id=? "
+        "AND side='WRITEOFF'", (cohort_id,),
+    ).fetchone()[0] == 0
+    store.close()
+
+
+def test_chain_meme_trader_dynamic_stage_partial_exit_uses_remaining_amount(tmp_path: Path):
+    store, token, cohort_id, _ = _forward_chain_meme_trader_fixture(
+        tmp_path, "chain-meme-partial.sqlite3"
+    )
+    with store.db:
+        store.db.execute(
+            "UPDATE chain_meme_trader_positions SET status='ineligible' "
+            "WHERE shadow_cohort_id=? AND arm_id<>'stage_04_dynamic_v1'",
+            (cohort_id,),
+        )
+        store.db.execute(
+            "UPDATE chain_meme_trader_positions SET opened_at=? "
+            "WHERE shadow_cohort_id=? AND status='open'",
+            (iso(utcnow() - timedelta(minutes=10)), cohort_id),
+        )
+    position = store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE arm_id='stage_04_dynamic_v1'"
+    ).fetchone()
+    when = utcnow()
+    snapshot_id = store.add_snapshot(TokenSnapshot(
+        "solana", token.address, 2.0, 20_000, 100_000, 10_000, 20, 10,
+        observed_at=when, ingested_at=when, provider="dexscreener",
+    ))
+    assert store.record_chain_meme_trader_evaluation(
+        cohort_id, snapshot_id=snapshot_id, evaluated_at=utcnow(),
+    ) == 1
+    task = store.due_chain_meme_trader_execution(now=utcnow())
+    assert int(task["input_amount_raw"]) == 180_000_000
+    attempt_id = store.start_chain_meme_trader_execution(
+        task, requested_at=utcnow(),
+    )
+    result_id = store.record_chain_meme_trader_execution_result(
+        attempt_id, status="quoted", output_amount_raw="8500000",
+        other_amount_threshold_raw="8000000", slippage_bps=400,
+        completed_at=utcnow(),
+    )
+    store.settle_chain_meme_trader_execution_result(result_id)
+    position = store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE arm_id='stage_04_dynamic_v1'"
+    ).fetchone()
+    assert position["status"] == "open"
+    assert int(position["amount_raw"]) == 720_000_000
+    assert int(position["next_tp_index"]) == 1
+    assert float(position["realized_proceeds_usd"]) == pytest.approx(8.0)
+    assert float(position["allocated_cost_usd"]) == pytest.approx(4.0)
+    assert float(position["realized_pnl_usd"]) == pytest.approx(4.0)
+    store.close()
+
+
+def test_solana_held_account_collector_decodes_exact_vault_identity():
+    mint = Pubkey.new_unique()
+    pool = Pubkey.new_unique()
+    raw = bytearray(165)
+    raw[0:32] = bytes(mint)
+    raw[32:64] = bytes(pool)
+    raw[64:72] = (123456).to_bytes(8, "little")
+    value = {
+        "owner": SafetyChecker.SPL_TOKEN_PROGRAM,
+        "lamports": 2_039_280,
+        "data": [base64.b64encode(bytes(raw)).decode(), "base64"],
+    }
+    target = {
+        "account_kind": "base_vault", "expected_mint": str(mint),
+        "pool_address": str(pool),
+        "expected_program_owner": SafetyChecker.SPL_TOKEN_PROGRAM,
+    }
+    decoded = SolanaHeldAccountCollector.decode_account(target, value)
+    assert decoded["status"] == "verified"
+    assert decoded["amount_raw"] == 123456
+    rejected = SolanaHeldAccountCollector.decode_account(
+        {**target, "pool_address": str(Pubkey.new_unique())}, value
+    )
+    assert rejected["status"] == "rejected"
+    assert rejected["reason"] == "vault_authority_mismatch"
+
+
+def test_solana_held_account_initial_snapshot_batches_over_rpc_limit():
+    async def scenario():
+        collector = SolanaHeldAccountCollector("https://rpc.example")
+        await collector.http.aclose()
+        raw = bytearray(82)
+        raw[36:44] = (1_000_000).to_bytes(8, "little")
+        raw[44] = 6
+        raw[45] = 1
+        encoded = base64.b64encode(bytes(raw)).decode()
+
+        class Response:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return self.payload
+
+        class Http:
+            def __init__(self):
+                self.batch_sizes = []
+
+            async def post(self, _url, *, json):
+                pubkeys = list(json["params"][0])
+                self.batch_sizes.append(len(pubkeys))
+                return Response({
+                    "result": {
+                        "context": {"slot": 100 + len(self.batch_sizes)},
+                        "value": [{
+                            "owner": SafetyChecker.SPL_TOKEN_PROGRAM,
+                            "lamports": 1,
+                            "data": [encoded, "base64"],
+                        } for _ in pubkeys],
+                    },
+                })
+
+        collector.http = Http()
+        targets = [{
+            "id": index + 1,
+            "pubkey": str(Pubkey.new_unique()),
+            "account_kind": "token_mint",
+            "expected_program_owner": SafetyChecker.SPL_TOKEN_PROGRAM,
+        } for index in range(105)]
+        updates = await collector._initial_updates(targets)
+        assert collector.http.batch_sizes == [100, 5]
+        assert len(updates) == 105
+        assert updates[0]["slot"] == 101
+        assert updates[-1]["slot"] == 102
+        assert all(item["decoded"]["status"] == "verified" for item in updates)
+
+    asyncio.run(scenario())
+
+
+def test_pumpswap_current_pool_decoder_preserves_virtual_reserve_and_padding_semantics():
+    keys = [Pubkey.new_unique() for _ in range(7)]
+    raw = bytearray(301)
+    raw[:8] = bytes((241, 154, 109, 4, 17, 177, 109, 188))
+    raw[9:11] = (7).to_bytes(2, "little")
+    for offset, key in zip((11, 43, 75, 107, 139, 171, 211), keys):
+        raw[offset:offset + 32] = bytes(key)
+    raw[203:211] = (123456).to_bytes(8, "little")
+    raw[243] = 0
+    raw[244] = 1
+    raw[245:261] = (-1).to_bytes(16, "little", signed=True)
+
+    decoded = decode_pumpswap_pool_account(bytes(raw))
+    assert decoded["decoder_version"] == PUMPSWAP_POOL_DECODER_V2
+    assert decoded["account_data_length"] == 301
+    assert decoded["idl_defined_size"] == 261
+    assert decoded["sdk_extend_threshold"] == 300
+    assert decoded["allocation_padding_length"] == 40
+    assert decoded["coin_creator"] == str(keys[6])
+    assert decoded["is_cashback_coin"] is True
+    assert decoded["virtual_quote_reserves_raw"] == -1
+    assert decoded["needs_sdk_extend"] is False
+
+    legacy = decode_pumpswap_pool_account(bytes(raw[:211]))
+    assert legacy["coin_creator"] == str(Pubkey.default())
+    assert legacy["is_mayhem_mode"] is False
+    assert legacy["is_cashback_coin"] is False
+    assert legacy["virtual_quote_reserves_raw"] == 0
+    assert legacy["needs_sdk_extend"] is True
+
+    value = {
+        "owner": SafetyChecker.PUMPSWAP_PROGRAM,
+        "lamports": 1,
+        "data": [base64.b64encode(bytes(raw)).decode(), "base64"],
+    }
+    target = {
+        "account_kind": "pool",
+        "decoder_version": PUMPSWAP_POOL_DECODER_V2,
+        "expected_program_owner": SafetyChecker.PUMPSWAP_PROGRAM,
+        "base_mint": str(keys[1]), "quote_mint": str(keys[2]),
+        "lp_mint": str(keys[3]), "base_vault": str(keys[4]),
+        "quote_vault": str(keys[5]),
+    }
+    assert SolanaHeldAccountCollector.decode_account(target, value)["status"] == "verified"
+    assert SolanaHeldAccountCollector.decode_account(
+        {key: val for key, val in target.items() if key != "decoder_version"}, value
+    )["reason"] == "pumpswap_pool_decoder_version_missing"
+
+    invalid = bytearray(raw)
+    invalid[243] = 2
+    with pytest.raises(ValueError, match="invalid_pumpswap_pool_bool"):
+        decode_pumpswap_pool_account(bytes(invalid))
+
+
+def test_pumpswap_sdk_119_global_and_fee_config_decoders_preserve_idl_layout():
+    keys = [Pubkey.new_unique() for _ in range(28)]
+    global_raw = bytearray(945)
+    global_raw[:8] = bytes((149, 8, 156, 202, 160, 252, 176, 217))
+    global_raw[8:40] = bytes(keys[0])
+    global_raw[40:48] = (20).to_bytes(8, "little")
+    global_raw[48:56] = (5).to_bytes(8, "little")
+    global_raw[56] = 16
+    for index in range(8):
+        global_raw[57 + 32 * index:89 + 32 * index] = bytes(keys[1 + index])
+    global_raw[313:321] = (95).to_bytes(8, "little")
+    global_raw[321:353] = bytes(keys[9])
+    global_raw[353:385] = bytes(keys[10])
+    global_raw[385:417] = bytes(keys[11])
+    global_raw[417] = 1
+    for index in range(7):
+        global_raw[418 + 32 * index:450 + 32 * index] = bytes(keys[12 + index])
+    global_raw[642] = 1
+    for index in range(8):
+        global_raw[643 + 32 * index:675 + 32 * index] = bytes(keys[19 + index])
+    global_raw[899:907] = (5000).to_bytes(8, "little")
+    global_raw[907:939] = bytes(keys[27])
+    global_raw[939] = 1
+    decoded_global = decode_pumpswap_global_config_account(bytes(global_raw))
+    assert decoded_global["decoder_version"] == PUMPSWAP_GLOBAL_CONFIG_DECODER_V1
+    assert decoded_global["borsh_used_size"] == 940
+    assert decoded_global["allocation_padding_length"] == 5
+    assert decoded_global["admin"] == str(keys[0])
+    assert decoded_global["protocol_fee_recipients"] == [str(key) for key in keys[1:9]]
+    assert decoded_global["coin_creator_fee_basis_points"] == 95
+    assert decoded_global["reserved_fee_recipients"] == [str(key) for key in keys[12:19]]
+    assert decoded_global["buyback_fee_recipients"] == [str(key) for key in keys[19:27]]
+    assert decoded_global["is_cashback_enabled"] is True
+    assert decoded_global["boost_enabled"] is True
+
+    fee_raw = bytearray(300)
+    fee_raw[:8] = bytes((143, 52, 146, 187, 219, 123, 76, 155))
+    fee_raw[8] = 255
+    fee_raw[9:41] = bytes(keys[0])
+    for offset, value in zip((41, 49, 57), (25, 5, 0)):
+        fee_raw[offset:offset + 8] = value.to_bytes(8, "little")
+    fee_raw[65:69] = (2).to_bytes(4, "little")
+
+    def put_tier(offset: int, threshold: int, fee_values: tuple[int, int, int]) -> None:
+        fee_raw[offset:offset + 16] = threshold.to_bytes(16, "little")
+        for fee_offset, value in zip((offset + 16, offset + 24, offset + 32), fee_values):
+            fee_raw[fee_offset:fee_offset + 8] = value.to_bytes(8, "little")
+
+    put_tier(69, 0, (2, 93, 30))
+    put_tier(109, 420_000_000_000, (20, 5, 95))
+    fee_raw[149:153] = (1).to_bytes(4, "little")
+    put_tier(153, 59_000_000_000, (7, 8, 9))
+    decoded_fee = decode_pumpswap_fee_config_account(bytes(fee_raw))
+    assert decoded_fee["decoder_version"] == PUMPSWAP_FEE_CONFIG_DECODER_V1
+    assert decoded_fee["bump"] == 255
+    assert decoded_fee["flat_fees"] == {
+        "lp_fee_bps": 25, "protocol_fee_bps": 5, "creator_fee_bps": 0,
+    }
+    assert decoded_fee["fee_tiers"][1] == {
+        "market_cap_lamports_threshold": 420_000_000_000,
+        "fees": {"lp_fee_bps": 20, "protocol_fee_bps": 5, "creator_fee_bps": 95},
+    }
+    assert decoded_fee["stable_fee_tiers"][0]["fees"] == {
+        "lp_fee_bps": 7, "protocol_fee_bps": 8, "creator_fee_bps": 9,
+    }
+    assert decoded_fee["borsh_used_size"] == 193
+    assert decoded_fee["allocation_padding_length"] == 107
+
+
+def test_pumpswap_sell_base_input_matches_official_sdk_119_vector_and_rounding():
+    base_mint = Pubkey.new_unique()
+    creator = Pubkey.find_program_address(
+        [b"pool-authority", bytes(base_mint)],
+        Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"),
+    )[0]
+    global_config = {
+        "lp_fee_basis_points": 20,
+        "protocol_fee_basis_points": 5,
+        "coin_creator_fee_basis_points": 5,
+    }
+    fee_config = {
+        "flat_fees": {"lp_fee_bps": 25, "protocol_fee_bps": 5, "creator_fee_bps": 0},
+        "fee_tiers": [
+            {
+                "market_cap_lamports_threshold": 0,
+                "fees": {"lp_fee_bps": 2, "protocol_fee_bps": 93, "creator_fee_bps": 30},
+            },
+            {
+                "market_cap_lamports_threshold": 420_000_000_000,
+                "fees": {"lp_fee_bps": 20, "protocol_fee_bps": 5, "creator_fee_bps": 95},
+            },
+        ],
+        "stable_fee_tiers": [],
+    }
+    inputs = {
+        "base_amount_raw": 123_456_789,
+        "slippage_bps": 400,
+        "base_reserve_raw": 700_000_000_000_000,
+        "quote_reserve_raw": 85_000_000_000,
+        "virtual_quote_reserves_raw": 25_000_000_000,
+        "base_mint_supply_raw": 1_000_000_000_000_000,
+        "base_mint": str(base_mint),
+        "creator": str(creator),
+        "coin_creator": str(Pubkey.new_unique()),
+        "global_config": global_config,
+        "fee_config": fee_config,
+    }
+    quote = pumpswap_sell_base_input_v1(**inputs)
+    assert quote["calculation_version"] == PUMPSWAP_SELL_BASE_INPUT_V1
+    assert quote["internal_quote_amount_out_raw"] == 19_400
+    assert quote["market_cap_lamports"] == 157_142_857_142
+    assert (quote["lp_fee_raw"], quote["protocol_fee_raw"], quote["creator_fee_raw"]) == (4, 181, 59)
+    assert quote["real_reserve_coverage_raw"] == 19_396
+    assert quote["ui_quote_raw"] == 19_156
+    assert quote["min_quote_raw"] == 18_389
+
+    without_creator_fee = pumpswap_sell_base_input_v1(
+        **{**inputs, "coin_creator": str(Pubkey.default())}
+    )
+    assert without_creator_fee["creator_fee_bps"] == 30
+    assert without_creator_fee["creator_fee_raw"] == 0
+    assert without_creator_fee["ui_quote_raw"] == 19_215
+    assert without_creator_fee["min_quote_raw"] == 18_446
+
+
+def test_pumpswap_sell_base_input_fee_selection_and_real_reserve_coverage():
+    base_mint = Pubkey.new_unique()
+    canonical_creator = Pubkey.find_program_address(
+        [b"pool-authority", bytes(base_mint)],
+        Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"),
+    )[0]
+    global_config = {
+        "lp_fee_basis_points": 30,
+        "protocol_fee_basis_points": 20,
+        "coin_creator_fee_basis_points": 10,
+    }
+    fee_config = {
+        "flat_fees": {"lp_fee_bps": 25, "protocol_fee_bps": 5, "creator_fee_bps": 0},
+        "fee_tiers": [
+            {
+                "market_cap_lamports_threshold": 0,
+                "fees": {"lp_fee_bps": 100, "protocol_fee_bps": 200, "creator_fee_bps": 300},
+            },
+            {
+                "market_cap_lamports_threshold": 420,
+                "fees": {"lp_fee_bps": 400, "protocol_fee_bps": 500, "creator_fee_bps": 600},
+            },
+        ],
+    }
+    common = {
+        "base_amount_raw": 10,
+        "slippage_bps": 400,
+        "base_reserve_raw": 100,
+        "virtual_quote_reserves_raw": 0,
+        "base_mint_supply_raw": 100,
+        "base_mint": str(base_mint),
+        "creator": str(canonical_creator),
+        "coin_creator": str(Pubkey.new_unique()),
+        "global_config": global_config,
+        "fee_config": fee_config,
+    }
+    below = pumpswap_sell_base_input_v1(**{**common, "quote_reserve_raw": 419})
+    at = pumpswap_sell_base_input_v1(**{**common, "quote_reserve_raw": 420})
+    assert (below["market_cap_lamports"], below["fee_tier_index"], below["lp_fee_bps"]) == (419, 0, 100)
+    assert (at["market_cap_lamports"], at["fee_tier_index"], at["lp_fee_bps"]) == (420, 1, 400)
+
+    flat = pumpswap_sell_base_input_v1(
+        **{**common, "quote_reserve_raw": 420, "creator": str(Pubkey.new_unique())}
+    )
+    assert flat["fee_source"] == "fee_config_flat"
+    assert flat["lp_fee_bps"] == 25
+    fallback = pumpswap_sell_base_input_v1(
+        **{**common, "quote_reserve_raw": 420, "fee_config": None}
+    )
+    assert fallback["fee_source"] == "global_config"
+    assert (fallback["lp_fee_bps"], fallback["protocol_fee_bps"], fallback["creator_fee_bps"]) == (30, 20, 10)
+
+    zero_fees = {
+        "lp_fee_basis_points": 0,
+        "protocol_fee_basis_points": 0,
+        "coin_creator_fee_basis_points": 0,
+    }
+    coverage = {
+        "base_amount_raw": 1,
+        "slippage_bps": 400,
+        "base_reserve_raw": 1,
+        "base_mint_supply_raw": 1,
+        "base_mint": str(base_mint),
+        "creator": str(Pubkey.new_unique()),
+        "coin_creator": str(Pubkey.default()),
+        "global_config": zero_fees,
+        "fee_config": None,
+    }
+    exact = pumpswap_sell_base_input_v1(
+        **{**coverage, "quote_reserve_raw": 50, "virtual_quote_reserves_raw": 50}
+    )
+    assert exact["real_reserve_coverage_raw"] == 50
+    assert exact["ui_quote_raw"] == 50
+    assert exact["min_quote_raw"] == 48
+    with pytest.raises(ValueError, match="insufficient_real_quote_reserves"):
+        pumpswap_sell_base_input_v1(
+            **{**coverage, "quote_reserve_raw": 49, "virtual_quote_reserves_raw": 51}
+        )
+
+
+def test_pumpswap_local_surface_quote_uses_one_coherent_account_context():
+    async def scenario():
+        base_mint = Pubkey.new_unique()
+        quote_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")
+        creator = Pubkey.find_program_address(
+            [b"pool-authority", bytes(base_mint)],
+            Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"),
+        )[0]
+        pool = Pubkey.new_unique()
+        lp_mint = Pubkey.new_unique()
+        base_vault = Pubkey.new_unique()
+        quote_vault = Pubkey.new_unique()
+
+        pool_raw = bytearray(301)
+        pool_raw[:8] = bytes((241, 154, 109, 4, 17, 177, 109, 188))
+        for start, value in (
+            (11, creator), (43, base_mint), (75, quote_mint), (107, lp_mint),
+            (139, base_vault), (171, quote_vault), (211, Pubkey.default()),
+        ):
+            pool_raw[start:start + 32] = bytes(value)
+
+        def token_account(mint: Pubkey, amount: int) -> bytes:
+            raw = bytearray(165)
+            raw[:32] = bytes(mint)
+            raw[32:64] = bytes(pool)
+            raw[64:72] = amount.to_bytes(8, "little")
+            return bytes(raw)
+
+        mint_raw = bytearray(82)
+        mint_raw[36:44] = (1_000_000_000_000_000).to_bytes(8, "little")
+        mint_raw[44] = 6
+        mint_raw[45] = 1
+        global_raw = bytearray(940)
+        global_raw[:8] = bytes((149, 8, 156, 202, 160, 252, 176, 217))
+        global_raw[40:48] = (20).to_bytes(8, "little")
+        global_raw[48:56] = (5).to_bytes(8, "little")
+        global_raw[313:321] = (5).to_bytes(8, "little")
+        fee_raw = bytearray(113)
+        fee_raw[:8] = bytes((143, 52, 146, 187, 219, 123, 76, 155))
+        fee_raw[65:69] = (1).to_bytes(4, "little")
+        for start, value in ((85, 20), (93, 5), (101, 5)):
+            fee_raw[start:start + 8] = value.to_bytes(8, "little")
+
+        def value(raw: bytes, owner: str) -> dict:
+            return {
+                "owner": owner, "lamports": 1,
+                "data": [base64.b64encode(raw).decode(), "base64"],
+            }
+
+        account_values = {
+            str(pool): value(bytes(pool_raw), PUMP_AMM_PROGRAM_ID),
+            str(base_vault): value(
+                token_account(base_mint, 700_000_000_000_000),
+                SafetyChecker.SPL_TOKEN_PROGRAM,
+            ),
+            str(quote_vault): value(
+                token_account(quote_mint, 85_000_000_000),
+                SafetyChecker.SPL_TOKEN_PROGRAM,
+            ),
+            str(base_mint): value(bytes(mint_raw), SafetyChecker.SPL_TOKEN_PROGRAM),
+            str(quote_mint): value(bytes(mint_raw), SafetyChecker.SPL_TOKEN_PROGRAM),
+            PUMPSWAP_GLOBAL_CONFIG_PDA: value(bytes(global_raw), PUMP_AMM_PROGRAM_ID),
+            PUMPSWAP_FEE_CONFIG_PDA: value(bytes(fee_raw), PUMP_FEE_PROGRAM_ID),
+        }
+
+        class Response:
+            def __init__(self, payload): self.payload = payload
+            def raise_for_status(self): return None
+            def json(self): return self.payload
+
+        class Http:
+            async def post(self, _url, *, json):
+                keys = list(json["params"][0])
+                return Response({
+                    "result": {
+                        "context": {"slot": 777},
+                        "value": [account_values[key] for key in keys],
+                    }
+                })
+
+        collector = SolanaHeldAccountCollector("https://rpc.example")
+        await collector.http.aclose()
+        collector.http = Http()
+        quotes = await collector.local_surface_quotes([{
+            "definition_version": Store.CHAIN_MEME_TRADER_VERSION,
+            "shadow_cohort_id": 1, "token_id": f"solana:{base_mint}",
+            "pool_address": str(pool), "base_mint": str(base_mint),
+            "quote_mint": str(quote_mint), "base_vault": str(base_vault),
+            "quote_vault": str(quote_vault),
+            "base_token_program": SafetyChecker.SPL_TOKEN_PROGRAM,
+            "quote_token_program": SafetyChecker.SPL_TOKEN_PROGRAM,
+            "remaining_amount_raw": "123456789",
+        }])
+        assert len(quotes) == 1
+        assert quotes[0]["context_slot"] == 777
+        assert quotes[0]["status"] == "LOCAL_SURFACE_CURRENT"
+        assert quotes[0]["min_quote_raw"] > 0
+        assert len(quotes[0]["source_hashes"]) == 7
+        routed = await collector.pumpswap_route_surface_quotes([{
+            "definition_version": Store.CHAIN_MEME_TRADER_V6_VERSION,
+            "shadow_cohort_id": 2, "token_id": f"solana:{base_mint}",
+            "pool_address": str(pool), "base_mint": str(base_mint),
+            "remaining_amount_raw": "123456789",
+            "surface_type": "pumpswap_route_pool",
+            "source_result_kind": "quote_result", "source_result_id": 77,
+            "route_leg_index": 0, "router_label": "Pump.fun Amm",
+        }])
+        assert routed[0]["status"] == "LOCAL_SURFACE_CURRENT"
+        assert routed[0]["pool_address"] == str(pool)
+        assert routed[0]["quote_mint"] == str(quote_mint)
+        assert routed[0]["source_result_id"] == 77
+
+    asyncio.run(scenario())
+
+
+def test_publicnode_local_surface_reads_respect_ten_account_limit():
+    async def scenario():
+        calls = []
+
+        class Response:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return self.payload
+
+        class Http:
+            async def post(self, _url, *, json):
+                keys = list(json["params"][0])
+                calls.append(keys)
+                return Response({
+                    "result": {
+                        "context": {"slot": 777},
+                        "value": [None for _ in keys],
+                    }
+                })
+
+        collector = SolanaHeldAccountCollector(
+            "https://solana-rpc.publicnode.com"
+        )
+        await collector.http.aclose()
+        collector.http = Http()
+        surfaces = []
+        for cohort_id in range(17):
+            mint = Pubkey.new_unique()
+            curve = Pubkey.find_program_address(
+                [b"bonding-curve", bytes(mint)],
+                Pubkey.from_string(PUMP_PROGRAM_ID),
+            )[0]
+            surfaces.append({
+                "definition_version": Store.CHAIN_MEME_TRADER_V6_VERSION,
+                "shadow_cohort_id": cohort_id,
+                "token_id": f"solana:{mint}",
+                "base_mint": str(mint),
+                "curve_address": str(curve),
+                "remaining_amount_raw": "1",
+            })
+        quotes = await collector.bonding_curve_quotes(surfaces)
+        assert len(quotes) == len(surfaces)
+        assert [len(keys) for keys in calls] == [10, 10, 3]
+        assert all(len(keys) <= 10 for keys in calls)
+
+    asyncio.run(scenario())
+
+
+def _insert_v10_observer_entry_fill(store: Store, *, address: str, filled_at) -> tuple[int, int]:
+    version = Store.CHAIN_MEME_TRADER_V6_VERSION
+    stamp = iso(filled_at)
+    with store.db:
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_v6_cohorts("
+            "definition_version,token_id,entry_family,source_snapshot_id,pair_address,"
+            "decided_at,episode_no,feature_json) VALUES(?,?,?,?,?,?,1,'{}')",
+            (version, f"solana:{address}", "broad_launch", 10_000 + sum(map(ord, address)),
+             f"pool-{address}", stamp),
+        )
+        cohort_id = int(store.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_execution_attempts("
+            "attempt_key,definition_version,execution_mode,adapter,side,shadow_cohort_id,"
+            "input_mint,output_mint,input_amount_raw,slippage_bps,intent_ids_json,requested_at) "
+            "VALUES(?,?, 'paper','fixture','BUY',?,?,?,?,400,'[]',?)",
+            (f"observer-buy-{cohort_id}", version, cohort_id, SOLANA_USDC_MINT,
+             address, "20000000", stamp),
+        )
+        execution_attempt_id = int(store.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_execution_results("
+            "definition_version,attempt_id,terminal_status,validity_status,output_amount_raw,"
+            "minimum_output_amount_raw,requested_at,completed_at,slippage_bps,route_plan_json,"
+            "error_type,recorded_at) VALUES(?,?, 'quoted','valid','1000000000',"
+            "'900000000',?,?,400,?,'',?)",
+            (version, execution_attempt_id, stamp, stamp, json.dumps([{
+                "label": "Pump.fun", "input_mint": SOLANA_USDC_MINT,
+                "output_mint": address,
+            }]), stamp),
+        )
+        execution_result_id = int(store.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_v6_entry_fills("
+            "definition_version,entry_cohort_id,execution_attempt_id,execution_result_id,"
+            "token_id,input_usdc_raw,output_token_raw,slippage_bps,filled_at) "
+            "VALUES(?,?,?,?,?,'20000000','900000000',400,?)",
+            (version, cohort_id, execution_attempt_id, execution_result_id,
+             f"solana:{address}", stamp),
+        )
+        fill_id = int(store.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+    return cohort_id, fill_id
+
+
+def test_immediate_reverseability_reuses_existing_quotes_and_freezes_recovery(tmp_path: Path):
+    store = Store(tmp_path / "reverseability.sqlite3", initial_cash_usd=1000)
+    store.register_chain_meme_trader_v6()
+    store.activate_chain_meme_trader_v6()
+    registration = store.register_chain_meme_trader_immediate_reverseability()
+    filled_at = parse_time(registration["registered_at"]) + timedelta(seconds=1)
+    address = "R" * 32
+    cohort_id, fill_id = _insert_v10_observer_entry_fill(
+        store, address=address, filled_at=filled_at,
+    )
+
+    first_task = {
+        "definition_version": Store.CHAIN_MEME_TRADER_V6_VERSION,
+        "quote_kind": "valuation", "shadow_cohort_id": cohort_id,
+        "input_mint": address, "output_mint": SOLANA_USDC_MINT,
+        "input_amount_raw": "900000000", "mark_ids": [], "slippage_bps": 400,
+    }
+    first_attempt = store.start_chain_meme_trader_quote(
+        first_task, requested_at=filled_at + timedelta(seconds=4),
+    )
+    store.record_chain_meme_trader_quote_result(
+        first_attempt, status="no_route", completed_at=filled_at + timedelta(seconds=5),
+    )
+    second_attempt = store.start_chain_meme_trader_quote(
+        first_task, requested_at=filled_at + timedelta(seconds=19),
+    )
+    quoted_result = store.record_chain_meme_trader_quote_result(
+        second_attempt, status="quoted", output_amount_raw="20000000",
+        other_amount_threshold_raw="19000000", slippage_bps=400,
+        route_plan=[{"label": "PumpSwap", "input_mint": address,
+                     "output_mint": SOLANA_USDC_MINT}],
+        completed_at=filled_at + timedelta(seconds=20),
+    )
+    quote_attempts_before = store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_quote_attempts"
+    ).fetchone()[0]
+    quote_results_before = store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_quote_results"
+    ).fetchone()[0]
+
+    assert store.finalize_chain_meme_trader_immediate_reverseability(
+        now=filled_at + timedelta(seconds=31)
+    ) == 2
+    outcomes = store.db.execute(
+        "SELECT * FROM chain_meme_trader_immediate_reverseability_outcomes "
+        "WHERE entry_fill_id=? ORDER BY horizon_seconds", (fill_id,),
+    ).fetchall()
+    assert [row["outcome_status"] for row in outcomes] == [
+        "REVERSE_NO_ROUTE", "TRANSIENT_ROUTE_GAP",
+    ]
+    assert outcomes[0]["minimum_recovery_ratio"] is None
+    assert outcomes[1]["first_quoted_result_id"] == quoted_result
+    assert outcomes[1]["central_recovery_ratio"] == pytest.approx(1.0)
+    assert outcomes[1]["minimum_recovery_ratio"] == pytest.approx(0.95)
+    assert store.finalize_chain_meme_trader_immediate_reverseability(
+        now=filled_at + timedelta(seconds=61)
+    ) == 1
+    assert store.finalize_chain_meme_trader_immediate_reverseability(
+        now=filled_at + timedelta(seconds=120)
+    ) == 0
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_quote_attempts"
+    ).fetchone()[0] == quote_attempts_before
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_quote_results"
+    ).fetchone()[0] == quote_results_before
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_trades"
+    ).fetchone()[0] == 0
+    store.close()
+
+
+def test_immediate_reverseability_frontier_and_missing_quote_remain_unknown(tmp_path: Path):
+    store = Store(tmp_path / "reverseability-frontier.sqlite3", initial_cash_usd=1000)
+    store.register_chain_meme_trader_v6()
+    store.activate_chain_meme_trader_v6()
+    now = utcnow()
+    _, historical_fill = _insert_v10_observer_entry_fill(
+        store, address="H" * 32, filled_at=now,
+    )
+    registration = store.register_chain_meme_trader_immediate_reverseability()
+    _, forward_fill = _insert_v10_observer_entry_fill(
+        store, address="F" * 32,
+        filled_at=parse_time(registration["registered_at"]) + timedelta(seconds=1),
+    )
+    assert store.finalize_chain_meme_trader_immediate_reverseability(
+        now=parse_time(registration["registered_at"]) + timedelta(seconds=70)
+    ) == 3
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_immediate_reverseability_outcomes "
+        "WHERE entry_fill_id=?", (historical_fill,),
+    ).fetchone()[0] == 0
+    rows = store.db.execute(
+        "SELECT * FROM chain_meme_trader_immediate_reverseability_outcomes "
+        "WHERE entry_fill_id=? ORDER BY horizon_seconds", (forward_fill,),
+    ).fetchall()
+    assert len(rows) == 3
+    assert {row["outcome_status"] for row in rows} == {"UNKNOWN_NO_SAMPLE"}
+    assert all(row["central_recovery_ratio"] is None for row in rows)
+    assert all(row["minimum_recovery_ratio"] is None for row in rows)
+    store.close()
+
+
+def test_pump_bonding_curve_sell_math_matches_frozen_sdk_integer_result():
+    quote = pump_bonding_curve_sell_quote_v1(
+        token_amount_raw=1_000_000_000,
+        slippage_bps=400,
+        bonding_curve={
+            "virtual_token_reserves_raw": 1_000_000_000_000,
+            "virtual_quote_reserves_raw": 1_000_000_000,
+            "real_quote_reserves_raw": 1_000_000_000,
+            "token_total_supply_raw": 1_000_000_000_000_000,
+            "complete": False,
+            "is_mayhem_mode": False,
+            "creator": str(Pubkey.new_unique()),
+        },
+        global_config={"fee_basis_points": 95, "creator_fee_basis_points": 30},
+        fee_config=None,
+    )
+    assert quote["internal_quote_amount_out_raw"] == 999_000
+    assert quote["protocol_fee_raw"] == 9_491
+    assert quote["creator_fee_raw"] == 2_997
+    assert quote["min_quote_raw"] == 947_051
+
+
+def test_chain_meme_market_mark_prices_open_position_without_liquidity(tmp_path: Path):
+    store = Store(tmp_path / "market-mark.sqlite3", initial_cash_usd=1000)
+    store.register_chain_meme_trader_v6()
+    store.activate_chain_meme_trader_v6()
+    address = str(Pubkey.new_unique())
+    token = TokenCandidate(
+        chain="solana", address=address, name="Market Mark", symbol="MARK",
+        source="dexscreener",
+    )
+    observed = utcnow()
+    store.upsert_token(token, seen_at=observed)
+    with store.db:
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_v6_cohorts("
+            "definition_version,token_id,entry_family,source_snapshot_id,pair_address,"
+            "decided_at,episode_no,feature_json) VALUES(?,?,?,?,?,?,?,?)",
+            (
+                Store.CHAIN_MEME_TRADER_V6_VERSION, token.token_id, "broad_launch",
+                1, "pair", iso(observed), 1, "{}",
+            ),
+        )
+        cohort_id = int(store.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_positions("
+            "definition_version,arm_id,shadow_cohort_id,token_id,source_buy_trade_id,"
+            "baseline_quote_result_id,entry_snapshot_id,entry_signal_price_usd,amount_raw,"
+            "initial_amount_raw,stake_usd,highest_signal_price_usd,status,opened_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,20,1,'open',?)",
+            (
+                Store.CHAIN_MEME_TRADER_V6_VERSION, "broad_launch__fast_escape",
+                cohort_id, token.token_id, 1, 1, 1, 1.0, "100", "100", iso(observed),
+            ),
+        )
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_trades("
+            "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+            "net_cash_flow_usd,reason,created_at) VALUES(?,?,?,?, 'BUY',20,-20,'fixture',?)",
+            (
+                Store.CHAIN_MEME_TRADER_V6_VERSION, "broad_launch__fast_escape",
+                cohort_id, token.token_id, iso(observed),
+            ),
+        )
+    store.upsert_chain_meme_trader_market_mark(
+        token,
+        TokenSnapshot(
+            chain="solana", address=address, price_usd=2.0, liquidity_usd=None,
+            market_cap_usd=100_000, volume_5m_usd=10_000, buys_5m=10, sells_5m=5,
+            observed_at=observed, provider="dexscreener",
+        ),
+        recorded_at=observed,
+    )
+    targets = store.chain_meme_trader_market_mark_targets()
+    assert [item["token_id"] for item in targets] == [token.token_id]
+    summary = Store.chain_meme_trader_summary_from_connection(store.db)
+    strategy = next(
+        item for item in summary["strategies"]
+        if item["arm_id"] == "broad_launch__fast_escape"
+    )
+    position = strategy["positions"][0]
+    assert position["indicative_liquidity_usd"] is None
+    assert position["indicative_source"] == "dex_price_mark_4pct_haircut"
+    assert position["indicative_sellability"] == "MARK_SELLABLE"
+    assert position["indicative_value_usd"] == pytest.approx(38.4)
+    assert strategy["account"]["indicative_total_pnl_usd"] == pytest.approx(18.4)
+    assert strategy["account"]["indicative_equity_usd"] == pytest.approx(1018.4)
+    store.close()
+
+
+def test_chain_meme_v12_uses_market_marks_and_one_shot_sell_fallback(tmp_path: Path):
+    store = Store(tmp_path / "market-mark-v12.sqlite3", initial_cash_usd=1000)
+    store.register_chain_meme_trader_v6()
+    store.activate_chain_meme_trader_v6()
+    store.register_chain_meme_trader_v12()
+    activation = store.activate_chain_meme_trader_v12()
+    version = Store.CHAIN_MEME_TRADER_V12_VERSION
+    assert activation["definition_version"] == version
+    assert store.due_chain_meme_trader_quote(definition_version=version) is None
+    active_summary = Store.chain_meme_trader_summary_from_connection(store.db)
+    assert active_summary["version"] == version
+    assert len(active_summary["strategies"]) == 12
+
+    observed = utcnow()
+    address = str(Pubkey.new_unique())
+    token = TokenCandidate(
+        chain="solana", address=address, name="Market exit", symbol="EXIT",
+        source="dexscreener",
+    )
+    store.upsert_token(token, seen_at=observed)
+    with store.db:
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_v6_cohorts("
+            "definition_version,token_id,entry_family,source_snapshot_id,pair_address,"
+            "decided_at,episode_no,feature_json) VALUES(?,?,?,?,?,?,?,?)",
+            (version, token.token_id, "broad_launch", 1, "pair", iso(observed), 1, "{}"),
+        )
+        cohort_id = int(store.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_positions("
+            "definition_version,arm_id,shadow_cohort_id,token_id,source_buy_trade_id,"
+            "baseline_quote_result_id,entry_snapshot_id,entry_signal_price_usd,amount_raw,"
+            "initial_amount_raw,stake_usd,highest_signal_price_usd,status,opened_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,20,1,'open',?)",
+            (
+                version, "broad_launch__fast_escape", cohort_id, token.token_id,
+                1, 1, 1, 1.0, "100", "100", iso(observed),
+            ),
+        )
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_trades("
+            "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+            "net_cash_flow_usd,reason,created_at) VALUES(?,?,?,?, 'BUY',20,-20,'fixture',?)",
+            (version, "broad_launch__fast_escape", cohort_id, token.token_id, iso(observed)),
+        )
+    mark_at = observed + timedelta(seconds=5)
+    store.upsert_chain_meme_trader_market_mark(
+        token,
+        TokenSnapshot(
+            chain="solana", address=address, price_usd=0.7, liquidity_usd=10_000,
+            market_cap_usd=100_000, volume_5m_usd=2_000, buys_5m=4, sells_5m=8,
+            observed_at=mark_at, provider="dexscreener",
+        ),
+        recorded_at=mark_at,
+    )
+    assert store.evaluate_chain_meme_trader_market_marks(
+        definition_version=version, now=mark_at,
+    ) == 1
+    task = store.due_chain_meme_trader_execution(
+        definition_version=version, now=mark_at,
+    )
+    assert task is not None and task["side"] == "SELL"
+    attempt_id = store.start_chain_meme_trader_execution(task, requested_at=mark_at)
+    result_id = store.record_chain_meme_trader_execution_result(
+        attempt_id, status="no_route", completed_at=mark_at + timedelta(seconds=1),
+    )
+    assert store.settle_chain_meme_trader_execution_result(result_id) == 1
+    position = store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE definition_version=?",
+        (version,),
+    ).fetchone()
+    assert position["status"] == "closed"
+    assert position["realized_pnl_usd"] == pytest.approx(-6.56)
+    fill = store.db.execute(
+        "SELECT * FROM chain_meme_trader_fills WHERE definition_version=? AND side='SELL'",
+        (version,),
+    ).fetchone()
+    assert fill["adapter"] == "dexscreener-market-mark-paper-fallback/v1"
+    assert fill["gross_usd"] == pytest.approx(13.44)
+    assert store.due_chain_meme_trader_execution(
+        definition_version=version, now=mark_at + timedelta(seconds=10),
+    ) is None
+    store.close()
+
+
+def test_chain_meme_v13_uses_dex_marks_for_buy_sell_and_missing_pool_writeoff(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "market-mark-v13.sqlite3", initial_cash_usd=1000)
+    store.register_chain_meme_trader_v12()
+    store.activate_chain_meme_trader_v12()
+    store.register_chain_meme_trader_v13()
+    activation = store.activate_chain_meme_trader_v13()
+    version = Store.CHAIN_MEME_TRADER_V13_VERSION
+    observed = utcnow()
+    address = str(Pubkey.new_unique())
+    token = TokenCandidate(
+        chain="solana", address=address, name="DEX Paper", symbol="DEXP",
+        source="dexscreener",
+    )
+    store.upsert_token(token, seen_at=observed)
+    pair = {
+        "chainId": "solana", "dexId": "pumpfun", "pairAddress": "pool-v13",
+        "pairCreatedAt": round((observed - timedelta(minutes=1)).timestamp() * 1000),
+        "priceUsd": "1.0",
+        "baseToken": {"address": address, "name": "DEX Paper", "symbol": "DEXP"},
+        "quoteToken": {"address": SOLANA_WRAPPED_SOL_MINT},
+        "txns": {"m5": {"buys": 2, "sells": 1}, "h1": {"buys": 2, "sells": 1}},
+        "volume": {"m5": 250.0, "h1": 250.0},
+    }
+    store.add_snapshot(TokenSnapshot(
+        "solana", address, 1.0, 10_000, 100_000, 250, 2, 1,
+        observed_at=observed, ingested_at=observed, provider="dexscreener",
+        raw={"pair": pair},
+    ))
+    assert store.enroll_chain_meme_trader_v6(
+        definition_version=version,
+    ) == {"evaluated": 1, "admitted": 1, "rejected": 0, "intents": 0}
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_positions WHERE definition_version=?",
+        (version,),
+    ).fetchone()[0] == 4
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_order_intents WHERE definition_version=?",
+        (version,),
+    ).fetchone()[0] == 0
+    position = store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND arm_id='broad_launch__fast_escape'", (version,),
+    ).fetchone()
+    assert position["entry_signal_price_usd"] == pytest.approx(1.0)
+    assert position["entry_execution_price_usd"] == pytest.approx(1.04)
+
+    mark_at = observed + timedelta(seconds=5)
+    store.upsert_chain_meme_trader_market_mark(
+        token,
+        TokenSnapshot(
+            chain="solana", address=address, price_usd=0.82, liquidity_usd=10_000,
+            market_cap_usd=100_000, volume_5m_usd=2_000, buys_5m=4, sells_5m=8,
+            observed_at=mark_at, provider="dexscreener",
+        ),
+        recorded_at=mark_at,
+    )
+    assert store.evaluate_chain_meme_trader_market_marks(
+        definition_version=version, now=mark_at,
+    ) == 1
+    waiting = store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND arm_id='broad_launch__fast_escape'", (version,),
+    ).fetchone()
+    assert waiting["status"] == "open"
+    assert waiting["pending_mark_id"] is not None
+    post_mark_at = mark_at + timedelta(seconds=2)
+    store.upsert_chain_meme_trader_market_mark(
+        token,
+        TokenSnapshot(
+            chain="solana", address=address, price_usd=0.82, liquidity_usd=10_000,
+            market_cap_usd=100_000, volume_5m_usd=2_000, buys_5m=4, sells_5m=8,
+            observed_at=post_mark_at, provider="dexscreener",
+        ),
+        recorded_at=post_mark_at,
+    )
+    assert store.evaluate_chain_meme_trader_market_marks(
+        definition_version=version, now=post_mark_at,
+    ) == 1
+    closed = store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND arm_id='broad_launch__fast_escape'", (version,),
+    ).fetchone()
+    expected_gross = 20.0 * 0.82 / 1.04 * 0.96
+    assert closed["status"] == "closed"
+    assert closed["realized_pnl_usd"] == pytest.approx(expected_gross - 20.0)
+    fill = store.db.execute(
+        "SELECT * FROM chain_meme_trader_fills WHERE definition_version=?",
+        (version,),
+    ).fetchone()
+    assert fill["adapter"] == "dexscreener-market-paper/v1"
+    store.record_chain_meme_trader_account_snapshots(
+        definition_version=version, now=post_mark_at,
+    )
+    account = store.db.execute(
+        "SELECT * FROM chain_meme_trader_account_snapshots WHERE definition_version=? "
+        "ORDER BY id DESC LIMIT 1", (version,),
+    ).fetchone()
+    assert account["valuation_status"] == "complete_market_mark"
+
+    store.record_chain_meme_trader_market_mark_miss(
+        token_id=token.token_id, chain="solana", address=address,
+        recorded_at=mark_at + timedelta(seconds=5),
+    )
+    first_missing_at = mark_at + timedelta(seconds=5)
+    store.record_chain_meme_trader_market_mark_miss(
+        token_id=token.token_id, chain="solana", address=address,
+        recorded_at=mark_at + timedelta(seconds=10),
+    )
+    assert store.evaluate_chain_meme_trader_market_marks(
+        definition_version=version, now=mark_at + timedelta(seconds=10),
+    ) == 0
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND status='written_off'", (version,),
+    ).fetchone()[0] == 0
+    misses_before_failure = store.db.execute(
+        "SELECT consecutive_misses FROM chain_meme_trader_market_marks WHERE token_id=?",
+        (token.token_id,),
+    ).fetchone()[0]
+    store.record_chain_meme_trader_market_mark_failure(
+        token_id=token.token_id, failure_kind="HTTP_TIMEOUT",
+        recorded_at=first_missing_at + timedelta(seconds=30),
+    )
+    assert store.db.execute(
+        "SELECT consecutive_misses FROM chain_meme_trader_market_marks WHERE token_id=?",
+        (token.token_id,),
+    ).fetchone()[0] == misses_before_failure
+    store.record_chain_meme_trader_market_mark_miss(
+        token_id=token.token_id, chain="solana", address=address,
+        recorded_at=first_missing_at + timedelta(seconds=60),
+    )
+    assert store.evaluate_chain_meme_trader_market_marks(
+        definition_version=version, now=first_missing_at + timedelta(seconds=60),
+    ) == 0
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND status='written_off'", (version,),
+    ).fetchone()[0] == 0
+    store.record_chain_meme_trader_market_mark_miss(
+        token_id=token.token_id, chain="solana", address=address,
+        recorded_at=first_missing_at + timedelta(seconds=60, milliseconds=1),
+    )
+    assert store.evaluate_chain_meme_trader_market_marks(
+        definition_version=version,
+        now=first_missing_at + timedelta(seconds=60, milliseconds=1),
+    ) == 3
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND status='written_off'", (version,),
+    ).fetchone()[0] == 3
+    assert store.due_chain_meme_trader_execution(
+        definition_version=version, now=mark_at + timedelta(seconds=11),
+    ) is None
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_execution_attempts "
+        "WHERE definition_version=?", (version,),
+    ).fetchone()[0] == 0
+    store.close()
+
+
+def test_chain_meme_v15_starts_clean_without_rewriting_v14_history(tmp_path: Path):
+    store = Store(tmp_path / "clean-v15.sqlite3", initial_cash_usd=1000)
+    store.register_chain_meme_trader_v14()
+    store.activate_chain_meme_trader_v14()
+    with store.db:
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_positions("
+            "definition_version,arm_id,shadow_cohort_id,token_id,source_buy_trade_id,"
+            "baseline_quote_result_id,entry_snapshot_id,entry_signal_price_usd,amount_raw,"
+            "initial_amount_raw,stake_usd,highest_signal_price_usd,status,opened_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,20,1,'open',?)",
+            (
+                Store.CHAIN_MEME_TRADER_V14_VERSION,
+                Store.chain_meme_trader_v14_policies()[0]["arm_id"], 1,
+                "solana:historical", 1, 1, 1, 1.0, "100", "100", iso(utcnow()),
+            ),
+        )
+    registration = store.register_chain_meme_trader_v15()
+    activation = store.activate_chain_meme_trader_v15()
+    definition = Store._json_object(registration["definition_json"])
+    assert len(definition["policies"]) == 124
+    assert int(activation["activation_snapshot_id"]) == 0
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_positions WHERE definition_version=?",
+        (Store.CHAIN_MEME_TRADER_V15_VERSION,),
+    ).fetchone()[0] == 0
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_positions WHERE definition_version=?",
+        (Store.CHAIN_MEME_TRADER_V14_VERSION,),
+    ).fetchone()[0] == 1
+    store.record_chain_meme_trader_account_snapshots(
+        definition_version=Store.CHAIN_MEME_TRADER_V15_VERSION,
+    )
+    accounts = store.db.execute(
+        "SELECT * FROM chain_meme_trader_account_snapshots WHERE definition_version=?",
+        (Store.CHAIN_MEME_TRADER_V15_VERSION,),
+    ).fetchall()
+    assert len(accounts) == 124
+    assert {row["cash_usd"] for row in accounts} == {1000.0}
+    store.close()
+
+
+def test_chain_meme_v16_starts_all_accounts_with_before_after_sell_contract(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "clean-v16.sqlite3", initial_cash_usd=1000)
+    store.register_chain_meme_trader_v15()
+    store.activate_chain_meme_trader_v15()
+    registration = store.register_chain_meme_trader_v16()
+    activation = store.activate_chain_meme_trader_v16()
+    definition = json.loads(registration["definition_json"])
+    assert activation["definition_version"] == Store.CHAIN_MEME_TRADER_V16_VERSION
+    assert definition["strategy_count"] == 124
+    assert definition["sell_confirmation"] == (
+        "dex_pair_visible_before_and_after_trigger"
+    )
+    summary = Store.chain_meme_trader_summary_from_connection(store.db)
+    assert summary["version"] == Store.CHAIN_MEME_TRADER_V16_VERSION
+    assert len(summary["strategies"]) == 124
+    observed = utcnow()
+    address = str(Pubkey.new_unique())
+    token = TokenCandidate(
+        chain="solana", address=address, name="Visible Pool", symbol="VISIBLE",
+        source="dexscreener",
+    )
+    store.upsert_token(token, seen_at=observed)
+    store.add_snapshot(TokenSnapshot(
+        "solana", address, 1.0, 10_000, 100_000, 1, 1, 0,
+        observed_at=observed, ingested_at=observed, provider="dexscreener",
+        raw={"pair": {
+            "chainId": "solana", "dexId": "pumpfun", "pairAddress": "pool-visible",
+            "pairCreatedAt": round((observed - timedelta(hours=1)).timestamp() * 1000),
+            "priceUsd": "1.0",
+            "baseToken": {"address": address, "name": "Visible Pool", "symbol": "VISIBLE"},
+            "quoteToken": {"address": SOLANA_WRAPPED_SOL_MINT},
+            "txns": {"m5": {"buys": 1, "sells": 0}, "h1": {"buys": 1, "sells": 0}},
+            "volume": {"m5": 1.0, "h1": 1.0},
+        }},
+    ))
+    assert store.enroll_chain_meme_trader_v6(
+        definition_version=Store.CHAIN_MEME_TRADER_V16_VERSION,
+    )["admitted"] == 1
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_positions WHERE definition_version=?",
+        (Store.CHAIN_MEME_TRADER_V16_VERSION,),
+    ).fetchone()[0] == 28
+    store.close()
+
+
+def test_chain_meme_v17_starts_clean_and_rejects_delayed_entry_snapshots(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "fresh-entry-v17.sqlite3", initial_cash_usd=1000)
+    registration = store.register_chain_meme_trader_v17()
+    activation = store.activate_chain_meme_trader_v17()
+    definition = json.loads(registration["definition_json"])
+    assert activation["definition_version"] == Store.CHAIN_MEME_TRADER_V17_VERSION
+    assert definition["strategy_count"] == 124
+    assert definition["entry_snapshot_max_age_seconds"] == 90.0
+    store.record_chain_meme_trader_account_snapshots(
+        definition_version=Store.CHAIN_MEME_TRADER_V17_VERSION,
+    )
+    accounts = store.db.execute(
+        "SELECT * FROM chain_meme_trader_account_snapshots WHERE definition_version=?",
+        (Store.CHAIN_MEME_TRADER_V17_VERSION,),
+    ).fetchall()
+    assert len(accounts) == 124
+    assert {row["cash_usd"] for row in accounts} == {1000.0}
+
+    observed = utcnow()
+    address = str(Pubkey.new_unique())
+    token = TokenCandidate(
+        chain="solana", address=address, name="Delayed", symbol="LATE",
+        source="dexscreener",
+    )
+    store.upsert_token(token, seen_at=observed)
+    snapshot_id = store.add_snapshot(TokenSnapshot(
+        "solana", address, 1.0, 10_000, 100_000, 250, 2, 1,
+        observed_at=observed, ingested_at=observed, provider="dexscreener",
+        raw={"pair": {
+            "chainId": "solana", "dexId": "pumpfun", "pairAddress": "pool-late",
+            "pairCreatedAt": round((observed - timedelta(minutes=1)).timestamp() * 1000),
+            "priceUsd": "1.0",
+            "baseToken": {"address": address, "name": "Delayed", "symbol": "LATE"},
+            "quoteToken": {"address": SOLANA_WRAPPED_SOL_MINT},
+            "txns": {"m5": {"buys": 2, "sells": 1}, "h1": {"buys": 2, "sells": 1}},
+            "volume": {"m5": 250.0, "h1": 250.0},
+        }},
+    ))
+    delayed_at = observed - timedelta(seconds=91)
+    with store.db:
+        store.db.execute("DROP TRIGGER token_snapshots_no_update")
+        store.db.execute(
+            "UPDATE token_snapshots SET observed_at=?,ingested_at=?,recorded_at=? WHERE id=?",
+            (iso(delayed_at), iso(delayed_at), iso(delayed_at), snapshot_id),
+        )
+        store.db.execute("DROP TRIGGER chain_meme_trader_v6_activation_no_update")
+        store.db.execute(
+            "UPDATE chain_meme_trader_v6_activations SET activated_at=? "
+            "WHERE definition_version=?",
+            (iso(delayed_at - timedelta(seconds=1)), Store.CHAIN_MEME_TRADER_V17_VERSION),
+        )
+    result = store.enroll_chain_meme_trader_v6(
+        definition_version=Store.CHAIN_MEME_TRADER_V17_VERSION,
+    )
+    assert result == {"evaluated": 1, "admitted": 0, "rejected": 1, "intents": 0}
+    assert store.db.execute(
+        "SELECT reason FROM chain_meme_trader_v6_entry_evaluations "
+        "WHERE definition_version=?",
+        (Store.CHAIN_MEME_TRADER_V17_VERSION,),
+    ).fetchone()[0] == "entry_snapshot_too_old"
+    store.close()
+
+
+def test_chain_meme_v18_preserves_historical_contracts_without_market_fallback(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "historical-fidelity-v18.sqlite3", initial_cash_usd=1000)
+    registration = store.register_chain_meme_trader_v18()
+    activation = store.activate_chain_meme_trader_v18()
+    definition = json.loads(registration["definition_json"])
+    policies = definition["policies"]
+
+    assert activation["definition_version"] == Store.CHAIN_MEME_TRADER_V18_VERSION
+    assert len(policies) == 124
+    assert len({policy["arm_id"] for policy in policies}) == 124
+    assert not any(policy["entry_family"] == "market_visible" for policy in policies)
+    route_policies = [
+        policy for policy in policies
+        if policy["entry_family"] in {
+            "two_way_route", "economic_route", "rug_safety", "solana_focus",
+        }
+    ]
+    assert route_policies
+    assert all(
+        policy["fidelity_status"] == "COVERAGE_UNAVAILABLE"
+        and policy["forward_enabled"] is False
+        for policy in route_policies
+    )
+    v1_policies = [
+        policy for policy in policies
+        if any("v1-12-forward-arms" in value for value in policy["source_versions"])
+    ]
+    assert len(v1_policies) == 12
+    assert {policy["entry_family"] for policy in v1_policies} == {"shadow_momentum"}
+    assert {
+        policy["max_hold_minutes"] for policy in v1_policies
+        if policy["exit_family"] == "fixed"
+    } == {15.0, 60.0, 240.0}
+    assert Store.chain_meme_trader_decision_behavior({
+        "entry_family": "two_way_route",
+        "exit_mode": "fixed_horizons",
+        "max_hold_minutes": 240.0,
+    }) == {"entry_family": "two_way_route", "max_hold_minutes": 240.0}
+    store.close()
+
+
+def test_chain_meme_v19_preserves_v18_and_activates_explicit_dex_successors(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "dex-successors-v19.sqlite3", initial_cash_usd=1000)
+    v18_registration = store.register_chain_meme_trader_v18()
+    v18 = json.loads(v18_registration["definition_json"])
+    v19_registration = store.register_chain_meme_trader_v19()
+    activation = store.activate_chain_meme_trader_v19()
+    v19 = json.loads(v19_registration["definition_json"])
+
+    old_enabled = [policy for policy in v18["policies"] if policy["forward_enabled"]]
+    old_disabled = [policy for policy in v18["policies"] if not policy["forward_enabled"]]
+    replicas = [policy for policy in v19["policies"] if not policy.get("successor_of")]
+    successors = [
+        policy for policy in v19["policies"]
+        if policy.get("fidelity_status") == "DEXSCREENER_SUCCESSOR"
+    ]
+    assert activation["definition_version"] == Store.CHAIN_MEME_TRADER_V19_VERSION
+    assert v19["previous_version"] == Store.CHAIN_MEME_TRADER_V18_VERSION
+    assert len(v19["policies"]) == len({p["arm_id"] for p in v19["policies"]}) == 124
+    assert (len(old_enabled), len(old_disabled)) == (86, 38)
+    assert (len(replicas), len(successors)) == (86, 38)
+    assert all(policy["forward_enabled"] is True for policy in v19["policies"])
+    assert {policy["arm_id"] for policy in replicas} == {
+        policy["arm_id"] for policy in old_enabled
+    }
+    assert {policy["successor_of"] for policy in successors} == {
+        policy["canonical_id"] for policy in old_disabled
+    }
+    assert all(
+        policy["source_canonical_id"] == policy["successor_of"]
+        and policy["arm_id"] != policy["successor_of"]
+        and policy["family"] == "dexscreener_successor"
+        for policy in successors
+    )
+
+    source_by_canonical = {policy["canonical_id"]: policy for policy in old_disabled}
+    exit_fields = (
+        "max_hold_minutes", "hard_stop_return", "trailing_activate_return",
+        "trailing_drawdown", "emergency_liquidity_usd",
+        "zero_activity_grace_minutes", "flow_grace_minutes",
+        "minimum_buy_ratio", "runner_review_minutes", "take_profit",
+    )
+    for successor in successors:
+        source_behavior = Store.chain_meme_trader_decision_behavior(
+            source_by_canonical[successor["successor_of"]]
+        )
+        successor_behavior = Store.chain_meme_trader_decision_behavior(
+            successor, definition_version=Store.CHAIN_MEME_TRADER_V19_VERSION,
+        )
+        assert {
+            field: successor_behavior.get(field) for field in exit_fields
+        } == {
+            field: source_behavior.get(field) for field in exit_fields
+        }
+
+    fixed_v1 = [
+        policy for policy in v19["policies"]
+        if policy.get("exit_family") == "fixed"
+        and any("v1-12-forward-arms" in item for item in policy["source_versions"])
+    ]
+    assert {
+        Store.chain_meme_trader_decision_behavior(policy)["max_hold_minutes"]
+        for policy in fixed_v1
+    } == {15.0, 60.0, 240.0}
+    assert v19["dexscreener_successor_count"] == 38
+    assert v19["automatic_learning"] is False
+    assert v19["no_historical_backfill"] is True
+    assert v19["policy_notional_usd"] == 20.0
+    assert v19["slippage_bps"] == 400
+    assert v19["additional_fee_usd_each_fill"] == 0.0
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_positions WHERE definition_version=?",
+        (Store.CHAIN_MEME_TRADER_V19_VERSION,),
+    ).fetchone()[0] == 0
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_trades WHERE definition_version=?",
+        (Store.CHAIN_MEME_TRADER_V19_VERSION,),
+    ).fetchone()[0] == 0
+    assert store.record_chain_meme_trader_account_snapshots(
+        definition_version=Store.CHAIN_MEME_TRADER_V19_VERSION,
+    ) == 124
+    accounts = store.db.execute(
+        "SELECT * FROM chain_meme_trader_account_snapshots WHERE definition_version=?",
+        (Store.CHAIN_MEME_TRADER_V19_VERSION,),
+    ).fetchall()
+    assert len(accounts) == 124
+    assert {row["cash_usd"] for row in accounts} == {1000.0}
+    assert {row["open_position_count"] for row in accounts} == {0}
+    preserved_v18 = json.loads(store.db.execute(
+        "SELECT definition_json FROM chain_meme_trader_v6_registrations "
+        "WHERE definition_version=?", (Store.CHAIN_MEME_TRADER_V18_VERSION,),
+    ).fetchone()[0])
+    assert sum(not policy["forward_enabled"] for policy in preserved_v18["policies"]) == 38
+    store.close()
+
+
+def test_chain_meme_v20_restarts_same_strategies_on_corrected_execution_epoch(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "accounting-corrected-v20.sqlite3", initial_cash_usd=1000)
+    v19 = json.loads(store.register_chain_meme_trader_v19()["definition_json"])
+    v20 = json.loads(store.register_chain_meme_trader_v20()["definition_json"])
+    activation = store.activate_chain_meme_trader_v20()
+
+    assert activation["definition_version"] == Store.CHAIN_MEME_TRADER_V20_VERSION
+    assert v20["previous_version"] == Store.CHAIN_MEME_TRADER_V19_VERSION
+    assert v20["strategy_logic_changed"] is False
+    assert v20["policies"] == v19["policies"]
+    assert len(v20["policies"]) == len({p["arm_id"] for p in v20["policies"]}) == 124
+    corrected_formula = (
+        "stake_usd*remaining_raw/initial_raw*current_price/"
+        "entry_execution_price_usd*0.96"
+    )
+    assert v20["market_mark_formula"] == corrected_formula
+    legacy_definition = {
+        **v20,
+        "market_mark_formula": (
+            "stake_usd*remaining_raw/initial_raw*current_price/"
+            "entry_signal_price*0.96"
+        ),
+    }
+    effective = Store.chain_meme_trader_effective_definition_from_connection(
+        store.db,
+        Store.CHAIN_MEME_TRADER_V20_VERSION,
+        json.dumps(legacy_definition),
+    )
+    assert effective["market_mark_formula"] == corrected_formula
+    assert effective["market_mark_formula_basis"] == "entry_execution_price_usd"
+    assert [item["field"] for item in effective["metadata_errata"]] == [
+        "market_mark_formula"
+    ]
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_positions WHERE definition_version=?",
+        (Store.CHAIN_MEME_TRADER_V20_VERSION,),
+    ).fetchone()[0] == 0
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_trades WHERE definition_version=?",
+        (Store.CHAIN_MEME_TRADER_V20_VERSION,),
+    ).fetchone()[0] == 0
+    stop = store.db.execute(
+        "SELECT reason FROM chain_meme_trader_primary_stops WHERE definition_version=?",
+        (Store.CHAIN_MEME_TRADER_V19_VERSION,),
+    ).fetchone()
+    assert "raw_decimal_contamination" in stop["reason"]
+    store.close()
+
+
+def test_system_errors_aggregate_status_updates_and_reopen(tmp_path: Path):
+    store = Store(tmp_path / "system-errors.sqlite3", initial_cash_usd=1000)
+    first_seen = utcnow() - timedelta(seconds=2)
+    case_id = store.record_system_error(
+        area="runtime", component="chain-meme-trader", error_type="PollError",
+        message_safe="market poll failed", severity="high",
+        context_safe={"attempt": 1}, observed_at=first_seen,
+    )
+    assert store.record_system_error(
+        area="runtime", component="chain-meme-trader", error_type="PollError",
+        message_safe="market poll failed", severity="high",
+        context_safe={"attempt": 2}, observed_at=first_seen + timedelta(seconds=1),
+    ) == case_id
+    case = store.db.execute(
+        "SELECT * FROM system_error_cases WHERE id=?", (case_id,),
+    ).fetchone()
+    assert case["status"] == "new"
+    assert case["occurrence_count"] == 2
+    assert json.loads(case["last_context_json"]) == {"attempt": 2}
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM system_error_occurrences WHERE case_id=?", (case_id,),
+    ).fetchone()[0] == 2
+
+    store.update_system_error_case(
+        case_id, status="in_progress", note="root cause isolated",
+    )
+    store.update_system_error_case(
+        case_id, status="fixed", note="collector repaired", evidence_safe="test passed",
+    )
+    fixed = store.db.execute(
+        "SELECT * FROM system_error_cases WHERE id=?", (case_id,),
+    ).fetchone()
+    assert fixed["status"] == "fixed"
+    assert fixed["resolved_at"] is not None
+
+    assert store.record_system_error(
+        area="runtime", component="chain-meme-trader", error_type="PollError",
+        message_safe="market poll failed", severity="high",
+        context_safe={"attempt": 3}, observed_at=utcnow(),
+    ) == case_id
+    reopened = store.db.execute(
+        "SELECT * FROM system_error_cases WHERE id=?", (case_id,),
+    ).fetchone()
+    assert reopened["status"] == "new"
+    assert reopened["occurrence_count"] == 3
+    assert reopened["resolved_at"] is None
+    assert [row[0] for row in store.db.execute(
+        "SELECT action FROM system_error_resolution_reports WHERE case_id=? ORDER BY id",
+        (case_id,),
+    )] == ["diagnosis_draft", "fixed", "reopened"]
+    store.close()
+
+
+def _seed_chain_market_position(
+    store: Store,
+    *,
+    version: str,
+    policy: dict,
+    opened_at,
+    entry_signal_price: float = 1.0,
+    entry_execution_price: float = 1.04,
+) -> tuple[TokenCandidate, int]:
+    token = TokenCandidate(
+        chain="solana", address=str(Pubkey.new_unique()),
+        name="Market fixture", symbol="MKT", source="dexscreener",
+    )
+    store.upsert_token(token, seen_at=opened_at)
+    with store.db:
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_v6_cohorts("
+            "definition_version,token_id,entry_family,source_snapshot_id,pair_address,"
+            "decided_at,episode_no,feature_json) VALUES(?,?,?,?,?,?,1,'{}')",
+            (
+                version, token.token_id, "broad_launch",
+                1, "pair-A", iso(opened_at),
+            ),
+        )
+        cohort_id = int(store.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+        quantity = 20.0 / entry_execution_price
+        amount_raw = max(1, round(quantity * 1_000_000_000))
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_positions("
+            "definition_version,arm_id,shadow_cohort_id,token_id,source_buy_trade_id,"
+            "baseline_quote_result_id,entry_snapshot_id,entry_signal_price_usd,"
+            "entry_execution_price_usd,paper_quantity_tokens,remaining_quantity_tokens,"
+            "amount_raw,initial_amount_raw,stake_usd,highest_signal_price_usd,status,opened_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,20,?,'open',?)",
+            (
+                version, policy["arm_id"], cohort_id, token.token_id, cohort_id,
+                1, 1, entry_signal_price, entry_execution_price, quantity, quantity,
+                str(amount_raw), str(amount_raw), entry_signal_price, iso(opened_at),
+            ),
+        )
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_trades("
+            "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+            "net_cash_flow_usd,realized_pnl_usd,reason,created_at) "
+            "VALUES(?,?,?,?, 'BUY',20,-20,NULL,'fixture',?)",
+            (version, policy["arm_id"], cohort_id, token.token_id, iso(opened_at)),
+        )
+    return token, cohort_id
+
+
+def test_chain_meme_market_entry_uses_real_quantity_and_two_sided_slippage_identity(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "market-accounting-v20.sqlite3", initial_cash_usd=1000)
+    registration = store.register_chain_meme_trader_v20()
+    store.activate_chain_meme_trader_v20()
+    version = Store.CHAIN_MEME_TRADER_V20_VERSION
+    definition = json.loads(registration["definition_json"])
+    observed = utcnow()
+    token = TokenCandidate(
+        chain="solana", address=str(Pubkey.new_unique()), name="Accounting",
+        symbol="ACCT", source="dexscreener",
+    )
+    store.upsert_token(token, seen_at=observed)
+    store.add_snapshot(TokenSnapshot(
+        "solana", token.address, 2.0, 10_000, 100_000, 250, 2, 1,
+        observed_at=observed, ingested_at=observed, provider="dexscreener",
+        raw={"pair": {
+            "chainId": "solana", "dexId": "pumpfun", "pairAddress": "pair-accounting",
+            "pairCreatedAt": round((observed - timedelta(minutes=1)).timestamp() * 1000),
+            "priceUsd": "2.0",
+            "baseToken": {"address": token.address, "name": "Accounting", "symbol": "ACCT"},
+            "quoteToken": {"address": SOLANA_WRAPPED_SOL_MINT},
+            "txns": {"m5": {"buys": 2, "sells": 1}, "h1": {"buys": 2, "sells": 1}},
+            "volume": {"m5": 250.0, "h1": 250.0},
+        }},
+    ))
+    assert store.enroll_chain_meme_trader_v6(definition_version=version)["admitted"] == 1
+    position = store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
+        "ORDER BY arm_id LIMIT 1", (version,),
+    ).fetchone()
+    entry_fill = store.db.execute(
+        "SELECT * FROM chain_meme_trader_v6_entry_fills WHERE definition_version=?",
+        (version,),
+    ).fetchone()
+    expected_execution_price = 2.0 * 1.04
+    expected_quantity = 20.0 / expected_execution_price
+    assert position["stake_usd"] == pytest.approx(20.0)
+    assert position["entry_signal_price_usd"] == pytest.approx(2.0)
+    assert position["entry_execution_price_usd"] == pytest.approx(expected_execution_price)
+    assert position["paper_quantity_tokens"] == pytest.approx(expected_quantity)
+    assert position["remaining_quantity_tokens"] == pytest.approx(expected_quantity)
+    assert int(position["amount_raw"]) == round(expected_quantity * 1_000_000_000)
+    assert entry_fill["entry_market_price_usd"] == pytest.approx(2.0)
+    assert entry_fill["execution_price_usd"] == pytest.approx(expected_execution_price)
+    assert entry_fill["output_token_quantity"] == pytest.approx(expected_quantity)
+    assert definition["additional_fee_usd_each_fill"] == 0.0
+    buy_trade = store.db.execute(
+        "SELECT * FROM chain_meme_trader_trades WHERE definition_version=? "
+        "AND arm_id=? AND side='BUY'", (version, position["arm_id"]),
+    ).fetchone()
+    assert buy_trade["recorded_at"] is not None
+    assert parse_time(buy_trade["created_at"]) <= parse_time(buy_trade["recorded_at"])
+
+    marked_at = utcnow()
+    store.upsert_chain_meme_trader_market_mark(
+        token,
+        TokenSnapshot(
+            "solana", token.address, 2.0, 10_000, 100_000, 250, 2, 1,
+            observed_at=marked_at, ingested_at=marked_at, provider="dexscreener",
+            raw={"pair": {"pairAddress": "pair-accounting"}},
+        ),
+        recorded_at=marked_at,
+    )
+    store.record_chain_meme_trader_account_snapshots(
+        definition_version=version, now=marked_at,
+    )
+    summary = Store.chain_meme_trader_summary_from_connection(store.db)
+    strategy = next(item for item in summary["strategies"] if item["arm_id"] == position["arm_id"])
+    account = strategy["account"]
+    marked_position = strategy["positions"][0]
+    expected_exit_value = 20.0 * 2.0 / expected_execution_price * 0.96
+    expected_total_pnl = expected_exit_value - 20.0
+    assert marked_position["indicative_value_usd"] == pytest.approx(expected_exit_value)
+    assert marked_position["indicative_unrealized_pnl_usd"] == pytest.approx(expected_total_pnl)
+    assert account["cash_usd"] == pytest.approx(980.0)
+    assert account["indicative_equity_usd"] == pytest.approx(980.0 + expected_exit_value)
+    assert account["indicative_total_pnl_usd"] == pytest.approx(expected_total_pnl)
+    assert account["ledger_trade_frontier_id"] == store.db.execute(
+        "SELECT MAX(id) FROM chain_meme_trader_trades WHERE definition_version=?",
+        (version,),
+    ).fetchone()[0]
+    assert account["cash_usd"] + marked_position["indicative_value_usd"] == pytest.approx(
+        1000.0 + account["indicative_total_pnl_usd"]
+    )
+    assert marked_position["holding_seconds"] >= 0.0
+    assert summary["unique_held_token_count"] == 1
+
+    empty = next(item for item in summary["strategies"] if item["account"]["open_position_count"] == 0)
+    assert empty["account"]["cash_usd"] == pytest.approx(1000.0)
+    assert empty["account"]["indicative_equity_usd"] == pytest.approx(1000.0)
+    assert empty["account"]["indicative_total_pnl_usd"] == pytest.approx(0.0)
+    assert empty["account"]["valuation_status"] == "complete_market_mark"
+
+    missing_at = utcnow()
+    store.record_chain_meme_trader_market_mark_miss(
+        token_id=token.token_id, chain="solana", address=token.address,
+        recorded_at=missing_at,
+    )
+    partial = Store.chain_meme_trader_summary_from_connection(store.db)
+    partial_strategy = next(
+        item for item in partial["strategies"] if item["arm_id"] == position["arm_id"]
+    )
+    assert partial_strategy["positions"][0]["indicative_value_usd"] is None
+    assert partial_strategy["positions"][0]["indicative_unrealized_pnl_usd"] is None
+    assert partial_strategy["account"]["indicative_equity_usd"] is None
+    assert partial_strategy["account"]["indicative_total_pnl_usd"] is None
+    assert partial_strategy["account"]["valuation_status"] == "partial_market_mark_unknown"
+    store.close()
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_action"),
+    [
+        ("take_profit_boundary", "TAKE_PROFIT_1"),
+        ("hard_stop_boundary", "HARD_STOP"),
+        ("liquidity_just_below", "LIQUIDITY_EXIT"),
+        ("liquidity_equal", None),
+        ("liquidity_unknown", None),
+        ("zero_over_zero_buy_ratio", None),
+        ("missing_activity", None),
+        ("stale_observed_at", None),
+    ],
+)
+def test_chain_meme_market_exit_boundaries_use_economic_return_and_fresh_observation(
+    tmp_path: Path, case: str, expected_action: str | None,
+):
+    store = Store(tmp_path / f"market-boundary-{case}.sqlite3", initial_cash_usd=1000)
+    registration = store.register_chain_meme_trader_v20()
+    store.activate_chain_meme_trader_v20()
+    version = Store.CHAIN_MEME_TRADER_V20_VERSION
+    policies = json.loads(registration["definition_json"])["policies"]
+    if case.startswith("liquidity"):
+        policy = next(
+            item for item in policies
+            if float(item.get("emergency_liquidity_usd") or 0.0) == 3000.0
+            and float(item.get("max_hold_minutes") or 0.0) > 1.0
+        )
+    elif case == "zero_over_zero_buy_ratio":
+        policy = next(item for item in policies if item.get("flow_grace_minutes") is not None)
+    elif case == "missing_activity":
+        policy = next(
+            item for item in policies
+            if item.get("zero_activity_grace_minutes") is not None
+        )
+    elif case == "take_profit_boundary":
+        policy = next(
+            item for item in policies
+            if item.get("take_profit")
+            and float(item["take_profit"][0]["fraction_of_remaining"]) < 1.0
+        )
+    else:
+        policy = next(
+            item for item in policies
+            if item.get("hard_stop_return") is not None
+            and float(item.get("max_hold_minutes") or 0.0) > 1.0
+        )
+    now = utcnow()
+    elapsed_minutes = (
+        float(policy["flow_grace_minutes"]) + 0.1
+        if case == "zero_over_zero_buy_ratio"
+        else float(policy["zero_activity_grace_minutes"]) + 0.1
+        if case == "missing_activity" else 0.5
+    )
+    token, cohort_id = _seed_chain_market_position(
+        store, version=version, policy=policy,
+        opened_at=now - timedelta(minutes=elapsed_minutes),
+    )
+    entry_execution_price = 1.04
+    if case == "take_profit_boundary":
+        economic_return = float(policy["take_profit"][0]["return"])
+        price = entry_execution_price * (1.0 + economic_return + 1e-9) / 0.96
+    elif case in {"hard_stop_boundary", "stale_observed_at"}:
+        economic_return = float(policy["hard_stop_return"])
+        price = entry_execution_price * (1.0 + economic_return - 1e-9) / 0.96
+    elif case == "zero_over_zero_buy_ratio":
+        price = entry_execution_price * 1.10 / 0.96
+    else:
+        price = entry_execution_price / 0.96
+    liquidity = {
+        "liquidity_just_below": 2999.99,
+        "liquidity_equal": 3000.0,
+        "liquidity_unknown": None,
+    }.get(case, 10_000.0)
+    observed_at = (
+        now - timedelta(minutes=10) if case == "stale_observed_at" else now
+    )
+    store.upsert_chain_meme_trader_market_mark(
+        token,
+        TokenSnapshot(
+            "solana", token.address, price, liquidity, 100_000,
+            None if case == "missing_activity" else 1.0,
+            None if case == "missing_activity" else (
+                0 if case == "zero_over_zero_buy_ratio" else 2
+            ),
+            None if case == "missing_activity" else (
+                0 if case == "zero_over_zero_buy_ratio" else 1
+            ),
+            observed_at=observed_at, ingested_at=now, provider="dexscreener",
+            raw={"pair": {"pairAddress": "pair-A"}},
+        ),
+        recorded_at=now,
+    )
+    created = store.evaluate_chain_meme_trader_market_marks(
+        definition_version=version, now=now,
+    )
+    pending = store.db.execute(
+        "SELECT m.* FROM chain_meme_trader_marks m "
+        "WHERE m.definition_version=? AND m.shadow_cohort_id=?",
+        (version, cohort_id),
+    ).fetchone()
+    if expected_action is None:
+        assert created == 0
+        assert pending is None
+    else:
+        assert created == 1
+        assert pending["action"] == expected_action
+        assert pending["status"] == "pending"
+    store.close()
+
+
+def test_chain_meme_partial_take_profit_rebases_pair_then_writes_off_only_after_60s(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "partial-rebase-writeoff-v20.sqlite3", initial_cash_usd=1000)
+    registration = store.register_chain_meme_trader_v20()
+    store.activate_chain_meme_trader_v20()
+    version = Store.CHAIN_MEME_TRADER_V20_VERSION
+    definition = json.loads(registration["definition_json"])
+    policy = next(
+        item for item in definition["policies"]
+        if item.get("take_profit")
+        and float(item["take_profit"][0]["fraction_of_remaining"]) < 1.0
+    )
+    trigger_at = utcnow() - timedelta(seconds=10)
+    token, cohort_id = _seed_chain_market_position(
+        store, version=version, policy=policy,
+        opened_at=trigger_at - timedelta(seconds=30),
+    )
+    target_return = float(policy["take_profit"][0]["return"]) + 0.01
+    price = 1.04 * (1.0 + target_return) / 0.96
+    store.upsert_chain_meme_trader_market_mark(
+        token,
+        TokenSnapshot(
+            "solana", token.address, price, 10_000, 100_000, 2_000, 8, 2,
+            observed_at=trigger_at, ingested_at=trigger_at, provider="dexscreener",
+            raw={"pair": {"pairAddress": "pair-A"}},
+        ),
+        recorded_at=trigger_at,
+    )
+    assert store.evaluate_chain_meme_trader_market_marks(
+        definition_version=version, now=trigger_at,
+    ) == 1
+    pending = store.db.execute(
+        "SELECT * FROM chain_meme_trader_marks WHERE definition_version=? "
+        "AND shadow_cohort_id=?", (version, cohort_id),
+    ).fetchone()
+    assert pending["action"] == "TAKE_PROFIT_1"
+    initial_amount = int(store.db.execute(
+        "SELECT initial_amount_raw FROM chain_meme_trader_positions "
+        "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+        (version, policy["arm_id"], cohort_id),
+    ).fetchone()[0])
+    sold_amount = int(pending["sell_amount_raw"])
+    assert 0 < sold_amount < initial_amount
+    assert pending["market_pair_address"] == "pair-A"
+
+    rebased_at = trigger_at + timedelta(seconds=1)
+    store.upsert_chain_meme_trader_market_mark(
+        token,
+        TokenSnapshot(
+            "solana", token.address, price, 10_000, 100_000, 2_000, 8, 2,
+            observed_at=rebased_at, ingested_at=rebased_at, provider="dexscreener",
+            raw={"pair": {"pairAddress": "pair-B"}},
+        ),
+        recorded_at=rebased_at,
+    )
+    assert store.evaluate_chain_meme_trader_market_marks(
+        definition_version=version, now=rebased_at,
+    ) == 0
+    rebased = store.db.execute(
+        "SELECT * FROM chain_meme_trader_marks WHERE id=?", (pending["id"],),
+    ).fetchone()
+    assert rebased["status"] == "pending"
+    assert rebased["market_pair_address"] == "pair-B"
+    assert rebased["market_post_sequence"] is None
+
+    sold_at = trigger_at + timedelta(seconds=2)
+    snapshot_before_sell_at = sold_at + timedelta(milliseconds=500)
+    store.record_chain_meme_trader_account_snapshots(
+        definition_version=version, now=snapshot_before_sell_at,
+    )
+    snapshot_before_sell = store.db.execute(
+        "SELECT * FROM chain_meme_trader_account_snapshots WHERE definition_version=? "
+        "AND arm_id=? AND recorded_at=?",
+        (version, policy["arm_id"], iso(snapshot_before_sell_at)),
+    ).fetchone()
+    store.upsert_chain_meme_trader_market_mark(
+        token,
+        TokenSnapshot(
+            "solana", token.address, price, 10_000, 100_000, 2_000, 8, 2,
+            observed_at=sold_at, ingested_at=sold_at, provider="dexscreener",
+            raw={"pair": {"pairAddress": "pair-B"}},
+        ),
+        recorded_at=sold_at,
+    )
+    assert store.evaluate_chain_meme_trader_market_marks(
+        definition_version=version, now=sold_at,
+    ) == 1
+    partial = store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND arm_id=? AND shadow_cohort_id=?",
+        (version, policy["arm_id"], cohort_id),
+    ).fetchone()
+    remaining_amount = initial_amount - sold_amount
+    expected_gross = 20.0 * sold_amount / initial_amount * price / 1.04 * 0.96
+    expected_cost = 20.0 * sold_amount / initial_amount
+    assert partial["status"] == "open"
+    assert int(partial["amount_raw"]) == remaining_amount
+    assert partial["remaining_quantity_tokens"] == pytest.approx(
+        float(partial["paper_quantity_tokens"]) * remaining_amount / initial_amount
+    )
+    assert partial["realized_proceeds_usd"] == pytest.approx(expected_gross)
+    assert partial["allocated_cost_usd"] == pytest.approx(expected_cost)
+    assert partial["realized_pnl_usd"] == pytest.approx(expected_gross - expected_cost)
+    fill = store.db.execute(
+        "SELECT * FROM chain_meme_trader_fills WHERE definition_version=? "
+        "AND arm_id=? AND side='SELL'", (version, policy["arm_id"]),
+    ).fetchone()
+    assert fill["filled_at"] == iso(sold_at)
+    assert fill["gross_usd"] == pytest.approx(expected_gross)
+    sell_trade = store.db.execute(
+        "SELECT * FROM chain_meme_trader_trades WHERE definition_version=? "
+        "AND arm_id=? AND side='SELL'", (version, policy["arm_id"]),
+    ).fetchone()
+    assert sell_trade["recorded_at"] is not None
+    assert parse_time(sell_trade["created_at"]) < parse_time(
+        snapshot_before_sell["recorded_at"]
+    )
+    assert sell_trade["id"] > snapshot_before_sell["ledger_trade_frontier_id"]
+    assert snapshot_before_sell["cash_usd"] == pytest.approx(980.0)
+    assert snapshot_before_sell["cash_usd"] == pytest.approx(
+        1000.0 + store.db.execute(
+            "SELECT COALESCE(SUM(net_cash_flow_usd),0) "
+            "FROM chain_meme_trader_trades WHERE definition_version=? AND arm_id=? "
+            "AND id<=?",
+            (
+                version, policy["arm_id"],
+                snapshot_before_sell["ledger_trade_frontier_id"],
+            ),
+        ).fetchone()[0]
+    )
+
+    first_missing_at = sold_at + timedelta(seconds=1)
+    store.record_chain_meme_trader_market_mark_miss(
+        token_id=token.token_id, chain="solana", address=token.address,
+        recorded_at=first_missing_at,
+    )
+    before_failure = store.db.execute(
+        "SELECT consecutive_misses,first_missing_at,status FROM "
+        "chain_meme_trader_market_marks WHERE token_id=?", (token.token_id,),
+    ).fetchone()
+    store.record_chain_meme_trader_market_mark_failure(
+        token_id=token.token_id, failure_kind="HTTP_TIMEOUT",
+        recorded_at=first_missing_at + timedelta(seconds=30),
+    )
+    after_failure = store.db.execute(
+        "SELECT consecutive_misses,first_missing_at,status FROM "
+        "chain_meme_trader_market_marks WHERE token_id=?", (token.token_id,),
+    ).fetchone()
+    assert tuple(after_failure) == tuple(before_failure)
+
+    exactly_60 = first_missing_at + timedelta(seconds=60)
+    store.record_chain_meme_trader_market_mark_miss(
+        token_id=token.token_id, chain="solana", address=token.address,
+        recorded_at=exactly_60,
+    )
+    assert store.evaluate_chain_meme_trader_market_marks(
+        definition_version=version, now=exactly_60,
+    ) == 0
+    after_60 = store.db.execute(
+        "SELECT status FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND arm_id=? AND shadow_cohort_id=?",
+        (version, policy["arm_id"], cohort_id),
+    ).fetchone()[0]
+    assert after_60 == "open"
+
+    over_60 = first_missing_at + timedelta(seconds=60, milliseconds=1)
+    store.record_chain_meme_trader_market_mark_miss(
+        token_id=token.token_id, chain="solana", address=token.address,
+        recorded_at=over_60,
+    )
+    assert store.evaluate_chain_meme_trader_market_marks(
+        definition_version=version, now=over_60,
+    ) == 1
+    written = store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND arm_id=? AND shadow_cohort_id=?",
+        (version, policy["arm_id"], cohort_id),
+    ).fetchone()
+    assert written["status"] == "written_off"
+    assert int(written["amount_raw"]) == 0
+    assert written["remaining_quantity_tokens"] == pytest.approx(0.0)
+    assert written["allocated_cost_usd"] == pytest.approx(20.0)
+    assert written["realized_pnl_usd"] == pytest.approx(expected_gross - 20.0)
+    trades = store.db.execute(
+        "SELECT * FROM chain_meme_trader_trades WHERE definition_version=? "
+        "AND arm_id=? ORDER BY id", (version, policy["arm_id"]),
+    ).fetchall()
+    assert [row["side"] for row in trades] == ["BUY", "SELL", "WRITEOFF"]
+    assert all(row["recorded_at"] is not None for row in trades[1:])
+    assert sum(float(row["realized_pnl_usd"] or 0.0) for row in trades) == pytest.approx(
+        written["realized_pnl_usd"]
+    )
+    store.record_chain_meme_trader_account_snapshots(
+        definition_version=version, now=over_60,
+    )
+    account = store.db.execute(
+        "SELECT * FROM chain_meme_trader_account_snapshots WHERE definition_version=? "
+        "AND arm_id=? ORDER BY id DESC LIMIT 1", (version, policy["arm_id"]),
+    ).fetchone()
+    assert account["cash_usd"] == pytest.approx(1000.0 + written["realized_pnl_usd"])
+    assert account["indicative_equity_usd"] == pytest.approx(account["cash_usd"])
+    assert account["indicative_total_pnl_usd"] == pytest.approx(written["realized_pnl_usd"])
+    assert account["valuation_status"] == "complete_market_mark"
+    assert account["ledger_trade_frontier_id"] == max(row["id"] for row in trades)
+    store.close()
+
+
+def test_chain_meme_market_paper_rejects_legacy_route_exit_results(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "market-paper-no-route-settlement-v19.sqlite3", initial_cash_usd=1000)
+    registration = store.register_chain_meme_trader_v19()
+    store.activate_chain_meme_trader_v19()
+    version = Store.CHAIN_MEME_TRADER_V19_VERSION
+    definition = json.loads(registration["definition_json"])
+    policy = next(item for item in definition["policies"] if item.get("take_profit"))
+    trigger_at = utcnow()
+    token, cohort_id = _seed_chain_market_position(
+        store, version=version, policy=policy,
+        opened_at=trigger_at - timedelta(seconds=30),
+    )
+    price = 1.04 * (1.0 + float(policy["take_profit"][0]["return"]) + 0.01) / 0.96
+    store.upsert_chain_meme_trader_market_mark(
+        token,
+        TokenSnapshot(
+            "solana", token.address, price, 10_000, 100_000, 2_000, 8, 2,
+            observed_at=trigger_at, ingested_at=trigger_at, provider="dexscreener",
+            raw={"pair": {"pairAddress": "pair-A"}},
+        ),
+        recorded_at=trigger_at,
+    )
+    assert store.evaluate_chain_meme_trader_market_marks(
+        definition_version=version, now=trigger_at,
+    ) == 1
+    assert store.due_chain_meme_trader_execution(
+        definition_version=version, now=trigger_at,
+    ) is None
+    pending = store.db.execute(
+        "SELECT * FROM chain_meme_trader_marks WHERE definition_version=? "
+        "AND arm_id=? AND shadow_cohort_id=?",
+        (version, policy["arm_id"], cohort_id),
+    ).fetchone()
+    position = store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND arm_id=? AND shadow_cohort_id=?",
+        (version, policy["arm_id"], cohort_id),
+    ).fetchone()
+    with store.db:
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_order_intents("
+            "intent_key,definition_version,execution_mode,arm_id,shadow_cohort_id,"
+            "token_id,side,exit_mark_id,input_mint,output_mint,input_amount_raw,"
+            "slippage_bps,status,reason,created_at,expires_at) "
+            "VALUES(?,?,'paper',?,?,?,'SELL',?,?,?,?,400,'ready',?,?,?)",
+            (
+                f"{version}:legacy-sell:{cohort_id}", version, policy["arm_id"], cohort_id,
+                token.token_id, int(pending["id"]), token.address,
+                Store.JUPITER_USDC_MINT, str(position["amount_raw"]), "legacy",
+                iso(trigger_at), iso(trigger_at + timedelta(minutes=1)),
+            ),
+        )
+    intent_id = int(store.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+    task = {
+        "definition_version": version, "execution_mode": "paper",
+        "adapter": "legacy-jupiter", "side": "SELL", "shadow_cohort_id": cohort_id,
+        "input_mint": token.address, "output_mint": Store.JUPITER_USDC_MINT,
+        "input_amount_raw": str(position["amount_raw"]), "slippage_bps": 400,
+        "intent_ids": [intent_id],
+    }
+    attempt_id = store.start_chain_meme_trader_execution(task, requested_at=trigger_at)
+    assert attempt_id is not None
+    result_id = store.record_chain_meme_trader_execution_result(
+        attempt_id, status="quoted", output_amount_raw=3_700_000_000,
+        other_amount_threshold_raw=3_615_943_433, completed_at=trigger_at + timedelta(seconds=1),
+    )
+    assert result_id is not None
+    assert store.settle_chain_meme_trader_execution_result(result_id) == 0
+    unchanged = store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND arm_id=? AND shadow_cohort_id=?",
+        (version, policy["arm_id"], cohort_id),
+    ).fetchone()
+    assert unchanged["status"] == "open"
+    assert unchanged["amount_raw"] == position["amount_raw"]
+    assert unchanged["remaining_quantity_tokens"] == pytest.approx(
+        position["remaining_quantity_tokens"]
+    )
+    assert unchanged["realized_proceeds_usd"] == pytest.approx(0.0)
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_fills WHERE definition_version=? "
+        "AND arm_id=? AND side='SELL'", (version, policy["arm_id"]),
+    ).fetchone()[0] == 0
+    assert store.db.execute(
+        "SELECT status FROM chain_meme_trader_order_intents WHERE id=?", (intent_id,),
+    ).fetchone()[0] == "cancelled"
+    assert store.db.execute(
+        "SELECT status FROM chain_meme_trader_marks WHERE id=?", (int(pending["id"]),),
+    ).fetchone()[0] == "pending"
+    store.close()
+
+
+def test_chain_meme_v14_runs_all_canonical_strategies_from_one_shared_snapshot(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "canonical-v14.sqlite3", initial_cash_usd=1000)
+    registration = store.register_chain_meme_trader_v14()
+    activation = store.activate_chain_meme_trader_v14()
+    version = Store.CHAIN_MEME_TRADER_V14_VERSION
+    definition = Store._json_object(registration["definition_json"])
+    policies = definition["policies"]
+    assert len(policies) == 124
+    assert len({policy["arm_id"] for policy in policies}) == 124
+    assert definition["automatic_learning"] is False
+    assert int(activation["activation_snapshot_id"]) == 0
+
+    observed = utcnow()
+    address = str(Pubkey.new_unique())
+    token = TokenCandidate(
+        chain="solana", address=address, name="Shared Market", symbol="SHARED",
+        source="dexscreener",
+    )
+    store.upsert_token(token, seen_at=observed)
+    store.add_snapshot(TokenSnapshot(
+        "solana", address, 1.0, 10_000, 100_000, 250, 2, 1,
+        observed_at=observed, ingested_at=observed, provider="dexscreener",
+        raw={"pair": {
+            "chainId": "solana", "dexId": "pumpfun", "pairAddress": "pool-v14",
+            "pairCreatedAt": round((observed - timedelta(minutes=1)).timestamp() * 1000),
+            "priceUsd": "1.0",
+            "baseToken": {"address": address, "name": "Shared Market", "symbol": "SHARED"},
+            "quoteToken": {"address": SOLANA_WRAPPED_SOL_MINT},
+            "txns": {"m5": {"buys": 2, "sells": 1}, "h1": {"buys": 2, "sells": 1}},
+            "volume": {"m5": 250.0, "h1": 250.0},
+        }},
+    ))
+    result = store.enroll_chain_meme_trader_v6(definition_version=version)
+    assert result == {"evaluated": 1, "admitted": 1, "rejected": 0, "intents": 0}
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_v6_cohorts WHERE definition_version=?",
+        (version,),
+    ).fetchone()[0] == 1
+    expected_positions = sum(
+        policy["entry_family"] in {"broad_launch", "market_visible"}
+        for policy in policies
+    )
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_positions WHERE definition_version=?",
+        (version,),
+    ).fetchone()[0] == expected_positions
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_order_intents WHERE definition_version=?",
+        (version,),
+    ).fetchone()[0] == 0
+    store.record_chain_meme_trader_account_snapshots(definition_version=version)
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_account_snapshots WHERE definition_version=?",
+        (version,),
+    ).fetchone()[0] == 124
+    store.close()
+
+
+def test_local_curve_capacity_does_not_claim_aggregate_no_route_or_fake_pnl(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "local-curve.sqlite3", initial_cash_usd=1000)
+    store.register_chain_meme_trader_v6()
+    store.activate_chain_meme_trader_v6()
+    mint = Pubkey.new_unique()
+    curve = Pubkey.find_program_address(
+        [b"bonding-curve", bytes(mint)], Pubkey.from_string(PUMP_PROGRAM_ID),
+    )[0]
+    token_id = f"solana:{mint}"
+    observed = utcnow()
+    with store.db:
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_v6_cohorts("
+            "definition_version,token_id,entry_family,source_snapshot_id,pair_address,"
+            "decided_at,episode_no,feature_json) VALUES(?,?,?,?,?,?,?,?)",
+            (
+                Store.CHAIN_MEME_TRADER_V6_VERSION, token_id, "broad_launch", 1,
+                str(curve), iso(observed), 1, json.dumps({"dex_id": "pumpfun"}),
+            ),
+        )
+        cohort_id = int(store.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_positions("
+            "definition_version,arm_id,shadow_cohort_id,token_id,source_buy_trade_id,"
+            "baseline_quote_result_id,entry_snapshot_id,entry_signal_price_usd,amount_raw,"
+            "initial_amount_raw,stake_usd,highest_signal_price_usd,status,opened_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,20,1,'open',?)",
+            (
+                Store.CHAIN_MEME_TRADER_V6_VERSION, "broad_launch__fast_escape", cohort_id,
+                token_id, 1, 1, 1, 1.0, "900000000", "900000000", iso(observed),
+            ),
+        )
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_trades("
+            "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+            "net_cash_flow_usd,reason,created_at) VALUES(?,?,?,?, 'BUY',20,-20,'fixture',?)",
+            (
+                Store.CHAIN_MEME_TRADER_V6_VERSION, "broad_launch__fast_escape",
+                cohort_id, token_id, iso(observed),
+            ),
+        )
+    registration = store.register_chain_meme_trader_local_surface_quote()
+    store.register_chain_meme_trader_local_critical_exit()
+    target = store.chain_meme_trader_local_surface_targets()[0]
+    assert target["curve_address"] == str(curve)
+    quote_at = parse_time(registration["registered_at"]) + timedelta(seconds=1)
+    current_id = store.record_chain_meme_trader_local_surface_quote({
+        **target, "context_slot": 100, "requested_at": quote_at,
+        "completed_at": quote_at, "age_ms": 10,
+        "status": "LOCAL_SURFACE_CURRENT", "min_quote_raw": 100_000_000,
+        "ui_quote_raw": 104_166_666, "quote_mint": SOLANA_WRAPPED_SOL_MINT,
+        "surface_type": "pump_bonding_curve",
+        "direct_estimated_recovery_usd": 18.5,
+        "conversion_source": "shared_jupiter_wsol_usdc_minimum",
+        "conversion_input_raw": 1_000_000_000,
+        "conversion_min_usdc_raw": 185_000_000,
+        "conversion_completed_at": quote_at, "source_hashes": {str(curve): "hash"},
+    })
+    assert current_id is not None
+    assert store.sync_chain_meme_trader_local_critical_exit(
+        current_id, now=quote_at,
+    ) == 0
+    store.record_chain_meme_trader_account_snapshots(
+        now=quote_at, definition_version=Store.CHAIN_MEME_TRADER_V6_VERSION,
+    )
+    account = store.db.execute(
+        "SELECT * FROM chain_meme_trader_account_snapshots WHERE arm_id=? "
+        "ORDER BY id DESC LIMIT 1",
+        ("broad_launch__fast_escape",),
+    ).fetchone()
+    assert account["direct_estimated_equity_usd"] == pytest.approx(998.5)
+    assert account["direct_estimated_unrealized_pnl_usd"] == pytest.approx(-1.5)
+    assert account["indicative_equity_usd"] == pytest.approx(998.5)
+    assert account["indicative_total_pnl_usd"] == pytest.approx(-1.5)
+    assert account["indicative_position_count"] == 1
+    assert account["indicative_is_complete"] == 1
+
+    failed_at = quote_at + timedelta(seconds=1)
+    failed_id = store.record_chain_meme_trader_local_surface_quote({
+        **target, "context_slot": 101, "requested_at": failed_at,
+        "completed_at": failed_at, "age_ms": 10,
+        "status": "LOCAL_NO_DIRECT_CAPACITY",
+        "reason": "insufficient_real_quote_reserves",
+        "quote_mint": SOLANA_WRAPPED_SOL_MINT,
+        "surface_type": "pump_bonding_curve", "source_hashes": {str(curve): "hash2"},
+    })
+    assert failed_id is not None
+    assert store.sync_chain_meme_trader_local_critical_exit(
+        failed_id, now=failed_at,
+    ) == 0
+    position = store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE definition_version=?",
+        (Store.CHAIN_MEME_TRADER_V6_VERSION,),
+    ).fetchone()
+    assert position["status"] == "open"
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_marks WHERE definition_version=? "
+        "AND action='RUG_EXIT'",
+        (Store.CHAIN_MEME_TRADER_V6_VERSION,),
+    ).fetchone()[0] == 0
+    route_at = utcnow()
+    route_pool = str(Pubkey.new_unique())
+    attempt_id = store.start_chain_meme_trader_quote({
+        "definition_version": Store.CHAIN_MEME_TRADER_V6_VERSION,
+        "quote_kind": "valuation", "shadow_cohort_id": cohort_id,
+        "input_mint": str(mint), "output_mint": SOLANA_USDC_MINT,
+        "input_amount_raw": "900000000", "mark_ids": [], "slippage_bps": 400,
+    }, requested_at=route_at)
+    result_id = store.record_chain_meme_trader_quote_result(
+        attempt_id, status="quoted", output_amount_raw="19000000",
+        other_amount_threshold_raw="18240000", slippage_bps=400,
+        route_plan=[{
+            "percent": 100, "amm_key": route_pool, "label": "Pump.fun Amm",
+            "input_mint": str(mint), "output_mint": SOLANA_WRAPPED_SOL_MINT,
+            "in_amount": "900000000", "out_amount": "100000000",
+        }], completed_at=route_at,
+    )
+    assert result_id is not None
+    assert json.loads(store.db.execute(
+        "SELECT route_plan_json FROM chain_meme_trader_quote_results WHERE id=?",
+        (result_id,),
+    ).fetchone()[0])[0]["amm_key"] == route_pool
+    route_target = store.chain_meme_trader_local_surface_targets()[0]
+    assert route_target["surface_type"] == "pumpswap_route_pool"
+    assert route_target["pool_address"] == route_pool
+    assert route_target["source_result_id"] == result_id
+    store.close()
+
+
+def test_onchain_narrative_runner_pairs_only_new_exact_buys_and_fixed_baseline_exit(
     tmp_path: Path,
 ):
     store = Store(tmp_path / "narrative-runner.sqlite3", initial_cash_usd=1000)
@@ -3653,7 +7853,7 @@ def test_onchain_narrative_runner_pairs_only_new_exact_buys_and_requires_economi
         chain="solana", address="Q" * 32, name="New Narrative", source="fixture"
     )
     opened_at = utcnow()
-    buy_id, entry_snapshot_id = insert_strategy2_buy(2, token, 102, opened_at)
+    buy_id, _ = insert_strategy2_buy(2, token, 102, opened_at)
     assert buy_id > old_buy_id
     assert store.enroll_onchain_paper_narrative_runner() == {
         "inserted": 1, "rejected": 0,
@@ -3679,65 +7879,34 @@ def test_onchain_narrative_runner_pairs_only_new_exact_buys_and_requires_economi
     assert pairing["runner_activation_count"] == 0
     assert pairing["narrative_evidence_status"] == "not_mature_not_enabled"
 
+    closed_at = utcnow()
     with store.db:
         store.db.execute(
-            """
-            INSERT INTO onchain_paper_exit_challenger_positions(
-                definition_version,shadow_cohort_id,token_id,source_buy_trade_id,
-                baseline_quote_result_id,entry_snapshot_id,entry_signal_price_usd,
-                initial_amount_raw,remaining_amount_raw,stake_usd,
-                entry_network_fee_usd,highest_signal_price_usd,status,opened_at
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?, 'open',?)
-            """,
+            "UPDATE onchain_paper_exploration_positions SET status='closed',"
+            "exit_quote_result_id=202,exit_horizon_minutes=15,exit_usdc=19.99,"
+            "realized_pnl_usd=-15.02,closed_at=?,close_reason=? "
+            "WHERE definition_version=? AND shadow_cohort_id=2",
             (
-                Store.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION, 2, token.token_id,
-                buy_id, 102, entry_snapshot_id, 1.0, "900000000", "900000000",
-                35.0, 0.01, 1.0, iso(opened_at),
+                iso(closed_at), "first_economic_jupiter_exit_15m",
+                Store.ONCHAIN_PAPER_EXPLORATION_VERSION,
             ),
         )
-    mark_time = utcnow()
-    stop_snapshot_id = store.add_snapshot(TokenSnapshot(
-        "solana", token.address, 0.5, 20_000, 50_000, 1_000, 2, 8,
-        observed_at=mark_time, ingested_at=mark_time, provider="dexscreener",
-    ))
-    mark = store.record_onchain_paper_exit_challenger_mark(
-        2, snapshot_id=stop_snapshot_id,
-        evaluated_at=mark_time + timedelta(seconds=1),
-    )
-    assert mark["action"] == "HARD_STOP"
-    task = store.due_onchain_paper_exit_challenger_quotes(
-        now=mark_time + timedelta(seconds=2)
-    )[0]
-    requested_at = mark_time + timedelta(seconds=2)
-    attempt_id = store.start_onchain_paper_exit_challenger_quote_attempt(
-        task, requested_at=requested_at,
-    )
-    store.record_onchain_paper_exit_challenger_quote_result(
-        task, attempt_id=attempt_id, status="quoted",
-        output_amount_raw="1200", other_amount_threshold_raw="1000",
-        slippage_bps=400, completed_at=requested_at + timedelta(seconds=1),
-    )
-    uneconomic = store.db.execute(
-        "SELECT * FROM onchain_paper_exit_challenger_quote_results WHERE attempt_id=?",
-        (attempt_id,),
-    ).fetchone()
-    assert uneconomic["economic_status"] == "quoted_but_uneconomic"
-    assert len(store.onchain_paper_narrative_runner_trades()) == 1
-    assert store.onchain_paper_narrative_runner_positions()[0]["status"] == "baseline"
-    assert store.onchain_paper_narrative_runner_account()["cash_usd"] == pytest.approx(
-        964.99
-    )
-
-    retry_at = requested_at + timedelta(seconds=17)
-    retry = store.due_onchain_paper_exit_challenger_quotes(now=retry_at)[0]
-    retry_attempt_id = store.start_onchain_paper_exit_challenger_quote_attempt(
-        retry, requested_at=retry_at,
-    )
-    store.record_onchain_paper_exit_challenger_quote_result(
-        retry, attempt_id=retry_attempt_id, status="quoted",
-        output_amount_raw="21000000", other_amount_threshold_raw="20000000",
-        slippage_bps=400, completed_at=retry_at + timedelta(seconds=1),
-    )
+        store.db.execute(
+            """
+            INSERT INTO onchain_paper_exploration_trades(
+                definition_version,shadow_cohort_id,token_id,quote_result_id,
+                side,horizon_minutes,gross_usd,network_fee_usd,
+                net_cash_flow_usd,realized_pnl_usd,reason,created_at
+            ) VALUES(?,?,?,?, 'SELL',15,20,0.01,19.99,-15.02,?,?)
+            """,
+            (
+                Store.ONCHAIN_PAPER_EXPLORATION_VERSION, 2, token.token_id, 202,
+                "first_economic_jupiter_exit_15m", iso(closed_at),
+            ),
+        )
+    assert store.sync_onchain_paper_narrative_runner() == {
+        "examined": 1, "applied": 1,
+    }
     closed = store.onchain_paper_narrative_runner_positions()[0]
     assert closed["status"] == "closed"
     assert closed["remaining_amount_raw"] == "0"
@@ -6389,20 +10558,92 @@ def test_jupiter_quote_is_normalized_and_never_exposes_transaction():
             }
 
     class Http:
+        def __init__(self): self.headers = []
         async def get(self, url, **kwargs):
             assert url == JupiterQuoteClient.BASE
             assert kwargs["params"] == {
                 "inputMint": "SOL", "outputMint": "TOKEN", "amount": 100,
                 "slippageBps": 100,
             }
+            self.headers.append(kwargs.get("headers"))
             return Response()
 
-    result = asyncio.run(JupiterQuoteClient(Http()).quote(" SOL ", "TOKEN", 100, slippage_bps=100))
+    http = Http()
+    result = asyncio.run(JupiterQuoteClient(http).quote(" SOL ", "TOKEN", 100, slippage_bps=100))
     assert result["out_amount"] == "90"
     assert result["price_impact_bps"] == pytest.approx(1000.0)
     assert result["price_impact_source"] == "priceImpactPct_decimal_ratio"
     assert result["route_plan"][0]["amm_key"] == "amm"
     assert "transaction" not in result and "requestId" not in result
+    assert http.headers == [None]
+    keyed_http = Http()
+    asyncio.run(JupiterQuoteClient(keyed_http, "test-key").quote(
+        "SOL", "TOKEN", 100, slippage_bps=100,
+    ))
+    assert keyed_http.headers == [{"x-api-key": "test-key"}]
+
+
+def test_zerox_price_is_amount_specific_cost_aware_and_secret_free():
+    stable = "0x" + "11" * 20
+    token = "0x" + "22" * 20
+
+    class Response:
+        def raise_for_status(self): return None
+        def json(self):
+            return {
+                "blockNumber": "123",
+                "buyAmount": "950",
+                "minBuyAmount": "912",
+                "buyToken": token,
+                "sellAmount": "20000000",
+                "sellToken": stable,
+                "gas": "210000",
+                "gasPrice": "3000000000",
+                "totalNetworkFee": "630000000000000",
+                "liquidityAvailable": True,
+                "issues": {
+                    "allowance": {"actual": "0", "spender": "0x" + "33" * 20},
+                    "simulationIncomplete": False,
+                },
+                "route": {"fills": [{
+                    "from": stable, "to": token,
+                    "source": "PancakeSwap_V3", "proportionBps": "10000",
+                }]},
+                "tokenMetadata": {
+                    "sellToken": {"buyTaxBps": "0", "sellTaxBps": "0"},
+                    "buyToken": {"buyTaxBps": "100", "sellTaxBps": "250"},
+                },
+                "transaction": {"data": "secret-calldata"},
+                "zid": "secret-request-id",
+            }
+
+    class Client:
+        async def get(self, url, *, params, headers):
+            assert url == EvmZeroXPriceClient.URL
+            assert params == {
+                "chainId": "56", "sellToken": stable, "buyToken": token,
+                "sellAmount": "20000000", "slippageBps": "400",
+            }
+            assert headers == {"0x-api-key": "test-key", "0x-version": "v2"}
+            return Response()
+
+    class Http:
+        client = Client()
+
+    result = asyncio.run(
+        EvmZeroXPriceClient(Http(), "test-key").price(
+            "bsc", stable, token, 20_000_000, slippage_bps=400
+        )
+    )
+    assert result["status"] == "priced"
+    assert result["minimum_buy_amount_raw"] == "912"
+    assert result["buy_token_tax"]["sell_tax_bps"] == 250
+    assert result["total_network_fee_native_raw"] == "630000000000000"
+    assert result["allowance_required"] is True
+    assert result["execution_scope"] == "amount_specific_aggregator_indicative_price"
+    assert result["firm_quote"] is False
+    assert "transaction" not in result and "zid" not in result
+    assert "api_key" not in result
 
 
 def test_evm_uniswap_v3_quote_uses_mixed_fee_fixed_block_and_two_sided_slippage():
@@ -6620,6 +10861,174 @@ def test_evm_route_store_is_forward_only_append_only_and_strategy_neutral(tmp_pa
             "UPDATE onchain_only_evm_route_quote_results SET economic_status='known' WHERE id=?",
             (result_id,),
         )
+    store.close()
+
+
+def test_zerox_observer_store_is_forward_only_append_only_and_strategy_neutral(tmp_path: Path):
+    store = Store(tmp_path / "zerox-observer.sqlite3", initial_cash_usd=1000)
+    store.register_onchain_only_shadow(
+        momentum_threshold=80, paper_stake_usd=20, min_liquidity_usd=12_000,
+        max_liquidity_impact_pct=0.0025, slippage_rate=0.04,
+        default_fee_bps=60, pump_fee_bps=125, max_tax_pct=10,
+        max_quote_delay_seconds=45,
+    )
+
+    def enroll(address: str, observed_at: datetime, key: str) -> int:
+        token = TokenCandidate(chain="bsc", address=address, name=key, source="fixture")
+        store.upsert_token(token, seen_at=observed_at)
+        round_id = store.start_token_discovery_round(
+            provider="fixture", surface="fixture", mode="poll", chain_scope="bsc",
+            started_at=observed_at,
+        )
+        store.add_token_discovery_exposure(
+            round_id, token_id=token.token_id, chain="bsc", role="new_token",
+            first_local_discovery=True, new_token=True, observed_at=observed_at,
+        )
+        store.finish_token_discovery_round(round_id, status="completed", returned_count=1)
+        snapshot_id = store.add_snapshot(TokenSnapshot(
+            "bsc", address, 1.0, 20_000, 100_000, 30_000, 30, 10,
+            observed_at=observed_at, ingested_at=observed_at, provider="dexscreener",
+        ))
+        transition_id = store.record_token_universe_funnel_transition(
+            token.token_id, stage="context_trigger_evaluation", status="eligible",
+            reason_code="onchain_momentum", evaluation_key=f"zerox:{key}",
+            observed_at=observed_at, ingested_at=observed_at,
+            source_table="token_context_trigger", snapshot_id=snapshot_id,
+            metadata={"trigger_kind": "onchain_momentum", "momentum_score": 90.0},
+        )
+        cohort_id = store.enroll_onchain_only_shadow(transition_id)
+        assert cohort_id is not None
+        return int(cohort_id)
+
+    now = utcnow()
+    legacy_id = enroll("0x" + "aa" * 20, now, "legacy")
+    registration = store.register_onchain_only_evm_aggregator_price(
+        EvmUniswapV3QuoteClient.public_network_definitions(),
+        paper_stake_usd=20, slippage_bps=400,
+        max_queue_delay_seconds=30, max_total_delay_seconds=45,
+    )
+    assert int(registration["activation_shadow_cohort_id"]) == legacy_id
+    future_id = enroll("0x" + "bb" * 20, utcnow(), "future")
+    anchor = parse_time(store.db.execute(
+        "SELECT trigger_recorded_at FROM onchain_only_shadow_cohorts WHERE id=?",
+        (future_id,),
+    ).fetchone()[0])
+    tasks = store.due_onchain_only_evm_aggregator_prices(now=anchor)
+    assert [task["shadow_cohort_id"] for task in tasks] == [future_id]
+    task = tasks[0]
+    assert task["sell_amount_raw"] == str(20 * 10**18)
+    decisions_before = store.db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
+    trades_before = store.db.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
+    attempt_id = store.start_onchain_only_evm_aggregator_price_attempt(
+        task, requested_at=anchor + timedelta(seconds=1)
+    )
+    result_id = store.record_onchain_only_evm_aggregator_price(
+        task, terminal_status="priced", attempt_id=attempt_id,
+        requested_at=anchor + timedelta(seconds=1),
+        completed_at=anchor + timedelta(seconds=2),
+        result={
+            "minimum_buy_amount_raw": "900", "gas": 210_000,
+            "gas_price_raw": "3000000000",
+            "total_network_fee_native_raw": "630000000000000",
+            "firm_quote": False, "transaction_built": False,
+            "decision_eligible": False, "affects": "none",
+        },
+    )
+    row = store.db.execute(
+        "SELECT * FROM onchain_only_evm_aggregator_price_results WHERE id=?", (result_id,)
+    ).fetchone()
+    assert row["terminal_status"] == "priced"
+    assert row["decision_eligible"] == 0 and row["affects"] == "none"
+    normalized = json.loads(row["normalized_result_json"])
+    assert "transaction" not in normalized and "api_key" not in normalized
+    summary = Store.onchain_only_evm_aggregator_price_summary_from_connection(store.db)
+    assert summary["attempts"] == 1 and summary["results"] == 1
+    assert summary["terminal_counts"] == {"priced": 1}
+    assert store.db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == decisions_before
+    assert store.db.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == trades_before
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute(
+            "UPDATE onchain_only_evm_aggregator_price_results SET affects='paper' WHERE id=?",
+            (result_id,),
+        )
+    store.close()
+
+
+def test_robinhood_official_stock_registry_excludes_exact_addresses_before_route(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "robinhood-registry.sqlite3", initial_cash_usd=1000)
+    store.register_onchain_only_shadow(
+        momentum_threshold=80, paper_stake_usd=20, min_liquidity_usd=12_000,
+        max_liquidity_impact_pct=0.0025, slippage_rate=0.04,
+        default_fee_bps=60, pump_fee_bps=125, max_tax_pct=10,
+        max_quote_delay_seconds=45,
+    )
+    store.register_onchain_only_evm_route_quote(
+        EvmUniswapV3QuoteClient.public_network_definitions(),
+        paper_stake_usd=20, slippage_bps=400,
+        max_queue_delay_seconds=30, max_total_delay_seconds=45,
+    )
+
+    def enroll(address: str, key: str) -> tuple[int, datetime]:
+        observed = utcnow()
+        token = TokenCandidate(
+            chain="robinhood", address=address, name=f"RH {key}", source="fixture"
+        )
+        store.upsert_token(token, seen_at=observed)
+        round_id = store.start_token_discovery_round(
+            provider="fixture", surface="fixture", mode="poll",
+            chain_scope="robinhood", started_at=observed,
+        )
+        store.add_token_discovery_exposure(
+            round_id, token_id=token.token_id, chain="robinhood", role="new_token",
+            first_local_discovery=True, new_token=True, observed_at=observed,
+        )
+        store.finish_token_discovery_round(round_id, status="completed", returned_count=1)
+        snapshot_id = store.add_snapshot(TokenSnapshot(
+            "robinhood", address, 1.0, 20_000, 100_000, 30_000, 30, 10,
+            observed_at=observed, ingested_at=observed, provider="dexscreener",
+        ))
+        transition_id = store.record_token_universe_funnel_transition(
+            token.token_id, stage="context_trigger_evaluation", status="eligible",
+            reason_code="onchain_momentum", evaluation_key=f"rh-route:{key}",
+            observed_at=observed, ingested_at=observed,
+            source_table="token_context_trigger", snapshot_id=snapshot_id,
+            metadata={"trigger_kind": "onchain_momentum", "momentum_score": 90.0},
+        )
+        cohort_id = store.enroll_onchain_only_shadow(transition_id)
+        assert cohort_id is not None
+        return int(cohort_id), observed
+
+    official = "0x" + "ab" * 20
+    official_id, official_at = enroll(official, "official")
+    assert store.due_onchain_only_evm_route_quotes(now=official_at) == []
+    run_id = store.record_robinhood_stock_token_registry({
+        "source_url": RobinhoodStockTokenRegistryClient.SOURCE_URL,
+        "requested_at": iso(official_at - timedelta(seconds=1)),
+        "completed_at": iso(official_at),
+        "payload_sha256": "1" * 64,
+        "asset_count": 1,
+        "entries": [{
+            "asset_id": "stock-1", "token_symbol": "TEST",
+            "token_name": "Test Stock Token", "contract_address": official,
+            "chain_id": 4663, "asset_status": "ASSET_STATUS_ACTIVE",
+        }],
+    })
+    assert run_id > 0
+    assert store.due_onchain_only_evm_route_quotes(now=official_at) == []
+    meme_id, meme_at = enroll("0x" + "cd" * 20, "meme")
+    tasks = store.due_onchain_only_evm_route_quotes(now=meme_at)
+    assert [item["shadow_cohort_id"] for item in tasks] == [meme_id]
+    summary = Store.robinhood_stock_token_registry_summary_from_connection(store.db)
+    assert summary["exclusion_ready"] is True
+    assert summary["entry_count"] == 1
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute(
+            "UPDATE robinhood_stock_token_registry_entries SET token_symbol='BAD' "
+            "WHERE run_id=?", (run_id,),
+        )
+    assert official_id != meme_id
     store.close()
 
 
@@ -7860,6 +12269,297 @@ def test_four_character_person_name_requires_more_than_text_overlap(tmp_path: Pa
     asyncio.run(scenario())
 
 
+def test_candidate_retrieval_uses_asof_exact_source_link_as_identity_only(tmp_path: Path):
+    async def scenario():
+        store = Store(tmp_path / "source-link-identity.sqlite3")
+        observed = utcnow() - timedelta(minutes=1)
+        public_url = "https://x.com/Example/status/2095436641124876646"
+        tokens = [
+            TokenCandidate(
+                chain="solana", address=address, name="Viral Otter", symbol="OTTER",
+                created_at=observed - timedelta(minutes=1),
+            )
+            for address in (str(Pubkey.new_unique()), str(Pubkey.new_unique()))
+        ]
+        round_id = store.start_token_discovery_round(
+            provider="pumpportal", surface="create", mode="stream_window",
+            chain_scope="solana", started_at=observed,
+        )
+        snapshots = {}
+        for token in tokens:
+            store.upsert_token(token, seen_at=observed)
+            exposure_id = store.add_token_discovery_exposure(
+                round_id, token_id=token.token_id, chain="solana", role="create",
+                first_local_discovery=True, new_token=True, observed_at=observed,
+            )
+            fingerprint, _ = store.upsert_token_source_link(
+                {
+                    "token_id": token.token_id,
+                    "provider": "pumpportal",
+                    "discovery_surface": "launch_metadata",
+                    "role": "identity",
+                    "original_url": public_url,
+                    "normalized_url": public_url,
+                    "link_kind": "social_post",
+                    "platform": "x",
+                    "verification_status": "provider_metadata",
+                },
+                observed_at=observed,
+            )
+            assert exposure_id is not None
+            assert store.link_token_discovery_exposure_source_links(
+                exposure_id, [fingerprint], observed_at=observed,
+            ) == 1
+            snapshots[token.token_id] = TokenSnapshot(
+                "solana", token.address, 0.001, 30_000, 100_000, 20_000, 40, 10,
+                observed_at=observed,
+            )
+
+        assert store.token_identity_set_for_public_items(
+            [public_url], available_at=observed, allowed_chains=["solana"]
+        ) == []
+
+        event_id, _, _ = EventEngine(store).ingest(
+            Observation(
+                source="browser:x:example", source_kind="social",
+                title="Viral Otter becomes a new meme",
+                text="Viral Otter becomes a new meme",
+                url=f"{public_url}/photo/1?s=46",
+                published_at=observed, observed_at=observed,
+                ingested_at=observed, availability_proof="local_receive",
+                role="feature",
+            )
+        )
+
+        class FakeDex:
+            async def quote(self, chain, address):
+                token_id = f"{chain}:{address}"
+                token = next((item for item in tokens if item.token_id == token_id), None)
+                return (token, snapshots[token_id]) if token is not None else None
+
+            async def search(self, query, limit=25):
+                return []
+
+        class FakeSafety:
+            async def check(self, snapshot):
+                return True, []
+
+        class FakeAgent:
+            def ask(self, payload, tier="low"):
+                return None
+
+        class NoJupiter:
+            async def quote(self, *args, **kwargs):
+                raise AssertionError("canonical ambiguity must block route probing")
+
+        decision = await CandidateEvaluator(
+            store, FakeDex(), FakeSafety(),
+            {
+                "chains": ["solana"], "min_match_score": 1,
+                "min_candidate_score": 1, "min_canonical_margin": 5,
+                "agent_tie_threshold": 0, "max_alias_queries": 0,
+                "token_watch_minutes": 0, "max_source_age_minutes": 30,
+            },
+            FakeAgent(), NoJupiter(),
+            {"max_position_usd": 20, "slippage_rate": 0.04,
+             "pump_swap_fee_bps": 125, "max_quote_age_seconds": 45},
+        ).discover_and_decide(store.get_event(event_id))
+        assert decision is not None and decision.action == "WAIT"
+        assert decision.rejected_reasons == ["canonical_token_ambiguous"]
+        assert "exact_source_link_identity_only" in decision.reasons
+        assert "identity_set_fanout=2" in decision.reasons
+        ranking = store.candidate_ranking(event_id)
+        assert ranking is not None and ranking["candidate_count_total"] == 2
+        assert {
+            item["token_id"] for item in ranking["candidates"]
+        } == {token.token_id for token in tokens}
+        store.close()
+
+    asyncio.run(scenario())
+
+
+def test_exact_source_link_identity_can_probe_route_without_bypassing_buy_flow_safety(
+    tmp_path: Path,
+):
+    async def scenario():
+        store = Store(tmp_path / "exact-identity-route.sqlite3")
+        observed = utcnow() - timedelta(minutes=1)
+        public_url = "https://x.com/example/status/2095436641124876646"
+        token = TokenCandidate(
+            chain="solana", address=f"{str(Pubkey.new_unique())[:-4]}pump",
+            name="Viral Otter", symbol="OTTER",
+            created_at=observed - timedelta(minutes=1),
+        )
+        store.upsert_token(token, seen_at=observed)
+        round_id = store.start_token_discovery_round(
+            provider="pumpportal", surface="create", mode="stream_window",
+            chain_scope="solana", started_at=observed,
+        )
+        exposure_id = store.add_token_discovery_exposure(
+            round_id, token_id=token.token_id, chain="solana", role="create",
+            first_local_discovery=True, new_token=True, observed_at=observed,
+        )
+        fingerprint, _ = store.upsert_token_source_link(
+            {
+                "token_id": token.token_id, "provider": "pumpportal",
+                "discovery_surface": "launch_metadata", "role": "identity",
+                "original_url": public_url, "normalized_url": public_url,
+                "link_kind": "social_post", "platform": "x",
+                "verification_status": "provider_metadata",
+            },
+            observed_at=observed,
+        )
+        assert exposure_id is not None
+        assert store.link_token_discovery_exposure_source_links(
+            exposure_id, [fingerprint], observed_at=observed,
+        ) == 1
+        event_id, _, _ = EventEngine(store).ingest(Observation(
+            source="browser:x:example", source_kind="social",
+            title="Viral Otter becomes a new meme",
+            text="Viral Otter becomes a new meme",
+            url=public_url, published_at=observed, observed_at=observed,
+            ingested_at=observed, availability_proof="local_receive", role="feature",
+        ))
+        snapshot = TokenSnapshot(
+            "solana", token.address, 0.00001, None, 100_000, 30_000, 20, 30,
+            observed_at=observed, ingested_at=observed, provider="dexscreener",
+            raw={"pair": {"dexId": "pumpfun"}},
+        )
+
+        class Dex:
+            async def quote(self, chain, address):
+                return (token, snapshot) if address == token.address else None
+
+            async def search(self, query, limit=25):
+                return []
+
+        class Jupiter:
+            calls = 0
+
+            async def quote(self, input_mint, output_mint, amount, *, slippage_bps):
+                self.calls += 1
+                requested = utcnow()
+                if self.calls == 1:
+                    out_amount, minimum = "1000000", "950000"
+                else:
+                    assert amount == 950000
+                    out_amount, minimum = "19500000", "19000000"
+                completed = utcnow()
+                return {
+                    "requested_at": iso(requested), "completed_at": iso(completed),
+                    "input_mint": input_mint, "output_mint": output_mint,
+                    "in_amount": str(amount), "out_amount": out_amount,
+                    "other_amount_threshold": minimum,
+                    "route_plan": [{"label": "fixture"}],
+                    "slippage_bps": slippage_bps,
+                }
+
+        safety = SafetyChecker(None, {
+            "min_liquidity_usd": 12_000, "min_5m_transactions": 8,
+            "min_buy_ratio": 0.55, "goplus_solana": False, "rugcheck": False,
+            "require_solana_report": False,
+        })
+        evaluator = CandidateEvaluator(
+            store, Dex(), safety,
+            {
+                "chains": ["solana"], "min_match_score": 1,
+                "min_candidate_score": 1, "min_canonical_margin": 4,
+                "max_alias_queries": 0, "token_watch_minutes": 0,
+                "max_source_age_minutes": 30,
+            },
+            None, Jupiter(),
+            {"max_position_usd": 20, "slippage_rate": 0.04,
+             "pump_swap_fee_bps": 125, "max_quote_age_seconds": 45},
+        )
+        decision = await evaluator.discover_and_decide(store.get_event(event_id))
+        expected_match = evaluator._match(
+            "Viral Otter becomes a new meme", ["viral otter becomes a new meme"],
+            token, set(),
+        )
+        expected_score, _ = evaluator._quality(
+            store.get_event(event_id), token, snapshot, expected_match, 1,
+        )
+
+        assert decision is not None and decision.action == "REJECT"
+        assert decision.match_score == pytest.approx(expected_match)
+        assert decision.score == pytest.approx(expected_score)
+        assert decision.rejected_reasons == ["buy_flow_too_weak"]
+        assert "route_probe_relation=exact_source_link_identity" in decision.reasons
+        assert decision.route_probe_id is not None
+        probe = store.event_context_jupiter_route_probe(decision.route_probe_id)
+        assert probe["definition_version"] == (
+            "event-context-jupiter-route/v2-exact-identity-addressable"
+        )
+        assert probe["status"] == "valid" and probe["decision_eligible"] == 1
+        store.close()
+
+    asyncio.run(scenario())
+
+
+def test_candidate_retrieval_reuses_unchanged_no_match_until_bounded_checkpoint(tmp_path: Path):
+    async def scenario():
+        store = Store(tmp_path / "candidate-retrieval-reuse.sqlite3")
+        observed = utcnow() - timedelta(minutes=1)
+        event_id, _, _ = EventEngine(store).ingest(
+            Observation(
+                source="rss:example", source_kind="news",
+                title="Quokka parade becomes a new meme",
+                text="Quokka parade becomes a new meme",
+                url="https://example.com/quokka",
+                published_at=observed, observed_at=observed,
+                ingested_at=observed, availability_proof="local_poll",
+                role="feature",
+            )
+        )
+
+        class FakeDex:
+            def __init__(self):
+                self.search_calls = 0
+
+            async def quote(self, chain, address):
+                return None
+
+            async def search(self, query, limit=25):
+                self.search_calls += 1
+                return []
+
+        class FakeSafety:
+            async def check(self, snapshot):
+                return True, []
+
+        class FakeAgent:
+            def ask(self, payload, tier="low"):
+                return None
+
+        dex = FakeDex()
+        evaluator = CandidateEvaluator(
+            store, dex, FakeSafety(),
+            {
+                "chains": ["solana"], "max_alias_queries": 2,
+                "token_watch_minutes": 240, "max_source_age_minutes": 30,
+                "unchanged_wait_reuse_seconds": 300,
+            },
+            FakeAgent(),
+        )
+        first = await evaluator.discover_and_decide(store.get_event(event_id))
+        first_search_calls = dex.search_calls
+        second = await evaluator.discover_and_decide(store.get_event(event_id))
+
+        assert first is not None and first.reasons == ["no_matching_token"]
+        assert first_search_calls > 0
+        assert dex.search_calls == first_search_calls
+        assert second is not None
+        assert second.reasons == [
+            "no_matching_token", "unchanged_retrieval_terminal_reused"
+        ]
+        ranking = store.candidate_ranking(event_id)
+        assert ranking is not None
+        assert ranking["retrieval_cache"]["broad_retrieval_at"]
+        store.close()
+
+    asyncio.run(scenario())
+
+
 def _record_kol_attention_point(
     store: Store, event_id: int, observation_id: int, attention: float,
 ) -> None:
@@ -8897,6 +13597,612 @@ def test_required_external_safety_reports_fail_closed():
     asyncio.run(scenario())
 
 
+def test_jupiter_route_truth_is_separate_from_selected_holding_surface():
+    def quote(route):
+        return {
+            "input_mint": "USDC", "output_mint": "TOKEN", "in_amount": "20000000",
+            "output_amount_raw": "1000", "other_amount_threshold": "900",
+            "route_plan": route,
+        }
+
+    direct = SafetyChecker.classify_jupiter_route_truth(quote([{
+        "amm_key": "POOL", "input_mint": "USDC", "output_mint": "TOKEN",
+        "in_amount": "20000000", "out_amount": "1000",
+    }]), selected_surface_pool="POOL")
+    assert direct["route_verifiability"] == "exact_onchain_legs"
+    assert direct["surface_relation"] == "contains_surface"
+
+    multi = SafetyChecker.classify_jupiter_route_truth(quote([
+        {"amm_key": "OTHER", "input_mint": "USDC", "output_mint": "MID",
+         "in_amount": "20000000", "out_amount": "5000"},
+        {"amm_key": "POOL", "input_mint": "MID", "output_mint": "TOKEN",
+         "in_amount": "5000", "out_amount": "1000"},
+    ]), selected_surface_pool="POOL")
+    assert multi["route_verifiability"] == "exact_onchain_legs"
+    assert multi["surface_relation"] == "multi_surface"
+    assert SafetyChecker.token_adjacent_route_pool(
+        quote([
+            {"amm_key": "OTHER", "input_mint": "USDC", "output_mint": "MID",
+             "in_amount": "20000000", "out_amount": "5000"},
+            {"amm_key": "POOL", "input_mint": "MID", "output_mint": "TOKEN",
+             "in_amount": "5000", "out_amount": "1000"},
+        ]), token_mint="TOKEN", direction="BUY",
+    ) == "POOL"
+
+    excluded = SafetyChecker.classify_jupiter_route_truth(quote([{
+        "amm_key": "OTHER", "input_mint": "USDC", "output_mint": "TOKEN",
+        "in_amount": "20000000", "out_amount": "1000",
+    }]), selected_surface_pool="POOL")
+    assert excluded["surface_relation"] == "excludes_surface"
+
+    opaque = SafetyChecker.classify_jupiter_route_truth(quote([{
+        "label": "Meta Router", "input_mint": "USDC", "output_mint": "TOKEN",
+        "in_amount": "20000000", "out_amount": "1000",
+    }]), selected_surface_pool="POOL")
+    assert opaque["route_verifiability"] == "meta_aggregator_opaque"
+    assert opaque["surface_relation"] == "opaque_router"
+
+    incoherent = SafetyChecker.classify_jupiter_route_truth(quote([{
+        "amm_key": "OTHER", "input_mint": "MID", "output_mint": "TOKEN",
+        "in_amount": "5000", "out_amount": "1000",
+    }]), selected_surface_pool="POOL")
+    assert incoherent["route_verifiability"] == "unsupported"
+    assert incoherent["surface_relation"] == "opaque_router"
+
+
+def test_market_surface_safety_does_not_depend_on_jupiter_route():
+    snap = TokenSnapshot("solana", "A" * 32, 1, 20_000, 100_000, 5_000, 20, 5)
+    snap.raw.update({
+        "pair": {"dexId": "pumpswap", "pairAddress": "POOL", "labels": ["amm"]},
+        "goplus_solana": {},
+        "rugcheck": {"tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"},
+        "solana_pool_rpc": {
+            "status": "verified", "canonical_migration_structure": True,
+            "vaults_verified": True, "burned_lp_pct": 0.0,
+            "program_owner": SafetyChecker.PUMPSWAP_PROGRAM,
+        },
+        "solana_token_rpc": {
+            "status": "verified", "program_owner": SafetyChecker.SPL_TOKEN_PROGRAM,
+            "mint_authority": None, "freeze_authority": None, "extension_types": [],
+        },
+    })
+    surface = SafetyChecker.solana_market_surface_assessment(snap)
+    assert surface["status"] == "PASS"
+    assert "exact_sell_preflight" not in surface["facts"]
+    assert surface["facts"]["custody_class"] == "pump_protocol_canonical_pool"
+
+    snap.raw["pair"]["dexId"] = "jupiter-route-surface"
+    snap.raw.pop("goplus_solana")
+    surface = SafetyChecker.solana_market_surface_assessment(snap)
+    assert surface["status"] == "PASS"
+    assert "pool_custody_unknown" not in surface["reasons"]
+    assert "token_control_report_unavailable" not in surface["reasons"]
+    assert surface["facts"]["venue"] == "pumpswap"
+    pretrade = SafetyChecker.solana_pretrade_rug_assessment(
+        snap,
+        exact_sell_preflight={
+            "status": "quoted", "minimum_output_raw": 19_000_000,
+            "net_recovery_usd": 18.6,
+        },
+    )
+    assert pretrade["status"] == "PASS"
+    assert "pool_custody_unknown" not in pretrade["reasons"]
+    assert "token_control_report_unavailable" not in pretrade["reasons"]
+    assert pretrade["facts"]["venue"] == "pumpswap"
+
+    snap.raw["goplus_solana"] = {}
+    snap.raw["pair"]["dexId"] = "pumpswap"
+
+    snap.raw["solana_token_rpc"] = {
+        "status": "verified", "program_owner": SafetyChecker.SPL_TOKEN_2022_PROGRAM,
+        "mint_authority": None, "freeze_authority": None,
+        "extension_types": ["permanentDelegate"],
+    }
+    surface = SafetyChecker.solana_market_surface_assessment(snap)
+    assert surface["status"] == "REJECT"
+    assert "dangerous_token_2022_permanentdelegate" in surface["reasons"]
+
+    snap.raw["solana_token_rpc"]["extension_types"] = []
+    snap.raw["pair"]["dexId"] = "raydium"
+    snap.raw["solana_pool_rpc"]["program_owner"] = SafetyChecker.RAYDIUM_CPMM_PROGRAM
+    snap.raw["solana_pool_rpc"]["canonical_migration_structure"] = False
+    surface = SafetyChecker.solana_market_surface_assessment(snap)
+    assert surface["status"] == "REJECT"
+    assert "primary_surface_not_canonical_pumpswap" in surface["reasons"]
+
+
+def test_strategy_focus_registration_is_forward_and_immutable(tmp_path: Path):
+    store = Store(tmp_path / "focus.sqlite3", initial_cash_usd=1000)
+    first = store.register_strategy_focus()
+    assert first["definition_version"] == Store.STRATEGY_FOCUS_VERSION
+    assert first["activation_quote_result_id"] == 0
+    assert store.strategy_focus_active() is True
+    definition = json.loads(first["definition_json"])
+    assert definition["active_strategy_family"] == "token_only"
+    assert definition["primary_venue"] == "canonical_pumpswap"
+    assert definition["live_execution"] is False
+    assert store.register_strategy_focus()["registered_at"] == first["registered_at"]
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute(
+            "UPDATE strategy_focus_registrations SET registered_at='changed'"
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute("DELETE FROM strategy_focus_registrations")
+
+
+def test_route_and_surface_observations_are_forward_and_immutable(tmp_path: Path):
+    store = Store(tmp_path / "route-surface.sqlite3")
+    token = TokenCandidate("solana", "A" * 32, "Route Surface")
+    store.upsert_token(token)
+    first_snapshot = store.add_snapshot(TokenSnapshot(
+        "solana", token.address, 1, 20_000, 100_000, 5_000, 20, 5,
+        provider="fixture", raw={"pair": {"pairAddress": "POOL"}},
+    ))
+    store.register_route_surface_observations()
+    second_snapshot = store.add_snapshot(TokenSnapshot(
+        "solana", token.address, 1, 20_000, 100_000, 5_000, 20, 5,
+        provider="fixture", raw={"pair": {"pairAddress": "POOL"}},
+    ))
+    surface_id = store.record_market_surface_safety(
+        lane="fixture", quote_key="q1", token_id=token.token_id,
+        trigger_snapshot_id=first_snapshot, assessed_snapshot_id=second_snapshot,
+        assessment={"status": "PASS", "reasons": [], "facts": {"pool": "POOL"}},
+        observed_at=utcnow(),
+    )
+    route_id = store.record_execution_route_observation(
+        lane="fixture", quote_key="q1", token_id=token.token_id, direction="BUY",
+        classification={
+            "route_verifiability": "exact_onchain_legs", "surface_relation": "contains_surface",
+        },
+        observed_at=utcnow(),
+    )
+    assert surface_id and route_id
+    assert store.db.execute(
+        "SELECT status FROM execution_route_observations WHERE id=?", (route_id,)
+    ).fetchone()[0] == "PASS"
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute("UPDATE market_surface_safety_observations SET status='WAIT'")
+    with pytest.raises(sqlite3.IntegrityError):
+        store.db.execute("DELETE FROM execution_route_observations")
+    store.close()
+
+
+def test_onchain_primary_scalar_gate_boundaries_are_frozen():
+    allowed = Store.onchain_primary_scalar_gate_reasons(
+        pool_age_seconds=600, queue_delay_seconds=5, total_delay_seconds=10,
+        quoted_recovery_ratio=0.90, stress_recovery_ratio=0.85,
+        open_positions=4, daily_exposure_usd=80, new_exposure_usd=20,
+        exit_alert_pending=False,
+    )
+    assert allowed == []
+    rejected = Store.onchain_primary_scalar_gate_reasons(
+        pool_age_seconds=601, queue_delay_seconds=5.01, total_delay_seconds=10.01,
+        quoted_recovery_ratio=0.899, stress_recovery_ratio=0.849,
+        open_positions=5, daily_exposure_usd=100, new_exposure_usd=20,
+        exit_alert_pending=True,
+    )
+    assert "exact_pool_age_over_600s" in rejected
+    assert "entry_queue_over_5s" in rejected
+    assert "final_preflight_over_10s" in rejected
+    assert any(reason.startswith("excessive_immediate_roundtrip_loss:") for reason in rejected)
+    assert "primary_open_position_cap_5" in rejected
+    assert "primary_daily_new_exposure_cap_100" in rejected
+    assert "primary_exit_alert_pending" in rejected
+
+
+def test_solana_pretrade_rug_safety_is_venue_aware_and_requires_exact_sell():
+    raw = {
+        "pair": {
+            "dexId": "raydium", "pairAddress": "POOL", "labels": ["CPMM"],
+        },
+        "rugcheck": {
+            "lpLockedPct": 99.5,
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        },
+        "goplus_solana": {
+            "mintable": {"status": "0", "authority": []},
+            "freezable": {"status": "0", "authority": []},
+            "closable": {"status": "0", "authority": []},
+            "balance_mutable_authority": {"status": "0", "authority": []},
+            "non_transferable": "0", "transfer_hook": [], "creators": [],
+            "dex": [{"id": "POOL", "dex_name": "raydium", "burn_percent": 99.5}],
+        },
+    }
+    snap = TokenSnapshot("solana", "P" * 32, 1, 20_000, 100_000, 1000, 10, 2, raw=raw)
+    waiting = SafetyChecker.solana_pretrade_rug_assessment(snap)
+    assert waiting["status"] == "WAIT"
+    assert waiting["reasons"] == [
+        "pool_custody_rpc_unavailable", "exact_size_sell_preflight_missing",
+    ]
+    passed = SafetyChecker.solana_pretrade_rug_assessment(
+        snap,
+        exact_sell_preflight={
+            "status": "quoted", "minimum_output_raw": 19_000_000,
+            "net_recovery_usd": 18.6,
+        },
+    )
+    assert passed["status"] == "WAIT"
+    assert passed["facts"]["custody_class"] == "raydium_pool_custody_unverified"
+    assert "pool_custody_rpc_unavailable" in passed["reasons"]
+
+
+def test_pumpswap_label_alone_cannot_prove_canonical_custody():
+    raw = {
+        "pair": {"dexId": "pumpswap", "pairAddress": "POOL"},
+        "rugcheck": {
+            "lpLockedPct": 100,
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        },
+        "goplus_solana": {
+            "mintable": {"status": "0", "authority": []},
+            "freezable": {"status": "0", "authority": []},
+            "closable": {"status": "0", "authority": []},
+            "balance_mutable_authority": {"status": "0", "authority": []},
+            "non_transferable": "0", "transfer_hook": [], "creators": [],
+        },
+    }
+    snap = TokenSnapshot("solana", "P" * 32 + "pump", 1, 20_000, 100_000, 1000, 10, 2, raw=raw)
+    result = SafetyChecker.solana_pretrade_rug_assessment(
+        snap,
+        exact_sell_preflight={
+            "status": "quoted", "minimum_output_raw": 19_000_000,
+            "net_recovery_usd": 18.6,
+        },
+    )
+    assert result["status"] == "WAIT"
+    assert result["facts"]["custody_class"] == "pump_pool_custody_unverified"
+    assert "pool_custody_rpc_unavailable" in result["reasons"]
+
+
+def test_pumpswap_rpc_canonical_pool_requires_exact_pda_vaults_and_burned_lp():
+    async def scenario():
+        pump_program = Pubkey.from_string(SafetyChecker.PUMP_PROGRAM)
+        amm_program = Pubkey.from_string(SafetyChecker.PUMPSWAP_PROGRAM)
+        base_mint = Pubkey.new_unique()
+        quote_mint = Pubkey.new_unique()
+        creator, _ = Pubkey.find_program_address(
+            [b"pool-authority", bytes(base_mint)], pump_program
+        )
+        pool, pool_bump = Pubkey.find_program_address(
+            [b"pool", (0).to_bytes(2, "little"), bytes(creator), bytes(base_mint), bytes(quote_mint)],
+            amm_program,
+        )
+        lp_mint, base_vault, quote_vault = (
+            Pubkey.new_unique(), Pubkey.new_unique(), Pubkey.new_unique()
+        )
+        data = bytearray(247)
+        data[:8] = SafetyChecker.PUMPSWAP_POOL_DISCRIMINATOR
+        data[8] = pool_bump
+        data[9:11] = (0).to_bytes(2, "little")
+        for offset, value in (
+            (11, creator), (43, base_mint), (75, quote_mint), (107, lp_mint),
+            (139, base_vault), (171, quote_vault),
+        ):
+            data[offset:offset + 32] = bytes(value)
+        data[203:211] = (4_194_352_106_721).to_bytes(8, "little")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            if isinstance(body, dict):
+                return httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "result": {"context": {"slot": 123}, "value": {
+                        "owner": str(amm_program),
+                        "data": [base64.b64encode(data).decode(), "base64"],
+                    }},
+                })
+            return httpx.Response(200, json=[
+                {"jsonrpc": "2.0", "id": 2, "result": {"value": [
+                    {"data": {"parsed": {"info": {"mint": str(base_mint), "owner": str(pool)}}}},
+                    {"data": {"parsed": {"info": {"mint": str(quote_mint), "owner": str(pool)}}}},
+                    {"owner": SafetyChecker.SPL_TOKEN_PROGRAM, "data": {"parsed": {"info": {
+                        "mintAuthority": None, "freezeAuthority": None,
+                    }}}},
+                ]}},
+                {"jsonrpc": "2.0", "id": 3, "result": {"value": {"amount": "0"}}},
+            ])
+
+        class FakeHttp:
+            client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+        checker = SafetyChecker(FakeHttp(), {})
+        snap = TokenSnapshot(
+            "solana", str(base_mint), 1, 20_000, 100_000, 1000, 10, 2,
+            raw={"pair": {
+                "dexId": "pumpswap", "pairAddress": str(pool),
+                "baseToken": {"address": str(base_mint)},
+                "quoteToken": {"address": str(quote_mint)},
+            }},
+        )
+        await checker.enrich_solana_pool_custody(snap)
+        assert snap.raw["solana_pool_rpc"]["status"] == "verified"
+        assert snap.raw["solana_pool_rpc"]["canonical_migration_structure"] is True
+        assert snap.raw["solana_pool_rpc"]["lp_tokens_burned"] is True
+        assert snap.raw["solana_pool_rpc"]["burned_lp_pct"] == 100.0
+        assert snap.raw["solana_token_rpc"]["mint_authority"] is None
+
+        quote_side_snap = TokenSnapshot(
+            "solana", str(quote_mint), 1, 20_000, 100_000, 1000, 10, 2,
+            raw={"pair": {
+                "dexId": "pumpswap", "pairAddress": str(pool),
+                "baseToken": {"address": str(base_mint)},
+                "quoteToken": {"address": str(quote_mint)},
+            }},
+        )
+        await checker.enrich_solana_pool_custody(quote_side_snap)
+        assert quote_side_snap.raw["solana_pool_rpc"]["status"] == "verified"
+        assert quote_side_snap.raw["solana_pool_rpc"]["canonical_migration_structure"] is False
+        await checker.http.client.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_raydium_cpmm_rpc_requires_exact_authority_vaults_lp_mint_and_burned_lp():
+    async def scenario():
+        program = Pubkey.from_string(SafetyChecker.RAYDIUM_CPMM_PROGRAM)
+        pool = Pubkey.new_unique()
+        mint_a, mint_b = Pubkey.new_unique(), Pubkey.new_unique()
+        token_0_mint, token_1_mint = sorted((mint_a, mint_b), key=bytes)
+        authority, authority_bump = Pubkey.find_program_address(
+            [b"vault_and_lp_mint_auth_seed"], program
+        )
+        token_0_vault, _ = Pubkey.find_program_address(
+            [b"pool_vault", bytes(pool), bytes(token_0_mint)], program
+        )
+        token_1_vault, _ = Pubkey.find_program_address(
+            [b"pool_vault", bytes(pool), bytes(token_1_mint)], program
+        )
+        lp_mint, _ = Pubkey.find_program_address([b"pool_lp_mint", bytes(pool)], program)
+        data = bytearray(637)
+        data[:8] = SafetyChecker.RAYDIUM_POOL_DISCRIMINATOR
+        for offset, value in (
+            (8, Pubkey.new_unique()), (40, Pubkey.new_unique()),
+            (72, token_0_vault), (104, token_1_vault), (136, lp_mint),
+            (168, token_0_mint), (200, token_1_mint),
+            (232, Pubkey.new_unique()), (264, Pubkey.new_unique()),
+            (296, Pubkey.new_unique()),
+        ):
+            data[offset:offset + 32] = bytes(value)
+        data[328] = authority_bump
+        data[329] = 0
+        data[333:341] = (1_000_000).to_bytes(8, "little")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            if isinstance(body, dict):
+                return httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "result": {"context": {"slot": 456}, "value": {
+                        "owner": str(program),
+                        "data": [base64.b64encode(data).decode(), "base64"],
+                    }},
+                })
+            return httpx.Response(200, json=[
+                {"jsonrpc": "2.0", "id": 2, "result": {"value": [
+                    {"data": {"parsed": {"info": {
+                        "mint": str(token_0_mint), "owner": str(authority),
+                    }}}},
+                    {"data": {"parsed": {"info": {
+                        "mint": str(token_1_mint), "owner": str(authority),
+                    }}}},
+                    {"data": {"parsed": {"info": {
+                        "mintAuthority": str(authority),
+                    }}}},
+                ]}},
+                {"jsonrpc": "2.0", "id": 3, "result": {"value": {"amount": "25000"}}},
+            ])
+
+        class FakeHttp:
+            client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+        checker = SafetyChecker(FakeHttp(), {})
+        snap = TokenSnapshot(
+            "solana", str(token_0_mint), 1, 20_000, 100_000, 1000, 10, 2,
+            raw={
+                "pair": {
+                    "dexId": "raydium", "pairAddress": str(pool), "labels": ["CPMM"],
+                    "baseToken": {"address": str(token_0_mint)},
+                    "quoteToken": {"address": str(token_1_mint)},
+                },
+                "rugcheck": {"tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"},
+                "goplus_solana": {
+                    "mintable": {"status": "0", "authority": []},
+                    "freezable": {"status": "0", "authority": []},
+                    "closable": {"status": "0", "authority": []},
+                    "balance_mutable_authority": {"status": "0", "authority": []},
+                    "non_transferable": "0", "transfer_hook": [], "creators": [],
+                },
+            },
+        )
+        await checker.enrich_solana_pool_custody(snap)
+        await checker.http.client.aclose()
+        facts = snap.raw["solana_pool_rpc"]
+        assert facts["status"] == "verified"
+        assert facts["program_kind"] == "raydium_cpmm"
+        assert facts["vaults_verified"] is True
+        assert facts["burned_lp_pct"] == 97.5
+        assessment = checker.solana_pretrade_rug_assessment(
+            snap,
+            exact_sell_preflight={
+                "status": "quoted", "minimum_output_raw": 19_000_000,
+                "net_recovery_usd": 18.6,
+            },
+        )
+        assert assessment["status"] == "PASS"
+        assert assessment["facts"]["custody_class"] == "raydium_cpmm_lp_burned_95pct"
+
+    asyncio.run(scenario())
+
+
+def test_pretrade_rug_safety_assessment_is_forward_only_and_immutable(tmp_path: Path):
+    store = Store(tmp_path / "rug-safety.sqlite3")
+    now = utcnow()
+    token = TokenCandidate(chain="solana", address="R" * 32, name="Rug Safety")
+    store.upsert_token(token, seen_at=now)
+    trigger_id = store.add_snapshot(TokenSnapshot(
+        "solana", token.address, 1, 20_000, 100_000, 1000, 10, 2,
+        observed_at=now, ingested_at=now, provider="fixture",
+    ))
+    registration = store.register_pretrade_rug_safety()
+    assert int(registration["activation_snapshot_id"]) == trigger_id
+    assessed_id = store.add_snapshot(TokenSnapshot(
+        "solana", token.address, 1, 20_000, 100_000, 1000, 10, 2,
+        observed_at=now, ingested_at=now, provider="fixture+safety",
+    ))
+    assessment_id = store.record_pretrade_rug_safety_assessment(
+        lane=Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+        quote_key="rug:1", token_id=token.token_id,
+        trigger_snapshot_id=trigger_id, assessed_snapshot_id=assessed_id,
+        assessment={"status": "WAIT", "reasons": ["pool_custody_unknown"], "facts": {}},
+        observed_at=now,
+    )
+    assert assessment_id is not None
+    row = store.pretrade_rug_safety_for_quote(
+        Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION, "rug:1"
+    )
+    assert row["status"] == "WAIT"
+    with pytest.raises(sqlite3.DatabaseError, match="immutable"):
+        store.db.execute(
+            "UPDATE pretrade_rug_safety_assessments SET status='PASS' WHERE id=?",
+            (assessment_id,),
+        )
+    store.close()
+
+
+def test_onchain_paper_cash_cannot_bypass_active_pretrade_rug_gate(tmp_path: Path):
+    store = Store(tmp_path / "rug-gated-paper.sqlite3", initial_cash_usd=1000)
+    now = utcnow()
+    store.register_onchain_only_shadow(
+        momentum_threshold=80, paper_stake_usd=20, min_liquidity_usd=12_000,
+        max_liquidity_impact_pct=0.0025, slippage_rate=0.04,
+        default_fee_bps=60, pump_fee_bps=125, max_tax_pct=10,
+        max_quote_delay_seconds=45,
+    )
+
+    def enroll(address: str, when: datetime) -> int:
+        token = TokenCandidate(chain="solana", address=address, name="Rug Gate")
+        store.upsert_token(token, seen_at=when)
+        round_id = store.start_token_discovery_round(
+            provider="fixture", surface="fixture", mode="poll", chain_scope="solana",
+            started_at=when,
+        )
+        store.add_token_discovery_exposure(
+            round_id, token_id=token.token_id, chain="solana", role="new_token",
+            first_local_discovery=True, new_token=True, observed_at=when,
+        )
+        store.finish_token_discovery_round(round_id, status="completed", returned_count=1)
+        snapshot_id = store.add_snapshot(TokenSnapshot(
+            "solana", address, 1, 20_000, 100_000, 30_000, 30, 10,
+            observed_at=when, ingested_at=when, provider="fixture",
+        ))
+        transition_id = store.record_token_universe_funnel_transition(
+            token.token_id, stage="context_trigger_evaluation", status="eligible",
+            reason_code="onchain_momentum", evaluation_key=f"rug:{address}",
+            observed_at=when, ingested_at=when, source_table="fixture",
+            snapshot_id=snapshot_id,
+            metadata={"trigger_kind": "onchain_momentum", "momentum_score": 90.0},
+        )
+        return int(store.enroll_onchain_only_shadow(transition_id))
+
+    enroll("A" * 32, now - timedelta(seconds=3))
+    store.register_onchain_only_jupiter_quote(
+        usdc_input_amount_raw=20_000_000, max_queue_delay_seconds=30,
+        max_total_delay_seconds=45,
+    )
+    store.register_onchain_paper_exploration(
+        starting_cash_usd=1000, max_open_positions=0,
+        estimated_network_fee_usd_each_side=0.4,
+    )
+    store.register_pretrade_rug_safety()
+    shadow_id = enroll("B" * 32, now - timedelta(seconds=1))
+    task = next(item for item in store.due_onchain_only_jupiter_quotes(now=now)
+                if item["shadow_cohort_id"] == shadow_id)
+    attempt_id = store.start_onchain_only_jupiter_quote_attempt(
+        task, requested_at=parse_time(task["anchor_at"]) + timedelta(seconds=1)
+    )
+    store.record_onchain_only_jupiter_quote(
+        task, status="quoted", attempt_id=attempt_id,
+        out_amount_raw="1000000", other_amount_threshold_raw="900000",
+        slippage_bps=400, price_impact_bps=0.0,
+        requested_at=parse_time(task["anchor_at"]) + timedelta(seconds=1),
+        completed_at=parse_time(task["anchor_at"]) + timedelta(seconds=2),
+    )
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM onchain_paper_exploration_positions"
+    ).fetchone()[0] == 0
+    assessment = store.db.execute(
+        "SELECT reason FROM onchain_paper_exploration_execution_assessments "
+        "WHERE shadow_cohort_id=?", (shadow_id,),
+    ).fetchone()
+    assert assessment["reason"] == "pretrade_rug_safety_missing"
+    assert store.db.execute(
+        "SELECT cash_usd FROM onchain_paper_exploration_account"
+    ).fetchone()[0] == pytest.approx(1000)
+
+    store.register_strategy_focus()
+    store.register_route_surface_observations()
+    focused_shadow_id = enroll("C" * 32, now - timedelta(milliseconds=500))
+    store.record_token_launch_fact(
+        TokenCandidate(
+            "solana", "C" * 32, "Focused Migration", source="pumpportal:migration",
+            first_seen_at=now - timedelta(milliseconds=400),
+            raw={"pump_event_type": "migration", "signature": "sig-focused", "pool": "pump-amm"},
+        ),
+        observed_at=now - timedelta(milliseconds=400),
+        ingested_at=now - timedelta(milliseconds=300),
+    )
+    focused_task = next(
+        item for item in store.due_onchain_only_jupiter_quotes(now=now)
+        if item["shadow_cohort_id"] == focused_shadow_id
+    )
+    trigger_snapshot_id = int(focused_task["baseline_snapshot_id"])
+    focused_snapshot = store.token_snapshot_by_id(trigger_snapshot_id)
+    assessed_snapshot_id = store.add_snapshot(focused_snapshot)
+    store.record_market_surface_safety(
+        lane=Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+        quote_key=str(focused_task["quote_key"]), token_id=focused_snapshot.token_id,
+        trigger_snapshot_id=trigger_snapshot_id, assessed_snapshot_id=assessed_snapshot_id,
+        assessment={"status": "PASS", "reasons": [], "facts": {}}, observed_at=utcnow(),
+    )
+    for direction in ("BUY", "SELL"):
+        store.record_execution_route_observation(
+            lane=Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+            quote_key=str(focused_task["quote_key"]), token_id=focused_snapshot.token_id,
+            direction=direction,
+            classification={
+                "route_verifiability": "exact_onchain_legs", "surface_relation": "contains_surface",
+                **({
+                    "quoted_net_recovery_ratio": 0.95,
+                    "stress_min_recovery_ratio": 0.90,
+                } if direction == "SELL" else {}),
+            },
+            observed_at=utcnow(),
+        )
+    focused_requested = parse_time(focused_task["anchor_at"]) + timedelta(milliseconds=100)
+    store.record_pretrade_rug_safety_assessment(
+        lane=Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+        quote_key=str(focused_task["quote_key"]), token_id=focused_snapshot.token_id,
+        trigger_snapshot_id=trigger_snapshot_id, assessed_snapshot_id=assessed_snapshot_id,
+        assessment={"status": "PASS", "reasons": [], "facts": {}},
+        observed_at=focused_requested + timedelta(milliseconds=200),
+        assessed_at=focused_requested + timedelta(milliseconds=200),
+    )
+    focused_attempt_id = store.start_onchain_only_jupiter_quote_attempt(
+        focused_task, requested_at=focused_requested,
+    )
+    store.record_onchain_only_jupiter_quote(
+        focused_task, status="quoted", attempt_id=focused_attempt_id,
+        out_amount_raw="1000000", other_amount_threshold_raw="900000",
+        slippage_bps=400, price_impact_bps=0.0,
+        requested_at=focused_requested, completed_at=focused_requested + timedelta(milliseconds=100),
+    )
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM onchain_paper_exploration_positions WHERE shadow_cohort_id=?",
+        (focused_shadow_id,),
+    ).fetchone()[0] == 1
+    store.close()
+
+
 def test_unqualified_token_context_reverse_id_cannot_create_exact_candidate(tmp_path: Path):
     async def scenario():
         store = Store(tmp_path / "db.sqlite3")
@@ -9390,3 +14696,222 @@ def test_goplus_solana_can_cover_rugcheck_outage_and_rejects_risky_authority():
         assert "goplus_solana_mintable" in risky_reasons
 
     asyncio.run(scenario())
+
+
+def _insert_confirmed_information_watch(
+    store: Store,
+    *,
+    token_id: str,
+    shadow_cohort_id: int,
+    trigger_snapshot_id: int,
+    confirmed_at: datetime,
+) -> int:
+    deadline = confirmed_at + timedelta(seconds=90)
+    cohort = store.db.execute(
+        "INSERT INTO token_information_watch_cohorts("
+        "definition_version,shadow_cohort_id,token_id,trigger_snapshot_id,trigger_transition_id,"
+        "watch_started_at,decision_deadline_at,recorded_at) VALUES(?,?,?,?,?,?,?,?)",
+        (
+            Store.TOKEN_INFORMATION_WATCH_VERSION,
+            shadow_cohort_id,
+            token_id,
+            trigger_snapshot_id,
+            100_000 + shadow_cohort_id,
+            iso(confirmed_at - timedelta(seconds=10)),
+            iso(deadline),
+            iso(confirmed_at - timedelta(seconds=10)),
+        ),
+    )
+    watch_id = int(cohort.lastrowid)
+    assessment = store.db.execute(
+        "INSERT INTO token_context_assessments("
+        "token_id,trigger,status,assessed_at,snapshot_observed_at,momentum_score,"
+        "assessment_json,agent_metadata_json,audit_json) VALUES(?,?,?,?,?,?,?,?,?)",
+        (
+            token_id,
+            "token_information_watch",
+            "completed",
+            iso(confirmed_at),
+            iso(confirmed_at - timedelta(seconds=15)),
+            0.0,
+            json.dumps({"confirmed": True}),
+            "{}",
+            "{}",
+        ),
+    )
+    store.db.execute(
+        "INSERT INTO token_information_watch_transitions("
+        "definition_version,watch_cohort_id,state,assessment_id,reason_code,recorded_at,evidence_json) "
+        "VALUES(?,?,?,?,?,?,?)",
+        (
+            Store.TOKEN_INFORMATION_WATCH_VERSION,
+            watch_id,
+            "CONFIRMED",
+            int(assessment.lastrowid),
+            "cross_source_supported",
+            iso(confirmed_at),
+            "{}",
+        ),
+    )
+    store.db.commit()
+    return watch_id
+
+
+def test_token_information_confirmation_paper_is_activation_fenced_and_atomic(tmp_path: Path):
+    store = Store(tmp_path / "strategy3-confirmed-paper.sqlite3", initial_cash_usd=1000)
+    base = utcnow()
+    token = TokenCandidate(chain="solana", address="A" * 32, name="Confirmed Meme")
+    store.upsert_token(token, seen_at=base)
+    snapshot_id = store.add_snapshot(
+        TokenSnapshot(
+            "solana", token.address, 0.001, 25_000, 100_000, 12_000, 30, 10,
+            observed_at=base, ingested_at=base, provider="dexscreener",
+        )
+    )
+    _insert_confirmed_information_watch(
+        store, token_id=token.token_id, shadow_cohort_id=1,
+        trigger_snapshot_id=snapshot_id, confirmed_at=base + timedelta(seconds=1),
+    )
+    store.register_token_information_confirmation_paper(
+        starting_cash_usd=1000, policy_notional_usd=20, slippage_bps=400,
+        fixed_network_fee_usd=0.4,
+    )
+    assert store.claim_token_information_confirmation_evaluation(
+        now=base + timedelta(seconds=5)
+    ) is None
+
+    watch_id = _insert_confirmed_information_watch(
+        store, token_id=token.token_id, shadow_cohort_id=2,
+        trigger_snapshot_id=snapshot_id, confirmed_at=base + timedelta(seconds=6),
+    )
+    evaluation = store.claim_token_information_confirmation_evaluation(
+        now=base + timedelta(seconds=7)
+    )
+    assert evaluation is not None
+    assert evaluation["final_snapshot_id"] == snapshot_id
+    requested = base + timedelta(seconds=8)
+    attempt = store.start_token_information_confirmation_quote(
+        evaluation["evaluation_id"], requested_at=requested
+    )
+    assert attempt is not None
+    completed = base + timedelta(seconds=9)
+    result_id = store.finish_token_information_confirmation_quote(
+        evaluation["evaluation_id"],
+        quote_attempt_id=attempt["id"],
+        status="quoted",
+        quote={
+            "input_mint": Store.JUPITER_USDC_MINT,
+            "output_mint": token.address,
+            "in_amount": "20000000",
+            "out_amount": "1000000",
+            "output_amount_raw": "1000000",
+            "other_amount_threshold": "950000",
+            "slippage_bps": 400,
+            "mode": "ExactIn",
+            "price_impact_bps": -25.0,
+            "requested_at": iso(requested),
+            "completed_at": iso(completed),
+        },
+        safety_snapshot_id=snapshot_id,
+        completed_at=base + timedelta(seconds=10),
+    )
+    result = store.db.execute(
+        "SELECT * FROM token_information_confirmation_paper_results WHERE id=?", (result_id,)
+    ).fetchone()
+    account = store.db.execute(
+        "SELECT * FROM token_information_confirmation_paper_account"
+    ).fetchone()
+    position = store.db.execute(
+        "SELECT * FROM token_information_confirmation_paper_positions"
+    ).fetchone()
+    assert result["terminal_state"] == "BOUGHT"
+    assert result["execution_quality"] == "QUOTE_OBSERVED"
+    assert result["cost_truth_level"] == "MODELED_FALLBACK"
+    assert result["minimum_output_amount_raw"] == "950000"
+    assert account["cash_usd"] == pytest.approx(979.6)
+    assert position["watch_cohort_id"] == watch_id
+    assert position["acquired_amount_raw"] == "950000"
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM token_information_confirmation_paper_trades"
+    ).fetchone()[0] == 1
+    summary = Store.token_information_confirmation_paper_summary_from_connection(store.db)
+    assert summary["status"] == "superseded_research_only"
+    assert summary["execution_enabled"] is False
+    assert summary["account"]["cash_usd"] == pytest.approx(979.6)
+    assert summary["account"]["reserved_open_cost_usd"] == pytest.approx(20.4)
+    assert summary["terminal_counts"] == {"BOUGHT": 1}
+    assert summary["recent_results"][0]["confirmed_transition_id"] > 0
+    assert {
+        row[0] for row in store.db.execute(
+            "SELECT state FROM token_information_watch_transitions WHERE watch_cohort_id=?",
+            (watch_id,),
+        )
+    } >= {"CONFIRMED", "BOUGHT", "POST_ENTRY_MONITORING"}
+    assert store.finish_token_information_confirmation_quote(
+        evaluation["evaluation_id"], quote_attempt_id=attempt["id"], status="no_route"
+    ) == result_id
+    assert account["cash_usd"] == pytest.approx(979.6)
+    store.close()
+
+
+def test_token_information_confirmation_paper_waits_without_cash_mutation(tmp_path: Path):
+    store = Store(tmp_path / "strategy3-confirmed-waits.sqlite3", initial_cash_usd=1000)
+    base = utcnow()
+    token = TokenCandidate(chain="solana", address="B" * 32, name="Unroutable Meme")
+    store.upsert_token(token, seen_at=base)
+    snapshot_id = store.add_snapshot(
+        TokenSnapshot(
+            "solana", token.address, 0.001, 25_000, 100_000, 12_000, 30, 10,
+            observed_at=base, ingested_at=base, provider="dexscreener",
+        )
+    )
+    store.register_token_information_confirmation_paper(
+        starting_cash_usd=1000, policy_notional_usd=20, slippage_bps=400,
+        fixed_network_fee_usd=0.4,
+    )
+    _insert_confirmed_information_watch(
+        store, token_id=token.token_id, shadow_cohort_id=10,
+        trigger_snapshot_id=snapshot_id, confirmed_at=base + timedelta(seconds=1),
+    )
+    safety_eval = store.claim_token_information_confirmation_evaluation(
+        now=base + timedelta(seconds=2)
+    )
+    store.record_token_information_confirmation_wait(
+        safety_eval["evaluation_id"], terminal_state="WAIT_SAFETY_FAILED",
+        reason_code="safety_failed", safety_reasons=["liquidity_below_minimum"],
+        safety_snapshot_id=snapshot_id, completed_at=base + timedelta(seconds=3),
+    )
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM token_information_confirmation_paper_quote_attempts"
+    ).fetchone()[0] == 0
+
+    _insert_confirmed_information_watch(
+        store, token_id=token.token_id, shadow_cohort_id=11,
+        trigger_snapshot_id=snapshot_id, confirmed_at=base + timedelta(seconds=4),
+    )
+    route_eval = store.claim_token_information_confirmation_evaluation(
+        now=base + timedelta(seconds=5)
+    )
+    attempt = store.start_token_information_confirmation_quote(
+        route_eval["evaluation_id"], requested_at=base + timedelta(seconds=6)
+    )
+    result_id = store.finish_token_information_confirmation_quote(
+        route_eval["evaluation_id"], quote_attempt_id=attempt["id"], status="no_route",
+        reason_code="jupiter_no_route", completed_at=base + timedelta(seconds=7),
+    )
+    result = store.db.execute(
+        "SELECT * FROM token_information_confirmation_paper_results WHERE id=?", (result_id,)
+    ).fetchone()
+    account = store.db.execute(
+        "SELECT * FROM token_information_confirmation_paper_account"
+    ).fetchone()
+    assert result["terminal_state"] == "WAIT_EXECUTION_UNAVAILABLE"
+    assert result["reason_code"] == "jupiter_no_route"
+    assert account["cash_usd"] == pytest.approx(1000)
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM token_information_confirmation_paper_positions"
+    ).fetchone()[0] == 0
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM token_information_confirmation_paper_trades"
+    ).fetchone()[0] == 0
+    store.close()

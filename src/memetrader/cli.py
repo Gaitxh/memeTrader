@@ -75,6 +75,10 @@ def _parser() -> argparse.ArgumentParser:
     web.add_argument("--host", default="127.0.0.1")
     web.add_argument("--port", type=int, default=8787)
     web.add_argument("--access-token-file")
+    chain_web = sub.add_parser("chain-web", help="run the independent ChainMemeTrader console")
+    chain_web.add_argument("--config", default="config.json")
+    chain_web.add_argument("--host", default="127.0.0.1")
+    chain_web.add_argument("--port", type=int, default=8790)
     replay = sub.add_parser("replay")
     replay.add_argument("fixture")
     replay.add_argument("--decision-at", required=True)
@@ -439,6 +443,10 @@ def main(argv: list[str] | None = None) -> int:
         from .web import serve
 
         return serve(args.config, args.host, args.port, args.access_token_file)
+    if args.command == "chain-web":
+        from .chain_web import serve
+
+        return serve(args.config, args.host, args.port)
     if args.command == "replay":
         return cmd_replay(args.fixture, args.decision_at)
     return 2

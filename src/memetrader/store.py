@@ -6,6 +6,7 @@ import math
 import re
 import sqlite3
 import threading
+from contextlib import nullcontext
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -101,21 +102,117 @@ class Store:
     ONCHAIN_ONLY_SHADOW_VERSION = "onchain-only-shadow/v2-20usdc"
     ONCHAIN_ONLY_JUPITER_QUOTE_VERSION = "onchain-only-shadow-jupiter-quote/v2-20usdc-400bps"
     ONCHAIN_ONLY_EVM_ROUTE_QUOTE_VERSION = (
-        "onchain-only-shadow-evm-uniswap-v3-quote/v1-forward-only"
+        "onchain-only-shadow-evm-uniswap-v3-quote/v2-20usdc-forward-only"
+    )
+    ONCHAIN_ONLY_EVM_AGGREGATOR_PRICE_VERSION = (
+        "onchain-only-shadow-evm-0x-price/v1-20usdc-forward-only"
     )
     EVM_ROUTE_RESEARCH_CHAINS = frozenset({"bsc", "base", "robinhood"})
-    EVENT_CONTEXT_JUPITER_ROUTE_VERSION = "event-context-jupiter-route/v1"
+    EVENT_CONTEXT_JUPITER_ROUTE_VERSION = (
+        "event-context-jupiter-route/v2-exact-identity-addressable"
+    )
     EVENT_ROUTE_EXECUTION_CHALLENGER_VERSION = (
         "event-route-execution-challenger/v1-entry-preflight"
     )
     ONCHAIN_PAPER_EXPLORATION_VERSION = "onchain-paper-exploration/v4-20usdc-flat040"
     ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION = "onchain-paper-exit-challenger/v4-20usdc-flat040"
+    ONCHAIN_PAPER_EXIT_QUOTE_SCHEDULER_VERSION = (
+        "onchain-paper-exit-quote-scheduler/v3-baseline-paired-rug-terminal"
+    )
+    ONCHAIN_HELD_ACCOUNT_MONITOR_VERSION = (
+        "onchain-held-account-monitor/v4-current-pumpswap-all-open-token2022-lp"
+    )
+    CHAIN_MEME_TRADER_LEGACY_VERSION = (
+        "chain-meme-trader/v4-paired-vault-rug-truth-20usdc-400bps-zero-fee"
+    )
+    CHAIN_MEME_TRADER_VERSION = (
+        "chain-meme-trader/v5-order-fill-kernel-20usdc-400bps-zero-fee"
+    )
+    CHAIN_MEME_TRADER_V10_VERSION = (
+        "chain-meme-trader/v10-entry3-exit4-route-surface-forward"
+    )
+    CHAIN_MEME_TRADER_V6_VERSION = (
+        "chain-meme-trader/v11-entry3-exit4-independent-arm-cash-forward"
+    )
+    CHAIN_MEME_TRADER_V11_VERSION = CHAIN_MEME_TRADER_V6_VERSION
+    CHAIN_MEME_TRADER_V12_VERSION = (
+        "chain-meme-trader/v12-dexmark5s-paper-exit-forward"
+    )
+    CHAIN_MEME_TRADER_V13_VERSION = (
+        "chain-meme-trader/v13-dexmark5s-paper-buy-sell-forward"
+    )
+    CHAIN_MEME_TRADER_V14_VERSION = (
+        "chain-meme-trader/v14-all-canonical-strategies-forward"
+    )
+    CHAIN_MEME_TRADER_V15_VERSION = (
+        "chain-meme-trader/v15-all-canonical-strategies-clean-forward"
+    )
+    CHAIN_MEME_TRADER_V16_VERSION = (
+        "chain-meme-trader/v16-dex-pair-before-after-sell-forward"
+    )
+    CHAIN_MEME_TRADER_V17_VERSION = (
+        "chain-meme-trader/v17-fresh-entry-before-after-sell-forward"
+    )
+    CHAIN_MEME_TRADER_V18_VERSION = (
+        "chain-meme-trader/v18-historical-fidelity-forward"
+    )
+    CHAIN_MEME_TRADER_V19_VERSION = (
+        "chain-meme-trader/v19-dexscreener-successors-clean-forward"
+    )
+    CHAIN_MEME_TRADER_V20_VERSION = (
+        "chain-meme-trader/v20-market-only-accounting-corrected-clean-forward"
+    )
+    CHAIN_MEME_TRADER_ACTIVE_VERSION = CHAIN_MEME_TRADER_V20_VERSION
+    CHAIN_MEME_TRADER_STAGE4_EXEC_DECAY_VERSION = (
+        "chain-meme-trader/stage4-executable-decay-challenger-v1"
+    )
+    CHAIN_MEME_TRADER_STAGE4_EXEC_EQUITY_V2_VERSION = (
+        "chain-meme-trader/stage4-executable-equity-paired-v2"
+    )
+    CHAIN_MEME_TRADER_POSITION_EQUITY_FRAME_VERSION = (
+        "chain-meme-trader-position-equity-frame/v1"
+    )
+    CHAIN_MEME_TRADER_V10_EQUITY_FRAME_VERSION = (
+        "chain-meme-trader-position-equity-frame/v6-v10"
+    )
+    CHAIN_MEME_TRADER_V6_EQUITY_FRAME_VERSION = (
+        "chain-meme-trader-position-equity-frame/v7-v11"
+    )
+    CHAIN_MEME_TRADER_LOCAL_SURFACE_QUOTE_VERSION = (
+        "chain-meme-trader-local-surface-quote/v6-v11-route-pumpswap-forward"
+    )
+    CHAIN_MEME_TRADER_LOCAL_CRITICAL_EXIT_VERSION = (
+        "local-surface-critical-exit/v6-v11-confirmed-rug-only"
+    )
+    CHAIN_MEME_TRADER_POSTBUY_RESEARCH_VERSION = (
+        "chain-meme-trader-postbuy-research/v1-shared-cohort"
+    )
+    CHAIN_MEME_TRADER_IMMEDIATE_REVERSEABILITY_VERSION = (
+        "immediate-reverseability-observer/v2-v11"
+    )
+    CHAIN_MEME_TRADER_IMMEDIATE_REVERSEABILITY_HORIZONS_SECONDS = (15, 30, 60)
+    ONCHAIN_PAPER_POSITION_MONITOR_VERSION = (
+        "onchain-paper-position-monitor/v1-exact-remaining-executable-equity"
+    )
     ONCHAIN_PAPER_NARRATIVE_RUNNER_VERSION = (
-        "onchain-paper-narrative-runner/v2-20usdc-flat040"
+        "onchain-paper-narrative-runner/v3-fixed-baseline-20usdc-flat040"
     )
     ONCHAIN_PAPER_NARRATIVE_CONTEXT_VERSION = (
-        "onchain-paper-narrative-context/v3-20usdc-entry-snapshot"
+        "onchain-paper-narrative-context/v4-fixed-baseline-entry-snapshot"
     )
+    TOKEN_INFORMATION_WATCH_VERSION = (
+        "token-information-watch/v2-120s-exact-cross-source-observer"
+    )
+    TOKEN_INFORMATION_CONFIRMATION_PAPER_VERSION = (
+        "strategy3-token-information-confirmed-paper/v1-20usdc-flat040"
+    )
+    PRETRADE_RUG_SAFETY_VERSION = "pretrade_rug_safety/v3-pumpswap-raydium-cpmm-rpc-custody"
+    ROUTE_PREFLIGHT_DEFERRED_RETRY_SHADOW_VERSION = (
+        "route-preflight-deferred-retry-shadow/v1"
+    )
+    STRATEGY_FOCUS_VERSION = "strategy-focus/v1-solana-onchain-primary"
+    MARKET_SURFACE_SAFETY_VERSION = "market-surface-safety/v1-canonical-pumpswap"
+    EXECUTION_ROUTE_OBSERVATION_VERSION = "execution-route-observation/v1-jupiter-order"
     SOLANA_HOLDER_SHADOW_VERSION = "solana-holder-breadth-shadow/v1"
     SOLANA_HOLDER_SHADOW_HORIZONS_MINUTES = (0, 15, 60, 240)
     SOLANA_HOLDER_SHADOW_SAMPLE_MODULUS = 1000
@@ -144,6 +241,8 @@ class Store:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._last_chain_market_history_prune_at: datetime | None = None
+        self._last_supervised_error_record_at: dict[str, datetime] = {}
         self.db = sqlite3.connect(self.path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         with self.db:
@@ -443,7 +542,7 @@ class Store:
                     id INTEGER PRIMARY KEY,
                     version TEXT NOT NULL,
                     work_unit_id INTEGER NOT NULL,
-                    attempt_id INTEGER NOT NULL UNIQUE,
+                    attempt_id INTEGER UNIQUE,
                     result_key TEXT NOT NULL UNIQUE,
                     status TEXT NOT NULL,
                     claim_status TEXT NOT NULL,
@@ -916,6 +1015,313 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS token_snapshots_lookup_idx
                     ON token_snapshots(token_id, observed_at DESC);
+
+                CREATE TABLE IF NOT EXISTS strategy_focus_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_agent_attempt_id INTEGER NOT NULL,
+                    activation_main_trade_id INTEGER NOT NULL,
+                    activation_quote_result_id INTEGER NOT NULL,
+                    activation_s2_buy_trade_id INTEGER NOT NULL,
+                    activation_s3_buy_trade_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TRIGGER IF NOT EXISTS strategy_focus_registrations_no_update
+                BEFORE UPDATE ON strategy_focus_registrations
+                BEGIN SELECT RAISE(ABORT,'strategy focus registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS strategy_focus_registrations_no_delete
+                BEFORE DELETE ON strategy_focus_registrations
+                BEGIN SELECT RAISE(ABORT,'strategy focus registrations are immutable'); END;
+
+                CREATE TABLE IF NOT EXISTS market_surface_safety_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_snapshot_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS market_surface_safety_observations (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    lane TEXT NOT NULL,
+                    quote_key TEXT NOT NULL,
+                    token_id TEXT NOT NULL,
+                    trigger_snapshot_id INTEGER NOT NULL,
+                    assessed_snapshot_id INTEGER NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('PASS','WAIT','REJECT')),
+                    reasons_json TEXT NOT NULL,
+                    facts_json TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    UNIQUE(definition_version,lane,quote_key),
+                    FOREIGN KEY(trigger_snapshot_id) REFERENCES token_snapshots(id),
+                    FOREIGN KEY(assessed_snapshot_id) REFERENCES token_snapshots(id)
+                );
+                CREATE TABLE IF NOT EXISTS execution_route_observation_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_quote_result_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS execution_route_observations (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    lane TEXT NOT NULL,
+                    quote_key TEXT NOT NULL,
+                    token_id TEXT NOT NULL,
+                    direction TEXT NOT NULL CHECK(direction IN ('BUY','SELL')),
+                    status TEXT NOT NULL CHECK(status IN ('PASS','WAIT','REJECT')),
+                    classification_json TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    UNIQUE(definition_version,lane,quote_key,direction)
+                );
+                CREATE TRIGGER IF NOT EXISTS market_surface_safety_registrations_no_update
+                BEFORE UPDATE ON market_surface_safety_registrations
+                BEGIN SELECT RAISE(ABORT,'market surface registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS market_surface_safety_registrations_no_delete
+                BEFORE DELETE ON market_surface_safety_registrations
+                BEGIN SELECT RAISE(ABORT,'market surface registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS market_surface_safety_observations_no_update
+                BEFORE UPDATE ON market_surface_safety_observations
+                BEGIN SELECT RAISE(ABORT,'market surface observations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS market_surface_safety_observations_no_delete
+                BEFORE DELETE ON market_surface_safety_observations
+                BEGIN SELECT RAISE(ABORT,'market surface observations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS execution_route_observation_registrations_no_update
+                BEFORE UPDATE ON execution_route_observation_registrations
+                BEGIN SELECT RAISE(ABORT,'execution route registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS execution_route_observation_registrations_no_delete
+                BEFORE DELETE ON execution_route_observation_registrations
+                BEGIN SELECT RAISE(ABORT,'execution route registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS execution_route_observations_no_update
+                BEFORE UPDATE ON execution_route_observations
+                BEGIN SELECT RAISE(ABORT,'execution route observations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS execution_route_observations_no_delete
+                BEFORE DELETE ON execution_route_observations
+                BEGIN SELECT RAISE(ABORT,'execution route observations are immutable'); END;
+
+                CREATE TABLE IF NOT EXISTS pretrade_rug_safety_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_snapshot_id INTEGER NOT NULL,
+                    activation_quote_result_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS pretrade_rug_safety_assessments (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    lane TEXT NOT NULL,
+                    quote_key TEXT NOT NULL,
+                    token_id TEXT NOT NULL,
+                    trigger_snapshot_id INTEGER NOT NULL,
+                    assessed_snapshot_id INTEGER NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('PASS','WAIT','REJECT')),
+                    reasons_json TEXT NOT NULL,
+                    facts_json TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    assessed_at TEXT NOT NULL,
+                    UNIQUE(definition_version,lane,quote_key),
+                    FOREIGN KEY(trigger_snapshot_id) REFERENCES token_snapshots(id),
+                    FOREIGN KEY(assessed_snapshot_id) REFERENCES token_snapshots(id)
+                );
+                CREATE TRIGGER IF NOT EXISTS pretrade_rug_safety_registrations_no_update
+                BEFORE UPDATE ON pretrade_rug_safety_registrations
+                BEGIN SELECT RAISE(ABORT,'pretrade rug safety registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS pretrade_rug_safety_registrations_no_delete
+                BEFORE DELETE ON pretrade_rug_safety_registrations
+                BEGIN SELECT RAISE(ABORT,'pretrade rug safety registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS pretrade_rug_safety_assessments_no_update
+                BEFORE UPDATE ON pretrade_rug_safety_assessments
+                BEGIN SELECT RAISE(ABORT,'pretrade rug safety assessments are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS pretrade_rug_safety_assessments_no_delete
+                BEFORE DELETE ON pretrade_rug_safety_assessments
+                BEGIN SELECT RAISE(ABORT,'pretrade rug safety assessments are immutable'); END;
+
+                CREATE TABLE IF NOT EXISTS route_preflight_deferred_retry_shadow_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_pretrade_assessment_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS route_preflight_deferred_retry_shadow_cases (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    source_assessment_id INTEGER NOT NULL UNIQUE,
+                    source_quote_result_id INTEGER NOT NULL,
+                    source_quote_attempt_id INTEGER NOT NULL,
+                    source_entry_decision_id INTEGER NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    quote_key TEXT NOT NULL,
+                    original_anchor_at TEXT NOT NULL,
+                    original_buy_requested_at TEXT NOT NULL,
+                    original_buy_completed_at TEXT NOT NULL,
+                    entry_input_amount_raw TEXT NOT NULL,
+                    input_mint TEXT NOT NULL,
+                    output_mint TEXT NOT NULL,
+                    input_amount_raw TEXT NOT NULL,
+                    slippage_bps INTEGER NOT NULL,
+                    selected_surface_pool TEXT NOT NULL DEFAULT '',
+                    deadline_at TEXT NOT NULL,
+                    enrollment_status TEXT NOT NULL CHECK(enrollment_status IN (
+                        'eligible','other_gate_blocked'
+                    )),
+                    source_reasons_json TEXT NOT NULL,
+                    blocking_reasons_json TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    FOREIGN KEY(source_assessment_id) REFERENCES pretrade_rug_safety_assessments(id),
+                    FOREIGN KEY(source_quote_result_id) REFERENCES onchain_only_jupiter_quote_results(id),
+                    FOREIGN KEY(source_quote_attempt_id) REFERENCES onchain_only_jupiter_quote_attempts(id),
+                    FOREIGN KEY(source_entry_decision_id) REFERENCES chain_meme_trader_entry_decisions(id)
+                );
+                CREATE TABLE IF NOT EXISTS route_preflight_deferred_retry_shadow_attempts (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    case_id INTEGER NOT NULL UNIQUE,
+                    request_key TEXT NOT NULL UNIQUE,
+                    requested_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    FOREIGN KEY(case_id) REFERENCES route_preflight_deferred_retry_shadow_cases(id)
+                );
+                CREATE TABLE IF NOT EXISTS route_preflight_deferred_retry_shadow_results (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    case_id INTEGER NOT NULL UNIQUE,
+                    attempt_id INTEGER UNIQUE,
+                    quote_terminal_status TEXT NOT NULL CHECK(quote_terminal_status IN (
+                        'quoted','no_route','error','quote_only_protocol_invalid',
+                        'expired_before_request','interrupted_after_request',
+                        'not_dispatched_other_gate_blocked'
+                    )),
+                    validity_status TEXT NOT NULL CHECK(validity_status IN (
+                        'route_recovered','no_route','provider_error','protocol_invalid',
+                        'stage2_window_expired','request_evidence_missing','other_gate_blocked'
+                    )),
+                    input_amount_raw TEXT NOT NULL,
+                    output_amount_raw TEXT,
+                    minimum_output_raw TEXT,
+                    requested_at TEXT,
+                    completed_at TEXT NOT NULL,
+                    queue_delay_seconds REAL,
+                    request_duration_seconds REAL,
+                    total_delay_seconds REAL NOT NULL,
+                    stage2_window_met INTEGER NOT NULL CHECK(stage2_window_met IN (0,1)),
+                    focus_10s_met INTEGER NOT NULL CHECK(focus_10s_met IN (0,1)),
+                    route_status TEXT NOT NULL CHECK(route_status IN (
+                        'PASS','WAIT','REJECT','NOT_APPLICABLE'
+                    )),
+                    route_recovered INTEGER NOT NULL CHECK(route_recovered IN (0,1)),
+                    quoted_net_recovery_ratio REAL,
+                    stress_min_recovery_ratio REAL,
+                    full_envelope_pass INTEGER NOT NULL CHECK(full_envelope_pass IN (0,1)),
+                    router TEXT NOT NULL DEFAULT '',
+                    route_json TEXT NOT NULL DEFAULT '[]',
+                    classification_json TEXT NOT NULL DEFAULT '{}',
+                    error_type TEXT NOT NULL DEFAULT '',
+                    recorded_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    FOREIGN KEY(case_id) REFERENCES route_preflight_deferred_retry_shadow_cases(id),
+                    FOREIGN KEY(attempt_id) REFERENCES route_preflight_deferred_retry_shadow_attempts(id)
+                );
+                CREATE INDEX IF NOT EXISTS route_preflight_deferred_retry_shadow_case_due_idx
+                    ON route_preflight_deferred_retry_shadow_cases(
+                        definition_version,enrollment_status,deadline_at,id
+                    );
+                CREATE TRIGGER IF NOT EXISTS route_preflight_deferred_retry_shadow_reg_no_update
+                BEFORE UPDATE ON route_preflight_deferred_retry_shadow_registrations
+                BEGIN SELECT RAISE(ABORT,'deferred retry registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS route_preflight_deferred_retry_shadow_reg_no_delete
+                BEFORE DELETE ON route_preflight_deferred_retry_shadow_registrations
+                BEGIN SELECT RAISE(ABORT,'deferred retry registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS route_preflight_deferred_retry_shadow_cases_no_update
+                BEFORE UPDATE ON route_preflight_deferred_retry_shadow_cases
+                BEGIN SELECT RAISE(ABORT,'deferred retry cases are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS route_preflight_deferred_retry_shadow_cases_no_delete
+                BEFORE DELETE ON route_preflight_deferred_retry_shadow_cases
+                BEGIN SELECT RAISE(ABORT,'deferred retry cases are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS route_preflight_deferred_retry_shadow_attempts_no_update
+                BEFORE UPDATE ON route_preflight_deferred_retry_shadow_attempts
+                BEGIN SELECT RAISE(ABORT,'deferred retry attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS route_preflight_deferred_retry_shadow_attempts_no_delete
+                BEFORE DELETE ON route_preflight_deferred_retry_shadow_attempts
+                BEGIN SELECT RAISE(ABORT,'deferred retry attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS route_preflight_deferred_retry_shadow_results_no_update
+                BEFORE UPDATE ON route_preflight_deferred_retry_shadow_results
+                BEGIN SELECT RAISE(ABORT,'deferred retry results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS route_preflight_deferred_retry_shadow_results_no_delete
+                BEFORE DELETE ON route_preflight_deferred_retry_shadow_results
+                BEGIN SELECT RAISE(ABORT,'deferred retry results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS route_preflight_deferred_retry_shadow_cases_insert_guard
+                BEFORE INSERT ON route_preflight_deferred_retry_shadow_cases
+                WHEN NOT EXISTS (
+                    SELECT 1
+                    FROM route_preflight_deferred_retry_shadow_registrations reg
+                    JOIN pretrade_rug_safety_assessments p
+                      ON p.id=NEW.source_assessment_id
+                    JOIN onchain_only_jupiter_quote_results q
+                      ON q.id=NEW.source_quote_result_id
+                    JOIN onchain_only_jupiter_quote_attempts a
+                      ON a.id=NEW.source_quote_attempt_id
+                    JOIN chain_meme_trader_entry_decisions d
+                      ON d.id=NEW.source_entry_decision_id
+                    WHERE reg.definition_version=NEW.definition_version
+                      AND p.id>reg.activation_pretrade_assessment_id
+                      AND p.definition_version='pretrade_rug_safety/v3-pumpswap-raydium-cpmm-rpc-custody'
+                      AND p.lane='onchain-only-shadow-jupiter-quote/v2-20usdc-400bps'
+                      AND p.quote_key=NEW.quote_key AND p.token_id=NEW.token_id
+                      AND q.quote_key=NEW.quote_key AND q.attempt_id=a.id
+                      AND q.shadow_cohort_id=NEW.shadow_cohort_id
+                      AND q.phase='baseline_buy'
+                      AND d.definition_version='chain-meme-trader/v5-order-fill-kernel-20usdc-400bps-zero-fee'
+                      AND d.arm_id='stage_02_jupiter_v1'
+                      AND d.shadow_cohort_id=NEW.shadow_cohort_id
+                      AND d.status='rejected'
+                      AND NEW.input_amount_raw=q.other_amount_threshold_raw
+                      AND NEW.original_buy_requested_at=a.requested_at
+                      AND NEW.original_buy_completed_at=q.completed_at
+                      AND NEW.original_anchor_at=q.anchor_at
+                )
+                BEGIN SELECT RAISE(ABORT,'invalid deferred retry case lineage'); END;
+                CREATE TRIGGER IF NOT EXISTS route_preflight_deferred_retry_shadow_attempts_insert_guard
+                BEFORE INSERT ON route_preflight_deferred_retry_shadow_attempts
+                WHEN NOT EXISTS (
+                    SELECT 1 FROM route_preflight_deferred_retry_shadow_cases c
+                    WHERE c.id=NEW.case_id AND c.definition_version=NEW.definition_version
+                      AND c.enrollment_status='eligible'
+                      AND NEW.requested_at>=c.original_buy_completed_at
+                      AND NEW.requested_at<=c.deadline_at
+                      AND NOT EXISTS (
+                          SELECT 1 FROM route_preflight_deferred_retry_shadow_results r
+                          WHERE r.case_id=c.id
+                      )
+                )
+                BEGIN SELECT RAISE(ABORT,'invalid deferred retry attempt'); END;
+                CREATE TRIGGER IF NOT EXISTS route_preflight_deferred_retry_shadow_results_insert_guard
+                BEFORE INSERT ON route_preflight_deferred_retry_shadow_results
+                WHEN NOT EXISTS (
+                    SELECT 1 FROM route_preflight_deferred_retry_shadow_cases c
+                    WHERE c.id=NEW.case_id AND c.definition_version=NEW.definition_version
+                      AND (
+                        (NEW.attempt_id IS NOT NULL AND EXISTS (
+                            SELECT 1 FROM route_preflight_deferred_retry_shadow_attempts a
+                            WHERE a.id=NEW.attempt_id AND a.case_id=c.id
+                              AND a.definition_version=NEW.definition_version
+                        ))
+                        OR
+                        (NEW.attempt_id IS NULL AND (
+                            (c.enrollment_status='other_gate_blocked'
+                             AND NEW.quote_terminal_status='not_dispatched_other_gate_blocked')
+                            OR
+                            (c.enrollment_status='eligible'
+                             AND NEW.quote_terminal_status='expired_before_request')
+                        ))
+                      )
+                )
+                BEGIN SELECT RAISE(ABORT,'invalid deferred retry result'); END;
 
                 CREATE TABLE IF NOT EXISTS token_source_links (
                     id INTEGER PRIMARY KEY,
@@ -1535,6 +1941,965 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS onchain_paper_exit_challenger_results_time_idx
                     ON onchain_paper_exit_challenger_quote_results(definition_version,recorded_at DESC,id DESC);
+                CREATE TABLE IF NOT EXISTS onchain_paper_exit_quote_scheduler_registrations (
+                    scheduler_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_quote_result_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TRIGGER IF NOT EXISTS onchain_paper_exit_quote_scheduler_no_update
+                BEFORE UPDATE ON onchain_paper_exit_quote_scheduler_registrations
+                BEGIN SELECT RAISE(ABORT,'onchain Paper exit scheduler registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_paper_exit_quote_scheduler_no_delete
+                BEFORE DELETE ON onchain_paper_exit_quote_scheduler_registrations
+                BEGIN SELECT RAISE(ABORT,'onchain Paper exit scheduler registrations are immutable'); END;
+                CREATE TABLE IF NOT EXISTS onchain_held_account_monitor_registrations (
+                    monitor_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_source_buy_trade_id INTEGER NOT NULL,
+                    activation_surface_observation_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS onchain_held_account_targets (
+                    id INTEGER PRIMARY KEY,
+                    monitor_version TEXT NOT NULL,
+                    position_definition_version TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    source_buy_trade_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    surface_observation_id INTEGER NOT NULL,
+                    pool_address TEXT NOT NULL,
+                    base_mint TEXT NOT NULL,
+                    quote_mint TEXT NOT NULL,
+                    lp_mint TEXT NOT NULL,
+                    base_vault TEXT NOT NULL,
+                    quote_vault TEXT NOT NULL,
+                    account_kind TEXT NOT NULL CHECK(account_kind IN (
+                        'pool','base_vault','quote_vault','token_mint','lp_mint'
+                    )),
+                    pubkey TEXT NOT NULL,
+                    expected_mint TEXT NOT NULL DEFAULT '',
+                    expected_program_owner TEXT NOT NULL DEFAULT '',
+                    registered_at TEXT NOT NULL,
+                    UNIQUE(monitor_version,position_definition_version,shadow_cohort_id,pubkey)
+                );
+                CREATE INDEX IF NOT EXISTS onchain_held_account_targets_position_idx
+                    ON onchain_held_account_targets(
+                        monitor_version,position_definition_version,shadow_cohort_id,account_kind
+                    );
+                CREATE TABLE IF NOT EXISTS onchain_held_account_baselines (
+                    target_id INTEGER PRIMARY KEY,
+                    monitor_version TEXT NOT NULL,
+                    amount_raw TEXT NOT NULL,
+                    slot INTEGER NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS onchain_held_account_states (
+                    target_id INTEGER PRIMARY KEY,
+                    last_slot INTEGER NOT NULL,
+                    data_hash TEXT NOT NULL,
+                    decoded_json TEXT NOT NULL,
+                    risk_state TEXT NOT NULL CHECK(risk_state IN ('HEALTHY','ALERT')),
+                    risk_reason TEXT NOT NULL DEFAULT '',
+                    observed_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS onchain_held_account_risk_events (
+                    id INTEGER PRIMARY KEY,
+                    monitor_version TEXT NOT NULL,
+                    target_id INTEGER NOT NULL,
+                    position_definition_version TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    pool_address TEXT NOT NULL,
+                    slot INTEGER NOT NULL,
+                    data_hash TEXT NOT NULL,
+                    account_kind TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    risk_state TEXT NOT NULL CHECK(risk_state IN ('HEALTHY','ALERT')),
+                    risk_reason TEXT NOT NULL DEFAULT '',
+                    previous_decoded_json TEXT NOT NULL DEFAULT '{}',
+                    decoded_json TEXT NOT NULL,
+                    alert_mark_id INTEGER,
+                    observed_at TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    UNIQUE(target_id,slot,data_hash)
+                );
+                CREATE INDEX IF NOT EXISTS onchain_held_account_risk_position_idx
+                    ON onchain_held_account_risk_events(
+                        monitor_version,position_definition_version,shadow_cohort_id,id DESC
+                    );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_local_surface_quote_registrations (
+                    version TEXT PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    registered_at TEXT NOT NULL,
+                    activation_fill_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_local_surface_quotes (
+                    id INTEGER PRIMARY KEY,
+                    version TEXT NOT NULL,
+                    definition_version TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    pool_address TEXT NOT NULL,
+                    quote_mint TEXT NOT NULL,
+                    remaining_amount_raw TEXT NOT NULL,
+                    context_slot INTEGER NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    completed_at TEXT NOT NULL,
+                    age_ms INTEGER NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN (
+                        'LOCAL_SURFACE_CURRENT','LOCAL_SURFACE_DEGRADED',
+                        'LOCAL_SURFACE_CRITICAL','LOCAL_NO_DIRECT_CAPACITY',
+                        'LOCAL_SELL_DISABLED','LOCAL_UNKNOWN_RPC',
+                        'LOCAL_UNKNOWN_MISSING_ACCOUNT','LOCAL_UNKNOWN_IDENTITY',
+                        'LOCAL_UNKNOWN_FEE_CONFIG','LOCAL_UNKNOWN_STALE',
+                        'LOCAL_UNKNOWN_MATH'
+                    )),
+                    min_quote_raw TEXT,
+                    ui_quote_raw TEXT,
+                    surface_type TEXT NOT NULL DEFAULT '',
+                    source_result_kind TEXT NOT NULL DEFAULT '',
+                    source_result_id INTEGER,
+                    route_leg_index INTEGER,
+                    router_label TEXT NOT NULL DEFAULT '',
+                    direct_estimated_recovery_usd REAL,
+                    conversion_source TEXT NOT NULL DEFAULT '',
+                    conversion_input_raw TEXT,
+                    conversion_min_usdc_raw TEXT,
+                    conversion_completed_at TEXT,
+                    high_water_raw TEXT,
+                    drawdown REAL,
+                    fee_source TEXT NOT NULL DEFAULT '',
+                    fee_tier_index INTEGER,
+                    lp_fee_bps INTEGER,
+                    protocol_fee_bps INTEGER,
+                    creator_fee_bps INTEGER,
+                    source_hashes_json TEXT NOT NULL,
+                    reason TEXT NOT NULL DEFAULT '',
+                    recorded_at TEXT NOT NULL,
+                    UNIQUE(version,definition_version,shadow_cohort_id,remaining_amount_raw,context_slot)
+                );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_local_critical_exit_registrations (
+                    version TEXT PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    registered_at TEXT NOT NULL,
+                    activation_local_quote_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_local_surface_quote_position_idx
+                    ON chain_meme_trader_local_surface_quotes(
+                        version,definition_version,shadow_cohort_id,remaining_amount_raw,id DESC
+                    );
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_local_surface_quote_reg_no_update
+                BEFORE UPDATE ON chain_meme_trader_local_surface_quote_registrations
+                BEGIN SELECT RAISE(ABORT,'local surface quote registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_local_surface_quote_reg_no_delete
+                BEFORE DELETE ON chain_meme_trader_local_surface_quote_registrations
+                BEGIN SELECT RAISE(ABORT,'local surface quote registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_local_surface_quotes_no_update
+                BEFORE UPDATE ON chain_meme_trader_local_surface_quotes
+                BEGIN SELECT RAISE(ABORT,'local surface quotes are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_local_surface_quotes_no_delete
+                BEFORE DELETE ON chain_meme_trader_local_surface_quotes
+                BEGIN SELECT RAISE(ABORT,'local surface quotes are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_local_critical_exit_reg_no_update
+                BEFORE UPDATE ON chain_meme_trader_local_critical_exit_registrations
+                BEGIN SELECT RAISE(ABORT,'local critical exit registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_local_critical_exit_reg_no_delete
+                BEFORE DELETE ON chain_meme_trader_local_critical_exit_registrations
+                BEGIN SELECT RAISE(ABORT,'local critical exit registrations are immutable'); END;
+                CREATE TABLE IF NOT EXISTS onchain_confirmed_rug_terminals (
+                    id INTEGER PRIMARY KEY,
+                    scheduler_version TEXT NOT NULL,
+                    position_definition_version TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    pool_address TEXT NOT NULL,
+                    risk_event_id INTEGER NOT NULL,
+                    alert_mark_id INTEGER NOT NULL,
+                    quote_result_id INTEGER NOT NULL,
+                    confirmation_reason TEXT NOT NULL,
+                    confirmed_at TEXT NOT NULL,
+                    UNIQUE(scheduler_version,position_definition_version,shadow_cohort_id)
+                );
+                CREATE TABLE IF NOT EXISTS onchain_dead_market_surfaces (
+                    id INTEGER PRIMARY KEY,
+                    scheduler_version TEXT NOT NULL,
+                    chain TEXT NOT NULL,
+                    mint TEXT NOT NULL,
+                    pool_address TEXT NOT NULL,
+                    policy_version TEXT NOT NULL,
+                    terminal_id INTEGER NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    UNIQUE(scheduler_version,chain,mint,pool_address,policy_version)
+                );
+                CREATE TRIGGER IF NOT EXISTS onchain_held_account_monitor_registrations_no_update
+                BEFORE UPDATE ON onchain_held_account_monitor_registrations
+                BEGIN SELECT RAISE(ABORT,'held account monitor registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_held_account_monitor_registrations_no_delete
+                BEFORE DELETE ON onchain_held_account_monitor_registrations
+                BEGIN SELECT RAISE(ABORT,'held account monitor registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_held_account_targets_no_update
+                BEFORE UPDATE ON onchain_held_account_targets
+                BEGIN SELECT RAISE(ABORT,'held account targets are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_held_account_targets_no_delete
+                BEFORE DELETE ON onchain_held_account_targets
+                BEGIN SELECT RAISE(ABORT,'held account targets are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_held_account_baselines_no_update
+                BEFORE UPDATE ON onchain_held_account_baselines
+                BEGIN SELECT RAISE(ABORT,'held account baselines are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_held_account_baselines_no_delete
+                BEFORE DELETE ON onchain_held_account_baselines
+                BEGIN SELECT RAISE(ABORT,'held account baselines are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_held_account_risk_events_no_update
+                BEFORE UPDATE ON onchain_held_account_risk_events
+                BEGIN SELECT RAISE(ABORT,'held account risk events are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_held_account_risk_events_no_delete
+                BEFORE DELETE ON onchain_held_account_risk_events
+                BEGIN SELECT RAISE(ABORT,'held account risk events are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_confirmed_rug_terminals_no_update
+                BEFORE UPDATE ON onchain_confirmed_rug_terminals
+                BEGIN SELECT RAISE(ABORT,'confirmed rug terminals are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_confirmed_rug_terminals_no_delete
+                BEFORE DELETE ON onchain_confirmed_rug_terminals
+                BEGIN SELECT RAISE(ABORT,'confirmed rug terminals are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_dead_market_surfaces_no_update
+                BEFORE UPDATE ON onchain_dead_market_surfaces
+                BEGIN SELECT RAISE(ABORT,'dead market surfaces are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_dead_market_surfaces_no_delete
+                BEFORE DELETE ON onchain_dead_market_surfaces
+                BEGIN SELECT RAISE(ABORT,'dead market surfaces are immutable'); END;
+                CREATE TABLE IF NOT EXISTS onchain_paper_position_monitor_registrations (
+                    monitor_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_source_buy_trade_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS onchain_paper_position_monitor_quote_attempts (
+                    id INTEGER PRIMARY KEY,
+                    monitor_version TEXT NOT NULL,
+                    quote_key TEXT NOT NULL UNIQUE,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    source_buy_trade_id INTEGER NOT NULL,
+                    monitor_state TEXT NOT NULL,
+                    input_mint TEXT NOT NULL,
+                    output_mint TEXT NOT NULL,
+                    input_amount_raw TEXT NOT NULL,
+                    requested_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS onchain_paper_position_monitor_attempts_position_idx
+                    ON onchain_paper_position_monitor_quote_attempts(
+                        monitor_version,shadow_cohort_id,requested_at DESC,id DESC
+                    );
+                CREATE TABLE IF NOT EXISTS onchain_paper_position_monitor_quote_results (
+                    id INTEGER PRIMARY KEY,
+                    monitor_version TEXT NOT NULL,
+                    attempt_id INTEGER NOT NULL UNIQUE,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    quote_terminal_status TEXT NOT NULL,
+                    validity_status TEXT NOT NULL,
+                    input_amount_raw TEXT NOT NULL,
+                    output_amount_raw TEXT,
+                    other_amount_threshold_raw TEXT,
+                    requested_at TEXT NOT NULL,
+                    completed_at TEXT NOT NULL,
+                    total_delay_seconds REAL NOT NULL,
+                    slippage_bps INTEGER,
+                    router TEXT NOT NULL DEFAULT '',
+                    mode TEXT NOT NULL DEFAULT '',
+                    price_impact_bps REAL,
+                    economic_status TEXT NOT NULL,
+                    gross_usdc REAL,
+                    network_fee_usd REAL NOT NULL DEFAULT 0,
+                    executable_recovery_usd REAL,
+                    error_type TEXT NOT NULL DEFAULT '',
+                    recorded_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS onchain_paper_position_monitor_results_position_idx
+                    ON onchain_paper_position_monitor_quote_results(
+                        monitor_version,shadow_cohort_id,recorded_at DESC,id DESC
+                    );
+                CREATE TABLE IF NOT EXISTS onchain_paper_position_monitor_account_snapshots (
+                    id INTEGER PRIMARY KEY,
+                    monitor_version TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    cash_usd REAL NOT NULL,
+                    executable_value_usd REAL,
+                    executable_equity_usd REAL,
+                    realized_pnl_usd REAL NOT NULL,
+                    executable_unrealized_pnl_usd REAL,
+                    executable_total_pnl_usd REAL,
+                    open_position_count INTEGER NOT NULL,
+                    priced_position_count INTEGER NOT NULL,
+                    no_route_position_count INTEGER NOT NULL,
+                    valuation_status TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS onchain_paper_position_monitor_account_time_idx
+                    ON onchain_paper_position_monitor_account_snapshots(
+                        monitor_version,recorded_at DESC,id DESC
+                    );
+                CREATE TRIGGER IF NOT EXISTS onchain_paper_position_monitor_registrations_no_update
+                BEFORE UPDATE ON onchain_paper_position_monitor_registrations
+                BEGIN SELECT RAISE(ABORT,'position monitor registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_paper_position_monitor_registrations_no_delete
+                BEFORE DELETE ON onchain_paper_position_monitor_registrations
+                BEGIN SELECT RAISE(ABORT,'position monitor registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_paper_position_monitor_attempts_no_update
+                BEFORE UPDATE ON onchain_paper_position_monitor_quote_attempts
+                BEGIN SELECT RAISE(ABORT,'position monitor attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_paper_position_monitor_attempts_no_delete
+                BEFORE DELETE ON onchain_paper_position_monitor_quote_attempts
+                BEGIN SELECT RAISE(ABORT,'position monitor attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_paper_position_monitor_results_no_update
+                BEFORE UPDATE ON onchain_paper_position_monitor_quote_results
+                BEGIN SELECT RAISE(ABORT,'position monitor results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_paper_position_monitor_results_no_delete
+                BEFORE DELETE ON onchain_paper_position_monitor_quote_results
+                BEGIN SELECT RAISE(ABORT,'position monitor results are immutable'); END;
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_exploration_buy_trade_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_v6_entry_evaluations (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    source_snapshot_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    evaluated_at TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('admitted','rejected')),
+                    entry_family TEXT,
+                    reason TEXT NOT NULL,
+                    feature_json TEXT NOT NULL,
+                    UNIQUE(definition_version,source_snapshot_id)
+                );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_v6_entry_eval_idx
+                    ON chain_meme_trader_v6_entry_evaluations(
+                        definition_version,source_snapshot_id,token_id
+                    );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_v6_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    code_registered_at TEXT NOT NULL,
+                    code_snapshot_frontier INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_definition_errata (
+                    definition_version TEXT NOT NULL,
+                    field_path TEXT NOT NULL,
+                    corrected_value_json TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    PRIMARY KEY(definition_version,field_path)
+                );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_v6_activations (
+                    definition_version TEXT PRIMARY KEY,
+                    activated_at TEXT NOT NULL,
+                    activation_snapshot_id INTEGER NOT NULL,
+                    v5_definition_version TEXT NOT NULL,
+                    v5_source_frontier INTEGER NOT NULL,
+                    entry_execution_enabled INTEGER NOT NULL DEFAULT 1
+                        CHECK(entry_execution_enabled=1)
+                );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_v6_cohorts (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    token_id TEXT NOT NULL,
+                    entry_family TEXT NOT NULL CHECK(entry_family IN (
+                        'broad_launch','flow_burst','reawakening'
+                    )),
+                    source_snapshot_id INTEGER NOT NULL,
+                    pair_address TEXT NOT NULL,
+                    decided_at TEXT NOT NULL,
+                    episode_no INTEGER NOT NULL,
+                    feature_json TEXT NOT NULL,
+                    UNIQUE(definition_version,source_snapshot_id),
+                    UNIQUE(definition_version,token_id,episode_no)
+                );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_v6_cohorts_token_idx
+                    ON chain_meme_trader_v6_cohorts(
+                        definition_version,token_id,decided_at,id
+                    );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_primary_stops (
+                    definition_version TEXT PRIMARY KEY,
+                    stopped_at TEXT NOT NULL,
+                    source_frontier INTEGER NOT NULL,
+                    reason TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_v6_entry_fills (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    entry_cohort_id INTEGER NOT NULL,
+                    execution_attempt_id INTEGER NOT NULL,
+                    execution_result_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    input_usdc_raw TEXT NOT NULL,
+                    output_token_raw TEXT NOT NULL,
+                    entry_market_price_usd REAL,
+                    execution_price_usd REAL,
+                    output_token_quantity REAL,
+                    slippage_bps INTEGER NOT NULL,
+                    filled_at TEXT NOT NULL,
+                    UNIQUE(definition_version,entry_cohort_id),
+                    UNIQUE(definition_version,execution_result_id)
+                );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_entry_participant_outcomes (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    arm_id TEXT NOT NULL,
+                    entry_decision_id INTEGER NOT NULL,
+                    entry_fill_id INTEGER NOT NULL,
+                    outcome TEXT NOT NULL CHECK(outcome IN (
+                        'projected','skipped_cash_unavailable_at_fill'
+                    )),
+                    available_cash_usd REAL NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    UNIQUE(definition_version,shadow_cohort_id,arm_id)
+                );
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_v6_entry_eval_no_update
+                BEFORE UPDATE ON chain_meme_trader_v6_entry_evaluations
+                BEGIN SELECT RAISE(ABORT,'v6 entry evaluations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_v6_entry_eval_no_delete
+                BEFORE DELETE ON chain_meme_trader_v6_entry_evaluations
+                BEGIN SELECT RAISE(ABORT,'v6 entry evaluations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_v6_cohorts_no_update
+                BEFORE UPDATE ON chain_meme_trader_v6_cohorts
+                BEGIN SELECT RAISE(ABORT,'v6 cohorts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_v6_cohorts_no_delete
+                BEFORE DELETE ON chain_meme_trader_v6_cohorts
+                BEGIN SELECT RAISE(ABORT,'v6 cohorts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_v6_reg_no_update
+                BEFORE UPDATE ON chain_meme_trader_v6_registrations
+                BEGIN SELECT RAISE(ABORT,'v6 registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_v6_reg_no_delete
+                BEFORE DELETE ON chain_meme_trader_v6_registrations
+                BEGIN SELECT RAISE(ABORT,'v6 registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_v6_activation_no_update
+                BEFORE UPDATE ON chain_meme_trader_v6_activations
+                BEGIN SELECT RAISE(ABORT,'v6 activations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_v6_activation_no_delete
+                BEFORE DELETE ON chain_meme_trader_v6_activations
+                BEGIN SELECT RAISE(ABORT,'v6 activations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_v6_entry_fill_no_update
+                BEFORE UPDATE ON chain_meme_trader_v6_entry_fills
+                BEGIN SELECT RAISE(ABORT,'v6 entry fills are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_v6_entry_fill_no_delete
+                BEFORE DELETE ON chain_meme_trader_v6_entry_fills
+                BEGIN SELECT RAISE(ABORT,'v6 entry fills are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_entry_participant_outcome_no_update
+                BEFORE UPDATE ON chain_meme_trader_entry_participant_outcomes
+                BEGIN SELECT RAISE(ABORT,'entry participant outcomes are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_entry_participant_outcome_no_delete
+                BEFORE DELETE ON chain_meme_trader_entry_participant_outcomes
+                BEGIN SELECT RAISE(ABORT,'entry participant outcomes are immutable'); END;
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_immediate_reverseability_registrations (
+                    observer_version TEXT PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    registered_at TEXT NOT NULL,
+                    activation_entry_fill_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_immediate_reverseability_outcomes (
+                    id INTEGER PRIMARY KEY,
+                    observer_version TEXT NOT NULL,
+                    definition_version TEXT NOT NULL,
+                    entry_fill_id INTEGER NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    horizon_seconds INTEGER NOT NULL CHECK(horizon_seconds IN (15,30,60)),
+                    outcome_status TEXT NOT NULL CHECK(outcome_status IN (
+                        'REVERSE_QUOTED','TRANSIENT_ROUTE_GAP','REVERSE_NO_ROUTE',
+                        'AGGREGATOR_COVERAGE_GAP','UNKNOWN_PROTOCOL','UNKNOWN_ERROR',
+                        'UNKNOWN_STALE','UNKNOWN_NO_SAMPLE'
+                    )),
+                    first_quote_attempt_id INTEGER,
+                    first_quote_result_id INTEGER,
+                    first_quoted_result_id INTEGER,
+                    local_surface_quote_id INTEGER,
+                    entry_input_usdc_raw TEXT NOT NULL,
+                    acquired_token_raw TEXT NOT NULL,
+                    central_recovery_usdc_raw TEXT,
+                    minimum_recovery_usdc_raw TEXT,
+                    central_recovery_ratio REAL,
+                    minimum_recovery_ratio REAL,
+                    fill_to_first_request_ms REAL,
+                    fill_to_first_complete_ms REAL,
+                    fill_to_first_route_ms REAL,
+                    evidence_json TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    UNIQUE(observer_version,entry_fill_id,horizon_seconds)
+                );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_reverseability_outcome_idx
+                    ON chain_meme_trader_immediate_reverseability_outcomes(
+                        observer_version,horizon_seconds,outcome_status,entry_fill_id
+                    );
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_reverseability_reg_no_update
+                BEFORE UPDATE ON chain_meme_trader_immediate_reverseability_registrations
+                BEGIN SELECT RAISE(ABORT,'reverseability registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_reverseability_reg_no_delete
+                BEFORE DELETE ON chain_meme_trader_immediate_reverseability_registrations
+                BEGIN SELECT RAISE(ABORT,'reverseability registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_reverseability_outcome_no_update
+                BEFORE UPDATE ON chain_meme_trader_immediate_reverseability_outcomes
+                BEGIN SELECT RAISE(ABORT,'reverseability outcomes are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_reverseability_outcome_no_delete
+                BEFORE DELETE ON chain_meme_trader_immediate_reverseability_outcomes
+                BEGIN SELECT RAISE(ABORT,'reverseability outcomes are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_primary_stops_no_update
+                BEFORE UPDATE ON chain_meme_trader_primary_stops
+                BEGIN SELECT RAISE(ABORT,'primary stops are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_primary_stops_no_delete
+                BEFORE DELETE ON chain_meme_trader_primary_stops
+                BEGIN SELECT RAISE(ABORT,'primary stops are immutable'); END;
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_executable_decay_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    source_definition_version TEXT NOT NULL,
+                    source_arm_id TEXT NOT NULL,
+                    registered_at TEXT NOT NULL,
+                    activation_source_buy_fill_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_exec_decay_reg_no_update
+                BEFORE UPDATE ON chain_meme_trader_executable_decay_registrations
+                BEGIN SELECT RAISE(ABORT,'executable decay registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_exec_decay_reg_no_delete
+                BEFORE DELETE ON chain_meme_trader_executable_decay_registrations
+                BEGIN SELECT RAISE(ABORT,'executable decay registrations are immutable'); END;
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_executable_decay_stops (
+                    definition_version TEXT PRIMARY KEY,
+                    stopped_at TEXT NOT NULL,
+                    source_buy_fill_frontier INTEGER NOT NULL,
+                    reason TEXT NOT NULL
+                );
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_exec_decay_stop_no_update
+                BEFORE UPDATE ON chain_meme_trader_executable_decay_stops
+                BEGIN SELECT RAISE(ABORT,'executable decay stops are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_exec_decay_stop_no_delete
+                BEFORE DELETE ON chain_meme_trader_executable_decay_stops
+                BEGIN SELECT RAISE(ABORT,'executable decay stops are immutable'); END;
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_position_equity_frame_registrations (
+                    frame_version TEXT PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    registered_at TEXT NOT NULL,
+                    activation_source_buy_fill_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_position_equity_frames (
+                    id INTEGER PRIMARY KEY,
+                    frame_version TEXT NOT NULL,
+                    definition_version TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    quote_result_id INTEGER NOT NULL,
+                    snapshot_id INTEGER,
+                    input_amount_raw TEXT NOT NULL,
+                    valuation_status TEXT NOT NULL CHECK(valuation_status IN (
+                        'COMPLETE','UNKNOWN_MISSING','UNKNOWN_NO_ROUTE',
+                        'UNKNOWN_STALE','UNKNOWN_ERROR'
+                    )),
+                    remaining_min_executable_recovery_usd REAL,
+                    arm_values_json TEXT NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    completed_at TEXT NOT NULL,
+                    decision_at TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    UNIQUE(frame_version,definition_version,shadow_cohort_id,quote_result_id)
+                );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_equity_frames_cohort_idx
+                    ON chain_meme_trader_position_equity_frames(
+                        definition_version,shadow_cohort_id,decision_at,id
+                    );
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_equity_frame_reg_no_update
+                BEFORE UPDATE ON chain_meme_trader_position_equity_frame_registrations
+                BEGIN SELECT RAISE(ABORT,'position equity frame registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_equity_frame_reg_no_delete
+                BEFORE DELETE ON chain_meme_trader_position_equity_frame_registrations
+                BEGIN SELECT RAISE(ABORT,'position equity frame registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_equity_frames_no_update
+                BEFORE UPDATE ON chain_meme_trader_position_equity_frames
+                BEGIN SELECT RAISE(ABORT,'position equity frames are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_equity_frames_no_delete
+                BEFORE DELETE ON chain_meme_trader_position_equity_frames
+                BEGIN SELECT RAISE(ABORT,'position equity frames are immutable'); END;
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_positions (
+                    definition_version TEXT NOT NULL,
+                    arm_id TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    source_buy_trade_id INTEGER NOT NULL,
+                    source_entry_fill_id INTEGER,
+                    baseline_quote_result_id INTEGER NOT NULL,
+                    entry_snapshot_id INTEGER NOT NULL,
+                    entry_signal_price_usd REAL NOT NULL,
+                    entry_execution_price_usd REAL,
+                    paper_quantity_tokens REAL,
+                    remaining_quantity_tokens REAL,
+                    amount_raw TEXT NOT NULL,
+                    initial_amount_raw TEXT,
+                    stake_usd REAL NOT NULL,
+                    realized_proceeds_usd REAL NOT NULL DEFAULT 0,
+                    allocated_cost_usd REAL NOT NULL DEFAULT 0,
+                    next_tp_index INTEGER NOT NULL DEFAULT 0,
+                    highest_signal_price_usd REAL NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN (
+                        'open','closed','written_off','ineligible'
+                    )),
+                    pending_mark_id INTEGER,
+                    last_evaluated_at TEXT,
+                    realized_pnl_usd REAL NOT NULL DEFAULT 0,
+                    opened_at TEXT NOT NULL,
+                    closed_at TEXT,
+                    close_reason TEXT NOT NULL DEFAULT '',
+                    entry_reason TEXT NOT NULL DEFAULT '',
+                    last_fixed_horizon_minutes INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(definition_version,arm_id,shadow_cohort_id),
+                    UNIQUE(definition_version,arm_id,source_buy_trade_id)
+                );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_positions_due_idx
+                    ON chain_meme_trader_positions(
+                        definition_version,status,last_evaluated_at,shadow_cohort_id
+                    );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_entry_decisions (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    arm_id TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    baseline_quote_result_id INTEGER NOT NULL,
+                    decided_at TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('admitted','rejected')),
+                    reason TEXT NOT NULL,
+                    UNIQUE(definition_version,arm_id,shadow_cohort_id)
+                );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_entry_decisions_stage_idx
+                    ON chain_meme_trader_entry_decisions(
+                        definition_version,arm_id,status,decided_at,id
+                    );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_marks (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    arm_id TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    snapshot_id INTEGER,
+                    recorded_at TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    sell_amount_raw TEXT NOT NULL,
+                    market_pre_sequence INTEGER,
+                    market_pair_address TEXT,
+                    market_post_sequence INTEGER,
+                    market_post_pair_address TEXT,
+                    market_post_price_usd REAL,
+                    market_post_recorded_at TEXT,
+                    trigger_evidence_json TEXT NOT NULL DEFAULT '{}',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at TEXT,
+                    status TEXT NOT NULL CHECK(status IN (
+                        'pending','quoting','retry','filled','written_off','exhausted'
+                    ))
+                );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_marks_due_idx
+                    ON chain_meme_trader_marks(
+                        definition_version,status,next_attempt_at,shadow_cohort_id
+                    );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_quote_attempts (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    quote_key TEXT NOT NULL UNIQUE,
+                    quote_kind TEXT NOT NULL CHECK(quote_kind IN ('exit','valuation')),
+                    shadow_cohort_id INTEGER NOT NULL,
+                    input_mint TEXT NOT NULL,
+                    output_mint TEXT NOT NULL,
+                    input_amount_raw TEXT NOT NULL,
+                    mark_ids_json TEXT NOT NULL DEFAULT '[]',
+                    requested_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_quote_results (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    attempt_id INTEGER NOT NULL UNIQUE,
+                    quote_kind TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    quote_terminal_status TEXT NOT NULL,
+                    validity_status TEXT NOT NULL,
+                    input_amount_raw TEXT NOT NULL,
+                    output_amount_raw TEXT,
+                    other_amount_threshold_raw TEXT,
+                    requested_at TEXT NOT NULL,
+                    completed_at TEXT NOT NULL,
+                    slippage_bps INTEGER NOT NULL,
+                    gross_usdc REAL,
+                    route_plan_json TEXT NOT NULL DEFAULT '[]',
+                    error_type TEXT NOT NULL DEFAULT '',
+                    recorded_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_quote_results_cohort_idx
+                    ON chain_meme_trader_quote_results(
+                        definition_version,shadow_cohort_id,recorded_at DESC,id DESC
+                    );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_trades (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    arm_id TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    quote_result_id INTEGER,
+                    side TEXT NOT NULL CHECK(side IN ('BUY','SELL','WRITEOFF')),
+                    gross_usd REAL NOT NULL,
+                    net_cash_flow_usd REAL NOT NULL,
+                    realized_pnl_usd REAL,
+                    reason TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    recorded_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_trades_arm_idx
+                    ON chain_meme_trader_trades(
+                        definition_version,arm_id,created_at,id
+                    );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_account_snapshots (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    arm_id TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    cash_usd REAL NOT NULL,
+                    executable_equity_usd REAL,
+                    realized_pnl_usd REAL NOT NULL,
+                    executable_unrealized_pnl_usd REAL,
+                    executable_total_pnl_usd REAL,
+                    direct_estimated_equity_usd REAL,
+                    direct_estimated_unrealized_pnl_usd REAL,
+                    direct_estimated_total_pnl_usd REAL,
+                    direct_estimated_position_count INTEGER NOT NULL DEFAULT 0,
+                    indicative_equity_usd REAL,
+                    indicative_unrealized_pnl_usd REAL,
+                    indicative_total_pnl_usd REAL,
+                    indicative_position_count INTEGER NOT NULL DEFAULT 0,
+                    indicative_is_complete INTEGER NOT NULL DEFAULT 0,
+                    open_position_count INTEGER NOT NULL,
+                    closed_position_count INTEGER NOT NULL,
+                    written_off_position_count INTEGER NOT NULL,
+                    priced_position_count INTEGER NOT NULL,
+                    valuation_status TEXT NOT NULL,
+                    ledger_trade_frontier_id INTEGER
+                );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_account_snapshots_arm_idx
+                    ON chain_meme_trader_account_snapshots(
+                        definition_version,arm_id,recorded_at,id
+                    );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_market_marks (
+                    token_id TEXT PRIMARY KEY,
+                    chain TEXT NOT NULL,
+                    address TEXT NOT NULL,
+                    pair_address TEXT,
+                    provider TEXT NOT NULL,
+                    price_usd REAL NOT NULL,
+                    liquidity_usd REAL,
+                    volume_5m_usd REAL,
+                    buys_5m INTEGER,
+                    sells_5m INTEGER,
+                    observed_at TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'VISIBLE',
+                    consecutive_misses INTEGER NOT NULL DEFAULT 0,
+                    sample_sequence INTEGER NOT NULL DEFAULT 0,
+                    first_missing_at TEXT,
+                    failure_kind TEXT NOT NULL DEFAULT '',
+                    last_attempt_at TEXT,
+                    last_success_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_market_marks_time_idx
+                    ON chain_meme_trader_market_marks(recorded_at DESC,token_id);
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_market_mark_history (
+                    id INTEGER PRIMARY KEY,
+                    token_id TEXT NOT NULL,
+                    chain TEXT,
+                    address TEXT,
+                    pair_address TEXT,
+                    provider TEXT NOT NULL,
+                    price_usd REAL,
+                    liquidity_usd REAL,
+                    volume_5m_usd REAL,
+                    buys_5m INTEGER,
+                    sells_5m INTEGER,
+                    observed_at TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    failure_kind TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_market_mark_history_token_idx
+                    ON chain_meme_trader_market_mark_history(
+                        token_id,recorded_at DESC,id DESC
+                    );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_market_mark_history_time_idx
+                    ON chain_meme_trader_market_mark_history(recorded_at,id);
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_order_intents (
+                    id INTEGER PRIMARY KEY,
+                    intent_key TEXT NOT NULL UNIQUE,
+                    definition_version TEXT NOT NULL,
+                    execution_mode TEXT NOT NULL CHECK(execution_mode IN ('paper','live')),
+                    arm_id TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    side TEXT NOT NULL CHECK(side IN ('BUY','SELL')),
+                    entry_decision_id INTEGER,
+                    exit_mark_id INTEGER,
+                    input_mint TEXT NOT NULL,
+                    output_mint TEXT NOT NULL,
+                    input_amount_raw TEXT NOT NULL,
+                    slippage_bps INTEGER NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN (
+                        'ready','submitted','retry','filled','failed','cancelled','written_off'
+                    )),
+                    reason TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    next_attempt_at TEXT,
+                    completed_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_intents_due_idx
+                    ON chain_meme_trader_order_intents(
+                        definition_version,status,next_attempt_at,side,shadow_cohort_id,id
+                    );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_execution_attempts (
+                    id INTEGER PRIMARY KEY,
+                    attempt_key TEXT NOT NULL UNIQUE,
+                    definition_version TEXT NOT NULL,
+                    execution_mode TEXT NOT NULL CHECK(execution_mode IN ('paper','live')),
+                    adapter TEXT NOT NULL,
+                    side TEXT NOT NULL CHECK(side IN ('BUY','SELL')),
+                    shadow_cohort_id INTEGER NOT NULL,
+                    input_mint TEXT NOT NULL,
+                    output_mint TEXT NOT NULL,
+                    input_amount_raw TEXT NOT NULL,
+                    slippage_bps INTEGER NOT NULL,
+                    intent_ids_json TEXT NOT NULL,
+                    requested_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_execution_results (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    attempt_id INTEGER NOT NULL UNIQUE,
+                    terminal_status TEXT NOT NULL,
+                    validity_status TEXT NOT NULL,
+                    output_amount_raw TEXT,
+                    minimum_output_amount_raw TEXT,
+                    requested_at TEXT NOT NULL,
+                    completed_at TEXT NOT NULL,
+                    slippage_bps INTEGER NOT NULL,
+                    route_plan_json TEXT NOT NULL DEFAULT '[]',
+                    error_type TEXT NOT NULL DEFAULT '',
+                    recorded_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_fills (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    intent_id INTEGER NOT NULL UNIQUE,
+                    result_id INTEGER NOT NULL,
+                    attempt_id INTEGER NOT NULL,
+                    execution_mode TEXT NOT NULL,
+                    adapter TEXT NOT NULL,
+                    arm_id TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    side TEXT NOT NULL CHECK(side IN ('BUY','SELL')),
+                    input_amount_raw TEXT NOT NULL,
+                    output_amount_raw TEXT NOT NULL,
+                    gross_usd REAL NOT NULL,
+                    filled_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_fills_arm_idx
+                    ON chain_meme_trader_fills(
+                        definition_version,arm_id,filled_at,id
+                    );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_postbuy_research_registrations (
+                    research_version TEXT PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    registered_at TEXT NOT NULL,
+                    activation_buy_fill_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_postbuy_research_cases (
+                    id INTEGER PRIMARY KEY,
+                    research_version TEXT NOT NULL,
+                    definition_version TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    first_buy_fill_id INTEGER NOT NULL,
+                    entry_snapshot_id INTEGER NOT NULL,
+                    position_opened_at TEXT NOT NULL,
+                    eligible_at TEXT NOT NULL,
+                    research_cutoff_at TEXT NOT NULL,
+                    snapshot_id INTEGER,
+                    trigger_transition_id INTEGER UNIQUE,
+                    status TEXT NOT NULL CHECK(status IN ('triggered','coverage_gap')),
+                    reason_code TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    UNIQUE(research_version,shadow_cohort_id,token_id)
+                );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_postbuy_research_cases_idx
+                    ON chain_meme_trader_postbuy_research_cases(
+                        research_version,status,research_cutoff_at,id
+                    );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_postbuy_research_results (
+                    id INTEGER PRIMARY KEY,
+                    research_version TEXT NOT NULL,
+                    case_id INTEGER NOT NULL UNIQUE,
+                    admission_id INTEGER,
+                    assessment_id INTEGER,
+                    terminal_status TEXT NOT NULL,
+                    completed_at TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL
+                );
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_postbuy_research_registrations_no_update
+                BEFORE UPDATE ON chain_meme_trader_postbuy_research_registrations
+                BEGIN SELECT RAISE(ABORT,'postbuy research registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_postbuy_research_registrations_no_delete
+                BEFORE DELETE ON chain_meme_trader_postbuy_research_registrations
+                BEGIN SELECT RAISE(ABORT,'postbuy research registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_postbuy_research_cases_no_update
+                BEFORE UPDATE ON chain_meme_trader_postbuy_research_cases
+                BEGIN SELECT RAISE(ABORT,'postbuy research cases are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_postbuy_research_cases_no_delete
+                BEFORE DELETE ON chain_meme_trader_postbuy_research_cases
+                BEGIN SELECT RAISE(ABORT,'postbuy research cases are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_postbuy_research_results_no_update
+                BEFORE UPDATE ON chain_meme_trader_postbuy_research_results
+                BEGIN SELECT RAISE(ABORT,'postbuy research results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_postbuy_research_results_no_delete
+                BEFORE DELETE ON chain_meme_trader_postbuy_research_results
+                BEGIN SELECT RAISE(ABORT,'postbuy research results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_registrations_no_update
+                BEFORE UPDATE ON chain_meme_trader_registrations
+                BEGIN SELECT RAISE(ABORT,'ChainMemeTrader registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_registrations_no_delete
+                BEFORE DELETE ON chain_meme_trader_registrations
+                BEGIN SELECT RAISE(ABORT,'ChainMemeTrader registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_quote_attempts_no_update
+                BEFORE UPDATE ON chain_meme_trader_quote_attempts
+                BEGIN SELECT RAISE(ABORT,'ChainMemeTrader quote attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_quote_attempts_no_delete
+                BEFORE DELETE ON chain_meme_trader_quote_attempts
+                BEGIN SELECT RAISE(ABORT,'ChainMemeTrader quote attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_quote_results_no_update
+                BEFORE UPDATE ON chain_meme_trader_quote_results
+                BEGIN SELECT RAISE(ABORT,'ChainMemeTrader quote results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_quote_results_no_delete
+                BEFORE DELETE ON chain_meme_trader_quote_results
+                BEGIN SELECT RAISE(ABORT,'ChainMemeTrader quote results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_trades_no_update
+                BEFORE UPDATE ON chain_meme_trader_trades
+                BEGIN SELECT RAISE(ABORT,'ChainMemeTrader trades are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_trades_no_delete
+                BEFORE DELETE ON chain_meme_trader_trades
+                BEGIN SELECT RAISE(ABORT,'ChainMemeTrader trades are immutable'); END;
                 CREATE TABLE IF NOT EXISTS onchain_paper_exit_challenger_account_snapshots (
                     id INTEGER PRIMARY KEY,
                     definition_version TEXT NOT NULL,
@@ -1681,6 +3046,175 @@ class Store:
                 BEFORE DELETE ON onchain_paper_narrative_context_seeds
                 BEGIN SELECT RAISE(ABORT,'onchain narrative context seeds are immutable'); END;
 
+                CREATE TABLE IF NOT EXISTS token_information_watch_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_trigger_transition_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS token_information_watch_cohorts (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    trigger_snapshot_id INTEGER NOT NULL,
+                    trigger_transition_id INTEGER NOT NULL UNIQUE,
+                    watch_started_at TEXT NOT NULL,
+                    decision_deadline_at TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    UNIQUE(definition_version,shadow_cohort_id)
+                );
+                CREATE TABLE IF NOT EXISTS token_information_watch_transitions (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    watch_cohort_id INTEGER NOT NULL,
+                    state TEXT NOT NULL CHECK(state IN (
+                        'WATCH_CREATED','INFO_PENDING','CONFIRMED',
+                        'REJECTED_NEGATIVE_INFORMATION','EXPIRED_NO_ASSESSMENT',
+                        'EXPIRED_AGENT_CAPACITY','EXPIRED_INSUFFICIENT_CONFIRMATION',
+                        'WAIT_EXECUTION_UNAVAILABLE','WAIT_SAFETY_FAILED','BOUGHT',
+                        'POST_ENTRY_MONITORING','EXIT'
+                    )),
+                    assessment_id INTEGER,
+                    reason_code TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL DEFAULT '{}',
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    UNIQUE(definition_version,watch_cohort_id,state)
+                );
+                CREATE INDEX IF NOT EXISTS token_information_watch_due_idx
+                    ON token_information_watch_cohorts(definition_version,decision_deadline_at,id);
+                CREATE TRIGGER IF NOT EXISTS token_information_watch_cohorts_no_update
+                BEFORE UPDATE ON token_information_watch_cohorts
+                BEGIN SELECT RAISE(ABORT,'token information watch cohorts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_information_watch_cohorts_no_delete
+                BEFORE DELETE ON token_information_watch_cohorts
+                BEGIN SELECT RAISE(ABORT,'token information watch cohorts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_information_watch_transitions_no_update
+                BEFORE UPDATE ON token_information_watch_transitions
+                BEGIN SELECT RAISE(ABORT,'token information watch transitions are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_information_watch_transitions_no_delete
+                BEFORE DELETE ON token_information_watch_transitions
+                BEGIN SELECT RAISE(ABORT,'token information watch transitions are immutable'); END;
+
+                CREATE TABLE IF NOT EXISTS token_information_confirmation_paper_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_watch_transition_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS token_information_confirmation_paper_account (
+                    definition_version TEXT PRIMARY KEY,
+                    starting_cash_usd REAL NOT NULL,
+                    cash_usd REAL NOT NULL,
+                    realized_pnl_usd REAL NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS token_information_confirmation_paper_evaluations (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    watch_cohort_id INTEGER NOT NULL,
+                    confirmed_transition_id INTEGER NOT NULL,
+                    assessment_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    final_snapshot_id INTEGER,
+                    final_entry_evaluated_at TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    UNIQUE(definition_version,watch_cohort_id)
+                );
+                CREATE TABLE IF NOT EXISTS token_information_confirmation_paper_quote_attempts (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    evaluation_id INTEGER NOT NULL UNIQUE,
+                    input_mint TEXT NOT NULL,
+                    output_mint TEXT NOT NULL,
+                    input_amount_raw TEXT NOT NULL,
+                    slippage_bps INTEGER NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS token_information_confirmation_paper_results (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    evaluation_id INTEGER NOT NULL UNIQUE,
+                    quote_attempt_id INTEGER UNIQUE,
+                    terminal_state TEXT NOT NULL CHECK(terminal_state IN (
+                        'WAIT_SAFETY_FAILED','WAIT_EXECUTION_UNAVAILABLE','BOUGHT'
+                    )),
+                    reason_code TEXT NOT NULL,
+                    safety_reasons_json TEXT NOT NULL DEFAULT '[]',
+                    safety_snapshot_id INTEGER,
+                    completed_at TEXT NOT NULL,
+                    output_amount_raw TEXT,
+                    minimum_output_amount_raw TEXT,
+                    price_impact_bps REAL,
+                    execution_quality TEXT NOT NULL,
+                    cost_truth_level TEXT NOT NULL,
+                    fee_model_version TEXT NOT NULL,
+                    network_fee_usd REAL,
+                    quote_json TEXT NOT NULL DEFAULT '{}',
+                    recorded_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS token_information_confirmation_paper_positions (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    watch_cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    entry_result_id INTEGER NOT NULL UNIQUE,
+                    stake_usd REAL NOT NULL,
+                    acquired_amount_raw TEXT NOT NULL,
+                    entry_network_fee_usd REAL NOT NULL,
+                    opened_at TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('open','closed','written_off')),
+                    UNIQUE(definition_version,watch_cohort_id)
+                );
+                CREATE TABLE IF NOT EXISTS token_information_confirmation_paper_trades (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    watch_cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    entry_result_id INTEGER NOT NULL UNIQUE,
+                    side TEXT NOT NULL CHECK(side='BUY'),
+                    gross_usd REAL NOT NULL,
+                    network_fee_usd REAL NOT NULL,
+                    net_cash_flow_usd REAL NOT NULL,
+                    reason TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TRIGGER IF NOT EXISTS token_information_confirmation_paper_registrations_no_update
+                BEFORE UPDATE ON token_information_confirmation_paper_registrations
+                BEGIN SELECT RAISE(ABORT,'token information confirmation registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_information_confirmation_paper_registrations_no_delete
+                BEFORE DELETE ON token_information_confirmation_paper_registrations
+                BEGIN SELECT RAISE(ABORT,'token information confirmation registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_information_confirmation_paper_evaluations_no_update
+                BEFORE UPDATE ON token_information_confirmation_paper_evaluations
+                BEGIN SELECT RAISE(ABORT,'token information confirmation evaluations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_information_confirmation_paper_evaluations_no_delete
+                BEFORE DELETE ON token_information_confirmation_paper_evaluations
+                BEGIN SELECT RAISE(ABORT,'token information confirmation evaluations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_information_confirmation_paper_quote_attempts_no_update
+                BEFORE UPDATE ON token_information_confirmation_paper_quote_attempts
+                BEGIN SELECT RAISE(ABORT,'token information confirmation quote attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_information_confirmation_paper_quote_attempts_no_delete
+                BEFORE DELETE ON token_information_confirmation_paper_quote_attempts
+                BEGIN SELECT RAISE(ABORT,'token information confirmation quote attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_information_confirmation_paper_results_no_update
+                BEFORE UPDATE ON token_information_confirmation_paper_results
+                BEGIN SELECT RAISE(ABORT,'token information confirmation results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_information_confirmation_paper_results_no_delete
+                BEFORE DELETE ON token_information_confirmation_paper_results
+                BEGIN SELECT RAISE(ABORT,'token information confirmation results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_information_confirmation_paper_trades_no_update
+                BEFORE UPDATE ON token_information_confirmation_paper_trades
+                BEGIN SELECT RAISE(ABORT,'token information confirmation trades are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS token_information_confirmation_paper_trades_no_delete
+                BEFORE DELETE ON token_information_confirmation_paper_trades
+                BEGIN SELECT RAISE(ABORT,'token information confirmation trades are immutable'); END;
+
                 CREATE TABLE IF NOT EXISTS source_utility_outcomes (
                     id INTEGER PRIMARY KEY,
                     outcome_key TEXT NOT NULL,
@@ -1729,6 +3263,50 @@ class Store:
                     last_error_at TEXT,
                     last_error TEXT NOT NULL DEFAULT ''
                 );
+                CREATE TABLE IF NOT EXISTS system_error_cases (
+                    id INTEGER PRIMARY KEY,
+                    fingerprint TEXT NOT NULL UNIQUE,
+                    area TEXT NOT NULL,
+                    component TEXT NOT NULL,
+                    error_type TEXT NOT NULL,
+                    message_safe TEXT NOT NULL DEFAULT '',
+                    severity TEXT NOT NULL CHECK(severity IN ('low','medium','high')),
+                    status TEXT NOT NULL DEFAULT 'new' CHECK(status IN (
+                        'new','in_progress','fixed','ignored'
+                    )),
+                    first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    occurrence_count INTEGER NOT NULL DEFAULT 1,
+                    last_context_json TEXT NOT NULL DEFAULT '{}',
+                    resolved_at TEXT,
+                    resolution_note TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS system_error_cases_status_idx
+                    ON system_error_cases(status,severity,last_seen_at DESC,id DESC);
+                CREATE TABLE IF NOT EXISTS system_error_occurrences (
+                    id INTEGER PRIMARY KEY,
+                    case_id INTEGER NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    context_safe_json TEXT NOT NULL DEFAULT '{}',
+                    FOREIGN KEY(case_id) REFERENCES system_error_cases(id)
+                );
+                CREATE INDEX IF NOT EXISTS system_error_occurrences_case_idx
+                    ON system_error_occurrences(case_id,observed_at DESC,id DESC);
+                CREATE TABLE IF NOT EXISTS system_error_resolution_reports (
+                    id INTEGER PRIMARY KEY,
+                    case_id INTEGER NOT NULL,
+                    action TEXT NOT NULL CHECK(action IN (
+                        'diagnosis_draft','fixed','ignored','reopened'
+                    )),
+                    summary TEXT NOT NULL,
+                    evidence_safe TEXT NOT NULL DEFAULT '',
+                    report_path TEXT NOT NULL DEFAULT '',
+                    actor TEXT NOT NULL DEFAULT 'user',
+                    recorded_at TEXT NOT NULL,
+                    FOREIGN KEY(case_id) REFERENCES system_error_cases(id)
+                );
+                CREATE INDEX IF NOT EXISTS system_error_reports_case_idx
+                    ON system_error_resolution_reports(case_id,recorded_at DESC,id DESC);
                 CREATE TABLE IF NOT EXISTS source_poll_attempts (
                     id INTEGER PRIMARY KEY,
                     version TEXT NOT NULL,
@@ -2964,6 +4542,8 @@ class Store:
                 CREATE TRIGGER IF NOT EXISTS onchain_only_jupiter_quote_results_no_delete
                 BEFORE DELETE ON onchain_only_jupiter_quote_results
                 BEGIN SELECT RAISE(ABORT,'onchain-only Jupiter results are immutable'); END;
+                DROP TRIGGER IF EXISTS onchain_only_jupiter_quote_attempts_insert_guard;
+                DROP TRIGGER IF EXISTS onchain_only_jupiter_quote_results_insert_guard;
                 CREATE TRIGGER IF NOT EXISTS onchain_only_jupiter_quote_attempts_insert_guard
                 BEFORE INSERT ON onchain_only_jupiter_quote_attempts
                 WHEN NOT EXISTS (
@@ -3066,6 +4646,43 @@ class Store:
                       )
                 )
                 BEGIN SELECT RAISE(ABORT,'invalid onchain-only Jupiter result'); END;
+                CREATE TABLE IF NOT EXISTS robinhood_stock_token_registry_runs (
+                    id INTEGER PRIMARY KEY,
+                    source_url TEXT NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    completed_at TEXT NOT NULL,
+                    payload_sha256 TEXT NOT NULL,
+                    asset_count INTEGER NOT NULL,
+                    deployment_count INTEGER NOT NULL,
+                    recorded_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS robinhood_stock_token_registry_entries (
+                    id INTEGER PRIMARY KEY,
+                    run_id INTEGER NOT NULL,
+                    asset_id TEXT NOT NULL,
+                    token_symbol TEXT NOT NULL,
+                    token_name TEXT NOT NULL,
+                    contract_address TEXT NOT NULL,
+                    chain_id INTEGER NOT NULL CHECK(chain_id=4663),
+                    asset_status TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    UNIQUE(run_id,contract_address),
+                    FOREIGN KEY(run_id) REFERENCES robinhood_stock_token_registry_runs(id)
+                );
+                CREATE INDEX IF NOT EXISTS robinhood_stock_token_registry_entries_address_idx
+                    ON robinhood_stock_token_registry_entries(contract_address,run_id);
+                CREATE TRIGGER IF NOT EXISTS robinhood_stock_token_registry_runs_no_update
+                BEFORE UPDATE ON robinhood_stock_token_registry_runs
+                BEGIN SELECT RAISE(ABORT,'Robinhood Stock Token registry runs are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS robinhood_stock_token_registry_runs_no_delete
+                BEFORE DELETE ON robinhood_stock_token_registry_runs
+                BEGIN SELECT RAISE(ABORT,'Robinhood Stock Token registry runs are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS robinhood_stock_token_registry_entries_no_update
+                BEFORE UPDATE ON robinhood_stock_token_registry_entries
+                BEGIN SELECT RAISE(ABORT,'Robinhood Stock Token registry entries are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS robinhood_stock_token_registry_entries_no_delete
+                BEFORE DELETE ON robinhood_stock_token_registry_entries
+                BEGIN SELECT RAISE(ABORT,'Robinhood Stock Token registry entries are immutable'); END;
                 CREATE TABLE IF NOT EXISTS onchain_only_evm_route_quote_registrations (
                     definition_version TEXT PRIMARY KEY,
                     registered_at TEXT NOT NULL,
@@ -3181,6 +4798,80 @@ class Store:
                 CREATE TRIGGER IF NOT EXISTS onchain_only_evm_route_quote_results_no_delete
                 BEFORE DELETE ON onchain_only_evm_route_quote_results
                 BEGIN SELECT RAISE(ABORT,'onchain-only EVM route results are immutable'); END;
+                CREATE TABLE IF NOT EXISTS onchain_only_evm_aggregator_price_registrations (
+                    definition_version TEXT PRIMARY KEY,
+                    registered_at TEXT NOT NULL,
+                    activation_shadow_cohort_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS onchain_only_evm_aggregator_price_attempts (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    quote_key TEXT NOT NULL UNIQUE,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    chain TEXT NOT NULL CHECK(lower(chain) IN ('bsc','robinhood')),
+                    anchor_at TEXT NOT NULL,
+                    sell_token TEXT NOT NULL,
+                    buy_token TEXT NOT NULL,
+                    sell_amount_raw TEXT NOT NULL,
+                    slippage_bps INTEGER NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none')
+                );
+                CREATE TABLE IF NOT EXISTS onchain_only_evm_aggregator_price_results (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    quote_key TEXT NOT NULL UNIQUE,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    attempt_id INTEGER UNIQUE,
+                    token_id TEXT NOT NULL,
+                    chain TEXT NOT NULL CHECK(lower(chain) IN ('bsc','robinhood')),
+                    anchor_at TEXT NOT NULL,
+                    terminal_status TEXT NOT NULL CHECK(terminal_status IN (
+                        'not_requested','priced','no_route','error','protocol_invalid',
+                        'interrupted_after_request'
+                    )),
+                    validity_status TEXT NOT NULL CHECK(validity_status IN (
+                        'valid','trigger_baseline_invalid','queue_delay_expired',
+                        'total_delay_expired','request_evidence_missing'
+                    )),
+                    requested_at TEXT NOT NULL,
+                    completed_at TEXT NOT NULL,
+                    queue_delay_seconds REAL NOT NULL,
+                    request_duration_seconds REAL NOT NULL,
+                    normalized_result_json TEXT NOT NULL,
+                    error_type TEXT NOT NULL DEFAULT '',
+                    recorded_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    FOREIGN KEY(attempt_id) REFERENCES onchain_only_evm_aggregator_price_attempts(id)
+                );
+                CREATE INDEX IF NOT EXISTS onchain_only_evm_aggregator_price_results_status_idx
+                    ON onchain_only_evm_aggregator_price_results(
+                        definition_version,chain,terminal_status,recorded_at
+                    );
+                CREATE TRIGGER IF NOT EXISTS onchain_only_evm_aggregator_price_registrations_no_update
+                BEFORE UPDATE ON onchain_only_evm_aggregator_price_registrations
+                BEGIN SELECT RAISE(ABORT,'EVM aggregator registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_only_evm_aggregator_price_registrations_no_delete
+                BEFORE DELETE ON onchain_only_evm_aggregator_price_registrations
+                BEGIN SELECT RAISE(ABORT,'EVM aggregator registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_only_evm_aggregator_price_attempts_no_update
+                BEFORE UPDATE ON onchain_only_evm_aggregator_price_attempts
+                BEGIN SELECT RAISE(ABORT,'EVM aggregator attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_only_evm_aggregator_price_attempts_no_delete
+                BEFORE DELETE ON onchain_only_evm_aggregator_price_attempts
+                BEGIN SELECT RAISE(ABORT,'EVM aggregator attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_only_evm_aggregator_price_results_no_update
+                BEFORE UPDATE ON onchain_only_evm_aggregator_price_results
+                BEGIN SELECT RAISE(ABORT,'EVM aggregator results are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS onchain_only_evm_aggregator_price_results_no_delete
+                BEFORE DELETE ON onchain_only_evm_aggregator_price_results
+                BEGIN SELECT RAISE(ABORT,'EVM aggregator results are immutable'); END;
+                DROP TRIGGER IF EXISTS onchain_only_evm_route_quote_attempts_insert_guard;
+                DROP TRIGGER IF EXISTS onchain_only_evm_route_quote_results_insert_guard;
                 CREATE TRIGGER IF NOT EXISTS onchain_only_evm_route_quote_attempts_insert_guard
                 BEFORE INSERT ON onchain_only_evm_route_quote_attempts
                 WHEN NOT EXISTS (
@@ -4437,6 +6128,173 @@ class Store:
                         "ALTER TABLE onchain_only_jupiter_quote_results "
                         f"ADD COLUMN {column} {definition}"
                     )
+            chain_position_columns = {
+                row["name"] for row in self.db.execute(
+                    "PRAGMA table_info(chain_meme_trader_positions)"
+                )
+            }
+            for column, definition in (
+                ("initial_amount_raw", "TEXT"),
+                ("entry_execution_price_usd", "REAL"),
+                ("paper_quantity_tokens", "REAL"),
+                ("remaining_quantity_tokens", "REAL"),
+                ("realized_proceeds_usd", "REAL NOT NULL DEFAULT 0"),
+                ("allocated_cost_usd", "REAL NOT NULL DEFAULT 0"),
+                ("next_tp_index", "INTEGER NOT NULL DEFAULT 0"),
+                ("entry_reason", "TEXT NOT NULL DEFAULT ''"),
+                ("last_fixed_horizon_minutes", "INTEGER NOT NULL DEFAULT 0"),
+                ("entry_fill_id", "INTEGER"),
+                ("last_fill_id", "INTEGER"),
+                ("source_entry_fill_id", "INTEGER"),
+            ):
+                if chain_position_columns and column not in chain_position_columns:
+                    self.db.execute(
+                        "ALTER TABLE chain_meme_trader_positions "
+                        f"ADD COLUMN {column} {definition}"
+                    )
+            market_entry_fill_columns = {
+                row["name"] for row in self.db.execute(
+                    "PRAGMA table_info(chain_meme_trader_v6_entry_fills)"
+                )
+            }
+            for column, definition in (
+                ("entry_market_price_usd", "REAL"),
+                ("execution_price_usd", "REAL"),
+                ("output_token_quantity", "REAL"),
+            ):
+                if market_entry_fill_columns and column not in market_entry_fill_columns:
+                    self.db.execute(
+                        "ALTER TABLE chain_meme_trader_v6_entry_fills "
+                        f"ADD COLUMN {column} {definition}"
+                    )
+            chain_mark_columns = {
+                row["name"] for row in self.db.execute(
+                    "PRAGMA table_info(chain_meme_trader_marks)"
+                )
+            }
+            for column, definition in (
+                ("market_pre_sequence", "INTEGER"),
+                ("market_pair_address", "TEXT"),
+                ("market_post_sequence", "INTEGER"),
+                ("market_post_pair_address", "TEXT"),
+                ("market_post_price_usd", "REAL"),
+                ("market_post_recorded_at", "TEXT"),
+                ("trigger_evidence_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ):
+                if chain_mark_columns and column not in chain_mark_columns:
+                    self.db.execute(
+                        "ALTER TABLE chain_meme_trader_marks "
+                        f"ADD COLUMN {column} {definition}"
+                    )
+            chain_trade_columns = {
+                row["name"] for row in self.db.execute(
+                    "PRAGMA table_info(chain_meme_trader_trades)"
+                )
+            }
+            for column, definition in (
+                ("execution_fill_id", "INTEGER"),
+                ("recorded_at", "TEXT"),
+            ):
+                if chain_trade_columns and column not in chain_trade_columns:
+                    self.db.execute(
+                        "ALTER TABLE chain_meme_trader_trades "
+                        f"ADD COLUMN {column} {definition}"
+                    )
+            for table in (
+                "chain_meme_trader_quote_results",
+                "chain_meme_trader_execution_results",
+            ):
+                result_columns = {
+                    row["name"] for row in self.db.execute(f"PRAGMA table_info({table})")
+                }
+                if result_columns and "route_plan_json" not in result_columns:
+                    self.db.execute(
+                        f"ALTER TABLE {table} "
+                        "ADD COLUMN route_plan_json TEXT NOT NULL DEFAULT '[]'"
+                    )
+            local_surface_columns = {
+                row["name"] for row in self.db.execute(
+                    "PRAGMA table_info(chain_meme_trader_local_surface_quotes)"
+                )
+            }
+            for column, definition in (
+                ("surface_type", "TEXT NOT NULL DEFAULT ''"),
+                ("direct_estimated_recovery_usd", "REAL"),
+                ("conversion_source", "TEXT NOT NULL DEFAULT ''"),
+                ("conversion_input_raw", "TEXT"),
+                ("conversion_min_usdc_raw", "TEXT"),
+                ("conversion_completed_at", "TEXT"),
+                ("source_result_kind", "TEXT NOT NULL DEFAULT ''"),
+                ("source_result_id", "INTEGER"),
+                ("route_leg_index", "INTEGER"),
+                ("router_label", "TEXT NOT NULL DEFAULT ''"),
+            ):
+                if local_surface_columns and column not in local_surface_columns:
+                    self.db.execute(
+                        "ALTER TABLE chain_meme_trader_local_surface_quotes "
+                        f"ADD COLUMN {column} {definition}"
+                    )
+            account_snapshot_columns = {
+                row["name"] for row in self.db.execute(
+                    "PRAGMA table_info(chain_meme_trader_account_snapshots)"
+                )
+            }
+            for column, definition in (
+                ("direct_estimated_equity_usd", "REAL"),
+                ("direct_estimated_unrealized_pnl_usd", "REAL"),
+                ("direct_estimated_total_pnl_usd", "REAL"),
+                ("direct_estimated_position_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("indicative_equity_usd", "REAL"),
+                ("indicative_unrealized_pnl_usd", "REAL"),
+                ("indicative_total_pnl_usd", "REAL"),
+                ("indicative_position_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("indicative_is_complete", "INTEGER NOT NULL DEFAULT 0"),
+                ("ledger_trade_frontier_id", "INTEGER"),
+            ):
+                if account_snapshot_columns and column not in account_snapshot_columns:
+                    self.db.execute(
+                        "ALTER TABLE chain_meme_trader_account_snapshots "
+                        f"ADD COLUMN {column} {definition}"
+                    )
+            market_mark_columns = {
+                row["name"] for row in self.db.execute(
+                    "PRAGMA table_info(chain_meme_trader_market_marks)"
+                )
+            }
+            for column, definition in (
+                ("pair_address", "TEXT"),
+                ("volume_5m_usd", "REAL"),
+                ("buys_5m", "INTEGER"),
+                ("sells_5m", "INTEGER"),
+                ("status", "TEXT NOT NULL DEFAULT 'VISIBLE'"),
+                ("consecutive_misses", "INTEGER NOT NULL DEFAULT 0"),
+                ("sample_sequence", "INTEGER NOT NULL DEFAULT 0"),
+                ("first_missing_at", "TEXT"),
+                ("failure_kind", "TEXT NOT NULL DEFAULT ''"),
+                ("last_attempt_at", "TEXT"),
+                ("last_success_at", "TEXT"),
+            ):
+                if market_mark_columns and column not in market_mark_columns:
+                    self.db.execute(
+                        "ALTER TABLE chain_meme_trader_market_marks "
+                        f"ADD COLUMN {column} {definition}"
+                    )
+            market_history_columns = {
+                row["name"] for row in self.db.execute(
+                    "PRAGMA table_info(chain_meme_trader_market_mark_history)"
+                )
+            }
+            for column, definition in (
+                ("chain", "TEXT"),
+                ("address", "TEXT"),
+                ("pair_address", "TEXT"),
+                ("failure_kind", "TEXT NOT NULL DEFAULT ''"),
+            ):
+                if market_history_columns and column not in market_history_columns:
+                    self.db.execute(
+                        "ALTER TABLE chain_meme_trader_market_mark_history "
+                        f"ADD COLUMN {column} {definition}"
+                    )
             exit_quote_columns = {
                 row["name"] for row in self.db.execute(
                     "PRAGMA table_info(onchain_paper_exit_challenger_quote_results)"
@@ -4885,6 +6743,38 @@ class Store:
         except (TypeError, ValueError, json.JSONDecodeError):
             return {}
         return parsed if isinstance(parsed, dict) else {}
+
+    @classmethod
+    def chain_meme_trader_effective_definition_from_connection(
+        cls, connection: sqlite3.Connection, definition_version: str, raw_json: Any,
+    ) -> dict[str, Any]:
+        """Overlay explicit metadata errata without mutating an immutable contract row."""
+        definition = cls._json_object(raw_json)
+        has_errata = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='chain_meme_trader_definition_errata'"
+        ).fetchone()
+        if has_errata is None:
+            return definition
+        for row in connection.execute(
+            "SELECT field_path,corrected_value_json,reason,recorded_at FROM "
+            "chain_meme_trader_definition_errata WHERE definition_version=? "
+            "ORDER BY field_path",
+            (str(definition_version),),
+        ).fetchall():
+            field = str(row["field_path"] or "")
+            if not field or "." in field:
+                continue
+            try:
+                definition[field] = json.loads(str(row["corrected_value_json"]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            definition.setdefault("metadata_errata", []).append({
+                "field": field,
+                "reason": str(row["reason"]),
+                "recorded_at": str(row["recorded_at"]),
+            })
+        return definition
 
     @staticmethod
     def _json_list(value: Any) -> list[Any]:
@@ -6198,11 +8088,14 @@ class Store:
             )
         )
 
-    def upsert_token(self, token: TokenCandidate, seen_at=None) -> bool:
+    def upsert_token(
+        self, token: TokenCandidate, seen_at=None, *, _in_transaction: bool = False,
+    ) -> bool:
         now = seen_at or token.first_seen_at or utcnow()
         if token.first_seen_at is None:
             token.first_seen_at = parse_time(now)
-        with self._lock, self.db:
+        transaction = nullcontext() if _in_transaction else self.db
+        with self._lock, transaction:
             self._record_token_market_surface_locked(token, observed_at=now)
             existed = self.db.execute("SELECT 1 FROM tokens WHERE token_id=?", (token.token_id,)).fetchone() is not None
             self.db.execute(
@@ -6731,8 +8624,20 @@ class Store:
         limit: int = 30,
         now=None,
         priority_social_account_urls: Iterable[str] = (),
+        chains: Iterable[str] = (),
+        prefer_fresh: bool = False,
     ) -> list[sqlite3.Row]:
         due_at = iso(parse_time(now or utcnow()))
+        selected_chains = tuple(dict.fromkeys(
+            str(chain).strip().lower() for chain in chains if str(chain).strip()
+        ))
+        chain_filter = ""
+        chain_params: tuple[Any, ...] = ()
+        if selected_chains:
+            chain_filter = (
+                f" AND LOWER(chain) IN ({','.join('?' for _ in selected_chains)})"
+            )
+            chain_params = selected_chains
         priority_patterns = tuple(
             dict.fromkeys(
                 f"{str(url).strip().rstrip('/').lower()}/%"
@@ -6760,6 +8665,7 @@ class Store:
                     SELECT * FROM token_detail_hydration
                     WHERE status IN ('pending','no_pair','error')
                       AND (next_attempt_at IS NULL OR next_attempt_at<=?)
+                      {chain_filter}
                     ORDER BY
                       CASE WHEN EXISTS(
                         SELECT 1 FROM token_universe_funnel_transitions AS handoff
@@ -6772,9 +8678,13 @@ class Store:
                             OR handoff.recorded_at>token_detail_hydration.last_attempt_at
                           )
                       ) THEN 0 ELSE 1 END,
-                      {priority_order} enqueued_at,attempts,token_id LIMIT ?
+                      {priority_order} {
+                          "COALESCE((SELECT first_seen_at FROM tokens AS token "
+                          "WHERE token.token_id=token_detail_hydration.token_id),enqueued_at) DESC"
+                          if prefer_fresh else "enqueued_at ASC"
+                      },attempts,token_id LIMIT ?
                     """,
-                    (due_at, *priority_params, max(0, min(300, int(limit)))),
+                    (due_at, *chain_params, *priority_params, max(0, min(300, int(limit)))),
                 )
             )
 
@@ -9049,6 +10959,83 @@ class Store:
                 )
             )
 
+    @staticmethod
+    def _public_item_url_variants(value: Any) -> set[str]:
+        """Return bounded exact URL variants for public-item identity lookup."""
+        raw = str(value or "").strip()
+        if not raw:
+            return set()
+        try:
+            parsed = urlparse(raw)
+        except ValueError:
+            return set()
+        host = (parsed.hostname or "").lower().removeprefix("www.")
+        if parsed.scheme.lower() not in {"http", "https"} or not host:
+            return set()
+        path = parsed.path.rstrip("/") or "/"
+        variants = {urlunparse(("https", host, path, "", "", ""))}
+        if host in {"x.com", "twitter.com"}:
+            match = re.match(
+                r"^/(@?[^/]+)/status/(\d+)(?:/(?:photo|video)/\d+)?$",
+                path,
+                flags=re.I,
+            )
+            if match:
+                handle = match.group(1)
+                status_id = match.group(2)
+                handles = {handle, handle.removeprefix("@")}
+                variants = {
+                    f"https://{candidate_host}/{candidate_handle}/status/{status_id}"
+                    for candidate_host in ("x.com", "twitter.com")
+                    for candidate_handle in handles
+                }
+        return variants
+
+    def token_identity_set_for_public_items(
+        self,
+        urls: Iterable[Any],
+        *,
+        available_at: Any,
+        allowed_chains: Iterable[str],
+        limit: int = 25,
+    ) -> list[dict[str, Any]]:
+        """Resolve only immutable, already-available source-link identities."""
+        variants = sorted(
+            set().union(*(self._public_item_url_variants(value) for value in urls))
+        )
+        chains = {str(value).strip().lower() for value in allowed_chains if value}
+        if not variants or not chains:
+            return []
+        placeholders = ",".join("?" for _ in variants)
+        with self._lock:
+            rows = self.db.execute(
+                f"""
+                SELECT l.token_id,l.normalized_url,MIN(x.recorded_at) AS first_available_at
+                FROM token_discovery_exposure_source_links x
+                JOIN token_source_links l ON l.id=x.source_link_id
+                WHERE x.recorded_at<=?
+                  AND l.normalized_url IN ({placeholders})
+                  AND l.role IN ('identity','promotion')
+                  AND l.verification_status<>'manual_only'
+                  AND l.link_kind IN ('social_post','website')
+                GROUP BY l.token_id,l.normalized_url
+                ORDER BY first_available_at,l.token_id
+                """,
+                (iso(parse_time(available_at)), *variants),
+            ).fetchall()
+        result: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for row in rows:
+            token_id = str(row["token_id"])
+            chain = token_id.split(":", 1)[0].lower() if ":" in token_id else ""
+            if token_id in seen or chain not in chains:
+                continue
+            seen.add(token_id)
+            result.append(dict(row))
+            if len(result) >= max(1, min(100, int(limit))):
+                break
+        return result
+
     def token(self, token_id: str) -> TokenCandidate | None:
         row = self.db.execute("SELECT * FROM tokens WHERE token_id=?", (token_id,)).fetchone()
         if not row:
@@ -9738,6 +11725,629 @@ class Store:
             ingested_at=parse_time(row["ingested_at"]) if row["ingested_at"] else None,
             provider=row["provider"], raw=json.loads(row["raw_json"]),
         )
+
+    def token_snapshot_by_id(self, snapshot_id: int) -> TokenSnapshot | None:
+        row = self.db.execute(
+            "SELECT * FROM token_snapshots WHERE id=?", (int(snapshot_id),)
+        ).fetchone()
+        if row is None:
+            return None
+        chain, address = str(row["token_id"]).split(":", 1)
+        return TokenSnapshot(
+            chain=chain, address=address, price_usd=row["price_usd"],
+            liquidity_usd=row["liquidity_usd"], market_cap_usd=row["market_cap_usd"],
+            volume_5m_usd=row["volume_5m_usd"], buys_5m=row["buys_5m"],
+            sells_5m=row["sells_5m"], buyers_5m=row["buyers_5m"],
+            holders=row["holders"], buy_tax_pct=row["buy_tax_pct"],
+            sell_tax_pct=row["sell_tax_pct"],
+            honeypot=None if row["honeypot"] is None else bool(row["honeypot"]),
+            sellable=None if row["sellable"] is None else bool(row["sellable"]),
+            observed_at=parse_time(row["observed_at"]),
+            ingested_at=parse_time(row["ingested_at"]) if row["ingested_at"] else None,
+            provider=str(row["provider"]), raw=json.loads(row["raw_json"]),
+        )
+
+    def register_pretrade_rug_safety(self) -> sqlite3.Row:
+        definition = {
+            "append_only": True,
+            "no_historical_backfill": True,
+            "chain": "solana",
+            "unknown_pool_custody": "WAIT",
+            "pumpswap_canonical_requires_rpc_owner_layout_pda_vaults_and_burned_lp": True,
+            "pumpswap_max_removable_lp_pct": 5.0,
+            "raydium_cpmm_requires_rpc_owner_layout_authority_vaults_lp_mint_and_burned_lp": True,
+            "raydium_cpmm_max_removable_lp_pct": 5.0,
+            "exact_size_sell_preflight_required": True,
+            "opaque_score": False,
+            "live_execution": False,
+        }
+        with self._lock, self.db:
+            self.db.execute(
+                """
+                INSERT OR IGNORE INTO pretrade_rug_safety_registrations(
+                    definition_version,registered_at,activation_snapshot_id,
+                    activation_quote_result_id,definition_json
+                ) VALUES(?,?,COALESCE((SELECT MAX(id) FROM token_snapshots),0),
+                    COALESCE((SELECT MAX(id) FROM onchain_only_jupiter_quote_results),0),?)
+                """,
+                (self.PRETRADE_RUG_SAFETY_VERSION, iso(), self._json(definition)),
+            )
+            return self.db.execute(
+                "SELECT * FROM pretrade_rug_safety_registrations WHERE definition_version=?",
+                (self.PRETRADE_RUG_SAFETY_VERSION,),
+            ).fetchone()
+
+    def register_strategy_focus(self) -> sqlite3.Row:
+        definition = {
+            "active_strategy_family": "token_only",
+            "chain": "solana",
+            "primary_venue": "canonical_pumpswap",
+            "paused_agent_tasks": [
+                "trend_scout", "source_discovery", "token_context", "fact_verifier",
+                "token_information_watch", "s3_post_entry_narrative",
+            ],
+            "paused_paper_families": ["information_plus_token", "token_then_information"],
+            "paused_route_research": ["bsc", "base", "robinhood"],
+            "retained": [
+                "passive_collectors", "immutable_provenance", "token_only_fixed_comparator",
+                "token_only_dynamic_exit", "existing_position_exit",
+            ],
+            "no_historical_backfill": True,
+            "live_execution": False,
+        }
+        with self._lock, self.db:
+            self.db.execute(
+                """
+                INSERT OR IGNORE INTO strategy_focus_registrations(
+                    definition_version,registered_at,activation_agent_attempt_id,
+                    activation_main_trade_id,activation_quote_result_id,activation_s2_buy_trade_id,
+                    activation_s3_buy_trade_id,definition_json
+                ) VALUES(?,?,COALESCE((SELECT MAX(id) FROM agent_attempts),0),
+                    COALESCE((SELECT MAX(id) FROM trades),0),
+                    COALESCE((SELECT MAX(id) FROM onchain_only_jupiter_quote_results),0),
+                    COALESCE((SELECT MAX(id) FROM onchain_paper_exploration_trades WHERE side='BUY'),0),
+                    COALESCE((SELECT MAX(id) FROM onchain_paper_narrative_runner_trades WHERE side='BUY'),0),?)
+                """,
+                (self.STRATEGY_FOCUS_VERSION, iso(), self._json(definition)),
+            )
+            return self.db.execute(
+                "SELECT * FROM strategy_focus_registrations WHERE definition_version=?",
+                (self.STRATEGY_FOCUS_VERSION,),
+            ).fetchone()
+
+    def strategy_focus_active(self) -> bool:
+        return self.db.execute(
+            "SELECT 1 FROM strategy_focus_registrations WHERE definition_version=?",
+            (self.STRATEGY_FOCUS_VERSION,),
+        ).fetchone() is not None
+
+    @staticmethod
+    def onchain_primary_scalar_gate_reasons(
+        *, pool_age_seconds: float | None, queue_delay_seconds: float | None,
+        total_delay_seconds: float | None, quoted_recovery_ratio: float | None,
+        stress_recovery_ratio: float | None, open_positions: int,
+        daily_exposure_usd: float, new_exposure_usd: float, exit_alert_pending: bool,
+    ) -> list[str]:
+        reasons: list[str] = []
+        if pool_age_seconds is None:
+            reasons.append("exact_pool_age_missing")
+        elif pool_age_seconds < 0:
+            reasons.append("exact_pool_age_future")
+        elif pool_age_seconds > 600:
+            reasons.append("exact_pool_age_over_600s")
+        if queue_delay_seconds is None or queue_delay_seconds > 5.0:
+            reasons.append("entry_queue_over_5s")
+        if total_delay_seconds is None or total_delay_seconds > 10.0:
+            reasons.append("final_preflight_over_10s")
+        if quoted_recovery_ratio is None or stress_recovery_ratio is None:
+            reasons.append("roundtrip_recovery_ratio_missing")
+        elif quoted_recovery_ratio < 0.90 or stress_recovery_ratio < 0.85:
+            reasons.append(
+                "excessive_immediate_roundtrip_loss:"
+                f"quoted={quoted_recovery_ratio:.6f}:stress={stress_recovery_ratio:.6f}"
+            )
+        if open_positions >= 5:
+            reasons.append("primary_open_position_cap_5")
+        if daily_exposure_usd + new_exposure_usd > 100.0:
+            reasons.append("primary_daily_new_exposure_cap_100")
+        if exit_alert_pending:
+            reasons.append("primary_exit_alert_pending")
+        return reasons
+
+    def register_route_surface_observations(self) -> None:
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO market_surface_safety_registrations("
+                "definition_version,registered_at,activation_snapshot_id,definition_json) "
+                "VALUES(?,?,COALESCE((SELECT MAX(id) FROM token_snapshots),0),?)",
+                (
+                    self.MARKET_SURFACE_SAFETY_VERSION, iso(),
+                    self._json({
+                        "chain": "solana", "holding_surface": "canonical_pumpswap",
+                        "excludes": "router_availability", "no_historical_backfill": True,
+                    }),
+                ),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO execution_route_observation_registrations("
+                "definition_version,registered_at,activation_quote_result_id,definition_json) "
+                "VALUES(?,?,COALESCE((SELECT MAX(id) FROM onchain_only_jupiter_quote_results),0),?)",
+                (
+                    self.EXECUTION_ROUTE_OBSERVATION_VERSION, iso(),
+                    self._json({
+                        "router": "jupiter", "directions": ["BUY", "SELL"],
+                        "does_not_imply_holding_surface": True, "no_historical_backfill": True,
+                    }),
+                ),
+            )
+
+    def record_market_surface_safety(
+        self, *, lane: str, quote_key: str, token_id: str,
+        trigger_snapshot_id: int, assessed_snapshot_id: int,
+        assessment: Mapping[str, Any], observed_at: Any,
+    ) -> int | None:
+        status = str(assessment.get("status") or "WAIT").upper()
+        if status not in {"PASS", "WAIT", "REJECT"}:
+            raise ValueError("invalid market surface safety status")
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT * FROM market_surface_safety_registrations WHERE definition_version=?",
+                (self.MARKET_SURFACE_SAFETY_VERSION,),
+            ).fetchone()
+            if registration is None or int(assessed_snapshot_id) <= int(registration["activation_snapshot_id"]):
+                return None
+            lineage = self.db.execute(
+                "SELECT COUNT(*) FROM token_snapshots WHERE id IN (?,?) AND token_id=?",
+                (int(trigger_snapshot_id), int(assessed_snapshot_id), str(token_id)),
+            ).fetchone()[0]
+            if int(lineage) != (1 if int(trigger_snapshot_id) == int(assessed_snapshot_id) else 2):
+                raise ValueError("invalid market surface snapshot lineage")
+            cursor = self.db.execute(
+                "INSERT OR IGNORE INTO market_surface_safety_observations("
+                "definition_version,lane,quote_key,token_id,trigger_snapshot_id,assessed_snapshot_id,"
+                "status,reasons_json,facts_json,observed_at,recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    self.MARKET_SURFACE_SAFETY_VERSION, str(lane), str(quote_key), str(token_id),
+                    int(trigger_snapshot_id), int(assessed_snapshot_id), status,
+                    self._json(assessment.get("reasons") or []),
+                    self._json(assessment.get("facts") or {}),
+                    iso(parse_time(observed_at)), iso(),
+                ),
+            )
+            return int(cursor.lastrowid) if cursor.rowcount == 1 else None
+
+    def record_execution_route_observation(
+        self, *, lane: str, quote_key: str, token_id: str, direction: str,
+        classification: Mapping[str, Any], observed_at: Any,
+    ) -> int | None:
+        side = str(direction).upper()
+        if side not in {"BUY", "SELL"}:
+            raise ValueError("invalid execution route direction")
+        verifiability = str(classification.get("route_verifiability") or "unsupported")
+        relation = str(classification.get("surface_relation") or "opaque_router")
+        status = (
+            "PASS" if verifiability == "exact_onchain_legs" and relation in {"contains_surface", "multi_surface"}
+            else "WAIT" if verifiability == "meta_aggregator_opaque" or relation in {"opaque_router", "multi_surface"}
+            else "REJECT"
+        )
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT 1 FROM execution_route_observation_registrations WHERE definition_version=?",
+                (self.EXECUTION_ROUTE_OBSERVATION_VERSION,),
+            ).fetchone()
+            if registration is None:
+                return None
+            cursor = self.db.execute(
+                "INSERT OR IGNORE INTO execution_route_observations("
+                "definition_version,lane,quote_key,token_id,direction,status,classification_json,"
+                "observed_at,recorded_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    self.EXECUTION_ROUTE_OBSERVATION_VERSION, str(lane), str(quote_key),
+                    str(token_id), side, status, self._json(dict(classification)),
+                    iso(parse_time(observed_at)), iso(),
+                ),
+            )
+            return int(cursor.lastrowid) if cursor.rowcount == 1 else None
+
+    def record_pretrade_rug_safety_assessment(
+        self,
+        *,
+        lane: str,
+        quote_key: str,
+        token_id: str,
+        trigger_snapshot_id: int,
+        assessed_snapshot_id: int,
+        assessment: Mapping[str, Any],
+        observed_at: Any,
+        assessed_at: Any = None,
+    ) -> int | None:
+        status = str(assessment.get("status") or "WAIT").upper()
+        if status not in {"PASS", "WAIT", "REJECT"}:
+            raise ValueError("invalid pretrade rug safety status")
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT * FROM pretrade_rug_safety_registrations WHERE definition_version=?",
+                (self.PRETRADE_RUG_SAFETY_VERSION,),
+            ).fetchone()
+            if registration is None:
+                return None
+            trigger = self.db.execute(
+                "SELECT token_id FROM token_snapshots WHERE id=?",
+                (int(trigger_snapshot_id),),
+            ).fetchone()
+            assessed = self.db.execute(
+                "SELECT token_id FROM token_snapshots WHERE id=?",
+                (int(assessed_snapshot_id),),
+            ).fetchone()
+            if (
+                trigger is None or assessed is None
+                or str(trigger["token_id"]) != str(token_id)
+                or str(assessed["token_id"]) != str(token_id)
+                or int(assessed_snapshot_id) <= int(registration["activation_snapshot_id"])
+            ):
+                raise ValueError("invalid pretrade rug safety snapshot lineage")
+            cursor = self.db.execute(
+                """
+                INSERT OR IGNORE INTO pretrade_rug_safety_assessments(
+                    definition_version,lane,quote_key,token_id,trigger_snapshot_id,
+                    assessed_snapshot_id,status,reasons_json,facts_json,observed_at,assessed_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    self.PRETRADE_RUG_SAFETY_VERSION, str(lane), str(quote_key),
+                    str(token_id), int(trigger_snapshot_id), int(assessed_snapshot_id), status,
+                    self._json(assessment.get("reasons") or []),
+                    self._json(assessment.get("facts") or {}),
+                    iso(parse_time(observed_at)), iso(parse_time(assessed_at or utcnow())),
+                ),
+            )
+            if cursor.rowcount != 1:
+                return None
+            return int(cursor.lastrowid)
+
+    def pretrade_rug_safety_for_quote(self, lane: str, quote_key: str) -> sqlite3.Row | None:
+        return self.db.execute(
+            "SELECT * FROM pretrade_rug_safety_assessments "
+            "WHERE definition_version=? AND lane=? AND quote_key=?",
+            (self.PRETRADE_RUG_SAFETY_VERSION, str(lane), str(quote_key)),
+        ).fetchone()
+
+    def register_route_preflight_deferred_retry_shadow(self) -> sqlite3.Row:
+        """Freeze a future-only denominator for one-shot deferred SELL preflights."""
+        version = self.ROUTE_PREFLIGHT_DEFERRED_RETRY_SHADOW_VERSION
+        definition = {
+            "version": version,
+            "source_assessment_version": self.PRETRADE_RUG_SAFETY_VERSION,
+            "source_quote_version": self.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+            "source_strategy_version": self.CHAIN_MEME_TRADER_VERSION,
+            "source_stage": "stage_02_jupiter_v1",
+            "source_reason": "exact_size_sell_preflight_deferred",
+            "max_stage2_delay_seconds": 45.0,
+            "focus_delay_seconds": 10.0,
+            "minimum_quoted_recovery_ratio": 0.90,
+            "minimum_stress_recovery_ratio": 0.85,
+            "attempts_per_case": 1,
+            "scheduling": "after_all_exit_execution_and_valuation_before_discovery_buy",
+            "no_historical_backfill": True,
+            "decision_eligible": False,
+            "affects": "none",
+        }
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO route_preflight_deferred_retry_shadow_registrations("
+                "definition_version,registered_at,activation_pretrade_assessment_id,definition_json) "
+                "VALUES(?,?,COALESCE((SELECT MAX(id) FROM pretrade_rug_safety_assessments),0),?)",
+                (version, iso(), self._json(definition)),
+            )
+            return self.db.execute(
+                "SELECT * FROM route_preflight_deferred_retry_shadow_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+
+    def enroll_route_preflight_deferred_retry_shadow(self) -> dict[str, int]:
+        """Append post-frontier cases; non-defer safety reasons remain hard blockers."""
+        version = self.ROUTE_PREFLIGHT_DEFERRED_RETRY_SHADOW_VERSION
+        enrolled = blocked = 0
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT * FROM route_preflight_deferred_retry_shadow_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if registration is None:
+                return {"enrolled": 0, "blocked": 0}
+            rows = self.db.execute(
+                """
+                SELECT p.*,q.id AS source_quote_result_id,q.attempt_id AS source_quote_attempt_id,
+                       q.shadow_cohort_id,q.anchor_at,q.input_mint AS entry_input_mint,
+                       q.output_mint AS token_mint,q.input_amount_raw AS entry_input_amount_raw,
+                       q.other_amount_threshold_raw AS acquired_amount_raw,q.slippage_bps,
+                       q.validity_status AS buy_validity_status,
+                       q.quote_terminal_status AS buy_terminal_status,q.completed_at AS buy_completed_at,
+                       a.requested_at AS buy_requested_at,d2.id AS source_entry_decision_id,
+                       buy.status AS buy_route_status,surface.status AS surface_status
+                FROM pretrade_rug_safety_assessments p
+                JOIN onchain_only_jupiter_quote_results q
+                  ON q.quote_key=p.quote_key AND q.phase='baseline_buy'
+                JOIN onchain_only_jupiter_quote_attempts a ON a.id=q.attempt_id
+                JOIN chain_meme_trader_entry_decisions d1
+                  ON d1.definition_version=? AND d1.arm_id='stage_01_shadow_v1'
+                 AND d1.shadow_cohort_id=q.shadow_cohort_id AND d1.status='admitted'
+                JOIN chain_meme_trader_entry_decisions d2
+                  ON d2.definition_version=? AND d2.arm_id='stage_02_jupiter_v1'
+                 AND d2.shadow_cohort_id=q.shadow_cohort_id AND d2.status='rejected'
+                LEFT JOIN execution_route_observations buy
+                  ON buy.definition_version=? AND buy.lane=? AND buy.quote_key=p.quote_key
+                 AND buy.direction='BUY'
+                LEFT JOIN market_surface_safety_observations surface
+                  ON surface.definition_version=? AND surface.lane=?
+                 AND surface.quote_key=p.quote_key
+                LEFT JOIN route_preflight_deferred_retry_shadow_cases c
+                  ON c.source_assessment_id=p.id
+                WHERE p.id>? AND p.definition_version=? AND p.lane=?
+                  AND p.status='WAIT' AND c.id IS NULL
+                ORDER BY p.id
+                """,
+                (
+                    self.CHAIN_MEME_TRADER_VERSION, self.CHAIN_MEME_TRADER_VERSION,
+                    self.EXECUTION_ROUTE_OBSERVATION_VERSION,
+                    self.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+                    self.MARKET_SURFACE_SAFETY_VERSION,
+                    self.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+                    int(registration["activation_pretrade_assessment_id"]),
+                    self.PRETRADE_RUG_SAFETY_VERSION,
+                    self.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+                ),
+            ).fetchall()
+            for row in rows:
+                source_reasons = [str(value) for value in self._json_list(row["reasons_json"])]
+                if "exact_size_sell_preflight_deferred" not in source_reasons:
+                    continue
+                facts = self._json_object(row["facts_json"])
+                preflight = facts.get("exact_sell_preflight")
+                preflight = preflight if isinstance(preflight, Mapping) else {}
+                acquired_raw = str(row["acquired_amount_raw"] or "")
+                blockers = [
+                    reason for reason in source_reasons
+                    if reason != "exact_size_sell_preflight_deferred"
+                ]
+                if str(preflight.get("status") or "") != "budget_deferred":
+                    blockers.append("source_preflight_not_budget_deferred")
+                if str(preflight.get("input_amount_raw") or "") != acquired_raw:
+                    blockers.append("source_exact_amount_mismatch")
+                if (
+                    str(row["buy_terminal_status"]) != "quoted"
+                    or str(row["buy_validity_status"]) != "valid"
+                ):
+                    blockers.append("source_buy_not_valid")
+                if str(row["buy_route_status"] or "") != "PASS":
+                    blockers.append("source_buy_route_not_pass")
+                if str(row["surface_status"] or "") != "PASS":
+                    blockers.append("source_surface_not_pass")
+                blockers = list(dict.fromkeys(blockers))
+                enrollment_status = "other_gate_blocked" if blockers else "eligible"
+                completed = parse_time(row["buy_completed_at"])
+                cursor = self.db.execute(
+                    "INSERT OR IGNORE INTO route_preflight_deferred_retry_shadow_cases("
+                    "definition_version,source_assessment_id,source_quote_result_id,"
+                    "source_quote_attempt_id,source_entry_decision_id,shadow_cohort_id,token_id,"
+                    "quote_key,original_anchor_at,original_buy_requested_at,"
+                    "original_buy_completed_at,entry_input_amount_raw,input_mint,output_mint,"
+                    "input_amount_raw,slippage_bps,selected_surface_pool,deadline_at,"
+                    "enrollment_status,source_reasons_json,blocking_reasons_json,recorded_at,"
+                    "decision_eligible,affects) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'none')",
+                    (
+                        version, int(row["id"]), int(row["source_quote_result_id"]),
+                        int(row["source_quote_attempt_id"]), int(row["source_entry_decision_id"]),
+                        int(row["shadow_cohort_id"]), str(row["token_id"]), str(row["quote_key"]),
+                        str(row["anchor_at"]), str(row["buy_requested_at"]),
+                        str(row["buy_completed_at"]), str(row["entry_input_amount_raw"]),
+                        str(row["token_mint"]), str(row["entry_input_mint"]), acquired_raw,
+                        int(row["slippage_bps"] or 400), str(facts.get("pool_address") or ""),
+                        iso(completed + timedelta(seconds=45)), enrollment_status,
+                        self._json(source_reasons), self._json(blockers), iso(),
+                    ),
+                )
+                if int(cursor.rowcount or 0) != 1:
+                    continue
+                case_id = int(cursor.lastrowid)
+                if enrollment_status == "eligible":
+                    enrolled += 1
+                else:
+                    blocked += 1
+                    self._record_route_preflight_deferred_retry_shadow_result_locked(
+                        case_id, attempt_id=None,
+                        status="not_dispatched_other_gate_blocked",
+                        result={}, route_classification={}, error_type="",
+                        completed_at=utcnow(),
+                    )
+        return {"enrolled": enrolled, "blocked": blocked}
+
+    def due_route_preflight_deferred_retry_shadow(
+        self, *, now: Any = None, limit: int = 1
+    ) -> list[dict[str, Any]]:
+        current = parse_time(now or utcnow())
+        with self._lock:
+            rows = self.db.execute(
+                """
+                SELECT c.* FROM route_preflight_deferred_retry_shadow_cases c
+                LEFT JOIN route_preflight_deferred_retry_shadow_attempts a ON a.case_id=c.id
+                LEFT JOIN route_preflight_deferred_retry_shadow_results r ON r.case_id=c.id
+                WHERE c.definition_version=? AND c.enrollment_status='eligible'
+                  AND a.id IS NULL AND r.id IS NULL
+                ORDER BY c.deadline_at,c.id LIMIT ?
+                """,
+                (self.ROUTE_PREFLIGHT_DEFERRED_RETRY_SHADOW_VERSION, max(1, int(limit))),
+            ).fetchall()
+            return [{**dict(row), "evaluated_at": iso(current)} for row in rows]
+
+    def start_route_preflight_deferred_retry_shadow_attempt(
+        self, case: Mapping[str, Any], *, requested_at: Any = None
+    ) -> int | None:
+        requested = parse_time(requested_at or utcnow())
+        case_id = int(case["id"])
+        version = self.ROUTE_PREFLIGHT_DEFERRED_RETRY_SHADOW_VERSION
+        with self._lock, self.db:
+            current = self.db.execute(
+                "SELECT * FROM route_preflight_deferred_retry_shadow_cases WHERE id=? "
+                "AND definition_version=?", (case_id, version),
+            ).fetchone()
+            if (
+                current is None or str(current["enrollment_status"]) != "eligible"
+                or requested < parse_time(current["original_buy_completed_at"])
+                or requested > parse_time(current["deadline_at"])
+            ):
+                return None
+            cursor = self.db.execute(
+                "INSERT OR IGNORE INTO route_preflight_deferred_retry_shadow_attempts("
+                "definition_version,case_id,request_key,requested_at,decision_eligible,affects) "
+                "VALUES(?,?,?,?,0,'none')",
+                (version, case_id, f"{version}:{case_id}", iso(requested)),
+            )
+            return int(cursor.lastrowid) if int(cursor.rowcount or 0) == 1 else None
+
+    @staticmethod
+    def _route_preflight_retry_route_status(classification: Mapping[str, Any]) -> str:
+        verifiability = str(classification.get("route_verifiability") or "unsupported")
+        relation = str(classification.get("surface_relation") or "opaque_router")
+        if verifiability == "exact_onchain_legs" and relation in {"contains_surface", "multi_surface"}:
+            return "PASS"
+        if verifiability == "meta_aggregator_opaque" or relation in {"opaque_router", "multi_surface"}:
+            return "WAIT"
+        return "REJECT"
+
+    def _record_route_preflight_deferred_retry_shadow_result_locked(
+        self, case_id: int, *, attempt_id: int | None, status: str,
+        result: Mapping[str, Any], route_classification: Mapping[str, Any],
+        error_type: str, completed_at: Any,
+    ) -> int | None:
+        version = self.ROUTE_PREFLIGHT_DEFERRED_RETRY_SHADOW_VERSION
+        case = self.db.execute(
+            "SELECT * FROM route_preflight_deferred_retry_shadow_cases WHERE id=? "
+            "AND definition_version=?", (int(case_id), version),
+        ).fetchone()
+        if case is None or self.db.execute(
+            "SELECT 1 FROM route_preflight_deferred_retry_shadow_results WHERE case_id=?",
+            (int(case_id),),
+        ).fetchone() is not None:
+            return None
+        attempt = None
+        if attempt_id is not None:
+            attempt = self.db.execute(
+                "SELECT * FROM route_preflight_deferred_retry_shadow_attempts "
+                "WHERE id=? AND case_id=? AND definition_version=?",
+                (int(attempt_id), int(case_id), version),
+            ).fetchone()
+            if attempt is None:
+                return None
+        allowed = {
+            "quoted", "no_route", "error", "quote_only_protocol_invalid",
+            "expired_before_request", "interrupted_after_request",
+            "not_dispatched_other_gate_blocked",
+        }
+        terminal = str(status)
+        if terminal not in allowed:
+            raise ValueError("invalid deferred retry terminal status")
+        completed = parse_time(completed_at)
+        original_completed = parse_time(case["original_buy_completed_at"])
+        requested = parse_time(attempt["requested_at"]) if attempt is not None else None
+        output_raw = result.get("output_amount_raw")
+        minimum_raw = result.get("other_amount_threshold")
+        if minimum_raw is None:
+            minimum_raw = result.get("minimum_output_raw")
+        if terminal == "quoted" and (
+            int(output_raw or 0) <= 0 or int(minimum_raw or 0) <= 0
+            or int(minimum_raw or 0) > int(output_raw or 0)
+        ):
+            terminal = "quote_only_protocol_invalid"
+            error_type = error_type or "invalid_quote_amounts"
+        route_status = (
+            self._route_preflight_retry_route_status(route_classification)
+            if terminal == "quoted" else "NOT_APPLICABLE"
+        )
+        entry_raw = int(case["entry_input_amount_raw"] or 0)
+        quoted_ratio = (
+            int(output_raw) / entry_raw
+            if terminal == "quoted" and output_raw is not None and entry_raw > 0 else None
+        )
+        stress_ratio = (
+            int(minimum_raw) / entry_raw
+            if terminal == "quoted" and minimum_raw is not None and entry_raw > 0 else None
+        )
+        total_delay = max(0.0, (completed - original_completed).total_seconds())
+        stage2_window_met = int(total_delay <= 45.0)
+        focus_10s_met = int(
+            completed <= parse_time(case["original_anchor_at"]) + timedelta(seconds=10)
+        )
+        recovered = int(terminal == "quoted" and int(minimum_raw or 0) > 0)
+        full_pass = int(bool(
+            recovered and route_status == "PASS" and stage2_window_met
+            and quoted_ratio is not None and quoted_ratio >= 0.90
+            and stress_ratio is not None and stress_ratio >= 0.85
+            and not self._json_list(case["blocking_reasons_json"])
+        ))
+        validity = {
+            "quoted": "route_recovered",
+            "no_route": "no_route",
+            "error": "provider_error",
+            "quote_only_protocol_invalid": "protocol_invalid",
+            "expired_before_request": "stage2_window_expired",
+            "interrupted_after_request": "request_evidence_missing",
+            "not_dispatched_other_gate_blocked": "other_gate_blocked",
+        }[terminal]
+        cursor = self.db.execute(
+            "INSERT OR IGNORE INTO route_preflight_deferred_retry_shadow_results("
+            "definition_version,case_id,attempt_id,quote_terminal_status,validity_status,"
+            "input_amount_raw,output_amount_raw,minimum_output_raw,requested_at,completed_at,"
+            "queue_delay_seconds,request_duration_seconds,total_delay_seconds,"
+            "stage2_window_met,focus_10s_met,route_status,route_recovered,"
+            "quoted_net_recovery_ratio,stress_min_recovery_ratio,full_envelope_pass,"
+            "router,route_json,classification_json,error_type,recorded_at,decision_eligible,affects) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'none')",
+            (
+                version, int(case_id), int(attempt_id) if attempt_id is not None else None,
+                terminal, validity, str(case["input_amount_raw"]),
+                str(output_raw) if output_raw is not None else None,
+                str(minimum_raw) if minimum_raw is not None else None,
+                iso(requested) if requested is not None else None, iso(completed),
+                (requested - original_completed).total_seconds() if requested is not None else None,
+                (completed - requested).total_seconds() if requested is not None else None,
+                total_delay, stage2_window_met, focus_10s_met, route_status, recovered,
+                quoted_ratio, stress_ratio, full_pass, str(result.get("router") or ""),
+                self._json(result.get("route_plan") or []),
+                self._json(dict(route_classification or {})), str(error_type or "")[:160], iso(),
+            ),
+        )
+        return int(cursor.lastrowid) if int(cursor.rowcount or 0) == 1 else None
+
+    def record_route_preflight_deferred_retry_shadow_result(
+        self, case_id: int, *, attempt_id: int | None = None, status: str,
+        result: Mapping[str, Any] | None = None,
+        route_classification: Mapping[str, Any] | None = None,
+        error_type: str = "", completed_at: Any = None,
+    ) -> int | None:
+        with self._lock, self.db:
+            return self._record_route_preflight_deferred_retry_shadow_result_locked(
+                int(case_id), attempt_id=attempt_id, status=status,
+                result=dict(result or {}), route_classification=dict(route_classification or {}),
+                error_type=error_type, completed_at=completed_at or utcnow(),
+            )
+
+    def recover_interrupted_route_preflight_deferred_retry_shadow(self) -> int:
+        """Close attempt-first crash gaps without ever issuing a second request."""
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT a.case_id,a.id FROM route_preflight_deferred_retry_shadow_attempts a "
+                "LEFT JOIN route_preflight_deferred_retry_shadow_results r ON r.case_id=a.case_id "
+                "WHERE a.definition_version=? AND r.id IS NULL ORDER BY a.id",
+                (self.ROUTE_PREFLIGHT_DEFERRED_RETRY_SHADOW_VERSION,),
+            ).fetchall()
+        recovered = 0
+        for row in rows:
+            recovered += int(self.record_route_preflight_deferred_retry_shadow_result(
+                int(row["case_id"]), attempt_id=int(row["id"]),
+                status="interrupted_after_request", completed_at=utcnow(),
+            ) is not None)
+        return recovered
 
     def post_entry_context_snapshot(
         self,
@@ -14641,8 +17251,12 @@ class Store:
         ).fetchone()
         return float(row["total"] or 0.0)
 
-    def heartbeat(self, source: str, *, item: bool = False, error: str = "") -> None:
-        now = iso()
+    def heartbeat(
+        self, source: str, *, item: bool = False, error: str = "",
+        error_detail: str = "",
+    ) -> None:
+        now_dt = utcnow()
+        now = iso(now_dt)
         with self._lock, self.db:
             row = self.db.execute("SELECT source FROM source_health WHERE source=?", (source,)).fetchone()
             if row:
@@ -14658,6 +17272,157 @@ class Store:
                     "INSERT INTO source_health(source,last_ok_at,last_item_at,last_error_at,last_error) VALUES(?,?,?,?,?)",
                     (source, None if error else now, now if item else None, now if error else None, error),
                 )
+            if error:
+                debounce_key = f"{source}:{error}"
+                previous = self._last_supervised_error_record_at.get(debounce_key)
+                if previous is None or (now_dt - previous).total_seconds() >= 60.0:
+                    self._record_system_error_locked(
+                        area="runtime",
+                        component=source,
+                        error_type=str(error),
+                        message_safe=str(error_detail or error),
+                        severity=(
+                            "high" if source in {
+                                "chain-meme-trader", "chain-meme-market-marks"
+                            } else "medium"
+                        ),
+                        context_safe={"source": source},
+                        observed_at=now_dt,
+                    )
+                    self._last_supervised_error_record_at[debounce_key] = now_dt
+
+    @staticmethod
+    def _safe_error_text(value: Any, *, limit: int = 240) -> str:
+        text = re.sub(r"[\x00-\x1f\x7f]+", " ", str(value or "")).strip()
+        text = re.sub(
+            r"(?i)(private[_ -]?key|secret|token|authorization|signature)\s*[:=]\s*\S+",
+            r"\1=[redacted]",
+            text,
+        )
+        return text[: max(1, int(limit))]
+
+    def _record_system_error_locked(
+        self, *, area: str, component: str, error_type: str,
+        message_safe: str = "", severity: str = "medium",
+        context_safe: Mapping[str, Any] | None = None, observed_at: Any = None,
+    ) -> int:
+        area_safe = self._safe_error_text(area, limit=80) or "system"
+        component_safe = self._safe_error_text(component, limit=120) or "unknown"
+        type_safe = self._safe_error_text(error_type, limit=120) or "Error"
+        message = self._safe_error_text(message_safe or type_safe)
+        level = severity if severity in {"low", "medium", "high"} else "medium"
+        at = iso(observed_at or utcnow())
+        context_json = self._bounded_json(dict(context_safe or {}), max_chars=4_000)
+        fingerprint = hashlib.sha256(
+            f"{area_safe}\n{component_safe}\n{type_safe}\n{message}".encode(
+                "utf-8", errors="ignore"
+            )
+        ).hexdigest()
+        existing = self.db.execute(
+            "SELECT id,status FROM system_error_cases WHERE fingerprint=?",
+            (fingerprint,),
+        ).fetchone()
+        if existing is None:
+            cursor = self.db.execute(
+                "INSERT INTO system_error_cases("
+                "fingerprint,area,component,error_type,message_safe,severity,status,"
+                "first_seen_at,last_seen_at,occurrence_count,last_context_json) "
+                "VALUES(?,?,?,?,?,?,'new',?,?,1,?)",
+                (
+                    fingerprint, area_safe, component_safe, type_safe, message,
+                    level, at, at, context_json,
+                ),
+            )
+            case_id = int(cursor.lastrowid)
+        else:
+            case_id = int(existing["id"])
+            was_fixed = str(existing["status"]) == "fixed"
+            self.db.execute(
+                "UPDATE system_error_cases SET last_seen_at=?,"
+                "occurrence_count=occurrence_count+1,last_context_json=?,"
+                "status=CASE WHEN status='fixed' THEN 'new' ELSE status END,"
+                "resolved_at=CASE WHEN status='fixed' THEN NULL ELSE resolved_at END "
+                "WHERE id=?",
+                (at, context_json, case_id),
+            )
+            if was_fixed:
+                self.db.execute(
+                    "INSERT INTO system_error_resolution_reports("
+                    "case_id,action,summary,evidence_safe,actor,recorded_at) "
+                    "VALUES(?,'reopened','同一错误再次出现','','system',?)",
+                    (case_id, at),
+                )
+        self.db.execute(
+            "INSERT INTO system_error_occurrences(case_id,observed_at,context_safe_json) "
+            "VALUES(?,?,?)",
+            (case_id, at, context_json),
+        )
+        return case_id
+
+    def record_system_error(
+        self, *, area: str, component: str, error_type: str,
+        message_safe: str = "", severity: str = "medium",
+        context_safe: Mapping[str, Any] | None = None, observed_at: Any = None,
+    ) -> int:
+        with self._lock, self.db:
+            return self._record_system_error_locked(
+                area=area, component=component, error_type=error_type,
+                message_safe=message_safe, severity=severity,
+                context_safe=context_safe, observed_at=observed_at,
+            )
+
+    def update_system_error_case(
+        self, case_id: int, *, status: str, note: str = "",
+        evidence_safe: str = "", report_path: str = "", actor: str = "user",
+    ) -> None:
+        with self._lock, self.db:
+            self.update_system_error_case_from_connection(
+                self.db, case_id, status=status, note=note,
+                evidence_safe=evidence_safe, report_path=report_path, actor=actor,
+            )
+
+    @classmethod
+    def update_system_error_case_from_connection(
+        cls, connection: sqlite3.Connection, case_id: int, *, status: str,
+        note: str = "", evidence_safe: str = "", report_path: str = "",
+        actor: str = "user",
+    ) -> None:
+        allowed = {"new", "in_progress", "fixed", "ignored"}
+        if status not in allowed:
+            raise ValueError("invalid error case status")
+        recorded_at = iso()
+        clean_note = cls._safe_error_text(note, limit=1_000)
+        clean_evidence = cls._safe_error_text(evidence_safe, limit=2_000)
+        clean_path = cls._safe_error_text(report_path, limit=500)
+        action = (
+            "diagnosis_draft" if status == "in_progress"
+            else "reopened" if status == "new"
+            else status
+        )
+        exists = connection.execute(
+            "SELECT 1 FROM system_error_cases WHERE id=?", (int(case_id),),
+        ).fetchone()
+        if exists is None:
+            raise ValueError("error case not found")
+        connection.execute(
+            "UPDATE system_error_cases SET status=?,resolution_note=?,"
+            "resolved_at=? WHERE id=?",
+            (
+                status, clean_note,
+                recorded_at if status in {"fixed", "ignored"} else None,
+                int(case_id),
+            ),
+        )
+        connection.execute(
+            "INSERT INTO system_error_resolution_reports("
+            "case_id,action,summary,evidence_safe,report_path,actor,recorded_at) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (
+                int(case_id), action, clean_note or f"状态更新为 {status}",
+                clean_evidence, clean_path,
+                cls._safe_error_text(actor, limit=80) or "user", recorded_at,
+            ),
+        )
 
     def source_health(self) -> list[sqlite3.Row]:
         return list(self.db.execute("SELECT * FROM source_health ORDER BY source"))
@@ -17713,6 +20478,7 @@ class Store:
         requested_at: Any = None,
         completed_at: Any = None,
         evaluated_at: Any = None,
+        apply_legacy_exploration: bool = True,
     ) -> int | None:
         statuses = {
             "not_requested", "quoted", "no_route", "error",
@@ -17920,9 +20686,385 @@ class Store:
                 (str(task["quote_key"]),),
             ).fetchone()
             result_id = int(row["id"]) if row is not None else None
-            if result_id is not None:
+            if result_id is not None and apply_legacy_exploration:
                 self._apply_onchain_paper_exploration_quote_locked(result_id)
             return result_id
+
+    def record_robinhood_stock_token_registry(
+        self,
+        result: Mapping[str, Any],
+    ) -> int:
+        """Append one official chain-4663 Stock Token registry snapshot."""
+        source_url = str(result.get("source_url") or "")
+        requested = parse_time(result["requested_at"])
+        completed = parse_time(result["completed_at"])
+        payload_hash = str(result.get("payload_sha256") or "").lower()
+        entries = result.get("entries")
+        if (
+            source_url != "https://api.robinhood.com/rhj/assets"
+            or requested > completed
+            or re.fullmatch(r"[0-9a-f]{64}", payload_hash) is None
+            or not isinstance(entries, list)
+            or not entries
+        ):
+            raise ValueError("invalid Robinhood Stock Token registry snapshot")
+        normalized: dict[str, dict[str, Any]] = {}
+        for item in entries:
+            if not isinstance(item, Mapping):
+                raise ValueError("invalid Robinhood Stock Token registry entry")
+            address = str(item.get("contract_address") or "").lower()
+            if (
+                re.fullmatch(r"0x[0-9a-f]{40}", address) is None
+                or int(item.get("chain_id") or 0) != 4663
+            ):
+                raise ValueError("invalid Robinhood Stock Token deployment")
+            normalized[address] = {
+                "asset_id": str(item.get("asset_id") or "")[:80],
+                "token_symbol": str(item.get("token_symbol") or "")[:40],
+                "token_name": str(item.get("token_name") or "")[:200],
+                "contract_address": address,
+                "chain_id": 4663,
+                "asset_status": str(item.get("asset_status") or "")[:60],
+            }
+        recorded_at = iso()
+        with self._lock, self.db:
+            cursor = self.db.execute(
+                "INSERT INTO robinhood_stock_token_registry_runs("
+                "source_url,requested_at,completed_at,payload_sha256,asset_count,"
+                "deployment_count,recorded_at) VALUES(?,?,?,?,?,?,?)",
+                (
+                    source_url, iso(requested), iso(completed), payload_hash,
+                    max(0, int(result.get("asset_count") or 0)), len(normalized),
+                    recorded_at,
+                ),
+            )
+            run_id = int(cursor.lastrowid)
+            self.db.executemany(
+                "INSERT INTO robinhood_stock_token_registry_entries("
+                "run_id,asset_id,token_symbol,token_name,contract_address,chain_id,"
+                "asset_status,recorded_at) VALUES(?,?,?,?,?,?,?,?)",
+                [
+                    (
+                        run_id, item["asset_id"], item["token_symbol"],
+                        item["token_name"], item["contract_address"], 4663,
+                        item["asset_status"], recorded_at,
+                    )
+                    for item in normalized.values()
+                ],
+            )
+        return run_id
+
+    @classmethod
+    def robinhood_stock_token_registry_summary_from_connection(
+        cls,
+        connection: sqlite3.Connection,
+    ) -> dict[str, Any]:
+        tables = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        if not {
+            "robinhood_stock_token_registry_runs",
+            "robinhood_stock_token_registry_entries",
+        }.issubset(tables):
+            return {"status": "not_observed", "exclusion_ready": False, "entry_count": 0}
+        run = connection.execute(
+            "SELECT * FROM robinhood_stock_token_registry_runs "
+            "ORDER BY completed_at DESC,id DESC LIMIT 1"
+        ).fetchone()
+        if run is None:
+            return {"status": "not_observed", "exclusion_ready": False, "entry_count": 0}
+        return {
+            "status": "active",
+            "exclusion_ready": True,
+            "run_id": int(run["id"]),
+            "source_url": str(run["source_url"]),
+            "requested_at": str(run["requested_at"]),
+            "completed_at": str(run["completed_at"]),
+            "payload_sha256": str(run["payload_sha256"]),
+            "asset_count": int(run["asset_count"]),
+            "entry_count": int(run["deployment_count"]),
+            "classification": "official_stock_token_rwa_excluded",
+            "decision_eligible": False,
+            "affects": "route_admission_only",
+        }
+
+    def register_onchain_only_evm_aggregator_price(
+        self,
+        networks: Mapping[str, Mapping[str, Any]],
+        *,
+        paper_stake_usd: float = 20,
+        slippage_bps: int = 400,
+        max_queue_delay_seconds: float = 30,
+        max_total_delay_seconds: float = 45,
+    ) -> sqlite3.Row:
+        """Freeze a credential-backed, indicative 0x price observer at activation."""
+        stake = Decimal(str(paper_stake_usd))
+        if stake <= 0:
+            raise ValueError("paper_stake_usd must be positive")
+        clean: dict[str, dict[str, Any]] = {}
+        amounts: dict[str, str] = {}
+        for chain in ("bsc", "robinhood"):
+            item = networks.get(chain)
+            if not isinstance(item, Mapping):
+                raise ValueError(f"missing 0x network definition: {chain}")
+            token = str(item.get("accounting_token") or "").strip().lower()
+            decimals = int(item.get("accounting_decimals") or 0)
+            chain_id = int(item.get("chain_id") or 0)
+            if not re.fullmatch(r"0x[0-9a-f]{40}", token) or not 0 <= decimals <= 36:
+                raise ValueError(f"invalid 0x network definition: {chain}")
+            clean[chain] = {
+                "chain_id": chain_id,
+                "accounting_token": token,
+                "accounting_symbol": str(item.get("accounting_symbol") or "")[:20],
+                "accounting_decimals": decimals,
+                "native_symbol": str(item.get("native_symbol") or "")[:20],
+            }
+            amounts[chain] = str(int(stake * (10 ** decimals)))
+        queue_limit = max(1.0, float(max_queue_delay_seconds))
+        total_limit = max(queue_limit, float(max_total_delay_seconds))
+        definition = {
+            "version": self.ONCHAIN_ONLY_EVM_AGGREGATOR_PRICE_VERSION,
+            "source": self.ONCHAIN_ONLY_SHADOW_VERSION,
+            "provider": "0x_swap_v2_price",
+            "no_historical_backfill": True,
+            "networks": clean,
+            "paper_stake_usd": float(stake),
+            "input_amount_raw_by_chain": amounts,
+            "slippage_bps": max(1, min(5_000, int(slippage_bps))),
+            "max_queue_delay_seconds": queue_limit,
+            "max_total_delay_seconds": total_limit,
+            "execution_scope": "amount_specific_aggregator_indicative_price",
+            "firm_quote": False,
+            "transaction_built": False,
+            "decision_eligible": False,
+            "affects": "none",
+        }
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO onchain_only_evm_aggregator_price_registrations("
+                "definition_version,registered_at,activation_shadow_cohort_id,definition_json) "
+                "VALUES(?,?,COALESCE((SELECT MAX(id) FROM onchain_only_shadow_cohorts),0),?)",
+                (self.ONCHAIN_ONLY_EVM_AGGREGATOR_PRICE_VERSION, iso(), self._json(definition)),
+            )
+            return self.db.execute(
+                "SELECT * FROM onchain_only_evm_aggregator_price_registrations "
+                "WHERE definition_version=?",
+                (self.ONCHAIN_ONLY_EVM_AGGREGATOR_PRICE_VERSION,),
+            ).fetchone()
+
+    @staticmethod
+    def _onchain_only_evm_aggregator_price_key(shadow_cohort_id: int) -> str:
+        return f"onchain-evm-0x-price:{int(shadow_cohort_id)}"
+
+    def due_onchain_only_evm_aggregator_prices(
+        self, *, now: Any = None, limit: int = 12
+    ) -> list[dict[str, Any]]:
+        current = parse_time(now or utcnow())
+        with self._lock:
+            registration = self.db.execute(
+                "SELECT * FROM onchain_only_evm_aggregator_price_registrations "
+                "WHERE definition_version=?",
+                (self.ONCHAIN_ONLY_EVM_AGGREGATOR_PRICE_VERSION,),
+            ).fetchone()
+            if registration is None:
+                return []
+            definition = self._json_object(registration["definition_json"])
+            registry = self.db.execute(
+                "SELECT id FROM robinhood_stock_token_registry_runs "
+                "ORDER BY completed_at DESC,id DESC LIMIT 1"
+            ).fetchone()
+            rows = self.db.execute(
+                """
+                SELECT c.*,a.id AS attempt_id,a.requested_at AS attempt_requested_at
+                FROM onchain_only_shadow_cohorts c
+                LEFT JOIN onchain_only_evm_aggregator_price_attempts a
+                  ON a.definition_version=? AND a.shadow_cohort_id=c.id
+                LEFT JOIN onchain_only_evm_aggregator_price_results r
+                  ON r.definition_version=? AND r.shadow_cohort_id=c.id
+                WHERE c.definition_version=? AND c.id>? AND lower(c.chain) IN ('bsc','robinhood')
+                  AND r.id IS NULL
+                ORDER BY c.trigger_recorded_at,c.id
+                """,
+                (
+                    self.ONCHAIN_ONLY_EVM_AGGREGATOR_PRICE_VERSION,
+                    self.ONCHAIN_ONLY_EVM_AGGREGATOR_PRICE_VERSION,
+                    self.ONCHAIN_ONLY_SHADOW_VERSION,
+                    int(registration["activation_shadow_cohort_id"]),
+                ),
+            ).fetchall()
+            tasks: list[dict[str, Any]] = []
+            for row in rows:
+                chain = str(row["chain"]).lower()
+                token_id = str(row["token_id"])
+                output = token_id.split(":", 1)[1].lower() if ":" in token_id else ""
+                if not re.fullmatch(r"0x[0-9a-f]{40}", output):
+                    continue
+                if chain == "robinhood":
+                    if registry is None:
+                        continue
+                    if self.db.execute(
+                        "SELECT 1 FROM robinhood_stock_token_registry_entries "
+                        "WHERE run_id=? AND contract_address=?",
+                        (int(registry["id"]), output),
+                    ).fetchone() is not None:
+                        continue
+                network = definition["networks"][chain]
+                anchor = parse_time(row["trigger_recorded_at"])
+                age = (current - anchor).total_seconds()
+                preflight = (
+                    "request_evidence_missing" if row["attempt_id"] is not None
+                    else "trigger_baseline_invalid" if str(row["baseline_status"]) != "valid"
+                    else "queue_delay_expired" if age > float(definition["max_queue_delay_seconds"])
+                    else None
+                )
+                tasks.append({
+                    "quote_key": self._onchain_only_evm_aggregator_price_key(int(row["id"])),
+                    "shadow_cohort_id": int(row["id"]),
+                    "attempt_id": int(row["attempt_id"]) if row["attempt_id"] else None,
+                    "attempt_requested_at": str(row["attempt_requested_at"] or ""),
+                    "token_id": token_id, "chain": chain, "anchor_at": iso(anchor),
+                    "sell_token": str(network["accounting_token"]), "buy_token": output,
+                    "sell_amount_raw": str(definition["input_amount_raw_by_chain"][chain]),
+                    "slippage_bps": int(definition["slippage_bps"]),
+                    "max_queue_delay_seconds": float(definition["max_queue_delay_seconds"]),
+                    "max_total_delay_seconds": float(definition["max_total_delay_seconds"]),
+                    "preflight_reason": preflight,
+                })
+            return tasks[:max(1, int(limit))]
+
+    def start_onchain_only_evm_aggregator_price_attempt(
+        self, task: Mapping[str, Any], *, requested_at: Any = None
+    ) -> int | None:
+        requested = parse_time(requested_at or utcnow())
+        if task.get("preflight_reason"):
+            return None
+        values = {
+            "definition_version": self.ONCHAIN_ONLY_EVM_AGGREGATOR_PRICE_VERSION,
+            "quote_key": str(task["quote_key"]), "shadow_cohort_id": int(task["shadow_cohort_id"]),
+            "token_id": str(task["token_id"]), "chain": str(task["chain"]),
+            "anchor_at": str(task["anchor_at"]), "sell_token": str(task["sell_token"]),
+            "buy_token": str(task["buy_token"]), "sell_amount_raw": str(task["sell_amount_raw"]),
+            "slippage_bps": int(task["slippage_bps"]), "requested_at": iso(requested),
+        }
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO onchain_only_evm_aggregator_price_attempts("
+                + ",".join(values) + ",decision_eligible,affects) VALUES("
+                + ",".join(f":{name}" for name in values) + ",0,'none')", values,
+            )
+            row = self.db.execute(
+                "SELECT id FROM onchain_only_evm_aggregator_price_attempts WHERE quote_key=?",
+                (str(task["quote_key"]),),
+            ).fetchone()
+            return int(row["id"]) if row else None
+
+    def record_onchain_only_evm_aggregator_price(
+        self,
+        task: Mapping[str, Any],
+        *,
+        terminal_status: str,
+        result: Mapping[str, Any] | None = None,
+        attempt_id: int | None = None,
+        requested_at: Any = None,
+        completed_at: Any = None,
+        error_type: str = "",
+    ) -> int | None:
+        allowed_statuses = {
+            "not_requested", "priced", "no_route", "error", "protocol_invalid",
+            "interrupted_after_request",
+        }
+        if terminal_status not in allowed_statuses:
+            raise ValueError("invalid 0x terminal status")
+        payload = dict(result or {})
+        forbidden = {"transaction", "zid", "api_key", "raw_json", "request_id"}
+        if forbidden.intersection(payload):
+            raise ValueError("sensitive 0x fields are forbidden")
+        requested = parse_time(requested_at or task.get("attempt_requested_at") or utcnow())
+        completed = parse_time(completed_at or utcnow())
+        anchor = parse_time(task["anchor_at"])
+        queue_delay = max(0.0, (requested - anchor).total_seconds())
+        duration = max(0.0, (completed - requested).total_seconds())
+        if terminal_status == "interrupted_after_request":
+            validity = "request_evidence_missing"
+        elif task.get("preflight_reason"):
+            validity = str(task["preflight_reason"])
+        elif (completed - anchor).total_seconds() > float(task["max_total_delay_seconds"]):
+            validity = "total_delay_expired"
+        else:
+            validity = "valid"
+        if terminal_status == "not_requested":
+            requested = completed
+            duration = 0.0
+        if terminal_status == "priced":
+            required = {"minimum_buy_amount_raw", "gas", "gas_price_raw", "total_network_fee_native_raw"}
+            if not required.issubset(payload) or payload.get("firm_quote") is not False:
+                raise ValueError("priced 0x result is incomplete or not indicative")
+        clean_error = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(error_type or ""))[:80]
+        normalized = payload if terminal_status in {"priced", "no_route"} else {}
+        with self._lock, self.db:
+            if self.db.execute(
+                "SELECT 1 FROM onchain_only_evm_aggregator_price_results WHERE quote_key=?",
+                (str(task["quote_key"]),),
+            ).fetchone():
+                return None
+            if terminal_status == "not_requested":
+                attempt_value = None
+            else:
+                attempt_value = int(attempt_id or task.get("attempt_id") or 0)
+                if attempt_value <= 0:
+                    raise ValueError("0x provider result requires persisted attempt")
+            self.db.execute(
+                "INSERT INTO onchain_only_evm_aggregator_price_results("
+                "definition_version,quote_key,shadow_cohort_id,attempt_id,token_id,chain,anchor_at,"
+                "terminal_status,validity_status,requested_at,completed_at,queue_delay_seconds,"
+                "request_duration_seconds,normalized_result_json,error_type,recorded_at,decision_eligible,affects) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'none')",
+                (
+                    self.ONCHAIN_ONLY_EVM_AGGREGATOR_PRICE_VERSION, str(task["quote_key"]),
+                    int(task["shadow_cohort_id"]), attempt_value, str(task["token_id"]),
+                    str(task["chain"]), iso(anchor), terminal_status, validity, iso(requested),
+                    iso(completed), queue_delay, duration, self._json(normalized), clean_error, iso(),
+                ),
+            )
+            return int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+
+    @classmethod
+    def onchain_only_evm_aggregator_price_summary_from_connection(
+        cls, connection: sqlite3.Connection
+    ) -> dict[str, Any]:
+        if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='onchain_only_evm_aggregator_price_registrations'"
+        ).fetchone() is None:
+            return {"status": "not_registered", "configured": False, "attempts": 0, "results": 0}
+        registration = connection.execute(
+            "SELECT * FROM onchain_only_evm_aggregator_price_registrations "
+            "WHERE definition_version=?",
+            (cls.ONCHAIN_ONLY_EVM_AGGREGATOR_PRICE_VERSION,),
+        ).fetchone()
+        if registration is None:
+            return {"status": "not_registered", "configured": False, "attempts": 0, "results": 0}
+        rows = connection.execute(
+            "SELECT terminal_status,validity_status,COUNT(*) count "
+            "FROM onchain_only_evm_aggregator_price_results WHERE definition_version=? "
+            "GROUP BY terminal_status,validity_status",
+            (cls.ONCHAIN_ONLY_EVM_AGGREGATOR_PRICE_VERSION,),
+        ).fetchall()
+        counts = {str(row["terminal_status"]): int(row["count"]) for row in rows}
+        attempts = int(connection.execute(
+            "SELECT COUNT(*) FROM onchain_only_evm_aggregator_price_attempts WHERE definition_version=?",
+            (cls.ONCHAIN_ONLY_EVM_AGGREGATOR_PRICE_VERSION,),
+        ).fetchone()[0])
+        return {
+            "status": "active", "configured": True,
+            "version": cls.ONCHAIN_ONLY_EVM_AGGREGATOR_PRICE_VERSION,
+            "registered_at": str(registration["registered_at"]),
+            "definition": cls._json_object(registration["definition_json"]),
+            "attempts": attempts, "results": sum(counts.values()),
+            "terminal_counts": counts, "pending": max(0, attempts - sum(counts.values())),
+            "decision_eligible": False, "affects": "none",
+        }
 
     def register_onchain_only_evm_route_quote(
         self,
@@ -18046,6 +21188,10 @@ class Store:
             if registration is None:
                 return []
             definition = self._json_object(registration["definition_json"])
+            robinhood_registry = self.db.execute(
+                "SELECT id FROM robinhood_stock_token_registry_runs "
+                "ORDER BY completed_at DESC,id DESC LIMIT 1"
+            ).fetchone()
             rows = self.db.execute(
                 """
                 SELECT c.*,a.id AS attempt_id
@@ -18073,6 +21219,16 @@ class Store:
                 if chain not in self.EVM_ROUTE_RESEARCH_CHAINS or ":" not in token_id:
                     continue
                 network = definition["networks"][chain]
+                output_token = token_id.split(":", 1)[1].lower()
+                if chain == "robinhood":
+                    if robinhood_registry is None:
+                        continue
+                    if self.db.execute(
+                        "SELECT 1 FROM robinhood_stock_token_registry_entries "
+                        "WHERE run_id=? AND contract_address=?",
+                        (int(robinhood_registry["id"]), output_token),
+                    ).fetchone() is not None:
+                        continue
                 tasks.append({
                     "lane": self.ONCHAIN_ONLY_EVM_ROUTE_QUOTE_VERSION,
                     "quote_key": self._onchain_only_evm_route_quote_key(int(row["id"])),
@@ -18083,7 +21239,7 @@ class Store:
                     "chain": chain,
                     "anchor_at": str(row["trigger_recorded_at"]),
                     "input_token": str(network["accounting_token"]),
-                    "output_token": token_id.split(":", 1)[1].lower(),
+                    "output_token": output_token,
                     "accounting_symbol": str(network["accounting_symbol"]),
                     "accounting_decimals": int(network["accounting_decimals"]),
                     "input_amount_raw": str(definition["input_amount_raw_by_chain"][chain]),
@@ -18461,6 +21617,165 @@ class Store:
         ).fetchone()
         if phase == "baseline_buy":
             if position is not None:
+                return
+            focus = self.db.execute(
+                "SELECT * FROM strategy_focus_registrations WHERE definition_version=?",
+                (self.STRATEGY_FOCUS_VERSION,),
+            ).fetchone()
+            if focus is not None and int(result_id) > int(focus["activation_quote_result_id"]):
+                surface = self.db.execute(
+                    "SELECT status,facts_json FROM market_surface_safety_observations "
+                    "WHERE definition_version=? AND lane=? AND quote_key=?",
+                    (
+                        self.MARKET_SURFACE_SAFETY_VERSION,
+                        self.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+                        str(result["quote_key"]),
+                    ),
+                ).fetchone()
+                route_rows = self.db.execute(
+                    "SELECT direction,status,classification_json FROM execution_route_observations "
+                    "WHERE definition_version=? AND lane=? AND quote_key=?",
+                    (
+                        self.EXECUTION_ROUTE_OBSERVATION_VERSION,
+                        self.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+                        str(result["quote_key"]),
+                    ),
+                ).fetchall()
+                routes = {str(row["direction"]): str(row["status"]) for row in route_rows}
+                route_facts = {
+                    str(row["direction"]): self._json_object(row["classification_json"])
+                    for row in route_rows
+                }
+                focus_reasons = []
+                if surface is None or str(surface["status"]) != "PASS":
+                    focus_reasons.append(
+                        "surface_missing" if surface is None
+                        else "surface_" + str(surface["status"]).lower()
+                    )
+                if surface is not None:
+                    surface_facts = self._json_object(surface["facts_json"])
+                    pool_facts = surface_facts.get("solana_pool_rpc") if isinstance(
+                        surface_facts.get("solana_pool_rpc"), Mapping
+                    ) else {}
+                    pool_address = str(
+                        pool_facts.get("pool_address") or surface_facts.get("pool_address") or ""
+                    )
+                    if pool_address and self.db.execute(
+                        "SELECT 1 FROM onchain_dead_market_surfaces WHERE chain='solana' "
+                        "AND mint=? AND pool_address=? AND policy_version=? LIMIT 1",
+                        (token_id.split(":", 1)[1], pool_address,
+                         self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION),
+                    ).fetchone() is not None:
+                        focus_reasons.append("confirmed_dead_surface_no_reentry")
+                for direction in ("BUY", "SELL"):
+                    if routes.get(direction) != "PASS":
+                        focus_reasons.append(
+                            f"{direction.lower()}_route_" + routes.get(direction, "missing").lower()
+                        )
+                migration = self.db.execute(
+                    "SELECT * FROM token_launch_facts WHERE token_id=? "
+                    "AND launch_event_type='migration' AND create_signature<>'' "
+                    "AND ingested_at<=? ORDER BY source_observed_at DESC,id DESC LIMIT 1",
+                    (token_id, str(result["anchor_at"])),
+                ).fetchone()
+                pool_age_seconds = None
+                if migration is not None:
+                    pool_age_seconds = (
+                        parse_time(result["anchor_at"]) - parse_time(migration["source_observed_at"])
+                    ).total_seconds()
+                sell_facts = route_facts.get("SELL") or {}
+                quoted_ratio = sell_facts.get("quoted_net_recovery_ratio")
+                stress_ratio = sell_facts.get("stress_min_recovery_ratio")
+                focus_open = int(self.db.execute(
+                    "SELECT COUNT(*) FROM onchain_paper_exploration_positions "
+                    "WHERE definition_version=? AND status='open' AND baseline_quote_result_id>?",
+                    (version, int(focus["activation_quote_result_id"])),
+                ).fetchone()[0])
+                daily_exposure = float(self.db.execute(
+                    "SELECT COALESCE(SUM(gross_usd),0) FROM onchain_paper_exploration_trades "
+                    "WHERE definition_version=? AND side='BUY' AND id>? "
+                    "AND substr(created_at,1,10)=substr(?,1,10)",
+                    (version, int(focus["activation_s2_buy_trade_id"]), str(result["completed_at"])),
+                ).fetchone()[0])
+                pending_alert = self.db.execute(
+                    "SELECT 1 FROM onchain_paper_exit_challenger_positions p "
+                    "JOIN onchain_paper_exit_challenger_marks m ON m.id=p.pending_mark_id "
+                    "WHERE p.definition_version=? AND p.status='open' "
+                    "AND m.action IN ('LIQUIDITY_EXIT','HARD_STOP','TRAILING','TAKE_PROFIT','TERMINAL') "
+                    "LIMIT 1",
+                    (self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION,),
+                ).fetchone()
+                focus_reasons.extend(self.onchain_primary_scalar_gate_reasons(
+                    pool_age_seconds=pool_age_seconds,
+                    queue_delay_seconds=(
+                        float(result["queue_delay_seconds"])
+                        if result["queue_delay_seconds"] is not None else None
+                    ),
+                    total_delay_seconds=(
+                        float(result["total_delay_seconds"])
+                        if result["total_delay_seconds"] is not None else None
+                    ),
+                    quoted_recovery_ratio=(
+                        float(quoted_ratio) if quoted_ratio is not None else None
+                    ),
+                    stress_recovery_ratio=(
+                        float(stress_ratio) if stress_ratio is not None else None
+                    ),
+                    open_positions=focus_open, daily_exposure_usd=daily_exposure,
+                    new_exposure_usd=int(result["input_amount_raw"]) / 1_000_000.0,
+                    exit_alert_pending=pending_alert is not None,
+                ))
+                if focus_reasons:
+                    self._record_onchain_paper_execution_assessment_locked(
+                        result_id=result_id, cohort_id=cohort_id, phase="entry", horizon_minutes=0,
+                        quote_status=str(result["quote_terminal_status"]),
+                        economic_status="not_applicable", paper_effect="entry_rejected",
+                        reason="strategy_focus_gate:" + ",".join(focus_reasons),
+                    )
+                    return
+            rug_registration = self.db.execute(
+                "SELECT * FROM pretrade_rug_safety_registrations WHERE definition_version=?",
+                (self.PRETRADE_RUG_SAFETY_VERSION,),
+            ).fetchone()
+            rug = self.db.execute(
+                "SELECT * FROM pretrade_rug_safety_assessments "
+                "WHERE definition_version=? AND lane=? AND quote_key=?",
+                (
+                    self.PRETRADE_RUG_SAFETY_VERSION,
+                    self.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+                    str(result["quote_key"]),
+                ),
+            ).fetchone()
+            rug_gate_active = bool(
+                rug_registration is not None
+                and int(result_id) > int(rug_registration["activation_quote_result_id"])
+            )
+            rug_fresh = bool(
+                rug is not None
+                and parse_time(rug["assessed_at"]) >= parse_time(result["completed_at"])
+                and (
+                    parse_time(rug["assessed_at"]) - parse_time(result["anchor_at"])
+                ).total_seconds() <= float(result["max_total_delay_seconds"])
+            )
+            if rug_gate_active and (
+                rug is None or str(rug["status"]) != "PASS" or not rug_fresh
+            ):
+                reason = "pretrade_rug_safety_missing"
+                if rug is not None:
+                    reasons = self._json_list(rug["reasons_json"])
+                    reason = (
+                        "pretrade_rug_safety_stale"
+                        if not rug_fresh else
+                        "pretrade_rug_safety_" + str(rug["status"]).lower()
+                    )
+                    if reasons:
+                        reason += ":" + ",".join(str(value) for value in reasons[:4])
+                self._record_onchain_paper_execution_assessment_locked(
+                    result_id=result_id, cohort_id=cohort_id, phase="entry", horizon_minutes=0,
+                    quote_status=str(result["quote_terminal_status"]),
+                    economic_status="not_applicable", paper_effect="entry_rejected",
+                    reason=reason,
+                )
                 return
             impact = result["price_impact_bps"]
             max_adverse = float(definition["maximum_adverse_price_impact_bps"])
@@ -18901,6 +22216,6530 @@ class Store:
             "execution_assessment_counts": assessment_counts,
         }
 
+    @classmethod
+    def chain_meme_trader_policies(cls) -> list[dict[str, Any]]:
+        """Twelve independent forward strategy accounts on one execution kernel."""
+        dynamic = {
+            "hard_stop_return": -0.35,
+            "trailing_activate_return": 0.60,
+            "trailing_drawdown": 0.28,
+            "emergency_liquidity_usd": 3000.0,
+            "zero_activity_grace_minutes": 5.0,
+            "max_hold_minutes": 240.0,
+            "take_profit": [
+                {"return": 0.80, "fraction_of_remaining": 0.20},
+                {"return": 1.80, "fraction_of_remaining": 0.25},
+                {"return": 3.50, "fraction_of_remaining": 0.35},
+                {"return": 7.00, "fraction_of_remaining": 1.00},
+            ],
+        }
+        rows = [
+            (1, "stage_01_shadow_v1", "链上 Shadow v1", "shadow_momentum", "dynamic_with_15m_deadline", "宽动量入场；动态风控优先，15分钟为最迟退出时点"),
+            (2, "stage_02_jupiter_v1", "Jupiter 报价层 v1", "two_way_route", "dynamic_with_15m_deadline", "增加双向路线；动态风控优先，15分钟为最迟退出时点"),
+            (3, "stage_03_fixed_paper_v1", "固定周期 Paper v1", "two_way_route", "dynamic_with_horizon_fallback", "动态风控优先，15/60/240分钟保留为可执行退出后备"),
+            (4, "stage_04_dynamic_v1", "动态退出 Challenger v1", "two_way_route", "dynamic", "增加止损、移动止盈、分批止盈、流动性和活跃度退出"),
+            (5, "stage_05_fair_start_v2", "Fair-start v2", "two_way_route", "dynamic", "统一前向起点并取消持仓数量限制"),
+            (6, "stage_06_economic_v3", "Economic-execution v3", "economic_route", "dynamic", "拒绝价格冲击异常或经济上不可执行的路线"),
+            (7, "stage_07_cost_v4", "公平成本 v4", "economic_route", "dynamic", "统一20U、4%滑点、0额外手续费"),
+            (8, "stage_08_rug_safety", "买前 Rug Safety", "rug_safety", "dynamic", "增加 Token 权限、池控制权和精确可卖性门"),
+            (9, "stage_09_executable_equity", "可执行权益监控", "rug_safety", "dynamic", "按实际剩余数量持续计算可执行权益"),
+            (10, "stage_10_dead_route_backoff", "死亡路线退避", "rug_safety", "dynamic_backoff", "no-route按15/30/60/120/300秒退避"),
+            (11, "stage_11_exact_rug_terminal", "精确账户监听与 Rug 终态", "rug_safety", "dynamic_backoff", "精确池账户告警后只做一次全量卖出验证"),
+            (12, "stage_12_solana_focus", "Solana Focus Epoch", "solana_focus", "dynamic_backoff", "仅Solana canonical PumpSwap及完整执行安全证据"),
+        ]
+        policies = []
+        for stage, arm_id, name, entry_gate, exit_mode, description in rows:
+            policy = {
+                "stage": stage, "arm_id": arm_id, "name": name,
+                "family": "independent_strategy_account", "entry_gate": entry_gate,
+                "exit_mode": exit_mode, "description": description,
+                "execution_profile": "paper-jupiter-next-quote-fill/v1",
+            }
+            policy.update(dynamic)
+            if stage in {5, 7}:
+                policy["behavior_equivalence_expected"] = (
+                    "stage_04_dynamic_v1" if stage == 5 else "stage_06_economic_v3"
+                )
+            policies.append(policy)
+        return policies
+
+    @classmethod
+    def chain_meme_trader_v6_policies(cls) -> list[dict[str, Any]]:
+        """Three as-of entry families crossed with four independently scored exits."""
+        balanced_tiers = [
+            {"return": 0.80, "fraction_of_remaining": 0.20},
+            {"return": 1.80, "fraction_of_remaining": 0.25},
+            {"return": 3.50, "fraction_of_remaining": 0.35},
+            {"return": 7.00, "fraction_of_remaining": 1.00},
+        ]
+        exits = (
+            ("fast_escape", "快速逃生", -0.20, 0.25, 0.12, 30.0,
+             [{"return": 0.80, "fraction_of_remaining": 1.00}]),
+            ("balanced_harvest", "均衡收获", -0.35, 0.60, 0.28, 240.0,
+             balanced_tiers),
+            ("peak_guard", "峰值保护", -0.35, 0.40, 0.15, 240.0,
+             balanced_tiers),
+            ("postbuy_research", "买后研究", -0.35, 0.60, 0.28, 240.0,
+             balanced_tiers),
+        )
+        entry_names = {
+            "broad_launch": "宽口径新发",
+            "flow_burst": "流量突发",
+            "reawakening": "沉寂复苏",
+        }
+        policies: list[dict[str, Any]] = []
+        stage = 0
+        for entry_family, entry_name in entry_names.items():
+            for exit_family, exit_name, hard_stop, arm, drawdown, max_hold, tiers in exits:
+                stage += 1
+                policy = {
+                    "stage": stage,
+                    "arm_id": f"{entry_family}__{exit_family}",
+                    "name": f"{entry_name} × {exit_name}",
+                    "description": (
+                        f"{entry_name}入场；{exit_name}按真实剩余数量的 Jupiter "
+                        "minimum output 动态止损、止盈和退出。"
+                    ),
+                    "family": "entry3_exit4_forward_matrix",
+                    "entry_family": entry_family,
+                    "exit_family": exit_family,
+                    "entry_gate": "v6_asof_family",
+                    "exit_mode": "executable_equity_dynamic_backoff",
+                    "execution_profile": "paper-jupiter-next-quote-fill/v1",
+                    "hard_stop_return": hard_stop,
+                    "trailing_activate_return": arm,
+                    "trailing_drawdown": drawdown,
+                    "max_hold_minutes": max_hold,
+                    "take_profit": tiers,
+                    "exact_risk_alerts": "shared_preemptive",
+                    "research_overlay": (
+                        "positive_independent_widens_trailing_28_to_35_only"
+                        if exit_family == "postbuy_research" else "none"
+                    ),
+                }
+                policies.append(policy)
+        return policies
+
+    @classmethod
+    def chain_meme_trader_v14_policies(cls) -> list[dict[str, Any]]:
+        """Load every canonical historical contract as an independent forward arm."""
+        report_path = (
+            Path(__file__).resolve().parents[2] / "docs" / "PROJECT_CONTEXT"
+            / "CHAIN_MEME_TRADER_HISTORICAL_STRATEGY_UNIVERSE_2026-09-04.json"
+        )
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        families = sorted(
+            report.get("behavior_families", []),
+            key=lambda item: str(item.get("canonical_id") or ""),
+        )
+        policies: list[dict[str, Any]] = []
+        specialized_entries = {"broad_launch", "flow_burst", "reawakening"}
+        for index, family in enumerate(families, 1):
+            canonical_id = str(family["canonical_id"])
+            contract = dict(family.get("contract") or {})
+            source_policy = dict(contract.get("policy") or {})
+            behavior = cls.chain_meme_trader_decision_behavior(
+                source_policy,
+                definition_version=str((family.get("versions") or [""])[-1]),
+            )
+            source_entry = str(
+                family.get("entry_family") or behavior.get("entry_family")
+                or source_policy.get("entry_gate") or "market_visible"
+            )
+            entry_family = (
+                source_entry if source_entry in specialized_entries else "market_visible"
+            )
+            exit_family = str(
+                family.get("exit_family") or source_policy.get("exit_family")
+                or source_policy.get("exit_mode") or "time_exit"
+            )
+            policy = dict(source_policy)
+            policy.update(behavior)
+            policy.update({
+                "stage": index,
+                "arm_id": canonical_id,
+                "canonical_id": canonical_id,
+                "name": f"{source_entry} × {exit_family}",
+                "description": (
+                    f"历史 canonical 合同 {canonical_id} 的独立严格前向账户；"
+                    "共享 DEX 行情，按本合同入场与退出参数独立决策。"
+                ),
+                "family": "canonical_strategy_forward",
+                "entry_family": entry_family,
+                "source_entry_family": source_entry,
+                "exit_family": exit_family,
+                "execution_profile": "dexscreener-market-paper/v1",
+                "behavior_contract_hash": str(family["behavior_contract_hash"]),
+                "source_versions": list(family.get("versions") or []),
+                "source_arm_ids": list(family.get("arm_ids") or []),
+                "source_contract": contract,
+            })
+            policies.append(policy)
+        if len(policies) != 124:
+            raise ValueError(f"expected 124 canonical policies, found {len(policies)}")
+        return policies
+
+    @classmethod
+    def chain_meme_trader_historical_replica_policies(cls) -> list[dict[str, Any]]:
+        """Restore source policy semantics without inventing unavailable evidence.
+
+        The v14-v17 migration treated many historical entry gates as a generic
+        visible-market gate and therefore did not reproduce those strategies.
+        This catalogue keeps every historical contract addressable, runs only
+        contracts whose point-in-time inputs are currently available, and says
+        explicitly when a source contract cannot yet be reproduced.
+        """
+        report_path = (
+            Path(__file__).resolve().parents[2] / "docs" / "PROJECT_CONTEXT"
+            / "CHAIN_MEME_TRADER_HISTORICAL_STRATEGY_UNIVERSE_2026-09-04.json"
+        )
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        families = sorted(
+            report.get("behavior_families", []),
+            key=lambda item: str(item.get("canonical_id") or ""),
+        )
+        policies: list[dict[str, Any]] = []
+        unavailable_entries = {
+            "two_way_route", "economic_route", "rug_safety", "solana_focus",
+        }
+        for index, family in enumerate(families, 1):
+            canonical_id = str(family["canonical_id"])
+            contract = dict(family.get("contract") or {})
+            source_policy = dict(contract.get("policy") or {})
+            versions = [str(item) for item in family.get("versions") or []]
+            arm_ids = [str(item) for item in family.get("arm_ids") or []]
+            is_v1_exit_arm = any("v1-12-forward-arms" in item for item in versions)
+            source_entry = (
+                "shadow_momentum" if is_v1_exit_arm else str(
+                    source_policy.get("entry_family")
+                    or family.get("entry_family")
+                    or source_policy.get("entry_gate")
+                    or ""
+                )
+            )
+            research_overlay = str(source_policy.get("research_overlay") or "none")
+            if source_entry in unavailable_entries:
+                fidelity = "COVERAGE_UNAVAILABLE"
+                forward_enabled = False
+                fidelity_note = "当前未持续生成该历史入场所需的同时间点路线或安全证据"
+            elif research_overlay != "none":
+                fidelity = "COVERAGE_UNAVAILABLE"
+                forward_enabled = False
+                fidelity_note = "历史买后研究覆盖未接入当前机械退出循环"
+            else:
+                fidelity = "REPLICA_WITH_ENGINEERING_CORRECTION"
+                forward_enabled = True
+                fidelity_note = (
+                    "保留历史入场与退出参数；统一采用20U、买卖各4%滑点、"
+                    "DEX池前后帧确认和独立账户记账"
+                )
+            behavior = cls.chain_meme_trader_decision_behavior(
+                {**source_policy, "entry_family": source_entry},
+                definition_version=versions[-1] if versions else "",
+            )
+            source_arm = arm_ids[0] if arm_ids else canonical_id
+            policy = dict(source_policy)
+            policy.update(behavior)
+            policy.update({
+                "stage": index,
+                "arm_id": canonical_id,
+                "canonical_id": canonical_id,
+                "name": f"策略 {index:03d}",
+                "description": fidelity_note,
+                "family": "historical_contract_replica",
+                "entry_family": source_entry,
+                "source_entry_family": source_entry,
+                "exit_family": str(
+                    family.get("exit_family") or source_policy.get("exit_family")
+                    or source_policy.get("exit_mode") or source_policy.get("family")
+                    or "time_exit"
+                ),
+                "source_arm_id": source_arm,
+                "execution_profile": "dexscreener-market-paper/v2-before-after",
+                "behavior_contract_hash": str(family["behavior_contract_hash"]),
+                "source_versions": versions,
+                "source_arm_ids": arm_ids,
+                "source_contract": contract,
+                "fidelity_status": fidelity,
+                "fidelity_note": fidelity_note,
+                "forward_enabled": forward_enabled,
+            })
+            policies.append(policy)
+        if len(policies) != 124:
+            raise ValueError(f"expected 124 historical contracts, found {len(policies)}")
+        return policies
+
+    @classmethod
+    def chain_meme_trader_dex_successor_policies(cls) -> list[dict[str, Any]]:
+        """Run faithful replicas plus explicit DexScreener successors.
+
+        A successor keeps the historical exit contract and lineage, but never
+        claims that a DexScreener visibility/activity proxy is the missing
+        historical route, custody, safety, or Agent evidence.
+        """
+        policies = cls.chain_meme_trader_historical_replica_policies()
+        successor_count = 0
+        for policy in policies:
+            if bool(policy.get("forward_enabled", True)):
+                continue
+            successor_count += 1
+            canonical_id = str(policy["canonical_id"])
+            source_entry = str(policy.get("source_entry_family") or "")
+            source_overlay = str(policy.get("research_overlay") or "none")
+            policy.update({
+                "arm_id": (
+                    f"dex-successor-{int(policy['stage']):03d}-"
+                    f"{canonical_id.removeprefix('canonical-')}"
+                ),
+                "successor_of": canonical_id,
+                "source_canonical_id": canonical_id,
+                "source_research_overlay": source_overlay,
+                "fidelity_status": "DEXSCREENER_SUCCESSOR",
+                "fidelity_note": (
+                    "新前向策略：保留历史退出合同；缺失的历史入场或买后研究证据"
+                    "改用当时可见的 DexScreener 池、价格和成交活动，不宣称原样复刻"
+                ),
+                "family": "dexscreener_successor",
+                "forward_enabled": True,
+                "execution_profile": "dexscreener-market-paper/v3-successor",
+            })
+            if source_entry in {
+                "two_way_route", "economic_route", "rug_safety", "solana_focus",
+            }:
+                policy.update({
+                    "entry_family": "dex_visible_successor",
+                    "entry_match_mode": "dex_visible",
+                })
+            else:
+                policy["entry_match_mode"] = "exact_entry_family"
+            if source_overlay != "none":
+                policy.update({
+                    "research_overlay": "dexscreener_activity_proxy",
+                    "dex_research_delay_minutes": 1.0,
+                    "dex_research_min_buy_ratio": 0.55,
+                    "dex_research_min_volume_5m_usd": 1_000.0,
+                    "dex_positive_trailing_drawdown": 0.35,
+                })
+            policy["behavior_contract_hash"] = cls.chain_meme_trader_behavior_hash(
+                policy, definition_version=cls.CHAIN_MEME_TRADER_V19_VERSION,
+            )
+        if successor_count != 38 or len(policies) != 124:
+            raise ValueError(
+                f"expected 38 DexScreener successors in 124 policies, found "
+                f"{successor_count}/{len(policies)}"
+            )
+        return policies
+
+    @classmethod
+    def chain_meme_trader_decision_behavior(
+        cls,
+        policy: Mapping[str, Any],
+        *,
+        definition_version: str = "",
+    ) -> dict[str, Any]:
+        """Return the fields that can change forward BUY/SELL decisions.
+
+        Historical execution epochs remain immutable.  This fingerprint is for
+        running one current Paper account per distinct decision behaviour, not
+        for merging historical PNL across non-comparable epochs.
+        """
+        raw_entry = str(
+            policy.get("entry_family")
+            or policy.get("entry_gate")
+            or (
+                "shadow_momentum"
+                if "v1-12-forward-arms" in definition_version
+                else "market_visible"
+            )
+        )
+        entry_family = raw_entry
+        exit_mode = str(policy.get("exit_mode") or "")
+        if exit_mode in {"fixed_15m", "dynamic_with_15m_deadline"}:
+            max_hold_minutes = 15.0
+        else:
+            max_hold_minutes = float(policy.get("max_hold_minutes") or 240.0)
+        behavior: dict[str, Any] = {
+            "entry_family": entry_family,
+            "max_hold_minutes": max_hold_minutes,
+        }
+        for name in ("entry_match_mode", "research_overlay"):
+            if policy.get(name) is not None:
+                behavior[name] = str(policy[name])
+        for name in (
+            "hard_stop_return", "trailing_activate_return", "trailing_drawdown",
+            "emergency_liquidity_usd", "zero_activity_grace_minutes",
+            "flow_grace_minutes", "minimum_buy_ratio", "runner_review_minutes",
+            "dex_research_delay_minutes", "dex_research_min_buy_ratio",
+            "dex_research_min_volume_5m_usd", "dex_positive_trailing_drawdown",
+        ):
+            if policy.get(name) is not None:
+                behavior[name] = float(policy[name])
+        tiers = policy.get("take_profit")
+        if isinstance(tiers, list) and tiers:
+            behavior["take_profit"] = [
+                {
+                    "return": float(item["return"]),
+                    "fraction_of_remaining": float(item["fraction_of_remaining"]),
+                }
+                for item in tiers
+            ]
+        elif policy.get("take_profit_return") is not None:
+            behavior["take_profit"] = [{
+                "return": float(policy["take_profit_return"]),
+                "fraction_of_remaining": 1.0,
+            }]
+        return behavior
+
+    @classmethod
+    def chain_meme_trader_behavior_hash(
+        cls, policy: Mapping[str, Any], *, definition_version: str = "",
+    ) -> str:
+        behavior = cls.chain_meme_trader_decision_behavior(
+            policy, definition_version=definition_version,
+        )
+        return hashlib.sha256(cls._json(behavior).encode("utf-8")).hexdigest()[:16]
+
+    def register_chain_meme_trader(self) -> sqlite3.Row:
+        definition = {
+            "version": self.CHAIN_MEME_TRADER_VERSION,
+            "source": self.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+            "chain": "solana", "holding_surface": "canonical_pumpswap",
+            "comparison": "twelve_independent_strategy_accounts",
+            "entry": "each_strategy_keeps_its_historical_entry_gate",
+            "policy_notional_usd": 20.0, "slippage_bps": 400,
+            "additional_fee_usd_each_fill": 0.0,
+            "starting_cash_usd_each_arm": 1000.0, "max_open_positions": 0,
+            "execution": "signal_to_order_intent_to_next_quote_fill_to_position",
+            "paper_live_kernel": "shared_state_machine_adapter_boundary",
+            "execution_profile": "paper-jupiter-next-quote-fill/v1",
+            "confirmed_pool_removed_and_no_route": "writeoff_full_20usdc",
+            "single_no_route_without_exact_pool_evidence": "not_a_rug_confirmation",
+            "position_scan_seconds": 15.0, "max_quote_delay_seconds": 45.0,
+            "retry_schedule_seconds": [15, 30, 60, 120, 300],
+            "max_attempts_per_mark": 6, "no_historical_backfill": True,
+            "simulated": True, "live_execution": False,
+            "policies": self.chain_meme_trader_policies(),
+        }
+        version = self.CHAIN_MEME_TRADER_VERSION
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_registrations("
+                "definition_version,registered_at,activation_exploration_buy_trade_id,definition_json) "
+                "VALUES(?,?,COALESCE((SELECT MAX(id) FROM onchain_only_jupiter_quote_results),0),?)",
+                (version, iso(), self._json(definition)),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_registrations WHERE definition_version=?",
+                (version,),
+            ).fetchone()
+
+    def register_chain_meme_trader_v6(self) -> sqlite3.Row:
+        """Install the inactive v6 contract without creating performance evidence."""
+        version = self.CHAIN_MEME_TRADER_V6_VERSION
+        definition = {
+            "version": version,
+            "source": "token_snapshots:immutable_raw_pair_payload",
+            "chain": "solana",
+            "comparison": "three_entry_families_by_four_exit_policies",
+            "policy_notional_usd": 20.0,
+            "slippage_bps": 400,
+            "additional_fee_usd_each_fill": 0.0,
+            "starting_cash_usd_each_arm": 1000.0,
+            "max_open_positions": 0,
+            "max_pending_buy_intents": 8,
+            "capital_eligibility": "per_strategy_account_independent",
+            "entry_cash_reservation": "20usdc_per_pending_participating_arm",
+            "max_signal_to_execution_start_seconds": 90.0,
+            "execution": "one_authoritative_next_quote_entry_fill_projected_to_eligible_accounts",
+            "execution_profile": "paper-jupiter-next-quote-fill/v1",
+            "valuation": "fresh_full_remaining_jupiter_minimum_output",
+            "position_equity_frame_version": self.CHAIN_MEME_TRADER_V6_EQUITY_FRAME_VERSION,
+            "entry_families": {
+                "broad_launch": {
+                    "max_age_seconds": 900,
+                    "min_m5_trades_or_volume": [3, 200.0],
+                },
+                "flow_burst": {
+                    "min_age_seconds_exclusive": 900,
+                    "max_age_seconds_exclusive": 21600,
+                    "min_m5_trades_or_volume": [8, 1000.0],
+                    "min_rate_acceleration": 3.0,
+                },
+                "reawakening": {
+                    "min_age_seconds": 21600,
+                    "max_prior55_trades": 2,
+                    "max_prior55_volume_usd": 200.0,
+                    "min_m5_trades": 10,
+                    "min_m5_volume_usd": 1000.0,
+                    "cooldown_seconds": 21600,
+                },
+            },
+            "retry_schedule_seconds": [15, 30, 60, 120, 300],
+            "max_attempts_per_mark": 6,
+            "max_quote_delay_seconds": 45.0,
+            "confirmed_pool_removed_and_no_route": "writeoff_full_20usdc",
+            "single_no_route_without_exact_pool_evidence": "unknown_and_retry",
+            "no_historical_backfill": True,
+            "classification_enabled_before_activation": False,
+            "entry_execution_enabled_before_activation": False,
+            "simulated": True,
+            "live_execution": False,
+            "policies": self.chain_meme_trader_v6_policies(),
+        }
+        with self._lock, self.db:
+            registered_at = iso()
+            snapshot_frontier = int(self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM token_snapshots"
+            ).fetchone()[0])
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_v6_registrations("
+                "definition_version,code_registered_at,code_snapshot_frontier,definition_json) "
+                "VALUES(?,?,?,?)",
+                (version, registered_at, snapshot_frontier, self._json(definition)),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_registrations("
+                "definition_version,registered_at,activation_exploration_buy_trade_id,"
+                "definition_json) VALUES(?,?,?,?)",
+                (version, registered_at, snapshot_frontier, self._json(definition)),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_position_equity_frame_registrations("
+                "frame_version,definition_version,registered_at,"
+                "activation_source_buy_fill_id,definition_json) VALUES(?,?,?,0,?)",
+                (
+                    self.CHAIN_MEME_TRADER_V6_EQUITY_FRAME_VERSION,
+                    version,
+                    registered_at,
+                    self._json({
+                        "version": self.CHAIN_MEME_TRADER_V6_EQUITY_FRAME_VERSION,
+                        "definition_version": version,
+                        "valuation": "fresh_amount_specific_jupiter_minimum_output",
+                        "unknown_is_null": True,
+                        "decision_time": "quote_completed_at",
+                        "immutable": True,
+                    }),
+                ),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_registrations WHERE definition_version=?",
+                (version,),
+            ).fetchone()
+
+    def activate_chain_meme_trader_v6(self) -> sqlite3.Row:
+        """Atomically stop new v5 entries and freeze the v6 performance frontier."""
+        version = self.CHAIN_MEME_TRADER_V6_VERSION
+        self.register_chain_meme_trader_v6()
+        with self._lock, self.db:
+            existing = self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_activations WHERE definition_version=?",
+                (version,),
+            ).fetchone()
+            if existing is not None:
+                return existing
+            activated_at = iso()
+            snapshot_frontier = int(self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM token_snapshots"
+            ).fetchone()[0])
+            v5_frontier = int(self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM onchain_only_jupiter_quote_results"
+            ).fetchone()[0])
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_primary_stops("
+                "definition_version,stopped_at,source_frontier,reason) VALUES(?,?,?,?)",
+                (
+                    self.CHAIN_MEME_TRADER_VERSION, activated_at, v5_frontier,
+                    "atomic_v6_entry_activation_existing_positions_continue",
+                ),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_primary_stops("
+                "definition_version,stopped_at,source_frontier,reason) VALUES(?,?,?,?)",
+                (
+                    self.CHAIN_MEME_TRADER_V10_VERSION, activated_at, snapshot_frontier,
+                    "v10_weakest_arm_cash_veto_superseded_by_v11_independent_cash",
+                ),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_primary_stops("
+                "definition_version,stopped_at,source_frontier,reason) VALUES(?,?,?,?)",
+                (
+                    "chain-meme-trader/v9-entry3-exit4-local-observer-forward",
+                    activated_at, snapshot_frontier,
+                    "v9_invalid_no_route_only_writeoff_epoch_superseded_by_v10",
+                ),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_primary_stops("
+                "definition_version,stopped_at,source_frontier,reason) VALUES(?,?,?,?)",
+                (
+                    "chain-meme-trader/v8-entry3-exit4-sla90-cash-forward",
+                    activated_at, snapshot_frontier,
+                    "v8_invalid_direct_curve_capacity_terminal_epoch_superseded_by_v9",
+                ),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_primary_stops("
+                "definition_version,stopped_at,source_frontier,reason) VALUES(?,?,?,?)",
+                (
+                    "chain-meme-trader/v7-entry3-exit4-capacity-cash-forward",
+                    activated_at, snapshot_frontier,
+                    "v7_scheduler_interference_epoch_superseded_by_v8",
+                ),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_primary_stops("
+                "definition_version,stopped_at,source_frontier,reason) VALUES(?,?,?,?)",
+                (
+                    "chain-meme-trader/v6-entry3-exit4-forward-matrix",
+                    activated_at, snapshot_frontier,
+                    "v6_invalid_negative_cash_epoch_superseded_by_v7",
+                ),
+            )
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_v6_activations("
+                "definition_version,activated_at,activation_snapshot_id,v5_definition_version,"
+                "v5_source_frontier,entry_execution_enabled) VALUES(?,?,?,?,?,1)",
+                (
+                    version, activated_at, snapshot_frontier,
+                    self.CHAIN_MEME_TRADER_VERSION, v5_frontier,
+                ),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_activations WHERE definition_version=?",
+                (version,),
+            ).fetchone()
+
+    def register_chain_meme_trader_v12(self) -> sqlite3.Row:
+        """Register the forward-only DEX-mark epoch without rewriting v11 evidence."""
+        version = self.CHAIN_MEME_TRADER_V12_VERSION
+        policies = []
+        for source in self.chain_meme_trader_v6_policies():
+            policy = dict(source)
+            policy.update({
+                "description": (
+                    f"{policy['entry_family']} 入场；5秒 DEX 市场标记触发动态退出，"
+                    "触发时只做一次 Jupiter SELL，失败但池价仍可见则按市场标记模拟成交。"
+                ),
+                "exit_mode": "market_mark_dynamic_one_shot_sell",
+                "execution_profile": "jupiter-buy-one-shot-sell-dexmark-fallback/v1",
+            })
+            policies.append(policy)
+        definition = {
+            "version": version,
+            "source": "token_snapshots:immutable_raw_pair_payload",
+            "chain": "solana",
+            "comparison": "three_entry_families_by_four_exit_policies",
+            "policy_notional_usd": 20.0,
+            "slippage_bps": 400,
+            "additional_fee_usd_each_fill": 0.0,
+            "starting_cash_usd_each_arm": 1000.0,
+            "max_open_positions": 0,
+            "max_pending_buy_intents": 8,
+            "capital_eligibility": "per_strategy_account_independent",
+            "entry_cash_reservation": "20usdc_per_pending_participating_arm",
+            "max_signal_to_execution_start_seconds": 90.0,
+            "execution": "one_jupiter_buy_fill_projected_to_eligible_accounts",
+            "execution_profile": "jupiter-buy-one-shot-sell-dexmark-fallback/v1",
+            "valuation": "dexscreener_market_mark_5s_4pct_haircut",
+            "continuous_jupiter_valuation": False,
+            "market_mark_provider": "dexscreener",
+            "market_mark_cadence_seconds": 5,
+            "market_mark_formula": (
+                "stake_usd*remaining_raw/initial_raw*current_price/entry_signal_price*0.96"
+            ),
+            "market_mark_missing": "unknown_not_zero",
+            "sell_execution": "one_jupiter_attempt_then_visible_dex_mark_paper_fallback",
+            "pool_missing_terminal": "two_consecutive_market_misses_plus_sell_no_route",
+            "entry_families": {
+                "broad_launch": {
+                    "max_age_seconds": 900,
+                    "min_m5_trades_or_volume": [3, 200.0],
+                },
+                "flow_burst": {
+                    "min_age_seconds_exclusive": 900,
+                    "max_age_seconds_exclusive": 21600,
+                    "min_m5_trades_or_volume": [8, 1000.0],
+                    "min_rate_acceleration": 3.0,
+                },
+                "reawakening": {
+                    "min_age_seconds": 21600,
+                    "max_prior55_trades": 2,
+                    "max_prior55_volume_usd": 200.0,
+                    "min_m5_trades": 10,
+                    "min_m5_volume_usd": 1000.0,
+                    "cooldown_seconds": 21600,
+                },
+            },
+            "retry_schedule_seconds": [],
+            "max_attempts_per_mark": 1,
+            "max_quote_delay_seconds": 45.0,
+            "confirmed_pool_removed_and_no_route": "writeoff_remaining_position",
+            "single_no_route_without_exact_pool_evidence": "dex_mark_fallback_or_unknown",
+            "no_historical_backfill": True,
+            "classification_enabled_before_activation": False,
+            "entry_execution_enabled_before_activation": False,
+            "simulated": True,
+            "live_execution": False,
+            "policies": policies,
+        }
+        with self._lock, self.db:
+            registered_at = iso()
+            snapshot_frontier = int(self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM token_snapshots"
+            ).fetchone()[0])
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_v6_registrations("
+                "definition_version,code_registered_at,code_snapshot_frontier,definition_json) "
+                "VALUES(?,?,?,?)",
+                (version, registered_at, snapshot_frontier, self._json(definition)),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_registrations("
+                "definition_version,registered_at,activation_exploration_buy_trade_id,"
+                "definition_json) VALUES(?,?,?,?)",
+                (version, registered_at, snapshot_frontier, self._json(definition)),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+
+    def activate_chain_meme_trader_v12(self) -> sqlite3.Row:
+        """Activate v12 at a new snapshot frontier and stop only new v11 entries."""
+        version = self.CHAIN_MEME_TRADER_V12_VERSION
+        self.register_chain_meme_trader_v12()
+        with self._lock, self.db:
+            existing = self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_activations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if existing is not None:
+                return existing
+            activated_at = iso()
+            snapshot_frontier = int(self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM token_snapshots"
+            ).fetchone()[0])
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_primary_stops("
+                "definition_version,stopped_at,source_frontier,reason) VALUES(?,?,?,?)",
+                (
+                    self.CHAIN_MEME_TRADER_V11_VERSION, activated_at, snapshot_frontier,
+                    "v11_continuous_jupiter_valuation_superseded_by_v12_dex_mark_epoch",
+                ),
+            )
+            self.db.execute(
+                "UPDATE chain_meme_trader_order_intents SET status='cancelled',"
+                "reason=reason||':superseded_by_v12',completed_at=? "
+                "WHERE definition_version=? AND side='BUY' AND status IN ('ready','retry')",
+                (activated_at, self.CHAIN_MEME_TRADER_V11_VERSION),
+            )
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_v6_activations("
+                "definition_version,activated_at,activation_snapshot_id,v5_definition_version,"
+                "v5_source_frontier,entry_execution_enabled) VALUES(?,?,?,?,?,1)",
+                (
+                    version, activated_at, snapshot_frontier,
+                    self.CHAIN_MEME_TRADER_V11_VERSION, snapshot_frontier,
+                ),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_activations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+
+    def register_chain_meme_trader_v13(self) -> sqlite3.Row:
+        """Register the price-visible Paper epoch without Jupiter BUY dependence."""
+        version = self.CHAIN_MEME_TRADER_V13_VERSION
+        self.register_chain_meme_trader_v12()
+        with self._lock, self.db:
+            existing = self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if existing is not None:
+                return existing
+            source = self.db.execute(
+                "SELECT definition_json FROM chain_meme_trader_v6_registrations "
+                "WHERE definition_version=?", (self.CHAIN_MEME_TRADER_V12_VERSION,),
+            ).fetchone()
+            definition = self._json_object(source["definition_json"])
+            definition.update({
+                "version": version,
+                "execution": "dexscreener_market_mark_entry_projected_to_eligible_accounts",
+                "execution_profile": "dexscreener-market-paper/v1",
+                "buy_execution": "dexscreener_snapshot_4pct_adverse_fill",
+                "sell_execution": "dexscreener_market_mark_only",
+                "jupiter_role": "none",
+                "valuation": "dexscreener_market_mark_2s_buy_and_sell_4pct",
+                "market_mark_cadence_seconds": 2,
+                "pool_missing_terminal": "two_consecutive_dex_pair_misses_writeoff",
+            })
+            for policy in definition["policies"]:
+                policy["execution_profile"] = "dexscreener-market-paper/v1"
+                policy["description"] = (
+                    f"{policy['entry_family']} 入场；DexScreener 可见价格按买卖各4%滑点"
+                    "完成模拟成交，持仓每2秒更新，连续两次池对缺失则核销剩余仓位。"
+                )
+            registered_at = iso()
+            snapshot_frontier = int(self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM token_snapshots"
+            ).fetchone()[0])
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_v6_registrations("
+                "definition_version,code_registered_at,code_snapshot_frontier,definition_json) "
+                "VALUES(?,?,?,?)",
+                (version, registered_at, snapshot_frontier, self._json(definition)),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_registrations("
+                "definition_version,registered_at,activation_exploration_buy_trade_id,"
+                "definition_json) VALUES(?,?,?,?)",
+                (version, registered_at, snapshot_frontier, self._json(definition)),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+
+    def activate_chain_meme_trader_v13(self) -> sqlite3.Row:
+        """Start a clean forward epoch and preserve all earlier strategy evidence."""
+        version = self.CHAIN_MEME_TRADER_V13_VERSION
+        self.register_chain_meme_trader_v13()
+        with self._lock, self.db:
+            existing = self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_activations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if existing is not None:
+                return existing
+            activated_at = iso()
+            snapshot_frontier = int(self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM token_snapshots"
+            ).fetchone()[0])
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_primary_stops("
+                "definition_version,stopped_at,source_frontier,reason) VALUES(?,?,?,?)",
+                (
+                    self.CHAIN_MEME_TRADER_V12_VERSION, activated_at, snapshot_frontier,
+                    "v12_jupiter_buy_dependency_superseded_by_v13_dex_mark_paper",
+                ),
+            )
+            self.db.execute(
+                "UPDATE chain_meme_trader_order_intents SET status='cancelled',"
+                "reason=reason||':superseded_by_v13',completed_at=? "
+                "WHERE definition_version=? AND side='BUY' AND status IN ('ready','retry')",
+                (activated_at, self.CHAIN_MEME_TRADER_V12_VERSION),
+            )
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_v6_activations("
+                "definition_version,activated_at,activation_snapshot_id,v5_definition_version,"
+                "v5_source_frontier,entry_execution_enabled) VALUES(?,?,?,?,?,1)",
+                (
+                    version, activated_at, snapshot_frontier,
+                    self.CHAIN_MEME_TRADER_V12_VERSION, snapshot_frontier,
+                ),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_activations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+
+    def register_chain_meme_trader_v14(self) -> sqlite3.Row:
+        """Register all canonical strategies on the shared DEX-mark Paper kernel."""
+        version = self.CHAIN_MEME_TRADER_V14_VERSION
+        self.register_chain_meme_trader_v13()
+        with self._lock, self.db:
+            existing = self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if existing is not None:
+                return existing
+            source = self.db.execute(
+                "SELECT definition_json FROM chain_meme_trader_v6_registrations "
+                "WHERE definition_version=?", (self.CHAIN_MEME_TRADER_V13_VERSION,),
+            ).fetchone()
+            definition = self._json_object(source["definition_json"])
+            policies = self.chain_meme_trader_v14_policies()
+            definition.update({
+                "version": version,
+                "comparison": "all_canonical_strategies_independent_forward_accounts",
+                "strategy_count": len(policies),
+                "policies": policies,
+                "capital_eligibility": "per_strategy_account_independent",
+                "market_data_fanout": "one_shared_snapshot_projected_to_matching_accounts",
+                "automatic_learning": False,
+                "no_historical_backfill": True,
+            })
+            registered_at = iso()
+            snapshot_frontier = int(self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM token_snapshots"
+            ).fetchone()[0])
+            payload = self._json(definition)
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_v6_registrations("
+                "definition_version,code_registered_at,code_snapshot_frontier,definition_json) "
+                "VALUES(?,?,?,?)",
+                (version, registered_at, snapshot_frontier, payload),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_registrations("
+                "definition_version,registered_at,activation_exploration_buy_trade_id,"
+                "definition_json) VALUES(?,?,?,?)",
+                (version, registered_at, snapshot_frontier, payload),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+
+    def activate_chain_meme_trader_v14(self) -> sqlite3.Row:
+        """Start all canonical accounts at one new immutable forward frontier."""
+        version = self.CHAIN_MEME_TRADER_V14_VERSION
+        self.register_chain_meme_trader_v14()
+        with self._lock, self.db:
+            existing = self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_activations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if existing is not None:
+                return existing
+            activated_at = iso()
+            snapshot_frontier = int(self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM token_snapshots"
+            ).fetchone()[0])
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_primary_stops("
+                "definition_version,stopped_at,source_frontier,reason) VALUES(?,?,?,?)",
+                (
+                    self.CHAIN_MEME_TRADER_V13_VERSION, activated_at, snapshot_frontier,
+                    "v13_twelve_arm_epoch_superseded_by_v14_all_canonical_forward",
+                ),
+            )
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_v6_activations("
+                "definition_version,activated_at,activation_snapshot_id,v5_definition_version,"
+                "v5_source_frontier,entry_execution_enabled) VALUES(?,?,?,?,?,1)",
+                (
+                    version, activated_at, snapshot_frontier,
+                    self.CHAIN_MEME_TRADER_V13_VERSION, snapshot_frontier,
+                ),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_activations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+
+    def register_chain_meme_trader_v15(self) -> sqlite3.Row:
+        """Register a clean all-strategy epoch without rewriting v14 evidence."""
+        version = self.CHAIN_MEME_TRADER_V15_VERSION
+        self.register_chain_meme_trader_v14()
+        with self._lock, self.db:
+            existing = self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if existing is not None:
+                return existing
+            source = self.db.execute(
+                "SELECT definition_json FROM chain_meme_trader_v6_registrations "
+                "WHERE definition_version=?", (self.CHAIN_MEME_TRADER_V14_VERSION,),
+            ).fetchone()
+            definition = self._json_object(source["definition_json"])
+            definition.update({
+                "version": version,
+                "comparison": "all_canonical_strategies_clean_forward_accounts",
+                "previous_version": self.CHAIN_MEME_TRADER_V14_VERSION,
+                "reset_reason": "user_requested_clean_forward_restart",
+                "no_historical_backfill": True,
+            })
+            registered_at = iso()
+            snapshot_frontier = int(self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM token_snapshots"
+            ).fetchone()[0])
+            payload = self._json(definition)
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_v6_registrations("
+                "definition_version,code_registered_at,code_snapshot_frontier,definition_json) "
+                "VALUES(?,?,?,?)",
+                (version, registered_at, snapshot_frontier, payload),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_registrations("
+                "definition_version,registered_at,activation_exploration_buy_trade_id,"
+                "definition_json) VALUES(?,?,?,?)",
+                (version, registered_at, snapshot_frontier, payload),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+
+    def activate_chain_meme_trader_v15(self) -> sqlite3.Row:
+        """Start 124 empty accounts at one new immutable forward frontier."""
+        version = self.CHAIN_MEME_TRADER_V15_VERSION
+        self.register_chain_meme_trader_v15()
+        with self._lock, self.db:
+            existing = self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_activations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if existing is not None:
+                return existing
+            activated_at = iso()
+            snapshot_frontier = int(self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM token_snapshots"
+            ).fetchone()[0])
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_primary_stops("
+                "definition_version,stopped_at,source_frontier,reason) VALUES(?,?,?,?)",
+                (
+                    self.CHAIN_MEME_TRADER_V14_VERSION, activated_at, snapshot_frontier,
+                    "v14_epoch_frozen_for_user_requested_v15_clean_restart",
+                ),
+            )
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_v6_activations("
+                "definition_version,activated_at,activation_snapshot_id,v5_definition_version,"
+                "v5_source_frontier,entry_execution_enabled) VALUES(?,?,?,?,?,1)",
+                (
+                    version, activated_at, snapshot_frontier,
+                    self.CHAIN_MEME_TRADER_V14_VERSION, snapshot_frontier,
+                ),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_activations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+
+    def register_chain_meme_trader_v16(self) -> sqlite3.Row:
+        """Register forward sells confirmed by DEX pair visibility on both sides."""
+        version = self.CHAIN_MEME_TRADER_V16_VERSION
+        self.register_chain_meme_trader_v15()
+        with self._lock, self.db:
+            existing = self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if existing is not None:
+                return existing
+            source = self.db.execute(
+                "SELECT definition_json FROM chain_meme_trader_v6_registrations "
+                "WHERE definition_version=?", (self.CHAIN_MEME_TRADER_V15_VERSION,),
+            ).fetchone()
+            definition = self._json_object(source["definition_json"])
+            definition.update({
+                "version": version,
+                "previous_version": self.CHAIN_MEME_TRADER_V15_VERSION,
+                "sell_confirmation": "dex_pair_visible_before_and_after_trigger",
+                "pool_missing_terminal": (
+                    "dex_pair_and_price_missing_continuously_over_60_seconds"
+                ),
+                "reset_reason": "forward_sell_confirmation_contract_changed",
+                "no_historical_backfill": True,
+            })
+            for policy in definition["policies"]:
+                policy["description"] = (
+                    f"{policy['entry_family']} 入场；卖出触发前后两次 DexScreener 采样"
+                    "均有池和价格才按后一次价格成交；连续缺失超过1分钟则核销剩余仓位。"
+                )
+            registered_at = iso()
+            snapshot_frontier = int(self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM token_snapshots"
+            ).fetchone()[0])
+            payload = self._json(definition)
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_v6_registrations("
+                "definition_version,code_registered_at,code_snapshot_frontier,definition_json) "
+                "VALUES(?,?,?,?)",
+                (version, registered_at, snapshot_frontier, payload),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_registrations("
+                "definition_version,registered_at,activation_exploration_buy_trade_id,"
+                "definition_json) VALUES(?,?,?,?)",
+                (version, registered_at, snapshot_frontier, payload),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+
+    def activate_chain_meme_trader_v16(self) -> sqlite3.Row:
+        """Start clean accounts for the revised forward sell contract."""
+        version = self.CHAIN_MEME_TRADER_V16_VERSION
+        self.register_chain_meme_trader_v16()
+        with self._lock, self.db:
+            existing = self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_activations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if existing is not None:
+                return existing
+            activated_at = iso()
+            snapshot_frontier = int(self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM token_snapshots"
+            ).fetchone()[0])
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_primary_stops("
+                "definition_version,stopped_at,source_frontier,reason) VALUES(?,?,?,?)",
+                (
+                    self.CHAIN_MEME_TRADER_V15_VERSION, activated_at, snapshot_frontier,
+                    "v15_frozen_for_v16_before_after_sell_confirmation",
+                ),
+            )
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_v6_activations("
+                "definition_version,activated_at,activation_snapshot_id,v5_definition_version,"
+                "v5_source_frontier,entry_execution_enabled) VALUES(?,?,?,?,?,1)",
+                (
+                    version, activated_at, snapshot_frontier,
+                    self.CHAIN_MEME_TRADER_V15_VERSION, snapshot_frontier,
+                ),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_activations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+
+    def register_chain_meme_trader_v17(self) -> sqlite3.Row:
+        """Register fresh-entry Paper accounts without reusing delayed snapshots."""
+        version = self.CHAIN_MEME_TRADER_V17_VERSION
+        self.register_chain_meme_trader_v16()
+        with self._lock, self.db:
+            existing = self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if existing is not None:
+                return existing
+            source = self.db.execute(
+                "SELECT definition_json FROM chain_meme_trader_v6_registrations "
+                "WHERE definition_version=?", (self.CHAIN_MEME_TRADER_V16_VERSION,),
+            ).fetchone()
+            definition = self._json_object(source["definition_json"])
+            definition.update({
+                "version": version,
+                "previous_version": self.CHAIN_MEME_TRADER_V16_VERSION,
+                "entry_snapshot_max_age_seconds": float(
+                    definition["max_signal_to_execution_start_seconds"]
+                ),
+                "reset_reason": "delayed_snapshot_entry_contamination_removed",
+                "no_historical_backfill": True,
+            })
+            registered_at = iso()
+            snapshot_frontier = int(self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM token_snapshots"
+            ).fetchone()[0])
+            payload = self._json(definition)
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_v6_registrations("
+                "definition_version,code_registered_at,code_snapshot_frontier,definition_json) "
+                "VALUES(?,?,?,?)",
+                (version, registered_at, snapshot_frontier, payload),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_registrations("
+                "definition_version,registered_at,activation_exploration_buy_trade_id,"
+                "definition_json) VALUES(?,?,?,?)",
+                (version, registered_at, snapshot_frontier, payload),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+
+    def activate_chain_meme_trader_v17(self) -> sqlite3.Row:
+        """Start a clean 124-account epoch at the current snapshot frontier."""
+        version = self.CHAIN_MEME_TRADER_V17_VERSION
+        self.register_chain_meme_trader_v17()
+        with self._lock, self.db:
+            existing = self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_activations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if existing is not None:
+                return existing
+            activated_at = iso()
+            snapshot_frontier = int(self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM token_snapshots"
+            ).fetchone()[0])
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_primary_stops("
+                "definition_version,stopped_at,source_frontier,reason) VALUES(?,?,?,?)",
+                (
+                    self.CHAIN_MEME_TRADER_V16_VERSION, activated_at, snapshot_frontier,
+                    "v16_frozen_after_delayed_snapshot_entry_contamination",
+                ),
+            )
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_v6_activations("
+                "definition_version,activated_at,activation_snapshot_id,v5_definition_version,"
+                "v5_source_frontier,entry_execution_enabled) VALUES(?,?,?,?,?,1)",
+                (
+                    version, activated_at, snapshot_frontier,
+                    self.CHAIN_MEME_TRADER_V16_VERSION, snapshot_frontier,
+                ),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_activations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+
+    def register_chain_meme_trader_v18(self) -> sqlite3.Row:
+        """Register truthful historical replicas on the corrected Paper adapter."""
+        version = self.CHAIN_MEME_TRADER_V18_VERSION
+        self.register_chain_meme_trader_v17()
+        with self._lock, self.db:
+            existing = self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if existing is not None:
+                return existing
+            source = self.db.execute(
+                "SELECT definition_json FROM chain_meme_trader_v6_registrations "
+                "WHERE definition_version=?", (self.CHAIN_MEME_TRADER_V17_VERSION,),
+            ).fetchone()
+            definition = self._json_object(source["definition_json"])
+            policies = self.chain_meme_trader_historical_replica_policies()
+            definition.update({
+                "version": version,
+                "previous_version": self.CHAIN_MEME_TRADER_V17_VERSION,
+                "comparison": "historical_contract_fidelity_forward_accounts",
+                "strategy_count": len(policies),
+                "policies": policies,
+                "historical_fidelity_mode": True,
+                "unavailable_contract_policy": "display_without_fabricated_trades",
+                "reset_reason": "v14_v17_historical_contract_distortion_removed",
+                "no_historical_backfill": True,
+            })
+            registered_at = iso()
+            snapshot_frontier = int(self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM token_snapshots"
+            ).fetchone()[0])
+            payload = self._json(definition)
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_v6_registrations("
+                "definition_version,code_registered_at,code_snapshot_frontier,definition_json) "
+                "VALUES(?,?,?,?)",
+                (version, registered_at, snapshot_frontier, payload),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_registrations("
+                "definition_version,registered_at,activation_exploration_buy_trade_id,"
+                "definition_json) VALUES(?,?,?,?)",
+                (version, registered_at, snapshot_frontier, payload),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+
+    def activate_chain_meme_trader_v18(self) -> sqlite3.Row:
+        """Start clean historical-replica accounts at one immutable frontier."""
+        version = self.CHAIN_MEME_TRADER_V18_VERSION
+        self.register_chain_meme_trader_v18()
+        with self._lock, self.db:
+            existing = self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_activations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if existing is not None:
+                return existing
+            activated_at = iso()
+            snapshot_frontier = int(self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM token_snapshots"
+            ).fetchone()[0])
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_primary_stops("
+                "definition_version,stopped_at,source_frontier,reason) VALUES(?,?,?,?)",
+                (
+                    self.CHAIN_MEME_TRADER_V17_VERSION, activated_at, snapshot_frontier,
+                    "v17_frozen_historical_contracts_were_not_source_faithful",
+                ),
+            )
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_v6_activations("
+                "definition_version,activated_at,activation_snapshot_id,v5_definition_version,"
+                "v5_source_frontier,entry_execution_enabled) VALUES(?,?,?,?,?,1)",
+                (
+                    version, activated_at, snapshot_frontier,
+                    self.CHAIN_MEME_TRADER_V17_VERSION, snapshot_frontier,
+                ),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_activations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+
+    def register_chain_meme_trader_v19(self) -> sqlite3.Row:
+        """Register 86 replicas plus 38 explicit DexScreener successors."""
+        version = self.CHAIN_MEME_TRADER_V19_VERSION
+        self.register_chain_meme_trader_v18()
+        with self._lock, self.db:
+            existing = self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if existing is not None:
+                return existing
+            source = self.db.execute(
+                "SELECT definition_json FROM chain_meme_trader_v6_registrations "
+                "WHERE definition_version=?", (self.CHAIN_MEME_TRADER_V18_VERSION,),
+            ).fetchone()
+            definition = self._json_object(source["definition_json"])
+            policies = self.chain_meme_trader_dex_successor_policies()
+            definition.update({
+                "version": version,
+                "previous_version": self.CHAIN_MEME_TRADER_V18_VERSION,
+                "comparison": "historical_replicas_plus_dexscreener_successors",
+                "strategy_count": len(policies),
+                "policies": policies,
+                "historical_fidelity_mode": True,
+                "dexscreener_successor_count": sum(
+                    policy.get("fidelity_status") == "DEXSCREENER_SUCCESSOR"
+                    for policy in policies
+                ),
+                "unavailable_contract_policy": (
+                    "preserve_historical_lineage_and_run_explicit_successor_id"
+                ),
+                "automatic_learning": False,
+                "reset_reason": "user_requested_dexscreener_successors_clean_forward",
+                "no_historical_backfill": True,
+            })
+            registered_at = iso()
+            snapshot_frontier = int(self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM token_snapshots"
+            ).fetchone()[0])
+            payload = self._json(definition)
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_v6_registrations("
+                "definition_version,code_registered_at,code_snapshot_frontier,definition_json) "
+                "VALUES(?,?,?,?)",
+                (version, registered_at, snapshot_frontier, payload),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_registrations("
+                "definition_version,registered_at,activation_exploration_buy_trade_id,"
+                "definition_json) VALUES(?,?,?,?)",
+                (version, registered_at, snapshot_frontier, payload),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+
+    def activate_chain_meme_trader_v19(self) -> sqlite3.Row:
+        """Start all 124 current strategies from one clean forward frontier."""
+        version = self.CHAIN_MEME_TRADER_V19_VERSION
+        self.register_chain_meme_trader_v19()
+        with self._lock, self.db:
+            existing = self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_activations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if existing is not None:
+                return existing
+            activated_at = iso()
+            snapshot_frontier = int(self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM token_snapshots"
+            ).fetchone()[0])
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_primary_stops("
+                "definition_version,stopped_at,source_frontier,reason) VALUES(?,?,?,?)",
+                (
+                    self.CHAIN_MEME_TRADER_V18_VERSION, activated_at, snapshot_frontier,
+                    "v18_preserved_as_historical_fidelity_baseline",
+                ),
+            )
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_v6_activations("
+                "definition_version,activated_at,activation_snapshot_id,v5_definition_version,"
+                "v5_source_frontier,entry_execution_enabled) VALUES(?,?,?,?,?,1)",
+                (
+                    version, activated_at, snapshot_frontier,
+                    self.CHAIN_MEME_TRADER_V18_VERSION, snapshot_frontier,
+                ),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_activations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+
+    def register_chain_meme_trader_v20(self) -> sqlite3.Row:
+        """Register the unchanged 124 policies on the corrected Paper kernel."""
+        version = self.CHAIN_MEME_TRADER_V20_VERSION
+        corrected_market_formula = (
+            "stake_usd*remaining_raw/initial_raw*current_price/"
+            "entry_execution_price_usd*0.96"
+        )
+        self.register_chain_meme_trader_v19()
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_definition_errata("
+                "definition_version,field_path,corrected_value_json,reason,recorded_at) "
+                "VALUES(?,?,?,?,?)",
+                (
+                    version, "market_mark_formula",
+                    self._json(corrected_market_formula),
+                    "contract_text_corrected_to_match_existing_execution_kernel;"
+                    "strategy_behavior_unchanged",
+                    iso(),
+                ),
+            )
+            existing = self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if existing is not None:
+                return existing
+            source = self.db.execute(
+                "SELECT definition_json FROM chain_meme_trader_v6_registrations "
+                "WHERE definition_version=?", (self.CHAIN_MEME_TRADER_V19_VERSION,),
+            ).fetchone()
+            definition = self._json_object(source["definition_json"])
+            definition.update({
+                "version": version,
+                "previous_version": self.CHAIN_MEME_TRADER_V19_VERSION,
+                "policies": self.chain_meme_trader_dex_successor_policies(),
+                "reset_reason": "market_only_accounting_engineering_correction",
+                "invalidated_previous_results": (
+                    "v19_legacy_jupiter_exit_raw_decimal_contamination"
+                ),
+                "paper_execution_correction": (
+                    "dexscreener_market_only_never_settles_legacy_jupiter_results"
+                ),
+                "market_mark_formula": corrected_market_formula,
+                "market_mark_formula_basis": "entry_execution_price_usd",
+                "strategy_logic_changed": False,
+                "automatic_learning": False,
+                "no_historical_backfill": True,
+            })
+            registered_at = iso()
+            snapshot_frontier = int(self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM token_snapshots"
+            ).fetchone()[0])
+            payload = self._json(definition)
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_v6_registrations("
+                "definition_version,code_registered_at,code_snapshot_frontier,definition_json) "
+                "VALUES(?,?,?,?)",
+                (version, registered_at, snapshot_frontier, payload),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_registrations("
+                "definition_version,registered_at,activation_exploration_buy_trade_id,"
+                "definition_json) VALUES(?,?,?,?)",
+                (version, registered_at, snapshot_frontier, payload),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+
+    def activate_chain_meme_trader_v20(self) -> sqlite3.Row:
+        """Start the corrected execution epoch without altering strategy contracts."""
+        version = self.CHAIN_MEME_TRADER_V20_VERSION
+        self.register_chain_meme_trader_v20()
+        with self._lock, self.db:
+            existing = self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_activations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if existing is not None:
+                return existing
+            activated_at = iso()
+            snapshot_frontier = int(self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM token_snapshots"
+            ).fetchone()[0])
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_primary_stops("
+                "definition_version,stopped_at,source_frontier,reason) VALUES(?,?,?,?)",
+                (
+                    self.CHAIN_MEME_TRADER_V19_VERSION, activated_at, snapshot_frontier,
+                    "v19_invalidated_legacy_jupiter_exit_raw_decimal_contamination",
+                ),
+            )
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_v6_activations("
+                "definition_version,activated_at,activation_snapshot_id,v5_definition_version,"
+                "v5_source_frontier,entry_execution_enabled) VALUES(?,?,?,?,?,1)",
+                (
+                    version, activated_at, snapshot_frontier,
+                    self.CHAIN_MEME_TRADER_V19_VERSION, snapshot_frontier,
+                ),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_activations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+
+    def register_chain_meme_trader_immediate_reverseability(self) -> sqlite3.Row:
+        """Freeze a forward-only observer over post-fill exact SELL valuations."""
+        observer = self.CHAIN_MEME_TRADER_IMMEDIATE_REVERSEABILITY_VERSION
+        version = self.CHAIN_MEME_TRADER_V6_VERSION
+        with self._lock, self.db:
+            registered_at = iso()
+            frontier = int(self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM chain_meme_trader_v6_entry_fills "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()[0])
+            self.db.execute(
+                "INSERT OR IGNORE INTO "
+                "chain_meme_trader_immediate_reverseability_registrations("
+                "observer_version,definition_version,registered_at,activation_entry_fill_id,"
+                "definition_json) VALUES(?,?,?,?,?)",
+                (
+                    observer, version, registered_at, frontier,
+                    self._json({
+                        "version": observer,
+                        "definition_version": version,
+                        "unit": "one_authoritative_entry_fill",
+                        "horizons_seconds": list(
+                            self.CHAIN_MEME_TRADER_IMMEDIATE_REVERSEABILITY_HORIZONS_SECONDS
+                        ),
+                        "source": "existing_exact_remaining_jupiter_valuations",
+                        "adds_provider_requests": False,
+                        "decision_eligible": False,
+                        "affects": "none",
+                        "no_historical_backfill": True,
+                    }),
+                ),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_immediate_reverseability_registrations "
+                "WHERE observer_version=?", (observer,),
+            ).fetchone()
+
+    def finalize_chain_meme_trader_immediate_reverseability(
+        self, *, now: Any = None, limit: int = 240,
+    ) -> int:
+        """Record immutable 15/30/60s outcomes without issuing any provider request."""
+        observer = self.CHAIN_MEME_TRADER_IMMEDIATE_REVERSEABILITY_VERSION
+        current = parse_time(now or utcnow())
+        inserted = 0
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT * FROM chain_meme_trader_immediate_reverseability_registrations "
+                "WHERE observer_version=?", (observer,),
+            ).fetchone()
+            if registration is None:
+                return 0
+            version = str(registration["definition_version"])
+            fills = self.db.execute(
+                "SELECT f.*,r.route_plan_json AS buy_route_plan_json "
+                "FROM chain_meme_trader_v6_entry_fills f "
+                "JOIN chain_meme_trader_execution_results r ON r.id=f.execution_result_id "
+                "WHERE f.definition_version=? AND f.id>? AND f.filled_at>=? "
+                "ORDER BY f.id LIMIT ?",
+                (
+                    version, int(registration["activation_entry_fill_id"]),
+                    str(registration["registered_at"]), max(1, int(limit)),
+                ),
+            ).fetchall()
+            for fill in fills:
+                filled_at = parse_time(fill["filled_at"])
+                mint = str(fill["token_id"]).split(":", 1)[1]
+                for horizon in self.CHAIN_MEME_TRADER_IMMEDIATE_REVERSEABILITY_HORIZONS_SECONDS:
+                    deadline = filled_at + timedelta(seconds=int(horizon))
+                    if current < deadline:
+                        continue
+                    if self.db.execute(
+                        "SELECT 1 FROM chain_meme_trader_immediate_reverseability_outcomes "
+                        "WHERE observer_version=? AND entry_fill_id=? AND horizon_seconds=?",
+                        (observer, int(fill["id"]), int(horizon)),
+                    ).fetchone() is not None:
+                        continue
+                    rows = self.db.execute(
+                        "SELECT a.id AS attempt_id,a.requested_at,r.id AS result_id,"
+                        "r.quote_terminal_status,r.validity_status,r.output_amount_raw,"
+                        "r.other_amount_threshold_raw,r.completed_at,r.error_type,"
+                        "r.route_plan_json FROM chain_meme_trader_quote_attempts a "
+                        "LEFT JOIN chain_meme_trader_quote_results r ON r.attempt_id=a.id "
+                        "WHERE a.definition_version=? AND a.quote_kind='valuation' "
+                        "AND a.shadow_cohort_id=? AND a.input_mint=? "
+                        "AND a.output_mint=? AND a.input_amount_raw=? "
+                        "AND a.requested_at>=? AND a.requested_at<=? "
+                        "ORDER BY a.requested_at,a.id",
+                        (
+                            version, int(fill["entry_cohort_id"]), mint,
+                            self.JUPITER_USDC_MINT, str(fill["output_token_raw"]),
+                            iso(filled_at), iso(deadline),
+                        ),
+                    ).fetchall()
+                    completed_rows = [
+                        row for row in rows
+                        if row["result_id"] is not None
+                        and parse_time(row["completed_at"]) >= parse_time(row["requested_at"])
+                        and parse_time(row["completed_at"]) <= deadline
+                    ]
+                    quoted_rows = [
+                        row for row in completed_rows
+                        if str(row["quote_terminal_status"]) == "quoted"
+                        and str(row["validity_status"]) == "valid"
+                        and int(row["other_amount_threshold_raw"] or 0) > 0
+                    ]
+                    no_route_rows = [
+                        row for row in completed_rows
+                        if str(row["quote_terminal_status"]) == "no_route"
+                        and str(row["validity_status"]) == "valid"
+                    ]
+                    local = self.db.execute(
+                        "SELECT * FROM chain_meme_trader_local_surface_quotes "
+                        "WHERE definition_version=? AND shadow_cohort_id=? "
+                        "AND remaining_amount_raw=? AND requested_at>=? AND completed_at<=? "
+                        "ORDER BY requested_at,id LIMIT 1",
+                        (
+                            version, int(fill["entry_cohort_id"]),
+                            str(fill["output_token_raw"]), iso(filled_at), iso(deadline),
+                        ),
+                    ).fetchone()
+                    first = completed_rows[0] if completed_rows else (rows[0] if rows else None)
+                    first_quoted = quoted_rows[0] if quoted_rows else None
+                    if first_quoted is not None:
+                        had_prior_no_route = any(
+                            parse_time(row["completed_at"])
+                            < parse_time(first_quoted["completed_at"])
+                            for row in no_route_rows
+                        )
+                        status = "TRANSIENT_ROUTE_GAP" if had_prior_no_route else "REVERSE_QUOTED"
+                    elif no_route_rows:
+                        local_recovery = (
+                            float(local["direct_estimated_recovery_usd"])
+                            if local is not None
+                            and local["direct_estimated_recovery_usd"] is not None
+                            else None
+                        )
+                        status = (
+                            "AGGREGATOR_COVERAGE_GAP"
+                            if local_recovery is not None and local_recovery > 0
+                            else "REVERSE_NO_ROUTE"
+                        )
+                    elif any(
+                        str(row["quote_terminal_status"]) == "quote_only_protocol_invalid"
+                        for row in completed_rows
+                    ):
+                        status = "UNKNOWN_PROTOCOL"
+                    elif any(str(row["quote_terminal_status"]) == "error" for row in completed_rows):
+                        status = "UNKNOWN_ERROR"
+                    elif rows:
+                        status = "UNKNOWN_STALE"
+                    else:
+                        status = "UNKNOWN_NO_SAMPLE"
+                    input_raw = max(1, int(fill["input_usdc_raw"]))
+                    central_raw = (
+                        int(first_quoted["output_amount_raw"] or 0)
+                        if first_quoted is not None else None
+                    )
+                    minimum_raw = (
+                        int(first_quoted["other_amount_threshold_raw"] or 0)
+                        if first_quoted is not None else None
+                    )
+                    first_request_ms = (
+                        (parse_time(first["requested_at"]) - filled_at).total_seconds() * 1000.0
+                        if first is not None else None
+                    )
+                    first_complete_ms = (
+                        (parse_time(first["completed_at"]) - filled_at).total_seconds() * 1000.0
+                        if first is not None and first["completed_at"] is not None else None
+                    )
+                    first_route_ms = (
+                        (parse_time(first_quoted["completed_at"]) - filled_at).total_seconds() * 1000.0
+                        if first_quoted is not None else None
+                    )
+                    evidence = {
+                        "buy_route_plan": self._json_list(fill["buy_route_plan_json"]),
+                        "first_sell_route_plan": (
+                            self._json_list(first_quoted["route_plan_json"])
+                            if first_quoted is not None else []
+                        ),
+                        "observations_within_horizon": len(completed_rows),
+                        "no_route_observations": len(no_route_rows),
+                        "local_surface_status": str(local["status"]) if local is not None else None,
+                        "local_surface_type": str(local["surface_type"]) if local is not None else None,
+                        "local_direct_estimated_recovery_usd": (
+                            float(local["direct_estimated_recovery_usd"])
+                            if local is not None
+                            and local["direct_estimated_recovery_usd"] is not None else None
+                        ),
+                        "observer_only": True,
+                    }
+                    cursor = self.db.execute(
+                        "INSERT OR IGNORE INTO "
+                        "chain_meme_trader_immediate_reverseability_outcomes("
+                        "observer_version,definition_version,entry_fill_id,shadow_cohort_id,"
+                        "token_id,horizon_seconds,outcome_status,first_quote_attempt_id,"
+                        "first_quote_result_id,first_quoted_result_id,local_surface_quote_id,"
+                        "entry_input_usdc_raw,acquired_token_raw,central_recovery_usdc_raw,"
+                        "minimum_recovery_usdc_raw,central_recovery_ratio,minimum_recovery_ratio,"
+                        "fill_to_first_request_ms,fill_to_first_complete_ms,fill_to_first_route_ms,"
+                        "evidence_json,observed_at,recorded_at,decision_eligible,affects) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            observer, version, int(fill["id"]), int(fill["entry_cohort_id"]),
+                            str(fill["token_id"]), int(horizon), status,
+                            int(first["attempt_id"]) if first is not None else None,
+                            int(first["result_id"]) if first is not None and first["result_id"] is not None else None,
+                            int(first_quoted["result_id"]) if first_quoted is not None else None,
+                            int(local["id"]) if local is not None else None,
+                            str(fill["input_usdc_raw"]), str(fill["output_token_raw"]),
+                            str(central_raw) if central_raw is not None else None,
+                            str(minimum_raw) if minimum_raw is not None else None,
+                            central_raw / input_raw if central_raw is not None else None,
+                            minimum_raw / input_raw if minimum_raw is not None else None,
+                            first_request_ms, first_complete_ms, first_route_ms,
+                            self._json(evidence), iso(deadline), iso(), 0, "none",
+                        ),
+                    )
+                    inserted += int(cursor.rowcount == 1)
+        return inserted
+
+    def _project_chain_meme_trader_market_entry(
+        self, *, version: str, cohort_id: int, token_id: str, snapshot_id: int,
+        market_price: float, filled_at: str, reason: str,
+        definition: Mapping[str, Any],
+    ) -> int:
+        """Project one visible DEX price into eligible Paper accounts."""
+        required_cash = float(definition["policy_notional_usd"])
+        adverse_entry_price = market_price * (
+            1.0 + int(definition["slippage_bps"]) / 10_000.0
+        )
+        if market_price <= 0.0 or adverse_entry_price <= 0.0:
+            return 0
+        paper_quantity = required_cash / adverse_entry_price
+        normalized_units = str(max(1, round(paper_quantity * 1_000_000_000)))
+        synthetic_execution_id = -int(cohort_id)
+        self.db.execute(
+            "INSERT OR IGNORE INTO chain_meme_trader_v6_entry_fills("
+            "definition_version,entry_cohort_id,execution_attempt_id,execution_result_id,"
+            "token_id,input_usdc_raw,output_token_raw,entry_market_price_usd,"
+            "execution_price_usd,output_token_quantity,slippage_bps,filled_at) "
+            "VALUES(?,?,?,?,?,'20000000',?,?,?,?,?,?)",
+            (
+                version, int(cohort_id), synthetic_execution_id, synthetic_execution_id,
+                token_id, normalized_units, market_price, adverse_entry_price,
+                paper_quantity, int(definition["slippage_bps"]), filled_at,
+            ),
+        )
+        entry_fill = self.db.execute(
+            "SELECT * FROM chain_meme_trader_v6_entry_fills WHERE "
+            "definition_version=? AND entry_cohort_id=?", (version, int(cohort_id)),
+        ).fetchone()
+        if entry_fill is None:
+            return 0
+        projected = 0
+        decisions = self.db.execute(
+            "SELECT * FROM chain_meme_trader_entry_decisions WHERE "
+            "definition_version=? AND shadow_cohort_id=? AND status='admitted' "
+            "ORDER BY arm_id", (version, int(cohort_id)),
+        ).fetchall()
+        net_flow_by_arm = {
+            str(row["arm_id"]): float(row["net_flow_usd"] or 0.0)
+            for row in self.db.execute(
+                "SELECT arm_id,COALESCE(SUM(net_cash_flow_usd),0) AS net_flow_usd "
+                "FROM chain_meme_trader_trades WHERE definition_version=? GROUP BY arm_id",
+                (version,),
+            ).fetchall()
+        }
+        for decision in decisions:
+            arm_id = str(decision["arm_id"])
+            net_flow = net_flow_by_arm.get(arm_id, 0.0)
+            available_cash = float(definition["starting_cash_usd_each_arm"]) + net_flow
+            if available_cash + 1e-9 < required_cash:
+                self.db.execute(
+                    "INSERT OR IGNORE INTO chain_meme_trader_entry_participant_outcomes("
+                    "definition_version,shadow_cohort_id,arm_id,entry_decision_id,entry_fill_id,"
+                    "outcome,available_cash_usd,recorded_at) "
+                    "VALUES(?,?,?,?,?,'skipped_cash_unavailable_at_fill',?,?)",
+                    (
+                        version, int(cohort_id), arm_id, int(decision["id"]),
+                        int(entry_fill["id"]), available_cash, filled_at,
+                    ),
+                )
+                continue
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_positions("
+                "definition_version,arm_id,shadow_cohort_id,token_id,source_buy_trade_id,"
+                "source_entry_fill_id,baseline_quote_result_id,entry_snapshot_id,"
+                "entry_signal_price_usd,entry_execution_price_usd,paper_quantity_tokens,"
+                "remaining_quantity_tokens,amount_raw,initial_amount_raw,stake_usd,"
+                "highest_signal_price_usd,status,opened_at,close_reason,entry_reason) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'open',?,'',?)",
+                (
+                    version, arm_id, int(cohort_id), token_id, int(entry_fill["id"]),
+                    int(entry_fill["id"]), int(snapshot_id), int(snapshot_id),
+                    market_price, adverse_entry_price, paper_quantity, paper_quantity,
+                    normalized_units, normalized_units, required_cash,
+                    market_price, filled_at, reason,
+                ),
+            )
+            if int(self.db.execute("SELECT changes()").fetchone()[0]) == 0:
+                continue
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_trades("
+                "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+                "net_cash_flow_usd,reason,created_at,recorded_at) "
+                "VALUES(?,?,?,?, 'BUY',?,?,?,?,?)",
+                (
+                    version, arm_id, int(cohort_id), token_id, required_cash,
+                    -required_cash, reason + ":dex_mark_paper_fill", filled_at, iso(),
+                ),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_entry_participant_outcomes("
+                "definition_version,shadow_cohort_id,arm_id,entry_decision_id,entry_fill_id,"
+                "outcome,available_cash_usd,recorded_at) "
+                "VALUES(?,?,?,?,?,'projected',?,?)",
+                (
+                    version, int(cohort_id), arm_id, int(decision["id"]),
+                    int(entry_fill["id"]), available_cash, filled_at,
+                ),
+            )
+            projected += 1
+        return projected
+
+    def enroll_chain_meme_trader_v6(
+        self, *, limit: int = 240, definition_version: str | None = None,
+    ) -> dict[str, int]:
+        """Classify post-activation snapshots and create one authoritative BUY intent."""
+        version = definition_version or self.CHAIN_MEME_TRADER_V6_VERSION
+        evaluated = admitted = rejected = intents = 0
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT r.definition_json,a.activated_at,a.activation_snapshot_id "
+                "FROM chain_meme_trader_v6_registrations r "
+                "JOIN chain_meme_trader_v6_activations a USING(definition_version) "
+                "WHERE r.definition_version=?",
+                (version,),
+            ).fetchone()
+            if registration is None:
+                return {"evaluated": 0, "admitted": 0, "rejected": 0, "intents": 0}
+            definition = self._json_object(registration["definition_json"])
+            rows = self.db.execute(
+                "SELECT s.id AS source_snapshot_id,s.* FROM token_snapshots s "
+                "WHERE s.id>? AND s.recorded_at>=? AND NOT EXISTS(SELECT 1 FROM "
+                "chain_meme_trader_v6_entry_evaluations e WHERE "
+                "e.definition_version=? AND e.source_snapshot_id=s.id) "
+                "ORDER BY s.id LIMIT ?",
+                (
+                    int(registration["activation_snapshot_id"]),
+                    str(registration["activated_at"]), version,
+                    max(1, int(limit)),
+                ),
+            ).fetchall()
+            policies = list(definition["policies"])
+            for row in rows:
+                token_id = str(row["token_id"])
+                snapshot_id = int(row["source_snapshot_id"])
+                family = None
+                eligible_policy_ids: set[str] = set()
+                reason = "entry_family_not_matched"
+                features: dict[str, Any] = {"source_snapshot_id": snapshot_id}
+                try:
+                    snapshot_observed = parse_time(row["observed_at"])
+                    snapshot_ingested = parse_time(row["ingested_at"] or row["observed_at"])
+                    snapshot_recorded = parse_time(
+                        row["recorded_at"] or row["ingested_at"] or row["observed_at"]
+                    )
+                    decision_at = utcnow()
+                    if not (
+                        snapshot_observed <= snapshot_ingested <= snapshot_recorded
+                        <= decision_at
+                    ):
+                        raise ValueError("noncausal_source_timestamps")
+                    observation_age_seconds = (
+                        decision_at - snapshot_observed
+                    ).total_seconds()
+                    receipt_age_seconds = (
+                        decision_at - snapshot_recorded
+                    ).total_seconds()
+                    signal_age_seconds = max(
+                        observation_age_seconds, receipt_age_seconds,
+                    )
+                    if signal_age_seconds > float(
+                        definition["max_signal_to_execution_start_seconds"]
+                    ):
+                        raise ValueError("entry_snapshot_too_old")
+                    raw = self._json_object(row["raw_json"])
+                    pair = raw.get("pair") if isinstance(raw.get("pair"), Mapping) else raw
+                    txns = pair.get("txns") if isinstance(pair.get("txns"), Mapping) else {}
+                    volumes = pair.get("volume") if isinstance(pair.get("volume"), Mapping) else {}
+                    m5 = txns.get("m5") if isinstance(txns.get("m5"), Mapping) else {}
+                    h1 = txns.get("h1") if isinstance(txns.get("h1"), Mapping) else {}
+                    base = pair.get("baseToken") if isinstance(pair.get("baseToken"), Mapping) else {}
+                    pair_created_ms = int(pair.get("pairCreatedAt") or 0)
+                    pair_created = datetime.fromtimestamp(pair_created_ms / 1000.0, tz=timezone.utc)
+                    m5_activity_available = (
+                        m5.get("buys") is not None and m5.get("sells") is not None
+                    )
+                    h1_activity_available = (
+                        h1.get("buys") is not None and h1.get("sells") is not None
+                    )
+                    m5_volume_available = volumes.get("m5") is not None
+                    h1_volume_available = volumes.get("h1") is not None
+                    m5_trades = (
+                        int(m5["buys"]) + int(m5["sells"])
+                        if m5_activity_available else None
+                    )
+                    h1_trades = (
+                        int(h1["buys"]) + int(h1["sells"])
+                        if h1_activity_available else None
+                    )
+                    m5_volume = (
+                        float(volumes["m5"]) if m5_volume_available else None
+                    )
+                    h1_volume = (
+                        float(volumes["h1"]) if h1_volume_available else None
+                    )
+                    prior55_trades = (
+                        h1_trades - m5_trades
+                        if h1_trades is not None and m5_trades is not None else None
+                    )
+                    prior55_volume = (
+                        h1_volume - m5_volume
+                        if h1_volume is not None and m5_volume is not None else None
+                    )
+                    age_seconds = (snapshot_observed - pair_created).total_seconds()
+                    price = float(row["price_usd"] or pair.get("priceUsd") or 0.0)
+                    if not (
+                        token_id.startswith("solana:")
+                        and str(pair.get("chainId") or "").lower() == "solana"
+                        and str(base.get("address") or "") == token_id.split(":", 1)[1]
+                        and pair_created_ms > 0 and pair_created <= snapshot_observed
+                        and age_seconds >= 0 and price > 0
+                        and (
+                            h1_trades is None or m5_trades is None
+                            or h1_trades >= m5_trades
+                        )
+                        and (
+                            h1_volume is None or m5_volume is None
+                            or h1_volume + 1e-9 >= m5_volume
+                        )
+                    ):
+                        raise ValueError("invalid_exact_asof_market_snapshot")
+                    tx_rate_acceleration = (
+                        None if prior55_trades is None or m5_trades is None
+                        else 1_000_000.0 if prior55_trades <= 0
+                        else m5_trades / (prior55_trades / 11.0)
+                    )
+                    volume_rate_acceleration = (
+                        None if prior55_volume is None or m5_volume is None
+                        else 1_000_000.0 if prior55_volume <= 0
+                        else m5_volume / (prior55_volume / 11.0)
+                    )
+                    pair_address = str(pair.get("pairAddress") or "")
+                    if not pair_address:
+                        raise ValueError("missing_pair_address")
+                    proposed_family = None
+                    if age_seconds <= 900 and (
+                        (m5_trades is not None and m5_trades >= 3)
+                        or (m5_volume is not None and m5_volume >= 200.0)
+                    ):
+                        proposed_family, reason = "broad_launch", "broad_launch_asof_pass"
+                    elif 900 < age_seconds < 21600 and (
+                        (m5_trades is not None and m5_trades >= 8)
+                        or (m5_volume is not None and m5_volume >= 1000.0)
+                    ) and (
+                        (
+                            tx_rate_acceleration is not None
+                            and tx_rate_acceleration >= 3.0
+                        ) or (
+                            volume_rate_acceleration is not None
+                            and volume_rate_acceleration >= 3.0
+                        )
+                    ):
+                        proposed_family, reason = "flow_burst", "flow_burst_asof_pass"
+                    elif (
+                        age_seconds >= 21600
+                        and prior55_trades is not None and prior55_trades <= 2
+                        and prior55_volume is not None and prior55_volume <= 200.0
+                        and m5_trades is not None and m5_trades >= 10
+                        and m5_volume is not None and m5_volume >= 1000.0
+                    ):
+                        proposed_family, reason = "reawakening", "reawakening_asof_pass"
+                    else:
+                        proposed_family, reason = "market_visible", "market_visible_asof_pass"
+                    previous = None
+                    cooldown_seconds = None
+                    storage_family = (
+                        "broad_launch" if proposed_family == "market_visible"
+                        else proposed_family
+                    )
+                    features.update({
+                        "policy_entry_family": proposed_family,
+                        "cohort_storage_family": storage_family,
+                    })
+                    historical_fidelity = bool(definition.get("historical_fidelity_mode"))
+                    shadow_row = None
+                    shadow_pass = False
+                    if historical_fidelity:
+                        shadow_row = self.db.execute(
+                            "SELECT id,baseline_status,momentum_score,momentum_threshold "
+                            "FROM onchain_only_shadow_cohorts WHERE trigger_snapshot_id=? "
+                            "ORDER BY id DESC LIMIT 1", (snapshot_id,),
+                        ).fetchone()
+                        shadow_pass = bool(
+                            shadow_row is not None
+                            and str(shadow_row["baseline_status"]) == "valid"
+                            and float(shadow_row["momentum_score"] or 0.0) >= 80.0
+                            and float(row["liquidity_usd"] or 0.0) >= 14_000.0
+                        )
+                        for policy in policies:
+                            if not bool(policy.get("forward_enabled", True)):
+                                continue
+                            policy_entry = str(policy.get("entry_family") or "")
+                            if (
+                                str(policy.get("entry_match_mode") or "") == "dex_visible"
+                                or policy_entry == proposed_family
+                            ) or (
+                                policy_entry == "shadow_momentum" and shadow_pass
+                            ):
+                                eligible_policy_ids.add(str(policy["arm_id"]))
+                        features.update({
+                            "historical_fidelity_mode": True,
+                            "shadow_source_cohort_id": (
+                                int(shadow_row["id"]) if shadow_row is not None else None
+                            ),
+                            "shadow_momentum_pass": shadow_pass,
+                            "eligible_historical_policy_count": len(eligible_policy_ids),
+                        })
+                    if proposed_family is not None:
+                        previous = self.db.execute(
+                            "SELECT * FROM chain_meme_trader_v6_cohorts WHERE "
+                            "definition_version=? AND token_id=? AND entry_family=? "
+                            "AND pair_address=? AND COALESCE(json_extract(feature_json,"
+                            "'$.policy_entry_family'),entry_family)=? "
+                            "ORDER BY decided_at DESC,id DESC LIMIT 1",
+                            (
+                                version, token_id, storage_family, pair_address,
+                                proposed_family,
+                            ),
+                        ).fetchone()
+                        cooldown_seconds = (
+                            (decision_at - parse_time(previous["decided_at"])).total_seconds()
+                            if previous is not None else None
+                        )
+                        required_cooldown = {
+                            "broad_launch": None,
+                            "flow_burst": 1800,
+                            "reawakening": 21600,
+                            "market_visible": None,
+                        }[proposed_family]
+                        if previous is None or (
+                            required_cooldown is not None
+                            and cooldown_seconds is not None
+                            and cooldown_seconds >= required_cooldown
+                        ):
+                            family = proposed_family
+                        else:
+                            reason = "family_episode_already_enrolled_or_cooldown_active"
+                    pending_buy_count = int(self.db.execute(
+                        "SELECT COUNT(*) FROM chain_meme_trader_order_intents "
+                        "WHERE definition_version=? AND side='BUY' "
+                        "AND status IN ('ready','retry','submitted')",
+                        (version,),
+                    ).fetchone()[0])
+                    pending_family_count = int(self.db.execute(
+                        "SELECT COUNT(*) FROM chain_meme_trader_order_intents "
+                        "WHERE definition_version=? AND side='BUY' AND arm_id=? "
+                        "AND status IN ('ready','retry','submitted')",
+                        (version, f"entry:{proposed_family}"),
+                    ).fetchone()[0]) if proposed_family is not None else 0
+                    shared_available_cash = None
+                    participating_arm_ids: list[str] = []
+                    arm_available_cash: dict[str, float] = {}
+                    arm_pending_reservations: dict[str, int] = {}
+                    if family is not None:
+                        net_flow_by_arm = {
+                            str(item["arm_id"]): float(item["net_flow_usd"] or 0.0)
+                            for item in self.db.execute(
+                                "SELECT arm_id,COALESCE(SUM(net_cash_flow_usd),0) AS net_flow_usd "
+                                "FROM chain_meme_trader_trades WHERE definition_version=? "
+                                "GROUP BY arm_id",
+                                (version,),
+                            ).fetchall()
+                        }
+                        pending_by_arm = {
+                            str(item["arm_id"]): int(item["pending_count"] or 0)
+                            for item in self.db.execute(
+                                "SELECT d.arm_id,COUNT(*) AS pending_count FROM "
+                                "chain_meme_trader_order_intents i JOIN "
+                                "chain_meme_trader_entry_decisions d ON "
+                                "d.definition_version=i.definition_version AND "
+                                "d.shadow_cohort_id=i.shadow_cohort_id WHERE "
+                                "i.definition_version=? AND i.side='BUY' AND "
+                                "i.status IN ('ready','retry','submitted') AND "
+                                "d.status='admitted' GROUP BY d.arm_id",
+                                (version,),
+                            ).fetchall()
+                        }
+                        family_arms = [
+                            str(policy["arm_id"]) for policy in policies
+                            if (
+                                str(policy["arm_id"]) in eligible_policy_ids
+                                if historical_fidelity else
+                                str(policy.get("entry_family")) in {
+                                    family, "market_visible",
+                                }
+                            )
+                        ]
+                        for arm_id in family_arms:
+                            net_flow = net_flow_by_arm.get(arm_id, 0.0)
+                            pending_arm_count = pending_by_arm.get(arm_id, 0)
+                            available_cash = (
+                                float(definition["starting_cash_usd_each_arm"])
+                                + net_flow
+                                - float(definition["policy_notional_usd"])
+                                * pending_arm_count
+                            )
+                            arm_available_cash[arm_id] = available_cash
+                            arm_pending_reservations[arm_id] = pending_arm_count
+                            if available_cash + 1e-9 >= float(
+                                definition["policy_notional_usd"]
+                            ):
+                                participating_arm_ids.append(arm_id)
+                        shared_available_cash = (
+                            min(arm_available_cash.values()) if arm_available_cash else 0.0
+                        )
+                        if pending_buy_count >= int(definition["max_pending_buy_intents"]):
+                            family = None
+                            reason = "entry_quote_capacity_full"
+                        elif not participating_arm_ids:
+                            family = None
+                            reason = "all_entry_accounts_cash_below_20usdc"
+                    features.update({
+                        "decision_at": iso(decision_at),
+                        "signal_age_seconds": signal_age_seconds,
+                        "observation_age_seconds": observation_age_seconds,
+                        "receipt_age_seconds": receipt_age_seconds,
+                        "signal_at": iso(snapshot_recorded),
+                        "snapshot_observed_at": iso(snapshot_observed),
+                        "pair_created_at": iso(pair_created),
+                        "age_seconds": age_seconds,
+                        "dex_id": str(pair.get("dexId") or ""),
+                        "pair_address": pair_address,
+                        "price_usd": price,
+                        "m5_trades": m5_trades,
+                        "h1_trades": h1_trades,
+                        "m5_activity_available": m5_activity_available,
+                        "h1_activity_available": h1_activity_available,
+                        "prior55_trades": prior55_trades,
+                        "m5_volume_usd": m5_volume,
+                        "h1_volume_usd": h1_volume,
+                        "m5_volume_available": m5_volume_available,
+                        "h1_volume_available": h1_volume_available,
+                        "prior55_volume_usd": prior55_volume,
+                        "tx_rate_acceleration": tx_rate_acceleration,
+                        "volume_rate_acceleration": volume_rate_acceleration,
+                        "cooldown_seconds": cooldown_seconds,
+                        "pending_buy_count": pending_buy_count,
+                        "pending_family_count": pending_family_count,
+                        "shared_available_cash_usd": shared_available_cash,
+                        "arm_available_cash_usd": arm_available_cash,
+                        "arm_pending_reservations": arm_pending_reservations,
+                        "participating_arm_ids": participating_arm_ids,
+                        "execution_capacity_policy": (
+                            "max_8_pending_with_independent_arm_cash_reservation/v2"
+                        ),
+                    })
+                except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                    decision_at = utcnow()
+                    reason = str(exc)[:160] or type(exc).__name__
+                if family is not None:
+                    previous_episode = self.db.execute(
+                        "SELECT MAX(episode_no) FROM chain_meme_trader_v6_cohorts "
+                        "WHERE definition_version=? AND token_id=?", (version, token_id),
+                    ).fetchone()[0]
+                    self.db.execute(
+                        "INSERT INTO chain_meme_trader_v6_cohorts("
+                        "definition_version,token_id,entry_family,source_snapshot_id,"
+                        "pair_address,decided_at,episode_no,feature_json) "
+                        "VALUES(?,?,?,?,?,?,?,?)",
+                        (
+                            version, token_id,
+                            "broad_launch" if family == "market_visible" else family,
+                            snapshot_id,
+                            str(features["pair_address"]),
+                            iso(decision_at), int(previous_episode or 0) + 1,
+                            self._json(features),
+                        ),
+                    )
+                    cohort_id = int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+                    for policy in policies:
+                        policy_matches = (
+                            str(policy["arm_id"]) in eligible_policy_ids
+                            if bool(definition.get("historical_fidelity_mode")) else
+                            str(policy.get("entry_family")) in {family, "market_visible"}
+                        )
+                        if not policy_matches:
+                            continue
+                        arm_id = str(policy["arm_id"])
+                        participates = arm_id in participating_arm_ids
+                        self.db.execute(
+                            "INSERT INTO chain_meme_trader_entry_decisions("
+                            "definition_version,arm_id,shadow_cohort_id,token_id,"
+                            "baseline_quote_result_id,decided_at,status,reason) "
+                            "VALUES(?,?,?,?,?,?,?,?)",
+                            (
+                                version, arm_id, cohort_id, token_id, snapshot_id,
+                                iso(decision_at),
+                                "admitted" if participates else "rejected",
+                                reason if participates else "entry_cash_below_20usdc",
+                            ),
+                        )
+                    if str(definition.get("buy_execution") or "") == (
+                        "dexscreener_snapshot_4pct_adverse_fill"
+                    ):
+                        self._project_chain_meme_trader_market_entry(
+                            version=version,
+                            cohort_id=cohort_id,
+                            token_id=token_id,
+                            snapshot_id=snapshot_id,
+                            market_price=float(features["price_usd"]),
+                            filled_at=iso(decision_at),
+                            reason=reason,
+                            definition=definition,
+                        )
+                    else:
+                        self.db.execute(
+                            "INSERT INTO chain_meme_trader_order_intents("
+                            "intent_key,definition_version,execution_mode,arm_id,"
+                            "shadow_cohort_id,token_id,side,input_mint,output_mint,input_amount_raw,"
+                            "slippage_bps,status,reason,created_at,expires_at) "
+                            "VALUES(?,?,'paper',?,?,?,'BUY',?,?,?,400,'ready',?,?,?)",
+                            (
+                                f"{version}:ENTRY_BUY:{cohort_id}", version, f"entry:{family}",
+                                cohort_id, token_id, self.JUPITER_USDC_MINT,
+                                token_id.split(":", 1)[1], "20000000", reason,
+                                iso(decision_at), iso(decision_at + timedelta(
+                                    seconds=float(definition["max_signal_to_execution_start_seconds"])
+                                )),
+                            ),
+                        )
+                        intents += int(self.db.execute("SELECT changes()").fetchone()[0])
+                    admitted += 1
+                else:
+                    rejected += 1
+                self.db.execute(
+                    "INSERT INTO chain_meme_trader_v6_entry_evaluations("
+                    "definition_version,source_snapshot_id,token_id,"
+                    "evaluated_at,status,entry_family,reason,feature_json) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
+                    (
+                        version, snapshot_id, token_id, iso(decision_at),
+                        "admitted" if family is not None else "rejected", family,
+                        reason, self._json(features),
+                    ),
+                )
+                evaluated += 1
+        return {
+            "evaluated": evaluated,
+            "admitted": admitted,
+            "rejected": rejected,
+            "intents": intents,
+        }
+
+    def register_chain_meme_trader_executable_decay(self) -> sqlite3.Row:
+        """Freeze a future-only Stage-4 same-Fill executable-decay challenger."""
+        version = self.CHAIN_MEME_TRADER_STAGE4_EXEC_DECAY_VERSION
+        source_version = self.CHAIN_MEME_TRADER_VERSION
+        source_arm_id = "stage_04_dynamic_v1"
+        policy = {
+            "stage": 4,
+            "arm_id": "stage_04_exec_decay_challenger_v1",
+            "name": "Stage 4 可执行回撤挑战策略",
+            "family": "paired_exit_challenger",
+            "entry_gate": "same_source_stage4_buy_fill",
+            "exit_mode": "dynamic_backoff",
+            "execution_profile": "paper-jupiter-next-quote-fill/v1",
+        }
+        definition = {
+            "version": version,
+            "source_definition_version": source_version,
+            "source_arm_id": source_arm_id,
+            "comparison": "same_buy_fill_exit_only_challenger",
+            "policy_notional_usd": 20.0,
+            "slippage_bps": 400,
+            "additional_fee_usd_each_fill": 0.0,
+            "starting_cash_usd_each_arm": 1000.0,
+            "execution": "valuation_signal_to_sell_order_intent_to_next_quote_fill",
+            "arm_executable_return": 0.40,
+            "exit_drawdown_from_executable_high_water": 0.15,
+            "sell_fraction_of_remaining": 1.0,
+            "max_quote_delay_seconds": 45.0,
+            "retry_schedule_seconds": [15, 30, 60, 120, 300],
+            "max_attempts_per_mark": 6,
+            "no_historical_backfill": True,
+            "simulated": True,
+            "live_execution": False,
+            "policies": [policy],
+        }
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_executable_decay_registrations("
+                "definition_version,source_definition_version,source_arm_id,registered_at,"
+                "activation_source_buy_fill_id,definition_json) VALUES(?,?,?,?,COALESCE(("
+                "SELECT MAX(id) FROM chain_meme_trader_fills WHERE definition_version=? "
+                "AND arm_id=? AND side='BUY'),0),?)",
+                (
+                    version, source_version, source_arm_id, iso(), source_version,
+                    source_arm_id, self._json(definition),
+                ),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_executable_decay_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+
+    def register_chain_meme_trader_stage4_v2(self) -> sqlite3.Row:
+        """Register a future-only Stage-4 pair whose sole treatment is trailing."""
+        version = self.CHAIN_MEME_TRADER_STAGE4_EXEC_EQUITY_V2_VERSION
+        source_version = self.CHAIN_MEME_TRADER_VERSION
+        source_arm_id = "stage_04_dynamic_v1"
+        common = {
+            "stage": 4,
+            "family": "paired_exit_challenger",
+            "entry_gate": "same_source_stage4_buy_fill",
+            "exit_mode": "dynamic_backoff",
+            "execution_profile": "paper-jupiter-next-quote-fill/v1",
+            "hard_stop_return": -0.35,
+            "emergency_liquidity_usd": 3000.0,
+            "zero_activity_grace_minutes": 5.0,
+            "max_hold_minutes": 240.0,
+            "take_profit": [
+                {"return": 0.80, "fraction_of_remaining": 0.20},
+                {"return": 1.80, "fraction_of_remaining": 0.25},
+                {"return": 3.50, "fraction_of_remaining": 0.35},
+                {"return": 7.00, "fraction_of_remaining": 1.00},
+            ],
+            "exact_risk_alerts": "shared_preemptive",
+        }
+        policies = [
+            {
+                **common,
+                "arm_id": "stage_04_exec_equity_control_v2",
+                "name": "Stage 4 可执行权益对照 v2",
+                "trailing_activate_return": 0.60,
+                "trailing_drawdown": 0.28,
+            },
+            {
+                **common,
+                "arm_id": "stage_04_exec_decay_challenger_v2",
+                "name": "Stage 4 可执行回撤挑战 v2",
+                "trailing_activate_return": 0.40,
+                "trailing_drawdown": 0.15,
+            },
+        ]
+        definition = {
+            "version": version,
+            "source_definition_version": source_version,
+            "source_arm_id": source_arm_id,
+            "comparison": "same_buy_fill_shared_equity_frame_trailing_only",
+            "policy_notional_usd": 20.0,
+            "slippage_bps": 400,
+            "additional_fee_usd_each_fill": 0.0,
+            "starting_cash_usd_each_arm": 1000.0,
+            "execution": "shared_frame_to_sell_intent_to_next_quote_fill",
+            "max_quote_delay_seconds": 45.0,
+            "retry_schedule_seconds": [15, 30, 60, 120, 300],
+            "max_attempts_per_mark": 6,
+            "position_equity_frame_version": (
+                self.CHAIN_MEME_TRADER_POSITION_EQUITY_FRAME_VERSION
+            ),
+            "no_historical_backfill": True,
+            "simulated": True,
+            "live_execution": False,
+            "policies": policies,
+        }
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_executable_decay_registrations("
+                "definition_version,source_definition_version,source_arm_id,registered_at,"
+                "activation_source_buy_fill_id,definition_json) VALUES(?,?,?,?,COALESCE(("
+                "SELECT MAX(id) FROM chain_meme_trader_fills WHERE definition_version=? "
+                "AND arm_id=? AND side='BUY'),0),?)",
+                (
+                    version, source_version, source_arm_id, iso(), source_version,
+                    source_arm_id, self._json(definition),
+                ),
+            )
+            registration = self.db.execute(
+                "SELECT * FROM chain_meme_trader_executable_decay_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            self.db.execute(
+                "INSERT OR IGNORE INTO "
+                "chain_meme_trader_position_equity_frame_registrations("
+                "frame_version,definition_version,registered_at,"
+                "activation_source_buy_fill_id,definition_json) VALUES(?,?,?,?,?)",
+                (
+                    self.CHAIN_MEME_TRADER_POSITION_EQUITY_FRAME_VERSION,
+                    version, str(registration["registered_at"]),
+                    int(registration["activation_source_buy_fill_id"]),
+                    self._json({
+                        "version": self.CHAIN_MEME_TRADER_POSITION_EQUITY_FRAME_VERSION,
+                        "definition_version": version,
+                        "valuation": "fresh_amount_specific_jupiter_minimum_output",
+                        "unknown_is_null": True,
+                        "decision_time": "quote_completed_at",
+                        "immutable": True,
+                    }),
+                ),
+            )
+            return registration
+
+    def _chain_meme_trader_registration(self, version: str) -> sqlite3.Row | None:
+        primary = self.db.execute(
+            "SELECT definition_json FROM chain_meme_trader_registrations "
+            "WHERE definition_version=?", (version,),
+        ).fetchone()
+        if primary is not None:
+            return primary
+        return self.db.execute(
+            "SELECT definition_json FROM chain_meme_trader_executable_decay_registrations "
+            "WHERE definition_version=?", (version,),
+        ).fetchone()
+
+    def register_chain_meme_trader_executable_decay_stop(self) -> sqlite3.Row:
+        """Freeze new v1 pairs without mutating its existing forward evidence."""
+        version = self.CHAIN_MEME_TRADER_STAGE4_EXEC_DECAY_VERSION
+        source_version = self.CHAIN_MEME_TRADER_VERSION
+        source_arm_id = "stage_04_dynamic_v1"
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_executable_decay_stops("
+                "definition_version,stopped_at,source_buy_fill_frontier,reason) "
+                "VALUES(?,?,COALESCE((SELECT MAX(id) FROM chain_meme_trader_fills "
+                "WHERE definition_version=? AND arm_id=? AND side='BUY'),0),?)",
+                (
+                    version, iso(), source_version, source_arm_id,
+                    "v1_missing_common_safety_envelope_retired_before_v2",
+                ),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_executable_decay_stops "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+
+    def enroll_chain_meme_trader_executable_decay(self) -> int:
+        """Clone only post-frontier Stage-4 BUY Fills into an independent Paper account."""
+        version = self.CHAIN_MEME_TRADER_STAGE4_EXEC_DECAY_VERSION
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT * FROM chain_meme_trader_executable_decay_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if registration is None:
+                return 0
+            source_version = str(registration["source_definition_version"])
+            source_arm_id = str(registration["source_arm_id"])
+            target_arm_id = str(
+                self._json_object(registration["definition_json"])["policies"][0]["arm_id"]
+            )
+            stop = self.db.execute(
+                "SELECT source_buy_fill_frontier FROM "
+                "chain_meme_trader_executable_decay_stops WHERE definition_version=?",
+                (version,),
+            ).fetchone()
+            rows = self.db.execute(
+                "SELECT f.*,p.source_buy_trade_id,p.baseline_quote_result_id,"
+                "p.entry_snapshot_id,p.entry_signal_price_usd,p.entry_reason "
+                "FROM chain_meme_trader_fills f JOIN chain_meme_trader_positions p "
+                "ON p.definition_version=f.definition_version AND p.arm_id=f.arm_id "
+                "AND p.shadow_cohort_id=f.shadow_cohort_id "
+                "WHERE f.definition_version=? AND f.arm_id=? AND f.side='BUY' AND f.id>? "
+                "AND (? IS NULL OR f.id<=?) "
+                "ORDER BY f.id",
+                (
+                    source_version, source_arm_id,
+                    int(registration["activation_source_buy_fill_id"]),
+                    int(stop["source_buy_fill_frontier"]) if stop is not None else None,
+                    int(stop["source_buy_fill_frontier"]) if stop is not None else None,
+                ),
+            ).fetchall()
+            inserted = 0
+            for row in rows:
+                cohort_id = int(row["shadow_cohort_id"])
+                decision_reason = f"paired_source_buy_fill:{int(row['id'])}"
+                self.db.execute(
+                    "INSERT OR IGNORE INTO chain_meme_trader_entry_decisions("
+                    "definition_version,arm_id,shadow_cohort_id,token_id,baseline_quote_result_id,"
+                    "decided_at,status,reason) VALUES(?,?,?,?,?,?,'admitted',?)",
+                    (
+                        version, target_arm_id, cohort_id, str(row["token_id"]),
+                        int(row["baseline_quote_result_id"]), str(row["filled_at"]),
+                        decision_reason,
+                    ),
+                )
+                self.db.execute(
+                    "INSERT OR IGNORE INTO chain_meme_trader_positions("
+                    "definition_version,arm_id,shadow_cohort_id,token_id,source_buy_trade_id,"
+                    "baseline_quote_result_id,entry_snapshot_id,entry_signal_price_usd,amount_raw,"
+                    "initial_amount_raw,stake_usd,highest_signal_price_usd,status,opened_at,"
+                    "close_reason,entry_reason,entry_fill_id,last_fill_id) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,20,?,'open',?,'',?,?,?)",
+                    (
+                        version, target_arm_id, cohort_id, str(row["token_id"]),
+                        int(row["source_buy_trade_id"]), int(row["baseline_quote_result_id"]),
+                        int(row["entry_snapshot_id"]), float(row["entry_signal_price_usd"]),
+                        str(row["output_amount_raw"]), str(row["output_amount_raw"]),
+                        float(row["entry_signal_price_usd"]), str(row["filled_at"]),
+                        decision_reason, int(row["id"]), int(row["id"]),
+                    ),
+                )
+                if int(self.db.execute("SELECT changes()").fetchone()[0]) == 0:
+                    continue
+                self.db.execute(
+                    "INSERT INTO chain_meme_trader_trades("
+                    "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+                    "net_cash_flow_usd,reason,created_at,execution_fill_id) "
+                    "VALUES(?,?,?,?, 'BUY',20,-20,?,?,?)",
+                    (
+                        version, target_arm_id, cohort_id, str(row["token_id"]),
+                        decision_reason, str(row["filled_at"]), int(row["id"]),
+                    ),
+                )
+                inserted += 1
+            return inserted
+
+    def enroll_chain_meme_trader_stage4_v2(self) -> int:
+        """Enroll both v2 arms from one future source BUY Fill, without a second BUY."""
+        version = self.CHAIN_MEME_TRADER_STAGE4_EXEC_EQUITY_V2_VERSION
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT * FROM chain_meme_trader_executable_decay_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if registration is None:
+                return 0
+            definition = self._json_object(registration["definition_json"])
+            rows = self.db.execute(
+                "SELECT f.*,p.source_buy_trade_id,p.baseline_quote_result_id,"
+                "p.entry_snapshot_id,p.entry_signal_price_usd,p.entry_reason "
+                "FROM chain_meme_trader_fills f JOIN chain_meme_trader_positions p "
+                "ON p.definition_version=f.definition_version AND p.arm_id=f.arm_id "
+                "AND p.shadow_cohort_id=f.shadow_cohort_id "
+                "WHERE f.definition_version=? AND f.arm_id=? AND f.side='BUY' AND f.id>? "
+                "ORDER BY f.id",
+                (
+                    str(registration["source_definition_version"]),
+                    str(registration["source_arm_id"]),
+                    int(registration["activation_source_buy_fill_id"]),
+                ),
+            ).fetchall()
+            inserted = 0
+            for row in rows:
+                cohort_id = int(row["shadow_cohort_id"])
+                decision_reason = f"paired_source_buy_fill:{int(row['id'])}"
+                for policy in definition["policies"]:
+                    arm_id = str(policy["arm_id"])
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO chain_meme_trader_entry_decisions("
+                        "definition_version,arm_id,shadow_cohort_id,token_id,"
+                        "baseline_quote_result_id,decided_at,status,reason) "
+                        "VALUES(?,?,?,?,?,?,'admitted',?)",
+                        (
+                            version, arm_id, cohort_id, str(row["token_id"]),
+                            int(row["baseline_quote_result_id"]), str(row["filled_at"]),
+                            decision_reason,
+                        ),
+                    )
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO chain_meme_trader_positions("
+                        "definition_version,arm_id,shadow_cohort_id,token_id,"
+                        "source_buy_trade_id,baseline_quote_result_id,entry_snapshot_id,"
+                        "entry_signal_price_usd,amount_raw,initial_amount_raw,stake_usd,"
+                        "highest_signal_price_usd,status,opened_at,close_reason,entry_reason,"
+                        "entry_fill_id,last_fill_id) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,20,?,'open',?,'',?,?,?)",
+                        (
+                            version, arm_id, cohort_id, str(row["token_id"]),
+                            int(row["source_buy_trade_id"]),
+                            int(row["baseline_quote_result_id"]),
+                            int(row["entry_snapshot_id"]),
+                            float(row["entry_signal_price_usd"]),
+                            str(row["output_amount_raw"]), str(row["output_amount_raw"]),
+                            float(row["entry_signal_price_usd"]), str(row["filled_at"]),
+                            decision_reason, int(row["id"]), int(row["id"]),
+                        ),
+                    )
+                    if int(self.db.execute("SELECT changes()").fetchone()[0]) == 0:
+                        continue
+                    self.db.execute(
+                        "INSERT INTO chain_meme_trader_trades("
+                        "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+                        "net_cash_flow_usd,reason,created_at,execution_fill_id) "
+                        "VALUES(?,?,?,?, 'BUY',20,-20,?,?,?)",
+                        (
+                            version, arm_id, cohort_id, str(row["token_id"]),
+                            decision_reason, str(row["filled_at"]), int(row["id"]),
+                        ),
+                    )
+                    inserted += 1
+            return inserted
+
+    def register_chain_meme_trader_postbuy_research(self) -> sqlite3.Row:
+        """Freeze a future-only, one-case-per-cohort semantic research frontier."""
+        research_version = self.CHAIN_MEME_TRADER_POSTBUY_RESEARCH_VERSION
+        definition = {
+            "version": research_version,
+            "source": self.CHAIN_MEME_TRADER_VERSION,
+            "unit": "one_shared_case_per_underlying_token_cohort",
+            "trigger": "first_v5_buy_fill",
+            "eligible_delay_seconds": 30,
+            "latest_start_seconds": 60,
+            "research_cutoff": "dispatch_at",
+            "decision_eligible": False,
+            "affects": "none",
+            "mechanical_exit_precedence": True,
+            "no_historical_backfill": True,
+        }
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_postbuy_research_registrations("
+                "research_version,definition_version,registered_at,activation_buy_fill_id,"
+                "definition_json) VALUES(?,?,?,COALESCE((SELECT MAX(id) FROM "
+                "chain_meme_trader_fills WHERE definition_version=? AND side='BUY'),0),?)",
+                (
+                    research_version, self.CHAIN_MEME_TRADER_VERSION, iso(),
+                    self.CHAIN_MEME_TRADER_VERSION, self._json(definition),
+                ),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_postbuy_research_registrations "
+                "WHERE research_version=?", (research_version,),
+            ).fetchone()
+
+    def due_chain_meme_trader_postbuy_research(
+        self, *, now: Any = None, limit: int = 1,
+    ) -> list[dict[str, Any]]:
+        """Return only post-registration cohorts whose first real BUY Fill is old enough."""
+        current = parse_time(now or utcnow())
+        research_version = self.CHAIN_MEME_TRADER_POSTBUY_RESEARCH_VERSION
+        with self._lock:
+            registration = self.db.execute(
+                "SELECT * FROM chain_meme_trader_postbuy_research_registrations "
+                "WHERE research_version=?", (research_version,),
+            ).fetchone()
+            if registration is None:
+                return []
+            definition = self._json_object(registration["definition_json"])
+            eligible_before = current - timedelta(
+                seconds=float(definition["eligible_delay_seconds"])
+            )
+            rows = self.db.execute(
+                """
+                SELECT f.shadow_cohort_id,f.token_id,MIN(f.id) AS first_buy_fill_id,
+                       MIN(f.filled_at) AS position_opened_at,
+                       MIN(p.entry_snapshot_id) AS entry_snapshot_id
+                FROM chain_meme_trader_fills f
+                JOIN chain_meme_trader_positions p
+                  ON p.definition_version=f.definition_version
+                 AND p.arm_id=f.arm_id
+                 AND p.shadow_cohort_id=f.shadow_cohort_id
+                 AND p.token_id=f.token_id
+                WHERE f.definition_version=? AND f.side='BUY' AND f.id>?
+                  AND f.filled_at<=?
+                  AND NOT EXISTS (
+                    SELECT 1 FROM chain_meme_trader_postbuy_research_cases c
+                    WHERE c.research_version=?
+                      AND c.shadow_cohort_id=f.shadow_cohort_id
+                      AND c.token_id=f.token_id
+                  )
+                GROUP BY f.shadow_cohort_id,f.token_id
+                ORDER BY first_buy_fill_id
+                LIMIT ?
+                """,
+                (
+                    self.CHAIN_MEME_TRADER_VERSION,
+                    int(registration["activation_buy_fill_id"]), iso(eligible_before),
+                    research_version, max(1, int(limit)),
+                ),
+            ).fetchall()
+            return [
+                {
+                    **dict(row),
+                    "research_version": research_version,
+                    "eligible_at": iso(
+                        parse_time(row["position_opened_at"])
+                        + timedelta(seconds=float(definition["eligible_delay_seconds"]))
+                    ),
+                    "latest_start_at": iso(
+                        parse_time(row["position_opened_at"])
+                        + timedelta(seconds=float(definition["latest_start_seconds"]))
+                    ),
+                }
+                for row in rows
+            ]
+
+    def record_chain_meme_trader_postbuy_research_case(
+        self, *, shadow_cohort_id: int, token_id: str, first_buy_fill_id: int,
+        entry_snapshot_id: int, position_opened_at: Any, research_cutoff_at: Any,
+        snapshot_id: int | None, trigger_transition_id: int | None,
+        status: str, reason_code: str,
+    ) -> int | None:
+        """Append one immutable observer-only case after the first v5 BUY Fill."""
+        if status not in {"triggered", "coverage_gap"}:
+            raise ValueError("invalid ChainMemeTrader postbuy research status")
+        if status == "triggered" and (
+            snapshot_id is None or trigger_transition_id is None
+        ):
+            raise ValueError("triggered postbuy research requires snapshot and transition")
+        cutoff = parse_time(research_cutoff_at)
+        research_version = self.CHAIN_MEME_TRADER_POSTBUY_RESEARCH_VERSION
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT * FROM chain_meme_trader_postbuy_research_registrations "
+                "WHERE research_version=?", (research_version,),
+            ).fetchone()
+            fill = self.db.execute(
+                "SELECT * FROM chain_meme_trader_fills WHERE id=? AND definition_version=? "
+                "AND side='BUY'", (int(first_buy_fill_id), self.CHAIN_MEME_TRADER_VERSION),
+            ).fetchone()
+            if (
+                registration is None or fill is None
+                or int(fill["id"]) <= int(registration["activation_buy_fill_id"])
+                or int(fill["shadow_cohort_id"]) != int(shadow_cohort_id)
+                or str(fill["token_id"]) != str(token_id)
+                or parse_time(fill["filled_at"]) != parse_time(position_opened_at)
+            ):
+                return None
+            definition = self._json_object(registration["definition_json"])
+            eligible_at = parse_time(fill["filled_at"]) + timedelta(
+                seconds=float(definition["eligible_delay_seconds"])
+            )
+            latest_start = parse_time(fill["filled_at"]) + timedelta(
+                seconds=float(definition["latest_start_seconds"])
+            )
+            if cutoff < eligible_at or (status == "triggered" and cutoff > latest_start):
+                raise ValueError("postbuy research cutoff outside frozen start window")
+            if status == "triggered":
+                snapshot = self.db.execute(
+                    "SELECT * FROM token_snapshots WHERE id=? AND token_id=?",
+                    (int(snapshot_id), str(token_id)),
+                ).fetchone()
+                transition = self.db.execute(
+                    "SELECT * FROM token_universe_funnel_transitions WHERE id=?",
+                    (int(trigger_transition_id),),
+                ).fetchone()
+                source_ids = self._json_object(
+                    transition["source_record_ids_json"] if transition is not None else "{}"
+                )
+                metadata = self._json_object(
+                    transition["metadata_json"] if transition is not None else "{}"
+                )
+                observed = parse_time(snapshot["observed_at"]) if snapshot is not None else cutoff
+                ingested = parse_time(snapshot["ingested_at"]) if snapshot is not None else cutoff
+                recorded = parse_time(snapshot["recorded_at"]) if snapshot is not None else cutoff
+                post_fill_snapshot = (
+                    snapshot is not None
+                    and parse_time(fill["filled_at"]) <= observed <= ingested <= recorded <= cutoff
+                )
+                entry_snapshot = (
+                    snapshot is not None and int(snapshot_id) == int(entry_snapshot_id)
+                    and observed <= ingested <= recorded <= parse_time(fill["filled_at"]) <= cutoff
+                )
+                valid_transition = bool(
+                    transition is not None
+                    and str(transition["token_id"]) == str(token_id)
+                    and str(transition["stage"]) == "context_trigger_evaluation"
+                    and str(transition["status"]) == "eligible"
+                    and str(transition["reason_code"]) == "post_entry_narrative_position"
+                    and int(transition["snapshot_id"] or 0) == int(snapshot_id)
+                    and int(source_ids.get("source_fill_id") or 0) == int(first_buy_fill_id)
+                    and int(source_ids.get("shadow_cohort_id") or 0) == int(shadow_cohort_id)
+                    and int(metadata.get("source_fill_id") or 0) == int(first_buy_fill_id)
+                    and parse_time(metadata.get("investigation_started_at")) == cutoff
+                )
+                if not ((post_fill_snapshot or entry_snapshot) and valid_transition):
+                    raise ValueError("postbuy research lineage mismatch")
+            cursor = self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_postbuy_research_cases("
+                "research_version,definition_version,shadow_cohort_id,token_id,"
+                "first_buy_fill_id,entry_snapshot_id,position_opened_at,eligible_at,"
+                "research_cutoff_at,snapshot_id,trigger_transition_id,status,reason_code,"
+                "recorded_at,decision_eligible,affects) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'none')",
+                (
+                    research_version, self.CHAIN_MEME_TRADER_VERSION,
+                    int(shadow_cohort_id), str(token_id), int(first_buy_fill_id),
+                    int(entry_snapshot_id), iso(parse_time(position_opened_at)), iso(eligible_at),
+                    iso(cutoff), int(snapshot_id) if snapshot_id is not None else None,
+                    int(trigger_transition_id) if trigger_transition_id is not None else None,
+                    status, str(reason_code)[:160], iso(),
+                ),
+            )
+            if int(cursor.rowcount or 0) == 1:
+                return int(cursor.lastrowid)
+            row = self.db.execute(
+                "SELECT id FROM chain_meme_trader_postbuy_research_cases "
+                "WHERE research_version=? AND shadow_cohort_id=? AND token_id=?",
+                (research_version, int(shadow_cohort_id), str(token_id)),
+            ).fetchone()
+            return int(row["id"]) if row is not None else None
+
+    def complete_chain_meme_trader_postbuy_research(
+        self, case_id: int, *, terminal_status: str | None = None,
+        completed_at: Any = None,
+    ) -> int | None:
+        """Append a terminal denominator row without granting the Agent trade authority."""
+        completed = parse_time(completed_at or utcnow())
+        research_version = self.CHAIN_MEME_TRADER_POSTBUY_RESEARCH_VERSION
+        with self._lock, self.db:
+            case = self.db.execute(
+                "SELECT * FROM chain_meme_trader_postbuy_research_cases WHERE id=? "
+                "AND research_version=?", (int(case_id), research_version),
+            ).fetchone()
+            if case is None or completed < parse_time(case["research_cutoff_at"]):
+                return None
+            admission = None
+            assessment = None
+            if case["trigger_transition_id"] is not None:
+                admission = self.db.execute(
+                    "SELECT * FROM token_context_admission_attempts "
+                    "WHERE trigger_transition_id=? ORDER BY id DESC LIMIT 1",
+                    (int(case["trigger_transition_id"]),),
+                ).fetchone()
+                if admission is not None:
+                    assessment = self.db.execute(
+                        "SELECT a.* FROM token_universe_funnel_transitions t "
+                        "JOIN token_context_assessments a ON a.id=t.assessment_id "
+                        "WHERE t.stage='agent_result' AND t.admission_id=? "
+                        "ORDER BY t.id DESC LIMIT 1", (int(admission["id"]),),
+                    ).fetchone()
+            terminal = str(terminal_status or (
+                assessment["status"] if assessment is not None
+                else f"{admission['outcome']}:{admission['reason']}" if admission is not None
+                else case["status"]
+            ))[:160]
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_postbuy_research_results("
+                "research_version,case_id,admission_id,assessment_id,terminal_status,"
+                "completed_at,recorded_at) VALUES(?,?,?,?,?,?,?)",
+                (
+                    research_version, int(case_id),
+                    int(admission["id"]) if admission is not None else None,
+                    int(assessment["id"]) if assessment is not None else None,
+                    terminal, iso(completed), iso(),
+                ),
+            )
+            row = self.db.execute(
+                "SELECT id FROM chain_meme_trader_postbuy_research_results WHERE case_id=?",
+                (int(case_id),),
+            ).fetchone()
+            return int(row["id"]) if row is not None else None
+
+    def recover_chain_meme_trader_postbuy_research(self) -> int:
+        """Close only cases stranded by a prior process; never redispatch implicitly."""
+        with self._lock:
+            case_ids = [
+                int(row["id"]) for row in self.db.execute(
+                    "SELECT c.id FROM chain_meme_trader_postbuy_research_cases c "
+                    "LEFT JOIN chain_meme_trader_postbuy_research_results r ON r.case_id=c.id "
+                    "WHERE c.research_version=? AND r.id IS NULL",
+                    (self.CHAIN_MEME_TRADER_POSTBUY_RESEARCH_VERSION,),
+                ).fetchall()
+            ]
+        recovered = 0
+        for case_id in case_ids:
+            recovered += int(self.complete_chain_meme_trader_postbuy_research(
+                case_id, terminal_status="runtime_interrupted",
+            ) is not None)
+        return recovered
+
+    def enroll_chain_meme_trader(self) -> dict[str, int]:
+        version = self.CHAIN_MEME_TRADER_VERSION
+        inserted = rejected = 0
+        with self._lock, self.db:
+            if self.db.execute(
+                "SELECT 1 FROM chain_meme_trader_primary_stops WHERE definition_version=?",
+                (version,),
+            ).fetchone() is not None:
+                return {"inserted": 0, "rejected": 0}
+            registration = self.db.execute(
+                "SELECT * FROM chain_meme_trader_registrations WHERE definition_version=?",
+                (version,),
+            ).fetchone()
+            if registration is None:
+                return {"inserted": 0, "rejected": 0}
+            definition = self._json_object(registration["definition_json"])
+            rows = self.db.execute(
+                """
+                SELECT q.*,c.token_id,c.chain,c.trigger_snapshot_id,c.baseline_status,
+                       c.momentum_score,c.momentum_threshold,c.trigger_recorded_at,
+                       s.price_usd,s.liquidity_usd,s.observed_at,
+                       COALESCE(s.ingested_at,s.observed_at) AS snapshot_ingested_at,
+                       COALESCE(s.recorded_at,s.ingested_at,s.observed_at) AS snapshot_recorded_at,
+                       a.requested_at AS attempt_requested_at
+                FROM onchain_only_jupiter_quote_results q
+                JOIN onchain_only_jupiter_quote_attempts a ON a.id=q.attempt_id
+                JOIN onchain_only_shadow_cohorts c ON c.id=q.shadow_cohort_id
+                JOIN token_snapshots s ON s.id=c.trigger_snapshot_id
+                WHERE q.id>? AND q.phase='baseline_buy' ORDER BY q.id
+                """, (int(registration["activation_exploration_buy_trade_id"]),),
+            ).fetchall()
+            for row in rows:
+                cohort_id, result_id = int(row["shadow_cohort_id"]), int(row["id"])
+                observed = parse_time(row["observed_at"])
+                ingested = parse_time(row["snapshot_ingested_at"])
+                recorded = parse_time(row["snapshot_recorded_at"])
+                requested = parse_time(row["attempt_requested_at"])
+                completed = parse_time(row["completed_at"])
+                price = float(row["price_usd"] or 0.0)
+                amount = int(row["other_amount_threshold_raw"] or 0)
+                common = bool(
+                    str(row["chain"]).lower() == "solana"
+                    and str(row["baseline_status"]) == "valid"
+                    and float(row["momentum_score"] or 0.0) >= 80.0
+                    and float(row["liquidity_usd"] or 0.0) >= 14_000.0
+                    and str(row["validity_status"]) == "valid"
+                    and str(row["quote_terminal_status"]) == "quoted"
+                    and int(row["input_amount_raw"] or 0) == 20_000_000
+                    and int(row["slippage_bps"] or 0) == 400
+                    and price > 0 and amount > 0
+                    and observed <= ingested <= recorded <= requested <= completed
+                )
+                route_rows = self.db.execute(
+                    "SELECT direction,status,classification_json,observed_at FROM execution_route_observations "
+                    "WHERE definition_version=? AND lane=? AND quote_key=?",
+                    (self.EXECUTION_ROUTE_OBSERVATION_VERSION,
+                     self.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION, str(row["quote_key"])),
+                ).fetchall()
+                routes = {str(item["direction"]): str(item["status"]) for item in route_rows}
+                route_facts = {
+                    str(item["direction"]): self._json_object(item["classification_json"])
+                    for item in route_rows
+                }
+                sell_facts = route_facts.get("SELL") or {}
+                recovery = sell_facts.get("quoted_net_recovery_ratio")
+                stress = sell_facts.get("stress_min_recovery_ratio")
+                sell_route_quoted = bool(
+                    sell_facts.get("route_verifiability") == "exact_onchain_legs"
+                    and recovery is not None and float(recovery) > 0
+                    and stress is not None and float(stress) > 0
+                )
+                two_way = common and routes.get("BUY") == "PASS" and sell_route_quoted
+                economic = bool(
+                    two_way and row["price_impact_bps"] is not None
+                    and float(row["price_impact_bps"]) >= -1_000.0
+                    and recovery is not None and float(recovery) > 0
+                )
+                rug = self.db.execute(
+                    "SELECT * FROM pretrade_rug_safety_assessments WHERE definition_version=? "
+                    "AND lane=? AND quote_key=? ORDER BY id DESC LIMIT 1",
+                    (self.PRETRADE_RUG_SAFETY_VERSION,
+                     self.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION, str(row["quote_key"])),
+                ).fetchone()
+                rug_safe = bool(economic and rug is not None and str(rug["status"]) == "PASS")
+                surface = self.db.execute(
+                    "SELECT * FROM market_surface_safety_observations WHERE definition_version=? "
+                    "AND lane=? AND quote_key=? ORDER BY id DESC LIMIT 1",
+                    (self.MARKET_SURFACE_SAFETY_VERSION,
+                     self.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION, str(row["quote_key"])),
+                ).fetchone()
+                migration = self.db.execute(
+                    "SELECT source_observed_at FROM token_launch_facts WHERE token_id=? "
+                    "AND launch_event_type='migration' AND create_signature<>'' AND ingested_at<=? "
+                    "ORDER BY source_observed_at DESC,id DESC LIMIT 1",
+                    (str(row["token_id"]), str(row["completed_at"])),
+                ).fetchone()
+                pool_age = (
+                    (completed - parse_time(migration["source_observed_at"])).total_seconds()
+                    if migration is not None else None
+                )
+                focus = bool(
+                    rug_safe and surface is not None and str(surface["status"]) == "PASS"
+                    and pool_age is not None and 0 <= pool_age <= 600
+                    and recovery is not None and float(recovery) >= 0.90
+                    and stress is not None and float(stress) >= 0.85
+                )
+                gates = {
+                    "shadow_momentum": common, "two_way_route": two_way,
+                    "economic_route": economic, "rug_safety": rug_safe,
+                    "solana_focus": focus,
+                }
+                gate_reasons = {
+                    "shadow_momentum": "shadow_signal_or_real_buy_quote_failed",
+                    "two_way_route": "two_way_route_not_pass",
+                    "economic_route": "economic_route_not_pass",
+                    "rug_safety": "pretrade_rug_safety_not_pass",
+                    "solana_focus": "solana_focus_gate_not_pass",
+                }
+                for policy in definition["policies"]:
+                    arm_id = str(policy["arm_id"])
+                    if self.db.execute(
+                        "SELECT 1 FROM chain_meme_trader_entry_decisions WHERE "
+                        "definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+                        (version, arm_id, cohort_id),
+                    ).fetchone() is not None:
+                        continue
+                    entry_gate = str(policy["entry_gate"])
+                    decision_times = [completed]
+                    if entry_gate in {"two_way_route", "economic_route", "rug_safety", "solana_focus"}:
+                        decision_times.extend(
+                            parse_time(item["observed_at"])
+                            for item in route_rows if item["observed_at"]
+                        )
+                    if entry_gate in {"rug_safety", "solana_focus"} and rug is not None:
+                        decision_times.append(parse_time(rug["assessed_at"]))
+                    if entry_gate == "solana_focus" and surface is not None:
+                        decision_times.append(parse_time(surface["observed_at"]))
+                    decision_at = max(decision_times)
+                    quote_age_seconds = (decision_at - completed).total_seconds()
+                    eligible = bool(
+                        gates.get(entry_gate, False)
+                        and 0 <= quote_age_seconds <= float(definition["max_quote_delay_seconds"])
+                    )
+                    reason = (
+                        f"{entry_gate}_pass"
+                        if eligible
+                        else "entry_quote_stale_before_stage_decision"
+                        if gates.get(entry_gate, False)
+                        else gate_reasons[entry_gate]
+                    )
+                    self.db.execute(
+                        "INSERT INTO chain_meme_trader_entry_decisions("
+                        "definition_version,arm_id,shadow_cohort_id,token_id,baseline_quote_result_id,"
+                        "decided_at,status,reason) VALUES(?,?,?,?,?,?,?,?)",
+                        (version, arm_id, cohort_id, str(row["token_id"]), result_id,
+                         iso(decision_at), "admitted" if eligible else "rejected", reason),
+                    )
+                    decision_id = int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+                    rejected += 0 if eligible else 1
+                    if not eligible:
+                        continue
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO chain_meme_trader_order_intents("
+                        "intent_key,definition_version,execution_mode,arm_id,shadow_cohort_id,"
+                        "token_id,side,entry_decision_id,input_mint,output_mint,input_amount_raw,"
+                        "slippage_bps,status,reason,created_at,expires_at) "
+                        "VALUES(?,?,'paper',?,?,?,'BUY',?,?,?,?,400,'ready',?,?,?)",
+                        (
+                            f"{version}:BUY:{arm_id}:{cohort_id}", version, arm_id, cohort_id,
+                            str(row["token_id"]), decision_id, self.JUPITER_USDC_MINT,
+                            str(row["token_id"]).split(":", 1)[1], "20000000", reason,
+                            iso(decision_at),
+                            iso(decision_at + timedelta(seconds=float(definition["max_quote_delay_seconds"]))),
+                        ),
+                    )
+                    changed = int(self.db.execute("SELECT changes()").fetchone()[0])
+                    inserted += changed
+        return {"inserted": inserted, "rejected": rejected}
+
+    def due_chain_meme_trader_execution(
+        self, *, now: Any = None, definition_version: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Return one fair Paper execution batch; a research quote is never a fill."""
+        version = definition_version or self.CHAIN_MEME_TRADER_VERSION
+        current = parse_time(now or utcnow())
+        with self._lock, self.db:
+            registration = self._chain_meme_trader_registration(version)
+            if registration is None:
+                return None
+            if version in {
+                self.CHAIN_MEME_TRADER_V11_VERSION,
+                self.CHAIN_MEME_TRADER_V12_VERSION,
+                self.CHAIN_MEME_TRADER_V13_VERSION,
+            } and self.db.execute(
+                "SELECT 1 FROM chain_meme_trader_v6_activations "
+                "WHERE definition_version=? AND entry_execution_enabled=1",
+                (version,),
+            ).fetchone() is None:
+                return None
+            definition = self._json_object(registration["definition_json"])
+            # DexScreener-market Paper settles only on its independent
+            # post-trigger DEX frame.  Sending its raw token amount to the
+            # generic Jupiter route executor can apply a wrong token decimal
+            # scale and bypass that confirmation.
+            if str(definition.get("sell_execution") or "") == (
+                "dexscreener_market_mark_only"
+            ):
+                self.db.execute(
+                    "UPDATE chain_meme_trader_order_intents SET status='cancelled',"
+                    "completed_at=? WHERE definition_version=? "
+                    "AND status IN ('ready','retry')",
+                    (iso(current), version),
+                )
+                return None
+            self.db.execute(
+                "UPDATE chain_meme_trader_order_intents SET status='failed',completed_at=? "
+                "WHERE definition_version=? AND side='BUY' AND status IN ('ready','retry') "
+                "AND expires_at<?",
+                (iso(current), version, iso(current)),
+            )
+            for mark in self.db.execute(
+                "SELECT m.*,p.token_id FROM chain_meme_trader_marks m "
+                "JOIN chain_meme_trader_positions p ON p.definition_version=m.definition_version "
+                "AND p.arm_id=m.arm_id AND p.shadow_cohort_id=m.shadow_cohort_id "
+                "WHERE m.definition_version=? AND p.status='open' "
+                "AND m.status IN ('pending','retry')", (version,),
+            ).fetchall():
+                token_id = str(mark["token_id"])
+                self.db.execute(
+                    "INSERT OR IGNORE INTO chain_meme_trader_order_intents("
+                    "intent_key,definition_version,execution_mode,arm_id,shadow_cohort_id,"
+                    "token_id,side,exit_mark_id,input_mint,output_mint,input_amount_raw,"
+                    "slippage_bps,status,reason,created_at,expires_at,next_attempt_at) "
+                    "VALUES(?,?,'paper',?,?,?,'SELL',?,?,?,?,?,'ready',?,?,?,?)",
+                    (
+                        f"{version}:SELL:{int(mark['id'])}", version, str(mark["arm_id"]),
+                        int(mark["shadow_cohort_id"]), token_id, int(mark["id"]),
+                        token_id.split(":", 1)[1], self.JUPITER_USDC_MINT,
+                        str(mark["sell_amount_raw"]), int(definition["slippage_bps"]),
+                        str(mark["reason"]), str(mark["recorded_at"]),
+                        iso(current + timedelta(days=1)), mark["next_attempt_at"],
+                    ),
+                )
+            first = self.db.execute(
+                "SELECT * FROM chain_meme_trader_order_intents WHERE definition_version=? "
+                "AND status IN ('ready','retry') AND (next_attempt_at IS NULL OR next_attempt_at<=?) "
+                "ORDER BY side='SELL' DESC,reason LIKE 'exact_pool_alert:%' DESC,"
+                "reason LIKE 'local_surface_%' DESC,expires_at,created_at,id "
+                "LIMIT 1", (version, iso(current)),
+            ).fetchone()
+            if first is None:
+                return None
+            rows = self.db.execute(
+                "SELECT * FROM chain_meme_trader_order_intents WHERE definition_version=? "
+                "AND status IN ('ready','retry') AND (next_attempt_at IS NULL OR next_attempt_at<=?) "
+                "AND side=? AND shadow_cohort_id=? AND input_mint=? AND output_mint=? "
+                "AND input_amount_raw=? ORDER BY id",
+                (
+                    version, iso(current), str(first["side"]), int(first["shadow_cohort_id"]),
+                    str(first["input_mint"]), str(first["output_mint"]),
+                    str(first["input_amount_raw"]),
+                ),
+            ).fetchall()
+            return {
+                "definition_version": version,
+                "execution_mode": "paper",
+                "adapter": str(
+                    definition.get("execution_profile")
+                    or "jupiter_quote_minimum_output_paper/v1"
+                ),
+                "side": str(first["side"]),
+                "shadow_cohort_id": int(first["shadow_cohort_id"]),
+                "input_mint": str(first["input_mint"]),
+                "output_mint": str(first["output_mint"]),
+                "input_amount_raw": str(first["input_amount_raw"]),
+                "slippage_bps": int(first["slippage_bps"]),
+                "intent_ids": [int(row["id"]) for row in rows],
+            }
+
+    def recover_interrupted_chain_meme_trader_executions(self, *, now: Any = None) -> int:
+        """Return submitted Paper intents without a recorded result to the retry queue."""
+        versions = (
+            self.CHAIN_MEME_TRADER_VERSION,
+            self.CHAIN_MEME_TRADER_V11_VERSION,
+            self.CHAIN_MEME_TRADER_ACTIVE_VERSION,
+            self.CHAIN_MEME_TRADER_STAGE4_EXEC_DECAY_VERSION,
+            self.CHAIN_MEME_TRADER_STAGE4_EXEC_EQUITY_V2_VERSION,
+        )
+        recovered_at = iso(now or utcnow())
+        recovered = 0
+        with self._lock:
+            result_ids = [
+                int(row["id"]) for row in self.db.execute(
+                    "SELECT DISTINCT r.id FROM chain_meme_trader_execution_results r "
+                    "JOIN chain_meme_trader_execution_attempts a ON a.id=r.attempt_id "
+                    "JOIN json_each(a.intent_ids_json) j "
+                    "JOIN chain_meme_trader_order_intents i ON i.id=CAST(j.value AS INTEGER) "
+                    "WHERE r.definition_version IN (?,?,?,?,?) AND i.status='submitted'",
+                    versions,
+                ).fetchall()
+            ]
+        for result_id in result_ids:
+            recovered += self.settle_chain_meme_trader_execution_result(result_id)
+        with self._lock, self.db:
+            rows = self.db.execute(
+                "SELECT i.id,i.exit_mark_id FROM chain_meme_trader_order_intents i "
+                "WHERE i.definition_version IN (?,?,?,?,?) AND i.status='submitted' "
+                "AND EXISTS (SELECT 1 FROM chain_meme_trader_execution_attempts a "
+                "JOIN json_each(a.intent_ids_json) j "
+                "WHERE a.definition_version=i.definition_version "
+                "AND CAST(j.value AS INTEGER)=i.id "
+                "AND NOT EXISTS (SELECT 1 FROM chain_meme_trader_execution_results r "
+                "WHERE r.attempt_id=a.id))",
+                versions,
+            ).fetchall()
+            for row in rows:
+                self.db.execute(
+                    "UPDATE chain_meme_trader_order_intents SET status='retry',next_attempt_at=? "
+                    "WHERE id=? AND status='submitted'", (recovered_at, int(row["id"])),
+                )
+                if row["exit_mark_id"] is not None:
+                    self.db.execute(
+                        "UPDATE chain_meme_trader_marks SET status='retry',next_attempt_at=? "
+                        "WHERE id=? AND status='quoting'",
+                        (recovered_at, int(row["exit_mark_id"])),
+                    )
+                recovered += 1
+        return recovered
+
+    def start_chain_meme_trader_execution(
+        self, task: Mapping[str, Any], *, requested_at: Any = None,
+    ) -> int | None:
+        requested = parse_time(requested_at or utcnow())
+        version = str(task.get("definition_version") or self.CHAIN_MEME_TRADER_VERSION)
+        intent_ids = sorted({int(value) for value in task.get("intent_ids") or []})
+        if (
+            not intent_ids or str(task.get("execution_mode")) != "paper"
+            or self._chain_meme_trader_registration(version) is None
+        ):
+            return None
+        with self._lock, self.db:
+            placeholders = ",".join("?" for _ in intent_ids)
+            rows = self.db.execute(
+                f"SELECT * FROM chain_meme_trader_order_intents WHERE id IN ({placeholders}) "
+                "AND definition_version=? AND execution_mode='paper' "
+                "AND status IN ('ready','retry')",
+                (*intent_ids, version),
+            ).fetchall()
+            if len(rows) != len(intent_ids):
+                return None
+            key = f"{version}:{task['side']}:{int(task['shadow_cohort_id'])}:{int(requested.timestamp()*1_000_000)}"
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_execution_attempts("
+                "attempt_key,definition_version,execution_mode,adapter,side,shadow_cohort_id,"
+                "input_mint,output_mint,input_amount_raw,slippage_bps,intent_ids_json,requested_at) "
+                "VALUES(?,?,'paper',?,?,?,?,?,?,?,?,?)",
+                (
+                    key, version, str(task["adapter"]), str(task["side"]),
+                    int(task["shadow_cohort_id"]), str(task["input_mint"]),
+                    str(task["output_mint"]), str(task["input_amount_raw"]),
+                    int(task["slippage_bps"]), self._json(intent_ids), iso(requested),
+                ),
+            )
+            attempt_id = int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+            self.db.execute(
+                f"UPDATE chain_meme_trader_order_intents SET status='submitted' "
+                f"WHERE id IN ({placeholders})", tuple(intent_ids),
+            )
+            mark_ids = [
+                int(row["exit_mark_id"]) for row in rows if row["exit_mark_id"] is not None
+            ]
+            if mark_ids:
+                mark_placeholders = ",".join("?" for _ in mark_ids)
+                self.db.execute(
+                    f"UPDATE chain_meme_trader_marks SET status='quoting',"
+                    f"attempt_count=attempt_count+1 WHERE id IN ({mark_placeholders})",
+                    tuple(mark_ids),
+                )
+            return attempt_id
+
+    def record_chain_meme_trader_execution_result(
+        self, attempt_id: int, *, status: str,
+        output_amount_raw: int | str | None = None,
+        other_amount_threshold_raw: int | str | None = None,
+        slippage_bps: int | None = None,
+        route_plan: Iterable[Mapping[str, Any]] | None = None,
+        error_type: str = "", completed_at: Any = None,
+    ) -> int | None:
+        if status not in {"quoted", "no_route", "error", "quote_only_protocol_invalid"}:
+            raise ValueError("invalid ChainMemeTrader execution status")
+        completed = parse_time(completed_at or utcnow())
+        with self._lock, self.db:
+            attempt = self.db.execute(
+                "SELECT * FROM chain_meme_trader_execution_attempts WHERE id=?",
+                (int(attempt_id),),
+            ).fetchone()
+            if attempt is None:
+                return None
+            version = str(attempt["definition_version"])
+            registration = self._chain_meme_trader_registration(version)
+            if attempt is None or registration is None:
+                return None
+            existing = self.db.execute(
+                "SELECT id FROM chain_meme_trader_execution_results WHERE attempt_id=?",
+                (int(attempt_id),),
+            ).fetchone()
+            if existing is not None:
+                return int(existing["id"])
+            definition = self._json_object(registration["definition_json"])
+            requested = parse_time(attempt["requested_at"])
+            timely = completed >= requested and (
+                completed - requested
+            ).total_seconds() <= float(definition["max_quote_delay_seconds"])
+            threshold = int(other_amount_threshold_raw or 0)
+            valid = bool(timely and ((status == "quoted" and threshold > 0) or status == "no_route"))
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_execution_results("
+                "definition_version,attempt_id,terminal_status,validity_status,output_amount_raw,"
+                "minimum_output_amount_raw,requested_at,completed_at,slippage_bps,"
+                "route_plan_json,error_type,recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    version, int(attempt_id), status, "valid" if valid else "invalid",
+                    str(output_amount_raw) if output_amount_raw is not None else None,
+                    str(other_amount_threshold_raw) if other_amount_threshold_raw is not None else None,
+                    str(attempt["requested_at"]), iso(completed),
+                    int(slippage_bps or attempt["slippage_bps"]),
+                    self._json(list(route_plan or [])), str(error_type or "")[:80], iso(),
+                ),
+            )
+            return int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+
+    def settle_chain_meme_trader_execution_result(self, result_id: int) -> int:
+        """Project immutable Paper results into fills and positions exactly once."""
+        settled = 0
+        with self._lock, self.db:
+            result = self.db.execute(
+                "SELECT r.*,a.adapter,a.side,a.intent_ids_json,a.input_amount_raw "
+                "FROM chain_meme_trader_execution_results r "
+                "JOIN chain_meme_trader_execution_attempts a ON a.id=r.attempt_id "
+                "WHERE r.id=?", (int(result_id),),
+            ).fetchone()
+            if result is None:
+                return 0
+            version = str(result["definition_version"])
+            registration = self._chain_meme_trader_registration(version)
+            if registration is None:
+                return 0
+            definition = self._json_object(registration["definition_json"])
+            # Ignore any result from a legacy generic executor task.  A task
+            # can have been submitted before the market-only gate above was
+            # deployed; it must not manufacture a Paper fill from raw units.
+            if str(definition.get("sell_execution") or "") == (
+                "dexscreener_market_mark_only"
+            ):
+                intent_ids = [int(value) for value in self._json_list(
+                    result["intent_ids_json"]
+                )]
+                if intent_ids:
+                    placeholders = ",".join("?" for _ in intent_ids)
+                    self.db.execute(
+                        f"UPDATE chain_meme_trader_order_intents SET status='cancelled',"
+                        f"completed_at=? WHERE id IN ({placeholders}) "
+                        "AND status IN ('ready','retry','submitted')",
+                        (str(result["completed_at"]), *intent_ids),
+                    )
+                    self.db.execute(
+                        f"UPDATE chain_meme_trader_marks SET status='pending',"
+                        f"next_attempt_at=NULL WHERE id IN ("
+                        f"SELECT exit_mark_id FROM chain_meme_trader_order_intents "
+                        f"WHERE id IN ({placeholders}) AND exit_mark_id IS NOT NULL) "
+                        "AND status='quoting'",
+                        tuple(intent_ids),
+                    )
+                return 0
+            policies = {str(item["arm_id"]): item for item in definition["policies"]}
+            quoted = (
+                str(result["terminal_status"]) == "quoted"
+                and str(result["validity_status"]) == "valid"
+                and int(result["minimum_output_amount_raw"] or 0) > 0
+            )
+            no_route = (
+                str(result["terminal_status"]) == "no_route"
+                and str(result["validity_status"]) == "valid"
+            )
+            for intent_id in [int(value) for value in self._json_list(result["intent_ids_json"])]:
+                intent = self.db.execute(
+                    "SELECT * FROM chain_meme_trader_order_intents WHERE id=? "
+                    "AND definition_version=?", (intent_id, version),
+                ).fetchone()
+                if intent is None or str(intent["status"]) in {"filled", "written_off", "cancelled"}:
+                    continue
+                if str(intent["side"]) == "BUY":
+                    if not quoted:
+                        self.db.execute(
+                            "UPDATE chain_meme_trader_order_intents SET status='failed',completed_at=? "
+                            "WHERE id=?", (str(result["completed_at"]), intent_id),
+                        )
+                        continue
+                    if version in {
+                        self.CHAIN_MEME_TRADER_V10_VERSION,
+                        self.CHAIN_MEME_TRADER_V11_VERSION,
+                        self.CHAIN_MEME_TRADER_V12_VERSION,
+                    }:
+                        cohort = self.db.execute(
+                            "SELECT c.*,s.price_usd FROM chain_meme_trader_v6_cohorts c "
+                            "JOIN token_snapshots s ON s.id=c.source_snapshot_id "
+                            "WHERE c.id=? AND c.definition_version=? AND c.token_id=?",
+                            (
+                                int(intent["shadow_cohort_id"]), version,
+                                str(intent["token_id"]),
+                            ),
+                        ).fetchone()
+                        decisions = self.db.execute(
+                            "SELECT * FROM chain_meme_trader_entry_decisions WHERE "
+                            "definition_version=? AND shadow_cohort_id=? AND status='admitted' "
+                            "ORDER BY arm_id",
+                            (version, int(intent["shadow_cohort_id"])),
+                        ).fetchall()
+                        invalid_participants = bool(
+                            cohort is None or not decisions
+                            or (
+                                version == self.CHAIN_MEME_TRADER_V10_VERSION
+                                and len(decisions) != 4
+                            )
+                        )
+                        if invalid_participants:
+                            self.db.execute(
+                                "UPDATE chain_meme_trader_order_intents SET status='failed',"
+                                "completed_at=? WHERE id=?",
+                                (str(result["completed_at"]), intent_id),
+                            )
+                            continue
+                        required_cash = float(definition["policy_notional_usd"])
+                        payable_decisions = []
+                        for decision in decisions:
+                            net_flow = float(self.db.execute(
+                                "SELECT COALESCE(SUM(net_cash_flow_usd),0) FROM "
+                                "chain_meme_trader_trades WHERE definition_version=? "
+                                "AND arm_id=?",
+                                (version, str(decision["arm_id"])),
+                            ).fetchone()[0] or 0.0)
+                            cash_at_fill = (
+                                float(definition["starting_cash_usd_each_arm"]) + net_flow
+                            )
+                            if cash_at_fill + 1e-9 >= required_cash:
+                                payable_decisions.append(decision)
+                        if (
+                            version == self.CHAIN_MEME_TRADER_V10_VERSION
+                            and len(payable_decisions) != len(decisions)
+                        ):
+                            self.db.execute(
+                                "UPDATE chain_meme_trader_order_intents SET "
+                                "status='cancelled',reason=reason||':cash_unavailable_at_fill',"
+                                "completed_at=? WHERE id=?",
+                                (str(result["completed_at"]), intent_id),
+                            )
+                            continue
+                        acquired = str(result["minimum_output_amount_raw"])
+                        self.db.execute(
+                            "INSERT OR IGNORE INTO chain_meme_trader_v6_entry_fills("
+                            "definition_version,entry_cohort_id,execution_attempt_id,"
+                            "execution_result_id,token_id,input_usdc_raw,output_token_raw,"
+                            "slippage_bps,filled_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                            (
+                                version, int(cohort["id"]), int(result["attempt_id"]),
+                                int(result_id), str(intent["token_id"]),
+                                str(result["input_amount_raw"]), acquired,
+                                int(result["slippage_bps"]), str(result["completed_at"]),
+                            ),
+                        )
+                        entry_fill = self.db.execute(
+                            "SELECT * FROM chain_meme_trader_v6_entry_fills WHERE "
+                            "definition_version=? AND entry_cohort_id=?",
+                            (version, int(cohort["id"])),
+                        ).fetchone()
+                        projected = 0
+                        payable_ids = {int(item["id"]) for item in payable_decisions}
+                        for decision in decisions:
+                            arm_id = str(decision["arm_id"])
+                            if int(decision["id"]) not in payable_ids:
+                                self.db.execute(
+                                    "INSERT OR IGNORE INTO "
+                                    "chain_meme_trader_entry_participant_outcomes("
+                                    "definition_version,shadow_cohort_id,arm_id,"
+                                    "entry_decision_id,entry_fill_id,outcome,"
+                                    "available_cash_usd,recorded_at) "
+                                    "VALUES(?,?,?,?,?,'skipped_cash_unavailable_at_fill',?,?)",
+                                    (
+                                        version, int(cohort["id"]), arm_id,
+                                        int(decision["id"]), int(entry_fill["id"]),
+                                        float(definition["starting_cash_usd_each_arm"])
+                                        + float(self.db.execute(
+                                            "SELECT COALESCE(SUM(net_cash_flow_usd),0) "
+                                            "FROM chain_meme_trader_trades "
+                                            "WHERE definition_version=? AND arm_id=?",
+                                            (version, arm_id),
+                                        ).fetchone()[0] or 0.0),
+                                        str(result["completed_at"]),
+                                    ),
+                                )
+                                continue
+                            self.db.execute(
+                                "INSERT OR IGNORE INTO chain_meme_trader_positions("
+                                "definition_version,arm_id,shadow_cohort_id,token_id,"
+                                "source_buy_trade_id,source_entry_fill_id,baseline_quote_result_id,"
+                                "entry_snapshot_id,entry_signal_price_usd,amount_raw,"
+                                "initial_amount_raw,stake_usd,highest_signal_price_usd,status,"
+                                "opened_at,close_reason,entry_reason) "
+                                "VALUES(?,?,?,?,?,?,?,?,?,?,?,20,?,'open',?,'',?)",
+                                (
+                                    version, arm_id, int(cohort["id"]),
+                                    str(intent["token_id"]), int(entry_fill["id"]),
+                                    int(entry_fill["id"]), int(cohort["source_snapshot_id"]),
+                                    int(cohort["source_snapshot_id"]),
+                                    float(cohort["price_usd"]), acquired, acquired,
+                                    float(cohort["price_usd"]), str(result["completed_at"]),
+                                    str(intent["reason"]),
+                                ),
+                            )
+                            if int(self.db.execute("SELECT changes()").fetchone()[0]) == 0:
+                                continue
+                            self.db.execute(
+                                "INSERT INTO chain_meme_trader_trades("
+                                "definition_version,arm_id,shadow_cohort_id,token_id,side,"
+                                "gross_usd,net_cash_flow_usd,reason,created_at) "
+                                "VALUES(?,?,?,?, 'BUY',20,-20,?,?)",
+                                (
+                                    version, arm_id, int(cohort["id"]),
+                                    str(intent["token_id"]), str(intent["reason"]),
+                                    str(result["completed_at"]),
+                                ),
+                            )
+                            self.db.execute(
+                                "INSERT OR IGNORE INTO "
+                                "chain_meme_trader_entry_participant_outcomes("
+                                "definition_version,shadow_cohort_id,arm_id,"
+                                "entry_decision_id,entry_fill_id,outcome,"
+                                "available_cash_usd,recorded_at) "
+                                "VALUES(?,?,?,?,?,'projected',?,?)",
+                                (
+                                    version, int(cohort["id"]), arm_id,
+                                    int(decision["id"]), int(entry_fill["id"]),
+                                    float(definition["starting_cash_usd_each_arm"])
+                                    + float(self.db.execute(
+                                        "SELECT COALESCE(SUM(net_cash_flow_usd),0) "
+                                        "FROM chain_meme_trader_trades "
+                                        "WHERE definition_version=? AND arm_id=?",
+                                        (version, arm_id),
+                                    ).fetchone()[0] or 0.0)
+                                    + required_cash,
+                                    str(result["completed_at"]),
+                                ),
+                            )
+                            projected += 1
+                        self.db.execute(
+                            "UPDATE chain_meme_trader_order_intents SET status='filled',"
+                            "completed_at=? WHERE id=?",
+                            (str(result["completed_at"]), intent_id),
+                        )
+                        settled += projected
+                        continue
+                    if version == self.CHAIN_MEME_TRADER_V6_VERSION:
+                        decision = self.db.execute(
+                            "SELECT d.*,c.trigger_snapshot_id,s.price_usd FROM "
+                            "chain_meme_trader_entry_decisions d "
+                            "JOIN chain_meme_trader_v6_cohorts c "
+                            "ON c.id=d.shadow_cohort_id AND c.definition_version=d.definition_version "
+                            "JOIN token_snapshots s ON s.id=c.trigger_snapshot_id "
+                            "WHERE d.id=? AND d.status='admitted'",
+                            (int(intent["entry_decision_id"]),),
+                        ).fetchone()
+                    else:
+                        decision = self.db.execute(
+                            "SELECT d.*,c.trigger_snapshot_id,s.price_usd FROM "
+                            "chain_meme_trader_entry_decisions d "
+                            "JOIN onchain_only_shadow_cohorts c ON c.id=d.shadow_cohort_id "
+                            "JOIN token_snapshots s ON s.id=c.trigger_snapshot_id "
+                            "WHERE d.id=? AND d.status='admitted'",
+                            (int(intent["entry_decision_id"]),),
+                        ).fetchone()
+                    if decision is None:
+                        self.db.execute(
+                            "UPDATE chain_meme_trader_order_intents SET status='failed',completed_at=? "
+                            "WHERE id=?", (str(result["completed_at"]), intent_id),
+                        )
+                        continue
+                    acquired = str(result["minimum_output_amount_raw"])
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO chain_meme_trader_fills("
+                        "definition_version,intent_id,result_id,attempt_id,execution_mode,adapter,"
+                        "arm_id,shadow_cohort_id,token_id,side,input_amount_raw,output_amount_raw,"
+                        "gross_usd,filled_at) VALUES(?,?,?,?, 'paper',?,?,?,?, 'BUY',?,?,20,?)",
+                        (
+                            version, intent_id, int(result_id), int(result["attempt_id"]),
+                            str(result["adapter"]), str(intent["arm_id"]),
+                            int(intent["shadow_cohort_id"]), str(intent["token_id"]),
+                            str(result["input_amount_raw"]), acquired, str(result["completed_at"]),
+                        ),
+                    )
+                    if int(self.db.execute("SELECT changes()").fetchone()[0]) == 0:
+                        continue
+                    fill_id = int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+                    self.db.execute(
+                        "INSERT INTO chain_meme_trader_positions("
+                        "definition_version,arm_id,shadow_cohort_id,token_id,source_buy_trade_id,"
+                        "baseline_quote_result_id,entry_snapshot_id,entry_signal_price_usd,amount_raw,"
+                        "initial_amount_raw,stake_usd,highest_signal_price_usd,status,opened_at,"
+                        "close_reason,entry_reason,entry_fill_id,last_fill_id) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,20,?,'open',?,?,?, ?,?)",
+                        (
+                            version, str(intent["arm_id"]), int(intent["shadow_cohort_id"]),
+                            str(intent["token_id"]), int(decision["baseline_quote_result_id"]),
+                            int(decision["baseline_quote_result_id"]), int(decision["trigger_snapshot_id"]),
+                            float(decision["price_usd"]), acquired, acquired,
+                            float(decision["price_usd"]), str(result["completed_at"]), "",
+                            str(intent["reason"]), fill_id, fill_id,
+                        ),
+                    )
+                    self.db.execute(
+                        "INSERT INTO chain_meme_trader_trades("
+                        "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+                        "net_cash_flow_usd,reason,created_at,execution_fill_id) "
+                        "VALUES(?,?,?,?, 'BUY',20,-20,?,?,?)",
+                        (
+                            version, str(intent["arm_id"]), int(intent["shadow_cohort_id"]),
+                            str(intent["token_id"]), str(intent["reason"]),
+                            str(result["completed_at"]), fill_id,
+                        ),
+                    )
+                    self.db.execute(
+                        "UPDATE chain_meme_trader_order_intents SET status='filled',completed_at=? "
+                        "WHERE id=?", (str(result["completed_at"]), intent_id),
+                    )
+                    settled += 1
+                    continue
+
+                mark = self.db.execute(
+                    "SELECT * FROM chain_meme_trader_marks WHERE id=? AND definition_version=?",
+                    (int(intent["exit_mark_id"]), version),
+                ).fetchone()
+                position = self.db.execute(
+                    "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
+                    "AND arm_id=? AND shadow_cohort_id=? AND status='open'",
+                    (version, str(intent["arm_id"]), int(intent["shadow_cohort_id"])),
+                ).fetchone()
+                if mark is None or position is None:
+                    self.db.execute(
+                        "UPDATE chain_meme_trader_order_intents SET status='cancelled',completed_at=? "
+                        "WHERE id=?", (str(result["completed_at"]), intent_id),
+                    )
+                    continue
+                policy = policies.get(str(intent["arm_id"])) or {}
+                fallback_mark = None
+                fallback_gross = None
+                market_exit_contract = bool(
+                    version == self.CHAIN_MEME_TRADER_V12_VERSION
+                    or ":v11_legacy_dexmark_drain_overlay" in str(mark["reason"])
+                )
+                if not quoted and market_exit_contract:
+                    fallback_mark = self.db.execute(
+                        "SELECT * FROM chain_meme_trader_market_marks WHERE token_id=? "
+                        "AND status='VISIBLE' AND price_usd>0 AND recorded_at>=? "
+                        "AND recorded_at<=? ORDER BY recorded_at DESC LIMIT 1",
+                        (
+                            str(intent["token_id"]), str(position["opened_at"]),
+                            str(result["completed_at"]),
+                        ),
+                    ).fetchone()
+                    if fallback_mark is not None:
+                        current_amount = max(0, int(position["amount_raw"] or 0))
+                        sold_amount = min(
+                            current_amount, max(0, int(mark["sell_amount_raw"] or 0)),
+                        )
+                        initial_amount = max(
+                            1, int(position["initial_amount_raw"] or current_amount or 1),
+                        )
+                        entry_price = float(
+                            position["entry_execution_price_usd"]
+                            or position["entry_signal_price_usd"] or 0.0
+                        )
+                        if current_amount > 0 and sold_amount > 0 and entry_price > 0:
+                            fallback_gross = max(
+                                0.0,
+                                float(position["stake_usd"])
+                                * sold_amount / initial_amount
+                                * float(fallback_mark["price_usd"]) / entry_price
+                                * (1.0 - int(definition["slippage_bps"]) / 10_000.0),
+                            )
+                if quoted or fallback_gross is not None:
+                    current_amount = max(0, int(position["amount_raw"] or 0))
+                    sold_amount = min(current_amount, max(0, int(mark["sell_amount_raw"] or 0)))
+                    if sold_amount <= 0:
+                        continue
+                    gross = (
+                        int(result["minimum_output_amount_raw"]) / 1_000_000.0
+                        if quoted else float(fallback_gross)
+                    )
+                    output_amount_raw = (
+                        str(result["minimum_output_amount_raw"])
+                        if quoted else str(round(gross * 1_000_000))
+                    )
+                    fill_adapter = (
+                        str(result["adapter"])
+                        if quoted else "dexscreener-market-mark-paper-fallback/v1"
+                    )
+                    fill_reason = str(mark["reason"])
+                    if not quoted:
+                        fill_reason += (
+                            f":dex_mark_fallback_after_{str(result['terminal_status'])}"
+                        )
+                    unallocated = max(0.0, float(position["stake_usd"]) - float(position["allocated_cost_usd"] or 0.0))
+                    cost_delta = unallocated * sold_amount / current_amount
+                    new_amount = current_amount - sold_amount
+                    new_proceeds = float(position["realized_proceeds_usd"] or 0.0) + gross
+                    new_allocated = float(position["allocated_cost_usd"] or 0.0) + cost_delta
+                    cumulative_pnl = new_proceeds - new_allocated
+                    closes = new_amount <= 0
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO chain_meme_trader_fills("
+                        "definition_version,intent_id,result_id,attempt_id,execution_mode,adapter,"
+                        "arm_id,shadow_cohort_id,token_id,side,input_amount_raw,output_amount_raw,"
+                        "gross_usd,filled_at) VALUES(?,?,?,?, 'paper',?,?,?,?, 'SELL',?,?,?,?)",
+                        (
+                            version, intent_id, int(result_id), int(result["attempt_id"]),
+                            fill_adapter, str(intent["arm_id"]),
+                            int(intent["shadow_cohort_id"]), str(intent["token_id"]),
+                            str(sold_amount), output_amount_raw, gross,
+                            str(result["completed_at"]),
+                        ),
+                    )
+                    if int(self.db.execute("SELECT changes()").fetchone()[0]) == 0:
+                        continue
+                    fill_id = int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+                    initial_amount = max(
+                        1, int(position["initial_amount_raw"] or current_amount or 1),
+                    )
+                    initial_quantity = float(position["paper_quantity_tokens"] or 0.0)
+                    remaining_quantity = (
+                        0.0 if closes else (
+                            initial_quantity * new_amount / initial_amount
+                            if initial_quantity > 0.0 else None
+                        )
+                    )
+                    next_tp = int(position["next_tp_index"] or 0) + (
+                        1 if str(mark["action"]).startswith("TAKE_PROFIT_") else 0
+                    )
+                    self.db.execute(
+                        "UPDATE chain_meme_trader_positions SET amount_raw=?,remaining_quantity_tokens=?,"
+                        "realized_proceeds_usd=?,"
+                        "allocated_cost_usd=?,next_tp_index=?,status=?,pending_mark_id=NULL,"
+                        "realized_pnl_usd=?,closed_at=?,close_reason=?,last_fill_id=? "
+                        "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+                        (
+                            str(new_amount), remaining_quantity, new_proceeds, new_allocated, next_tp,
+                            "closed" if closes else "open", cumulative_pnl,
+                            str(result["completed_at"]) if closes else None,
+                            fill_reason if closes else "", fill_id, version,
+                            str(intent["arm_id"]), int(intent["shadow_cohort_id"]),
+                        ),
+                    )
+                    self.db.execute(
+                        "UPDATE chain_meme_trader_marks SET status='filled',next_attempt_at=NULL WHERE id=?",
+                        (int(mark["id"]),),
+                    )
+                    self.db.execute(
+                        "UPDATE chain_meme_trader_order_intents SET status='filled',completed_at=? "
+                        "WHERE id=?", (str(result["completed_at"]), intent_id),
+                    )
+                    self.db.execute(
+                        "INSERT INTO chain_meme_trader_trades("
+                        "definition_version,arm_id,shadow_cohort_id,token_id,quote_result_id,side,"
+                        "gross_usd,net_cash_flow_usd,realized_pnl_usd,reason,created_at,execution_fill_id) "
+                        "VALUES(?,?,?,?,NULL,'SELL',?,?,?,?,?,?)",
+                        (
+                            version, str(intent["arm_id"]), int(intent["shadow_cohort_id"]),
+                            str(intent["token_id"]), gross, gross, gross - cost_delta,
+                            fill_reason, str(result["completed_at"]), fill_id,
+                        ),
+                    )
+                    settled += 1
+                    continue
+
+                attempts = int(mark["attempt_count"] or 0)
+                exit_mode = str(policy.get("exit_mode") or "")
+                fixed_horizon = 0
+                if str(mark["reason"]).startswith("fixed_horizon_"):
+                    try:
+                        fixed_horizon = int(str(mark["reason"]).split("_")[-1][:-1])
+                    except (TypeError, ValueError):
+                        fixed_horizon = 0
+                confirmed_rug = self.db.execute(
+                    "SELECT 1 FROM onchain_confirmed_rug_terminals WHERE "
+                    "position_definition_version=? AND shadow_cohort_id=? LIMIT 1",
+                    (version, int(intent["shadow_cohort_id"])),
+                ).fetchone()
+                missing_market = self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_market_marks WHERE token_id=? "
+                    "AND status='MISSING' AND consecutive_misses>=2",
+                    (str(intent["token_id"]),),
+                ).fetchone()
+                terminal = bool(
+                    no_route
+                    and (
+                        str(mark["action"]) == "RUG_EXIT"
+                        or confirmed_rug is not None
+                        or (
+                            market_exit_contract
+                            and missing_market is not None
+                        )
+                    )
+                )
+                if terminal:
+                    remaining_cost = max(
+                        0.0, float(position["stake_usd"])
+                        - float(position["allocated_cost_usd"] or 0.0),
+                    )
+                    cumulative_pnl = float(position["realized_proceeds_usd"] or 0.0) - float(position["stake_usd"])
+                    reason_text = "confirmed_pool_removed_no_executable_exit"
+                    self.db.execute(
+                        "UPDATE chain_meme_trader_positions SET status='written_off',amount_raw='0',"
+                        "allocated_cost_usd=stake_usd,pending_mark_id=NULL,realized_pnl_usd=?,"
+                        "closed_at=?,close_reason=? WHERE definition_version=? AND arm_id=? "
+                        "AND shadow_cohort_id=?",
+                        (
+                            cumulative_pnl, str(result["completed_at"]), reason_text, version,
+                            str(intent["arm_id"]), int(intent["shadow_cohort_id"]),
+                        ),
+                    )
+                    self.db.execute(
+                        "UPDATE chain_meme_trader_marks SET status='written_off',next_attempt_at=NULL WHERE id=?",
+                        (int(mark["id"]),),
+                    )
+                    self.db.execute(
+                        "UPDATE chain_meme_trader_order_intents SET status='written_off',completed_at=? "
+                        "WHERE id=?", (str(result["completed_at"]), intent_id),
+                    )
+                    self.db.execute(
+                        "INSERT INTO chain_meme_trader_trades("
+                        "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+                        "net_cash_flow_usd,realized_pnl_usd,reason,created_at) "
+                        "VALUES(?,?,?,?, 'WRITEOFF',0,0,?,?,?)",
+                        (
+                            version, str(intent["arm_id"]), int(intent["shadow_cohort_id"]),
+                            str(intent["token_id"]), -remaining_cost, reason_text,
+                            str(result["completed_at"]),
+                        ),
+                    )
+                    settled += 1
+                    continue
+                if market_exit_contract:
+                    self.db.execute(
+                        "UPDATE chain_meme_trader_marks SET status='exhausted',"
+                        "next_attempt_at=NULL WHERE id=?", (int(mark["id"]),),
+                    )
+                    self.db.execute(
+                        "UPDATE chain_meme_trader_positions SET pending_mark_id=NULL WHERE "
+                        "definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+                        (version, str(intent["arm_id"]), int(intent["shadow_cohort_id"])),
+                    )
+                    self.db.execute(
+                        "UPDATE chain_meme_trader_order_intents SET status='failed',"
+                        "completed_at=? WHERE id=?",
+                        (str(result["completed_at"]), intent_id),
+                    )
+                    continue
+                delays = list(definition["retry_schedule_seconds"])
+                if no_route and exit_mode == "dynamic_with_horizon_fallback" and fixed_horizon in {15, 60}:
+                    self.db.execute(
+                        "UPDATE chain_meme_trader_marks SET status='exhausted',next_attempt_at=NULL WHERE id=?",
+                        (int(mark["id"]),),
+                    )
+                    self.db.execute(
+                        "UPDATE chain_meme_trader_positions SET pending_mark_id=NULL,"
+                        "last_fixed_horizon_minutes=? WHERE definition_version=? AND arm_id=? "
+                        "AND shadow_cohort_id=?",
+                        (fixed_horizon, version, str(intent["arm_id"]), int(intent["shadow_cohort_id"])),
+                    )
+                    self.db.execute(
+                        "UPDATE chain_meme_trader_order_intents SET status='failed',completed_at=? WHERE id=?",
+                        (str(result["completed_at"]), intent_id),
+                    )
+                elif attempts >= int(definition["max_attempts_per_mark"]):
+                    self.db.execute(
+                        "UPDATE chain_meme_trader_marks SET status='exhausted',next_attempt_at=NULL WHERE id=?",
+                        (int(mark["id"]),),
+                    )
+                    self.db.execute(
+                        "UPDATE chain_meme_trader_positions SET pending_mark_id=NULL WHERE "
+                        "definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+                        (version, str(intent["arm_id"]), int(intent["shadow_cohort_id"])),
+                    )
+                    self.db.execute(
+                        "UPDATE chain_meme_trader_order_intents SET status='failed',completed_at=? WHERE id=?",
+                        (str(result["completed_at"]), intent_id),
+                    )
+                else:
+                    delay = delays[min(max(0, attempts - 1), len(delays) - 1)]
+                    next_at = iso(parse_time(result["completed_at"]) + timedelta(seconds=float(delay)))
+                    self.db.execute(
+                        "UPDATE chain_meme_trader_marks SET status='retry',next_attempt_at=? WHERE id=?",
+                        (next_at, int(mark["id"])),
+                    )
+                    self.db.execute(
+                        "UPDATE chain_meme_trader_order_intents SET status='retry',next_attempt_at=? WHERE id=?",
+                        (next_at, intent_id),
+                    )
+            return settled
+
+    def due_chain_meme_trader_evaluations(self, *, now: Any = None, limit: int = 3) -> list[dict[str, Any]]:
+        cutoff = parse_time(now or utcnow()) - timedelta(seconds=15)
+        with self._lock:
+            rows = self.db.execute(
+                """
+                SELECT shadow_cohort_id,token_id,MIN(opened_at) AS opened_at,
+                       MIN(last_evaluated_at) AS first_evaluated_at,
+                       SUM(CASE WHEN last_evaluated_at IS NULL THEN 1 ELSE 0 END) AS never_count
+                FROM chain_meme_trader_positions
+                WHERE definition_version=? AND status='open'
+                GROUP BY shadow_cohort_id,token_id
+                HAVING never_count>0 OR first_evaluated_at<=?
+                ORDER BY never_count DESC,first_evaluated_at,opened_at,shadow_cohort_id LIMIT ?
+                """, (self.CHAIN_MEME_TRADER_VERSION, iso(cutoff), max(1, int(limit))),
+            ).fetchall()
+            return [{**dict(row), "chain": str(row["token_id"]).split(":", 1)[0],
+                     "address": str(row["token_id"]).split(":", 1)[1]}
+                    for row in rows if ":" in str(row["token_id"])]
+
+    def record_chain_meme_trader_evaluation(self, shadow_cohort_id: int, *, snapshot_id: int | None, evaluated_at: Any = None, reason: str = "") -> int:
+        version, current, created = self.CHAIN_MEME_TRADER_VERSION, parse_time(evaluated_at or utcnow()), 0
+        with self._lock, self.db:
+            registration = self.db.execute("SELECT * FROM chain_meme_trader_registrations WHERE definition_version=?", (version,)).fetchone()
+            if registration is None:
+                return 0
+            definition = self._json_object(registration["definition_json"])
+            policies = {str(item["arm_id"]): item for item in definition["policies"]}
+            positions = self.db.execute("SELECT * FROM chain_meme_trader_positions WHERE definition_version=? AND shadow_cohort_id=? AND status='open' ORDER BY arm_id", (version, int(shadow_cohort_id))).fetchall()
+            snapshot, temporal_valid = None, False
+            if snapshot_id is not None and positions:
+                snapshot = self.db.execute("SELECT * FROM token_snapshots WHERE id=? AND token_id=?", (int(snapshot_id), str(positions[0]["token_id"]))).fetchone()
+            if snapshot is not None:
+                observed = parse_time(snapshot["observed_at"]); ingested = parse_time(snapshot["ingested_at"] or snapshot["observed_at"]); recorded = parse_time(snapshot["recorded_at"] or snapshot["ingested_at"] or snapshot["observed_at"])
+                temporal_valid = observed <= ingested <= recorded <= current
+            price = float(snapshot["price_usd"]) if temporal_valid and snapshot["price_usd"] is not None else None
+            for position in positions:
+                policy = policies.get(str(position["arm_id"])) or {}
+                elapsed = max(0.0, (current - parse_time(position["opened_at"])).total_seconds() / 60.0)
+                high = max(float(position["highest_signal_price_usd"] or 0.0), float(price or 0.0))
+                action, mark_reason = None, reason or "monitor"
+                sell_amount = int(position["amount_raw"] or 0)
+                if position["pending_mark_id"] is None:
+                    exit_mode = str(policy.get("exit_mode") or "")
+                    dynamic_mode = exit_mode in {
+                        "dynamic", "dynamic_backoff", "dynamic_with_15m_deadline",
+                        "dynamic_with_horizon_fallback",
+                    }
+                    if dynamic_mode and elapsed >= float(policy.get("max_hold_minutes") or 240.0):
+                        action, mark_reason = "TIME_EXIT", "dynamic_max_hold_240m"
+                    elif dynamic_mode and temporal_valid and price is not None and price > 0:
+                        entry = float(position["entry_signal_price_usd"]); raw_return = price / entry - 1.0
+                        drawdown = price / high - 1.0 if high > 0 else 0.0
+                        liquidity = snapshot["liquidity_usd"]; buys = int(snapshot["buys_5m"] or 0); sells = int(snapshot["sells_5m"] or 0); volume = float(snapshot["volume_5m_usd"] or 0.0); total_trades = buys + sells
+                        if policy.get("emergency_liquidity_usd") is not None and liquidity is not None and float(liquidity) < float(policy["emergency_liquidity_usd"]): action, mark_reason = "LIQUIDITY_EXIT", "liquidity_below_3000"
+                        elif policy.get("hard_stop_return") is not None and raw_return <= float(policy["hard_stop_return"]): action, mark_reason = "HARD_STOP", "return_below_minus_35pct"
+                        elif policy.get("trailing_activate_return") is not None and high / entry - 1.0 >= float(policy["trailing_activate_return"]) and drawdown <= -float(policy["trailing_drawdown"]): action, mark_reason = "TRAILING_EXIT", "peak_drawdown_28pct"
+                        elif policy.get("zero_activity_grace_minutes") is not None and elapsed >= float(policy["zero_activity_grace_minutes"]) and volume <= 0 and total_trades <= 0: action, mark_reason = "INACTIVITY_EXIT", "zero_5m_activity"
+                        else:
+                            tp_index = int(position["next_tp_index"] or 0)
+                            tiers = list(policy.get("take_profit") or [])
+                            if tp_index < len(tiers) and raw_return >= float(tiers[tp_index]["return"]):
+                                fraction = float(tiers[tp_index]["fraction_of_remaining"])
+                                sell_amount = (
+                                    int(position["amount_raw"])
+                                    if fraction >= 1.0
+                                    else max(1, min(int(position["amount_raw"]), round(int(position["amount_raw"]) * fraction)))
+                                )
+                                action = f"TAKE_PROFIT_{tp_index + 1}"
+                                mark_reason = f"dynamic_take_profit_tier_{tp_index + 1}"
+                    if action is None and exit_mode == "dynamic_with_15m_deadline" and elapsed >= 15.0:
+                        action, mark_reason = "TIME_EXIT", "fixed_horizon_15m"
+                    elif action is None and exit_mode == "dynamic_with_horizon_fallback":
+                        completed_horizon = int(position["last_fixed_horizon_minutes"] or 0)
+                        due_horizon = next(
+                            (value for value in (15, 60, 240)
+                             if elapsed >= value and completed_horizon < value),
+                            None,
+                        )
+                        if due_horizon is not None:
+                            action, mark_reason = "TIME_EXIT", f"fixed_horizon_{due_horizon}m"
+                self.db.execute("UPDATE chain_meme_trader_positions SET highest_signal_price_usd=?,last_evaluated_at=? WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=? AND status='open'", (high, iso(current), version, str(position["arm_id"]), int(shadow_cohort_id)))
+                if action and sell_amount > 0:
+                    self.db.execute("INSERT INTO chain_meme_trader_marks(definition_version,arm_id,shadow_cohort_id,snapshot_id,recorded_at,action,reason,sell_amount_raw,status) VALUES(?,?,?,?,?,?,?,?, 'pending')", (version, str(position["arm_id"]), int(shadow_cohort_id), int(snapshot_id) if snapshot_id is not None else None, iso(current), action, mark_reason, str(sell_amount)))
+                    mark_id = int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+                    self.db.execute("UPDATE chain_meme_trader_positions SET pending_mark_id=? WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?", (mark_id, version, str(position["arm_id"]), int(shadow_cohort_id)))
+                    created += 1
+        return created
+
+    def sync_chain_meme_trader_rug_alerts(self) -> int:
+        emergency = {
+            "account_missing", "pool_identity_changed", "pool_program_owner_mismatch",
+            "base_vault_empty", "quote_vault_empty", "base_vault_depleted_90pct",
+            "quote_vault_depleted_90pct", "lp_supply_reappeared",
+            "joint_vaults_depleted_90pct_baseline",
+        }
+        terminal = {
+            "account_missing", "pool_identity_changed", "pool_program_owner_mismatch",
+            "joint_vaults_depleted_90pct_baseline",
+        }
+        inserted = 0
+        with self._lock, self.db:
+            for version in (
+                self.CHAIN_MEME_TRADER_VERSION,
+                self.CHAIN_MEME_TRADER_V10_VERSION,
+                self.CHAIN_MEME_TRADER_V11_VERSION,
+                self.CHAIN_MEME_TRADER_ACTIVE_VERSION,
+                self.CHAIN_MEME_TRADER_STAGE4_EXEC_DECAY_VERSION,
+                self.CHAIN_MEME_TRADER_STAGE4_EXEC_EQUITY_V2_VERSION,
+            ):
+                if self._chain_meme_trader_registration(version) is None:
+                    continue
+                for event in self.db.execute(
+                    "SELECT e.* FROM onchain_held_account_risk_events e "
+                    "WHERE e.risk_state='ALERT' AND e.monitor_version=? "
+                    "AND e.position_definition_version=? ORDER BY e.id",
+                    (self.ONCHAIN_HELD_ACCOUNT_MONITOR_VERSION, version),
+                ).fetchall():
+                    risk_reason = str(event["risk_reason"])
+                    if risk_reason not in emergency:
+                        continue
+                    reason = f"exact_pool_alert:{int(event['id'])}:{risk_reason}"
+                    action = "RUG_EXIT" if risk_reason in terminal else "LIQUIDITY_EXIT"
+                    positions = self.db.execute(
+                        "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
+                        "AND shadow_cohort_id=? AND token_id=? AND status='open'",
+                        (version, int(event["shadow_cohort_id"]), str(event["token_id"])),
+                    ).fetchall()
+                    for position in positions:
+                        if self.db.execute("SELECT 1 FROM chain_meme_trader_marks WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=? AND reason=?", (version, str(position["arm_id"]), int(event["shadow_cohort_id"]), reason)).fetchone() is not None:
+                            continue
+                        if position["pending_mark_id"] is not None:
+                            self.db.execute("UPDATE chain_meme_trader_marks SET status='exhausted' WHERE id=? AND status IN ('pending','retry','quoting')", (int(position["pending_mark_id"]),))
+                        self.db.execute("INSERT INTO chain_meme_trader_marks(definition_version,arm_id,shadow_cohort_id,recorded_at,action,reason,sell_amount_raw,status) VALUES(?,?,?,?,?,?,?, 'pending')", (version, str(position["arm_id"]), int(event["shadow_cohort_id"]), str(event["observed_at"]), action, reason, str(position["amount_raw"])))
+                        mark_id = int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+                        self.db.execute("UPDATE chain_meme_trader_positions SET pending_mark_id=? WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?", (mark_id, version, str(position["arm_id"]), int(event["shadow_cohort_id"])))
+                        inserted += 1
+        return inserted
+
+    @staticmethod
+    def _chain_meme_valuation_interval(opened_at: Any, now: Any) -> float:
+        age = max(0.0, (parse_time(now) - parse_time(opened_at)).total_seconds())
+        return 15.0 if age <= 600 else 30.0 if age <= 3600 else 60.0
+
+    def due_chain_meme_trader_quote(
+        self, *, now: Any = None, definition_version: str | None = None,
+    ) -> dict[str, Any] | None:
+        version = definition_version or self.CHAIN_MEME_TRADER_VERSION
+        current = parse_time(now or utcnow())
+        with self._lock:
+            registration = self._chain_meme_trader_registration(version)
+            if registration is None:
+                return None
+            definition = self._json_object(registration["definition_json"])
+            if definition.get("continuous_jupiter_valuation") is False:
+                return None
+            cohorts = self.db.execute(
+                "SELECT p.shadow_cohort_id,p.token_id,p.amount_raw,MIN(p.opened_at) AS opened_at,"
+                "(SELECT l.status FROM chain_meme_trader_local_surface_quotes l "
+                "WHERE l.version=? AND l.definition_version=p.definition_version "
+                "AND l.shadow_cohort_id=p.shadow_cohort_id "
+                "AND l.remaining_amount_raw=p.amount_raw ORDER BY l.id DESC LIMIT 1) "
+                "AS local_surface_status,"
+                "(SELECT MAX(r.completed_at) FROM chain_meme_trader_quote_results r "
+                "WHERE r.definition_version=p.definition_version "
+                "AND r.shadow_cohort_id=p.shadow_cohort_id "
+                "AND r.input_amount_raw=p.amount_raw) AS latest_completed_at "
+                "FROM chain_meme_trader_positions p "
+                "WHERE p.definition_version=? AND p.status='open' "
+                "GROUP BY p.shadow_cohort_id,p.token_id,p.amount_raw "
+                "ORDER BY CASE WHEN local_surface_status IN ("
+                "'LOCAL_SURFACE_CRITICAL','LOCAL_NO_DIRECT_CAPACITY','LOCAL_SELL_DISABLED',"
+                "'LOCAL_SURFACE_DEGRADED') THEN 0 ELSE 1 END,"
+                "CASE WHEN latest_completed_at IS NULL THEN 0 ELSE 1 END,"
+                "latest_completed_at,opened_at,p.shadow_cohort_id",
+                (self.CHAIN_MEME_TRADER_LOCAL_SURFACE_QUOTE_VERSION, version),
+            ).fetchall()
+            for row in cohorts:
+                if self.db.execute("SELECT 1 FROM chain_meme_trader_quote_attempts a LEFT JOIN chain_meme_trader_quote_results r ON r.attempt_id=a.id WHERE a.definition_version=? AND a.shadow_cohort_id=? AND r.id IS NULL", (version, int(row["shadow_cohort_id"]))).fetchone() is not None:
+                    continue
+                interval = self._chain_meme_valuation_interval(row["opened_at"], current)
+                if row["latest_completed_at"] is not None and (
+                    current - parse_time(row["latest_completed_at"])
+                ).total_seconds() < interval:
+                    continue
+                token_id = str(row["token_id"])
+                return {"definition_version": version, "quote_kind": "valuation", "shadow_cohort_id": int(row["shadow_cohort_id"]), "input_mint": token_id.split(":", 1)[1], "output_mint": self.JUPITER_USDC_MINT, "input_amount_raw": str(row["amount_raw"]), "mark_ids": [], "slippage_bps": int(definition["slippage_bps"]), "max_quote_delay_seconds": float(definition["max_quote_delay_seconds"])}
+        return None
+
+    def chain_meme_trader_quote_peer_tasks(
+        self, task: Mapping[str, Any], definition_versions: Iterable[str],
+    ) -> list[dict[str, Any]]:
+        """Share one amount-specific provider observation across exact peer positions."""
+        cohort_id = int(task["shadow_cohort_id"])
+        input_mint = str(task["input_mint"])
+        amount_raw = str(task["input_amount_raw"])
+        source_version = str(task["definition_version"])
+        peers: list[dict[str, Any]] = []
+        with self._lock:
+            for candidate in definition_versions:
+                version = str(candidate)
+                if version == source_version:
+                    continue
+                registration = self._chain_meme_trader_registration(version)
+                if registration is None:
+                    continue
+                position = self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_positions WHERE definition_version=? "
+                    "AND shadow_cohort_id=? AND token_id=? AND amount_raw=? "
+                    "AND status='open' LIMIT 1",
+                    (version, cohort_id, f"solana:{input_mint}", amount_raw),
+                ).fetchone()
+                unfinished = self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_quote_attempts a "
+                    "LEFT JOIN chain_meme_trader_quote_results r ON r.attempt_id=a.id "
+                    "WHERE a.definition_version=? AND a.shadow_cohort_id=? "
+                    "AND r.id IS NULL LIMIT 1", (version, cohort_id),
+                ).fetchone()
+                if position is None or unfinished is not None:
+                    continue
+                definition = self._json_object(registration["definition_json"])
+                if int(definition["slippage_bps"]) != int(task["slippage_bps"]):
+                    continue
+                peers.append({
+                    "definition_version": version,
+                    "quote_kind": "valuation",
+                    "shadow_cohort_id": cohort_id,
+                    "input_mint": input_mint,
+                    "output_mint": str(task["output_mint"]),
+                    "input_amount_raw": amount_raw,
+                    "mark_ids": [],
+                    "slippage_bps": int(definition["slippage_bps"]),
+                    "max_quote_delay_seconds": float(definition["max_quote_delay_seconds"]),
+                })
+        return peers
+
+    def start_chain_meme_trader_quote(self, task: Mapping[str, Any], *, requested_at: Any = None) -> int | None:
+        requested = parse_time(requested_at or utcnow())
+        version = str(task.get("definition_version") or self.CHAIN_MEME_TRADER_VERSION)
+        if self._chain_meme_trader_registration(version) is None:
+            return None
+        mark_ids = [int(value) for value in task.get("mark_ids") or []]
+        key = f"chain-meme:{version}:{task['quote_kind']}:{int(task['shadow_cohort_id'])}:{int(requested.timestamp() * 1_000_000)}"
+        with self._lock, self.db:
+            self.db.execute("INSERT OR IGNORE INTO chain_meme_trader_quote_attempts(definition_version,quote_key,quote_kind,shadow_cohort_id,input_mint,output_mint,input_amount_raw,mark_ids_json,requested_at) VALUES(?,?,?,?,?,?,?,?,?)", (version, key, str(task["quote_kind"]), int(task["shadow_cohort_id"]), str(task["input_mint"]), str(task["output_mint"]), str(task["input_amount_raw"]), self._json(mark_ids), iso(requested)))
+            attempt_id = int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+            for mark_id in mark_ids:
+                self.db.execute("UPDATE chain_meme_trader_marks SET status='quoting',attempt_count=attempt_count+1 WHERE id=? AND definition_version=? AND status IN ('pending','retry')", (mark_id, version))
+            return attempt_id or None
+
+    def record_chain_meme_trader_quote_result(self, attempt_id: int, *, status: str, output_amount_raw: int | str | None = None, other_amount_threshold_raw: int | str | None = None, slippage_bps: int | None = None, route_plan: Iterable[Mapping[str, Any]] | None = None, error_type: str = "", completed_at: Any = None) -> int | None:
+        if status not in {"quoted", "no_route", "error", "quote_only_protocol_invalid"}:
+            raise ValueError("invalid ChainMemeTrader quote status")
+        completed = parse_time(completed_at or utcnow())
+        with self._lock, self.db:
+            attempt = self.db.execute(
+                "SELECT * FROM chain_meme_trader_quote_attempts WHERE id=?",
+                (int(attempt_id),),
+            ).fetchone()
+            if attempt is None:
+                return None
+            version = str(attempt["definition_version"])
+            registration = self._chain_meme_trader_registration(version)
+            if attempt is None or registration is None or self.db.execute("SELECT 1 FROM chain_meme_trader_quote_results WHERE attempt_id=?", (int(attempt_id),)).fetchone() is not None:
+                return None
+            definition = self._json_object(registration["definition_json"]); requested = parse_time(attempt["requested_at"])
+            timely = completed >= requested and (completed - requested).total_seconds() <= float(definition["max_quote_delay_seconds"])
+            threshold = int(other_amount_threshold_raw or 0); quoted = status == "quoted" and timely and threshold > 0; no_route = status == "no_route" and timely
+            validity = "valid" if quoted or no_route else "invalid"
+            # Absence of an executable route is unknown recovery, not a zero-dollar quote.
+            gross = threshold / 1_000_000.0 if quoted else None
+            self.db.execute("INSERT INTO chain_meme_trader_quote_results(definition_version,attempt_id,quote_kind,shadow_cohort_id,quote_terminal_status,validity_status,input_amount_raw,output_amount_raw,other_amount_threshold_raw,requested_at,completed_at,slippage_bps,gross_usdc,route_plan_json,error_type,recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (version, int(attempt_id), str(attempt["quote_kind"]), int(attempt["shadow_cohort_id"]), status, validity, str(attempt["input_amount_raw"]), str(output_amount_raw) if output_amount_raw is not None else None, str(other_amount_threshold_raw) if other_amount_threshold_raw is not None else None, str(attempt["requested_at"]), iso(completed), int(slippage_bps or definition["slippage_bps"]), gross, self._json(list(route_plan or [])), str(error_type or "")[:80], iso()))
+            result_id = int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+            policies = {str(item["arm_id"]): item for item in definition["policies"]}
+            retry_delays = list(definition["retry_schedule_seconds"])
+            for mark_id in [int(value) for value in self._json_list(attempt["mark_ids_json"])]:
+                mark = self.db.execute("SELECT * FROM chain_meme_trader_marks WHERE id=? AND definition_version=?", (mark_id, version)).fetchone()
+                if mark is None:
+                    continue
+                position = self.db.execute("SELECT * FROM chain_meme_trader_positions WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=? AND status='open'", (version, str(mark["arm_id"]), int(mark["shadow_cohort_id"]))).fetchone()
+                if position is None:
+                    continue
+                policy = policies.get(str(mark["arm_id"])) or {}
+                exit_mode = str(policy.get("exit_mode") or "")
+                if quoted:
+                    current_amount = max(0, int(position["amount_raw"] or 0))
+                    sold_amount = min(current_amount, max(0, int(mark["sell_amount_raw"] or 0)))
+                    if sold_amount <= 0:
+                        continue
+                    unallocated_cost = max(
+                        0.0,
+                        float(position["stake_usd"])
+                        - float(position["allocated_cost_usd"] or 0.0),
+                    )
+                    cost_delta = unallocated_cost * sold_amount / current_amount
+                    new_amount = current_amount - sold_amount
+                    new_proceeds = float(position["realized_proceeds_usd"] or 0.0) + float(gross)
+                    new_allocated = float(position["allocated_cost_usd"] or 0.0) + cost_delta
+                    cumulative_pnl = new_proceeds - new_allocated
+                    closes = new_amount <= 0
+                    next_tp = int(position["next_tp_index"] or 0)
+                    if str(mark["action"]).startswith("TAKE_PROFIT_"):
+                        next_tp += 1
+                    initial_amount = max(
+                        1, int(position["initial_amount_raw"] or current_amount or 1),
+                    )
+                    initial_quantity = float(position["paper_quantity_tokens"] or 0.0)
+                    remaining_quantity = (
+                        0.0 if closes else (
+                            initial_quantity * new_amount / initial_amount
+                            if initial_quantity > 0.0 else None
+                        )
+                    )
+                    self.db.execute(
+                        "UPDATE chain_meme_trader_positions SET amount_raw=?,remaining_quantity_tokens=?,"
+                        "realized_proceeds_usd=?,allocated_cost_usd=?,next_tp_index=?,"
+                        "status=?,pending_mark_id=NULL,realized_pnl_usd=?,closed_at=?,"
+                        "close_reason=? WHERE definition_version=? AND arm_id=? "
+                        "AND shadow_cohort_id=?",
+                        (str(new_amount), remaining_quantity, new_proceeds, new_allocated, next_tp,
+                         "closed" if closes else "open", cumulative_pnl,
+                         iso(completed) if closes else None,
+                         str(mark["reason"]) if closes else "", version,
+                         str(mark["arm_id"]), int(mark["shadow_cohort_id"])),
+                    )
+                    self.db.execute("UPDATE chain_meme_trader_marks SET status='filled',next_attempt_at=NULL WHERE id=?", (mark_id,))
+                    self.db.execute(
+                        "INSERT INTO chain_meme_trader_trades(definition_version,"
+                        "arm_id,shadow_cohort_id,token_id,quote_result_id,side,gross_usd,"
+                        "net_cash_flow_usd,realized_pnl_usd,reason,created_at) "
+                        "VALUES(?,?,?,?,?, 'SELL',?,?,?,?,?)",
+                        (version, str(mark["arm_id"]), int(mark["shadow_cohort_id"]),
+                         str(position["token_id"]), result_id, float(gross), float(gross),
+                         float(gross) - cost_delta, str(mark["reason"]), iso(completed)),
+                    )
+                elif no_route:
+                    attempts = int(mark["attempt_count"])
+                    action = str(mark["action"])
+                    fixed_horizon = 0
+                    if str(mark["reason"]).startswith("fixed_horizon_"):
+                        try:
+                            fixed_horizon = int(str(mark["reason"]).split("_")[-1][:-1])
+                        except (TypeError, ValueError):
+                            fixed_horizon = 0
+                    terminal = (
+                        action == "RUG_EXIT"
+                        or exit_mode == "fixed_15m"
+                        or (exit_mode == "fixed_horizons" and fixed_horizon >= 240)
+                        or (exit_mode in {"dynamic", "dynamic_backoff"}
+                            and attempts >= int(definition["max_attempts_per_mark"]))
+                    )
+                    if terminal:
+                        reason_text = (
+                            "confirmed_pool_removed_no_executable_exit"
+                            if action == "RUG_EXIT"
+                            else f"{mark['reason']}:no_executable_sell_writeoff"
+                        )
+                        cumulative_pnl = (
+                            float(position["realized_proceeds_usd"] or 0.0)
+                            - float(position["stake_usd"])
+                        )
+                        self.db.execute(
+                            "UPDATE chain_meme_trader_positions SET status='written_off',"
+                            "amount_raw='0',allocated_cost_usd=stake_usd,pending_mark_id=NULL,"
+                            "realized_pnl_usd=?,closed_at=?,close_reason=? "
+                            "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+                            (cumulative_pnl, iso(completed), reason_text, version,
+                             str(mark["arm_id"]), int(mark["shadow_cohort_id"])),
+                        )
+                        self.db.execute(
+                            "UPDATE chain_meme_trader_marks SET status='written_off',"
+                            "next_attempt_at=NULL WHERE id=?", (mark_id,),
+                        )
+                        self.db.execute(
+                            "INSERT INTO chain_meme_trader_trades(definition_version,"
+                            "arm_id,shadow_cohort_id,token_id,quote_result_id,side,gross_usd,"
+                            "net_cash_flow_usd,realized_pnl_usd,reason,created_at) "
+                            "VALUES(?,?,?,?,?, 'WRITEOFF',0,0,?,?,?)",
+                            (version, str(mark["arm_id"]), int(mark["shadow_cohort_id"]),
+                             str(position["token_id"]), result_id,
+                             -max(0.0, float(position["stake_usd"])
+                                  - float(position["allocated_cost_usd"] or 0.0)),
+                             reason_text, iso(completed)),
+                        )
+                    elif exit_mode == "fixed_horizons":
+                        self.db.execute(
+                            "UPDATE chain_meme_trader_marks SET status='exhausted',"
+                            "next_attempt_at=NULL WHERE id=?", (mark_id,),
+                        )
+                        self.db.execute(
+                            "UPDATE chain_meme_trader_positions SET pending_mark_id=NULL,"
+                            "last_fixed_horizon_minutes=? WHERE definition_version=? "
+                            "AND arm_id=? AND shadow_cohort_id=?",
+                            (fixed_horizon, version, str(mark["arm_id"]),
+                             int(mark["shadow_cohort_id"])),
+                        )
+                    else:
+                        delays = retry_delays if exit_mode == "dynamic_backoff" else [15]
+                        delay = delays[min(max(0, attempts - 1), len(delays) - 1)]
+                        self.db.execute(
+                            "UPDATE chain_meme_trader_marks SET status='retry',"
+                            "next_attempt_at=? WHERE id=?",
+                            (iso(completed + timedelta(seconds=float(delay))), mark_id),
+                        )
+                else:
+                    attempts = int(mark["attempt_count"])
+                    if attempts >= int(definition["max_attempts_per_mark"]):
+                        self.db.execute("UPDATE chain_meme_trader_marks SET status='exhausted',next_attempt_at=NULL WHERE id=?", (mark_id,))
+                        self.db.execute(
+                            "UPDATE chain_meme_trader_positions SET pending_mark_id=NULL "
+                            "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+                            (version, str(mark["arm_id"]), int(mark["shadow_cohort_id"])),
+                        )
+                    else:
+                        delays = retry_delays if exit_mode == "dynamic_backoff" else [15]
+                        delay = delays[min(max(0, attempts - 1), len(delays) - 1)]
+                        self.db.execute("UPDATE chain_meme_trader_marks SET status='retry',next_attempt_at=? WHERE id=?", (iso(completed + timedelta(seconds=float(delay))), mark_id))
+            return result_id
+
+    def record_chain_meme_trader_position_equity_frame(
+        self, result_id: int, *, snapshot_id: int | None = None,
+        definition_version: str | None = None,
+    ) -> int | None:
+        """Freeze one shared point-in-time executable-equity observation."""
+        version = definition_version or self.CHAIN_MEME_TRADER_STAGE4_EXEC_EQUITY_V2_VERSION
+        frame_version = (
+            self.CHAIN_MEME_TRADER_V6_EQUITY_FRAME_VERSION
+            if version == self.CHAIN_MEME_TRADER_V6_VERSION
+            else self.CHAIN_MEME_TRADER_V10_EQUITY_FRAME_VERSION
+            if version == self.CHAIN_MEME_TRADER_V10_VERSION
+            else self.CHAIN_MEME_TRADER_POSITION_EQUITY_FRAME_VERSION
+        )
+        with self._lock, self.db:
+            registration = self._chain_meme_trader_registration(version)
+            frame_registration = self.db.execute(
+                "SELECT * FROM chain_meme_trader_position_equity_frame_registrations "
+                "WHERE frame_version=? AND definition_version=?",
+                (frame_version, version),
+            ).fetchone()
+            result = self.db.execute(
+                "SELECT * FROM chain_meme_trader_quote_results WHERE id=? "
+                "AND definition_version=? AND quote_kind='valuation'",
+                (int(result_id), version),
+            ).fetchone()
+            if registration is None or frame_registration is None or result is None:
+                return None
+            existing = self.db.execute(
+                "SELECT id FROM chain_meme_trader_position_equity_frames "
+                "WHERE frame_version=? AND definition_version=? "
+                "AND shadow_cohort_id=? AND quote_result_id=?",
+                (frame_version, version, int(result["shadow_cohort_id"]), int(result_id)),
+            ).fetchone()
+            if existing is not None:
+                return int(existing["id"])
+            definition = self._json_object(registration["definition_json"])
+            requested = parse_time(result["requested_at"])
+            completed = parse_time(result["completed_at"])
+            timely = completed >= requested and (
+                completed - requested
+            ).total_seconds() <= float(definition["max_quote_delay_seconds"])
+            quoted = bool(
+                timely and str(result["quote_terminal_status"]) == "quoted"
+                and str(result["validity_status"]) == "valid"
+                and int(result["other_amount_threshold_raw"] or 0) > 0
+            )
+            if quoted:
+                valuation_status = "COMPLETE"
+                recovery = int(result["other_amount_threshold_raw"]) / 1_000_000.0
+            elif str(result["quote_terminal_status"]) == "no_route" and timely:
+                valuation_status, recovery = "UNKNOWN_NO_ROUTE", None
+            elif not timely:
+                valuation_status, recovery = "UNKNOWN_STALE", None
+            elif str(result["quote_terminal_status"]) == "quoted":
+                valuation_status, recovery = "UNKNOWN_MISSING", None
+            else:
+                valuation_status, recovery = "UNKNOWN_ERROR", None
+            positions = self.db.execute(
+                "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
+                "AND shadow_cohort_id=? AND status='open' AND amount_raw=? ORDER BY arm_id",
+                (version, int(result["shadow_cohort_id"]), str(result["input_amount_raw"])),
+            ).fetchall()
+            if not positions:
+                return None
+            valid_snapshot_id = None
+            if snapshot_id is not None:
+                snapshot = self.db.execute(
+                    "SELECT * FROM token_snapshots WHERE id=? AND token_id=?",
+                    (int(snapshot_id), str(positions[0]["token_id"])),
+                ).fetchone()
+                if snapshot is not None:
+                    observed = parse_time(snapshot["observed_at"])
+                    ingested = parse_time(snapshot["ingested_at"] or snapshot["observed_at"])
+                    recorded = parse_time(
+                        snapshot["recorded_at"] or snapshot["ingested_at"]
+                        or snapshot["observed_at"]
+                    )
+                    if observed <= ingested <= recorded <= completed:
+                        valid_snapshot_id = int(snapshot_id)
+            arm_values: dict[str, dict[str, float | None]] = {}
+            for position in positions:
+                entry_debit = float(position["stake_usd"])
+                realized = float(position["realized_proceeds_usd"] or 0.0)
+                total_equity = realized + recovery if recovery is not None else None
+                arm_values[str(position["arm_id"])] = {
+                    "total_entry_debit_usd": entry_debit,
+                    "realized_proceeds_usd": realized,
+                    "remaining_min_executable_recovery_usd": recovery,
+                    "total_executable_equity_usd": total_equity,
+                    "economic_return": (
+                        total_equity / entry_debit - 1.0
+                        if total_equity is not None and entry_debit > 0 else None
+                    ),
+                }
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_position_equity_frames("
+                "frame_version,definition_version,shadow_cohort_id,quote_result_id,"
+                "snapshot_id,input_amount_raw,valuation_status,"
+                "remaining_min_executable_recovery_usd,arm_values_json,requested_at,"
+                "completed_at,decision_at,recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    frame_version, version, int(result["shadow_cohort_id"]),
+                    int(result_id), valid_snapshot_id, str(result["input_amount_raw"]),
+                    valuation_status, recovery, self._json(arm_values),
+                    str(result["requested_at"]), str(result["completed_at"]),
+                    str(result["completed_at"]), iso(),
+                ),
+            )
+            return int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+
+    def evaluate_chain_meme_trader_stage4_v2_frame(
+        self, frame_id: int, *, definition_version: str | None = None,
+    ) -> int:
+        """Apply versioned dynamic exits from exact executable equity only."""
+        version = definition_version or self.CHAIN_MEME_TRADER_STAGE4_EXEC_EQUITY_V2_VERSION
+        frame_version = (
+            self.CHAIN_MEME_TRADER_V6_EQUITY_FRAME_VERSION
+            if version == self.CHAIN_MEME_TRADER_V6_VERSION
+            else self.CHAIN_MEME_TRADER_V10_EQUITY_FRAME_VERSION
+            if version == self.CHAIN_MEME_TRADER_V10_VERSION
+            else self.CHAIN_MEME_TRADER_POSITION_EQUITY_FRAME_VERSION
+        )
+        with self._lock, self.db:
+            registration = self._chain_meme_trader_registration(version)
+            frame = self.db.execute(
+                "SELECT * FROM chain_meme_trader_position_equity_frames WHERE id=? "
+                "AND frame_version=? AND definition_version=?",
+                (int(frame_id), frame_version, version),
+            ).fetchone()
+            if registration is None or frame is None:
+                return 0
+            definition = self._json_object(registration["definition_json"])
+            policies = {str(item["arm_id"]): item for item in definition["policies"]}
+            arm_values = self._json_object(frame["arm_values_json"])
+            decision_at = parse_time(frame["decision_at"])
+            snapshot = None
+            if frame["snapshot_id"] is not None:
+                snapshot = self.db.execute(
+                    "SELECT * FROM token_snapshots WHERE id=?", (int(frame["snapshot_id"]),),
+                ).fetchone()
+            prior_frames = self.db.execute(
+                "SELECT id,arm_values_json FROM chain_meme_trader_position_equity_frames "
+                "WHERE frame_version=? AND definition_version=? AND shadow_cohort_id=? "
+                "AND decision_at<=? AND id<=? ORDER BY decision_at,id",
+                (
+                    frame_version, version,
+                    int(frame["shadow_cohort_id"]), str(frame["decision_at"]), int(frame_id),
+                ),
+            ).fetchall()
+            created = 0
+            positions = self.db.execute(
+                "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
+                "AND shadow_cohort_id=? AND status='open' ORDER BY arm_id",
+                (version, int(frame["shadow_cohort_id"])),
+            ).fetchall()
+            for position in positions:
+                arm_id = str(position["arm_id"])
+                policy = policies.get(arm_id) or {}
+                value = arm_values.get(arm_id)
+                if not isinstance(value, Mapping):
+                    continue
+                self.db.execute(
+                    "UPDATE chain_meme_trader_positions SET last_evaluated_at=? "
+                    "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=? "
+                    "AND status='open'",
+                    (iso(decision_at), version, arm_id, int(position["shadow_cohort_id"])),
+                )
+                if position["pending_mark_id"] is not None:
+                    continue
+                elapsed = max(
+                    0.0,
+                    (decision_at - parse_time(position["opened_at"])).total_seconds() / 60.0,
+                )
+                economic_return = value.get("economic_return")
+                total_equity = value.get("total_executable_equity_usd")
+                highs = []
+                for old_frame in prior_frames:
+                    old_values = self._json_object(old_frame["arm_values_json"])
+                    old_value = old_values.get(arm_id)
+                    if isinstance(old_value, Mapping):
+                        old_equity = old_value.get("total_executable_equity_usd")
+                        if old_equity is not None:
+                            highs.append(float(old_equity))
+                high = max(highs) if highs else None
+                action = None
+                reason = ""
+                sell_amount = int(position["amount_raw"] or 0)
+                if elapsed >= float(policy["max_hold_minutes"]):
+                    action, reason = "TIME_EXIT", "shared_max_hold_240m"
+                elif (
+                    policy.get("emergency_liquidity_usd") is not None
+                    and snapshot is not None and snapshot["liquidity_usd"] is not None
+                    and float(snapshot["liquidity_usd"])
+                    < float(policy["emergency_liquidity_usd"])
+                ):
+                    action, reason = "LIQUIDITY_EXIT", "shared_liquidity_floor_breached"
+                elif (
+                    economic_return is not None
+                    and float(economic_return) <= float(policy["hard_stop_return"])
+                ):
+                    action, reason = "HARD_STOP", "shared_executable_return_below_minus_35pct"
+                elif total_equity is not None and high is not None:
+                    entry_debit = float(value["total_entry_debit_usd"])
+                    armed = high >= entry_debit * (
+                        1.0 + float(policy["trailing_activate_return"])
+                    )
+                    if armed and float(total_equity) <= high * (
+                        1.0 - float(policy["trailing_drawdown"])
+                    ):
+                        action = "TRAILING_EXIT"
+                        reason = (
+                            f"treatment_trailing:{int(float(policy['trailing_activate_return'])*100)}:"
+                            f"{int(float(policy['trailing_drawdown'])*100)}"
+                        )
+                if action is None and snapshot is not None and policy.get(
+                    "zero_activity_grace_minutes"
+                ) is not None and elapsed >= float(policy["zero_activity_grace_minutes"]):
+                    activity = int(snapshot["buys_5m"] or 0) + int(snapshot["sells_5m"] or 0)
+                    if float(snapshot["volume_5m_usd"] or 0.0) <= 0.0 and activity <= 0:
+                        action, reason = "INACTIVITY_EXIT", "shared_zero_5m_activity"
+                if action is None and economic_return is not None:
+                    tp_index = int(position["next_tp_index"] or 0)
+                    tiers = list(policy["take_profit"])
+                    if tp_index < len(tiers) and float(economic_return) >= float(
+                        tiers[tp_index]["return"]
+                    ):
+                        fraction = float(tiers[tp_index]["fraction_of_remaining"])
+                        sell_amount = (
+                            int(position["amount_raw"])
+                            if fraction >= 1.0 else max(
+                                1, min(
+                                    int(position["amount_raw"]),
+                                    round(int(position["amount_raw"]) * fraction),
+                                ),
+                            )
+                        )
+                        action = f"TAKE_PROFIT_{tp_index + 1}"
+                        reason = f"shared_take_profit_tier_{tp_index + 1}"
+                if action is None or sell_amount <= 0:
+                    continue
+                reason = (
+                    f"{reason}:equity_frame={int(frame_id)}:"
+                    f"status={str(frame['valuation_status'])}"
+                )
+                self.db.execute(
+                    "INSERT INTO chain_meme_trader_marks("
+                    "definition_version,arm_id,shadow_cohort_id,snapshot_id,recorded_at,"
+                    "action,reason,sell_amount_raw,status) VALUES(?,?,?,?,?,?,?,?, 'pending')",
+                    (
+                        version, arm_id, int(position["shadow_cohort_id"]),
+                        int(frame["snapshot_id"]) if frame["snapshot_id"] is not None else None,
+                        str(frame["decision_at"]), action, reason, str(sell_amount),
+                    ),
+                )
+                mark_id = int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+                self.db.execute(
+                    "UPDATE chain_meme_trader_positions SET pending_mark_id=? "
+                    "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=? "
+                    "AND status='open' AND pending_mark_id IS NULL",
+                    (mark_id, version, arm_id, int(position["shadow_cohort_id"])),
+                )
+                created += int(self.db.execute("SELECT changes()").fetchone()[0])
+            return created
+
+    def evaluate_chain_meme_trader_v6_frame(self, frame_id: int) -> int:
+        return self.evaluate_chain_meme_trader_stage4_v2_frame(
+            frame_id, definition_version=self.CHAIN_MEME_TRADER_V6_VERSION,
+        )
+
+    def chain_meme_trader_market_mark_targets(
+        self, *, definition_version: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return one bounded, de-duplicated watch row per relevant token."""
+        versions = list(dict.fromkeys(
+            [definition_version] if definition_version is not None else [
+                self.CHAIN_MEME_TRADER_ACTIVE_VERSION,
+                self.CHAIN_MEME_TRADER_V13_VERSION,
+                self.CHAIN_MEME_TRADER_V11_VERSION,
+            ]
+        ))
+        placeholders = ",".join("?" for _ in versions)
+        query = (
+            "WITH watched AS ("
+            f"SELECT token_id,'OPEN_POSITION' AS reason FROM chain_meme_trader_positions "
+            f"WHERE definition_version IN ({placeholders}) AND status='open' UNION ALL "
+            f"SELECT token_id,'PENDING_INTENT' FROM chain_meme_trader_order_intents "
+            f"WHERE definition_version IN ({placeholders}) AND status IN ('ready','retry','submitted') "
+            "UNION ALL SELECT token_id,'RECENT_DECISION' FROM ("
+            "SELECT token_id FROM chain_meme_trader_entry_decisions "
+            f"WHERE definition_version IN ({placeholders}) AND status='admitted' "
+            "ORDER BY id DESC LIMIT 120)) "
+            "SELECT t.token_id,t.chain,t.address,"
+            "GROUP_CONCAT(DISTINCT watched.reason) AS watch_reason "
+            "FROM watched JOIN tokens t ON t.token_id=watched.token_id "
+            "GROUP BY t.token_id,t.chain,t.address ORDER BY t.token_id LIMIT 600"
+        )
+        with self._lock:
+            return [
+                dict(row) for row in self.db.execute(
+                    query, tuple(versions + versions + versions),
+                ).fetchall()
+            ]
+
+    def upsert_chain_meme_trader_market_mark(
+        self, token: TokenCandidate, snapshot: TokenSnapshot, *, recorded_at: Any = None,
+        _in_transaction: bool = False,
+    ) -> None:
+        """Keep every live mark while sampling a lighter Token chart history."""
+        mark_at = parse_time(recorded_at or utcnow())
+        pair = snapshot.raw.get("pair") if isinstance(snapshot.raw, Mapping) else {}
+        pair_address = str(pair.get("pairAddress") or "") if isinstance(pair, Mapping) else ""
+        provider = snapshot.provider or token.source or "dex-market-mark"
+        transaction = nullcontext() if _in_transaction else self.db
+        with self._lock, transaction:
+            if not pair_address:
+                known_pair = self.db.execute(
+                    "SELECT pair_address FROM chain_meme_trader_v6_cohorts "
+                    "WHERE token_id=? AND pair_address IS NOT NULL AND pair_address!='' "
+                    "ORDER BY id DESC LIMIT 1",
+                    (token.token_id,),
+                ).fetchone()
+                pair_address = (
+                    str(known_pair["pair_address"] or "")
+                    if known_pair is not None else ""
+                )
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_market_marks("
+                "token_id,chain,address,pair_address,provider,price_usd,liquidity_usd,"
+                "volume_5m_usd,buys_5m,sells_5m,observed_at,recorded_at,status,"
+                "consecutive_misses,sample_sequence,first_missing_at,failure_kind,"
+                "last_attempt_at,last_success_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'VISIBLE',0,1,NULL,'',?,?) "
+                "ON CONFLICT(token_id) DO UPDATE SET "
+                "chain=excluded.chain,address=excluded.address,pair_address=excluded.pair_address,"
+                "provider=excluded.provider,price_usd=excluded.price_usd,"
+                "liquidity_usd=excluded.liquidity_usd,volume_5m_usd=excluded.volume_5m_usd,"
+                "buys_5m=excluded.buys_5m,sells_5m=excluded.sells_5m,"
+                "observed_at=excluded.observed_at,recorded_at=excluded.recorded_at,"
+                "status='VISIBLE',consecutive_misses=0,"
+                "sample_sequence=chain_meme_trader_market_marks.sample_sequence+1,"
+                "first_missing_at=NULL,failure_kind='',"
+                "last_attempt_at=excluded.last_attempt_at,"
+                "last_success_at=excluded.last_success_at",
+                (
+                    token.token_id, token.chain.lower(), token.address, pair_address or None,
+                    provider,
+                    float(snapshot.price_usd or 0.0), snapshot.liquidity_usd,
+                    snapshot.volume_5m_usd, snapshot.buys_5m, snapshot.sells_5m,
+                    iso(snapshot.observed_at), iso(mark_at), iso(mark_at), iso(mark_at),
+                ),
+            )
+            latest_history = self.db.execute(
+                "SELECT status,recorded_at FROM chain_meme_trader_market_mark_history "
+                "WHERE token_id=? ORDER BY id DESC LIMIT 1", (token.token_id,),
+            ).fetchone()
+            if (
+                latest_history is None
+                or str(latest_history["status"]) != "VISIBLE"
+                or (mark_at - parse_time(latest_history["recorded_at"])).total_seconds() >= 10.0
+            ):
+                self.db.execute(
+                    "INSERT INTO chain_meme_trader_market_mark_history("
+                    "token_id,chain,address,pair_address,provider,price_usd,liquidity_usd,"
+                    "volume_5m_usd,buys_5m,sells_5m,observed_at,recorded_at,status,"
+                    "failure_kind) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'VISIBLE','')",
+                    (
+                        token.token_id, token.chain.lower(), token.address,
+                        pair_address or None, provider, float(snapshot.price_usd or 0.0),
+                        snapshot.liquidity_usd, snapshot.volume_5m_usd,
+                        snapshot.buys_5m, snapshot.sells_5m,
+                        iso(snapshot.observed_at), iso(mark_at),
+                    ),
+                )
+            if (
+                self._last_chain_market_history_prune_at is None
+                or (
+                    mark_at - self._last_chain_market_history_prune_at
+                ).total_seconds() >= 60.0
+            ):
+                self.db.execute(
+                    "DELETE FROM chain_meme_trader_market_mark_history "
+                    "WHERE recorded_at<?", (iso(mark_at - timedelta(hours=6)),),
+                )
+                self._last_chain_market_history_prune_at = mark_at
+
+    def record_chain_meme_trader_market_mark_miss(
+        self, *, token_id: str, chain: str, address: str, recorded_at: Any = None,
+        _in_transaction: bool = False,
+    ) -> None:
+        """Record a structural no-pool/no-price interval without inventing price zero."""
+        attempted = parse_time(recorded_at or utcnow())
+        attempted_at = iso(attempted)
+        transaction = nullcontext() if _in_transaction else self.db
+        with self._lock, transaction:
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_market_marks("
+                "token_id,chain,address,pair_address,provider,price_usd,liquidity_usd,"
+                "volume_5m_usd,buys_5m,sells_5m,observed_at,recorded_at,status,"
+                "consecutive_misses,sample_sequence,first_missing_at,failure_kind,"
+                "last_attempt_at,last_success_at) "
+                "VALUES(?,?,?,NULL,'dexscreener',0,NULL,NULL,NULL,NULL,?,?,'MISSING',"
+                "1,0,?,'NO_VISIBLE_POOL_OR_PRICE',?,NULL) "
+                "ON CONFLICT(token_id) DO UPDATE SET status='MISSING',"
+                "consecutive_misses=CASE WHEN chain_meme_trader_market_marks.status='MISSING' "
+                "THEN chain_meme_trader_market_marks.consecutive_misses+1 ELSE 1 END,"
+                "first_missing_at=CASE WHEN chain_meme_trader_market_marks.status='MISSING' "
+                "THEN COALESCE(chain_meme_trader_market_marks.first_missing_at,excluded.first_missing_at) "
+                "ELSE excluded.first_missing_at END,"
+                "failure_kind='NO_VISIBLE_POOL_OR_PRICE',"
+                "last_attempt_at=excluded.last_attempt_at",
+                (
+                    token_id, chain.lower(), address, attempted_at, attempted_at,
+                    attempted_at, attempted_at,
+                ),
+            )
+            latest_history = self.db.execute(
+                "SELECT status,recorded_at FROM chain_meme_trader_market_mark_history "
+                "WHERE token_id=? ORDER BY id DESC LIMIT 1", (token_id,),
+            ).fetchone()
+            if (
+                latest_history is None
+                or str(latest_history["status"]) != "MISSING"
+                or (attempted - parse_time(latest_history["recorded_at"])).total_seconds() >= 10.0
+            ):
+                self.db.execute(
+                    "INSERT INTO chain_meme_trader_market_mark_history("
+                    "token_id,chain,address,pair_address,provider,price_usd,liquidity_usd,"
+                    "volume_5m_usd,buys_5m,sells_5m,observed_at,recorded_at,status,"
+                    "failure_kind) VALUES(?,?,?,NULL,'dexscreener',NULL,NULL,NULL,NULL,NULL,"
+                    "?,?,'MISSING','NO_VISIBLE_POOL_OR_PRICE')",
+                    (token_id, chain.lower(), address, attempted_at, attempted_at),
+                )
+            if (
+                self._last_chain_market_history_prune_at is None
+                or (
+                    attempted - self._last_chain_market_history_prune_at
+                ).total_seconds() >= 60.0
+            ):
+                self.db.execute(
+                    "DELETE FROM chain_meme_trader_market_mark_history "
+                    "WHERE recorded_at<?", (iso(attempted - timedelta(hours=6)),),
+                )
+                self._last_chain_market_history_prune_at = attempted
+
+    def record_chain_meme_trader_market_mark_failure(
+        self, *, token_id: str, failure_kind: str, recorded_at: Any = None,
+        _in_transaction: bool = False,
+    ) -> None:
+        """Record a provider/data failure without calling it a structural pool miss."""
+        attempted_at = iso(recorded_at or utcnow())
+        transaction = nullcontext() if _in_transaction else self.db
+        with self._lock, transaction:
+            self.db.execute(
+                "UPDATE chain_meme_trader_market_marks SET last_attempt_at=?,failure_kind=? "
+                "WHERE token_id=?",
+                (attempted_at, str(failure_kind or "DATA_UNAVAILABLE")[:80], token_id),
+            )
+
+    def apply_chain_meme_trader_market_mark_batch(
+        self, outcomes: Iterable[Mapping[str, Any]], *, recorded_at: Any = None,
+    ) -> int:
+        """Persist one provider batch in one SQLite transaction."""
+        batch_at = parse_time(recorded_at or utcnow())
+        refreshed = 0
+        with self._lock, self.db:
+            for outcome in outcomes:
+                kind = str(outcome.get("kind") or "")
+                if kind == "visible":
+                    token = outcome.get("token")
+                    snapshot = outcome.get("snapshot")
+                    if not isinstance(token, TokenCandidate) or not isinstance(
+                        snapshot, TokenSnapshot
+                    ):
+                        continue
+                    self.upsert_token(
+                        token, seen_at=snapshot.observed_at, _in_transaction=True,
+                    )
+                    self.upsert_chain_meme_trader_market_mark(
+                        token, snapshot, recorded_at=batch_at,
+                        _in_transaction=True,
+                    )
+                    refreshed += 1
+                elif kind == "missing":
+                    self.record_chain_meme_trader_market_mark_miss(
+                        token_id=str(outcome.get("token_id") or ""),
+                        chain=str(outcome.get("chain") or ""),
+                        address=str(outcome.get("address") or ""),
+                        recorded_at=batch_at, _in_transaction=True,
+                    )
+                elif kind == "failure":
+                    self.record_chain_meme_trader_market_mark_failure(
+                        token_id=str(outcome.get("token_id") or ""),
+                        failure_kind=str(
+                            outcome.get("failure_kind") or "DATA_UNAVAILABLE"
+                        ),
+                        recorded_at=batch_at, _in_transaction=True,
+                    )
+        return refreshed
+
+    def _settle_chain_meme_trader_market_exit(
+        self, *, version: str, mark_id: int, completed_at: str,
+        definition: Mapping[str, Any],
+    ) -> int:
+        mark = self.db.execute(
+            "SELECT * FROM chain_meme_trader_marks WHERE id=? AND definition_version=?",
+            (int(mark_id), version),
+        ).fetchone()
+        if mark is None:
+            return 0
+        position = self.db.execute(
+            "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
+            "AND arm_id=? AND shadow_cohort_id=? AND status='open'",
+            (version, str(mark["arm_id"]), int(mark["shadow_cohort_id"])),
+        ).fetchone()
+        if position is None:
+            return 0
+        if str(mark["action"]) == "RUG_EXIT":
+            remaining_cost = max(
+                0.0,
+                float(position["stake_usd"])
+                - float(position["allocated_cost_usd"] or 0.0),
+            )
+            cumulative_pnl = (
+                float(position["realized_proceeds_usd"] or 0.0)
+                - float(position["stake_usd"])
+            )
+            reason = "dex_pair_missing_over_60_seconds_writeoff"
+            self.db.execute(
+                "UPDATE chain_meme_trader_positions SET status='written_off',amount_raw='0',"
+                "remaining_quantity_tokens=0,"
+                "allocated_cost_usd=stake_usd,pending_mark_id=NULL,realized_pnl_usd=?,"
+                "closed_at=?,close_reason=? WHERE definition_version=? AND arm_id=? "
+                "AND shadow_cohort_id=?",
+                (
+                    cumulative_pnl, completed_at, reason, version,
+                    str(position["arm_id"]), int(position["shadow_cohort_id"]),
+                ),
+            )
+            self.db.execute(
+                "UPDATE chain_meme_trader_marks SET status='written_off',next_attempt_at=NULL "
+                "WHERE id=?", (int(mark_id),),
+            )
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_trades("
+                "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+                "net_cash_flow_usd,realized_pnl_usd,reason,created_at,recorded_at) "
+                "VALUES(?,?,?,?, 'WRITEOFF',0,0,?,?,?,?)",
+                (
+                    version, str(position["arm_id"]), int(position["shadow_cohort_id"]),
+                    str(position["token_id"]), -remaining_cost, reason, completed_at,
+                    iso(),
+                ),
+            )
+            return 1
+        post_price = float(mark["market_post_price_usd"] or 0.0)
+        post_recorded_at = mark["market_post_recorded_at"]
+        if post_price <= 0.0 or post_recorded_at is None:
+            return 0
+        current_amount = max(0, int(position["amount_raw"] or 0))
+        sold_amount = min(current_amount, max(0, int(mark["sell_amount_raw"] or 0)))
+        initial_amount = max(
+            1, int(position["initial_amount_raw"] or current_amount or 1),
+        )
+        entry_price = float(
+            position["entry_execution_price_usd"]
+            or position["entry_signal_price_usd"] or 0.0
+        )
+        if sold_amount <= 0 or entry_price <= 0:
+            return 0
+        gross = max(
+            0.0,
+            float(position["stake_usd"])
+            * sold_amount / initial_amount
+            * post_price / entry_price
+            * (1.0 - int(definition["slippage_bps"]) / 10_000.0),
+        )
+        synthetic_fill_id = -int(mark_id)
+        self.db.execute(
+            "INSERT OR IGNORE INTO chain_meme_trader_fills("
+            "definition_version,intent_id,result_id,attempt_id,execution_mode,adapter,"
+            "arm_id,shadow_cohort_id,token_id,side,input_amount_raw,output_amount_raw,"
+            "gross_usd,filled_at) VALUES(?,?,?,?, 'paper','dexscreener-market-paper/v1',"
+            "?,?,?,'SELL',?,?,?,?)",
+            (
+                version, synthetic_fill_id, synthetic_fill_id, synthetic_fill_id,
+                str(position["arm_id"]), int(position["shadow_cohort_id"]),
+                str(position["token_id"]), str(sold_amount),
+                str(round(gross * 1_000_000)), gross, completed_at,
+            ),
+        )
+        if int(self.db.execute("SELECT changes()").fetchone()[0]) == 0:
+            return 0
+        fill_id = int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+        unallocated = max(
+            0.0,
+            float(position["stake_usd"])
+            - float(position["allocated_cost_usd"] or 0.0),
+        )
+        cost_delta = unallocated * sold_amount / current_amount
+        new_amount = current_amount - sold_amount
+        initial_quantity = float(position["paper_quantity_tokens"] or 0.0)
+        remaining_quantity = (
+            initial_quantity * new_amount / initial_amount
+            if initial_quantity > 0.0 else None
+        )
+        new_proceeds = float(position["realized_proceeds_usd"] or 0.0) + gross
+        new_allocated = float(position["allocated_cost_usd"] or 0.0) + cost_delta
+        cumulative_pnl = new_proceeds - new_allocated
+        closes = new_amount <= 0
+        next_tp = int(position["next_tp_index"] or 0) + (
+            1 if str(mark["action"]).startswith("TAKE_PROFIT_") else 0
+        )
+        reason = str(mark["reason"]) + ":dex_mark_paper_fill"
+        self.db.execute(
+            "UPDATE chain_meme_trader_positions SET amount_raw=?,remaining_quantity_tokens=?,"
+            "realized_proceeds_usd=?,"
+            "allocated_cost_usd=?,next_tp_index=?,status=?,pending_mark_id=NULL,"
+            "realized_pnl_usd=?,closed_at=?,close_reason=?,last_fill_id=? "
+            "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+            (
+                str(new_amount), remaining_quantity, new_proceeds, new_allocated, next_tp,
+                "closed" if closes else "open", cumulative_pnl,
+                completed_at if closes else None, reason if closes else "", fill_id,
+                version, str(position["arm_id"]), int(position["shadow_cohort_id"]),
+            ),
+        )
+        self.db.execute(
+            "UPDATE chain_meme_trader_marks SET status='filled',next_attempt_at=NULL WHERE id=?",
+            (int(mark_id),),
+        )
+        self.db.execute(
+            "INSERT INTO chain_meme_trader_trades("
+            "definition_version,arm_id,shadow_cohort_id,token_id,quote_result_id,side,"
+            "gross_usd,net_cash_flow_usd,realized_pnl_usd,reason,created_at,"
+            "execution_fill_id,recorded_at) VALUES(?,?,?,?,NULL,'SELL',?,?,?,?,?,?,?)",
+            (
+                version, str(position["arm_id"]), int(position["shadow_cohort_id"]),
+                str(position["token_id"]), gross, gross, gross - cost_delta,
+                reason, completed_at, fill_id, iso(),
+            ),
+        )
+        return 1
+
+    def evaluate_chain_meme_trader_market_marks(
+        self, *, definition_version: str | None = None, now: Any = None,
+    ) -> int:
+        """Create forward exit marks from shared 5-second market data, without Jupiter."""
+        version = definition_version or self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        current = parse_time(now or utcnow())
+        with self._lock, self.db:
+            registration = self._chain_meme_trader_registration(version)
+            if registration is None:
+                return 0
+            definition = self._json_object(registration["definition_json"])
+            policies = {str(item["arm_id"]): item for item in definition["policies"]}
+            positions = self.db.execute(
+                "SELECT p.*,m.price_usd AS mark_price_usd,m.liquidity_usd AS mark_liquidity_usd,"
+                "m.volume_5m_usd AS mark_volume_5m_usd,m.buys_5m AS mark_buys_5m,"
+                "m.sells_5m AS mark_sells_5m,m.pair_address AS mark_pair_address,"
+                "m.status AS mark_status,m.consecutive_misses,m.recorded_at AS mark_recorded_at,"
+                "m.observed_at AS mark_observed_at,"
+                "m.last_success_at AS mark_last_success_at,m.first_missing_at,"
+                "m.failure_kind AS mark_failure_kind,m.sample_sequence,"
+                "pm.action AS pending_action,pm.reason AS pending_reason,"
+                "pm.recorded_at AS pending_recorded_at,"
+                "pm.market_pre_sequence,pm.market_pair_address AS pending_pair_address,"
+                "pm.trigger_evidence_json AS pending_trigger_evidence_json "
+                "FROM chain_meme_trader_positions p LEFT JOIN chain_meme_trader_market_marks m "
+                "ON m.token_id=p.token_id LEFT JOIN chain_meme_trader_marks pm "
+                "ON pm.id=p.pending_mark_id WHERE p.definition_version=? AND p.status='open' "
+                "ORDER BY p.shadow_cohort_id,p.arm_id", (version,),
+            ).fetchall()
+            created = 0
+            for position in positions:
+                arm_id = str(position["arm_id"])
+                policy = policies.get(arm_id) or {}
+                elapsed = max(
+                    0.0,
+                    (current - parse_time(position["opened_at"])).total_seconds() / 60.0,
+                )
+                action = None
+                reason = ""
+                trigger_evidence: dict[str, Any] = {}
+                sell_amount = int(position["amount_raw"] or 0)
+                mark_status = str(position["mark_status"] or "UNKNOWN")
+                misses = int(position["consecutive_misses"] or 0)
+                mark_recorded_at = position["mark_recorded_at"]
+                missing_seconds = (
+                    (current - parse_time(position["first_missing_at"])).total_seconds()
+                    if position["first_missing_at"] is not None else 0.0
+                )
+                market_only_exit = str(definition.get("sell_execution") or "") == (
+                    "dexscreener_market_mark_only"
+                )
+                if position["pending_mark_id"] is not None:
+                    if not market_only_exit:
+                        continue
+                    pending_id = int(position["pending_mark_id"])
+                    if (
+                        mark_status == "MISSING" and misses >= 2
+                        and missing_seconds > 60.0
+                    ):
+                        pending_evidence = self._json_object(
+                            position["pending_trigger_evidence_json"]
+                        )
+                        pending_evidence["terminal_missing"] = {
+                            "first_missing_at": position["first_missing_at"],
+                            "confirmed_at": iso(current),
+                            "consecutive_misses": misses,
+                            "failure_kind": str(position["mark_failure_kind"] or ""),
+                        }
+                        self.db.execute(
+                            "UPDATE chain_meme_trader_marks SET action='RUG_EXIT',"
+                            "reason=reason||':dex_pair_missing_over_60_seconds',"
+                            "trigger_evidence_json=? WHERE id=?",
+                            (self._json(pending_evidence), pending_id),
+                        )
+                        created += self._settle_chain_meme_trader_market_exit(
+                            version=version, mark_id=pending_id,
+                            completed_at=iso(current), definition=definition,
+                        )
+                    elif (
+                        mark_status == "VISIBLE"
+                        and position["mark_last_success_at"] is not None
+                        and position["pending_recorded_at"] is not None
+                        and position["mark_pair_address"]
+                        and (
+                            position["mark_liquidity_usd"] is None
+                            or float(position["mark_liquidity_usd"]) > 0.0
+                        )
+                    ):
+                        post_mark_at = parse_time(position["mark_last_success_at"])
+                        post_observed_at = parse_time(
+                            position["mark_observed_at"]
+                            or position["mark_last_success_at"]
+                        )
+                        post_sequence = int(position["sample_sequence"] or 0)
+                        pre_sequence = int(position["market_pre_sequence"] or 0)
+                        current_pair = str(position["mark_pair_address"] or "")
+                        pending_pair = str(position["pending_pair_address"] or "")
+                        if (
+                            post_mark_at > parse_time(position["pending_recorded_at"])
+                            and post_sequence > pre_sequence
+                            and post_mark_at <= current
+                            and (current - post_mark_at).total_seconds() <= 15.0
+                            and post_observed_at <= current
+                            and 0.0 <= (
+                                current - post_observed_at
+                            ).total_seconds() <= 15.0
+                            and float(position["mark_price_usd"] or 0.0) > 0.0
+                        ):
+                            if current_pair == pending_pair:
+                                pending_evidence = self._json_object(
+                                    position["pending_trigger_evidence_json"]
+                                )
+                                pending_evidence["post_confirmation"] = {
+                                    "sample_sequence": post_sequence,
+                                    "pair_address": current_pair,
+                                    "price_usd": float(position["mark_price_usd"]),
+                                    "liquidity_usd": position["mark_liquidity_usd"],
+                                    "volume_5m_usd": position["mark_volume_5m_usd"],
+                                    "buys_5m": position["mark_buys_5m"],
+                                    "sells_5m": position["mark_sells_5m"],
+                                    "observed_at": iso(post_observed_at),
+                                    "recorded_at": iso(post_mark_at),
+                                }
+                                self.db.execute(
+                                    "UPDATE chain_meme_trader_marks SET "
+                                    "market_post_sequence=?,market_post_pair_address=?,"
+                                    "market_post_price_usd=?,market_post_recorded_at=?,"
+                                    "trigger_evidence_json=? WHERE id=? AND status='pending'",
+                                    (
+                                        post_sequence, current_pair,
+                                        float(position["mark_price_usd"]),
+                                        iso(post_mark_at), self._json(pending_evidence),
+                                        pending_id,
+                                    ),
+                                )
+                                created += self._settle_chain_meme_trader_market_exit(
+                                    version=version, mark_id=pending_id,
+                                    completed_at=iso(post_mark_at), definition=definition,
+                                )
+                            else:
+                                pending_evidence = self._json_object(
+                                    position["pending_trigger_evidence_json"]
+                                )
+                                pending_evidence["pair_rebased"] = {
+                                    "sample_sequence": post_sequence,
+                                    "pair_address": current_pair,
+                                    "recorded_at": iso(post_mark_at),
+                                }
+                                self.db.execute(
+                                    "UPDATE chain_meme_trader_marks SET market_pre_sequence=?,"
+                                    "market_pair_address=?,trigger_evidence_json=? "
+                                    "WHERE id=? AND status='pending'",
+                                    (
+                                        post_sequence, current_pair,
+                                        self._json(pending_evidence), pending_id,
+                                    ),
+                                )
+                    continue
+                if (
+                    mark_status == "MISSING" and misses >= 2
+                    and missing_seconds > 60.0
+                ):
+                    action, reason = "RUG_EXIT", "dex_pair_missing_over_60_seconds"
+                    trigger_evidence = {
+                        "terminal_missing": {
+                            "first_missing_at": position["first_missing_at"],
+                            "confirmed_at": iso(current),
+                            "consecutive_misses": misses,
+                            "failure_kind": str(position["mark_failure_kind"] or ""),
+                        }
+                    }
+                elif elapsed >= float(policy.get("max_hold_minutes") or 240.0):
+                    action, reason = "TIME_EXIT", "market_mark_max_hold"
+                elif mark_status == "VISIBLE" and position["mark_recorded_at"] is not None:
+                    mark_at = parse_time(position["mark_recorded_at"])
+                    mark_observed_at = parse_time(
+                        position["mark_observed_at"] or position["mark_recorded_at"]
+                    )
+                    mark_price = float(position["mark_price_usd"] or 0.0)
+                    if (
+                        parse_time(position["opened_at"]) <= mark_observed_at <= current
+                        and mark_observed_at <= mark_at <= current
+                        and (current - mark_at).total_seconds() <= 15.0
+                        and (current - mark_observed_at).total_seconds() <= 15.0
+                        and mark_price > 0
+                    ):
+                        entry_price = float(
+                            position["entry_execution_price_usd"]
+                            or position["entry_signal_price_usd"] or 0.0
+                        )
+                        high = max(
+                            float(position["highest_signal_price_usd"] or 0.0), mark_price,
+                        )
+                        self.db.execute(
+                            "UPDATE chain_meme_trader_positions SET highest_signal_price_usd=?,"
+                            "last_evaluated_at=? WHERE definition_version=? AND arm_id=? "
+                            "AND shadow_cohort_id=? AND status='open'",
+                            (
+                                high, iso(current), version, arm_id,
+                                int(position["shadow_cohort_id"]),
+                            ),
+                        )
+                        sell_factor = 1.0 - int(definition["slippage_bps"]) / 10_000.0
+                        initial_amount = max(
+                            1, int(position["initial_amount_raw"] or position["amount_raw"] or 1),
+                        )
+                        remaining_fraction = max(
+                            0.0,
+                            min(1.0, int(position["amount_raw"] or 0) / initial_amount),
+                        )
+                        stake = max(1e-12, float(position["stake_usd"] or 0.0))
+                        realized_proceeds = float(position["realized_proceeds_usd"] or 0.0)
+                        economic_return = (
+                            (
+                                realized_proceeds
+                                + stake * remaining_fraction
+                                * mark_price * sell_factor / entry_price
+                            ) / stake - 1.0
+                            if entry_price > 0 else None
+                        )
+                        high_economic_return = (
+                            (
+                                realized_proceeds
+                                + stake * remaining_fraction
+                                * high * sell_factor / entry_price
+                            ) / stake - 1.0
+                            if entry_price > 0 else None
+                        )
+                        current_economic_value = (
+                            realized_proceeds
+                            + stake * remaining_fraction
+                            * mark_price * sell_factor / entry_price
+                            if entry_price > 0 else None
+                        )
+                        high_economic_value = (
+                            realized_proceeds
+                            + stake * remaining_fraction
+                            * high * sell_factor / entry_price
+                            if entry_price > 0 else None
+                        )
+                        drawdown = (
+                            current_economic_value / high_economic_value - 1.0
+                            if current_economic_value is not None
+                            and high_economic_value is not None
+                            and high_economic_value > 0.0 else 0.0
+                        )
+                        trigger_evidence = {
+                            "pre_trigger": {
+                                "sample_sequence": int(position["sample_sequence"] or 0),
+                                "pair_address": str(position["mark_pair_address"] or ""),
+                                "price_usd": mark_price,
+                                "liquidity_usd": position["mark_liquidity_usd"],
+                                "volume_5m_usd": position["mark_volume_5m_usd"],
+                                "buys_5m": position["mark_buys_5m"],
+                                "sells_5m": position["mark_sells_5m"],
+                                "observed_at": iso(mark_observed_at),
+                                "recorded_at": iso(mark_at),
+                                "economic_return": economic_return,
+                                "high_economic_return": high_economic_return,
+                                "drawdown": drawdown,
+                                "elapsed_minutes": elapsed,
+                            }
+                        }
+                        liquidity = position["mark_liquidity_usd"]
+                        emergency_liquidity = policy.get("emergency_liquidity_usd")
+                        if (
+                            liquidity is not None
+                            and float(liquidity) < float(emergency_liquidity or 0.0)
+                        ):
+                            action, reason = "LIQUIDITY_EXIT", "dex_pool_liquidity_below_exit_level"
+                        elif economic_return is not None and economic_return <= float(
+                            policy.get("hard_stop_return") or -1.0
+                        ):
+                            action, reason = "HARD_STOP", "market_mark_hard_stop"
+                        elif (
+                            entry_price > 0
+                            and high_economic_return is not None
+                            and high_economic_return >= float(
+                                policy.get("trailing_activate_return") or 99.0
+                            )
+                            and drawdown <= -float(
+                                policy.get("dex_positive_trailing_drawdown")
+                                if (
+                                    policy.get("research_overlay") == "dexscreener_activity_proxy"
+                                    and elapsed >= float(policy.get("dex_research_delay_minutes") or 0.0)
+                                    and position["mark_volume_5m_usd"] is not None
+                                    and position["mark_buys_5m"] is not None
+                                    and position["mark_sells_5m"] is not None
+                                    and float(position["mark_volume_5m_usd"])
+                                    >= float(policy.get("dex_research_min_volume_5m_usd") or 0.0)
+                                    and (
+                                        int(position["mark_buys_5m"])
+                                        / max(
+                                            1,
+                                            int(position["mark_buys_5m"])
+                                            + int(position["mark_sells_5m"]),
+                                        )
+                                    ) >= float(policy.get("dex_research_min_buy_ratio") or 0.0)
+                                )
+                                else policy.get("trailing_drawdown") or 1.0
+                            )
+                        ):
+                            action, reason = "TRAILING_EXIT", "market_mark_trailing_exit"
+                        elif (
+                            policy.get("zero_activity_grace_minutes") is not None
+                            and elapsed >= float(policy["zero_activity_grace_minutes"])
+                            and position["mark_volume_5m_usd"] is not None
+                            and position["mark_buys_5m"] is not None
+                            and position["mark_sells_5m"] is not None
+                            and float(position["mark_volume_5m_usd"]) <= 0.0
+                            and int(position["mark_buys_5m"])
+                            + int(position["mark_sells_5m"]) <= 0
+                        ):
+                            action, reason = "INACTIVITY_EXIT", "market_mark_zero_5m_activity"
+                        elif (
+                            policy.get("flow_grace_minutes") is not None
+                            and elapsed >= float(policy["flow_grace_minutes"])
+                            and position["mark_buys_5m"] is not None
+                            and position["mark_sells_5m"] is not None
+                        ):
+                            buys = int(position["mark_buys_5m"])
+                            sells = int(position["mark_sells_5m"])
+                            total_trades = buys + sells
+                            buy_ratio = buys / total_trades if total_trades > 0 else None
+                            if (
+                                buy_ratio is not None
+                                and buy_ratio < float(policy.get("minimum_buy_ratio") or 0.0)
+                            ):
+                                action, reason = "FLOW_EXIT", "market_mark_buy_ratio_faded"
+                        if (
+                            action is None
+                            and policy.get("runner_review_minutes") is not None
+                            and elapsed >= float(policy["runner_review_minutes"])
+                            and economic_return is not None and economic_return <= 0.0
+                        ):
+                            action, reason = "RUNNER_REVIEW_EXIT", "market_mark_runner_not_profitable"
+                        if action is None and economic_return is not None:
+                            tp_index = int(position["next_tp_index"] or 0)
+                            tiers = list(policy.get("take_profit") or [])
+                            if tp_index < len(tiers) and economic_return >= float(
+                                tiers[tp_index]["return"]
+                            ):
+                                fraction = float(tiers[tp_index]["fraction_of_remaining"])
+                                sell_amount = (
+                                    int(position["amount_raw"])
+                                    if fraction >= 1.0 else max(
+                                        1, min(
+                                            int(position["amount_raw"]),
+                                            round(int(position["amount_raw"]) * fraction),
+                                        ),
+                                    )
+                                )
+                                action = f"TAKE_PROFIT_{tp_index + 1}"
+                                reason = f"market_mark_take_profit_{tp_index + 1}"
+                if action is None or sell_amount <= 0:
+                    continue
+                if market_only_exit and action != "RUG_EXIT":
+                    if not (
+                        mark_status == "VISIBLE"
+                        and position["mark_recorded_at"] is not None
+                        and position["mark_pair_address"]
+                        and (
+                            position["mark_liquidity_usd"] is None
+                            or float(position["mark_liquidity_usd"]) > 0.0
+                        )
+                        and 0.0 <= (
+                            current - parse_time(position["mark_recorded_at"])
+                        ).total_seconds() <= 15.0
+                        and position["mark_observed_at"] is not None
+                        and 0.0 <= (
+                            current - parse_time(position["mark_observed_at"])
+                        ).total_seconds() <= 15.0
+                        and float(position["mark_price_usd"] or 0.0) > 0.0
+                    ):
+                        continue
+                if version == self.CHAIN_MEME_TRADER_V11_VERSION:
+                    reason += ":v11_legacy_dexmark_drain_overlay"
+                self.db.execute(
+                    "INSERT INTO chain_meme_trader_marks("
+                    "definition_version,arm_id,shadow_cohort_id,recorded_at,action,reason,"
+                    "sell_amount_raw,market_pre_sequence,market_pair_address,"
+                    "trigger_evidence_json,status) VALUES(?,?,?,?,?,?,?,?,?,?,'pending')",
+                    (
+                        version, arm_id, int(position["shadow_cohort_id"]),
+                        iso(current), action, reason, str(sell_amount),
+                        int(position["sample_sequence"] or 0),
+                        str(position["mark_pair_address"] or "") or None,
+                        self._json(trigger_evidence),
+                    ),
+                )
+                mark_id = int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+                self.db.execute(
+                    "UPDATE chain_meme_trader_positions SET pending_mark_id=?,last_evaluated_at=? "
+                    "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=? "
+                    "AND status='open' AND pending_mark_id IS NULL",
+                    (
+                        mark_id, iso(current), version, arm_id,
+                        int(position["shadow_cohort_id"]),
+                    ),
+                )
+                changed = int(self.db.execute("SELECT changes()").fetchone()[0])
+                created += changed
+                if changed and market_only_exit and action == "RUG_EXIT":
+                    self._settle_chain_meme_trader_market_exit(
+                        version=version,
+                        mark_id=mark_id,
+                        completed_at=iso(current),
+                        definition=definition,
+                    )
+            return created
+
+    def evaluate_chain_meme_trader_executable_decay_quote(self, result_id: int) -> int:
+        """Arm and trigger the paired challenger from exact executable valuations only."""
+        version = self.CHAIN_MEME_TRADER_STAGE4_EXEC_DECAY_VERSION
+        with self._lock, self.db:
+            registration = self._chain_meme_trader_registration(version)
+            result = self.db.execute(
+                "SELECT * FROM chain_meme_trader_quote_results WHERE id=? "
+                "AND definition_version=? AND quote_kind='valuation' "
+                "AND quote_terminal_status='quoted' AND validity_status='valid'",
+                (int(result_id), version),
+            ).fetchone()
+            if registration is None or result is None:
+                return 0
+            position = self.db.execute(
+                "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
+                "AND shadow_cohort_id=? AND status='open'",
+                (version, int(result["shadow_cohort_id"])),
+            ).fetchone()
+            if (
+                position is None
+                or str(result["input_amount_raw"]) != str(position["amount_raw"])
+                or parse_time(result["completed_at"]) < parse_time(position["opened_at"])
+                or position["pending_mark_id"] is not None
+            ):
+                return 0
+            definition = self._json_object(registration["definition_json"])
+            high_row = self.db.execute(
+                "SELECT MAX(gross_usdc) AS high FROM chain_meme_trader_quote_results "
+                "WHERE definition_version=? AND quote_kind='valuation' "
+                "AND shadow_cohort_id=? AND input_amount_raw=? "
+                "AND quote_terminal_status='quoted' AND validity_status='valid' "
+                "AND completed_at>=? AND id<=?",
+                (
+                    version, int(position["shadow_cohort_id"]), str(position["amount_raw"]),
+                    str(position["opened_at"]), int(result_id),
+                ),
+            ).fetchone()
+            high = float(high_row["high"] or 0.0)
+            current = float(result["gross_usdc"] or 0.0)
+            stake = float(position["stake_usd"])
+            armed = high >= stake * (1.0 + float(definition["arm_executable_return"]))
+            trigger = bool(
+                armed and high > 0.0
+                and current <= high * (
+                    1.0 - float(definition["exit_drawdown_from_executable_high_water"])
+                )
+            )
+            if not trigger:
+                return 0
+            recorded_at = str(result["completed_at"])
+            reason = (
+                f"exact_executable_drawdown_15pct_after_40pct_arm:"
+                f"valuation_result={int(result_id)}:high={high:.6f}:current={current:.6f}"
+            )
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_marks("
+                "definition_version,arm_id,shadow_cohort_id,recorded_at,action,reason,"
+                "sell_amount_raw,status) VALUES(?,?,?,?,?,?,?,'pending')",
+                (
+                    version, str(position["arm_id"]), int(position["shadow_cohort_id"]),
+                    recorded_at, "EXECUTABLE_DECAY_EXIT", reason,
+                    str(position["amount_raw"]),
+                ),
+            )
+            mark_id = int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+            self.db.execute(
+                "UPDATE chain_meme_trader_positions SET pending_mark_id=? "
+                "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=? "
+                "AND status='open' AND pending_mark_id IS NULL",
+                (
+                    mark_id, version, str(position["arm_id"]),
+                    int(position["shadow_cohort_id"]),
+                ),
+            )
+            return int(self.db.execute("SELECT changes()").fetchone()[0])
+
+    def record_chain_meme_trader_account_snapshots(
+        self, *, now: Any = None, definition_version: str | None = None,
+    ) -> int:
+        version = definition_version or self.CHAIN_MEME_TRADER_VERSION
+        current, inserted = parse_time(now or utcnow()), 0
+        with self._lock, self.db:
+            registration = self._chain_meme_trader_registration(version)
+            if registration is None:
+                return 0
+            definition = self._json_object(registration["definition_json"])
+            market_only_valuation = str(definition.get("sell_execution") or "") == (
+                "dexscreener_market_mark_only"
+            )
+            if market_only_valuation:
+                return self._record_chain_meme_trader_market_account_snapshots(
+                    version=version, definition=definition, current=current,
+                )
+            for policy in definition["policies"]:
+                arm_id = str(policy["arm_id"])
+                positions = self.db.execute("SELECT * FROM chain_meme_trader_positions WHERE definition_version=? AND arm_id=? AND status!='ineligible'", (version, arm_id)).fetchall()
+                trades = self.db.execute("SELECT * FROM chain_meme_trader_trades WHERE definition_version=? AND arm_id=?", (version, arm_id)).fetchall()
+                cash = float(definition["starting_cash_usd_each_arm"]) + sum(float(row["net_cash_flow_usd"]) for row in trades)
+                realized = sum(float(row["realized_pnl_usd"] or 0.0) for row in positions)
+                open_positions = [row for row in positions if row["status"] == "open"]
+                executable = unrealized = 0.0; priced = 0
+                for position in open_positions:
+                    if market_only_valuation:
+                        break
+                    if version in {
+                        self.CHAIN_MEME_TRADER_STAGE4_EXEC_EQUITY_V2_VERSION,
+                        self.CHAIN_MEME_TRADER_V10_VERSION,
+                        self.CHAIN_MEME_TRADER_V6_VERSION,
+                    }:
+                        frame_version = (
+                            self.CHAIN_MEME_TRADER_V6_EQUITY_FRAME_VERSION
+                            if version == self.CHAIN_MEME_TRADER_V6_VERSION
+                            else self.CHAIN_MEME_TRADER_V10_EQUITY_FRAME_VERSION
+                            if version == self.CHAIN_MEME_TRADER_V10_VERSION
+                            else self.CHAIN_MEME_TRADER_POSITION_EQUITY_FRAME_VERSION
+                        )
+                        frame = self.db.execute(
+                            "SELECT * FROM chain_meme_trader_position_equity_frames "
+                            "WHERE frame_version=? AND definition_version=? "
+                            "AND shadow_cohort_id=? AND input_amount_raw=? "
+                            "ORDER BY decision_at DESC,id DESC LIMIT 1",
+                            (
+                                frame_version,
+                                version, int(position["shadow_cohort_id"]),
+                                str(position["amount_raw"]),
+                            ),
+                        ).fetchone()
+                        if frame is None or str(frame["valuation_status"]) != "COMPLETE":
+                            continue
+                        interval = self._chain_meme_valuation_interval(
+                            position["opened_at"], current
+                        )
+                        if (current - parse_time(frame["decision_at"])).total_seconds() > interval * 2:
+                            continue
+                        arm_value = self._json_object(frame["arm_values_json"]).get(arm_id)
+                        if not isinstance(arm_value, Mapping) or arm_value.get(
+                            "remaining_min_executable_recovery_usd"
+                        ) is None:
+                            continue
+                        value = float(arm_value["remaining_min_executable_recovery_usd"])
+                    else:
+                        result = self.db.execute("SELECT * FROM chain_meme_trader_quote_results WHERE definition_version=? AND shadow_cohort_id=? AND input_amount_raw=? AND quote_terminal_status='quoted' AND validity_status='valid' AND gross_usdc IS NOT NULL ORDER BY id DESC LIMIT 1", (version, int(position["shadow_cohort_id"]), str(position["amount_raw"]))).fetchone()
+                        if result is None:
+                            continue
+                        interval = self._chain_meme_valuation_interval(position["opened_at"], current)
+                        if (current - parse_time(result["completed_at"])).total_seconds() > interval * 2:
+                            continue
+                        value = float(result["gross_usdc"] or 0.0)
+                    remaining_cost = max(
+                        0.0,
+                        float(position["stake_usd"])
+                        - float(position["allocated_cost_usd"] or 0.0),
+                    )
+                    executable += value
+                    unrealized += value - remaining_cost
+                    priced += 1
+                direct_estimated = direct_unrealized = 0.0
+                direct_priced = 0
+                indicative_estimated = indicative_unrealized = 0.0
+                indicative_priced = 0
+                directly_priced: set[tuple[int, str]] = set()
+                for position in open_positions:
+                    if market_only_valuation:
+                        break
+                    local = self.db.execute(
+                        "SELECT * FROM chain_meme_trader_local_surface_quotes "
+                        "WHERE version=? AND definition_version=? AND shadow_cohort_id=? "
+                        "AND remaining_amount_raw=? ORDER BY id DESC LIMIT 1",
+                        (
+                            self.CHAIN_MEME_TRADER_LOCAL_SURFACE_QUOTE_VERSION,
+                            version, int(position["shadow_cohort_id"]),
+                            str(position["amount_raw"]),
+                        ),
+                    ).fetchone()
+                    if (
+                        local is None
+                        or local["direct_estimated_recovery_usd"] is None
+                        or str(local["status"]) not in {
+                            "LOCAL_SURFACE_CURRENT", "LOCAL_SURFACE_DEGRADED",
+                            "LOCAL_SURFACE_CRITICAL",
+                        }
+                    ):
+                        continue
+                    local_age = (
+                        current - parse_time(local["completed_at"])
+                    ).total_seconds()
+                    if not 0.0 <= local_age <= 15.0:
+                        continue
+                    direct_value = float(local["direct_estimated_recovery_usd"])
+                    remaining_cost = max(
+                        0.0,
+                        float(position["stake_usd"])
+                        - float(position["allocated_cost_usd"] or 0.0),
+                    )
+                    direct_estimated += direct_value
+                    direct_unrealized += direct_value - remaining_cost
+                    direct_priced += 1
+                    indicative_estimated += direct_value
+                    indicative_unrealized += direct_value - remaining_cost
+                    indicative_priced += 1
+                    directly_priced.add((
+                        int(position["shadow_cohort_id"]), str(position["amount_raw"]),
+                    ))
+                for position in open_positions:
+                    if (
+                        int(position["shadow_cohort_id"]), str(position["amount_raw"]),
+                    ) in directly_priced:
+                        continue
+                    snapshot = self.db.execute(
+                        "SELECT price_usd,liquidity_usd,pair_address,status,observed_at,"
+                        "last_success_at,recorded_at "
+                        "FROM chain_meme_trader_market_marks WHERE token_id=? "
+                        "AND recorded_at<=?",
+                        (str(position["token_id"]), iso(current)),
+                    ).fetchone()
+                    if snapshot is None and not market_only_valuation:
+                        snapshot = self.db.execute(
+                            "SELECT price_usd,liquidity_usd,NULL AS pair_address,"
+                            "'VISIBLE' AS status,observed_at,recorded_at AS last_success_at,"
+                            "recorded_at "
+                            "FROM token_snapshots "
+                            "WHERE token_id=? AND recorded_at<=? "
+                            "ORDER BY recorded_at DESC,id DESC LIMIT 1",
+                            (str(position["token_id"]), iso(current)),
+                        ).fetchone()
+                    if snapshot is None:
+                        continue
+                    mark_age = (
+                        (current - parse_time(snapshot["last_success_at"])).total_seconds()
+                        if snapshot["last_success_at"] is not None else None
+                    )
+                    observed_age = (
+                        (current - parse_time(snapshot["observed_at"])).total_seconds()
+                        if snapshot["observed_at"] is not None else None
+                    )
+                    if market_only_valuation and not (
+                        str(snapshot["status"] or "") == "VISIBLE"
+                        and snapshot["pair_address"]
+                        and (
+                            snapshot["liquidity_usd"] is None
+                            or float(snapshot["liquidity_usd"]) > 0.0
+                        )
+                        and mark_age is not None and 0.0 <= mark_age <= 15.0
+                        and observed_age is not None and 0.0 <= observed_age <= 15.0
+                    ):
+                        continue
+                    current_price = float(snapshot["price_usd"] or 0.0)
+                    entry_price = float(
+                        position["entry_execution_price_usd"]
+                        or position["entry_signal_price_usd"] or 0.0
+                    )
+                    initial_raw = int(
+                        position["initial_amount_raw"] or position["amount_raw"] or 0
+                    )
+                    remaining_raw = int(position["amount_raw"] or 0)
+                    if current_price <= 0 or entry_price <= 0 or initial_raw <= 0:
+                        continue
+                    remaining_fraction = max(
+                        0.0, min(1.0, remaining_raw / initial_raw)
+                    )
+                    gross_mark = (
+                        float(position["stake_usd"]) * remaining_fraction
+                        * current_price / entry_price
+                        * (1.0 - int(definition["slippage_bps"]) / 10_000.0)
+                    )
+                    indicative_value = max(0.0, gross_mark)
+                    remaining_cost = max(
+                        0.0,
+                        float(position["stake_usd"])
+                        - float(position["allocated_cost_usd"] or 0.0),
+                    )
+                    indicative_estimated += indicative_value
+                    indicative_unrealized += indicative_value - remaining_cost
+                    indicative_priced += 1
+                complete = priced == len(open_positions); closed = sum(1 for row in positions if row["status"] == "closed"); written = sum(1 for row in positions if row["status"] == "written_off")
+                direct_complete = direct_priced == len(open_positions)
+                indicative_complete = indicative_priced == len(open_positions)
+                valuation_status = (
+                    "complete_market_mark"
+                    if market_only_valuation and indicative_complete
+                    else "partial_market_mark_unknown"
+                    if market_only_valuation
+                    else "complete_exact_jupiter"
+                    if complete
+                    else "awaiting_fresh_exact_quote"
+                )
+                payload = (
+                    version, arm_id, iso(current), cash,
+                    cash + executable if complete else None, realized,
+                    unrealized if complete else None,
+                    realized + unrealized if complete else None,
+                    cash + direct_estimated if direct_complete else None,
+                    direct_unrealized if direct_complete else None,
+                    realized + direct_unrealized if direct_complete else None,
+                    direct_priced, len(open_positions), closed, written, priced,
+                    cash + indicative_estimated if indicative_complete else None,
+                    indicative_unrealized if indicative_complete else None,
+                    realized + indicative_unrealized if indicative_complete else None,
+                    indicative_priced, int(indicative_complete),
+                    valuation_status,
+                )
+                latest = self.db.execute("SELECT * FROM chain_meme_trader_account_snapshots WHERE definition_version=? AND arm_id=? ORDER BY id DESC LIMIT 1", (version, arm_id)).fetchone()
+                if latest is not None:
+                    previous = tuple(latest[key] for key in (
+                        "cash_usd", "executable_equity_usd", "realized_pnl_usd",
+                        "executable_unrealized_pnl_usd", "executable_total_pnl_usd",
+                        "direct_estimated_equity_usd",
+                        "direct_estimated_unrealized_pnl_usd",
+                        "direct_estimated_total_pnl_usd",
+                        "direct_estimated_position_count", "open_position_count",
+                        "closed_position_count", "written_off_position_count",
+                        "priced_position_count", "indicative_equity_usd",
+                        "indicative_unrealized_pnl_usd", "indicative_total_pnl_usd",
+                        "indicative_position_count", "indicative_is_complete",
+                        "valuation_status",
+                    ))
+                    if previous == payload[3:] and (current - parse_time(latest["recorded_at"])).total_seconds() < 60:
+                        continue
+                self.db.execute(
+                    "INSERT INTO chain_meme_trader_account_snapshots("
+                    "definition_version,arm_id,recorded_at,cash_usd,executable_equity_usd,"
+                    "realized_pnl_usd,executable_unrealized_pnl_usd,"
+                    "executable_total_pnl_usd,direct_estimated_equity_usd,"
+                    "direct_estimated_unrealized_pnl_usd,direct_estimated_total_pnl_usd,"
+                    "direct_estimated_position_count,open_position_count,"
+                    "closed_position_count,written_off_position_count,priced_position_count,"
+                    "indicative_equity_usd,indicative_unrealized_pnl_usd,"
+                    "indicative_total_pnl_usd,indicative_position_count,"
+                    "indicative_is_complete,valuation_status) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    payload,
+                ); inserted += 1
+        return inserted
+
+    def _record_chain_meme_trader_market_account_snapshots(
+        self, *, version: str, definition: Mapping[str, Any], current: datetime,
+    ) -> int:
+        """Persist all DEX-mark accounts from one shared set of rows."""
+        policy_ids = [str(item["arm_id"]) for item in definition["policies"]]
+        starting_cash = float(definition["starting_cash_usd_each_arm"])
+        slippage_factor = 1.0 - int(definition["slippage_bps"]) / 10_000.0
+        positions_by_arm: dict[str, list[sqlite3.Row]] = {
+            arm_id: [] for arm_id in policy_ids
+        }
+        for row in self.db.execute(
+            "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
+            "AND status!='ineligible' ORDER BY arm_id,opened_at",
+            (version,),
+        ).fetchall():
+            positions_by_arm.setdefault(str(row["arm_id"]), []).append(row)
+        net_flow_by_arm = {
+            str(row["arm_id"]): float(row["net_flow_usd"] or 0.0)
+            for row in self.db.execute(
+                "SELECT arm_id,COALESCE(SUM(net_cash_flow_usd),0.0) AS net_flow_usd "
+                "FROM chain_meme_trader_trades WHERE definition_version=? GROUP BY arm_id",
+                (version,),
+            ).fetchall()
+        }
+        ledger_trade_frontier_id = int(self.db.execute(
+            "SELECT COALESCE(MAX(id),0) FROM chain_meme_trader_trades "
+            "WHERE definition_version=?",
+            (version,),
+        ).fetchone()[0])
+        token_ids = {
+            str(row["token_id"])
+            for rows in positions_by_arm.values()
+            for row in rows if str(row["status"]) == "open"
+        }
+        marks_by_token: dict[str, sqlite3.Row] = {}
+        if token_ids:
+            placeholders = ",".join("?" for _ in token_ids)
+            marks_by_token = {
+                str(row["token_id"]): row
+                for row in self.db.execute(
+                    "SELECT token_id,price_usd,liquidity_usd,pair_address,status,observed_at,"
+                    "last_success_at,recorded_at FROM chain_meme_trader_market_marks "
+                    f"WHERE token_id IN ({placeholders}) AND recorded_at<=?",
+                    (*sorted(token_ids), iso(current)),
+                ).fetchall()
+            }
+        latest_by_arm = {
+            str(row["arm_id"]): row
+            for row in self.db.execute(
+                "SELECT s.* FROM chain_meme_trader_account_snapshots s JOIN ("
+                "SELECT arm_id,MAX(id) AS latest_id FROM chain_meme_trader_account_snapshots "
+                "WHERE definition_version=? GROUP BY arm_id"
+                ") latest ON latest.latest_id=s.id",
+                (version,),
+            ).fetchall()
+        }
+        inserted = 0
+        for arm_id in policy_ids:
+            positions = positions_by_arm.get(arm_id, [])
+            open_positions = [row for row in positions if str(row["status"]) == "open"]
+            closed = sum(1 for row in positions if str(row["status"]) == "closed")
+            written = sum(1 for row in positions if str(row["status"]) == "written_off")
+            realized = sum(float(row["realized_pnl_usd"] or 0.0) for row in positions)
+            cash = starting_cash + net_flow_by_arm.get(arm_id, 0.0)
+            indicative_value = 0.0
+            indicative_unrealized = 0.0
+            indicative_priced = 0
+            for position in open_positions:
+                mark = marks_by_token.get(str(position["token_id"]))
+                if mark is None or str(mark["status"] or "") != "VISIBLE":
+                    continue
+                mark_at_value = mark["last_success_at"] or mark["recorded_at"]
+                mark_age = (
+                    (current - parse_time(mark_at_value)).total_seconds()
+                    if mark_at_value is not None else None
+                )
+                observed_age = (
+                    (current - parse_time(mark["observed_at"])).total_seconds()
+                    if mark["observed_at"] is not None else None
+                )
+                liquidity = mark["liquidity_usd"]
+                if not (
+                    mark["pair_address"]
+                    and float(mark["price_usd"] or 0.0) > 0.0
+                    and (liquidity is None or float(liquidity) > 0.0)
+                    and mark_age is not None and 0.0 <= mark_age <= 15.0
+                    and observed_age is not None and 0.0 <= observed_age <= 15.0
+                ):
+                    continue
+                entry_price = float(
+                    position["entry_execution_price_usd"]
+                    or position["entry_signal_price_usd"] or 0.0
+                )
+                initial_raw = int(
+                    position["initial_amount_raw"] or position["amount_raw"] or 0
+                )
+                if entry_price <= 0.0 or initial_raw <= 0:
+                    continue
+                remaining_fraction = max(
+                    0.0,
+                    min(1.0, int(position["amount_raw"] or 0) / initial_raw),
+                )
+                recovery = max(
+                    0.0,
+                    float(position["stake_usd"]) * remaining_fraction
+                    * float(mark["price_usd"]) / entry_price * slippage_factor,
+                )
+                remaining_cost = max(
+                    0.0,
+                    float(position["stake_usd"])
+                    - float(position["allocated_cost_usd"] or 0.0),
+                )
+                indicative_value += recovery
+                indicative_unrealized += recovery - remaining_cost
+                indicative_priced += 1
+            open_count = len(open_positions)
+            indicative_complete = indicative_priced == open_count
+            no_open_positions = open_count == 0
+            payload = (
+                version, arm_id, iso(current), cash,
+                cash if no_open_positions else None,
+                realized,
+                0.0 if no_open_positions else None,
+                realized if no_open_positions else None,
+                cash if no_open_positions else None,
+                0.0 if no_open_positions else None,
+                realized if no_open_positions else None,
+                0, open_count, closed, written, 0,
+                cash + indicative_value if indicative_complete else None,
+                indicative_unrealized if indicative_complete else None,
+                realized + indicative_unrealized if indicative_complete else None,
+                indicative_priced, int(indicative_complete),
+                "complete_market_mark"
+                if indicative_complete else "partial_market_mark_unknown",
+                ledger_trade_frontier_id,
+            )
+            latest = latest_by_arm.get(arm_id)
+            if latest is not None:
+                previous = tuple(latest[key] for key in (
+                    "cash_usd", "executable_equity_usd", "realized_pnl_usd",
+                    "executable_unrealized_pnl_usd", "executable_total_pnl_usd",
+                    "direct_estimated_equity_usd",
+                    "direct_estimated_unrealized_pnl_usd",
+                    "direct_estimated_total_pnl_usd",
+                    "direct_estimated_position_count", "open_position_count",
+                    "closed_position_count", "written_off_position_count",
+                    "priced_position_count", "indicative_equity_usd",
+                    "indicative_unrealized_pnl_usd", "indicative_total_pnl_usd",
+                    "indicative_position_count", "indicative_is_complete",
+                    "valuation_status", "ledger_trade_frontier_id",
+                ))
+                age = (current - parse_time(latest["recorded_at"])).total_seconds()
+                if age < 10.0 or (previous == payload[3:] and age < 60.0):
+                    continue
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_account_snapshots("
+                "definition_version,arm_id,recorded_at,cash_usd,executable_equity_usd,"
+                "realized_pnl_usd,executable_unrealized_pnl_usd,"
+                "executable_total_pnl_usd,direct_estimated_equity_usd,"
+                "direct_estimated_unrealized_pnl_usd,direct_estimated_total_pnl_usd,"
+                "direct_estimated_position_count,open_position_count,"
+                "closed_position_count,written_off_position_count,priced_position_count,"
+                "indicative_equity_usd,indicative_unrealized_pnl_usd,"
+                "indicative_total_pnl_usd,indicative_position_count,"
+                "indicative_is_complete,valuation_status,ledger_trade_frontier_id) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                payload,
+            )
+            inserted += 1
+        return inserted
+
+    @classmethod
+    def chain_meme_trader_executable_decay_summary_from_connection(
+        cls, connection: sqlite3.Connection,
+    ) -> dict[str, Any]:
+        version = cls.CHAIN_MEME_TRADER_STAGE4_EXEC_DECAY_VERSION
+        registration = connection.execute(
+            "SELECT * FROM chain_meme_trader_executable_decay_registrations "
+            "WHERE definition_version=?", (version,),
+        ).fetchone()
+        if registration is None:
+            return {"status": "not_registered", "version": version, "positions": []}
+        definition = cls._json_object(registration["definition_json"])
+        stop = connection.execute(
+            "SELECT * FROM chain_meme_trader_executable_decay_stops "
+            "WHERE definition_version=?", (version,),
+        ).fetchone()
+        account = connection.execute(
+            "SELECT * FROM chain_meme_trader_account_snapshots "
+            "WHERE definition_version=? ORDER BY id DESC LIMIT 1", (version,),
+        ).fetchone()
+        positions = []
+        for row in connection.execute(
+            "SELECT p.*,s.status AS control_status,s.realized_pnl_usd AS control_pnl "
+            "FROM chain_meme_trader_positions p LEFT JOIN chain_meme_trader_positions s "
+            "ON s.definition_version=? AND s.arm_id='stage_04_dynamic_v1' "
+            "AND s.shadow_cohort_id=p.shadow_cohort_id "
+            "WHERE p.definition_version=? ORDER BY p.opened_at DESC",
+            (cls.CHAIN_MEME_TRADER_VERSION, version),
+        ).fetchall():
+            item = dict(row)
+            current = high = None
+            armed = False
+            drawdown = None
+            latest_at = None
+            if str(row["status"]) == "open":
+                latest = connection.execute(
+                    "SELECT gross_usdc,completed_at FROM chain_meme_trader_quote_results "
+                    "WHERE definition_version=? AND quote_kind='valuation' "
+                    "AND shadow_cohort_id=? AND input_amount_raw=? "
+                    "AND quote_terminal_status='quoted' AND validity_status='valid' "
+                    "AND completed_at>=? ORDER BY id DESC LIMIT 1",
+                    (
+                        version, int(row["shadow_cohort_id"]), str(row["amount_raw"]),
+                        str(row["opened_at"]),
+                    ),
+                ).fetchone()
+                high_row = connection.execute(
+                    "SELECT MAX(gross_usdc) AS high FROM chain_meme_trader_quote_results "
+                    "WHERE definition_version=? AND quote_kind='valuation' "
+                    "AND shadow_cohort_id=? AND input_amount_raw=? "
+                    "AND quote_terminal_status='quoted' AND validity_status='valid' "
+                    "AND completed_at>=?",
+                    (
+                        version, int(row["shadow_cohort_id"]), str(row["amount_raw"]),
+                        str(row["opened_at"]),
+                    ),
+                ).fetchone()
+                current = float(latest["gross_usdc"]) if latest is not None else None
+                latest_at = latest["completed_at"] if latest is not None else None
+                high = float(high_row["high"]) if high_row and high_row["high"] is not None else None
+                armed = bool(
+                    high is not None and high >= float(row["stake_usd"]) * (
+                        1.0 + float(definition["arm_executable_return"])
+                    )
+                )
+                drawdown = (
+                    current / high - 1.0
+                    if current is not None and high is not None and high > 0 else None
+                )
+            item.update({
+                "current_executable_usd": current,
+                "executable_high_water_usd": high,
+                "armed": armed,
+                "drawdown_from_high": drawdown,
+                "latest_valuation_at": latest_at,
+                "paired_realized_pnl_delta_usd": (
+                    float(row["realized_pnl_usd"]) - float(row["control_pnl"])
+                    if str(row["status"]) in {"closed", "written_off"}
+                    and row["control_pnl"] is not None else None
+                ),
+            })
+            positions.append(item)
+        return {
+            "status": "enrollment_stopped" if stop is not None else "running",
+            "version": version,
+            "registered_at": registration["registered_at"],
+            "activation_source_buy_fill_id": int(registration["activation_source_buy_fill_id"]),
+            "source_arm_id": registration["source_arm_id"],
+            "arm_executable_return": float(definition["arm_executable_return"]),
+            "exit_drawdown": float(definition["exit_drawdown_from_executable_high_water"]),
+            "enrollment_stop": dict(stop) if stop is not None else None,
+            "account": dict(account) if account is not None else None,
+            "positions": positions,
+        }
+
+    @classmethod
+    def chain_meme_trader_summary_from_connection(
+        cls, connection: sqlite3.Connection, *, trade_limit: int = 200,
+        curve_limit: int = 240,
+    ) -> dict[str, Any]:
+        summary_at = parse_time(utcnow())
+        tables = {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "chain_meme_trader_registrations" not in tables:
+            return {"status": "not_enabled", "version": cls.CHAIN_MEME_TRADER_VERSION, "strategies": []}
+        active_registration = (
+            connection.execute(
+                "SELECT definition_version FROM chain_meme_trader_v6_activations "
+                "WHERE entry_execution_enabled=1 ORDER BY activated_at DESC,rowid DESC LIMIT 1"
+            ).fetchone()
+            if "chain_meme_trader_v6_activations" in tables else None
+        )
+        active_epoch = active_registration is not None
+        version = (
+            str(active_registration["definition_version"])
+            if active_registration is not None else cls.CHAIN_MEME_TRADER_VERSION
+        )
+        registration = connection.execute("SELECT * FROM chain_meme_trader_registrations WHERE definition_version=?", (version,)).fetchone()
+        if registration is None:
+            return {"status": "not_enabled", "version": version, "strategies": []}
+        definition = cls.chain_meme_trader_effective_definition_from_connection(
+            connection, version, registration["definition_json"],
+        )
+        strategies = []
+        market_only_valuation = str(definition.get("sell_execution") or "") == (
+            "dexscreener_market_mark_only"
+        )
+        starting_cash = float(definition["starting_cash_usd_each_arm"])
+        quote_cache: dict[tuple[int, str], sqlite3.Row | None] = {}
+        local_surface_cache: dict[tuple[int, str], sqlite3.Row | None] = {}
+        indicative_snapshot_cache: dict[str, sqlite3.Row | None] = {}
+        market_mark_columns = (
+            {
+                str(item["name"])
+                for item in connection.execute(
+                    "PRAGMA table_info(chain_meme_trader_market_marks)"
+                ).fetchall()
+            }
+            if "chain_meme_trader_market_marks" in tables else set()
+        )
+        optional_market_mark_projection = ",".join(
+            column if column in market_mark_columns else f"NULL AS {column}"
+            for column in ("pair_address", "volume_5m_usd", "buys_5m", "sells_5m")
+        )
+        account_snapshot_columns = {
+            str(item["name"])
+            for item in connection.execute(
+                "PRAGMA table_info(chain_meme_trader_account_snapshots)"
+            ).fetchall()
+        }
+        has_ledger_frontier = "ledger_trade_frontier_id" in account_snapshot_columns
+        previous_total_pnl: float | None = None
+        open_position_count_all = 0
+        unique_held_token_ids: set[str] = set()
+        for policy in definition["policies"]:
+            arm_id = str(policy["arm_id"])
+            latest = connection.execute("SELECT * FROM chain_meme_trader_account_snapshots WHERE definition_version=? AND arm_id=? ORDER BY id DESC LIMIT 1", (version, arm_id)).fetchone()
+            curve_where = (
+                "definition_version=? AND arm_id=? AND ledger_trade_frontier_id IS NOT NULL"
+                if has_ledger_frontier and version == cls.CHAIN_MEME_TRADER_ACTIVE_VERSION
+                else "definition_version=? AND arm_id=?"
+            )
+            curve = [dict(row) for row in connection.execute(
+                "SELECT * FROM chain_meme_trader_account_snapshots WHERE "
+                f"{curve_where} ORDER BY id DESC LIMIT ?",
+                (version, arm_id, max(1, int(curve_limit))),
+            )][::-1]
+            legacy_curve_points = (
+                int(connection.execute(
+                    "SELECT COUNT(*) FROM chain_meme_trader_account_snapshots "
+                    "WHERE definition_version=? AND arm_id=? "
+                    "AND ledger_trade_frontier_id IS NULL",
+                    (version, arm_id),
+                ).fetchone()[0])
+                if has_ledger_frontier and version == cls.CHAIN_MEME_TRADER_ACTIVE_VERSION
+                else 0
+            )
+            positions = []
+            position_rows = connection.execute(
+                "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
+                "AND arm_id=? ORDER BY opened_at DESC",
+                (version, arm_id),
+            ).fetchall()
+            priced_recovery = priced_unrealized = 0.0
+            priced_position_count = 0
+            indicative_recovery = indicative_unrealized = 0.0
+            indicative_position_count = 0
+            direct_recovery = direct_unrealized = 0.0
+            direct_position_count = 0
+            for row in position_rows:
+                position = dict(row)
+                key = (int(row["shadow_cohort_id"]), str(row["amount_raw"]))
+                if key not in quote_cache and not market_only_valuation:
+                    quote_cache[key] = connection.execute(
+                        "SELECT * FROM chain_meme_trader_quote_results "
+                        "WHERE definition_version=? AND shadow_cohort_id=? "
+                        "AND input_amount_raw=? ORDER BY id DESC LIMIT 1",
+                        (version, key[0], key[1]),
+                    ).fetchone()
+                quote = quote_cache.get(key)
+                if key not in local_surface_cache and not market_only_valuation:
+                    local_surface_cache[key] = connection.execute(
+                        "SELECT * FROM chain_meme_trader_local_surface_quotes "
+                        "WHERE version=? AND definition_version=? AND shadow_cohort_id=? "
+                        "AND remaining_amount_raw=? ORDER BY id DESC LIMIT 1",
+                        (
+                            cls.CHAIN_MEME_TRADER_LOCAL_SURFACE_QUOTE_VERSION,
+                            version, key[0], key[1],
+                        ),
+                    ).fetchone()
+                local_surface = local_surface_cache.get(key)
+                local_surface_at = (
+                    parse_time(local_surface["completed_at"])
+                    if local_surface is not None else None
+                )
+                local_surface_age = (
+                    (summary_at - local_surface_at).total_seconds()
+                    if local_surface_at is not None else None
+                )
+                local_surface_is_fresh = (
+                    local_surface_age is not None
+                    and 0.0 <= local_surface_age <= 15.0
+                )
+                quote_status = str(quote["quote_terminal_status"]) if quote is not None else None
+                quote_validity = str(quote["validity_status"]) if quote is not None else None
+                quote_at = parse_time(quote["completed_at"]) if quote is not None else None
+                quote_age = (
+                    (summary_at - quote_at).total_seconds() if quote_at is not None else None
+                )
+                fresh_for_position = (
+                    quote_age is not None
+                    and quote_age >= 0.0
+                    and quote_age <= cls._chain_meme_valuation_interval(
+                        row["opened_at"], summary_at
+                    ) * 2.0
+                )
+                quoted_value = (
+                    float(quote["gross_usdc"])
+                    if quote is not None
+                    and quote_status == "quoted"
+                    and quote_validity == "valid"
+                    and quote["gross_usdc"] is not None
+                    else None
+                )
+                if str(row["status"]) != "open":
+                    valuation_status = "not_applicable_closed"
+                elif quote is None:
+                    valuation_status = "awaiting_exact_quote"
+                elif quote_age is not None and quote_age < 0.0:
+                    valuation_status = "unknown_future_quote"
+                elif quote_status == "no_route":
+                    valuation_status = "unknown_no_route"
+                elif quoted_value is None:
+                    valuation_status = "unknown_error"
+                elif not fresh_for_position:
+                    valuation_status = "stale_exact_quote"
+                else:
+                    valuation_status = "complete_exact_jupiter"
+                executable_value = (
+                    quoted_value
+                    if valuation_status == "complete_exact_jupiter" else None
+                )
+                token_id = str(row["token_id"])
+                if token_id not in indicative_snapshot_cache:
+                    market_mark = (
+                        connection.execute(
+                            "SELECT NULL AS id,price_usd,liquidity_usd,"
+                            f"{optional_market_mark_projection},observed_at,"
+                            "recorded_at AS ingested_at,recorded_at,provider,status,"
+                            "consecutive_misses,last_attempt_at,last_success_at "
+                            "FROM chain_meme_trader_market_marks WHERE token_id=? "
+                            "AND recorded_at<=?",
+                            (token_id, iso(summary_at)),
+                        ).fetchone()
+                        if "chain_meme_trader_market_marks" in tables else None
+                    )
+                    indicative_snapshot_cache[token_id] = market_mark
+                    if market_mark is None and not market_only_valuation:
+                        indicative_snapshot_cache[token_id] = connection.execute(
+                            "SELECT id,price_usd,liquidity_usd,NULL AS pair_address,"
+                            "volume_5m_usd,buys_5m,sells_5m,observed_at,ingested_at,"
+                            "recorded_at,provider,'VISIBLE' AS status,0 AS consecutive_misses,"
+                            "NULL AS last_attempt_at,recorded_at AS last_success_at "
+                            "FROM token_snapshots WHERE token_id=? "
+                            "AND recorded_at<=? ORDER BY recorded_at DESC,id DESC LIMIT 1",
+                            (token_id, iso(summary_at)),
+                        ).fetchone()
+                indicative_snapshot = indicative_snapshot_cache[token_id]
+                indicative_value = None
+                indicative_pnl = None
+                indicative_source = None
+                indicative_mark_age = (
+                    (
+                        summary_at - parse_time(
+                            indicative_snapshot["last_success_at"]
+                            or indicative_snapshot["recorded_at"]
+                        )
+                    ).total_seconds()
+                    if indicative_snapshot is not None else None
+                )
+                indicative_observation_age = (
+                    (
+                        summary_at - parse_time(indicative_snapshot["observed_at"])
+                    ).total_seconds()
+                    if indicative_snapshot is not None
+                    and indicative_snapshot["observed_at"] is not None else None
+                )
+                if (
+                    indicative_mark_age is not None
+                    and indicative_observation_age is not None
+                ):
+                    indicative_mark_age = max(
+                        indicative_mark_age, indicative_observation_age,
+                    )
+                indicative_mark_status = (
+                    str(indicative_snapshot["status"])
+                    if indicative_snapshot is not None else None
+                )
+                fresh_visible_market_mark = bool(
+                    indicative_snapshot is not None
+                    and indicative_mark_status == "VISIBLE"
+                    and indicative_snapshot["pair_address"]
+                    and float(indicative_snapshot["price_usd"] or 0.0) > 0.0
+                    and (
+                        indicative_snapshot["liquidity_usd"] is None
+                        or float(indicative_snapshot["liquidity_usd"]) > 0.0
+                    )
+                    and indicative_mark_age is not None
+                    and 0.0 <= indicative_mark_age <= 15.0
+                )
+                if (
+                    fresh_visible_market_mark
+                    and str(row["status"]) == "open"
+                    and float(
+                        row["entry_execution_price_usd"]
+                        or row["entry_signal_price_usd"] or 0.0
+                    ) > 0.0
+                    and int(row["initial_amount_raw"] or row["amount_raw"] or 0) > 0
+                ):
+                    current_price = float(indicative_snapshot["price_usd"])
+                    entry_price = float(
+                        row["entry_execution_price_usd"]
+                        or row["entry_signal_price_usd"]
+                    )
+                    initial_raw = int(row["initial_amount_raw"] or row["amount_raw"])
+                    remaining_raw = int(row["amount_raw"] or 0)
+                    remaining_fraction = max(0.0, min(1.0, remaining_raw / initial_raw))
+                    indicative_value = max(
+                        0.0,
+                        float(row["stake_usd"]) * remaining_fraction
+                        * current_price / entry_price
+                        * (1.0 - int(definition["slippage_bps"]) / 10_000.0),
+                    )
+                    indicative_pnl = indicative_value - max(
+                        0.0,
+                        float(row["stake_usd"])
+                        - float(row["allocated_cost_usd"] or 0.0),
+                    )
+                    indicative_source = "dex_price_mark_4pct_haircut"
+                elif (
+                    not market_only_valuation
+                    and
+                    str(row["status"]) == "open"
+                    and local_surface_is_fresh
+                    and local_surface["direct_estimated_recovery_usd"] is not None
+                    and str(local_surface["status"]) in {
+                        "LOCAL_SURFACE_CURRENT", "LOCAL_SURFACE_DEGRADED",
+                        "LOCAL_SURFACE_CRITICAL",
+                    }
+                ):
+                    indicative_value = float(
+                        local_surface["direct_estimated_recovery_usd"]
+                    )
+                    indicative_pnl = indicative_value - max(
+                        0.0,
+                        float(row["stake_usd"])
+                        - float(row["allocated_cost_usd"] or 0.0),
+                    )
+                    indicative_source = (
+                        "route_verified_pumpswap_minimum_estimate"
+                        if str(local_surface["surface_type"]).startswith("pumpswap")
+                        else "pump_curve_full_position_minimum_estimate"
+                    )
+                holding_seconds = (
+                    (
+                        parse_time(row["closed_at"])
+                        if row["closed_at"] else summary_at
+                    ) - parse_time(row["opened_at"])
+                ).total_seconds()
+                position.update({
+                    "latest_quote_status": quote_status,
+                    "latest_quote_validity": quote_validity,
+                    "latest_quote_at": str(quote["completed_at"]) if quote is not None else None,
+                    "quote_age_seconds": quote_age,
+                    "valuation_status": valuation_status,
+                    "executable_value_usd": executable_value,
+                    "indicative_value_usd": indicative_value,
+                    "indicative_unrealized_pnl_usd": indicative_pnl,
+                    "indicative_source": indicative_source,
+                    "indicative_sellability": (
+                        "MARK_SELLABLE"
+                        if fresh_visible_market_mark
+                        else "PAIR_MISSING"
+                        if indicative_mark_status == "MISSING"
+                        else "STALE_MARK"
+                        if indicative_mark_status == "VISIBLE"
+                        and indicative_mark_age is not None
+                        and indicative_mark_age > 15.0
+                        else "AWAITING_MARK"
+                        if str(row["status"]) == "open"
+                        else "NOT_APPLICABLE"
+                    ),
+                    "indicative_mark_age_seconds": indicative_mark_age,
+                    "indicative_market_status": indicative_mark_status,
+                    "indicative_market_misses": (
+                        int(indicative_snapshot["consecutive_misses"] or 0)
+                        if indicative_snapshot is not None else 0
+                    ),
+                    "indicative_price_usd": (
+                        float(indicative_snapshot["price_usd"])
+                        if indicative_snapshot is not None
+                        and indicative_snapshot["price_usd"] is not None else None
+                    ),
+                    "indicative_liquidity_usd": (
+                        float(indicative_snapshot["liquidity_usd"])
+                        if indicative_snapshot is not None
+                        and indicative_snapshot["liquidity_usd"] is not None else None
+                    ),
+                    "indicative_pair_address": (
+                        str(indicative_snapshot["pair_address"])
+                        if indicative_snapshot is not None
+                        and indicative_snapshot["pair_address"] else None
+                    ),
+                    "indicative_provider": (
+                        str(indicative_snapshot["provider"])
+                        if indicative_snapshot is not None else None
+                    ),
+                    "indicative_observed_at": (
+                        str(indicative_snapshot["observed_at"])
+                        if indicative_snapshot is not None else None
+                    ),
+                    "indicative_received_at": (
+                        str(indicative_snapshot["recorded_at"])
+                        if indicative_snapshot is not None else None
+                    ),
+                    "indicative_mark_at": (
+                        str(
+                            indicative_snapshot["last_success_at"]
+                            or indicative_snapshot["recorded_at"]
+                        )
+                        if indicative_snapshot is not None else None
+                    ),
+                    "last_known_executable_value_usd": (
+                        quoted_value if valuation_status == "stale_exact_quote" else None
+                    ),
+                    "local_surface_status": (
+                        str(local_surface["status"]) if local_surface is not None else None
+                    ),
+                    "local_surface_type": (
+                        str(local_surface["surface_type"]) if local_surface is not None else None
+                    ),
+                    "local_surface_min_quote_raw": (
+                        str(local_surface["min_quote_raw"])
+                        if local_surface is not None
+                        and local_surface["min_quote_raw"] is not None else None
+                    ),
+                    "local_surface_quote_mint": (
+                        str(local_surface["quote_mint"]) if local_surface is not None else None
+                    ),
+                    "local_surface_drawdown": (
+                        float(local_surface["drawdown"])
+                        if local_surface is not None
+                        and local_surface["drawdown"] is not None else None
+                    ),
+                    "local_surface_context_slot": (
+                        int(local_surface["context_slot"]) if local_surface is not None else None
+                    ),
+                    "local_surface_at": (
+                        str(local_surface["completed_at"]) if local_surface is not None else None
+                    ),
+                    "local_surface_reason": (
+                        str(local_surface["reason"]) if local_surface is not None else ""
+                    ),
+                    "local_surface_direct_estimated_recovery_usd": (
+                        float(local_surface["direct_estimated_recovery_usd"])
+                        if local_surface is not None
+                        and local_surface["direct_estimated_recovery_usd"] is not None
+                        else None
+                    ),
+                    "local_surface_conversion_source": (
+                        str(local_surface["conversion_source"])
+                        if local_surface is not None else ""
+                    ),
+                    "local_surface_age_seconds": local_surface_age,
+                    "holding_seconds": (
+                        holding_seconds if holding_seconds >= 0.0 else None
+                    ),
+                    "holding_time_status": (
+                        "valid" if holding_seconds >= 0.0 else "invalid_future_opened_at"
+                    ),
+                    "terminal_return_fraction": (
+                        float(row["realized_pnl_usd"] or 0.0)
+                        / float(row["stake_usd"])
+                        if str(row["status"]) in {"closed", "written_off"}
+                        and float(row["stake_usd"] or 0.0) > 0.0 else None
+                    ),
+                })
+                position["executable_unrealized_pnl_usd"] = (
+                    float(position["executable_value_usd"])
+                    - max(
+                        0.0,
+                        float(row["stake_usd"])
+                        - float(row["allocated_cost_usd"] or 0.0),
+                    )
+                    if position["executable_value_usd"] is not None
+                    and str(row["status"]) == "open"
+                    else None
+                )
+                if position["executable_value_usd"] is not None:
+                    priced_recovery += float(position["executable_value_usd"])
+                    priced_unrealized += float(position["executable_unrealized_pnl_usd"])
+                    priced_position_count += 1
+                if indicative_value is not None:
+                    indicative_recovery += indicative_value
+                    indicative_unrealized += float(indicative_pnl)
+                    indicative_position_count += 1
+                    if indicative_source in {
+                        "pump_curve_full_position_minimum_estimate",
+                        "route_verified_pumpswap_minimum_estimate",
+                    }:
+                        direct_recovery += indicative_value
+                        direct_unrealized += float(indicative_pnl)
+                        direct_position_count += 1
+                positions.append(position)
+            trades = [dict(row) for row in connection.execute("SELECT * FROM chain_meme_trader_trades WHERE definition_version=? AND arm_id=? ORDER BY id DESC LIMIT ?", (version, arm_id, trade_limit))]
+            account = dict(latest) if latest is not None else {"cash_usd": starting_cash, "executable_equity_usd": starting_cash, "realized_pnl_usd": 0.0, "executable_unrealized_pnl_usd": 0.0, "executable_total_pnl_usd": 0.0, "open_position_count": 0, "closed_position_count": 0, "written_off_position_count": 0, "priced_position_count": 0, "valuation_status": "complete_exact_jupiter"}
+            current_positions = [row for row in position_rows if str(row["status"]) != "ineligible"]
+            open_position_count = sum(1 for row in current_positions if str(row["status"]) == "open")
+            open_position_count_all += open_position_count
+            unique_held_token_ids.update(
+                str(row["token_id"])
+                for row in current_positions if str(row["status"]) == "open"
+            )
+            closed_position_count = sum(1 for row in current_positions if str(row["status"]) == "closed")
+            written_off_position_count = sum(
+                1 for row in current_positions if str(row["status"]) == "written_off"
+            )
+            realized_pnl = sum(float(row["realized_pnl_usd"] or 0.0) for row in current_positions)
+            net_cash_flow = connection.execute(
+                "SELECT COALESCE(SUM(net_cash_flow_usd),0.0) FROM "
+                "chain_meme_trader_trades WHERE definition_version=? AND arm_id=?",
+                (version, arm_id),
+            ).fetchone()[0]
+            cash = starting_cash + float(net_cash_flow or 0.0)
+            complete = priced_position_count == open_position_count
+            has_priced_open_position = priced_position_count > 0
+            indicative_complete = indicative_position_count == open_position_count
+            account.update({
+                "cash_usd": cash,
+                "executable_equity_usd": cash + priced_recovery if complete else None,
+                "realized_pnl_usd": realized_pnl,
+                "executable_unrealized_pnl_usd": priced_unrealized if complete else None,
+                "executable_total_pnl_usd": (
+                    realized_pnl + priced_unrealized if complete else None
+                ),
+                "open_position_count": open_position_count,
+                "closed_position_count": closed_position_count,
+                "written_off_position_count": written_off_position_count,
+                "priced_position_count": priced_position_count,
+                "unpriced_position_count": open_position_count - priced_position_count,
+                "priced_executable_recovery_usd": (
+                    priced_recovery
+                    if has_priced_open_position or open_position_count == 0 else None
+                ),
+                "priced_unrealized_pnl_usd": (
+                    priced_unrealized
+                    if has_priced_open_position or open_position_count == 0 else None
+                ),
+                "priced_total_pnl_subtotal_usd": (
+                    realized_pnl + priced_unrealized
+                    if has_priced_open_position or open_position_count == 0 else None
+                ),
+                "indicative_marked_value_usd": (
+                    indicative_recovery if indicative_complete else None
+                ),
+                "indicative_equity_usd": (
+                    cash + indicative_recovery
+                    if indicative_complete else None
+                ),
+                "indicative_unrealized_pnl_usd": (
+                    indicative_unrealized if indicative_complete else None
+                ),
+                "indicative_total_pnl_usd": (
+                    realized_pnl + indicative_unrealized
+                    if indicative_complete else None
+                ),
+                "indicative_position_count": indicative_position_count,
+                "indicative_is_complete": indicative_complete,
+                "direct_estimated_equity_usd": (
+                    cash + direct_recovery
+                    if direct_position_count == open_position_count else None
+                ),
+                "direct_estimated_unrealized_pnl_usd": (
+                    direct_unrealized
+                    if direct_position_count == open_position_count else None
+                ),
+                "direct_estimated_total_pnl_usd": (
+                    realized_pnl + direct_unrealized
+                    if direct_position_count == open_position_count else None
+                ),
+                "direct_estimated_position_count": direct_position_count,
+                "total_pnl_is_complete": (
+                    indicative_complete if market_only_valuation else complete
+                ),
+                "win_count": sum(
+                    1 for row in current_positions
+                    if str(row["status"]) in {"closed", "written_off"}
+                    and float(row["realized_pnl_usd"] or 0.0) > 0.0
+                ),
+                "valuation_status": (
+                    "complete_market_mark"
+                    if market_only_valuation and indicative_complete
+                    else "partial_market_mark_unknown"
+                    if market_only_valuation
+                    else "complete_exact_jupiter"
+                    if complete else "awaiting_fresh_exact_quote"
+                ),
+                "summary_at": iso(summary_at),
+            })
+            total_for_return = account.get(
+                "indicative_total_pnl_usd"
+                if market_only_valuation else "executable_total_pnl_usd"
+            )
+            account["account_return_fraction"] = (
+                float(total_for_return) / starting_cash
+                if total_for_return is not None and starting_cash > 0.0 else None
+            )
+            account["terminal_position_count"] = (
+                closed_position_count + written_off_position_count
+            )
+            account["win_rate_fraction"] = (
+                float(account["win_count"])
+                / float(account["terminal_position_count"])
+                if account["terminal_position_count"] > 0 else None
+            )
+            decisions = connection.execute(
+                "SELECT status,reason,COUNT(*) AS count FROM "
+                "chain_meme_trader_entry_decisions WHERE definition_version=? "
+                "AND arm_id=? GROUP BY status,reason ORDER BY count DESC,reason",
+                (version, arm_id),
+            ).fetchall()
+            admitted = sum(int(row["count"]) for row in decisions if row["status"] == "admitted")
+            rejected = sum(int(row["count"]) for row in decisions if row["status"] == "rejected")
+            participant_outcomes = {"projected": 0, "skipped_cash_unavailable_at_fill": 0}
+            if "chain_meme_trader_entry_participant_outcomes" in tables:
+                participant_outcomes.update({
+                    str(row["outcome"]): int(row["count"])
+                    for row in connection.execute(
+                        "SELECT outcome,COUNT(*) AS count FROM "
+                        "chain_meme_trader_entry_participant_outcomes "
+                        "WHERE definition_version=? AND arm_id=? GROUP BY outcome",
+                        (version, arm_id),
+                    ).fetchall()
+                })
+            current_total = account.get(
+                "indicative_total_pnl_usd"
+                if market_only_valuation else "executable_total_pnl_usd"
+            )
+            delta = (
+                float(current_total) - previous_total_pnl
+                if current_total is not None and previous_total_pnl is not None
+                else None
+            )
+            strategies.append({
+                **policy, "account": account, "curve": curve,
+                "curve_accounting_status": (
+                    "ledger_frontier_verified" if has_ledger_frontier
+                    else "legacy_event_time_only"
+                ),
+                "excluded_legacy_curve_points": legacy_curve_points,
+                "positions": positions, "trades": trades,
+                "entry_decisions": {
+                    "admitted": admitted, "rejected": rejected,
+                    "reasons": [dict(row) for row in decisions],
+                },
+                "entry_participation": participant_outcomes,
+                "delta_vs_previous_stage_usd": delta,
+            })
+            previous_total_pnl = float(current_total) if current_total is not None else None
+        activation = None
+        if active_epoch:
+            activation = connection.execute(
+                "SELECT * FROM chain_meme_trader_v6_activations WHERE definition_version=?",
+                (version,),
+            ).fetchone()
+        return {
+            "status": "running", "version": version,
+            "registered_at": registration["registered_at"],
+            "activation_exploration_buy_trade_id": int(
+                registration["activation_exploration_buy_trade_id"]
+            ),
+            "activation": dict(activation) if activation is not None else None,
+            "simulated": True, "live": False, "definition": definition,
+            "open_position_count": open_position_count_all,
+            "unique_held_token_count": len(unique_held_token_ids),
+            "strategies": strategies,
+        }
+
     def register_onchain_paper_exit_challenger(
         self,
         *,
@@ -18979,6 +28818,1113 @@ class Store:
                 "WHERE definition_version=?",
                 (version,),
             ).fetchone()
+
+    def register_onchain_paper_exit_quote_scheduler(self) -> sqlite3.Row:
+        """Freeze transient retry timing and confirmed-rug terminal semantics."""
+        version = self.ONCHAIN_PAPER_EXIT_QUOTE_SCHEDULER_VERSION
+        definition = {
+            "version": version,
+            "source": self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION,
+            "activation": "new_quote_results_after_registration",
+            "retry_schedule_seconds": [15, 30, 60, 120, 300],
+            "max_attempts_per_mark": 6,
+            "transient_rearm": "fresh_liquidity_and_activity_recovery",
+            "confirmed_rug": "one_full_remaining_quote_then_terminal_no_rearm",
+            "no_historical_backfill": True,
+            "affects": "jupiter_quote_scheduling_only",
+        }
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO onchain_paper_exit_quote_scheduler_registrations("
+                "scheduler_version,registered_at,activation_quote_result_id,definition_json) "
+                "VALUES(?,?,COALESCE((SELECT MAX(id) FROM "
+                "onchain_paper_exit_challenger_quote_results),0),?)",
+                (version, iso(), self._json(definition)),
+            )
+            return self.db.execute(
+                "SELECT * FROM onchain_paper_exit_quote_scheduler_registrations "
+                "WHERE scheduler_version=?", (version,),
+            ).fetchone()
+
+    def register_chain_meme_trader_local_surface_quote(self) -> sqlite3.Row:
+        """Freeze the forward-only route-surface direct-capacity observer."""
+        version = self.CHAIN_MEME_TRADER_LOCAL_SURFACE_QUOTE_VERSION
+        definition = {
+            "version": version,
+            "definition_version": self.CHAIN_MEME_TRADER_V6_VERSION,
+            "scope": "v11_route_verified_pumpswap_else_pump_curve_forward_observer",
+            "coherent_read": "single_confirmed_getMultipleAccounts_context_slot",
+            "required_accounts": [
+                "route_plan", "verified_pool", "base_vault", "quote_vault",
+                "base_mint", "quote_mint", "pump_global", "pump_fee_config",
+            ],
+            "amount": "exact_current_remaining_raw_shared_by_cohort_and_amount_epoch",
+            "slippage_bps": 400,
+            "current_max_age_seconds": 5,
+            "degraded_drawdown": 0.15,
+            "critical_drawdown": 0.35,
+            "valuation_authority": "direct_two_leg_estimate_only_jupiter_remains_fill_authority",
+            "surface_provenance_at_entry": False,
+            "forward_attachment_only": True,
+            "route_plan_is_discovery_not_execution_authority": True,
+            "fallback_when_no_verified_route_surface": "pump_bonding_curve_observer",
+            "no_historical_backfill": True,
+            "live_execution": False,
+        }
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_local_surface_quote_registrations("
+                "version,definition_version,registered_at,activation_fill_id,definition_json) "
+                "VALUES(?,?,?,COALESCE((SELECT MAX(id) FROM chain_meme_trader_fills "
+                "WHERE definition_version=?),0),?)",
+                (version, self.CHAIN_MEME_TRADER_V6_VERSION, iso(),
+                 self.CHAIN_MEME_TRADER_V6_VERSION, self._json(definition)),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_local_surface_quote_registrations "
+                "WHERE version=?", (version,),
+            ).fetchone()
+
+    def register_chain_meme_trader_local_critical_exit(self) -> sqlite3.Row:
+        """Freeze the future-only local-critical exit trigger contract."""
+        version = self.CHAIN_MEME_TRADER_LOCAL_CRITICAL_EXIT_VERSION
+        definition = {
+            "version": version,
+            "definition_version": self.CHAIN_MEME_TRADER_V6_VERSION,
+            "source_version": self.CHAIN_MEME_TRADER_LOCAL_SURFACE_QUOTE_VERSION,
+            "scope": "shared_mechanical_risk_kernel_all_twelve_accounts",
+            "trigger": ["LOCAL_SURFACE_CRITICAL"],
+            "current_max_age_seconds": 5,
+            "amount": "exact_current_remaining_raw",
+            "action": "immediate_full_remaining_jupiter_sell_probe",
+            "execution_authority": "next_fresh_jupiter_quote_and_fill_only",
+            "direct_curve_no_capacity": "risk_observation_only_not_aggregate_route_proof",
+            "writeoff": "reserved_for_independent_exact_pool_removal_plus_fresh_full_remaining_jupiter_no_route",
+            "unknown_or_degraded_does_not_trigger": True,
+            "no_historical_backfill": True,
+            "live_execution": False,
+        }
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_local_critical_exit_registrations("
+                "version,definition_version,registered_at,activation_local_quote_id,definition_json) "
+                "VALUES(?,?,?,COALESCE((SELECT MAX(id) FROM "
+                "chain_meme_trader_local_surface_quotes),0),?)",
+                (version, self.CHAIN_MEME_TRADER_V6_VERSION, iso(), self._json(definition)),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_local_critical_exit_registrations "
+                "WHERE version=?", (version,),
+            ).fetchone()
+
+    def chain_meme_trader_local_surface_targets(self) -> list[dict[str, Any]]:
+        """Return one target per underlying cohort and remaining-amount epoch."""
+        version = self.CHAIN_MEME_TRADER_V6_VERSION
+        with self._lock:
+            registration = self.db.execute(
+                "SELECT 1 FROM chain_meme_trader_local_surface_quote_registrations "
+                "WHERE version=? AND definition_version=?",
+                (self.CHAIN_MEME_TRADER_LOCAL_SURFACE_QUOTE_VERSION, version),
+            ).fetchone()
+            if registration is None:
+                return []
+            rows = self.db.execute(
+                """
+                SELECT p.definition_version,p.shadow_cohort_id,p.token_id,p.amount_raw,
+                       MIN(p.opened_at) AS opened_at,
+                       MAX(c.pair_address) AS source_pair_address,
+                       MAX(c.feature_json) AS feature_json
+                FROM chain_meme_trader_positions p
+                JOIN chain_meme_trader_v6_cohorts c
+                  ON c.definition_version=p.definition_version
+                 AND c.id=p.shadow_cohort_id
+                WHERE p.definition_version=? AND p.status='open'
+                GROUP BY p.definition_version,p.shadow_cohort_id,p.token_id,p.amount_raw
+                ORDER BY p.shadow_cohort_id,p.amount_raw
+                """,
+                (version,),
+            ).fetchall()
+            targets: list[dict[str, Any]] = []
+            for row in rows:
+                token_id = str(row["token_id"])
+                if int(row["amount_raw"] or 0) <= 0 or not token_id.startswith("solana:"):
+                    continue
+                feature = self._json_object(row["feature_json"])
+                mint_text = token_id.split(":", 1)[1]
+                route_target = None
+                route_sources = []
+                quote_result = self.db.execute(
+                    "SELECT r.id,r.route_plan_json,r.completed_at FROM "
+                    "chain_meme_trader_quote_results r JOIN chain_meme_trader_quote_attempts a "
+                    "ON a.id=r.attempt_id WHERE r.definition_version=? "
+                    "AND r.shadow_cohort_id=? AND r.quote_terminal_status='quoted' "
+                    "AND r.validity_status='valid' AND r.input_amount_raw=? "
+                    "AND r.route_plan_json!='[]' AND r.completed_at>=? "
+                    "ORDER BY r.id DESC LIMIT 1",
+                    (
+                        version, int(row["shadow_cohort_id"]), str(row["amount_raw"]),
+                        str(row["opened_at"]),
+                    ),
+                ).fetchone()
+                if quote_result is not None:
+                    route_sources.append(("quote_result", quote_result))
+                execution_result = self.db.execute(
+                    "SELECT r.id,r.route_plan_json,r.completed_at FROM "
+                    "chain_meme_trader_execution_results r "
+                    "JOIN chain_meme_trader_execution_attempts a ON a.id=r.attempt_id "
+                    "WHERE r.definition_version=? AND a.shadow_cohort_id=? AND a.side='BUY' "
+                    "AND r.terminal_status='quoted' AND r.validity_status='valid' "
+                    "AND r.route_plan_json!='[]' AND r.completed_at>=? "
+                    "ORDER BY r.id DESC LIMIT 1",
+                    (version, int(row["shadow_cohort_id"]), str(row["opened_at"])),
+                ).fetchone()
+                if execution_result is not None:
+                    route_sources.append(("execution_result", execution_result))
+                for source_kind, source in route_sources:
+                    for leg_index, leg in enumerate(self._json_list(source["route_plan_json"])):
+                        if not isinstance(leg, Mapping):
+                            continue
+                        label = str(leg.get("label") or "")
+                        if label.casefold() not in {"pump.fun amm", "pumpswap", "pump swap"}:
+                            continue
+                        if mint_text not in {
+                            str(leg.get("input_mint") or ""),
+                            str(leg.get("output_mint") or ""),
+                        }:
+                            continue
+                        pool_address = str(leg.get("amm_key") or "")
+                        try:
+                            Pubkey.from_string(pool_address)
+                        except ValueError:
+                            continue
+                        route_target = {
+                            **dict(row), "base_mint": mint_text,
+                            "pool_address": pool_address,
+                            "remaining_amount_raw": str(row["amount_raw"]),
+                            "surface_type": "pumpswap_route_pool",
+                            "source_result_kind": source_kind,
+                            "source_result_id": int(source["id"]),
+                            "route_leg_index": leg_index,
+                            "router_label": label,
+                        }
+                        break
+                    if route_target is not None:
+                        break
+                dex_id = str(feature.get("dex_id") or "").casefold()
+                if route_target is None and dex_id in {"pumpswap", "pump-amm"}:
+                    pair_address = str(row["source_pair_address"] or "")
+                    try:
+                        Pubkey.from_string(pair_address)
+                    except ValueError:
+                        pair_address = ""
+                    if pair_address:
+                        route_target = {
+                            **dict(row), "base_mint": mint_text,
+                            "pool_address": pair_address,
+                            "remaining_amount_raw": str(row["amount_raw"]),
+                            "surface_type": "pumpswap_signal_pool",
+                            "source_result_kind": "entry_snapshot",
+                            "source_result_id": int(feature.get("source_snapshot_id") or 0),
+                            "route_leg_index": None,
+                            "router_label": dex_id,
+                        }
+                if route_target is not None:
+                    targets.append(route_target)
+                    continue
+                if dex_id != "pumpfun":
+                    continue
+                try:
+                    mint = Pubkey.from_string(mint_text)
+                    curve_address = str(Pubkey.find_program_address(
+                        [b"bonding-curve", bytes(mint)],
+                        Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"),
+                    )[0])
+                except ValueError:
+                    continue
+                targets.append({
+                    **dict(row), "base_mint": mint_text,
+                    "curve_address": curve_address,
+                    "pool_address": curve_address,
+                    "remaining_amount_raw": str(row["amount_raw"]),
+                    "surface_type": "pump_bonding_curve",
+                    "source_result_kind": "entry_snapshot",
+                    "source_result_id": int(feature.get("source_snapshot_id") or 0),
+                    "route_leg_index": None,
+                    "router_label": "Pump.fun",
+                })
+            return targets
+
+    def record_chain_meme_trader_local_surface_quote(
+        self, quote: Mapping[str, Any],
+    ) -> int | None:
+        """Append one coherent local surface quote; never mutate cash, PNL, or fills."""
+        version = self.CHAIN_MEME_TRADER_LOCAL_SURFACE_QUOTE_VERSION
+        definition_version = str(
+            quote.get("definition_version") or self.CHAIN_MEME_TRADER_VERSION
+        )
+        status = str(quote.get("status") or "")
+        allowed = {
+            "LOCAL_SURFACE_CURRENT", "LOCAL_SURFACE_DEGRADED",
+            "LOCAL_SURFACE_CRITICAL", "LOCAL_NO_DIRECT_CAPACITY",
+            "LOCAL_SELL_DISABLED", "LOCAL_UNKNOWN_RPC",
+            "LOCAL_UNKNOWN_MISSING_ACCOUNT", "LOCAL_UNKNOWN_IDENTITY",
+            "LOCAL_UNKNOWN_FEE_CONFIG", "LOCAL_UNKNOWN_STALE",
+            "LOCAL_UNKNOWN_MATH",
+        }
+        if status not in allowed:
+            return None
+        cohort_id = int(quote.get("shadow_cohort_id") or 0)
+        remaining = str(quote.get("remaining_amount_raw") or "0")
+        completed = parse_time(quote.get("completed_at") or utcnow())
+        requested = parse_time(quote.get("requested_at") or completed)
+        age_ms = max(0, int(quote.get("age_ms") or 0))
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT * FROM chain_meme_trader_local_surface_quote_registrations "
+                "WHERE version=? AND definition_version=?",
+                (version, definition_version),
+            ).fetchone()
+            position = self.db.execute(
+                "SELECT 1 FROM chain_meme_trader_positions WHERE definition_version=? "
+                "AND shadow_cohort_id=? AND amount_raw=? AND status='open' LIMIT 1",
+                (definition_version, cohort_id, remaining),
+            ).fetchone()
+            if (
+                registration is None or position is None
+                or completed < parse_time(registration["registered_at"])
+                or completed < requested
+            ):
+                return None
+            definition = self._json_object(registration["definition_json"])
+            if age_ms > int(float(definition["current_max_age_seconds"]) * 1000):
+                status = "LOCAL_UNKNOWN_STALE"
+            min_quote = quote.get("min_quote_raw")
+            ui_quote = quote.get("ui_quote_raw")
+            high_water = None
+            drawdown = None
+            if min_quote is not None and status == "LOCAL_SURFACE_CURRENT":
+                current_raw = max(0, int(min_quote))
+                prior = self.db.execute(
+                    "SELECT MAX(CAST(high_water_raw AS INTEGER)) AS high_water FROM "
+                    "chain_meme_trader_local_surface_quotes WHERE version=? "
+                    "AND definition_version=? AND shadow_cohort_id=? "
+                    "AND remaining_amount_raw=? AND high_water_raw IS NOT NULL",
+                    (version, definition_version, cohort_id, remaining),
+                ).fetchone()
+                high_water = max(current_raw, int(prior["high_water"] or 0))
+                drawdown = current_raw / high_water - 1.0 if high_water > 0 else None
+                if current_raw <= 0 or (
+                    drawdown is not None
+                    and drawdown <= -float(definition["critical_drawdown"])
+                ):
+                    status = "LOCAL_SURFACE_CRITICAL"
+                elif (
+                    drawdown is not None
+                    and drawdown <= -float(definition["degraded_drawdown"])
+                ):
+                    status = "LOCAL_SURFACE_DEGRADED"
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_local_surface_quotes("
+                "version,definition_version,shadow_cohort_id,token_id,pool_address,"
+                "quote_mint,remaining_amount_raw,context_slot,requested_at,completed_at,"
+                "age_ms,status,min_quote_raw,ui_quote_raw,surface_type,"
+                "source_result_kind,source_result_id,route_leg_index,router_label,"
+                "direct_estimated_recovery_usd,conversion_source,conversion_input_raw,"
+                "conversion_min_usdc_raw,conversion_completed_at,high_water_raw,drawdown,"
+                "fee_source,fee_tier_index,lp_fee_bps,protocol_fee_bps,creator_fee_bps,"
+                "source_hashes_json,reason,recorded_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    version, definition_version, cohort_id, str(quote.get("token_id") or ""),
+                    str(quote.get("pool_address") or ""), str(quote.get("quote_mint") or ""),
+                    remaining, int(quote.get("context_slot") or 0), iso(requested),
+                    iso(completed), age_ms, status,
+                    str(min_quote) if min_quote is not None else None,
+                    str(ui_quote) if ui_quote is not None else None,
+                    str(quote.get("surface_type") or ""),
+                    str(quote.get("source_result_kind") or ""),
+                    quote.get("source_result_id"), quote.get("route_leg_index"),
+                    str(quote.get("router_label") or ""),
+                    quote.get("direct_estimated_recovery_usd"),
+                    str(quote.get("conversion_source") or ""),
+                    str(quote.get("conversion_input_raw"))
+                    if quote.get("conversion_input_raw") is not None else None,
+                    str(quote.get("conversion_min_usdc_raw"))
+                    if quote.get("conversion_min_usdc_raw") is not None else None,
+                    str(quote.get("conversion_completed_at") or "") or None,
+                    str(high_water) if high_water is not None else None, drawdown,
+                    str(quote.get("fee_source") or ""), quote.get("fee_tier_index"),
+                    quote.get("lp_fee_bps"), quote.get("protocol_fee_bps"),
+                    quote.get("creator_fee_bps"),
+                    self._json(dict(quote.get("source_hashes") or {})),
+                    str(quote.get("reason") or "")[:160], iso(),
+                ),
+            )
+            if int(self.db.execute("SELECT changes()").fetchone()[0]) == 1:
+                return int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+            existing = self.db.execute(
+                "SELECT id FROM chain_meme_trader_local_surface_quotes WHERE version=? "
+                "AND definition_version=? AND shadow_cohort_id=? "
+                "AND remaining_amount_raw=? AND context_slot=?",
+                (
+                    version, definition_version, cohort_id, remaining,
+                    int(quote.get("context_slot") or 0),
+                ),
+            ).fetchone()
+            return int(existing["id"]) if existing is not None else None
+
+    def sync_chain_meme_trader_local_critical_exit(
+        self, quote_id: int, *, now: Any = None,
+    ) -> int:
+        """Turn one new, current CRITICAL frame into full-remaining SELL marks."""
+        policy_version = self.CHAIN_MEME_TRADER_LOCAL_CRITICAL_EXIT_VERSION
+        current = parse_time(now or utcnow())
+        inserted = 0
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT * FROM chain_meme_trader_local_critical_exit_registrations "
+                "WHERE version=?", (policy_version,),
+            ).fetchone()
+            quote = self.db.execute(
+                "SELECT * FROM chain_meme_trader_local_surface_quotes WHERE id=?",
+                (int(quote_id),),
+            ).fetchone()
+            if registration is None or quote is None:
+                return 0
+            definition = self._json_object(registration["definition_json"])
+            completed = parse_time(quote["completed_at"])
+            age = (current - completed).total_seconds()
+            status = str(quote["status"])
+            if (
+                int(quote["id"]) <= int(registration["activation_local_quote_id"])
+                or str(quote["definition_version"]) != str(registration["definition_version"])
+                or str(quote["version"]) != str(definition["source_version"])
+                or status != "LOCAL_SURFACE_CRITICAL"
+                or quote["min_quote_raw"] is None
+                or int(quote["context_slot"] or 0) <= 0
+                or age < 0.0
+                or age > float(definition["current_max_age_seconds"])
+                or completed < parse_time(registration["registered_at"])
+            ):
+                return 0
+            positions = self.db.execute(
+                "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
+                "AND shadow_cohort_id=? AND token_id=? AND amount_raw=? AND status='open'",
+                (
+                    str(quote["definition_version"]), int(quote["shadow_cohort_id"]),
+                    str(quote["token_id"]), str(quote["remaining_amount_raw"]),
+                ),
+            ).fetchall()
+            reason = f"local_surface_critical:{policy_version}:{int(quote['id'])}"
+            for position in positions:
+                pending = None
+                if position["pending_mark_id"] is not None:
+                    pending = self.db.execute(
+                        "SELECT * FROM chain_meme_trader_marks WHERE id=?",
+                        (int(position["pending_mark_id"]),),
+                    ).fetchone()
+                if pending is not None:
+                    if (
+                        int(pending["sell_amount_raw"] or 0) >= int(position["amount_raw"])
+                        and str(pending["status"]) in {"pending", "quoting", "retry"}
+                    ):
+                        continue
+                    submitted = self.db.execute(
+                        "SELECT 1 FROM chain_meme_trader_order_intents WHERE exit_mark_id=? "
+                        "AND status='submitted' LIMIT 1", (int(pending["id"]),),
+                    ).fetchone()
+                    if submitted is not None:
+                        continue
+                    self.db.execute(
+                        "UPDATE chain_meme_trader_order_intents SET status='cancelled',completed_at=? "
+                        "WHERE exit_mark_id=? AND status IN ('ready','retry')",
+                        (iso(current), int(pending["id"])),
+                    )
+                    self.db.execute(
+                        "UPDATE chain_meme_trader_marks SET status='exhausted' WHERE id=? "
+                        "AND status IN ('pending','retry')", (int(pending["id"]),),
+                    )
+                self.db.execute(
+                    "INSERT INTO chain_meme_trader_marks("
+                    "definition_version,arm_id,shadow_cohort_id,recorded_at,action,reason,"
+                    "sell_amount_raw,status) VALUES(?,?,?,?,?,?,?,'pending')",
+                    (
+                        str(quote["definition_version"]), str(position["arm_id"]),
+                        int(quote["shadow_cohort_id"]), str(quote["completed_at"]),
+                        "LOCAL_SURFACE_CRITICAL_EXIT", reason,
+                        str(position["amount_raw"]),
+                    ),
+                )
+                mark_id = int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+                self.db.execute(
+                    "UPDATE chain_meme_trader_positions SET pending_mark_id=? "
+                    "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=? "
+                    "AND status='open'",
+                    (
+                        mark_id, str(quote["definition_version"]),
+                        str(position["arm_id"]), int(quote["shadow_cohort_id"]),
+                    ),
+                )
+                inserted += 1
+        return inserted
+
+    def register_onchain_held_account_monitor(self) -> sqlite3.Row:
+        """Freeze exact canonical PumpSwap held-account monitoring."""
+        version = self.ONCHAIN_HELD_ACCOUNT_MONITOR_VERSION
+        definition = {
+            "version": version,
+            "source": [
+                self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION,
+                self.CHAIN_MEME_TRADER_VERSION,
+            ],
+            "surface": self.MARKET_SURFACE_SAFETY_VERSION,
+            "accounts": ["pool", "base_vault", "quote_vault", "token_mint", "lp_mint"],
+            "commitment": "confirmed",
+            "vault_depletion_remaining_ratio": 0.10,
+            "vault_reference": "first_verified_http_baseline_per_exact_vault",
+            "terminal_vault_rule": "both_base_and_quote_at_or_below_10pct_of_baseline",
+            "single_vault_or_lp_alert": "emergency_sell_probe_only_not_terminal_proof",
+            "holding_scope": "all_open_chain_meme_trader_and_exit_challenger_positions",
+            "account_change": "websocket_account_subscribe",
+            "fallback": "existing_bounded_dex_and_exact_remaining_jupiter_monitor",
+            "agent_calls": False,
+            "no_historical_backfill": True,
+            "live_execution": False,
+        }
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO onchain_held_account_monitor_registrations("
+                "monitor_version,registered_at,activation_source_buy_trade_id,"
+                "activation_surface_observation_id,definition_json) "
+                "VALUES(?,?,COALESCE((SELECT MAX(source_buy_trade_id) FROM "
+                "onchain_paper_exit_challenger_positions),0),COALESCE((SELECT MAX(id) FROM "
+                "market_surface_safety_observations),0),?)",
+                (version, iso(), self._json(definition)),
+            )
+            return self.db.execute(
+                "SELECT * FROM onchain_held_account_monitor_registrations "
+                "WHERE monitor_version=?", (version,),
+            ).fetchone()
+
+    def enroll_onchain_held_account_targets(self) -> int:
+        """Materialize exact account targets; observations begin only after registration."""
+        version = self.ONCHAIN_HELD_ACCOUNT_MONITOR_VERSION
+        inserted = 0
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT 1 FROM onchain_held_account_monitor_registrations WHERE monitor_version=?",
+                (version,),
+            ).fetchone()
+            if registration is None:
+                return 0
+            rows = list(self.db.execute(
+                """
+                SELECT p.*,p.definition_version AS position_definition_version,
+                       q.quote_key,s.id AS surface_observation_id,s.status AS surface_status,
+                       s.facts_json
+                FROM onchain_paper_exit_challenger_positions p
+                JOIN onchain_only_jupiter_quote_results q ON q.id=p.baseline_quote_result_id
+                JOIN market_surface_safety_observations s
+                  ON s.definition_version=? AND s.lane=q.definition_version
+                 AND s.quote_key=q.quote_key AND s.token_id=p.token_id
+                WHERE p.definition_version=? AND p.status='open' AND s.status='PASS'
+                  AND NOT EXISTS(
+                    SELECT 1 FROM chain_meme_trader_positions c
+                    WHERE c.definition_version=?
+                      AND c.shadow_cohort_id=p.shadow_cohort_id
+                      AND c.status='open'
+                  )
+                ORDER BY p.shadow_cohort_id
+                """,
+                (
+                    self.MARKET_SURFACE_SAFETY_VERSION,
+                    self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION,
+                    self.CHAIN_MEME_TRADER_VERSION,
+                ),
+            ).fetchall())
+            rows.extend(self.db.execute(
+                """
+                SELECT c.definition_version AS position_definition_version,
+                       c.shadow_cohort_id,
+                       c.baseline_quote_result_id AS source_buy_trade_id,
+                       c.token_id,q.quote_key,s.id AS surface_observation_id,
+                       s.status AS surface_status,s.facts_json
+                FROM chain_meme_trader_positions c
+                JOIN onchain_only_jupiter_quote_results q
+                  ON q.id=c.baseline_quote_result_id
+                JOIN market_surface_safety_observations s
+                  ON s.definition_version=? AND s.lane=q.definition_version
+                 AND s.quote_key=q.quote_key AND s.token_id=c.token_id
+                WHERE c.definition_version=? AND c.status='open'
+                  AND s.status='PASS'
+                GROUP BY c.definition_version,c.shadow_cohort_id,c.baseline_quote_result_id,
+                         c.token_id,q.quote_key,s.id,s.status,s.facts_json
+                ORDER BY c.shadow_cohort_id
+                """,
+                (self.MARKET_SURFACE_SAFETY_VERSION, self.CHAIN_MEME_TRADER_VERSION),
+            ).fetchall())
+            rows.extend(self.db.execute(
+                """
+                SELECT c.definition_version AS position_definition_version,
+                       c.shadow_cohort_id,c.source_buy_trade_id,c.token_id,
+                       q.quote_key,s.id AS surface_observation_id,
+                       s.status AS surface_status,s.facts_json
+                FROM chain_meme_trader_positions c
+                JOIN chain_meme_trader_positions source
+                  ON source.definition_version=?
+                 AND source.arm_id='stage_04_dynamic_v1'
+                 AND source.shadow_cohort_id=c.shadow_cohort_id
+                JOIN onchain_only_jupiter_quote_results q
+                  ON q.id=source.baseline_quote_result_id
+                JOIN market_surface_safety_observations s
+                  ON s.definition_version=? AND s.lane=q.definition_version
+                 AND s.quote_key=q.quote_key AND s.token_id=c.token_id
+                WHERE c.definition_version IN (?,?) AND c.status='open' AND s.status='PASS'
+                GROUP BY c.definition_version,c.shadow_cohort_id,c.source_buy_trade_id,
+                         c.token_id,q.quote_key,s.id,s.status,s.facts_json
+                ORDER BY c.shadow_cohort_id
+                """,
+                (
+                    self.CHAIN_MEME_TRADER_VERSION,
+                    self.MARKET_SURFACE_SAFETY_VERSION,
+                    self.CHAIN_MEME_TRADER_STAGE4_EXEC_DECAY_VERSION,
+                    self.CHAIN_MEME_TRADER_STAGE4_EXEC_EQUITY_V2_VERSION,
+                ),
+            ).fetchall())
+            for position in rows:
+                facts = self._json_object(position["facts_json"])
+                pool = facts.get("solana_pool_rpc") if isinstance(
+                    facts.get("solana_pool_rpc"), Mapping
+                ) else {}
+                token = facts.get("solana_token_rpc") if isinstance(
+                    facts.get("solana_token_rpc"), Mapping
+                ) else {}
+                token_id = str(position["token_id"])
+                if ":" not in token_id:
+                    continue
+                chain, mint = token_id.split(":", 1)
+                if not (
+                    chain == "solana"
+                    and pool.get("status") == "verified"
+                    and pool.get("canonical_migration_structure") is True
+                    and str(pool.get("base_mint") or "") == mint
+                    and str(pool.get("pool_address") or "")
+                    and str(pool.get("base_vault") or "")
+                    and str(pool.get("quote_vault") or "")
+                    and str(pool.get("lp_mint") or "")
+                ):
+                    continue
+                pool_address = str(pool["pool_address"])
+                base_mint = str(pool["base_mint"])
+                quote_mint = str(pool["quote_mint"])
+                lp_mint = str(pool["lp_mint"])
+                base_vault = str(pool["base_vault"])
+                quote_vault = str(pool["quote_vault"])
+                spl_token_program = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+                token_program = str(token.get("program_owner") or "")
+                targets = [
+                    ("pool", pool_address, "", str(pool.get("program_owner") or "")),
+                    ("base_vault", base_vault, base_mint, token_program),
+                    ("quote_vault", quote_vault, quote_mint, spl_token_program),
+                    ("token_mint", base_mint, base_mint, token_program),
+                    ("lp_mint", lp_mint, lp_mint, token_program),
+                ]
+                for kind, pubkey, expected_mint, expected_owner in targets:
+                    cursor = self.db.execute(
+                        "INSERT OR IGNORE INTO onchain_held_account_targets("
+                        "monitor_version,position_definition_version,shadow_cohort_id,"
+                        "source_buy_trade_id,token_id,surface_observation_id,pool_address,"
+                        "base_mint,quote_mint,lp_mint,base_vault,quote_vault,account_kind,"
+                        "pubkey,expected_mint,expected_program_owner,registered_at) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            version, str(position["position_definition_version"]),
+                            int(position["shadow_cohort_id"]), int(position["source_buy_trade_id"]),
+                            token_id, int(position["surface_observation_id"]), pool_address,
+                            base_mint, quote_mint, lp_mint, base_vault, quote_vault,
+                            kind, pubkey, expected_mint, expected_owner, iso(),
+                        ),
+                    )
+                    inserted += int(cursor.rowcount == 1)
+        return inserted
+
+    def onchain_held_account_targets(self) -> list[dict[str, Any]]:
+        version = self.ONCHAIN_HELD_ACCOUNT_MONITOR_VERSION
+        with self._lock:
+            targets = [dict(row) for row in self.db.execute(
+                """
+                SELECT t.* FROM onchain_held_account_targets t
+                LEFT JOIN onchain_confirmed_rug_terminals d
+                  ON d.scheduler_version=?
+                 AND d.position_definition_version=t.position_definition_version
+                 AND d.shadow_cohort_id=t.shadow_cohort_id
+                WHERE t.monitor_version=? AND d.id IS NULL AND (
+                    EXISTS(
+                        SELECT 1 FROM onchain_paper_exit_challenger_positions p
+                        WHERE p.definition_version=t.position_definition_version
+                          AND p.shadow_cohort_id=t.shadow_cohort_id
+                          AND p.status='open'
+                    ) OR EXISTS(
+                        SELECT 1 FROM chain_meme_trader_positions c
+                        WHERE c.definition_version=t.position_definition_version
+                          AND c.shadow_cohort_id=t.shadow_cohort_id
+                          AND c.status='open'
+                    )
+                )
+                ORDER BY t.id
+                """,
+                (
+                    self.ONCHAIN_PAPER_EXIT_QUOTE_SCHEDULER_VERSION, version,
+                ),
+            ).fetchall()]
+            for target in targets:
+                if str(target.get("account_kind") or "") == "pool":
+                    target["decoder_version"] = (
+                        "pump-amm-pool/v2-idl-6b5c7e-sdk-1.19.0"
+                    )
+            return targets
+
+    def _create_onchain_rug_alert_mark_locked(
+        self, target: sqlite3.Row, *, slot: int, reason: str, recorded_at: Any
+    ) -> int | None:
+        position = self.db.execute(
+            "SELECT * FROM onchain_paper_exit_challenger_positions "
+            "WHERE definition_version=? AND shadow_cohort_id=? AND status='open'",
+            (str(target["position_definition_version"]), int(target["shadow_cohort_id"])),
+        ).fetchone()
+        if position is None or int(position["remaining_amount_raw"] or 0) <= 0:
+            return None
+        pending = None
+        if position["pending_mark_id"] is not None:
+            pending = self.db.execute(
+                "SELECT * FROM onchain_paper_exit_challenger_marks WHERE id=?",
+                (int(position["pending_mark_id"]),),
+            ).fetchone()
+        if pending is not None and str(pending["reason"]).startswith("onchain_rug_alert:"):
+            return int(pending["id"])
+        remaining = str(position["remaining_amount_raw"])
+        self.db.execute(
+            """
+            INSERT INTO onchain_paper_exit_challenger_marks(
+                definition_version,shadow_cohort_id,recorded_at,provider,pair_address,
+                remaining_amount_raw,realized_pnl_usd,action,sell_fraction,
+                sell_amount_raw,reason
+            ) VALUES(?,?,?,?,?,?,?,'LIQUIDITY_EXIT',1.0,?,?)
+            """,
+            (
+                self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION,
+                int(target["shadow_cohort_id"]), iso(parse_time(recorded_at)),
+                "solana_account_subscribe", str(target["pool_address"]), remaining,
+                float(position["realized_pnl_usd"]), remaining,
+                f"onchain_rug_alert:{int(target['id'])}:{int(slot)}:{reason}",
+            ),
+        )
+        mark_id = int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+        self.db.execute(
+            "UPDATE onchain_paper_exit_challenger_positions SET pending_mark_id=? "
+            "WHERE definition_version=? AND shadow_cohort_id=? AND status='open'",
+            (mark_id, self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION,
+             int(target["shadow_cohort_id"])),
+        )
+        return mark_id
+
+    def record_onchain_held_account_update(
+        self, update: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        """Reduce one exact account notification to material state and optional exit alert."""
+        target_id = int(update.get("id") or 0)
+        slot = int(update.get("slot") or 0)
+        data_hash = str(update.get("data_hash") or "")
+        decoded = dict(update.get("decoded") or {})
+        observed = parse_time(update.get("observed_at") or utcnow())
+        if target_id <= 0 or slot <= 0 or not data_hash:
+            return None
+        with self._lock, self.db:
+            target = self.db.execute(
+                "SELECT * FROM onchain_held_account_targets WHERE id=? AND monitor_version=?",
+                (target_id, self.ONCHAIN_HELD_ACCOUNT_MONITOR_VERSION),
+            ).fetchone()
+            if target is None or str(target["pubkey"]) != str(update.get("pubkey") or ""):
+                return None
+            if observed < parse_time(target["registered_at"]):
+                return None
+            position = self.db.execute(
+                "SELECT status FROM onchain_paper_exit_challenger_positions "
+                "WHERE definition_version=? AND shadow_cohort_id=?",
+                (str(target["position_definition_version"]), int(target["shadow_cohort_id"])),
+            ).fetchone()
+            suite_open = self.db.execute(
+                "SELECT 1 FROM chain_meme_trader_positions WHERE definition_version=? "
+                "AND shadow_cohort_id=? AND status='open' LIMIT 1",
+                (
+                    str(target["position_definition_version"]),
+                    int(target["shadow_cohort_id"]),
+                ),
+            ).fetchone()
+            if (position is None or str(position["status"]) != "open") and suite_open is None:
+                return None
+            previous = self.db.execute(
+                "SELECT * FROM onchain_held_account_states WHERE target_id=?", (target_id,)
+            ).fetchone()
+            if previous is not None:
+                if slot < int(previous["last_slot"]):
+                    return None
+                if slot == int(previous["last_slot"]) and data_hash == str(previous["data_hash"]):
+                    return None
+            previous_decoded = self._json_object(previous["decoded_json"]) if previous else {}
+            kind = str(target["account_kind"])
+            risk_state = "HEALTHY"
+            risk_reason = ""
+            status = str(decoded.get("status") or "")
+            baseline_row = self.db.execute(
+                "SELECT amount_raw FROM onchain_held_account_baselines WHERE target_id=?",
+                (target_id,),
+            ).fetchone()
+            baseline_amount = int(baseline_row["amount_raw"] or 0) if baseline_row else 0
+            if kind in {"base_vault", "quote_vault"} and status == "verified":
+                amount = int(decoded.get("amount_raw") or 0)
+                if baseline_amount <= 0 and amount > 0:
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO onchain_held_account_baselines("
+                        "target_id,monitor_version,amount_raw,slot,observed_at,recorded_at) "
+                        "VALUES(?,?,?,?,?,?)",
+                        (
+                            target_id, self.ONCHAIN_HELD_ACCOUNT_MONITOR_VERSION,
+                            str(amount), slot, iso(observed), iso(),
+                        ),
+                    )
+                    baseline_row = self.db.execute(
+                        "SELECT amount_raw FROM onchain_held_account_baselines WHERE target_id=?",
+                        (target_id,),
+                    ).fetchone()
+                    baseline_amount = int(baseline_row["amount_raw"] or 0)
+            if status != "verified":
+                risk_state, risk_reason = "ALERT", str(decoded.get("reason") or status or "account_unverified")
+            elif kind in {"base_vault", "quote_vault"}:
+                amount = int(decoded.get("amount_raw") or 0)
+                previous_amount = int(previous_decoded.get("amount_raw") or 0)
+                if amount <= 0:
+                    risk_state, risk_reason = "ALERT", f"{kind}_empty"
+                elif previous_amount > 0 and amount / previous_amount <= 0.10:
+                    risk_state, risk_reason = "ALERT", f"{kind}_depleted_90pct"
+                if baseline_amount > 0 and amount / baseline_amount <= 0.10:
+                    other_kind = "quote_vault" if kind == "base_vault" else "base_vault"
+                    counterpart = self.db.execute(
+                        "SELECT b.amount_raw AS baseline_amount_raw,s.decoded_json "
+                        "FROM onchain_held_account_targets t "
+                        "JOIN onchain_held_account_baselines b ON b.target_id=t.id "
+                        "JOIN onchain_held_account_states s ON s.target_id=t.id "
+                        "WHERE t.monitor_version=? AND t.position_definition_version=? "
+                        "AND t.shadow_cohort_id=? AND t.pool_address=? "
+                        "AND t.account_kind=? LIMIT 1",
+                        (
+                            self.ONCHAIN_HELD_ACCOUNT_MONITOR_VERSION,
+                            str(target["position_definition_version"]),
+                            int(target["shadow_cohort_id"]), str(target["pool_address"]),
+                            other_kind,
+                        ),
+                    ).fetchone()
+                    if counterpart is not None:
+                        counterpart_baseline = int(counterpart["baseline_amount_raw"] or 0)
+                        counterpart_amount = int(
+                            self._json_object(counterpart["decoded_json"]).get("amount_raw") or 0
+                        )
+                        if (
+                            counterpart_baseline > 0
+                            and counterpart_amount / counterpart_baseline <= 0.10
+                        ):
+                            risk_state = "ALERT"
+                            risk_reason = "joint_vaults_depleted_90pct_baseline"
+            elif kind == "lp_mint":
+                supply = int(decoded.get("supply_raw") or 0)
+                previous_supply = int(previous_decoded.get("supply_raw") or 0)
+                if previous is not None and previous_supply == 0 and supply > 0:
+                    risk_state, risk_reason = "ALERT", "lp_supply_reappeared"
+            elif kind == "token_mint" and (
+                decoded.get("mint_authority") or decoded.get("freeze_authority")
+            ):
+                risk_state, risk_reason = "ALERT", "token_control_authority_enabled"
+            material = previous is None or risk_state != str(previous["risk_state"])
+            if previous is not None and data_hash != str(previous["data_hash"]):
+                if kind in {"pool", "token_mint", "lp_mint"}:
+                    material = True
+                elif kind in {"base_vault", "quote_vault"}:
+                    before = int(previous_decoded.get("amount_raw") or 0)
+                    after = int(decoded.get("amount_raw") or 0)
+                    material = material or before == 0 or abs(after - before) / max(1, before) >= 0.10
+            severe = risk_reason in {
+                "account_missing", "pool_identity_changed", "pool_program_owner_mismatch",
+                "base_vault_empty", "quote_vault_empty", "base_vault_depleted_90pct",
+                "quote_vault_depleted_90pct", "lp_supply_reappeared",
+                "joint_vaults_depleted_90pct_baseline",
+            }
+            alert_mark_id = None
+            if risk_state == "ALERT" and severe:
+                alert_mark_id = self._create_onchain_rug_alert_mark_locked(
+                    target, slot=slot, reason=risk_reason, recorded_at=observed,
+                )
+                material = True
+            self.db.execute(
+                "INSERT INTO onchain_held_account_states(target_id,last_slot,data_hash,decoded_json,"
+                "risk_state,risk_reason,observed_at,updated_at) VALUES(?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(target_id) DO UPDATE SET last_slot=excluded.last_slot,"
+                "data_hash=excluded.data_hash,decoded_json=excluded.decoded_json,"
+                "risk_state=excluded.risk_state,risk_reason=excluded.risk_reason,"
+                "observed_at=excluded.observed_at,updated_at=excluded.updated_at",
+                (target_id, slot, data_hash, self._json(decoded), risk_state, risk_reason,
+                 iso(observed), iso()),
+            )
+            event_id = None
+            if material:
+                cursor = self.db.execute(
+                    "INSERT OR IGNORE INTO onchain_held_account_risk_events("
+                    "monitor_version,target_id,position_definition_version,shadow_cohort_id,"
+                    "token_id,pool_address,slot,data_hash,account_kind,event_type,risk_state,"
+                    "risk_reason,previous_decoded_json,decoded_json,alert_mark_id,observed_at,recorded_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        self.ONCHAIN_HELD_ACCOUNT_MONITOR_VERSION, target_id,
+                        str(target["position_definition_version"]), int(target["shadow_cohort_id"]),
+                        str(target["token_id"]), str(target["pool_address"]), slot, data_hash,
+                        kind, "initial" if previous is None else "material_change", risk_state,
+                        risk_reason, self._json(previous_decoded), self._json(decoded),
+                        alert_mark_id, iso(observed), iso(),
+                    ),
+                )
+                event_id = int(cursor.lastrowid) if cursor.rowcount == 1 else None
+            return {
+                "target_id": target_id, "event_id": event_id, "risk_state": risk_state,
+                "risk_reason": risk_reason, "alert_mark_id": alert_mark_id,
+            }
+
+    def register_onchain_paper_position_monitor(self) -> sqlite3.Row:
+        """Freeze passive exact-remaining executable valuation without changing positions."""
+        version = self.ONCHAIN_PAPER_POSITION_MONITOR_VERSION
+        definition = {
+            "version": version,
+            "source": self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION,
+            "activation": "new_observations_after_registration_including_existing_open_positions",
+            "no_historical_backfill": True,
+            "states": {
+                "ENTRY_HOT": {"until_minutes": 10, "valuation_seconds": 15},
+                "OPEN_WARM": {"until_minutes": 60, "valuation_seconds": 30},
+                "OPEN_COOL": {"valuation_seconds": 60},
+            },
+            "input": "exact_current_remaining_amount_raw",
+            "output": "jupiter_other_amount_threshold_usdc_minus_modeled_network_fee",
+            "slippage_bps": 400,
+            "max_total_delay_seconds": 45,
+            "estimated_network_fee_usd": 0.4,
+            "exit_priority": "passive_valuation_only_when_no_exit_quote_is_due",
+            "position_mutation": False,
+            "agent_calls": False,
+            "simulated": True,
+            "live_execution": False,
+        }
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO onchain_paper_position_monitor_registrations("
+                "monitor_version,registered_at,activation_source_buy_trade_id,definition_json) "
+                "VALUES(?,?,COALESCE((SELECT MAX(source_buy_trade_id) FROM "
+                "onchain_paper_exit_challenger_positions),0),?)",
+                (version, iso(), self._json(definition)),
+            )
+            return self.db.execute(
+                "SELECT * FROM onchain_paper_position_monitor_registrations "
+                "WHERE monitor_version=?", (version,),
+            ).fetchone()
+
+    @staticmethod
+    def _position_monitor_state_and_seconds(opened_at: Any, now: Any) -> tuple[str, float]:
+        age_minutes = max(
+            0.0, (parse_time(now) - parse_time(opened_at)).total_seconds() / 60.0
+        )
+        if age_minutes < 10:
+            return "ENTRY_HOT", 15.0
+        if age_minutes < 60:
+            return "OPEN_WARM", 30.0
+        return "OPEN_COOL", 60.0
+
+    def due_onchain_paper_position_monitor_quotes(
+        self, *, now: Any = None, limit: int = 1
+    ) -> list[dict[str, Any]]:
+        """Return passive valuation work; pending real exits always remain ahead of this lane."""
+        current = parse_time(now or utcnow())
+        version = self.ONCHAIN_PAPER_POSITION_MONITOR_VERSION
+        with self._lock:
+            registration = self.db.execute(
+                "SELECT * FROM onchain_paper_position_monitor_registrations "
+                "WHERE monitor_version=?", (version,),
+            ).fetchone()
+            if registration is None:
+                return []
+            definition = self._json_object(registration["definition_json"])
+            positions = self.db.execute(
+                "SELECT * FROM onchain_paper_exit_challenger_positions "
+                "WHERE definition_version=? AND status='open' AND pending_mark_id IS NULL "
+                "ORDER BY opened_at,shadow_cohort_id",
+                (self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION,),
+            ).fetchall()
+            tasks: list[dict[str, Any]] = []
+            for position in positions:
+                state, interval = self._position_monitor_state_and_seconds(
+                    position["opened_at"], current
+                )
+                remaining = str(position["remaining_amount_raw"])
+                latest = self.db.execute(
+                    "SELECT r.completed_at FROM onchain_paper_position_monitor_quote_results r "
+                    "JOIN onchain_paper_position_monitor_quote_attempts a ON a.id=r.attempt_id "
+                    "WHERE r.monitor_version=? AND r.shadow_cohort_id=? "
+                    "AND a.input_amount_raw=? ORDER BY r.id DESC LIMIT 1",
+                    (version, int(position["shadow_cohort_id"]), remaining),
+                ).fetchone()
+                if latest is not None and (
+                    current - parse_time(latest["completed_at"])
+                ).total_seconds() < interval:
+                    continue
+                unfinished = self.db.execute(
+                    "SELECT a.requested_at FROM onchain_paper_position_monitor_quote_attempts a "
+                    "LEFT JOIN onchain_paper_position_monitor_quote_results r ON r.attempt_id=a.id "
+                    "WHERE a.monitor_version=? AND a.shadow_cohort_id=? AND r.id IS NULL "
+                    "ORDER BY a.id DESC LIMIT 1",
+                    (version, int(position["shadow_cohort_id"])),
+                ).fetchone()
+                if unfinished is not None and (
+                    current - parse_time(unfinished["requested_at"])
+                ).total_seconds() <= float(definition["max_total_delay_seconds"]):
+                    continue
+                tasks.append({
+                    "monitor_version": version,
+                    "shadow_cohort_id": int(position["shadow_cohort_id"]),
+                    "source_buy_trade_id": int(position["source_buy_trade_id"]),
+                    "monitor_state": state,
+                    "input_mint": str(position["token_id"]).split(":", 1)[1],
+                    "output_mint": self.JUPITER_USDC_MINT,
+                    "input_amount_raw": remaining,
+                    "slippage_bps": int(definition["slippage_bps"]),
+                    "max_total_delay_seconds": float(definition["max_total_delay_seconds"]),
+                })
+                if len(tasks) >= max(1, int(limit)):
+                    break
+            return tasks
+
+    def start_onchain_paper_position_monitor_quote_attempt(
+        self, task: Mapping[str, Any], *, requested_at: Any = None
+    ) -> int | None:
+        requested = parse_time(requested_at or utcnow())
+        version = self.ONCHAIN_PAPER_POSITION_MONITOR_VERSION
+        quote_key = (
+            f"position-value:{int(task['shadow_cohort_id'])}:"
+            f"{task['input_amount_raw']}:{int(requested.timestamp() * 1_000_000)}"
+        )
+        with self._lock, self.db:
+            position = self.db.execute(
+                "SELECT * FROM onchain_paper_exit_challenger_positions "
+                "WHERE definition_version=? AND shadow_cohort_id=? AND status='open' "
+                "AND pending_mark_id IS NULL",
+                (self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION,
+                 int(task["shadow_cohort_id"])),
+            ).fetchone()
+            if (
+                position is None
+                or str(position["remaining_amount_raw"]) != str(task["input_amount_raw"])
+            ):
+                return None
+            self.db.execute(
+                "INSERT INTO onchain_paper_position_monitor_quote_attempts("
+                "monitor_version,quote_key,shadow_cohort_id,source_buy_trade_id,monitor_state,"
+                "input_mint,output_mint,input_amount_raw,requested_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    version, quote_key, int(task["shadow_cohort_id"]),
+                    int(task["source_buy_trade_id"]), str(task["monitor_state"]),
+                    str(task["input_mint"]), str(task["output_mint"]),
+                    str(task["input_amount_raw"]), iso(requested),
+                ),
+            )
+            return int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+
+    def record_onchain_paper_position_monitor_quote_result(
+        self,
+        *,
+        attempt_id: int,
+        status: str,
+        output_amount_raw: int | str | None = None,
+        other_amount_threshold_raw: int | str | None = None,
+        slippage_bps: int | None = None,
+        router: str = "",
+        mode: str = "",
+        price_impact_bps: float | None = None,
+        error_type: str = "",
+        completed_at: Any = None,
+    ) -> int | None:
+        if status not in {"quoted", "no_route", "error", "quote_only_protocol_invalid"}:
+            raise ValueError("invalid position monitor quote status")
+        completed = parse_time(completed_at or utcnow())
+        version = self.ONCHAIN_PAPER_POSITION_MONITOR_VERSION
+        with self._lock, self.db:
+            if self.db.execute(
+                "SELECT 1 FROM onchain_paper_position_monitor_quote_results WHERE attempt_id=?",
+                (int(attempt_id),),
+            ).fetchone() is not None:
+                return None
+            attempt = self.db.execute(
+                "SELECT * FROM onchain_paper_position_monitor_quote_attempts WHERE id=?",
+                (int(attempt_id),),
+            ).fetchone()
+            registration = self.db.execute(
+                "SELECT * FROM onchain_paper_position_monitor_registrations "
+                "WHERE monitor_version=?", (version,),
+            ).fetchone()
+            if attempt is None or registration is None:
+                return None
+            definition = self._json_object(registration["definition_json"])
+            requested = parse_time(attempt["requested_at"])
+            delay = (completed - requested).total_seconds()
+            temporal_valid = bool(
+                completed >= requested
+                and delay <= float(definition["max_total_delay_seconds"])
+            )
+            threshold = int(other_amount_threshold_raw or 0)
+            quote_valid = status == "quoted" and temporal_valid and threshold > 0
+            no_route_valid = status == "no_route" and temporal_valid
+            validity = "valid" if quote_valid or no_route_valid else (
+                "total_delay_expired" if delay > float(definition["max_total_delay_seconds"])
+                else "invalid"
+            )
+            # A fresh no-route result is evidence that an executable mark is
+            # unavailable, not evidence that the position is worth zero.
+            gross = threshold / 1_000_000.0 if quote_valid else None
+            network_fee = float(definition["estimated_network_fee_usd"]) if quote_valid else 0.0
+            executable = (
+                max(0.0, float(gross) - network_fee) if gross is not None else None
+            )
+            economic_status = (
+                "economic" if quote_valid and executable and executable > 0
+                else "quoted_but_uneconomic" if quote_valid
+                else "no_route" if no_route_valid else "not_applicable"
+            )
+            self.db.execute(
+                "INSERT INTO onchain_paper_position_monitor_quote_results("
+                "monitor_version,attempt_id,shadow_cohort_id,quote_terminal_status,"
+                "validity_status,input_amount_raw,output_amount_raw,other_amount_threshold_raw,"
+                "requested_at,completed_at,total_delay_seconds,slippage_bps,router,mode,"
+                "price_impact_bps,economic_status,gross_usdc,network_fee_usd,"
+                "executable_recovery_usd,error_type,recorded_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    version, int(attempt_id), int(attempt["shadow_cohort_id"]), status,
+                    validity, str(attempt["input_amount_raw"]),
+                    str(output_amount_raw) if output_amount_raw is not None else None,
+                    str(other_amount_threshold_raw)
+                    if other_amount_threshold_raw is not None else None,
+                    str(attempt["requested_at"]), iso(completed), delay,
+                    int(slippage_bps) if slippage_bps is not None else None,
+                    str(router or "")[:80], str(mode or "")[:40], price_impact_bps,
+                    economic_status, gross, network_fee, executable,
+                    str(error_type or "")[:80], iso(),
+                ),
+            )
+            return int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
 
     def enroll_onchain_paper_exit_challenger(self) -> dict[str, int]:
         """Pair challenger positions only with exploration BUYs created after activation."""
@@ -19157,10 +30103,49 @@ class Store:
                     "SELECT * FROM onchain_paper_exit_challenger_marks WHERE id=?",
                     (int(position["pending_mark_id"]),),
                 ).fetchone()
+            scheduler = self.db.execute(
+                "SELECT * FROM onchain_paper_exit_quote_scheduler_registrations "
+                "WHERE scheduler_version=?",
+                (self.ONCHAIN_PAPER_EXIT_QUOTE_SCHEDULER_VERSION,),
+            ).fetchone()
+            pending_exhausted = False
+            if pending is not None and scheduler is not None:
+                scheduler_definition = self._json_object(scheduler["definition_json"])
+                attempt_count = int(self.db.execute(
+                    "SELECT COUNT(*) FROM onchain_paper_exit_challenger_quote_attempts "
+                    "WHERE definition_version=? AND mark_id=?",
+                    (version, int(pending["id"])),
+                ).fetchone()[0])
+                pending_exhausted = attempt_count >= int(
+                    scheduler_definition["max_attempts_per_mark"]
+                )
+                recovered = bool(
+                    temporal_valid
+                    and snapshot is not None
+                    and snapshot["liquidity_usd"] is not None
+                    and float(snapshot["liquidity_usd"])
+                    >= float(definition["emergency_liquidity_usd"])
+                    and (
+                        float(snapshot["volume_5m_usd"] or 0) > 0
+                        or int(snapshot["buys_5m"] or 0) + int(snapshot["sells_5m"] or 0) > 0
+                    )
+                )
+                if pending_exhausted and recovered:
+                    pending = None
+                    self.db.execute(
+                        "UPDATE onchain_paper_exit_challenger_positions SET pending_mark_id=NULL "
+                        "WHERE definition_version=? AND shadow_cohort_id=? AND status='open'",
+                        (version, int(shadow_cohort_id)),
+                    )
             if elapsed_minutes >= float(definition["max_hold_minutes"]):
                 action, fraction, mark_reason = "TERMINAL", 1.0, "max_hold_terminal"
             elif pending is not None:
-                action, mark_reason = "PENDING", f"awaiting_{str(pending['action']).lower()}_quote"
+                action = "PENDING"
+                mark_reason = (
+                    "awaiting_fresh_recovery_after_exhausted_exit_quotes"
+                    if pending_exhausted
+                    else f"awaiting_{str(pending['action']).lower()}_quote"
+                )
             elif not temporal_valid or price is None or price <= 0:
                 mark_reason = reason or "price_observation_unavailable_or_temporally_invalid"
             else:
@@ -19293,9 +30278,17 @@ class Store:
             if registration is None:
                 return []
             definition = self._json_object(registration["definition_json"])
+            scheduler = self.db.execute(
+                "SELECT * FROM onchain_paper_exit_quote_scheduler_registrations "
+                "WHERE scheduler_version=?",
+                (self.ONCHAIN_PAPER_EXIT_QUOTE_SCHEDULER_VERSION,),
+            ).fetchone()
+            scheduler_definition = (
+                self._json_object(scheduler["definition_json"]) if scheduler is not None else None
+            )
             positions = self.db.execute(
                 """
-                SELECT p.*,m.action,m.sell_amount_raw,m.recorded_at AS triggered_at,
+                SELECT p.*,m.action,m.reason,m.sell_amount_raw,m.recorded_at AS triggered_at,
                        (
                          SELECT MAX(COALESCE(r2.completed_at,a2.requested_at))
                          FROM onchain_paper_exit_challenger_quote_attempts a2
@@ -19307,11 +30300,13 @@ class Store:
                 FROM onchain_paper_exit_challenger_positions p
                 JOIN onchain_paper_exit_challenger_marks m ON m.id=p.pending_mark_id
                 WHERE p.definition_version=? AND p.status='open'
-                ORDER BY last_attempt_at IS NOT NULL,last_attempt_at,
+                ORDER BY CASE WHEN m.reason LIKE 'onchain_rug_alert:%' THEN 0 ELSE 1 END,
+                    last_attempt_at IS NOT NULL,
                     CASE m.action
                     WHEN 'TERMINAL' THEN 0 WHEN 'LIQUIDITY_EXIT' THEN 1
                     WHEN 'HARD_STOP' THEN 2 WHEN 'TRAILING' THEN 3
                     WHEN 'INACTIVITY_EXIT' THEN 4 ELSE 5 END,
+                    last_attempt_at,
                     m.recorded_at,p.shadow_cohort_id
                 """,
                 (version,),
@@ -19339,12 +30334,21 @@ class Store:
                 next_seq = 1
                 if last is not None:
                     next_seq = int(last["attempt_seq"]) + 1
+                    if (
+                        scheduler_definition is not None
+                        and next_seq > int(scheduler_definition["max_attempts_per_mark"])
+                    ):
+                        continue
                     anchor = parse_time(last["completed_at"] or last["requested_at"])
-                    wait_seconds = (
-                        float(definition["quote_retry_seconds"])
-                        if last["completed_at"] is not None
-                        else float(definition["max_quote_delay_seconds"])
-                    )
+                    if scheduler_definition is not None and last["completed_at"] is not None:
+                        schedule = list(scheduler_definition["retry_schedule_seconds"])
+                        wait_seconds = float(schedule[min(next_seq - 2, len(schedule) - 1)])
+                    else:
+                        wait_seconds = (
+                            float(definition["quote_retry_seconds"])
+                            if last["completed_at"] is not None
+                            else float(definition["max_quote_delay_seconds"])
+                        )
                     if (current - anchor).total_seconds() < wait_seconds:
                         continue
                 address = str(row["token_id"]).split(":", 1)[1]
@@ -19355,6 +30359,7 @@ class Store:
                     "shadow_cohort_id": int(row["shadow_cohort_id"]),
                     "attempt_seq": next_seq,
                     "action": str(row["action"]),
+                    "reason": str(row["reason"]),
                     "triggered_at": str(row["triggered_at"]),
                     "input_mint": address,
                     "output_mint": self.JUPITER_USDC_MINT,
@@ -19470,6 +30475,11 @@ class Store:
             definition = self._json_object(registration["definition_json"])
             requested = parse_time(attempt["requested_at"])
             total_delay = (completed - requested).total_seconds()
+            risk_event = self.db.execute(
+                "SELECT * FROM onchain_held_account_risk_events "
+                "WHERE alert_mark_id=? AND risk_state='ALERT' ORDER BY id DESC LIMIT 1",
+                (int(mark["id"]),),
+            ).fetchone()
             threshold = int(other_amount_threshold_raw or 0)
             valid = bool(
                 status == "quoted"
@@ -19493,6 +30503,22 @@ class Store:
             economic_status = (
                 "economic" if economic else "quoted_but_uneconomic"
                 if valid else "not_applicable"
+            )
+            confirmed_rug = bool(
+                risk_event is not None
+                and str(risk_event["risk_reason"]) in {
+                    "account_missing",
+                    "pool_identity_changed",
+                    "pool_program_owner_mismatch",
+                    "joint_vaults_depleted_90pct_baseline",
+                }
+                and int(attempt["input_amount_raw"]) == remaining_before
+                and completed >= requested
+                and total_delay <= float(definition["max_quote_delay_seconds"])
+                and (
+                    status == "no_route"
+                    or (status == "quoted" and valid and economic_status == "quoted_but_uneconomic")
+                )
             )
             total_cost = float(position["stake_usd"]) + float(position["entry_network_fee_usd"])
             allocated_before = float(position["allocated_cost_usd"])
@@ -19520,6 +30546,16 @@ class Store:
                     position_status = "closed"
                     close_reason = str(mark["reason"])
                     closed_at_value = iso(completed)
+            elif confirmed_rug:
+                unallocated = max(0.0, total_cost - allocated_before)
+                pnl_delta = -unallocated
+                realized_pnl += pnl_delta
+                allocated_cost = total_cost
+                remaining_after = 0
+                pending_mark_id = None
+                position_status = "written_off"
+                close_reason = "confirmed_rug_dead_no_economic_exit"
+                closed_at_value = iso(completed)
             elif str(mark["action"]) == "TERMINAL":
                 unallocated = max(0.0, total_cost - allocated_before)
                 pnl_delta = -unallocated
@@ -19562,6 +30598,37 @@ class Store:
                 ),
             )
             result_id = int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+            if confirmed_rug and risk_event is not None:
+                self.db.execute(
+                    "INSERT OR IGNORE INTO onchain_confirmed_rug_terminals("
+                    "scheduler_version,position_definition_version,shadow_cohort_id,token_id,"
+                    "pool_address,risk_event_id,alert_mark_id,quote_result_id,"
+                    "confirmation_reason,confirmed_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        self.ONCHAIN_PAPER_EXIT_QUOTE_SCHEDULER_VERSION, version,
+                        int(attempt["shadow_cohort_id"]), str(position["token_id"]),
+                        str(risk_event["pool_address"]), int(risk_event["id"]),
+                        int(mark["id"]), result_id,
+                        f"exact_{risk_event['risk_reason']}+fresh_{status}", iso(completed),
+                    ),
+                )
+                terminal = self.db.execute(
+                    "SELECT id FROM onchain_confirmed_rug_terminals WHERE scheduler_version=? "
+                    "AND position_definition_version=? AND shadow_cohort_id=?",
+                    (self.ONCHAIN_PAPER_EXIT_QUOTE_SCHEDULER_VERSION, version,
+                     int(attempt["shadow_cohort_id"])),
+                ).fetchone()
+                if terminal is not None and ":" in str(position["token_id"]):
+                    chain, mint = str(position["token_id"]).split(":", 1)
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO onchain_dead_market_surfaces("
+                        "scheduler_version,chain,mint,pool_address,policy_version,terminal_id,recorded_at) "
+                        "VALUES(?,?,?,?,?,?,?)",
+                        (
+                            self.ONCHAIN_PAPER_EXIT_QUOTE_SCHEDULER_VERSION, chain, mint,
+                            str(risk_event["pool_address"]), version, int(terminal["id"]), iso(),
+                        ),
+                    )
             self.db.execute(
                 """
                 UPDATE onchain_paper_exit_challenger_positions
@@ -19576,7 +30643,6 @@ class Store:
                     version, int(attempt["shadow_cohort_id"]),
                 ),
             )
-            self._apply_onchain_paper_narrative_runner_exit_result_locked(result_id)
             return result_id
 
     def record_onchain_paper_exit_challenger_account_snapshot(
@@ -19669,6 +30735,177 @@ class Store:
                     :equity_usd,:realized_pnl_usd,:unrealized_pnl_usd,:total_pnl_usd,
                     :open_position_count,:priced_position_count,:valuation_status)
                 """,
+                payload,
+            )
+            return payload
+
+    def record_onchain_paper_position_monitor_account_snapshot(
+        self, *, recorded_at: Any = None
+    ) -> dict[str, Any] | None:
+        """Persist exact-remaining executable equity; missing/stale/error stays unknown."""
+        current = parse_time(recorded_at or utcnow())
+        monitor_version = self.ONCHAIN_PAPER_POSITION_MONITOR_VERSION
+        position_version = self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION
+        with self._lock, self.db:
+            monitor_registration = self.db.execute(
+                "SELECT * FROM onchain_paper_position_monitor_registrations "
+                "WHERE monitor_version=?", (monitor_version,),
+            ).fetchone()
+            exit_registration = self.db.execute(
+                "SELECT * FROM onchain_paper_exit_challenger_registrations "
+                "WHERE definition_version=?", (position_version,),
+            ).fetchone()
+            if monitor_registration is None or exit_registration is None:
+                return None
+            exit_definition = self._json_object(exit_registration["definition_json"])
+            positions = self.db.execute(
+                "SELECT * FROM onchain_paper_exit_challenger_positions "
+                "WHERE definition_version=? AND status!='ineligible'",
+                (position_version,),
+            ).fetchall()
+            open_positions = [row for row in positions if row["status"] == "open"]
+            starting_cash = float(exit_definition["starting_cash_usd"])
+            debits = sum(
+                float(row["stake_usd"]) + float(row["entry_network_fee_usd"])
+                for row in positions
+            )
+            proceeds = float(self.db.execute(
+                "SELECT COALESCE(SUM(net_proceeds_usd),0) "
+                "FROM onchain_paper_exit_challenger_quote_results "
+                "WHERE definition_version=? AND economic_status='economic'",
+                (position_version,),
+            ).fetchone()[0] or 0.0)
+            cash = starting_cash - debits + proceeds
+            realized = sum(float(row["realized_pnl_usd"]) for row in positions)
+            executable_value = 0.0
+            executable_unrealized = 0.0
+            priced = 0
+            no_route = 0
+            for position in open_positions:
+                _, interval = self._position_monitor_state_and_seconds(
+                    position["opened_at"], current
+                )
+                result = self.db.execute(
+                    "SELECT r.* FROM onchain_paper_position_monitor_quote_results r "
+                    "JOIN onchain_paper_position_monitor_quote_attempts a ON a.id=r.attempt_id "
+                    "WHERE r.monitor_version=? AND r.shadow_cohort_id=? "
+                    "AND a.input_amount_raw=? ORDER BY r.id DESC LIMIT 1",
+                    (
+                        monitor_version, int(position["shadow_cohort_id"]),
+                        str(position["remaining_amount_raw"]),
+                    ),
+                ).fetchone()
+                exit_result = self.db.execute(
+                    "SELECT * FROM onchain_paper_exit_challenger_quote_results "
+                    "WHERE definition_version=? AND shadow_cohort_id=? "
+                    "AND input_amount_raw=? AND completed_at>=? "
+                    "ORDER BY id DESC LIMIT 1",
+                    (
+                        position_version, int(position["shadow_cohort_id"]),
+                        str(position["remaining_amount_raw"]),
+                        str(monitor_registration["registered_at"]),
+                    ),
+                ).fetchone()
+                latest_mark = self.db.execute(
+                    "SELECT recorded_at FROM onchain_paper_exit_challenger_marks "
+                    "WHERE definition_version=? AND shadow_cohort_id=? "
+                    "ORDER BY id DESC LIMIT 1",
+                    (position_version, int(position["shadow_cohort_id"])),
+                ).fetchone()
+                source_completed_at = None
+                source_no_route = False
+                value = None
+                monitor_usable = bool(
+                    result is not None
+                    and result["validity_status"] == "valid"
+                    and result["executable_recovery_usd"] is not None
+                )
+                exit_is_newer = bool(
+                    exit_result is not None
+                    and (
+                        not monitor_usable
+                        or parse_time(exit_result["completed_at"])
+                        > parse_time(result["completed_at"])
+                    )
+                )
+                if monitor_usable and not exit_is_newer:
+                    source_completed_at = result["completed_at"]
+                    source_no_route = result["economic_status"] == "no_route"
+                    value = float(result["executable_recovery_usd"])
+                elif exit_is_newer:
+                    source_completed_at = exit_result["completed_at"]
+                    if exit_result["quote_terminal_status"] == "no_route":
+                        source_no_route = True
+                    elif (
+                        exit_result["validity_status"] == "valid"
+                        and exit_result["net_proceeds_usd"] is not None
+                    ):
+                        value = max(0.0, float(exit_result["net_proceeds_usd"]))
+                if source_completed_at is None:
+                    continue
+                if (current - parse_time(source_completed_at)).total_seconds() > interval:
+                    continue
+                if (
+                    latest_mark is not None
+                    and parse_time(source_completed_at) < parse_time(latest_mark["recorded_at"])
+                ):
+                    continue
+                no_route += int(source_no_route)
+                if value is None:
+                    continue
+                total_cost = float(position["stake_usd"]) + float(
+                    position["entry_network_fee_usd"]
+                )
+                unallocated = max(0.0, total_cost - float(position["allocated_cost_usd"]))
+                executable_value += value
+                executable_unrealized += value - unallocated
+                priced += 1
+            complete = priced == len(open_positions)
+            payload = {
+                "monitor_version": monitor_version,
+                "recorded_at": iso(current),
+                "cash_usd": cash,
+                "executable_value_usd": executable_value if complete else None,
+                "executable_equity_usd": cash + executable_value if complete else None,
+                "realized_pnl_usd": realized,
+                "executable_unrealized_pnl_usd": (
+                    executable_unrealized if complete else None
+                ),
+                "executable_total_pnl_usd": (
+                    realized + executable_unrealized if complete else None
+                ),
+                "open_position_count": len(open_positions),
+                "priced_position_count": priced,
+                "no_route_position_count": no_route,
+                "valuation_status": (
+                    "complete_exact_remaining_jupiter_minimum_output"
+                    if complete else "incomplete_exact_remaining_quotes"
+                ),
+            }
+            latest = self.db.execute(
+                "SELECT * FROM onchain_paper_position_monitor_account_snapshots "
+                "WHERE monitor_version=? ORDER BY id DESC LIMIT 1",
+                (monitor_version,),
+            ).fetchone()
+            comparable = (
+                "cash_usd", "executable_value_usd", "executable_equity_usd",
+                "realized_pnl_usd", "executable_unrealized_pnl_usd",
+                "executable_total_pnl_usd", "open_position_count",
+                "priced_position_count", "no_route_position_count",
+                "valuation_status",
+            )
+            if latest is not None and all(latest[key] == payload[key] for key in comparable):
+                return dict(latest)
+            self.db.execute(
+                "INSERT INTO onchain_paper_position_monitor_account_snapshots("
+                "monitor_version,recorded_at,cash_usd,executable_value_usd,"
+                "executable_equity_usd,realized_pnl_usd,executable_unrealized_pnl_usd,"
+                "executable_total_pnl_usd,open_position_count,priced_position_count,"
+                "no_route_position_count,valuation_status) "
+                "VALUES(:monitor_version,:recorded_at,:cash_usd,:executable_value_usd,"
+                ":executable_equity_usd,:realized_pnl_usd,:executable_unrealized_pnl_usd,"
+                ":executable_total_pnl_usd,:open_position_count,:priced_position_count,"
+                ":no_route_position_count,:valuation_status)",
                 payload,
             )
             return payload
@@ -19791,6 +31028,18 @@ class Store:
         ).fetchone()[0])
         valid_sells = sum(1 for row in results if row["validity_status"] == "valid")
         latest_performance = performance_curve[-1] if performance_curve else None
+        indicative_marked = (
+            latest_performance["marked_value_usd"] if latest_performance else None
+        )
+        indicative_unrealized = (
+            latest_performance["unrealized_pnl_usd"] if latest_performance else None
+        )
+        indicative_total = (
+            latest_performance["total_pnl_usd"] if latest_performance else None
+        )
+        indicative_equity = (
+            latest_performance["equity_usd"] if latest_performance else None
+        )
         account = {
             "starting_cash_usd": starting_cash,
             "cash_usd": (
@@ -19803,28 +31052,25 @@ class Store:
                     if row["status"] != "ineligible"
                 )
             ),
-            "unrealized_pnl_usd": (
-                latest_performance["unrealized_pnl_usd"] if latest_performance else None
+            "unrealized_pnl_usd": None if open_positions else 0.0,
+            "total_pnl_usd": None if open_positions else (
+                float(latest_performance["realized_pnl_usd"])
+                if latest_performance else running_realized
             ),
-            "total_pnl_usd": (
-                latest_performance["total_pnl_usd"] if latest_performance else None
-            ),
-            "marked_value_usd": (
-                latest_performance["marked_value_usd"] if latest_performance else None
-            ),
+            "marked_value_usd": None if open_positions else 0.0,
+            "indicative_unrealized_pnl_usd": indicative_unrealized,
+            "indicative_total_pnl_usd": indicative_total,
+            "indicative_marked_value_usd": indicative_marked,
+            "indicative_equity_usd": indicative_equity,
             "equity_lower_bound_usd": (
                 float(latest_performance["cash_usd"])
                 if latest_performance else running_cash
             ),
-            "equity_usd": latest_performance["equity_usd"] if latest_performance else None,
-            "equity_is_fully_marked": bool(
-                latest_performance
-                and int(latest_performance["open_position_count"])
-                == int(latest_performance["priced_position_count"])
-            ),
+            "equity_usd": None if open_positions else running_cash,
+            "equity_is_fully_marked": not open_positions,
             "valuation_status": (
-                latest_performance["valuation_status"]
-                if latest_performance else "not_yet_snapshotted"
+                "indicative_only_open_positions_no_executable_quote"
+                if open_positions else "cash_and_realized_only"
             ),
             "open_position_count": len(open_positions),
             "closed_position_count": len(completed),
@@ -19871,6 +31117,81 @@ class Store:
             "performance_curve": performance_curve,
             "pnl_is_executable": not open_positions,
         }
+        monitor_curve = [dict(row) for row in connection.execute(
+            "SELECT * FROM onchain_paper_position_monitor_account_snapshots "
+            "WHERE monitor_version=? ORDER BY id",
+            (cls.ONCHAIN_PAPER_POSITION_MONITOR_VERSION,),
+        )] if "onchain_paper_position_monitor_account_snapshots" in tables else []
+        latest_monitor = monitor_curve[-1] if monitor_curve else None
+        latest_open_mark = connection.execute(
+            "SELECT MAX(m.recorded_at) FROM onchain_paper_exit_challenger_marks m "
+            "JOIN onchain_paper_exit_challenger_positions p "
+            "ON p.definition_version=m.definition_version "
+            "AND p.shadow_cohort_id=m.shadow_cohort_id "
+            "WHERE p.definition_version=? AND p.status='open'",
+            (version,),
+        ).fetchone()[0]
+        monitor_fresh = bool(
+            latest_monitor
+            and (utcnow() - parse_time(latest_monitor["recorded_at"])).total_seconds() <= 75
+            and int(latest_monitor["open_position_count"]) == len(open_positions)
+            and (
+                latest_open_mark is None
+                or parse_time(latest_monitor["recorded_at"]) >= parse_time(latest_open_mark)
+            )
+        )
+        if latest_monitor is not None:
+            account["executable_monitor_version"] = latest_monitor["monitor_version"]
+            account["executable_quote_as_of"] = latest_monitor["recorded_at"]
+            account["executable_priced_position_count"] = int(
+                latest_monitor["priced_position_count"]
+            )
+            account["executable_no_route_position_count"] = int(
+                latest_monitor["no_route_position_count"]
+            )
+            account["executable_performance_curve"] = monitor_curve
+        if monitor_fresh and latest_monitor is not None:
+            account["marked_value_usd"] = latest_monitor["executable_value_usd"]
+            account["equity_usd"] = latest_monitor["executable_equity_usd"]
+            account["unrealized_pnl_usd"] = latest_monitor[
+                "executable_unrealized_pnl_usd"
+            ]
+            account["total_pnl_usd"] = latest_monitor["executable_total_pnl_usd"]
+            account["equity_is_fully_marked"] = bool(
+                latest_monitor["executable_equity_usd"] is not None
+            )
+            account["valuation_status"] = latest_monitor["valuation_status"]
+            account["pnl_is_executable"] = bool(
+                latest_monitor["executable_equity_usd"] is not None
+            )
+        if "onchain_paper_position_monitor_quote_results" in tables:
+            for position in positions:
+                latest_value = connection.execute(
+                    "SELECT r.*,a.monitor_state FROM "
+                    "onchain_paper_position_monitor_quote_results r "
+                    "JOIN onchain_paper_position_monitor_quote_attempts a ON a.id=r.attempt_id "
+                    "WHERE r.monitor_version=? AND r.shadow_cohort_id=? "
+                    "AND a.input_amount_raw=? ORDER BY r.id DESC LIMIT 1",
+                    (
+                        cls.ONCHAIN_PAPER_POSITION_MONITOR_VERSION,
+                        int(position["shadow_cohort_id"]),
+                        str(position["remaining_amount_raw"]),
+                    ),
+                ).fetchone()
+                position["monitor_state"] = (
+                    str(latest_value["monitor_state"]) if latest_value is not None else None
+                )
+                position["executable_quote_status"] = (
+                    str(latest_value["quote_terminal_status"])
+                    if latest_value is not None else None
+                )
+                position["executable_recovery_usd"] = (
+                    latest_value["executable_recovery_usd"]
+                    if latest_value is not None else None
+                )
+                position["executable_quote_as_of"] = (
+                    latest_value["completed_at"] if latest_value is not None else None
+                )
         return {
             "status": "running", "simulated": True, "live": False,
             "definition": definition, "registered_at": registration["registered_at"],
@@ -19879,6 +31200,700 @@ class Store:
             ),
             "account": account, "positions": positions,
             "trades": list(reversed(events[-max(1, int(trade_limit)):])), "marks": marks,
+        }
+
+    def register_token_information_watch(
+        self, *, decision_window_seconds: int = 120
+    ) -> sqlite3.Row:
+        """Freeze the new Token-first pre-entry watch frontier."""
+        version = self.TOKEN_INFORMATION_WATCH_VERSION
+        window = max(30, min(120, int(decision_window_seconds)))
+        definition = {
+            "version": version,
+            "source": self.ONCHAIN_ONLY_SHADOW_VERSION,
+            "entry_source": "new_eligible_solana_onchain_momentum_trigger",
+            "decision_window_seconds": window,
+            "state_machine": [
+                "WATCH_CREATED", "INFO_PENDING", "CONFIRMED",
+                "REJECTED_NEGATIVE_INFORMATION", "EXPIRED_NO_ASSESSMENT",
+                "EXPIRED_AGENT_CAPACITY", "EXPIRED_INSUFFICIENT_CONFIRMATION",
+                "WAIT_EXECUTION_UNAVAILABLE", "WAIT_SAFETY_FAILED", "BOUGHT",
+                "POST_ENTRY_MONITORING", "EXIT",
+            ],
+            "confirmation_policy": "exact_token_binding_plus_two_origin_cross_source/v1",
+            "buy_enabled": False,
+            "no_historical_backfill": True,
+            "decision_eligible": False,
+            "affects": "none",
+        }
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO token_information_watch_registrations("
+                "definition_version,registered_at,activation_trigger_transition_id,definition_json) "
+                "VALUES(?,?,COALESCE((SELECT MAX(id) FROM token_universe_funnel_transitions),0),?)",
+                (version, iso(), self._json(definition)),
+            )
+            return self.db.execute(
+                "SELECT * FROM token_information_watch_registrations WHERE definition_version=?",
+                (version,),
+            ).fetchone()
+
+    def enroll_token_information_watches(self) -> dict[str, int]:
+        """Create WATCH from new eligible Solana on-chain triggers, before entry."""
+        version = self.TOKEN_INFORMATION_WATCH_VERSION
+        inserted = 0
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT * FROM token_information_watch_registrations WHERE definition_version=?",
+                (version,),
+            ).fetchone()
+            if registration is None:
+                return {"inserted": 0}
+            definition = self._json_object(registration["definition_json"])
+            rows = self.db.execute(
+                """
+                SELECT c.id AS shadow_cohort_id,c.trigger_snapshot_id,
+                       c.trigger_recorded_at,c.trigger_transition_id,c.token_id,c.universe_cohort_id
+                FROM onchain_only_shadow_cohorts c
+                LEFT JOIN token_information_watch_cohorts w
+                  ON w.definition_version=? AND w.shadow_cohort_id=c.id
+                WHERE c.definition_version=? AND c.trigger_transition_id>?
+                  AND c.baseline_status='valid' AND lower(c.chain)='solana' AND w.id IS NULL
+                ORDER BY c.trigger_transition_id
+                """,
+                (version, self.ONCHAIN_ONLY_SHADOW_VERSION,
+                 int(registration["activation_trigger_transition_id"])),
+            ).fetchall()
+            for row in rows:
+                started = parse_time(row["trigger_recorded_at"])
+                transition_id = self.record_token_universe_funnel_transition(
+                    str(row["token_id"]), stage="context_trigger_evaluation",
+                    status="eligible", reason_code="pre_entry_token_watch",
+                    evaluation_key=f"token-information-watch:{int(row['shadow_cohort_id'])}",
+                    observed_at=started, ingested_at=started,
+                    source_table="onchain_only_shadow_cohorts",
+                    source_record_ids={
+                        "shadow_cohort_id": int(row["shadow_cohort_id"]),
+                    }, snapshot_id=int(row["trigger_snapshot_id"]),
+                    metadata={"watch_version": version, "decision_eligible": False},
+                )
+                if transition_id is None:
+                    continue
+                deadline = started + timedelta(seconds=int(definition["decision_window_seconds"]))
+                cursor = self.db.execute(
+                    """
+                    INSERT OR IGNORE INTO token_information_watch_cohorts(
+                        definition_version,shadow_cohort_id,token_id,
+                        trigger_snapshot_id,trigger_transition_id,watch_started_at,
+                        decision_deadline_at,recorded_at,decision_eligible,affects
+                    ) VALUES(?,?,?,?,?,?,?,?,0,'none')
+                    """,
+                    (version, int(row["shadow_cohort_id"]),
+                     str(row["token_id"]), int(row["trigger_snapshot_id"]),
+                     int(transition_id), iso(started), iso(deadline), iso()),
+                )
+                if int(cursor.rowcount or 0) != 1:
+                    continue
+                watch_id = int(cursor.lastrowid)
+                self.db.execute(
+                    "INSERT INTO token_information_watch_transitions("
+                    "definition_version,watch_cohort_id,state,reason_code,recorded_at,"
+                    "decision_eligible,affects) VALUES(?,?,'WATCH_CREATED','eligible_onchain_trigger',?,0,'none')",
+                    (version, watch_id, iso()),
+                )
+                inserted += 1
+        return {"inserted": inserted}
+
+    def due_token_information_watches(
+        self, *, now: Any = None, limit: int = 1
+    ) -> list[dict[str, Any]]:
+        current = parse_time(now or utcnow())
+        with self._lock:
+            rows = self.db.execute(
+                """
+                SELECT w.* FROM token_information_watch_cohorts w
+                WHERE w.definition_version=? AND w.decision_deadline_at>=?
+                  AND NOT EXISTS (
+                    SELECT 1 FROM token_context_admission_attempts a
+                    WHERE a.trigger_transition_id=w.trigger_transition_id
+                  )
+                ORDER BY w.watch_started_at,w.id LIMIT ?
+                """,
+                (self.TOKEN_INFORMATION_WATCH_VERSION, iso(current), max(1, int(limit))),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    @staticmethod
+    def token_information_watch_assessment_state(
+        assessment: Mapping[str, Any]
+    ) -> tuple[str, str]:
+        reporting = assessment.get("independent_reporting")
+        reporting = reporting if isinstance(reporting, Mapping) else {}
+        verifier = assessment.get("content_verifier")
+        verifier = verifier if isinstance(verifier, Mapping) else {}
+        claim = str(verifier.get("claim_status") or "")
+        if claim in {"false_claim", "correction", "retraction", "satire", "impersonation"}:
+            return "REJECTED_NEGATIVE_INFORMATION", claim
+        confirmed = bool(
+            reporting.get("exact_token_binding_eligible") is True
+            and str(reporting.get("status") or "") == "cross_source_supported_lower_bound"
+            and str(verifier.get("status") or "") == "cross_source_supported"
+            and claim in {"confirmed_fact", "probable_report"}
+            and float(verifier.get("confidence") or 0.0) >= 0.80
+            and int(verifier.get("distinct_origin_support_domain_count") or 0) >= 2
+        )
+        return (
+            ("CONFIRMED", "exact_cross_source_confirmation")
+            if confirmed else
+            ("INFO_PENDING", "assessment_insufficient_before_deadline")
+        )
+
+    def finalize_token_information_watches(self, *, now: Any = None) -> dict[str, int]:
+        """Record honest INFO_PENDING/EXPIRED states; v1 cannot buy before classifier freeze."""
+        current = parse_time(now or utcnow())
+        inserted = 0
+        with self._lock, self.db:
+            rows = self.db.execute(
+                "SELECT * FROM token_information_watch_cohorts WHERE definition_version=?",
+                (self.TOKEN_INFORMATION_WATCH_VERSION,),
+            ).fetchall()
+            for row in rows:
+                admission = self.db.execute(
+                    "SELECT * FROM token_context_admission_attempts WHERE trigger_transition_id=? "
+                    "ORDER BY id DESC LIMIT 1", (int(row["trigger_transition_id"]),),
+                ).fetchone()
+                assessment = None
+                if admission is not None:
+                    assessment = self.db.execute(
+                        "SELECT a.* FROM token_universe_funnel_transitions t "
+                        "JOIN token_context_assessments a ON a.id=t.assessment_id "
+                        "WHERE t.stage='agent_result' AND t.admission_id=? "
+                        "ORDER BY t.id DESC LIMIT 1", (int(admission["id"]),),
+                    ).fetchone()
+                payload = self._json_object(
+                    assessment["assessment_json"] if assessment is not None else "{}"
+                )
+                timely = bool(
+                    assessment is not None
+                    and parse_time(assessment["assessed_at"])
+                    <= parse_time(row["decision_deadline_at"])
+                )
+                if timely:
+                    state, reason = self.token_information_watch_assessment_state(payload)
+                    if (
+                        state == "INFO_PENDING"
+                        and current > parse_time(row["decision_deadline_at"])
+                    ):
+                        state, reason = (
+                            "EXPIRED_INSUFFICIENT_CONFIRMATION",
+                            "assessment_insufficient_at_deadline",
+                        )
+                elif current > parse_time(row["decision_deadline_at"]):
+                    if assessment is not None:
+                        state, reason = "EXPIRED_INSUFFICIENT_CONFIRMATION", "assessment_late_or_insufficient"
+                    elif admission is not None and str(admission["reason"]) in {
+                        "daily_call_limit_reached", "daily_token_reserve_exceeded", "quota_unavailable"
+                    }:
+                        state, reason = "EXPIRED_AGENT_CAPACITY", str(admission["reason"])
+                    else:
+                        state, reason = "EXPIRED_NO_ASSESSMENT", "no_assessment_within_window"
+                else:
+                    continue
+                cursor = self.db.execute(
+                    "INSERT OR IGNORE INTO token_information_watch_transitions("
+                    "definition_version,watch_cohort_id,state,assessment_id,reason_code,"
+                    "recorded_at,evidence_json,decision_eligible,affects) "
+                    "VALUES(?,?,?,?,?,?,?,0,'none')",
+                    (self.TOKEN_INFORMATION_WATCH_VERSION, int(row["id"]), state,
+                     int(assessment["id"]) if assessment is not None else None,
+                     reason, iso(current), self._json({"buy_enabled": False})),
+                )
+                inserted += int(cursor.rowcount or 0) == 1
+        return {"inserted": inserted}
+
+    def register_token_information_confirmation_paper(
+        self,
+        *,
+        starting_cash_usd: float,
+        policy_notional_usd: float = 20.0,
+        slippage_bps: int = 400,
+        max_total_delay_seconds: float = 45.0,
+        fixed_network_fee_usd: float = 0.4,
+    ) -> sqlite3.Row:
+        """Freeze the isolated confirm-before-entry Strategy-3 Paper frontier."""
+        version = self.TOKEN_INFORMATION_CONFIRMATION_PAPER_VERSION
+        definition = {
+            "version": version,
+            "source_watch": self.TOKEN_INFORMATION_WATCH_VERSION,
+            "entry": "timely_confirmed_watch_then_fresh_safety_and_new_jupiter_quote",
+            "policy_notional_usd": max(0.01, float(policy_notional_usd)),
+            "buy_input_amount_raw": str(round(max(0.01, float(policy_notional_usd)) * 1_000_000)),
+            "slippage_bps": max(1, min(5_000, int(slippage_bps))),
+            "max_total_delay_seconds": max(1.0, float(max_total_delay_seconds)),
+            "maximum_adverse_price_impact_bps": -1_000.0,
+            "fixed_network_fee_usd": max(0.0, float(fixed_network_fee_usd)),
+            "execution_quality": "QUOTE_OBSERVED",
+            "cost_truth_level": "MODELED_FALLBACK",
+            "fee_model_version": "flat-usdc-per-economic-fill/v1",
+            "route_fees_and_slippage": "included_in_jupiter_minimum_output",
+            "post_entry_information": "collecting_no_treatment_yet",
+            "exit": "not_registered_in_this_entry_tranche",
+            "no_historical_backfill": True,
+            "simulated": True,
+            "live_execution": False,
+        }
+        cash = max(0.01, float(starting_cash_usd))
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO token_information_confirmation_paper_registrations("
+                "definition_version,registered_at,activation_watch_transition_id,definition_json) "
+                "VALUES(?,?,COALESCE((SELECT MAX(id) FROM token_information_watch_transitions),0),?)",
+                (version, iso(), self._json(definition)),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO token_information_confirmation_paper_account("
+                "definition_version,starting_cash_usd,cash_usd,realized_pnl_usd,updated_at) "
+                "VALUES(?,?,?,?,?)",
+                (version, cash, cash, 0.0, iso()),
+            )
+            return self.db.execute(
+                "SELECT * FROM token_information_confirmation_paper_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+
+    def claim_token_information_confirmation_evaluation(
+        self, *, now: Any = None
+    ) -> dict[str, Any] | None:
+        """Freeze one post-registration timely CONFIRMED watch and its as-of snapshot."""
+        current = parse_time(now or utcnow())
+        version = self.TOKEN_INFORMATION_CONFIRMATION_PAPER_VERSION
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT * FROM token_information_confirmation_paper_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if registration is None:
+                return None
+            row = self.db.execute(
+                """
+                SELECT w.*,t.id AS confirmed_transition_id,t.assessment_id,
+                       t.recorded_at AS confirmed_recorded_at,a.assessed_at
+                FROM token_information_watch_transitions t
+                JOIN token_information_watch_cohorts w ON w.id=t.watch_cohort_id
+                JOIN token_context_assessments a ON a.id=t.assessment_id
+                LEFT JOIN token_information_confirmation_paper_evaluations e
+                  ON e.definition_version=? AND e.watch_cohort_id=w.id
+                WHERE t.definition_version=? AND t.state='CONFIRMED' AND t.id>?
+                  AND a.assessed_at<=w.decision_deadline_at AND t.recorded_at<=?
+                  AND e.id IS NULL
+                ORDER BY t.id LIMIT 1
+                """,
+                (
+                    version, self.TOKEN_INFORMATION_WATCH_VERSION,
+                    int(registration["activation_watch_transition_id"]), iso(current),
+                ),
+            ).fetchone()
+            if row is None:
+                return None
+            snapshot = self.db.execute(
+                """
+                SELECT * FROM token_snapshots
+                WHERE token_id=? AND observed_at<=? AND ingested_at<=? AND recorded_at<=?
+                  AND observed_at<=ingested_at AND ingested_at<=recorded_at
+                ORDER BY recorded_at DESC,id DESC LIMIT 1
+                """,
+                (str(row["token_id"]), iso(current), iso(current), iso(current)),
+            ).fetchone()
+            cursor = self.db.execute(
+                "INSERT OR IGNORE INTO token_information_confirmation_paper_evaluations("
+                "definition_version,watch_cohort_id,confirmed_transition_id,assessment_id,"
+                "token_id,final_snapshot_id,final_entry_evaluated_at,recorded_at) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    version, int(row["id"]), int(row["confirmed_transition_id"]),
+                    int(row["assessment_id"]), str(row["token_id"]),
+                    int(snapshot["id"]) if snapshot is not None else None,
+                    iso(current), iso(current),
+                ),
+            )
+            if int(cursor.rowcount or 0) != 1:
+                return None
+            return {
+                **dict(row),
+                "evaluation_id": int(cursor.lastrowid),
+                "final_snapshot_id": int(snapshot["id"]) if snapshot is not None else None,
+                "final_entry_evaluated_at": iso(current),
+                "definition": self._json_object(registration["definition_json"]),
+            }
+
+    def record_token_information_confirmation_wait(
+        self,
+        evaluation_id: int,
+        *,
+        terminal_state: str,
+        reason_code: str,
+        safety_reasons: Iterable[str] = (),
+        safety_snapshot_id: int | None = None,
+        completed_at: Any = None,
+    ) -> int:
+        if terminal_state not in {"WAIT_SAFETY_FAILED", "WAIT_EXECUTION_UNAVAILABLE"}:
+            raise ValueError("invalid Strategy-3 WAIT state")
+        current = parse_time(completed_at or utcnow())
+        version = self.TOKEN_INFORMATION_CONFIRMATION_PAPER_VERSION
+        with self._lock, self.db:
+            evaluation = self.db.execute(
+                "SELECT * FROM token_information_confirmation_paper_evaluations "
+                "WHERE id=? AND definition_version=?", (int(evaluation_id), version),
+            ).fetchone()
+            if evaluation is None:
+                raise ValueError("Strategy-3 evaluation not found")
+            cursor = self.db.execute(
+                "INSERT OR IGNORE INTO token_information_confirmation_paper_results("
+                "definition_version,evaluation_id,quote_attempt_id,terminal_state,reason_code,"
+                "safety_reasons_json,safety_snapshot_id,completed_at,execution_quality,cost_truth_level,"
+                "fee_model_version,recorded_at) VALUES(?,?,NULL,?,?,?,?,?,?,?,?,?)",
+                (
+                    version, int(evaluation_id), terminal_state, str(reason_code)[:240],
+                    self._json([str(value) for value in safety_reasons]),
+                    int(safety_snapshot_id) if safety_snapshot_id is not None else None,
+                    iso(current),
+                    "NOT_OBSERVED", "NOT_APPLICABLE", "not_applicable", iso(current),
+                ),
+            )
+            result = self.db.execute(
+                "SELECT id FROM token_information_confirmation_paper_results "
+                "WHERE evaluation_id=?", (int(evaluation_id),),
+            ).fetchone()
+            self.db.execute(
+                "INSERT OR IGNORE INTO token_information_watch_transitions("
+                "definition_version,watch_cohort_id,state,assessment_id,reason_code,"
+                "recorded_at,evidence_json,decision_eligible,affects) "
+                "VALUES(?,?,?,?,?,?,?,0,'none')",
+                (
+                    self.TOKEN_INFORMATION_WATCH_VERSION,
+                    int(evaluation["watch_cohort_id"]), terminal_state,
+                    int(evaluation["assessment_id"]), str(reason_code)[:240], iso(current),
+                    self._json({"entry_result_id": int(result["id"])}),
+                ),
+            )
+            return int(result["id"])
+
+    def start_token_information_confirmation_quote(
+        self, evaluation_id: int, *, requested_at: Any = None
+    ) -> dict[str, Any] | None:
+        requested = parse_time(requested_at or utcnow())
+        version = self.TOKEN_INFORMATION_CONFIRMATION_PAPER_VERSION
+        with self._lock, self.db:
+            row = self.db.execute(
+                """
+                SELECT e.*,a.assessed_at,r.definition_json
+                FROM token_information_confirmation_paper_evaluations e
+                JOIN token_context_assessments a ON a.id=e.assessment_id
+                JOIN token_information_confirmation_paper_registrations r
+                  ON r.definition_version=e.definition_version
+                LEFT JOIN token_information_confirmation_paper_results x
+                  ON x.evaluation_id=e.id
+                WHERE e.id=? AND e.definition_version=? AND x.id IS NULL
+                """,
+                (int(evaluation_id), version),
+            ).fetchone()
+            if row is None:
+                return None
+            evaluated = parse_time(row["final_entry_evaluated_at"])
+            assessed = parse_time(row["assessed_at"])
+            if requested < evaluated or requested <= assessed:
+                raise ValueError("Strategy-3 quote must start after confirmation evaluation")
+            definition = self._json_object(row["definition_json"])
+            address = str(row["token_id"]).split(":", 1)[1]
+            cursor = self.db.execute(
+                "INSERT OR IGNORE INTO token_information_confirmation_paper_quote_attempts("
+                "definition_version,evaluation_id,input_mint,output_mint,input_amount_raw,"
+                "slippage_bps,requested_at,recorded_at) VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    version, int(evaluation_id), self.JUPITER_USDC_MINT, address,
+                    str(definition["buy_input_amount_raw"]), int(definition["slippage_bps"]),
+                    iso(requested), iso(requested),
+                ),
+            )
+            attempt = self.db.execute(
+                "SELECT * FROM token_information_confirmation_paper_quote_attempts "
+                "WHERE evaluation_id=?", (int(evaluation_id),),
+            ).fetchone()
+            return dict(attempt) if attempt is not None and int(cursor.rowcount or 0) == 1 else None
+
+    def finish_token_information_confirmation_quote(
+        self,
+        evaluation_id: int,
+        *,
+        quote_attempt_id: int,
+        status: str,
+        quote: Mapping[str, Any] | None = None,
+        reason_code: str = "",
+        safety_snapshot_id: int | None = None,
+        completed_at: Any = None,
+    ) -> int:
+        current = parse_time(completed_at or utcnow())
+        version = self.TOKEN_INFORMATION_CONFIRMATION_PAPER_VERSION
+        normalized = dict(quote or {})
+        with self._lock, self.db:
+            row = self.db.execute(
+                """
+                SELECT e.*,q.input_mint,q.output_mint,q.input_amount_raw,q.slippage_bps,
+                       q.requested_at,r.definition_json
+                FROM token_information_confirmation_paper_evaluations e
+                JOIN token_information_confirmation_paper_quote_attempts q
+                  ON q.evaluation_id=e.id
+                JOIN token_information_confirmation_paper_registrations r
+                  ON r.definition_version=e.definition_version
+                LEFT JOIN token_information_confirmation_paper_results x
+                  ON x.evaluation_id=e.id
+                WHERE e.id=? AND q.id=? AND e.definition_version=? AND x.id IS NULL
+                """,
+                (int(evaluation_id), int(quote_attempt_id), version),
+            ).fetchone()
+            if row is None:
+                existing = self.db.execute(
+                    "SELECT id FROM token_information_confirmation_paper_results "
+                    "WHERE evaluation_id=?", (int(evaluation_id),),
+                ).fetchone()
+                if existing is None:
+                    raise ValueError("Strategy-3 quote attempt not found")
+                return int(existing["id"])
+            definition = self._json_object(row["definition_json"])
+            terminal = "WAIT_EXECUTION_UNAVAILABLE"
+            reason = str(reason_code or status)[:240]
+            requested = parse_time(row["requested_at"])
+            provider_requested = parse_time(normalized.get("requested_at") or requested)
+            provider_completed = parse_time(normalized.get("completed_at") or current)
+            valid_time = bool(
+                parse_time(row["final_entry_evaluated_at"]) <= requested
+                <= provider_requested <= provider_completed <= current
+                and (provider_completed - parse_time(row["final_entry_evaluated_at"])).total_seconds()
+                <= float(definition["max_total_delay_seconds"])
+            )
+            minimum = int(normalized.get("other_amount_threshold") or 0)
+            output = int(normalized.get("output_amount_raw") or normalized.get("out_amount") or 0)
+            impact = normalized.get("price_impact_bps")
+            structurally_valid = bool(
+                status == "quoted" and valid_time and minimum > 0 and output >= minimum
+                and str(normalized.get("input_mint") or "") == str(row["input_mint"])
+                and str(normalized.get("output_mint") or "") == str(row["output_mint"])
+                and str(normalized.get("in_amount") or "") == str(row["input_amount_raw"])
+                and int(normalized.get("slippage_bps") or -1) == int(row["slippage_bps"])
+                and str(normalized.get("mode") or "ExactIn") == "ExactIn"
+            )
+            if status != "quoted":
+                reason = str(reason_code or status)[:240]
+            elif not valid_time:
+                reason = "final_quote_time_invalid_or_stale"
+            elif not structurally_valid:
+                reason = str(reason_code or "final_quote_protocol_invalid")[:240]
+            elif impact is None:
+                reason = "normalized_price_impact_missing"
+            elif float(impact) < float(definition["maximum_adverse_price_impact_bps"]):
+                reason = "price_impact_below_frozen_limit"
+            else:
+                account = self.db.execute(
+                    "SELECT * FROM token_information_confirmation_paper_account "
+                    "WHERE definition_version=?", (version,),
+                ).fetchone()
+                stake = float(definition["policy_notional_usd"])
+                fee = float(definition["fixed_network_fee_usd"])
+                if account is None or float(account["cash_usd"]) + 1e-9 < stake + fee:
+                    reason = "insufficient_paper_cash"
+                else:
+                    terminal, reason = "BOUGHT", "confirmed_fresh_jupiter_minimum_output_entry"
+            cursor = self.db.execute(
+                "INSERT INTO token_information_confirmation_paper_results("
+                "definition_version,evaluation_id,quote_attempt_id,terminal_state,reason_code,"
+                "safety_reasons_json,safety_snapshot_id,completed_at,output_amount_raw,minimum_output_amount_raw,"
+                "price_impact_bps,execution_quality,cost_truth_level,fee_model_version,"
+                "network_fee_usd,quote_json,recorded_at) VALUES(?,?,?,?,?,'[]',?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    version, int(evaluation_id), int(quote_attempt_id), terminal, reason,
+                    int(safety_snapshot_id) if safety_snapshot_id is not None else None,
+                    iso(current), str(output) if output > 0 else None,
+                    str(minimum) if minimum > 0 else None,
+                    float(impact) if impact is not None else None,
+                    "QUOTE_OBSERVED" if structurally_valid else "NOT_OBSERVED",
+                    "MODELED_FALLBACK" if terminal == "BOUGHT" else "NOT_APPLICABLE",
+                    str(definition["fee_model_version"]),
+                    float(definition["fixed_network_fee_usd"]) if terminal == "BOUGHT" else None,
+                    self._bounded_json(normalized), iso(current),
+                ),
+            )
+            result_id = int(cursor.lastrowid)
+            evaluation = self.db.execute(
+                "SELECT * FROM token_information_confirmation_paper_evaluations WHERE id=?",
+                (int(evaluation_id),),
+            ).fetchone()
+            if terminal == "BOUGHT":
+                stake = float(definition["policy_notional_usd"])
+                fee = float(definition["fixed_network_fee_usd"])
+                self.db.execute(
+                    "UPDATE token_information_confirmation_paper_account "
+                    "SET cash_usd=cash_usd-?,updated_at=? WHERE definition_version=?",
+                    (stake + fee, iso(current), version),
+                )
+                self.db.execute(
+                    "INSERT INTO token_information_confirmation_paper_positions("
+                    "definition_version,watch_cohort_id,token_id,entry_result_id,stake_usd,"
+                    "acquired_amount_raw,entry_network_fee_usd,opened_at,status) "
+                    "VALUES(?,?,?,?,?,?,?,?, 'open')",
+                    (
+                        version, int(evaluation["watch_cohort_id"]), str(evaluation["token_id"]),
+                        result_id, stake, str(minimum), fee, iso(current),
+                    ),
+                )
+                self.db.execute(
+                    "INSERT INTO token_information_confirmation_paper_trades("
+                    "definition_version,watch_cohort_id,token_id,entry_result_id,side,gross_usd,"
+                    "network_fee_usd,net_cash_flow_usd,reason,created_at) "
+                    "VALUES(?,?,?,?, 'BUY',?,?,?,?,?)",
+                    (
+                        version, int(evaluation["watch_cohort_id"]), str(evaluation["token_id"]),
+                        result_id, stake, fee, -(stake + fee), reason, iso(current),
+                    ),
+                )
+                for state in ("BOUGHT", "POST_ENTRY_MONITORING"):
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO token_information_watch_transitions("
+                        "definition_version,watch_cohort_id,state,assessment_id,reason_code,"
+                        "recorded_at,evidence_json,decision_eligible,affects) "
+                        "VALUES(?,?,?,?,?,?,?,0,'none')",
+                        (
+                            self.TOKEN_INFORMATION_WATCH_VERSION,
+                            int(evaluation["watch_cohort_id"]), state,
+                            int(evaluation["assessment_id"]), reason, iso(current),
+                            self._json({"entry_result_id": result_id}),
+                        ),
+                    )
+            else:
+                self.db.execute(
+                    "INSERT OR IGNORE INTO token_information_watch_transitions("
+                    "definition_version,watch_cohort_id,state,assessment_id,reason_code,"
+                    "recorded_at,evidence_json,decision_eligible,affects) "
+                    "VALUES(?,?,?,?,?,?,?,0,'none')",
+                    (
+                        self.TOKEN_INFORMATION_WATCH_VERSION,
+                        int(evaluation["watch_cohort_id"]), terminal,
+                        int(evaluation["assessment_id"]), reason, iso(current),
+                        self._json({"entry_result_id": result_id}),
+                    ),
+                )
+            return result_id
+
+    def recover_interrupted_token_information_confirmation_quotes(self) -> int:
+        recovered = 0
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT q.evaluation_id,q.id FROM token_information_confirmation_paper_quote_attempts q "
+                "LEFT JOIN token_information_confirmation_paper_results r ON r.evaluation_id=q.evaluation_id "
+                "WHERE q.definition_version=? AND r.id IS NULL",
+                (self.TOKEN_INFORMATION_CONFIRMATION_PAPER_VERSION,),
+            ).fetchall()
+        for row in rows:
+            self.finish_token_information_confirmation_quote(
+                int(row["evaluation_id"]), quote_attempt_id=int(row["id"]),
+                status="interrupted", reason_code="interrupted_after_provider_request",
+            )
+            recovered += 1
+        return recovered
+
+    @classmethod
+    def token_information_confirmation_paper_summary_from_connection(
+        cls, connection: sqlite3.Connection, *, trade_limit: int = 100
+    ) -> dict[str, Any]:
+        """Read the isolated confirm-before-entry Strategy-3 Paper ledger."""
+        version = cls.TOKEN_INFORMATION_CONFIRMATION_PAPER_VERSION
+        tables = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        required = {
+            "token_information_confirmation_paper_registrations",
+            "token_information_confirmation_paper_account",
+            "token_information_confirmation_paper_evaluations",
+            "token_information_confirmation_paper_results",
+            "token_information_confirmation_paper_positions",
+            "token_information_confirmation_paper_trades",
+        }
+        empty = {
+            "status": "not_enabled", "simulated": True, "live": False,
+            "definition": {"version": version}, "account": {},
+            "terminal_counts": {}, "positions": [], "trades": [], "recent_results": [],
+        }
+        if not required.issubset(tables):
+            return empty
+        registration = connection.execute(
+            "SELECT * FROM token_information_confirmation_paper_registrations "
+            "WHERE definition_version=?", (version,),
+        ).fetchone()
+        if registration is None:
+            return empty
+        try:
+            definition = json.loads(str(registration["definition_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            definition = {"version": version}
+        account_row = connection.execute(
+            "SELECT * FROM token_information_confirmation_paper_account "
+            "WHERE definition_version=?", (version,),
+        ).fetchone()
+        terminal_counts = {
+            str(row["terminal_state"]): int(row["count"])
+            for row in connection.execute(
+                "SELECT terminal_state,COUNT(*) AS count "
+                "FROM token_information_confirmation_paper_results "
+                "WHERE definition_version=? GROUP BY terminal_state", (version,),
+            )
+        }
+        positions = [dict(row) for row in connection.execute(
+            "SELECT * FROM token_information_confirmation_paper_positions "
+            "WHERE definition_version=? ORDER BY id DESC LIMIT ?",
+            (version, max(1, int(trade_limit))),
+        )]
+        trades = [dict(row) for row in connection.execute(
+            "SELECT * FROM token_information_confirmation_paper_trades "
+            "WHERE definition_version=? ORDER BY id DESC LIMIT ?",
+            (version, max(1, int(trade_limit))),
+        )]
+        recent_results = [dict(row) for row in connection.execute(
+            "SELECT r.*,e.token_id,e.watch_cohort_id,e.confirmed_transition_id,"
+            "e.final_snapshot_id,e.final_entry_evaluated_at "
+            "FROM token_information_confirmation_paper_results r "
+            "JOIN token_information_confirmation_paper_evaluations e ON e.id=r.evaluation_id "
+            "WHERE r.definition_version=? ORDER BY r.id DESC LIMIT ?",
+            (version, max(1, min(int(trade_limit), 100))),
+        )]
+        account = dict(account_row) if account_row is not None else {}
+        account["open_position_count"] = sum(
+            1 for row in positions if str(row.get("status")) == "open"
+        )
+        account["reserved_open_cost_usd"] = sum(
+            float(row.get("stake_usd") or 0) + float(row.get("entry_network_fee_usd") or 0)
+            for row in positions if str(row.get("status")) == "open"
+        )
+        account["entry_evaluation_count"] = int(connection.execute(
+            "SELECT COUNT(*) FROM token_information_confirmation_paper_evaluations "
+            "WHERE definition_version=?", (version,),
+        ).fetchone()[0])
+        return {
+            "status": "superseded_research_only",
+            "simulated": True,
+            "live": False,
+            "execution_enabled": False,
+            "registered_at": registration["registered_at"],
+            "activation_watch_transition_id": int(
+                registration["activation_watch_transition_id"]
+            ),
+            "definition": definition,
+            "account": account,
+            "terminal_counts": terminal_counts,
+            "positions": positions,
+            "trades": trades,
+            "recent_results": recent_results,
         }
 
     def register_onchain_paper_narrative_runner(
@@ -19890,7 +31905,7 @@ class Store:
         definition = {
             "version": version,
             "source_entry": self.ONCHAIN_PAPER_EXPLORATION_VERSION,
-            "source_baseline_exit": self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION,
+            "source_baseline_exit": self.ONCHAIN_PAPER_EXPLORATION_VERSION,
             "no_historical_backfill": True,
             "entry": "exact_new_strategy2_buy_after_registration",
             "entry_fields": [
@@ -19899,10 +31914,10 @@ class Store:
             ],
             "initial_state": "baseline",
             "narrative_runner_activation": "disabled_until_mature_forward_evidence",
-            "baseline_exit": "existing_dynamic_exit_challenger",
+            "baseline_exit": "exact_strategy2_first_valid_15_60_240m_exit_or_240m_writeoff",
             "max_hold_minutes": 240,
             "priority": [
-                "safety", "liquidity", "hard_stop", "dynamic_exit", "narrative",
+                "strategy2_fixed_baseline", "future_preregistered_narrative_treatment",
             ],
             "execution": "source_amount_specific_jupiter_minimum_output",
             "route_fees_and_slippage": "included_in_jupiter_minimum_output",
@@ -20177,6 +32192,8 @@ class Store:
 
     def enroll_onchain_paper_narrative_runner(self) -> dict[str, int]:
         """Clone only exact strategy 2 BUYs created beyond the frozen frontier."""
+        if self.strategy_focus_active():
+            return {"inserted": 0, "rejected": 0}
         version = self.ONCHAIN_PAPER_NARRATIVE_RUNNER_VERSION
         inserted = rejected = 0
         with self._lock, self.db:
@@ -20271,33 +32288,34 @@ class Store:
             self._sync_onchain_paper_narrative_runner_locked()
         return {"inserted": inserted, "rejected": rejected}
 
-    def _apply_onchain_paper_narrative_runner_exit_result_locked(
-        self, result_id: int
+    def _apply_onchain_paper_narrative_runner_exit_trade_locked(
+        self, source_trade_id: int
     ) -> bool:
         version = self.ONCHAIN_PAPER_NARRATIVE_RUNNER_VERSION
-        result = self.db.execute(
-            "SELECT * FROM onchain_paper_exit_challenger_quote_results "
-            "WHERE id=? AND definition_version=?",
-            (int(result_id), self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION),
+        source_trade = self.db.execute(
+            "SELECT * FROM onchain_paper_exploration_trades "
+            "WHERE id=? AND definition_version=? AND side='SELL'",
+            (int(source_trade_id), self.ONCHAIN_PAPER_EXPLORATION_VERSION),
         ).fetchone()
-        if result is None:
+        if source_trade is None:
             return False
         position = self.db.execute(
             "SELECT * FROM onchain_paper_narrative_runner_positions "
             "WHERE definition_version=? AND shadow_cohort_id=? AND status='baseline'",
-            (version, int(result["shadow_cohort_id"])),
+            (version, int(source_trade["shadow_cohort_id"])),
         ).fetchone()
         if position is None or self.db.execute(
             "SELECT 1 FROM onchain_paper_narrative_runner_trades "
-            "WHERE source_exit_quote_result_id=?", (int(result_id),),
+            "WHERE source_exit_quote_result_id=?",
+            (int(source_trade["quote_result_id"]),),
         ).fetchone() is not None:
             return False
         source = self.db.execute(
-            "SELECT * FROM onchain_paper_exit_challenger_positions "
-            "WHERE definition_version=? AND source_buy_trade_id=?",
+            "SELECT * FROM onchain_paper_exploration_positions "
+            "WHERE definition_version=? AND shadow_cohort_id=?",
             (
-                self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION,
-                int(position["source_buy_trade_id"]),
+                self.ONCHAIN_PAPER_EXPLORATION_VERSION,
+                int(position["shadow_cohort_id"]),
             ),
         ).fetchone()
         exact_source = bool(
@@ -20306,64 +32324,36 @@ class Store:
             and str(source["token_id"]) == str(position["token_id"])
             and int(source["baseline_quote_result_id"])
             == int(position["baseline_quote_result_id"])
-            and str(source["initial_amount_raw"]) == str(position["initial_amount_raw"])
+            and str(source["acquired_amount_raw"]) == str(position["initial_amount_raw"])
             and abs(float(source["stake_usd"]) - float(position["stake_usd"])) <= 1e-9
             and abs(
                 float(source["entry_network_fee_usd"])
                 - float(position["entry_network_fee_usd"])
             ) <= 1e-9
             and str(source["opened_at"]) == str(position["opened_at"])
+            and int(source["exit_quote_result_id"] or 0)
+            == int(source_trade["quote_result_id"])
+            and str(source["status"]) in {"closed", "written_off"}
         )
         if not exact_source:
             return False
-        economic = bool(
-            str(result["validity_status"]) == "valid"
-            and str(result["economic_status"]) == "economic"
-            and result["gross_usdc"] is not None
-            and result["net_proceeds_usd"] is not None
-            and float(result["net_proceeds_usd"]) > 0
-        )
-        remaining_before = int(position["remaining_amount_raw"])
+        sold = int(position["remaining_amount_raw"])
+        if sold <= 0:
+            return False
         total_cost = float(position["stake_usd"]) + float(
             position["entry_network_fee_usd"]
         )
-        if economic:
-            sold = min(remaining_before, int(result["input_amount_raw"]))
-            remaining_after = remaining_before - sold
-            if sold <= 0 or remaining_after != int(result["remaining_amount_raw"]):
-                return False
-            gross = float(result["gross_usdc"])
-            network_fee = float(result["network_fee_usd"] or 0.0)
-            net = float(result["net_proceeds_usd"])
-            cost_delta = total_cost * sold / int(position["initial_amount_raw"])
-            pnl_delta = net - cost_delta
-            target_status = str(result["position_status"])
-            if target_status not in {"open", "closed"}:
-                return False
-            status = "closed" if target_status == "closed" else "baseline"
-            closed_at = str(result["completed_at"]) if status == "closed" else None
-            close_reason = str(source["close_reason"] or "") if status == "closed" else ""
-            allocated_cost = float(position["allocated_cost_usd"]) + cost_delta
-            realized_proceeds = float(position["realized_proceeds_usd"]) + net
-            realized_pnl = float(position["realized_pnl_usd"]) + pnl_delta
-            side = "SELL"
-            reason = "paired_dynamic_jupiter_minimum_output_exit"
-        elif str(result["position_status"]) == "written_off":
-            sold = remaining_before
-            remaining_after = 0
-            gross = network_fee = net = 0.0
-            cost_delta = max(0.0, total_cost - float(position["allocated_cost_usd"]))
-            pnl_delta = -cost_delta
-            allocated_cost = total_cost
-            realized_proceeds = float(position["realized_proceeds_usd"])
-            realized_pnl = float(position["realized_pnl_usd"]) + pnl_delta
-            status = "written_off"
-            closed_at = str(result["completed_at"])
-            close_reason = "terminal_without_executable_jupiter_exit"
-            side = "WRITEOFF"
-            reason = close_reason
-        else:
+        gross = float(source_trade["gross_usd"])
+        network_fee = float(source_trade["network_fee_usd"])
+        net = float(source_trade["net_cash_flow_usd"])
+        pnl_delta = float(source_trade["realized_pnl_usd"])
+        if abs(pnl_delta - (net - total_cost)) > 1e-9:
             return False
+        status = str(source["status"])
+        side = "WRITEOFF" if status == "written_off" else "SELL"
+        reason = "paired_strategy2_fixed_baseline_exit"
+        closed_at = str(source["closed_at"])
+        close_reason = str(source["close_reason"] or source_trade["reason"])
         self.db.execute(
             """
             UPDATE onchain_paper_narrative_runner_positions
@@ -20372,8 +32362,7 @@ class Store:
             WHERE definition_version=? AND shadow_cohort_id=? AND status='baseline'
             """,
             (
-                str(remaining_after), realized_proceeds, allocated_cost, realized_pnl,
-                status, closed_at, close_reason, version,
+                "0", net, total_cost, pnl_delta, status, closed_at, close_reason, version,
                 int(position["shadow_cohort_id"]),
             ),
         )
@@ -20381,7 +32370,7 @@ class Store:
             "UPDATE onchain_paper_narrative_runner_account "
             "SET cash_usd=cash_usd+?,realized_pnl_usd=realized_pnl_usd+?,updated_at=? "
             "WHERE definition_version=?",
-            (net, pnl_delta, str(result["completed_at"]), version),
+            (net, pnl_delta, closed_at, version),
         )
         self.db.execute(
             """
@@ -20393,39 +32382,40 @@ class Store:
             """,
             (
                 version, int(position["shadow_cohort_id"]), str(position["token_id"]),
-                int(position["source_buy_trade_id"]), int(result_id), side, str(sold),
-                gross, network_fee, net, pnl_delta, reason, str(result["completed_at"]),
+                int(position["source_buy_trade_id"]),
+                int(source_trade["quote_result_id"]), side, str(sold), gross,
+                network_fee, net, pnl_delta, reason, closed_at,
             ),
         )
         return True
 
     def _sync_onchain_paper_narrative_runner_locked(self) -> dict[str, int]:
-        result_ids = [
+        source_trade_ids = [
             int(row["id"])
             for row in self.db.execute(
                 """
-                SELECT r.id
-                FROM onchain_paper_exit_challenger_quote_results r
+                SELECT s.id
+                FROM onchain_paper_exploration_trades s
                 JOIN onchain_paper_narrative_runner_positions p
                   ON p.definition_version=?
-                 AND p.shadow_cohort_id=r.shadow_cohort_id
+                 AND p.shadow_cohort_id=s.shadow_cohort_id
                  AND p.status='baseline'
                 LEFT JOIN onchain_paper_narrative_runner_trades t
-                  ON t.source_exit_quote_result_id=r.id
-                WHERE r.definition_version=? AND t.id IS NULL
-                ORDER BY r.id
+                  ON t.source_exit_quote_result_id=s.quote_result_id
+                WHERE s.definition_version=? AND s.side='SELL' AND t.id IS NULL
+                ORDER BY s.id
                 """,
                 (
                     self.ONCHAIN_PAPER_NARRATIVE_RUNNER_VERSION,
-                    self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION,
+                    self.ONCHAIN_PAPER_EXPLORATION_VERSION,
                 ),
             )
         ]
         applied = sum(
-            self._apply_onchain_paper_narrative_runner_exit_result_locked(result_id)
-            for result_id in result_ids
+            self._apply_onchain_paper_narrative_runner_exit_trade_locked(source_trade_id)
+            for source_trade_id in source_trade_ids
         )
-        return {"examined": len(result_ids), "applied": int(applied)}
+        return {"examined": len(source_trade_ids), "applied": int(applied)}
 
     def sync_onchain_paper_narrative_runner(self) -> dict[str, int]:
         with self._lock, self.db:
@@ -20523,16 +32513,16 @@ class Store:
                 "WHERE definition_version=? AND source_buy_trade_id<=?",
                 (version, activation),
             ).fetchone()[0])
-            dynamic_pairs = int(self.db.execute(
+            fixed_baseline_pairs = int(self.db.execute(
                 """
                 SELECT COUNT(*)
                 FROM onchain_paper_narrative_runner_positions n
-                JOIN onchain_paper_exit_challenger_positions x
+                JOIN onchain_paper_exploration_positions x
                   ON x.definition_version=?
-                 AND x.source_buy_trade_id=n.source_buy_trade_id
+                 AND x.shadow_cohort_id=n.shadow_cohort_id
                 WHERE n.definition_version=?
                 """,
-                (self.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION, version),
+                (self.ONCHAIN_PAPER_EXPLORATION_VERSION, version),
             ).fetchone()[0])
             return {
                 "status": "running",
@@ -20543,7 +32533,8 @@ class Store:
                 "paired_position_count": paired_count,
                 "exact_pairing_count": exact_count,
                 "missing_pair_count": max(0, source_count - paired_count),
-                "dynamic_exit_pair_count": dynamic_pairs,
+                "fixed_baseline_pair_count": fixed_baseline_pairs,
+                "dynamic_exit_pair_count": 0,
                 "backfilled_position_count": backfilled,
                 "status_counts": statuses,
                 "runner_activation_count": int(statuses.get("narrative_runner", 0)),
@@ -23358,6 +35349,9 @@ class Store:
                 "affects": "none",
             })
         definition = cls._json_object(registration["definition_json"])
+        stock_registry = cls.robinhood_stock_token_registry_summary_from_connection(
+            connection
+        )
         return {
             "status": "collecting" if eligible else "registered_waiting_forward_data",
             "version": version,
@@ -23368,6 +35362,7 @@ class Store:
             "summary": summary,
             "chains": chains,
             "recent": recent,
+            "robinhood_stock_token_registry": stock_registry,
             "fee_completeness": "quote_only_no_full_transaction_network_fee",
             "economic_status": "cost_unknown",
             "execution_scope": "pool_math_quote_only",

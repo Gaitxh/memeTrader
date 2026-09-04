@@ -11,6 +11,9 @@ PROJECT_MIRROR = Path(
 LEAD_STATE = PROJECT / "docs" / "PROJECT_CONTEXT" / "CHATGPT_LEAD_STATE.json"
 SYNC_STATE = PROJECT / "docs" / "PROJECT_CONTEXT" / "CHATGPT_CODEX_SYNC_STATE.json"
 
+_CLOSED_GROUP_STATUSES = ("ACKED", "RESOLVED", "SUPERSEDED", "CLOSED")
+_OPEN_GROUP_STATUSES = ("ATTENTION_REQUIRED", "OPEN", "BLOCKED", "PENDING")
+
 
 def _under(path: Path, root: Path) -> bool:
     try:
@@ -27,6 +30,27 @@ def _load_json(path: Path) -> dict:
         return {}
 
 
+def _select_pending_group(open_groups: list[object]) -> dict | None:
+    candidates: list[tuple[int, int, str, int, dict]] = []
+    for index, raw_group in enumerate(open_groups):
+        if not isinstance(raw_group, dict):
+            continue
+        status = str(raw_group.get("status") or "").upper()
+        artifact = str(raw_group.get("artifact") or "").strip()
+        if not artifact or any(token in status for token in _CLOSED_GROUP_STATUSES):
+            continue
+        candidates.append(
+            (
+                int(bool(raw_group.get("blocks_release"))),
+                int(any(token in status for token in _OPEN_GROUP_STATUSES)),
+                str(raw_group.get("fact_cutoff_utc") or ""),
+                index,
+                raw_group,
+            )
+        )
+    return max(candidates, default=None, key=lambda item: item[:4])[-1] if candidates else None
+
+
 def _context() -> str:
     lead = _load_json(LEAD_STATE)
     sync = _load_json(SYNC_STATE)
@@ -35,7 +59,8 @@ def _context() -> str:
     open_groups = sync.get("open_groups") or []
     pending_artifact = ""
     if sync.get("attention_required") and open_groups:
-        pending_artifact = str((open_groups[0] or {}).get("artifact") or "").strip()
+        pending_group = _select_pending_group(open_groups)
+        pending_artifact = str((pending_group or {}).get("artifact") or "").strip()
     return "\n".join(
         [
             "[GXH PROJECT GUARD — durable constraint context, NOT a new user task]",

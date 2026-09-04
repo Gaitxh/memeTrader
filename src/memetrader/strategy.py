@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import html
 import json
 import math
@@ -12,8 +14,10 @@ from collections import Counter
 from dataclasses import asdict
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import urlparse
+
+from solders.pubkey import Pubkey
 
 from .collectors import (
     DexScreenerClient,
@@ -21,6 +25,7 @@ from .collectors import (
     JupiterNoRouteError,
     JupiterQuoteClient,
     JupiterQuoteError,
+    decode_pumpswap_pool_account,
 )
 from .models import CandidateDecision, EventView, Observation, ObservationRevisionHandoff, Position, TokenCandidate, TokenSnapshot, iso, parse_time, utcnow
 from .store import Store
@@ -547,8 +552,469 @@ def _goplus_tax_pct(value: Any, default: float | None = None) -> float | None:
 
 
 class SafetyChecker:
+    PRETRADE_RUG_SAFETY_VERSION = "pretrade_rug_safety/v3-pumpswap-raydium-cpmm-rpc-custody"
+    EXECUTION_ROUTE_OBSERVATION_VERSION = "execution-route-observation/v1-jupiter-order"
+
+    @staticmethod
+    def classify_jupiter_route_truth(
+        result: Mapping[str, Any], *, selected_surface_pool: str
+    ) -> dict[str, Any]:
+        """Classify quote-route truth without treating it as holding-surface safety."""
+        input_mint = str(result.get("input_mint") or "")
+        output_mint = str(result.get("output_mint") or "")
+        input_amount = str(result.get("in_amount") or result.get("input_amount_raw") or "")
+        output_amount = str(result.get("output_amount_raw") or result.get("out_amount") or "")
+        minimum_output = str(
+            result.get("other_amount_threshold") or result.get("minimum_output_raw") or ""
+        )
+        route = result.get("route_plan") if isinstance(result.get("route_plan"), list) else []
+        top_valid = bool(
+            input_mint and output_mint and input_amount.isdigit() and int(input_amount) > 0
+            and output_amount.isdigit() and int(output_amount) > 0
+            and minimum_output.isdigit() and 0 < int(minimum_output) <= int(output_amount)
+        )
+        complete_legs = bool(route) and all(
+            isinstance(leg, Mapping)
+            and str(leg.get("amm_key") or "")
+            and str(leg.get("input_mint") or "")
+            and str(leg.get("output_mint") or "")
+            and str(leg.get("in_amount") or "").isdigit()
+            and int(str(leg.get("in_amount") or "0")) > 0
+            and str(leg.get("out_amount") or "").isdigit()
+            and int(str(leg.get("out_amount") or "0")) > 0
+            for leg in route
+        )
+        coherent = False
+        if complete_legs and top_valid:
+            reachable = {input_mint}
+            changed = True
+            while changed:
+                changed = False
+                for leg in route:
+                    source = str(leg["input_mint"])
+                    target = str(leg["output_mint"])
+                    if source in reachable and target not in reachable:
+                        reachable.add(target)
+                        changed = True
+            coherent = output_mint in reachable
+        if not top_valid or (complete_legs and not coherent):
+            verifiability = "unsupported"
+        elif not complete_legs:
+            verifiability = "meta_aggregator_opaque"
+        else:
+            verifiability = "exact_onchain_legs"
+        pool = str(selected_surface_pool or "").casefold()
+        amm_keys = {
+            str(leg.get("amm_key") or "").casefold()
+            for leg in route if isinstance(leg, Mapping) and leg.get("amm_key")
+        }
+        if verifiability != "exact_onchain_legs":
+            relation = "opaque_router"
+        elif pool and pool not in amm_keys:
+            relation = "excludes_surface"
+        elif len(amm_keys) > 1:
+            relation = "multi_surface"
+        else:
+            relation = "contains_surface"
+        return {
+            "definition_version": SafetyChecker.EXECUTION_ROUTE_OBSERVATION_VERSION,
+            "route_verifiability": verifiability,
+            "surface_relation": relation,
+            "selected_surface_pool": str(selected_surface_pool or ""),
+            "leg_count": len(route),
+            "amm_keys": sorted(amm_keys),
+            "top_level_lineage_valid": top_valid,
+            "route_graph_coherent": coherent if complete_legs else None,
+        }
+
+    @staticmethod
+    def token_adjacent_route_pool(
+        result: Mapping[str, Any], *, token_mint: str, direction: str,
+    ) -> str:
+        route = result.get("route_plan") if isinstance(result.get("route_plan"), list) else []
+        side = str(direction).upper()
+        pools = {
+            str(leg.get("amm_key") or "")
+            for leg in route if isinstance(leg, Mapping)
+            and (
+                str(leg.get("output_mint") or "") == str(token_mint)
+                if side == "BUY" else
+                str(leg.get("input_mint") or "") == str(token_mint)
+            )
+            and str(leg.get("amm_key") or "")
+        }
+        return next(iter(pools)) if len(pools) == 1 else ""
+
+    @staticmethod
+    def solana_market_surface_assessment(snap: TokenSnapshot) -> dict[str, Any]:
+        """Assess the selected holding surface without using router availability."""
+        combined = SafetyChecker.solana_pretrade_rug_assessment(
+            snap,
+            exact_sell_preflight={
+                "status": "quoted", "minimum_output_raw": 1, "net_recovery_usd": 1.0,
+            },
+        )
+        facts = dict(combined.get("facts") or {})
+        facts.pop("exact_sell_preflight", None)
+        reasons = [
+            str(reason) for reason in combined.get("reasons") or []
+            if not str(reason).startswith("exact_size_sell_")
+        ]
+        venue = str(facts.get("venue") or "").lower()
+        pool_rpc = snap.raw.get("solana_pool_rpc") if isinstance(
+            snap.raw.get("solana_pool_rpc"), Mapping
+        ) else {}
+        canonical_pumpswap = bool(
+            pool_rpc.get("status") == "verified"
+            and pool_rpc.get("program_owner") == SafetyChecker.PUMPSWAP_PROGRAM
+            and pool_rpc.get("canonical_migration_structure") is True
+            and pool_rpc.get("vaults_verified") is True
+        )
+        if canonical_pumpswap:
+            reasons = [
+                reason for reason in reasons
+                if reason not in {
+                    "pool_custody_unknown",
+                    "pool_custody_rpc_unavailable",
+                    "pool_custody_or_lp_burn_insufficient",
+                }
+            ]
+            facts["venue"] = "pumpswap"
+            facts["custody_class"] = "pump_protocol_canonical_pool"
+        token_rpc = snap.raw.get("solana_token_rpc") if isinstance(
+            snap.raw.get("solana_token_rpc"), Mapping
+        ) else None
+        facts["solana_token_rpc"] = dict(token_rpc or {})
+        if token_rpc is None or token_rpc.get("status") != "verified":
+            reasons.append("direct_token_control_rpc_unavailable")
+        else:
+            reasons = [
+                reason for reason in reasons
+                if reason not in {"token_control_report_unavailable", "token_2022_controls_unknown"}
+            ]
+            if token_rpc.get("mint_authority"):
+                reasons.append("direct_mint_authority_enabled")
+            if token_rpc.get("freeze_authority"):
+                reasons.append("direct_freeze_authority_enabled")
+            dangerous_extensions = {
+                "permanentdelegate", "transferhook", "nontransferable", "pausable",
+            }
+            normalized_extensions = {
+                re.sub(r"[^a-z0-9]", "", str(value).lower())
+                for value in token_rpc.get("extension_types") or []
+            }
+            reasons.extend(
+                f"dangerous_token_2022_{extension}"
+                for extension in sorted(dangerous_extensions & normalized_extensions)
+            )
+        if not canonical_pumpswap:
+            reasons.append("primary_surface_not_canonical_pumpswap")
+        hard = [
+            reason for reason in reasons
+            if reason in set(combined.get("hard_rejections") or [])
+            or reason == "primary_surface_not_canonical_pumpswap"
+            or reason.startswith("direct_") and reason.endswith("_enabled")
+            or reason.startswith("dangerous_token_2022_")
+        ]
+        unknowns = [reason for reason in reasons if reason not in hard]
+        return {
+            "definition_version": "market-surface-safety/v1-canonical-pumpswap",
+            "status": "REJECT" if hard else "WAIT" if unknowns else "PASS",
+            "reasons": list(dict.fromkeys(reasons)),
+            "hard_rejections": list(dict.fromkeys(hard)),
+            "unknowns": list(dict.fromkeys(unknowns)),
+            "facts": facts,
+        }
+    PUMPSWAP_PROGRAM = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
+    PUMP_PROGRAM = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+    SPL_TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+    SPL_TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+    PUMPSWAP_POOL_DISCRIMINATOR = bytes((241, 154, 109, 4, 17, 177, 109, 188))
+    RAYDIUM_CPMM_PROGRAM = "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C"
+    RAYDIUM_CLMM_PROGRAM = "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK"
+    RAYDIUM_AMM_V4_PROGRAM = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
+    RAYDIUM_POOL_DISCRIMINATOR = bytes.fromhex("f7ede3f5d7c3de46")
+
     def __init__(self, http: HttpClient, config: dict[str, Any]):
         self.http, self.config = http, config
+
+    @classmethod
+    def _decode_pumpswap_pool(cls, data: bytes) -> dict[str, Any]:
+        return decode_pumpswap_pool_account(data, include_current_fields=False)
+
+    @classmethod
+    def _decode_raydium_cpmm_pool(cls, data: bytes) -> dict[str, Any]:
+        if len(data) != 637 or data[:8] != cls.RAYDIUM_POOL_DISCRIMINATOR:
+            raise ValueError("invalid_raydium_cpmm_pool_layout")
+
+        def pubkey(offset: int) -> str:
+            return str(Pubkey.from_bytes(data[offset:offset + 32]))
+
+        return {
+            "amm_config": pubkey(8),
+            "pool_creator": pubkey(40),
+            "token_0_vault": pubkey(72),
+            "token_1_vault": pubkey(104),
+            "lp_mint": pubkey(136),
+            "token_0_mint": pubkey(168),
+            "token_1_mint": pubkey(200),
+            "token_0_program": pubkey(232),
+            "token_1_program": pubkey(264),
+            "observation_key": pubkey(296),
+            "auth_bump": data[328],
+            "status_raw": data[329],
+            "lp_supply_recorded_raw": int.from_bytes(data[333:341], "little"),
+        }
+
+    async def enrich_solana_pool_custody(self, snap: TokenSnapshot) -> TokenSnapshot:
+        """Read exact PumpSwap pool/vault/LP facts from Solana RPC; unknown venues fail closed."""
+        if snap.chain.lower() != "solana":
+            return snap
+        pair = snap.raw.get("pair") if isinstance(snap.raw.get("pair"), Mapping) else {}
+        pool_address = str(pair.get("pairAddress") or "").strip()
+        if not pool_address:
+            snap.raw["solana_pool_rpc"] = {"status": "unavailable", "reason": "pool_identity_unknown"}
+            return snap
+        rpc_url = str(
+            self.config.get("solana_rpc_url") or "https://api.mainnet-beta.solana.com"
+        )
+        try:
+            response = await self.http.client.post(
+                rpc_url,
+                json={
+                    "jsonrpc": "2.0", "id": 1, "method": "getAccountInfo",
+                    "params": [pool_address, {"encoding": "base64", "commitment": "confirmed"}],
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+            result = payload.get("result") if isinstance(payload, Mapping) else None
+            value = result.get("value") if isinstance(result, Mapping) else None
+            if not isinstance(value, Mapping):
+                raise ValueError("pool_account_missing")
+            owner = str(value.get("owner") or "")
+            if owner in {self.RAYDIUM_CLMM_PROGRAM, self.RAYDIUM_AMM_V4_PROGRAM}:
+                snap.raw["solana_pool_rpc"] = {
+                    "status": "unsupported", "reason": "raydium_pool_economics_not_implemented",
+                    "pool_address": pool_address, "program_owner": owner,
+                }
+                return snap
+            if owner not in {self.PUMPSWAP_PROGRAM, self.RAYDIUM_CPMM_PROGRAM}:
+                snap.raw["solana_pool_rpc"] = {
+                    "status": "unsupported", "reason": "pool_program_not_supported",
+                    "pool_address": pool_address, "program_owner": owner,
+                }
+                return snap
+            encoded = value.get("data")
+            if not isinstance(encoded, list) or not encoded:
+                raise ValueError("pool_data_missing")
+            pool_data = base64.b64decode(str(encoded[0]), validate=True)
+            if owner == self.RAYDIUM_CPMM_PROGRAM:
+                decoded = self._decode_raydium_cpmm_pool(pool_data)
+                pool_key = Pubkey.from_string(pool_address)
+                token_0_mint = Pubkey.from_string(decoded["token_0_mint"])
+                token_1_mint = Pubkey.from_string(decoded["token_1_mint"])
+                program = Pubkey.from_string(owner)
+                authority, authority_bump = Pubkey.find_program_address(
+                    [b"vault_and_lp_mint_auth_seed"], program
+                )
+                expected_vault_0, _ = Pubkey.find_program_address(
+                    [b"pool_vault", bytes(pool_key), bytes(token_0_mint)], program
+                )
+                expected_vault_1, _ = Pubkey.find_program_address(
+                    [b"pool_vault", bytes(pool_key), bytes(token_1_mint)], program
+                )
+                expected_lp_mint, _ = Pubkey.find_program_address(
+                    [b"pool_lp_mint", bytes(pool_key)], program
+                )
+                expected_mints = {
+                    str((pair.get("baseToken") or {}).get("address") or ""),
+                    str((pair.get("quoteToken") or {}).get("address") or ""),
+                }
+                decoded_mints = {decoded["token_0_mint"], decoded["token_1_mint"]}
+                if snap.address not in decoded_mints:
+                    raise ValueError("token_mint_mismatch")
+                if expected_mints - {*decoded_mints, ""}:
+                    raise ValueError("pair_mint_mismatch")
+                if bytes(token_0_mint) >= bytes(token_1_mint):
+                    raise ValueError("raydium_cpmm_mint_order_mismatch")
+                if decoded["auth_bump"] != authority_bump:
+                    raise ValueError("raydium_cpmm_authority_bump_mismatch")
+                if Pubkey.from_string(decoded["token_0_vault"]) != expected_vault_0:
+                    raise ValueError("raydium_cpmm_vault_pda_mismatch")
+                if Pubkey.from_string(decoded["token_1_vault"]) != expected_vault_1:
+                    raise ValueError("raydium_cpmm_vault_pda_mismatch")
+                if Pubkey.from_string(decoded["lp_mint"]) != expected_lp_mint:
+                    raise ValueError("raydium_cpmm_lp_mint_pda_mismatch")
+                if decoded["status_raw"] & 4:
+                    raise ValueError("raydium_cpmm_swap_disabled")
+
+                batch = [
+                    {
+                        "jsonrpc": "2.0", "id": 2, "method": "getMultipleAccounts",
+                        "params": [[decoded["token_0_vault"], decoded["token_1_vault"],
+                                    decoded["lp_mint"]],
+                                   {"encoding": "jsonParsed", "commitment": "confirmed"}],
+                    },
+                    {
+                        "jsonrpc": "2.0", "id": 3, "method": "getTokenSupply",
+                        "params": [decoded["lp_mint"], {"commitment": "confirmed"}],
+                    },
+                ]
+                response = await self.http.client.post(rpc_url, json=batch)
+                response.raise_for_status()
+                replies = response.json()
+                by_id = {item.get("id"): item for item in replies if isinstance(item, Mapping)}
+                accounts = (((by_id.get(2) or {}).get("result") or {}).get("value") or [])
+                if len(accounts) != 3 or not all(isinstance(item, Mapping) for item in accounts):
+                    raise ValueError("raydium_cpmm_accounts_missing")
+                vault_facts = []
+                for item, expected_mint in zip(
+                    accounts[:2], (decoded["token_0_mint"], decoded["token_1_mint"])
+                ):
+                    info = (((item.get("data") or {}).get("parsed") or {}).get("info") or {})
+                    vault_facts.append({
+                        "mint": str(info.get("mint") or ""),
+                        "authority": str(info.get("owner") or ""),
+                    })
+                    if str(info.get("mint") or "") != expected_mint:
+                        raise ValueError("vault_mint_mismatch")
+                    if str(info.get("owner") or "") != str(authority):
+                        raise ValueError("vault_authority_mismatch")
+                lp_info = (((accounts[2].get("data") or {}).get("parsed") or {}).get("info") or {})
+                if str(lp_info.get("mintAuthority") or "") != str(authority):
+                    raise ValueError("lp_mint_authority_mismatch")
+                supply_value = (((by_id.get(3) or {}).get("result") or {}).get("value") or {})
+                lp_supply_raw = int(supply_value.get("amount") or 0)
+                recorded_lp_supply = int(decoded["lp_supply_recorded_raw"] or 0)
+                removable_lp_pct = (
+                    min(100.0, lp_supply_raw / recorded_lp_supply * 100.0)
+                    if recorded_lp_supply > 0 else None
+                )
+                snap.raw["solana_pool_rpc"] = {
+                    "status": "verified", "pool_address": pool_address,
+                    "program_owner": owner, "program_kind": "raydium_cpmm", **decoded,
+                    "authority": str(authority), "vaults_verified": True,
+                    "lp_mint_authority_verified": True, "vaults": vault_facts,
+                    "lp_token_supply_raw": lp_supply_raw,
+                    "removable_lp_pct": removable_lp_pct,
+                    "burned_lp_pct": None if removable_lp_pct is None else 100.0 - removable_lp_pct,
+                    "slot": result.get("context", {}).get("slot"),
+                    "observed_at": iso(utcnow()),
+                }
+                return snap
+
+            decoded = self._decode_pumpswap_pool(pool_data)
+            pool_key = Pubkey.from_string(pool_address)
+            base_mint = Pubkey.from_string(decoded["base_mint"])
+            quote_mint = Pubkey.from_string(decoded["quote_mint"])
+            creator = Pubkey.from_string(decoded["creator"])
+            expected_pool, _ = Pubkey.find_program_address(
+                [b"pool", int(decoded["index"]).to_bytes(2, "little"), bytes(creator),
+                 bytes(base_mint), bytes(quote_mint)],
+                Pubkey.from_string(self.PUMPSWAP_PROGRAM),
+            )
+            canonical_creator, _ = Pubkey.find_program_address(
+                [b"pool-authority", bytes(base_mint)], Pubkey.from_string(self.PUMP_PROGRAM)
+            )
+            expected_mints = {
+                str((pair.get("baseToken") or {}).get("address") or ""),
+                str((pair.get("quoteToken") or {}).get("address") or ""),
+            }
+            if snap.address not in {decoded["base_mint"], decoded["quote_mint"]}:
+                raise ValueError("token_mint_mismatch")
+            if expected_mints - {decoded["base_mint"], decoded["quote_mint"], ""}:
+                raise ValueError("pair_mint_mismatch")
+            if expected_pool != pool_key:
+                raise ValueError("pool_pda_mismatch")
+
+            batch = [
+                {
+                    "jsonrpc": "2.0", "id": 2, "method": "getMultipleAccounts",
+                    "params": [[decoded["base_vault"], decoded["quote_vault"], snap.address],
+                               {"encoding": "jsonParsed", "commitment": "confirmed"}],
+                },
+                {
+                    "jsonrpc": "2.0", "id": 3, "method": "getTokenSupply",
+                    "params": [decoded["lp_mint"], {"commitment": "confirmed"}],
+                },
+            ]
+            response = await self.http.client.post(rpc_url, json=batch)
+            response.raise_for_status()
+            replies = response.json()
+            by_id = {item.get("id"): item for item in replies if isinstance(item, Mapping)}
+            vault_values = (((by_id.get(2) or {}).get("result") or {}).get("value") or [])
+            if len(vault_values) != 3 or not all(isinstance(item, Mapping) for item in vault_values):
+                raise ValueError("vault_accounts_missing")
+            vault_facts = []
+            for item, expected_mint in zip(vault_values, (decoded["base_mint"], decoded["quote_mint"])):
+                info = (((item.get("data") or {}).get("parsed") or {}).get("info") or {})
+                token_amount = info.get("tokenAmount") if isinstance(
+                    info.get("tokenAmount"), Mapping
+                ) else {}
+                vault_facts.append({
+                    "mint": str(info.get("mint") or ""),
+                    "authority": str(info.get("owner") or ""),
+                    "amount_raw": str(token_amount.get("amount") or "0"),
+                })
+                if str(info.get("mint") or "") != expected_mint:
+                    raise ValueError("vault_mint_mismatch")
+                if str(info.get("owner") or "") != pool_address:
+                    raise ValueError("vault_authority_mismatch")
+            mint_account = vault_values[2]
+            mint_program = str(mint_account.get("owner") or "")
+            if mint_program not in {self.SPL_TOKEN_PROGRAM, self.SPL_TOKEN_2022_PROGRAM}:
+                raise ValueError("token_program_unsupported")
+            mint_info = (((mint_account.get("data") or {}).get("parsed") or {}).get("info") or {})
+            extensions = mint_info.get("extensions") if isinstance(mint_info.get("extensions"), list) else []
+            extension_types = sorted({
+                str(item.get("extension") or item.get("type") or "").strip()
+                for item in extensions if isinstance(item, Mapping)
+                and str(item.get("extension") or item.get("type") or "").strip()
+            })
+            snap.raw["solana_token_rpc"] = {
+                "status": "verified", "program_owner": mint_program,
+                "is_token_2022": mint_program == self.SPL_TOKEN_2022_PROGRAM,
+                "mint_authority": mint_info.get("mintAuthority"),
+                "freeze_authority": mint_info.get("freezeAuthority"),
+                "extension_types": extension_types,
+                "extensions": extensions,
+                "slot": result.get("context", {}).get("slot"),
+                "observed_at": iso(utcnow()),
+            }
+            supply_value = (((by_id.get(3) or {}).get("result") or {}).get("value") or {})
+            lp_supply_raw = int(supply_value.get("amount") or 0)
+            recorded_lp_supply = int(decoded["lp_supply_recorded_raw"] or 0)
+            removable_lp_pct = (
+                min(100.0, lp_supply_raw / recorded_lp_supply * 100.0)
+                if recorded_lp_supply > 0 else None
+            )
+            canonical = (
+                decoded["index"] == 0
+                and snap.address == decoded["base_mint"]
+                and creator == canonical_creator
+            )
+            snap.raw["solana_pool_rpc"] = {
+                "status": "verified", "pool_address": pool_address,
+                "program_owner": owner, **decoded,
+                "pool_pda_verified": True, "vaults_verified": True,
+                "vaults": vault_facts, "canonical_creator": str(canonical_creator),
+                "canonical_migration_structure": canonical,
+                "lp_token_supply_raw": lp_supply_raw,
+                "lp_tokens_burned": lp_supply_raw == 0,
+                "removable_lp_pct": removable_lp_pct,
+                "burned_lp_pct": None if removable_lp_pct is None else 100.0 - removable_lp_pct,
+                "slot": result.get("context", {}).get("slot"),
+                "observed_at": iso(utcnow()),
+            }
+        except Exception as exc:
+            snap.raw["solana_pool_rpc"] = {
+                "status": "rejected" if isinstance(exc, ValueError) else "unavailable",
+                "reason": str(exc) if isinstance(exc, ValueError) else type(exc).__name__,
+                "pool_address": pool_address,
+                "observed_at": iso(utcnow()),
+            }
+        return snap
 
     async def _enrich_goplus_evm(self, snap: TokenSnapshot) -> TokenSnapshot:
         chain_ids = {"ethereum": 1, "eth": 1, "bsc": 56, "base": 8453}
@@ -690,6 +1156,220 @@ class SafetyChecker:
         )
         return snap
 
+    @staticmethod
+    def solana_pretrade_rug_assessment(
+        snap: TokenSnapshot,
+        *,
+        exact_sell_preflight: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Build a transparent, venue-aware point-in-time Solana BUY gate."""
+        pair = snap.raw.get("pair") if isinstance(snap.raw.get("pair"), Mapping) else {}
+        goplus = (
+            snap.raw.get("goplus_solana")
+            if isinstance(snap.raw.get("goplus_solana"), Mapping) else None
+        )
+        rugcheck = snap.raw.get("rugcheck") if isinstance(snap.raw.get("rugcheck"), Mapping) else None
+        venue = str(pair.get("dexId") or "").strip().lower()
+        pool_address = str(pair.get("pairAddress") or "").strip()
+        labels = [str(value).strip().lower() for value in pair.get("labels") or []]
+        pool_type = labels[0] if labels else "unknown"
+        reject: list[str] = []
+        wait: list[str] = []
+
+        def authority_enabled(name: str) -> bool | None:
+            if goplus is None:
+                return None
+            value = goplus.get(name)
+            if isinstance(value, Mapping):
+                status = value.get("status")
+                if status is not None:
+                    return _risk_flag(status)
+                authorities = value.get("authority")
+                if isinstance(authorities, list):
+                    return bool(authorities)
+            if value is None:
+                return None
+            return _risk_flag(value)
+
+        controls = {
+            name: authority_enabled(name)
+            for name in (
+                "mintable", "freezable", "closable", "balance_mutable_authority",
+                "transfer_fee_upgradable", "transfer_hook_upgradable",
+                "default_account_state_upgradable",
+            )
+        }
+        if goplus is None and rugcheck is None:
+            wait.append("solana_risk_report_unavailable")
+        if goplus is None:
+            wait.append("token_control_report_unavailable")
+        for name in ("mintable", "freezable", "closable", "balance_mutable_authority"):
+            if controls[name] is True:
+                reject.append(f"dangerous_{name}")
+        for name in (
+            "transfer_fee_upgradable", "transfer_hook_upgradable",
+            "default_account_state_upgradable",
+        ):
+            if controls[name] is True:
+                reject.append(f"dangerous_{name}")
+        if goplus is not None:
+            if _risk_flag(goplus.get("non_transferable")):
+                reject.append("non_transferable")
+            hooks = goplus.get("transfer_hook")
+            if hooks:
+                reject.append("transfer_hook_present")
+            creators = goplus.get("creators") if isinstance(goplus.get("creators"), list) else []
+            if any(_risk_flag(item.get("malicious_address")) for item in creators if isinstance(item, Mapping)):
+                reject.append("malicious_creator")
+
+        token_program = str((rugcheck or {}).get("tokenProgram") or "")
+        if token_program and token_program != "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA":
+            if goplus is None:
+                wait.append("token_2022_controls_unknown")
+
+        exact_dex = None
+        if goplus is not None:
+            pools = goplus.get("dex") if isinstance(goplus.get("dex"), list) else []
+            exact_dex = next((
+                item for item in pools
+                if isinstance(item, Mapping)
+                and str(item.get("id") or "").casefold() == pool_address.casefold()
+            ), None)
+        lock_pct = _safe_float((rugcheck or {}).get("lpLockedPct"))
+        burn_pct = _safe_float((exact_dex or {}).get("burn_percent"))
+        locked_pct = max(value for value in (lock_pct, burn_pct, 0.0) if value is not None)
+        lp_holders = (
+            goplus.get("lp_holders")
+            if goplus is not None and isinstance(goplus.get("lp_holders"), list) else []
+        )
+        unlocked_lp_pct = sum(
+            _safe_float(item.get("percent"), 0.0) or 0.0
+            for item in lp_holders
+            if isinstance(item, Mapping) and not _risk_flag(item.get("is_locked"))
+        )
+        holders = (
+            goplus.get("holders")
+            if goplus is not None and isinstance(goplus.get("holders"), list) else []
+        )
+        custody_tags = {"burn", "raydium", "orca", "meteora", "pump", "streamflow", "locker"}
+        non_custody_holder_pcts = [
+            _safe_float(item.get("percent"), 0.0) or 0.0
+            for item in holders
+            if isinstance(item, Mapping)
+            and not any(tag in str(item.get("tag") or "").lower() for tag in custody_tags)
+        ]
+        pool_rpc = snap.raw.get("solana_pool_rpc") if isinstance(
+            snap.raw.get("solana_pool_rpc"), Mapping
+        ) else None
+        token_rpc = snap.raw.get("solana_token_rpc") if isinstance(
+            snap.raw.get("solana_token_rpc"), Mapping
+        ) else None
+        canonical_pumpswap = bool(
+            pool_rpc is not None
+            and pool_rpc.get("status") == "verified"
+            and pool_rpc.get("program_owner") == SafetyChecker.PUMPSWAP_PROGRAM
+            and pool_rpc.get("canonical_migration_structure") is True
+            and pool_rpc.get("vaults_verified") is True
+        )
+        if canonical_pumpswap:
+            venue = "pumpswap"
+            wait = [reason for reason in wait if reason != "pool_custody_unknown"]
+        if token_rpc is not None and token_rpc.get("status") == "verified":
+            wait = [
+                reason for reason in wait
+                if reason not in {"token_control_report_unavailable", "token_2022_controls_unknown"}
+            ]
+        if "pump" in venue:
+            if pool_rpc is None or pool_rpc.get("status") not in {"verified", "rejected"}:
+                custody_class = "pump_pool_custody_unverified"
+                wait.append("pool_custody_rpc_unavailable")
+            elif pool_rpc.get("status") == "rejected":
+                custody_class = "pump_pool_identity_mismatch"
+                reject.append(str(pool_rpc.get("reason") or "pool_rpc_verification_failed"))
+            elif canonical_pumpswap:
+                custody_class = "pump_protocol_canonical_pool"
+            else:
+                custody_class = "pumpswap_creator_withdrawable_or_unknown"
+                wait.append("pool_custody_or_lp_burn_insufficient")
+        elif venue == "raydium":
+            if pool_rpc is None or pool_rpc.get("status") not in {"verified", "rejected"}:
+                custody_class = "raydium_pool_custody_unverified"
+                wait.append("pool_custody_rpc_unavailable")
+            elif pool_rpc.get("status") == "rejected":
+                custody_class = "raydium_pool_identity_mismatch"
+                reject.append(str(pool_rpc.get("reason") or "pool_rpc_verification_failed"))
+            elif (
+                pool_rpc.get("program_kind") == "raydium_cpmm"
+                and pool_rpc.get("vaults_verified") is True
+                and pool_rpc.get("lp_mint_authority_verified") is True
+                and _safe_float(pool_rpc.get("burned_lp_pct"), 0.0) >= 95.0
+            ):
+                custody_class = "raydium_cpmm_lp_burned_95pct"
+            else:
+                custody_class = "raydium_withdrawable_or_unknown"
+                wait.append("pool_custody_or_lock_insufficient")
+        elif venue == "orca":
+            custody_class = "orca_position_owner_unknown"
+            wait.append("pool_custody_unknown")
+        elif "meteora" in venue:
+            custody_class = "meteora_lock_unknown"
+            wait.append("pool_custody_unknown")
+        else:
+            custody_class = "unknown"
+            wait.append("pool_custody_unknown")
+        if not pool_address:
+            wait.append("pool_identity_unknown")
+
+        sell = dict(exact_sell_preflight or {})
+        if not sell:
+            wait.append("exact_size_sell_preflight_missing")
+        elif str(sell.get("status") or "") in {"budget_deferred", "error"}:
+            wait.append("exact_size_sell_preflight_deferred")
+        elif str(sell.get("status") or "") != "quoted" or int(sell.get("minimum_output_raw") or 0) <= 0:
+            reject.append("exact_size_sell_route_unavailable")
+        elif float(sell.get("net_recovery_usd") or 0.0) <= 0:
+            reject.append("exact_size_sell_recovery_uneconomic")
+
+        status = "REJECT" if reject else "WAIT" if wait else "PASS"
+        return {
+            "definition_version": SafetyChecker.PRETRADE_RUG_SAFETY_VERSION,
+            "status": status,
+            "reasons": list(dict.fromkeys([*reject, *wait])),
+            "hard_rejections": list(dict.fromkeys(reject)),
+            "unknowns": list(dict.fromkeys(wait)),
+            "facts": {
+                "venue": venue or "unknown",
+                "pool_type": pool_type,
+                "pool_address": pool_address,
+                "token_program": token_program,
+                "custody_class": custody_class,
+                "locked_or_burned_pct": locked_pct,
+                "unlocked_lp_holder_pct": unlocked_lp_pct if lp_holders else None,
+                "largest_non_custody_holder_pct": (
+                    max(non_custody_holder_pcts) if non_custody_holder_pcts else None
+                ),
+                "top10_non_custody_holder_pct": (
+                    sum(sorted(non_custody_holder_pcts, reverse=True)[:10])
+                    if non_custody_holder_pcts else None
+                ),
+                "creator_addresses": [
+                    str(item.get("address") or "") for item in (
+                        goplus.get("creators") if goplus is not None
+                        and isinstance(goplus.get("creators"), list) else []
+                    ) if isinstance(item, Mapping) and item.get("address")
+                ],
+                "pool_tvl_usd": _safe_float((exact_dex or {}).get("tvl")),
+                "token_controls": controls,
+                "solana_pool_rpc": dict(pool_rpc or {}),
+                "solana_token_rpc": dict(token_rpc or {}),
+                "exact_sell_preflight": sell,
+                "sources": [name for name, value in (
+                    ("dexscreener_pair", pair), ("goplus_solana", goplus),
+                    ("rugcheck", rugcheck), ("solana_pool_rpc", pool_rpc),
+                ) if value],
+            },
+        }
+
     async def check(
         self, snap: TokenSnapshot, *, executable_route: bool = False
     ) -> tuple[bool, list[str]]:
@@ -766,6 +1446,12 @@ class SafetyChecker:
                 for flag in cfg.get("goplus_solana_reject_flags", []):
                     if _risk_flag(goplus_report.get(str(flag))):
                         rejected.append(f"goplus_solana_{flag}")
+            if cfg.get("require_pretrade_rug_safety_v1", False):
+                assessment = self.solana_pretrade_rug_assessment(snap)
+                snap.raw["pretrade_rug_safety_v1"] = assessment
+                rejected.extend(
+                    f"pretrade_rug_{reason}" for reason in assessment["reasons"]
+                )
         return not rejected, list(dict.fromkeys(rejected))
 
 
@@ -865,6 +1551,8 @@ def _extract_json(text: str) -> dict[str, Any]:
 
 
 class CandidateEvaluator:
+    RETRIEVAL_POLICY_VERSION = "exact-source-link-identity-and-unchanged-wait/v1"
+
     def __init__(
         self, store: Store, dex: DexScreenerClient, safety: SafetyChecker,
         config: dict[str, Any], agent: AgentRouter,
@@ -1033,6 +1721,7 @@ class CandidateEvaluator:
         tie_break: dict[str, Any] | None = None,
         safety_checked: bool = False,
         evaluated_candidates: dict[str, dict[str, Any]] | None = None,
+        retrieval_cache: dict[str, Any] | None = None,
     ) -> None:
         persisted = ranked[:25]
         selected_score = persisted[0][0] if persisted else None
@@ -1102,6 +1791,7 @@ class CandidateEvaluator:
                 "tie_break": safe_tie_break,
                 "candidates": candidates,
                 "final_outcome": None,
+                "retrieval_cache": dict(retrieval_cache or {}),
             },
         )
         audit_evaluated_at = decision.created_at if decision is not None else evaluated_at
@@ -1324,6 +2014,96 @@ class CandidateEvaluator:
             for chain in self.config.get("chains", ["solana", "bsc", "base"])
         }
 
+        # Provider metadata that already cited the exact public item can narrow
+        # the identity set, but it never becomes independent evidence or a score
+        # boost. The immutable exposure-link clock prevents later metadata from
+        # being inserted into an earlier decision.
+        public_item_urls = {
+            str(value).strip()
+            for row in external
+            for value in (row["url"], row["source_item_id"])
+            if str(value or "").strip()
+        }
+        identity_rows = self.store.token_identity_set_for_public_items(
+            public_item_urls,
+            available_at=decision_at,
+            allowed_chains=allowed_chains,
+            limit=int(self.config.get("max_source_link_identity_candidates", 25)),
+        )
+        identity_token_ids = {str(row["token_id"]) for row in identity_rows}
+        identity_fanout = len(identity_token_ids)
+        event_terms = terms(event_text)
+        recent_overlap_tokens = [
+            token
+            for token in self.store.recent_tokens(
+                minutes=int(self.config.get("token_watch_minutes", 240))
+            )
+            if event_terms & terms(f"{token.name} {token.symbol}")
+            or token.address.lower() in {address.lower() for address in direct_addresses}
+        ]
+        retrieval_input = {
+            "accepted_observation_ids": sorted(int(row["id"]) for row in accepted),
+            "agent_linked_token_ids": sorted(agent_linked_token_ids),
+            "direct_addresses": sorted(address.casefold() for address in direct_addresses),
+            "identity_token_ids": sorted(identity_token_ids),
+            "recent_overlap_token_ids": sorted(token.token_id for token in recent_overlap_tokens),
+        }
+        retrieval_fingerprint = hashlib.sha256(
+            json.dumps(retrieval_input, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        previous_ranking = self.store.candidate_ranking(event.id) or {}
+        previous_cache = previous_ranking.get("retrieval_cache") or {}
+        previous_reasons = {
+            str(reason) for reason in previous_ranking.get("outcome_reasons") or []
+        }
+        broad_retrieval_at = previous_cache.get("broad_retrieval_at")
+        reuse_seconds = max(
+            1, int(self.config.get("unchanged_wait_reuse_seconds", 300))
+        )
+        if (
+            "no_matching_token" in previous_reasons
+            and int(previous_ranking.get("candidate_count_total") or 0) == 0
+            and previous_cache.get("input_fingerprint") == retrieval_fingerprint
+            and broad_retrieval_at
+            and (decision_at - parse_time(broad_retrieval_at)).total_seconds() < reuse_seconds
+        ):
+            decision = CandidateDecision(
+                event.id,
+                "",
+                "WAIT",
+                0,
+                0,
+                0,
+                ["no_matching_token", "unchanged_retrieval_terminal_reused"],
+                [],
+            )
+            self._persist_ranking(
+                event,
+                evaluated_at=decision_at,
+                ranked=[],
+                decision=decision,
+                outcome_reasons=decision.reasons,
+                retrieval_cache={
+                    **dict(previous_cache),
+                    "policy_version": self.RETRIEVAL_POLICY_VERSION,
+                    "input_fingerprint": retrieval_fingerprint,
+                    "reuse_seconds": reuse_seconds,
+                    "reused_at": iso(decision_at),
+                },
+            )
+            return decision
+
+        for token_id in identity_token_ids:
+            if ":" not in token_id:
+                continue
+            chain, address = token_id.split(":", 1)
+            try:
+                quoted = await self.dex.quote(chain, address)
+            except Exception:
+                quoted = None
+            if quoted and quoted[0].token_id == token_id:
+                remember_candidate(quoted, "exact_source_link_identity/v1")
+
         # A token-context Agent result is usable only after the Agent supplied two
         # independently reachable, recent sources. Quote that exact linked token
         # before broad name search so same-name clones cannot replace it silently.
@@ -1379,15 +2159,13 @@ class CandidateEvaluator:
 
         # Token-first path: retain recently observed launch/new-pool candidates, but
         # entry is evaluated only now that independent external evidence exists.
-        event_terms = terms(event_text)
-        for token in self.store.recent_tokens(minutes=int(self.config.get("token_watch_minutes", 240))):
-            if event_terms & terms(f"{token.name} {token.symbol}") or token.address.lower() in {a.lower() for a in direct_addresses}:
-                try:
-                    quoted = await self.dex.quote(token.chain, token.address)
-                except Exception:
-                    quoted = None
-                if quoted:
-                    remember_candidate(quoted, "recent_token_overlap")
+        for token in recent_overlap_tokens:
+            try:
+                quoted = await self.dex.quote(token.chain, token.address)
+            except Exception:
+                quoted = None
+            if quoted:
+                remember_candidate(quoted, "recent_token_overlap")
 
         ranked: list[tuple[float, float, TokenCandidate, TokenSnapshot, list[str]]] = []
         asset_temporal_rejections: list[str] = []
@@ -1435,6 +2213,12 @@ class CandidateEvaluator:
                 evaluated_candidates[token.token_id]["match_score"] = float(match)
                 continue
             score, reasons = self._quality(event, token, snap, match, source_count)
+            if token.token_id in identity_token_ids:
+                reasons = [
+                    *reasons,
+                    "exact_source_link_identity_only",
+                    f"identity_set_fanout={identity_fanout}",
+                ]
             if agent_linked:
                 reasons = [*reasons, "agent_context_exact_token_link"]
             if reverse_only:
@@ -1468,6 +2252,18 @@ class CandidateEvaluator:
                 decision=decision,
                 outcome_reasons=[*decision.reasons, *decision.rejected_reasons],
                 evaluated_candidates=evaluated_candidates,
+                retrieval_cache={
+                    "policy_version": self.RETRIEVAL_POLICY_VERSION,
+                    "input_fingerprint": retrieval_fingerprint,
+                    "candidate_set_fingerprint": hashlib.sha256(
+                        json.dumps(
+                            sorted(evaluated_candidates),
+                            ensure_ascii=False,
+                        ).encode("utf-8")
+                    ).hexdigest(),
+                    "broad_retrieval_at": iso(final_decision_at),
+                    "reuse_seconds": reuse_seconds,
+                },
             )
             return decision
 
@@ -1528,10 +2324,15 @@ class CandidateEvaluator:
         source_snapshot_id = evaluated_candidates.get(token.token_id, {}).get("snapshot_id")
         total_tx = (snap.buys_5m or 0) + (snap.sells_5m or 0)
         min_tx = int(getattr(self.safety, "config", {}).get("min_5m_transactions", 8))
-        token_specific_relation = (
-            token.address.lower() in {value.lower() for value in direct_addresses}
-            or token.token_id in agent_linked_token_ids
-        )
+        if token.address.lower() in {value.lower() for value in direct_addresses}:
+            route_probe_relation = "direct_contract_address"
+        elif token.token_id in agent_linked_token_ids:
+            route_probe_relation = "agent_context_exact_token"
+        elif token.token_id in identity_token_ids:
+            route_probe_relation = "exact_source_link_identity"
+        else:
+            route_probe_relation = ""
+        token_specific_relation = bool(route_probe_relation)
         route_probe_applicable = (
             source_snapshot_id is not None
             and snap.liquidity_usd is None
@@ -1543,6 +2344,8 @@ class CandidateEvaluator:
         )
         if route_probe_applicable:
             route_probe_attempted = True
+            reasons = [*reasons, f"route_probe_relation={route_probe_relation}"]
+            ranked[0] = (score, match, token, snap, reasons)
             route_probe_id = await self._probe_event_context_route(
                 event_id=event.id,
                 token=token,
@@ -1616,9 +2419,27 @@ class CandidateEvaluator:
             ok, rejected_reasons = await self.safety.check(snap, executable_route=True)
         # Persist the post-enrichment snapshot so an audit can see the exact
         # Honeypot/RugCheck information used by this decision.
-        evaluated_candidates[token.token_id]["snapshot_id"] = self.store.add_snapshot(snap)
+        assessed_snapshot_id = self.store.add_snapshot(snap)
+        evaluated_candidates[token.token_id]["snapshot_id"] = assessed_snapshot_id
+        assessment = snap.raw.get("pretrade_rug_safety_v1")
+        if source_snapshot_id is not None and isinstance(assessment, Mapping):
+            self.store.record_pretrade_rug_safety_assessment(
+                lane="event_candidate",
+                quote_key=f"event:{event.id}:assessed_snapshot:{assessed_snapshot_id}",
+                token_id=token.token_id,
+                trigger_snapshot_id=int(source_snapshot_id),
+                assessed_snapshot_id=assessed_snapshot_id,
+                assessment=assessment,
+                observed_at=final_decision_at,
+            )
         if not ok:
-            decision = CandidateDecision(event.id, token.token_id, "REJECT", score, match, margin, reasons, rejected_reasons, route_probe_id=route_probe_id)
+            action = (
+                "WAIT"
+                if rejected_reasons
+                and all(reason.startswith("pretrade_rug_") for reason in rejected_reasons)
+                else "REJECT"
+            )
+            decision = CandidateDecision(event.id, token.token_id, action, score, match, margin, reasons, rejected_reasons, route_probe_id=route_probe_id)
             self._persist_ranking(
                 event,
                 evaluated_at=final_decision_at,

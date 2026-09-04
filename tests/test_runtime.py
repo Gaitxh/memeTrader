@@ -26,6 +26,10 @@ from memetrader.runtime import (
 from memetrader.store import Store
 
 
+def test_superseded_confirmation_paper_has_no_runtime_execution_entrypoint():
+    assert not hasattr(Runtime, "token_information_confirmation_entry_once")
+
+
 def test_initial_config_has_private_token_and_live_locked():
     config = initial_config()
     assert len(config["bridge"]["token"]) >= 24
@@ -48,6 +52,35 @@ def test_initial_config_has_private_token_and_live_locked():
     assert config["paper"]["fixed_fee_usd_each_side"] == pytest.approx(0.4)
     assert config["paper"]["fee_bps"] == pytest.approx(60)
     assert config["paper"]["pump_swap_fee_bps"] == pytest.approx(125)
+
+
+def test_chain_only_runtime_registers_and_activates_current_v20(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        config["chain_meme_trader_only_enabled"] = True
+        runtime = Runtime(config, tmp_path)
+        active = runtime.store.db.execute(
+            "SELECT definition_version FROM chain_meme_trader_v6_activations "
+            "WHERE entry_execution_enabled=1 ORDER BY activated_at DESC,rowid DESC LIMIT 1"
+        ).fetchone()
+        registration = runtime.store.db.execute(
+            "SELECT definition_json FROM chain_meme_trader_v6_registrations "
+            "WHERE definition_version=?", (Store.CHAIN_MEME_TRADER_V20_VERSION,),
+        ).fetchone()
+        assert active["definition_version"] == Store.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        assert active["definition_version"] == Store.CHAIN_MEME_TRADER_V20_VERSION
+        definition = json.loads(registration["definition_json"])
+        assert len(definition["policies"]) == 124
+        assert all(policy["forward_enabled"] for policy in definition["policies"])
+        assert sum(
+            policy.get("fidelity_status") == "DEXSCREENER_SUCCESSOR"
+            for policy in definition["policies"]
+        ) == 38
+        await runtime.close()
+
+    asyncio.run(scenario())
 
 
 def test_event_route_execution_challenger_requests_final_size_without_paper_fill(tmp_path):
@@ -2103,6 +2136,30 @@ def test_due_hydration_prioritizes_exact_high_impact_social_links_without_droppi
     store.close()
 
 
+def test_due_hydration_can_prioritize_fresh_solana_without_changing_default_fifo(tmp_path):
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    now = utcnow()
+    old_sol = TokenCandidate(chain="solana", address="O" * 32, name="Old Sol")
+    new_sol = TokenCandidate(chain="solana", address="N" * 32, name="New Sol")
+    bsc = TokenCandidate(chain="bsc", address="0x" + "b" * 40, name="BSC")
+    store.upsert_token(old_sol, seen_at=now - timedelta(minutes=10))
+    store.upsert_token(bsc, seen_at=now - timedelta(minutes=5))
+    store.enqueue_token_detail_hydration("bsc", bsc.address, enqueued_at=now - timedelta(minutes=5))
+    store.upsert_token(new_sol, seen_at=now - timedelta(minutes=1))
+
+    assert [row["token_id"] for row in store.due_token_detail_hydrations(limit=3, now=now)] == [
+        old_sol.token_id, bsc.token_id, new_sol.token_id,
+    ]
+    assert [row["token_id"] for row in store.due_token_detail_hydrations(
+        limit=3, now=now, chains=("solana",), prefer_fresh=True,
+    )] == [new_sol.token_id, old_sol.token_id]
+    store.requeue_token_detail_hydration(old_sol.token_id, enqueued_at=now)
+    assert [row["token_id"] for row in store.due_token_detail_hydrations(
+        limit=2, now=now, chains=("solana",), prefer_fresh=True,
+    )] == [new_sol.token_id, old_sol.token_id]
+    store.close()
+
+
 def test_exact_token_linked_browser_post_requeues_hydration_with_durable_priority(tmp_path):
     async def scenario():
         config = initial_config()
@@ -3024,6 +3081,145 @@ def test_pump_launch_metadata_is_bounded_and_persists_identity_links(tmp_path):
             (exposure_id,),
         ).fetchone()[0]
         assert linked == 3
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_pump_launch_metadata_retries_transient_http_once(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        runtime = Runtime(config, tmp_path)
+        token = TokenCandidate(
+            chain="solana", address="R" * 32, name="Retry metadata",
+            source="pumpportal:create",
+            raw={"uri": "https://ipfs.io/ipfs/bafy-test-metadata"},
+        )
+        await runtime.ingest_token(token)
+        round_id = runtime.store.start_token_discovery_round(
+            provider="pumpportal", surface="create", mode="stream_window",
+            chain_scope="solana",
+        )
+        exposure_id = runtime.store.add_token_discovery_exposure(
+            round_id, token_id=token.token_id, chain=token.chain, role="create",
+            first_local_discovery=True, new_token=True,
+            observed_at=token.first_seen_at,
+        )
+
+        class Response:
+            def json(self):
+                return {"description": "Recovered", "website": "https://example.com"}
+
+        class Http:
+            calls = 0
+            urls = []
+
+            async def get_public_document(self, url, **kwargs):
+                self.calls += 1
+                self.urls.append(url)
+                if self.calls == 1:
+                    request = httpx.Request("GET", url)
+                    response = httpx.Response(
+                        503, headers={"Retry-After": "0"}, request=request
+                    )
+                    raise httpx.HTTPStatusError(
+                        "temporary", request=request, response=response
+                    )
+                return Response()
+
+            async def close(self):
+                pass
+
+        runtime.http = Http()
+        assert exposure_id is not None
+        await runtime._hydrate_pump_metadata(
+            token, round_id=round_id, exposure_id=exposure_id
+        )
+        result = runtime.store.db.execute(
+            "SELECT status,reason_code,metadata_json FROM "
+            "token_universe_funnel_transitions WHERE token_id=? AND "
+            "stage='metadata_hydration_result' ORDER BY id DESC LIMIT 1",
+            (token.token_id,),
+        ).fetchone()
+        assert runtime.http.calls == 2
+        assert runtime.http.urls == [
+            "https://ipfs.io/ipfs/bafy-test-metadata",
+            "https://gateway.pinata.cloud/ipfs/bafy-test-metadata",
+        ]
+        assert (result["status"], result["reason_code"]) == (
+            "hydrated", "metadata_links_found"
+        )
+        result_metadata = json.loads(result["metadata_json"])
+        assert result_metadata["attempt_count"] == 2
+        assert result_metadata["document_host"] == "ipfs.io"
+        assert result_metadata["retrieval_host"] == "gateway.pinata.cloud"
+        assert runtime.store.db.execute(
+            "SELECT COUNT(*) FROM system_error_cases"
+        ).fetchone()[0] == 0
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_pump_launch_metadata_http_404_is_token_coverage_not_system_error(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        runtime = Runtime(config, tmp_path)
+        token = TokenCandidate(
+            chain="solana", address="N" * 32, name="Missing metadata",
+            source="pumpportal:create", raw={"uri": "https://metadata.example/missing.json"},
+        )
+        await runtime.ingest_token(token)
+        round_id = runtime.store.start_token_discovery_round(
+            provider="pumpportal", surface="create", mode="stream_window",
+            chain_scope="solana",
+        )
+        exposure_id = runtime.store.add_token_discovery_exposure(
+            round_id, token_id=token.token_id, chain=token.chain, role="create",
+            first_local_discovery=True, new_token=True,
+            observed_at=token.first_seen_at,
+        )
+
+        class Http:
+            calls = 0
+
+            async def get_public_document(self, url, **kwargs):
+                self.calls += 1
+                request = httpx.Request("GET", url)
+                response = httpx.Response(404, request=request)
+                raise httpx.HTTPStatusError(
+                    "missing", request=request, response=response
+                )
+
+            async def close(self):
+                pass
+
+        runtime.http = Http()
+        assert exposure_id is not None
+        await runtime._hydrate_pump_metadata(
+            token, round_id=round_id, exposure_id=exposure_id
+        )
+        result = runtime.store.db.execute(
+            "SELECT status,reason_code,metadata_json FROM "
+            "token_universe_funnel_transitions WHERE token_id=? AND "
+            "stage='metadata_hydration_result' ORDER BY id DESC LIMIT 1",
+            (token.token_id,),
+        ).fetchone()
+        metadata = json.loads(result["metadata_json"])
+        assert runtime.http.calls == 1
+        assert (result["status"], result["reason_code"]) == (
+            "unavailable", "http_status_404"
+        )
+        assert metadata["document_host"] == "metadata.example"
+        assert metadata["http_status"] == 404
+        assert metadata["attempt_count"] == 1
+        assert runtime.store.db.execute(
+            "SELECT COUNT(*) FROM system_error_cases"
+        ).fetchone()[0] == 0
         await runtime.close()
 
     asyncio.run(scenario())
@@ -4373,6 +4569,37 @@ def test_status_hides_disabled_rss_source(tmp_path, capsys):
     assert "enabled-source" in sources
 
 
+def test_onchain_primary_focus_pauses_active_agent_and_evm_dispatch(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        config["onchain_primary_focus_enabled"] = True
+        runtime = Runtime(config, tmp_path)
+        assert runtime.store.strategy_focus_active() is True
+        before = runtime.store.db.execute("SELECT COUNT(*) FROM agent_attempts").fetchone()[0]
+
+        async def forbidden(*args, **kwargs):
+            raise AssertionError("focused runtime attempted paused external work")
+
+        runtime.autonomous_search.discover_sources = forbidden
+        runtime.autonomous_search.scout_trends = forbidden
+        runtime.autonomous_search.search_token_context = forbidden
+        runtime.evm_route.quote_round_trip = forbidden
+        assert (await runtime.discover_sources_once())["status"] == "paused"
+        assert (await runtime.scout_trends_once())["status"] == "paused"
+        token = TokenCandidate("solana", "F" * 32, name="Focus", source="fixture")
+        snapshot = TokenSnapshot("solana", token.address, 1, 20_000, 50_000, 2_000, 10, 2)
+        await runtime._investigate_token_context(token, snapshot, momentum_score=90)
+        await runtime.onchain_only_evm_route_quote_once()
+        await runtime.onchain_only_evm_aggregator_price_once()
+        after = runtime.store.db.execute("SELECT COUNT(*) FROM agent_attempts").fetchone()[0]
+        assert after == before
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
 def test_dynamic_exit_challenger_uses_local_mark_then_amount_specific_jupiter_quote(tmp_path):
     async def scenario():
         config = initial_config()
@@ -4445,6 +4672,32 @@ def test_dynamic_exit_challenger_uses_local_mark_then_amount_specific_jupiter_qu
         assert recorded[0]["status"] == "quoted"
         assert recorded[0]["other_amount_threshold_raw"] == "20000000"
         await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_zerox_observer_only_registers_when_local_credential_exists(tmp_path, monkeypatch):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        monkeypatch.delenv("MEMETRADER_ZEROX_API_KEY", raising=False)
+        runtime = Runtime(config, tmp_path / "without-key")
+        assert runtime.evm_aggregator is None
+        assert Store.onchain_only_evm_aggregator_price_summary_from_connection(
+            runtime.store.db
+        )["status"] == "not_registered"
+        await runtime.close()
+
+        monkeypatch.setenv("MEMETRADER_ZEROX_API_KEY", "fixture-key")
+        configured = Runtime(config, tmp_path / "with-key")
+        assert configured.evm_aggregator is not None
+        summary = Store.onchain_only_evm_aggregator_price_summary_from_connection(
+            configured.store.db
+        )
+        assert summary["status"] == "active" and summary["configured"] is True
+        assert "fixture-key" not in json.dumps(summary)
+        await configured.close()
 
     asyncio.run(scenario())
 
