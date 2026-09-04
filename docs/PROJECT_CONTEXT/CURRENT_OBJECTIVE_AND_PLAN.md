@@ -1,7 +1,112 @@
 # 当前目标与执行计划
 
-更新时间：2026-09-03
+更新时间：2026-09-04
 状态：`ACTIVE / CONTINUOUS`
+
+## 0C. 2026-09-04 08:54 +08 最新运行纠偏：先退役 v10 shared-cash veto，激活 v11 independent-arm cash
+
+Lead 通过用户指定且唯一权威的 `@笔记本量化MCP-官方隧道` 再次核对当前 checkout、测试与 8790 运行态。**源码已经包含** `chain-meme-trader/v11-entry3-exit4-independent-arm-cash-forward`：同一 entry family 的每个策略账户独立计算现金，低于20U的账户单独拒绝，同一 cohort 仍只创建一个 authoritative Jupiter BUY intent，Fill 时再次按实际现金把同一 Fill 只投影给仍有资格的账户；针对性测试 `test_chain_meme_trader_independent_cash_keeps_solvent_arms_trading` 已通过。**但是部署中的 8790 `/api/state` 仍报告 v10** `chain-meme-trader/v10-entry3-exit4-route-surface-forward`，其冻结定义仍是 shared-cohort cash reservation。结合最新自然时期出现的 weakest-arm/shared-cash veto，这构成当前最高影响的代码—运行态漂移：一个 Broad Launch 账户亏损/现金不足不得锁死其余三个账户或整个 family。
+
+因此当前最小发布顺序更新为：**(1) 原子冻结 v10 新入场并受控激活 v11；旧 v10 仓只继续退出；(2) 立即停止已越过前向边界且同时改变 activation 与 drawdown 的 Stage4 executable-equity v2 新 enrollment，历史保留并标 `CONFOUNDED_TWO_VARIABLE_TREATMENT / LEARNING / UNRANKED`；(3) 继续 actual-Fill PositionEquityFrame + all-position current-PumpSwap RiskKernel + critical SELL 抢占；(4) 再注册只改变 28% vs 15% executable-equity drawdown 的干净同 Fill 比较；(5) 后续才扩展 MarketFrame、Reawakening、Agent、Cockpit、L0–L4 与 BSC/Robinhood。**这不是放松 strict-forward/identity/protocol/execution truth，而是删除不必要的跨策略共享资金 veto，把“买入机会召回”和“持仓风险退出”分开。**
+
+本轮 Codex 执行门铃：`docs/PROJECT_CONTEXT/COMMON_SPACE/ALERTS/CHATGPT_TO_CODEX/C2C-20260904-005400-CHATGPT-V11-INDEPENDENT-CASH-PROFIT-KERNEL-EXECUTE.md`。Codex 是唯一代码/Runtime writer；Live 继续锁定。
+
+## 0D. 2026-09-04 18:35 +08 用户 supersession：当前 P0 完成后，保留旧 124 行为族并增量加入新策略组合
+
+**执行顺序不变：先把当前 coherent P0 做到真实 stop condition，不因本节中断当前实现。** 当前 P0 完成后，本节成为强制下一周期，优先于无关的可选优化。届时先按真实订单行为整理现有 156 个版本化实例 / 124 个行为合同族：行为等价者合并，参数表面不同但实际很少改变 BUY/HOLD/SELL/SIZE/EXIT 的不得重复计为独立策略；真正改变候选、入场、仓位、持仓、止损止盈、流动性/可卖性或退出路径的才保留为独立行为。
+
+**更正前述替换语义：不要抛弃原来的 124 个行为合同族。** 旧 registration、Fill、Position、terminal、失败与审计证据继续不可变保存；在行为整理后，旧 124 个行为族仍作为历史/基线/可继续前向运行的既有策略集合保留在系统中。新研究、实现和测试出的策略只作为**额外策略**增量加入当前 Strategy Registry/Runtime/UI，不得以“新体系替换”为理由删除、隐藏或停掉旧 124。行为等价策略仍需在统计与组合 PNL 中去重，避免重复样本/重复利润，但这不等同于删除旧 lineage。
+
+新策略阶段允许并要求广泛使用当前本地数据、严格前向结果、历史失败/成功模式，以及公开互联网、官方资料、成熟开源项目与社区经验进行研究。目标不是堆数量，而是形成行为机制真正不同、风险收益互补的组合，包括但不限于高风险高收益、平衡、超短线/scalping、first-mover、momentum/breakout、pullback/continuation、reversal/mean-reversion、trend hold、快速兑现、非对称尾部、流动性/资金流、regime、生命周期和多阶段建仓/退出，并继续主动寻找尚未覆盖的机制。若自然窗口没有成交，可用当时真实可得数据、报价和流动性做 point-in-time Paper/模拟买卖来检验行为；仍严禁未来 ATH/事后最高最低价等 lookahead。所有测试计入手续费、滑点、价格冲击、流动性衰减和真实可卖性。
+
+不要把“安全”理解成无限叠加统一硬门。严格时序、身份/协议/账户真值、amount-specific execution、exact dead/no-reentry 等底线继续硬；其他不确定风险优先作为策略特定 sizing、软过滤、监控和动态退出变量。系统需要足够交易频率来学习，不能因为防御性门堆叠导致一天几乎无交易。
+
+Codex 同时恢复并主动使用既定 ChatGPT 协作协议：先读 `CHATGPT_CONTACT.md` 与 `docs/PROJECT_CONTEXT/CHATGPT_CODEX_SYNC_STATE.json`，主通道为 `GXH_C2C_V3`；Codex 用 `codex_app.send_message_to_thread` 向指针中的精确 Lead ChatGPT conversation 发送 compact envelope，并用 `codex_app.read_thread` 在同一 conversation 收取回复。详细状态机见 `docs/PROJECT_CONTEXT/CHATGPT_CODEX_BIDIRECTIONAL_CHANNEL.md`，耐久邮箱为 `docs/PROJECT_CONTEXT/CHATGPT_CODEX_SYNC.md`。不要启动第二个 Codex writer，也不要把大日志/diff/secret 粘贴到聊天；ChatGPT负责研究、策略/经济/因果复核与方案比较，Codex核验本地事实并负责实现、测试和运行结果。
+
+强提醒/队列合同：`docs/PROJECT_CONTEXT/COMMON_SPACE/ALERTS/CHATGPT_TO_CODEX/C2C-20260904-093244-CHATGPT-FORCE-REMINDER-POSTP0-AND-DIRECT-CHAT-PROTOCOL.md` 与 `C2C-20260904-091100-CHATGPT-QUEUE-STRATEGY-REBUILD-AND-NEW-RESEARCH.md` 中凡涉及“旧 124 退出/被替换”的内容均被本次更晚用户纠正 supersede；其余“当前 P0 完成后立即进入行为整理、新策略研究/实现/测试、恢复 ChatGPT 直连协议”的执行顺序继续有效。当前 P0 到达 stop condition 时，Codex 必须 ACK 本次纠正并把本节提升为下一 active cycle。
+
+## 0E. 2026-09-04 19:50 +08 后续最小策略增量：本金回收 Runner → v20 Vault Shadow → 结果驱动合成
+
+当前 P0 顺序不变，不中断正在执行的核心任务。P0 到达真实 checkpoint 后，以 `docs/PROJECT_CONTEXT/COMMON_SPACE/ALERTS/CHATGPT_TO_CODEX/C2C-20260904-115000-CHATGPT-FINAL-MINIMAL-ADDITIVE-STRATEGY-V20-FLOW-PLAN.md` 作为本轮策略研究的最新实施合同。旧 124 策略全部保留；新策略只增量加入。
+
+第一步不做大架构：直接在现有 v20 policy/market-mark/Strategy Registry 上新增 `BROAD_PRINCIPAL_LOCK_RUNNER_V1`，以现有 Broad Launch 为入场，+80% 经济收益时锁定 60% 仓位、剩余 40% 用宽 Runner 捕捉尾部，并从新前向 frontier 独立测试。第二步才复用已经运行的 `SolanaHeldAccountCollector.accountSubscribe`，给新策略持仓增加有界 PumpSwap Pool/base-vault/quote-vault Shadow 派生层；不先建全量逐笔/Geyser平台、不堆新通用入场门。规律性买卖只形成描述性 `REGULARITY/SYNTHETIC_SUPPORT/UNWIND` 特征；真实 reserve/effective-depth 急剧恶化是独立的 exact 风险事实。
+
+重要实现边界：v20 `amount_raw` 是 `paper_quantity*1e9` 的 synthetic unit，绝不可直接作为链上 mint raw amount；未来 exact quote 必须用 `remaining_quantity_tokens × 10^RPC-verified decimals` 的 decimal-safe 转换。Exact-Vault 触发在有严格的 post-trigger amount-specific executable quote/fill 之前保持 Shadow，严禁在真实 reserve 已崩时仍按滞后的 DexScreener 高价结算 Paper SELL。等新策略取得真实前向结果后，再按当前真实决策行为 hash、底层 cohort 去重和成功/失败域设计 A+B→C 类综合新策略；C/D 等仍全部作为新策略加入，不覆盖父策略。
+
+此前 `C2C-20260904-104900` 的广泛微观结构研究继续作为背景，但其“先建完整逐笔 TradeMicrostructureFrame”的实施顺序被本节和 `C2C-20260904-115000` 收缩为 Vault-WebSocket-first 的最小路径。
+
+## 0. 2026-09-04 02:17 JST 最新 authority：官方隧道、单主升浪假设与市场级 v6
+
+用户明确纠正：本项目本地访问**始终允许且只以 `@笔记本量化MCP-官方隧道` 为权威插件**；其他连接面不得写入或改变本项目 authority。用户同时提出“新 Meme 基本只有一波，最高点回撤后大概率结束”的交易假设，并再次要求以挣钱为目标、不要用过度防御压低机会覆盖、把系统做到可上市水准。
+
+Lead 已用官方隧道对当前 r6 做只读检验。对 Solana 正价格快照不少于10个、跨度不少于30分钟、先有至少25%上涨的约4,084个 Token group，首次30%回撤后在15/60/240分钟内再创新高约为8.33%/11.93%/13.82%；若要求回撤在3分钟内由第二个观测确认，Pump地址子集在60/240分钟再创新高约2.90%/6.82%。另一严格口径的133个持续30%回撤事件只有12个后来再创新高，0个在10分钟内发生；多数例外在10分钟以后，支持“先退出、真正复苏时用新 `REAWAKENING` cohort重入”，而不是长期扛过深回撤。该统计受当前四日窗口、稀疏/条件采样和右删失影响，只能作为 active hypothesis，不能直接把30%写成所有策略的最终阈值。
+
+更重要的自然样本是v5 cohort `2286`：Stage1在Dex表面约317k流动性、buy/sell 238/114、canonical PumpSwap与静态mint安全正常时入场；全仓可执行最低回收从约20.5434U在约20秒内跌到0.0062U，最终约-19.9937U。exact vault后验核验显示quote vault约从1,512 SOL降到约1.10 SOL、base vault从约11.5M Token增到约951M Token，属于大规模卖入池抽干SOL，而非LP removal。Stage1因现有代码只给Stage11/12挂held-account targets而没有实时风险监听。这证明当前最高影响断点是**所有持仓共享的低延迟Pool/Vault/flow/recovery风险内核和退出抢占**，不是再加一层静态买前硬门。
+
+随后自然样本进一步收敛断点：cohort `2298` 虽有五类exact targets，真实WSOL vault仍在入场后约19.65/19.98/20.46秒分别降到raw baseline的38.83%/16.66%/5.37%，约24秒低于1%，base vault同时增至约7.25倍；现有风险状态因只认“单步直接跌90%”或“双边Vault都耗尽”而始终为HEALTHY，最终等Dex liquidity<3000才以每账户约-19.6643U退出。当前官方Pool另有约17.5845 SOL virtual quote reserve；按`real + virtual`的effective depth，2298同期约从46.97%降到13.69%，仍是约86.3%的严重深度崩塌，但raw flow与effective price depth必须分开。cohort `2306` 又证明每步不足10%的渐进恶化会被mutable state覆盖，无法形成1s/3s/10s/30s斜率。另有13/13 v5 LP mint实际为Token-2022 owner，目标却硬编码legacy Tokenkeg而产生固定误报。P0因此不仅是coverage，还包括**连续reserve-flow语义、append-only risk frame、正确program owner与增量订阅**。
+
+收益去重也推翻了表面盈利：在一个10个底层机会均已结束的截面，代表性20U路径合计约-13.5799U、3胜7负、中位数约-1.9758U；最大赢家+37.9134U，移除后约-51.4933U。相同市场路径复制进多个策略账户后却显示正的账户合计。`strategy_counterfactual_pnl`、unique/netted `portfolio_paper_pnl`和future `live_confirmed_pnl`必须永久分开；行为等价账户不得增加样本或系统利润。
+
+当前 authority：
+
+1. v5已有真实分母，保留为`ORDER_KERNEL_PILOT`；v6激活前可继续自然运行，v6激活时停止v5新入场，旧仓继续退出，不修改v5历史。
+2. v5虽然实现了Decision→OrderIntent→Attempt→quote-simulated Fill，但仍沿用历史Stage门，未完成3×4独立策略；cohort2285把同一底层赢家复制到12账户，每账户+37.913424U，不能把合计+454.961088U称为系统利润。v6必须区分strategy counterfactual、portfolio paper与future live confirmed PNL，并检测behavioral equivalence。
+3. v6采用`Broad Launch / Flow Burst / Reawakening × Fast Escape / Balanced Harvest / Peak Guard / Post-buy Research`十二策略矩阵。Broad Paper可以宽，但所有仓位必须共享exact targets、post-fill full-size SELL heartbeat、风险状态和RED/DEAD抢占通道。
+4. 峰值退出只使用当时运行中高点。持续回撤、failed reclaim、sell-flow、quote-vault、large-sell burst与全仓recovery slope联合形成Peak-Death hazard；未来ATH只作outcome。真正第二波另行重入。
+5. 当前5秒Runtime与15–20秒估值不足以应对20秒collapse。P0恢复PumpSwap transaction decoder和低延迟Geyser/Yellowstone provider benchmark，形成250ms–5m MarketFrame；风险线程不得等待Agent、DexScreener或Web。
+6. quote-only minimum output只能标`L0_QUOTE_ONLY/QUOTE_SIMULATED_FILL`。市场级Paper/Live内核要继续到taker/buildable transaction、RPC simulation、confirmation、balance/fee reconciliation；Live工程现在做，资本开关仍锁定并需用户显式授权。
+7. 当前Python SQLite为3.51.0、主库约5.7GB、WAL约930MB；SQLite官方WAL-reset修复要求升级到3.51.3+或官方backport。先Online Backup、隔离副本校验、升级、WAL/reader telemetry与restore drill，不在活动库盲目VACUUM/TRUNCATE。
+8. 当前官方PumpSwap IDL/SDK又暴露协议正确性门：抽样18个exact pool均为301-byte account，当前Python只解前211 bytes，忽略`coin_creator/is_mayhem_mode/is_cashback_coin/virtual_quote_reserves`；18/18 virtual reserve非零。新monitor/surface版本必须先完整解码、冻结IDL/SDK hash、获取GlobalConfig/FeeConfig，并用官方SDK公式做本地direct holding-surface risk quote。该本地quote用于每个Vault事件后的亚秒风险估计，Jupiter full-route仍是实际执行权威。
+9. v5延迟审计：source baseline→下一BUY quote-simulated fill p50/p95约8.607/16.249秒，而provider调用p50/p95仅约0.526/2.819秒；首个全仓估值p50约208.79秒，27个cohort只有3个在10秒内获得。主要延迟在本机调度与风险覆盖，不应只提高provider并发。
+10. v5动态退出还存在账户基准错误：当前止损、止盈和trailing以成交前DexScreener `entry_signal_price_usd` 为锚，而不是实际指定金额BUY Fill的成本。对23个自然Stage-4入场只读核验，`信号价 / 保守Fill有效单价` 中位数约0.946339，范围0.721314–1.507246；3/23偏差超过10%，2/23超过25%。cohort `2314` 的信号价为0.000287，但20U保守Fill得到105,034.589879枚，真实有效成本约0.000190413463；旧控制只把后续0.0003437视为约+19.76%，事实上相对Fill成本约+80.50%，全仓可执行权益高点为41.283448U。v5历史必须保留并标记`legacy_pre_fill_signal_anchor`；v6及干净Stage-4 v2的return/hard-stop/TP/trailing/high-water必须统一基于实际Fill成本和`已实现回收 + 当前全部剩余数量最低可执行回收 - 未嵌入成本`，Dex价格只作速度/交易流信号。
+11. 详细研究与实施合同：`docs/PROJECT_CONTEXT/CHATGPT_SINGLE_WAVE_PEAK_EXIT_AND_MARKET_GRADE_PROFIT_PLAN_2026-09-04.md`。P0顺序冻结为：authority/v5 truth→官方301-byte Pool decoder + all-position risk/EXIT fast lane→Fill成本/总可执行权益账户真值→冻结缺公共安全包络的Stage-4 v1并注册干净v2→v6 3×4→PumpSwap transaction flow/MarketFrame→execution L0–L4→learning/storage/Cockpit→BSC/Robinhood。
+
+## 0C. 2026-09-04 09:59 CST 用户纠正：开放式策略注册表、禁止学习退化与资源/OOM硬约束
+
+用户进一步纠正：策略数量**不局限于12个**。最初的12个Stage策略是永久`Baseline-12`策略库；后续`Broad Launch / Flow Burst / Reawakening × 4 exits`只是新的Challenger集合之一，不能语义上替代Baseline-12。前向学习可以基于任何已有策略进行组合、拆分、特征/入场/退出/执行改进，也可以提出第13、第20或更多全新策略；每次改变都创建新的不可变strategy/version/lineage，不能看完结果再原地改策略。新版本不因“更新”自动优于旧版本，必须采用`Baseline/Champion -> Challenger -> strictly-forward experiment -> maturity review -> Promote/Reject/Pause/Rollback`，保留旧基线作为持续benchmark。工程正确性修复可淘汰错误机制，但不能被宣传为alpha提升。
+
+主页排名必须恢复且永远有诚实输出：已实现终局结果可形成`REALIZED ROBUSTNESS`排序；当前开放仓位可执行权益另按fresh exact quote覆盖率形成`EXECUTABLE EQUITY`排序；低样本/估值不完整可显示`PROVISIONAL / LOW-N / INCOMPLETE-COVERAGE`，不能把UNKNOWN补0，也不能因为一个开放仓缺Jupiter报价就让整个Top榜空白。没有通过成熟门的策略不称Champion，但仍可显示暂定排名；全策略页展示Baseline-12、所有Challenger和历史Retired lineage。
+
+资源约束同步提升为生产发布硬条件。当前r6主库约5.8GB、WAL约888MB，策略和高频RiskFrame继续增长会带来OOM/读放大/锁和页面卡顿风险。所有新增策略/学习/MarketFrame/Risk/Web功能必须使用有界内存ring-buffer/缓存、队列上限与backpressure、分页/分块DB读取、bounded Web queries/materialized projections、cohort级公共证据去重，禁止全表`fetchall()`和每策略复制RPC/Jupiter/Agent/市场证据。高频非决策原始事件不得无限写入SQLite；决策/Fill/terminal证据永久保留，其余只保留有界聚合或版本化冷归档。持续监控Runtime RSS/private memory、queue/cache sizes、DB/WAL bytes、write/checkpoint latency和Web latency；高水位时先停低优先级Agent/enrichment/history aggregation并释放可重建缓存，保护RED/DEAD/SELL和交易状态。必须完成Online Backup/restore drill和已批准SQLite修复升级后再做破坏性WAL维护，禁止在活动库盲目VACUUM/TRUNCATE。
+
+详细执行纠正：`docs/PROJECT_CONTEXT/COMMON_SPACE/ALERTS/CHATGPT_TO_CODEX/C2C-20260904-015900-CHATGPT-STRATEGY-REGISTRY-RANKING-RESOURCE-GUARD.md`。该纠正不改变当前P0顺序：先v11 independent cash、停止污染实验、实际Fill/可执行权益/RiskKernel/critical SELL，再修排名和开放式Strategy Registry；内存/存储/OOM约束从现在起对每一步都生效。
+
+## 0B. 2026-09-04 早先 supersession：Profit-First 多策略自动交易学习系统 v5
+
+用户进一步明确：最终目标是盈利，当前 12 个 Stage 必须被理解为 12 个独立策略账户，而不是历史工程演进卡；买入候选覆盖不能被越来越严格的统一硬门压到极少交易，卖出反而必须更敏感、更快；撤池/死亡前若存在可重复的前向可执行盈利窗口，应允许独立高风险 Paper 策略学习；买后 Agent 可快速多角度调查，但不得阻塞机械/紧急退出；Paper 与未来 Live 必须共用 Strategy -> Signal -> OrderIntent -> ExecutionPlan -> Fill -> Position -> Exit 状态机，只允许 Executor/Signer 不同，Live 继续锁定且密钥永不进入 config/UI/SQLite/Agent。长期还要纳入 `REAWAKENING` 独立 cohort、BSC/Robinhood execution adapters、延迟/存储/重复工作和 8790 Trading Cockpit 优化。
+
+因此，2026-09-03 的 single canonical-PumpSwap focus **只在已经验证有价值的 execution-truth / held-account / confirmed-rug 基础设施层继续有效**；其“把越来越多风险事实变成所有 Stage 共同硬入场门、把 12 Stage 解释成 cumulative evolution”的产品/策略定义被本轮更具体用户要求 supersede。旧 v4 registration/rows 必须冻结保留，不回填、不改写；新行为通过 v5 新 registration 生效。
+
+当前 P0 改为：
+
+1. **冻结 v4，注册 12 个真正独立的 v5 StrategyAccount/PolicyVersion。** 至少包含 Broad Launch 高召回、Momentum+Flow 和独立 Reawakening entry family；不同策略拥有 Fast Escape、Balanced Dynamic、Local-Top Peak Guard、Post-Buy Research Runner 等独立 exit policy。旧 Stage evolution 移到历史页。
+2. **统一 Paper/Live 交易状态机。** v5 禁止 Strategy admitted 后直接写 Trade；必须通过 `OrderIntent -> amount-specific ExecutionPlan/Attempt -> Fill -> PositionEvent -> ExitIntent -> Reconciliation`。Paper/Live 只替换 execution adapter；Live interface 完整但 hard locked。
+3. **BUY 宽、SELL 紧。** 严格时序、数据一致性、unsupported/协议无效、exact dead-surface no-reentry 仍是公共硬合同；momentum/liquidity/creator/rug/recovery 等大多数风险变成 strategy-specific soft facts。保留一个明确 `paper_only / not_live_eligible` 的高风险 Scout，用前向 writeoff/no-route 分母验证是否因过度防御错过盈利机会。报价缺失、过期、`no_route` 或 provider error 时，可执行权益与未实现 PNL 必须是 `null / UNKNOWN`，既不得借用屏幕价伪造，也不得写成 0；只有 exact pool/account 已确认死亡且随后一次新鲜 full-remaining SELL 仍不可执行，才把剩余仓位核销为全损。
+4. **建立持仓 fast lane。** exact account WebSocket、Pump/PumpSwap flow、本地短窗派生特征触发 GREEN/YELLOW/ORANGE/RED/DEAD；价格长期不动只作 suspicion trigger，先请求 full-remaining SELL，不单独判死池；confirmed terminal 继续需要 exact pool/account + full-remaining sellability 真值。紧急 SELL 优先级高于估值、研究和 Agent。
+5. **持续研究局部顶部退出。** 只用 strict-as-of 的 price velocity/acceleration、高水位回撤速度、volume/flow 反转、trade interval、buyer breadth、liquidity/vault delta、Jupiter recovery/route deterioration 等派生特征；禁止 later ATH 作为实时输入。
+6. **买后 Agent 去重并异步。** 每 Token/cohort 一个共享 ResearchCase；最多两条生产 Agent lane，数值链上事实走本地 deterministic code；结果只影响 completed_at 之后的 runner/risk，绝不覆盖 RED/DEAD 或硬机械退出。
+7. **复用公共执行内核后再扩链。** BSC 与 Robinhood 使用 firm 0x quote、exact sell amount、simulation、allowance/tax/gas/L1 fee 等 EVM adapter；Robinhood 先排除 Stock Token/RWA，不复制 Solana 费率。
+8. **8790 变成 Trading Cockpit。** 首页显示运行心跳、discovery/order/exit pulse、延迟、open risk、真实 executable equity 和成熟 Top 3；未成熟策略 `LEARNING/UNRANKED`。全部 12 策略、Token 深链、Execution、Risk、Learning、Chains、System、History 分页展示。
+
+详细实施合同已写入 `docs/PROJECT_CONTEXT/COMMON_SPACE/ALERTS/CHATGPT_TO_CODEX/C2C-20260903-162000-CHATGPT-PROFIT-FIRST-V5-STRATEGY-EXECUTION-PLAN.md`。Codex 仍是代码/测试/部署唯一执行 owner；当前 v4 Paper Runtime 不要求停机，Live 继续锁定。
+
+## 0A. 2026-09-03 12:00Z 用户优先级重分配：Solana 纯链上盈利闭环（历史当前周期，已被 2026-09-04 v5 产品/策略定义部分 supersede）
+
+用户明确要求以“尽可能多挣钱”为最终目标，并指出一旦**真实池子被撤/端掉**就不考虑恢复。结合当前 r6、Runtime 和最新前向证据，本轮新增工程/研究资源正式重分配为：约 70% Solana 安全/执行/机械持仓监控与死亡池终态、20% 严格前向链上 alpha 数据工厂、5% 轻量运行可观测性、5% 信息链 maintenance mode。信息/热点/人物/社区线不删除，但不再占据当前主工程和 Agent 预算中心；只有新的前向转化/经济证据证明其边际价值重新上升时再扩张。
+
+当前决定由 `docs/PROJECT_CONTEXT/CHATGPT_ONCHAIN_CORE_REALLOCATION_AND_EXECUTION_PLAN_2026-09-03.md` 详细定义。它 supersede 的是**实施优先级与资源配置**，不删除任何旧 registration/row，也不倒灌历史结果。
+
+当前 P0 顺序：
+
+1. **先修 execution route 与 holding surface 的安全语义错位。** 最近 100 个有效 Solana Jupiter baseline BUY 抽查中，31 个实际 route 不包含触发 DexScreener snapshot 的 pair；当前安全层不能再把“snapshot pair 已验证”隐含为“实际 Jupiter route 全部已验证”。Holding surface custody/mint safety 与 amount-specific execution route 必须分层、时点有效、可审计。
+2. **直接 RPC 解码 SPL Mint / Token-2022 危险能力。** GoPlus/Rugcheck 改为 cross-check，不再是 mint/freeze/transfer-fee/permanent-delegate/transfer-hook 等关键控制的唯一事实来源。
+3. **实现 exact held-account 事件驱动监控与 `POOL_DEAD_TERMINAL_NO_RECOVERY`。** 确认死亡只能来自 exact pool/account 的链上事实，不能由一次 `no_route`/API error/Dex `liquidity=0` 推断；确认死亡后最多一次立即 remaining-size SELL，失败则 write-off，永不 re-arm/恢复该 dead surface。后来出现的新 pool 是新 market surface/cohort，不回写旧 PNL。
+4. **PumpSwap on-chain flow decoder + strict-as-of alpha frames。** 保留现有 `_momentum_score` 为 immutable control，新增 value-flow、trade-size、burst、creator、liquidity/route、holder 等研究特征；先透明 challenger，后模型。
+5. **大 UI、多链、额外 venue 暂缓。** 当前 `onchain-only-shadow/v2-20usdc` 的 Solana cohort 32 个中 31 个为 PumpSwap、1 个 Meteora；因此本轮唯一主动策略开发/Paper promotion 目标收敛为 **canonical PumpSwap**。已完成的 Raydium CPMM v3 decoder/证据保留为 Research Lab 资产，但本轮不继续扩展；CLMM/AMM-v4/Meteora/Orca 继续 fail-closed WAIT。BSC/Robinhood 研究资产保留但暂停扩张。Web 大重构不阻塞主线，必要实时状态优先用只读终端 cockpit。
+
+信息线进入 **passive maintenance mode**：保留 deterministic ingestion、exact CA/post/provenance、不可变分母和未来可复盘 optionality；本轮暂停主动 `trend_scout / source_discovery / token_context / fact_verifier / WATCH / S3 post-entry narrative` Agent dispatch。只有被动证据达到已固化 reactivation gate 后才另注册主动预算版本；不得增加 production Agent concurrency。
+
+纯链上当前**尚未证明稳定盈利**。任何晋级仍必须保留 no-route/dead/writeoff 在 ITT 分母，报告全成本 PNL、可执行权益、回撤、尾部、writeoff/no-route、资金时间效率、Top1/Top3 贡献以及 remove-best-1/remove-best-3 后结果；不得因当前少数大赢家调参或扩大 Live 风险。
 
 ## 1. 最终目的
 
@@ -49,7 +154,7 @@
 - 生产 autonomous-search 并发保持最多 2；是否增加只能由前向排队和有效产出证据支持。
 - 所有项目持久数据保存在 `E:\memeTrader`；不清空或改写 r6，不推送 Git。
 - UI 深化后置；只有数据缺失、误导或操作不可用时才优先修 UI。
-- ChatGPT 高智能协同当前统一使用用户最新指定的 `@笔记本mcp20260902-2`。关键架构、策略和实验在确属 material gate 时默认使用一条有实质内容的最高强度 Lead 复核；只有结论冲突、信息不完整或影响特别重大时才增加独立会话，普通局部实现/验证不得机械复制多审。ChatGPT 负责研究、反证、方案比较与综合，Codex 验证当前事实、实现和测试。
+- ChatGPT 高智能协同当前始终使用用户最新指定的 `@笔记本量化MCP-官方隧道`；它是本项目唯一权威本地连接面，除非用户以后明确 supersede。关键架构、策略和实验在确属 material gate 时默认使用一条有实质内容的最高强度 Lead 复核；只有结论冲突、信息不完整或影响特别重大时才增加独立会话，普通局部实现/验证不得机械复制多审。ChatGPT 负责研究、反证、方案比较与综合，Codex 验证当前事实、实现和测试。
 
 ## 4. 当前执行优先级
 
@@ -142,6 +247,8 @@
 30. 对上一条自然结果完成版本归属复核后，确认其属于旧 context v1，不能代表 current v2。已将 post-entry active retry 严格限定为当前 context version + exact seed/transition/source BUY/open paired position；旧版本保留审计但不再抢槽。退出监控从 `opened_at` 固定队首改为未标记优先、随后按最旧 mark 公平轮换；退出报价也改为未尝试 pending mark 优先、随后按最旧尝试轮换，修复同一失败仓 16 次重试而多个待退出仓 0 次的垄断。部署后 cohorts `2130/2137/2138/2139` 已全部得到首个 mark，原 0-attempt 的 `2110/2112/2113/2117` 已获得首个真实卖出尝试，current-v2 seed `12` 已产生 assessment `1044/no_context`。这恢复了当前版本的价格/叙事/执行观察分母，但没有启用 runner，也没有证明 alpha；下一步继续收集另外两个 v2 assessment、Strategy3 amount-specific exits 和费用完整性，再冻结可检验的叙事处理规则。
 31. 当前执行范围按用户最新决定收敛为 Solana-only；BSC/Base/Robinhood 的既有只读研究账本保留但暂停进入新发现、Agent、Decision、Paper 与 PNL。三种 Paper 策略已从 `fair-comparison/2026-09-03-20usdc-v2` 公平重启，统一采用 `$20` 入场、BUY/SELL 各 `4%` 不利滑点、每次实际成交固定 `$0.40`。链上策略使用新的不可变 v2/v4 版本链，旧版本不回写；主信息策略的新成交使用相同成本，但仍需补独立 machine-readable policy version。近期主线是收集该成本版本的 Solana 前向样本与可执行退出，不扩张多链。
 
+32. 2026-09-03 最新执行目标再次 supersede 第 31 条的长期链范围：当前产品模型固定为三个策略家族 `information_plus_token`、`token_only`、`token_then_information`，买入金额、加仓、止损、止盈、runner 与退出均是各家族内部可版本化 policy arm，不是额外策略。后端 `/api/portfolio.strategy_model` 已提供 `three-strategy-families-policy-arms/v1` 机器可读契约，列出 signal/entry/sizing/exit/cost/chain-execution 版本、research state、decision eligibility 与 affects。Strategy 3 的新 `v3-fixed-baseline` 控制臂精确复制 Strategy 2 的买入及固定 15/60/240 分钟退出，买后信息 `affects=none`；旧 dynamic-exit 对照数据保持不改写。近期真实执行仍先修复并收集 Solana Jupiter amount-specific 前向样本；BSC 与 Robinhood 是下一批必须实现完整路由/成本/安全语义的链，Base 历史研究数据保留但不阻塞。Live 始终锁定。
+
 ## 6. 完成判定
 
 本长期目标不能因网站可用、代码测试通过或出现少量 Paper 成交而关闭。至少需要：
@@ -154,3 +261,53 @@
 - 仍保持无未来数据、无回填、Live 锁和完整审计。
 
 在这些条件满足前，状态保持 `ACTIVE / CONTINUOUS`。
+
+## 2026-09-03 动态退出与多链执行增量
+
+用户进一步明确：每个策略家族都必须具有动态退出，固定周期只能作为可比较基线或因果控制。机器可读契约已据此固化：策略 1 当前 `deterministic-paper-exit/v1` 为动态退出；策略 2 的 15/60/240 分钟臂标为 `fixed_comparison_baseline`，与现有动态止损/移动止盈/分批止盈/流动性退出 challenger 并存；策略 3 当前固定臂只用于隔离买后信息增量，未来动态 information treatment 必须另行预注册、前向激活，成熟前不得假装已经启用。
+
+首个当前 v2 自然 Solana cohort 已形成 Strategy 2/3 精确配对的 `$20` BUY，并在 15 分钟取得金额特定 Jupiter SELL；两账本均以 `-$0.51209` 扣费 Paper 结果闭合。0x Swap v2 金额特定 `/price` 观测客户端及 append-only Store/Runtime/Web overlay 已实现、测试并部署；只有本机环境凭据存在时才从当时 activation 开始观测，当前凭据不存在所以生产明确为 `not_registered`，不会回填或伪造结果。该层仍为 indicative、`affects=none`；没有 firm `/quote`、taker、完整安全与成本证据前，BSC/Robinhood 不得进入 Paper。
+
+双向协作从本周期起统一使用 `GXH_C2C_V3`。消息工具返回 success 只记 `SEND_ACCEPTED`，目标线程回读相同 ID 才记 `DELIVERED`，显式 ACK 后才记 `ACKNOWLEDGED`，验收完成需要 RESULT 与结果确认。详细研究留 Common Space，Codex等待 Lead 时继续不冲突 tranche；协作在根因明确、实现完成、最小测试通过、前向观察启动后停止无新增证据的循环。
+
+### 2026-09-03 P0-A S1 检索转化效率
+
+`exact-source-link-identity-and-unchanged-wait/v1` 已部署。当前 Event 的精确 public-item URL 只使用决策时已存在的 Token exposure/source-link 建立有界 identity set，不增加分数、不充当独立证据；同帖多币继续显式 fanout 和 canonical ambiguity。对 `no_matching_token`，证据、identity 和本地候选集合未变化时复用既有宽检索结果，最长 300 秒后强制重跑；任何新 Observation、identity membership 或本地 overlap Token 会提前失效。阈值、风控、交易与 Agent 并发未改。下一主线转入 P0-B：严格前向的 Token-first WATCH → 有界入场前信息确认；P0-A 同时等待自然转化数据。
+### Active next tranche — preserve S3 authority and measure the WATCH observer
+
+The new Solana Token-first 120-second WATCH and deterministic confirmation classifier are deployed forward-only as a separate research observer. The user's later, more specific Strategy-3 definition remains authoritative: exact Strategy-2 entry followed by post-entry information research and, only after preregistered evidence matures, a dynamic holding/exit treatment. The WATCH therefore remains `entry_enabled=false / decision_eligible=false / affects=none`; it must not create another Paper cash ledger or be relabeled as product Strategy 3. Next measure natural WATCH coverage/terminal yield alongside S1 exact-link conversion, while continuing the existing Strategy-2/3 exact-paired, amount-specific exit evidence. A future confirm-before-entry challenger requires a distinct preregistered research version and explicit promotion decision.
+
+### 2026-09-03 10:07 UTC current execution delta
+
+- The coordination guard, Runtime→Store startability and Strategy-2 Jupiter-v2 dispatch are verified by current code, targeted tests and natural forward attempts. The old zero-attempt snapshot is obsolete.
+- Strategy 3 v3 is now a clean causal control: r6 contains five exact-paired BUYs and one SELL matching Strategy 2 in time, amount, modeled fee and cash flow. Post-entry information remains observational and no narrative treatment is preregistered.
+- Every concrete Paper policy arm now exposes machine-readable family/signal/entry/sizing/exit/cost/execution/activation/role/promotion fields.
+- Current implementation priority is BSC and Robinhood amount-specific firm routing, sellability/safety and chain-specific cost semantics. Base code/history stays research-only and does not block these chains; Solana continues collecting the current forward cohort.
+
+### 2026-09-03 10:26 UTC user supersession — rug safety / realtime mechanical exit / UI
+
+The user explicitly elevated sudden liquidity withdrawal / unsellable-rug defense, adaptive post-BUY monitoring, BUY-funnel bottleneck correction and UI/live-equity simplification above the prior next implementation tranche. Current P0 is therefore: **(A)** venue-aware pretrade pool-custody/rug safety and exact-size sellability, **(B)** adaptive Agent-free held-token/pool monitoring with immediate amount-specific emergency SELL and a new dead-pool retry scheduler version, **(C)** Strategy-1 exact-size Jupiter BUY/SELL execution parity including the existing exact-identity route-addressability seam, and **(D)** an incremental Live Cockpit UI that separates executable from indicative equity. BSC/Robinhood remain required multi-chain work but must not displace this Solana safety/execution P0.
+
+This supersession does **not** authorize looser safety gates or online parameter chasing. Current-v4 dynamic-exit rules remain frozen while paired forward samples accumulate; the natural 2179/2194 outcomes are evidence to continue studying dynamic exits, not permission to retune them. Any BUY-threshold widening comes only after rug/execution semantics are complete, one variable at a time in a preregistered Shadow challenger. Live remains locked.
+
+Detailed research and ordered implementation contract: `docs/PROJECT_CONTEXT/CHATGPT_RUG_SAFETY_REALTIME_EXIT_UI_RESEARCH_2026-09-03.md` and `docs/PROJECT_CONTEXT/COMMON_SPACE/ALERTS/CHATGPT_TO_CODEX/C2C-20260903-102646-CHATGPT-RUG-SAFETY-REALTIME-EXIT-UI-P0.md`.
+
+### 2026-09-03 11:58 UTC user supersession — one on-chain primary, confirmed rug never recovers
+
+Finite engineering and runtime resources are now concentrated on one active development and Paper-promotion path: **Solana canonical Pump.fun → PumpSwap, pure on-chain momentum, RPC-verified pool custody/LP burn, exact `$20` Jupiter BUY→immediate exact-size SELL preflight, and deterministic dynamic exit**. The existing Raydium CPMM decoder is preserved as Research evidence, but AMM-v4/CLMM/Orca/Meteora and BSC/Base/Robinhood expansion pause for this focus cycle. S1/S3 historical ledgers and passive information collectors remain, while high-cost Trend/Source/Token-Context/Verifier/WATCH/post-entry narrative Agent dispatch and new non-primary Paper promotion pause at a forward focus frontier.
+
+A confirmed on-chain liquidity withdrawal/rug is now terminal. It may receive at most one immediate full-remaining-size emergency SELL attempt; absent an economic route, the position is written off and the exact mint/pool/policy lineage is permanently non-rearmable and non-reenterable for that version. A provider timeout, one Jupiter no-route, or a DexScreener zero alone is not sufficient to classify a rug; transient failures retain capped backoff. Scheduler v1 recovery semantics must therefore be superseded by a new terminal-aware version.
+
+The primary entry version must also fix the current preflight weakness: `net_recovery_usd > 0` cannot admit a `$20` trade that can immediately recover only pennies. It must reuse a preregistered round-trip cost floor derived from Jupiter minimum output, configured adverse slippage/applicable pool fee and entry/exit fixed costs. Current momentum threshold and dynamic TP/stop parameters remain frozen; fixed 15/60/240m remains the same-entry comparator. Capital, chain and venue expansion remain blocked until at least 100 closed primary positions across 15 dates, including losses/dead cases and top-winner-removal robustness.
+
+Full strategic review: `docs/PROJECT_CONTEXT/CHATGPT_ONCHAIN_FIRST_STRATEGIC_CONVERGENCE_2026-09-03.md`. Urgent execution contract: `docs/PROJECT_CONTEXT/COMMON_SPACE/ALERTS/CHATGPT_TO_CODEX/C2C-20260903-115826-CHATGPT-ONCHAIN-FIRST-PRIMARY-P0.md`.
+
+### 2026-09-03 12:00 UTC incremental correctness — holding surface != execution route
+
+The on-chain-primary focus remains unchanged, but pretrade safety must explicitly separate **Holding Surface Safety** from **Execution Route Truth**. A read-only sample of the latest 100 quoted baseline BUY rows found the DexScreener snapshot pair absent from 31% of actual Jupiter route plans and multi-leg routing in 69%; therefore RPC custody proof for the selected PumpSwap holding surface must not be described as proof for every aggregator leg. Persist route-to-surface relation and route verifiability as a new forward-only evidence layer before any new primary version claims complete route/surface safety. Do not require the best Jupiter route to contain PumpSwap merely to preserve the focus; amount-specific minimum-output truth remains authoritative while opaque/unsupported route semantics are labeled honestly. Incremental execution directive: `docs/PROJECT_CONTEXT/COMMON_SPACE/ALERTS/CHATGPT_TO_CODEX/C2C-20260903-120100-CHATGPT-ONCHAIN-CORE-REALLOCATION-P0.md`.
+
+### 2026-09-03 12:31 UTC execution boundary — focus first, young pools, no penny recovery
+
+The strategy-focus stop has not yet become a runtime fact: after `12:00Z`, r6 recorded 11 additional valid Token Context calls using 597,015 tokens plus one valid Trend fallback using 44,200 tokens, and no focus registration table exists. Before another engineering tranche, Codex must activate `strategy-focus/v1-solana-onchain-primary` and stop new high-cost information-model dispatch while leaving passive RSS/browser/PumpPortal/Dex/RPC/Jupiter collection intact.
+
+Primary v1 is further bounded to exact on-chain Pump migration/pool age `<=600s`; current evidence shows 32/34 Solana high-momentum cohorts are PumpSwap, all eight current v4 Paper entries were approximately 2.0–8.5 minutes old, while several old-pool revival cohorts were about 6.8–7.5 hours old. Jupiter timing supports queue `<=5s` and completed preflight `<=10s`. The existing positive-penny sellability condition is replaced by transparent no-double-count ratios: quoted net immediate recovery `>=0.90` and stress minimum recovery `>=0.85`, after separate modeled network cost only. New primary capacity is capped at 5 open positions and `$100` daily new exposure; any pending ALERT/dead emergency exit blocks new entry. Detailed delta: `docs/PROJECT_CONTEXT/COMMON_SPACE/ALERTS/CHATGPT_TO_CODEX/C2C-20260903-122440-CHATGPT-ONCHAIN-PRIMARY-AGE-COST-ADDENDUM.md`; immediate stop blocker: `docs/PROJECT_CONTEXT/COMMON_SPACE/ALERTS/CHATGPT_TO_CODEX/C2C-20260903-123119-CHATGPT-FOCUS-STOP-NOT-ACTIVE.md`.

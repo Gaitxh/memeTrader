@@ -948,6 +948,44 @@ def test_token_context_global_cooldown_prevents_bursts(tmp_path: Path):
     asyncio.run(scenario())
 
 
+def test_pre_entry_token_watch_bypasses_only_global_context_cooldown(tmp_path: Path):
+    async def scenario():
+        store = Store(tmp_path / "db.sqlite3")
+        agent = AutonomousSearchAgent(
+            store, FakeHttp(),
+            config(context_global_cooldown_minutes=5, context_search_daily_limit=8),
+        )
+        calls = []
+
+        def search(prompt, task="token_context"):
+            calls.append(task)
+            return {"event_found": False, "sources": []}, {"tokens_used": 25}
+
+        agent._run_codex_search = search
+        token_a = TokenCandidate(chain="solana", address="A" * 32, name="Viral Otter")
+        token_b = TokenCandidate(chain="solana", address="B" * 32, name="Dancing Beaver")
+        await agent.search_token_context(
+            token_a,
+            TokenSnapshot("solana", token_a.address, 0.01, 50000, 500000, 20000, 100, 20),
+            momentum_score=90,
+        )
+        agent.resolve_token_context_trigger = lambda *args, **kwargs: {
+            "kind": "pre_entry_token_watch", "priority": 2
+        }
+        await agent.search_token_context(
+            token_b,
+            TokenSnapshot("solana", token_b.address, 0.01, 50000, 500000, 20000, 100, 20),
+            momentum_score=90,
+        )
+        assert calls == ["token_context", "token_context"]
+        assert [row["reason"] for row in store.token_context_admission_attempts(
+            token_b.token_id
+        )] == ["admitted"]
+        store.close()
+
+    asyncio.run(scenario())
+
+
 def test_token_context_global_cooldown_is_reserved_before_agent_finishes(tmp_path: Path):
     async def scenario():
         store = Store(tmp_path / "db.sqlite3")
@@ -1376,6 +1414,95 @@ def test_fresh_identity_metadata_link_triggers_research_without_momentum(tmp_pat
     assert agent.token_context_source_key(trigger) == "metadata:https://example.com/project"
     assert trigger["decision_eligible"] is False
     assert trigger["endorsement_inferred"] is False
+    store.close()
+
+
+def test_metadata_trigger_does_not_consume_parallel_onchain_momentum(tmp_path: Path):
+    store = Store(tmp_path / "parallel-onchain.sqlite3")
+    store.register_onchain_only_shadow(
+        momentum_threshold=80,
+        paper_stake_usd=20,
+        min_liquidity_usd=14_000,
+        max_liquidity_impact_pct=0.0025,
+        slippage_rate=0.04,
+        default_fee_bps=0,
+        pump_fee_bps=0,
+        max_tax_pct=10,
+        max_quote_delay_seconds=45,
+    )
+    agent = AutonomousSearchAgent(
+        store,
+        FakeHttp(),
+        config(context_min_momentum_score=80, context_metadata_link_trigger_enabled=True),
+    )
+    token = TokenCandidate(chain="solana", address="Y" * 32, name="Parallel signal")
+    observed_at = utcnow()
+    store.upsert_token(token, seen_at=observed_at)
+    round_id = store.start_token_discovery_round(
+        provider="fixture",
+        surface="fixture",
+        mode="poll",
+        chain_scope="solana",
+        started_at=observed_at,
+    )
+    store.add_token_discovery_exposure(
+        round_id,
+        token_id=token.token_id,
+        chain="solana",
+        role="new_token",
+        first_local_discovery=True,
+        new_token=True,
+        observed_at=observed_at,
+    )
+    store.finish_token_discovery_round(round_id, status="completed", returned_count=1)
+    snapshot_id = store.add_snapshot(
+        TokenSnapshot(
+            "solana",
+            token.address,
+            0.01,
+            25_000,
+            100_000,
+            50_000,
+            100,
+            10,
+            observed_at=observed_at,
+            ingested_at=observed_at,
+        )
+    )
+    store.upsert_token_source_link(
+        {
+            "token_id": token.token_id,
+            "provider": "pumpportal",
+            "discovery_surface": "launch_metadata",
+            "role": "identity",
+            "original_url": "https://example.com/parallel",
+            "normalized_url": "https://example.com/parallel",
+            "link_kind": "website",
+            "platform": "",
+            "verification_status": "provider_metadata",
+        },
+        observed_at=observed_at,
+    )
+
+    trigger = agent.resolve_token_context_trigger(
+        token,
+        momentum_score=90,
+        snapshot_observed_at=observed_at,
+        snapshot_id=snapshot_id,
+    )
+
+    assert trigger is not None
+    assert trigger["kind"] == "token_metadata_source_link"
+    assert trigger["onchain_shadow_cohort_id"] > 0
+    reasons = {
+        row["reason_code"]
+        for row in store.db.execute(
+            "SELECT reason_code FROM token_universe_funnel_transitions "
+            "WHERE token_id=? AND stage='context_trigger_evaluation'",
+            (token.token_id,),
+        )
+    }
+    assert reasons == {"token_metadata_source_link", "onchain_momentum"}
     store.close()
 
 

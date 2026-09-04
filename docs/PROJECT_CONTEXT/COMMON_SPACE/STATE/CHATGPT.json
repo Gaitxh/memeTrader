@@ -1,34 +1,43 @@
 {
   "schema_version": 1,
   "writer": "Lead ChatGPT",
-  "updated_date": "2026-09-02",
-  "lead_conversation_id": "6a98135b-e2d4-83e9-bd0c-269e36451542",
+  "updated_date": "2026-09-04",
+  "updated_at_utc": "2026-09-03T17:00:00Z",
+  "lead_conversation_id": "6a995e14-63bc-83e8-b1b2-efca42dca997",
   "codex_thread_id": "01a0514b-bbb5-7400-baf9-d9feb4dc603d",
-  "north_star": "Improve genuine forward, executable, cost-adjusted, risk-adjusted meme-token profitability without future-data leakage or manufactured trade count.",
+  "north_star": "Maximize genuine forward, executable, cost-adjusted long-run compounded meme-token profitability while controlling ruin, rug, liquidity-death and tail risk; never optimize manufactured trade count or non-executable marks.",
   "active_cycle_source": "docs/PROJECT_CONTEXT/CHATGPT_CODEX_SYNC_STATE.json",
+  "current_handoff": "docs/PROJECT_CONTEXT/CHATGPT_CURRENT_HANDOFF_2026-09-03.md",
+  "latest_strategy_research": "docs/PROJECT_CONTEXT/CHATGPT_ONCHAIN_FIRST_STRATEGIC_CONVERGENCE_2026-09-03.md",
   "current_collaboration_focus": [
-    "Prevent Codex forgetting/drift by E:-resident durable state and compact context guard.",
-    "Use Common Space for detailed bilateral research/challenge; direct messages are short doorbells.",
-    "Reduce development-side subagent/review cost and unnecessary defensive work.",
-    "Treat official docs/mature OSS/upstream issues/community experience as first-line research for generic tooling/implementation blockers.",
-    "Verify whether browser account/profile coverage latency is a current P0 cause of missed/stale exact social capture before changing timers blindly.",
-    "Keep Lead rollover safe so a new ChatGPT chat can inherit from E: without creating dual coordinators."
-  ],
-  "recent_findings": [
-    "One chronological pass recovered all 139 structured user messages from the designated Codex thread; Codex history and current GXH ChatGPT chats are complementary user-intent authority sources.",
-    "The target Codex thread has 99 context compactions and 91 distinct subagent starts; 48 started paths are conservatively named audit/review/recheck, consistent with the user's efficiency concern.",
-    "Current browser extension is event-driven faster than one minute on-page, but one account tab rotates 100 enabled accounts; idealized full normal-pool revisit is roughly 144 minutes. Coverage scheduling is a stronger freshness candidate than the 60-second fallback scan."
+    "Latest user supersession concentrates one full forward cycle on a single active strategy-development and Paper-promotion path: Solana canonical Pump.fun-to-PumpSwap pure-onchain momentum with RPC custody/LP-burn proof, exact-size Jupiter round-trip preflight and deterministic dynamic exit.",
+    "Confirmed onchain liquidity withdrawal/rug is terminal: at most one immediate full-remaining-size exit attempt, then close/write off, append dead lineage and never rearm or automatically re-enter for that policy version. A provider timeout, one no-route or DexScreener zero alone is not rug.",
+    "Pause active information Agents, S1/S3 promotion, WATCH/post-entry narrative dispatch, EVM chains and additional venue expansion. Preserve cheap passive RSS/browser/onchain collection, immutable history and Research Lab optionality.",
+    "Codex results accepted: product S3 authority restored; transient adaptive retry deployed; PumpSwap RPC custody v2 and Raydium CPMM custody v3 deployed; generic executable-looking open-position PNL removed until exact remaining-size valuation exists.",
+    "Before the first new primary BUY, replace the current positive-penny sell-preflight gate with a preregistered full round-trip cost floor and register a new isolated canonical-PumpSwap primary account/version. Current momentum threshold and v4 dynamic TP/stop parameters remain frozen; fixed 15/60/240 is the comparator.",
+    "Build Agent-free account/log-driven HOT/WARM/COOL/ALERT/DEAD monitoring and a read-only 1-second terminal cockpit before broad Web redesign. Browser refresh must never trigger provider work.",
+    "Current evidence supports focus but not alpha maturity: information used about 9.80M Agent tokens for 0 CANDIDATE after the fair cutoff; onchain v4 has eight entries, but dynamic realized results are tiny-sample and dominated by one winner."
   ],
   "open_questions": [
-    "Will live observation denominators confirm account coverage latency materially contributes to missed exact X/KOL posts?",
-    "Direct ChatGPT->Codex same-thread delivery is now verified through Codex Desktop codex_app.send_message_to_thread with MESSAGE_ID delivery/ACK checks; keep testing its usefulness only through real material messages, not synthetic pings.",
-    "Will the E:-resident context guard naturally appear after future prompt/resume/compact events without creating duplicate context?",
-    "Which current Codex task should be changed, if any, after it reads the recovered requirements and efficiency policy?"
+    "Has Codex ACKed the new focus directive and frozen a strategy-focus activation frontier that stops high-cost/non-primary dispatch while preserving passive collectors?",
+    "Has the exact-size immediate round-trip gate been corrected so a 20-USDC BUY that can recover only pennies cannot PASS?",
+    "Has scheduler v2 separated confirmed-rug terminal no-rearm/no-reentry from transient capped provider retries?",
+    "Can canonical-PumpSwap account/log subscriptions and a terminal cockpit expose exact remaining-size recovery without delaying critical exit quotes?",
+    "Do at least 100 closed primary positions across 15 dates remain profitable and robust after top-1/top-3 winner removal and date-block tests?",
+    "Does passive information evidence ever meet the explicit reactivation gate for active Agents?"
+  ],
+  "latest_lead_alerts": [
+    "docs/PROJECT_CONTEXT/COMMON_SPACE/ALERTS/CHATGPT_TO_CODEX/C2C-20260903-115826-CHATGPT-ONCHAIN-FIRST-PRIMARY-P0.md",
+    "docs/PROJECT_CONTEXT/COMMON_SPACE/ALERTS/CHATGPT_TO_CODEX/C2C-20260903-103109-CHATGPT-STOP-ISOLATED-S3-RESTORE-P0.md",
+    "docs/PROJECT_CONTEXT/COMMON_SPACE/ALERTS/CHATGPT_TO_CODEX/C2C-20260903-102646-CHATGPT-RUG-SAFETY-REALTIME-EXIT-UI-P0.md"
   ],
   "do_not_do": [
-    "Do not let collaboration infrastructure displace the active memeTrader economic bottleneck.",
-    "Do not enable a second code writer or second Lead coordinator.",
-    "Do not copy secrets/raw private reasoning into Common Space.",
-    "Do not promote Common Space proposals without existing governance."
+    "Do not split current engineering effort across S1/S2/S3, EVM chains or more Solana venues.",
+    "Do not classify one no-route/provider error/DEX zero as confirmed rug.",
+    "Do not rearm or automatically re-enter a confirmed rug/dead lineage.",
+    "Do not let net_recovery_usd greater than zero admit a catastrophic immediate round-trip loss.",
+    "Do not retune momentum, TP, stop or sizing from current tiny/winner-dominated samples.",
+    "Do not let UI, Research or Agents delay a safety/exit request.",
+    "Do not delete or backfill historical data and do not unlock Live."
   ]
 }

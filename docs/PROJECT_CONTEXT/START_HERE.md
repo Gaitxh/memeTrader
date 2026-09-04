@@ -1,6 +1,6 @@
 # START HERE — memeTrader 项目上下文
 
-最后更新：2026-09-02（Asia/Shanghai）
+最后更新：2026-09-04（Asia/Tokyo）
 
 这个目录是给后续开发者和 Agent 使用的**版本控制内项目记忆**。它保存产品意图、架构、安全边界、已实现状态、未完成事项和运行手册，但绝不保存密码、Cookie、Session、验证码、私钥、钱包材料、Bridge Token、公开入口口令、数据库内容或日志。
 
@@ -27,6 +27,9 @@
 - [../../CHATGPT_CONTACT.md](../../CHATGPT_CONTACT.md)：Codex 主动唤醒、联系和续接主协调 ChatGPT 的最小联系卡；端点以快速同步指针为准。
 - [CHATGPT_CODEX_SYNC_STATE.json](CHATGPT_CODEX_SYNC_STATE.json)：当前 active cycle、`attention_required`、open-group/alert 路由的快速可变指针；每次 substantial cycle 与上下文恢复先读。
 - [CHATGPT_LEAD_STATE.json](CHATGPT_LEAD_STATE.json)：Lead ChatGPT 的 E 盘耐久北极星、协作拓扑、已恢复要求与最新关键诊断。
+- [CHATGPT_CURRENT_HANDOFF_2026-09-03.md](CHATGPT_CURRENT_HANDOFF_2026-09-03.md)：当前 Lead 的最小续接入口；新 GXH chat 应先读它与同步指针，然后直接继续，不向用户重复整套历史，除非用户要求回顾。
+- [CHATGPT_SINGLE_WAVE_PEAK_EXIT_AND_MARKET_GRADE_PROFIT_PLAN_2026-09-04.md](CHATGPT_SINGLE_WAVE_PEAK_EXIT_AND_MARKET_GRADE_PROFIT_PLAN_2026-09-04.md)：当前最高权威的单主升浪/峰值退出、v5自然尾部、v6十二独立策略、全仓RiskKernel、真实执行、存储恢复、Cockpit与多链实施方案；本项目本地访问始终使用`@笔记本量化MCP-官方隧道`。
+- [CHATGPT_STRATEGY_POLICY_ARCH_RESEARCH_2026-09-03.md](CHATGPT_STRATEGY_POLICY_ARCH_RESEARCH_2026-09-03.md)：历史三策略家族、内部买卖 policy arms、自适应晋级、Solana/BSC/Robinhood 执行与 UI 信息架构研究；其产品定义被后续v5/v6 authority部分supersede，研究资产保留。
 - [CHATGPT_CURRENT_CONVERSATION_REQUIREMENTS_2026-09-02.md](CHATGPT_CURRENT_CONVERSATION_REQUIREMENTS_2026-09-02.md)：本次 GXH ChatGPT 聊天新增/强化的权威用户意图；与 Codex 历史互补。
 - [CHATGPT_RECOVERED_USER_REQUIREMENTS_2026-09-02.md](CHATGPT_RECOVERED_USER_REQUIREMENTS_2026-09-02.md)：从指定 Codex thread 的 139 条 userMessage 恢复并脱敏后的长期需求谱系。
 - [CHATGPT_CODEX_EXECUTION_EFFICIENCY_POLICY_2026-09-02.md](CHATGPT_CODEX_EXECUTION_EFFICIENCY_POLICY_2026-09-02.md)：Codex 开发子 Agent 成本、review/test 停止规则、open-source-first 与任务复杂度路由。
@@ -39,7 +42,7 @@
 - [SAFETY_AND_INVARIANTS.md](SAFETY_AND_INVARIANTS.md)：Paper/Live、时间门、账号、Agent、钱包和公开 URL 的硬边界。
 - [../SOLANA_HOLDER_BREADTH_SHADOW_CN.md](../SOLANA_HOLDER_BREADTH_SHADOW_CN.md)：Solana holder 聚合数据的低频前向可用性实验、误读边界和升级门。
 - [SNAPSHOT_2026-09-01.md](SNAPSHOT_2026-09-01.md)：最新 P0-A/P0-B 前向证据、Paper/非收益边界和未成熟自然样本断点。
-- [CHATGPT_REVIEW_HANDOFF_KOL_LOW_ATTENTION_PROBE_2026-09-02.md](CHATGPT_REVIEW_HANDOFF_KOL_LOW_ATTENTION_PROBE_2026-09-02.md)：三路最高强度 ChatGPT 独立复核已完成；原始“ticker/叙事词→Dex 候选→事后涨幅”方案为 `NO-GO`，修订后的前向 addressability-first 探针为 `MODIFIED_GO`，统一使用 `@笔记本mcp20260902`。
+- [CHATGPT_REVIEW_HANDOFF_KOL_LOW_ATTENTION_PROBE_2026-09-02.md](CHATGPT_REVIEW_HANDOFF_KOL_LOW_ATTENTION_PROBE_2026-09-02.md)：历史三路最高强度独立复核；原始“ticker/叙事词→Dex候选→事后涨幅”为`NO-GO`，修订后的前向addressability-first探针为`MODIFIED_GO`。旧插件名仅为历史记录；当前项目操作始终使用`@笔记本量化MCP-官方隧道`。
 - [SNAPSHOT_2026-08-31.md](SNAPSHOT_2026-08-31.md)：上一份全量需求复核、首笔 Paper 闭环审计、学习缺口和推进历史。
 - [SNAPSHOT_2026-08-30.md](SNAPSHOT_2026-08-30.md)：上一阶段实现、运行和未完成状态。
 - [OPERATIONS_AND_VALIDATION.md](OPERATIONS_AND_VALIDATION.md)：Windows 常驻、Web、浏览器采集、验证与发布检查。
@@ -76,7 +79,7 @@ memeTrader 是一个运行在个人 Windows 电脑上的、仅前向证据驱动
 
 ## 开始任何后续工作前
 
-先执行只读检查：
+本项目本地代码、SQLite、文档和运行操作只通过`@笔记本量化MCP-官方隧道`进行，除非用户以后明确更换。先执行只读检查：
 
 ```powershell
 Set-Location E:\memeTrader

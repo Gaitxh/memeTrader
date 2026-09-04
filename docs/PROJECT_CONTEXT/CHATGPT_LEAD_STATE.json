@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_date": "2026-09-02",
+  "updated_date": "2026-09-04",
   "purpose": "Durable, compact state for the Lead ChatGPT reasoning/review layer. This is routing and continuity context, not trading evidence and not a replacement for current code/SQLite/authoritative plans.",
   "north_star": {
     "business_goal": "Continuously improve genuine forward, executable, cost-adjusted, risk-adjusted meme-token profitability without using future data or manufacturing trade count.",
@@ -27,18 +27,18 @@
     "lead_chatgpt_role": "Objective keeper; deep research, reasoning, causal/statistical review, trading-economics review, architecture challenge, alternative-path discovery, cross-review synthesis and drift detection.",
     "reviewers": "Use distinct read-only roles only at material architecture/strategy/experiment/deployment gates; they report to Lead ChatGPT, not as competing writers.",
     "codex_thread_id": "01a0514b-bbb5-7400-baf9-d9feb4dc603d",
-    "lead_chatgpt_conversation_id": "6a98135b-e2d4-83e9-bd0c-269e36451542",
+    "lead_chatgpt_conversation_id": "6a995e14-63bc-83e8-b1b2-efca42dca997",
     "contact_card": "CHATGPT_CONTACT.md",
     "fast_sync_pointer": "docs/PROJECT_CONTEXT/CHATGPT_CODEX_SYNC_STATE.json",
     "durable_mailbox": "docs/PROJECT_CONTEXT/CHATGPT_CODEX_SYNC.md"
   },
   "current_cycle_hint": {
     "source_of_truth": "Read active_cycle from CHATGPT_CODEX_SYNC_STATE.json on every injection; this copy is only a fallback.",
-    "cycle_id": "kol-token-addressability-lag",
+    "cycle_id": "memetrader-system-research-20260903",
     "priority": "P0",
-    "status": "EXACT_POST_SOURCE_FACT_BINDING_AND_AMBIGUITY_FORWARD",
-    "objective": "Improve and measure exact/fresh post capture -> source-level fact investigation -> per-Token exact/ambiguous binding -> canonical/executable evidence, while keeping provider-post ambiguity separate and preventing identity/promotion or reused source facts from becoming Decision/Paper evidence.",
-    "scope_guard": "Do not displace this information-to-evidence P0 with UI, generic collaboration work, extra production Agent concurrency, Strategy relaxation, retrospective winners, or Live."
+    "status": "STRATEGY_POLICY_MULTICHAIN_EXECUTION_AND_LEARNING",
+    "objective": "Advance three strategy families with internal policy arms, fix clean Strategy-3 causal control, restore current-version executable quote flow, and implement chain-aware Solana/BSC/Robinhood simulation costs and clearer UI without future-data leakage.",
+    "scope_guard": "One writer; current code/SQLite facts first; no backfill, no gate relaxation, Live locked; preserve Base research/history; do not let communication or UI work displace execution correctness."
   },
   "memory_policy": {
     "durable_root": "E:/memeTrader",
@@ -48,6 +48,8 @@
     "journal_file": "docs/PROJECT_CONTEXT/CHATGPT_LEAD_JOURNAL.md",
     "recovered_user_requirements": "docs/PROJECT_CONTEXT/CHATGPT_RECOVERED_USER_REQUIREMENTS_2026-09-02.md",
     "current_chat_requirements": "docs/PROJECT_CONTEXT/CHATGPT_CURRENT_CONVERSATION_REQUIREMENTS_2026-09-02.md",
+    "current_handoff": "docs/PROJECT_CONTEXT/CHATGPT_CURRENT_HANDOFF_2026-09-03.md",
+    "latest_strategy_research": "docs/PROJECT_CONTEXT/CHATGPT_STRATEGY_POLICY_ARCH_RESEARCH_2026-09-03.md",
     "execution_efficiency_policy": "docs/PROJECT_CONTEXT/CHATGPT_CODEX_EXECUTION_EFFICIENCY_POLICY_2026-09-02.md",
     "common_space": "docs/PROJECT_CONTEXT/COMMON_SPACE/"
   },
@@ -87,6 +89,7 @@
     "safety_interpretation": "Do not upgrade Codex, start a second implementation thread, or mutate business/runtime files merely to improve coordination while the active checkout is busy."
   },
   "next_coordination_actions": [
+    "A new GXH ChatGPT chat should read CHATGPT_CURRENT_HANDOFF_2026-09-03.md plus CHATGPT_CODEX_SYNC_STATE.json and continue directly; do not re-explain the full project unless the user asks.",
     "Keep this state and the journal current after material Lead ChatGPT findings or handoffs.",
     "Treat open-source/official/mature-community research as the default first move for generic tool and implementation blockers before custom-building a replacement.",
     "Apply the development-side agent routing and stop rules from CHATGPT_CODEX_EXECUTION_EFFICIENCY_POLICY_2026-09-02.md; do not confuse them with production Trend/Source/Context Agent budgets.",

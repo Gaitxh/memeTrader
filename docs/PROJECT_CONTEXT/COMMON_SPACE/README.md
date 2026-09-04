@@ -66,21 +66,25 @@ Do **not** put here:
 
 ## 3. Alert card protocol
 
-When one side sees a material problem or clearly better path, create one small immutable card in its outgoing alert folder. Suggested fields:
+When one side sees a material problem or clearly better path, create one small immutable card in its outgoing alert folder. Formal material alerts use the canonical `[GXH_C2C_V3]` envelope:
 
 ```text
+[GXH_C2C_V3]
 MESSAGE_ID:
-FROM:
-TO:
-UTC:
-SEVERITY: INFO | IMPORTANT | BLOCKER
-TOPIC_ID:
-WHY_NOW:
-FINDING_OR_CHALLENGE:
-EVIDENCE_POINTERS:
-SUGGESTED_ACTION:
-BLOCKS_CURRENT_RELEASE: true|false
-ACK_EXPECTED: true|false
+REPLY_TO:
+TYPE:
+PRIORITY: NORMAL | HIGH | URGENT
+CYCLE_ID:
+ISSUE_ID:
+FACT_CUTOFF_UTC:
+SENDER:
+TARGET:
+BLOCKS_RELEASE: true | false
+ARTIFACT_POINTERS:
+SUMMARY:
+ACTION_REQUESTED:
+NEXT_SYNC_EVENT:
+SENSITIVE_DATA: NONE
 ```
 
 Then use the fastest available direct transport to send only a short doorbell, for example:
@@ -90,6 +94,8 @@ Then use the fastest available direct transport to send only a short doorbell, f
 If direct transport is unavailable, the existing durable mailbox/pointer remains the fallback.
 
 Do not resend the same alert unless materially new evidence exists. ACK may be a direct short message plus a pointer to the receiver's topic note; it does not require editing the sender's immutable alert.
+
+Every material message follows `CREATED → SEND_ACCEPTED → DELIVERED → ACKNOWLEDGED → PROCESSING → RESULT_SENT → RESULT_ACKNOWLEDGED → CLOSED`. Tool acceptance alone is never delivery; delivery requires exact `MESSAGE_ID` readback from the intended thread. ACK and RESULT must carry `REPLY_TO`. A deliberate retry uses a new ID plus `RETRY_OF`; ACK delay is not send failure.
 
 ## 4. When to interrupt the other side
 

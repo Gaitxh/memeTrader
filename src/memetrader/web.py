@@ -218,6 +218,13 @@ EXPECTED_TABLES = {
     "onchain_paper_narrative_runner_trades",
     "onchain_paper_narrative_context_registrations",
     "onchain_paper_narrative_context_seeds",
+    "token_information_confirmation_paper_registrations",
+    "token_information_confirmation_paper_account",
+    "token_information_confirmation_paper_evaluations",
+    "token_information_confirmation_paper_quote_attempts",
+    "token_information_confirmation_paper_results",
+    "token_information_confirmation_paper_positions",
+    "token_information_confirmation_paper_trades",
     "paper_source_attribution_attempts",
     "positions",
     "source_health",
@@ -4401,6 +4408,26 @@ class WebData:
             "execution": False, "pnl": False,
             "decision_eligible": False, "affects": "none",
         }
+        token_information_watch: dict[str, Any] = {
+            "status": "not_registered",
+            "definition_version": Store.TOKEN_INFORMATION_WATCH_VERSION,
+            "registered_at": None,
+            "activation_trigger_transition_id": None,
+            "cohorts": 0,
+            "terminal_counts": {},
+            "entry_enabled": False,
+            "decision_eligible": False,
+            "affects": "none",
+            "role": "research_observer_only",
+        }
+        token_information_confirmation_paper: dict[str, Any] = {
+            "status": "not_enabled", "simulated": True, "live": False,
+            "definition": {
+                "version": Store.TOKEN_INFORMATION_CONFIRMATION_PAPER_VERSION
+            },
+            "account": {}, "terminal_counts": {}, "positions": [],
+            "trades": [], "recent_results": [],
+        }
         with self.connect() as connection:
             ingestion_activity = self.ingestion_activity(connection)
             if connection is not None:
@@ -4533,6 +4560,11 @@ class WebData:
                         connection, trade_limit=trade_limit
                     )
                 )
+                token_information_confirmation_paper = (
+                    Store.token_information_confirmation_paper_summary_from_connection(
+                        connection, trade_limit=trade_limit
+                    )
+                )
                 if self._table_exists(
                     connection, "event_route_execution_challenger_registrations"
                 ):
@@ -4544,6 +4576,48 @@ class WebData:
                 evm_route_research = (
                     Store.onchain_only_evm_route_quote_summary_from_connection(connection)
                 )
+                evm_route_research["aggregator_price"] = (
+                    Store.onchain_only_evm_aggregator_price_summary_from_connection(connection)
+                )
+                if self._table_exists(connection, "token_information_watch_registrations"):
+                    watch_registration = connection.execute(
+                        "SELECT * FROM token_information_watch_registrations "
+                        "WHERE definition_version=?",
+                        (Store.TOKEN_INFORMATION_WATCH_VERSION,),
+                    ).fetchone()
+                    if watch_registration is not None:
+                        watch_counts = {
+                            str(row["state"]): int(row["count"])
+                            for row in connection.execute(
+                                """
+                                WITH latest AS (
+                                    SELECT watch_cohort_id,MAX(id) AS transition_id
+                                    FROM token_information_watch_transitions
+                                    WHERE definition_version=?
+                                    GROUP BY watch_cohort_id
+                                )
+                                SELECT t.state,COUNT(*) AS count
+                                FROM latest l
+                                JOIN token_information_watch_transitions t
+                                  ON t.id=l.transition_id
+                                GROUP BY t.state
+                                """,
+                                (Store.TOKEN_INFORMATION_WATCH_VERSION,),
+                            )
+                        }
+                        token_information_watch.update({
+                            "status": "forward_collecting",
+                            "registered_at": watch_registration["registered_at"],
+                            "activation_trigger_transition_id": int(
+                                watch_registration["activation_trigger_transition_id"]
+                            ),
+                            "cohorts": int(connection.execute(
+                                "SELECT COUNT(*) FROM token_information_watch_cohorts "
+                                "WHERE definition_version=?",
+                                (Store.TOKEN_INFORMATION_WATCH_VERSION,),
+                            ).fetchone()[0]),
+                            "terminal_counts": watch_counts,
+                        })
         missing = sum(1 for row in positions if row["market_value_usd"] is None)
         known_marks = sum(float(row["market_value_usd"] or 0) for row in positions if row["market_value_usd"] is not None)
         account["known_marked_value_usd"] = known_marks
@@ -4583,56 +4657,279 @@ class WebData:
             "live": {"enabled": False, "locked": True, "available": False},
             "fair_comparison": fair_epoch,
             "strategy_model": {
-                "version": "three-accounts-two-entry-logics/v1",
+                "version": "three-strategy-families-policy-arms/v1",
                 "cash_ledgers_are_additive": False,
+                "promotion_lifecycle": {
+                    "version": "forward-policy-promotion/v1",
+                    "stages": [
+                        "COLLECTING",
+                        "MATURE_DESCRIPTIVE",
+                        "POLICY_CANDIDATE",
+                        "PREREGISTERED_PAPER_ARM",
+                        "FORWARD_COMPARISON",
+                        "TEMPORAL_HOLDOUT_PASS",
+                        "PROMOTABLE",
+                        "REJECTED",
+                    ],
+                    "promotion_requires": [
+                        "immutable_activation_boundary",
+                        "point_in_time_features",
+                        "next_quote_execution",
+                        "cost_complete_or_explicitly_unknown",
+                        "forward_comparison",
+                        "temporal_holdout",
+                    ],
+                    "single_trade_online_rewrite": False,
+                    "winner_backfill": False,
+                    "live_promotion": "unavailable",
+                },
                 "chain_execution_status": [
                     {
                         "chain": "solana",
                         "discovery": "active",
                         "paper": "amount_specific_jupiter_strategy2",
                         "cost_basis": "minimum_output_plus_estimated_network_fee",
+                        "execution_profile_version": "solana-jupiter-amount-specific/v2",
+                        "valuation_authority": "executable_quote",
+                        "cost_completeness": "partial_modeled_network_fee",
+                        "cost_components": {
+                            "route_venue_fee": "OBSERVED_IN_MINIMUM_OUTPUT",
+                            "adverse_slippage_minimum_output": "OBSERVED",
+                            "token_buy_sell_tax": "NOT_APPLICABLE_SPL",
+                            "network_fee": "MODELED",
+                            "approval_cost": "NOT_APPLICABLE",
+                            "l1_l2_fee": "NOT_APPLICABLE",
+                            "no_route_unsellable_terminal": "ENFORCED",
+                        },
                     },
                     {
                         "chain": "bsc",
                         "discovery": "active",
                         "paper": "disabled_until_route_and_cost_complete",
                         "cost_basis": "quoter_research_only_network_fee_unknown",
+                        "execution_profile_version": "bsc-evm-route-research/v2",
+                        "valuation_authority": "research_only",
+                        "cost_completeness": "incomplete",
+                        "cost_components": {
+                            "route_venue_fee": "INDICATIVE_POOL_MATH_ONLY",
+                            "adverse_slippage_minimum_output": "INDICATIVE",
+                            "token_buy_sell_tax": "UNKNOWN",
+                            "network_fee": "UNKNOWN_BNB_GAS",
+                            "approval_cost": "UNKNOWN",
+                            "l1_l2_fee": "NOT_APPLICABLE",
+                            "no_route_unsellable_terminal": "OBSERVED_RESEARCH_ONLY",
+                        },
+                        "promotion_blockers": [
+                            "amount_specific_router_transaction_simulation",
+                            "sell_transfer_and_tax_checks",
+                            "dynamic_bnb_gas_and_allowance_cost",
+                        ],
                     },
                     {
                         "chain": "base",
                         "discovery": "research_only",
                         "paper": "disabled",
                         "cost_basis": "amount_specific_route_gas_and_l1_fee_pending",
+                        "execution_profile_version": "base-retained-research/v1",
+                        "valuation_authority": "research_only",
+                        "cost_completeness": "incomplete",
+                        "cost_components": {
+                            "route_venue_fee": "INDICATIVE_POOL_MATH_ONLY",
+                            "adverse_slippage_minimum_output": "INDICATIVE",
+                            "token_buy_sell_tax": "UNKNOWN",
+                            "network_fee": "UNKNOWN_L2_EXECUTION_GAS",
+                            "approval_cost": "UNKNOWN",
+                            "l1_l2_fee": "UNKNOWN_L1_DATA_FEE",
+                            "no_route_unsellable_terminal": "OBSERVED_RESEARCH_ONLY",
+                        },
                     },
                     {
                         "chain": "robinhood",
                         "discovery": "research_only",
                         "paper": "disabled",
                         "cost_basis": "stock_token_filter_route_gas_and_l1_fee_pending",
+                        "execution_profile_version": "robinhood-4663-route-research/v2",
+                        "valuation_authority": "research_only",
+                        "cost_completeness": "incomplete",
+                        "cost_components": {
+                            "route_venue_fee": "INDICATIVE_POOL_MATH_ONLY",
+                            "adverse_slippage_minimum_output": "INDICATIVE",
+                            "token_buy_sell_tax": "UNKNOWN",
+                            "network_fee": "UNKNOWN_ETH_L2_GAS",
+                            "approval_cost": "UNKNOWN",
+                            "l1_l2_fee": "UNKNOWN_L1_DATA_FEE",
+                            "no_route_unsellable_terminal": "OBSERVED_RESEARCH_ONLY",
+                        },
+                        "promotion_blockers": [
+                            "official_stock_token_rwa_exact_address_exclusion",
+                            "amount_specific_router_transaction_simulation",
+                            "sell_transfer_and_tax_checks",
+                            "dynamic_eth_gas_l1_fee_and_allowance_cost",
+                        ],
                     },
                 ],
                 "strategies": [
                     {
                         "id": "information_plus_token",
+                        "strategy_family_version": "information-plus-token/v1",
                         "entry_basis": ["information", "token"],
                         "account_key": "account",
                         "execution_challenger_key": "event_route_execution",
+                        "research_state": "paper_baseline",
+                        "exit_architecture": {
+                            "dynamic_exit_required": True,
+                            "active_dynamic_policy": "deterministic-paper-exit/v1",
+                            "fixed_horizon_role": "comparison_only",
+                            "learning": "versioned_forward_challenger_only",
+                        },
+                        "activation": {
+                            "epoch_id": fair_epoch.get("epoch_id") if fair_epoch else None,
+                            "activated_at": fair_started_at,
+                        },
+                        "decision_eligible": True,
+                        "affects": "paper_only",
+                        "policy_arms": [{
+                            "arm_id": "s1-current-paper-baseline",
+                            "policy_role": "current_paper_baseline",
+                            "promotion_state": "NOT_APPLICABLE_BASELINE",
+                            "signal_policy_version": "event-token-canonical-safety/v1",
+                            "entry_policy_version": "candidate-next-quote/v1",
+                            "sizing_policy_version": "fixed-20usdc/v1",
+                            "exit_policy_version": "deterministic-paper-exit/v1",
+                            "exit_mode": "dynamic",
+                            "cost_model_version": "paper-4pct-flat040/v1",
+                            "chain_execution_profile_version": "solana-current-paper/v1",
+                            "activation": {
+                                "epoch_id": fair_epoch.get("epoch_id") if fair_epoch else None,
+                                "activated_at": fair_started_at,
+                            },
+                        }],
                     },
                     {
                         "id": "token_only",
+                        "strategy_family_version": "token-only/v1",
                         "entry_basis": ["token"],
                         "account_key": "onchain_exploration",
                         "exit_comparison_key": "onchain_exit_challenger",
+                        "research_state": "forward_comparison",
+                        "exit_architecture": {
+                            "dynamic_exit_required": True,
+                            "active_dynamic_policy": Store.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION,
+                            "fixed_horizon_role": "comparison_baseline_only",
+                            "learning": "versioned_forward_challenger_only",
+                        },
+                        "activation": {
+                            "activated_at": onchain_exploration.get("registered_at"),
+                            "activation_quote_result_id": onchain_exploration.get(
+                                "activation_quote_result_id"
+                            ),
+                        },
+                        "decision_eligible": False,
+                        "affects": "research_only",
+                        "policy_arms": [
+                            {
+                                "arm_id": "s2-fixed-horizon",
+                                "policy_role": "comparison_baseline",
+                                "promotion_state": "NOT_APPLICABLE_BASELINE",
+                                "signal_policy_version": Store.ONCHAIN_ONLY_SHADOW_VERSION,
+                                "entry_policy_version": Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+                                "sizing_policy_version": "fixed-20usdc/v1",
+                                "exit_policy_version": "first-valid-15-60-240-or-writeoff/v1",
+                                "exit_mode": "fixed_comparison_baseline",
+                                "cost_model_version": "jupiter-min-output-flat040/v1",
+                                "chain_execution_profile_version": "solana-jupiter-quote/v2",
+                                "activation": {
+                                    "activated_at": onchain_exploration.get("registered_at"),
+                                    "activation_quote_result_id": onchain_exploration.get(
+                                        "activation_quote_result_id"
+                                    ),
+                                },
+                            },
+                            {
+                                "arm_id": "s2-dynamic-exit-challenger",
+                                "policy_role": "policy_challenger",
+                                "promotion_state": "FORWARD_COMPARISON",
+                                "signal_policy_version": Store.ONCHAIN_ONLY_SHADOW_VERSION,
+                                "entry_policy_version": Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+                                "sizing_policy_version": "fixed-20usdc/v1",
+                                "exit_policy_version": Store.ONCHAIN_PAPER_EXIT_CHALLENGER_VERSION,
+                                "exit_mode": "dynamic",
+                                "cost_model_version": "jupiter-min-output-flat040/v1",
+                                "chain_execution_profile_version": "solana-jupiter-quote/v2",
+                                "activation": {
+                                    "activated_at": onchain_exit_challenger.get("registered_at"),
+                                    "activation_buy_trade_id": onchain_exit_challenger.get(
+                                        "activation_buy_trade_id"
+                                    ),
+                                },
+                            },
+                        ],
                     },
                     {
-                        "id": "narrative_hold",
+                        "id": "token_then_information",
+                        "strategy_family_version": "token-then-information/v1",
                         "entry_basis": ["token"],
                         "account_key": "narrative_hold",
                         "entry_source_strategy_id": "token_only",
                         "entry_pairing": "exact",
                         "agent_role": "post_entry_narrative_evidence_only",
+                        "research_state": "collecting_control",
+                        "exit_architecture": {
+                            "dynamic_exit_required": True,
+                            "active_dynamic_policy": None,
+                            "fixed_horizon_role": "causal_control_only",
+                            "learning": "future_preregistered_forward_treatment",
+                            "status": "awaiting_preregistered_dynamic_treatment",
+                        },
+                        "activation": {
+                            "activated_at": narrative_hold.get("registered_at"),
+                            "activation_exploration_buy_trade_id": narrative_hold.get(
+                                "activation_exploration_buy_trade_id"
+                            ),
+                        },
+                        "decision_eligible": False,
+                        "affects": "none",
+                        "policy_arms": [{
+                            "arm_id": "s3-causal-control",
+                            "policy_role": "causal_control",
+                            "promotion_state": "NOT_APPLICABLE_BASELINE",
+                            "signal_policy_version": Store.ONCHAIN_ONLY_SHADOW_VERSION,
+                            "entry_policy_version": Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+                            "sizing_policy_version": "exact-s2-fixed-20usdc/v1",
+                            "exit_policy_version": "exact-s2-first-valid-15-60-240-or-writeoff/v1",
+                            "exit_mode": "fixed_causal_control",
+                            "cost_model_version": "exact-s2-jupiter-min-output-flat040/v1",
+                            "chain_execution_profile_version": "solana-jupiter-quote/v2",
+                            "post_entry_information_version": Store.ONCHAIN_PAPER_NARRATIVE_CONTEXT_VERSION,
+                            "post_entry_information_affects": "none",
+                            "activation": {
+                                "activated_at": narrative_hold.get("registered_at"),
+                                "activation_exploration_buy_trade_id": narrative_hold.get(
+                                    "activation_exploration_buy_trade_id"
+                                ),
+                            },
+                        }],
+                        "planned_policy_arms": [{
+                            "arm_id": "s3-dynamic-information-exit-treatment",
+                            "policy_role": "policy_candidate",
+                            "promotion_state": "POLICY_CANDIDATE",
+                            "entry_pairing": "exact_s2",
+                            "exit_mode": "dynamic",
+                            "allowed_components": [
+                                "stop_loss", "trailing_stop", "staged_take_profit",
+                                "liquidity_no_route_exit", "max_hold", "runner",
+                            ],
+                            "activation": None,
+                            "research_state": "not_preregistered",
+                            "affects": "none",
+                        }],
                     },
                 ],
+                "research_observers": [{
+                    "id": "token_information_watch",
+                    "top_level_strategy": False,
+                    **token_information_watch,
+                }],
             },
             "account": account,
             "summary": account,
@@ -4644,9 +4941,74 @@ class WebData:
             "narrative_hold": narrative_hold,
             "event_route_execution": event_route_execution,
             "evm_route_research": evm_route_research,
+            "token_information_watch": token_information_watch,
+            "token_information_confirmation_paper": token_information_confirmation_paper,
             "ingestion_activity": ingestion_activity,
             "as_of": iso(),
         }
+
+    def chain_meme_trader(self, query: dict[str, list[str]]) -> dict[str, Any]:
+        """Read-only live view of the twelve strictly-forward on-chain arms."""
+        trade_limit = _query_int(query, "trade_limit", 80, 1, 500)
+        with self.connect() as connection:
+            if connection is None:
+                return {
+                    "status": "database_unavailable",
+                    "version": Store.CHAIN_MEME_TRADER_VERSION,
+                    "strategies": [],
+                    "as_of": iso(),
+                }
+            payload = Store.chain_meme_trader_summary_from_connection(
+                connection, trade_limit=trade_limit
+            )
+            heartbeat = None
+            if self._table_exists(connection, "source_health"):
+                heartbeat = connection.execute(
+                    "SELECT * FROM source_health WHERE source='chain-meme-trader'"
+                ).fetchone()
+            last_ok_at = str(heartbeat["last_ok_at"]) if heartbeat and heartbeat["last_ok_at"] else None
+            heartbeat_age_minutes = _minutes_since(last_ok_at)
+            runtime_status = (
+                "running"
+                if heartbeat_age_minutes is not None and heartbeat_age_minutes <= 2.0
+                else "waiting"
+                if heartbeat is None
+                else "stale"
+            )
+            strategies = payload.get("strategies") or []
+            payload.update({
+                "runtime": {
+                    "status": runtime_status,
+                    "last_ok_at": last_ok_at,
+                    "heartbeat_age_minutes": heartbeat_age_minutes,
+                    "last_error_at": (
+                        str(heartbeat["last_error_at"])
+                        if heartbeat and heartbeat["last_error_at"] else None
+                    ),
+                    "last_error": (
+                        str(heartbeat["last_error"])
+                        if heartbeat and heartbeat["last_error"] else ""
+                    ),
+                },
+                "summary": {
+                    "strategy_count": len(strategies),
+                    "open_positions": sum(
+                        int((item.get("account") or {}).get("open_position_count") or 0)
+                        for item in strategies
+                    ),
+                    "closed_positions": sum(
+                        int((item.get("account") or {}).get("closed_position_count") or 0)
+                        for item in strategies
+                    ),
+                    "written_off_positions": sum(
+                        int((item.get("account") or {}).get("written_off_position_count") or 0)
+                        for item in strategies
+                    ),
+                },
+                "ingestion_activity": self.ingestion_activity(connection),
+                "as_of": iso(),
+            })
+            return payload
 
     @staticmethod
     def _agent_last_result(value: Any) -> dict[str, Any] | None:
@@ -6801,7 +7163,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 "version": "0.6.3",
                 "routes": [
                     "/api/overview", "/api/events", "/api/tokens", "/api/decisions",
-                    "/api/portfolio", "/api/notifications", "/api/agents", "/api/sources", "/api/audit", "/api/settings",
+                    "/api/portfolio", "/api/chain-meme-trader", "/api/notifications", "/api/agents", "/api/sources", "/api/audit", "/api/settings",
                     "/api/watchlist", "/api/wallet", "/api/telegram/external-handoffs",
                 ],
                 "live": {"enabled": False, "locked": True, "available": False},
@@ -6823,6 +7185,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             return self.data.decisions(query)
         if path == "/api/portfolio":
             return self.data.portfolio(query)
+        if path == "/api/chain-meme-trader":
+            return self.data.chain_meme_trader(query)
         if path == "/api/notifications":
             return self.data.notifications(query)
         if path == "/api/agents":

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import ipaddress
 import json
@@ -14,7 +15,7 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime
 from email.utils import parsedate_to_datetime
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable, Mapping
 
 import httpx
 import websockets
@@ -39,6 +40,402 @@ METADATA_HOSTS = {
     "metadata.google.internal",
     "metadata.google",
 }
+
+PUMPSWAP_POOL_DISCRIMINATOR = bytes((241, 154, 109, 4, 17, 177, 109, 188))
+PUMPSWAP_POOL_DECODER_V2 = "pump-amm-pool/v2-idl-6b5c7e-sdk-1.19.0"
+PUMPSWAP_POOL_IDL_DEFINED_SIZE = 261
+PUMPSWAP_POOL_SDK_EXTEND_THRESHOLD = 300
+PUMPSWAP_POOL_OBSERVED_ALLOCATION = 301
+PUMPSWAP_GLOBAL_CONFIG_DISCRIMINATOR = bytes((149, 8, 156, 202, 160, 252, 176, 217))
+PUMPSWAP_FEE_CONFIG_DISCRIMINATOR = bytes((143, 52, 146, 187, 219, 123, 76, 155))
+PUMPSWAP_GLOBAL_CONFIG_DECODER_V1 = "pump-amm-global-config/v1-idl-6b5c7e-sdk-1.19.0"
+PUMPSWAP_FEE_CONFIG_DECODER_V1 = "pump-fee-config/v1-idl-6b5c7e-sdk-1.19.0"
+PUMPSWAP_SELL_BASE_INPUT_V1 = "pump-amm-sell-base-input/v1-sdk-1.19.0"
+PUMP_PROGRAM_ID = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+PUMP_AMM_PROGRAM_ID = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
+PUMP_FEE_PROGRAM_ID = "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ"
+PUMP_GLOBAL_PDA = "4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf"
+PUMP_FEE_CONFIG_PDA = "8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt"
+PUMP_BONDING_CURVE_DISCRIMINATOR = bytes((23, 183, 248, 55, 96, 216, 172, 96))
+PUMP_GLOBAL_DISCRIMINATOR = bytes((167, 232, 232, 177, 200, 108, 114, 127))
+PUMP_BONDING_CURVE_DECODER_V1 = "pump-bonding-curve/v1-idl-sdk-1.36.0"
+PUMP_GLOBAL_DECODER_V1 = "pump-global/v1-idl-sdk-1.36.0"
+PUMP_BONDING_CURVE_SELL_V1 = "pump-bonding-curve-sell/v1-sdk-1.36.0"
+SOLANA_SYSTEM_PROGRAM_ID = "11111111111111111111111111111111"
+SOLANA_WRAPPED_SOL_MINT = "So11111111111111111111111111111111111111112"
+SOLANA_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+PUMPSWAP_GLOBAL_CONFIG_PDA = "ADyA8hdefvWN2dbGGWFotbzWxrAvLW83WG6QCVXvJKqw"
+PUMPSWAP_FEE_CONFIG_PDA = "5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx"
+PUMPSWAP_DISABLE_SELL_MASK = 1 << 4
+
+
+def decode_pump_bonding_curve_account(raw: bytes) -> dict[str, Any]:
+    """Decode the current Pump BondingCurve while zero-padding legacy accounts."""
+    if len(raw) < 49 or raw[:8] != PUMP_BONDING_CURVE_DISCRIMINATOR:
+        raise ValueError("invalid_pump_bonding_curve_layout")
+    from solders.pubkey import Pubkey
+
+    padded = raw[:115].ljust(115, b"\0")
+    return {
+        "decoder_version": PUMP_BONDING_CURVE_DECODER_V1,
+        "account_data_length": len(raw),
+        "virtual_token_reserves_raw": int.from_bytes(padded[8:16], "little"),
+        "virtual_quote_reserves_raw": int.from_bytes(padded[16:24], "little"),
+        "real_token_reserves_raw": int.from_bytes(padded[24:32], "little"),
+        "real_quote_reserves_raw": int.from_bytes(padded[32:40], "little"),
+        "token_total_supply_raw": int.from_bytes(padded[40:48], "little"),
+        "complete": bool(padded[48]),
+        "creator": str(Pubkey.from_bytes(padded[49:81])),
+        "is_mayhem_mode": bool(padded[81]),
+        "is_cashback_coin": bool(padded[82]),
+        "quote_mint": str(Pubkey.from_bytes(padded[83:115])),
+    }
+
+
+def decode_pump_global_account(raw: bytes) -> dict[str, Any]:
+    """Decode the Pump Global fields used by official SDK 1.36.0 sell math."""
+    if len(raw) < 162 or raw[:8] != PUMP_GLOBAL_DISCRIMINATOR:
+        raise ValueError("invalid_pump_global_layout")
+    return {
+        "decoder_version": PUMP_GLOBAL_DECODER_V1,
+        "account_data_length": len(raw),
+        "fee_basis_points": int.from_bytes(raw[105:113], "little"),
+        "creator_fee_basis_points": int.from_bytes(raw[154:162], "little"),
+    }
+
+
+def pump_bonding_curve_sell_quote_v1(
+    *,
+    token_amount_raw: int,
+    slippage_bps: int,
+    bonding_curve: Mapping[str, Any],
+    global_config: Mapping[str, Any],
+    fee_config: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Exact integer port of @pump-fun/pump-sdk 1.36.0 bonding-curve sell."""
+    from solders.pubkey import Pubkey
+
+    amount = int(token_amount_raw)
+    slippage = int(slippage_bps)
+    virtual_token = int(bonding_curve["virtual_token_reserves_raw"])
+    virtual_quote = int(bonding_curve["virtual_quote_reserves_raw"])
+    real_quote = int(bonding_curve["real_quote_reserves_raw"])
+    if amount <= 0 or not 0 <= slippage <= 10_000:
+        raise ValueError("invalid_pump_sell_input")
+    if bool(bonding_curve.get("complete")) or virtual_token <= 0:
+        raise ValueError("bonding_curve_complete_migrated")
+    if virtual_quote <= 0:
+        raise ValueError("invalid_pump_virtual_quote_reserve")
+
+    fee_tier_index: int | None = None
+    if fee_config is not None:
+        tiers = list(fee_config.get("fee_tiers") or [])
+        if not tiers:
+            raise ValueError("invalid_pump_fee_tiers")
+        supply = (
+            int(bonding_curve["token_total_supply_raw"])
+            if bool(bonding_curve.get("is_mayhem_mode"))
+            else 1_000_000_000_000_000
+        )
+        market_cap = virtual_quote * supply // virtual_token
+        fee_tier_index = 0
+        if market_cap >= int(tiers[0]["market_cap_lamports_threshold"]):
+            for index in range(len(tiers) - 1, -1, -1):
+                if market_cap >= int(tiers[index]["market_cap_lamports_threshold"]):
+                    fee_tier_index = index
+                    break
+        selected = dict(tiers[fee_tier_index]["fees"])
+        fee_source = "pump_fee_config_tier"
+    else:
+        market_cap = virtual_quote * int(
+            bonding_curve["token_total_supply_raw"]
+        ) // virtual_token
+        selected = {
+            "lp_fee_bps": 0,
+            "protocol_fee_bps": int(global_config["fee_basis_points"]),
+            "creator_fee_bps": int(global_config["creator_fee_basis_points"]),
+        }
+        fee_source = "pump_global"
+
+    def fee(value: int, bps: int) -> int:
+        return (value * bps + 9_999) // 10_000
+
+    gross = amount * virtual_quote // (virtual_token + amount)
+    protocol_fee_bps = int(selected.get("protocol_fee_bps") or 0)
+    creator_fee_bps = int(selected.get("creator_fee_bps") or 0)
+    creator_present = str(bonding_curve.get("creator") or "") != str(Pubkey.default())
+    protocol_fee = fee(gross, protocol_fee_bps)
+    creator_fee = fee(gross, creator_fee_bps) if creator_present else 0
+    if gross > real_quote:
+        raise ValueError("insufficient_real_quote_reserves")
+    received = gross - protocol_fee - creator_fee
+    if received <= 0:
+        raise ValueError("pump_fees_exceed_output")
+    minimum = received * (10_000 - slippage) // 10_000
+    return {
+        "calculation_version": PUMP_BONDING_CURVE_SELL_V1,
+        "fee_source": fee_source,
+        "fee_tier_index": fee_tier_index,
+        "market_cap_quote_raw": market_cap,
+        "internal_quote_amount_out_raw": gross,
+        "lp_fee_bps": 0,
+        "protocol_fee_bps": protocol_fee_bps,
+        "creator_fee_bps": creator_fee_bps if creator_present else 0,
+        "lp_fee_raw": 0,
+        "protocol_fee_raw": protocol_fee,
+        "creator_fee_raw": creator_fee,
+        "real_reserve_coverage_raw": gross,
+        "ui_quote_raw": received,
+        "min_quote_raw": minimum,
+    }
+
+
+def decode_pumpswap_pool_account(
+    raw: bytes, *, include_current_fields: bool = True
+) -> dict[str, Any]:
+    """Decode official PumpSwap Pool fields; allocation padding is not data."""
+    if len(raw) < 211 or raw[:8] != PUMPSWAP_POOL_DISCRIMINATOR:
+        raise ValueError("invalid_pumpswap_pool_layout")
+    from solders.pubkey import Pubkey
+
+    def pubkey(offset: int) -> str:
+        return str(Pubkey.from_bytes(raw[offset:offset + 32]))
+
+    decoded: dict[str, Any] = {
+        "index": int.from_bytes(raw[9:11], "little"),
+        "creator": pubkey(11),
+        "base_mint": pubkey(43),
+        "quote_mint": pubkey(75),
+        "lp_mint": pubkey(107),
+        "base_vault": pubkey(139),
+        "quote_vault": pubkey(171),
+        "lp_supply_recorded_raw": int.from_bytes(raw[203:211], "little"),
+    }
+    if not include_current_fields:
+        return decoded
+
+    padded = raw[:PUMPSWAP_POOL_IDL_DEFINED_SIZE].ljust(
+        PUMPSWAP_POOL_IDL_DEFINED_SIZE, b"\0"
+    )
+    if padded[243] not in (0, 1) or padded[244] not in (0, 1):
+        raise ValueError("invalid_pumpswap_pool_bool")
+    coin_creator = str(Pubkey.from_bytes(padded[211:243]))
+    decoded.update({
+        "decoder_version": PUMPSWAP_POOL_DECODER_V2,
+        "account_data_length": len(raw),
+        "idl_defined_size": PUMPSWAP_POOL_IDL_DEFINED_SIZE,
+        "sdk_extend_threshold": PUMPSWAP_POOL_SDK_EXTEND_THRESHOLD,
+        "observed_current_allocation": PUMPSWAP_POOL_OBSERVED_ALLOCATION,
+        "needs_sdk_extend": len(raw) < PUMPSWAP_POOL_SDK_EXTEND_THRESHOLD,
+        "coin_creator": coin_creator,
+        "coin_creator_is_default": coin_creator == str(Pubkey.default()),
+        "is_mayhem_mode": bool(padded[243]),
+        "is_cashback_coin": bool(padded[244]),
+        "virtual_quote_reserves_raw": int.from_bytes(
+            padded[245:261], "little", signed=True
+        ),
+        "allocation_padding_length": max(0, len(raw) - PUMPSWAP_POOL_IDL_DEFINED_SIZE),
+    })
+    return decoded
+
+
+def decode_pumpswap_global_config_account(raw: bytes) -> dict[str, Any]:
+    """Decode the fixed-size PumpSwap GlobalConfig from the official IDL."""
+    if len(raw) < 940 or raw[:8] != PUMPSWAP_GLOBAL_CONFIG_DISCRIMINATOR:
+        raise ValueError("invalid_pumpswap_global_config_layout")
+    if raw[417] not in (0, 1) or raw[642] not in (0, 1) or raw[939] not in (0, 1):
+        raise ValueError("invalid_pumpswap_global_config_bool")
+    from solders.pubkey import Pubkey
+
+    def pubkey(offset: int) -> str:
+        return str(Pubkey.from_bytes(raw[offset:offset + 32]))
+
+    return {
+        "decoder_version": PUMPSWAP_GLOBAL_CONFIG_DECODER_V1,
+        "account_data_length": len(raw),
+        "borsh_used_size": 940,
+        "admin": pubkey(8),
+        "lp_fee_basis_points": int.from_bytes(raw[40:48], "little"),
+        "protocol_fee_basis_points": int.from_bytes(raw[48:56], "little"),
+        "disable_flags": raw[56],
+        "protocol_fee_recipients": [pubkey(57 + 32 * index) for index in range(8)],
+        "coin_creator_fee_basis_points": int.from_bytes(raw[313:321], "little"),
+        "admin_set_coin_creator_authority": pubkey(321),
+        "whitelist_pda": pubkey(353),
+        "reserved_fee_recipient": pubkey(385),
+        "mayhem_mode_enabled": bool(raw[417]),
+        "reserved_fee_recipients": [pubkey(418 + 32 * index) for index in range(7)],
+        "is_cashback_enabled": bool(raw[642]),
+        "buyback_fee_recipients": [pubkey(643 + 32 * index) for index in range(8)],
+        "buyback_basis_points": int.from_bytes(raw[899:907], "little"),
+        "boost_authority": pubkey(907),
+        "boost_enabled": bool(raw[939]),
+        "allocation_padding_length": len(raw) - 940,
+    }
+
+
+def decode_pumpswap_fee_config_account(raw: bytes) -> dict[str, Any]:
+    """Decode Pump fee tiers and retain the IDL's stable tiers and padding."""
+    if len(raw) < 73 or raw[:8] != PUMPSWAP_FEE_CONFIG_DISCRIMINATOR:
+        raise ValueError("invalid_pumpswap_fee_config_layout")
+    from solders.pubkey import Pubkey
+
+    def fees(offset: int) -> dict[str, int]:
+        return {
+            "lp_fee_bps": int.from_bytes(raw[offset:offset + 8], "little"),
+            "protocol_fee_bps": int.from_bytes(raw[offset + 8:offset + 16], "little"),
+            "creator_fee_bps": int.from_bytes(raw[offset + 16:offset + 24], "little"),
+        }
+
+    def tiers(offset: int, count: int) -> list[dict[str, Any]]:
+        return [
+            {
+                "market_cap_lamports_threshold": int.from_bytes(
+                    raw[offset + 40 * index:offset + 40 * index + 16], "little"
+                ),
+                "fees": fees(offset + 40 * index + 16),
+            }
+            for index in range(count)
+        ]
+
+    fee_tier_count = int.from_bytes(raw[65:69], "little")
+    stable_count_offset = 69 + 40 * fee_tier_count
+    if stable_count_offset + 4 > len(raw):
+        raise ValueError("invalid_pumpswap_fee_config_layout")
+    stable_fee_tier_count = int.from_bytes(
+        raw[stable_count_offset:stable_count_offset + 4], "little"
+    )
+    stable_tier_offset = stable_count_offset + 4
+    borsh_used_size = stable_tier_offset + 40 * stable_fee_tier_count
+    if borsh_used_size > len(raw):
+        raise ValueError("invalid_pumpswap_fee_config_layout")
+    return {
+        "decoder_version": PUMPSWAP_FEE_CONFIG_DECODER_V1,
+        "account_data_length": len(raw),
+        "borsh_used_size": borsh_used_size,
+        "bump": raw[8],
+        "admin": str(Pubkey.from_bytes(raw[9:41])),
+        "flat_fees": fees(41),
+        "fee_tiers": tiers(69, fee_tier_count),
+        "stable_fee_tiers": tiers(stable_tier_offset, stable_fee_tier_count),
+        "allocation_padding_length": len(raw) - borsh_used_size,
+    }
+
+
+def pumpswap_sell_base_input_v1(
+    *,
+    base_amount_raw: int,
+    slippage_bps: int,
+    base_reserve_raw: int,
+    quote_reserve_raw: int,
+    virtual_quote_reserves_raw: int,
+    base_mint_supply_raw: int,
+    base_mint: str,
+    creator: str,
+    coin_creator: str,
+    global_config: Mapping[str, Any],
+    fee_config: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Exact integer port of pump-swap-sdk 1.19.0 sellBaseInput."""
+    from solders.pubkey import Pubkey
+
+    base = int(base_amount_raw)
+    base_reserve = int(base_reserve_raw)
+    real_quote_reserve = int(quote_reserve_raw)
+    virtual_quote_reserve = int(virtual_quote_reserves_raw)
+    supply = int(base_mint_supply_raw)
+    slippage = int(slippage_bps)
+    if base < 0 or base_reserve < 0 or real_quote_reserve < 0 or supply < 0:
+        raise ValueError("invalid_pumpswap_sell_unsigned_input")
+    if base_reserve == 0 or real_quote_reserve == 0:
+        raise ValueError("invalid_pumpswap_sell_zero_reserve")
+    if not 0 <= slippage <= 10_000:
+        raise ValueError("invalid_pumpswap_sell_slippage")
+
+    def trunc_div(numerator: int, denominator: int) -> int:
+        if denominator == 0:
+            raise ZeroDivisionError
+        sign = -1 if (numerator < 0) != (denominator < 0) else 1
+        return sign * (abs(numerator) // abs(denominator))
+
+    def fee(amount: int, basis_points: int) -> int:
+        return trunc_div(amount * basis_points + 9_999, 10_000)
+
+    effective_quote_reserve = real_quote_reserve + virtual_quote_reserve
+    quote_amount_out = trunc_div(
+        effective_quote_reserve * base, base_reserve + base
+    )
+    market_cap_lamports = trunc_div(
+        effective_quote_reserve * supply, base_reserve
+    )
+
+    base_key = Pubkey.from_string(str(base_mint))
+    pump_program = Pubkey.from_string(PUMP_PROGRAM_ID)
+    pump_creator = Pubkey.find_program_address(
+        [b"pool-authority", bytes(base_key)], pump_program
+    )[0]
+    is_pump_pool = Pubkey.from_string(str(creator)) == pump_creator
+    fee_tier_index: int | None = None
+    if fee_config is None:
+        selected_fees = {
+            "lp_fee_bps": int(global_config["lp_fee_basis_points"]),
+            "protocol_fee_bps": int(global_config["protocol_fee_basis_points"]),
+            "creator_fee_bps": int(global_config["coin_creator_fee_basis_points"]),
+        }
+        fee_source = "global_config"
+    elif is_pump_pool:
+        fee_tiers = list(fee_config["fee_tiers"])
+        if not fee_tiers:
+            raise ValueError("invalid_pumpswap_fee_tiers")
+        fee_tier_index = 0
+        if market_cap_lamports >= int(fee_tiers[0]["market_cap_lamports_threshold"]):
+            for index in range(len(fee_tiers) - 1, -1, -1):
+                if market_cap_lamports >= int(
+                    fee_tiers[index]["market_cap_lamports_threshold"]
+                ):
+                    fee_tier_index = index
+                    break
+        selected_fees = fee_tiers[fee_tier_index]["fees"]
+        fee_source = "fee_config_tier"
+    else:
+        selected_fees = fee_config["flat_fees"]
+        fee_source = "fee_config_flat"
+
+    lp_fee_bps = int(selected_fees["lp_fee_bps"])
+    protocol_fee_bps = int(selected_fees["protocol_fee_bps"])
+    creator_fee_bps = int(selected_fees["creator_fee_bps"])
+    lp_fee = fee(quote_amount_out, lp_fee_bps)
+    protocol_fee = fee(quote_amount_out, protocol_fee_bps)
+    coin_creator_key = Pubkey.from_string(str(coin_creator))
+    creator_fee = (
+        0 if coin_creator_key == Pubkey.default()
+        else fee(quote_amount_out, creator_fee_bps)
+    )
+    real_reserve_coverage_raw = quote_amount_out - lp_fee
+    if real_quote_reserve < real_reserve_coverage_raw:
+        raise ValueError("insufficient_real_quote_reserves")
+    final_quote = quote_amount_out - lp_fee - protocol_fee - creator_fee
+    if final_quote < 0:
+        raise ValueError("pumpswap_fees_exceed_output")
+    min_quote = final_quote * (10_000 - slippage) // 10_000
+    return {
+        "calculation_version": PUMPSWAP_SELL_BASE_INPUT_V1,
+        "is_pump_pool": is_pump_pool,
+        "fee_source": fee_source,
+        "fee_tier_index": fee_tier_index,
+        "effective_quote_reserve_raw": effective_quote_reserve,
+        "market_cap_lamports": market_cap_lamports,
+        "internal_quote_amount_out_raw": quote_amount_out,
+        "lp_fee_bps": lp_fee_bps,
+        "protocol_fee_bps": protocol_fee_bps,
+        "creator_fee_bps": creator_fee_bps,
+        "lp_fee_raw": lp_fee,
+        "protocol_fee_raw": protocol_fee,
+        "creator_fee_raw": creator_fee,
+        "real_reserve_coverage_raw": real_reserve_coverage_raw,
+        "ui_quote_raw": final_quote,
+        "min_quote_raw": min_quote,
+    }
 
 
 class UnsafeFeedURL(ValueError):
@@ -320,13 +717,16 @@ class HttpClient:
             wait = self.min_host_interval - (time.monotonic() - self._last[host])
             if wait > 0:
                 await asyncio.sleep(wait)
-            response = await self.client.get(url, params=params, headers=headers)
+            # Rate limits are defined between request starts.  Recording the
+            # timestamp after the response added network latency to every
+            # interval and made a nominal 0.5 RPS client substantially slower.
             self._last[host] = time.monotonic()
+            response = await self.client.get(url, params=params, headers=headers)
             if response.status_code == 429:
                 retry = min(15.0, float(response.headers.get("Retry-After", "2") or 2))
                 await asyncio.sleep(retry)
-                response = await self.client.get(url, params=params, headers=headers)
                 self._last[host] = time.monotonic()
+                response = await self.client.get(url, params=params, headers=headers)
         response.raise_for_status()
         if ttl:
             try:
@@ -1136,6 +1536,8 @@ class DexScreenerClient:
         self,
         chain: str,
         addresses: list[str] | tuple[str, ...],
+        *,
+        ttl: float = 8,
     ) -> dict[str, tuple[TokenCandidate, TokenSnapshot]]:
         """Hydrate up to many token details through DexScreener's documented 30-address endpoint."""
         normalized_chain = self._chain(str(chain)).lower()
@@ -1147,7 +1549,7 @@ class DexScreenerClient:
             joined = urllib.parse.quote(",".join(chunk), safe=",")
             response = await self.http.get(
                 f"{self.BASE}/tokens/v1/{normalized_chain}/{joined}",
-                ttl=8,
+                ttl=ttl,
             )
             payload = response.json()
             if isinstance(payload, dict):
@@ -1165,6 +1567,14 @@ class DexScreenerClient:
                 if current is None or (snap.liquidity_usd or 0.0) > (current[1].liquidity_usd or 0.0):
                     by_token[candidate.token_id] = (candidate, snap)
         return by_token
+
+    async def batch_quote_fresh(
+        self,
+        chain: str,
+        addresses: list[str] | tuple[str, ...],
+    ) -> dict[str, tuple[TokenCandidate, TokenSnapshot]]:
+        """Fetch current held-token marks without reusing the hydration cache."""
+        return await self.batch_quote(chain, addresses, ttl=0)
 
 
     async def discover_surface(
@@ -1216,8 +1626,9 @@ class JupiterQuoteClient:
 
     BASE = "https://api.jup.ag/swap/v2/order"
 
-    def __init__(self, http: HttpClient):
+    def __init__(self, http: HttpClient, api_key: str = ""):
         self.http = http
+        self._api_key = str(api_key or "").strip()
 
     async def quote(
         self,
@@ -1235,10 +1646,14 @@ class JupiterQuoteClient:
             raise ValueError("slippage_bps must be between 0 and 10000")
         requested_at = iso(utcnow())
         try:
-            response = await self.http.get(self.BASE, params={
-                "inputMint": input_mint, "outputMint": output_mint,
-                "amount": amount, "slippageBps": slippage_bps,
-            })
+            response = await self.http.get(
+                self.BASE,
+                params={
+                    "inputMint": input_mint, "outputMint": output_mint,
+                    "amount": amount, "slippageBps": slippage_bps,
+                },
+                headers={"x-api-key": self._api_key} if self._api_key else None,
+            )
             if hasattr(response, "raise_for_status"):
                 response.raise_for_status()
         except httpx.HTTPStatusError as exc:
@@ -1339,6 +1754,205 @@ class JupiterQuoteClient:
             "time_taken_ms": payload.get("totalTime")
             if payload.get("totalTime") is not None
             else ((float(payload["timeTaken"]) * 1000) if payload.get("timeTaken") is not None else None),
+        }
+
+
+class RobinhoodStockTokenRegistryClient:
+    """Read the official Robinhood Stock Token address registry."""
+
+    SOURCE_URL = "https://api.robinhood.com/rhj/assets"
+    CHAIN_ID = 4663
+
+    def __init__(self, http: HttpClient):
+        self.http = http
+
+    async def fetch(self) -> dict[str, Any]:
+        requested_at = utcnow()
+        response = await self.http.get(self.SOURCE_URL, ttl=3_600)
+        completed_at = utcnow()
+        payload = response.json()
+        if not isinstance(payload, dict) or not isinstance(payload.get("assets"), list):
+            raise ValueError("Robinhood Stock Token registry payload is invalid")
+        entries: list[dict[str, Any]] = []
+        for asset in payload["assets"]:
+            if not isinstance(asset, dict):
+                continue
+            for deployment in asset.get("deployments") or []:
+                if not isinstance(deployment, dict) or int(deployment.get("chainId") or 0) != self.CHAIN_ID:
+                    continue
+                address = str(deployment.get("contractAddress") or "").strip().lower()
+                if not re.fullmatch(r"0x[0-9a-f]{40}", address):
+                    continue
+                entries.append({
+                    "asset_id": str(asset.get("id") or "")[:80],
+                    "token_symbol": str(asset.get("tokenSymbol") or "")[:40],
+                    "token_name": str(asset.get("tokenName") or "")[:200],
+                    "contract_address": address,
+                    "chain_id": self.CHAIN_ID,
+                    "asset_status": str(asset.get("status") or "")[:60],
+                })
+        if not entries:
+            raise ValueError("Robinhood Stock Token registry contains no chain-4663 deployments")
+        canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return {
+            "source_url": self.SOURCE_URL,
+            "requested_at": iso(requested_at),
+            "completed_at": iso(completed_at),
+            "payload_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+            "asset_count": len(payload["assets"]),
+            "entries": entries,
+        }
+
+
+class EvmZeroXPriceClient:
+    """Amount-specific 0x Swap v2 observer; never signs or submits transactions."""
+
+    URL = "https://api.0x.org/swap/allowance-holder/price"
+    CHAIN_IDS = {"bsc": 56, "base": 8453, "robinhood": 4663}
+
+    def __init__(self, http: HttpClient, api_key: str):
+        self.http = http
+        self._api_key = str(api_key or "").strip()
+        if not self._api_key:
+            raise ValueError("0x API key is required")
+
+    @staticmethod
+    def _address(value: Any) -> str:
+        address = str(value or "").strip().lower()
+        if not re.fullmatch(r"0x[0-9a-f]{40}", address):
+            raise ValueError("valid EVM address required")
+        return address
+
+    @staticmethod
+    def _uint(value: Any, field: str, *, allow_zero: bool = False) -> int:
+        try:
+            number = int(str(value))
+        except (TypeError, ValueError) as exc:
+            raise EvmRouteQuoteProtocolError(f"0x {field} is invalid") from exc
+        if number < 0 or (number == 0 and not allow_zero):
+            raise EvmRouteQuoteProtocolError(f"0x {field} is non-positive")
+        return number
+
+    @staticmethod
+    def _tax_bps(metadata: Any, side: str) -> dict[str, int | None]:
+        item = metadata.get(side) if isinstance(metadata, dict) else None
+        if not isinstance(item, dict):
+            return {"buy_tax_bps": None, "sell_tax_bps": None}
+        parsed: dict[str, int | None] = {}
+        for source, target in (("buyTaxBps", "buy_tax_bps"), ("sellTaxBps", "sell_tax_bps")):
+            try:
+                value = int(str(item[source])) if item.get(source) is not None else None
+            except (TypeError, ValueError) as exc:
+                raise EvmRouteQuoteProtocolError(f"0x {source} is invalid") from exc
+            if value is not None and not 0 <= value <= 10_000:
+                raise EvmRouteQuoteProtocolError(f"0x {source} is outside bps range")
+            parsed[target] = value
+        return parsed
+
+    async def price(
+        self,
+        chain: str,
+        sell_token: str,
+        buy_token: str,
+        sell_amount_raw: int | str,
+        *,
+        slippage_bps: int = 400,
+    ) -> dict[str, Any]:
+        chain = str(chain).strip().lower()
+        if chain not in self.CHAIN_IDS:
+            raise ValueError("unsupported 0x chain")
+        sell = self._address(sell_token)
+        buy = self._address(buy_token)
+        amount = int(sell_amount_raw)
+        slippage = int(slippage_bps)
+        if amount <= 0 or not 0 <= slippage < 10_000 or sell == buy:
+            raise ValueError("valid amount, slippage and distinct tokens required")
+        requested_at = iso(utcnow())
+        try:
+            response = await self.http.client.get(
+                self.URL,
+                params={
+                    "chainId": str(self.CHAIN_IDS[chain]),
+                    "sellToken": sell,
+                    "buyToken": buy,
+                    "sellAmount": str(amount),
+                    "slippageBps": str(slippage),
+                },
+                headers={"0x-api-key": self._api_key, "0x-version": "v2"},
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:
+            raise EvmRouteQuoteError("0x price request failed") from exc
+        completed_at = iso(utcnow())
+        if not isinstance(payload, dict):
+            raise EvmRouteQuoteProtocolError("0x price response is not an object")
+        if payload.get("liquidityAvailable") is not True:
+            return {
+                "provider": "0x_swap_v2_price",
+                "chain": chain,
+                "chain_id": self.CHAIN_IDS[chain],
+                "requested_at": requested_at,
+                "completed_at": completed_at,
+                "status": "no_route",
+                "sell_token": sell,
+                "buy_token": buy,
+                "sell_amount_raw": str(amount),
+                "slippage_bps": slippage,
+                "decision_eligible": False,
+                "affects": "none",
+            }
+        if self._address(payload.get("sellToken")) != sell or self._address(payload.get("buyToken")) != buy:
+            raise EvmRouteQuoteProtocolError("0x token identity mismatch")
+        sell_amount = self._uint(payload.get("sellAmount"), "sellAmount")
+        buy_amount = self._uint(payload.get("buyAmount"), "buyAmount")
+        minimum = self._uint(payload.get("minBuyAmount"), "minBuyAmount")
+        if sell_amount != amount or minimum > buy_amount:
+            raise EvmRouteQuoteProtocolError("0x amount identity mismatch")
+        route = payload.get("route") if isinstance(payload.get("route"), dict) else {}
+        fills = route.get("fills") if isinstance(route.get("fills"), list) else []
+        clean_fills = [
+            {
+                "from": self._address(item.get("from")),
+                "to": self._address(item.get("to")),
+                "source": str(item.get("source") or "")[:80],
+                "proportion_bps": self._uint(item.get("proportionBps"), "proportionBps", allow_zero=True),
+            }
+            for item in fills if isinstance(item, dict)
+        ]
+        issues = payload.get("issues") if isinstance(payload.get("issues"), dict) else {}
+        allowance = issues.get("allowance") if isinstance(issues.get("allowance"), dict) else None
+        return {
+            "provider": "0x_swap_v2_price",
+            "chain": chain,
+            "chain_id": self.CHAIN_IDS[chain],
+            "requested_at": requested_at,
+            "completed_at": completed_at,
+            "status": "priced",
+            "sell_token": sell,
+            "buy_token": buy,
+            "sell_amount_raw": str(sell_amount),
+            "buy_amount_raw": str(buy_amount),
+            "minimum_buy_amount_raw": str(minimum),
+            "slippage_bps": slippage,
+            "block_number": self._uint(payload.get("blockNumber"), "blockNumber"),
+            "gas": self._uint(payload.get("gas"), "gas"),
+            "gas_price_raw": str(self._uint(payload.get("gasPrice"), "gasPrice")),
+            "total_network_fee_native_raw": str(
+                self._uint(payload.get("totalNetworkFee"), "totalNetworkFee", allow_zero=True)
+            ),
+            "sell_token_tax": self._tax_bps(payload.get("tokenMetadata"), "sellToken"),
+            "buy_token_tax": self._tax_bps(payload.get("tokenMetadata"), "buyToken"),
+            "allowance_required": allowance is not None,
+            "allowance_spender": self._address(allowance.get("spender")) if allowance else None,
+            "simulation_incomplete": bool(issues.get("simulationIncomplete")),
+            "route": clean_fills,
+            "execution_scope": "amount_specific_aggregator_indicative_price",
+            "firm_quote": False,
+            "transaction_built": False,
+            "transaction_submitted": False,
+            "decision_eligible": False,
+            "affects": "none",
         }
 
 
@@ -1689,6 +2303,666 @@ class EvmUniswapV3QuoteClient:
             "decision_eligible": False,
             "affects": "none",
         }
+
+
+class SolanaHeldAccountCollector:
+    """Subscribe only to exact accounts of currently held canonical PumpSwap positions."""
+
+    MAX_MULTIPLE_ACCOUNTS = 100
+
+    def __init__(self, rpc_url: str, *, refresh_seconds: float = 5.0):
+        self.rpc_url = str(rpc_url)
+        parsed = urllib.parse.urlparse(str(rpc_url))
+        scheme = "wss" if parsed.scheme == "https" else "ws"
+        self.url = urllib.parse.urlunparse(
+            (scheme, parsed.netloc, parsed.path or "/", "", parsed.query, "")
+        )
+        # PublicNode rejects getMultipleAccounts requests containing more than
+        # ten keys with HTTP 403.  Keep the upstream limit for other RPCs.
+        self.max_multiple_accounts = (
+            10 if parsed.netloc.casefold().endswith("publicnode.com")
+            else self.MAX_MULTIPLE_ACCOUNTS
+        )
+        self.refresh_seconds = max(1.0, float(refresh_seconds))
+        self.http = httpx.AsyncClient(timeout=15.0)
+
+    @staticmethod
+    def _rpc_error_reason(exc: Exception) -> str:
+        if isinstance(exc, httpx.HTTPStatusError):
+            return f"HTTPStatusError:{exc.response.status_code}"
+        return type(exc).__name__
+
+    async def close(self) -> None:
+        await self.http.aclose()
+
+    async def _initial_updates(
+        self, targets: list[Mapping[str, Any]]
+    ) -> list[dict[str, Any]]:
+        updates: list[dict[str, Any]] = []
+        for offset in range(0, len(targets), self.max_multiple_accounts):
+            batch = targets[offset:offset + self.max_multiple_accounts]
+            response = await self.http.post(
+                self.rpc_url,
+                json={
+                    "jsonrpc": "2.0", "id": offset // self.max_multiple_accounts + 1,
+                    "method": "getMultipleAccounts",
+                    "params": [
+                        [str(target["pubkey"]) for target in batch],
+                        {"encoding": "base64", "commitment": "confirmed"},
+                    ],
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+            result = payload.get("result") if isinstance(payload, Mapping) else None
+            values = result.get("value") if isinstance(result, Mapping) else None
+            if not isinstance(values, list) or len(values) != len(batch):
+                raise ValueError("held account baseline response is invalid")
+            slot = int((result.get("context") or {}).get("slot") or 0)
+            observed_at = iso(utcnow())
+            for target, value in zip(batch, values):
+                decoded = self.decode_account(
+                    target, value if isinstance(value, Mapping) else None
+                )
+                encoded = value.get("data") if isinstance(value, Mapping) else None
+                digest_payload = encoded[0] if isinstance(encoded, list) and encoded else ""
+                updates.append({
+                    **dict(target),
+                    "slot": slot,
+                    "data_hash": hashlib.sha256(str(digest_payload).encode()).hexdigest(),
+                    "decoded": decoded,
+                    "observed_at": observed_at,
+                })
+        return updates
+
+    async def bonding_curve_quotes(
+        self,
+        surfaces: list[Mapping[str, Any]],
+        *,
+        slippage_bps: int = 400,
+        wsol_usdc_conversion: Mapping[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Quote exact current Pump bonding-curve exits from one coherent RPC read."""
+        if not surfaces:
+            return []
+        from solders.pubkey import Pubkey
+
+        results: list[dict[str, Any]] = []
+        pump_program = Pubkey.from_string(PUMP_PROGRAM_ID)
+        surface_batch_size = max(1, self.max_multiple_accounts - 2)
+        for offset in range(0, len(surfaces), surface_batch_size):
+            batch = surfaces[offset:offset + surface_batch_size]
+            requested_at = utcnow()
+            pubkeys = list(dict.fromkeys([
+                PUMP_GLOBAL_PDA,
+                PUMP_FEE_CONFIG_PDA,
+                *(str(surface["curve_address"]) for surface in batch),
+            ]))
+            try:
+                response = await self.http.post(
+                    self.rpc_url,
+                    json={
+                        "jsonrpc": "2.0", "id": offset // surface_batch_size + 20_000,
+                        "method": "getMultipleAccounts",
+                        "params": [pubkeys, {"encoding": "base64", "commitment": "confirmed"}],
+                    },
+                )
+                response.raise_for_status()
+                payload = response.json()
+                result = payload.get("result") if isinstance(payload, Mapping) else None
+                values = result.get("value") if isinstance(result, Mapping) else None
+                slot = int((result.get("context") or {}).get("slot") or 0) if isinstance(result, Mapping) else 0
+                if not isinstance(values, list) or len(values) != len(pubkeys) or slot <= 0:
+                    raise ValueError("pump_curve_account_bundle_invalid")
+                accounts = dict(zip(pubkeys, values))
+            except Exception as exc:
+                completed_at = utcnow()
+                for surface in batch:
+                    results.append({
+                        **dict(surface), "context_slot": 0,
+                        "requested_at": iso(requested_at), "completed_at": iso(completed_at),
+                        "age_ms": max(0, round((completed_at - requested_at).total_seconds() * 1000)),
+                        "status": "LOCAL_UNKNOWN_RPC", "reason": self._rpc_error_reason(exc),
+                        "source_hashes": {}, "surface_type": "pump_bonding_curve",
+                    })
+                continue
+
+            def decode(pubkey: str, target: Mapping[str, Any]) -> dict[str, Any]:
+                return self.decode_account(target, accounts.get(pubkey))
+
+            global_config = decode(PUMP_GLOBAL_PDA, {
+                "account_kind": "pump_global",
+                "expected_program_owner": PUMP_PROGRAM_ID,
+            })
+            fee_config = decode(PUMP_FEE_CONFIG_PDA, {
+                "account_kind": "fee_config",
+                "expected_program_owner": PUMP_FEE_PROGRAM_ID,
+            })
+            for surface in batch:
+                completed_at = utcnow()
+                quote_mint = SOLANA_WRAPPED_SOL_MINT
+                curve_address = str(surface["curve_address"])
+                source_hashes: dict[str, str] = {}
+                for pubkey in (curve_address, PUMP_GLOBAL_PDA, PUMP_FEE_CONFIG_PDA):
+                    value = accounts.get(pubkey)
+                    encoded = value.get("data") if isinstance(value, Mapping) else None
+                    body = encoded[0] if isinstance(encoded, list) and encoded else ""
+                    source_hashes[pubkey] = hashlib.sha256(str(body).encode()).hexdigest()
+                common = {
+                    **dict(surface), "pool_address": curve_address,
+                    "surface_type": "pump_bonding_curve", "context_slot": slot,
+                    "requested_at": iso(requested_at), "completed_at": iso(completed_at),
+                    "age_ms": max(0, round((completed_at - requested_at).total_seconds() * 1000)),
+                    "source_hashes": source_hashes,
+                }
+                try:
+                    mint = Pubkey.from_string(str(surface["base_mint"]))
+                    expected_curve = str(Pubkey.find_program_address(
+                        [b"bonding-curve", bytes(mint)], pump_program,
+                    )[0])
+                    if curve_address != expected_curve or (
+                        str(surface.get("source_pair_address") or "")
+                        and str(surface.get("source_pair_address")) != expected_curve
+                    ):
+                        raise PermissionError("bonding_curve_identity_mismatch")
+                    curve = decode(curve_address, {
+                        "account_kind": "bonding_curve",
+                        "expected_program_owner": PUMP_PROGRAM_ID,
+                    })
+                    required = (curve, global_config)
+                    if any(item.get("status") == "missing" for item in required):
+                        raise LookupError("required_account_missing")
+                    if any(item.get("status") != "verified" for item in required):
+                        raise PermissionError("required_account_identity_invalid")
+                    if fee_config.get("status") not in {"verified", "missing"}:
+                        raise RuntimeError("fee_config_identity_invalid")
+                    quote_mint = str(curve.get("quote_mint") or SOLANA_SYSTEM_PROGRAM_ID)
+                    if quote_mint in {SOLANA_SYSTEM_PROGRAM_ID, SOLANA_WRAPPED_SOL_MINT}:
+                        quote_mint = SOLANA_WRAPPED_SOL_MINT
+                    quote = pump_bonding_curve_sell_quote_v1(
+                        token_amount_raw=int(surface["remaining_amount_raw"]),
+                        slippage_bps=int(slippage_bps), bonding_curve=curve,
+                        global_config=global_config,
+                        fee_config=fee_config if fee_config.get("status") == "verified" else None,
+                    )
+                    estimate = None
+                    conversion_source = ""
+                    conversion_min_usdc_raw = None
+                    conversion_input_raw = None
+                    conversion_completed_at = None
+                    if quote_mint == SOLANA_USDC_MINT:
+                        estimate = int(quote["min_quote_raw"]) / 1_000_000.0
+                        conversion_source = "direct_usdc_curve_minimum"
+                    elif quote_mint == SOLANA_WRAPPED_SOL_MINT and wsol_usdc_conversion:
+                        conversion_input_raw = int(wsol_usdc_conversion.get("input_amount_raw") or 0)
+                        conversion_min_usdc_raw = int(
+                            wsol_usdc_conversion.get("minimum_output_amount_raw") or 0
+                        )
+                        conversion_completed_at = str(
+                            wsol_usdc_conversion.get("completed_at") or ""
+                        )
+                        if conversion_input_raw > 0 and conversion_min_usdc_raw > 0:
+                            estimate = (
+                                int(quote["min_quote_raw"]) * conversion_min_usdc_raw
+                                / conversion_input_raw / 1_000_000.0
+                            )
+                            conversion_source = "shared_jupiter_wsol_usdc_minimum"
+                    results.append({
+                        **common, **quote, "quote_mint": quote_mint,
+                        "status": "LOCAL_SURFACE_CURRENT", "reason": "",
+                        "direct_estimated_recovery_usd": estimate,
+                        "conversion_source": conversion_source,
+                        "conversion_min_usdc_raw": conversion_min_usdc_raw,
+                        "conversion_input_raw": conversion_input_raw,
+                        "conversion_completed_at": conversion_completed_at,
+                    })
+                except LookupError as exc:
+                    results.append({**common, "status": "LOCAL_UNKNOWN_MISSING_ACCOUNT", "reason": str(exc)})
+                except PermissionError as exc:
+                    results.append({**common, "status": "LOCAL_UNKNOWN_IDENTITY", "reason": str(exc)})
+                except RuntimeError as exc:
+                    results.append({**common, "status": "LOCAL_UNKNOWN_FEE_CONFIG", "reason": str(exc)})
+                except ValueError as exc:
+                    reason = str(exc)
+                    status = (
+                        "LOCAL_NO_DIRECT_CAPACITY"
+                        if reason in {"insufficient_real_quote_reserves", "bonding_curve_complete_migrated"}
+                        else "LOCAL_UNKNOWN_MATH"
+                    )
+                    results.append({
+                        **common, "status": status, "reason": reason,
+                        "quote_mint": quote_mint,
+                    })
+        return results
+
+    async def pumpswap_route_surface_quotes(
+        self, candidates: list[Mapping[str, Any]], *, slippage_bps: int = 400,
+    ) -> list[dict[str, Any]]:
+        """Verify Jupiter/Dex route pool keys, then quote their exact PumpSwap surface."""
+        verified: list[dict[str, Any]] = []
+        results: list[dict[str, Any]] = []
+        for offset in range(0, len(candidates), self.max_multiple_accounts):
+            batch = candidates[offset:offset + self.max_multiple_accounts]
+            requested_at = utcnow()
+            pool_keys = list(dict.fromkeys(str(item["pool_address"]) for item in batch))
+            try:
+                response = await self.http.post(
+                    self.rpc_url,
+                    json={
+                        "jsonrpc": "2.0", "id": offset // self.max_multiple_accounts + 9_000,
+                        "method": "getMultipleAccounts",
+                        "params": [pool_keys, {"encoding": "base64", "commitment": "confirmed"}],
+                    },
+                )
+                response.raise_for_status()
+                payload = response.json()
+                result = payload.get("result") if isinstance(payload, Mapping) else None
+                values = result.get("value") if isinstance(result, Mapping) else None
+                slot = int((result.get("context") or {}).get("slot") or 0) if isinstance(result, Mapping) else 0
+                if not isinstance(values, list) or len(values) != len(pool_keys) or slot <= 0:
+                    raise ValueError("route_surface_pool_bundle_invalid")
+                accounts = dict(zip(pool_keys, values))
+            except Exception as exc:
+                completed_at = utcnow()
+                for candidate in batch:
+                    results.append({
+                        **dict(candidate), "quote_mint": "", "context_slot": 0,
+                        "requested_at": iso(requested_at), "completed_at": iso(completed_at),
+                        "age_ms": max(0, round((completed_at - requested_at).total_seconds() * 1000)),
+                        "status": "LOCAL_UNKNOWN_RPC", "reason": self._rpc_error_reason(exc),
+                        "source_hashes": {},
+                    })
+                continue
+            completed_at = utcnow()
+            for candidate in batch:
+                pool_address = str(candidate["pool_address"])
+                value = accounts.get(pool_address)
+                common = {
+                    **dict(candidate), "quote_mint": "", "context_slot": slot,
+                    "requested_at": iso(requested_at), "completed_at": iso(completed_at),
+                    "age_ms": max(0, round((completed_at - requested_at).total_seconds() * 1000)),
+                }
+                encoded = value.get("data") if isinstance(value, Mapping) else None
+                body = encoded[0] if isinstance(encoded, list) and encoded else ""
+                source_hashes = {pool_address: hashlib.sha256(str(body).encode()).hexdigest()}
+                try:
+                    pool = self.decode_account({
+                        **dict(candidate), "account_kind": "pool",
+                        "decoder_version": PUMPSWAP_POOL_DECODER_V2,
+                        "expected_program_owner": PUMP_AMM_PROGRAM_ID,
+                    }, value)
+                    if pool.get("status") == "missing":
+                        raise LookupError("route_surface_pool_missing")
+                    if pool.get("status") != "verified":
+                        raise PermissionError(str(pool.get("reason") or "route_surface_pool_invalid"))
+                    verified.append({
+                        **dict(candidate),
+                        "pool_address": pool_address,
+                        "base_mint": str(pool["base_mint"]),
+                        "quote_mint": str(pool["quote_mint"]),
+                        "lp_mint": str(pool["lp_mint"]),
+                        "base_vault": str(pool["base_vault"]),
+                        "quote_vault": str(pool["quote_vault"]),
+                        "surface_type": "pumpswap_route_pool",
+                        "route_verification_slot": slot,
+                    })
+                except LookupError as exc:
+                    results.append({**common, "status": "LOCAL_UNKNOWN_MISSING_ACCOUNT", "reason": str(exc), "source_hashes": source_hashes})
+                except (PermissionError, KeyError, ValueError) as exc:
+                    results.append({**common, "status": "LOCAL_UNKNOWN_IDENTITY", "reason": str(exc), "source_hashes": source_hashes})
+        if verified:
+            results.extend(await self.local_surface_quotes(verified, slippage_bps=slippage_bps))
+        return results
+
+    async def local_surface_quotes(
+        self, surfaces: list[Mapping[str, Any]], *, slippage_bps: int = 400,
+    ) -> list[dict[str, Any]]:
+        """Read coherent PumpSwap account bundles and quote exact remaining amounts."""
+        results: list[dict[str, Any]] = []
+        surface_batch_size = 1 if self.max_multiple_accounts <= 10 else 24
+        for offset in range(0, len(surfaces), surface_batch_size):
+            batch = surfaces[offset:offset + surface_batch_size]
+            requested_at = utcnow()
+            pubkeys: list[str] = []
+            for surface in batch:
+                pubkeys.extend([
+                    str(surface["pool_address"]), str(surface["base_vault"]),
+                    str(surface["quote_vault"]), str(surface["base_mint"]),
+                    str(surface["quote_mint"]),
+                ])
+            pubkeys.extend([PUMPSWAP_GLOBAL_CONFIG_PDA, PUMPSWAP_FEE_CONFIG_PDA])
+            pubkeys = list(dict.fromkeys(pubkeys))
+            try:
+                response = await self.http.post(
+                    self.rpc_url,
+                    json={
+                        "jsonrpc": "2.0", "id": offset // surface_batch_size + 10_000,
+                        "method": "getMultipleAccounts",
+                        "params": [pubkeys, {"encoding": "base64", "commitment": "confirmed"}],
+                    },
+                )
+                response.raise_for_status()
+                payload = response.json()
+                result = payload.get("result") if isinstance(payload, Mapping) else None
+                values = result.get("value") if isinstance(result, Mapping) else None
+                slot = int((result.get("context") or {}).get("slot") or 0) if isinstance(result, Mapping) else 0
+                if not isinstance(values, list) or len(values) != len(pubkeys) or slot <= 0:
+                    raise ValueError("local_surface_account_bundle_invalid")
+                accounts = dict(zip(pubkeys, values))
+                completed_at = utcnow()
+            except Exception as exc:
+                completed_at = utcnow()
+                for surface in batch:
+                    results.append({
+                        **dict(surface), "context_slot": 0,
+                        "requested_at": iso(requested_at), "completed_at": iso(completed_at),
+                        "age_ms": max(0, round((completed_at - requested_at).total_seconds() * 1000)),
+                        "status": "LOCAL_UNKNOWN_RPC", "reason": self._rpc_error_reason(exc),
+                        "source_hashes": {},
+                    })
+                continue
+
+            def decode(pubkey: str, target: Mapping[str, Any]) -> dict[str, Any]:
+                return self.decode_account(target, accounts.get(pubkey))
+
+            global_config = decode(PUMPSWAP_GLOBAL_CONFIG_PDA, {
+                "account_kind": "global_config",
+                "expected_program_owner": PUMP_AMM_PROGRAM_ID,
+            })
+            fee_config = decode(PUMPSWAP_FEE_CONFIG_PDA, {
+                "account_kind": "fee_config",
+                "expected_program_owner": PUMP_FEE_PROGRAM_ID,
+            })
+            for surface in batch:
+                completed_at = utcnow()
+                common = {
+                    **dict(surface), "context_slot": slot,
+                    "requested_at": iso(requested_at), "completed_at": iso(completed_at),
+                    "age_ms": max(0, round((completed_at - requested_at).total_seconds() * 1000)),
+                }
+                source_hashes = {}
+                for pubkey in (
+                    str(surface["pool_address"]), str(surface["base_vault"]),
+                    str(surface["quote_vault"]), str(surface["base_mint"]),
+                    str(surface["quote_mint"]),
+                    PUMPSWAP_GLOBAL_CONFIG_PDA, PUMPSWAP_FEE_CONFIG_PDA,
+                ):
+                    value = accounts.get(pubkey)
+                    encoded = value.get("data") if isinstance(value, Mapping) else None
+                    body = encoded[0] if isinstance(encoded, list) and encoded else ""
+                    source_hashes[pubkey] = hashlib.sha256(str(body).encode()).hexdigest()
+                common["source_hashes"] = source_hashes
+                try:
+                    pool = decode(str(surface["pool_address"]), {
+                        **dict(surface), "account_kind": "pool",
+                        "decoder_version": PUMPSWAP_POOL_DECODER_V2,
+                        "expected_program_owner": PUMP_AMM_PROGRAM_ID,
+                    })
+                    base_mint = decode(str(surface["base_mint"]), {
+                        **dict(surface), "account_kind": "token_mint",
+                    })
+                    quote_mint = decode(str(surface["quote_mint"]), {
+                        **dict(surface), "account_kind": "token_mint",
+                    })
+                    if base_mint.get("status") != "verified" or quote_mint.get("status") != "verified":
+                        raise PermissionError("mint_identity_invalid")
+                    base_token_program = str(base_mint.get("owner") or "")
+                    quote_token_program = str(quote_mint.get("owner") or "")
+                    if (
+                        surface.get("base_token_program")
+                        and str(surface["base_token_program"]) != base_token_program
+                    ) or (
+                        surface.get("quote_token_program")
+                        and str(surface["quote_token_program"]) != quote_token_program
+                    ):
+                        raise PermissionError("token_program_identity_changed")
+                    base_vault = decode(str(surface["base_vault"]), {
+                        **dict(surface), "account_kind": "base_vault",
+                        "expected_mint": str(surface["base_mint"]),
+                        "expected_program_owner": base_token_program,
+                    })
+                    quote_vault = decode(str(surface["quote_vault"]), {
+                        **dict(surface), "account_kind": "quote_vault",
+                        "expected_mint": str(surface["quote_mint"]),
+                        "expected_program_owner": quote_token_program,
+                    })
+                    required = (
+                        pool, base_vault, quote_vault, base_mint, quote_mint,
+                        global_config,
+                    )
+                    if any(item.get("status") == "missing" for item in required):
+                        raise LookupError("required_account_missing")
+                    if any(item.get("status") != "verified" for item in required):
+                        raise PermissionError("required_account_identity_invalid")
+                    if fee_config.get("status") not in {"verified", "missing"}:
+                        raise RuntimeError("fee_config_identity_invalid")
+                    from solders.pubkey import Pubkey
+                    pump_program = Pubkey.from_string(PUMP_PROGRAM_ID)
+                    canonical_creator = str(Pubkey.find_program_address(
+                        [b"pool-authority", bytes(Pubkey.from_string(str(surface["base_mint"])))],
+                        pump_program,
+                    )[0])
+                    if (
+                        str(pool.get("creator")) != canonical_creator
+                        or str(pool.get("base_mint")) != str(surface["base_mint"])
+                        or str(pool.get("quote_mint")) != str(surface["quote_mint"])
+                        or str(pool.get("base_vault")) != str(surface["base_vault"])
+                        or str(pool.get("quote_vault")) != str(surface["quote_vault"])
+                    ):
+                        raise PermissionError("canonical_surface_identity_mismatch")
+                    if int(global_config.get("disable_flags") or 0) & PUMPSWAP_DISABLE_SELL_MASK:
+                        results.append({
+                            **common, "status": "LOCAL_SELL_DISABLED",
+                            "reason": "global_config_sell_disabled",
+                        })
+                        continue
+                    quote = pumpswap_sell_base_input_v1(
+                        base_amount_raw=int(surface["remaining_amount_raw"]),
+                        slippage_bps=int(slippage_bps),
+                        base_reserve_raw=int(base_vault["amount_raw"]),
+                        quote_reserve_raw=int(quote_vault["amount_raw"]),
+                        virtual_quote_reserves_raw=int(pool["virtual_quote_reserves_raw"]),
+                        base_mint_supply_raw=int(base_mint["supply_raw"]),
+                        base_mint=str(surface["base_mint"]), creator=str(pool["creator"]),
+                        coin_creator=str(pool["coin_creator"]), global_config=global_config,
+                        fee_config=fee_config if fee_config.get("status") == "verified" else None,
+                    )
+                    results.append({
+                        **common, **quote, "status": "LOCAL_SURFACE_CURRENT", "reason": "",
+                    })
+                except LookupError as exc:
+                    results.append({**common, "status": "LOCAL_UNKNOWN_MISSING_ACCOUNT", "reason": str(exc)})
+                except PermissionError as exc:
+                    results.append({**common, "status": "LOCAL_UNKNOWN_IDENTITY", "reason": str(exc)})
+                except RuntimeError as exc:
+                    results.append({**common, "status": "LOCAL_UNKNOWN_FEE_CONFIG", "reason": str(exc)})
+                except ValueError as exc:
+                    reason = str(exc)
+                    status = (
+                        "LOCAL_NO_DIRECT_CAPACITY"
+                        if reason in {"insufficient_real_quote_reserves", "invalid_pumpswap_sell_zero_reserve"}
+                        else "LOCAL_UNKNOWN_MATH"
+                    )
+                    results.append({**common, "status": status, "reason": reason})
+        return results
+
+    @staticmethod
+    def _pubkey(raw: bytes, offset: int) -> str:
+        from solders.pubkey import Pubkey
+
+        return str(Pubkey.from_bytes(raw[offset:offset + 32]))
+
+    @classmethod
+    def decode_account(
+        cls, target: Mapping[str, Any], value: Mapping[str, Any] | None
+    ) -> dict[str, Any]:
+        if not isinstance(value, Mapping):
+            return {"status": "missing", "reason": "account_missing"}
+        encoded = value.get("data")
+        if not isinstance(encoded, list) or not encoded or not isinstance(encoded[0], str):
+            return {"status": "rejected", "reason": "account_data_missing"}
+        try:
+            raw = base64.b64decode(encoded[0], validate=True)
+        except Exception:
+            return {"status": "rejected", "reason": "account_data_invalid"}
+        owner = str(value.get("owner") or "")
+        kind = str(target.get("account_kind") or "")
+        facts: dict[str, Any] = {
+            "status": "verified",
+            "owner": owner,
+            "lamports": int(value.get("lamports") or 0),
+            "data_length": len(raw),
+        }
+        try:
+            if kind == "pool":
+                if str(target.get("decoder_version") or "") != PUMPSWAP_POOL_DECODER_V2:
+                    raise ValueError("pumpswap_pool_decoder_version_missing")
+                facts.update(decode_pumpswap_pool_account(raw))
+                expected = {
+                    "base_mint": str(target.get("base_mint") or ""),
+                    "quote_mint": str(target.get("quote_mint") or ""),
+                    "lp_mint": str(target.get("lp_mint") or ""),
+                    "base_vault": str(target.get("base_vault") or ""),
+                    "quote_vault": str(target.get("quote_vault") or ""),
+                }
+                if owner != str(target.get("expected_program_owner") or ""):
+                    raise ValueError("pool_program_owner_mismatch")
+                if any(expected[name] and facts[name] != expected[name] for name in expected):
+                    raise ValueError("pool_identity_changed")
+            elif kind in {"base_vault", "quote_vault"}:
+                if len(raw) < 72:
+                    raise ValueError("invalid_token_account_layout")
+                facts.update({
+                    "mint": cls._pubkey(raw, 0),
+                    "authority": cls._pubkey(raw, 32),
+                    "amount_raw": int.from_bytes(raw[64:72], "little"),
+                })
+                if facts["mint"] != str(target.get("expected_mint") or ""):
+                    raise ValueError("vault_mint_mismatch")
+                if facts["authority"] != str(target.get("pool_address") or ""):
+                    raise ValueError("vault_authority_mismatch")
+            elif kind in {"token_mint", "lp_mint"}:
+                if len(raw) < 82:
+                    raise ValueError("invalid_mint_layout")
+                mint_authority_option = int.from_bytes(raw[0:4], "little")
+                freeze_authority_option = int.from_bytes(raw[46:50], "little")
+                facts.update({
+                    "mint_authority": cls._pubkey(raw, 4) if mint_authority_option else None,
+                    "supply_raw": int.from_bytes(raw[36:44], "little"),
+                    "decimals": int(raw[44]),
+                    "initialized": bool(raw[45]),
+                    "freeze_authority": cls._pubkey(raw, 50) if freeze_authority_option else None,
+                })
+            elif kind == "global_config":
+                facts.update(decode_pumpswap_global_config_account(raw))
+            elif kind == "pump_global":
+                facts.update(decode_pump_global_account(raw))
+            elif kind == "bonding_curve":
+                facts.update(decode_pump_bonding_curve_account(raw))
+            elif kind == "fee_config":
+                facts.update(decode_pumpswap_fee_config_account(raw))
+            else:
+                raise ValueError("unsupported_held_account_kind")
+            expected_program_owner = str(target.get("expected_program_owner") or "")
+            if expected_program_owner and owner != expected_program_owner:
+                raise ValueError("account_program_owner_mismatch")
+        except ValueError as exc:
+            return {**facts, "status": "rejected", "reason": str(exc)}
+        return facts
+
+    @staticmethod
+    def _target_fingerprint(targets: list[Mapping[str, Any]]) -> tuple[tuple[int, str], ...]:
+        return tuple(sorted(
+            (int(item["id"]), str(item["pubkey"])) for item in targets
+        ))
+
+    async def stream(
+        self, target_provider: Callable[[], list[dict[str, Any]]]
+    ) -> AsyncIterator[dict[str, Any]]:
+        while True:
+            targets = target_provider()
+            if not targets:
+                await asyncio.sleep(self.refresh_seconds)
+                continue
+            fingerprint = self._target_fingerprint(targets)
+            try:
+                async with websockets.connect(
+                    self.url, ping_interval=20, ping_timeout=20, max_size=2_000_000
+                ) as ws:
+                    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+                    for target in targets:
+                        grouped[str(target["pubkey"])].append(target)
+                    requests: dict[int, list[dict[str, Any]]] = {}
+                    subscriptions: dict[int, list[dict[str, Any]]] = {}
+                    for request_id, (pubkey, grouped_targets) in enumerate(
+                        grouped.items(), start=1
+                    ):
+                        requests[request_id] = grouped_targets
+                        await ws.send(json.dumps({
+                            "jsonrpc": "2.0", "id": request_id,
+                            "method": "accountSubscribe",
+                            "params": [pubkey, {
+                                "encoding": "base64", "commitment": "confirmed",
+                            }],
+                        }))
+                    while len(subscriptions) < len(grouped):
+                        message = json.loads(await asyncio.wait_for(ws.recv(), timeout=20))
+                        if "error" in message:
+                            raise RuntimeError("held_account_subscription_rejected")
+                        if "id" in message and isinstance(message.get("result"), int):
+                            matched = requests.get(int(message["id"]))
+                            if matched is not None:
+                                subscriptions[int(message["result"])] = matched
+                    for update in await self._initial_updates(targets):
+                        yield update
+                    while True:
+                        try:
+                            raw_message = await asyncio.wait_for(
+                                ws.recv(), timeout=self.refresh_seconds
+                            )
+                        except TimeoutError:
+                            if self._target_fingerprint(target_provider()) != fingerprint:
+                                break
+                            continue
+                        message = json.loads(raw_message)
+                        if "id" in message and isinstance(message.get("result"), int):
+                            matched = requests.get(int(message["id"]))
+                            if matched is not None:
+                                subscriptions[int(message["result"])] = matched
+                            continue
+                        params = message.get("params") if isinstance(message, Mapping) else None
+                        if not isinstance(params, Mapping):
+                            continue
+                        matched_targets = subscriptions.get(
+                            int(params.get("subscription") or -1)
+                        )
+                        result = params.get("result")
+                        if matched_targets is None or not isinstance(result, Mapping):
+                            continue
+                        context = result.get("context") if isinstance(result.get("context"), Mapping) else {}
+                        value = result.get("value") if isinstance(result.get("value"), Mapping) else None
+                        digest_payload = None
+                        if isinstance(value, Mapping):
+                            encoded = value.get("data")
+                            digest_payload = encoded[0] if isinstance(encoded, list) and encoded else ""
+                        observed_at = iso(utcnow())
+                        data_hash = hashlib.sha256(
+                            str(digest_payload or "").encode()
+                        ).hexdigest()
+                        for target in matched_targets:
+                            yield {
+                                **dict(target),
+                                "slot": int(context.get("slot") or 0),
+                                "data_hash": data_hash,
+                                "decoded": self.decode_account(target, value),
+                                "observed_at": observed_at,
+                            }
+                        if self._target_fingerprint(target_provider()) != fingerprint:
+                            break
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                raise
 
 
 class PumpPortalCollector:

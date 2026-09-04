@@ -1,13 +1,13 @@
 # GXH coin · ChatGPT ↔ Codex contact card
 
-Status: `ACTIVE / GXH-C2C/1`
+Status: `ACTIVE / GXH_C2C_V3`
 
 This is the smallest operational entry point for the persistent collaboration pair. It is routing metadata, not a product requirement, performance claim, or evidence ledger.
 
 ## Exact endpoints
 
 - Codex execution thread: `01a0514b-bbb5-7400-baf9-d9feb4dc603d`
-- Lead ChatGPT conversation: `6a98135b-e2d4-83e9-bd0c-269e36451542`
+- Lead ChatGPT conversation: `6a995e14-63bc-83e8-b1b2-efca42dca997`
 - ChatGPT project: `GXH coin`
 - Fast routing pointer: `docs/PROJECT_CONTEXT/CHATGPT_CODEX_SYNC_STATE.json`
 - Durable mailbox: `docs/PROJECT_CONTEXT/CHATGPT_CODEX_SYNC.md`
@@ -21,28 +21,37 @@ Use the Codex app tool `codex_app.send_message_to_thread` with the exact Lead Ch
 
 Sending one compact prompt is the activation step: it starts or resumes that ChatGPT conversation. No separate browser launch, URL navigation, duplicate chat, pasted project history, or `codex exec resume` is required.
 
-Start the prompt with `[GXH_SYNC_V2]` and include only the useful delta:
+Start the prompt with `[GXH_C2C_V3]` and include only the useful delta:
 
 ```text
-[GXH_SYNC_V2]
+[GXH_C2C_V3]
 MESSAGE_ID: C2C-YYYYMMDD-HHMMSS-CODEX
 REPLY_TO: <message id, or NONE>
-TYPE: QUESTION | CHECKPOINT | BLOCKER | DEPLOY_GATE | NATURAL_SAMPLE | HANDOFF
+TYPE: QUESTION | RESEARCH | REVIEW | IMPLEMENT | CHECKPOINT | NATURAL_SAMPLE | BLOCKER | DEPLOY_GATE | ACK | RESULT
+PRIORITY: NORMAL | HIGH | URGENT
 CYCLE_ID: <active cycle>
 FACT_CUTOFF_UTC: <timestamp>
-DELTA_SINCE: <prior message/checkpoint>
 ISSUE_ID: <stable dedupe key>
-DECISION_REQUESTED: <one precise question or ACK_ONLY>
-OWNER: Codex
+SENDER: CODEX
+TARGET: CHATGPT_LEAD
 BLOCKS_RELEASE: true | false
-ARTIFACT_POINTERS: <small list of files/methods/test ids; never paste logs/diffs>
-NEXT_SYNC_EVENT: <event that warrants another message>
 
-DELTA:
-<compact facts, uncertainty, and the smallest useful question>
+ARTIFACT_POINTERS:
+- <small list of files/methods/test ids; never paste logs/diffs>
+
+SUMMARY:
+<delta only>
+
+ACTION_REQUESTED:
+<one precise question or ACK_ONLY>
+
+NEXT_SYNC_EVENT: <event that warrants another message>
+SENSITIVE_DATA: NONE
 ```
 
 A direct question must carry `MESSAGE_ID`; the answer must echo it in `REPLY_TO` so simultaneous reviews cannot be crossed.
+
+Transport success is not task success. Tool acceptance is `SEND_ACCEPTED`; only readback of the same `MESSAGE_ID` is `DELIVERED`; an explicit `TYPE: ACK` is `ACKNOWLEDGED`. Completion requires `TYPE: RESULT`, result acknowledgement, satisfied acceptance criteria, and no blocker. Never resend the same ID; a deliberate retry uses a new ID plus `RETRY_OF`.
 
 ## How ChatGPT contacts Codex
 
@@ -69,7 +78,7 @@ If direct delivery fails:
 3. continue only within the already approved safety/release boundary;
 4. do not start a second Codex writer or inject `codex exec resume` into the active thread.
 
-If the Lead ChatGPT conversation is unavailable or full, record `CONTACT_REBIND_REQUIRED` once. A replacement becomes active only after an explicit old→new conversation-id handoff updates this card and the routing pointer. Current binding generation was explicitly moved on 2026-09-02 from `6a97a9c9-b0a4-83e8-b0d0-4840f4930990` to `6a98135b-e2d4-83e9-bd0c-269e36451542` after the new Lead restored E:-resident state and completed a verified bidirectional send/ACK cycle. Never guess a replacement by title.
+If the Lead ChatGPT conversation is unavailable or full, record `CONTACT_REBIND_REQUIRED` once. A replacement becomes active only after an explicit old→new conversation-id handoff updates this card and the routing pointer. Binding generation 3 was validated on 2026-09-04 by reading the current GXH coin Lead conversation `6a995e14-63bc-83e8-b1b2-efca42dca997`, which contains the current production-state-machine review. The prior Lead `6a98135b-e2d4-83e9-bd0c-269e36451542` is superseded for new messages. Never guess a replacement by title.
 
 ## Scope and authority guard
 

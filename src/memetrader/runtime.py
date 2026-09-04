@@ -16,7 +16,7 @@ from dataclasses import asdict
 from datetime import timedelta
 from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Mapping
 
 import httpx
 
@@ -27,8 +27,12 @@ from .collectors import (
     EvmRouteQuoteError,
     EvmRouteQuoteProtocolError,
     EvmUniswapV3QuoteClient,
+    EvmZeroXPriceClient,
+    FeedRedirectError,
+    FeedResponseTooLarge,
     GeckoNewPoolsCollector,
     HttpClient,
+    InvalidPublicDocumentContentType,
     JupiterNoRouteError,
     JupiterQuoteError,
     JupiterQuoteClient,
@@ -36,10 +40,16 @@ from .collectors import (
     MastodonCollector,
     PumpPortalCollector,
     RSSCollector,
+    RobinhoodStockTokenRegistryClient,
+    SolanaHeldAccountCollector,
+    SOLANA_USDC_MINT,
+    SOLANA_WRAPPED_SOL_MINT,
+    UnsafeFeedURL,
+    UnsupportedFeedContentEncoding,
     normalize_loopback_socks5_proxy_url,
     normalize_public_http_url,
 )
-from .models import CandidateDecision, Observation, ObservationRevisionHandoff, TokenCandidate, iso, parse_time, utcnow
+from .models import CandidateDecision, Observation, ObservationRevisionHandoff, TokenCandidate, TokenSnapshot, iso, parse_time, utcnow
 from .store import Store
 from .strategy import (
     AgentRouter,
@@ -62,6 +72,8 @@ from .strategy import (
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "mode": "paper",
+    "onchain_primary_focus_enabled": False,
+    "chain_meme_trader_only_enabled": False,
     "database": "data/memetrader_forward.sqlite3",
     "lock_file": "data/memetrader.lock",
     "poll_seconds": 60,
@@ -192,6 +204,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "reverse_only_penalty": 8.0,
     },
     "safety": {
+        "require_pretrade_rug_safety_v1": True,
         "min_liquidity_usd": 12_000,
         "max_market_cap_usd": 25_000_000,
         "min_5m_transactions": 8,
@@ -1129,12 +1142,23 @@ class Runtime:
 
     def __init__(self, config: dict[str, Any], root: Path):
         self.config, self.root = config, root
+        zerox_api_key = os.environ.get("MEMETRADER_ZEROX_API_KEY", "").strip()
+        jupiter_api_key = os.environ.get("MEMETRADER_JUPITER_API_KEY", "").strip()
         db_path = Path(str(config["database"]))
         starting_cash = float(config["paper"].get("starting_cash_usd", 1_000))
         self.store = Store(
             db_path if db_path.is_absolute() else root / db_path,
             initial_cash_usd=starting_cash,
         )
+        self._last_chain_account_snapshot_monotonic = 0.0
+        self.chain_meme_trader_only = bool(config.get("chain_meme_trader_only_enabled", False))
+        self.strategy_focus_active = bool(
+            config.get("onchain_primary_focus_enabled", False)
+            or self.chain_meme_trader_only
+        )
+        if self.strategy_focus_active:
+            self.store.register_strategy_focus()
+            self.store.register_route_surface_observations()
         self.store.register_provider_post_ambiguity_shadow(
             _watchlist_accounts(root / "data" / "web_console" / "console_settings.json")
         )
@@ -1186,6 +1210,14 @@ class Runtime:
             max_queue_delay_seconds=30,
             max_total_delay_seconds=float(paper_config.get("max_quote_age_seconds", 45)),
         )
+        if zerox_api_key:
+            self.store.register_onchain_only_evm_aggregator_price(
+                EvmUniswapV3QuoteClient.public_network_definitions(),
+                paper_stake_usd=float(paper_config.get("max_position_usd", 35)),
+                slippage_bps=round(float(paper_config.get("slippage_rate", 0.04)) * 10_000),
+                max_queue_delay_seconds=30,
+                max_total_delay_seconds=float(paper_config.get("max_quote_age_seconds", 45)),
+            )
         if str(config.get("mode") or "paper").lower() == "paper":
             self.store.register_event_route_execution_challenger()
             self.store.register_onchain_paper_exploration(
@@ -1219,10 +1251,48 @@ class Runtime:
                     paper_config.get("max_liquidity_impact_pct", 0.0025)
                 ),
             )
+            self.store.register_onchain_paper_exit_quote_scheduler()
+            self.store.register_onchain_paper_position_monitor()
+            if self.strategy_focus_active:
+                if self.chain_meme_trader_only:
+                    self.store.register_chain_meme_trader_v20()
+                    self.store.activate_chain_meme_trader_v20()
+                else:
+                    self.store.register_onchain_held_account_monitor()
+                    self.store.register_chain_meme_trader()
+                    self.store.register_chain_meme_trader_v6()
+                    self.store.activate_chain_meme_trader_v6()
+                    self.store.register_chain_meme_trader_v12()
+                    self.store.activate_chain_meme_trader_v12()
+                    self.store.register_chain_meme_trader_v13()
+                    self.store.activate_chain_meme_trader_v13()
+                    self.store.register_chain_meme_trader_v14()
+                    self.store.activate_chain_meme_trader_v14()
+                    self.store.register_chain_meme_trader_v15()
+                    self.store.activate_chain_meme_trader_v15()
+                    self.store.register_chain_meme_trader_v16()
+                    self.store.activate_chain_meme_trader_v16()
+                    self.store.register_chain_meme_trader_v17()
+                    self.store.activate_chain_meme_trader_v17()
+                    self.store.register_chain_meme_trader_v18()
+                    self.store.activate_chain_meme_trader_v18()
+                    self.store.register_chain_meme_trader_v19()
+                    self.store.activate_chain_meme_trader_v19()
+                    self.store.register_chain_meme_trader_v20()
+                    self.store.activate_chain_meme_trader_v20()
+                    self.store.register_chain_meme_trader_immediate_reverseability()
+                    self.store.register_chain_meme_trader_local_surface_quote()
+                    self.store.register_chain_meme_trader_local_critical_exit()
+                    self.store.register_chain_meme_trader_executable_decay()
+                    self.store.register_chain_meme_trader_executable_decay_stop()
+                    self.store.register_chain_meme_trader_stage4_v2()
+                    self.store.register_chain_meme_trader_postbuy_research()
+                    self.store.register_route_preflight_deferred_retry_shadow()
             self.store.register_onchain_paper_narrative_runner(
                 starting_cash_usd=starting_cash,
             )
             self.store.register_onchain_paper_narrative_context()
+            self.store.register_token_information_watch(decision_window_seconds=120)
         self.store.register_token_universe_jupiter_quote(
             usdc_input_amount_raw=round(float(paper_config.get("max_position_usd", 35)) * 1_000_000),
         )
@@ -1233,6 +1303,9 @@ class Runtime:
         self.store.recover_interrupted_exposure_attempts()
         self.store.recover_interrupted_event_context_route_probes()
         self.store.recover_interrupted_event_route_execution_challenger_attempts()
+        self.store.recover_interrupted_chain_meme_trader_executions()
+        self.store.recover_chain_meme_trader_postbuy_research()
+        self.store.recover_interrupted_route_preflight_deferred_retry_shadow()
         if not self.store.open_positions() and not self.store.trades():
             with self.store.db:
                 self.store.db.execute("UPDATE paper_account SET cash_usd=?,updated_at=? WHERE singleton=1", (starting_cash, iso()))
@@ -1244,17 +1317,35 @@ class Runtime:
             conditional_store=self.store,
         )
         self.market_http = HttpClient()
-        self.jupiter_http = HttpClient(min_host_interval=2.1)
+        self.jupiter_http = HttpClient(
+            min_host_interval=1.05 if jupiter_api_key else 2.1
+        )
         self.evm_route_http = HttpClient(min_host_interval=0.15)
         self.dex = DexScreenerClient(self.market_http)
-        self.jupiter = JupiterQuoteClient(self.jupiter_http)
+        self.jupiter = JupiterQuoteClient(self.jupiter_http, jupiter_api_key)
+        self.held_accounts = SolanaHeldAccountCollector(
+            str(config["safety"].get("solana_rpc_url") or "https://api.mainnet-beta.solana.com")
+        )
         self.evm_route = EvmUniswapV3QuoteClient(self.evm_route_http)
+        self.evm_aggregator = (
+            EvmZeroXPriceClient(self.evm_route_http, zerox_api_key)
+            if zerox_api_key else None
+        )
+        self.robinhood_stock_tokens = RobinhoodStockTokenRegistryClient(
+            self.evm_route_http
+        )
         self._evm_route_quote_lock = asyncio.Lock()
         self._jupiter_quote_lock = asyncio.Lock()
         self._jupiter_background_dispatch_lock = asyncio.Lock()
+        self._onchain_exit_dispatch_lock = asyncio.Lock()
+        self._critical_onchain_exit_event = asyncio.Event()
         self._jupiter_background_epoch_started = 0.0
         self._jupiter_background_epoch_requests = 0
         self._jupiter_background_epoch_seconds = 5.0
+        self._chain_meme_quote_version_cursor = 0
+        self._chain_meme_normal_slot = 0
+        self._wsol_usdc_conversion: dict[str, Any] | None = None
+        self._wsol_usdc_conversion_at = 0.0
         self._dex_quote_lock = asyncio.Lock()
         self.events = EventEngine(
             self.store,
@@ -1289,12 +1380,15 @@ class Runtime:
         self._dex_quote_backoff_until = 0.0
         self._dex_quote_backoff_base_seconds = 2.0
         self._dex_quote_backoff_cap_seconds = 30.0
+        if self.config["safety"].get("require_pretrade_rug_safety_v1", False):
+            self.store.register_pretrade_rug_safety()
         self._record_paper_account_snapshot()
 
     async def close(self) -> None:
         if self.bridge:
             await self.bridge.close()
         await self.evm_route_http.close()
+        await self.held_accounts.close()
         await self.jupiter_http.close()
         await self.market_http.close()
         await self.http.close()
@@ -1311,6 +1405,8 @@ class Runtime:
         self,
         chain: str,
         addresses: list[str] | tuple[str, ...],
+        *,
+        fresh: bool = False,
     ) -> dict[str, tuple[TokenCandidate, TokenSnapshot]]:
         """Serialize Dex quote batches and back off across lanes after transport failure."""
         async with self._dex_quote_lock:
@@ -1319,7 +1415,10 @@ class Runtime:
             if wait > 0:
                 await asyncio.sleep(wait)
             try:
-                quoted = await self.dex.batch_quote(chain, addresses)
+                if fresh and hasattr(self.dex, "batch_quote_fresh"):
+                    quoted = await self.dex.batch_quote_fresh(chain, addresses)
+                else:
+                    quoted = await self.dex.batch_quote(chain, addresses)
             except httpx.TransportError as exc:
                 self._dex_quote_failure_streak += 1
                 base = min(
@@ -2023,10 +2122,14 @@ class Runtime:
         candidate_chains = {
             str(chain).lower() for chain in self.config["candidate"].get("chains", [])
         }
+        if self.chain_meme_trader_only:
+            candidate_chains = {"solana"}
         surface_chains = {
             *candidate_chains,
             *(str(chain).lower() for chain in cfg.get("surface_chains", [])),
         }
+        if self.chain_meme_trader_only:
+            surface_chains = {"solana"}
         max_items = int(cfg.get("max_items_per_surface", 40))
         max_hydrations = int(cfg.get("max_hydrations_per_cycle", 180))
         direct_context_candidates: list[tuple[int, TokenCandidate, TokenSnapshot, float, dict[str, Any]]] = []
@@ -2098,9 +2201,13 @@ class Runtime:
 
         due = self.store.due_token_detail_hydrations(
             limit=max_hydrations,
+            chains=("solana",) if self.chain_meme_trader_only else (),
+            prefer_fresh=self.chain_meme_trader_only,
             priority_social_account_urls=(
-                str(account.get("url") or "")
-                for account in self.autonomous_search._configured_high_impact_accounts()
+                () if self.chain_meme_trader_only else (
+                    str(account.get("url") or "")
+                    for account in self.autonomous_search._configured_high_impact_accounts()
+                )
             ),
         )
         if not due:
@@ -2406,6 +2513,8 @@ class Runtime:
             await asyncio.gather(*tasks)
 
     async def discover_sources_once(self, *, force: bool = False) -> dict[str, Any]:
+        if self.strategy_focus_active:
+            return {"status": "paused", "reason": "strategy_focus_sol_onchain_primary"}
         result = await self.autonomous_search.discover_sources(force=force)
         accepted = result.get("accepted") or []
         if result.get("status") == "completed":
@@ -2441,6 +2550,8 @@ class Runtime:
         await self._periodic("autonomous_source_discovery", interval, self.discover_sources_once)
 
     async def scout_trends_once(self, *, force: bool = False) -> dict[str, Any]:
+        if self.strategy_focus_active:
+            return {"status": "paused", "reason": "strategy_focus_sol_onchain_primary"}
         result, observations = await self.autonomous_search.scout_trends(force=force)
         lane_selection = result.get("lane_selection") if isinstance(result, dict) else None
         run_id = str((lane_selection or {}).get("run_id") or "") if isinstance(lane_selection, dict) else ""
@@ -2496,7 +2607,10 @@ class Runtime:
         momentum_score: float,
         event_relation: dict[str, Any] | None = None,
         retry_lane: bool = False,
+        allow_postbuy_research_in_focus: bool = False,
     ) -> None:
+        if self.strategy_focus_active and not allow_postbuy_research_in_focus:
+            return
         observations = await self.autonomous_search.search_token_context(
             token,
             snapshot,
@@ -4029,6 +4143,9 @@ class Runtime:
                 )
                 self._notify_source_error(f"dexscreener:{surface}", exc)
                 continue
+            if self.strategy_focus_active and decision.action == "CANDIDATE":
+                decision.action = "WAIT"
+                decision.rejected_reasons.append("strategy_focus_s1_paper_entry_paused")
             for item in chunk:
                 token_id = str(item["token_id"])
                 role = str(item["role"])
@@ -4107,6 +4224,158 @@ class Runtime:
                 include_kol=include_kol,
             )
 
+    async def _record_onchain_pretrade_rug_safety(
+        self,
+        item: Mapping[str, Any],
+        *,
+        buy_status: str,
+        buy_result: Mapping[str, Any],
+        shared_budget: dict[str, int],
+    ) -> None:
+        if (
+            not self.config["safety"].get("require_pretrade_rug_safety_v1", False)
+            or item.get("lane") != Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION
+            or str(item.get("phase")) != "baseline_buy"
+        ):
+            return
+        snapshot = self.store.token_snapshot_by_id(int(item["baseline_snapshot_id"]))
+        if snapshot is None:
+            return
+        snapshot = await self.safety.enrich_solana(snapshot)
+        buy_route_payload = {
+            **dict(buy_result),
+            "input_mint": str(item["input_mint"]),
+            "output_mint": str(item["output_mint"]),
+            "input_amount_raw": str(item["input_amount_raw"]),
+        }
+        selected_surface_pool = self.safety.token_adjacent_route_pool(
+            buy_route_payload, token_mint=str(item["output_mint"]), direction="BUY",
+        )
+        if selected_surface_pool:
+            adjacent_leg = next(
+                (
+                    leg for leg in buy_route_payload.get("route_plan") or []
+                    if isinstance(leg, Mapping)
+                    and str(leg.get("amm_key") or "") == selected_surface_pool
+                    and str(leg.get("output_mint") or "") == str(item["output_mint"])
+                ),
+                {},
+            )
+            routed = TokenSnapshot(**asdict(snapshot))
+            routed.raw["pair"] = {
+                "dexId": "jupiter-route-surface", "pairAddress": selected_surface_pool,
+                "baseToken": {"address": str(item["output_mint"])},
+                "quoteToken": {"address": str(adjacent_leg.get("input_mint") or item["input_mint"])},
+                "route_derived": True,
+            }
+            snapshot = routed
+        snapshot = await self.safety.enrich_solana_pool_custody(snapshot)
+        assessed_snapshot_id = self.store.add_snapshot(snapshot)
+        surface = self.safety.solana_market_surface_assessment(snapshot)
+        self.store.record_market_surface_safety(
+            lane=Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+            quote_key=str(item["quote_key"]), token_id=str(item.get("token_id") or snapshot.token_id),
+            trigger_snapshot_id=int(item["baseline_snapshot_id"]),
+            assessed_snapshot_id=assessed_snapshot_id, assessment=surface,
+            observed_at=utcnow(),
+        )
+        buy_route = self.safety.classify_jupiter_route_truth(
+            buy_route_payload, selected_surface_pool=selected_surface_pool,
+        )
+        self.store.record_execution_route_observation(
+            lane=Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+            quote_key=str(item["quote_key"]), token_id=str(item.get("token_id") or snapshot.token_id),
+            direction="BUY", classification=buy_route, observed_at=utcnow(),
+        )
+        sell_preflight: dict[str, Any] = {}
+        acquired_raw = int(buy_result.get("other_amount_threshold") or 0)
+        if buy_status == "quoted" and acquired_raw > 0:
+            provider_request_limit = int(
+                shared_budget.get("provider_request_limit", 3)
+            )
+            if (
+                shared_budget["provider_requests"] < provider_request_limit
+                and self._jupiter_background_epoch_requests < 3
+            ):
+                shared_budget["provider_requests"] += 1
+                self._jupiter_background_epoch_requests += 1
+                try:
+                    async with self._jupiter_quote_lock:
+                        sell_result = await self.jupiter.quote(
+                            str(item["output_mint"]),
+                            str(item["input_mint"]),
+                            acquired_raw,
+                            slippage_bps=int(item.get("slippage_bps") or round(
+                                float(self.config["paper"].get("slippage_rate", 0.04)) * 10_000
+                            )),
+                        )
+                except JupiterNoRouteError:
+                    sell_preflight = {"status": "no_route", "input_amount_raw": acquired_raw}
+                except Exception as exc:
+                    sell_preflight = {
+                        "status": "error", "input_amount_raw": acquired_raw,
+                        "error_type": type(exc).__name__,
+                    }
+                else:
+                    minimum_raw = int(sell_result.get("other_amount_threshold") or 0)
+                    fixed_fee = float(
+                        self.config["paper"].get("fixed_fee_usd_each_side", 0.0) or 0.0
+                    )
+                    sell_preflight = {
+                        "status": "quoted",
+                        "input_amount_raw": acquired_raw,
+                        "output_amount_raw": int(sell_result.get("output_amount_raw") or 0),
+                        "minimum_output_raw": minimum_raw,
+                        "minimum_output_usd": minimum_raw / 1_000_000.0,
+                        "net_recovery_usd": minimum_raw / 1_000_000.0 - fixed_fee,
+                        "fixed_fee_usd": fixed_fee,
+                        "router": str(sell_result.get("router") or ""),
+                        "price_impact_bps": sell_result.get("price_impact_bps"),
+                        "route_plan": sell_result.get("route_plan") or [],
+                    }
+            else:
+                sell_preflight = {"status": "budget_deferred", "input_amount_raw": acquired_raw}
+        if sell_preflight:
+            sell_route_payload = {
+                **sell_preflight,
+                "input_mint": str(item["output_mint"]),
+                "output_mint": str(item["input_mint"]),
+                "output_amount_raw": str(sell_preflight.get("output_amount_raw") or ""),
+                "other_amount_threshold": str(sell_preflight.get("minimum_output_raw") or ""),
+            }
+            sell_route = self.safety.classify_jupiter_route_truth(
+                sell_route_payload, selected_surface_pool=selected_surface_pool,
+            )
+            entry_debit = int(item["input_amount_raw"]) / 1_000_000.0 + float(
+                self.config["paper"].get("fixed_fee_usd_each_side", 0.0) or 0.0
+            )
+            exit_fee = float(self.config["paper"].get("fixed_fee_usd_each_side", 0.0) or 0.0)
+            if entry_debit > 0 and str(sell_preflight.get("status")) == "quoted":
+                sell_route["quoted_net_recovery_ratio"] = (
+                    int(sell_preflight.get("output_amount_raw") or 0) / 1_000_000.0 - exit_fee
+                ) / entry_debit
+                sell_route["stress_min_recovery_ratio"] = (
+                    int(sell_preflight.get("minimum_output_raw") or 0) / 1_000_000.0 - exit_fee
+                ) / entry_debit
+            self.store.record_execution_route_observation(
+                lane=Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+                quote_key=str(item["quote_key"]),
+                token_id=str(item.get("token_id") or snapshot.token_id), direction="SELL",
+                classification=sell_route, observed_at=utcnow(),
+            )
+        assessment = self.safety.solana_pretrade_rug_assessment(
+            snapshot, exact_sell_preflight=sell_preflight or None,
+        )
+        self.store.record_pretrade_rug_safety_assessment(
+            lane=Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION,
+            quote_key=str(item["quote_key"]),
+            token_id=str(item.get("token_id") or snapshot.token_id),
+            trigger_snapshot_id=int(item["baseline_snapshot_id"]),
+            assessed_snapshot_id=assessed_snapshot_id,
+            assessment=assessment,
+            observed_at=utcnow(),
+        )
+
     async def _token_universe_jupiter_quote_once_unlocked(
         self,
         *,
@@ -4115,10 +4384,15 @@ class Runtime:
         include_onchain: bool = True,
         include_kol: bool = True,
     ) -> None:
-        """Share three quote-only requests across universe and trigger-anchored lanes."""
+        """Share quote-only requests across universe and trigger-anchored lanes."""
         shared = budget if budget is not None else {"provider_requests": 0, "gap_records": 0}
         shared.setdefault("provider_requests", 0)
         shared.setdefault("gap_records", 0)
+        shared.setdefault(
+            "provider_request_limit",
+            2 if self.chain_meme_trader_only and include_onchain
+            and not include_universe and not include_kol else 3,
+        )
         universe_tasks: list[dict[str, Any]] = []
         onchain_tasks: list[dict[str, Any]] = []
         kol_tasks: list[dict[str, Any]] = []
@@ -4200,7 +4474,7 @@ class Runtime:
         ))
         kol_sent = False
         for item in requestable:
-            if shared["provider_requests"] >= 3:
+            if shared["provider_requests"] >= shared["provider_request_limit"]:
                 break
             loop_now = asyncio.get_running_loop().time()
             if (
@@ -4294,12 +4568,19 @@ class Runtime:
                     result=result, error_type=error_type,
                 )
             elif item.get("lane") == Store.ONCHAIN_ONLY_JUPITER_QUOTE_VERSION:
+                await self._record_onchain_pretrade_rug_safety(
+                    item,
+                    buy_status=status,
+                    buy_result=result,
+                    shared_budget=shared,
+                )
                 self.store.record_onchain_only_jupiter_quote(
                     item,
                     **payload,
                     attempt_id=attempt_id,
                     requested_at=requested_at,
                     completed_at=result.get("completed_at") or completed_at,
+                    apply_legacy_exploration=not self.chain_meme_trader_only,
                 )
             else:
                 self.store.record_token_universe_jupiter_quote_validity(
@@ -4309,15 +4590,145 @@ class Runtime:
                     completed_at=result.get("completed_at") or completed_at,
                 )
 
+    def _route_preflight_deferred_retry_has_priority_work(self) -> bool:
+        """Keep executable exits ahead without letting routine work starve the Shadow."""
+        if self._critical_onchain_exit_event.is_set():
+            return True
+        if self.store.due_onchain_paper_exit_challenger_quotes(limit=1):
+            return True
+        for version in (
+            Store.CHAIN_MEME_TRADER_VERSION,
+            Store.CHAIN_MEME_TRADER_STAGE4_EXEC_DECAY_VERSION,
+        ):
+            execution = self.store.due_chain_meme_trader_execution(
+                definition_version=version
+            )
+            if execution is not None and str(execution.get("side")) == "SELL":
+                return True
+        return False
+
+    async def _dispatch_route_preflight_deferred_retry_shadow_once(self) -> bool:
+        """Use one otherwise-idle background slot; never alter the source decision."""
+        self.store.enroll_route_preflight_deferred_retry_shadow()
+        due = self.store.due_route_preflight_deferred_retry_shadow(limit=1)
+        if not due:
+            return False
+        case = due[0]
+        now = utcnow()
+        if now > parse_time(case["deadline_at"]):
+            self.store.record_route_preflight_deferred_retry_shadow_result(
+                int(case["id"]), status="expired_before_request", completed_at=now,
+            )
+            return True
+        if self._route_preflight_deferred_retry_has_priority_work():
+            return True
+        async with self._jupiter_background_dispatch_lock:
+            loop_now = asyncio.get_running_loop().time()
+            if (
+                loop_now - self._jupiter_background_epoch_started
+                >= self._jupiter_background_epoch_seconds
+            ):
+                self._jupiter_background_epoch_started = loop_now
+                self._jupiter_background_epoch_requests = 0
+            if self._jupiter_background_epoch_requests >= 3:
+                return True
+            requested_at = utcnow()
+            if requested_at > parse_time(case["deadline_at"]):
+                self.store.record_route_preflight_deferred_retry_shadow_result(
+                    int(case["id"]), status="expired_before_request",
+                    completed_at=requested_at,
+                )
+                return True
+            attempt_id = self.store.start_route_preflight_deferred_retry_shadow_attempt(
+                case, requested_at=requested_at,
+            )
+            if attempt_id is None:
+                return True
+            self._jupiter_background_epoch_requests += 1
+            status = "quoted"
+            result: dict[str, Any] = {}
+            error_type = ""
+            try:
+                async with self._jupiter_quote_lock:
+                    result = await self.jupiter.quote(
+                        str(case["input_mint"]), str(case["output_mint"]),
+                        int(case["input_amount_raw"]),
+                        slippage_bps=int(case["slippage_bps"]),
+                    )
+            except JupiterNoRouteError:
+                status = "no_route"
+            except JupiterQuoteProtocolError as exc:
+                status, error_type = "quote_only_protocol_invalid", type(exc).__name__
+            except Exception as exc:
+                status, error_type = "error", type(exc).__name__
+            completed_at = result.get("completed_at") or utcnow()
+            route_classification: dict[str, Any] = {}
+            if status == "quoted":
+                route_classification = self.safety.classify_jupiter_route_truth(
+                    {
+                        **result,
+                        "input_mint": str(case["input_mint"]),
+                        "output_mint": str(case["output_mint"]),
+                        "input_amount_raw": str(case["input_amount_raw"]),
+                    },
+                    selected_surface_pool=str(case["selected_surface_pool"] or ""),
+                )
+            self.store.record_route_preflight_deferred_retry_shadow_result(
+                int(case["id"]), attempt_id=int(attempt_id), status=status,
+                result=result, route_classification=route_classification,
+                error_type=error_type, completed_at=completed_at,
+            )
+            return True
+
     async def onchain_only_jupiter_quote_once(self) -> None:
+        if await self._dispatch_route_preflight_deferred_retry_shadow_once():
+            return
         await self.token_universe_jupiter_quote_once(
             include_universe=False,
             include_onchain=True,
-            include_kol=True,
+            include_kol=not self.chain_meme_trader_only,
         )
+
+    async def token_information_watch_once(self) -> None:
+        """Run one forward Token-first observer WATCH; it has no entry authority."""
+        if self.strategy_focus_active:
+            self.store.finalize_token_information_watches()
+            return
+        self.store.enroll_token_information_watches()
+        self.store.finalize_token_information_watches()
+        due = self.store.due_token_information_watches(limit=1)
+        if not due:
+            return
+        watch = due[0]
+        token = self.store.token(str(watch["token_id"]))
+        snapshot = self.store.latest_snapshot(
+            str(watch["token_id"]), at_or_before=watch["watch_started_at"]
+        )
+        if token is None or snapshot is None:
+            return
+        trigger = {
+            "kind": "pre_entry_token_watch",
+            "priority": 2,
+            "transition_id": int(watch["trigger_transition_id"]),
+            "shadow_cohort_id": int(watch["shadow_cohort_id"]),
+            "watch_started_at": str(watch["watch_started_at"]),
+            "decision_deadline_at": str(watch["decision_deadline_at"]),
+            "selection_path": "strategy3_pre_entry_watch",
+            "decision_eligible": False,
+            "endorsement_inferred": False,
+        }
+        await self._investigate_token_context(
+            token, snapshot,
+            momentum_score=CandidateEvaluator._momentum_score(snapshot),
+            event_relation=trigger,
+        )
+        self.store.finalize_token_information_watches()
+        self.store.heartbeat("token-information-watch", item=True)
 
     async def onchain_only_evm_route_quote_once(self) -> None:
         """Observe one post-registration EVM cohort without mutating any strategy."""
+        if self.strategy_focus_active:
+            return
         requestable: dict[str, Any] | None = None
         for item in self.store.due_onchain_only_evm_route_quotes(limit=12):
             evaluated_at = utcnow()
@@ -4377,10 +4788,283 @@ class Runtime:
             error=error_type if status in {"error", "quote_only_protocol_invalid"} else "",
         )
 
+    async def onchain_only_evm_aggregator_price_once(self) -> None:
+        """Observe one new BSC/Robinhood cohort through 0x when configured."""
+        if self.strategy_focus_active:
+            return
+        if self.evm_aggregator is None:
+            return
+        requestable: dict[str, Any] | None = None
+        for item in self.store.due_onchain_only_evm_aggregator_prices(limit=12):
+            reason = str(item.get("preflight_reason") or "")
+            if reason:
+                self.store.record_onchain_only_evm_aggregator_price(
+                    item,
+                    terminal_status=(
+                        "interrupted_after_request"
+                        if reason == "request_evidence_missing" else "not_requested"
+                    ),
+                    attempt_id=item.get("attempt_id"),
+                    requested_at=item.get("attempt_requested_at") or utcnow(),
+                    completed_at=utcnow(),
+                )
+                continue
+            requestable = item
+            break
+        if requestable is None:
+            return
+        requested_at = utcnow()
+        attempt_id = self.store.start_onchain_only_evm_aggregator_price_attempt(
+            requestable, requested_at=requested_at
+        )
+        if attempt_id is None:
+            return
+        result: dict[str, Any] = {}
+        status, error_type = "error", ""
+        try:
+            async with self._evm_route_quote_lock:
+                result = await self.evm_aggregator.price(
+                    str(requestable["chain"]),
+                    str(requestable["sell_token"]),
+                    str(requestable["buy_token"]),
+                    str(requestable["sell_amount_raw"]),
+                    slippage_bps=int(requestable["slippage_bps"]),
+                )
+            status = str(result["status"])
+        except EvmRouteQuoteProtocolError as exc:
+            status, error_type = "protocol_invalid", type(exc).__name__
+        except Exception as exc:
+            status, error_type = "error", type(exc).__name__
+        result_id = self.store.record_onchain_only_evm_aggregator_price(
+            requestable,
+            terminal_status=status,
+            result=result,
+            attempt_id=attempt_id,
+            requested_at=result.get("requested_at") or requested_at,
+            completed_at=result.get("completed_at") or utcnow(),
+            error_type=error_type,
+        )
+        self.store.heartbeat(
+            f"0x-price:{requestable['chain']}",
+            item=result_id is not None,
+            error=error_type if status in {"error", "protocol_invalid"} else "",
+        )
+
+    async def robinhood_stock_token_registry_once(self) -> None:
+        """Refresh the official exact-address exclusion registry."""
+        result = await self.robinhood_stock_tokens.fetch()
+        run_id = self.store.record_robinhood_stock_token_registry(result)
+        self.store.heartbeat("robinhood-stock-token-registry", item=run_id is not None)
+
+    async def _dispatch_onchain_exit_quote_once(self, *, critical_only: bool = False) -> bool:
+        """Dispatch one real exit quote; exact account alerts bypass background quota."""
+        async with self._onchain_exit_dispatch_lock:
+            tasks = self.store.due_onchain_paper_exit_challenger_quotes(limit=1)
+            if not tasks:
+                return False
+            item = tasks[0]
+            if critical_only and not str(item.get("reason") or "").startswith(
+                "onchain_rug_alert:"
+            ):
+                return False
+            async with self._jupiter_background_dispatch_lock:
+                loop_now = asyncio.get_running_loop().time()
+                if (
+                    loop_now - self._jupiter_background_epoch_started
+                    >= self._jupiter_background_epoch_seconds
+                ):
+                    self._jupiter_background_epoch_started = loop_now
+                    self._jupiter_background_epoch_requests = 0
+                if not critical_only and self._jupiter_background_epoch_requests >= 3:
+                    return False
+                requested_at = utcnow()
+                attempt_id = self.store.start_onchain_paper_exit_challenger_quote_attempt(
+                    item, requested_at=requested_at
+                )
+                if attempt_id is None:
+                    return False
+                self._jupiter_background_epoch_requests += 1
+                status = "quoted"
+                result: dict[str, Any] = {}
+                error_type = ""
+                try:
+                    async with self._jupiter_quote_lock:
+                        result = await self.jupiter.quote(
+                            str(item["input_mint"]),
+                            str(item["output_mint"]),
+                            int(item["input_amount_raw"]),
+                            slippage_bps=int(item["slippage_bps"]),
+                        )
+                except JupiterNoRouteError:
+                    status = "no_route"
+                except JupiterQuoteProtocolError as exc:
+                    status, error_type = "quote_only_protocol_invalid", type(exc).__name__
+                except Exception as exc:
+                    status, error_type = "error", type(exc).__name__
+                completed_at = result.get("completed_at") or utcnow()
+                self.store.record_onchain_paper_exit_challenger_quote_result(
+                    item,
+                    attempt_id=int(attempt_id),
+                    status=status,
+                    output_amount_raw=result.get("output_amount_raw"),
+                    other_amount_threshold_raw=result.get("other_amount_threshold"),
+                    slippage_bps=result.get("slippage_bps"),
+                    signature_fee_lamports=result.get("signature_fee_lamports"),
+                    prioritization_fee_lamports=result.get("prioritization_fee_lamports"),
+                    rent_fee_lamports=result.get("rent_fee_lamports"),
+                    router=str(result.get("router") or ""),
+                    mode=str(result.get("mode") or ""),
+                    fee_bps=result.get("fee_bps"),
+                    platform_fee_bps=result.get("platform_fee_bps"),
+                    price_impact_pct=result.get("price_impact_pct"),
+                    price_impact_bps=result.get("price_impact_bps"),
+                    price_impact_source=str(result.get("price_impact_source") or ""),
+                    route_plan=result.get("route_plan") or [],
+                    error_type=error_type,
+                    completed_at=completed_at,
+                )
+                return True
+
+    async def held_account_loop(self) -> None:
+        """Maintain exact held-account subscriptions and trigger immediate exit truth."""
+        while not self._stop.is_set():
+            self.store.enroll_onchain_held_account_targets()
+            try:
+                async for update in self.held_accounts.stream(
+                    self.store.onchain_held_account_targets
+                ):
+                    outcome = self.store.record_onchain_held_account_update(update)
+                    self.store.heartbeat(
+                        "solana-held-accounts",
+                        item=bool(outcome and outcome.get("event_id")),
+                        error="",
+                    )
+                    if outcome and outcome.get("alert_mark_id"):
+                        self._critical_onchain_exit_event.set()
+                    if self._stop.is_set():
+                        return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.store.heartbeat(
+                    "solana-held-accounts", item=False, error=type(exc).__name__
+                )
+                await asyncio.sleep(30 if type(exc).__name__ == "InvalidStatus" else 5)
+
+    async def chain_meme_local_surface_once(self) -> None:
+        """Refresh route-verified PumpSwap or fallback Pump-curve capacity."""
+        targets = self.store.chain_meme_trader_local_surface_targets()
+        if not targets:
+            self.store.heartbeat("chain-meme-local-surface", item=False, error="")
+            return
+        loop_now = asyncio.get_running_loop().time()
+        if (
+            self._wsol_usdc_conversion is None
+            or loop_now - self._wsol_usdc_conversion_at >= 30.0
+        ):
+            try:
+                async with self._jupiter_quote_lock:
+                    conversion = await self.jupiter.quote(
+                        SOLANA_WRAPPED_SOL_MINT,
+                        SOLANA_USDC_MINT,
+                        1_000_000_000,
+                        slippage_bps=400,
+                    )
+                self._wsol_usdc_conversion = {
+                    "input_amount_raw": 1_000_000_000,
+                    "minimum_output_amount_raw": int(
+                        conversion["other_amount_threshold"]
+                    ),
+                    "completed_at": str(conversion["completed_at"]),
+                }
+                self._wsol_usdc_conversion_at = asyncio.get_running_loop().time()
+            except Exception:
+                if loop_now - self._wsol_usdc_conversion_at >= 60.0:
+                    self._wsol_usdc_conversion = None
+        curve_targets = [
+            item for item in targets
+            if str(item.get("surface_type") or "") == "pump_bonding_curve"
+        ]
+        route_targets = [
+            item for item in targets
+            if str(item.get("surface_type") or "") != "pump_bonding_curve"
+        ]
+        quotes: list[dict[str, Any]] = []
+        if curve_targets:
+            quotes.extend(await self.held_accounts.bonding_curve_quotes(
+                curve_targets,
+                slippage_bps=400,
+                wsol_usdc_conversion=self._wsol_usdc_conversion,
+            ))
+        if route_targets:
+            route_quotes = await self.held_accounts.pumpswap_route_surface_quotes(
+                route_targets, slippage_bps=400,
+            )
+            for quote in route_quotes:
+                if (
+                    quote.get("min_quote_raw") is not None
+                    and str(quote.get("status") or "") == "LOCAL_SURFACE_CURRENT"
+                ):
+                    quote_mint = str(quote.get("quote_mint") or "")
+                    if quote_mint == SOLANA_USDC_MINT:
+                        quote["direct_estimated_recovery_usd"] = (
+                            int(quote["min_quote_raw"]) / 1_000_000.0
+                        )
+                        quote["conversion_source"] = "direct_pumpswap_usdc_minimum"
+                    elif quote_mint == SOLANA_WRAPPED_SOL_MINT and self._wsol_usdc_conversion:
+                        conversion_input = int(
+                            self._wsol_usdc_conversion["input_amount_raw"]
+                        )
+                        conversion_output = int(
+                            self._wsol_usdc_conversion["minimum_output_amount_raw"]
+                        )
+                        if conversion_input > 0 and conversion_output > 0:
+                            quote["direct_estimated_recovery_usd"] = (
+                                int(quote["min_quote_raw"]) * conversion_output
+                                / conversion_input / 1_000_000.0
+                            )
+                            quote["conversion_source"] = (
+                                "route_verified_pumpswap_plus_shared_jupiter_wsol_usdc"
+                            )
+                            quote["conversion_input_raw"] = conversion_input
+                            quote["conversion_min_usdc_raw"] = conversion_output
+                            quote["conversion_completed_at"] = str(
+                                self._wsol_usdc_conversion["completed_at"]
+                            )
+            quotes.extend(route_quotes)
+        recorded = 0
+        healthy = 0
+        for quote in quotes:
+            quote_id = self.store.record_chain_meme_trader_local_surface_quote(quote)
+            recorded += int(quote_id is not None)
+            if quote_id is not None:
+                self.store.sync_chain_meme_trader_local_critical_exit(quote_id)
+            healthy += int(not str(quote.get("status") or "").startswith("LOCAL_UNKNOWN"))
+        self.store.heartbeat(
+            "chain-meme-local-surface",
+            item=healthy > 0,
+            error=(
+                str(quotes[0].get("status") or "local_surface_unknown")
+                if quotes and healthy == 0 else ""
+            ),
+        )
+
+    async def critical_onchain_exit_loop(self) -> None:
+        """Drain exact-account risk exits before ordinary background quote work."""
+        while not self._stop.is_set():
+            await self._critical_onchain_exit_event.wait()
+            self._critical_onchain_exit_event.clear()
+            while await self._dispatch_onchain_exit_quote_once(critical_only=True):
+                self.store.sync_onchain_paper_narrative_runner()
+                self.store.record_onchain_paper_exit_challenger_account_snapshot()
+                self.store.record_onchain_paper_position_monitor_account_snapshot()
+
     async def onchain_paper_exit_challenger_once(self) -> None:
         """Monitor paired Shadow positions locally and quote only triggered exits."""
         self.store.enroll_onchain_paper_exit_challenger()
         self.store.enroll_onchain_paper_narrative_runner()
+        if self.strategy_focus_active:
+            self.store.enroll_onchain_held_account_targets()
         for position in self.store.due_onchain_paper_exit_challenger_marks(limit=3):
             snapshot_id = None
             mark_reason = ""
@@ -4409,10 +5093,513 @@ class Runtime:
                 reason=mark_reason,
             )
 
-        tasks = self.store.due_onchain_paper_exit_challenger_quotes(limit=1)
+        dispatched = await self._dispatch_onchain_exit_quote_once()
+        if not dispatched:
+            await self.onchain_paper_position_monitor_once()
+        self.store.sync_onchain_paper_narrative_runner()
+        self.store.record_onchain_paper_exit_challenger_account_snapshot()
+        self.store.record_onchain_paper_position_monitor_account_snapshot()
+
+    async def chain_meme_trader_once(self) -> None:
+        """Advance every active strictly-forward, zero-extra-fee strategy account."""
+        if not self.chain_meme_trader_only:
+            self.store.enroll_chain_meme_trader()
+        self.store.enroll_chain_meme_trader_v6(
+            limit=4 if self.chain_meme_trader_only else 240,
+            definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
+        )
+        if not self.chain_meme_trader_only:
+            self.store.enroll_chain_meme_trader_executable_decay()
+            self.store.enroll_chain_meme_trader_stage4_v2()
+            self.store.enroll_onchain_held_account_targets()
+        legacy_positions = (
+            [] if self.chain_meme_trader_only
+            else self.store.due_chain_meme_trader_evaluations(limit=3)
+        )
+        for position in legacy_positions:
+            snapshot_id = None
+            mark_reason = ""
+            try:
+                quoted = await self.dex.quote("solana", str(position["address"]))
+            except Exception as exc:
+                quoted = None
+                mark_reason = f"dexscreener_{type(exc).__name__}"
+            if quoted is not None:
+                token, snapshot = quoted
+                received_at = utcnow()
+                rejections = self._paper_quote_rejections(
+                    str(position["token_id"]), token, snapshot, received_at
+                )
+                if rejections:
+                    mark_reason = "dexscreener_temporal_rejected:" + ",".join(rejections)
+                else:
+                    self.store.upsert_token(token, seen_at=snapshot.observed_at)
+                    snapshot_id = self.store.add_snapshot(snapshot)
+            elif not mark_reason:
+                mark_reason = "dexscreener_pair_unavailable"
+            self.store.record_chain_meme_trader_evaluation(
+                int(position["shadow_cohort_id"]), snapshot_id=snapshot_id,
+                evaluated_at=utcnow(), reason=mark_reason,
+            )
+        if not self.chain_meme_trader_only:
+            self.store.sync_chain_meme_trader_rug_alerts()
+        primary_execution = (
+            None if self.chain_meme_trader_only
+            else self.store.due_chain_meme_trader_execution()
+        )
+        active_execution = self.store.due_chain_meme_trader_execution(
+            definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
+        )
+        v11_execution = None if self.chain_meme_trader_only else (
+            self.store.due_chain_meme_trader_execution(
+                definition_version=self.store.CHAIN_MEME_TRADER_V11_VERSION,
+            )
+        )
+        v10_execution = None if self.chain_meme_trader_only else (
+            self.store.due_chain_meme_trader_execution(
+                definition_version=self.store.CHAIN_MEME_TRADER_V10_VERSION,
+            )
+        )
+        v2_execution = None if self.chain_meme_trader_only else (
+            self.store.due_chain_meme_trader_execution(
+                definition_version=self.store.CHAIN_MEME_TRADER_STAGE4_EXEC_EQUITY_V2_VERSION,
+            )
+        )
+        challenger_execution = None if self.chain_meme_trader_only else (
+            self.store.due_chain_meme_trader_execution(
+                definition_version=self.store.CHAIN_MEME_TRADER_STAGE4_EXEC_DECAY_VERSION,
+            )
+        )
+        execution_candidates = (
+            active_execution, v11_execution, v10_execution, primary_execution, v2_execution,
+            challenger_execution,
+        )
+        execution_task = next(
+            (item for item in execution_candidates if item is not None and item["side"] == "SELL"),
+            next((item for item in execution_candidates if item is not None), None),
+        )
+        quote_versions = (
+            ()
+            if self.chain_meme_trader_only
+            else (
+                self.store.CHAIN_MEME_TRADER_VERSION,
+                self.store.CHAIN_MEME_TRADER_V11_VERSION,
+                self.store.CHAIN_MEME_TRADER_V10_VERSION,
+                self.store.CHAIN_MEME_TRADER_STAGE4_EXEC_EQUITY_V2_VERSION,
+                self.store.CHAIN_MEME_TRADER_STAGE4_EXEC_DECAY_VERSION,
+            )
+        )
+        task = None
+        selected_quote_index = None
+        for offset in range(len(quote_versions)):
+            index = (self._chain_meme_quote_version_cursor + offset) % len(quote_versions)
+            candidate = self.store.due_chain_meme_trader_quote(
+                definition_version=quote_versions[index],
+            )
+            if candidate is not None:
+                task = candidate
+                selected_quote_index = index
+                break
+        quote_gets_next_slot = bool(
+            task is not None
+            and execution_task is not None
+            and str(execution_task.get("side")) != "SELL"
+            and self._chain_meme_normal_slot == 2
+        )
+        if execution_task is not None and not quote_gets_next_slot:
+            async with self._jupiter_background_dispatch_lock:
+                loop_now = asyncio.get_running_loop().time()
+                if loop_now - self._jupiter_background_epoch_started >= self._jupiter_background_epoch_seconds:
+                    self._jupiter_background_epoch_started = loop_now
+                    self._jupiter_background_epoch_requests = 0
+                if self._jupiter_background_epoch_requests < 3:
+                    requested_at = utcnow()
+                    attempt_id = self.store.start_chain_meme_trader_execution(
+                        execution_task, requested_at=requested_at
+                    )
+                    if attempt_id is not None:
+                        if str(execution_task.get("side")) != "SELL":
+                            self._chain_meme_normal_slot = (
+                                self._chain_meme_normal_slot + 1
+                            ) % 3
+                        self._jupiter_background_epoch_requests += 1
+                        status = "quoted"
+                        result: dict[str, Any] = {}
+                        error_type = ""
+                        try:
+                            async with self._jupiter_quote_lock:
+                                result = await self.jupiter.quote(
+                                    str(execution_task["input_mint"]),
+                                    str(execution_task["output_mint"]),
+                                    int(execution_task["input_amount_raw"]),
+                                    slippage_bps=int(execution_task["slippage_bps"]),
+                                )
+                        except JupiterNoRouteError:
+                            status = "no_route"
+                        except JupiterQuoteProtocolError as exc:
+                            status, error_type = "quote_only_protocol_invalid", type(exc).__name__
+                        except Exception as exc:
+                            status, error_type = "error", type(exc).__name__
+                        result_id = self.store.record_chain_meme_trader_execution_result(
+                            int(attempt_id), status=status,
+                            output_amount_raw=result.get("output_amount_raw"),
+                            other_amount_threshold_raw=result.get("other_amount_threshold"),
+                            slippage_bps=result.get("slippage_bps"),
+                            route_plan=result.get("route_plan") or [],
+                            error_type=error_type,
+                            completed_at=result.get("completed_at") or utcnow(),
+                        )
+                        if result_id is not None:
+                            self.store.settle_chain_meme_trader_execution_result(int(result_id))
+        if task is not None and (execution_task is None or quote_gets_next_slot):
+            quote_tasks = [
+                task,
+                *self.store.chain_meme_trader_quote_peer_tasks(task, quote_versions),
+            ]
+            frame_snapshot_id = None
+            if any(
+                str(item.get("definition_version"))
+                == self.store.CHAIN_MEME_TRADER_STAGE4_EXEC_EQUITY_V2_VERSION
+                for item in quote_tasks
+            ):
+                try:
+                    quoted = await self.dex.quote("solana", str(task["input_mint"]))
+                except Exception:
+                    quoted = None
+                if quoted is not None:
+                    token, snapshot = quoted
+                    received_at = utcnow()
+                    if not self._paper_quote_rejections(
+                        f"solana:{task['input_mint']}", token, snapshot, received_at
+                    ):
+                        self.store.upsert_token(token, seen_at=snapshot.observed_at)
+                        frame_snapshot_id = self.store.add_snapshot(snapshot)
+            async with self._jupiter_background_dispatch_lock:
+                loop_now = asyncio.get_running_loop().time()
+                if loop_now - self._jupiter_background_epoch_started >= self._jupiter_background_epoch_seconds:
+                    self._jupiter_background_epoch_started = loop_now
+                    self._jupiter_background_epoch_requests = 0
+                if self._jupiter_background_epoch_requests < 3:
+                    requested_at = utcnow()
+                    attempts = [
+                        (item, attempt_id)
+                        for item in quote_tasks
+                        if (attempt_id := self.store.start_chain_meme_trader_quote(
+                            item, requested_at=requested_at
+                        )) is not None
+                    ]
+                    if attempts:
+                        self._chain_meme_normal_slot = (
+                            self._chain_meme_normal_slot + 1
+                        ) % 3
+                        if selected_quote_index is not None:
+                            self._chain_meme_quote_version_cursor = (
+                                selected_quote_index + 1
+                            ) % len(quote_versions)
+                        self._jupiter_background_epoch_requests += 1
+                        status = "quoted"
+                        result: dict[str, Any] = {}
+                        error_type = ""
+                        try:
+                            async with self._jupiter_quote_lock:
+                                result = await self.jupiter.quote(
+                                    str(task["input_mint"]), str(task["output_mint"]),
+                                    int(task["input_amount_raw"]),
+                                    slippage_bps=int(task["slippage_bps"]),
+                                )
+                        except JupiterNoRouteError:
+                            status = "no_route"
+                        except JupiterQuoteProtocolError as exc:
+                            status, error_type = "quote_only_protocol_invalid", type(exc).__name__
+                        except Exception as exc:
+                            status, error_type = "error", type(exc).__name__
+                        completed_at = result.get("completed_at") or utcnow()
+                        for quote_task, attempt_id in attempts:
+                            quote_result_id = self.store.record_chain_meme_trader_quote_result(
+                                int(attempt_id), status=status,
+                                output_amount_raw=result.get("output_amount_raw"),
+                                other_amount_threshold_raw=result.get("other_amount_threshold"),
+                                slippage_bps=result.get("slippage_bps"),
+                                route_plan=result.get("route_plan") or [],
+                                error_type=error_type,
+                                completed_at=completed_at,
+                            )
+                            if (
+                                quote_result_id is not None
+                                and str(quote_task.get("definition_version")) in {
+                                    self.store.CHAIN_MEME_TRADER_V10_VERSION,
+                                    self.store.CHAIN_MEME_TRADER_V11_VERSION,
+                                }
+                            ):
+                                matrix_version = str(quote_task["definition_version"])
+                                frame_id = self.store.record_chain_meme_trader_position_equity_frame(
+                                    int(quote_result_id), snapshot_id=frame_snapshot_id,
+                                    definition_version=matrix_version,
+                                )
+                                if frame_id is not None:
+                                    self.store.evaluate_chain_meme_trader_stage4_v2_frame(
+                                        frame_id, definition_version=matrix_version,
+                                    )
+                            elif (
+                                quote_result_id is not None
+                                and str(quote_task.get("definition_version"))
+                                == self.store.CHAIN_MEME_TRADER_STAGE4_EXEC_DECAY_VERSION
+                            ):
+                                self.store.evaluate_chain_meme_trader_executable_decay_quote(
+                                    int(quote_result_id)
+                                )
+                            elif (
+                                quote_result_id is not None
+                                and str(quote_task.get("definition_version"))
+                                == self.store.CHAIN_MEME_TRADER_STAGE4_EXEC_EQUITY_V2_VERSION
+                            ):
+                                frame_id = self.store.record_chain_meme_trader_position_equity_frame(
+                                    int(quote_result_id), snapshot_id=frame_snapshot_id,
+                                )
+                                if frame_id is not None:
+                                    self.store.evaluate_chain_meme_trader_stage4_v2_frame(frame_id)
+        if not self.chain_meme_trader_only:
+            self.store.record_chain_meme_trader_account_snapshots()
+        snapshot_clock = asyncio.get_running_loop().time()
+        if snapshot_clock - self._last_chain_account_snapshot_monotonic >= 5.0:
+            self.store.record_chain_meme_trader_account_snapshots(
+                definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
+            )
+            self._last_chain_account_snapshot_monotonic = snapshot_clock
+        if not self.chain_meme_trader_only:
+            self.store.record_chain_meme_trader_account_snapshots(
+                definition_version=self.store.CHAIN_MEME_TRADER_V11_VERSION,
+            )
+            self.store.record_chain_meme_trader_account_snapshots(
+                definition_version=self.store.CHAIN_MEME_TRADER_V10_VERSION,
+            )
+            self.store.finalize_chain_meme_trader_immediate_reverseability()
+            self.store.record_chain_meme_trader_account_snapshots(
+                definition_version=self.store.CHAIN_MEME_TRADER_STAGE4_EXEC_DECAY_VERSION,
+            )
+            self.store.record_chain_meme_trader_account_snapshots(
+                definition_version=self.store.CHAIN_MEME_TRADER_STAGE4_EXEC_EQUITY_V2_VERSION,
+            )
+        self.store.heartbeat("chain-meme-trader", item=True)
+
+    async def chain_meme_market_marks_once(self) -> None:
+        """Refresh held tokens every two seconds with one fresh DEX batch per 30 mints."""
+        targets = self.store.chain_meme_trader_market_mark_targets(
+            definition_version=(
+                self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION
+                if self.chain_meme_trader_only else None
+            )
+        )
+        refreshed = 0
+        for start in range(0, len(targets), 30):
+            chunk = targets[start:start + 30]
+            if not chunk:
+                continue
+            chain = str(chunk[0]["chain"])
+            try:
+                quoted = await self._dex_batch_quote(
+                    chain, [str(item["address"]) for item in chunk],
+                    fresh=True,
+                )
+            except Exception as exc:
+                self.store.heartbeat(
+                    "chain-meme-market-marks", error=type(exc).__name__,
+                )
+                return
+            received_at = utcnow()
+            outcomes = []
+            for item in chunk:
+                result = quoted.get(str(item["token_id"]))
+                if result is None:
+                    outcomes.append({
+                        "kind": "missing",
+                        "token_id": str(item["token_id"]),
+                        "chain": str(item["chain"]),
+                        "address": str(item["address"]),
+                    })
+                    continue
+                token, snapshot = result
+                raw = snapshot.raw if isinstance(snapshot.raw, dict) else {}
+                pair = raw.get("pair") if isinstance(raw.get("pair"), dict) else raw
+                pair_address = str(pair.get("pairAddress") or "").strip()
+                if (
+                    not pair_address
+                    or float(snapshot.price_usd or 0.0) <= 0.0
+                    or (
+                        snapshot.liquidity_usd is not None
+                        and float(snapshot.liquidity_usd) <= 0.0
+                    )
+                ):
+                    outcomes.append({
+                        "kind": "missing",
+                        "token_id": str(item["token_id"]),
+                        "chain": str(item["chain"]),
+                        "address": str(item["address"]),
+                    })
+                    continue
+                rejections = self._paper_quote_rejections(
+                    str(item["token_id"]), token, snapshot, received_at,
+                )
+                if rejections:
+                    outcomes.append({
+                        "kind": "failure",
+                        "token_id": str(item["token_id"]),
+                        "failure_kind": "DATA_REJECTED:" + ",".join(rejections),
+                    })
+                    continue
+                outcomes.append({
+                    "kind": "visible", "token": token, "snapshot": snapshot,
+                })
+            refreshed += self.store.apply_chain_meme_trader_market_mark_batch(
+                outcomes, recorded_at=received_at,
+            )
+        self.store.evaluate_chain_meme_trader_market_marks(
+            definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
+        )
+        if not self.chain_meme_trader_only:
+            self.store.evaluate_chain_meme_trader_market_marks(
+                definition_version=self.store.CHAIN_MEME_TRADER_V11_VERSION,
+            )
+        self.store.heartbeat("chain-meme-market-marks", item=refreshed > 0)
+
+    async def chain_meme_trader_postbuy_research_once(self) -> None:
+        """Run one observer-only semantic investigation shared by all v5 strategy arms."""
+        due = self.store.due_chain_meme_trader_postbuy_research(limit=1)
+        if not due:
+            return
+        item = due[0]
+        cutoff = utcnow()
+        latest_start = parse_time(item["latest_start_at"])
+        if cutoff > latest_start:
+            case_id = self.store.record_chain_meme_trader_postbuy_research_case(
+                shadow_cohort_id=int(item["shadow_cohort_id"]),
+                token_id=str(item["token_id"]),
+                first_buy_fill_id=int(item["first_buy_fill_id"]),
+                entry_snapshot_id=int(item["entry_snapshot_id"]),
+                position_opened_at=item["position_opened_at"],
+                research_cutoff_at=cutoff,
+                snapshot_id=None,
+                trigger_transition_id=None,
+                status="coverage_gap",
+                reason_code="research_start_window_missed",
+            )
+            if case_id is not None:
+                self.store.complete_chain_meme_trader_postbuy_research(
+                    int(case_id), terminal_status="coverage_gap:start_window_missed",
+                )
+            return
+        token = self.store.token(str(item["token_id"]))
+        if token is None:
+            case_id = self.store.record_chain_meme_trader_postbuy_research_case(
+                shadow_cohort_id=int(item["shadow_cohort_id"]),
+                token_id=str(item["token_id"]),
+                first_buy_fill_id=int(item["first_buy_fill_id"]),
+                entry_snapshot_id=int(item["entry_snapshot_id"]),
+                position_opened_at=item["position_opened_at"],
+                research_cutoff_at=cutoff,
+                snapshot_id=None,
+                trigger_transition_id=None,
+                status="coverage_gap",
+                reason_code="token_record_unavailable",
+            )
+            if case_id is not None:
+                self.store.complete_chain_meme_trader_postbuy_research(
+                    int(case_id), terminal_status="coverage_gap:token_record_unavailable",
+                )
+            return
+        frozen = self.store.post_entry_context_snapshot(
+            str(item["token_id"]),
+            opened_at=item["position_opened_at"],
+            at_or_before=cutoff,
+            entry_snapshot_id=int(item["entry_snapshot_id"]),
+        )
+        if frozen is None:
+            case_id = self.store.record_chain_meme_trader_postbuy_research_case(
+                shadow_cohort_id=int(item["shadow_cohort_id"]),
+                token_id=str(item["token_id"]),
+                first_buy_fill_id=int(item["first_buy_fill_id"]),
+                entry_snapshot_id=int(item["entry_snapshot_id"]),
+                position_opened_at=item["position_opened_at"],
+                research_cutoff_at=cutoff,
+                snapshot_id=None,
+                trigger_transition_id=None,
+                status="coverage_gap",
+                reason_code="no_temporally_valid_snapshot",
+            )
+            if case_id is not None:
+                self.store.complete_chain_meme_trader_postbuy_research(
+                    int(case_id), terminal_status="coverage_gap:no_temporally_valid_snapshot",
+                )
+            return
+        snapshot_id, snapshot = frozen
+        snapshot_basis = (
+            "entry_trigger_snapshot"
+            if int(snapshot_id) == int(item["entry_snapshot_id"])
+            else "post_entry_snapshot"
+        )
+        momentum = CandidateEvaluator._momentum_score(snapshot)
+        trigger = self.autonomous_search.resolve_token_context_trigger(
+            token,
+            momentum_score=momentum,
+            event_relation={
+                "kind": "post_entry_narrative_position",
+                "source_buy_trade_id": int(item["first_buy_fill_id"]),
+                "source_fill_id": int(item["first_buy_fill_id"]),
+                "shadow_cohort_id": int(item["shadow_cohort_id"]),
+                "position_opened_at": str(item["position_opened_at"]),
+                "position_status": "v5_shared_postbuy",
+                "selection_path": "chain_meme_trader_v5_shared_postbuy",
+                "context_snapshot_basis": snapshot_basis,
+                "investigation_started_at": iso(cutoff),
+            },
+            snapshot_observed_at=snapshot.observed_at,
+            snapshot_id=int(snapshot_id),
+        )
+        transition_id = (
+            int(trigger["transition_id"])
+            if trigger is not None and trigger.get("transition_id") is not None
+            else None
+        )
+        case_id = self.store.record_chain_meme_trader_postbuy_research_case(
+            shadow_cohort_id=int(item["shadow_cohort_id"]),
+            token_id=str(item["token_id"]),
+            first_buy_fill_id=int(item["first_buy_fill_id"]),
+            entry_snapshot_id=int(item["entry_snapshot_id"]),
+            position_opened_at=item["position_opened_at"],
+            research_cutoff_at=cutoff,
+            snapshot_id=int(snapshot_id),
+            trigger_transition_id=transition_id,
+            status="triggered" if transition_id is not None else "coverage_gap",
+            reason_code=(
+                "v5_shared_postbuy" if transition_id is not None
+                else "token_universe_lineage_unavailable"
+            ),
+        )
+        if case_id is None:
+            return
+        if transition_id is None:
+            self.store.complete_chain_meme_trader_postbuy_research(
+                int(case_id), terminal_status="coverage_gap:transition_unavailable",
+            )
+            return
+        try:
+            await self._investigate_token_context(
+                token,
+                snapshot,
+                momentum_score=momentum,
+                event_relation=trigger,
+                allow_postbuy_research_in_focus=True,
+            )
+        finally:
+            self.store.complete_chain_meme_trader_postbuy_research(
+                int(case_id), completed_at=utcnow(),
+            )
+        self.store.heartbeat("chain-meme-postbuy-research", item=True)
+
+    async def onchain_paper_position_monitor_once(self) -> None:
+        """Passively value one exact remaining position; never mutate or sell it."""
+        tasks = self.store.due_onchain_paper_position_monitor_quotes(limit=1)
         if not tasks:
-            self.store.sync_onchain_paper_narrative_runner()
-            self.store.record_onchain_paper_exit_challenger_account_snapshot()
             return
         async with self._jupiter_background_dispatch_lock:
             loop_now = asyncio.get_running_loop().time()
@@ -4423,17 +5610,13 @@ class Runtime:
                 self._jupiter_background_epoch_started = loop_now
                 self._jupiter_background_epoch_requests = 0
             if self._jupiter_background_epoch_requests >= 3:
-                self.store.sync_onchain_paper_narrative_runner()
-                self.store.record_onchain_paper_exit_challenger_account_snapshot()
                 return
-            item = tasks[0]
+            task = tasks[0]
             requested_at = utcnow()
-            attempt_id = self.store.start_onchain_paper_exit_challenger_quote_attempt(
-                item, requested_at=requested_at
+            attempt_id = self.store.start_onchain_paper_position_monitor_quote_attempt(
+                task, requested_at=requested_at
             )
             if attempt_id is None:
-                self.store.sync_onchain_paper_narrative_runner()
-                self.store.record_onchain_paper_exit_challenger_account_snapshot()
                 return
             self._jupiter_background_epoch_requests += 1
             status = "quoted"
@@ -4442,10 +5625,9 @@ class Runtime:
             try:
                 async with self._jupiter_quote_lock:
                     result = await self.jupiter.quote(
-                        str(item["input_mint"]),
-                        str(item["output_mint"]),
-                        int(item["input_amount_raw"]),
-                        slippage_bps=int(item["slippage_bps"]),
+                        str(task["input_mint"]), str(task["output_mint"]),
+                        int(task["input_amount_raw"]),
+                        slippage_bps=int(task["slippage_bps"]),
                     )
             except JupiterNoRouteError:
                 status = "no_route"
@@ -4453,33 +5635,23 @@ class Runtime:
                 status, error_type = "quote_only_protocol_invalid", type(exc).__name__
             except Exception as exc:
                 status, error_type = "error", type(exc).__name__
-            completed_at = result.get("completed_at") or utcnow()
-            self.store.record_onchain_paper_exit_challenger_quote_result(
-                item,
+            self.store.record_onchain_paper_position_monitor_quote_result(
                 attempt_id=int(attempt_id),
                 status=status,
                 output_amount_raw=result.get("output_amount_raw"),
                 other_amount_threshold_raw=result.get("other_amount_threshold"),
                 slippage_bps=result.get("slippage_bps"),
-                signature_fee_lamports=result.get("signature_fee_lamports"),
-                prioritization_fee_lamports=result.get("prioritization_fee_lamports"),
-                rent_fee_lamports=result.get("rent_fee_lamports"),
                 router=str(result.get("router") or ""),
                 mode=str(result.get("mode") or ""),
-                fee_bps=result.get("fee_bps"),
-                platform_fee_bps=result.get("platform_fee_bps"),
-                price_impact_pct=result.get("price_impact_pct"),
                 price_impact_bps=result.get("price_impact_bps"),
-                price_impact_source=str(result.get("price_impact_source") or ""),
-                route_plan=result.get("route_plan") or [],
                 error_type=error_type,
-                completed_at=completed_at,
+                completed_at=result.get("completed_at") or utcnow(),
             )
-        self.store.sync_onchain_paper_narrative_runner()
-        self.store.record_onchain_paper_exit_challenger_account_snapshot()
 
     async def onchain_paper_narrative_context_once(self) -> None:
         """Investigate each new Strategy 3 position once, without changing its exit."""
+        if self.strategy_focus_active:
+            return
         self.store.enroll_onchain_paper_narrative_runner()
         due = self.store.due_onchain_paper_narrative_context(limit=8)
         if not due:
@@ -4630,13 +5802,69 @@ class Runtime:
             round_id=round_id,
             metadata={"provider": "pumpportal"},
         )
+        metadata_uri = ""
+        document_host = ""
+        retrieval_host = ""
+        alternate_uri = ""
+        attempt_count = 0
         try:
             metadata_uri = normalize_public_http_url(str(raw_uri))
-            response = await self.http.get_public_document(
-                metadata_uri,
-                maximum_bytes=int(cfg.get("metadata_max_response_bytes", 131_072)),
-                maximum_redirects=3,
-            )
+            parsed_metadata_uri = urllib.parse.urlsplit(metadata_uri)
+            document_host = (parsed_metadata_uri.hostname or "unknown").lower()
+            request_uri = metadata_uri
+            if parsed_metadata_uri.path.startswith("/ipfs/"):
+                alternate_hosts = {
+                    "ipfs.io": "gateway.pinata.cloud",
+                    "gateway.pinata.cloud": "ipfs.io",
+                }
+                alternate_host = alternate_hosts.get(document_host)
+                if alternate_host:
+                    alternate_uri = normalize_public_http_url(
+                        urllib.parse.urlunsplit(
+                            (
+                                "https", alternate_host, parsed_metadata_uri.path,
+                                parsed_metadata_uri.query, "",
+                            )
+                        )
+                    )
+            while True:
+                attempt_count += 1
+                retrieval_host = (
+                    urllib.parse.urlsplit(request_uri).hostname or "unknown"
+                ).lower()
+                try:
+                    response = await self.http.get_public_document(
+                        request_uri,
+                        maximum_bytes=int(
+                            cfg.get("metadata_max_response_bytes", 131_072)
+                        ),
+                        maximum_redirects=3,
+                    )
+                    break
+                except httpx.HTTPStatusError as exc:
+                    status_code = int(exc.response.status_code)
+                    retryable = (
+                        status_code in {408, 425, 429}
+                        or status_code >= 500
+                        or (status_code == 403 and bool(alternate_uri))
+                    )
+                    if attempt_count >= 2 or not retryable:
+                        raise
+                    if alternate_uri:
+                        request_uri = alternate_uri
+                    try:
+                        retry_after = float(
+                            exc.response.headers.get("Retry-After", "0.5") or 0.5
+                        )
+                    except ValueError:
+                        retry_after = 0.5
+                    await asyncio.sleep(max(0.0, min(5.0, retry_after)))
+                except httpx.TransportError:
+                    if attempt_count >= 2:
+                        raise
+                    if alternate_uri:
+                        request_uri = alternate_uri
+                    await asyncio.sleep(0.5)
             payload = response.json()
             if not isinstance(payload, dict):
                 raise ValueError("Pump metadata must be a JSON object")
@@ -4724,25 +5952,82 @@ class Runtime:
                 },
                 round_id=round_id,
                 source_link_id=source_link_id,
-                metadata={"provider": "pumpportal", "source_link_count": len(source_links)},
+                metadata={
+                    "provider": "pumpportal",
+                    "source_link_count": len(source_links),
+                    "document_host": document_host,
+                    "retrieval_host": retrieval_host,
+                    "attempt_count": attempt_count,
+                },
             )
             self.store.heartbeat("pumpportal:metadata", item=bool(source_links))
         except Exception as exc:
             completed_at = utcnow()
+            status_code = (
+                int(exc.response.status_code)
+                if isinstance(exc, httpx.HTTPStatusError) else None
+            )
+            retryable_failure = (
+                isinstance(exc, httpx.TransportError)
+                or (
+                    status_code is not None
+                    and (
+                        status_code in {408, 425, 429}
+                        or status_code >= 500
+                        or (status_code == 403 and bool(alternate_uri))
+                    )
+                )
+            )
+            document_unavailable = (
+                isinstance(
+                    exc,
+                    (
+                        httpx.HTTPStatusError,
+                        json.JSONDecodeError,
+                        UnsafeFeedURL,
+                        FeedRedirectError,
+                        FeedResponseTooLarge,
+                        InvalidPublicDocumentContentType,
+                        UnsupportedFeedContentEncoding,
+                    ),
+                )
+                or str(exc) == "Pump metadata must be a JSON object"
+            )
+            reason_code = (
+                f"http_status_{status_code}"
+                if status_code is not None else type(exc).__name__
+            )
             self.store.record_token_universe_funnel_transition(
                 token.token_id,
                 stage="metadata_hydration_result",
-                status="error",
-                reason_code=type(exc).__name__,
+                status="unavailable" if document_unavailable and not retryable_failure else "error",
+                reason_code=reason_code,
                 evaluation_key=evaluation_key + ":result",
                 observed_at=completed_at,
                 ingested_at=completed_at,
                 source_table="token_discovery_rounds",
                 source_record_ids={"round_id": round_id},
                 round_id=round_id,
-                metadata={"provider": "pumpportal"},
+                metadata={
+                    "provider": "pumpportal",
+                    "document_host": document_host or "unknown",
+                    "retrieval_host": retrieval_host or document_host or "unknown",
+                    "http_status": status_code,
+                    "attempt_count": attempt_count,
+                },
             )
-            self.store.heartbeat("pumpportal:metadata", error=type(exc).__name__)
+            # Invalid or unavailable metadata belongs to this Token's coverage
+            # ledger.  Only a retry-exhausted transport/provider failure or an
+            # unexpected program error is a system-level incident.
+            if retryable_failure or not document_unavailable:
+                self.store.heartbeat(
+                    "pumpportal:metadata",
+                    error=f"{reason_code}:{document_host or 'unknown'}",
+                    error_detail=(
+                        f"{reason_code}; host={retrieval_host or document_host or 'unknown'}; "
+                        f"attempts={attempt_count}"
+                    ),
+                )
 
     async def pump_loop(self) -> None:
         cfg = self.config["sources"].get("pumpportal") or {}
@@ -4893,6 +6178,9 @@ class Runtime:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                self.store.heartbeat(
+                    name, error=type(exc).__name__, error_detail=str(exc),
+                )
                 self.notifier.send(
                     "runtime_error",
                     name,
@@ -4907,7 +6195,7 @@ class Runtime:
 
     async def run_forever(self) -> None:
         bridge_cfg = self.config["bridge"]
-        if bridge_cfg.get("enabled", True):
+        if bridge_cfg.get("enabled", True) and not self.chain_meme_trader_only:
             self.bridge = BrowserBridge(
                 str(bridge_cfg.get("host", "127.0.0.1")), int(bridge_cfg.get("port", 8765)), str(bridge_cfg["token"]),
                 self.ingest_observation, self.browser_heartbeat,
@@ -4919,6 +6207,40 @@ class Runtime:
             await self.bridge.start()
             self.notifier.send("bridge_started", "browser bridge", {"host": bridge_cfg.get("host"), "port": bridge_cfg.get("port")})
 
+        if self.chain_meme_trader_only:
+            tasks = [
+                asyncio.create_task(self.pump_loop(), name="pumpportal"),
+                asyncio.create_task(
+                    self._periodic(
+                        "dexscreener_discovery",
+                        (self.config["sources"].get("dexscreener_discovery") or {}).get("interval_seconds", 90),
+                        self.poll_dexscreener_discovery_once,
+                    ),
+                    name="dexscreener_discovery",
+                ),
+                asyncio.create_task(
+                    self._periodic(
+                        "chain_meme_trader", 1, self.chain_meme_trader_once,
+                    ),
+                    name="chain_meme_trader",
+                ),
+                asyncio.create_task(
+                    self._periodic(
+                        "chain_meme_market_marks", 2,
+                        self.chain_meme_market_marks_once,
+                    ),
+                    name="chain_meme_market_marks",
+                ),
+            ]
+            try:
+                await self._stop.wait()
+            finally:
+                self._stop.set()
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+            return
+
         tasks = [
             asyncio.create_task(self.pump_loop(), name="pumpportal"),
             asyncio.create_task(self._autonomous_source_loop(), name="autonomous_source_discovery"),
@@ -4926,6 +6248,14 @@ class Runtime:
             asyncio.create_task(
                 self._periodic("external_sources", self.config.get("poll_seconds", 60), self.poll_external_once),
                 name="external_sources",
+            ),
+            asyncio.create_task(
+                self._periodic(
+                    "robinhood_stock_token_registry",
+                    21_600,
+                    self.robinhood_stock_token_registry_once,
+                ),
+                name="robinhood_stock_token_registry",
             ),
             asyncio.create_task(
                 self._periodic(
@@ -4996,11 +6326,27 @@ class Runtime:
             ),
             asyncio.create_task(
                 self._periodic(
+                    "token_information_watch",
+                    5,
+                    self.token_information_watch_once,
+                ),
+                name="token_information_watch",
+            ),
+            asyncio.create_task(
+                self._periodic(
                     "onchain_only_evm_route_quote",
                     10,
                     self.onchain_only_evm_route_quote_once,
                 ),
                 name="onchain_only_evm_route_quote",
+            ),
+            asyncio.create_task(
+                self._periodic(
+                    "onchain_only_evm_aggregator_price",
+                    10,
+                    self.onchain_only_evm_aggregator_price_once,
+                ),
+                name="onchain_only_evm_aggregator_price",
             ),
             asyncio.create_task(
                 self._periodic(
@@ -5027,6 +6373,35 @@ class Runtime:
                 name="source_health",
             ),
         ]
+        if self.strategy_focus_active:
+            tasks.extend([
+                asyncio.create_task(
+                    self._periodic(
+                        "chain_meme_trader", 5, self.chain_meme_trader_once
+                    ),
+                    name="chain_meme_trader",
+                ),
+                asyncio.create_task(
+                    self._periodic(
+                        "chain_meme_postbuy_research", 5,
+                        self.chain_meme_trader_postbuy_research_once,
+                    ),
+                    name="chain_meme_postbuy_research",
+                ),
+                asyncio.create_task(
+                    self.held_account_loop(), name="solana_held_account_monitor"
+                ),
+                asyncio.create_task(
+                    self.critical_onchain_exit_loop(), name="critical_onchain_exit"
+                ),
+                asyncio.create_task(
+                    self._periodic(
+                        "chain_meme_market_marks", 2,
+                        self.chain_meme_market_marks_once,
+                    ),
+                    name="chain_meme_market_marks",
+                ),
+            ])
         try:
             await self._stop.wait()
         finally:
