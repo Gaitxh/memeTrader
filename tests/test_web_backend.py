@@ -103,7 +103,12 @@ def test_chain_meme_trader_api_and_static_page_preserve_forward_contract(tmp_pat
     store.register_chain_meme_trader()
     store.register_chain_meme_trader_v19()
     store.activate_chain_meme_trader_v19()
+    observed_at = utcnow()
     store.record_chain_meme_trader_account_snapshots(
+        definition_version=Store.CHAIN_MEME_TRADER_V19_VERSION,
+    )
+    store.record_chain_meme_trader_account_snapshots(
+        now=observed_at + timedelta(seconds=61),
         definition_version=Store.CHAIN_MEME_TRADER_V19_VERSION,
     )
     store.heartbeat("chain-meme-trader", item=True)
@@ -169,7 +174,7 @@ def test_chain_meme_trader_api_and_static_page_preserve_forward_contract(tmp_pat
     assert "fullTimer=setTimeout(refreshFull" not in app
     assert "池与持仓监控" in app
     assert "持仓约 2 秒" in index
-    assert "同一个 Token 不会重复访问 124 次" in app
+    assert "同一个 Token 不会按 ${families.length} 个策略重复访问" in app
     assert "连续无池/价格超过 1 分钟才全损" in app
     assert 'id="overview-strategies"' in index
     assert "账户实时曲线" in app
@@ -197,6 +202,7 @@ def test_chain_meme_trader_api_and_static_page_preserve_forward_contract(tmp_pat
         assert "strategy_registry" not in live
         assert "positions" not in live["strategies"][0]
         assert "open_positions" not in live
+        assert len(live["strategies"][0]["curve"]) == 2
         assert len(live_response.content) < len(response.content)
         focused_live = httpx.get(
             f"http://127.0.0.1:{port}/api/live",
@@ -218,8 +224,55 @@ def test_chain_meme_trader_api_and_static_page_preserve_forward_contract(tmp_pat
         assert "全局配置锁定" in live_enable.json()["error"]
     finally:
         server.shutdown()
-    server.server_close()
-    thread.join(timeout=2)
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_strategy_universe_refreshes_when_v21_additive_strategy_activates(tmp_path: Path):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    store.register_chain_meme_trader_v20()
+    store.activate_chain_meme_trader_v20()
+    store.record_chain_meme_trader_account_snapshots(
+        definition_version=Store.CHAIN_MEME_TRADER_V20_VERSION,
+    )
+    store.close()
+
+    source_universe = (
+        Path(__file__).parents[1] / "docs" / "PROJECT_CONTEXT" /
+        "CHAIN_MEME_TRADER_HISTORICAL_STRATEGY_UNIVERSE_2026-09-04.json"
+    )
+    target_universe = (
+        tmp_path / "docs" / "PROJECT_CONTEXT" /
+        "CHAIN_MEME_TRADER_HISTORICAL_STRATEGY_UNIVERSE_2026-09-04.json"
+    )
+    target_universe.parent.mkdir(parents=True)
+    shutil.copy2(source_universe, target_universe)
+
+    web_data = ChainWebData(config_path)
+    assert len(web_data.strategy_universe()["families"]) == 124
+
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    store.register_chain_meme_trader_v21()
+    store.activate_chain_meme_trader_v21()
+    assert store.record_chain_meme_trader_account_snapshots(
+        definition_version=Store.CHAIN_MEME_TRADER_V21_VERSION,
+    ) == 125
+    store.close()
+
+    payload = web_data.state()
+    universe = web_data.strategy_universe()
+    assert payload["definition"]["strategy_count"] == 125
+    assert len(payload["strategies"]) == 125
+    assert universe["summary"]["historical_behavior_contract_families"] == 124
+    assert universe["summary"]["behavior_contract_families"] == 125
+    assert universe["summary"]["active_forward_families"] == 125
+    assert len(universe["families"]) == 125
+    additive = universe["families"][-1]
+    assert additive["display_index"] == 125
+    assert additive["active_arm_ids"] == ["broad_principal_lock_runner_v1"]
+    assert additive["fidelity_status"] == "ADDITIVE_FORWARD"
+    assert universe["provider_requests_triggered"] == 0
 
 
 def test_chain_web_reports_distinct_tokens_holding_duration_and_trade_markers(

@@ -35,7 +35,7 @@ class ChainWebData:
         self.wallets = SolanaLiveWalletManager(root, self.database)
         self._cache_lock = threading.Lock()
         self._state_cache: dict[tuple[bool, str | None], tuple[float, dict[str, Any]]] = {}
-        self._universe_cache: tuple[float, dict[str, Any]] | None = None
+        self._universe_cache: tuple[tuple[float, str], dict[str, Any]] | None = None
         self._last_web_error_record_at: dict[str, float] = {}
         self.strategy_universe_path = (
             root / "docs" / "PROJECT_CONTEXT" /
@@ -425,6 +425,22 @@ class ChainWebData:
                     (active_version,),
                 ).fetchall()
             }
+            curve_rows = connection.execute(
+                "SELECT recorded_at,arm_id,indicative_equity_usd,"
+                "executable_equity_usd FROM chain_meme_trader_account_snapshots "
+                "WHERE definition_version=? ORDER BY id DESC LIMIT ?",
+                (active_version, max(120, len(policies) * 120)),
+            ).fetchall()
+            curves_by_arm: dict[str, list[dict[str, Any]]] = {}
+            for row in reversed(curve_rows):
+                curve = curves_by_arm.setdefault(str(row["arm_id"]), [])
+                curve.append({
+                    "recorded_at": row["recorded_at"],
+                    "indicative_equity_usd": row["indicative_equity_usd"],
+                    "executable_equity_usd": row["executable_equity_usd"],
+                })
+                if len(curve) > 120:
+                    del curve[:-120]
             latest_snapshot_at = max(
                 (
                     str(item.get("recorded_at") or "")
@@ -503,11 +519,7 @@ class ChainWebData:
                     },
                     "arm_id": policy_arm_id,
                     "account": account,
-                    "curve": ([{
-                        "recorded_at": account["recorded_at"],
-                        "indicative_equity_usd": account.get("indicative_equity_usd"),
-                        "executable_equity_usd": account.get("executable_equity_usd"),
-                    }] if account.get("recorded_at") else []),
+                    "curve": curves_by_arm.get(policy_arm_id, []),
                 })
 
             open_rows = (
@@ -1582,7 +1594,7 @@ class ChainWebData:
         return payload
 
     def strategy_universe(self) -> dict[str, Any]:
-        """Return the canonical 124-contract catalogue without querying providers."""
+        """Return preserved historical strategies plus current additive strategies."""
         if not self.strategy_universe_path.is_file():
             return {
                 "status": "not_generated",
@@ -1590,9 +1602,29 @@ class ChainWebData:
                 "summary": {"behavior_contract_families": 0},
             }
         modified_at = self.strategy_universe_path.stat().st_mtime
-        with self._cache_lock:
-            if self._universe_cache is not None and self._universe_cache[0] == modified_at:
-                return self._universe_cache[1]
+        with self._connect() as connection:
+            active_row = connection.execute(
+                "SELECT definition_version FROM chain_meme_trader_v6_activations "
+                "WHERE entry_execution_enabled=1 ORDER BY activated_at DESC LIMIT 1"
+            ).fetchone()
+            active_version = (
+                str(active_row["definition_version"])
+                if active_row is not None else Store.CHAIN_MEME_TRADER_ACTIVE_VERSION
+            )
+            cache_key = (modified_at, active_version)
+            with self._cache_lock:
+                if self._universe_cache is not None and self._universe_cache[0] == cache_key:
+                    return self._universe_cache[1]
+            definition_row = connection.execute(
+                "SELECT definition_json FROM chain_meme_trader_registrations "
+                "WHERE definition_version=?", (active_version,),
+            ).fetchone()
+            active_definition = (
+                Store.chain_meme_trader_effective_definition_from_connection(
+                    connection, active_version, definition_row["definition_json"],
+                )
+                if definition_row is not None else {}
+            )
         report = json.loads(self.strategy_universe_path.read_text(encoding="utf-8"))
         instances_by_hash: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for item in report.get("instances", []):
@@ -1606,25 +1638,6 @@ class ChainWebData:
                     "execution_contract", "frozen_policy",
                 )
             })
-        with self._connect() as connection:
-            active_row = connection.execute(
-                "SELECT definition_version FROM chain_meme_trader_v6_activations "
-                "WHERE entry_execution_enabled=1 ORDER BY activated_at DESC LIMIT 1"
-            ).fetchone()
-            active_version = (
-                str(active_row["definition_version"])
-                if active_row is not None else Store.CHAIN_MEME_TRADER_ACTIVE_VERSION
-            )
-            definition_row = connection.execute(
-                "SELECT definition_json FROM chain_meme_trader_registrations "
-                "WHERE definition_version=?", (active_version,),
-            ).fetchone()
-            active_definition = (
-                Store.chain_meme_trader_effective_definition_from_connection(
-                    connection, active_version, definition_row["definition_json"],
-                )
-                if definition_row is not None else {}
-            )
         active_policies = active_definition.get("policies", [])
         active_policy_by_canonical = {
             str(policy.get("canonical_id") or ""): policy
@@ -1689,6 +1702,58 @@ class ChainWebData:
                     "projected account totals are descriptive, not independent cohort evidence"
                 ),
             })
+        represented_arms = {
+            str(arm_id)
+            for family in families
+            for arm_id in family.get("active_arm_ids", [])
+        }
+        for active_policy in active_policies:
+            arm_id = str(active_policy.get("arm_id") or "")
+            if not arm_id or arm_id in represented_arms:
+                continue
+            canonical_id = str(
+                active_policy.get("canonical_id") or f"additive-{arm_id}"
+            )
+            fingerprint = str(
+                active_policy.get("behavior_contract_hash")
+                or Store.chain_meme_trader_behavior_hash(
+                    active_policy, definition_version=active_version,
+                )
+            )
+            forward_enabled = bool(active_policy.get("forward_enabled", True))
+            families.append({
+                "canonical_id": canonical_id,
+                "behavior_contract_hash": fingerprint,
+                "display_index": len(families) + 1,
+                "name": str(active_policy.get("name") or arm_id),
+                "description": str(active_policy.get("description") or ""),
+                "entry_family": str(active_policy.get("entry_family") or ""),
+                "exit_family": str(active_policy.get("exit_family") or ""),
+                "members": [{
+                    "strategy_key": f"{active_version}:{arm_id}",
+                    "version": active_version,
+                    "arm_id": arm_id,
+                    "name": str(active_policy.get("name") or arm_id),
+                    "stage": active_policy.get("stage"),
+                    "entry_family": active_policy.get("entry_family"),
+                    "exit_family": active_policy.get("exit_family"),
+                    "classification": "ADDITIVE_FORWARD",
+                }],
+                "active_version": active_version,
+                "active_members": [f"{active_version}:{arm_id}"],
+                "active_arm_ids": [arm_id],
+                "realtime_state": (
+                    "ACTIVE_FORWARD" if forward_enabled else "COVERAGE_UNAVAILABLE"
+                ),
+                "fidelity_status": str(
+                    active_policy.get("fidelity_status") or "ADDITIVE_FORWARD"
+                ),
+                "fidelity_note": str(active_policy.get("fidelity_note") or ""),
+                "forward_enabled": forward_enabled,
+                "historical_terminal_projected_sum": 0,
+                "historical_realized_pnl_projected_sum_usd": 0.0,
+                "historical_metric_warning": "new forward strategy; no historical backfill",
+            })
         payload = {
             "status": "ok",
             "generated_at": iso(utcnow()),
@@ -1696,6 +1761,10 @@ class ChainWebData:
             "active_version": active_version,
             "summary": {
                 **report.get("summary", {}),
+                "historical_behavior_contract_families": len(
+                    report.get("behavior_families", [])
+                ),
+                "behavior_contract_families": len(families),
                 "active_forward_families": sum(
                     family["realtime_state"] == "ACTIVE_FORWARD" for family in families
                 ),
@@ -1714,10 +1783,13 @@ class ChainWebData:
             "shared_market_data": True,
             "provider_requests_triggered": 0,
         }
-        if len(families) != 124:
-            raise ValueError(f"expected 124 behavior contract families, found {len(families)}")
+        if len(families) < 124:
+            raise ValueError(
+                f"expected at least 124 preserved behavior contract families, "
+                f"found {len(families)}"
+            )
         with self._cache_lock:
-            self._universe_cache = (modified_at, payload)
+            self._universe_cache = (cache_key, payload)
         return payload
 
     def token_detail(self, token_id: str) -> dict[str, Any]:

@@ -3,6 +3,16 @@
 更新时间：2026-09-04
 状态：`ACTIVE / CONTINUOUS`
 
+## 0F. 2026-09-04 21:58 +08 已部署：v21 保留旧 124，并增量运行本金回收 Runner 与 Vault Shadow
+
+当前 Paper 运行态已切换为 `chain-meme-trader/v21-additive-principal-lock-runner-clean-forward`：旧 124 个策略定义、账户、历史与 lineage 全部保留，新增第 125 个独立策略 `broad_principal_lock_runner_v1`。激活 frontier 为 snapshot `817128`，首个 v21 source snapshot 为 `817129`，没有回填旧快照；v20 停止新入场，但旧开放仓继续退出。Live 仍由配置锁定。
+
+Runner 沿用 Broad Launch 入场，-20% hard stop，+80% 时目标卖出剩余仓位 60%，保留 40% runner，partial Fill 后以实际 post-fill mark 重置 high-water，50% trailing，最大 240 分钟。`principal_recovered` 只在累计实际回收达到原始 20U debit 后成立；当前五个已触发 partial TP 的自然前向仓位中，三笔真实回收达到20U、两笔没有，状态没有按目标价伪造。
+
+有界 Vault Shadow 已复用现有 PumpSwap `accountSubscribe`，仅覆盖新 runner 的去重持有池，`decision_eligible=0 / affects=none`。截至 `2026-09-04T13:58:35Z` 已有 3 个 resolved pool target、15 个严格前向 frame；它不会触发买卖或核销。v20/v21 synthetic `amount_raw` 未被当作真实 mint raw；未来任何 exact-Vault 退出必须先取得严格晚于触发点的 amount-specific executable quote/fill。
+
+低频审计不支持现在统一放宽：Broad/market-visible 分母充足，但 Flow Burst 只有 2 个自然输入，Reawakening 为 0；另有 137 个输入缺有效时点价格/池龄而应拒绝，51/124 个旧账户现金已低于20U。前两者是短窗口覆盖不足，后者是独立账户资本耗尽，不是共享现金或通用门控故障。旧策略不改；只有形成 coverage-distance 证据后，才注册单变量继承策略。详细结果：`docs/PROJECT_CONTEXT/COMMON_SPACE/ALERTS/CODEX_TO_CHATGPT/C2C-20260904-215800-CODEX-V21-ADDITIVE-RUNNER-VAULT-SHADOW-RESULT.md`。
+
 ## 0C. 2026-09-04 08:54 +08 最新运行纠偏：先退役 v10 shared-cash veto，激活 v11 independent-arm cash
 
 Lead 通过用户指定且唯一权威的 `@笔记本量化MCP-官方隧道` 再次核对当前 checkout、测试与 8790 运行态。**源码已经包含** `chain-meme-trader/v11-entry3-exit4-independent-arm-cash-forward`：同一 entry family 的每个策略账户独立计算现金，低于20U的账户单独拒绝，同一 cohort 仍只创建一个 authoritative Jupiter BUY intent，Fill 时再次按实际现金把同一 Fill 只投影给仍有资格的账户；针对性测试 `test_chain_meme_trader_independent_cash_keeps_solvent_arms_trading` 已通过。**但是部署中的 8790 `/api/state` 仍报告 v10** `chain-meme-trader/v10-entry3-exit4-route-surface-forward`，其冻结定义仍是 shared-cohort cash reservation。结合最新自然时期出现的 weakest-arm/shared-cash veto，这构成当前最高影响的代码—运行态漂移：一个 Broad Launch 账户亏损/现金不足不得锁死其余三个账户或整个 family。

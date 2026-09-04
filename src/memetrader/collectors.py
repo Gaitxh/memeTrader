@@ -11,11 +11,13 @@ import socket
 import time
 import urllib.parse
 import xml.etree.ElementTree as ET
-from collections import defaultdict
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
+from decimal import Decimal, ROUND_DOWN
 from email.utils import parsedate_to_datetime
-from typing import Any, AsyncIterator, Callable, Mapping
+from statistics import median
+from typing import Any, AsyncIterator, Callable, Iterable, Mapping
 
 import httpx
 import websockets
@@ -67,6 +69,436 @@ SOLANA_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 PUMPSWAP_GLOBAL_CONFIG_PDA = "ADyA8hdefvWN2dbGGWFotbzWxrAvLW83WG6QCVXvJKqw"
 PUMPSWAP_FEE_CONFIG_PDA = "5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx"
 PUMPSWAP_DISABLE_SELL_MASK = 1 << 4
+SPL_TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+SPL_TOKEN_2022_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+
+
+def token_quantity_to_raw_floor(quantity_tokens: Any, mint_decimals: int) -> int:
+    """Convert a verified token quantity to mint raw units without inventing dust."""
+    if isinstance(mint_decimals, bool) or not isinstance(mint_decimals, int):
+        raise ValueError("mint_decimals_unknown")
+    if not 0 <= mint_decimals <= 255:
+        raise ValueError("mint_decimals_invalid")
+    quantity = Decimal(str(quantity_tokens))
+    if not quantity.is_finite() or quantity < 0:
+        raise ValueError("token_quantity_invalid")
+    return int(
+        (quantity * (Decimal(10) ** mint_decimals)).to_integral_value(
+            rounding=ROUND_DOWN
+        )
+    )
+
+
+class PumpSwapVaultFlowTracker:
+    """Bounded, observer-only reserve-flow summaries keyed by unique pool."""
+
+    def __init__(
+        self, *, window_seconds: float = 60.0, max_points: int = 2048,
+        summary_seconds: float = 30.0,
+    ):
+        self.window_seconds = max(1.0, float(window_seconds))
+        self.max_points = max(8, int(max_points))
+        self.summary_seconds = max(1.0, float(summary_seconds))
+        self._latest: dict[int, dict[str, dict[str, Any]]] = defaultdict(dict)
+        self._points: dict[int, deque[dict[str, Any]]] = {}
+        self._last_pair_key: dict[int, tuple[Any, ...]] = {}
+        self._last_state: dict[int, str] = {}
+        self._last_emitted_at: dict[int, datetime] = {}
+
+    def retain(self, pool_target_ids: Iterable[int]) -> None:
+        keep = {int(item) for item in pool_target_ids}
+        for mapping in (
+            self._latest, self._points, self._last_pair_key,
+            self._last_state, self._last_emitted_at,
+        ):
+            for key in set(mapping) - keep:
+                mapping.pop(key, None)
+
+    @staticmethod
+    def _ratio(after: int, before: int) -> float | None:
+        return after / before - 1.0 if before > 0 else None
+
+    @staticmethod
+    def _mad_ratio(values: list[float]) -> float | None:
+        if not values:
+            return None
+        center = float(median(values))
+        if center <= 0.0:
+            return None
+        return float(median(abs(item - center) for item in values)) / center
+
+    def _frame(
+        self, pool_id: int, *, state: str, observed_at: datetime,
+        base_amount: int | None, quote_amount: int | None,
+        effective_quote: int | None, slot_min: int, slot_max: int,
+        features: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        previous = self._last_state.get(pool_id, "")
+        prior_emit = self._last_emitted_at.get(pool_id)
+        state_changed = state != previous
+        periodic_due = (
+            prior_emit is None
+            or (observed_at - prior_emit).total_seconds() >= self.summary_seconds
+        )
+        self._last_state[pool_id] = state
+        if not state_changed and not periodic_due:
+            return None
+        self._last_emitted_at[pool_id] = observed_at
+        points = self._points.get(pool_id) or ()
+        started_at = points[0]["observed_at"] if points else observed_at
+        return {
+            "observer_version": str(features.get("observer_version") or ""),
+            "pool_target_id": pool_id,
+            "frame_kind": "state_change" if state_changed else "periodic_30s",
+            "observer_state": state,
+            "previous_state": previous,
+            "window_started_at": iso(started_at),
+            "observed_at": iso(observed_at),
+            "slot_min": int(slot_min),
+            "slot_max": int(slot_max),
+            "base_amount_raw": str(base_amount) if base_amount is not None else None,
+            "quote_amount_raw": str(quote_amount) if quote_amount is not None else None,
+            "effective_quote_reserve_raw": (
+                str(effective_quote) if effective_quote is not None else None
+            ),
+            "features": dict(features),
+            "decision_eligible": False,
+            "affects": "none",
+        }
+
+    def push(self, update: Mapping[str, Any]) -> dict[str, Any] | None:
+        pool_id = int(update.get("pool_target_id") or 0)
+        kind = str(update.get("account_kind") or "")
+        slot = int(update.get("slot") or 0)
+        data_hash = str(update.get("data_hash") or "")
+        observed_at = parse_time(update.get("observed_at") or utcnow())
+        decoded = dict(update.get("decoded") or {})
+        observer_version = str(update.get("observer_version") or "")
+        if pool_id <= 0 or slot <= 0 or not data_hash:
+            return None
+        if str(decoded.get("status") or "") != "verified":
+            if kind == "pool":
+                self._latest[pool_id].pop("pool", None)
+            return self._frame(
+                pool_id, state="IDENTITY_INVALID", observed_at=observed_at,
+                base_amount=None, quote_amount=None, effective_quote=None,
+                slot_min=slot, slot_max=slot,
+                features={
+                    "observer_version": observer_version,
+                    "missing_reason": str(
+                        decoded.get("reason") or decoded.get("status") or "unverified"
+                    ),
+                    "sample_count": len(self._points.get(pool_id) or ()),
+                },
+            )
+        latest = self._latest[pool_id]
+        if kind == "pool":
+            if (
+                bool(decoded.get("needs_sdk_extend"))
+                or int(decoded.get("account_data_length") or 0)
+                < PUMPSWAP_POOL_SDK_EXTEND_THRESHOLD
+            ):
+                return self._frame(
+                    pool_id, state="IDENTITY_INVALID", observed_at=observed_at,
+                    base_amount=None, quote_amount=None, effective_quote=None,
+                    slot_min=slot, slot_max=slot,
+                    features={
+                        "observer_version": observer_version,
+                        "missing_reason": "pumpswap_current_fields_unavailable",
+                        "sample_count": len(self._points.get(pool_id) or ()),
+                    },
+                )
+            prior_pool = latest.get("pool")
+            if prior_pool is not None and slot < int(prior_pool["slot"]):
+                return None
+            if (
+                prior_pool is not None
+                and slot == int(prior_pool["slot"])
+                and data_hash == str(prior_pool["data_hash"])
+            ):
+                return None
+            latest["pool"] = {
+                "slot": slot,
+                "data_hash": data_hash,
+                "observed_at": observed_at,
+                "virtual_quote_reserves_raw": int(
+                    decoded["virtual_quote_reserves_raw"]
+                ),
+            }
+        elif kind not in {"base_vault", "quote_vault"}:
+            return None
+        else:
+            prior_same = latest.get(kind)
+            if prior_same is not None and slot < int(prior_same["slot"]):
+                return None
+            if (
+                prior_same is not None and int(prior_same["slot"]) == slot
+                and str(prior_same["data_hash"]) == data_hash
+            ):
+                return None
+            latest[kind] = {
+                "slot": slot, "data_hash": data_hash, "observed_at": observed_at,
+                "amount_raw": int(decoded.get("amount_raw") or 0),
+            }
+        base = latest.get("base_vault")
+        quote = latest.get("quote_vault")
+        if base is None or quote is None:
+            if kind == "pool":
+                return None
+            amount = int(decoded.get("amount_raw") or 0)
+            return self._frame(
+                pool_id, state="PARTIAL_PAIR", observed_at=observed_at,
+                base_amount=amount if kind == "base_vault" else None,
+                quote_amount=amount if kind == "quote_vault" else None,
+                effective_quote=None, slot_min=slot, slot_max=slot,
+                features={
+                    "observer_version": observer_version,
+                    "missing_reason": "counterpart_not_observed",
+                    "sample_count": len(self._points.get(pool_id) or ()),
+                },
+            )
+        slot_min = min(int(base["slot"]), int(quote["slot"]))
+        slot_max = max(int(base["slot"]), int(quote["slot"]))
+        coherent = slot_min == slot_max
+        if not coherent:
+            return None
+        pair_key = (
+            int(base["slot"]), str(base["data_hash"]),
+            int(quote["slot"]), str(quote["data_hash"]),
+        )
+        prior_pair_key = self._last_pair_key.get(pool_id)
+        base_amount = int(base["amount_raw"])
+        quote_amount = int(quote["amount_raw"])
+        pool_fact = latest.get("pool")
+        if pool_fact is not None:
+            virtual_quote = int(pool_fact["virtual_quote_reserves_raw"])
+            virtual_slot = int(pool_fact["slot"])
+            virtual_known = True
+        elif update.get("virtual_quote_reserves_raw") is not None:
+            virtual_quote = int(update["virtual_quote_reserves_raw"])
+            virtual_slot = int(update.get("resolved_slot") or 0)
+            virtual_known = True
+        else:
+            virtual_quote = 0
+            virtual_slot = 0
+            virtual_known = False
+        effective_known = virtual_known and virtual_slot == slot_max
+        pair_at = max(
+            base["observed_at"], quote["observed_at"],
+            pool_fact["observed_at"] if effective_known else base["observed_at"],
+        )
+        effective_quote = (
+            quote_amount + virtual_quote if effective_known else quote_amount
+        )
+        points = self._points.setdefault(pool_id, deque(maxlen=self.max_points))
+        upgrades_latest = bool(
+            prior_pair_key == pair_key
+            and effective_known
+            and points
+            and not bool(points[-1].get("effective_quote_known"))
+            and int(points[-1]["slot_min"]) == slot_min
+            and int(points[-1]["slot_max"]) == slot_max
+        )
+        if prior_pair_key == pair_key and not upgrades_latest:
+            return None
+        if prior_pair_key is not None and prior_pair_key != pair_key:
+            if slot_max <= int(prior_pair_key[2]):
+                return None
+            if (
+                str(base["data_hash"]) == str(prior_pair_key[1])
+                or str(quote["data_hash"]) == str(prior_pair_key[3])
+            ):
+                return None
+        if not upgrades_latest:
+            self._last_pair_key[pool_id] = pair_key
+        if upgrades_latest:
+            previous_point = points[-2] if len(points) >= 2 else None
+        else:
+            previous_point = points[-1] if points else None
+        direction = "UNKNOWN_INCOHERENT"
+        normalized_gross = 0.0
+        if previous_point is not None:
+            base_delta = base_amount - int(previous_point["base_amount_raw"])
+            quote_delta = quote_amount - int(previous_point["quote_amount_raw"])
+            if base_delta > 0 and quote_delta < 0:
+                direction = "SELL_LIKE_NET"
+            elif base_delta < 0 and quote_delta > 0:
+                direction = "BUY_LIKE_NET"
+            elif base_delta > 0 and quote_delta > 0:
+                direction = "LP_ADD_LIKE"
+            elif base_delta < 0 and quote_delta < 0:
+                direction = "LP_REMOVE_LIKE"
+            normalized_gross = (
+                abs(base_delta) / max(1, int(previous_point["base_amount_raw"]))
+                + abs(quote_delta) / max(1, int(previous_point["effective_quote_raw"]))
+            )
+        point = {
+            "observed_at": pair_at,
+            "slot_min": slot_min,
+            "slot_max": slot_max,
+            "base_amount_raw": base_amount,
+            "quote_amount_raw": quote_amount,
+            "effective_quote_raw": effective_quote,
+            "effective_quote_known": effective_known,
+            "direction": direction,
+            "normalized_gross": normalized_gross,
+        }
+        if upgrades_latest:
+            points[-1] = point
+        else:
+            points.append(point)
+        cutoff = pair_at - timedelta(seconds=self.window_seconds)
+        while points and points[0]["observed_at"] < cutoff:
+            points.popleft()
+        point_list = list(points)
+        trade_points = [
+            item for item in point_list
+            if item["direction"] in {"BUY_LIKE_NET", "SELL_LIKE_NET"}
+        ]
+        intervals = [
+            max(0.0, (after["observed_at"] - before["observed_at"]).total_seconds())
+            for before, after in zip(trade_points, trade_points[1:])
+        ]
+        sizes = [float(item["normalized_gross"]) for item in trade_points]
+        directions = [
+            str(item["direction"]) for item in point_list
+            if item["direction"] in {"BUY_LIKE_NET", "SELL_LIKE_NET"}
+        ]
+        alternation = (
+            sum(left != right for left, right in zip(directions, directions[1:]))
+            / (len(directions) - 1)
+            if len(directions) >= 2 else None
+        )
+        direction_entropy = None
+        if directions:
+            buy_share = directions.count("BUY_LIKE_NET") / len(directions)
+            direction_entropy = -sum(
+                share * math.log2(share)
+                for share in (buy_share, 1.0 - buy_share) if share > 0.0
+            )
+        implied_prices = [
+            float(item["effective_quote_raw"]) / int(item["base_amount_raw"])
+            for item in point_list
+            if bool(item.get("effective_quote_known"))
+            and int(item["base_amount_raw"]) > 0
+        ]
+        price_variation = (
+            max(implied_prices) / min(implied_prices) - 1.0
+            if implied_prices and min(implied_prices) > 0.0 else None
+        )
+        windows: dict[str, Any] = {}
+        for horizon in (1, 3, 10, 30):
+            boundary = pair_at - timedelta(seconds=horizon)
+            before = [item for item in point_list if item["observed_at"] <= boundary]
+            baseline = before[-1] if before else point_list[0]
+            covered = max(
+                0.0, (pair_at - baseline["observed_at"]).total_seconds()
+            )
+            base_change = self._ratio(base_amount, int(baseline["base_amount_raw"]))
+            baseline_effective_known = bool(baseline.get("effective_quote_known"))
+            quote_change = (
+                self._ratio(effective_quote, int(baseline["effective_quote_raw"]))
+                if effective_known and baseline_effective_known else None
+            )
+            depth_ratio = (
+                effective_quote / max(1, int(baseline["effective_quote_raw"]))
+                if effective_known and baseline_effective_known else None
+            )
+            raw_quote_change = self._ratio(
+                quote_amount, int(baseline["quote_amount_raw"])
+            )
+            windows[str(horizon)] = {
+                "coverage_seconds": covered,
+                "base_change_ratio": base_change,
+                "effective_quote_change_ratio": quote_change,
+                "base_slope_per_second": base_change / covered if covered and base_change is not None else None,
+                "effective_quote_slope_per_second": quote_change / covered if covered and quote_change is not None else None,
+                "effective_depth_ratio": depth_ratio,
+                "raw_quote_change_ratio": raw_quote_change,
+                "raw_quote_slope_per_second": raw_quote_change / covered if covered and raw_quote_change is not None else None,
+            }
+        interval_mad_ratio = self._mad_ratio(intervals)
+        size_mad_ratio = self._mad_ratio(sizes)
+        gross_turnover = sum(sizes)
+        span_seconds = max(
+            0.0, (pair_at - point_list[0]["observed_at"]).total_seconds()
+        )
+        regularity = (
+            len(trade_points) >= 6 and span_seconds >= 3.0
+            and interval_mad_ratio is not None and interval_mad_ratio <= 0.25
+            and size_mad_ratio is not None and size_mad_ratio <= 0.25
+        )
+        ten = windows["10"]
+        unwind = (
+            ten["coverage_seconds"] >= 3.0
+            and direction in {"SELL_LIKE_NET", "LP_REMOVE_LIKE"}
+            and (
+                (ten["effective_quote_change_ratio"] is not None
+                 and ten["effective_quote_change_ratio"] <= -0.15)
+                or (
+                    ten["effective_depth_ratio"] is not None
+                    and ten["effective_depth_ratio"] <= 0.70
+                )
+            )
+        )
+        synthetic_support = (
+            regularity and alternation is not None and alternation >= 0.60
+            and price_variation is not None and price_variation <= 0.03
+            and gross_turnover >= 0.02
+        )
+        if virtual_known and effective_quote <= 0:
+            state = "EFFECTIVE_RESERVE_NONPOSITIVE"
+        elif len(point_list) < 3 or span_seconds < 3.0:
+            state = "INSUFFICIENT_EVENTS"
+        elif unwind:
+            state = "UNWIND_HAZARD_PRECURSOR_RECOVERY_UNKNOWN"
+        elif synthetic_support:
+            state = "SYNTHETIC_SUPPORT_PATTERN"
+        elif regularity:
+            state = "REGULARITY_PATTERN"
+        else:
+            state = "OBSERVED_NORMAL"
+        features = {
+            "observer_version": observer_version,
+            "pair_key": ":".join(str(item) for item in pair_key),
+            "source_hashes": {
+                "base_vault": str(base["data_hash"]),
+                "quote_vault": str(quote["data_hash"]),
+                "pool": str(pool_fact["data_hash"]) if pool_fact is not None else None,
+            },
+            "flow_granularity": "confirmed_slot_net_not_transaction_identity",
+            "sample_count": len(point_list),
+            "span_seconds": span_seconds,
+            "latest_direction": direction,
+            "median_interval_seconds": float(median(intervals)) if intervals else None,
+            "interval_mad_ratio": interval_mad_ratio,
+            "size_mad_ratio": size_mad_ratio,
+            "alternation_rate": alternation,
+            "direction_entropy": direction_entropy,
+            "gross_turnover_ratio": gross_turnover,
+            "reserve_price_variation": price_variation,
+            "virtual_quote_reserve_known": virtual_known,
+            "effective_quote_reserve_known": effective_known,
+            "virtual_quote_reserve_raw": virtual_quote if virtual_known else None,
+            "virtual_quote_reserve_slot": virtual_slot if virtual_known else None,
+            "virtual_component_temporal_status": (
+                "SAME_SLOT" if effective_known
+                else "LAST_CONFIRMED_ASOF" if virtual_known
+                else "UNKNOWN"
+            ),
+            "regularity_pattern": regularity,
+            "synthetic_support_pattern": synthetic_support,
+            "unwind_hazard_precursor": unwind,
+            "recovery_status": "UNKNOWN_NOT_MEASURED",
+            "windows": windows,
+        }
+        return self._frame(
+            pool_id, state=state, observed_at=pair_at,
+            base_amount=base_amount, quote_amount=quote_amount,
+            effective_quote=effective_quote if effective_known else None,
+            slot_min=slot_min, slot_max=slot_max,
+            features=features,
+        )
 
 
 def decode_pump_bonding_curve_account(raw: bytes) -> dict[str, Any]:
@@ -2335,16 +2767,204 @@ class SolanaHeldAccountCollector:
     async def close(self) -> None:
         await self.http.aclose()
 
+    async def resolve_pumpswap_shadow_pools(
+        self, candidates: list[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Resolve exact PumpSwap identities and baselines without creating a quote."""
+        outcomes: list[dict[str, Any]] = []
+        for offset in range(0, len(candidates), self.max_multiple_accounts):
+            batch = candidates[offset:offset + self.max_multiple_accounts]
+            pool_keys = [str(item["pool_address"]) for item in batch]
+            try:
+                response = await self.http.post(
+                    self.rpc_url,
+                    json={
+                        "jsonrpc": "2.0", "id": offset + 30_000,
+                        "method": "getMultipleAccounts",
+                        "params": [
+                            pool_keys,
+                            {"encoding": "base64", "commitment": "confirmed"},
+                        ],
+                    },
+                )
+                response.raise_for_status()
+                payload = response.json()
+                result = payload.get("result") if isinstance(payload, Mapping) else None
+                values = result.get("value") if isinstance(result, Mapping) else None
+                if not isinstance(values, list) or len(values) != len(batch):
+                    raise ValueError("vault_shadow_pool_bundle_invalid")
+            except Exception as exc:
+                outcomes.extend({
+                    **dict(item), "status": "UNKNOWN_RPC",
+                    "reason": self._rpc_error_reason(exc),
+                } for item in batch)
+                continue
+            for candidate, value in zip(batch, values):
+                try:
+                    pool = self.decode_account({
+                        **dict(candidate),
+                        "account_kind": "pool",
+                        "decoder_version": PUMPSWAP_POOL_DECODER_V2,
+                        "expected_program_owner": PUMP_AMM_PROGRAM_ID,
+                    }, value if isinstance(value, Mapping) else None)
+                    if pool.get("status") != "verified":
+                        raise PermissionError(
+                            str(pool.get("reason") or "pool_identity_invalid")
+                        )
+                    if (
+                        bool(pool.get("needs_sdk_extend"))
+                        or int(pool.get("account_data_length") or 0)
+                        < PUMPSWAP_POOL_SDK_EXTEND_THRESHOLD
+                    ):
+                        raise PermissionError("pumpswap_current_fields_unavailable")
+                    base_mint = str(pool["base_mint"])
+                    if base_mint != str(candidate.get("base_mint") or ""):
+                        raise PermissionError("pool_base_mint_mismatch")
+                    quote_mint = str(pool["quote_mint"])
+                    lp_mint = str(pool["lp_mint"])
+                    base_vault = str(pool["base_vault"])
+                    quote_vault = str(pool["quote_vault"])
+                    keys = [
+                        str(candidate["pool_address"]), base_vault, quote_vault,
+                        base_mint, quote_mint,
+                    ]
+                    bundle_response = await self.http.post(
+                        self.rpc_url,
+                        json={
+                            "jsonrpc": "2.0", "id": offset + 40_000,
+                            "method": "getMultipleAccounts",
+                            "params": [
+                                keys,
+                                {"encoding": "base64", "commitment": "confirmed"},
+                            ],
+                        },
+                    )
+                    bundle_response.raise_for_status()
+                    bundle_payload = bundle_response.json()
+                    bundle_result = (
+                        bundle_payload.get("result")
+                        if isinstance(bundle_payload, Mapping) else None
+                    )
+                    bundle_values = (
+                        bundle_result.get("value")
+                        if isinstance(bundle_result, Mapping) else None
+                    )
+                    resolved_slot = int(
+                        (bundle_result.get("context") or {}).get("slot") or 0
+                    ) if isinstance(bundle_result, Mapping) else 0
+                    if (
+                        not isinstance(bundle_values, list)
+                        or len(bundle_values) != len(keys)
+                        or resolved_slot <= 0
+                    ):
+                        raise ValueError("vault_shadow_identity_bundle_invalid")
+                    accounts = dict(zip(keys, bundle_values))
+                    base_mint_fact = self.decode_account(
+                        {"account_kind": "token_mint"}, accounts[base_mint]
+                    )
+                    quote_mint_fact = self.decode_account(
+                        {"account_kind": "token_mint"}, accounts[quote_mint]
+                    )
+                    allowed_programs = {
+                        SPL_TOKEN_PROGRAM_ID, SPL_TOKEN_2022_PROGRAM_ID,
+                    }
+                    if (
+                        base_mint_fact.get("status") != "verified"
+                        or quote_mint_fact.get("status") != "verified"
+                        or str(base_mint_fact.get("owner") or "") not in allowed_programs
+                        or str(quote_mint_fact.get("owner") or "") not in allowed_programs
+                    ):
+                        raise PermissionError("mint_identity_invalid")
+                    base_program = str(base_mint_fact["owner"])
+                    quote_program = str(quote_mint_fact["owner"])
+                    exact_pool = self.decode_account({
+                        "account_kind": "pool",
+                        "decoder_version": PUMPSWAP_POOL_DECODER_V2,
+                        "expected_program_owner": PUMP_AMM_PROGRAM_ID,
+                        "base_mint": base_mint,
+                        "quote_mint": quote_mint,
+                        "lp_mint": lp_mint,
+                        "base_vault": base_vault,
+                        "quote_vault": quote_vault,
+                    }, accounts[str(candidate["pool_address"])])
+                    base_vault_fact = self.decode_account({
+                        "account_kind": "base_vault",
+                        "expected_mint": base_mint,
+                        "expected_program_owner": base_program,
+                        "pool_address": str(candidate["pool_address"]),
+                    }, accounts[base_vault])
+                    quote_vault_fact = self.decode_account({
+                        "account_kind": "quote_vault",
+                        "expected_mint": quote_mint,
+                        "expected_program_owner": quote_program,
+                        "pool_address": str(candidate["pool_address"]),
+                    }, accounts[quote_vault])
+                    required = (exact_pool, base_vault_fact, quote_vault_fact)
+                    if any(item.get("status") != "verified" for item in required):
+                        raise PermissionError("pool_or_vault_identity_invalid")
+                    if (
+                        bool(exact_pool.get("needs_sdk_extend"))
+                        or int(exact_pool.get("account_data_length") or 0)
+                        < PUMPSWAP_POOL_SDK_EXTEND_THRESHOLD
+                    ):
+                        raise PermissionError("pumpswap_current_fields_unavailable")
+                    outcomes.append({
+                        **dict(candidate),
+                        "status": "RESOLVED",
+                        "reason": "",
+                        "base_mint": base_mint,
+                        "quote_mint": quote_mint,
+                        "lp_mint": lp_mint,
+                        "base_vault": base_vault,
+                        "quote_vault": quote_vault,
+                        "base_token_program": base_program,
+                        "quote_token_program": quote_program,
+                        "base_mint_decimals": int(base_mint_fact["decimals"]),
+                        "virtual_quote_reserves_raw": int(
+                            exact_pool.get("virtual_quote_reserves_raw") or 0
+                        ),
+                        "baseline_base_raw": int(base_vault_fact["amount_raw"]),
+                        "baseline_quote_raw": int(quote_vault_fact["amount_raw"]),
+                        "resolved_slot": resolved_slot,
+                        "resolved_at": iso(utcnow()),
+                    })
+                except PermissionError as exc:
+                    outcomes.append({
+                        **dict(candidate), "status": "UNKNOWN_IDENTITY",
+                        "reason": str(exc),
+                    })
+                except Exception as exc:
+                    outcomes.append({
+                        **dict(candidate), "status": "UNKNOWN_RPC",
+                        "reason": self._rpc_error_reason(exc),
+                    })
+        return outcomes
+
     async def _initial_updates(
         self, targets: list[Mapping[str, Any]]
     ) -> list[dict[str, Any]]:
         updates: list[dict[str, Any]] = []
-        for offset in range(0, len(targets), self.max_multiple_accounts):
-            batch = targets[offset:offset + self.max_multiple_accounts]
+        grouped: list[list[Mapping[str, Any]]] = []
+        by_pool: dict[int, list[Mapping[str, Any]]] = {}
+        for target in targets:
+            pool_target_id = int(target.get("pool_target_id") or 0)
+            if pool_target_id:
+                by_pool.setdefault(pool_target_id, []).append(target)
+            else:
+                grouped.append([target])
+        grouped.extend(by_pool[key] for key in sorted(by_pool))
+        batches: list[list[Mapping[str, Any]]] = []
+        for group in grouped:
+            if len(group) > self.max_multiple_accounts:
+                raise ValueError("held_account_identity_group_exceeds_rpc_batch")
+            if not batches or len(batches[-1]) + len(group) > self.max_multiple_accounts:
+                batches.append([])
+            batches[-1].extend(group)
+        for batch_index, batch in enumerate(batches):
             response = await self.http.post(
                 self.rpc_url,
                 json={
-                    "jsonrpc": "2.0", "id": offset // self.max_multiple_accounts + 1,
+                    "jsonrpc": "2.0", "id": batch_index + 1,
                     "method": "getMultipleAccounts",
                     "params": [
                         [str(target["pubkey"]) for target in batch],
@@ -2915,12 +3535,14 @@ class SolanaHeldAccountCollector:
                                 subscriptions[int(message["result"])] = matched
                     for update in await self._initial_updates(targets):
                         yield update
+                    last_target_refresh = time.monotonic()
                     while True:
                         try:
                             raw_message = await asyncio.wait_for(
                                 ws.recv(), timeout=self.refresh_seconds
                             )
                         except TimeoutError:
+                            last_target_refresh = time.monotonic()
                             if self._target_fingerprint(target_provider()) != fingerprint:
                                 break
                             continue
@@ -2957,8 +3579,10 @@ class SolanaHeldAccountCollector:
                                 "decoded": self.decode_account(target, value),
                                 "observed_at": observed_at,
                             }
-                        if self._target_fingerprint(target_provider()) != fingerprint:
-                            break
+                        if time.monotonic() - last_target_refresh >= self.refresh_seconds:
+                            last_target_refresh = time.monotonic()
+                            if self._target_fingerprint(target_provider()) != fingerprint:
+                                break
             except asyncio.CancelledError:
                 raise
             except Exception:

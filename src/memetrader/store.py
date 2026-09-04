@@ -162,7 +162,14 @@ class Store:
     CHAIN_MEME_TRADER_V20_VERSION = (
         "chain-meme-trader/v20-market-only-accounting-corrected-clean-forward"
     )
-    CHAIN_MEME_TRADER_ACTIVE_VERSION = CHAIN_MEME_TRADER_V20_VERSION
+    CHAIN_MEME_TRADER_V21_VERSION = (
+        "chain-meme-trader/v21-additive-principal-lock-runner-clean-forward"
+    )
+    CHAIN_MEME_V21_VAULT_SHADOW_VERSION = (
+        "chain-meme-v21-vault-flow-shadow/v1-runner-only-no-authority"
+    )
+    PUMPSWAP_PROGRAM_ID = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
+    CHAIN_MEME_TRADER_ACTIVE_VERSION = CHAIN_MEME_TRADER_V21_VERSION
     CHAIN_MEME_TRADER_STAGE4_EXEC_DECAY_VERSION = (
         "chain-meme-trader/stage4-executable-decay-challenger-v1"
     )
@@ -2030,6 +2037,78 @@ class Store:
                     ON onchain_held_account_risk_events(
                         monitor_version,position_definition_version,shadow_cohort_id,id DESC
                     );
+                CREATE TABLE IF NOT EXISTS chain_meme_v21_vault_shadow_registrations (
+                    observer_version TEXT PRIMARY KEY,
+                    position_definition_version TEXT NOT NULL,
+                    arm_id TEXT NOT NULL,
+                    registered_at TEXT NOT NULL,
+                    activation_position_frontier INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none')
+                );
+                CREATE TABLE IF NOT EXISTS chain_meme_v21_vault_shadow_pool_targets (
+                    id INTEGER PRIMARY KEY,
+                    observer_version TEXT NOT NULL,
+                    pool_address TEXT NOT NULL,
+                    token_id TEXT NOT NULL,
+                    first_source_cohort_id INTEGER NOT NULL,
+                    entry_snapshot_id INTEGER NOT NULL,
+                    base_mint TEXT NOT NULL,
+                    quote_mint TEXT NOT NULL,
+                    lp_mint TEXT NOT NULL,
+                    base_vault TEXT NOT NULL,
+                    quote_vault TEXT NOT NULL,
+                    base_token_program TEXT NOT NULL,
+                    quote_token_program TEXT NOT NULL,
+                    base_mint_decimals INTEGER NOT NULL,
+                    virtual_quote_reserves_raw TEXT NOT NULL,
+                    baseline_base_raw TEXT NOT NULL,
+                    baseline_quote_raw TEXT NOT NULL,
+                    resolved_slot INTEGER NOT NULL,
+                    registered_at TEXT NOT NULL,
+                    UNIQUE(observer_version,pool_address)
+                );
+                CREATE TABLE IF NOT EXISTS chain_meme_v21_vault_shadow_resolution_attempts (
+                    id INTEGER PRIMARY KEY,
+                    observer_version TEXT NOT NULL,
+                    pool_address TEXT NOT NULL,
+                    token_id TEXT NOT NULL,
+                    source_cohort_id INTEGER NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN (
+                        'RESOLVED','UNKNOWN_RPC','UNKNOWN_IDENTITY'
+                    )),
+                    reason TEXT NOT NULL DEFAULT '',
+                    attempted_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    UNIQUE(observer_version,pool_address,attempted_at)
+                );
+                CREATE TABLE IF NOT EXISTS chain_meme_v21_vault_shadow_frames (
+                    id INTEGER PRIMARY KEY,
+                    observer_version TEXT NOT NULL,
+                    pool_target_id INTEGER NOT NULL,
+                    frame_kind TEXT NOT NULL CHECK(frame_kind IN ('periodic_30s','state_change')),
+                    observer_state TEXT NOT NULL,
+                    previous_state TEXT NOT NULL DEFAULT '',
+                    window_started_at TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    slot_min INTEGER NOT NULL,
+                    slot_max INTEGER NOT NULL,
+                    base_amount_raw TEXT,
+                    quote_amount_raw TEXT,
+                    effective_quote_reserve_raw TEXT,
+                    holder_cohorts_json TEXT NOT NULL,
+                    features_json TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
+                    affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none'),
+                    UNIQUE(observer_version,pool_target_id,observed_at,frame_kind,observer_state)
+                );
+                CREATE INDEX IF NOT EXISTS chain_meme_v21_vault_shadow_frames_pool_idx
+                    ON chain_meme_v21_vault_shadow_frames(
+                        observer_version,pool_target_id,observed_at DESC,id DESC
+                    );
                 CREATE TABLE IF NOT EXISTS chain_meme_trader_local_surface_quote_registrations (
                     version TEXT PRIMARY KEY,
                     definition_version TEXT NOT NULL,
@@ -2160,6 +2239,30 @@ class Store:
                 CREATE TRIGGER IF NOT EXISTS onchain_held_account_risk_events_no_delete
                 BEFORE DELETE ON onchain_held_account_risk_events
                 BEGIN SELECT RAISE(ABORT,'held account risk events are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_v21_vault_shadow_reg_no_update
+                BEFORE UPDATE ON chain_meme_v21_vault_shadow_registrations
+                BEGIN SELECT RAISE(ABORT,'v21 vault shadow registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_v21_vault_shadow_reg_no_delete
+                BEFORE DELETE ON chain_meme_v21_vault_shadow_registrations
+                BEGIN SELECT RAISE(ABORT,'v21 vault shadow registrations are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_v21_vault_shadow_target_no_update
+                BEFORE UPDATE ON chain_meme_v21_vault_shadow_pool_targets
+                BEGIN SELECT RAISE(ABORT,'v21 vault shadow targets are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_v21_vault_shadow_target_no_delete
+                BEFORE DELETE ON chain_meme_v21_vault_shadow_pool_targets
+                BEGIN SELECT RAISE(ABORT,'v21 vault shadow targets are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_v21_vault_shadow_resolution_no_update
+                BEFORE UPDATE ON chain_meme_v21_vault_shadow_resolution_attempts
+                BEGIN SELECT RAISE(ABORT,'v21 vault shadow resolution attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_v21_vault_shadow_resolution_no_delete
+                BEFORE DELETE ON chain_meme_v21_vault_shadow_resolution_attempts
+                BEGIN SELECT RAISE(ABORT,'v21 vault shadow resolution attempts are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_v21_vault_shadow_frame_no_update
+                BEFORE UPDATE ON chain_meme_v21_vault_shadow_frames
+                BEGIN SELECT RAISE(ABORT,'v21 vault shadow frames are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_v21_vault_shadow_frame_no_delete
+                BEFORE DELETE ON chain_meme_v21_vault_shadow_frames
+                BEGIN SELECT RAISE(ABORT,'v21 vault shadow frames are immutable'); END;
                 CREATE TRIGGER IF NOT EXISTS onchain_confirmed_rug_terminals_no_update
                 BEFORE UPDATE ON onchain_confirmed_rug_terminals
                 BEGIN SELECT RAISE(ABORT,'confirmed rug terminals are immutable'); END;
@@ -2546,6 +2649,9 @@ class Store:
                     realized_proceeds_usd REAL NOT NULL DEFAULT 0,
                     allocated_cost_usd REAL NOT NULL DEFAULT 0,
                     next_tp_index INTEGER NOT NULL DEFAULT 0,
+                    principal_recovered INTEGER NOT NULL DEFAULT 0,
+                    principal_recovered_at TEXT,
+                    principal_recovery_proceeds_usd REAL,
                     highest_signal_price_usd REAL NOT NULL,
                     status TEXT NOT NULL CHECK(status IN (
                         'open','closed','written_off','ineligible'
@@ -6141,6 +6247,9 @@ class Store:
                 ("realized_proceeds_usd", "REAL NOT NULL DEFAULT 0"),
                 ("allocated_cost_usd", "REAL NOT NULL DEFAULT 0"),
                 ("next_tp_index", "INTEGER NOT NULL DEFAULT 0"),
+                ("principal_recovered", "INTEGER NOT NULL DEFAULT 0"),
+                ("principal_recovered_at", "TEXT"),
+                ("principal_recovery_proceeds_usd", "REAL"),
                 ("entry_reason", "TEXT NOT NULL DEFAULT ''"),
                 ("last_fixed_horizon_minutes", "INTEGER NOT NULL DEFAULT 0"),
                 ("entry_fill_id", "INTEGER"),
@@ -22531,6 +22640,50 @@ class Store:
         return policies
 
     @classmethod
+    def chain_meme_trader_v21_policies(cls) -> list[dict[str, Any]]:
+        """Keep the v20 catalogue intact and append one forward challenger."""
+        policies = cls.chain_meme_trader_dex_successor_policies()
+        policy = {
+            "stage": len(policies) + 1,
+            "arm_id": "broad_principal_lock_runner_v1",
+            "canonical_id": "additive-broad-principal-lock-runner-v1",
+            "name": "本金回收趋势 Runner v1",
+            "description": (
+                "沿用新币宽口径入场；净经济收益达到80%时卖出剩余仓位60%，"
+                "以回收本金为目标并保留40%趋势仓位；只有实际卖出累计回收达到"
+                "初始投入后才标记为已回本。"
+            ),
+            "family": "additive_forward_challenger",
+            "entry_family": "broad_launch",
+            "source_entry_family": "broad_launch",
+            "entry_gate": "v6_asof_family",
+            "exit_family": "principal_lock_runner",
+            "exit_mode": "market_mark_principal_recovery_runner",
+            "execution_profile": "dexscreener-market-paper/v2-before-after",
+            "hard_stop_return": -0.20,
+            "trailing_activate_return": 0.80,
+            "trailing_drawdown": 0.50,
+            "max_hold_minutes": 240.0,
+            "take_profit": [
+                {"return": 0.80, "fraction_of_remaining": 0.60},
+            ],
+            "exact_risk_alerts": "shadow_only_no_trading_authority",
+            "research_overlay": "none",
+            "forward_enabled": True,
+            "fidelity_status": "ADDITIVE_FORWARD",
+            "fidelity_note": (
+                "新增严格前向策略；不回填旧样本，不替换旧124个策略"
+            ),
+            "source_versions": [cls.CHAIN_MEME_TRADER_V20_VERSION],
+            "source_arm_ids": [],
+        }
+        policy["behavior_contract_hash"] = cls.chain_meme_trader_behavior_hash(
+            policy, definition_version=cls.CHAIN_MEME_TRADER_V21_VERSION,
+        )
+        policies.append(policy)
+        return policies
+
+    @classmethod
     def chain_meme_trader_decision_behavior(
         cls,
         policy: Mapping[str, Any],
@@ -23675,6 +23828,382 @@ class Store:
                 "SELECT * FROM chain_meme_trader_v6_activations "
                 "WHERE definition_version=?", (version,),
             ).fetchone()
+
+    def register_chain_meme_trader_v21(self) -> sqlite3.Row:
+        """Register the preserved v20 catalogue plus one additive runner."""
+        version = self.CHAIN_MEME_TRADER_V21_VERSION
+        self.register_chain_meme_trader_v20()
+        with self._lock, self.db:
+            existing = self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if existing is not None:
+                return existing
+            source = self.db.execute(
+                "SELECT definition_json FROM chain_meme_trader_v6_registrations "
+                "WHERE definition_version=?", (self.CHAIN_MEME_TRADER_V20_VERSION,),
+            ).fetchone()
+            definition = self._json_object(source["definition_json"])
+            policies = self.chain_meme_trader_v21_policies()
+            definition.update({
+                "version": version,
+                "previous_version": self.CHAIN_MEME_TRADER_V20_VERSION,
+                "comparison": "preserved_124_plus_additive_principal_runner",
+                "strategy_count": len(policies),
+                "policies": policies,
+                "additive_strategy_count": 1,
+                "strategy_logic_changed": True,
+                "reset_reason": "additive_principal_lock_runner_clean_forward",
+                "automatic_learning": False,
+                "no_historical_backfill": True,
+            })
+            registered_at = iso()
+            snapshot_frontier = int(self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM token_snapshots"
+            ).fetchone()[0])
+            payload = self._json(definition)
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_v6_registrations("
+                "definition_version,code_registered_at,code_snapshot_frontier,definition_json) "
+                "VALUES(?,?,?,?)",
+                (version, registered_at, snapshot_frontier, payload),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_registrations("
+                "definition_version,registered_at,activation_exploration_buy_trade_id,"
+                "definition_json) VALUES(?,?,?,?)",
+                (version, registered_at, snapshot_frontier, payload),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_registrations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+
+    def activate_chain_meme_trader_v21(self) -> sqlite3.Row:
+        """Start 125 strategies together while preserving the complete v20 epoch."""
+        version = self.CHAIN_MEME_TRADER_V21_VERSION
+        self.register_chain_meme_trader_v21()
+        with self._lock, self.db:
+            existing = self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_activations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+            if existing is not None:
+                return existing
+            activated_at = iso()
+            snapshot_frontier = int(self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM token_snapshots"
+            ).fetchone()[0])
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_primary_stops("
+                "definition_version,stopped_at,source_frontier,reason) VALUES(?,?,?,?)",
+                (
+                    self.CHAIN_MEME_TRADER_V20_VERSION, activated_at, snapshot_frontier,
+                    "v20_preserved_before_additive_principal_runner_epoch",
+                ),
+            )
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_v6_activations("
+                "definition_version,activated_at,activation_snapshot_id,v5_definition_version,"
+                "v5_source_frontier,entry_execution_enabled) VALUES(?,?,?,?,?,1)",
+                (
+                    version, activated_at, snapshot_frontier,
+                    self.CHAIN_MEME_TRADER_V20_VERSION, snapshot_frontier,
+                ),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_activations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+
+    def register_chain_meme_v21_vault_shadow(self) -> sqlite3.Row:
+        """Register a runner-only observer with no decision or execution authority."""
+        observer = self.CHAIN_MEME_V21_VAULT_SHADOW_VERSION
+        definition = {
+            "observer_version": observer,
+            "position_definition_version": self.CHAIN_MEME_TRADER_V21_VERSION,
+            "arm_id": "broad_principal_lock_runner_v1",
+            "source": "solana_accountSubscribe_confirmed",
+            "scope": "unique_current_pumpswap_pool",
+            "windows_seconds": [1, 3, 10, 30],
+            "ring_seconds": 60,
+            "summary_seconds": 30,
+            "features": [
+                "reserve_slope", "flow_direction", "interval_regularity",
+                "size_regularity", "synthetic_support", "unwind_hazard",
+            ],
+            "missing_is_unknown": True,
+            "decision_eligible": False,
+            "affects": "none",
+            "no_historical_backfill": True,
+        }
+        with self._lock, self.db:
+            frontier = int(self.db.execute(
+                "SELECT COALESCE(MAX(shadow_cohort_id),0) "
+                "FROM chain_meme_trader_positions WHERE definition_version=?",
+                (self.CHAIN_MEME_TRADER_V21_VERSION,),
+            ).fetchone()[0])
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_v21_vault_shadow_registrations("
+                "observer_version,position_definition_version,arm_id,registered_at,"
+                "activation_position_frontier,definition_json,decision_eligible,affects) "
+                "VALUES(?,?,?,?,?,?,0,'none')",
+                (
+                    observer, self.CHAIN_MEME_TRADER_V21_VERSION,
+                    "broad_principal_lock_runner_v1", iso(), frontier,
+                    self._json(definition),
+                ),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_v21_vault_shadow_registrations "
+                "WHERE observer_version=?", (observer,),
+            ).fetchone()
+
+    def chain_meme_v21_vault_shadow_candidates(self) -> list[dict[str, Any]]:
+        """Return unresolved, entry-as-of PumpSwap pools held by the additive runner."""
+        observer = self.CHAIN_MEME_V21_VAULT_SHADOW_VERSION
+        version = self.CHAIN_MEME_TRADER_V21_VERSION
+        with self._lock:
+            registered = self.db.execute(
+                "SELECT * FROM chain_meme_v21_vault_shadow_registrations "
+                "WHERE observer_version=?", (observer,),
+            ).fetchone()
+            if registered is None:
+                return []
+            rows = self.db.execute(
+                """
+                SELECT c.id AS source_cohort_id,c.token_id,c.source_snapshot_id,
+                       c.pair_address,c.feature_json,p.opened_at
+                FROM chain_meme_trader_positions p
+                JOIN chain_meme_trader_v6_cohorts c
+                  ON c.definition_version=p.definition_version
+                 AND c.id=p.shadow_cohort_id
+                WHERE p.definition_version=?
+                  AND p.arm_id='broad_principal_lock_runner_v1'
+                  AND p.status='open'
+                  AND p.opened_at>=?
+                  AND c.id>?
+                ORDER BY c.id
+                """,
+                (
+                    version, str(registered["registered_at"]),
+                    int(registered["activation_position_frontier"]),
+                ),
+            ).fetchall()
+            candidates: list[dict[str, Any]] = []
+            seen: set[str] = set()
+            for row in rows:
+                pool_address = str(row["pair_address"] or "")
+                token_id = str(row["token_id"] or "")
+                features = self._json_object(row["feature_json"])
+                if (
+                    pool_address in seen
+                    or str(features.get("dex_id") or "").casefold()
+                    not in {"pumpswap", "pump-amm"}
+                    or not token_id.startswith("solana:")
+                ):
+                    continue
+                try:
+                    Pubkey.from_string(pool_address)
+                    Pubkey.from_string(token_id.split(":", 1)[1])
+                except ValueError:
+                    continue
+                existing = self.db.execute(
+                    "SELECT 1 FROM chain_meme_v21_vault_shadow_pool_targets "
+                    "WHERE observer_version=? AND pool_address=?",
+                    (observer, pool_address),
+                ).fetchone()
+                if existing is not None:
+                    continue
+                seen.add(pool_address)
+                candidates.append({
+                    "observer_version": observer,
+                    "pool_address": pool_address,
+                    "token_id": token_id,
+                    "base_mint": token_id.split(":", 1)[1],
+                    "first_source_cohort_id": int(row["source_cohort_id"]),
+                    "entry_snapshot_id": int(row["source_snapshot_id"]),
+                    "opened_at": str(row["opened_at"]),
+                })
+            return candidates
+
+    def add_chain_meme_v21_vault_shadow_target(
+        self, resolved: Mapping[str, Any],
+    ) -> int | None:
+        """Persist one verified pool identity and its initial reserve baseline."""
+        if str(resolved.get("status") or "") != "RESOLVED":
+            return None
+        observer = self.CHAIN_MEME_V21_VAULT_SHADOW_VERSION
+        if str(resolved.get("observer_version") or "") != observer:
+            return None
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_v21_vault_shadow_pool_targets("
+                "observer_version,pool_address,token_id,first_source_cohort_id,"
+                "entry_snapshot_id,base_mint,quote_mint,lp_mint,base_vault,quote_vault,"
+                "base_token_program,quote_token_program,base_mint_decimals,"
+                "virtual_quote_reserves_raw,baseline_base_raw,baseline_quote_raw,"
+                "resolved_slot,registered_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    observer, str(resolved["pool_address"]), str(resolved["token_id"]),
+                    int(resolved["first_source_cohort_id"]),
+                    int(resolved["entry_snapshot_id"]), str(resolved["base_mint"]),
+                    str(resolved["quote_mint"]), str(resolved["lp_mint"]),
+                    str(resolved["base_vault"]), str(resolved["quote_vault"]),
+                    str(resolved["base_token_program"]),
+                    str(resolved["quote_token_program"]),
+                    int(resolved["base_mint_decimals"]),
+                    str(resolved["virtual_quote_reserves_raw"]),
+                    str(resolved["baseline_base_raw"]),
+                    str(resolved["baseline_quote_raw"]), int(resolved["resolved_slot"]),
+                    str(resolved.get("resolved_at") or iso()),
+                ),
+            )
+            row = self.db.execute(
+                "SELECT id FROM chain_meme_v21_vault_shadow_pool_targets "
+                "WHERE observer_version=? AND pool_address=?",
+                (observer, str(resolved["pool_address"])),
+            ).fetchone()
+            return int(row["id"]) if row is not None else None
+
+    def record_chain_meme_v21_vault_shadow_resolution(
+        self, outcome: Mapping[str, Any], *, attempted_at: Any = None,
+    ) -> int | None:
+        """Keep the complete resolver denominator without turning coverage gaps into errors."""
+        observer = self.CHAIN_MEME_V21_VAULT_SHADOW_VERSION
+        status = str(outcome.get("status") or "")
+        if (
+            str(outcome.get("observer_version") or "") != observer
+            or status not in {"RESOLVED", "UNKNOWN_RPC", "UNKNOWN_IDENTITY"}
+        ):
+            return None
+        with self._lock, self.db:
+            cursor = self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_v21_vault_shadow_resolution_attempts("
+                "observer_version,pool_address,token_id,source_cohort_id,status,reason,"
+                "attempted_at,decision_eligible,affects) VALUES(?,?,?,?,?,?,?,0,'none')",
+                (
+                    observer, str(outcome.get("pool_address") or ""),
+                    str(outcome.get("token_id") or ""),
+                    int(outcome.get("first_source_cohort_id") or 0), status,
+                    str(outcome.get("reason") or ""), iso(attempted_at or utcnow()),
+                ),
+            )
+            return int(cursor.lastrowid) if cursor.rowcount == 1 else None
+
+    def chain_meme_v21_vault_shadow_account_targets(self) -> list[dict[str, Any]]:
+        """Expand each active unique pool into one pool and two vault subscriptions."""
+        observer = self.CHAIN_MEME_V21_VAULT_SHADOW_VERSION
+        version = self.CHAIN_MEME_TRADER_V21_VERSION
+        with self._lock:
+            rows = self.db.execute(
+                """
+                SELECT t.* FROM chain_meme_v21_vault_shadow_pool_targets t
+                WHERE t.observer_version=? AND EXISTS(
+                    SELECT 1 FROM chain_meme_trader_positions p
+                    JOIN chain_meme_trader_v6_cohorts c
+                      ON c.definition_version=p.definition_version
+                     AND c.id=p.shadow_cohort_id
+                    WHERE p.definition_version=?
+                      AND p.arm_id='broad_principal_lock_runner_v1'
+                      AND p.status='open' AND c.pair_address=t.pool_address
+                )
+                ORDER BY t.id
+                """,
+                (observer, version),
+            ).fetchall()
+            targets: list[dict[str, Any]] = []
+            for row in rows:
+                common = {
+                    **dict(row), "pool_target_id": int(row["id"]),
+                    "decoder_version": "pump-amm-pool/v2-idl-6b5c7e-sdk-1.19.0",
+                    "virtual_quote_reserves_raw": str(row["virtual_quote_reserves_raw"]),
+                }
+                targets.extend([
+                    {
+                        **common, "id": int(row["id"]) * 10 + 1,
+                        "account_kind": "pool", "pubkey": str(row["pool_address"]),
+                        "expected_mint": "",
+                        "expected_program_owner": self.PUMPSWAP_PROGRAM_ID,
+                    },
+                    {
+                        **common, "id": int(row["id"]) * 10 + 2,
+                        "account_kind": "base_vault", "pubkey": str(row["base_vault"]),
+                        "expected_mint": str(row["base_mint"]),
+                        "expected_program_owner": str(row["base_token_program"]),
+                    },
+                    {
+                        **common, "id": int(row["id"]) * 10 + 3,
+                        "account_kind": "quote_vault", "pubkey": str(row["quote_vault"]),
+                        "expected_mint": str(row["quote_mint"]),
+                        "expected_program_owner": str(row["quote_token_program"]),
+                    },
+                ])
+            return targets
+
+    def record_chain_meme_v21_vault_shadow_frame(
+        self, frame: Mapping[str, Any],
+    ) -> int | None:
+        """Persist an observer frame without touching marks, positions, trades, or fills."""
+        observer = self.CHAIN_MEME_V21_VAULT_SHADOW_VERSION
+        pool_target_id = int(frame.get("pool_target_id") or 0)
+        if (
+            str(frame.get("observer_version") or "") != observer
+            or bool(frame.get("decision_eligible"))
+            or str(frame.get("affects") or "") != "none"
+            or pool_target_id <= 0
+        ):
+            return None
+        with self._lock, self.db:
+            target = self.db.execute(
+                "SELECT * FROM chain_meme_v21_vault_shadow_pool_targets "
+                "WHERE id=? AND observer_version=?", (pool_target_id, observer),
+            ).fetchone()
+            if target is None:
+                return None
+            observed_at = str(frame["observed_at"])
+            holders = [int(row[0]) for row in self.db.execute(
+                """
+                SELECT DISTINCT p.shadow_cohort_id
+                FROM chain_meme_trader_positions p
+                JOIN chain_meme_trader_v6_cohorts c
+                  ON c.definition_version=p.definition_version
+                 AND c.id=p.shadow_cohort_id
+                WHERE p.definition_version=?
+                  AND p.arm_id='broad_principal_lock_runner_v1'
+                  AND p.opened_at<=?
+                  AND (p.closed_at IS NULL OR p.closed_at>?)
+                  AND c.pair_address=?
+                ORDER BY p.shadow_cohort_id
+                """,
+                (
+                    self.CHAIN_MEME_TRADER_V21_VERSION, observed_at, observed_at,
+                    str(target["pool_address"]),
+                ),
+            ).fetchall()]
+            if not holders:
+                return None
+            cursor = self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_v21_vault_shadow_frames("
+                "observer_version,pool_target_id,frame_kind,observer_state,previous_state,"
+                "window_started_at,observed_at,slot_min,slot_max,base_amount_raw,"
+                "quote_amount_raw,effective_quote_reserve_raw,holder_cohorts_json,"
+                "features_json,recorded_at,decision_eligible,affects) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'none')",
+                (
+                    observer, pool_target_id, str(frame["frame_kind"]),
+                    str(frame["observer_state"]), str(frame.get("previous_state") or ""),
+                    str(frame["window_started_at"]), str(frame["observed_at"]),
+                    int(frame["slot_min"]), int(frame["slot_max"]),
+                    frame.get("base_amount_raw"), frame.get("quote_amount_raw"),
+                    frame.get("effective_quote_reserve_raw"), self._json(holders),
+                    self._json(dict(frame.get("features") or {})), iso(),
+                ),
+            )
+            if cursor.rowcount != 1:
+                return None
+            return int(cursor.lastrowid)
 
     def register_chain_meme_trader_immediate_reverseability(self) -> sqlite3.Row:
         """Freeze a forward-only observer over post-fill exact SELL valuations."""
@@ -26745,10 +27274,12 @@ class Store:
 
     def chain_meme_trader_market_mark_targets(
         self, *, definition_version: str | None = None,
+        definition_versions: Iterable[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Return one bounded, de-duplicated watch row per relevant token."""
         versions = list(dict.fromkeys(
-            [definition_version] if definition_version is not None else [
+            list(definition_versions) if definition_versions is not None
+            else [definition_version] if definition_version is not None else [
                 self.CHAIN_MEME_TRADER_ACTIVE_VERSION,
                 self.CHAIN_MEME_TRADER_V13_VERSION,
                 self.CHAIN_MEME_TRADER_V11_VERSION,
@@ -26776,6 +27307,14 @@ class Store:
                     query, tuple(versions + versions + versions),
                 ).fetchall()
             ]
+
+    def chain_meme_trader_has_open_positions(self, definition_version: str) -> bool:
+        with self._lock:
+            return self.db.execute(
+                "SELECT 1 FROM chain_meme_trader_positions "
+                "WHERE definition_version=? AND status='open' LIMIT 1",
+                (str(definition_version),),
+            ).fetchone() is not None
 
     def upsert_chain_meme_trader_market_mark(
         self, token: TokenCandidate, snapshot: TokenSnapshot, *, recorded_at: Any = None,
@@ -26990,6 +27529,13 @@ class Store:
         ).fetchone()
         if position is None:
             return 0
+        policy = next(
+            (
+                item for item in definition.get("policies", [])
+                if str(item.get("arm_id") or "") == str(position["arm_id"])
+            ),
+            {},
+        )
         if str(mark["action"]) == "RUG_EXIT":
             remaining_cost = max(
                 0.0,
@@ -27083,27 +27629,67 @@ class Store:
         new_allocated = float(position["allocated_cost_usd"] or 0.0) + cost_delta
         cumulative_pnl = new_proceeds - new_allocated
         closes = new_amount <= 0
-        next_tp = int(position["next_tp_index"] or 0) + (
-            1 if str(mark["action"]).startswith("TAKE_PROFIT_") else 0
-        )
+        current_tp = int(position["next_tp_index"] or 0)
         reason = str(mark["reason"]) + ":dex_mark_paper_fill"
+        principal_recovered = int(position["principal_recovered"] or 0)
+        principal_recovered_at = position["principal_recovered_at"]
+        principal_recovery_proceeds = position["principal_recovery_proceeds_usd"]
+        high_after_fill = float(position["highest_signal_price_usd"] or post_price)
+        principal_target_fill = bool(
+            not closes
+            and str(policy.get("exit_family") or "") == "principal_lock_runner"
+            and str(mark["action"]).startswith("TAKE_PROFIT_")
+        )
+        next_tp = current_tp + int(
+            str(mark["action"]).startswith("TAKE_PROFIT_")
+            and (not principal_target_fill or new_proceeds >= float(position["stake_usd"]))
+        )
+        if principal_target_fill:
+            principal_recovery_proceeds = new_proceeds
+            if new_proceeds >= float(position["stake_usd"]):
+                principal_recovered = 1
+                principal_recovered_at = completed_at
+                # The runner starts a new realizable high-water at the actual
+                # post-trigger fill.  A pre-fill price high cannot be combined
+                # with proceeds that did not exist at that earlier time.
+                high_after_fill = post_price
         self.db.execute(
             "UPDATE chain_meme_trader_positions SET amount_raw=?,remaining_quantity_tokens=?,"
             "realized_proceeds_usd=?,"
-            "allocated_cost_usd=?,next_tp_index=?,status=?,pending_mark_id=NULL,"
+            "allocated_cost_usd=?,next_tp_index=?,principal_recovered=?,"
+            "principal_recovered_at=?,principal_recovery_proceeds_usd=?,"
+            "highest_signal_price_usd=?,status=?,pending_mark_id=NULL,"
             "realized_pnl_usd=?,closed_at=?,close_reason=?,last_fill_id=? "
             "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
             (
                 str(new_amount), remaining_quantity, new_proceeds, new_allocated, next_tp,
+                principal_recovered, principal_recovered_at,
+                principal_recovery_proceeds, high_after_fill,
                 "closed" if closes else "open", cumulative_pnl,
                 completed_at if closes else None, reason if closes else "", fill_id,
                 version, str(position["arm_id"]), int(position["shadow_cohort_id"]),
             ),
         )
-        self.db.execute(
-            "UPDATE chain_meme_trader_marks SET status='filled',next_attempt_at=NULL WHERE id=?",
-            (int(mark_id),),
-        )
+        if principal_target_fill:
+            evidence = self._json_object(mark["trigger_evidence_json"])
+            evidence["principal_lock_settlement"] = {
+                "target_initial_debit_usd": float(position["stake_usd"]),
+                "cumulative_realized_proceeds_usd": new_proceeds,
+                "principal_recovered": bool(principal_recovered),
+                "runner_high_water_rebased_price_usd": post_price,
+                "filled_at": completed_at,
+            }
+            self.db.execute(
+                "UPDATE chain_meme_trader_marks SET status='filled',next_attempt_at=NULL,"
+                "trigger_evidence_json=? WHERE id=?",
+                (self._json(evidence), int(mark_id)),
+            )
+        else:
+            self.db.execute(
+                "UPDATE chain_meme_trader_marks SET status='filled',next_attempt_at=NULL "
+                "WHERE id=?",
+                (int(mark_id),),
+            )
         self.db.execute(
             "INSERT INTO chain_meme_trader_trades("
             "definition_version,arm_id,shadow_cohort_id,token_id,quote_result_id,side,"
@@ -27393,6 +27979,11 @@ class Store:
                             action, reason = "HARD_STOP", "market_mark_hard_stop"
                         elif (
                             entry_price > 0
+                            and (
+                                str(policy.get("exit_family") or "")
+                                != "principal_lock_runner"
+                                or int(position["principal_recovered"] or 0) == 1
+                            )
                             and high_economic_return is not None
                             and high_economic_return >= float(
                                 policy.get("trailing_activate_return") or 99.0

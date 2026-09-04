@@ -38,7 +38,7 @@ const strategyName = (arm) => {
 const outcomeCount = (account={}) => Number(account.closed_position_count||0)+Number(account.written_off_position_count||0);
 const isMature = (strategy) => outcomeCount(strategy.account) >= 30;
 const entryLabels={shadow_momentum:'链上动量达到历史门槛',two_way_route:'买卖双向路线通过',economic_route:'交易经济性通过',rug_safety:'买前安全检查通过',solana_focus:'Solana 精确池条件通过',broad_launch:'新币宽口径',flow_burst:'交易突然放量',reawakening:'沉寂后重新活跃',market_visible:'有池且价格可见',dex_visible_successor:'DexScreener 池与成交可见'};
-const exitLabels={fast_escape:'快速止损止盈',balanced:'均衡退出',balanced_harvest:'均衡分批止盈',peak_guard:'高点回撤保护',postbuy_research:'买后信息辅助',dynamic:'动态退出',dynamic_backoff:'动态退出与退避',dynamic_with_15m_deadline:'动态退出，最晚 15 分钟',dynamic_with_horizon_fallback:'动态退出，超时按固定周期',fixed:'固定周期退出',fixed_15m:'15 分钟退出',fixed_horizons:'分阶段固定退出',risk:'风险优先退出',profit:'利润优先退出',liquidity:'流动性异常退出',activity:'活跃度衰减退出',runner:'强势延续退出',flow:'资金流退出',trailing:'移动止盈',composite:'综合退出'};
+const exitLabels={fast_escape:'快速止损止盈',balanced:'均衡退出',balanced_harvest:'均衡分批止盈',peak_guard:'高点回撤保护',postbuy_research:'买后信息辅助',principal_lock_runner:'本金回收目标＋趋势仓',dynamic:'动态退出',dynamic_backoff:'动态退出与退避',dynamic_with_15m_deadline:'动态退出，最晚 15 分钟',dynamic_with_horizon_fallback:'动态退出，超时按固定周期',fixed:'固定周期退出',fixed_15m:'15 分钟退出',fixed_horizons:'分阶段固定退出',risk:'风险优先退出',profit:'利润优先退出',liquidity:'流动性异常退出',activity:'活跃度衰减退出',runner:'强势延续退出',flow:'资金流退出',trailing:'移动止盈',composite:'综合退出'};
 const readable = (value,labels) => labels[value]||String(value||'未说明').replaceAll('_',' ');
 const strategyIndex = (family) => {
   const found=(universe?.families||[]).indexOf(family);
@@ -192,7 +192,7 @@ function liveMetricForFamily(family){
 
 function fidelityLabel(family){
   const value=family?.fidelity_status||family?.realtime_state;
-  return ({REPLICA_ELIGIBLE:'原历史规则',REPLICA_WITH_ENGINEERING_CORRECTION:'历史规则·统一成交口径',DEXSCREENER_SUCCESSOR:'DexScreener 新前向策略',COVERAGE_UNAVAILABLE:'缺少原始证据，未交易',ACTIVE_FORWARD:'前向运行',FROZEN_HISTORY:'仅历史记录'})[value]||'待核验';
+  return ({REPLICA_ELIGIBLE:'原历史规则',REPLICA_WITH_ENGINEERING_CORRECTION:'历史规则·统一成交口径',DEXSCREENER_SUCCESSOR:'DexScreener 新前向策略',ADDITIVE_FORWARD:'新增前向策略',COVERAGE_UNAVAILABLE:'缺少原始证据，未交易',ACTIVE_FORWARD:'前向运行',FROZEN_HISTORY:'仅历史记录'})[value]||'待核验';
 }
 
 function ingestStrategyHistory(data){
@@ -292,7 +292,7 @@ function renderUniverse(){
     ['策略账户',families.length,'每个策略独立资金、持仓和结果'],
     ['前向运行',active,inactive?`${inactive} 个当前未运行`:`${replicas} 个历史规则 · ${successors} 个 DexScreener 继承策略`],
     ['初始总资金',baseline==null?'后端未提供':money(families.length*baseline),baseline==null?'等待账户定义':`每个账户 ${money(baseline)} USDC`],
-    ['行情采集','共享一次','同一个 Token 不会重复访问 124 次'],
+    ['行情采集','共享一次',`同一个 Token 不会按 ${families.length} 个策略重复访问`],
   ].map(([k,v,n])=>`<article class="summary-card"><span>${esc(k)}</span><strong>${esc(v)}</strong><small>${esc(n)}</small></article>`).join('');
   const q=($('#universe-search')?.value||'').trim().toLowerCase(), sort=$('#universe-sort')?.value||'account_value';
   const rows=families.filter(f=>{
@@ -703,6 +703,7 @@ function renderLive(data,focusedArm=null){
     return merged;
   });
   state={...state,...data,system:{...(state?.system||{}),...(data.system||{})},discovery:{...(state?.discovery||{}),...(data.discovery||{})},trading:{...(state?.trading||{}),...(data.trading||{})},strategies:mergedStrategies}; const strategies=mergedStrategies;
+  if(universe&&Number(universe.families?.length||0)!==strategies.length)refreshUniverse();
   renderRuntime(state);renderDiscoveryBeacon(state);renderSummary(state,strategies);renderLeaders(state);renderUniverse();renderOverviewStrategies();renderRisk(state.recent_risk||[]);renderActivity(state.recent_activity||[],strategies);renderDiscoveries(state);renderHealth(state.source_health||[],state);populateWalletStrategies();renderWallets();if(lastPage==='wallets')refreshWallets();if(activeTokenId&&Date.now()-tokenDetailRefreshedAt>=4000)openToken(activeTokenId,false);
 }
 

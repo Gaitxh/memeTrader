@@ -6,6 +6,7 @@ import hashlib
 import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from itertools import permutations
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,7 @@ from memetrader.collectors import (
     JupiterQuoteClient,
     MastodonCollector,
     PumpPortalCollector,
+    PumpSwapVaultFlowTracker,
     PUMPSWAP_FEE_CONFIG_DECODER_V1,
     PUMPSWAP_FEE_CONFIG_PDA,
     PUMPSWAP_GLOBAL_CONFIG_DECODER_V1,
@@ -41,6 +43,7 @@ from memetrader.collectors import (
     decode_pumpswap_global_config_account,
     decode_pumpswap_pool_account,
     pumpswap_sell_base_input_v1,
+    token_quantity_to_raw_floor,
 )
 from memetrader.models import CandidateDecision, EventView, Observation, ObservationRevisionHandoff, Position, TokenCandidate, TokenSnapshot, iso, parse_time, utcnow
 from memetrader.runtime import Runtime, load_config
@@ -5764,6 +5767,82 @@ def test_pumpswap_current_pool_decoder_preserves_virtual_reserve_and_padding_sem
         decode_pumpswap_pool_account(bytes(invalid))
 
 
+def test_pumpswap_shadow_resolver_requires_current_layout_and_verified_bundle():
+    async def scenario(pool_size: int):
+        pool_key, creator, base_mint, quote_mint, lp_mint, base_vault, quote_vault = [
+            Pubkey.new_unique() for _ in range(7)
+        ]
+        pool_raw = bytearray(301)
+        pool_raw[:8] = bytes((241, 154, 109, 4, 17, 177, 109, 188))
+        for offset, key in zip(
+            (11, 43, 75, 107, 139, 171, 211),
+            (creator, base_mint, quote_mint, lp_mint, base_vault, quote_vault, creator),
+        ):
+            pool_raw[offset:offset + 32] = bytes(key)
+        pool_raw[245:261] = (-500).to_bytes(16, "little", signed=True)
+
+        def encoded(raw: bytes, owner: str):
+            return {
+                "owner": owner, "lamports": 1,
+                "data": [base64.b64encode(raw).decode(), "base64"],
+            }
+
+        def vault(mint: Pubkey, amount: int):
+            raw = bytearray(165)
+            raw[:32] = bytes(mint)
+            raw[32:64] = bytes(pool_key)
+            raw[64:72] = amount.to_bytes(8, "little")
+            return encoded(bytes(raw), SafetyChecker.SPL_TOKEN_PROGRAM)
+
+        def mint(decimals: int):
+            raw = bytearray(82)
+            raw[44] = decimals
+            raw[45] = 1
+            return encoded(bytes(raw), SafetyChecker.SPL_TOKEN_PROGRAM)
+
+        pool_value = encoded(bytes(pool_raw[:pool_size]), SafetyChecker.PUMPSWAP_PROGRAM)
+        payloads = [
+            {"result": {"context": {"slot": 100}, "value": [pool_value]}},
+        ]
+        if pool_size >= 300:
+            payloads.append({
+                "result": {
+                    "context": {"slot": 101},
+                    "value": [
+                        pool_value, vault(base_mint, 1_000), vault(quote_mint, 2_000),
+                        mint(6), mint(9),
+                    ],
+                },
+            })
+
+        class FakeHttp:
+            async def post(self, *args, **kwargs):
+                payload = payloads.pop(0)
+                return httpx.Response(
+                    200, json={"jsonrpc": "2.0", "id": 1, **payload},
+                    request=httpx.Request("POST", "https://rpc.invalid"),
+                )
+
+        collector = SolanaHeldAccountCollector("https://rpc.invalid")
+        await collector.http.aclose()
+        collector.http = FakeHttp()
+        result = await collector.resolve_pumpswap_shadow_pools([{
+            "observer_version": Store.CHAIN_MEME_V21_VAULT_SHADOW_VERSION,
+            "pool_address": str(pool_key), "token_id": f"solana:{base_mint}",
+            "base_mint": str(base_mint), "first_source_cohort_id": 1,
+            "entry_snapshot_id": 1,
+        }])
+        return result[0]
+
+    resolved = asyncio.run(scenario(301))
+    assert resolved["status"] == "RESOLVED"
+    assert resolved["virtual_quote_reserves_raw"] == -500
+    assert resolved["base_mint_decimals"] == 6
+    legacy = asyncio.run(scenario(211))
+    assert legacy["status"] == "UNKNOWN_IDENTITY"
+    assert legacy["reason"] == "pumpswap_current_fields_unavailable"
+
+
 def test_pumpswap_sdk_119_global_and_fee_config_decoders_preserve_idl_layout():
     keys = [Pubkey.new_unique() for _ in range(28)]
     global_raw = bytearray(945)
@@ -6964,6 +7043,412 @@ def test_chain_meme_v20_restarts_same_strategies_on_corrected_execution_epoch(
         (Store.CHAIN_MEME_TRADER_V19_VERSION,),
     ).fetchone()
     assert "raw_decimal_contamination" in stop["reason"]
+    store.close()
+
+
+def test_chain_meme_v21_appends_runner_without_mutating_v20(tmp_path: Path):
+    store = Store(tmp_path / "additive-runner-v21.sqlite3", initial_cash_usd=1000)
+    v20 = json.loads(store.register_chain_meme_trader_v20()["definition_json"])
+    store.activate_chain_meme_trader_v20()
+    assert store.record_chain_meme_trader_account_snapshots(
+        definition_version=Store.CHAIN_MEME_TRADER_V20_VERSION,
+    ) == 124
+
+    v21 = json.loads(store.register_chain_meme_trader_v21()["definition_json"])
+    activation = store.activate_chain_meme_trader_v21()
+    runner = v21["policies"][-1]
+
+    assert activation["definition_version"] == Store.CHAIN_MEME_TRADER_V21_VERSION
+    assert v21["previous_version"] == Store.CHAIN_MEME_TRADER_V20_VERSION
+    assert v21["policies"][:124] == v20["policies"]
+    assert len(v21["policies"]) == len({p["arm_id"] for p in v21["policies"]}) == 125
+    assert runner["arm_id"] == "broad_principal_lock_runner_v1"
+    assert runner["entry_family"] == "broad_launch"
+    assert runner["hard_stop_return"] == pytest.approx(-0.20)
+    assert runner["take_profit"] == [
+        {"return": 0.80, "fraction_of_remaining": 0.60},
+    ]
+    assert runner["trailing_activate_return"] == pytest.approx(0.80)
+    assert runner["trailing_drawdown"] == pytest.approx(0.50)
+    assert runner["max_hold_minutes"] == pytest.approx(240.0)
+    assert runner["behavior_contract_hash"] not in {
+        policy["behavior_contract_hash"] for policy in v20["policies"]
+    }
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_account_snapshots "
+        "WHERE definition_version=?",
+        (Store.CHAIN_MEME_TRADER_V20_VERSION,),
+    ).fetchone()[0] == 124
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_positions WHERE definition_version=?",
+        (Store.CHAIN_MEME_TRADER_V21_VERSION,),
+    ).fetchone()[0] == 0
+    assert store.db.execute(
+        "SELECT reason FROM chain_meme_trader_primary_stops WHERE definition_version=?",
+        (Store.CHAIN_MEME_TRADER_V20_VERSION,),
+    ).fetchone()["reason"] == "v20_preserved_before_additive_principal_runner_epoch"
+    store.close()
+
+
+def test_chain_meme_v21_principal_runner_recovers_principal_then_trails_runner(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "principal-runner-v21.sqlite3", initial_cash_usd=1000)
+    registration = store.register_chain_meme_trader_v21()
+    store.activate_chain_meme_trader_v21()
+    version = Store.CHAIN_MEME_TRADER_V21_VERSION
+    policy = json.loads(registration["definition_json"])["policies"][-1]
+    opened_at = utcnow() - timedelta(minutes=1)
+    token, cohort_id = _seed_chain_market_position(
+        store, version=version, policy=policy, opened_at=opened_at,
+    )
+
+    def mark(price: float, at) -> int:
+        store.upsert_chain_meme_trader_market_mark(
+            token,
+            TokenSnapshot(
+                "solana", token.address, price, 10_000, 100_000, 2_000, 8, 2,
+                observed_at=at, ingested_at=at, provider="dexscreener",
+                raw={"pair": {"pairAddress": "pair-A"}},
+            ),
+            recorded_at=at,
+        )
+        return store.evaluate_chain_meme_trader_market_marks(
+            definition_version=version, now=at,
+        )
+
+    trigger_at = utcnow()
+    take_profit_price = 1.04 * 1.80 / 0.96
+    assert mark(10.0, trigger_at) == 1
+    pending = store.db.execute(
+        "SELECT * FROM chain_meme_trader_marks WHERE definition_version=? "
+        "AND arm_id=? AND shadow_cohort_id=?",
+        (version, policy["arm_id"], cohort_id),
+    ).fetchone()
+    assert pending["action"] == "TAKE_PROFIT_1"
+
+    assert mark(take_profit_price, trigger_at + timedelta(seconds=1)) == 1
+    partial = store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND arm_id=? AND shadow_cohort_id=?",
+        (version, policy["arm_id"], cohort_id),
+    ).fetchone()
+    initial_amount = int(partial["initial_amount_raw"])
+    assert partial["status"] == "open"
+    assert int(partial["amount_raw"]) / initial_amount == pytest.approx(0.40, abs=1e-8)
+    assert partial["realized_proceeds_usd"] == pytest.approx(21.60, abs=1e-7)
+    assert partial["allocated_cost_usd"] == pytest.approx(12.0, abs=1e-7)
+    assert partial["next_tp_index"] == 1
+    assert partial["principal_recovered"] == 1
+    assert partial["principal_recovered_at"] == iso(trigger_at + timedelta(seconds=1))
+    assert partial["principal_recovery_proceeds_usd"] == pytest.approx(21.60, abs=1e-7)
+    assert partial["highest_signal_price_usd"] == pytest.approx(take_profit_price)
+    settled_mark = store.db.execute(
+        "SELECT trigger_evidence_json FROM chain_meme_trader_marks WHERE id=?",
+        (pending["id"],),
+    ).fetchone()
+    settlement = json.loads(settled_mark["trigger_evidence_json"])[
+        "principal_lock_settlement"
+    ]
+    assert settlement["principal_recovered"] is True
+    assert settlement["runner_high_water_rebased_price_usd"] == pytest.approx(
+        take_profit_price
+    )
+
+    high_at = trigger_at + timedelta(seconds=2)
+    assert mark(10.0, high_at) == 0
+    trailing_at = trigger_at + timedelta(seconds=3)
+    assert mark(3.0, trailing_at) == 1
+    trailing = store.db.execute(
+        "SELECT * FROM chain_meme_trader_marks WHERE definition_version=? "
+        "AND arm_id=? AND shadow_cohort_id=? AND action='TRAILING_EXIT'",
+        (version, policy["arm_id"], cohort_id),
+    ).fetchone()
+    assert trailing is not None and trailing["status"] == "pending"
+    evidence = json.loads(trailing["trigger_evidence_json"])["pre_trigger"]
+    assert evidence["high_economic_return"] > 0.80
+    assert evidence["drawdown"] <= -0.50
+
+    assert mark(3.0, trigger_at + timedelta(seconds=4)) == 1
+    closed = store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND arm_id=? AND shadow_cohort_id=?",
+        (version, policy["arm_id"], cohort_id),
+    ).fetchone()
+    assert closed["status"] == "closed"
+    assert int(closed["amount_raw"]) == 0
+    assert closed["remaining_quantity_tokens"] == pytest.approx(0.0)
+    trades = store.db.execute(
+        "SELECT side,reason FROM chain_meme_trader_trades WHERE definition_version=? "
+        "AND arm_id=? ORDER BY id", (version, policy["arm_id"]),
+    ).fetchall()
+    assert [row["side"] for row in trades] == ["BUY", "SELL", "SELL"]
+    assert "take_profit_1" in trades[1]["reason"]
+    assert "trailing_exit" in trades[2]["reason"]
+    store.close()
+
+
+def test_chain_meme_v21_principal_runner_retries_tp_until_proceeds_recover_principal(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "principal-runner-retry-v21.sqlite3", initial_cash_usd=1000)
+    registration = store.register_chain_meme_trader_v21()
+    store.activate_chain_meme_trader_v21()
+    version = Store.CHAIN_MEME_TRADER_V21_VERSION
+    policy = json.loads(registration["definition_json"])["policies"][-1]
+    trigger_at = utcnow()
+    token, cohort_id = _seed_chain_market_position(
+        store, version=version, policy=policy,
+        opened_at=trigger_at - timedelta(minutes=1),
+    )
+
+    def mark(price: float, at) -> int:
+        store.upsert_chain_meme_trader_market_mark(
+            token,
+            TokenSnapshot(
+                "solana", token.address, price, 10_000, 100_000, 2_000, 8, 2,
+                observed_at=at, ingested_at=at, provider="dexscreener",
+                raw={"pair": {"pairAddress": "pair-A"}},
+            ),
+            recorded_at=at,
+        )
+        return store.evaluate_chain_meme_trader_market_marks(
+            definition_version=version, now=at,
+        )
+
+    assert mark(10.0, trigger_at) == 1
+    assert mark(1.50, trigger_at + timedelta(seconds=1)) == 1
+    position = store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND arm_id=? AND shadow_cohort_id=?",
+        (version, policy["arm_id"], cohort_id),
+    ).fetchone()
+    assert position["next_tp_index"] == 0
+    assert position["principal_recovered"] == 0
+    assert position["principal_recovery_proceeds_usd"] < position["stake_usd"]
+    assert position["highest_signal_price_usd"] == pytest.approx(10.0)
+
+    assert mark(10.0, trigger_at + timedelta(seconds=2)) == 1
+    assert mark(1.95, trigger_at + timedelta(seconds=3)) == 1
+    recovered = store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND arm_id=? AND shadow_cohort_id=?",
+        (version, policy["arm_id"], cohort_id),
+    ).fetchone()
+    assert recovered["next_tp_index"] == 1
+    assert recovered["principal_recovered"] == 1
+    assert recovered["principal_recovery_proceeds_usd"] >= recovered["stake_usd"]
+    store.close()
+
+
+def test_real_token_raw_conversion_uses_verified_decimals_and_rounds_down():
+    assert token_quantity_to_raw_floor("1.23456789", 6) == 1_234_567
+    assert token_quantity_to_raw_floor("1.23456789", 9) == 1_234_567_890
+    assert token_quantity_to_raw_floor("0.0000009", 6) == 0
+    with pytest.raises(ValueError, match="mint_decimals_unknown"):
+        token_quantity_to_raw_floor("1.0", None)
+    with pytest.raises(ValueError, match="mint_decimals_invalid"):
+        token_quantity_to_raw_floor("1.0", -1)
+    with pytest.raises(ValueError, match="token_quantity_invalid"):
+        token_quantity_to_raw_floor("NaN", 6)
+
+
+def test_v21_vault_flow_tracker_pairs_same_slot_and_preserves_signed_virtual_reserve():
+    tracker = PumpSwapVaultFlowTracker(summary_seconds=10)
+    observed = datetime(2026, 9, 4, tzinfo=timezone.utc)
+
+    def update(kind, slot, amount=None, *, virtual=None, second=0):
+        decoded = {"status": "verified"}
+        if kind == "pool":
+            decoded.update({
+                "account_data_length": 301,
+                "needs_sdk_extend": False,
+                "virtual_quote_reserves_raw": virtual,
+            })
+        else:
+            decoded["amount_raw"] = amount
+        return {
+            "observer_version": Store.CHAIN_MEME_V21_VAULT_SHADOW_VERSION,
+            "pool_target_id": 7,
+            "account_kind": kind,
+            "slot": slot,
+            "data_hash": f"{kind}-{slot}-{amount}-{virtual}",
+            "decoded": decoded,
+            "virtual_quote_reserves_raw": -500,
+            "resolved_slot": 99,
+            "observed_at": iso(observed + timedelta(seconds=second)),
+        }
+
+    assert tracker.push(update("pool", 100, virtual=-500)) is None
+    assert tracker.push(update("base_vault", 100, 1_000)) is not None
+    first = tracker.push(update("quote_vault", 100, 1_000))
+    assert first is not None
+    assert first["effective_quote_reserve_raw"] == "500"
+    assert len(tracker._points[7]) == 1
+
+    assert tracker.push(update("base_vault", 101, 100, second=1)) is None
+    assert len(tracker._points[7]) == 1
+    second = tracker.push(update("quote_vault", 101, 2_000, second=1))
+    assert second is None
+    assert len(tracker._points[7]) == 2
+    assert tracker._points[7][-1]["direction"] == "BUY_LIKE_NET"
+    assert tracker._points[7][-1]["effective_quote_known"] is False
+    assert tracker.push(update("base_vault", 99, 999, second=2)) is None
+    assert tracker._latest[7]["base_vault"]["slot"] == 101
+
+
+def test_v21_vault_flow_tracker_is_independent_of_same_slot_arrival_order():
+    observed = datetime(2026, 9, 4, tzinfo=timezone.utc)
+
+    def update(kind, slot, amount=None, *, virtual=None, second=0):
+        decoded = {"status": "verified"}
+        if kind == "pool":
+            decoded.update({
+                "account_data_length": 301,
+                "needs_sdk_extend": False,
+                "virtual_quote_reserves_raw": virtual,
+            })
+        else:
+            decoded["amount_raw"] = amount
+        return {
+            "observer_version": Store.CHAIN_MEME_V21_VAULT_SHADOW_VERSION,
+            "pool_target_id": 11,
+            "account_kind": kind,
+            "slot": slot,
+            "data_hash": f"{kind}-{slot}-{amount}-{virtual}",
+            "decoded": decoded,
+            "observed_at": iso(observed + timedelta(seconds=second)),
+        }
+
+    expected = None
+    for order in permutations(("pool", "base_vault", "quote_vault")):
+        tracker = PumpSwapVaultFlowTracker(summary_seconds=10)
+        tracker.push(update("pool", 100, virtual=-500))
+        tracker.push(update("base_vault", 100, 1_000))
+        tracker.push(update("quote_vault", 100, 1_000))
+        next_updates = {
+            "pool": update("pool", 101, virtual=-400, second=1),
+            "base_vault": update("base_vault", 101, 1_100, second=1),
+            "quote_vault": update("quote_vault", 101, 900, second=1),
+        }
+        for kind in order:
+            tracker.push(next_updates[kind])
+        points = tracker._points[11]
+        assert len(points) == 2
+        latest = points[-1]
+        actual = (
+            latest["effective_quote_known"],
+            latest["effective_quote_raw"],
+            latest["direction"],
+            latest["normalized_gross"],
+        )
+        expected = actual if expected is None else expected
+        assert actual == expected
+        assert actual[:3] == (True, 500, "SELL_LIKE_NET")
+
+
+def test_v21_vault_shadow_is_forward_only_unique_pool_and_has_no_trading_authority(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "vault-shadow.sqlite3", initial_cash_usd=1000)
+    store.register_chain_meme_trader_v21()
+    version = Store.CHAIN_MEME_TRADER_V21_VERSION
+    arm = "broad_principal_lock_runner_v1"
+
+    def seed(pool: str, opened_at, snapshot_id: int) -> int:
+        token_id = f"solana:{Pubkey.new_unique()}"
+        with store.db:
+            store.db.execute(
+                "INSERT INTO chain_meme_trader_v6_cohorts("
+                "definition_version,token_id,entry_family,source_snapshot_id,pair_address,"
+                "decided_at,episode_no,feature_json) VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    version, token_id, "broad_launch", snapshot_id, pool,
+                    iso(opened_at), snapshot_id,
+                    json.dumps({"dex_id": "pumpswap"}),
+                ),
+            )
+            cohort_id = int(store.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+            store.db.execute(
+                "INSERT INTO chain_meme_trader_positions("
+                "definition_version,arm_id,shadow_cohort_id,token_id,source_buy_trade_id,"
+                "baseline_quote_result_id,entry_snapshot_id,entry_signal_price_usd,"
+                "entry_execution_price_usd,paper_quantity_tokens,remaining_quantity_tokens,"
+                "amount_raw,initial_amount_raw,stake_usd,highest_signal_price_usd,status,opened_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,20,1,'open',?)",
+                (
+                    version, arm, cohort_id, token_id, cohort_id, 1, snapshot_id,
+                    1.0, 1.04, 10.0, 10.0, "10000000000", "10000000000",
+                    iso(opened_at),
+                ),
+            )
+        return cohort_id
+
+    seed(str(Pubkey.new_unique()), utcnow() - timedelta(minutes=2), 1)
+    registration = store.register_chain_meme_v21_vault_shadow()
+    pool = str(Pubkey.new_unique())
+    post_opened_at = parse_time(registration["registered_at"]) + timedelta(seconds=1)
+    cohort_id = seed(pool, post_opened_at, 2)
+    candidates = store.chain_meme_v21_vault_shadow_candidates()
+    assert [item["first_source_cohort_id"] for item in candidates] == [cohort_id]
+
+    keys = [str(Pubkey.new_unique()) for _ in range(5)]
+    resolved = {
+        **candidates[0], "status": "RESOLVED", "quote_mint": keys[0],
+        "lp_mint": keys[1], "base_vault": keys[2], "quote_vault": keys[3],
+        "base_token_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "quote_token_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "base_mint_decimals": 6, "virtual_quote_reserves_raw": -10,
+        "baseline_base_raw": 1000, "baseline_quote_raw": 2000,
+        "resolved_slot": 123, "resolved_at": iso(utcnow()),
+    }
+    target_id = store.add_chain_meme_v21_vault_shadow_target(resolved)
+    assert target_id is not None
+    assert store.record_chain_meme_v21_vault_shadow_resolution(resolved) is not None
+    resolution = store.db.execute(
+        "SELECT status,decision_eligible,affects FROM "
+        "chain_meme_v21_vault_shadow_resolution_attempts"
+    ).fetchone()
+    assert tuple(resolution) == ("RESOLVED", 0, "none")
+    targets = store.chain_meme_v21_vault_shadow_account_targets()
+    assert [item["account_kind"] for item in targets] == [
+        "pool", "base_vault", "quote_vault",
+    ]
+    before = {
+        table: store.db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        for table in (
+            "chain_meme_trader_marks", "chain_meme_trader_trades",
+            "chain_meme_trader_fills",
+        )
+    }
+    frame_at = post_opened_at + timedelta(seconds=1)
+    with store.db:
+        store.db.execute(
+            "UPDATE chain_meme_trader_positions SET status='closed',closed_at=? "
+            "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+            (iso(frame_at + timedelta(seconds=1)), version, arm, cohort_id),
+        )
+    frame_id = store.record_chain_meme_v21_vault_shadow_frame({
+        "observer_version": Store.CHAIN_MEME_V21_VAULT_SHADOW_VERSION,
+        "pool_target_id": target_id, "frame_kind": "state_change",
+        "observer_state": "INSUFFICIENT_EVENTS", "previous_state": "",
+        "window_started_at": iso(frame_at), "observed_at": iso(frame_at),
+        "slot_min": 123, "slot_max": 123, "base_amount_raw": "1000",
+        "quote_amount_raw": "2000", "effective_quote_reserve_raw": "1990",
+        "features": {"sample_count": 1}, "decision_eligible": False,
+        "affects": "none",
+    })
+    assert frame_id is not None
+    row = store.db.execute(
+        "SELECT decision_eligible,affects,holder_cohorts_json "
+        "FROM chain_meme_v21_vault_shadow_frames WHERE id=?", (frame_id,),
+    ).fetchone()
+    assert row["decision_eligible"] == 0 and row["affects"] == "none"
+    assert json.loads(row["holder_cohorts_json"]) == [cohort_id]
+    assert before == {
+        table: store.db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        for table in before
+    }
     store.close()
 
 

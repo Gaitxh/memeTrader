@@ -39,6 +39,7 @@ from .collectors import (
     JupiterQuoteProtocolError,
     MastodonCollector,
     PumpPortalCollector,
+    PumpSwapVaultFlowTracker,
     RSSCollector,
     RobinhoodStockTokenRegistryClient,
     SolanaHeldAccountCollector,
@@ -1255,8 +1256,9 @@ class Runtime:
             self.store.register_onchain_paper_position_monitor()
             if self.strategy_focus_active:
                 if self.chain_meme_trader_only:
-                    self.store.register_chain_meme_trader_v20()
-                    self.store.activate_chain_meme_trader_v20()
+                    self.store.register_chain_meme_trader_v21()
+                    self.store.activate_chain_meme_trader_v21()
+                    self.store.register_chain_meme_v21_vault_shadow()
                 else:
                     self.store.register_onchain_held_account_monitor()
                     self.store.register_chain_meme_trader()
@@ -1280,6 +1282,8 @@ class Runtime:
                     self.store.activate_chain_meme_trader_v19()
                     self.store.register_chain_meme_trader_v20()
                     self.store.activate_chain_meme_trader_v20()
+                    self.store.register_chain_meme_trader_v21()
+                    self.store.activate_chain_meme_trader_v21()
                     self.store.register_chain_meme_trader_immediate_reverseability()
                     self.store.register_chain_meme_trader_local_surface_quote()
                     self.store.register_chain_meme_trader_local_critical_exit()
@@ -1326,6 +1330,9 @@ class Runtime:
         self.held_accounts = SolanaHeldAccountCollector(
             str(config["safety"].get("solana_rpc_url") or "https://api.mainnet-beta.solana.com")
         )
+        self.chain_meme_v21_vault_tracker = PumpSwapVaultFlowTracker()
+        self._chain_meme_v21_vault_retry_after: dict[str, float] = {}
+        self._chain_meme_v21_vault_last_heartbeat = 0.0
         self.evm_route = EvmUniswapV3QuoteClient(self.evm_route_http)
         self.evm_aggregator = (
             EvmZeroXPriceClient(self.evm_route_http, zerox_api_key)
@@ -4951,6 +4958,87 @@ class Runtime:
                 )
                 await asyncio.sleep(30 if type(exc).__name__ == "InvalidStatus" else 5)
 
+    async def chain_meme_v21_vault_shadow_enroll_once(self) -> None:
+        """Resolve new runner pools and keep only active observer rings."""
+        now = asyncio.get_running_loop().time()
+        candidate_pool_rows = self.store.chain_meme_v21_vault_shadow_candidates()
+        candidates = [
+            item for item in candidate_pool_rows
+            if self._chain_meme_v21_vault_retry_after.get(
+                str(item["pool_address"]), 0.0
+            ) <= now
+        ]
+        resolved = await self.held_accounts.resolve_pumpswap_shadow_pools(candidates)
+        inserted = 0
+        unresolved = 0
+        for outcome in resolved:
+            self.store.record_chain_meme_v21_vault_shadow_resolution(outcome)
+            if self.store.add_chain_meme_v21_vault_shadow_target(outcome) is not None:
+                inserted += 1
+                self._chain_meme_v21_vault_retry_after.pop(
+                    str(outcome["pool_address"]), None
+                )
+            elif str(outcome.get("status") or "") != "RESOLVED":
+                unresolved += 1
+                self._chain_meme_v21_vault_retry_after[
+                    str(outcome["pool_address"])
+                ] = now + 60.0
+        active = self.store.chain_meme_v21_vault_shadow_account_targets()
+        active_pools = {str(item["pool_address"]) for item in active}
+        candidate_pools = {
+            str(item["pool_address"]) for item in candidate_pool_rows
+        }
+        self._chain_meme_v21_vault_retry_after = {
+            pool: retry_at
+            for pool, retry_at in self._chain_meme_v21_vault_retry_after.items()
+            if pool in active_pools or pool in candidate_pools
+        }
+        self.chain_meme_v21_vault_tracker.retain(
+            int(item["pool_target_id"]) for item in active
+        )
+        self.store.heartbeat(
+            "chain-meme-v21-vault-shadow-enroll",
+            item=bool(inserted or active),
+            error="",
+            error_detail=f"resolved={inserted};unresolved={unresolved}",
+        )
+
+    async def chain_meme_v21_vault_shadow_loop(self) -> None:
+        """Record bounded Pool/Vault flow summaries with no trading authority."""
+        while not self._stop.is_set():
+            try:
+                async for update in self.held_accounts.stream(
+                    self.store.chain_meme_v21_vault_shadow_account_targets
+                ):
+                    frame = self.chain_meme_v21_vault_tracker.push(update)
+                    frame_id = (
+                        self.store.record_chain_meme_v21_vault_shadow_frame(frame)
+                        if frame is not None else None
+                    )
+                    now = asyncio.get_running_loop().time()
+                    if (
+                        frame_id is not None
+                        or now - self._chain_meme_v21_vault_last_heartbeat >= 10.0
+                    ):
+                        self.store.heartbeat(
+                            "chain-meme-v21-vault-shadow",
+                            item=frame_id is not None,
+                            error="",
+                        )
+                        self._chain_meme_v21_vault_last_heartbeat = now
+                    if self._stop.is_set():
+                        return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.store.heartbeat(
+                    "chain-meme-v21-vault-shadow",
+                    item=False,
+                    error=type(exc).__name__,
+                    error_detail=str(exc),
+                )
+                await asyncio.sleep(5)
+
     async def chain_meme_local_surface_once(self) -> None:
         """Refresh route-verified PumpSwap or fallback Pump-curve capacity."""
         targets = self.store.chain_meme_trader_local_surface_targets()
@@ -5365,6 +5453,17 @@ class Runtime:
             self.store.record_chain_meme_trader_account_snapshots(
                 definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
             )
+            if (
+                self.chain_meme_trader_only
+                and self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION
+                != self.store.CHAIN_MEME_TRADER_V20_VERSION
+                and self.store.chain_meme_trader_has_open_positions(
+                    self.store.CHAIN_MEME_TRADER_V20_VERSION
+                )
+            ):
+                self.store.record_chain_meme_trader_account_snapshots(
+                    definition_version=self.store.CHAIN_MEME_TRADER_V20_VERSION,
+                )
             self._last_chain_account_snapshot_monotonic = snapshot_clock
         if not self.chain_meme_trader_only:
             self.store.record_chain_meme_trader_account_snapshots(
@@ -5384,11 +5483,22 @@ class Runtime:
 
     async def chain_meme_market_marks_once(self) -> None:
         """Refresh held tokens every two seconds with one fresh DEX batch per 30 mints."""
-        targets = self.store.chain_meme_trader_market_mark_targets(
-            definition_version=(
-                self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION
-                if self.chain_meme_trader_only else None
+        carry_v20 = (
+            self.chain_meme_trader_only
+            and self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION
+            != self.store.CHAIN_MEME_TRADER_V20_VERSION
+            and self.store.chain_meme_trader_has_open_positions(
+                self.store.CHAIN_MEME_TRADER_V20_VERSION
             )
+        )
+        targets = self.store.chain_meme_trader_market_mark_targets(
+            definition_versions=(
+                [
+                    self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
+                    self.store.CHAIN_MEME_TRADER_V20_VERSION,
+                ]
+                if carry_v20 else [self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION]
+            ) if self.chain_meme_trader_only else None,
         )
         refreshed = 0
         for start in range(0, len(targets), 30):
@@ -5456,6 +5566,16 @@ class Runtime:
         self.store.evaluate_chain_meme_trader_market_marks(
             definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
         )
+        if carry_v20:
+            self.store.evaluate_chain_meme_trader_market_marks(
+                definition_version=self.store.CHAIN_MEME_TRADER_V20_VERSION,
+            )
+            if not self.store.chain_meme_trader_has_open_positions(
+                self.store.CHAIN_MEME_TRADER_V20_VERSION
+            ):
+                self.store.record_chain_meme_trader_account_snapshots(
+                    definition_version=self.store.CHAIN_MEME_TRADER_V20_VERSION,
+                )
         if not self.chain_meme_trader_only:
             self.store.evaluate_chain_meme_trader_market_marks(
                 definition_version=self.store.CHAIN_MEME_TRADER_V11_VERSION,
@@ -6230,6 +6350,17 @@ class Runtime:
                         self.chain_meme_market_marks_once,
                     ),
                     name="chain_meme_market_marks",
+                ),
+                asyncio.create_task(
+                    self._periodic(
+                        "chain_meme_v21_vault_shadow_enroll", 15,
+                        self.chain_meme_v21_vault_shadow_enroll_once,
+                    ),
+                    name="chain_meme_v21_vault_shadow_enroll",
+                ),
+                asyncio.create_task(
+                    self.chain_meme_v21_vault_shadow_loop(),
+                    name="chain_meme_v21_vault_shadow",
                 ),
             ]
             try:

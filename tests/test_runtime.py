@@ -54,7 +54,7 @@ def test_initial_config_has_private_token_and_live_locked():
     assert config["paper"]["pump_swap_fee_bps"] == pytest.approx(125)
 
 
-def test_chain_only_runtime_registers_and_activates_current_v20(tmp_path):
+def test_chain_only_runtime_registers_and_activates_current_v21(tmp_path):
     async def scenario():
         config = initial_config()
         config["database"] = "db.sqlite3"
@@ -67,17 +67,194 @@ def test_chain_only_runtime_registers_and_activates_current_v20(tmp_path):
         ).fetchone()
         registration = runtime.store.db.execute(
             "SELECT definition_json FROM chain_meme_trader_v6_registrations "
-            "WHERE definition_version=?", (Store.CHAIN_MEME_TRADER_V20_VERSION,),
+            "WHERE definition_version=?", (Store.CHAIN_MEME_TRADER_V21_VERSION,),
         ).fetchone()
         assert active["definition_version"] == Store.CHAIN_MEME_TRADER_ACTIVE_VERSION
-        assert active["definition_version"] == Store.CHAIN_MEME_TRADER_V20_VERSION
+        assert active["definition_version"] == Store.CHAIN_MEME_TRADER_V21_VERSION
         definition = json.loads(registration["definition_json"])
-        assert len(definition["policies"]) == 124
+        assert len(definition["policies"]) == 125
         assert all(policy["forward_enabled"] for policy in definition["policies"])
         assert sum(
             policy.get("fidelity_status") == "DEXSCREENER_SUCCESSOR"
             for policy in definition["policies"]
         ) == 38
+        assert sum(
+            policy.get("fidelity_status") == "ADDITIVE_FORWARD"
+            for policy in definition["policies"]
+        ) == 1
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_chain_only_v21_keeps_v20_positions_marked_without_new_v20_entries(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        config["chain_meme_trader_only_enabled"] = True
+        runtime = Runtime(config, tmp_path)
+        store = runtime.store
+        v20 = Store.CHAIN_MEME_TRADER_V20_VERSION
+        v21 = Store.CHAIN_MEME_TRADER_V21_VERSION
+        definition = json.loads(store.db.execute(
+            "SELECT definition_json FROM chain_meme_trader_v6_registrations "
+            "WHERE definition_version=?", (v20,),
+        ).fetchone()[0])
+        policy = next(
+            item for item in definition["policies"]
+            if item.get("entry_family") == "broad_launch"
+            and item.get("hard_stop_return") == -0.20
+        )
+        opened_at = utcnow() - timedelta(minutes=1)
+        held = TokenCandidate(
+            "solana", "V" * 32, "Carried v20", "V20", source="dexscreener",
+        )
+        store.upsert_token(held, seen_at=opened_at)
+        with store.db:
+            store.db.execute(
+                "INSERT INTO chain_meme_trader_v6_cohorts("
+                "definition_version,token_id,entry_family,source_snapshot_id,pair_address,"
+                "decided_at,episode_no,feature_json) VALUES(?,?,?,?,?,?,1,'{}')",
+                (v20, held.token_id, "broad_launch", 1, "pair-v20", iso(opened_at)),
+            )
+            cohort_id = int(store.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+            quantity = 20.0 / 1.04
+            amount_raw = str(round(quantity * 1_000_000_000))
+            store.db.execute(
+                "INSERT INTO chain_meme_trader_positions("
+                "definition_version,arm_id,shadow_cohort_id,token_id,source_buy_trade_id,"
+                "baseline_quote_result_id,entry_snapshot_id,entry_signal_price_usd,"
+                "entry_execution_price_usd,paper_quantity_tokens,remaining_quantity_tokens,"
+                "amount_raw,initial_amount_raw,stake_usd,highest_signal_price_usd,status,"
+                "opened_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,20,1,'open',?)",
+                (
+                    v20, policy["arm_id"], cohort_id, held.token_id, cohort_id, 1, 1,
+                    1.0, 1.04, quantity, quantity, amount_raw, amount_raw, iso(opened_at),
+                ),
+            )
+            store.db.execute(
+                "INSERT INTO chain_meme_trader_trades("
+                "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+                "net_cash_flow_usd,reason,created_at) "
+                "VALUES(?,?,?,?, 'BUY',20,-20,'fixture',?)",
+                (v20, policy["arm_id"], cohort_id, held.token_id, iso(opened_at)),
+            )
+
+        targets = store.chain_meme_trader_market_mark_targets(
+            definition_versions=[v21, v20],
+        )
+        assert [item["token_id"] for item in targets] == [held.token_id]
+
+        async def batch_quote(chain, addresses):
+            assert (chain, addresses) == ("solana", [held.address])
+            observed_at = utcnow()
+            return {held.token_id: (
+                held,
+                TokenSnapshot(
+                    "solana", held.address, 0.50, 10_000, 100_000, 2_000, 4, 8,
+                    observed_at=observed_at, ingested_at=observed_at,
+                    provider="dexscreener",
+                    raw={"pair": {"pairAddress": "pair-v20"}},
+                ),
+            )}
+
+        runtime.dex.batch_quote_fresh = batch_quote
+        await runtime.chain_meme_market_marks_once()
+        exit_mark = store.db.execute(
+            "SELECT action,status FROM chain_meme_trader_marks "
+            "WHERE definition_version=? AND shadow_cohort_id=?",
+            (v20, cohort_id),
+        ).fetchone()
+        assert (exit_mark["action"], exit_mark["status"]) == ("HARD_STOP", "pending")
+        snapshots_before_terminal_exit = store.db.execute(
+            "SELECT COUNT(*) FROM chain_meme_trader_account_snapshots "
+            "WHERE definition_version=?", (v20,),
+        ).fetchone()[0]
+        await runtime.chain_meme_market_marks_once()
+        terminal_snapshot = store.db.execute(
+            "SELECT open_position_count,closed_position_count FROM "
+            "chain_meme_trader_account_snapshots WHERE definition_version=? "
+            "AND arm_id=? ORDER BY id DESC LIMIT 1",
+            (v20, policy["arm_id"]),
+        ).fetchone()
+        assert store.db.execute(
+            "SELECT status FROM chain_meme_trader_positions WHERE "
+            "definition_version=? AND shadow_cohort_id=?",
+            (v20, cohort_id),
+        ).fetchone()["status"] == "closed"
+        assert store.db.execute(
+            "SELECT COUNT(*) FROM chain_meme_trader_account_snapshots "
+            "WHERE definition_version=?", (v20,),
+        ).fetchone()[0] > snapshots_before_terminal_exit
+        assert (terminal_snapshot["open_position_count"], terminal_snapshot["closed_position_count"]) == (0, 1)
+
+        entry_at = utcnow()
+        fresh = TokenCandidate(
+            "solana", "N" * 32, "Fresh v21", "V21", source="dexscreener",
+        )
+        store.upsert_token(fresh, seen_at=entry_at)
+        snapshot_id = store.add_snapshot(TokenSnapshot(
+            "solana", fresh.address, 1.0, 10_000, 100_000, 250, 2, 1,
+            observed_at=entry_at, ingested_at=entry_at, provider="dexscreener",
+            raw={"pair": {
+                "chainId": "solana", "dexId": "pumpfun", "pairAddress": "pair-v21",
+                "pairCreatedAt": round((entry_at - timedelta(minutes=1)).timestamp() * 1000),
+                "priceUsd": "1.0",
+                "baseToken": {"address": fresh.address},
+                "txns": {"m5": {"buys": 2, "sells": 1}, "h1": {"buys": 2, "sells": 1}},
+                "volume": {"m5": 250.0, "h1": 250.0},
+            }},
+        ))
+        runtime._last_chain_account_snapshot_monotonic = asyncio.get_running_loop().time()
+        await runtime.chain_meme_trader_once()
+        assert store.db.execute(
+            "SELECT COUNT(*) FROM chain_meme_trader_v6_entry_evaluations "
+            "WHERE definition_version=? AND source_snapshot_id=?", (v21, snapshot_id),
+        ).fetchone()[0] == 1
+        assert store.db.execute(
+            "SELECT COUNT(*) FROM chain_meme_trader_v6_entry_evaluations "
+            "WHERE definition_version=? AND source_snapshot_id=?", (v20, snapshot_id),
+        ).fetchone()[0] == 0
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_v21_vault_shadow_keeps_unresolved_pool_retry_until_due(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        config["chain_meme_trader_only_enabled"] = True
+        runtime = Runtime(config, tmp_path)
+        pool = "P" * 32
+        candidate = {
+            "observer_version": Store.CHAIN_MEME_V21_VAULT_SHADOW_VERSION,
+            "pool_address": pool,
+            "token_id": "solana:" + "M" * 32,
+            "base_mint": "M" * 32,
+            "first_source_cohort_id": 1,
+            "entry_snapshot_id": 1,
+            "opened_at": iso(utcnow()),
+        }
+        calls = []
+
+        async def resolve(candidates):
+            calls.append([item["pool_address"] for item in candidates])
+            return [{**item, "status": "UNKNOWN_RPC", "reason": "fixture"} for item in candidates]
+
+        runtime.store.chain_meme_v21_vault_shadow_candidates = lambda: [candidate]
+        runtime.held_accounts.resolve_pumpswap_shadow_pools = resolve
+        await runtime.chain_meme_v21_vault_shadow_enroll_once()
+        retry_at = runtime._chain_meme_v21_vault_retry_after[pool]
+        await runtime.chain_meme_v21_vault_shadow_enroll_once()
+        assert calls == [[pool], []]
+        assert runtime._chain_meme_v21_vault_retry_after[pool] == retry_at
+
+        runtime._chain_meme_v21_vault_retry_after[pool] = 0.0
+        await runtime.chain_meme_v21_vault_shadow_enroll_once()
+        assert calls == [[pool], [], [pool]]
         await runtime.close()
 
     asyncio.run(scenario())
