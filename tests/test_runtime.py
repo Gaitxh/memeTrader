@@ -2328,6 +2328,7 @@ def test_active_market_mark_batches_are_bounded_and_one_failure_does_not_stop_ch
         runtime._paper_quote_rejections = lambda *args: []
         calls = []
         applied = []
+        heartbeats = []
         inflight = 0
         max_inflight = 0
 
@@ -2339,7 +2340,7 @@ def test_active_market_mark_batches_are_bounded_and_one_failure_does_not_stop_ch
 
             @staticmethod
             def heartbeat(*args, **kwargs):
-                return None
+                heartbeats.append((args, kwargs))
 
         async def batch_quote(
             chain, addresses, *, fresh=False, high_priority=False,
@@ -2388,6 +2389,8 @@ def test_active_market_mark_batches_are_bounded_and_one_failure_does_not_stop_ch
         assert refreshed == 91
         assert len(applied) == 121
         assert sum(item["kind"] == "failure" for item in applied) == 30
+        assert any(kwargs.get("error") == "ReadTimeout" for _, kwargs in heartbeats)
+        assert any(kwargs.get("item") is True for _, kwargs in heartbeats)
 
     asyncio.run(scenario())
 

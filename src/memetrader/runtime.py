@@ -5701,6 +5701,9 @@ class Runtime:
             refreshed_count = self.store.apply_chain_meme_trader_market_mark_batch(
                 outcomes, recorded_at=received_at,
             )
+            self.store.heartbeat(
+                heartbeat_name, item=refreshed_count > 0,
+            )
             if observe_flat_breakout:
                 self.store.observe_flat_compression_breakout_market_batch(
                     outcomes, recorded_at=received_at,
