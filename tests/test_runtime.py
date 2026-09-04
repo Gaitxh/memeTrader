@@ -164,6 +164,12 @@ def test_chain_only_v22_keeps_v20_positions_marked_without_new_v20_entries(tmp_p
 
         runtime.dex.batch_quote_fresh = batch_quote
         await runtime.chain_meme_market_marks_once()
+        assert store.db.execute(
+            "SELECT COUNT(*) FROM chain_meme_trader_marks "
+            "WHERE definition_version=? AND shadow_cohort_id=?",
+            (v20, cohort_id),
+        ).fetchone()[0] == 0
+        await runtime.chain_meme_carried_market_marks_once()
         exit_mark = store.db.execute(
             "SELECT action,status FROM chain_meme_trader_marks "
             "WHERE definition_version=? AND shadow_cohort_id=?",
@@ -174,7 +180,7 @@ def test_chain_only_v22_keeps_v20_positions_marked_without_new_v20_entries(tmp_p
             "SELECT COUNT(*) FROM chain_meme_trader_account_snapshots "
             "WHERE definition_version=?", (v20,),
         ).fetchone()[0]
-        await runtime.chain_meme_market_marks_once()
+        await runtime.chain_meme_carried_market_marks_once()
         terminal_snapshot = store.db.execute(
             "SELECT open_position_count,closed_position_count FROM "
             "chain_meme_trader_account_snapshots WHERE definition_version=? "

@@ -1350,7 +1350,11 @@ class Runtime:
             feed_proxy_url=str(source_config.get("rss_proxy_url") or ""),
             conditional_store=self.store,
         )
-        self.market_http = HttpClient()
+        # DexScreener documents 300 requests/minute for token batches.  A
+        # 250ms start interval caps this process at 240/minute while allowing
+        # held-token marks to refresh materially faster than the generic
+        # 600ms public-endpoint default.
+        self.market_http = HttpClient(min_host_interval=0.25)
         self.jupiter_http = HttpClient(
             min_host_interval=1.05 if jupiter_api_key else 2.1
         )
@@ -5560,26 +5564,10 @@ class Runtime:
             )
         self.store.heartbeat("chain-meme-trader", item=True)
 
-    async def chain_meme_market_marks_once(self) -> None:
-        """Refresh held tokens every two seconds with one fresh DEX batch per 30 mints."""
-        carry_versions = [
-            version
-            for version in (
-                self.store.CHAIN_MEME_TRADER_V21_VERSION,
-                self.store.CHAIN_MEME_TRADER_V20_VERSION,
-            )
-            if (
-                self.chain_meme_trader_only
-                and version != self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION
-                and self.store.chain_meme_trader_has_open_positions(version)
-            )
-        ]
-        marked_versions = [
-            self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION, *carry_versions,
-        ]
-        targets = self.store.chain_meme_trader_market_mark_targets(
-            definition_versions=(marked_versions if self.chain_meme_trader_only else None),
-        )
+    async def _refresh_chain_meme_market_marks(
+        self, targets: list[dict[str, Any]], *, heartbeat_name: str,
+    ) -> int:
+        """Refresh a de-duplicated target set with fresh 30-token DEX batches."""
         refreshed = 0
         targets_by_chain: dict[str, list[dict[str, Any]]] = {}
         for item in targets:
@@ -5594,7 +5582,7 @@ class Runtime:
                     )
                 except Exception as exc:
                     self.store.heartbeat(
-                        "chain-meme-market-marks", error=type(exc).__name__,
+                        heartbeat_name, error=type(exc).__name__,
                     )
                     break
                 received_at = utcnow()
@@ -5644,8 +5632,61 @@ class Runtime:
                 refreshed += self.store.apply_chain_meme_trader_market_mark_batch(
                     outcomes, recorded_at=received_at,
                 )
+        return refreshed
+
+    async def chain_meme_market_marks_once(self) -> None:
+        """Refresh current-version held tokens on the high-priority DEX lane."""
+        active_version = self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        target_versions = [active_version]
+        if not self.chain_meme_trader_only:
+            target_versions.extend([
+                self.store.CHAIN_MEME_TRADER_V13_VERSION,
+                self.store.CHAIN_MEME_TRADER_V11_VERSION,
+            ])
+        targets = self.store.chain_meme_trader_market_mark_targets(
+            definition_versions=target_versions,
+        )
+        refreshed = await self._refresh_chain_meme_market_marks(
+            targets, heartbeat_name="chain-meme-market-marks",
+        )
         self.store.evaluate_chain_meme_trader_market_marks(
-            definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
+            definition_version=active_version,
+        )
+
+        if not self.chain_meme_trader_only:
+            self.store.evaluate_chain_meme_trader_market_marks(
+                definition_version=self.store.CHAIN_MEME_TRADER_V11_VERSION,
+            )
+        self.store.heartbeat("chain-meme-market-marks", item=refreshed > 0)
+
+    async def chain_meme_carried_market_marks_once(self) -> None:
+        """Maintain older open positions without slowing the active strategy lane."""
+        carry_versions = [
+            version
+            for version in (
+                self.store.CHAIN_MEME_TRADER_V21_VERSION,
+                self.store.CHAIN_MEME_TRADER_V20_VERSION,
+            )
+            if (
+                version != self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION
+                and self.store.chain_meme_trader_has_open_positions(version)
+            )
+        ]
+        if not carry_versions:
+            self.store.heartbeat("chain-meme-carried-market-marks", item=False)
+            return
+        active_targets = self.store.chain_meme_trader_market_mark_targets(
+            definition_versions=[self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION],
+        )
+        active_token_ids = {str(item["token_id"]) for item in active_targets}
+        targets = [
+            item for item in self.store.chain_meme_trader_market_mark_targets(
+                definition_versions=carry_versions,
+            )
+            if str(item["token_id"]) not in active_token_ids
+        ]
+        refreshed = await self._refresh_chain_meme_market_marks(
+            targets, heartbeat_name="chain-meme-carried-market-marks",
         )
         for version in carry_versions:
             self.store.evaluate_chain_meme_trader_market_marks(
@@ -5657,11 +5698,9 @@ class Runtime:
                 self.store.record_chain_meme_trader_account_snapshots(
                     definition_version=version,
                 )
-        if not self.chain_meme_trader_only:
-            self.store.evaluate_chain_meme_trader_market_marks(
-                definition_version=self.store.CHAIN_MEME_TRADER_V11_VERSION,
-            )
-        self.store.heartbeat("chain-meme-market-marks", item=refreshed > 0)
+        self.store.heartbeat(
+            "chain-meme-carried-market-marks", item=refreshed > 0,
+        )
 
     async def chain_meme_trader_postbuy_research_once(self) -> None:
         """Run one observer-only semantic investigation shared by all v5 strategy arms."""
@@ -6427,10 +6466,17 @@ class Runtime:
                 ),
                 asyncio.create_task(
                     self._periodic(
-                        "chain_meme_market_marks", 2,
+                        "chain_meme_market_marks", 1,
                         self.chain_meme_market_marks_once,
                     ),
                     name="chain_meme_market_marks",
+                ),
+                asyncio.create_task(
+                    self._periodic(
+                        "chain_meme_carried_market_marks", 15,
+                        self.chain_meme_carried_market_marks_once,
+                    ),
+                    name="chain_meme_carried_market_marks",
                 ),
                 asyncio.create_task(
                     self._periodic(
@@ -6608,10 +6654,17 @@ class Runtime:
                 ),
                 asyncio.create_task(
                     self._periodic(
-                        "chain_meme_market_marks", 2,
+                        "chain_meme_market_marks", 1,
                         self.chain_meme_market_marks_once,
                     ),
                     name="chain_meme_market_marks",
+                ),
+                asyncio.create_task(
+                    self._periodic(
+                        "chain_meme_carried_market_marks", 15,
+                        self.chain_meme_carried_market_marks_once,
+                    ),
+                    name="chain_meme_carried_market_marks",
                 ),
             ])
         try:
