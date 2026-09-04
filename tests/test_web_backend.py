@@ -191,7 +191,7 @@ def test_chain_meme_trader_api_and_static_page_preserve_forward_contract(tmp_pat
     assert "profit_loss_ratio" in app
     assert "profit_factor" in app
     assert "收益因子" in app
-    assert "实时曲线最大回撤" in app
+    assert "已实现曲线最大回撤" in app
     assert "strategyMetrics" in app
     assert "总资产实时曲线" not in index
     assert "UNKNOWN" in app
@@ -326,8 +326,9 @@ def test_chain_web_profit_factor_and_drawdown_use_effective_results_and_own_curv
     )
     assert account["profit_factor"] == pytest.approx(1.6)
     assert account["profit_factor_status"] == "available"
-    assert account["max_drawdown_usd"] == pytest.approx(9.0)
-    assert account["max_drawdown_fraction"] == pytest.approx(0.75)
+    assert account["max_drawdown_usd"] == pytest.approx(5.0)
+    assert account["max_drawdown_fraction"] == pytest.approx(5.0 / 1008.0)
+    assert account["max_drawdown_basis"] == "realized_terminal_pnl"
 
 
 def test_strategy_universe_refreshes_for_additive_strategy_versions(tmp_path: Path):
@@ -536,6 +537,9 @@ def test_chain_web_reports_distinct_tokens_holding_duration_and_trade_markers(
         20.0 * 0.96 / 1.04 - 20.0
     )
     assert focused["open_positions"][0]["market_is_fresh"] is True
+    assert focused["open_positions"][0]["remaining_quantity_tokens"] == pytest.approx(
+        20.0 / 1.04
+    )
     focused_strategy = next(
         item for item in focused["strategies"]
         if item["arm_id"] == positions[0]["arm_id"]

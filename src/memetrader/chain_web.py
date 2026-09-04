@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import mimetypes
 import shutil
 import sqlite3
@@ -539,7 +540,8 @@ class ChainWebData:
             for row in self._rows(
                 connection,
                 "SELECT p.arm_id,p.shadow_cohort_id,p.token_id,p.status,p.stake_usd,"
-                "p.amount_raw,p.initial_amount_raw,p.entry_signal_price_usd,"
+                "p.amount_raw,p.initial_amount_raw,p.paper_quantity_tokens,"
+                "p.remaining_quantity_tokens,p.entry_signal_price_usd,"
                 "p.entry_execution_price_usd,p.allocated_cost_usd,p.realized_pnl_usd,"
                 "p.opened_at,p.closed_at,m.pair_address,m.price_usd,m.liquidity_usd,"
                 "m.status AS market_status,m.observed_at AS market_observed_at,"
@@ -753,18 +755,30 @@ class ChainWebData:
                     sum(winning_pnls) / abs(sum(losing_pnls))
                     if losing_pnls else None
                 )
-                curve_pnls = [
-                    float(point["total_pnl_usd"])
-                    for point in curve if point.get("total_pnl_usd") is not None
-                ]
-                peak = 0.0
+                # Drawdown is an accounting metric: use every valid terminal
+                # realized result, not the clipped display sparkline.
+                realized_curve = []
+                cumulative_realized = 0.0
+                for value in terminal_pnls:
+                    if not isinstance(value, (int, float)) or not math.isfinite(value):
+                        continue
+                    cumulative_realized += float(value)
+                    realized_curve.append(cumulative_realized)
+                starting_cash = float(
+                    definition.get("starting_cash_usd_each_arm") or 0.0
+                )
+                peak_equity = (
+                    starting_cash if capital_model == "legacy_cash_limited" else 0.0
+                )
+                peak = peak_equity
                 max_drawdown = 0.0
                 max_drawdown_fraction: float | None = None
-                for value in curve_pnls:
-                    peak = max(peak, value)
-                    drawdown = max(0.0, peak - value)
+                for realized in realized_curve:
+                    equity = peak_equity + realized
+                    peak = max(peak, equity)
+                    drawdown = max(0.0, peak - equity)
                     max_drawdown = max(max_drawdown, drawdown)
-                    if peak > 0.0:
+                    if capital_model == "legacy_cash_limited" and peak > 0.0:
                         fraction = drawdown / peak
                         max_drawdown_fraction = max(
                             max_drawdown_fraction or 0.0, fraction,
@@ -793,8 +807,9 @@ class ChainWebData:
                     "expectancy_usd": (
                         sum(terminal_pnls) / len(terminal_pnls) if terminal_pnls else None
                     ),
-                    "max_drawdown_usd": max_drawdown if curve_pnls else None,
+                    "max_drawdown_usd": max_drawdown,
                     "max_drawdown_fraction": max_drawdown_fraction,
+                    "max_drawdown_basis": "realized_terminal_pnl",
                     "tail_return_usd": (
                         sum(sorted(terminal_pnls)[:tail_count]) / tail_count
                         if terminal_pnls else None
@@ -929,6 +944,25 @@ class ChainWebData:
                 holding_seconds = (
                     current - parse_time(row["opened_at"])
                 ).total_seconds()
+                paper_quantity = row.get("paper_quantity_tokens")
+                remaining_quantity = row.get("remaining_quantity_tokens")
+                if paper_quantity is None:
+                    entry_execution_price = float(
+                        row.get("entry_execution_price_usd") or 0.0
+                    )
+                    if entry_execution_price > 0.0:
+                        paper_quantity = (
+                            float(row.get("stake_usd") or 0.0)
+                            / entry_execution_price
+                        )
+                if remaining_quantity is None and paper_quantity is not None:
+                    initial_raw = int(row.get("initial_amount_raw") or 0)
+                    if initial_raw > 0:
+                        remaining_quantity = (
+                            float(paper_quantity)
+                            * int(row.get("amount_raw") or 0)
+                            / initial_raw
+                        )
                 open_positions.append({
                     "arm_id": row["arm_id"],
                     "shadow_cohort_id": row["shadow_cohort_id"],
@@ -941,6 +975,8 @@ class ChainWebData:
                     ),
                     "stake_usd": row["stake_usd"],
                     "amount_raw": row["amount_raw"],
+                    "paper_quantity_tokens": paper_quantity,
+                    "remaining_quantity_tokens": remaining_quantity,
                     "realized_pnl_usd": row["realized_pnl_usd"],
                     "price_usd": row["price_usd"],
                     "liquidity_usd": row["liquidity_usd"],
@@ -2054,6 +2090,7 @@ class ChainWebData:
                 key: position.get(key) for key in (
                     "arm_id", "shadow_cohort_id", "token_id", "opened_at",
                     "holding_seconds", "stake_usd", "realized_pnl_usd",
+                    "paper_quantity_tokens", "remaining_quantity_tokens",
                     "indicative_value_usd", "indicative_unrealized_pnl_usd",
                     "indicative_price_usd", "indicative_liquidity_usd",
                     "indicative_market_status", "indicative_mark_age_seconds",

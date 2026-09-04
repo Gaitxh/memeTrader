@@ -31343,9 +31343,11 @@ class Store:
             current_positions = [row for row in position_rows if str(row["status"]) != "ineligible"]
             corrected_cohorts = set(arm_corrections)
             contaminated_cohorts = set(arm_contaminations)
+            formal_corrected_cohorts = corrected_cohorts - contaminated_cohorts
             unresolved_position_count = sum(
-                1 for row in arm_corrections.values()
-                if str(row["replacement_outcome"]) == "UNRESOLVED"
+                1 for cohort_id, row in arm_corrections.items()
+                if cohort_id in formal_corrected_cohorts
+                and str(row["replacement_outcome"]) == "UNRESOLVED"
             )
             open_position_count = sum(
                 1 for row in current_positions if str(row["status"]) == "open"
@@ -31356,10 +31358,11 @@ class Store:
             unique_held_token_ids.update(
                 str(row["token_id"])
                 for row in current_positions
-                if (
+                if int(row["shadow_cohort_id"]) not in contaminated_cohorts
+                and (
                     str(row["status"]) == "open"
                     and int(row["shadow_cohort_id"]) not in corrected_cohorts
-                    or int(row["shadow_cohort_id"]) in corrected_cohorts
+                    or int(row["shadow_cohort_id"]) in formal_corrected_cohorts
                     and str(arm_corrections[int(row["shadow_cohort_id"])]["replacement_outcome"])
                     == "UNRESOLVED"
                 )
@@ -31369,16 +31372,18 @@ class Store:
                 and int(row["shadow_cohort_id"]) not in corrected_cohorts
                 and int(row["shadow_cohort_id"]) not in contaminated_cohorts
             ) + sum(
-                1 for row in arm_corrections.values()
-                if str(row["replacement_outcome"]) == "SELL"
+                1 for cohort_id, row in arm_corrections.items()
+                if cohort_id in formal_corrected_cohorts
+                and str(row["replacement_outcome"]) == "SELL"
             )
             written_off_position_count = sum(
                 1 for row in current_positions if str(row["status"]) == "written_off"
                 and int(row["shadow_cohort_id"]) not in corrected_cohorts
                 and int(row["shadow_cohort_id"]) not in contaminated_cohorts
             ) + sum(
-                1 for row in arm_corrections.values()
-                if str(row["replacement_outcome"]) == "WRITEOFF"
+                1 for cohort_id, row in arm_corrections.items()
+                if cohort_id in formal_corrected_cohorts
+                and str(row["replacement_outcome"]) == "WRITEOFF"
             )
             raw_realized_pnl = sum(
                 float(row["realized_pnl_usd"] or 0.0) for row in current_positions

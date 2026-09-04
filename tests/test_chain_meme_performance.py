@@ -277,6 +277,98 @@ def test_market_account_snapshot_sql_aggregation_preserves_effective_results(
     store.close()
 
 
+def test_summary_excludes_contaminated_corrections_from_formal_counts(
+    tmp_path: Path,
+):
+    store, definition, policy = _open_v22(
+        tmp_path, "summary-contaminated-corrections.sqlite3"
+    )
+    store.activate_chain_meme_trader_v22()
+    version = definition["version"]
+    arm_id = policy["arm_id"]
+    now = utcnow()
+    held_token, _, _, _ = _insert_position(
+        store, version=version, arm_id=arm_id,
+        opened_at=now - timedelta(seconds=2),
+    )
+    corrected = []
+    for offset, outcome in enumerate(("UNRESOLVED", "SELL", "WRITEOFF"), start=3):
+        token, cohort_id, buy_trade_id, sell_trade_id = _insert_position(
+            store, version=version, arm_id=arm_id,
+            opened_at=now - timedelta(seconds=offset), status="closed",
+            sell_gross_usd=30.0,
+        )
+        corrected.append((token, cohort_id, buy_trade_id, sell_trade_id, outcome))
+    with store.db:
+        for index, (token, cohort_id, buy_trade_id, sell_trade_id, outcome) in enumerate(
+            corrected, start=1,
+        ):
+            replacement_gross = 25.0 if outcome == "SELL" else None
+            cash_adjustment = -5.0 if outcome == "SELL" else -30.0
+            realized_adjustment = -5.0 if outcome == "SELL" else (
+                -10.0 if outcome == "UNRESOLVED" else -30.0
+            )
+            store.db.execute(
+                "INSERT INTO chain_meme_trader_market_fill_corrections("
+                "source_trade_id,definition_version,arm_id,shadow_cohort_id,token_id,"
+                "source_fill_id,source_mark_id,original_gross_usd,post_liquidity_usd,"
+                "max_market_gross_usd,replacement_outcome,replacement_gross_usd,"
+                "cash_adjustment_usd,realized_adjustment_usd,replacement_observed_at,"
+                "reason,evidence_json,recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    sell_trade_id, version, arm_id, cohort_id, token.token_id,
+                    index, index, 30.0, 100_000.0, 25.0, outcome,
+                    replacement_gross, cash_adjustment, realized_adjustment,
+                    iso(now), "fixture correction", "{}", iso(now),
+                ),
+            )
+            store.db.execute(
+                "INSERT INTO chain_meme_trader_accounting_contaminations("
+                "definition_version,arm_id,shadow_cohort_id,source_buy_trade_id,"
+                "reason,evidence_json,recorded_at) VALUES(?,?,?,?,?,'{}',?)",
+                (
+                    version, arm_id, cohort_id, buy_trade_id,
+                    "fixture contamination", iso(now),
+                ),
+            )
+
+    summary = Store.chain_meme_trader_summary_from_connection(
+        store.db, arm_id=arm_id,
+    )
+    strategy = summary["strategies"][0]
+    account = strategy["account"]
+    assert account["open_position_count"] == 1
+    assert account["unresolved_corrected_position_count"] == 0
+    assert account["closed_position_count"] == 0
+    assert account["written_off_position_count"] == 0
+    assert account["terminal_position_count"] == 0
+    assert account["win_count"] == 0
+    assert account["win_rate_fraction"] is None
+    assert account["realized_pnl_usd"] == pytest.approx(0.0)
+    assert account["market_fill_correction_count"] == 3
+    assert account["accounting_contaminated_position_count"] == 3
+    assert summary["open_position_count"] == 1
+    assert summary["unique_held_token_count"] == 1
+    assert held_token.token_id in {
+        position["token_id"] for position in strategy["positions"]
+        if position["status"] == "open"
+        and position.get("formal_metrics_eligible") is not False
+    }
+    contaminated_positions = [
+        position for position in strategy["positions"]
+        if position.get("accounting_status") == "ACCOUNTING_CONTAMINATED"
+    ]
+    assert len(contaminated_positions) == 3
+    assert all(
+        position["formal_metrics_eligible"] is False
+        for position in contaminated_positions
+    )
+    assert {position["status"] for position in contaminated_positions} == {
+        "open", "closed", "written_off",
+    }
+    store.close()
+
+
 def test_current_strategy_queries_use_targeted_indexes(tmp_path: Path):
     store = Store(tmp_path / "query-plan.sqlite3", initial_cash_usd=1000)
     decision_plan = " ".join(
