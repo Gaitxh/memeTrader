@@ -29,6 +29,7 @@ class ChainWebData:
     LIVE_SPARKLINE_POINTS = 12
     LIVE_DETAIL_CURVE_POINTS = 300
     LIVE_OPEN_POSITION_LIMIT = 200
+    LIVE_CACHE_SECONDS = 6.0
     STATE_CACHE_MAX_ENTRIES = 16
 
     def __init__(self, config_path: str | Path):
@@ -319,12 +320,12 @@ class ChainWebData:
         return [dict(row) for row in connection.execute(sql, values).fetchall()]
 
     def state(self, *, compact: bool = False, arm_id: str | None = None) -> dict[str, Any]:
-        ttl = 1.0 if compact else 10.0
+        ttl = self.LIVE_CACHE_SECONDS if compact else 10.0
         now = time.monotonic()
         cache_key = (compact, str(arm_id or "").strip() or None)
         with self._cache_lock:
             for key, (created_at, _) in list(self._state_cache.items()):
-                key_ttl = 1.0 if key[0] else 10.0
+                key_ttl = self.LIVE_CACHE_SECONDS if key[0] else 10.0
                 if now - created_at > key_ttl:
                     del self._state_cache[key]
             cached = self._state_cache.get(cache_key)
@@ -856,7 +857,8 @@ class ChainWebData:
             open_rows = self._rows(
                 connection,
                 "SELECT p.arm_id,p.shadow_cohort_id,p.token_id,p.stake_usd,"
-                "p.amount_raw,p.initial_amount_raw,p.entry_signal_price_usd,"
+                "p.amount_raw,p.initial_amount_raw,p.paper_quantity_tokens,"
+                "p.remaining_quantity_tokens,p.entry_signal_price_usd,"
                 "p.entry_execution_price_usd,"
                 "p.allocated_cost_usd,p.realized_pnl_usd,"
                 "p.status,p.opened_at,p.closed_at,p.close_reason,p.last_evaluated_at,"
