@@ -143,6 +143,33 @@ def test_http_client_ttl_cache_prunes_expired_entries_and_bounds_size(monkeypatc
     run(scenario())
 
 
+def test_http_client_spaces_request_starts_without_serializing_responses():
+    starts = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        starts.append(asyncio.get_running_loop().time())
+        await asyncio.sleep(0.15)
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    async def scenario():
+        http = HttpClient(
+            transport=httpx.MockTransport(handler), min_host_interval=0.03,
+        )
+        try:
+            started = asyncio.get_running_loop().time()
+            await asyncio.gather(
+                http.get("https://public.example/one"),
+                http.get("https://public.example/two"),
+            )
+            return asyncio.get_running_loop().time() - started
+        finally:
+            await http.close()
+
+    elapsed = run(scenario())
+    assert starts[1] - starts[0] >= 0.02
+    assert elapsed < 0.25
+
+
 def test_runtime_config_rejects_private_static_feed_and_invalid_limits(tmp_path: Path):
     config = initial_config()
     config["sources"]["rss"] = [{"name": "private", "url": "http://10.0.0.2/feed"}]

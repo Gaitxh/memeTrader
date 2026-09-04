@@ -1390,7 +1390,9 @@ class Runtime:
         self._chain_meme_normal_slot = 0
         self._wsol_usdc_conversion: dict[str, Any] | None = None
         self._wsol_usdc_conversion_at = 0.0
-        self._dex_quote_lock = asyncio.Lock()
+        self._dex_quote_lock = asyncio.Semaphore(2)
+        self._chain_meme_active_idle_event = asyncio.Event()
+        self._chain_meme_active_idle_event.set()
         self.events = EventEngine(
             self.store,
             similarity_threshold=float((config.get("events") or {}).get("similarity", 0.28)),
@@ -1441,9 +1443,19 @@ class Runtime:
     def _dex_quote_low_priority_available(self) -> bool:
         loop = asyncio.get_running_loop()
         return (
+            self._chain_meme_active_idle().is_set()
+            and
             not self._dex_quote_lock.locked()
             and loop.time() >= self._dex_quote_backoff_until
         )
+
+    def _chain_meme_active_idle(self) -> asyncio.Event:
+        idle = getattr(self, "_chain_meme_active_idle_event", None)
+        if idle is None:
+            idle = asyncio.Event()
+            idle.set()
+            self._chain_meme_active_idle_event = idle
+        return idle
 
     async def _dex_batch_quote(
         self,
@@ -1451,8 +1463,11 @@ class Runtime:
         addresses: list[str] | tuple[str, ...],
         *,
         fresh: bool = False,
+        high_priority: bool = False,
     ) -> dict[str, tuple[TokenCandidate, TokenSnapshot]]:
         """Serialize Dex quote batches and back off across lanes after transport failure."""
+        if not high_priority:
+            await self._chain_meme_active_idle().wait()
         async with self._dex_quote_lock:
             loop = asyncio.get_running_loop()
             wait = self._dex_quote_backoff_until - loop.time()
@@ -2188,6 +2203,7 @@ class Runtime:
             tuple[int, TokenCandidate, TokenSnapshot, float, dict[str, Any]]
         ] = []
         for surface in self.dex.DISCOVERY_SURFACES:
+            await self._chain_meme_active_idle().wait()
             source = f"dexscreener:{surface}"
             round_id = self.store.start_token_discovery_round(
                 provider="dexscreener",
@@ -5572,98 +5588,119 @@ class Runtime:
 
     async def _refresh_chain_meme_market_marks(
         self, targets: list[dict[str, Any]], *, heartbeat_name: str,
+        high_priority: bool = False,
     ) -> int:
         """Refresh a de-duplicated target set with fresh 30-token DEX batches."""
-        refreshed = 0
         targets_by_chain: dict[str, list[dict[str, Any]]] = {}
         for item in targets:
             targets_by_chain.setdefault(str(item["chain"]).lower(), []).append(item)
-        for chain, chain_targets in targets_by_chain.items():
-            for start in range(0, len(chain_targets), 30):
-                chunk = chain_targets[start:start + 30]
-                try:
-                    quoted = await self._dex_batch_quote(
-                        chain, [str(item["address"]) for item in chunk],
-                        fresh=True,
-                    )
-                except Exception as exc:
-                    self.store.heartbeat(
-                        heartbeat_name, error=type(exc).__name__,
-                    )
-                    break
-                received_at = utcnow()
-                outcomes = []
-                for item in chunk:
-                    result = quoted.get(str(item["token_id"]))
-                    if result is None:
-                        outcomes.append({
-                            "kind": "missing",
-                            "token_id": str(item["token_id"]),
-                            "chain": str(item["chain"]),
-                            "address": str(item["address"]),
-                        })
-                        continue
-                    token, snapshot = result
-                    raw = snapshot.raw if isinstance(snapshot.raw, dict) else {}
-                    pair = raw.get("pair") if isinstance(raw.get("pair"), dict) else raw
-                    pair_address = str(pair.get("pairAddress") or "").strip()
-                    if (
-                        not pair_address
-                        or float(snapshot.price_usd or 0.0) <= 0.0
-                        or (
-                            snapshot.liquidity_usd is not None
-                            and float(snapshot.liquidity_usd) <= 0.0
-                        )
-                    ):
-                        outcomes.append({
-                            "kind": "missing",
-                            "token_id": str(item["token_id"]),
-                            "chain": str(item["chain"]),
-                            "address": str(item["address"]),
-                        })
-                        continue
-                    rejections = self._paper_quote_rejections(
-                        str(item["token_id"]), token, snapshot, received_at,
-                    )
-                    if rejections:
-                        outcomes.append({
-                            "kind": "failure",
-                            "token_id": str(item["token_id"]),
-                            "failure_kind": "DATA_REJECTED:" + ",".join(rejections),
-                        })
-                        continue
-                    outcomes.append({
-                        "kind": "visible", "token": token, "snapshot": snapshot,
-                    })
-                refreshed += self.store.apply_chain_meme_trader_market_mark_batch(
-                    outcomes, recorded_at=received_at,
+        batches = [
+            (chain, chain_targets[start:start + 30])
+            for chain, chain_targets in targets_by_chain.items()
+            for start in range(0, len(chain_targets), 30)
+        ]
+
+        async def refresh_batch(
+            chain: str, chunk: list[dict[str, Any]],
+        ) -> int:
+            if not high_priority:
+                await self._chain_meme_active_idle().wait()
+            try:
+                quoted = await self._dex_batch_quote(
+                    chain, [str(item["address"]) for item in chunk],
+                    fresh=True, high_priority=high_priority,
                 )
+            except Exception as exc:
+                self.store.heartbeat(
+                    heartbeat_name, error=type(exc).__name__,
+                )
+                return 0
+            received_at = utcnow()
+            outcomes = []
+            for item in chunk:
+                result = quoted.get(str(item["token_id"]))
+                if result is None:
+                    outcomes.append({
+                        "kind": "missing",
+                        "token_id": str(item["token_id"]),
+                        "chain": str(item["chain"]),
+                        "address": str(item["address"]),
+                    })
+                    continue
+                token, snapshot = result
+                raw = snapshot.raw if isinstance(snapshot.raw, dict) else {}
+                pair = raw.get("pair") if isinstance(raw.get("pair"), dict) else raw
+                pair_address = str(pair.get("pairAddress") or "").strip()
+                if (
+                    not pair_address
+                    or float(snapshot.price_usd or 0.0) <= 0.0
+                    or (
+                        snapshot.liquidity_usd is not None
+                        and float(snapshot.liquidity_usd) <= 0.0
+                    )
+                ):
+                    outcomes.append({
+                        "kind": "missing",
+                        "token_id": str(item["token_id"]),
+                        "chain": str(item["chain"]),
+                        "address": str(item["address"]),
+                    })
+                    continue
+                rejections = self._paper_quote_rejections(
+                    str(item["token_id"]), token, snapshot, received_at,
+                )
+                if rejections:
+                    outcomes.append({
+                        "kind": "failure",
+                        "token_id": str(item["token_id"]),
+                        "failure_kind": "DATA_REJECTED:" + ",".join(rejections),
+                    })
+                    continue
+                outcomes.append({
+                    "kind": "visible", "token": token, "snapshot": snapshot,
+                })
+            return self.store.apply_chain_meme_trader_market_mark_batch(
+                outcomes, recorded_at=received_at,
+            )
+
+        refreshed = 0
+        for start in range(0, len(batches), 2):
+            refreshed += sum(await asyncio.gather(*(
+                refresh_batch(chain, chunk)
+                for chain, chunk in batches[start:start + 2]
+            )))
         return refreshed
 
     async def chain_meme_market_marks_once(self) -> None:
         """Refresh current-version held tokens on the high-priority DEX lane."""
-        active_version = self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION
-        target_versions = [active_version]
-        if not self.chain_meme_trader_only:
-            target_versions.extend([
-                self.store.CHAIN_MEME_TRADER_V13_VERSION,
-                self.store.CHAIN_MEME_TRADER_V11_VERSION,
-            ])
-        targets = self.store.chain_meme_trader_market_mark_targets(
-            definition_versions=target_versions,
-        )
-        refreshed = await self._refresh_chain_meme_market_marks(
-            targets, heartbeat_name="chain-meme-market-marks",
-        )
-        self.store.evaluate_chain_meme_trader_market_marks(
-            definition_version=active_version,
-        )
-
-        if not self.chain_meme_trader_only:
-            self.store.evaluate_chain_meme_trader_market_marks(
-                definition_version=self.store.CHAIN_MEME_TRADER_V11_VERSION,
+        idle = self._chain_meme_active_idle()
+        idle.clear()
+        try:
+            active_version = self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION
+            target_versions = [active_version]
+            if not self.chain_meme_trader_only:
+                target_versions.extend([
+                    self.store.CHAIN_MEME_TRADER_V13_VERSION,
+                    self.store.CHAIN_MEME_TRADER_V11_VERSION,
+                ])
+            targets = self.store.chain_meme_trader_market_mark_targets(
+                definition_versions=target_versions,
             )
-        self.store.heartbeat("chain-meme-market-marks", item=refreshed > 0)
+            refreshed = await self._refresh_chain_meme_market_marks(
+                targets, heartbeat_name="chain-meme-market-marks",
+                high_priority=True,
+            )
+            self.store.evaluate_chain_meme_trader_market_marks(
+                definition_version=active_version,
+            )
+
+            if not self.chain_meme_trader_only:
+                self.store.evaluate_chain_meme_trader_market_marks(
+                    definition_version=self.store.CHAIN_MEME_TRADER_V11_VERSION,
+                )
+            self.store.heartbeat("chain-meme-market-marks", item=refreshed > 0)
+        finally:
+            idle.set()
 
     async def chain_meme_carried_market_marks_once(self) -> None:
         """Maintain older open positions without slowing the active strategy lane."""

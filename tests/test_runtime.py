@@ -2144,8 +2144,11 @@ def test_market_marks_batch_addresses_by_chain_before_quoting():
             def heartbeat(*args, **kwargs):
                 return None
 
-        async def batch_quote(chain, addresses, *, fresh=False):
+        async def batch_quote(
+            chain, addresses, *, fresh=False, high_priority=False,
+        ):
             calls.append((chain, list(addresses), fresh))
+            assert high_priority is True
             observed_at = utcnow()
             return {
                 f"{chain}:{address}": (
@@ -2170,6 +2173,115 @@ def test_market_marks_batch_addresses_by_chain_before_quoting():
             ("solana", ["S1"], True),
         ]
         assert len(applied) == 3
+
+    asyncio.run(scenario())
+
+
+def test_active_market_mark_batches_are_bounded_and_one_failure_does_not_stop_chain():
+    async def scenario():
+        runtime = Runtime.__new__(Runtime)
+        runtime._chain_meme_active_idle_event = asyncio.Event()
+        runtime._chain_meme_active_idle_event.set()
+        runtime._paper_quote_rejections = lambda *args: []
+        calls = []
+        applied = []
+        inflight = 0
+        max_inflight = 0
+
+        class FakeStore:
+            @staticmethod
+            def apply_chain_meme_trader_market_mark_batch(outcomes, recorded_at):
+                applied.extend(outcomes)
+                return len(outcomes)
+
+            @staticmethod
+            def heartbeat(*args, **kwargs):
+                return None
+
+        async def batch_quote(
+            chain, addresses, *, fresh=False, high_priority=False,
+        ):
+            nonlocal inflight, max_inflight
+            calls.append(list(addresses))
+            assert fresh is True
+            assert high_priority is True
+            inflight += 1
+            max_inflight = max(max_inflight, inflight)
+            try:
+                await asyncio.sleep(0.02)
+                if addresses[0] == "S30":
+                    raise httpx.ReadTimeout("one failed batch")
+                observed_at = utcnow()
+                return {
+                    f"solana:{address}": (
+                        TokenCandidate("solana", address, address),
+                        TokenSnapshot(
+                            "solana", address, 1.0, 10_000, 20_000, 10, 1, 1,
+                            observed_at=observed_at, ingested_at=observed_at,
+                            provider="dexscreener",
+                            raw={"pair": {"pairAddress": f"pair-{address}"}},
+                        ),
+                    )
+                    for address in addresses
+                }
+            finally:
+                inflight -= 1
+
+        runtime.store = FakeStore()
+        runtime._dex_batch_quote = batch_quote
+        targets = [
+            {
+                "token_id": f"solana:S{index}",
+                "chain": "solana",
+                "address": f"S{index}",
+            }
+            for index in range(61)
+        ]
+        refreshed = await runtime._refresh_chain_meme_market_marks(
+            targets, heartbeat_name="marks", high_priority=True,
+        )
+        assert len(calls) == 3
+        assert max_inflight == 2
+        assert refreshed == 31
+        assert len(applied) == 31
+
+    asyncio.run(scenario())
+
+
+def test_carried_market_mark_batch_waits_until_active_lane_is_idle():
+    async def scenario():
+        runtime = Runtime.__new__(Runtime)
+        runtime._chain_meme_active_idle_event = asyncio.Event()
+        runtime._paper_quote_rejections = lambda *args: []
+        started = asyncio.Event()
+
+        class FakeStore:
+            @staticmethod
+            def apply_chain_meme_trader_market_mark_batch(outcomes, recorded_at):
+                return len(outcomes)
+
+            @staticmethod
+            def heartbeat(*args, **kwargs):
+                return None
+
+        async def batch_quote(
+            chain, addresses, *, fresh=False, high_priority=False,
+        ):
+            assert high_priority is False
+            started.set()
+            return {}
+
+        runtime.store = FakeStore()
+        runtime._dex_batch_quote = batch_quote
+        task = asyncio.create_task(runtime._refresh_chain_meme_market_marks(
+            [{"token_id": "solana:S1", "chain": "solana", "address": "S1"}],
+            heartbeat_name="carried", high_priority=False,
+        ))
+        await asyncio.sleep(0)
+        assert not started.is_set()
+        runtime._chain_meme_active_idle_event.set()
+        await task
+        assert started.is_set()
 
     asyncio.run(scenario())
 

@@ -1156,6 +1156,21 @@ class HttpClient:
         await self.client.aclose()
         await self.feed_client.aclose()
 
+    async def _reserve_host_request_start(
+        self, host: str, *, not_before: float = 0.0,
+    ) -> None:
+        """Space request starts without serializing network response time."""
+        async with self._locks[host]:
+            now = time.monotonic()
+            wait = max(
+                0.0,
+                self.min_host_interval - (now - self._last[host]),
+                float(not_before) - now,
+            )
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._last[host] = time.monotonic()
+
     async def get(self, url: str, *, params: dict[str, Any] | None = None, ttl: float = 0, headers: dict[str, str] | None = None) -> httpx.Response:
         key = url + "?" + urllib.parse.urlencode(sorted((params or {}).items()), doseq=True)
         now = time.monotonic()
@@ -1168,20 +1183,14 @@ class HttpClient:
             response = httpx.Response(200, request=httpx.Request("GET", url), json=cached[1])
             return response
         host = urllib.parse.urlparse(url).netloc.lower()
-        async with self._locks[host]:
-            wait = self.min_host_interval - (time.monotonic() - self._last[host])
-            if wait > 0:
-                await asyncio.sleep(wait)
-            # Rate limits are defined between request starts.  Recording the
-            # timestamp after the response added network latency to every
-            # interval and made a nominal 0.5 RPS client substantially slower.
-            self._last[host] = time.monotonic()
+        await self._reserve_host_request_start(host)
+        response = await self.client.get(url, params=params, headers=headers)
+        if response.status_code == 429:
+            retry = min(15.0, float(response.headers.get("Retry-After", "2") or 2))
+            await self._reserve_host_request_start(
+                host, not_before=time.monotonic() + retry,
+            )
             response = await self.client.get(url, params=params, headers=headers)
-            if response.status_code == 429:
-                retry = min(15.0, float(response.headers.get("Retry-After", "2") or 2))
-                await asyncio.sleep(retry)
-                self._last[host] = time.monotonic()
-                response = await self.client.get(url, params=params, headers=headers)
         response.raise_for_status()
         if ttl:
             try:
