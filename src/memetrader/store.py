@@ -17690,6 +17690,32 @@ class Store:
                     "INSERT INTO source_health(source,last_ok_at,last_item_at,last_error_at,last_error) VALUES(?,?,?,?,?)",
                     (source, None if error else now, now if item else None, now if error else None, error),
                 )
+            if not error:
+                transient_prefixes = (
+                    "ConnectError", "ConnectTimeout", "ConnectionClosedError",
+                    "NetworkError", "PoolTimeout", "ProxyError", "ReadError",
+                    "ReadTimeout", "RemoteProtocolError", "TimeoutError",
+                    "WriteTimeout",
+                )
+                recovered = self.db.execute(
+                    "SELECT id,error_type,message_safe FROM system_error_cases "
+                    "WHERE area='runtime' AND component=? AND status='new'",
+                    (source,),
+                ).fetchall()
+                for case in recovered:
+                    error_type = str(case["error_type"] or "")
+                    message = str(case["message_safe"] or "")
+                    is_transient = error_type.startswith(transient_prefixes) or (
+                        error_type == "RuntimeError"
+                        and message.startswith("held_account_subscription_rejected")
+                    )
+                    if is_transient:
+                        self.update_system_error_case_from_connection(
+                            self.db, int(case["id"]), status="fixed",
+                            note="数据源后续成功，瞬时传输错误已自动恢复。",
+                            evidence_safe=f"source={source}; recovered_at={now}",
+                            actor="system",
+                        )
             if error:
                 debounce_key = f"{source}:{error}"
                 previous = self._last_supervised_error_record_at.get(debounce_key)

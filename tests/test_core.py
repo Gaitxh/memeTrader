@@ -7957,6 +7957,41 @@ def test_system_errors_aggregate_status_updates_and_reopen(tmp_path: Path):
     store.close()
 
 
+def test_successful_source_heartbeat_closes_only_recovered_transport_errors(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "system-errors-recovery.sqlite3", initial_cash_usd=1000)
+    source = "pumpportal:metadata"
+    transient_id = store.record_system_error(
+        area="runtime", component=source,
+        error_type="RemoteProtocolError:ipfs.io",
+        message_safe="RemoteProtocolError; attempts=2", severity="medium",
+    )
+    persistent_id = store.record_system_error(
+        area="runtime", component=source, error_type="SchemaError",
+        message_safe="invalid provider payload", severity="medium",
+    )
+
+    store.heartbeat(source, item=True)
+
+    statuses = {
+        int(row["id"]): str(row["status"])
+        for row in store.db.execute(
+            "SELECT id,status FROM system_error_cases WHERE id IN (?,?)",
+            (transient_id, persistent_id),
+        )
+    }
+    assert statuses == {transient_id: "fixed", persistent_id: "new"}
+    report = store.db.execute(
+        "SELECT action,actor,evidence_safe FROM system_error_resolution_reports "
+        "WHERE case_id=? ORDER BY id DESC LIMIT 1",
+        (transient_id,),
+    ).fetchone()
+    assert (report["action"], report["actor"]) == ("fixed", "system")
+    assert f"source={source}" in report["evidence_safe"]
+    store.close()
+
+
 def _seed_chain_market_position(
     store: Store,
     *,
