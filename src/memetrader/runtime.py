@@ -139,6 +139,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
             },
         ],
         "gecko_networks": ["solana"],
+        "multichain_meme_data": {
+            "chains": ["solana", "bsc", "robinhood"],
+            "interval_seconds": 90,
+        },
         "dexscreener_discovery": {
             "enabled": True,
             "chains": ["solana"],
@@ -597,6 +601,30 @@ def load_config(path: str | Path) -> tuple[dict[str, Any], Path]:
         active_minutes = int(dex_discovery.get("active_token_minutes", 180))
         if not 1 <= active_minutes <= 1440:
             raise ValueError("sources.dexscreener_discovery.active_token_minutes must be between 1 and 1440")
+
+    multichain_meme_data = sources.get("multichain_meme_data") or {}
+    if not isinstance(multichain_meme_data, dict):
+        raise ValueError("sources.multichain_meme_data must be an object")
+    raw_multichain_chains = multichain_meme_data.get("chains", [])
+    if not isinstance(raw_multichain_chains, list):
+        raise ValueError("sources.multichain_meme_data.chains must be a list")
+    multichain_chains = list(dict.fromkeys(
+        str(chain).strip().lower()
+        for chain in raw_multichain_chains
+        if str(chain).strip()
+    ))
+    if not 1 <= len(multichain_chains) <= 16 or any(
+        len(chain) > 40 for chain in multichain_chains
+    ):
+        raise ValueError(
+            "sources.multichain_meme_data.chains must contain between 1 and 16 bounded chain identifiers"
+        )
+    multichain_meme_data["chains"] = multichain_chains
+    multichain_interval = float(multichain_meme_data.get("interval_seconds", 90))
+    if not 30 <= multichain_interval <= 3600:
+        raise ValueError(
+            "sources.multichain_meme_data.interval_seconds must be between 30 and 3600"
+        )
 
     for name in ("poll_seconds", "reverse_news_seconds", "event_scan_seconds", "position_scan_seconds", "source_health_seconds"):
         if float(config.get(name, 0)) <= 0:
@@ -1256,9 +1284,9 @@ class Runtime:
             self.store.register_onchain_paper_position_monitor()
             if self.strategy_focus_active:
                 if self.chain_meme_trader_only:
-                    self.store.register_chain_meme_trader_v21()
-                    self.store.activate_chain_meme_trader_v21()
-                    self.store.register_chain_meme_v21_vault_shadow()
+                    self.store.register_chain_meme_trader_v22()
+                    self.store.activate_chain_meme_trader_v22()
+                    self.store.register_chain_meme_v22_vault_shadow()
                 else:
                     self.store.register_onchain_held_account_monitor()
                     self.store.register_chain_meme_trader()
@@ -1284,6 +1312,8 @@ class Runtime:
                     self.store.activate_chain_meme_trader_v20()
                     self.store.register_chain_meme_trader_v21()
                     self.store.activate_chain_meme_trader_v21()
+                    self.store.register_chain_meme_trader_v22()
+                    self.store.activate_chain_meme_trader_v22()
                     self.store.register_chain_meme_trader_immediate_reverseability()
                     self.store.register_chain_meme_trader_local_surface_quote()
                     self.store.register_chain_meme_trader_local_critical_exit()
@@ -1884,6 +1914,8 @@ class Runtime:
             for chain in [
                 *self.config["candidate"].get("chains", []),
                 *discovery_cfg.get("chains", []),
+                *((self.config["sources"].get("multichain_meme_data") or {}).get("chains", [])
+                  if self.chain_meme_trader_only else []),
             ]
         }
         if token.chain.lower() in hydration_chains:
@@ -2136,7 +2168,12 @@ class Runtime:
             *(str(chain).lower() for chain in cfg.get("surface_chains", [])),
         }
         if self.chain_meme_trader_only:
-            surface_chains = {"solana"}
+            surface_chains = {
+                str(chain).lower()
+                for chain in (
+                    self.config["sources"].get("multichain_meme_data") or {}
+                ).get("chains", ["solana"])
+            }
         max_items = int(cfg.get("max_items_per_surface", 40))
         max_hydrations = int(cfg.get("max_hydrations_per_cycle", 180))
         direct_context_candidates: list[tuple[int, TokenCandidate, TokenSnapshot, float, dict[str, Any]]] = []
@@ -2208,7 +2245,7 @@ class Runtime:
 
         due = self.store.due_token_detail_hydrations(
             limit=max_hydrations,
-            chains=("solana",) if self.chain_meme_trader_only else (),
+            chains=tuple(sorted(surface_chains)) if self.chain_meme_trader_only else (),
             prefer_fresh=self.chain_meme_trader_only,
             priority_social_account_urls=(
                 () if self.chain_meme_trader_only else (
@@ -2508,6 +2545,20 @@ class Runtime:
                 momentum_score=momentum,
                 event_relation=trigger,
             )
+
+    async def poll_multichain_meme_data_once(self) -> None:
+        """Collect shared Solana/BSC/Robinhood discovery without legacy feeds or Agents."""
+        cfg = self.config["sources"].get("multichain_meme_data") or {}
+        chains = tuple(
+            dict.fromkeys(
+                str(chain).strip().lower()
+                for chain in cfg.get("chains", [])
+                if str(chain).strip()
+            )
+        )
+        await asyncio.gather(*(self._poll_gecko_network(chain) for chain in chains))
+        await self.poll_dexscreener_discovery_once()
+        self.store.heartbeat("multichain_meme_data")
 
     async def poll_external_once(self) -> None:
         collectors = [*self._rss_collectors(), *self._bluesky_collectors(), *self._mastodon_collectors()]
@@ -4958,10 +5009,15 @@ class Runtime:
                 )
                 await asyncio.sleep(30 if type(exc).__name__ == "InvalidStatus" else 5)
 
-    async def chain_meme_v21_vault_shadow_enroll_once(self) -> None:
+    async def chain_meme_v21_vault_shadow_enroll_once(
+        self, *, v22: bool = False,
+    ) -> None:
         """Resolve new runner pools and keep only active observer rings."""
         now = asyncio.get_running_loop().time()
-        candidate_pool_rows = self.store.chain_meme_v21_vault_shadow_candidates()
+        candidate_pool_rows = (
+            self.store.chain_meme_v22_vault_shadow_candidates()
+            if v22 else self.store.chain_meme_v21_vault_shadow_candidates()
+        )
         candidates = [
             item for item in candidate_pool_rows
             if self._chain_meme_v21_vault_retry_after.get(
@@ -4972,8 +5028,13 @@ class Runtime:
         inserted = 0
         unresolved = 0
         for outcome in resolved:
-            self.store.record_chain_meme_v21_vault_shadow_resolution(outcome)
-            if self.store.add_chain_meme_v21_vault_shadow_target(outcome) is not None:
+            if v22:
+                self.store.record_chain_meme_v22_vault_shadow_resolution(outcome)
+                target_id = self.store.add_chain_meme_v22_vault_shadow_target(outcome)
+            else:
+                self.store.record_chain_meme_v21_vault_shadow_resolution(outcome)
+                target_id = self.store.add_chain_meme_v21_vault_shadow_target(outcome)
+            if target_id is not None:
                 inserted += 1
                 self._chain_meme_v21_vault_retry_after.pop(
                     str(outcome["pool_address"]), None
@@ -4983,7 +5044,10 @@ class Runtime:
                 self._chain_meme_v21_vault_retry_after[
                     str(outcome["pool_address"])
                 ] = now + 60.0
-        active = self.store.chain_meme_v21_vault_shadow_account_targets()
+        active = (
+            self.store.chain_meme_v22_vault_shadow_account_targets()
+            if v22 else self.store.chain_meme_v21_vault_shadow_account_targets()
+        )
         active_pools = {str(item["pool_address"]) for item in active}
         candidate_pools = {
             str(item["pool_address"]) for item in candidate_pool_rows
@@ -4997,22 +5061,34 @@ class Runtime:
             int(item["pool_target_id"]) for item in active
         )
         self.store.heartbeat(
-            "chain-meme-v21-vault-shadow-enroll",
+            f"chain-meme-v{22 if v22 else 21}-vault-shadow-enroll",
             item=bool(inserted or active),
             error="",
             error_detail=f"resolved={inserted};unresolved={unresolved}",
         )
 
-    async def chain_meme_v21_vault_shadow_loop(self) -> None:
+    async def chain_meme_v22_vault_shadow_enroll_once(self) -> None:
+        await self.chain_meme_v21_vault_shadow_enroll_once(v22=True)
+
+    async def chain_meme_v21_vault_shadow_loop(
+        self, *, v22: bool = False,
+    ) -> None:
         """Record bounded Pool/Vault flow summaries with no trading authority."""
         while not self._stop.is_set():
             try:
                 async for update in self.held_accounts.stream(
-                    self.store.chain_meme_v21_vault_shadow_account_targets
+                    (
+                        self.store.chain_meme_v22_vault_shadow_account_targets
+                        if v22 else self.store.chain_meme_v21_vault_shadow_account_targets
+                    )
                 ):
                     frame = self.chain_meme_v21_vault_tracker.push(update)
                     frame_id = (
-                        self.store.record_chain_meme_v21_vault_shadow_frame(frame)
+                        (
+                            self.store.record_chain_meme_v22_vault_shadow_frame(frame)
+                            if v22
+                            else self.store.record_chain_meme_v21_vault_shadow_frame(frame)
+                        )
                         if frame is not None else None
                     )
                     now = asyncio.get_running_loop().time()
@@ -5021,7 +5097,7 @@ class Runtime:
                         or now - self._chain_meme_v21_vault_last_heartbeat >= 10.0
                     ):
                         self.store.heartbeat(
-                            "chain-meme-v21-vault-shadow",
+                            f"chain-meme-v{22 if v22 else 21}-vault-shadow",
                             item=frame_id is not None,
                             error="",
                         )
@@ -5032,12 +5108,15 @@ class Runtime:
                 raise
             except Exception as exc:
                 self.store.heartbeat(
-                    "chain-meme-v21-vault-shadow",
+                    f"chain-meme-v{22 if v22 else 21}-vault-shadow",
                     item=False,
                     error=type(exc).__name__,
                     error_detail=str(exc),
                 )
                 await asyncio.sleep(5)
+
+    async def chain_meme_v22_vault_shadow_loop(self) -> None:
+        await self.chain_meme_v21_vault_shadow_loop(v22=True)
 
     async def chain_meme_local_surface_once(self) -> None:
         """Refresh route-verified PumpSwap or fallback Pump-curve capacity."""
@@ -5483,98 +5562,100 @@ class Runtime:
 
     async def chain_meme_market_marks_once(self) -> None:
         """Refresh held tokens every two seconds with one fresh DEX batch per 30 mints."""
-        carry_v20 = (
-            self.chain_meme_trader_only
-            and self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION
-            != self.store.CHAIN_MEME_TRADER_V20_VERSION
-            and self.store.chain_meme_trader_has_open_positions(
-                self.store.CHAIN_MEME_TRADER_V20_VERSION
+        carry_versions = [
+            version
+            for version in (
+                self.store.CHAIN_MEME_TRADER_V21_VERSION,
+                self.store.CHAIN_MEME_TRADER_V20_VERSION,
             )
-        )
+            if (
+                self.chain_meme_trader_only
+                and version != self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION
+                and self.store.chain_meme_trader_has_open_positions(version)
+            )
+        ]
+        marked_versions = [
+            self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION, *carry_versions,
+        ]
         targets = self.store.chain_meme_trader_market_mark_targets(
-            definition_versions=(
-                [
-                    self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
-                    self.store.CHAIN_MEME_TRADER_V20_VERSION,
-                ]
-                if carry_v20 else [self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION]
-            ) if self.chain_meme_trader_only else None,
+            definition_versions=(marked_versions if self.chain_meme_trader_only else None),
         )
         refreshed = 0
-        for start in range(0, len(targets), 30):
-            chunk = targets[start:start + 30]
-            if not chunk:
-                continue
-            chain = str(chunk[0]["chain"])
-            try:
-                quoted = await self._dex_batch_quote(
-                    chain, [str(item["address"]) for item in chunk],
-                    fresh=True,
-                )
-            except Exception as exc:
-                self.store.heartbeat(
-                    "chain-meme-market-marks", error=type(exc).__name__,
-                )
-                return
-            received_at = utcnow()
-            outcomes = []
-            for item in chunk:
-                result = quoted.get(str(item["token_id"]))
-                if result is None:
-                    outcomes.append({
-                        "kind": "missing",
-                        "token_id": str(item["token_id"]),
-                        "chain": str(item["chain"]),
-                        "address": str(item["address"]),
-                    })
-                    continue
-                token, snapshot = result
-                raw = snapshot.raw if isinstance(snapshot.raw, dict) else {}
-                pair = raw.get("pair") if isinstance(raw.get("pair"), dict) else raw
-                pair_address = str(pair.get("pairAddress") or "").strip()
-                if (
-                    not pair_address
-                    or float(snapshot.price_usd or 0.0) <= 0.0
-                    or (
-                        snapshot.liquidity_usd is not None
-                        and float(snapshot.liquidity_usd) <= 0.0
+        targets_by_chain: dict[str, list[dict[str, Any]]] = {}
+        for item in targets:
+            targets_by_chain.setdefault(str(item["chain"]).lower(), []).append(item)
+        for chain, chain_targets in targets_by_chain.items():
+            for start in range(0, len(chain_targets), 30):
+                chunk = chain_targets[start:start + 30]
+                try:
+                    quoted = await self._dex_batch_quote(
+                        chain, [str(item["address"]) for item in chunk],
+                        fresh=True,
                     )
-                ):
+                except Exception as exc:
+                    self.store.heartbeat(
+                        "chain-meme-market-marks", error=type(exc).__name__,
+                    )
+                    break
+                received_at = utcnow()
+                outcomes = []
+                for item in chunk:
+                    result = quoted.get(str(item["token_id"]))
+                    if result is None:
+                        outcomes.append({
+                            "kind": "missing",
+                            "token_id": str(item["token_id"]),
+                            "chain": str(item["chain"]),
+                            "address": str(item["address"]),
+                        })
+                        continue
+                    token, snapshot = result
+                    raw = snapshot.raw if isinstance(snapshot.raw, dict) else {}
+                    pair = raw.get("pair") if isinstance(raw.get("pair"), dict) else raw
+                    pair_address = str(pair.get("pairAddress") or "").strip()
+                    if (
+                        not pair_address
+                        or float(snapshot.price_usd or 0.0) <= 0.0
+                        or (
+                            snapshot.liquidity_usd is not None
+                            and float(snapshot.liquidity_usd) <= 0.0
+                        )
+                    ):
+                        outcomes.append({
+                            "kind": "missing",
+                            "token_id": str(item["token_id"]),
+                            "chain": str(item["chain"]),
+                            "address": str(item["address"]),
+                        })
+                        continue
+                    rejections = self._paper_quote_rejections(
+                        str(item["token_id"]), token, snapshot, received_at,
+                    )
+                    if rejections:
+                        outcomes.append({
+                            "kind": "failure",
+                            "token_id": str(item["token_id"]),
+                            "failure_kind": "DATA_REJECTED:" + ",".join(rejections),
+                        })
+                        continue
                     outcomes.append({
-                        "kind": "missing",
-                        "token_id": str(item["token_id"]),
-                        "chain": str(item["chain"]),
-                        "address": str(item["address"]),
+                        "kind": "visible", "token": token, "snapshot": snapshot,
                     })
-                    continue
-                rejections = self._paper_quote_rejections(
-                    str(item["token_id"]), token, snapshot, received_at,
+                refreshed += self.store.apply_chain_meme_trader_market_mark_batch(
+                    outcomes, recorded_at=received_at,
                 )
-                if rejections:
-                    outcomes.append({
-                        "kind": "failure",
-                        "token_id": str(item["token_id"]),
-                        "failure_kind": "DATA_REJECTED:" + ",".join(rejections),
-                    })
-                    continue
-                outcomes.append({
-                    "kind": "visible", "token": token, "snapshot": snapshot,
-                })
-            refreshed += self.store.apply_chain_meme_trader_market_mark_batch(
-                outcomes, recorded_at=received_at,
-            )
         self.store.evaluate_chain_meme_trader_market_marks(
             definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
         )
-        if carry_v20:
+        for version in carry_versions:
             self.store.evaluate_chain_meme_trader_market_marks(
-                definition_version=self.store.CHAIN_MEME_TRADER_V20_VERSION,
+                definition_version=version,
             )
             if not self.store.chain_meme_trader_has_open_positions(
-                self.store.CHAIN_MEME_TRADER_V20_VERSION
+                version
             ):
                 self.store.record_chain_meme_trader_account_snapshots(
-                    definition_version=self.store.CHAIN_MEME_TRADER_V20_VERSION,
+                    definition_version=version,
                 )
         if not self.chain_meme_trader_only:
             self.store.evaluate_chain_meme_trader_market_marks(
@@ -6332,11 +6413,11 @@ class Runtime:
                 asyncio.create_task(self.pump_loop(), name="pumpportal"),
                 asyncio.create_task(
                     self._periodic(
-                        "dexscreener_discovery",
-                        (self.config["sources"].get("dexscreener_discovery") or {}).get("interval_seconds", 90),
-                        self.poll_dexscreener_discovery_once,
+                        "multichain_meme_data",
+                        (self.config["sources"].get("multichain_meme_data") or {}).get("interval_seconds", 90),
+                        self.poll_multichain_meme_data_once,
                     ),
-                    name="dexscreener_discovery",
+                    name="multichain_meme_data",
                 ),
                 asyncio.create_task(
                     self._periodic(
@@ -6353,14 +6434,14 @@ class Runtime:
                 ),
                 asyncio.create_task(
                     self._periodic(
-                        "chain_meme_v21_vault_shadow_enroll", 15,
-                        self.chain_meme_v21_vault_shadow_enroll_once,
+                        "chain_meme_v22_vault_shadow_enroll", 15,
+                        self.chain_meme_v22_vault_shadow_enroll_once,
                     ),
-                    name="chain_meme_v21_vault_shadow_enroll",
+                    name="chain_meme_v22_vault_shadow_enroll",
                 ),
                 asyncio.create_task(
-                    self.chain_meme_v21_vault_shadow_loop(),
-                    name="chain_meme_v21_vault_shadow",
+                    self.chain_meme_v22_vault_shadow_loop(),
+                    name="chain_meme_v22_vault_shadow",
                 ),
             ]
             try:

@@ -11,6 +11,7 @@ const tokenPrice = (value, fallback = '—') => {
 };
 const percent = (value, fallback = '—') => value === null || value === undefined ? fallback : `${Number(value) >= 0 ? '+' : '−'}${Math.abs(Number(value) * 100).toFixed(1)}%`;
 const shortToken = (value) => { const v=String(value||''); const a=v.includes(':')?v.split(':')[1]:v; return a.length>12?`${a.slice(0,5)}…${a.slice(-5)}`:a; };
+const chainLabelForToken = (value) => ({solana:'Solana',bsc:'BSC',robinhood:'Robinhood Chain'})[String(value||'').split(':')[0].toLowerCase()]||'其他链';
 const time = (value, date=false) => value ? new Date(value).toLocaleString('zh-CN',date?{hour12:false}:{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}) : '—';
 const ageSeconds = (value) => {
   if(!value)return null;
@@ -38,7 +39,7 @@ const strategyName = (arm) => {
 const outcomeCount = (account={}) => Number(account.closed_position_count||0)+Number(account.written_off_position_count||0);
 const isMature = (strategy) => outcomeCount(strategy.account) >= 30;
 const entryLabels={shadow_momentum:'链上动量达到历史门槛',two_way_route:'买卖双向路线通过',economic_route:'交易经济性通过',rug_safety:'买前安全检查通过',solana_focus:'Solana 精确池条件通过',broad_launch:'新币宽口径',flow_burst:'交易突然放量',reawakening:'沉寂后重新活跃',market_visible:'有池且价格可见',dex_visible_successor:'DexScreener 池与成交可见'};
-const exitLabels={fast_escape:'快速止损止盈',balanced:'均衡退出',balanced_harvest:'均衡分批止盈',peak_guard:'高点回撤保护',postbuy_research:'买后信息辅助',principal_lock_runner:'本金回收目标＋趋势仓',dynamic:'动态退出',dynamic_backoff:'动态退出与退避',dynamic_with_15m_deadline:'动态退出，最晚 15 分钟',dynamic_with_horizon_fallback:'动态退出，超时按固定周期',fixed:'固定周期退出',fixed_15m:'15 分钟退出',fixed_horizons:'分阶段固定退出',risk:'风险优先退出',profit:'利润优先退出',liquidity:'流动性异常退出',activity:'活跃度衰减退出',runner:'强势延续退出',flow:'资金流退出',trailing:'移动止盈',composite:'综合退出'};
+const exitLabels={fast_escape:'快速止损止盈',balanced:'均衡退出',balanced_harvest:'均衡分批止盈',peak_guard:'高点回撤保护',postbuy_research:'买后信息辅助',principal_lock_runner:'本金回收目标＋趋势仓',flash_tail_first_mover:'早期爆发分档兑现',mature_continuity_control:'成熟延续快速退出',dynamic:'动态退出',dynamic_backoff:'动态退出与退避',dynamic_with_15m_deadline:'动态退出，最晚 15 分钟',dynamic_with_horizon_fallback:'动态退出，超时按固定周期',fixed:'固定周期退出',fixed_15m:'15 分钟退出',fixed_horizons:'分阶段固定退出',risk:'风险优先退出',profit:'利润优先退出',liquidity:'流动性异常退出',activity:'活跃度衰减退出',runner:'强势延续退出',flow:'资金流退出',trailing:'移动止盈',composite:'综合退出'};
 const readable = (value,labels) => labels[value]||String(value||'未说明').replaceAll('_',' ');
 const strategyIndex = (family) => {
   const found=(universe?.families||[]).indexOf(family);
@@ -185,9 +186,24 @@ function liveMetricForFamily(family){
     terminal,
     wins,
     winRate:terminal?wins/terminal:null,
+    realizedPnl:account.realized_pnl_usd==null?null:Number(account.realized_pnl_usd),
+    profitLossRatio:account.profit_loss_ratio,
+    expectancy:account.expectancy_usd,
+    maxDrawdown:account.max_drawdown_usd,
+    maxDrawdownFraction:account.max_drawdown_fraction,
+    tailReturn:account.tail_return_usd,
+    metricSampleCount:Number(account.metric_sample_count||0),
+    metricSampleStatus:account.metric_sample_status,
     status:family?.realtime_state||(strategy?'ACTIVE_FORWARD':'FROZEN_HISTORY'),
     updatedAt:state?.generated_at||universe?.generated_at,
   };
+}
+
+function strategyMetrics(live){
+  const value=(v,format=money)=>v==null?'—':format(v);
+  const sample=live.metricSampleCount?`${live.metricSampleCount} 笔${live.metricSampleStatus==='insufficient_sample'?'，样本不足':''}`:'暂无闭仓样本';
+  const drawdown=live.maxDrawdown==null?'—':`${money(live.maxDrawdown)}${live.maxDrawdownFraction==null?'':` / ${percent(-Number(live.maxDrawdownFraction))}`}`;
+  return `<small class="strategy-metrics">已实现 ${value(live.realizedPnl)} · 盈亏比 ${value(live.profitLossRatio, v=>Number(v).toFixed(2))} · 单笔期望 ${value(live.expectancy)} · 闭仓最大回撤 ${drawdown} · 最差 10% 均值 ${value(live.tailReturn)}（${sample}）</small>`;
 }
 
 function fidelityLabel(family){
@@ -308,7 +324,7 @@ function renderUniverse(){
   });
   $('#universe-count').textContent=`显示 ${rows.length} / ${families.length} · ${time(state?.generated_at||universe.generated_at)} 刷新`;
   $('#universe-refresh').textContent=`${active} 个前向运行 · ${replicas} 个历史规则 · ${successors} 个 DexScreener 继承策略`;
-  $('#canonical-universe tbody').innerHTML=rows.map((f,index)=>{const live=liveMetricForFamily(f),id=f.canonical_id||f.behavior_contract_hash;return `<tr class="strategy-row ${selectedCanonical===id?'selected':''}" data-canonical="${esc(id)}"><td>${index+1}</td><td><strong>${esc(strategyLabel(f))}</strong><small>唯一编号 #${String(strategyIndex(f)).padStart(3,'0')}</small></td><td><span class="status-pill ${live.status==='ACTIVE_FORWARD'?'closed':'retry'}">${esc(fidelityLabel(f))}</span></td><td>${esc(readable(f.entry_family,entryLabels))}</td><td>${esc(readable(f.exit_family,exitLabels))}</td><td class="${pnlClass(live.pnl)}">${live.totalValue==null?'价格待更新':money(live.totalValue)}</td><td class="${pnlClass(live.pnl)}">${live.pnl==null?'价格待更新':money(live.pnl)}</td><td>${strategySparkline(live.strategy)}</td><td>${money(live.cash)}</td><td>${live.open}</td><td>${live.terminal}</td><td>${live.winRate==null?'等待样本':percent(live.winRate)}</td><td>${time(live.updatedAt)}</td></tr>`;}).join('')||'<tr><td colspan="13" class="empty">没有符合当前筛选条件的策略</td></tr>';
+  $('#canonical-universe tbody').innerHTML=rows.map((f,index)=>{const live=liveMetricForFamily(f),id=f.canonical_id||f.behavior_contract_hash;return `<tr class="strategy-row ${selectedCanonical===id?'selected':''}" data-canonical="${esc(id)}"><td>${index+1}</td><td><strong>${esc(strategyLabel(f))}</strong><small>唯一编号 #${String(strategyIndex(f)).padStart(3,'0')}</small></td><td><span class="status-pill ${live.status==='ACTIVE_FORWARD'?'closed':'retry'}">${esc(fidelityLabel(f))}</span></td><td>${esc(readable(f.entry_family,entryLabels))}</td><td>${esc(readable(f.exit_family,exitLabels))}</td><td>${live.totalValue==null?'价格待更新':money(live.totalValue)}</td><td class="${pnlClass(live.pnl)}">${live.pnl==null?'价格待更新':money(live.pnl)}${strategyMetrics(live)}</td><td>${strategySparkline(live.strategy)}</td><td>${money(live.cash)}</td><td>${live.open}</td><td>${live.terminal}</td><td>${live.winRate==null?'等待样本':percent(live.winRate)}</td><td>${time(live.updatedAt)}</td></tr>`;}).join('')||'<tr><td colspan="13" class="empty">没有符合当前筛选条件的策略</td></tr>';
   $$('#canonical-universe tbody tr[data-canonical]').forEach(row=>row.addEventListener('click',()=>{const family=families.find(f=>(f.canonical_id||`C-${f.behavior_contract_hash}`)===row.dataset.canonical);renderUniverseDetail(family);}));
   const selected=families.find(f=>(f.canonical_id||f.behavior_contract_hash)===selectedCanonical)||rows[0]||families[0];
   if(selected)renderUniverseDetail(selected);
@@ -318,7 +334,7 @@ function renderDiscoveryBeacon(data){
   const latest=data.discovery?.latest_at, age=ageSeconds(latest), active=age!==null&&age<=90;
   $('#discovery-beacon').classList.toggle('active',active);
   $('#discovery-state').textContent=active?'正在发现 Token':'等待下一轮发现';
-  $('#discovery-age').textContent=latest?`最近发现 ${ageText(latest)}`:'尚无 Solana 发现记录';
+  $('#discovery-age').textContent=latest?`最近发现 ${ageText(latest)}`:'尚无新币发现记录';
 }
 
 function renderSummary(data, strategies){
@@ -349,7 +365,7 @@ function renderOverviewStrategies(){
   const target=$('#overview-strategies tbody');
   if(!target||!universe)return;
   const ranked=(universe.families||[]).map(f=>({family:f,live:liveMetricForFamily(f)})).sort((a,b)=>Number(b.live.totalValue??-Infinity)-Number(a.live.totalValue??-Infinity)||Number(b.live.pnl??-Infinity)-Number(a.live.pnl??-Infinity)||strategyIndex(a.family)-strategyIndex(b.family));
-  target.innerHTML=ranked.map((item,index)=>`<tr class="strategy-row" data-overview-strategy="${esc(item.family.canonical_id||item.family.behavior_contract_hash)}"><td>${index+1}</td><td><strong>${esc(strategyLabel(item.family))}</strong><small>唯一编号 #${String(strategyIndex(item.family)).padStart(3,'0')} · ${esc(readable(item.family.entry_family,entryLabels))} → ${esc(readable(item.family.exit_family,exitLabels))}</small></td><td><span class="status-pill ${item.live.status==='ACTIVE_FORWARD'?'closed':'retry'}">${esc(fidelityLabel(item.family))}</span></td><td class="${pnlClass(item.live.pnl)}">${item.live.totalValue==null?'价格待更新':money(item.live.totalValue)}</td><td class="${pnlClass(item.live.pnl)}">${item.live.pnl==null?'价格待更新':money(item.live.pnl)}</td><td>${strategySparkline(item.live.strategy)}</td><td>${item.live.open}</td><td>${item.live.terminal}</td><td>${item.live.winRate==null?'等待样本':percent(item.live.winRate)}</td><td>${time(item.live.updatedAt)}</td></tr>`).join('');
+  target.innerHTML=ranked.map((item,index)=>`<tr class="strategy-row" data-overview-strategy="${esc(item.family.canonical_id||item.family.behavior_contract_hash)}"><td>${index+1}</td><td><strong>${esc(strategyLabel(item.family))}</strong><small>唯一编号 #${String(strategyIndex(item.family)).padStart(3,'0')} · ${esc(readable(item.family.entry_family,entryLabels))} → ${esc(readable(item.family.exit_family,exitLabels))}</small></td><td><span class="status-pill ${item.live.status==='ACTIVE_FORWARD'?'closed':'retry'}">${esc(fidelityLabel(item.family))}</span></td><td>${item.live.totalValue==null?'价格待更新':money(item.live.totalValue)}</td><td class="${pnlClass(item.live.pnl)}">${item.live.pnl==null?'价格待更新':money(item.live.pnl)}${strategyMetrics(item.live)}</td><td>${strategySparkline(item.live.strategy)}</td><td>${item.live.open}</td><td>${item.live.terminal}</td><td>${item.live.winRate==null?'等待样本':percent(item.live.winRate)}</td><td>${time(item.live.updatedAt)}</td></tr>`).join('');
   $$('[data-overview-strategy]').forEach(row=>row.addEventListener('click',()=>{
     selectedCanonical=row.dataset.overviewStrategy;
     location.hash='#/strategies';
@@ -469,8 +485,8 @@ function renderActivity(items,strategies){
 
 function renderDiscoveries(data){
   const items=data.discovery?.tokens||[];
-  $('#token-stream').innerHTML=items.length?items.slice(0,10).map(t=>`<div class="token-row"><span class="new-dot ${ageSeconds(t.observed_at)<=90?'active':''}"></span><div>${tokenLink(t.token_id,t.symbol||t.name||shortToken(t.token_id))}<small>${esc(shortToken(t.token_id))} · ${esc(sourceText(t.source))}</small></div><time>${ageText(t.observed_at)}</time></div>`).join(''):'<div class="empty">等待新 Token</div>';
-  $('#discovery-table tbody').innerHTML=items.length?items.map(t=>`<tr><td>${time(t.observed_at,true)}</td><td>${tokenLink(t.token_id)}</td><td>${esc(t.symbol||t.name||'—')}</td><td>${esc(sourceText(t.source))}</td><td>${t.new_token?'新币':t.first_local_discovery?'首次发现':'再次活跃'}</td><td>${t.snapshot_count||0}</td><td><span class="status-pill ${t.no_pair?'written_off':'closed'}">${t.no_pair?'暂无池':'有行情'}</span></td></tr>`).join(''):'<tr><td colspan="7" class="empty">尚无发现记录</td></tr>';
+  $('#token-stream').innerHTML=items.length?items.slice(0,10).map(t=>`<div class="token-row"><span class="new-dot ${ageSeconds(t.observed_at)<=90?'active':''}"></span><div>${tokenLink(t.token_id,t.symbol||t.name||shortToken(t.token_id))}<small>${esc(chainLabelForToken(t.token_id))} · ${esc(shortToken(t.token_id))} · ${esc(sourceText(t.source))}</small></div><time>${ageText(t.observed_at)}</time></div>`).join(''):'<div class="empty">等待新 Token</div>';
+  $('#discovery-table tbody').innerHTML=items.length?items.map(t=>`<tr><td>${time(t.observed_at,true)}</td><td>${esc(chainLabelForToken(t.token_id))}</td><td>${tokenLink(t.token_id)}</td><td>${esc(t.symbol||t.name||'—')}</td><td>${esc(sourceText(t.source))}</td><td>${t.new_token?'新币':t.first_local_discovery?'首次发现':'再次活跃'}</td><td>${t.snapshot_count||0}</td><td><span class="status-pill ${t.no_pair?'written_off':'closed'}">${t.no_pair?'暂无池':'有行情'}</span></td></tr>`).join(''):'<tr><td colspan="8" class="empty">尚无发现记录</td></tr>';
   const rounds=data.discovery?.rounds||[], totals=rounds.reduce((a,r)=>{a.returned+=Number(r.returned_count||0);a.exposed+=Number(r.exposed_token_count||0);a.fresh+=Number(r.first_local_discovery_count||0);a.errors+=r.status==='error'?1:0;return a;},{returned:0,exposed:0,fresh:0,errors:0});
   $('#round-summary').innerHTML=`<div class="round-metrics"><div><span>轮次</span><strong>${rounds.length}</strong></div><div><span>返回 / 暴露</span><strong>${totals.returned} / ${totals.exposed}</strong></div><div><span>首次发现</span><strong>${totals.fresh}</strong></div><div><span>错误</span><strong class="${totals.errors?'pnl-negative':''}">${totals.errors}</strong></div></div>${rounds.slice(0,5).map(r=>`<p><span>${time(r.started_at)}</span><strong>${esc(r.provider)}</strong><small>${esc(r.status)} · ${r.exposed_token_count||0} tokens</small></p>`).join('')}`;
 }
@@ -514,7 +530,7 @@ function renderHealth(items,data){
   const storage=s.storage||{},gb=n=>Number.isFinite(Number(n))?(Number(n)/1073741824).toFixed(2)+' GB':'—';
   const monitorOk=Number(s.held_account_states||0)>0&&Number(s.held_account_alerts||0)===0;
   const queueOk=Number(capacity.zero_attempt_failed_buy_count||0)===0;
-  const labels={'chain-meme-trader':'策略与账户','pumpportal':'Pump.fun 新币发现','dexscreener_discovery':'DexScreener Token 发现','chain-meme-market-marks':'持仓价格与池监控','onchain_only_jupiter_quote':'真实成交报价','solana-held-accounts':'链上账户监控','chain-meme-postbuy-research':'买后信息调查'};
+  const labels={'chain-meme-trader':'策略与账户','pumpportal':'Pump.fun 新币发现','dexscreener_discovery':'DexScreener Token 发现','multichain_meme_data':'三链新币与行情采集','chain-meme-market-marks':'持仓价格与池监控','onchain_only_jupiter_quote':'真实成交报价','solana-held-accounts':'链上账户监控','chain-meme-postbuy-research':'买后信息调查'};
   $('#health-grid').innerHTML=items.map(h=>{const latest=h.last_item_at||h.last_ok_at,ok=!h.last_error_at||new Date(h.last_error_at)<=new Date(h.last_ok_at||0);return `<article class="health-card ${ok?'ok':'bad'}"><span class="health-dot"></span><div><strong>${esc(labels[h.source]||'后台服务')}</strong><p>${latest?`最后活动 ${ageText(latest)}`:'尚无活动'}</p><small>${h.last_error?'最近一次运行出现错误':'运行正常'}</small></div></article>`}).join('')+`<article class="health-card ${queueOk?'ok':'bad'}"><span class="health-dot"></span><div><strong>交易队列</strong><p>${capacity.ready_buy_count||0} 笔待买</p><small>${capacity.zero_attempt_failed_buy_count||0} 笔尚未成功开始处理</small></div></article><article class="health-card ${monitorOk?'ok':'bad'}"><span class="health-dot"></span><div><strong>池与持仓监控</strong><p>${s.held_account_states||0} 已观测 · ${s.held_account_alerts||0} 告警</p><small>${s.held_account_latest_at?`最近状态 ${ageText(s.held_account_latest_at)}`:'等待首个持仓'}</small></div></article><article class="health-card ok"><span class="health-dot"></span><div><strong>模拟交易</strong><p>正在运行</p><small>公开市场价格与统一策略流程</small></div></article><article class="health-card ok"><span class="health-dot"></span><div><strong>实盘接口</strong><p>按钱包单独启用</p><small>未启用的钱包不会发送交易</small></div></article><article class="health-card ${(Number(storage.wal_bytes||0)<1073741824&&Number(storage.free_bytes||0)>10737418240)?'ok':'bad'}"><span class="health-dot"></span><div><strong>本地存储</strong><p>数据库 ${gb(storage.database_bytes)} · 临时数据 ${gb(storage.wal_bytes)}</p><small>E盘剩余 ${gb(storage.free_bytes)}</small></div></article><article class="health-card ok"><span class="health-dot"></span><div><strong>网页刷新</strong><p>实时数据每 2 秒更新</p><small>待执行卖出 ${s.pending_exit_quotes||0}</small></div></article>`;
 }
 

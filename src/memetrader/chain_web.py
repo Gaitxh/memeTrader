@@ -370,7 +370,7 @@ class ChainWebData:
                 "heartbeat_at": heartbeat_at,
                 "heartbeat_age_seconds": heartbeat_age,
                 "refresh_seconds": 2,
-                "chain": "Solana",
+                "chain": "Solana / BSC / Robinhood",
                 "paper_only": locked_by_config,
                 "live_locked": locked_by_config,
                 "locked_by_config": locked_by_config,
@@ -463,6 +463,16 @@ class ChainWebData:
                     (active_version,),
                 ).fetchall()
             }
+            terminal_rows_by_arm: dict[str, list[float]] = {}
+            for row in connection.execute(
+                "SELECT arm_id,realized_pnl_usd FROM chain_meme_trader_positions "
+                "WHERE definition_version=? AND status IN ('closed','written_off') "
+                "AND realized_pnl_usd IS NOT NULL ORDER BY closed_at,rowid",
+                (active_version,),
+            ).fetchall():
+                terminal_rows_by_arm.setdefault(str(row["arm_id"]), []).append(
+                    float(row["realized_pnl_usd"])
+                )
             open_position_counts = connection.execute(
                 "SELECT COUNT(*) AS open_position_count,"
                 "COUNT(DISTINCT token_id) AS unique_held_token_count "
@@ -512,6 +522,49 @@ class ChainWebData:
                     float(total_pnl) / starting_cash
                     if total_pnl is not None and starting_cash > 0.0 else None
                 )
+                terminal_pnls = terminal_rows_by_arm.get(policy_arm_id, [])
+                winning_pnls = [value for value in terminal_pnls if value > 0.0]
+                losing_pnls = [value for value in terminal_pnls if value < 0.0]
+                average_win = (
+                    sum(winning_pnls) / len(winning_pnls) if winning_pnls else None
+                )
+                average_loss = (
+                    abs(sum(losing_pnls) / len(losing_pnls)) if losing_pnls else None
+                )
+                running = peak = 0.0
+                max_drawdown = 0.0
+                for value in terminal_pnls:
+                    running += value
+                    peak = max(peak, running)
+                    max_drawdown = max(max_drawdown, peak - running)
+                tail_count = (
+                    max(1, (len(terminal_pnls) + 9) // 10) if terminal_pnls else 0
+                )
+                account.update({
+                    "metric_sample_count": len(terminal_pnls),
+                    "metric_sample_status": (
+                        "no_closed_results" if not terminal_pnls
+                        else "insufficient_sample" if len(terminal_pnls) < 30
+                        else "sufficient_sample"
+                    ),
+                    "profit_loss_ratio": (
+                        average_win / average_loss
+                        if average_win is not None and average_loss not in {None, 0.0}
+                        else None
+                    ),
+                    "expectancy_usd": (
+                        sum(terminal_pnls) / len(terminal_pnls) if terminal_pnls else None
+                    ),
+                    "max_drawdown_usd": max_drawdown if terminal_pnls else None,
+                    "max_drawdown_fraction": (
+                        max_drawdown / starting_cash
+                        if terminal_pnls and starting_cash > 0.0 else None
+                    ),
+                    "tail_return_usd": (
+                        sum(sorted(terminal_pnls)[:tail_count]) / tail_count
+                        if terminal_pnls else None
+                    ),
+                })
                 strategies.append({
                     **{
                         key: policy.get(key)
@@ -631,6 +684,7 @@ class ChainWebData:
                 "SELECT source,last_ok_at,last_item_at,last_error_at,last_error "
                 "FROM source_health WHERE source IN ("
                 "'chain-meme-trader','pumpportal','dexscreener_discovery',"
+                "'multichain_meme_data',"
                 "'chain-meme-market-marks') ORDER BY source",
             )
             for item in health:
@@ -669,13 +723,16 @@ class ChainWebData:
                 connection,
                 "SELECT e.token_id,t.name,t.symbol,t.source,e.role,e.observed_at,e.recorded_at "
                 "FROM token_discovery_exposures e LEFT JOIN tokens t ON t.token_id=e.token_id "
-                "WHERE e.chain='solana' ORDER BY e.id DESC LIMIT 20",
+                "WHERE e.chain IN ('solana','bsc','robinhood') "
+                "ORDER BY e.id DESC LIMIT 20",
             )
             discovery_rounds = self._rows(
                 connection,
                 "SELECT provider,surface,status,returned_count,exposed_token_count,error_type,"
                 "started_at,completed_at FROM token_discovery_rounds "
-                "WHERE chain_scope='solana' ORDER BY id DESC LIMIT 12",
+                "WHERE chain_scope IN ("
+                "'solana','bsc','robinhood','bsc,robinhood,solana') "
+                "ORDER BY id DESC LIMIT 12",
             )
             error_summary = self._error_summary_from_connection(connection)
         return {
@@ -732,7 +789,8 @@ class ChainWebData:
                 "SELECT * FROM source_health WHERE source IN ("
                 "'chain-meme-trader','pumpportal','dexscreener_discovery',"
                 "'onchain_only_jupiter_quote','solana-held-accounts',"
-                "'chain-meme-postbuy-research','chain-meme-market-marks') "
+                "'chain-meme-postbuy-research','chain-meme-market-marks',"
+                "'multichain_meme_data') "
                 "ORDER BY source",
             )
             if bool(self.config.get("chain_meme_trader_only_enabled", False)):
@@ -915,7 +973,8 @@ class ChainWebData:
                 connection,
                 "SELECT provider,surface,status,returned_count,exposed_token_count,"
                 "first_local_discovery_count,new_token_count,error_type,started_at,completed_at "
-                "FROM token_discovery_rounds WHERE chain_scope='solana' "
+                "FROM token_discovery_rounds WHERE chain_scope IN ("
+                "'solana','bsc','robinhood','bsc,robinhood,solana') "
                 "ORDER BY id DESC LIMIT 30",
             )
             discoveries = self._rows(
@@ -923,7 +982,8 @@ class ChainWebData:
                 "SELECT e.token_id,t.name,t.symbol,t.source,e.role,e.first_local_discovery,"
                 "e.new_token,e.snapshot_count,e.no_pair,e.observed_at,e.recorded_at "
                 "FROM token_discovery_exposures e LEFT JOIN tokens t ON t.token_id=e.token_id "
-                "WHERE e.chain='solana' ORDER BY e.id DESC LIMIT 40",
+                "WHERE e.chain IN ('solana','bsc','robinhood') "
+                "ORDER BY e.id DESC LIMIT 40",
             )
             versions = []
             for row in connection.execute(
@@ -1494,7 +1554,7 @@ class ChainWebData:
                     latest_snapshot["recorded_at"] if latest_snapshot else None
                 ),
                 "refresh_seconds": 2,
-                "chain": "Solana",
+                "chain": "Solana / BSC / Robinhood",
                 "paper_only": not self.live_enabled,
                 "live_locked": not self.live_enabled,
                 "locked_by_config": not self.live_enabled,
@@ -1825,9 +1885,21 @@ class ChainWebData:
                 links.append({"label": label, "url": value})
 
             add_link("行情页面", token_view.get("url") or pair.get("url"))
-            add_link("DexScreener", f"https://dexscreener.com/solana/{token_view['address']}")
-            add_link("Pump.fun", f"https://pump.fun/coin/{token_view['address']}")
-            add_link("Solscan", f"https://solscan.io/token/{token_view['address']}")
+            chain = str(token_view.get("chain") or "").lower()
+            add_link(
+                "DexScreener",
+                f"https://dexscreener.com/{chain}/{token_view['address']}",
+            )
+            if chain == "solana":
+                add_link("Pump.fun", f"https://pump.fun/coin/{token_view['address']}")
+                add_link("Solscan", f"https://solscan.io/token/{token_view['address']}")
+            elif chain == "bsc":
+                add_link("BscScan", f"https://bscscan.com/token/{token_view['address']}")
+            elif chain == "robinhood":
+                add_link(
+                    "Robinhood Chain Explorer",
+                    f"https://robinhoodchain.blockscout.com/address/{token_view['address']}",
+                )
             for website in info.get("websites") or []:
                 if isinstance(website, dict):
                     add_link(str(website.get("label") or "项目网站"), website.get("url"))

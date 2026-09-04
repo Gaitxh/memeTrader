@@ -37,6 +37,9 @@ def test_initial_config_has_private_token_and_live_locked():
     assert config["agent"]["enabled"] is False
     assert config["live"]["enabled"] is False
     assert config["sources"]["gecko_networks"] == ["solana"]
+    assert config["sources"]["multichain_meme_data"]["chains"] == [
+        "solana", "bsc", "robinhood",
+    ]
     assert config["sources"]["dexscreener_discovery"]["chains"] == [
         "solana",
     ]
@@ -54,7 +57,7 @@ def test_initial_config_has_private_token_and_live_locked():
     assert config["paper"]["pump_swap_fee_bps"] == pytest.approx(125)
 
 
-def test_chain_only_runtime_registers_and_activates_current_v21(tmp_path):
+def test_chain_only_runtime_registers_and_activates_current_v22(tmp_path):
     async def scenario():
         config = initial_config()
         config["database"] = "db.sqlite3"
@@ -67,12 +70,12 @@ def test_chain_only_runtime_registers_and_activates_current_v21(tmp_path):
         ).fetchone()
         registration = runtime.store.db.execute(
             "SELECT definition_json FROM chain_meme_trader_v6_registrations "
-            "WHERE definition_version=?", (Store.CHAIN_MEME_TRADER_V21_VERSION,),
+            "WHERE definition_version=?", (Store.CHAIN_MEME_TRADER_V22_VERSION,),
         ).fetchone()
         assert active["definition_version"] == Store.CHAIN_MEME_TRADER_ACTIVE_VERSION
-        assert active["definition_version"] == Store.CHAIN_MEME_TRADER_V21_VERSION
+        assert active["definition_version"] == Store.CHAIN_MEME_TRADER_V22_VERSION
         definition = json.loads(registration["definition_json"])
-        assert len(definition["policies"]) == 125
+        assert len(definition["policies"]) == 127
         assert all(policy["forward_enabled"] for policy in definition["policies"])
         assert sum(
             policy.get("fidelity_status") == "DEXSCREENER_SUCCESSOR"
@@ -81,13 +84,13 @@ def test_chain_only_runtime_registers_and_activates_current_v21(tmp_path):
         assert sum(
             policy.get("fidelity_status") == "ADDITIVE_FORWARD"
             for policy in definition["policies"]
-        ) == 1
+        ) == 3
         await runtime.close()
 
     asyncio.run(scenario())
 
 
-def test_chain_only_v21_keeps_v20_positions_marked_without_new_v20_entries(tmp_path):
+def test_chain_only_v22_keeps_v20_positions_marked_without_new_v20_entries(tmp_path):
     async def scenario():
         config = initial_config()
         config["database"] = "db.sqlite3"
@@ -96,7 +99,7 @@ def test_chain_only_v21_keeps_v20_positions_marked_without_new_v20_entries(tmp_p
         runtime = Runtime(config, tmp_path)
         store = runtime.store
         v20 = Store.CHAIN_MEME_TRADER_V20_VERSION
-        v21 = Store.CHAIN_MEME_TRADER_V21_VERSION
+        v22 = Store.CHAIN_MEME_TRADER_V22_VERSION
         definition = json.loads(store.db.execute(
             "SELECT definition_json FROM chain_meme_trader_v6_registrations "
             "WHERE definition_version=?", (v20,),
@@ -142,7 +145,7 @@ def test_chain_only_v21_keeps_v20_positions_marked_without_new_v20_entries(tmp_p
             )
 
         targets = store.chain_meme_trader_market_mark_targets(
-            definition_versions=[v21, v20],
+            definition_versions=[v22, v20],
         )
         assert [item["token_id"] for item in targets] == [held.token_id]
 
@@ -210,7 +213,7 @@ def test_chain_only_v21_keeps_v20_positions_marked_without_new_v20_entries(tmp_p
         await runtime.chain_meme_trader_once()
         assert store.db.execute(
             "SELECT COUNT(*) FROM chain_meme_trader_v6_entry_evaluations "
-            "WHERE definition_version=? AND source_snapshot_id=?", (v21, snapshot_id),
+            "WHERE definition_version=? AND source_snapshot_id=?", (v22, snapshot_id),
         ).fetchone()[0] == 1
         assert store.db.execute(
             "SELECT COUNT(*) FROM chain_meme_trader_v6_entry_evaluations "
@@ -221,7 +224,7 @@ def test_chain_only_v21_keeps_v20_positions_marked_without_new_v20_entries(tmp_p
     asyncio.run(scenario())
 
 
-def test_v21_vault_shadow_keeps_unresolved_pool_retry_until_due(tmp_path):
+def test_v22_vault_shadow_keeps_unresolved_pool_retry_until_due(tmp_path):
     async def scenario():
         config = initial_config()
         config["database"] = "db.sqlite3"
@@ -230,7 +233,7 @@ def test_v21_vault_shadow_keeps_unresolved_pool_retry_until_due(tmp_path):
         runtime = Runtime(config, tmp_path)
         pool = "P" * 32
         candidate = {
-            "observer_version": Store.CHAIN_MEME_V21_VAULT_SHADOW_VERSION,
+            "observer_version": Store.CHAIN_MEME_V22_VAULT_SHADOW_VERSION,
             "pool_address": pool,
             "token_id": "solana:" + "M" * 32,
             "base_mint": "M" * 32,
@@ -244,16 +247,16 @@ def test_v21_vault_shadow_keeps_unresolved_pool_retry_until_due(tmp_path):
             calls.append([item["pool_address"] for item in candidates])
             return [{**item, "status": "UNKNOWN_RPC", "reason": "fixture"} for item in candidates]
 
-        runtime.store.chain_meme_v21_vault_shadow_candidates = lambda: [candidate]
+        runtime.store.chain_meme_v22_vault_shadow_candidates = lambda: [candidate]
         runtime.held_accounts.resolve_pumpswap_shadow_pools = resolve
-        await runtime.chain_meme_v21_vault_shadow_enroll_once()
+        await runtime.chain_meme_v22_vault_shadow_enroll_once()
         retry_at = runtime._chain_meme_v21_vault_retry_after[pool]
-        await runtime.chain_meme_v21_vault_shadow_enroll_once()
+        await runtime.chain_meme_v22_vault_shadow_enroll_once()
         assert calls == [[pool], []]
         assert runtime._chain_meme_v21_vault_retry_after[pool] == retry_at
 
         runtime._chain_meme_v21_vault_retry_after[pool] = 0.0
-        await runtime.chain_meme_v21_vault_shadow_enroll_once()
+        await runtime.chain_meme_v22_vault_shadow_enroll_once()
         assert calls == [[pool], [], [pool]]
         await runtime.close()
 
@@ -2011,6 +2014,210 @@ def test_dex_hydration_immediately_investigates_exact_high_impact_post_only(tmp_
         await runtime.close()
 
     asyncio.run(scenario())
+
+
+def test_chain_only_multichain_data_persists_shared_chain_token_snapshots(
+    tmp_path, monkeypatch,
+):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        config["chain_meme_trader_only_enabled"] = True
+        config["sources"]["dexscreener_discovery"]["chains"] = [
+            "solana", "bsc", "robinhood",
+        ]
+        config["sources"]["dexscreener_discovery"]["surface_chains"] = [
+            "solana", "bsc", "robinhood",
+        ]
+        runtime = Runtime(config, tmp_path)
+        shared_evm_address = "0x" + "a" * 40
+        tokens = {
+            "solana": TokenCandidate(
+                "solana", "S" * 32, "Solana new pool", "SOLNEW",
+                source="geckoterminal:solana",
+            ),
+            "bsc": TokenCandidate(
+                "bsc", shared_evm_address, "BSC new pool", "BSCNEW",
+                source="geckoterminal:bsc",
+            ),
+            "robinhood": TokenCandidate(
+                "robinhood", shared_evm_address, "Robinhood new pool", "RHNEW",
+                source="geckoterminal:robinhood",
+            ),
+        }
+
+        class Gecko:
+            def __init__(self, http, network):
+                self.network = network
+
+            async def poll(self):
+                return [tokens[self.network], tokens[self.network]]
+
+        class Dex:
+            DISCOVERY_SURFACES = {}
+
+            async def batch_quote(self, chain, addresses):
+                token = tokens[chain]
+                assert addresses == [token.address]
+                observed_at = utcnow()
+                snapshot = TokenSnapshot(
+                    chain, token.address, 1.0, 10_000, 20_000, 10, 1, 1,
+                    observed_at=observed_at, ingested_at=observed_at,
+                    provider="dexscreener",
+                    raw={"pair": {
+                        "chainId": chain, "pairAddress": f"{chain}-pair",
+                        "priceUsd": "1.0",
+                    }},
+                )
+                return {token.token_id: (token, snapshot)}
+
+        monkeypatch.setattr("memetrader.runtime.GeckoNewPoolsCollector", Gecko)
+        runtime.dex = Dex()
+        await runtime.poll_multichain_meme_data_once()
+
+        assert runtime.store.db.execute(
+            "SELECT COUNT(*) FROM tokens WHERE address=?",
+            (shared_evm_address,),
+        ).fetchone()[0] == 2
+        for token in tokens.values():
+            assert runtime.store.token(token.token_id) is not None
+            assert runtime.store.latest_snapshot(token.token_id) is not None
+        scopes = {
+            row["token_id"]: json.loads(row["metadata_json"])["scope"]
+            for row in runtime.store.db.execute(
+                "SELECT token_id,metadata_json FROM token_universe_funnel_transitions "
+                "WHERE stage='metadata_hydration_result' AND status='hydrated'"
+            )
+        }
+        assert scopes[tokens["solana"].token_id] == "candidate"
+        assert scopes[tokens["bsc"].token_id] == "research_only"
+        assert scopes[tokens["robinhood"].token_id] == "research_only"
+        assert runtime.store.source_health()[0] is not None
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_market_marks_batch_addresses_by_chain_before_quoting():
+    async def scenario():
+        runtime = Runtime.__new__(Runtime)
+        runtime.chain_meme_trader_only = True
+        calls = []
+        applied = []
+
+        class FakeStore:
+            CHAIN_MEME_TRADER_ACTIVE_VERSION = "active"
+            CHAIN_MEME_TRADER_V21_VERSION = "v21"
+            CHAIN_MEME_TRADER_V20_VERSION = "v20"
+            CHAIN_MEME_TRADER_V11_VERSION = "v11"
+
+            @staticmethod
+            def chain_meme_trader_has_open_positions(version):
+                return False
+
+            @staticmethod
+            def chain_meme_trader_market_mark_targets(definition_versions=None):
+                assert definition_versions == ["active"]
+                return [
+                    {"token_id": "bsc:0x1", "chain": "bsc", "address": "0x1"},
+                    {"token_id": "solana:S1", "chain": "solana", "address": "S1"},
+                    {"token_id": "bsc:0x2", "chain": "bsc", "address": "0x2"},
+                ]
+
+            @staticmethod
+            def apply_chain_meme_trader_market_mark_batch(outcomes, recorded_at):
+                applied.extend(outcomes)
+                return len(outcomes)
+
+            @staticmethod
+            def evaluate_chain_meme_trader_market_marks(definition_version):
+                assert definition_version == "active"
+
+            @staticmethod
+            def heartbeat(*args, **kwargs):
+                return None
+
+        async def batch_quote(chain, addresses, *, fresh=False):
+            calls.append((chain, list(addresses), fresh))
+            observed_at = utcnow()
+            return {
+                f"{chain}:{address}": (
+                    TokenCandidate(chain, address, address),
+                    TokenSnapshot(
+                        chain, address, 1.0, 10_000, 20_000, 10, 1, 1,
+                        observed_at=observed_at, ingested_at=observed_at,
+                        provider="dexscreener",
+                        raw={"pair": {"pairAddress": f"{chain}-{address}"}},
+                    ),
+                )
+                for address in addresses
+            }
+
+        runtime.store = FakeStore()
+        runtime._dex_batch_quote = batch_quote
+        runtime._paper_quote_rejections = lambda *args: []
+        await runtime.chain_meme_market_marks_once()
+
+        assert calls == [
+            ("bsc", ["0x1", "0x2"], True),
+            ("solana", ["S1"], True),
+        ]
+        assert len(applied) == 3
+
+    asyncio.run(scenario())
+
+
+def test_v6_enrollment_uses_explicit_definition_chain_allowlist(tmp_path):
+    store = Store(tmp_path / "multichain-definition.sqlite3", initial_cash_usd=1000)
+    source = store.register_chain_meme_trader_v6()
+    definition = json.loads(source["definition_json"])
+    version = "test/explicit-bsc-definition"
+    definition.update({"version": version, "chains": ["bsc"]})
+    activated_at = iso()
+    with store.db:
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_v6_registrations("
+            "definition_version,code_registered_at,code_snapshot_frontier,definition_json) "
+            "VALUES(?,?,0,?)",
+            (version, activated_at, json.dumps(definition)),
+        )
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_v6_activations("
+            "definition_version,activated_at,activation_snapshot_id,v5_definition_version,"
+            "v5_source_frontier,entry_execution_enabled) VALUES(?,?,0,?,0,1)",
+            (version, activated_at, Store.CHAIN_MEME_TRADER_VERSION),
+        )
+
+    observed_at = utcnow()
+    token = TokenCandidate(
+        "bsc", "0x" + "b" * 40, "BSC strategy candidate", "BSC",
+        source="dexscreener",
+    )
+    store.upsert_token(token, seen_at=observed_at)
+    store.add_snapshot(TokenSnapshot(
+        "bsc", token.address, 1.0, 10_000, 20_000, 250, 2, 1,
+        observed_at=observed_at, ingested_at=observed_at,
+        provider="dexscreener",
+        raw={"pair": {
+            "chainId": "bsc", "pairAddress": "bsc-pair",
+            "pairCreatedAt": round(
+                (observed_at - timedelta(minutes=1)).timestamp() * 1000
+            ),
+            "priceUsd": "1.0",
+            "baseToken": {"address": token.address},
+            "txns": {
+                "m5": {"buys": 2, "sells": 1},
+                "h1": {"buys": 2, "sells": 1},
+            },
+            "volume": {"m5": 250.0, "h1": 250.0},
+        }},
+    ))
+
+    assert store.enroll_chain_meme_trader_v6(
+        definition_version=version,
+    )["admitted"] == 1
+    store.close()
 
 
 def test_dexscreener_research_chain_hydrates_without_agent_or_candidate_admission(tmp_path):

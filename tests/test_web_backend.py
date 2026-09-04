@@ -179,6 +179,8 @@ def test_chain_meme_trader_api_and_static_page_preserve_forward_contract(tmp_pat
     assert 'id="overview-strategies"' in index
     assert "账户实时曲线" in app
     assert "indicative_total_pnl_usd" in app
+    assert "profit_loss_ratio" in app
+    assert "strategyMetrics" in app
     assert "总资产实时曲线" not in index
     assert "UNKNOWN" in app
     strategy_universe = web_data.strategy_universe()
@@ -203,6 +205,8 @@ def test_chain_meme_trader_api_and_static_page_preserve_forward_contract(tmp_pat
         assert "positions" not in live["strategies"][0]
         assert "open_positions" not in live
         assert len(live["strategies"][0]["curve"]) == 2
+        assert live["strategies"][0]["account"]["metric_sample_status"] == "no_closed_results"
+        assert live["strategies"][0]["account"]["expectancy_usd"] is None
         assert len(live_response.content) < len(response.content)
         focused_live = httpx.get(
             f"http://127.0.0.1:{port}/api/live",
@@ -228,7 +232,7 @@ def test_chain_meme_trader_api_and_static_page_preserve_forward_contract(tmp_pat
         thread.join(timeout=2)
 
 
-def test_strategy_universe_refreshes_when_v21_additive_strategy_activates(tmp_path: Path):
+def test_strategy_universe_refreshes_for_additive_strategy_versions(tmp_path: Path):
     config_path, _ = _config(tmp_path)
     store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
     store.register_chain_meme_trader_v20()
@@ -273,6 +277,27 @@ def test_strategy_universe_refreshes_when_v21_additive_strategy_activates(tmp_pa
     assert additive["active_arm_ids"] == ["broad_principal_lock_runner_v1"]
     assert additive["fidelity_status"] == "ADDITIVE_FORWARD"
     assert universe["provider_requests_triggered"] == 0
+
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    store.register_chain_meme_trader_v22()
+    store.activate_chain_meme_trader_v22()
+    assert store.record_chain_meme_trader_account_snapshots(
+        definition_version=Store.CHAIN_MEME_TRADER_V22_VERSION,
+    ) == 127
+    store.close()
+
+    web_data = ChainWebData(config_path)
+    payload = web_data.state()
+    universe = web_data.strategy_universe()
+    assert payload["definition"]["strategy_count"] == 127
+    assert len(payload["strategies"]) == 127
+    assert universe["summary"]["behavior_contract_families"] == 127
+    assert universe["summary"]["active_forward_families"] == 127
+    assert [item["display_index"] for item in universe["families"][-2:]] == [126, 127]
+    assert [item["active_arm_ids"] for item in universe["families"][-2:]] == [
+        ["broad_flash_tail_first_mover_v1"],
+        ["broad_mature_continuity_control_v1"],
+    ]
 
 
 def test_chain_web_reports_distinct_tokens_holding_duration_and_trade_markers(

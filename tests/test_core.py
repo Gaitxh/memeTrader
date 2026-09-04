@@ -7090,6 +7090,212 @@ def test_chain_meme_v21_appends_runner_without_mutating_v20(tmp_path: Path):
     store.close()
 
 
+def test_chain_meme_v22_appends_two_filtered_multichain_strategies(tmp_path: Path):
+    store = Store(tmp_path / "filtered-multichain-v22.sqlite3", initial_cash_usd=1000)
+    v21 = json.loads(store.register_chain_meme_trader_v21()["definition_json"])
+    v22 = json.loads(store.register_chain_meme_trader_v22()["definition_json"])
+
+    assert v22["previous_version"] == Store.CHAIN_MEME_TRADER_V21_VERSION
+    assert v22["policies"][:125] == v21["policies"]
+    assert len(v22["policies"]) == len({p["arm_id"] for p in v22["policies"]}) == 127
+    assert v21["chain"] == "solana"
+    assert v22["chain"] == "multichain"
+    assert v22["chains"] == ["solana", "bsc", "robinhood"]
+    assert v22["starting_cash_usd_each_arm"] == pytest.approx(1000.0)
+    assert v22["policy_notional_usd"] == pytest.approx(20.0)
+    assert v22["slippage_bps"] == 400
+    assert v22["additional_fee_usd_each_fill"] == pytest.approx(0.0)
+
+    flash, mature = v22["policies"][-2:]
+    assert flash["arm_id"] == "broad_flash_tail_first_mover_v1"
+    assert flash["take_profit"] == [
+        {"return": 0.40, "fraction_of_remaining": 0.50},
+        {"return": 0.80, "fraction_of_remaining": 1.00},
+    ]
+    assert mature["arm_id"] == "broad_mature_continuity_control_v1"
+    assert mature["trailing_activate_return"] == pytest.approx(0.25)
+    assert mature["trailing_drawdown"] == pytest.approx(0.12)
+    assert mature["take_profit"] == [
+        {"return": 0.80, "fraction_of_remaining": 1.00},
+    ]
+    assert Store.chain_meme_trader_entry_filter_matches(
+        flash, age_seconds=119.0, m5_trades=50,
+        prior55_trades=0, m5_volume_usd=999.0,
+    )
+    assert not Store.chain_meme_trader_entry_filter_matches(
+        flash, age_seconds=120.0, m5_trades=50,
+        prior55_trades=0, m5_volume_usd=999.0,
+    )
+    assert not Store.chain_meme_trader_entry_filter_matches(
+        flash, age_seconds=119.0, m5_trades=49,
+        prior55_trades=0, m5_volume_usd=999.0,
+    )
+    assert not Store.chain_meme_trader_entry_filter_matches(
+        flash, age_seconds=119.0, m5_trades=50,
+        prior55_trades=1, m5_volume_usd=999.0,
+    )
+    assert not Store.chain_meme_trader_entry_filter_matches(
+        flash, age_seconds=119.0, m5_trades=50,
+        prior55_trades=0, m5_volume_usd=1000.0,
+    )
+    assert Store.chain_meme_trader_entry_filter_matches(
+        mature, age_seconds=300.0, m5_trades=3,
+        prior55_trades=3, m5_volume_usd=1.0,
+    )
+    assert Store.chain_meme_trader_entry_filter_matches(
+        mature, age_seconds=900.0, m5_trades=3,
+        prior55_trades=3, m5_volume_usd=1.0,
+    )
+    assert not Store.chain_meme_trader_entry_filter_matches(
+        mature, age_seconds=299.0, m5_trades=3,
+        prior55_trades=3, m5_volume_usd=1.0,
+    )
+    assert not Store.chain_meme_trader_entry_filter_matches(
+        mature, age_seconds=901.0, m5_trades=3,
+        prior55_trades=3, m5_volume_usd=1.0,
+    )
+    assert not Store.chain_meme_trader_entry_filter_matches(
+        mature, age_seconds=600.0, m5_trades=3,
+        prior55_trades=2, m5_volume_usd=1.0,
+    )
+    altered = dict(flash)
+    altered["entry_filter"] = {**flash["entry_filter"], "min_m5_trades": 51}
+    assert Store.chain_meme_trader_behavior_hash(
+        altered, definition_version=Store.CHAIN_MEME_TRADER_V22_VERSION,
+    ) != flash["behavior_contract_hash"]
+    store.close()
+
+
+def test_chain_meme_v22_reuses_historical_momentum_score_for_bsc(tmp_path: Path):
+    store = Store(tmp_path / "crosschain-shadow-momentum-v22.sqlite3", initial_cash_usd=1000)
+    store.activate_chain_meme_trader_v22()
+    version = Store.CHAIN_MEME_TRADER_V22_VERSION
+    observed = utcnow()
+    address = "0x" + "a" * 40
+    token = TokenCandidate(
+        chain="bsc", address=address, name="BSC Momentum", symbol="BSCM",
+        source="dexscreener",
+    )
+    store.upsert_token(token, seen_at=observed)
+    pair = {
+        "chainId": "bsc", "dexId": "pancakeswap",
+        "pairAddress": "0x" + "b" * 40,
+        "pairCreatedAt": round((observed - timedelta(seconds=60)).timestamp() * 1000),
+        "priceUsd": "1.0",
+        "baseToken": {"address": address, "name": "BSC Momentum", "symbol": "BSCM"},
+        "quoteToken": {"address": "0x" + "c" * 40},
+        "txns": {
+            "m5": {"buys": 100, "sells": 10},
+            "h1": {"buys": 100, "sells": 10},
+        },
+        "volume": {"m5": 100_000.0, "h1": 100_000.0},
+    }
+    snapshot_id = store.add_snapshot(TokenSnapshot(
+        "bsc", address, 1.0, 20_000.0, 100_000.0, 100_000.0, 100, 10,
+        observed_at=observed, ingested_at=observed,
+        provider="dexscreener", raw={"pair": pair},
+    ))
+
+    result = store.enroll_chain_meme_trader_v6(definition_version=version)
+
+    assert result["admitted"] == 1
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM onchain_only_shadow_cohorts WHERE trigger_snapshot_id=?",
+        (snapshot_id,),
+    ).fetchone()[0] == 0
+    feature = json.loads(store.db.execute(
+        "SELECT feature_json FROM chain_meme_trader_v6_entry_evaluations "
+        "WHERE definition_version=? AND source_snapshot_id=?",
+        (version, snapshot_id),
+    ).fetchone()[0])
+    expected = Store.chain_meme_trader_snapshot_momentum_score(
+        liquidity_usd=20_000.0, volume_5m_usd=100_000.0,
+        buys_5m=100, sells_5m=10,
+    )
+    assert feature["shadow_momentum_source"] == "crosschain_point_in_time_dex_snapshot"
+    assert feature["shadow_momentum_score"] == pytest.approx(expected)
+    assert feature["shadow_momentum_pass"] is True
+    shadow_arm_ids = {
+        policy["arm_id"] for policy in Store.chain_meme_trader_v22_policies()
+        if policy.get("entry_family") == "shadow_momentum"
+    }
+    admitted_shadow_arms = {
+        row[0] for row in store.db.execute(
+            "SELECT arm_id FROM chain_meme_trader_entry_decisions "
+            "WHERE definition_version=? AND token_id=? AND status='admitted'",
+            (version, token.token_id),
+        ).fetchall()
+    }
+    assert admitted_shadow_arms & shadow_arm_ids
+    store.close()
+
+
+def test_chain_meme_v22_applies_policy_filters_during_asof_enrollment(tmp_path: Path):
+    store = Store(tmp_path / "filtered-enrollment-v22.sqlite3", initial_cash_usd=1000)
+    store.activate_chain_meme_trader_v22()
+    version = Store.CHAIN_MEME_TRADER_V22_VERSION
+
+    def add_snapshot(*, age_seconds: float, m5_trades: int, h1_trades: int,
+                     m5_volume: float, h1_volume: float) -> str:
+        observed = utcnow()
+        address = str(Pubkey.new_unique())
+        token = TokenCandidate(
+            chain="solana", address=address, name="v22", symbol="V22",
+            source="dexscreener",
+        )
+        store.upsert_token(token, seen_at=observed)
+        m5_buys = m5_trades // 2
+        pair = {
+            "chainId": "solana", "dexId": "pumpfun",
+            "pairAddress": f"pool-{address}",
+            "pairCreatedAt": round(
+                (observed - timedelta(seconds=age_seconds)).timestamp() * 1000
+            ),
+            "priceUsd": "1.0",
+            "baseToken": {"address": address, "name": "v22", "symbol": "V22"},
+            "quoteToken": {"address": SOLANA_WRAPPED_SOL_MINT},
+            "txns": {
+                "m5": {"buys": m5_buys, "sells": m5_trades - m5_buys},
+                "h1": {"buys": h1_trades // 2, "sells": h1_trades - h1_trades // 2},
+            },
+            "volume": {"m5": m5_volume, "h1": h1_volume},
+        }
+        store.add_snapshot(TokenSnapshot(
+            "solana", address, 1.0, 10_000, 100_000, m5_volume,
+            m5_buys, m5_trades - m5_buys, observed_at=observed,
+            ingested_at=observed, provider="dexscreener", raw={"pair": pair},
+        ))
+        return token.token_id
+
+    flash_token = add_snapshot(
+        age_seconds=60, m5_trades=50, h1_trades=50,
+        m5_volume=900, h1_volume=900,
+    )
+    mature_token = add_snapshot(
+        age_seconds=600, m5_trades=10, h1_trades=13,
+        m5_volume=500, h1_volume=600,
+    )
+    assert store.enroll_chain_meme_trader_v6(
+        definition_version=version,
+    )["admitted"] == 2
+    new_arms_by_token = {
+        token_id: {
+            row[0] for row in store.db.execute(
+                "SELECT arm_id FROM chain_meme_trader_entry_decisions "
+                "WHERE definition_version=? AND token_id=? AND arm_id IN (?,?)",
+                (
+                    version, token_id, "broad_flash_tail_first_mover_v1",
+                    "broad_mature_continuity_control_v1",
+                ),
+            ).fetchall()
+        }
+        for token_id in (flash_token, mature_token)
+    }
+    assert new_arms_by_token[flash_token] == {"broad_flash_tail_first_mover_v1"}
+    assert new_arms_by_token[mature_token] == {"broad_mature_continuity_control_v1"}
+    store.close()
+
+
 def test_chain_meme_v21_principal_runner_recovers_principal_then_trails_runner(
     tmp_path: Path,
 ):
@@ -7449,6 +7655,70 @@ def test_v21_vault_shadow_is_forward_only_unique_pool_and_has_no_trading_authori
         table: store.db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         for table in before
     }
+    store.close()
+
+
+def test_v22_vault_shadow_covers_v22_runner_without_reusing_v21_namespace(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "vault-shadow-v22.sqlite3", initial_cash_usd=1000)
+    store.register_chain_meme_trader_v22()
+    old_registration = store.register_chain_meme_v21_vault_shadow()
+    registration = store.register_chain_meme_v22_vault_shadow()
+    version = Store.CHAIN_MEME_TRADER_V22_VERSION
+    observer = Store.CHAIN_MEME_V22_VAULT_SHADOW_VERSION
+    pool = str(Pubkey.new_unique())
+    token_id = f"solana:{Pubkey.new_unique()}"
+    opened_at = parse_time(registration["registered_at"]) + timedelta(seconds=1)
+    with store.db:
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_v6_cohorts("
+            "definition_version,token_id,entry_family,source_snapshot_id,pair_address,"
+            "decided_at,episode_no,feature_json) VALUES(?,?,?,?,?,?,?,?)",
+            (
+                version, token_id, "broad_launch", 1, pool, iso(opened_at), 1,
+                json.dumps({"dex_id": "pumpswap"}),
+            ),
+        )
+        cohort_id = int(store.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_positions("
+            "definition_version,arm_id,shadow_cohort_id,token_id,source_buy_trade_id,"
+            "baseline_quote_result_id,entry_snapshot_id,entry_signal_price_usd,"
+            "entry_execution_price_usd,paper_quantity_tokens,remaining_quantity_tokens,"
+            "amount_raw,initial_amount_raw,stake_usd,highest_signal_price_usd,status,opened_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,20,1,'open',?)",
+            (
+                version, "broad_principal_lock_runner_v1", cohort_id, token_id,
+                cohort_id, 1, 1, 1.0, 1.04, 10.0, 10.0,
+                "10000000000", "10000000000", iso(opened_at),
+            ),
+        )
+    candidates = store.chain_meme_v22_vault_shadow_candidates()
+    assert [item["first_source_cohort_id"] for item in candidates] == [cohort_id]
+    assert candidates[0]["observer_version"] == observer
+    assert store.chain_meme_v21_vault_shadow_candidates() == []
+
+    keys = [str(Pubkey.new_unique()) for _ in range(5)]
+    target_id = store.add_chain_meme_v22_vault_shadow_target({
+        **candidates[0], "status": "RESOLVED", "quote_mint": keys[0],
+        "lp_mint": keys[1], "base_vault": keys[2], "quote_vault": keys[3],
+        "base_token_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "quote_token_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "base_mint_decimals": 6, "virtual_quote_reserves_raw": -10,
+        "baseline_base_raw": 1000, "baseline_quote_raw": 2000,
+        "resolved_slot": 123, "resolved_at": iso(utcnow()),
+    })
+    assert target_id is not None
+    assert [item["account_kind"] for item in
+            store.chain_meme_v22_vault_shadow_account_targets()] == [
+        "pool", "base_vault", "quote_vault",
+    ]
+    assert store.chain_meme_v21_vault_shadow_account_targets() == []
+    assert old_registration["position_definition_version"] == (
+        Store.CHAIN_MEME_TRADER_V21_VERSION
+    )
+    assert registration["position_definition_version"] == version
     store.close()
 
 
