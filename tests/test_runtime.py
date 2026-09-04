@@ -2137,8 +2137,11 @@ def test_market_marks_batch_addresses_by_chain_before_quoting():
                 return len(outcomes)
 
             @staticmethod
-            def evaluate_chain_meme_trader_market_marks(definition_version):
+            def evaluate_chain_meme_trader_market_marks(
+                definition_version, token_ids=None,
+            ):
                 assert definition_version == "active"
+                assert token_ids == ["bsc:0x1", "solana:S1", "bsc:0x2"]
 
             @staticmethod
             def heartbeat(*args, **kwargs):

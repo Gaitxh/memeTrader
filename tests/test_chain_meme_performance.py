@@ -158,6 +158,42 @@ def test_unchanged_market_and_equity_evaluations_do_not_update_positions(
     store.close()
 
 
+def test_market_exit_evaluation_can_be_scoped_to_refreshed_tokens(tmp_path: Path):
+    store, definition, policy = _open_v22(tmp_path, "scoped-market-exit.sqlite3")
+    version = definition["version"]
+    now = utcnow()
+    first, _, _, _ = _insert_position(
+        store, version=version, arm_id=policy["arm_id"],
+        opened_at=now - timedelta(minutes=300),
+    )
+    second, _, _, _ = _insert_position(
+        store, version=version, arm_id=policy["arm_id"],
+        opened_at=now - timedelta(minutes=300),
+    )
+    for token in (first, second):
+        store.upsert_chain_meme_trader_market_mark(
+            token,
+            TokenSnapshot(
+                "solana", token.address, 1.0, 100_000, 100_000, 100, 5, 2,
+                observed_at=now, ingested_at=now, provider="dexscreener",
+                raw={"pair": {"pairAddress": f"pair-{token.address}"}},
+            ),
+            recorded_at=now,
+        )
+
+    assert store.evaluate_chain_meme_trader_market_marks(
+        definition_version=version, now=now, token_ids=[first.token_id],
+    ) == 1
+    marks = store.db.execute(
+        "SELECT token_id FROM chain_meme_trader_positions p JOIN "
+        "chain_meme_trader_marks m ON m.id=p.pending_mark_id "
+        "WHERE p.definition_version=?",
+        (version,),
+    ).fetchall()
+    assert [row["token_id"] for row in marks] == [first.token_id]
+    store.close()
+
+
 def test_market_account_snapshot_sql_aggregation_preserves_effective_results(
     tmp_path: Path,
 ):

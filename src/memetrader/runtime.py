@@ -5739,6 +5739,7 @@ class Runtime:
             )
             self.store.evaluate_chain_meme_trader_market_marks(
                 definition_version=active_version,
+                token_ids=[str(item["token_id"]) for item in targets],
             )
 
             if not self.chain_meme_trader_only:

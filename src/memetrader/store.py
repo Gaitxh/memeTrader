@@ -2740,6 +2740,10 @@ class Store:
                     ON chain_meme_trader_positions(
                         definition_version,status,last_evaluated_at,shadow_cohort_id
                     );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_positions_market_idx
+                    ON chain_meme_trader_positions(
+                        definition_version,status,token_id,shadow_cohort_id,arm_id
+                    );
                 CREATE TABLE IF NOT EXISTS chain_meme_trader_entry_decisions (
                     id INTEGER PRIMARY KEY,
                     definition_version TEXT NOT NULL,
@@ -29376,10 +29380,17 @@ class Store:
 
     def evaluate_chain_meme_trader_market_marks(
         self, *, definition_version: str | None = None, now: Any = None,
+        token_ids: Iterable[str] | None = None,
     ) -> int:
         """Create forward exit marks from shared 5-second market data, without Jupiter."""
         version = definition_version or self.CHAIN_MEME_TRADER_ACTIVE_VERSION
         current = parse_time(now or utcnow())
+        scoped_token_ids = (
+            sorted({str(token_id) for token_id in token_ids if str(token_id)})
+            if token_ids is not None else None
+        )
+        if scoped_token_ids == []:
+            return 0
         with self._lock, self.db:
             registration = self._chain_meme_trader_registration(version)
             if registration is None:
@@ -29388,6 +29399,12 @@ class Store:
                 version, registration["definition_json"],
             )
             policies = {str(item["arm_id"]): item for item in definition["policies"]}
+            token_filter = (
+                " AND p.token_id IN ("
+                + ",".join("?" for _ in scoped_token_ids)
+                + ")"
+                if scoped_token_ids is not None else ""
+            )
             positions = self.db.execute(
                 "SELECT p.*,m.price_usd AS mark_price_usd,m.liquidity_usd AS mark_liquidity_usd,"
                 "m.volume_5m_usd AS mark_volume_5m_usd,m.buys_5m AS mark_buys_5m,"
@@ -29405,7 +29422,8 @@ class Store:
                 "FROM chain_meme_trader_positions p LEFT JOIN chain_meme_trader_market_marks m "
                 "ON m.token_id=p.token_id LEFT JOIN chain_meme_trader_marks pm "
                 "ON pm.id=p.pending_mark_id WHERE p.definition_version=? AND p.status='open' "
-                "ORDER BY p.shadow_cohort_id,p.arm_id", (version,),
+                f"{token_filter} ORDER BY p.token_id,p.shadow_cohort_id,p.arm_id",
+                (version, *(scoped_token_ids or [])),
             ).fetchall()
             created = 0
             for position in positions:
