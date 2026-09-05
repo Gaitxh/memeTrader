@@ -2334,6 +2334,7 @@ def test_pattern_scout_is_bounded_and_preserves_hourly_due_check(tmp_path: Path)
         agent._run_codex_search = search
         result, observations = await agent.scout_trends(pattern_budget=True)
         assert result["status"] == "completed" and not observations
+        assert result["next_interval_minutes"] >= 60
         assert len(result["lane_selection"]["selected_lanes"]) == 1
         assert "no more than 2 web searches" in prompts[0]
         assert "Return at most 1 events" in prompts[0]

@@ -2808,8 +2808,8 @@ class AutonomousSearchAgent:
             account_results=account_results,
             rejected_event_count=len(rejected_events),
         )
-        self.store.set_kv(TREND_RESULT_KEY, result)
-        result["next_interval_minutes"] = self.trend_interval_minutes()
+        next_interval = self.trend_interval_minutes()
+        result["next_interval_minutes"] = max(60, next_interval) if pattern_budget else next_interval
         self.store.set_kv(TREND_RESULT_KEY, result)
         return result, observations
 

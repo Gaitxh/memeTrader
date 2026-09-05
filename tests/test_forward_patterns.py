@@ -172,3 +172,28 @@ def test_runtime_reuses_held_quote_and_real_dex_receipt(tmp_path):
     asyncio.run(scenario())
     assert runtime.store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_v6_entry_evaluations WHERE reason='pattern_observation'").fetchone()[0] == 1
     runtime.store.close()
+
+
+def test_mature_watch_leaves_breakout_window_without_renewal_or_extra_slots(monkeypatch):
+    from types import SimpleNamespace
+    from memetrader.runtime import Runtime
+    runtime = Runtime.__new__(Runtime)
+    now = utcnow()
+    monkeypatch.setattr("memetrader.runtime.utcnow", lambda: now)
+    quoted = {}
+    for i, age in enumerate((60, 30000, 30000, 30000, 30000)):
+        token = TokenCandidate("solana", str(Pubkey.new_unique()), str(i), str(i))
+        quote = SimpleNamespace(observed_at=now, price_usd=1, raw={
+            "pairAddress": f"pool{i}", "pairCreatedAt": int((now-timedelta(seconds=age)).timestamp()*1000)})
+        quoted[token.token_id] = token, quote
+    runtime._remember_pattern_quotes(quoted)
+    assert len(runtime._pattern_watch) == 4  # One early and only three mature slots.
+    expires = {k: v["expires_at"] for k, v in runtime._pattern_watch.items()}
+    for item in runtime._pattern_watch.values():
+        assert item["expires_at"] - now == timedelta(minutes=20 if item["bucket"] == "mature" else 15)
+    now += timedelta(minutes=5)
+    runtime._remember_pattern_quotes(quoted)
+    assert {k: v["expires_at"] for k, v in runtime._pattern_watch.items()} == expires
+    now += timedelta(minutes=15, seconds=1)
+    runtime._remember_pattern_quotes({})
+    assert not runtime._pattern_watch

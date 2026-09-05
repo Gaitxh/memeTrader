@@ -6033,7 +6033,7 @@ class Runtime:
                 continue
             watch[token_id] = {"token": token, "bucket": bucket, "quote": snapshot,
                 "pair_address": canonical_token_address(chain, address),
-                "expires_at": current + timedelta(minutes=15)}
+                "expires_at": current + timedelta(minutes=20 if bucket == "mature" else 15)}
         self._pattern_watch = watch
 
     async def chain_meme_pattern_observer_once(self) -> None:
