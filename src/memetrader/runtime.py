@@ -2222,9 +2222,11 @@ class Runtime:
             item["next_attempt"] = now + 10
         try:
             pairs = await self.dex.exact_pools_fresh(chain, [str(item["pair_address"]) for _, item in chunk])
+            exact_received = True
         except Exception as exc:
             self._notify_source_error("dexscreener:original_pool", exc)
             pairs = {}
+            exact_received = False
         # Route only still-uncovered identities to the quota-limited provider.
         def usable(item, pair):
             if pair is None or canonical_token_address(chain, str(pair.get("pairAddress") or "")) != canonical_token_address(chain, item["pair_address"]):
@@ -2245,7 +2247,11 @@ class Runtime:
         for key, item in chunk:
             pair = pairs.get(canonical_token_address(chain, str(item["pair_address"])))
             if pair is None:
-                continue  # This provider not listing a pool is not proof of its death.
+                if exact_received:
+                    outcomes.append({"kind": "pool_missing", "token_id": item["token_id"],
+                                     "pair_address": item["pair_address"], "chain": chain,
+                                     "address": item["address"]})
+                continue  # HTTP failure or quota exhaustion is never pool absence.
             if canonical_token_address(chain, str(pair.get("pairAddress") or "")) != key[1]:
                 continue
             token = DexScreenerClient._candidate(pair)
@@ -6286,7 +6292,7 @@ class Runtime:
                             self._queue_market_pool_gap(item, pair_address,
                                 evaluate_versions or ([evaluate_version] if evaluate_version else []))
                             outcomes.append({
-                                "kind": "pool_failure" if (target_token_id, canonical_token_address(target_chain, pair_address)) in getattr(self, "_market_complement_pools", set()) else "pool_missing",
+                                "kind": "pool_failure",
                                 "token_id": target_token_id,
                                 "pair_address": pair_address, "chain": target_chain,
                                 "address": target_address,
@@ -6353,7 +6359,7 @@ class Runtime:
                     self._queue_market_pool_gap(item, expected_pair,
                         evaluate_versions or ([evaluate_version] if evaluate_version else []))
                     outcomes.append({
-                        "kind": "pool_failure" if expected_pair in observed_pairs or (target_token_id, expected_pair) in getattr(self, "_market_complement_pools", set()) else "pool_missing",
+                        "kind": "pool_failure",
                         "token_id": target_token_id, "pair_address": expected_pair,
                         "chain": target_chain, "address": target_address,
                         "failure_kind": "DATA_REJECTED:ENTRY_POOL_INVALID",

@@ -303,3 +303,32 @@ def test_exact_original_pool_recovers_dust_without_spending_complement_quota(tmp
         assert runtime.coingecko.calls == []
         await runtime.close()
     asyncio.run(scenario())
+
+
+def test_token_endpoint_gap_after_restart_is_not_original_pool_absence(tmp_path):
+    async def scenario():
+        runtime = make_runtime(tmp_path)
+        token = TokenCandidate("solana", "R" * 32, "Known complement", "RST")
+        pool = "known-original"
+        target = target_for(token, pool)
+        from memetrader.collectors import DexScreenerClient
+        pair = pair_payload(token, pool)
+        snapshot = runtime._complement_snapshot(pair)
+        runtime.store.upsert_chain_meme_trader_pool_mark(token, snapshot)
+        class Dex:
+            async def batch_quote_fresh(self, chain, addresses):
+                return {}
+        runtime.dex = Dex()
+        runtime.coingecko = FakeCoinGecko(available=False)
+        # New Runtime's in-memory complement set is empty; database evidence survives.
+        assert not runtime._market_complement_pools
+        await runtime._refresh_chain_meme_market_marks([target], heartbeat_name="fixture", high_priority=True)
+        mark = runtime.store.db.execute(
+            "SELECT * FROM chain_meme_trader_pool_marks WHERE token_id=? AND pair_address=?",
+            (token.token_id, pool),
+        ).fetchone()
+        assert mark["consecutive_misses"] == 0
+        assert mark["last_success_at"] is not None
+        assert runtime._market_pool_gaps
+        await runtime.close()
+    asyncio.run(scenario())
