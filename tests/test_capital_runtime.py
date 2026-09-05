@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 import threading
+from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
 
 import memetrader.runtime as runtime_module
 from memetrader.runtime import Runtime
 from memetrader.store import Store
+from memetrader.models import TokenCandidate, iso, utcnow
 
 
 def test_capital_research_seal_uses_readonly_worker_and_reuses_persisted_model(
@@ -107,4 +110,46 @@ def test_flat_compression_read_is_async_readonly_and_does_not_hold_store_write_l
     }
     assert observations["thread"] != main_thread
     assert store.get_kv("flat-shadow:event-loop-probe") == {"advanced": True}
+    store.close()
+
+
+def test_origin_transient_failure_is_visible_and_retries_only_once(tmp_path, monkeypatch):
+    store = Store(tmp_path / "origin-retry.sqlite3", initial_cash_usd=1000)
+    runtime = Runtime.__new__(Runtime)
+    runtime.store = store
+    now = utcnow()
+    monkeypatch.setattr(runtime_module, "utcnow", lambda: now)
+    token = TokenCandidate("solana", "origin-mint", "Origin", "ORG", first_seen_at=now,
+        source="pumpportal:create", raw={"pump_event_type": "create", "txType": "create",
+        "signature": "known-create"})
+    store.record_token_launch_fact(token, ingested_at=now)
+    pool = dict(token_id=token.token_id, pool_address="origin-pool", base_mint=token.address)
+    runtime._pattern_pool_targets = {"origin-pool": pool}
+    runtime.held_accounts = SimpleNamespace()
+    runtime._chain_meme_active_idle_event = asyncio.Event()
+    runtime._chain_meme_active_idle_event.set()
+    calls = []
+
+    async def fail(*args, **kwargs):
+        calls.append(True)
+        return {"status": "unverified", "reason": "get_transaction_failed:ReadTimeout"}
+
+    monkeypatch.setattr(runtime_module, "verify_creator_from_known_signature", fail)
+
+    async def scenario():
+        nonlocal now
+        await runtime._chain_meme_pattern_origin_once(pool)
+        await runtime._chain_meme_pattern_origin_once(pool)
+        assert len(calls) == 1
+        row = store.db.execute("SELECT payload_json FROM chain_meme_pattern_evidence "
+                               "WHERE kind='token_origin'").fetchone()
+        assert store._json_object(row[0])["reason"] == "get_transaction_failed:ReadTimeout"
+        now += timedelta(seconds=61)
+        await runtime._chain_meme_pattern_origin_once(pool)
+        now += timedelta(seconds=61)
+        await runtime._chain_meme_pattern_origin_once(pool)
+        assert len(calls) == 2
+        assert "retry_at" not in runtime._pattern_origin_cache["origin-pool"]
+
+    asyncio.run(scenario())
     store.close()

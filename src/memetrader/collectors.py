@@ -2914,9 +2914,12 @@ class SolanaHeldAccountCollector:
         instructions = [(f"outer:{i}", ix) for i, ix in enumerate(message.get("instructions", []))]
         instructions.extend((f"inner:{group['index']}:{i}", ix)
             for group in tx["meta"].get("innerInstructions") or [] for i, ix in enumerate(group.get("instructions", [])))
-        types = {bytes((102,6,61,18,1,218,235,234)): ("BUY", 25),
-            bytes((198,46,21,82,180,217,232,112)): ("BUY", 25),
-            bytes((51,230,133,164,1,127,131,173)): ("SELL", 24)}
+        # BUY's trailing OptionBool(track_volume) may be absent on legacy
+        # successful calls (e.g. mainnet 3QD3KZ...HXCgrAN, slot 444576018).
+        # Official pump_amm IDL encodes the present OptionBool as one bool.
+        types = {bytes((102,6,61,18,1,218,235,234)): ("BUY", (24, 25)),
+            bytes((198,46,21,82,180,217,232,112)): ("BUY", (24, 25)),
+            bytes((51,230,133,164,1,127,131,173)): ("SELL", (24,))}
         liquidity_ops = {bytes((242,35,198,137,82,225,242,182)), bytes((183,18,70,156,148,109,161,34))}
         alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
         trades, lp_seen = [], False
@@ -2939,7 +2942,8 @@ class SolanaHeldAccountCollector:
                 lp_seen = True
                 continue
             operation = types.get(raw[:8])
-            if (operation is None or len(raw) != operation[1] or len(accounts) < 13
+            if (operation is None or len(raw) not in operation[1]
+                    or (len(raw) == 25 and raw[24] not in (0, 1)) or len(accounts) < 13
                     or any(accounts[i] != value for i, value in expected.items())
                     or accounts[1] not in signers or accounts[1] in expected.values()):
                 return [], False

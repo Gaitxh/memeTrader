@@ -104,10 +104,10 @@ def test_preentry_pool_targets_share_existing_stream_without_fake_holders(tmp_pa
     runtime.store.close()
 
 
-def participation_fixture():
+def participation_fixture(track_volume=b"\x01"):
     pool = dict(pool_address="pool", base_mint="base", quote_mint="quote", base_vault="bv",
         quote_vault="qv", base_token_program="bp", quote_token_program="qp", resolved_slot=50)
-    raw = bytes((102,6,61,18,1,218,235,234)) + (100).to_bytes(8, "little") + (200).to_bytes(8, "little") + b"\x01"
+    raw = bytes((102,6,61,18,1,218,235,234)) + (100).to_bytes(8, "little") + (200).to_bytes(8, "little") + track_volume
     alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
     number, encoded = int.from_bytes(raw, "big"), ""
     while number:
@@ -121,8 +121,9 @@ def participation_fixture():
 
 
 @pytest.mark.parametrize("near_miss", [None, "inner", "pool", "base", "qv", "signer", "unknown", "missing"])
-def test_participation_exact_signers_not_balance_volume(near_miss):
-    pool, signature, tx = participation_fixture()
+@pytest.mark.parametrize("track_volume", [b"", b"\x01"])
+def test_participation_exact_signers_not_balance_volume(near_miss, track_volume):
+    pool, signature, tx = participation_fixture(track_volume)
     ix = tx["transaction"]["message"]["instructions"][0]
     if near_miss == "inner":
         tx["transaction"]["message"]["instructions"] = []
@@ -214,6 +215,29 @@ def test_actual_spl_transfer_mints_amounts_and_sell_direction(side, checked):
         assert trades[0]["block_time"] == 100
     tx["meta"]["innerInstructions"][0]["instructions"][1]["programId"] = "fake-token-program"
     assert SolanaHeldAccountCollector._pumpswap_actual_transfer_amounts(tx, "user", pool, side, "outer:0") is None
+
+
+@pytest.mark.parametrize("track_volume,valid", [(b"", True), (b"\x00", True), (b"\x01", True),
+                                               (b"\x02", False), (b"\x00\x00", False)])
+def test_buy_optional_track_volume_has_only_legal_encodings(track_volume, valid):
+    pool, signature, tx = participation_fixture(track_volume)
+    trades, complete = SolanaHeldAccountCollector._pumpswap_participation_instructions(tx, signature, pool)
+    assert complete is valid
+    assert bool(trades) is valid
+
+
+def test_observed_24_byte_buy_uses_actual_transfer_not_quote_limit():
+    # Observed mainnet scan 2950 frontier, successful slot 444576018 BUY:
+    # discriminator + base_out=336067 + max_quote_in=21500, no OptionBool.
+    pool, signature, tx = amountful_participation_fixture(checked=True)
+    tx["transaction"]["message"]["instructions"][0]["data"] = "AJTQ2h9DXrC3EfEBX5hGGuf79oqJ5wVyH"
+    transfers = tx["meta"]["innerInstructions"][0]["instructions"]
+    transfers[0]["parsed"]["info"]["tokenAmount"] = {"amount": "336067", "decimals": 6}
+    transfers[1]["parsed"]["info"]["tokenAmount"] = {"amount": "21224", "decimals": 9}
+    trades, complete = SolanaHeldAccountCollector._pumpswap_participation_instructions(tx, signature, pool)
+    assert complete and trades[0]["amount_complete"]
+    assert trades[0]["base_amount_raw"] == 336067
+    assert trades[0]["quote_amount_raw"] == 21224  # Not the 21500 instruction limit.
 
 
 def test_inner_swaps_use_actual_cpi_stack_scope_and_reject_ambiguous_amounts():
@@ -379,6 +403,7 @@ def test_runtime_origin_verifies_known_create_signature_once_per_pool(tmp_path, 
 def test_runtime_wsol_reference_is_independent_shared_and_bounded():
     from memetrader.collectors import SOLANA_WRAPPED_SOL_MINT
     runtime = Runtime.__new__(Runtime)
+    runtime.store = SimpleNamespace(heartbeat=lambda *args, **kwargs: None)
     runtime._pattern_pool_targets = {"pool": {"quote_mint": SOLANA_WRAPPED_SOL_MINT}}
     runtime._wsol_usdc_conversion = None
     runtime._wsol_usdc_conversion_at = 0

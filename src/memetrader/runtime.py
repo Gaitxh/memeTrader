@@ -5389,9 +5389,13 @@ class Runtime:
         address = str(pool.get("pool_address") or "")
         token_id = str(pool.get("token_id") or "")
         mint = str(pool.get("base_mint") or token_id.partition(":")[2])
+        previous = cache.get(address, {})
+        retry_at = previous.get("retry_at")
         if (
-            not address or not token_id or not mint or address in cache
-            or len(cache) >= 6 or not self._chain_meme_active_idle().is_set()
+            not address or not token_id or not mint
+            or (previous and (retry_at is None or utcnow() < parse_time(retry_at)))
+            or (address not in cache and len(cache) >= 6)
+            or not self._chain_meme_active_idle().is_set()
         ):
             return
         fact = self.store.db.execute(
@@ -5427,8 +5431,19 @@ class Runtime:
                 "mint": mint, "create_signature": signature,
                 "creator_address": None, "proof": None,
             }
-        cache[address] = dict(result)
+        attempts = int(previous.get("attempts", 0)) + 1
+        cache[address] = {**result, "attempts": attempts}
         if result.get("status") != "verified":
+            reason = str(result.get("reason") or "unverified")
+            self.store.record_chain_meme_pattern_evidence(
+                token_id, address, "token_origin", result, observed_at=utcnow(),
+                source_key=f"pump-create-origin/v1:{signature}:{mint}:{reason}",
+            )
+            if attempts < 2 and (
+                reason == "origin_rpc_timeout" or reason.startswith("get_transaction_failed:")
+            ):
+                cache[address]["retry_at"] = iso(utcnow() + timedelta(seconds=60))
+            self.store.heartbeat("chain-meme-token-origin", error_detail=reason)
             return
         evidence_id = (
             int(existing_row["id"])
@@ -5441,6 +5456,7 @@ class Runtime:
         )
         cache[address] = {**result, "evidence_id": evidence_id,
                           "launch_fact_id": int(fact["id"])}
+        self.store.heartbeat("chain-meme-token-origin", item=True, error_detail="verified")
 
     async def chain_meme_pattern_narrative_once(self) -> None:
         """One bounded information-first scout; never enqueue legacy trade decisions."""
@@ -5741,7 +5757,10 @@ class Runtime:
                     "completed_at": str(conversion.get("completed_at") or iso()),
                 }
                 self._wsol_usdc_conversion_at = asyncio.get_running_loop().time()
-            except Exception:
+                self.store.heartbeat("chain-meme-wsol-reference", item=True,
+                                     error_detail="fresh_reference_not_token_fill")
+            except Exception as exc:
+                self.store.heartbeat("chain-meme-wsol-reference", error=type(exc).__name__)
                 if reference and reference.get("completed_at") and (
                     utcnow() - parse_time(reference["completed_at"])
                 ).total_seconds() < 60.0:
@@ -5850,10 +5869,15 @@ class Runtime:
             self.store.enroll_chain_meme_trader()
         enrollment_batches = 8 if self.chain_meme_trader_only else 1
         for _ in range(enrollment_batches):
+            phase_started = asyncio.get_running_loop().time()
             enrollment = self.store.enroll_chain_meme_trader_v6(
                 limit=4 if self.chain_meme_trader_only else 240,
                 definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
             )
+            if hasattr(self, "runtime_timing"):
+                self.runtime_timing.observe("chain_meme_entry_batch",
+                    asyncio.get_running_loop().time() - phase_started,
+                    items=int(enrollment["evaluated"]))
             if not self.chain_meme_trader_only or int(enrollment["evaluated"]) < 4:
                 break
             await asyncio.sleep(0)
@@ -6128,6 +6152,9 @@ class Runtime:
                 self.store.record_chain_meme_trader_account_snapshots(
                     definition_version=self.store.CHAIN_MEME_TRADER_V20_VERSION,
                 )
+            if hasattr(self, "runtime_timing"):
+                self.runtime_timing.observe("chain_meme_account_snapshot",
+                    asyncio.get_running_loop().time() - snapshot_clock)
             self._last_chain_account_snapshot_monotonic = snapshot_clock
         if not self.chain_meme_trader_only:
             self.store.record_chain_meme_trader_account_snapshots(
@@ -7439,7 +7466,7 @@ class Runtime:
                 ),
                 asyncio.create_task(
                     self._periodic(
-                        "chain_meme_wsol_reference", 30,
+                        "chain_meme_wsol_reference", 5,
                         self.chain_meme_wsol_reference_once,
                     ),
                     name="chain_meme_wsol_reference",
