@@ -5710,13 +5710,10 @@ class Runtime:
                 )
             return refreshed_count
 
-        refreshed = 0
-        for start in range(0, len(batches), 4):
-            refreshed += sum(await asyncio.gather(*(
-                refresh_batch(chain, chunk)
-                for chain, chunk in batches[start:start + 4]
-            )))
-        return refreshed
+        return sum(await asyncio.gather(*(
+            refresh_batch(chain, chunk)
+            for chain, chunk in batches
+        )))
 
     async def chain_meme_market_marks_once(self) -> None:
         """Refresh current-version held tokens on the high-priority DEX lane."""

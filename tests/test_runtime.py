@@ -2328,10 +2328,16 @@ def test_active_market_mark_batches_are_bounded_and_one_failure_does_not_stop_ch
         runtime = Runtime.__new__(Runtime)
         runtime._chain_meme_active_idle_event = asyncio.Event()
         runtime._chain_meme_active_idle_event.set()
+        runtime._dex_quote_lock = asyncio.Semaphore(4)
+        runtime._dex_quote_backoff_until = 0.0
+        runtime._dex_quote_failure_streak = 0
+        runtime._dex_quote_backoff_base_seconds = 0.01
+        runtime._dex_quote_backoff_cap_seconds = 0.01
         runtime._paper_quote_rejections = lambda *args: []
         calls = []
         applied = []
         heartbeats = []
+        batch_times = {}
         inflight = 0
         max_inflight = 0
 
@@ -2345,37 +2351,38 @@ def test_active_market_mark_batches_are_bounded_and_one_failure_does_not_stop_ch
             def heartbeat(*args, **kwargs):
                 heartbeats.append((args, kwargs))
 
-        async def batch_quote(
-            chain, addresses, *, fresh=False, high_priority=False,
-        ):
-            nonlocal inflight, max_inflight
-            calls.append(list(addresses))
-            assert fresh is True
-            assert high_priority is True
-            inflight += 1
-            max_inflight = max(max_inflight, inflight)
-            try:
-                await asyncio.sleep(0.02)
-                if addresses[0] == "S30":
-                    raise httpx.ReadTimeout("one failed batch")
-                observed_at = utcnow()
-                return {
-                    f"solana:{address}": (
-                        TokenCandidate("solana", address, address),
-                        TokenSnapshot(
-                            "solana", address, 1.0, 10_000, 20_000, 10, 1, 1,
-                            observed_at=observed_at, ingested_at=observed_at,
-                            provider="dexscreener",
-                            raw={"pair": {"pairAddress": f"pair-{address}"}},
-                        ),
-                    )
-                    for address in addresses
-                }
-            finally:
-                inflight -= 1
+        class Dex:
+            @staticmethod
+            async def batch_quote_fresh(chain, addresses):
+                nonlocal inflight, max_inflight
+                first = addresses[0]
+                calls.append(list(addresses))
+                inflight += 1
+                max_inflight = max(max_inflight, inflight)
+                batch_times[first] = {"started": asyncio.get_running_loop().time()}
+                try:
+                    await asyncio.sleep(0.08 if first == "S0" else 0.01)
+                    if first == "S120":
+                        raise httpx.ReadTimeout("one failed batch")
+                    observed_at = utcnow()
+                    return {
+                        f"solana:{address}": (
+                            TokenCandidate("solana", address, address),
+                            TokenSnapshot(
+                                "solana", address, 1.0, 10_000, 20_000, 10, 1, 1,
+                                observed_at=observed_at, ingested_at=observed_at,
+                                provider="dexscreener",
+                                raw={"pair": {"pairAddress": f"pair-{address}"}},
+                            ),
+                        )
+                        for address in addresses
+                    }
+                finally:
+                    batch_times[first]["ended"] = asyncio.get_running_loop().time()
+                    inflight -= 1
 
         runtime.store = FakeStore()
-        runtime._dex_batch_quote = batch_quote
+        runtime.dex = Dex()
         targets = [
             {
                 "token_id": f"solana:S{index}",
@@ -2389,9 +2396,10 @@ def test_active_market_mark_batches_are_bounded_and_one_failure_does_not_stop_ch
         )
         assert len(calls) == 5
         assert max_inflight == 4
-        assert refreshed == 91
+        assert batch_times["S120"]["started"] < batch_times["S0"]["ended"]
+        assert refreshed == 120
         assert len(applied) == 121
-        assert sum(item["kind"] == "failure" for item in applied) == 30
+        assert sum(item["kind"] == "failure" for item in applied) == 1
         assert any(kwargs.get("error") == "ReadTimeout" for _, kwargs in heartbeats)
         assert any(kwargs.get("item") is True for _, kwargs in heartbeats)
 
