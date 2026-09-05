@@ -876,8 +876,11 @@ class ChainWebData:
                     "capital_credit_usd": float(capital_credits.get(policy_arm_id, {}).get("amount_usd") or 0.0),
                     "capital_credit_count": int(capital_credits.get(policy_arm_id, {}).get("buy_count") or 0),
                     "unresolved_corrected_position_count": unresolved_by_arm[policy_arm_id],
-                    "engineering_anomaly_position_count": entry_anomalies_by_arm[policy_arm_id],
-                    "research_metrics_eligible": entry_anomalies_by_arm[policy_arm_id] == 0,
+                    "update_delay_loss_position_count": int(capital_credits.get(policy_arm_id, {}).get("update_delay_count") or 0),
+                    "engineering_anomaly_position_count": entry_anomalies_by_arm[policy_arm_id]
+                    + int(capital_credits.get(policy_arm_id, {}).get("update_delay_count") or 0),
+                    "research_metrics_eligible": entry_anomalies_by_arm[policy_arm_id] == 0
+                    and not capital_credits.get(policy_arm_id, {}).get("update_delay_count"),
                     "cash_usd": starting_cash + net_flows.get(policy_arm_id, 0.0),
                     "indicative_equity_usd": starting_cash + net_flows.get(policy_arm_id, 0.0)
                     + effective_value_by_arm.get(policy_arm_id, 0.0) if indicative_complete else None,

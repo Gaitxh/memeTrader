@@ -250,7 +250,7 @@ function liveMetricForFamily(family){
 
 function strategyMetrics(live){
   const anomalies=Number(live.strategy?.account?.engineering_anomaly_position_count||0);
-  if(anomalies)return `<small class="strategy-metrics">含 ${anomalies} 笔入场池低于 $1 的工程异常；原收支保留，不能据此评价策略</small>`;
+  if(anomalies)return `<small class="strategy-metrics">含 ${anomalies} 笔低流动性入场或持仓漏采工程异常；原收支保留，不能据此评价策略</small>`;
   const value=(v,format=money)=>v==null?'—':format(v);
   const sample=live.metricSampleCount?`${live.metricSampleCount} 笔${live.metricSampleStatus==='insufficient_sample'?'，样本不足':''}`:'暂无闭仓样本';
   const factor=live.profitFactor==null?(live.profitFactorStatus==='no_losses'?'暂无亏损样本':'—'):Number(live.profitFactor).toFixed(2);

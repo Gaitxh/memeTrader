@@ -184,7 +184,7 @@ def test_dust_principal_credit_is_idempotent_cash_only_and_preserves_evidence(tm
     store.close()
 
 
-def test_confirmed_update_delay_credit_uses_closed_net_loss_and_never_duplicates(tmp_path):
+def test_confirmed_update_delay_credit_uses_closed_net_loss_and_never_duplicates(tmp_path, monkeypatch):
     store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
     store.activate_chain_meme_trader_funded_period()
     version = Store.CHAIN_MEME_TRADER_ACTIVE_VERSION
@@ -223,6 +223,12 @@ def test_confirmed_update_delay_credit_uses_closed_net_loss_and_never_duplicates
     assert store.credit_chain_meme_update_delay_losses(ids, evidence={"cause": "same failure"}, recorded_at=now)["new_credits"] == 0
     assert store._chain_meme_trader_effective_net_flows(version)[arm] == pytest.approx(cash_before+8)
     assert [tuple(r) for r in store.db.execute("SELECT * FROM chain_meme_trader_trades ORDER BY id")] == original
+    store.record_chain_meme_trader_account_snapshots(definition_version=version, now=now)
+    monkeypatch.setattr("memetrader.chain_web.utcnow", lambda: now+timedelta(seconds=1))
+    account = next(s for s in ChainWebData(config_path).state(compact=True)["strategies"] if s["arm_id"] == arm)["account"]
+    assert account["update_delay_loss_position_count"] == 1
+    assert account["engineering_anomaly_position_count"] == 2
+    assert account["research_metrics_eligible"] is False
     store.close()
 
 

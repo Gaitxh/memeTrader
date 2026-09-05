@@ -25131,7 +25131,8 @@ class Store:
         if connection.execute("SELECT 1 FROM sqlite_master WHERE name='chain_meme_trader_capital_credits'").fetchone() is None:
             return {}
         return {str(row["arm_id"]): dict(row) for row in connection.execute(
-            "SELECT arm_id,SUM(amount_usd) AS amount_usd,COUNT(*) AS buy_count "
+            "SELECT arm_id,SUM(amount_usd) AS amount_usd,COUNT(*) AS buy_count,"
+            "SUM(reason='user_authorized_confirmed_update_delay_actual_loss') AS update_delay_count "
             "FROM chain_meme_trader_capital_credits WHERE definition_version=? GROUP BY arm_id", (version,),
         )}
 
