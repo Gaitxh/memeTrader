@@ -153,3 +153,28 @@ def test_origin_transient_failure_is_visible_and_retries_only_once(tmp_path, mon
 
     asyncio.run(scenario())
     store.close()
+
+
+def test_surface_waits_for_held_lane_then_verifies_origin_instead_of_skipping(monkeypatch):
+    runtime = Runtime.__new__(Runtime)
+    runtime._pattern_pool_targets = {"pool": {"pool_address": "pool", "token_id": "solana:mint"}}
+    runtime._chain_meme_active_idle_event = asyncio.Event()
+    runtime._chain_meme_active_idle_event.set()
+    runtime.store = SimpleNamespace(record_chain_meme_pattern_evidence=lambda *a, **k: 1,
+                                    heartbeat=lambda *a, **k: None)
+    runtime.held_accounts = SimpleNamespace()
+    calls = []
+
+    async def surface(*args):
+        runtime._chain_meme_active_idle_event.clear()
+        asyncio.get_running_loop().call_later(.01, runtime._chain_meme_active_idle_event.set)
+        return dict(complete=True, status="RESOLVED", observed_at=iso(), recorded_at=iso())
+
+    async def origin(pool):
+        assert runtime._chain_meme_active_idle_event.is_set()
+        calls.append(pool["pool_address"])
+
+    monkeypatch.setattr(runtime_module, "collect_pumpswap_pool_surface", surface)
+    runtime._chain_meme_pattern_origin_once = origin
+    asyncio.run(runtime._chain_meme_pattern_surface_once())
+    assert calls == ["pool"]

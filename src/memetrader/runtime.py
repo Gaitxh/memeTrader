@@ -5374,6 +5374,7 @@ class Runtime:
             source_key=f"{address}:{surface['recorded_at']}")
         cache[address] = {**surface, "evidence_id": evidence_id, "recorded_at": iso(utcnow())}
         if surface.get("complete") is True:
+            await self._chain_meme_active_idle().wait()
             await self._chain_meme_pattern_origin_once(pool)
         self.store.heartbeat("chain-meme-pattern-surface", item=surface.get("complete") is True,
                              error_detail=str(surface.get("status", "UNKNOWN")))

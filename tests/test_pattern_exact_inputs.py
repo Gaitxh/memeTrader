@@ -240,6 +240,50 @@ def test_observed_24_byte_buy_uses_actual_transfer_not_quote_limit():
     assert trades[0]["quote_amount_raw"] == 21224  # Not the 21500 instruction limit.
 
 
+@pytest.mark.parametrize("checked", [False, True])
+@pytest.mark.parametrize("near_miss", [None, "unknown_fee_destination", "wrong_fee_owner", "wrong_fee_mint"])
+def test_observed_sell_vault_fee_legs_do_not_discard_user_recovery(checked, near_miss):
+    from copy import deepcopy
+    pool, signature, tx = amountful_participation_fixture("SELL", checked)
+    swap = tx["transaction"]["message"]["instructions"][0]
+    # Mainnet successful SELL 3tbqfV...Aka9q9C, slot 444579388.
+    swap["data"] = "5jRcjdixRUDKHJsWJ2FdEp4FoqQFkBDVy"
+    swap["accounts"].extend(["system", "ata_program", "event", PUMP_AMM_PROGRAM_ID,
+        "creator_ata", "creator_owner", "fee_config", "fee_program", "pool_v2", "buyback_owner", "buyback_ata"])
+    transfers = tx["meta"]["innerInstructions"][0]["instructions"]
+    def set_amount(ix, value):
+        info = ix["parsed"]["info"]
+        if checked:
+            info["tokenAmount"]["amount"] = str(value)
+        else:
+            info["amount"] = str(value)
+    set_amount(transfers[0], 3387307562)
+    set_amount(transfers[1], 215752775)
+    for ata, owner, value in (("fee_ata", "fee", 54199),
+                              ("creator_ata", "creator_owner", 498625),
+                              ("buyback_ata", "buyback_owner", 54198)):
+        keys = tx["transaction"]["message"]["accountKeys"]
+        keys.append({"pubkey": ata, "signer": False})
+        tx["meta"]["preTokenBalances"].append(dict(accountIndex=len(keys)-1,
+            mint="quote", owner=owner, uiTokenAmount={"amount": "0", "decimals": 9}))
+        fee = deepcopy(transfers[1])
+        fee["parsed"]["info"].update(source="qv", destination=ata)
+        set_amount(fee, value)
+        transfers.append(fee)
+    if near_miss == "unknown_fee_destination":
+        transfers[-1]["parsed"]["info"]["destination"] = "unknown"
+    elif near_miss == "wrong_fee_owner":
+        tx["meta"]["preTokenBalances"][-1]["owner"] = "unrelated"
+    elif near_miss == "wrong_fee_mint":
+        tx["meta"]["preTokenBalances"][-1]["mint"] = "wrong"
+    trades, complete = SolanaHeldAccountCollector._pumpswap_participation_instructions(tx, signature, pool)
+    assert complete
+    assert trades[0]["amount_complete"] is (near_miss is None)
+    if near_miss is None:
+        assert trades[0]["base_amount_raw"] == 3387307562
+        assert trades[0]["quote_amount_raw"] == 215752775  # User receipt, not fees or minOut.
+
+
 def test_inner_swaps_use_actual_cpi_stack_scope_and_reject_ambiguous_amounts():
     from copy import deepcopy
     pool, _, tx = amountful_participation_fixture()

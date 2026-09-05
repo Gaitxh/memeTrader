@@ -2976,7 +2976,8 @@ class SolanaHeldAccountCollector:
             group = next((group["instructions"] for group in meta.get("innerInstructions") or []
                           if group.get("index") == outer_index), [])
             if path[0] == "outer" and len(path) == 2:
-                if outer[outer_index].get("programId") != PUMP_AMM_PROGRAM_ID:
+                swap = outer[outer_index]
+                if swap.get("programId") != PUMP_AMM_PROGRAM_ID:
                     return None
                 # A nested PumpSwap call would make attribution ambiguous.
                 if any(ix.get("programId") == PUMP_AMM_PROGRAM_ID
@@ -3051,6 +3052,16 @@ class SolanaHeldAccountCollector:
         def is_user(address):
             return owners.get(address) == signer
 
+        # SELL also pays fees from the quote vault. The official sell IDL
+        # binds protocol ATA/owner at 10/9 and creator ATA/owner at 17/18;
+        # BREAKING_FEE_RECIPIENT.md adds buyback owner/ATA as the final pair.
+        # Exclude only these proven fee legs, not arbitrary non-user outflows.
+        swap_accounts = swap.get("accounts") or []
+        fee_owners = {swap_accounts[ata]: swap_accounts[owner]
+                      for ata, owner in ((10, 9), (17, 18))
+                      if len(swap_accounts) > max(ata, owner)}
+        if side == "SELL" and len(swap_accounts) in (24, 26):
+            fee_owners[swap_accounts[-1]] = swap_accounts[-2]
         base_hits, quote_hits = [], []
         for ix in selected:
             parsed = ix.get("parsed") if isinstance(ix, Mapping) else None
@@ -3085,6 +3096,10 @@ class SolanaHeldAccountCollector:
                     return None
                 base_hits.append(amount)
             elif mint == quote:
+                if (side == "SELL" and source == qv and destination in fee_owners
+                        and destination != swap_accounts[6]
+                        and owners.get(destination) == fee_owners[destination]):
+                    continue
                 valid = ((is_user(source) and destination == qv) if side == "BUY"
                          else (source == qv and is_user(destination)))
                 if not valid:
