@@ -1301,6 +1301,7 @@ class Runtime:
                 if self.chain_meme_trader_only:
                     self.store.activate_chain_meme_trader_funded_period()
                     self.store.register_chain_meme_trader_cost_coverage_scaleout()
+                    self.store.register_chain_meme_pattern_experiments()
                     self.store.register_chain_meme_v22_vault_shadow(
                         position_definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
                     )
@@ -1518,6 +1519,8 @@ class Runtime:
                 raise
             self._dex_quote_failure_streak = 0
             self._dex_quote_backoff_until = 0.0
+            if getattr(self, "chain_meme_trader_only", False):
+                self._remember_pattern_quotes(quoted)
             return quoted
         finally:
             self._dex_quote_lock.release()
@@ -5840,6 +5843,7 @@ class Runtime:
             targets = self.store.chain_meme_trader_market_mark_targets(
                 definition_versions=target_versions,
             )
+            self._pattern_held_tokens = {str(t["token_id"]) for t in targets}
             refreshed = await self._refresh_chain_meme_market_marks(
                 targets, heartbeat_name="chain-meme-market-marks",
                 high_priority=True,
@@ -5872,6 +5876,88 @@ class Runtime:
             "flat-compression-breakout-shadow", item=refreshed > 0,
             error_detail=f"targets={len(targets)};refreshed={refreshed}",
         )
+
+    def _remember_pattern_quotes(self, quoted: dict) -> None:
+        """Bounded passive watch: reuse discovery/held/flat quotes, no I/O here."""
+        current = utcnow()
+        watch = getattr(self, "_pattern_watch", {})
+        watch = {k: v for k, v in watch.items() if current < v["expires_at"]}
+        for token, snapshot in quoted.values():
+            token_id, chain = token.token_id, token.chain
+            if token_id in watch:
+                watch[token_id]["quote"] = snapshot
+                continue
+            if chain not in {"solana", "bsc", "robinhood"}:
+                continue
+            raw = snapshot.raw or {}
+            pair = raw.get("pair", raw)
+            address = str(pair.get("pairAddress") or "")
+            created = pair.get("pairCreatedAt")
+            if not address or not created or snapshot.price_usd is None or snapshot.price_usd <= 0:
+                continue
+            age = snapshot.observed_at.timestamp() - float(created) / 1000
+            bucket = "early" if age < 900 else "growth" if age < 21600 else "mature"
+            capacity = 4 if bucket == "growth" else 3
+            if age < 0 or sum(v["token"].chain == chain and v["bucket"] == bucket for v in watch.values()) >= capacity:
+                continue
+            watch[token_id] = {"token": token, "bucket": bucket, "quote": snapshot,
+                "pair_address": canonical_token_address(chain, address),
+                "expires_at": current + timedelta(minutes=15)}
+        self._pattern_watch = watch
+
+    async def chain_meme_pattern_observer_once(self) -> None:
+        """At most 30 shared candidates; low priority and isolated from old entries."""
+        self._remember_pattern_quotes({})
+        watch = self._pattern_watch
+        projected = sampled = 0
+        chains = sorted({v["token"].chain for v in watch.values()})
+        cursor = getattr(self, "_pattern_chain_cursor", 0)
+        if chains:
+            offset = cursor % len(chains)
+            chains = chains[offset:] + chains[:offset]
+        self._pattern_chain_cursor = cursor + 1
+        requested = False
+        for chain in chains:
+            await self._chain_meme_active_idle().wait()
+            targets = [v for v in watch.values() if v["token"].chain == chain]
+            # Held tokens only consume their core lane's next response. Never
+            # make a second request when a held response is late or unavailable.
+            due = [v["token"].address for v in targets
+                   if v["token"].token_id not in getattr(self, "_pattern_held_tokens", set())
+                   and ((utcnow() - v["quote"].observed_at).total_seconds() > 15
+                        or v.get("sampled_at") == v["quote"].observed_at)]
+            if due and not requested and self._dex_quote_low_priority_available():
+                requested = True
+                try:
+                    quoted = await asyncio.wait_for(self._dex_batch_quote(
+                        chain, due, fresh=True, high_priority=False), timeout=3)
+                    self._remember_pattern_quotes(quoted)
+                except (httpx.HTTPError, TimeoutError) as exc:
+                    self.store.heartbeat("chain-meme-pattern-observer", error=type(exc).__name__)
+            for item in targets:
+                token = item["token"]
+                snapshot = item["quote"]
+                if (item.get("sampled_at") == snapshot.observed_at
+                        or (utcnow() - snapshot.observed_at).total_seconds() > 30):
+                    continue
+                raw = snapshot.raw or {}
+                pair = raw.get("pair", raw)
+                pairs = raw.get("pairs") or [pair]
+                exact = next((p for p in pairs if canonical_token_address(chain, str(p.get("pairAddress") or "")) == item["pair_address"]), None)
+                if exact is None:
+                    continue
+                observation = DexScreenerClient._snapshot(exact)
+                if observation is None:
+                    continue
+                observation.observed_at, observation.ingested_at = snapshot.observed_at, snapshot.ingested_at
+                received = utcnow()
+                if self._paper_quote_rejections(token.token_id, token, observation, received):
+                    continue
+                projected += self.store.observe_chain_meme_pattern(token, observation, recorded_at=received)
+                item["sampled_at"] = snapshot.observed_at
+                sampled += 1
+        self.store.heartbeat("chain-meme-pattern-observer", item=sampled > 0,
+            error_detail=f"watched={len(watch)};sampled={sampled};projected={projected}")
 
     async def chain_meme_carried_market_marks_once(self) -> None:
         """Maintain older open positions without slowing the active strategy lane."""
@@ -6707,6 +6793,11 @@ class Runtime:
                         self.flat_compression_breakout_shadow_once,
                     ),
                     name="flat_compression_breakout_shadow",
+                ),
+                asyncio.create_task(
+                    self._periodic("chain_meme_pattern_observer", 15,
+                                   self.chain_meme_pattern_observer_once),
+                    name="chain_meme_pattern_observer",
                 ),
                 asyncio.create_task(
                     self._periodic(

@@ -7,7 +7,7 @@ import re
 import sqlite3
 import threading
 from contextlib import nullcontext
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -15,6 +15,8 @@ from typing import Any, Iterable, Mapping
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from solders.pubkey import Pubkey
+
+from .forward_patterns import experiment_policies, pattern_signal, conditional_fraction
 
 from .models import (
     CandidateDecision,
@@ -2498,6 +2500,9 @@ class Store:
                     UNIQUE(definition_version,source_snapshot_id),
                     UNIQUE(definition_version,token_id,episode_no)
                 );
+                CREATE INDEX IF NOT EXISTS chain_meme_pattern_evaluations_token_idx
+                    ON chain_meme_trader_v6_entry_evaluations(definition_version,token_id,id DESC)
+                    WHERE reason='pattern_observation';
                 CREATE INDEX IF NOT EXISTS chain_meme_trader_v6_cohorts_token_idx
                     ON chain_meme_trader_v6_cohorts(
                         definition_version,token_id,decided_at,id
@@ -23505,6 +23510,8 @@ class Store:
         }
         if isinstance(policy.get("entry_filter"), Mapping):
             behavior["entry_filter"] = dict(policy["entry_filter"])
+        if isinstance(policy.get("conditional_exit"), Mapping):
+            behavior["conditional_exit"] = dict(policy["conditional_exit"])
         for name in ("entry_match_mode", "research_overlay"):
             if policy.get(name) is not None:
                 behavior[name] = str(policy[name])
@@ -25199,6 +25206,136 @@ class Store:
                 definition_version=version,
             )
 
+    def register_chain_meme_pattern_experiments(self) -> int:
+        """Append only experiments with the current shared price inputs wired."""
+        ready = {"sustained_breakout", "pullback_reclaim", "conditional_runner",
+                 "quiet_reawakening", "panic_reclaim"}
+        added = 0
+        for policy in experiment_policies():
+            if policy["entry_family"] not in ready:
+                continue
+            with self._lock:
+                exists = self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?",
+                    (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, policy["arm_id"]),
+                ).fetchone()
+                if exists is None:
+                    self.append_chain_meme_trader_policy(policy)
+                    added += 1
+        return added
+
+    def observe_chain_meme_pattern(self, token: TokenCandidate, snapshot: TokenSnapshot,
+                                   *, recorded_at: Any = None) -> int:
+        """One shared observation; separate signals from next-observed BUY fills.
+
+        These isolated snapshots do not create extra opportunities for old arms.
+        All pattern arms signalling on one sample share the later cohort/fill.
+        """
+        current = parse_time(recorded_at or utcnow())
+        snapshot = replace(snapshot, ingested_at=snapshot.ingested_at or current)
+        raw = dict(snapshot.raw or {})
+        pair = raw.get("pair", raw)
+        pair_address = canonical_token_address(token.chain, str(pair.get("pairAddress") or ""))
+        if (not pair_address or token.token_id != snapshot.token_id
+                or str(pair.get("chainId") or "").lower() != token.chain
+                or canonical_token_address(token.chain, str((pair.get("baseToken") or {}).get("address") or "")) != token.address
+                or not 0 <= (current - snapshot.observed_at).total_seconds() <= 30
+                or not snapshot.observed_at <= snapshot.ingested_at <= current
+                or float(snapshot.price_usd or 0) <= 0):
+            return 0
+        isolated = replace(snapshot, provider="strategy-observer:" + snapshot.provider,
+                           raw={"pair": pair, "upstream_provider": snapshot.provider})
+        if isolated.liquidity_usd is None and isinstance(pair.get("liquidity"), Mapping):
+            isolated = replace(isolated, liquidity_usd=pair["liquidity"].get("usd"))
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        with self._lock:
+            registration = self._chain_meme_trader_registration(version)
+            if registration is None:
+                return 0
+            definition = self._chain_meme_trader_effective_definition(version, registration["definition_json"])
+            policies = [p for p in definition["policies"] if p.get("entry_match_mode") == "isolated_pattern_observer"]
+            if not policies:
+                return 0
+            snapshot_id = self.add_snapshot(isolated)
+            row = self.db.execute("SELECT *,id AS source_snapshot_id FROM token_snapshots WHERE id=?", (snapshot_id,)).fetchone()
+            # A source receipt timestamp is not a future local storage timestamp.
+            decision_at = max(current, parse_time(row["recorded_at"]))
+            history = []
+            for source in self.db.execute(
+                "SELECT * FROM token_snapshots WHERE token_id=? AND observed_at>=? AND observed_at<=? "
+                "AND provider LIKE 'strategy-observer:%' ORDER BY observed_at DESC,id DESC LIMIT 80",
+                (token.token_id, iso(decision_at - timedelta(minutes=20)), iso(decision_at)),
+            ).fetchall()[::-1]:
+                source_raw = self._json_object(source["raw_json"])
+                source_pair = source_raw.get("pair", source_raw)
+                source_address = canonical_token_address(token.chain, str(source_pair.get("pairAddress") or ""))
+                created = source_pair.get("pairCreatedAt")
+                if source_address != pair_address or not created:
+                    continue
+                history.append({"id": int(source["id"]), "token_id": token.token_id,
+                    "pair_address": source_address, "price": source["price_usd"],
+                    "liquidity": source["liquidity_usd"], "volume": source["volume_5m_usd"],
+                    "buys": source["buys_5m"], "sells": source["sells_5m"],
+                    "pool_age_seconds": (parse_time(source["observed_at"]) - datetime.fromtimestamp(float(created) / 1000, tz=timezone.utc)).total_seconds(),
+                    "observed_at": source["observed_at"], "ingested_at": source["ingested_at"],
+                    "recorded_at": source["recorded_at"]})
+            if not history or history[-1]["id"] != snapshot_id:
+                return 0
+            previous = self.db.execute(
+                "SELECT feature_json FROM chain_meme_trader_v6_entry_evaluations WHERE definition_version=? "
+                "AND token_id=? AND reason='pattern_observation' ORDER BY id DESC LIMIT 1", (version, token.token_id),
+            ).fetchone()
+            previous_features = self._json_object(previous["feature_json"]) if previous else {}
+            pending = previous_features.get("ready_arm_ids", [])
+            pre_observed = previous_features.get("observed_at")
+            post_valid = bool(pre_observed and previous_features.get("pair_address") == pair_address
+                and parse_time(pre_observed) < snapshot.observed_at
+                and 0 < (snapshot.observed_at - parse_time(pre_observed)).total_seconds() <= 60
+                and (isolated.liquidity_usd is None or float(isolated.liquidity_usd) >= 1))
+            already_bought = {str(r[0]) for r in self.db.execute(
+                "SELECT DISTINCT p.arm_id FROM chain_meme_trader_positions p JOIN chain_meme_trader_v6_cohorts c "
+                "ON c.id=p.shadow_cohort_id WHERE p.definition_version=? AND p.token_id=? AND c.pair_address=?",
+                (version, token.token_id, pair_address),
+            )}
+            active = [p for p in policies if self._chain_meme_trader_policy_active_for_snapshot(p, row)]
+            ready, outcomes = [], {}
+            for policy in active:
+                passed, reason = pattern_signal(history, policy, decision_at=iso(decision_at),
+                    activated_at=policy["forward_started_at"])
+                if policy["arm_id"] in already_bought:
+                    passed, reason = False, "pattern_already_enrolled_at_this_pool"
+                outcomes[policy["arm_id"]] = reason
+                if passed:
+                    ready.append(policy["arm_id"])
+            admitted_arms = [p["arm_id"] for p in active if post_valid and p["arm_id"] in pending
+                             and p["arm_id"] not in already_bought]
+            features = {"source_snapshot_id": snapshot_id, "pair_address": pair_address,
+                        "observed_at": iso(snapshot.observed_at), "ready_arm_ids": ready,
+                        "outcomes": outcomes, "fill_signal_snapshot_id": previous_features.get("source_snapshot_id"),
+                        "entry_signal_key": "isolated_patterns/v1", "policy_entry_family": "pattern_experiments"}
+            projected = 0
+            with self.db:
+                if admitted_arms:
+                    episode = self.db.execute("SELECT COALESCE(MAX(episode_no),0)+1 FROM chain_meme_trader_v6_cohorts WHERE definition_version=? AND token_id=?", (version, token.token_id)).fetchone()[0]
+                    cursor = self.db.execute(
+                        "INSERT INTO chain_meme_trader_v6_cohorts(definition_version,token_id,entry_family,source_snapshot_id,pair_address,decided_at,episode_no,feature_json) VALUES(?,?,'broad_launch',?,?,?,?,?)",
+                        (version, token.token_id, snapshot_id, pair_address, iso(decision_at), episode, self._json(features)))
+                    cohort = int(cursor.lastrowid)
+                    net_flows = self._chain_meme_trader_effective_net_flows(version)
+                    for arm in admitted_arms:
+                        cash = float(definition["starting_cash_usd_each_arm"]) + net_flows.get(arm, 0)
+                        enough = cash + 1e-9 >= float(definition["policy_notional_usd"])
+                        self.db.execute("INSERT INTO chain_meme_trader_entry_decisions(definition_version,arm_id,shadow_cohort_id,token_id,baseline_quote_result_id,decided_at,status,reason) VALUES(?,?,?,?,?,?,?,?)",
+                            (version, arm, cohort, token.token_id, snapshot_id, iso(decision_at),
+                             "admitted" if enough else "rejected", "pattern_next_observation" if enough else "entry_cash_below_20usdc"))
+                    projected = self._project_chain_meme_trader_market_entry(version=version, cohort_id=cohort,
+                        token_id=token.token_id, snapshot_id=snapshot_id, market_price=float(snapshot.price_usd),
+                        filled_at=iso(decision_at), reason="pattern_next_observation", definition=definition,
+                        net_flow_by_arm=net_flows)
+                self.db.execute("INSERT INTO chain_meme_trader_v6_entry_evaluations(definition_version,source_snapshot_id,token_id,evaluated_at,status,entry_family,reason,feature_json) VALUES(?,?,?,?,?,NULL,'pattern_observation',?)",
+                    (version, snapshot_id, token.token_id, iso(decision_at), "admitted" if projected else "rejected", self._json(features)))
+            return projected
+
     def register_chain_meme_v21_vault_shadow(
         self, *, observer_version: str | None = None,
         position_definition_version: str | None = None,
@@ -25914,7 +26051,7 @@ class Store:
             )
             rows = self.db.execute(
                 "SELECT s.id AS source_snapshot_id,s.* FROM token_snapshots s "
-                "WHERE s.id>? AND s.recorded_at>=? AND NOT EXISTS(SELECT 1 FROM "
+                "WHERE s.id>? AND s.recorded_at>=? AND s.provider NOT LIKE 'strategy-observer:%' AND NOT EXISTS(SELECT 1 FROM "
                 "chain_meme_trader_v6_entry_evaluations e WHERE "
                 "e.definition_version=? AND e.source_snapshot_id=s.id) "
                 "ORDER BY s.id LIMIT ?",
@@ -30383,6 +30520,29 @@ class Store:
                                 tiers[tp_index]["return"]
                             ):
                                 fraction = float(tiers[tp_index]["fraction_of_remaining"])
+                                if tp_index == 0 and (policy.get("conditional_exit") or {}).get("enabled"):
+                                    entry_liquidity = self.db.execute(
+                                        "SELECT liquidity_usd FROM token_snapshots WHERE id=?",
+                                        (position["entry_snapshot_id"],),
+                                    ).fetchone()
+                                    prior_marks = [dict(r) for r in self.db.execute(
+                                        "SELECT buys_5m AS buys,sells_5m AS sells,liquidity_usd AS liquidity,observed_at "
+                                        "FROM chain_meme_trader_market_mark_history WHERE token_id=? AND pair_address=? "
+                                        + ("COLLATE NOCASE " if not str(position["token_id"]).startswith("solana:") else "") +
+                                        "AND status='VISIBLE' AND observed_at>=? AND observed_at<? AND recorded_at<=? "
+                                        "ORDER BY recorded_at DESC,id DESC LIMIT 1",
+                                        (position["token_id"], position["mark_pair_address"],
+                                         max(str(position["opened_at"]), iso(current - timedelta(seconds=30))),
+                                         iso(mark_observed_at), iso(current)),
+                                    )]
+                                    continuity = prior_marks + [{"buys": position["mark_buys_5m"],
+                                        "sells": position["mark_sells_5m"], "liquidity": liquidity}]
+                                    fraction = conditional_fraction(policy, continuity,
+                                        entry_liquidity[0] if entry_liquidity else None)
+                                    trigger_evidence["conditional_runner"] = {
+                                        "fraction_of_remaining": fraction, "continuity_marks": continuity,
+                                        "rule": policy["conditional_exit"],
+                                    }
                                 sell_amount = (
                                     int(position["amount_raw"])
                                     if fraction >= 1.0 else max(
