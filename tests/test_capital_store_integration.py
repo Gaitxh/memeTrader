@@ -44,6 +44,25 @@ def _capital_store(tmp_path, monkeypatch, name):
     return store, clock
 
 
+def test_market_entry_does_not_scan_historical_reservations_when_none_pending(tmp_path, monkeypatch):
+    store, clock = _capital_store(tmp_path, monkeypatch, "empty-reservations.sqlite3")
+    clock[0] += timedelta(seconds=1)
+    token = _new_token("NoPending")
+    store.upsert_token(token)
+    snapshot = _snapshot(token, str(Pubkey.new_unique()), clock[0], buys=8, sells=2)
+    snapshot.raw["pair"].update(txns={"m5": {"buys": 8, "sells": 2}}, volume={"m5": 500})
+    store.add_snapshot(snapshot)
+    statements = []
+    store.db.set_trace_callback(statements.append)
+    result = store.enroll_chain_meme_trader_v6(definition_version=Store.CHAIN_MEME_TRADER_ACTIVE_VERSION)
+    store.db.set_trace_callback(None)
+    assert result["admitted"] == 1
+    assert not any("SELECT d.arm_id,COUNT(*) AS pending_count" in sql for sql in statements)
+    buy = store.db.execute("SELECT net_cash_flow_usd FROM chain_meme_trader_trades WHERE side='BUY' LIMIT 1").fetchone()
+    assert buy[0] == pytest.approx(-20)
+    store.close()
+
+
 def _record_actual_flow(store, clock, token, pair, when, *, net_raw=-1_000_000):
     clock[0] = when
     payload = {

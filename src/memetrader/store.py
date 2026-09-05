@@ -26780,6 +26780,9 @@ class Store:
                         if batch_net_flows is None:
                             batch_net_flows = self._chain_meme_trader_effective_net_flows(version)
                         net_flow_by_arm = batch_net_flows
+                        # Market-mark Paper has no pending BUY intents. Avoid
+                        # joining the complete historical decision ledger for
+                        # an empty reservation set on every fresh token.
                         pending_by_arm = {
                             str(item["arm_id"]): int(item["pending_count"] or 0)
                             for item in self.db.execute(
@@ -26793,7 +26796,7 @@ class Store:
                                 "d.status='admitted' GROUP BY d.arm_id",
                                 (version,),
                             ).fetchall()
-                        }
+                        } if pending_buy_count else {}
                         family_arms = [
                             str(policy["arm_id"]) for policy in snapshot_policies
                             if (
