@@ -7526,6 +7526,126 @@ def test_chain_meme_v22_funding_and_policy_additions_start_at_their_own_frontier
     assert appended["maturity"] == "early"
     assert appended["account"]["account_return_fraction"] is None
     assert appended["account"]["capital_neutral_total_pnl_usd"] is not None
+
+    # Restoring fixed funding must preserve the unlimited period and its open
+    # positions. Queued snapshots must not bypass the restored cash gate.
+    _, queued_id = add_flash_snapshot()
+    preserved = {
+        table: [tuple(row) for row in store.db.execute(f"SELECT * FROM {table}")]
+        for table in (
+            "chain_meme_trader_v6_activations", "chain_meme_trader_trades",
+            "chain_meme_trader_positions", "chain_meme_trader_entry_decisions",
+            "chain_meme_trader_policy_additions",
+        )
+    }
+    restoration = store.restore_chain_meme_trader_fixed_paper_funding()
+    assert restoration["starting_cash_usd"] == 1000.0
+    assert restoration["activation_snapshot_id"] == queued_id
+    assert dict(store.restore_chain_meme_trader_fixed_paper_funding()) == dict(restoration)
+    for table, expected in preserved.items():
+        assert [tuple(row) for row in store.db.execute(f"SELECT * FROM {table}")] == expected
+    assert store.enroll_chain_meme_trader_v6(definition_version=version)["admitted"] == 1
+    assert decision(source_policy["arm_id"], queued_id)["status"] == "rejected"
+    assert decision(appended_policy["arm_id"], queued_id)["status"] == "rejected"
+
+    # A realized recovery can fund another BUY; all snapshots in one batch
+    # must see its debit so the same balance cannot be spent twice.
+    with store.db:
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_trades("
+            "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+            "net_cash_flow_usd,reason,created_at,recorded_at) "
+            "VALUES(?,?,-2,'synthetic:funding-boundary','SELL',50,50,'fixture_recovery',?,?)",
+            (version, appended_policy["arm_id"], iso(), iso()),
+        )
+    _, first_id = add_flash_snapshot()
+    _, second_id = add_flash_snapshot()
+    assert store.enroll_chain_meme_trader_v6(definition_version=version)["admitted"] == 2
+    assert decision(appended_policy["arm_id"], first_id)["status"] == "admitted"
+    assert decision(appended_policy["arm_id"], second_id)["status"] == "rejected"
+    assert store._chain_meme_trader_effective_net_flows(version)[appended_policy["arm_id"]] == -990
+    restored_definition = store._chain_meme_trader_effective_definition(
+        version, registration["definition_json"],
+    )
+    assert restored_definition["capital_model"] == "legacy_cash_limited"
+    assert restored_definition["starting_cash_usd_each_arm"] == 1000.0
+
+    # The pre-restoration pending stop still executes after funding is restored.
+    followup_at = utcnow() + timedelta(seconds=1)
+    store.upsert_chain_meme_trader_market_mark(
+        post_addition_token,
+        TokenSnapshot(
+            "solana", post_addition_token.address, 0.5, 10_000, 50_000, 100, 2, 1,
+            observed_at=followup_at, ingested_at=followup_at, provider="dexscreener",
+            raw={"pair": {"pairAddress": f"pool-{post_addition_token.address}"}},
+        ), recorded_at=followup_at,
+    )
+    store.evaluate_chain_meme_trader_market_marks(definition_version=version, now=followup_at)
+    assert store.db.execute(
+        "SELECT status FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND arm_id=? AND token_id=?",
+        (version, appended_policy["arm_id"], post_addition_token.token_id),
+    ).fetchone()["status"] == "closed"
+    store.close()
+
+
+def test_chain_meme_funded_period_preserves_rules_and_old_sell_cash(tmp_path: Path):
+    store = Store(tmp_path / "funded-period.sqlite3", initial_cash_usd=1000)
+    old = Store.CHAIN_MEME_TRADER_V22_VERSION
+    new = Store.CHAIN_MEME_TRADER_FUNDED_PERIOD_VERSION
+    store.activate_chain_meme_trader_v22()
+    registration = store._chain_meme_trader_registration(old)
+    definition = store._chain_meme_trader_effective_definition(old, registration["definition_json"])
+    policy = next(p for p in definition["policies"] if p["arm_id"] == "broad_principal_lock_runner_v1")
+    token, cohort = _seed_chain_market_position(
+        store, version=old, policy=policy, opened_at=utcnow() - timedelta(minutes=1),
+    )
+    old_position = tuple(store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE definition_version=?", (old,),
+    ).fetchone())
+    activated = store.activate_chain_meme_trader_funded_period()
+    assert dict(store.activate_chain_meme_trader_funded_period()) == dict(activated)
+    new_definition = store._chain_meme_trader_effective_definition(
+        new, store._chain_meme_trader_registration(new)["definition_json"],
+    )
+    assert new_definition["strategy_logic_changed"] is False
+    assert new_definition["capital_model"] == "legacy_cash_limited"
+    assert [(p["arm_id"], p["behavior_contract_hash"]) for p in definition["policies"]] == [
+        (p["arm_id"], p["behavior_contract_hash"]) for p in new_definition["policies"]
+    ]
+    assert store._chain_meme_trader_effective_net_flows(new) == {}
+    assert tuple(store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE definition_version=?", (old,),
+    ).fetchone()) == old_position
+    for p in new_definition["policies"]:
+        assert p["forward_activation_snapshot_id"] == activated["activation_snapshot_id"]
+        assert p["forward_started_at"] == activated["activated_at"]
+    # Old-position exits remain executable, but their proceeds cannot fund new accounts.
+    at = utcnow()
+    store.upsert_chain_meme_trader_market_mark(token, TokenSnapshot(
+        "solana", token.address, 0.5, 10000, 50000, 100, 2, 1,
+        observed_at=at, ingested_at=at, provider="dexscreener",
+        raw={"pair": {"pairAddress": "pair-A"}},
+    ), recorded_at=at)
+    store.evaluate_chain_meme_trader_market_marks(definition_version=old, now=at)
+    later = at + timedelta(seconds=1)
+    store.upsert_chain_meme_trader_market_mark(token, TokenSnapshot(
+        "solana", token.address, 0.5, 10000, 50000, 100, 2, 1,
+        observed_at=later, ingested_at=later, provider="dexscreener",
+        raw={"pair": {"pairAddress": "pair-A"}},
+    ), recorded_at=later)
+    store.evaluate_chain_meme_trader_market_marks(definition_version=old, now=later)
+    assert store.db.execute(
+        "SELECT status FROM chain_meme_trader_positions WHERE definition_version=? AND shadow_cohort_id=?",
+        (old, cohort),
+    ).fetchone()["status"] == "closed"
+    assert store._chain_meme_trader_effective_net_flows(old)[policy["arm_id"]] > -20
+    assert store._chain_meme_trader_effective_net_flows(new) == {}
+    assert store.record_chain_meme_trader_account_snapshots(definition_version=new) == len(definition["policies"])
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_account_snapshots WHERE definition_version=? AND cash_usd=1000",
+        (new,),
+    ).fetchone()[0] == len(definition["policies"])
     store.close()
 
 

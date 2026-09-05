@@ -39,7 +39,12 @@ class ChainWebData:
         self.live_enabled = bool((config.get("live") or {}).get("enabled", False))
         database = Path(str(config["database"]))
         self.database = database if database.is_absolute() else root / database
-        self.wallets = SolanaLiveWalletManager(root, self.database)
+        live_config = config.get("live") or {}
+        self.wallets = SolanaLiveWalletManager(
+            root, self.database,
+            min_sol_fee_reserve_lamports=int(live_config.get("min_sol_fee_reserve_lamports", 5_000_000)),
+            minimum_buy_usdc_raw=int(live_config.get("minimum_buy_usdc_raw", 1_000_000)),
+        )
         self._cache_lock = threading.Lock()
         self._state_cache: dict[tuple[bool, str | None], tuple[float, dict[str, Any]]] = {}
         self._universe_cache: tuple[tuple[Any, ...], dict[str, Any]] | None = None
@@ -164,6 +169,52 @@ class ChainWebData:
             "in_progress": int(row["progress_count"] or 0),
             "latest_at": row["latest_at"],
         }
+
+    def update_history(self) -> dict[str, Any]:
+        path = self.root / "docs" / "PROJECT_CONTEXT" / "SYSTEM_UPDATE_HISTORY.json"
+        entries = json.loads(path.read_text(encoding="utf-8")).get("entries", []) if path.exists() else []
+        return {"status": "ok", "generated_at": iso(), "entries": entries[-100:][::-1]}
+
+    def performance_state(self) -> dict[str, Any]:
+        """Small on-demand diagnostics; no ledger aggregation or external requests."""
+        versions = tuple(dict.fromkeys((Store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
+            Store.CHAIN_MEME_TRADER_V22_VERSION, Store.CHAIN_MEME_TRADER_V21_VERSION,
+            Store.CHAIN_MEME_TRADER_V20_VERSION)))
+        with self._connect() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_timing_latest'"
+            ).fetchone()
+            row = connection.execute("SELECT * FROM runtime_timing_latest WHERE id=1").fetchone() if exists else None
+            sources = self._rows(connection, "SELECT * FROM source_health")
+            held = self._rows(connection,
+                "SELECT t.chain,m.last_success_at,m.last_attempt_at,m.failure_kind AS last_failure_kind "
+                "FROM (SELECT DISTINCT token_id FROM chain_meme_trader_positions WHERE status='open' "
+                f"AND definition_version IN ({','.join('?' for _ in versions)})) p "
+                "JOIN tokens t ON t.token_id=p.token_id "
+                "LEFT JOIN chain_meme_trader_market_marks m ON m.token_id=p.token_id", versions)
+        now = utcnow()
+        by_chain: dict[str, Any] = {}
+        for item in held:
+            group = by_chain.setdefault(item["chain"], {"tokens": 0, "missing": 0, "failures": 0, "ages": []})
+            group["tokens"] += 1
+            group["failures"] += int(bool(item["last_failure_kind"]))
+            if item["last_success_at"]:
+                group["ages"].append(max(0.0, (now - parse_time(item["last_success_at"])).total_seconds()))
+            else:
+                group["missing"] += 1
+        for group in by_chain.values():
+            ages = sorted(group.pop("ages"))
+            group.update({"age_p50_seconds": ages[(len(ages)-1)//2] if ages else None,
+                          "age_p95_seconds": ages[min(len(ages)-1, math.ceil(len(ages)*.95)-1)] if ages else None,
+                          "age_max_seconds": ages[-1] if ages else None})
+        return {"status": "ok", "generated_at": iso(now),
+                "timing": json.loads(row["payload_json"]) if row else None,
+                "timing_recorded_at": row["recorded_at"] if row else None,
+                "held_by_chain": by_chain, "sources": sources,
+                "ui": {"visible_seconds": 5, "hidden_seconds": 30, "token_detail_seconds": 10},
+                "storage": {"database_bytes": self.database.stat().st_size,
+                            "wal_bytes": Path(str(self.database)+"-wal").stat().st_size if Path(str(self.database)+"-wal").exists() else 0,
+                            "free_bytes": shutil.disk_usage(self.database.parent).free}}
 
     def error_state(self) -> dict[str, Any]:
         with self._connect() as connection:
@@ -651,6 +702,7 @@ class ChainWebData:
             capital_model = str(
                 definition.get("capital_model") or "legacy_cash_limited"
             )
+            starting_cash = float(definition.get("starting_cash_usd_each_arm") or 0.0)
             compact_policy_keys = {
                 "arm_id", "stage", "name", "entry_family", "exit_family", "exit_mode",
                 "max_hold_minutes", "fixed_horizon_minutes", "forward_enabled",
@@ -721,7 +773,11 @@ class ChainWebData:
                     float(account["win_count"]) / terminal_count
                     if terminal_count > 0 else None
                 )
-                account["account_return_fraction"] = None
+                account["account_return_fraction"] = (
+                    total_pnl / starting_cash
+                    if capital_model == "legacy_cash_limited"
+                    and total_pnl is not None and starting_cash > 0 else None
+                )
                 curve = list(curves_by_arm.get(policy_arm_id, []))
                 if accounting_effective_after:
                     curve_limit = (
@@ -765,9 +821,6 @@ class ChainWebData:
                         continue
                     cumulative_realized += float(value)
                     realized_curve.append(cumulative_realized)
-                starting_cash = float(
-                    definition.get("starting_cash_usd_each_arm") or 0.0
-                )
                 peak_equity = (
                     starting_cash if capital_model == "legacy_cash_limited" else 0.0
                 )
@@ -3186,6 +3239,14 @@ class ChainWebHandler(BaseHTTPRequestHandler):
                     {"status": "error", "error": type(exc).__name__},
                     HTTPStatus.SERVICE_UNAVAILABLE,
                 )
+            return
+        if route in {"/api/updates", "/api/performance"}:
+            try:
+                payload = self.server.data.update_history() if route == "/api/updates" else self.server.data.performance_state()
+                self._send_json(payload)
+            except (OSError, sqlite3.Error, ValueError) as exc:
+                self.server.data.record_web_error(route, exc)
+                self._send_json({"status": "error", "error": "诊断记录暂时不可用"}, HTTPStatus.SERVICE_UNAVAILABLE)
             return
         if route == "/api/errors":
             try:

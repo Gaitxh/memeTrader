@@ -148,6 +148,7 @@ const pageMeta = {
   system:['运行状态','采集与执行系统'],
   wallets:['钱包与实盘','钱包、策略绑定与实盘'],
   errors:['错误监督','错误与修复记录'],
+  updates:['更新历史','系统变更与运行记录'],
 };
 
 function route(){
@@ -159,7 +160,30 @@ function route(){
   $('#page-kicker').textContent=pageMeta[page][0]; $('#page-title').textContent=pageMeta[page][1];
   clearTimeout(errorTimer);
   if(page==='errors')refreshErrors();
+  if(page==='updates')refreshUpdates();
+  if(page==='system')refreshPerformance();
   closeDrawer(false);
+  if(state)renderVisible(state);
+}
+
+async function refreshUpdates(){
+  const target=$('#updates-list');
+  try{
+    const response=await fetch('/api/updates',{cache:'no-store'}),payload=await response.json();
+    if(!response.ok)throw new Error(payload.error||'读取失败');
+    target.innerHTML=(payload.entries||[]).map(item=>`<article class="update-entry"><div class="section-head"><h3>${esc(item.title)}</h3><time>${time(item.recorded_at,true)}</time></div><dl><dt>问题</dt><dd>${esc(item.problem)}</dd><dt>改动</dt><dd>${esc(item.change)}</dd><dt>原因与目的</dt><dd>${esc(item.rationale)}</dd><dt>验证结果</dt><dd>${esc(item.validation)}</dd><dt>影响范围</dt><dd>${esc(item.scope)}</dd><dt>当前进度</dt><dd>${esc(item.status)}</dd></dl><details><summary>部署与回溯记录</summary><p>提交：${esc(item.commit||'尚未提交')} · 推送：${esc(item.pushed_at||'尚未推送')} · 部署：${esc(item.deployed_at||'尚未部署')}</p><p>运行核验：${esc(item.runtime_verification||'尚未核验')}</p><p>回退方式：${esc(item.rollback||'未指定')}</p></details></article>`).join('')||'<p class="empty">暂无已登记更新</p>';
+  }catch(error){target.textContent=`更新记录读取失败：${error.message}`;}
+}
+
+async function refreshPerformance(){
+  const target=$('#performance-content'),seconds=x=>x==null?'待采样':`${Number(x).toFixed(2)} 秒`;
+  try{
+    const response=await fetch('/api/performance',{cache:'no-store'}),data=await response.json();
+    if(!response.ok)throw new Error(data.error||'读取失败');
+    const labels={chain_meme_trader:'策略判断与账户',chain_meme_market_marks:'当前持仓采集轮次',chain_meme_carried_market_marks:'旧账期持仓采集轮次',multichain_meme_data:'多链发现轮次',flat_compression_breakout_shadow:'静默突破观察',held_fetch:'持仓批次：排队与请求',held_apply_exit:'持仓批次：写入与退出判断'};
+    const rows=Object.fromEntries(Object.entries(data.timing?.components||{}).map(([name,v])=>[name,{...v,interval_p50_seconds:v.actual_interval_seconds?.p50,interval_p95_seconds:v.actual_interval_seconds?.p95,duration_p50_seconds:v.duration_seconds?.p50,duration_p95_seconds:v.duration_seconds?.p95}]));
+    target.innerHTML=`<p class="delta">统计更新 ${time(data.timing_recorded_at,true)} · 每类最多最近 120 次观测 · 页面可见 5 秒 / 隐藏 30 秒</p><div class="table-wrap"><table><thead><tr><th>功能</th><th>预定义周期</th><th>实际周期中位数 / 较慢5%</th><th>处理耗时中位数 / 较慢5%</th><th>样本</th></tr></thead><tbody>${Object.entries(rows).map(([name,v])=>`<tr><td>${esc(labels[name]||'后台观察任务')}</td><td>${seconds(v.configured_interval_seconds)}</td><td>${seconds(v.interval_p50_seconds)} / ${seconds(v.interval_p95_seconds)}</td><td>${seconds(v.duration_p50_seconds)} / ${seconds(v.duration_p95_seconds)}</td><td>${Number(v.sample_count||0)}</td></tr>`).join('')||'<tr><td colspan="5">等待新运行进程产生真实计时</td></tr>'}</tbody></table></div><h3>所有账期仍持有的币</h3><div class="table-wrap"><table><thead><tr><th>链</th><th>去重币数</th><th>无成功价格</th><th>最近请求失败</th><th>数据年龄中位数 / 较旧5% / 最旧</th></tr></thead><tbody>${Object.entries(data.held_by_chain||{}).map(([chain,v])=>`<tr><td>${esc(chain)}</td><td>${v.tokens}</td><td>${v.missing}</td><td>${v.failures}</td><td>${seconds(v.age_p50_seconds)} / ${seconds(v.age_p95_seconds)} / ${seconds(v.age_max_seconds)}</td></tr>`).join('')}</tbody></table></div><p class="delta">数据年龄是距离最近一次成功接收的时间，不是采集间隔；失败与没有价格的币没有被排除。</p>`;
+  }catch(error){target.textContent=`速度诊断暂不可用：${error.message}`;}
 }
 
 function renderRuntime(data){
@@ -305,7 +329,7 @@ function renderUniverseDetail(family){
     <section class="contract-section"><h3>入场规则</h3><p>${esc(readable(strategy.source_entry_family||family.entry_family,entryLabels))}</p><small>只使用当时已经采集到的 Token、交易量、价格与池信息，不使用之后才出现的数据。</small></section>
     <section class="contract-section"><h3>复刻状态</h3><p>${esc(fidelityLabel(family))}</p><small>${esc(family.fidelity_note||'等待历史合同核验')}</small></section>
     <section class="contract-section"><h3>退出规则</h3><p>${esc(readable(family.exit_family,exitLabels))}</p><small>最长持有 ${Number(strategy.max_hold_minutes||240)} 分钟；${strategy.hard_stop_return==null?'无额外固定止损':`回撤到 ${percent(strategy.hard_stop_return)} 触发止损`}。池和价格连续不可见超过 1 分钟时，剩余仓位按全部亏损处理。</small></section>
-    <section class="contract-section"><h3>当前结果</h3><p>已观察 ${live.opportunityCount} 个符合策略条件的机会，已完成 ${live.terminal} 笔，其中盈利 ${live.wins} 笔，胜率 ${live.winRate==null?'等待样本':percent(live.winRate)}；当前持仓 ${live.open} 笔。</p><small>研究资金不因虚拟现金不足阻断新机会；单笔仍为 ${notional==null?'—':`${money(notional)} USDC`}，买卖各按 ${slippageBps==null?'—':`${Number(slippageBps)/100}%`} 滑点。</small></section>
+    <section class="contract-section"><h3>当前结果</h3><p>已观察 ${live.opportunityCount} 个符合策略条件的机会，已完成 ${live.terminal} 笔，其中盈利 ${live.wins} 笔，胜率 ${live.winRate==null?'等待样本':percent(live.winRate)}；当前持仓 ${live.open} 笔。</p><p>账户现金 ${strategy.account?.cash_usd==null?'待更新':money(strategy.account.cash_usd)}。${strategy.account?.capital_model==='unconstrained_research_notional'?'研究资金不受余额限制。':'初始资金 1000 USDC；现金不足暂停新买入，已有持仓继续退出。'}</p><small>单笔 ${notional==null?'—':`${money(notional)} USDC`}，买卖各按 ${slippageBps==null?'—':`${Number(slippageBps)/100}%`} 滑点。</small></section>
     <section class="contract-section"><h3>最近操作记录</h3><div class="strategy-log">${trades.length?trades.map(item=>`<button data-token="${esc(item.token_id)}"><time>${time(item.created_at)}</time><strong>${esc(sideText(item.side))}</strong><span>${esc(shortToken(item.token_id))}</span><em class="${pnlClass(item.realized_pnl_usd)}">${item.side==='BUY'?money(item.gross_usd):money(item.realized_pnl_usd)}</em><small>${esc(reasonText(item.reason))}</small></button>`).join(''):'<p class="empty">新前向版本尚无操作</p>'}</div></section>
     <section class="contract-section"><h3>仓位、持仓时长与交易记录</h3><div class="position-records">${positionCards||'<p class="empty">当前没有仓位记录</p>'}</div></section>
     <section class="contract-section"><h3>历史来源</h3><p>这个策略由 ${members.length} 个历史版本中的相同行为归纳而来。</p><small>历史总计 ${family.historical_terminal_projected_sum||0} 个完成样本，描述性 PNL ${money(family.historical_realized_pnl_projected_sum_usd)}；当前策略从真实部署时间开始累计，不回填部署前事件。</small></section>`;
@@ -324,7 +348,7 @@ function renderUniverse(){
   $('#universe-summary').innerHTML=[
     ['策略',families.length,'每个策略独立决策、持仓和结果'],
     ['前向运行',active,inactive?`${inactive} 个当前未运行`:`${replicas} 个历史规则 · ${successors} 个 DexScreener 继承策略`],
-    ['研究资金',unconstrained?'机会不受余额阻断':'原现金限制仍生效',unconstrained?'单笔规模和风险规则保持不变':'等待未来激活边界'],
+    ['策略资金',unconstrained?'机会不受余额阻断':'初始 1000 USDC',unconstrained?'单笔规模和风险规则保持不变':'按累计收支计算余额；余额不足暂停新买入，持仓继续退出'],
     ['行情采集','共享一次',`同一个 Token 不会按 ${families.length} 个策略重复访问`],
   ].map(([k,v,n])=>`<article class="summary-card"><span>${esc(k)}</span><strong>${esc(v)}</strong><small>${esc(n)}</small></article>`).join('');
   const q=($('#universe-search')?.value||'').trim().toLowerCase(), sort=$('#universe-sort')?.value||'maturity';
@@ -426,7 +450,7 @@ function renderTrading(data,strategies){
     ['正在提交',counts.submitted||0,'提交不等于已经成交'],
     ['已经成交',counts.filled||0,`${(t.fills||[]).length} 个最近成交`],
     ['零尝试失败',capacity.zero_attempt_failed_buy_count||0,`仍在等首次尝试 ${capacity.zero_attempt_waiting_buy_count||0} · P95 ${capacity.buy_queue_delay_p95_seconds==null?'—':Math.round(capacity.buy_queue_delay_p95_seconds)+' 秒'}`],
-    ['实际参与 / 历史现金门跳过',`${participation.projected} / ${participation.skipped}`,'资金模式激活后不再因 Paper 余额阻断新机会'],
+    ['实际参与 / 现金不足跳过',`${participation.projected} / ${participation.skipped}`,'每个策略独立核对现金，已有持仓继续退出'],
   ].map(([k,v,n])=>`<article class="summary-card"><span>${esc(k)}</span><strong>${esc(v)}</strong><small>${esc(n)}</small></article>`).join('');
   const lastIntent=(t.intents||[])[0],lastAttempt=(t.attempts||[])[0],lastFill=(t.fills||[])[0];
   $('#lifecycle').innerHTML=[
@@ -719,7 +743,16 @@ async function refreshWallets(force=false){
 }
 
 function bindTokenLinks(){document.body.addEventListener('click',e=>{const button=e.target.closest('[data-token]');if(button)openToken(button.dataset.token);});}
-function render(data){ingestStrategyHistory(data);state=data;const strategies=data.strategies||[];renderRuntime(data);renderDiscoveryBeacon(data);renderSummary(data,strategies);renderLeaders(data);renderUniverse();renderOverviewStrategies();renderTrading(data,strategies);renderReverseability(data);renderFunnel(strategies);renderRisk(data.recent_risk||[]);renderActivity(data.recent_activity||[],strategies);renderDiscoveries(data);renderHealth(data.source_health||[],data);populateWalletStrategies();renderWallets();refreshWallets();}
+function renderVisible(data){
+  const strategies=data.strategies||[];
+  if(lastPage==='overview'){renderSummary(data,strategies);renderOverviewStrategies();renderRisk(data.recent_risk||[]);renderActivity(data.recent_activity||[],strategies);renderDiscoveries(data);}
+  if(lastPage==='strategies')renderUniverse();
+  if(lastPage==='trading'){renderTrading(data,strategies);renderReverseability(data);}
+  if(lastPage==='discovery'){renderFunnel(strategies);renderDiscoveries(data);}
+  if(lastPage==='system')renderHealth(data.source_health||[],data);
+  if(lastPage==='wallets'){populateWalletStrategies();renderWallets();refreshWallets();}
+}
+function render(data){ingestStrategyHistory(data);state=data;renderRuntime(data);renderVisible(data);}
 
 function renderLive(data,focusedArm=null){
   ingestStrategyHistory(data);
@@ -737,7 +770,7 @@ function renderLive(data,focusedArm=null){
   });
   state={...state,...data,system:{...(state?.system||{}),...(data.system||{})},discovery:{...(state?.discovery||{}),...(data.discovery||{})},trading:{...(state?.trading||{}),...(data.trading||{})},strategies:mergedStrategies}; const strategies=mergedStrategies;
   if(universe&&Number(universe.families?.length||0)!==strategies.length)refreshUniverse();
-  renderRuntime(state);renderDiscoveryBeacon(state);renderSummary(state,strategies);renderLeaders(state);renderUniverse();renderOverviewStrategies();renderRisk(state.recent_risk||[]);renderActivity(state.recent_activity||[],strategies);renderDiscoveries(state);renderHealth(state.source_health||[],state);populateWalletStrategies();renderWallets();if(lastPage==='wallets')refreshWallets();if(activeTokenId&&Date.now()-tokenDetailRefreshedAt>=10000)openToken(activeTokenId,false);
+  renderRuntime(state);renderVisible(state);if(activeTokenId&&Date.now()-tokenDetailRefreshedAt>=10000)openToken(activeTokenId,false);
 }
 
 async function refreshUniverse(){
@@ -761,6 +794,8 @@ async function refreshLive(){
 
 window.addEventListener('hashchange',()=>{route();if(lastPage==='wallets')refreshWallets(true);});document.addEventListener('visibilitychange',()=>{clearTimeout(liveTimer);if(!state){refreshFull();return;}refreshLive();});
 $('#drawer-close').addEventListener('click',()=>closeDrawer());$('#scrim').addEventListener('click',()=>closeDrawer());
+$('#updates-refresh').addEventListener('click',refreshUpdates);
+$('#performance-refresh').addEventListener('click',refreshPerformance);
 document.body.addEventListener('click',event=>{
   const wallet=event.target.closest('[data-wallet-detail]');if(wallet){openWalletDetail(wallet.dataset.walletDetail);return;}
   const error=event.target.closest('[data-error-detail]');if(error){openError(error.dataset.errorDetail);}

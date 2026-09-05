@@ -56,6 +56,28 @@ def _config(tmp_path: Path) -> tuple[Path, dict]:
     return path, config
 
 
+def test_chain_diagnostics_read_bounded_timing_and_update_history(tmp_path: Path):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    store.record_runtime_timing({"components": {"chain_meme_trader": {"sample_count": 3}}})
+    store.close()
+    data = ChainWebData(config_path)
+    assert data.update_history()["entries"] == []
+    history = tmp_path / "docs" / "PROJECT_CONTEXT"
+    history.mkdir(parents=True)
+    (history / "SYSTEM_UPDATE_HISTORY.json").write_text(json.dumps({"entries": [
+        {"id": str(i), "title": "stage"} for i in range(105)
+    ]}), encoding="utf-8")
+    updates = data.update_history()
+    assert len(updates["entries"]) == 100
+    assert updates["entries"][0]["id"] == "104"
+    perf = data.performance_state()
+    assert perf["timing"]["components"]["chain_meme_trader"]["sample_count"] == 3
+    assert perf["held_by_chain"] == {}
+    assert perf["ui"]["visible_seconds"] == 5
+    assert "bridge-secret" not in json.dumps(perf)
+
+
 def test_token_detail_exposes_forward_creator_launch_shadow_without_raw_payload(tmp_path: Path):
     config_path, _ = _config(tmp_path)
     store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
@@ -152,7 +174,8 @@ def test_chain_meme_trader_api_and_static_page_preserve_forward_contract(tmp_pat
     assert 'id="canonical-universe"' in index
     assert 'id="strategy-detail"' in index
     assert 'id="universe-summary"' in index
-    assert "历史策略与实时结果" in index
+    assert 'data-page="updates"' in index
+    assert 'id="performance-content"' in index
     assert 'data-page="overview"' in index
     assert 'data-page="trading"' in index
     assert 'data-page="wallets"' in index
@@ -832,12 +855,14 @@ def test_compact_chain_web_excludes_contaminated_pnl_and_pre_correction_curve(
     assert store.record_chain_meme_trader_account_snapshots(
         definition_version=version, now=opened_at + timedelta(seconds=40),
     ) == 1
+    assert store._chain_meme_trader_effective_net_flows(version)[arm_id] == 0.0
     store.close()
 
     live = ChainWebData(config_path).state(compact=True)
     strategy = next(item for item in live["strategies"] if item["arm_id"] == arm_id)
     assert strategy["account"]["capital_neutral_realized_pnl_usd"] == 0.0
     assert strategy["account"]["capital_neutral_total_pnl_usd"] == 0.0
+    assert strategy["account"]["account_return_fraction"] == 0.0
     assert strategy["account"]["terminal_position_count"] == 0
     assert strategy["maturity"] == "waiting"
     assert strategy["curve"]

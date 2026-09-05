@@ -1261,6 +1261,34 @@ def test_dex_quote_transport_backoff_is_shared_across_waiting_lanes(tmp_path):
     asyncio.run(scenario())
 
 
+def test_dex_quote_backoff_does_not_hold_batch_semaphore_slot():
+    async def scenario():
+        runtime = Runtime.__new__(Runtime)
+        runtime._chain_meme_active_idle_event = asyncio.Event()
+        runtime._chain_meme_active_idle_event.set()
+        runtime._dex_quote_lock = asyncio.Semaphore(8)
+        runtime._dex_quote_backoff_until = asyncio.get_running_loop().time() + 0.05
+        runtime._dex_quote_failure_streak = 0
+        runtime._dex_quote_backoff_base_seconds = 0.01
+        runtime._dex_quote_backoff_cap_seconds = 0.01
+
+        async def batch_quote(chain, addresses):
+            return {}
+
+        runtime.dex = type("Dex", (), {"batch_quote": staticmethod(batch_quote)})()
+        task = asyncio.create_task(runtime._dex_batch_quote("solana", ["A"]))
+        await asyncio.sleep(0)
+        acquired = []
+        for _ in range(8):
+            await asyncio.wait_for(runtime._dex_quote_lock.acquire(), timeout=0.01)
+            acquired.append(True)
+        for _ in acquired:
+            runtime._dex_quote_lock.release()
+        await task
+
+    asyncio.run(scenario())
+
+
 def test_runtime_records_one_quote_only_jupiter_leg_without_trading(tmp_path):
     async def scenario():
         config = initial_config()
@@ -2152,6 +2180,7 @@ def test_market_marks_batch_addresses_by_chain_before_quoting():
         runtime.chain_meme_trader_only = True
         calls = []
         applied = []
+        evaluated = []
 
         class FakeStore:
             CHAIN_MEME_TRADER_ACTIVE_VERSION = "active"
@@ -2182,7 +2211,7 @@ def test_market_marks_batch_addresses_by_chain_before_quoting():
                 definition_version, token_ids=None,
             ):
                 assert definition_version == "active"
-                assert token_ids == ["bsc:0x1", "solana:S1", "bsc:0x2"]
+                evaluated.append(token_ids)
 
             @staticmethod
             def heartbeat(*args, **kwargs):
@@ -2217,6 +2246,7 @@ def test_market_marks_batch_addresses_by_chain_before_quoting():
             ("solana", ["S1"], True),
         ]
         assert len(applied) == 3
+        assert evaluated == [["bsc:0x1", "bsc:0x2"], ["solana:S1"]]
 
     asyncio.run(scenario())
 
@@ -2379,10 +2409,20 @@ def test_active_market_mark_batches_are_bounded_and_one_failure_does_not_stop_ch
         applied = []
         heartbeats = []
         batch_times = {}
+        evaluated_at = {}
+        evaluated_versions = set()
         inflight = 0
         max_inflight = 0
 
         class FakeStore:
+            @staticmethod
+            def evaluate_chain_meme_trader_market_marks(definition_version, token_ids):
+                assert definition_version in {"active", "carry"}
+                evaluated_versions.add(definition_version)
+                assert len(token_ids) <= 30
+                for token_id in token_ids:
+                    evaluated_at[token_id] = asyncio.get_running_loop().time()
+
             @staticmethod
             def apply_chain_meme_trader_market_mark_batch(outcomes, recorded_at):
                 applied.extend(outcomes)
@@ -2434,9 +2474,14 @@ def test_active_market_mark_batches_are_bounded_and_one_failure_does_not_stop_ch
         ]
         refreshed = await runtime._refresh_chain_meme_market_marks(
             targets, heartbeat_name="marks", high_priority=True,
+            evaluate_versions=["active", "carry"],
         )
         assert len(calls) == 9
         assert max_inflight == 8
+        assert len(evaluated_at) == 240
+        assert evaluated_versions == {"active", "carry"}
+        assert "solana:S240" not in evaluated_at
+        assert evaluated_at["solana:S30"] < batch_times["S0"]["ended"]
         assert batch_times["S240"]["started"] < batch_times["S0"]["ended"]
         assert refreshed == 240
         assert len(applied) == 241

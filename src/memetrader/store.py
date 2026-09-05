@@ -169,6 +169,9 @@ class Store:
     CHAIN_MEME_TRADER_V22_VERSION = (
         "chain-meme-trader/v22-additive-first-mover-mature-control-multichain-forward"
     )
+    CHAIN_MEME_TRADER_FUNDED_PERIOD_VERSION = (
+        "chain-meme-trader/funding-20260905-fixed-1000"
+    )
     CHAIN_MEME_V21_VAULT_SHADOW_VERSION = (
         "chain-meme-v21-vault-flow-shadow/v1-runner-only-no-authority"
     )
@@ -2418,6 +2421,19 @@ class Store:
                     activation_entry_fill_id INTEGER NOT NULL,
                     activation_trade_id INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_fixed_funding_restorations (
+                    definition_version TEXT PRIMARY KEY,
+                    activated_at TEXT NOT NULL,
+                    activation_snapshot_id INTEGER NOT NULL,
+                    activation_trade_id INTEGER NOT NULL,
+                    starting_cash_usd REAL NOT NULL CHECK(starting_cash_usd=1000)
+                );
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_fixed_funding_no_update
+                BEFORE UPDATE ON chain_meme_trader_fixed_funding_restorations
+                BEGIN SELECT RAISE(ABORT,'fixed funding restoration is immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_trader_fixed_funding_no_delete
+                BEFORE DELETE ON chain_meme_trader_fixed_funding_restorations
+                BEGIN SELECT RAISE(ABORT,'fixed funding restoration is immutable'); END;
                 CREATE TABLE IF NOT EXISTS chain_meme_trader_policy_additions (
                     id INTEGER PRIMARY KEY,
                     definition_version TEXT NOT NULL,
@@ -2847,6 +2863,11 @@ class Store:
                 CREATE INDEX IF NOT EXISTS chain_meme_trader_trades_arm_idx
                     ON chain_meme_trader_trades(
                         definition_version,arm_id,created_at,id
+                    );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_trades_cash_idx
+                    ON chain_meme_trader_trades(
+                        definition_version,arm_id,shadow_cohort_id,
+                        net_cash_flow_usd,realized_pnl_usd
                     );
                 CREATE TABLE IF NOT EXISTS chain_meme_trader_account_snapshots (
                     id INTEGER PRIMARY KEY,
@@ -3566,6 +3587,11 @@ class Store:
                     last_item_at TEXT,
                     last_error_at TEXT,
                     last_error TEXT NOT NULL DEFAULT ''
+                );
+                CREATE TABLE IF NOT EXISTS runtime_timing_latest (
+                    id INTEGER PRIMARY KEY CHECK(id=1),
+                    recorded_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS system_error_cases (
                     id INTEGER PRIMARY KEY,
@@ -7148,6 +7174,15 @@ class Store:
             if funding is not None:
                 definition["paper_funding"] = dict(funding)
                 definition["capital_model"] = str(funding["mode"])
+        if "chain_meme_trader_fixed_funding_restorations" in tables:
+            restored = connection.execute(
+                "SELECT * FROM chain_meme_trader_fixed_funding_restorations "
+                "WHERE definition_version=?", (str(definition_version),),
+            ).fetchone()
+            if restored is not None:
+                definition["paper_funding"] = dict(restored)
+                definition["capital_model"] = "legacy_cash_limited"
+                definition["starting_cash_usd_each_arm"] = float(restored["starting_cash_usd"])
         return definition
 
     def _chain_meme_trader_effective_definition(
@@ -7180,6 +7215,13 @@ class Store:
     def _chain_meme_trader_paper_funding_mode_for_snapshot(
         self, definition_version: str, snapshot: Mapping[str, Any],
     ) -> str:
+        # Restoration applies to every subsequent decision, including queued
+        # snapshots. Previously recorded decisions and fills stay unchanged.
+        if self.db.execute(
+            "SELECT 1 FROM chain_meme_trader_fixed_funding_restorations "
+            "WHERE definition_version=?", (str(definition_version),),
+        ).fetchone() is not None:
+            return "legacy_cash_limited"
         row = self.db.execute(
             "SELECT * FROM chain_meme_trader_paper_funding_activations "
             "WHERE definition_version=?",
@@ -17676,6 +17718,15 @@ class Store:
         ).fetchone()
         return float(row["total"] or 0.0)
 
+    def record_runtime_timing(self, payload: Mapping[str, Any]) -> None:
+        """Replace one small diagnostic snapshot, not an unbounded metrics ledger."""
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT INTO runtime_timing_latest(id,recorded_at,payload_json) VALUES(1,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET recorded_at=excluded.recorded_at,"
+                "payload_json=excluded.payload_json", (iso(), self._json(payload)),
+            )
+
     def heartbeat(
         self, source: str, *, item: bool = False, error: str = "",
         error_detail: str = "",
@@ -24811,6 +24862,74 @@ class Store:
                 "WHERE definition_version=?", (version,),
             ).fetchone()
 
+    def activate_chain_meme_trader_funded_period(self) -> sqlite3.Row:
+        """One user-authorized funding period; old positions retain their ledger namespace.
+
+        definition_version already keys positions and their cash flows. Reusing
+        that boundary isolates old SELL proceeds without rewriting strategy IDs,
+        frozen rules, history, or cash flows after an arbitrary trade frontier.
+        """
+        version = self.CHAIN_MEME_TRADER_FUNDED_PERIOD_VERSION
+        source_version = self.CHAIN_MEME_TRADER_V22_VERSION
+        self.activate_chain_meme_trader_v22()
+        with self._lock, self.db:
+            existing = self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_activations WHERE definition_version=?",
+                (version,),
+            ).fetchone()
+            if existing is not None:
+                return existing
+            source = self._chain_meme_trader_registration(source_version)
+            definition = self._chain_meme_trader_effective_definition(
+                source_version, source["definition_json"],
+            )
+            activated_at = iso()
+            frontier = int(self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM token_snapshots"
+            ).fetchone()[0])
+            for policy in definition["policies"]:
+                policy["original_forward_started_at"] = policy.get("forward_started_at")
+                policy["forward_started_at"] = activated_at
+                policy["forward_activation_snapshot_id"] = frontier
+                policy.pop("runtime_addition_id", None)
+            definition.pop("paper_funding", None)
+            definition["runtime_policy_additions"] = []
+            definition.update({
+                "version": version, "previous_version": source_version,
+                "funding_period": version, "funding_source_version": source_version,
+                "capital_model": "legacy_cash_limited",
+                "starting_cash_usd_each_arm": 1000.0,
+                "strategy_logic_changed": False,
+                "reset_reason": "user_authorized_independent_funding_period",
+                "no_historical_backfill": True,
+            })
+            payload = self._json(definition)
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_v6_registrations("
+                "definition_version,code_registered_at,code_snapshot_frontier,definition_json) "
+                "VALUES(?,?,?,?)", (version, activated_at, frontier, payload),
+            )
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_registrations("
+                "definition_version,registered_at,activation_exploration_buy_trade_id,definition_json) "
+                "VALUES(?,?,?,?)", (version, activated_at, frontier, payload),
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_primary_stops("
+                "definition_version,stopped_at,source_frontier,reason) VALUES(?,?,?,?)",
+                (source_version, activated_at, frontier, "new_funding_period_old_positions_keep_exiting"),
+            )
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_v6_activations("
+                "definition_version,activated_at,activation_snapshot_id,v5_definition_version,"
+                "v5_source_frontier,entry_execution_enabled) VALUES(?,?,?,?,?,1)",
+                (version, activated_at, frontier, source_version, frontier),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_v6_activations WHERE definition_version=?",
+                (version,),
+            ).fetchone()
+
     def activate_chain_meme_trader_unconstrained_paper_funding(
         self, *, definition_version: str | None = None, activated_at: Any = None,
     ) -> sqlite3.Row:
@@ -24865,6 +24984,61 @@ class Store:
                 "SELECT * FROM chain_meme_trader_paper_funding_activations "
                 "WHERE definition_version=?", (version,),
             ).fetchone()
+
+    def restore_chain_meme_trader_fixed_paper_funding(
+        self, *, definition_version: str | None = None,
+    ) -> sqlite3.Row:
+        """Restore the 1000 USD cash gate without funding or resetting accounts."""
+        version = definition_version or self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        with self._lock, self.db:
+            active = self.db.execute(
+                "SELECT definition_version FROM chain_meme_trader_v6_activations "
+                "WHERE entry_execution_enabled=1 ORDER BY activated_at DESC,rowid DESC LIMIT 1"
+            ).fetchone()
+            if active is None or str(active["definition_version"]) != version:
+                raise ValueError("fixed funding can only restore on the current forward epoch")
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_trader_fixed_funding_restorations "
+                "VALUES(?,?,(SELECT COALESCE(MAX(id),0) FROM token_snapshots),"
+                "(SELECT COALESCE(MAX(id),0) FROM chain_meme_trader_trades "
+                "WHERE definition_version=?),1000)",
+                (version, iso(), version),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_trader_fixed_funding_restorations "
+                "WHERE definition_version=?", (version,),
+            ).fetchone()
+
+    def _chain_meme_trader_effective_net_flows(self, version: str) -> dict[str, float]:
+        """Cash gates use the same corrected, unpolluted ledger as account PNL."""
+        flows = {
+            str(row["arm_id"]): float(row["net_flow_usd"] or 0.0)
+            for row in self.db.execute(
+                "SELECT arm_id,SUM(net_cash_flow_usd) AS net_flow_usd "
+                "FROM chain_meme_trader_trades WHERE definition_version=? GROUP BY arm_id",
+                (version,),
+            )
+        }
+        excluded = {
+            (str(row["arm_id"]), int(row["shadow_cohort_id"]))
+            for row in self._chain_meme_trader_accounting_contaminations_from_connection(
+                self.db, version,
+            )
+        }
+        for arm, cohort in excluded:
+            net = self.db.execute(
+                "SELECT SUM(net_cash_flow_usd) FROM chain_meme_trader_trades "
+                "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+                (version, arm, cohort),
+            ).fetchone()[0]
+            flows[arm] = flows.get(arm, 0.0) - float(net or 0.0)
+        for row in self._chain_meme_trader_market_fill_corrections_from_connection(
+            self.db, version,
+        ):
+            arm = str(row["arm_id"])
+            if (arm, int(row["shadow_cohort_id"])) not in excluded:
+                flows[arm] = flows.get(arm, 0.0) + float(row["cash_adjustment_usd"] or 0.0)
+        return flows
 
     def append_chain_meme_trader_policy(
         self, policy: Mapping[str, Any], *, definition_version: str | None = None,
@@ -25523,6 +25697,7 @@ class Store:
         market_price: float, filled_at: str, reason: str,
         definition: Mapping[str, Any],
         funding_mode: str = "legacy_cash_limited",
+        net_flow_by_arm: dict[str, float] | None = None,
     ) -> int:
         """Project one visible DEX price into eligible Paper accounts."""
         required_cash = float(definition["policy_notional_usd"])
@@ -25558,14 +25733,8 @@ class Store:
             "definition_version=? AND shadow_cohort_id=? AND status='admitted' "
             "ORDER BY arm_id", (version, int(cohort_id)),
         ).fetchall()
-        net_flow_by_arm = {
-            str(row["arm_id"]): float(row["net_flow_usd"] or 0.0)
-            for row in self.db.execute(
-                "SELECT arm_id,COALESCE(SUM(net_cash_flow_usd),0) AS net_flow_usd "
-                "FROM chain_meme_trader_trades WHERE definition_version=? GROUP BY arm_id",
-                (version,),
-            ).fetchall()
-        }
+        if net_flow_by_arm is None:
+            net_flow_by_arm = self._chain_meme_trader_effective_net_flows(version)
         for decision in decisions:
             arm_id = str(decision["arm_id"])
             net_flow = net_flow_by_arm.get(arm_id, 0.0)
@@ -25623,6 +25792,7 @@ class Store:
                     int(entry_fill["id"]), available_cash, filled_at, funding_mode,
                 ),
             )
+            net_flow_by_arm[arm_id] = net_flow - required_cash
             projected += 1
         return projected
 
@@ -25663,6 +25833,7 @@ class Store:
                 for chain in (definition.get("chains") or ["solana"])
                 if str(chain).strip()
             }
+            batch_net_flows: dict[str, float] | None = None
             for row in rows:
                 token_id = str(row["token_id"])
                 snapshot_id = int(row["source_snapshot_id"])
@@ -25828,7 +25999,7 @@ class Store:
                             "ORDER BY id DESC LIMIT 1", (snapshot_id,),
                         ).fetchone()
                         if (
-                            version == self.CHAIN_MEME_TRADER_V22_VERSION
+                            bool(definition.get("crosschain_shadow_momentum_semantics"))
                             and token_chain in {"bsc", "robinhood"}
                         ):
                             shadow_momentum_score = (
@@ -25929,15 +26100,9 @@ class Store:
                     arm_available_cash: dict[str, float] = {}
                     arm_pending_reservations: dict[str, int] = {}
                     if family is not None:
-                        net_flow_by_arm = {
-                            str(item["arm_id"]): float(item["net_flow_usd"] or 0.0)
-                            for item in self.db.execute(
-                                "SELECT arm_id,COALESCE(SUM(net_cash_flow_usd),0) AS net_flow_usd "
-                                "FROM chain_meme_trader_trades WHERE definition_version=? "
-                                "GROUP BY arm_id",
-                                (version,),
-                            ).fetchall()
-                        }
+                        if batch_net_flows is None:
+                            batch_net_flows = self._chain_meme_trader_effective_net_flows(version)
+                        net_flow_by_arm = batch_net_flows
                         pending_by_arm = {
                             str(item["arm_id"]): int(item["pending_count"] or 0)
                             for item in self.db.execute(
@@ -26089,6 +26254,7 @@ class Store:
                             reason=reason,
                             definition=definition,
                             funding_mode=funding_mode,
+                            net_flow_by_arm=batch_net_flows,
                         )
                     else:
                         self.db.execute(

@@ -20,6 +20,8 @@ from typing import Any, Awaitable, Callable, Mapping
 
 import httpx
 
+from .runtime_timing import RuntimeTiming
+
 from .autonomous_search import AutonomousSearchAgent, _canonical_social_url, _same_social_url
 from .collectors import (
     BlueskySearchCollector,
@@ -1479,11 +1481,21 @@ class Runtime:
         """Serialize Dex quote batches and back off across lanes after transport failure."""
         if not high_priority:
             await self._chain_meme_active_idle().wait()
-        async with self._dex_quote_lock:
-            loop = asyncio.get_running_loop()
+        loop = asyncio.get_running_loop()
+        wait = self._dex_quote_backoff_until - loop.time()
+        if wait > 0:
+            await asyncio.sleep(wait)
+        while True:
+            await self._dex_quote_lock.acquire()
+            # A failed peer may have extended the shared backoff while this
+            # caller was waiting for the serialized quote slot. Never sleep
+            # while holding a batch semaphore slot.
             wait = self._dex_quote_backoff_until - loop.time()
-            if wait > 0:
-                await asyncio.sleep(wait)
+            if wait <= 0:
+                break
+            self._dex_quote_lock.release()
+            await asyncio.sleep(wait)
+        try:
             try:
                 if fresh and hasattr(self.dex, "batch_quote_fresh"):
                     quoted = await self.dex.batch_quote_fresh(chain, addresses)
@@ -1505,6 +1517,8 @@ class Runtime:
             self._dex_quote_failure_streak = 0
             self._dex_quote_backoff_until = 0.0
             return quoted
+        finally:
+            self._dex_quote_lock.release()
 
     async def solana_holder_shadow_once(self) -> None:
         cfg = self.config["sources"].get("solana_holder_shadow") or {}
@@ -5612,6 +5626,8 @@ class Runtime:
     async def _refresh_chain_meme_market_marks(
         self, targets: list[dict[str, Any]], *, heartbeat_name: str,
         high_priority: bool = False, observe_flat_breakout: bool = False,
+        evaluate_version: str | None = None,
+        evaluate_versions: list[str] | None = None,
     ) -> int:
         """Refresh a de-duplicated target set with fresh 30-token DEX batches."""
         targets_by_chain: dict[str, list[dict[str, Any]]] = {}
@@ -5626,6 +5642,8 @@ class Runtime:
         async def refresh_batch(
             chain: str, chunk: list[dict[str, Any]],
         ) -> int:
+            batch_started = asyncio.get_running_loop().time()
+            timing = getattr(self, "runtime_timing", None)
             if not high_priority:
                 await self._chain_meme_active_idle().wait()
             try:
@@ -5634,6 +5652,8 @@ class Runtime:
                     fresh=True, high_priority=high_priority,
                 )
             except Exception as exc:
+                if timing is not None:
+                    timing.observe("held_fetch", asyncio.get_running_loop().time()-batch_started, failures=1)
                 self.store.heartbeat(
                     heartbeat_name, error=type(exc).__name__,
                 )
@@ -5650,6 +5670,9 @@ class Runtime:
                 )
                 return 0
             received_at = utcnow()
+            apply_started = asyncio.get_running_loop().time()
+            if timing is not None:
+                timing.observe("held_fetch", apply_started-batch_started, items=len(chunk))
             outcomes = []
             for item in chunk:
                 target_token_id = str(item["token_id"])
@@ -5677,7 +5700,7 @@ class Runtime:
                     or float(snapshot.price_usd or 0.0) <= 0.0
                     or (
                         snapshot.liquidity_usd is not None
-                        and float(snapshot.liquidity_usd) <= 0.0
+                        and float(snapshot.liquidity_usd) < 0.0
                     )
                 ):
                     outcomes.append({
@@ -5706,9 +5729,18 @@ class Runtime:
             refreshed_count = self.store.apply_chain_meme_trader_market_mark_batch(
                 outcomes, recorded_at=received_at,
             )
+            for version in dict.fromkeys(evaluate_versions or ([evaluate_version] if evaluate_version else [])):
+                # Use this batch while its observations are fresh; waiting for
+                # every other HTTP batch can expire the 15-second exit window.
+                self.store.evaluate_chain_meme_trader_market_marks(
+                    definition_version=version,
+                    token_ids=[str(item["token_id"]) for item in chunk],
+                )
             self.store.heartbeat(
                 heartbeat_name, item=refreshed_count > 0,
             )
+            if timing is not None:
+                timing.observe("held_apply_exit", asyncio.get_running_loop().time()-apply_started, items=refreshed_count)
             if observe_flat_breakout:
                 self.store.observe_flat_compression_breakout_market_batch(
                     outcomes, recorded_at=received_at,
@@ -5738,10 +5770,7 @@ class Runtime:
             refreshed = await self._refresh_chain_meme_market_marks(
                 targets, heartbeat_name="chain-meme-market-marks",
                 high_priority=True,
-            )
-            self.store.evaluate_chain_meme_trader_market_marks(
-                definition_version=active_version,
-                token_ids=[str(item["token_id"]) for item in targets],
+                evaluate_versions=[active_version, *getattr(self, "_chain_carry_versions", [])],
             )
 
             if not self.chain_meme_trader_only:
@@ -5776,6 +5805,7 @@ class Runtime:
         carry_versions = [
             version
             for version in (
+                self.store.CHAIN_MEME_TRADER_V22_VERSION,
                 self.store.CHAIN_MEME_TRADER_V21_VERSION,
                 self.store.CHAIN_MEME_TRADER_V20_VERSION,
             )
@@ -5787,6 +5817,7 @@ class Runtime:
         if not carry_versions:
             self.store.heartbeat("chain-meme-carried-market-marks", item=False)
             return
+        self._chain_carry_versions = carry_versions
         active_targets = self.store.chain_meme_trader_market_mark_targets(
             definition_versions=[self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION],
         )
@@ -5799,11 +5830,9 @@ class Runtime:
         ]
         refreshed = await self._refresh_chain_meme_market_marks(
             targets, heartbeat_name="chain-meme-carried-market-marks",
+            evaluate_versions=carry_versions,
         )
         for version in carry_versions:
-            self.store.evaluate_chain_meme_trader_market_marks(
-                definition_version=version,
-            )
             if not self.store.chain_meme_trader_has_open_positions(
                 version
             ):
@@ -6523,13 +6552,19 @@ class Runtime:
         action: Callable[[], Awaitable[None]],
     ) -> None:
         interval_seconds = max(1.0, float(interval_seconds))
+        if not hasattr(self, "runtime_timing"):
+            self.runtime_timing = RuntimeTiming()
+            self._last_timing_write = 0.0
+        previous_start = None
         while not self._stop.is_set():
             started = asyncio.get_running_loop().time()
+            failed = 0
             try:
                 await action()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                failed = 1
                 self.store.heartbeat(
                     name, error=type(exc).__name__, error_detail=str(exc),
                 )
@@ -6539,6 +6574,15 @@ class Runtime:
                     {"error": type(exc).__name__, "detail": str(exc)[:500]},
                 )
             elapsed = asyncio.get_running_loop().time() - started
+            self.runtime_timing.observe(
+                name, elapsed,
+                interval_seconds=started-previous_start if previous_start is not None else None,
+                configured_interval_seconds=interval_seconds, failures=failed,
+            )
+            previous_start = started
+            if started - self._last_timing_write >= 10.0:
+                self.store.record_runtime_timing(self.runtime_timing.snapshot())
+                self._last_timing_write = started
             wait_seconds = max(0.2, interval_seconds - elapsed)
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=wait_seconds)

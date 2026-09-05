@@ -162,9 +162,9 @@ def test_live_wallet_accepts_appended_strategy_but_keeps_real_balance_gate(
     monkeypatch.setattr(manager, "_balances", lambda wallet, refresh=False: balances)
     manager.connect(str(Keypair()), "Added strategy", appended["arm_id"])
     wallet_id = manager.snapshot()["wallets"][0]["id"]
-    with pytest.raises(live_module.LiveWalletError, match="USDC 不足 20"):
+    with pytest.raises(live_module.LiveWalletError, match="USDC 不足最小买入金额"):
         manager.set_enabled(wallet_id, True)
-    balances["usdc"] = 100.0
+    balances["usdc"] = 12.0
     manager.set_enabled(wallet_id, True)
     assert manager.snapshot()["wallets"][0]["enabled"] is True
 
@@ -211,3 +211,132 @@ def test_live_wallet_detail_is_safe_and_lists_recent_operations_newest_first(tmp
     assert "signature" not in serialized
     assert "public-but-omitted" not in serialized
     assert "also-omitted" not in serialized
+
+
+def test_live_buy_scales_to_fresh_integer_usdc_balance(tmp_path, monkeypatch):
+    manager = SolanaLiveWalletManager(tmp_path, tmp_path / "unused.sqlite3")
+    manager._write({
+        "version": 1,
+        "wallets": [{
+            "id": "wallet", "address": "address", "enabled": True,
+            "entry_enabled": True, "last_trade_id": 0, "pending": None,
+        }],
+        "positions": {},
+    })
+    monkeypatch.setattr(
+        manager, "_next_trade",
+        lambda wallet: {
+            "id": 1, "side": "BUY", "token_id": "solana:mint",
+            "shadow_cohort_id": 10,
+        },
+    )
+    monkeypatch.setattr(
+        manager, "_balances",
+        lambda wallet, refresh=False: {
+            "status": "ok", "sol_raw": 5_000_000, "usdc_raw": 7_500_000,
+        },
+    )
+    token_balances = iter([0, 123])
+    monkeypatch.setattr(manager, "_token_balance_raw", lambda owner, mint: next(token_balances))
+    quoted = []
+    monkeypatch.setattr(
+        manager, "_quote",
+        lambda input_mint, output_mint, amount_raw: (
+            quoted.append(amount_raw) or {"outAmount": "123"}
+        ),
+    )
+    monkeypatch.setattr(manager, "_swap_transaction", lambda quote, address: "encoded")
+    monkeypatch.setattr(manager, "_sign_and_send", lambda wallet_id, transaction: "signature")
+    monkeypatch.setattr(manager, "_confirm", lambda signature: True)
+
+    assert manager.sync_once() == 1
+    assert quoted == [7_500_000]
+
+
+def test_paused_wallet_skips_buy_but_continues_existing_sell(tmp_path, monkeypatch):
+    manager = SolanaLiveWalletManager(tmp_path, tmp_path / "unused.sqlite3")
+    manager._write({
+        "version": 1,
+        "wallets": [{
+            "id": "wallet", "address": "address", "enabled": True,
+            "entry_enabled": True, "last_trade_id": 0, "pending": None,
+        }],
+        "positions": {"wallet": {"10": {"token_id": "solana:mint", "amount_raw": 100}}},
+    })
+    manager.set_enabled("wallet", False)
+
+    def next_trade(wallet):
+        if int(wallet["last_trade_id"]) == 0:
+            return {"id": 1, "side": "BUY", "token_id": "solana:other", "shadow_cohort_id": 11}
+        if int(wallet["last_trade_id"]) == 1:
+            return {
+                "id": 2, "side": "SELL", "token_id": "solana:mint",
+                "shadow_cohort_id": 10, "sell_fraction": 1.0,
+            }
+        return None
+
+    monkeypatch.setattr(manager, "_next_trade", next_trade)
+    quoted = []
+    monkeypatch.setattr(
+        manager, "_quote",
+        lambda input_mint, output_mint, amount_raw: (
+            quoted.append((input_mint, output_mint, amount_raw)) or {"outAmount": "1"}
+        ),
+    )
+    monkeypatch.setattr(manager, "_swap_transaction", lambda quote, address: "encoded")
+    signed = []
+    monkeypatch.setattr(
+        manager, "_sign_and_send",
+        lambda wallet_id, transaction: signed.append(wallet_id) or "signature",
+    )
+    monkeypatch.setattr(manager, "_confirm", lambda signature: True)
+
+    assert manager.sync_once() == 0
+    assert manager.sync_once() == 1
+    saved = json.loads(manager.state_path.read_text(encoding="utf-8"))
+    assert signed == ["wallet"]
+    assert quoted == [("mint", live_module.USDC_MINT, 100)]
+    assert saved["positions"]["wallet"] == {}
+    assert saved["wallets"][0]["enabled"] is False
+    assert saved["wallets"][0]["entry_enabled"] is False
+
+
+def test_unknown_confirmation_keeps_pending_and_does_not_rebroadcast(tmp_path, monkeypatch):
+    manager = SolanaLiveWalletManager(tmp_path, tmp_path / "unused.sqlite3")
+    manager._write({
+        "version": 1,
+        "wallets": [{
+            "id": "wallet", "address": "address", "enabled": True,
+            "entry_enabled": True, "last_trade_id": 0, "pending": None,
+        }],
+        "positions": {},
+    })
+    monkeypatch.setattr(
+        manager, "_next_trade",
+        lambda wallet: {
+            "id": 1, "side": "BUY", "token_id": "solana:mint",
+            "shadow_cohort_id": 10,
+        },
+    )
+    monkeypatch.setattr(
+        manager, "_balances",
+        lambda wallet, refresh=False: {
+            "status": "ok", "sol_raw": 5_000_000, "usdc_raw": 20_000_000,
+        },
+    )
+    monkeypatch.setattr(manager, "_token_balance_raw", lambda owner, mint: 0)
+    monkeypatch.setattr(manager, "_quote", lambda *args: {"outAmount": "123"})
+    monkeypatch.setattr(manager, "_swap_transaction", lambda quote, address: "encoded")
+    signed = []
+    monkeypatch.setattr(
+        manager, "_sign_and_send",
+        lambda wallet_id, transaction: signed.append(wallet_id) or "signature",
+    )
+    monkeypatch.setattr(manager, "_confirm", lambda signature: None)
+
+    assert manager.sync_once() == 0
+    assert manager.sync_once() == 0
+    saved = json.loads(manager.state_path.read_text(encoding="utf-8"))
+    assert signed == ["wallet"]
+    assert saved["wallets"][0]["pending"]["signature"] == "signature"
+    assert saved["wallets"][0]["enabled"] is False

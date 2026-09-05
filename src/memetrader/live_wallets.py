@@ -39,7 +39,11 @@ def _now() -> str:
 class SolanaLiveWalletManager:
     """Local multi-wallet signer that mirrors future Paper actions on mainnet."""
 
-    def __init__(self, root: str | Path, database: str | Path):
+    def __init__(
+        self, root: str | Path, database: str | Path, *,
+        min_sol_fee_reserve_lamports: int = 5_000_000,
+        minimum_buy_usdc_raw: int = 1_000_000,
+    ):
         self.root = Path(root)
         self.database = Path(database)
         self.directory = self.root / "data" / "chain_live"
@@ -51,6 +55,8 @@ class SolanaLiveWalletManager:
             "https://api.jup.ag/swap/v1" if self.jupiter_api_key
             else "https://lite-api.jup.ag/swap/v1"
         )
+        self.min_sol_fee_reserve_lamports = max(0, int(min_sol_fee_reserve_lamports))
+        self.minimum_buy_usdc_raw = max(1, int(minimum_buy_usdc_raw))
         self._lock = threading.RLock()
         self._balance_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
@@ -188,7 +194,11 @@ class SolanaLiveWalletManager:
         try:
             sol = int((self._rpc("getBalance", [address, {"commitment": "confirmed"}]) or {}).get("value") or 0)
             usdc = self._token_balance_raw(address, USDC_MINT)
-            value = {"status": "ok", "sol": sol / 1_000_000_000, "usdc": usdc / 1_000_000, "as_of": _now()}
+            value = {
+                "status": "ok", "sol": sol / 1_000_000_000,
+                "usdc": usdc / 1_000_000, "sol_raw": sol,
+                "usdc_raw": usdc, "as_of": _now(),
+            }
         except LiveWalletError as exc:
             value = {"status": "error", "sol": None, "usdc": None, "error": str(exc), "as_of": _now()}
         self._balance_cache[wallet_id] = (time.monotonic(), copy.deepcopy(value))
@@ -220,6 +230,7 @@ class SolanaLiveWalletManager:
                 "strategy_id": strategy,
                 "definition_version": version,
                 "enabled": False,
+                "entry_enabled": False,
                 "connected_at": row.get("connected_at") or _now(),
                 "last_trade_id": row.get("last_trade_id"),
                 "pending": row.get("pending"),
@@ -245,7 +256,10 @@ class SolanaLiveWalletManager:
                 raise LiveWalletError("钱包不存在")
             if wallet.get("enabled"):
                 raise LiveWalletError("请先停止该钱包的实盘交易")
-            wallet.update({"strategy_id": strategy, "definition_version": version, "last_trade_id": None, "pending": None})
+            wallet.update({
+                "strategy_id": strategy, "definition_version": version,
+                "last_trade_id": None, "pending": None, "entry_enabled": False,
+            })
             self._write(state)
         return self.snapshot()
 
@@ -266,10 +280,12 @@ class SolanaLiveWalletManager:
                 balance = self._balances(wallet, refresh=True)
                 if balance.get("status") != "ok":
                     raise LiveWalletError(str(balance.get("error") or "无法读取钱包余额"))
-                if float(balance.get("usdc") or 0) < 20:
-                    raise LiveWalletError("钱包 USDC 不足 20，无法启动实盘")
-                if float(balance.get("sol") or 0) <= 0:
-                    raise LiveWalletError("钱包没有 SOL，无法支付链上费用")
+                usdc_raw = int(balance.get("usdc_raw") or round(float(balance.get("usdc") or 0) * 1_000_000))
+                sol_raw = int(balance.get("sol_raw") or round(float(balance.get("sol") or 0) * 1_000_000_000))
+                if usdc_raw < self.minimum_buy_usdc_raw:
+                    raise LiveWalletError("钱包 USDC 不足最小买入金额，无法启动实盘")
+                if sol_raw < self.min_sol_fee_reserve_lamports:
+                    raise LiveWalletError("钱包 SOL 低于保守入场手续费储备")
                 if wallet.get("last_trade_id") is None or wallet.get("definition_version") != version:
                     with self._connect_db() as connection:
                         frontier = int(connection.execute(
@@ -277,9 +293,17 @@ class SolanaLiveWalletManager:
                             (version,),
                         ).fetchone()[0])
                     wallet["last_trade_id"] = frontier
-                wallet.update({"definition_version": version, "enabled": True, "status": "实盘运行中", "error": None})
+                wallet.update({
+                    "definition_version": version, "enabled": True,
+                    "entry_enabled": True, "status": "实盘运行中", "error": None,
+                })
             else:
-                wallet.update({"enabled": False, "status": "已停止"})
+                wallet["entry_enabled"] = False
+                positions = state["positions"].get(wallet_key) or {}
+                if positions or wallet.get("pending"):
+                    wallet.update({"enabled": True, "status": "停止新买入，旧仓继续退出"})
+                else:
+                    wallet.update({"enabled": False, "status": "已停止"})
             self._write(state)
         return self.snapshot(refresh=True)
 
@@ -489,7 +513,41 @@ class SolanaLiveWalletManager:
                 live_positions = state["positions"].setdefault(str(wallet["id"]), {})
                 try:
                     if trade["side"] == "BUY":
-                        amount_raw = BUY_USDC_RAW
+                        if not bool(wallet.get("entry_enabled", wallet.get("enabled"))):
+                            wallet["last_trade_id"] = int(trade["id"])
+                            self._write(state)
+                            self._append_execution({
+                                "wallet_id": wallet["id"], "paper_trade_id": trade["id"],
+                                "side": "BUY", "status": "skipped_entry_paused",
+                            })
+                            continue
+                        balance = self._balances(wallet, refresh=True)
+                        if balance.get("status") != "ok":
+                            raise LiveWalletError(str(balance.get("error") or "无法读取钱包余额"))
+                        usdc_raw = int(
+                            balance.get("usdc_raw")
+                            or round(float(balance.get("usdc") or 0) * 1_000_000)
+                        )
+                        sol_raw = int(
+                            balance.get("sol_raw")
+                            or round(float(balance.get("sol") or 0) * 1_000_000_000)
+                        )
+                        if (
+                            usdc_raw < self.minimum_buy_usdc_raw
+                            or sol_raw < self.min_sol_fee_reserve_lamports
+                        ):
+                            wallet["last_trade_id"] = int(trade["id"])
+                            wallet["status"] = (
+                                "等待补充 USDC" if usdc_raw < self.minimum_buy_usdc_raw
+                                else "等待补充 SOL 手续费储备"
+                            )
+                            self._write(state)
+                            self._append_execution({
+                                "wallet_id": wallet["id"], "paper_trade_id": trade["id"],
+                                "side": "BUY", "status": "skipped_insufficient_balance",
+                            })
+                            continue
+                        amount_raw = min(BUY_USDC_RAW, usdc_raw)
                         input_mint, output_mint = USDC_MINT, mint
                         before = self._token_balance_raw(str(wallet["address"]), mint)
                     else:
@@ -529,7 +587,16 @@ class SolanaLiveWalletManager:
                             live_positions[position_key]["amount_raw"] = remaining
                         else:
                             live_positions.pop(position_key, None)
-                    wallet.update({"last_trade_id": int(trade["id"]), "pending": None, "status": "实盘运行中", "error": None})
+                    entry_enabled = bool(wallet.get("entry_enabled", wallet.get("enabled")))
+                    wallet.update({
+                        "last_trade_id": int(trade["id"]), "pending": None,
+                        "enabled": entry_enabled or bool(live_positions),
+                        "status": (
+                            "实盘运行中" if entry_enabled else
+                            "停止新买入，旧仓继续退出" if live_positions else "已停止"
+                        ),
+                        "error": None,
+                    })
                     self._write(state)
                     self._append_execution({"wallet_id": wallet["id"], "paper_trade_id": trade["id"], "side": trade["side"], "status": "confirmed", "signature": signature, "amount_raw": amount_raw})
                     self._balance_cache.pop(str(wallet["id"]), None)

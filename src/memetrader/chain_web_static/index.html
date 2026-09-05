@@ -10,13 +10,14 @@
   <aside class="sidebar">
     <a class="brand" href="#/overview"><span class="brand-mark">CM</span><span><strong>ChainMemeTrader</strong><small>实时自动交易系统</small></span></a>
     <nav>
-      <a href="#/overview" data-route="overview"><i>01</i><span>实时 Cockpit</span></a>
+      <a href="#/overview" data-route="overview"><i>01</i><span>运行总览</span></a>
       <a href="#/strategies" data-route="strategies"><i>02</i><span>策略账户</span></a>
       <a href="#/trading" data-route="trading"><i>03</i><span>实时交易监控</span></a>
-      <a href="#/discovery" data-route="discovery"><i>04</i><span>Token 发现</span></a>
+      <a href="#/discovery" data-route="discovery"><i>04</i><span>新币发现</span></a>
       <a href="#/system" data-route="system"><i>05</i><span>运行系统</span></a>
       <a href="#/wallets" data-route="wallets"><i>06</i><span>钱包与实盘</span></a>
       <a href="#/errors" data-route="errors"><i>07</i><span>错误监督</span></a>
+      <a href="#/updates" data-route="updates"><i>08</i><span>更新历史</span></a>
     </nav>
     <div class="side-contract"><span>20 USDC / 4% 滑点</span><strong>模拟持续运行</strong><small>实盘按钱包单独启用</small></div>
   </aside>
@@ -42,7 +43,7 @@
       </section>
 
       <section class="page" data-page="strategies">
-        <section class="panel universe-hero"><div><p class="eyebrow">策略账户</p><h2>历史策略与实时结果</h2><p>每一行对应一个历史合同。可复现的策略从同一新起点前向运行；缺少原始路线、安全或研究证据的策略保留展示，但不会用宽泛规则伪造交易。</p></div><div class="live-stamp"><span class="pulse"></span><strong id="universe-refresh">正在载入</strong><small>一次行情采集 · 批量计算</small></div></section>
+        <div class="section-head"><h2>策略账户</h2><p id="universe-refresh">正在读取</p></div>
         <section class="summary-grid" id="universe-summary"></section>
         <section class="universe-workbench">
           <article class="panel universe-main"><div class="section-head"><div><p class="eyebrow">实时策略表</p><h2>策略表现排序</h2></div><p id="universe-count">等待策略结果</p></div>
@@ -67,6 +68,7 @@
       </section>
 
       <section class="page" data-page="system">
+        <section class="panel"><div class="section-head"><h2>真实更新速度</h2><button class="table-action" id="performance-refresh">刷新诊断</button></div><p>调度间隔不等于每个币的成功采集间隔。以下分别显示实际周期、处理耗时和当前数据年龄。</p><div id="performance-content" class="performance-content">正在读取…</div></section>
         <section class="contract" aria-label="交易设置"><div><span>单笔</span><strong>20 USDC</strong></div><div><span>买入滑点</span><strong>4%</strong></div><div><span>卖出滑点</span><strong>4%</strong></div><div><span>模拟额外手续费</span><strong>0</strong></div><div><span>前向流程</span><strong>模拟 / 实盘共用</strong></div><div><span>资源优先级</span><strong>持仓行情与退出优先</strong></div><div><span>页面刷新</span><strong>可见 5 秒 / 隐藏 30 秒</strong></div><div><span>实盘</span><strong>逐钱包启停</strong></div></section>
         <section class="panel"><div class="section-head"><div><p class="eyebrow">系统健康</p><h2>采集与执行服务</h2></div></div><div class="health-grid" id="health-grid"></div></section>
       </section>
@@ -81,8 +83,11 @@
       <section class="page" data-page="errors">
         <section class="panel"><div class="section-head"><div><p class="eyebrow">运行监督</p><h2>错误与修复记录</h2></div><p id="errors-refresh">等待读取</p></div><div class="table-wrap"><table id="errors-table"><thead><tr><th>状态</th><th>严重度</th><th>组件</th><th>错误摘要</th><th>首次发生</th><th>最近发生</th><th>次数</th><th>操作</th></tr></thead><tbody><tr><td colspan="8" class="empty">正在读取错误记录…</td></tr></tbody></table></div></section>
       </section>
+      <section class="page" data-page="updates">
+        <section class="panel"><div class="section-head"><h2>系统更新历史</h2><button class="table-action" id="updates-refresh">刷新记录</button></div><p>记录问题、改动、原因与验证结果。完成测试、上传代码和运行生效分别记录。</p><div id="updates-list" class="updates-list">正在读取…</div></section>
+      </section>
     </main>
-    <footer>ChainMemeTrader · 历史合同按可复现性前向运行 · 参数变更仅由用户主动发起 · 钱包实盘独立启停</footer>
+    <footer>ChainMemeTrader · 模拟结果与真实钱包结果独立记录</footer>
   </div>
 
   <aside class="drawer" id="token-drawer" aria-hidden="true"><div class="drawer-head"><div><p class="eyebrow" id="drawer-kicker">Token 信息</p><h2 id="drawer-title">Token 详情</h2></div><button id="drawer-close" aria-label="关闭">×</button></div><div id="drawer-body"></div></aside>
