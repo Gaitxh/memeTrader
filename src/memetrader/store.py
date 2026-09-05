@@ -17,7 +17,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from solders.pubkey import Pubkey
 
-from .forward_patterns import experiment_policies, pattern_signal, conditional_fraction
+from .forward_patterns import experiment_policies, result_driven_policies, pattern_signal, conditional_fraction
 from .capital_entry import capital_observation_signal, capital_context_from_observations
 from .capital_context import evaluate_capital_exit_context
 from .capital_cross_section import build_capital_cross_section
@@ -25430,6 +25430,18 @@ class Store:
             result[kind] = [{**dict(r), "payload": self._json_object(r["payload_json"])} for r in rows]
         return result
 
+    def register_chain_meme_result_experiments(self) -> int:
+        added = 0
+        for policy in result_driven_policies():
+            with self._lock:
+                exists = self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?",
+                    (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, policy["arm_id"])).fetchone()
+                if exists is None:
+                    self.append_chain_meme_trader_policy(policy)
+                    added += 1
+        return added
+
     def capital_cross_section(self, targets, *, now=None):
         current = parse_time(now or utcnow())
         version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
@@ -25674,6 +25686,19 @@ class Store:
                 "SELECT arm_id FROM chain_meme_trader_positions WHERE definition_version=? AND token_id=? AND status='open'",
                 (version, token.token_id))}
             active = [p for p in policies if self._chain_meme_trader_policy_active_for_snapshot(p, row)]
+            limited = {p["arm_id"]: int(p["entry_filter"]["max_concurrent_positions"])
+                       for p in active if p.get("entry_filter", {}).get("max_concurrent_positions")}
+            occupied = {str(r[0]): int(r[1]) for r in self.db.execute(
+                "SELECT arm_id,COUNT(*) FROM chain_meme_trader_positions WHERE definition_version=? "
+                "AND status='open' AND arm_id IN (" + ",".join("?" for _ in limited) + ") GROUP BY arm_id",
+                (version, *limited))} if limited else {}
+            entry_blocked = {}
+            for p in active:
+                if p["arm_id"] in limited and occupied.get(p["arm_id"], 0) >= limited[p["arm_id"]]:
+                    entry_blocked[p["arm_id"]] = "strategy_open_slot_limit"
+                elif p.get("entry_filter", {}).get("required_market_surface") == "solana_pumpswap" and (
+                        token.chain != "solana" or pair.get("dexId") != "pumpswap"):
+                    entry_blocked[p["arm_id"]] = "strategy_market_surface_not_supported"
             context = self.chain_meme_pattern_context(token.token_id, pair_address, history, decision_at)
             capital_context = {}
             wave_rows = {}
@@ -25725,11 +25750,13 @@ class Store:
                         activated_at=policy["forward_started_at"], context=context)
                 if policy["arm_id"] in already_bought:
                     passed, reason = False, "pattern_already_enrolled_at_this_pool"
+                if policy["arm_id"] in entry_blocked:
+                    passed, reason = False, entry_blocked[policy["arm_id"]]
                 outcomes[policy["arm_id"]] = reason
                 if passed:
                     ready.append(policy["arm_id"])
             admitted_arms = [p["arm_id"] for p in active if post_valid and p["arm_id"] in pending
-                             and p["arm_id"] not in already_bought]
+                             and p["arm_id"] not in already_bought and p["arm_id"] not in entry_blocked]
             features = {"source_snapshot_id": snapshot_id, "pair_address": pair_address,
                         "observed_at": iso(snapshot.observed_at), "ready_arm_ids": ready,
                         "outcomes": outcomes, "fill_signal_snapshot_id": previous_features.get("source_snapshot_id"),

@@ -2071,6 +2071,22 @@ class DexScreenerClient:
         """Fetch current held-token marks without reusing the hydration cache."""
         return await self.batch_quote(chain, addresses, ttl=0)
 
+    async def exact_pools_fresh(self, chain: str, addresses: list[str]) -> dict[str, dict[str, Any]]:
+        """Recover known held pools omitted from the token-address endpoint."""
+        chain = self._chain(chain.lower())
+        requested = {canonical_token_address(chain, p) for p in addresses}
+        joined = urllib.parse.quote(",".join(dict.fromkeys(addresses)), safe=",")
+        response = await self.http.get(f"{self.BASE}/latest/dex/pairs/{chain}/{joined}", ttl=0)
+        received = iso(utcnow())
+        return {
+            canonical_token_address(chain, str(p.get("pairAddress") or "")): {
+                **p, "provider": "dexscreener", "observedAt": received,
+            }
+            for p in (response.json().get("pairs") or [])
+            if str(p.get("chainId") or "").lower() == chain
+            and canonical_token_address(chain, str(p.get("pairAddress") or "")) in requested
+        }
+
 
     async def discover_surface(
         self,

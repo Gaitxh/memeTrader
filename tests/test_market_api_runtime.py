@@ -11,7 +11,11 @@ def make_runtime(tmp_path):
     config = initial_config()
     config["database"] = "market-api-runtime.sqlite3"
     config["bridge"]["enabled"] = False
-    return Runtime(config, tmp_path)
+    runtime = Runtime(config, tmp_path)
+    async def no_exact(chain, addresses):
+        return {}
+    runtime.dex.exact_pools_fresh = no_exact
+    return runtime
 
 
 def pair_payload(token: TokenCandidate, pool: str, *, provider="coingecko-demo", observed=None):
@@ -151,6 +155,8 @@ def test_dex_gap_queues_then_wrong_token_and_wrong_pool_are_refused(tmp_path):
         class MissingDex:
             async def batch_quote_fresh(self, chain, addresses):
                 return {}
+            async def exact_pools_fresh(self, chain, addresses):
+                return {}
 
         wrong_token = TokenCandidate("solana", "W" * 32, "Wrong", "WRG")
         coingecko = FakeCoinGecko([
@@ -179,6 +185,7 @@ def test_dex_gap_queues_then_wrong_token_and_wrong_pool_are_refused(tmp_path):
         assert tuple(after_wrong_token) == tuple(before)
 
         next(iter(runtime._market_pool_gaps.values()))["next_attempt"] = 0.0
+        next(iter(runtime._market_pool_gaps.values()))["next_complement_attempt"] = 0.0
         await runtime.complementary_market_data_once()
         after_wrong_pool = runtime.store.db.execute(
             "SELECT sample_sequence,observed_at FROM chain_meme_trader_market_marks WHERE token_id=?",
@@ -216,6 +223,7 @@ def test_cached_observation_does_not_advance_market_sample_or_old_period(tmp_pat
             "WHERE token_id=?", (token.token_id,),
         ).fetchone()
         next(iter(runtime._market_pool_gaps.values()))["next_attempt"] = 0.0
+        next(iter(runtime._market_pool_gaps.values()))["next_complement_attempt"] = 0.0
         await runtime.complementary_market_data_once()
         second = runtime.store.db.execute(
             "SELECT sample_sequence,observed_at,provider FROM chain_meme_trader_market_marks "
@@ -257,4 +265,41 @@ def test_per_pool_due_and_unavailable_budget_are_silent_without_http(tmp_path):
         assert coingecko.calls == [("solana", [pool])]
         await runtime.close()
 
+    asyncio.run(scenario())
+
+
+def test_exact_original_pool_recovers_dust_without_spending_complement_quota(tmp_path):
+    from memetrader.collectors import DexScreenerClient
+    async def scenario():
+        runtime = make_runtime(tmp_path)
+        token = TokenCandidate("solana", "S" * 32, "Original dust pool", "DUST")
+        pool = "original-pool"
+        target = target_for(token, pool)
+        calls = []
+        payload = pair_payload(token, pool, provider="dexscreener")
+        payload["liquidity"]["usd"] = 0.84
+        class Http:
+            async def get(self, url, *, ttl):
+                calls.append((url, ttl))
+                class Response:
+                    def json(self):
+                        return {"pairs": [payload]}
+                return Response()
+        runtime.dex = DexScreenerClient(Http())
+        runtime.coingecko = FakeCoinGecko(available=False)
+        runtime.store.chain_meme_trader_market_mark_targets = lambda **kwargs: [target]
+        evaluations = []
+        runtime.store.evaluate_chain_meme_trader_market_marks = lambda **kwargs: evaluations.append(kwargs)
+        runtime._queue_market_pool_gap(target, pool, ["current-period"])
+        await runtime.complementary_market_data_once()
+        mark = runtime.store.db.execute(
+            "SELECT * FROM chain_meme_trader_pool_marks WHERE token_id=? AND pair_address=?",
+            (token.token_id, pool),
+        ).fetchone()
+        assert mark["liquidity_usd"] == 0.84
+        assert mark["provider"] == "dexscreener"
+        assert evaluations == [{"definition_version": "current-period", "token_ids": [token.token_id]}]
+        assert calls == [(f"https://api.dexscreener.com/latest/dex/pairs/solana/{pool}", 0)]
+        assert runtime.coingecko.calls == []
+        await runtime.close()
     asyncio.run(scenario())

@@ -44,6 +44,45 @@ def _capital_store(tmp_path, monkeypatch, name):
     return store, clock
 
 
+def test_result_experiments_preserve_parents_and_single_slot_does_not_queue(tmp_path, monkeypatch):
+    from memetrader.forward_patterns import experiment_policies, result_driven_policies
+    from memetrader.capital_exits import EARN_THE_HOLD_POLICY
+    parents = {p["arm_id"]: p for p in experiment_policies()}
+    candidates = {p["arm_id"]: p for p in result_driven_policies()}
+    serial = candidates["serial_conditional_runner_v1"]
+    hybrid = candidates["sustained_breakout_earn_hold_v1"]
+    assert serial["conditional_exit"] == parents[serial["source_arm_ids"][0]]["conditional_exit"]
+    assert serial["take_profit"] == parents[serial["source_arm_ids"][0]]["take_profit"]
+    assert hybrid["capital_exit_policy"] == dict(EARN_THE_HOLD_POLICY)
+    assert "max_concurrent_positions" not in parents[serial["source_arm_ids"][0]]["entry_filter"]
+    store, clock = _capital_store(tmp_path, monkeypatch, "result-experiments.sqlite3")
+    version = Store.CHAIN_MEME_TRADER_ACTIVE_VERSION
+    old = [tuple(r) for r in store.db.execute("SELECT * FROM chain_meme_trader_policy_additions ORDER BY id")]
+    assert store.register_chain_meme_result_experiments() == 2
+    assert store.register_chain_meme_result_experiments() == 0
+    assert [tuple(r) for r in store.db.execute("SELECT * FROM chain_meme_trader_policy_additions ORDER BY id LIMIT 18")] == old
+    start = clock[0]
+    a, b = _new_token("A"), _new_token("B")
+    pa, pb = str(Pubkey.new_unique()), str(Pubkey.new_unique())
+    for seconds in (1, 2):
+        _observe(store, clock, a, pa, start+timedelta(seconds=seconds), buys=4, sells=2)
+    arm = "serial_conditional_runner_v1"
+    assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_positions WHERE arm_id=? AND status='open'", (arm,)).fetchone()[0] == 1
+    for seconds in (3, 4):
+        _observe(store, clock, b, pb, start+timedelta(seconds=seconds), buys=4, sells=2)
+    row = store.db.execute("SELECT feature_json FROM chain_meme_trader_v6_entry_evaluations ORDER BY id DESC LIMIT 1").fetchone()
+    assert json.loads(row[0])["outcomes"][arm] == "strategy_open_slot_limit"
+    assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_trades WHERE arm_id=? AND side='BUY'", (arm,)).fetchone()[0] == 1
+    # Entry-only fixture transition: releasing a slot must not replay blocked signals.
+    store.db.execute("UPDATE chain_meme_trader_positions SET status='closed',closed_at=? WHERE arm_id=?", (iso(start+timedelta(seconds=5)), arm))
+    store.db.commit()
+    _observe(store, clock, b, pb, start+timedelta(seconds=6), buys=4, sells=2)
+    assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_trades WHERE arm_id=? AND side='BUY'", (arm,)).fetchone()[0] == 1
+    _observe(store, clock, b, pb, start+timedelta(seconds=7), buys=4, sells=2)
+    assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_trades WHERE arm_id=? AND side='BUY'", (arm,)).fetchone()[0] == 2
+    store.close()
+
+
 def test_market_entry_does_not_scan_historical_reservations_when_none_pending(tmp_path, monkeypatch):
     store, clock = _capital_store(tmp_path, monkeypatch, "empty-reservations.sqlite3")
     clock[0] += timedelta(seconds=1)

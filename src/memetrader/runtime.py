@@ -1323,6 +1323,7 @@ class Runtime:
                     self.store.register_chain_meme_trader_cost_coverage_scaleout()
                     self.store.register_chain_meme_pattern_experiments()
                     self.store.register_chain_meme_capital_experiments()
+                    self.store.register_chain_meme_result_experiments()
                     self.store.register_chain_meme_v22_vault_shadow(
                         position_definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
                     )
@@ -2180,8 +2181,6 @@ class Runtime:
 
     def _queue_market_pool_gap(self, item: Mapping[str, Any], pair: str,
                                versions: list[str]) -> None:
-        if not hasattr(self, "coingecko") or not self.coingecko.available():
-            return
         chain = str(item["chain"]).lower()
         key = (str(item["token_id"]), canonical_token_address(chain, pair))
         if key not in self._market_pool_gaps and len(self._market_pool_gaps) >= 300:
@@ -2190,6 +2189,7 @@ class Runtime:
         self._market_pool_gaps[key] = {
             **dict(item), "pair_address": pair, "versions": versions or [self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION],
             "next_attempt": previous.get("next_attempt", 0.0),
+            "next_complement_attempt": previous.get("next_complement_attempt", 0.0),
         }
 
     async def complementary_market_data_once(self) -> None:
@@ -2197,7 +2197,7 @@ class Runtime:
         status = self.coingecko.status()
         status["pending_original_pools"] = len(self._market_pool_gaps)
         self.store.set_kv("market_api:coingecko-demo:status", status)
-        if not self.coingecko.available() or not self._market_pool_gaps:
+        if not self._market_pool_gaps:
             return
         now = asyncio.get_running_loop().time()
         due = [(key, item) for key, item in self._market_pool_gaps.items()
@@ -2219,8 +2219,27 @@ class Runtime:
         if not chunk:
             return
         for _, item in chunk:
-            item["next_attempt"] = now + 60
-        pairs = await self.coingecko.get_pools(chain, [str(item["pair_address"]) for _, item in chunk])
+            item["next_attempt"] = now + 10
+        try:
+            pairs = await self.dex.exact_pools_fresh(chain, [str(item["pair_address"]) for _, item in chunk])
+        except Exception as exc:
+            self._notify_source_error("dexscreener:original_pool", exc)
+            pairs = {}
+        # Route only still-uncovered identities to the quota-limited provider.
+        def usable(item, pair):
+            if pair is None or canonical_token_address(chain, str(pair.get("pairAddress") or "")) != canonical_token_address(chain, item["pair_address"]):
+                return False
+            token = DexScreenerClient._candidate(pair)
+            snapshot = self._complement_snapshot(pair)
+            return token is not None and snapshot is not None and not self._paper_quote_rejections(
+                str(item["token_id"]), token, snapshot, utcnow())
+        uncovered = [(key, item) for key, item in chunk
+                     if not usable(item, pairs.get(key[1]))
+                     and float(item["next_complement_attempt"]) <= now]
+        if uncovered and self.coingecko.available():
+            for _, item in uncovered:
+                item["next_complement_attempt"] = now + 60
+            pairs.update(await self.coingecko.get_pools(chain, [str(item["pair_address"]) for _, item in uncovered]))
         outcomes = []
         received = utcnow()
         for key, item in chunk:

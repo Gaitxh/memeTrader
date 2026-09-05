@@ -78,6 +78,32 @@ def buy_ratio(frame: Mapping[str, Any]) -> float | None:
     return buys / (buys + sells)
 
 
+def result_driven_policies() -> list[dict[str, Any]]:
+    """Independent single-mechanism tests; parent contracts remain unchanged."""
+    import copy
+    from .capital_exits import EARN_THE_HOLD_POLICY
+    parents = {p["arm_id"]: p for p in experiment_policies()}
+    specs = (
+        ("serial_conditional_runner_v1", "experiment_conditional_runner_candidate_v1",
+         "单槽条件兑现", {"max_concurrent_positions": 1,
+                          "occupied_signal_policy": "reject_without_queue_or_replay"}),
+        ("sustained_breakout_earn_hold_v1", "experiment_sustained_breakout_candidate_v1",
+         "突破后持仓资格", {"required_market_surface": "solana_pumpswap"}),
+    )
+    result = []
+    for arm, parent, name, extra in specs:
+        policy = copy.deepcopy(parents[parent])
+        policy.update(arm_id=arm, canonical_id=arm, name=name,
+                      source_arm_ids=[parent], notional_usd=20.0,
+                      description="基于自然结果提出的独立机制实验，尚未证明优于原策略。")
+        policy["entry_filter"].update(extra)
+        if arm == "sustained_breakout_earn_hold_v1":
+            policy.update(capital_exit_kind="earn_the_hold",
+                          capital_exit_policy=dict(EARN_THE_HOLD_POLICY))
+        result.append(policy)
+    return result
+
+
 def pattern_signal(
     history: list[dict[str, Any]], policy: Mapping[str, Any], *,
     decision_at: str, activated_at: str,
