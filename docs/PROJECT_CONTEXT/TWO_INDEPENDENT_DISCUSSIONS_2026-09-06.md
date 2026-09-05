@@ -2,11 +2,11 @@
 
 来源：用户指定“设计新策略”聊天中的两个独立回合。主Agent已分别完整阅读；第一回合60289881、第二回合6c12cb02。下面两张表分别追踪，第二篇的建议顺序不取消第一篇方向。原文不作为私聊导出提交。编号是需求编号，不是策略ID；同一真实机制可被两个需求引用，但名称相近不能代替行为等价。
 
-当前部署边界：`fc3c0f3` 已部署180臂，包含 `duration_competing_risk_v1` 与 `direct_lp_amount_specific_confirmed_v1`；共享Recovery Shadow已有真实quote-only帧，不是成交或旧策略退出变更。另4个独立实验已完成代码和真实Store测试，待增量部署至184：`official_event_actual_flow_v1`、`migration_amount_rate_absorption_v1`、`early_observed_buyer_distribution_v1`、`common_funding_adjusted_breadth_5u_v1`。以下“已接”不等于已有自然触发或已证明收益；184不是当前运行数，也不是全方向完成证明。
+当前部署边界：7b66aa5在21:31:40Z/frontier927746增量184；4420950于21:45:35Z修复QQQ原池quote方向缺价，未重置任何策略。fc3c0f3的duration/DirectLP及共享Recovery已运行。两篇分别16/22项，包含复用组件和独立候选对照，不能用184或新增38臂的数量宣称所有原始数据完全覆盖；逐项限制如下。
 
 ## 第一篇：独立清单
 
-部署更新：7b66aa5已在21:31:40Z/frontier927746增量184。下表四项“待部署”为先前代码截点，现均已部署；不表示自然经济效果已验证。
+部署更新：下表新增机制均已增量部署；不表示自然经济效果已验证。最新四臂已有部分实际输入但尚无自然BUY。
 
 |项|方向|已有实现与尚缺部分|
 |---|---|---|
@@ -14,14 +14,14 @@
 |A02|Earn-the-Hold|earn_the_hold_v1机制、实际金额流及专门同BUY对照已部署；6池及有界签名预算可能截断，换池需重新seed，完整双窗缺失不冒充零流，也不全部归因于策略阈值|
 |A03|Failed-Continuation Profit Lock|failed_continuation_profit_lock_v1及专门同BUY对照已部署|
 |A04|Wave Reset Re-entry|wave_reset_reentry_v1：真实旧仓关闭后10–240分钟、新流/深度/结构确认及下一帧；不是持旧仓等后来上涨|
-|A05|Migration Flush→Absorption|原migration_absorption_v1保留；新增migration_amount_rate_absorption_v1待部署：迁移后两完整窗真实SELL raw/秒衰减、净流、breadth及flush/reclaim确认，不再以卖出笔数替代该新臂的金额卖压。完整发行早期持有人flush与amount-specific回收改善仍未接入此序列|
+|A05|Migration Flush→Absorption|原migration_absorption_v1保留；新增migration_amount_rate_absorption_v1已部署：迁移后两完整窗真实SELL raw/秒衰减、净流、breadth及flush/reclaim确认，不以笔数替代金额卖压；无法归因到未被观察的发行初始持有人|
 |A06|Executable-Recovery Decay|executable_recovery_decay_v1实际数量quote已接；共享Shadow已部署并产生真实quote-only帧，按原池/真实数量合并、最后报价优先级及30秒轮转，不影响旧退出；免费报价预算下不保证每仓30秒内必有新quote|
 |A07|Capital-Velocity FirstMover|capital_velocity_v1已部署毕业后实际买卖总金额/秒，另有净流字段；PREGRAD WATCH也已部署并有真实曲线净储备速率。gross成交速率、net资本积累和预毕业观察是不同语义，不以后一篇覆盖前一篇|
 |A08|Effective-Breadth Flow|effective_breadth_v1使用实际金额参与广度，不以地址数冒充独立人类|
 |A09|Price-to-Flow Fragility|price_to_flow_fragility_v1已接实际流/价格退出；实收源覆盖不足保持UNKNOWN|
 |A10|Churn/Wash Resistant|churn_resistant_v1使用真实金额中位数、dust比例、净流，不宣称确定识别洗盘|
-|A11|Creator/Early Holder Distribution|原creator_early_holder_distribution_v1及真实creator输入保留；early_observed_buyer_distribution_v1待部署：封存部署后首次完整BUY观察群、匹配后来真实SELL，两连续派发窗触发后下一原池帧卖出。当前Store封存不传出生fact，coverage明确first_observed_buyers_only，不冒充铸币初始持有人；完整早期分配与隐藏控制仍未覆盖|
-|A12|Bundle-Adjusted Breadth|bundle_adjusted_breadth_v1已部署，仅真实同交易原子组；common_funding_adjusted_breadth_5u_v1待部署，补已抓交易中显式资金转账关系的广度调整。共同来源不代表共同控制；未公开跨交易bundle及完整funding历史仍未知|
+|A11|Creator/Early Holder Distribution|原creator_early_holder_distribution_v1及真实creator输入保留；early_observed_buyer_distribution_v1已部署：封存部署后首次完整BUY观察群、匹配后来真实SELL，两连续派发窗触发后下一原池帧卖出。coverage明确first_observed_buyers_only，不冒充铸币初始持有人；完整早期分配与隐藏控制仍未覆盖|
+|A12|Bundle-Adjusted Breadth|bundle_adjusted_breadth_v1已部署，仅真实同交易原子组；common_funding_adjusted_breadth_5u_v1已部署，补已抓交易中显式资金转账关系的广度调整。共同来源不代表共同控制；未公开跨交易bundle及完整funding历史仍未知|
 |A13|Finite-Capital Ranker|finite_capital_ranker_v1有界已观察池排序、独立现金/槽位；不是全市场排序|
 |A14|Market Regime Throttle|market_regime_throttle_v1为有界横截面深度/广度实验，不是已验证跨日宏观模型|
 |A15|Competing-Risk Model|旧competing_risk_v1终局频率保留；duration_competing_risk_v1已随fc3c0f3部署：右删失CIF及失联独立保守情景、5U；不是无偏市场死亡概率，缺同类清洁样本不能编概率|
@@ -34,7 +34,7 @@
 |B01|Exact Surface Classifier|pool_surface.py已有exact PDA、LP、mint、vault分类；未知权限或LP锁定不伪造|
 |B02|Direct LP Float-Constrained Scout|原direct_lp_float_constrained_v1保留；direct_lp_amount_specific_confirmed_v1已随fc3c0f3部署，正实际流、5U两腿原池quote-only、下一帧Paper；预检不是成交，未知全流通供给、LP锁定及撤池能力不伪造|
 |B03|PREGRAD Capital-Velocity WATCH|8e3cc74已部署：免费create、最多3个精确PDA曲线净储备观察、30秒/300秒TTL优先名单、真实迁移唤醒一次；仅WATCH非买入；已有自然观察记录|
-|B04|Migration Absorption|独立对应A05：待部署新臂补真实SELL金额速率/净流/breadth/flush-reclaim；不等价原文“早期holder flush→回收改善”的完整序列。后者仍是待接代码/输入，不仅是等待自然机会|
+|B04|Migration Absorption|独立对应A05：已部署新臂补真实SELL金额速率/净流/breadth/flush-reclaim；未观测早期holder身份不冒充已知。不得把其他章节回收建议迁移成本项额外必需门控|
 |B05|Vault shared Shadow→ExitIntent与同BUY实验|同BUY实验已部署；共享观察已接6槽held优先/120秒驻留轮转，旧退出不改；轮换保留已驻留池连续性，换出池不伪造连续双窗；未支持exact解码的池不是仅靠增加配额就能覆盖|
 |B06|Executable-Recovery shared Shadow|已部署并有真实quote-only帧：按原池/真实数量去重接合格held，复用现有报价预算、不fill；exact decimals/实际余量缺失保持未知，非支持链/输入不是旧仓全覆盖|
 |B07|Earn-the-Hold候选/对照|复用A02机制，专门paired候选/对照已19:38:02Z部署，共用实际BUY|
@@ -42,12 +42,12 @@
 |B09|Wave Reset|A04可等价复用，保留该独立来源关联|
 |B10|Event Reawakening / Mature Event|event_reawakening_v1已在174阶段部署：新官方精确CA事件→成熟池新价格/深度/实际流→下一帧，事件键消费；旧事件不能重复开仓；现有源面不等价所有外部事件|
 |B11|Price-to-Flow Fragility|复用A09，覆盖限制保留|
-|B12|Creator/Early Holder Distribution|分别复用A11原creator臂和待部署首次观察买家派发臂；首观BUY群不是完整早期持有人，也不是LP holder集合；缺失历史不能用当前余额回填|
+|B12|Creator/Early Holder Distribution|分别复用A11原creator臂和已部署首次观察买家派发臂；首观BUY群不是完整早期持有人，也不是LP holder集合；缺失历史不能用当前余额回填|
 |B13|Effective Breadth|复用A08，实际金额和有效参与者|
 |B14|Churn Resistant|复用A10，不以交易笔数充当真实资本|
-|B15|Bundle Adjusted Breadth|复用A12已部署原子组及待部署显式资金关系补充；可观察联系不等价Jito bundle、完整经济独立人数或共同控制|
-|B16|Wallet economic structure|现有金额集中度/重复/creator组件已接；common_funding_adjusted_breadth_5u_v1待部署，复用已抓交易中的显式资金转账关系，不增加RPC。交易之外的钱包资金历史和隐蔽簇仍未覆盖，不冒充smart-money复制|
-|B17|Authoritative Event Shock|原OKX精确CA官方事件入口保留；official_event_actual_flow_v1待部署，新增官方事件后的真实金额流确认，不能用原只验事件身份的臂抵扣。无CA路径由已部署B18独立处理；其他官方平台/事件类型未接，不能未经访问验证就称资源受限|
+|B15|Bundle Adjusted Breadth|复用A12已部署原子组及显式资金关系补充；可观察联系不等价Jito bundle、完整经济独立人数或共同控制|
+|B16|Wallet economic structure|现有金额集中度/重复/creator组件已接；common_funding_adjusted_breadth_5u_v1已部署，复用已抓交易中的显式资金转账关系，不增加RPC。交易之外的钱包资金历史和隐蔽簇仍未覆盖，不冒充smart-money复制|
+|B17|Authoritative Event Shock|原OKX精确CA官方事件入口保留；official_event_actual_flow_v1已部署，新增官方事件后的真实金额流确认，不能用原只验事件身份的臂抵扣。无CA路径由已部署B18独立处理；其他官方平台/事件类型属于来源扩展，不把尚未适配称资源受限|
 |B18|No-CA Event→冻结clone CA集合→资本排序|no_ca_event_flow_leader_v1已20:13:26Z部署；首次搜索冻结集合、全成员同轮金额流排名、唯一正净流第一；选择冻结后下一帧信号/再下一帧5U；缺源或并列WAIT，无官方CA伪装|
 |B19|Finite Capital Ranker|可复用A13有界版本，非全市场|
 |B20|Market Regime|可复用A14有界版本，未验证状态分类收益|
