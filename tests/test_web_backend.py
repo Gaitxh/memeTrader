@@ -693,6 +693,27 @@ def test_chain_web_wallet_views_join_paper_state_without_live_signer_material(
     assert "must-not-reach-wallet-detail" not in serialized
     assert "signature" not in serialized
 
+    current_state = web.state
+
+    def next_period_state(*, compact=False, arm_id=None):
+        state = current_state(compact=compact, arm_id=arm_id)
+        return {**state, "version": "next-funding-period"}
+
+    monkeypatch.setattr(web, "state", next_period_state)
+    old_period_overview = web.wallet_state()["wallets"][0]
+    assert old_period_overview["strategy"]["realized_pnl_usd"] is None
+    assert old_period_overview["strategy"]["unrealized_pnl_usd"] is None
+    assert old_period_overview["strategy"]["total_pnl_usd"] is None
+    assert old_period_overview["strategy"]["open_position_count"] == 0
+
+    old_period_detail = web.wallet_detail(wallet_id)
+    assert old_period_detail["strategy"] is None
+    assert old_period_detail["account"] == {}
+    assert old_period_detail["positions"] == []
+    assert old_period_detail["paper"]["open_positions"] == []
+    assert old_period_detail["paper"]["period_note"] == "钱包绑定旧账期；不混入新账期结果"
+    assert old_period_detail["paper"]["trades"] == detail["paper"]["trades"]
+
 
 def test_chain_web_error_views_expose_safe_case_lifecycle_only(tmp_path: Path):
     config_path, _ = _config(tmp_path)

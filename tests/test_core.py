@@ -7390,8 +7390,9 @@ def test_chain_meme_v22_applies_policy_filters_during_asof_enrollment(tmp_path: 
 
 
 def test_chain_meme_v22_funding_and_policy_additions_start_at_their_own_frontiers(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch,
 ):
+    monkeypatch.setattr(Store, "CHAIN_MEME_TRADER_ACTIVE_VERSION", Store.CHAIN_MEME_TRADER_V22_VERSION)
     store = Store(tmp_path / "additive-funding-v22.sqlite3", initial_cash_usd=1000)
     store.activate_chain_meme_trader_v22()
     version = Store.CHAIN_MEME_TRADER_V22_VERSION

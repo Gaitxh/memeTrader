@@ -182,7 +182,7 @@ class Store:
         "chain-meme-trader/flat-compression-breakout-shadow/v1-observer-only"
     )
     PUMPSWAP_PROGRAM_ID = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
-    CHAIN_MEME_TRADER_ACTIVE_VERSION = CHAIN_MEME_TRADER_V22_VERSION
+    CHAIN_MEME_TRADER_ACTIVE_VERSION = CHAIN_MEME_TRADER_FUNDED_PERIOD_VERSION
     CHAIN_MEME_TRADER_STAGE4_EXEC_DECAY_VERSION = (
         "chain-meme-trader/stage4-executable-decay-challenger-v1"
     )
@@ -25157,10 +25157,16 @@ class Store:
                 "WHERE observer_version=?", (observer,),
             ).fetchone()
 
-    def register_chain_meme_v22_vault_shadow(self) -> sqlite3.Row:
+    def register_chain_meme_v22_vault_shadow(
+        self, *, position_definition_version: str | None = None,
+    ) -> sqlite3.Row:
+        position_version = position_definition_version or self.CHAIN_MEME_TRADER_V22_VERSION
+        self._active_vault_observer_version = self.CHAIN_MEME_V22_VAULT_SHADOW_VERSION + (
+            "/funding-20260905" if position_version == self.CHAIN_MEME_TRADER_FUNDED_PERIOD_VERSION else ""
+        )
         return self.register_chain_meme_v21_vault_shadow(
-            observer_version=self.CHAIN_MEME_V22_VAULT_SHADOW_VERSION,
-            position_definition_version=self.CHAIN_MEME_TRADER_V22_VERSION,
+            observer_version=self._active_vault_observer_version,
+            position_definition_version=position_version,
         )
 
     def chain_meme_v21_vault_shadow_candidates(
@@ -25236,7 +25242,7 @@ class Store:
 
     def chain_meme_v22_vault_shadow_candidates(self) -> list[dict[str, Any]]:
         return self.chain_meme_v21_vault_shadow_candidates(
-            observer_version=self.CHAIN_MEME_V22_VAULT_SHADOW_VERSION,
+            observer_version=getattr(self, "_active_vault_observer_version", self.CHAIN_MEME_V22_VAULT_SHADOW_VERSION),
         )
 
     def add_chain_meme_v21_vault_shadow_target(
@@ -25287,7 +25293,7 @@ class Store:
         self, resolved: Mapping[str, Any],
     ) -> int | None:
         return self.add_chain_meme_v21_vault_shadow_target(
-            resolved, observer_version=self.CHAIN_MEME_V22_VAULT_SHADOW_VERSION,
+            resolved, observer_version=getattr(self, "_active_vault_observer_version", self.CHAIN_MEME_V22_VAULT_SHADOW_VERSION),
         )
 
     def record_chain_meme_v21_vault_shadow_resolution(
@@ -25326,7 +25332,7 @@ class Store:
     ) -> int | None:
         return self.record_chain_meme_v21_vault_shadow_resolution(
             outcome, attempted_at=attempted_at,
-            observer_version=self.CHAIN_MEME_V22_VAULT_SHADOW_VERSION,
+            observer_version=getattr(self, "_active_vault_observer_version", self.CHAIN_MEME_V22_VAULT_SHADOW_VERSION),
         )
 
     def chain_meme_v21_vault_shadow_account_targets(
@@ -25391,7 +25397,7 @@ class Store:
 
     def chain_meme_v22_vault_shadow_account_targets(self) -> list[dict[str, Any]]:
         return self.chain_meme_v21_vault_shadow_account_targets(
-            observer_version=self.CHAIN_MEME_V22_VAULT_SHADOW_VERSION,
+            observer_version=getattr(self, "_active_vault_observer_version", self.CHAIN_MEME_V22_VAULT_SHADOW_VERSION),
         )
 
     def record_chain_meme_v21_vault_shadow_frame(
@@ -25469,7 +25475,7 @@ class Store:
         self, frame: Mapping[str, Any],
     ) -> int | None:
         return self.record_chain_meme_v21_vault_shadow_frame(
-            frame, observer_version=self.CHAIN_MEME_V22_VAULT_SHADOW_VERSION,
+            frame, observer_version=getattr(self, "_active_vault_observer_version", self.CHAIN_MEME_V22_VAULT_SHADOW_VERSION),
         )
 
     def register_chain_meme_trader_immediate_reverseability(self) -> sqlite3.Row:

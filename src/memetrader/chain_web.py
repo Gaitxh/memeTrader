@@ -63,6 +63,8 @@ class ChainWebData:
         }
         for wallet in payload.get("wallets", []):
             strategy = strategies.get(str(wallet.get("strategy_id") or ""), {})
+            if wallet.get("definition_version") != live.get("version"):
+                strategy = {}
             account = strategy.get("account") or {}
             wallet["strategy"] = {
                 "arm_id": strategy.get("arm_id") or wallet.get("strategy_id"),
@@ -91,6 +93,9 @@ class ChainWebData:
         )
         if not definition_version:
             definition_version = str(live.get("version") or "")
+        same_period = definition_version == str(live.get("version") or "")
+        if not same_period:
+            strategy = None
         with self._connect() as connection:
             paper_trades = self._rows(
                 connection,
@@ -110,12 +115,13 @@ class ChainWebData:
         payload["strategy"] = strategy
         payload["paper"] = {
             "version": definition_version,
-            "open_positions": live.get("open_positions", []),
+            "open_positions": live.get("open_positions", []) if same_period else [],
+            "period_note": "当前账期" if same_period else "钱包绑定旧账期；不混入新账期结果",
             "terminal_positions": terminal_positions,
             "trades": paper_trades,
         }
         payload["account"] = (strategy or {}).get("account") or {}
-        payload["positions"] = live.get("open_positions", [])
+        payload["positions"] = live.get("open_positions", []) if same_period else []
         payload["trades"] = paper_trades
         payload["live_executions"] = payload.get("executions", [])
         wallet["balance"] = payload.get("balance") or {}
@@ -185,7 +191,13 @@ class ChainWebData:
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_timing_latest'"
             ).fetchone()
             row = connection.execute("SELECT * FROM runtime_timing_latest WHERE id=1").fetchone() if exists else None
-            sources = self._rows(connection, "SELECT * FROM source_health")
+            sources = self._rows(connection,
+                "SELECT * FROM source_health WHERE source IN ("
+                "'chain-meme-trader','chain-meme-market-marks','chain-meme-carried-market-marks',"
+                "'pumpportal','pumpportal:create','pumpportal:migration','multichain_meme_data',"
+                "'dexscreener_discovery','dexscreener:hydration','geckoterminal:solana',"
+                "'geckoterminal:bsc','geckoterminal:robinhood',"
+                "'flat-compression-breakout-shadow') ORDER BY source")
             held = self._rows(connection,
                 "SELECT t.chain,m.last_success_at,m.last_attempt_at,m.failure_kind AS last_failure_kind "
                 "FROM (SELECT DISTINCT token_id FROM chain_meme_trader_positions WHERE status='open' "

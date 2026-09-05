@@ -1299,9 +1299,10 @@ class Runtime:
             self.store.register_onchain_paper_position_monitor()
             if self.strategy_focus_active:
                 if self.chain_meme_trader_only:
-                    self.store.register_chain_meme_trader_v22()
-                    self.store.activate_chain_meme_trader_v22()
-                    self.store.register_chain_meme_v22_vault_shadow()
+                    self.store.activate_chain_meme_trader_funded_period()
+                    self.store.register_chain_meme_v22_vault_shadow(
+                        position_definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
+                    )
                 else:
                     self.store.register_onchain_held_account_monitor()
                     self.store.register_chain_meme_trader()
