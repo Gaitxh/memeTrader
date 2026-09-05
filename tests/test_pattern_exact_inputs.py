@@ -8,7 +8,8 @@ import pytest
 from solders.pubkey import Pubkey
 
 from memetrader.collectors import (PumpSwapVaultFlowTracker, SolanaHeldAccountCollector,
-    PUMP_AMM_PROGRAM_ID, PUMPSWAP_GLOBAL_CONFIG_PDA)
+    PUMP_AMM_PROGRAM_ID, PUMPSWAP_GLOBAL_CONFIG_PDA, SPL_TOKEN_PROGRAM_ID,
+    SPL_TOKEN_2022_PROGRAM_ID)
 from memetrader.forward_patterns import experiment_policies, pattern_signal
 from memetrader.models import TokenCandidate, TokenSnapshot, Observation, iso, utcnow
 from memetrader.autonomous_search import _source_contract_mentions
@@ -166,6 +167,102 @@ def test_participation_seed_and_truncated_windows_never_create_false_breadth():
         truncated = await collector.sample_pumpswap_participation(pool, scan["frontier"])
         assert truncated["status"] == "TRUNCATED_INCOMPLETE" and not truncated["trades"]
         assert methods.count("getTransaction") == 1
+    asyncio.run(scenario())
+
+
+def amountful_participation_fixture(side="BUY", checked=False):
+    pool, signature, tx = participation_fixture()
+    pool.update(base_token_program=SPL_TOKEN_2022_PROGRAM_ID, quote_token_program=SPL_TOKEN_PROGRAM_ID)
+    ix = tx["transaction"]["message"]["instructions"][0]
+    ix["accounts"][11:13] = [pool["base_token_program"], pool["quote_token_program"]]
+    tx["blockTime"] = signature["blockTime"] = 100
+    keys = tx["transaction"]["message"]["accountKeys"]
+    for address, mint, owner in (("ub", "base", "user"), ("uq", "quote", "user"),
+                                 ("bv", "base", "pool"), ("qv", "quote", "pool")):
+        keys.append({"pubkey": address, "signer": False})
+        tx["meta"].setdefault("preTokenBalances", []).append(dict(
+            accountIndex=len(keys) - 1, mint=mint, owner=owner,
+            uiTokenAmount={"amount": "999999999", "decimals": 9}))
+    def transfer(source, destination, mint, amount, program):
+        info = dict(source=source, destination=destination, authority="user")
+        if checked:
+            info.update(mint=mint, tokenAmount={"amount": str(amount), "decimals": 9})
+        else:
+            info["amount"] = str(amount)
+        return dict(programId=program, program="spl-token", stackHeight=2,
+                    parsed=dict(type="transferChecked" if checked else "transfer", info=info))
+    base = transfer("bv" if side == "BUY" else "ub", "ub" if side == "BUY" else "bv",
+                    "base", 7, pool["base_token_program"])
+    quote = transfer("uq" if side == "BUY" else "qv", "qv" if side == "BUY" else "uq",
+                     "quote", 123, pool["quote_token_program"])
+    fee = transfer("uq", "fee_ata", "quote", 9, pool["quote_token_program"])
+    event = dict(programId=PUMP_AMM_PROGRAM_ID, accounts=["event_authority"], data="event", stackHeight=2)
+    tx["meta"]["innerInstructions"] = [dict(index=0, instructions=[base, quote, fee, event])]
+    return pool, signature, tx
+
+
+@pytest.mark.parametrize("side", ["BUY", "SELL"])
+@pytest.mark.parametrize("checked", [False, True])
+def test_actual_spl_transfer_mints_amounts_and_sell_direction(side, checked):
+    pool, signature, tx = amountful_participation_fixture(side, checked)
+    amounts = SolanaHeldAccountCollector._pumpswap_actual_transfer_amounts(tx, "user", pool, side, "outer:0")
+    assert amounts == {"base_amount_raw": 7, "quote_amount_raw": 123}
+    if side == "BUY":
+        trades, complete = SolanaHeldAccountCollector._pumpswap_participation_instructions(tx, signature, pool)
+        assert complete and trades[0]["amount_complete"]
+        assert trades[0]["quote_amount_raw"] == 123  # maxQuoteIn in instruction is 200.
+        assert trades[0]["block_time"] == 100
+    tx["meta"]["innerInstructions"][0]["instructions"][1]["programId"] = "fake-token-program"
+    assert SolanaHeldAccountCollector._pumpswap_actual_transfer_amounts(tx, "user", pool, side, "outer:0") is None
+
+
+def test_inner_swaps_use_actual_cpi_stack_scope_and_reject_ambiguous_amounts():
+    from copy import deepcopy
+    pool, _, tx = amountful_participation_fixture()
+    swap = tx["transaction"]["message"]["instructions"][0]
+    swap["stackHeight"] = 2
+    transfers = tx["meta"]["innerInstructions"][0]["instructions"]
+    for ix in transfers:
+        ix["stackHeight"] = 3
+    tx["transaction"]["message"]["instructions"] = [{"programId": "router"}]
+    group = [swap, *transfers, deepcopy(swap), *deepcopy(transfers)]
+    tx["meta"]["innerInstructions"][0]["instructions"] = group
+    for path in ("inner:0:0", "inner:0:5"):
+        assert SolanaHeldAccountCollector._pumpswap_actual_transfer_amounts(
+            tx, "user", pool, "BUY", path) == {"base_amount_raw": 7, "quote_amount_raw": 123}
+    group[1].pop("stackHeight")
+    assert SolanaHeldAccountCollector._pumpswap_actual_transfer_amounts(tx, "user", pool, "BUY", "inner:0:0") is None
+
+
+def test_temporary_wrapped_quote_account_owner_comes_from_prior_spl_initialization():
+    pool, _, tx = amountful_participation_fixture(checked=True)
+    tx["meta"]["preTokenBalances"] = [b for b in tx["meta"]["preTokenBalances"] if b["accountIndex"] != 2]
+    init = dict(programId=SPL_TOKEN_PROGRAM_ID,
+                parsed=dict(type="initializeAccount3", info=dict(account="uq", mint="quote", owner="user")))
+    tx["transaction"]["message"]["instructions"].insert(0, init)
+    tx["meta"]["innerInstructions"][0]["index"] = 1
+    assert SolanaHeldAccountCollector._pumpswap_actual_transfer_amounts(
+        tx, "user", pool, "BUY", "outer:1") == {"base_amount_raw": 7, "quote_amount_raw": 123}
+    init["parsed"]["info"]["owner"] = "other"
+    assert SolanaHeldAccountCollector._pumpswap_actual_transfer_amounts(tx, "user", pool, "BUY", "outer:1") is None
+
+
+def test_scan_preserves_block_frontier_and_actual_local_receipts():
+    async def scenario():
+        pool, signature, tx = amountful_participation_fixture()
+        responses = [[signature], tx]
+        class Http:
+            async def post(self, url, *, json):
+                return httpx.Response(200, json={"result": responses.pop(0)}, request=httpx.Request("POST", url))
+        collector = SolanaHeldAccountCollector("https://rpc.invalid")
+        await collector.http.aclose()
+        collector.http = Http()
+        scan = await collector.sample_pumpswap_participation(pool, dict(signature="prior", slot=51, block_time=90))
+        assert scan["complete"] and scan["coverage_complete"]
+        assert scan["coverage_start"] == 90 and scan["coverage_end"] == 100
+        assert scan["frontier"]["block_time"] == 100
+        assert scan["trades"][0]["observed_at"] <= scan["observed_at"]
+        assert scan["trades"][0]["recorded_at"] <= scan["recorded_at"]
     asyncio.run(scenario())
 
 

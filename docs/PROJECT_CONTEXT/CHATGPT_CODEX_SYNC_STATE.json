@@ -40,7 +40,7 @@
   "active_cycle": {
     "priority": "P1",
     "cycle_id": "funding-20260905-fixed-1000",
-    "status": "FULL_DIRECTION_IMPLEMENTATION_WITH_ACQUISITION_COVERAGE_GAPS",
+    "status": "FULL_18_DIRECTIONS_API_COMPLEMENT_AND_DISCOVERY_STAGE",
     "objective": "Implement all15+1 new directions from the user-designated strategy discussion, not only its three-item next batch. Preserve146 existing strategies/funding/history; pure modules are under integration, not yet registered or deployed. Latest acquisition diagnosis separates genuine551 cash rejections from Robinhood low Dex pair coverage and missing ordinary follow-up snapshots after hydration; do not infer that discovery stopped or all coverage is adequate. Reuse bounded fresh acquisition and protect held exits. Actual resource blockers must be evidenced; no placeholder WAIT-only completion, reset, backfill, duplicate compensation, Live activation or restored2h automation. CURRENT_OBJECTIVE_AND_PLAN.md leads the implementation queue.",
     "scope_guard": "The one user-authorized initialization was used at 2026-09-05T07:37:08.842373Z, snapshot frontier 829428. Never repeat it automatically. Old positions continue exiting in their old funding period; proceeds must not fund new accounts. Preserve all history and IDs. No MAE/MFE, no manual strategy selection, no future data or historical backfill. Valid same-pool liquidity below 1 USD writes off remaining Paper cost. Live stays locked: balance sizing and mocked tests do not resolve Paper-fill signal/exit coupling or constitute mainnet validation.",
     "fact_cutoff_utc": "2026-09-05T14:38:04.184532Z",

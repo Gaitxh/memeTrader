@@ -5,6 +5,7 @@ import base64
 import binascii
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -22,6 +23,7 @@ import httpx
 from solders.pubkey import Pubkey
 
 from .runtime_timing import RuntimeTiming
+from .market_api import CoinGeckoDemoPoolClient
 
 from .autonomous_search import AutonomousSearchAgent, _canonical_social_url, _same_social_url
 from .collectors import (
@@ -1187,8 +1189,19 @@ class Runtime:
 
     def __init__(self, config: dict[str, Any], root: Path):
         self.config, self.root = config, root
+        market_keys = {}
+        credential_path = root / "data" / "market_api_credentials.json"
+        if credential_path.exists():
+            try:
+                from .wallet import _dpapi_unprotect
+                envelope = json.loads(credential_path.read_text(encoding="utf-8"))
+                market_keys = json.loads(_dpapi_unprotect(base64.b64decode(envelope["dpapi"])))
+            except Exception:
+                # Optional credentials must not take down the existing public collectors.
+                market_keys = {}
         zerox_api_key = os.environ.get("MEMETRADER_ZEROX_API_KEY", "").strip()
-        jupiter_api_key = os.environ.get("MEMETRADER_JUPITER_API_KEY", "").strip()
+        jupiter_api_key = (os.environ.get("MEMETRADER_JUPITER_API_KEY") or market_keys.get("jupiter") or "").strip()
+        coingecko_api_key = (os.environ.get("MEMETRADER_COINGECKO_API_KEY") or market_keys.get("coingecko_demo") or "").strip()
         db_path = Path(str(config["database"]))
         starting_cash = float(config["paper"].get("starting_cash_usd", 1_000))
         self.store = Store(
@@ -1381,6 +1394,16 @@ class Runtime:
         self.evm_route_http = HttpClient(min_host_interval=0.15)
         self.dex = DexScreenerClient(self.market_http)
         self.jupiter = JupiterQuoteClient(self.jupiter_http, jupiter_api_key)
+        self.coingecko_http = HttpClient(timeout=6, min_host_interval=1.05)
+        self.coingecko = CoinGeckoDemoPoolClient(self.coingecko_http, coingecko_api_key, store=self.store)
+        self._market_pool_gaps: dict[tuple[str, str], dict[str, Any]] = {}
+        self._market_complement_pools: set[tuple[str, str]] = set()
+        self.store.set_kv("market_api:configured", {
+            "jupiter_authenticated": bool(jupiter_api_key),
+            "coingecko_authenticated": bool(coingecko_api_key),
+            "credential_storage": "windows_dpapi_local_file",
+            "cross_provider_validation": False,
+        })
         self.held_accounts = SolanaHeldAccountCollector(
             str(config["safety"].get("solana_rpc_url") or "https://api.mainnet-beta.solana.com")
         )
@@ -1458,6 +1481,7 @@ class Runtime:
         await self.evm_route_http.close()
         await self.held_accounts.close()
         await self.jupiter_http.close()
+        await self.coingecko_http.close()
         await self.market_http.close()
         await self.http.close()
         self.store.close()
@@ -2129,6 +2153,88 @@ class Runtime:
                 )
             self._notify_source_error(name, exc)
 
+    @staticmethod
+    def _complement_snapshot(pair: dict[str, Any]) -> TokenSnapshot | None:
+        snapshot = DexScreenerClient._snapshot(pair)
+        if snapshot is None or not math.isfinite(float(snapshot.price_usd or 0)) or not float(snapshot.price_usd or 0) > 0:
+            return None
+        snapshot.provider = str(pair["provider"])
+        snapshot.observed_at = parse_time(pair["observedAt"])
+        snapshot.ingested_at = snapshot.observed_at
+        snapshot.market_cap_usd = pair.get("marketCap")
+        return snapshot
+
+    def _queue_market_pool_gap(self, item: Mapping[str, Any], pair: str,
+                               versions: list[str]) -> None:
+        if not hasattr(self, "coingecko") or not self.coingecko.available():
+            return
+        chain = str(item["chain"]).lower()
+        key = (str(item["token_id"]), canonical_token_address(chain, pair))
+        if key not in self._market_pool_gaps and len(self._market_pool_gaps) >= 300:
+            return
+        previous = self._market_pool_gaps.get(key, {})
+        self._market_pool_gaps[key] = {
+            **dict(item), "pair_address": pair, "versions": versions or [self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION],
+            "next_attempt": previous.get("next_attempt", 0.0),
+        }
+
+    async def complementary_market_data_once(self) -> None:
+        """Fetch only uncovered original pools, outside the held-token hot loop."""
+        status = self.coingecko.status()
+        status["pending_original_pools"] = len(self._market_pool_gaps)
+        self.store.set_kv("market_api:coingecko-demo:status", status)
+        if not self.coingecko.available() or not self._market_pool_gaps:
+            return
+        now = asyncio.get_running_loop().time()
+        due = [(key, item) for key, item in self._market_pool_gaps.items()
+               if float(item["next_attempt"]) <= now]
+        if not due:
+            return
+        chain = str(due[0][1]["chain"])
+        chunk = [(key, item) for key, item in due if item["chain"] == chain][:30]
+        # Do not consume quota for a position that closed while queued.
+        current = self.store.chain_meme_trader_market_mark_targets(
+            definition_versions=tuple(dict.fromkeys(v for _, item in chunk for v in item["versions"])),
+        )
+        held = {str(item["token_id"]) for item in current}
+        for key, item in chunk:
+            if item["token_id"] not in held:
+                self._market_pool_gaps.pop(key, None)
+                self._market_complement_pools.discard(key)
+        chunk = [(key, item) for key, item in chunk if item["token_id"] in held]
+        if not chunk:
+            return
+        for _, item in chunk:
+            item["next_attempt"] = now + 60
+        pairs = await self.coingecko.get_pools(chain, [str(item["pair_address"]) for _, item in chunk])
+        outcomes = []
+        received = utcnow()
+        for key, item in chunk:
+            pair = pairs.get(canonical_token_address(chain, str(item["pair_address"])))
+            if pair is None:
+                continue  # This provider not listing a pool is not proof of its death.
+            if canonical_token_address(chain, str(pair.get("pairAddress") or "")) != key[1]:
+                continue
+            token = DexScreenerClient._candidate(pair)
+            snapshot = self._complement_snapshot(pair)
+            if token is None or snapshot is None or self._paper_quote_rejections(
+                str(item["token_id"]), token, snapshot, received,
+            ):
+                continue
+            token.source = snapshot.provider
+            self._market_complement_pools.add(key)
+            outcomes.extend({"kind": kind, "token": token, "snapshot": snapshot,
+                             "target_token_id": item["token_id"], "target_chain": chain,
+                             "target_address": item["address"]}
+                            for kind in ("pool_visible", "visible"))
+        if outcomes:
+            self.store.apply_chain_meme_trader_market_mark_batch(outcomes, recorded_at=received)
+            for version in dict.fromkeys(v for _, item in chunk for v in item["versions"]):
+                self.store.evaluate_chain_meme_trader_market_marks(
+                    definition_version=version, token_ids=[str(item["token_id"]) for _, item in chunk],
+                )
+        self.store.heartbeat("coingecko:gap_recovery", item=bool(outcomes))
+
     async def _poll_gecko_network(self, network: str) -> None:
         name = f"geckoterminal:{network}"
         round_id = self.store.start_token_discovery_round(
@@ -2146,6 +2252,24 @@ class Runtime:
                 created = await self.ingest_token(token)
                 first_local = not known_before and created
                 duplicates += int(not first_local)
+                pair = token.raw.get("market_pair")
+                snapshot_count = 0
+                if isinstance(pair, dict):
+                    snapshot = self._complement_snapshot(pair)
+                    if snapshot is not None and snapshot.token_id == token.token_id:
+                        snapshot_id = self.store.add_snapshot(snapshot)
+                        snapshot_count = 1
+                        self.store.mark_token_detail_hydration(token.token_id, "hydrated")
+                        self.store.record_token_universe_funnel_transition(
+                            token.token_id, stage="metadata_hydration_result", status="hydrated",
+                            reason_code="new_pool_response_contains_market_data",
+                            evaluation_key=f"round:{round_id}:result", observed_at=snapshot.observed_at,
+                            ingested_at=snapshot.ingested_at, source_table="token_snapshots",
+                            source_record_ids={"round_id": round_id, "snapshot_id": snapshot_id},
+                            round_id=round_id, snapshot_id=snapshot_id,
+                            metadata={"provider": "geckoterminal", "chain": token.chain},
+                        )
+                        self._remember_pattern_quotes({token.token_id: (token, snapshot)})
                 self.store.add_token_discovery_exposure(
                     round_id,
                     token_id=token.token_id,
@@ -2153,6 +2277,7 @@ class Runtime:
                     role="new_pool",
                     first_local_discovery=first_local,
                     new_token=created,
+                    snapshot_count=snapshot_count,
                     observed_at=token.first_seen_at,
                 )
             self.store.finish_token_discovery_round(
@@ -5804,6 +5929,8 @@ class Runtime:
                 for item in chunk:
                     for pair_address in str(item.get("entry_pair_addresses") or "").split(","):
                         if pair_address:
+                            self._queue_market_pool_gap(item, pair_address,
+                                evaluate_versions or ([evaluate_version] if evaluate_version else []))
                             failure_outcomes.append({
                                 "kind": "pool_failure",
                                 "token_id": str(item["token_id"]),
@@ -5839,10 +5966,14 @@ class Runtime:
                     })
                     for pair_address in str(item.get("entry_pair_addresses") or "").split(","):
                         if pair_address:
+                            self._queue_market_pool_gap(item, pair_address,
+                                evaluate_versions or ([evaluate_version] if evaluate_version else []))
                             outcomes.append({
-                                "kind": "pool_missing", "token_id": target_token_id,
+                                "kind": "pool_failure" if (target_token_id, canonical_token_address(target_chain, pair_address)) in getattr(self, "_market_complement_pools", set()) else "pool_missing",
+                                "token_id": target_token_id,
                                 "pair_address": pair_address, "chain": target_chain,
                                 "address": target_address,
+                                "failure_kind": "DEX_SOURCE_COVERAGE_GAP",
                             })
                     continue
                 token, snapshot = result
@@ -5873,6 +6004,7 @@ class Runtime:
                         continue
                     pool_snapshot.observed_at = snapshot.observed_at
                     pool_snapshot.ingested_at = snapshot.ingested_at
+                    pool_snapshot.provider = snapshot.provider
                     if (
                         float(pool_snapshot.price_usd or 0.0) <= 0.0
                         or (
@@ -5893,14 +6025,18 @@ class Runtime:
                     if pool_rejections:
                         continue
                     valid_pairs.add(pair_key)
+                    getattr(self, "_market_pool_gaps", {}).pop((target_token_id, pair_key), None)
+                    getattr(self, "_market_complement_pools", set()).discard((target_token_id, pair_key))
                     outcomes.append({
                         "kind": "pool_visible", "token": pool_token,
                         "snapshot": pool_snapshot, "target_token_id": target_token_id,
                         "target_chain": target_chain, "target_address": target_address,
                     })
                 for expected_pair in expected_pairs - valid_pairs:
+                    self._queue_market_pool_gap(item, expected_pair,
+                        evaluate_versions or ([evaluate_version] if evaluate_version else []))
                     outcomes.append({
-                        "kind": "pool_failure" if expected_pair in observed_pairs else "pool_missing",
+                        "kind": "pool_failure" if expected_pair in observed_pairs or (target_token_id, expected_pair) in getattr(self, "_market_complement_pools", set()) else "pool_missing",
                         "token_id": target_token_id, "pair_address": expected_pair,
                         "chain": target_chain, "address": target_address,
                         "failure_kind": "DATA_REJECTED:ENTRY_POOL_INVALID",
@@ -6909,6 +7045,10 @@ class Runtime:
                         "chain_meme_trader", 1, self.chain_meme_trader_once,
                     ),
                     name="chain_meme_trader",
+                ),
+                asyncio.create_task(
+                    self._periodic("complementary_market_data", 10, self.complementary_market_data_once),
+                    name="complementary_market_data",
                 ),
                 asyncio.create_task(
                     self._periodic(

@@ -54,6 +54,7 @@ class ChainWebData:
         self._curve_frontier = 0
         self._curves: dict[str, dict[str, Any]] = {}
         self._discovery_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._discovery_series_cache: tuple[float, dict[str, Any]] | None = None
         self.strategy_universe_path = (
             root / "docs" / "PROJECT_CONTEXT" /
             "CHAIN_MEME_TRADER_HISTORICAL_STRATEGY_UNIVERSE_2026-09-04.json"
@@ -254,6 +255,56 @@ class ChainWebData:
             return {arm: {**history, "points": self._sample_curve(history["points"], self.LIVE_DETAIL_CURVE_POINTS)}
                     for arm, history in self._curves.items()}
 
+    def _discovery_activity_series(self, connection) -> dict[str, Any]:
+        cached = self._discovery_series_cache
+        if cached and time.monotonic() - cached[0] < 20:
+            return cached[1]
+        now = utcnow()
+        start = now.replace(second=0, microsecond=0) - timedelta(minutes=59)
+        # Indexed rowid tails bound Web cost independently of the growing ledger.
+        latest = int(connection.execute("SELECT COALESCE(MAX(id),0) FROM token_discovery_exposures").fetchone()[0])
+        lower = max(0, latest - 20000)
+        first = connection.execute(
+            "SELECT COALESCE(recorded_at,observed_at) FROM token_discovery_exposures WHERE id>? ORDER BY id LIMIT 1",
+            (lower,),
+        ).fetchone()
+        if lower and first and parse_time(first[0]) > start:
+            start = parse_time(first[0]).replace(second=0, microsecond=0) + timedelta(minutes=1)
+        counts: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+        rows = connection.execute(
+            "SELECT chain,token_id,COALESCE(recorded_at,observed_at) AS at FROM token_discovery_exposures "
+            "WHERE id>? AND first_local_discovery=1 AND COALESCE(recorded_at,observed_at)>=?",
+            (lower, iso(start)),
+        ).fetchall()
+        for row in rows:
+            counts[(str(row["at"])[:16], str(row["chain"]), "new")].add(str(row["token_id"]))
+        frontier = int(connection.execute("SELECT COALESCE(MAX(id),0) FROM chain_meme_trader_v6_entry_evaluations").fetchone()[0])
+        rows = connection.execute(
+            "SELECT token_id,source_snapshot_id,decided_at FROM chain_meme_trader_v6_entry_evaluations "
+            "WHERE id>? AND decided_at>=? AND json_extract(feature_json,'$.policy_entry_family')='reawakening'",
+            (max(0, frontier-20000), iso(start)),
+        ).fetchall()
+        for row in rows:
+            chain_name = str(row["token_id"]).split(":", 1)[0]
+            counts[(str(row["decided_at"])[:16], chain_name, "reactivated")].add(str(row["token_id"]))
+        points = []
+        minute = start
+        while minute <= now:
+            points.append({"observed_at": iso(minute), **{
+                name: {kind: len(counts[(iso(minute)[:16], name, kind)]) for kind in ("new", "reactivated")}
+                for name in ("solana", "bsc", "robinhood")
+            }})
+            minute += timedelta(minutes=1)
+        result = {"points": points, "bucket_seconds": 60, "start_at": iso(start),
+                  "generated_at": iso(now), "refresh_seconds": 20,
+                  "reactivation_basis": "unique_qualified_tokens_per_minute_before_cash_gate"}
+        self._discovery_series_cache = (time.monotonic(), result)
+        return result
+
+    def discovery_activity(self) -> dict[str, Any]:
+        with self._connect() as connection:
+            return {"status": "ok", "activity_series": self._discovery_activity_series(connection)}
+
     def discovery_state(self, chain: str = "all") -> dict[str, Any]:
         if chain not in {"all", "solana", "bsc", "robinhood"}:
             raise ValueError("unsupported discovery chain")
@@ -294,6 +345,7 @@ class ChainWebData:
                                   and 0 <= heartbeat_age <= 30 else "stale",
                                   "heartbeat_age_seconds": heartbeat_age},
                        "tokens": tokens, "rounds": rounds, "funnel": funnel,
+                       "activity_series": self._discovery_activity_series(connection),
                        "latest_at": tokens[0]["observed_at"] if tokens else None}
         with self._cache_lock:
             self._discovery_cache[chain] = (time.monotonic(), payload)
@@ -3341,6 +3393,9 @@ class ChainWebHandler(BaseHTTPRequestHandler):
                     {"status": "error", "error": type(exc).__name__},
                     HTTPStatus.SERVICE_UNAVAILABLE,
                 )
+            return
+        if route == "/api/discovery-activity":
+            self._send_json(self.server.data.discovery_activity())
             return
         if route == "/api/discovery":
             try:

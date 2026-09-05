@@ -1710,9 +1710,11 @@ class GeckoNewPoolsCollector:
     async def poll(self) -> list[TokenCandidate]:
         response = await self.http.get(
             f"https://api.geckoterminal.com/api/v2/networks/{self.network}/new_pools",
-            params={"include": "base_token", "page": 1}, ttl=20,
+            params={"include": "base_token,quote_token,dex", "page": 1}, ttl=20,
         )
         payload = response.json()
+        from .market_api import normalize_gecko_pool
+        received_at = utcnow()
         included = {item.get("id"): item for item in payload.get("included", [])}
         out: list[TokenCandidate] = []
         for pool in payload.get("data", [])[:40]:
@@ -1729,7 +1731,9 @@ class GeckoNewPoolsCollector:
                     chain=chain, address=address, name=str(token_attrs.get("name") or attrs.get("name") or ""),
                     symbol=str(token_attrs.get("symbol") or ""), created_at=_published(attrs.get("pool_created_at")),
                     source=f"geckoterminal:{self.network}", url=f"https://www.geckoterminal.com/{self.network}/pools/{attrs.get('address','')}",
-                    raw={"pool": attrs, "pool_address": attrs.get("address")},
+                    raw={"pool": attrs, "pool_address": attrs.get("address"),
+                         "market_pair": normalize_gecko_pool(pool, payload.get("included", []),
+                             chain, received_at, provider="geckoterminal")},
                 )
             )
         return out
@@ -2829,12 +2833,14 @@ class SolanaHeldAccountCollector:
     async def sample_pumpswap_participation(
         self, pool: Mapping[str, Any], frontier: Mapping[str, Any] | None,
     ) -> dict[str, Any]:
-        """Bounded confirmed signer-address sampling, never trade-volume inference."""
+        """Bounded confirmed signer sampling plus actual SPL transfer evidence."""
         address = str(pool["pool_address"])
         started = utcnow()
         result: dict[str, Any] = {"started_at": iso(started), "complete": False,
             "status": "UNKNOWN_RPC", "trades": [], "frontier": dict(frontier or {}),
-            "identity_unit": "signer_address_not_human", "decoder": "pump-amm-participation/v1"}
+            "identity_unit": "signer_address_not_human", "decoder": "pump-amm-participation/v2",
+            "coverage_complete": False, "truncated": False,
+            "coverage_start": (frontier or {}).get("block_time"), "coverage_end": None}
 
         async def rpc(method, params):
             response = await self.http.post(self.rpc_url, json={
@@ -2855,12 +2861,15 @@ class SolanaHeldAccountCollector:
             if not isinstance(signatures, list):
                 raise ValueError("participation_signature_shape")
             head = signatures[0] if signatures else frontier or {"signature": None, "slot": pool["resolved_slot"]}
-            result["frontier"] = {"signature": head.get("signature"), "slot": int(head["slot"])}
+            result["frontier"] = {"signature": head.get("signature"), "slot": int(head["slot"]),
+                                  "block_time": head.get("blockTime", head.get("block_time"))}
+            result["coverage_end"] = result["frontier"]["block_time"]
             if frontier is None:
                 result["status"] = "SEEDED_NO_WINDOW"
             elif len(signatures) >= 10:
                 # Advance explicitly over a discarded interval, never fabricate its breadth.
                 result["status"] = "TRUNCATED_INCOMPLETE"
+                result["truncated"] = True
             else:
                 trades = []
                 complete = True
@@ -2873,13 +2882,22 @@ class SolanaHeldAccountCollector:
                         "commitment": "confirmed", "encoding": "jsonParsed", "maxSupportedTransactionVersion": 0,
                     }])
                     parsed, valid = self._pumpswap_participation_instructions(tx, item, pool)
+                    received_at = iso(utcnow())
+                    for trade in parsed:
+                        trade.update(observed_at=received_at, recorded_at=received_at)
                     complete = complete and valid
                     trades.extend(parsed)
                 result.update(complete=complete, status="COMPLETE" if complete else "INCOMPLETE_DISCARDED",
                     trades=trades if complete else [])
+                coverage_start, coverage_end = result["coverage_start"], result["coverage_end"]
+                result["coverage_complete"] = (complete and type(coverage_start) is int
+                    and type(coverage_end) is int and coverage_start < coverage_end
+                    and all(type(trade.get("block_time")) is int
+                            and coverage_start < trade["block_time"] <= coverage_end for trade in trades))
         except Exception as exc:
             result.update(status="UNKNOWN_RPC", complete=False, trades=[], reason=self._rpc_error_reason(exc))
         result["completed_at"] = iso(utcnow())
+        result.update(observed_at=result["completed_at"], recorded_at=result["completed_at"])
         return result
 
     @staticmethod
@@ -2925,9 +2943,154 @@ class SolanaHeldAccountCollector:
                     or any(accounts[i] != value for i, value in expected.items())
                     or accounts[1] not in signers or accounts[1] in expected.values()):
                 return [], False
-            trades.append({"signature": signature["signature"], "slot": signature["slot"],
-                "instruction_path": path, "side": operation[0], "signer_address": accounts[1]})
+            trade = {"signature": signature["signature"], "slot": signature["slot"],
+                "block_time": tx.get("blockTime", signature.get("blockTime")),
+                "instruction_path": path, "side": operation[0], "signer_address": accounts[1],
+                "amount_complete": False, "pool_address": pool["pool_address"],
+                "base_mint": pool["base_mint"], "quote_mint": pool["quote_mint"]}
+            # Instruction amounts are limits (maxQuoteIn/minQuoteOut), not fills.
+            # Only attach actual amounts when the transaction contains one
+            # unambiguous pair of parsed SPL transfers for this swap.
+            actual = SolanaHeldAccountCollector._pumpswap_actual_transfer_amounts(
+                tx, accounts[1], pool, operation[0], path)
+            if actual is not None:
+                trade.update(actual, amount_complete=True,
+                    amount_source="parsed_spl_transfer")
+            trades.append(trade)
         return ([], False) if lp_seen and trades else (trades, True)
+
+    @staticmethod
+    def _pumpswap_actual_transfer_amounts(tx, signer, pool, side, instruction_path):
+        """Exact vault-to-user SPL transfers, never limits or net balance deltas."""
+        transaction = tx.get("transaction") or {}
+        message = transaction.get("message") or {}
+        meta = tx.get("meta") or {}
+        outer = message.get("instructions", [])
+        try:
+            path = instruction_path.split(":")
+            outer_index = int(path[1])
+            group = next((group["instructions"] for group in meta.get("innerInstructions") or []
+                          if group.get("index") == outer_index), [])
+            if path[0] == "outer" and len(path) == 2:
+                if outer[outer_index].get("programId") != PUMP_AMM_PROGRAM_ID:
+                    return None
+                # A nested PumpSwap call would make attribution ambiguous.
+                if any(ix.get("programId") == PUMP_AMM_PROGRAM_ID
+                       and pool["pool_address"] in (ix.get("accounts") or []) for ix in group):
+                    return None
+                selected = group
+            elif path[0] == "inner" and len(path) == 3:
+                index = int(path[2])
+                swap = group[index]
+                height = swap.get("stackHeight")
+                if swap.get("programId") != PUMP_AMM_PROGRAM_ID or type(height) is not int:
+                    return None
+                selected = []
+                for ix in group[index + 1:]:
+                    depth = ix.get("stackHeight")
+                    if type(depth) is not int:
+                        return None
+                    if depth <= height:
+                        break
+                    if (ix.get("programId") == PUMP_AMM_PROGRAM_ID
+                            and pool["pool_address"] in (ix.get("accounts") or [])):
+                        return None
+                    selected.append(ix)
+            else:
+                return None
+        except (ValueError, IndexError, KeyError, TypeError):
+            return None
+
+        base, quote = str(pool["base_mint"]), str(pool["quote_mint"])
+        bv, qv = str(pool["base_vault"]), str(pool["quote_vault"])
+        mints, owners = {bv: base, qv: quote}, {}
+        keys = message.get("accountKeys", [])
+        for balance in list(meta.get("preTokenBalances") or []) + list(meta.get("postTokenBalances") or []):
+            try:
+                key = keys[int(balance["accountIndex"])]
+                address = key.get("pubkey") if isinstance(key, Mapping) else key
+                mint, owner = balance["mint"], balance.get("owner")
+                if address in mints and mints[address] != mint:
+                    return None
+                if owner is not None and address in owners and owners[address] != owner:
+                    return None
+                mints[address] = mint
+                if owner is not None:
+                    owners[address] = owner
+            except (KeyError, IndexError, TypeError, ValueError):
+                return None
+        # Wrapped SOL accounts created and closed within this transaction are
+        # absent from pre/post balances. Their earlier SPL initialization is
+        # direct mint/owner evidence, unlike a guessed signer ATA relationship.
+        prior_instructions = list(outer[:outer_index])
+        prior_instructions.extend(ix for prior in meta.get("innerInstructions") or []
+                                  if prior.get("index", outer_index) < outer_index
+                                  for ix in prior.get("instructions", []))
+        if path[0] == "inner":
+            prior_instructions.extend(group[:index])
+        for ix in prior_instructions:
+            parsed = ix.get("parsed") or {}
+            if (ix.get("programId") not in {SPL_TOKEN_PROGRAM_ID, SPL_TOKEN_2022_PROGRAM_ID}
+                    or parsed.get("type") not in {"initializeAccount", "initializeAccount2", "initializeAccount3"}):
+                continue
+            info = parsed.get("info") or {}
+            address, mint, owner = info.get("account"), info.get("mint"), info.get("owner")
+            if not address or not mint or not owner:
+                return None
+            expected_program = pool.get("base_token_program" if mint == base else "quote_token_program")
+            if mint not in {base, quote}:
+                continue
+            if (ix["programId"] != expected_program or mints.get(address, mint) != mint
+                    or owners.get(address, owner) != owner):
+                return None
+            mints[address], owners[address] = mint, owner
+        def is_user(address):
+            return owners.get(address) == signer
+
+        base_hits, quote_hits = [], []
+        for ix in selected:
+            parsed = ix.get("parsed") if isinstance(ix, Mapping) else None
+            if not isinstance(parsed, Mapping) or parsed.get("type") not in {
+                    "transfer", "transferChecked"}:
+                continue
+            info = parsed.get("info") or {}
+            source, destination = info.get("source"), info.get("destination")
+            if not ({source, destination} & {bv, qv}):
+                continue  # Separate fee transfers are not pool quote notional.
+            program = ix.get("programId")
+            if program not in {SPL_TOKEN_PROGRAM_ID, SPL_TOKEN_2022_PROGRAM_ID}:
+                return None
+            mint = info.get("mint") or mints.get(source) or mints.get(destination)
+            if not mint or any(mints.get(address, mint) != mint for address in (source, destination)):
+                return None
+            expected_program = pool.get("base_token_program" if mint == base else "quote_token_program")
+            if expected_program != program:
+                return None
+            amount = info.get("amount", (info.get("tokenAmount") or {}).get("amount"))
+            if isinstance(amount, bool) or not isinstance(amount, (int, str)):
+                return None
+            if isinstance(amount, str) and (not amount.isascii() or not amount.isdigit()):
+                return None
+            amount = int(amount)
+            if not 0 < amount <= 2**64 - 1:
+                return None
+            if mint == base:
+                valid = ((source == bv and is_user(destination)) if side == "BUY"
+                         else (is_user(source) and destination == bv))
+                if not valid:
+                    return None
+                base_hits.append(amount)
+            elif mint == quote:
+                valid = ((is_user(source) and destination == qv) if side == "BUY"
+                         else (source == qv and is_user(destination)))
+                if not valid:
+                    return None
+                quote_hits.append(amount)
+            else:
+                return None
+        if side not in {"BUY", "SELL"} or len(base_hits) != 1 or len(quote_hits) != 1:
+            return None
+        return {"base_amount_raw": base_hits[0], "quote_amount_raw": quote_hits[0]}
 
     async def resolve_pumpswap_shadow_pools(
         self, candidates: list[Mapping[str, Any]],

@@ -132,6 +132,7 @@ let errorTimer = null;
 let errors = [];
 let activeDrawerKind = null;
 let discoveryView = null;
+let discoveryActivity = null, activityRequestedAt = 0, activityLoading = false;
 let discoveryLoading = false;
 let discoveryRequestedAt = 0;
 
@@ -640,6 +641,28 @@ function miniSeriesChart(points,key,label,lineClass,transactions=[],formatter=mo
   const last=valid.at(-1),lastX=x(new Date(last.observed_at).getTime()).toFixed(1),lastY=y(Number(last[key])).toFixed(1);
   return `<svg class="mini-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Token ${esc(label)}变化"><path class="${esc(lineClass)}" d="${path}"/><circle class="series-last ${esc(lineClass)}" cx="${lastX}" cy="${lastY}" r="4"/>${markers}</svg><div class="chart-range"><span>最低 ${formatter(min)}</span><span>${valid.length} 个后端快照点</span><span>最高 ${formatter(max)}</span></div>`;
 }
+function renderDiscoveryActivity(){
+  const series=discoveryActivity?.points||[],selected=$('#activity-chain').value;
+  const chains=selected==='all'?['solana','bsc','robinhood']:[selected];
+  const colors={solana:'#62e3d7',bsc:'#f4c565',robinhood:'#9aabff'};
+  if(!series.length){$('#discovery-curves').innerHTML='<p class="empty">暂无发现记录</p>';return;}
+  $('#discovery-curves').innerHTML=[['new','新发现'],['reactivated','再次活跃']].map(([kind,title])=>{
+    const max=Math.max(1,...series.flatMap(p=>chains.map(c=>Number(p[c]?.[kind]||0))));
+    const path=chains.map(c=>{
+      const pts=series.map((p,i)=>({x:18+i/Math.max(1,series.length-1)*660,y:162-Number(p[c]?.[kind]||0)/max*140,p}));
+      return `<path d="${pts.map((p,i)=>`${i?'L':'M'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')}" fill="none" stroke="${colors[c]}" stroke-width="2"/>`+pts.map(p=>`<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="3" fill="${colors[c]}"><title>${esc(c)} · ${time(p.p.observed_at)} · ${p.p[c]?.[kind]||0} 币</title></circle>`).join('');
+    }).join('');
+    return `<section><h3>${title} <small>币 / 分钟</small></h3><svg viewBox="0 0 700 185" role="img" aria-label="${title}每分钟Token数"><text x="18" y="13" fill="currentColor" font-size="12">${max}</text><path d="M18,162 H678" stroke="var(--line)"/>${path}</svg><div class="chart-range"><span>${time(series[0].observed_at)}</span><span>${time(series.at(-1).observed_at)}</span></div><p>${chains.map(c=>`<span style="color:${colors[c]}">${c==='solana'?'Solana':c==='bsc'?'BSC':'Robinhood'} ${series.reduce((n,p)=>n+Number(p[c]?.[kind]||0),0)}</span>`).join('　')}</p></section>`;
+  }).join('');
+  $('#discovery-curve-note').textContent='每 20 秒更新；当前分钟尚未结束。新发现按首次本地发现计数；再次活跃按每分钟满足复苏条件的币去重，包含因余额不足未买入的机会，不包含重复采集。';
+}
+async function refreshDiscoveryActivity(){
+  if(activityLoading||Date.now()-activityRequestedAt<20000)return;
+  activityLoading=true;activityRequestedAt=Date.now();
+  try{const r=await fetch('/api/discovery-activity',{cache:'no-store'});if(!r.ok)throw new Error(`HTTP ${r.status}`);const d=await r.json();discoveryActivity=d.activity_series;renderDiscoveryActivity();}
+  catch(e){$('#discovery-curve-note').textContent=`曲线更新失败：${e.message}`;}
+  finally{activityLoading=false;}
+}
 function miniPriceChart(points,transactions=[]){
   return `<div class="market-charts"><section><h4>价格曲线</h4>${miniSeriesChart(points,'price_usd','价格','price-line',transactions,tokenPrice)}<p class="trade-legend"><i class="legend-buy"></i>BUY　<i class="legend-sell"></i>SELL　<i class="legend-writeoff">×</i>WRITEOFF · 标记已按成交/事件去重</p></section><section><h4>流动性曲线</h4>${miniSeriesChart(points,'liquidity_usd','流动性','liquidity-line')}</section></div>`;
 }
@@ -773,7 +796,7 @@ async function refreshWallets(force=false){
 function bindTokenLinks(){document.body.addEventListener('click',e=>{const button=e.target.closest('[data-token]');if(button)openToken(button.dataset.token);});}
 function renderVisible(data){
   const strategies=data.strategies||[];
-  if(lastPage==='overview'){renderSummary(data,strategies);renderOverviewStrategies();renderRisk(data.recent_risk||[]);renderActivity(data.recent_activity||[],strategies);renderDiscoveries(data);}
+  if(lastPage==='overview'){renderSummary(data,strategies);renderOverviewStrategies();renderRisk(data.recent_risk||[]);renderActivity(data.recent_activity||[],strategies);renderDiscoveries(data);refreshDiscoveryActivity();}
   if(lastPage==='strategies')renderUniverse();
   if(lastPage==='trading'){renderTrading(data,strategies);renderReverseability(data);}
   if(lastPage==='discovery'){renderFunnel(strategies);renderDiscoveries(data);}
@@ -840,6 +863,7 @@ $('#drawer-close').addEventListener('click',()=>closeDrawer());$('#scrim').addEv
 $('#updates-refresh').addEventListener('click',refreshUpdates);
 $('#performance-refresh').addEventListener('click',refreshPerformance);
 $('#discovery-chain').addEventListener('change',()=>{discoveryView=null;refreshDiscovery(true);});
+$('#activity-chain').addEventListener('change',renderDiscoveryActivity);
 $('#overview-sort').addEventListener('change',renderOverviewStrategies);
 document.body.addEventListener('click',event=>{
   const wallet=event.target.closest('[data-wallet-detail]');if(wallet){openWalletDetail(wallet.dataset.walletDetail);return;}

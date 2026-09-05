@@ -1,5 +1,13 @@
 # 当前目标与执行计划
 
+## 00:15 最新补充与实施边界（2026-09-06 北京时间）
+
+用户要求同一“设计新策略”聊天增量全部方向实施，仍覆盖之前15+1；附件 aa9f93e3 已由主Agent完整阅读，新增 Direct/Normal LP Float-Constrained Scout、Authoritative Event Shock，不能因为聊天建议“只三条/其余延后”缩小用户范围。吸收其真实机制纠正：canonical migration 与 normal/direct Pool 必须 exact 区分；缺 migration fact 不是 noncanonical 证明；capital velocity 预测毕业不代表毕业后盈利；migration absorption 不得退化成迁移追涨。各方向必须分别实现、接入真实输入和前向实验；已测纯模块仍未注册，不算完成。
+
+本阶段接通用户提供的 CoinGecko/Jupiter 密钥（仅本机DPAPI密文，Git忽略）、配额内原池缺口补源与已有Gecko新池响应直接补全。Jupiter实际只读quote、CoinGecko Robinhood exactpool请求均200；无跨API重复比价。主held通道不等待补源，CG日240/月8000本机预算及60s缓存不冒充秒级源。总览新增每分钟新发现/再次活跃分链曲线，ALL/Solana/BSC/Robinhood选择；Web独立20s缓存+有界rowid尾读取，不改后台采集节拍。记录及部署证据见 `API_COMPLEMENT_AND_DISCOVERY_2026-09-06.md`。
+
+接续：剩余全部新策略entry/exit/actual量级quote/部署集成；完成后核对指标、性能、内存与存储。任务期间可证实系统故障造成的损失用原BUY唯一独立资金事件补偿，不改原PNL、不重复此前7518.807662700746U已补款、不把未证实反事实收益直接当补款。保留146旧策略/账期/全部历史与开放仓，无再次初始化、无Live开启、自动复盘仍暂停；仅全部完成后语音。
+
 ## 当前推进：全方向新策略与数据覆盖（2026-09-05 14:38Z）
 
 当前active goal要求完整实现用户指定“设计新策略”讨论中的15个方向及第20节组合方向，不受“下一批仅三条”建议限制。全范围：Vault Hazard、Earn-the-Hold、Failed Continuation、Wave Reset、Migration Absorption、Executable Recovery、Capital Velocity、Effective Breadth、Price-to-Flow Fragility、Churn Resistant、Creator/Early Holder Distribution、Bundle-adjusted Breadth、Finite-capital Ranker、Market Regime、Competing Risk，以及High Recall→Earn Hold→Harvest→Exit→Wave Reset组合。只有实际资源不可用且留证才可跳过；纯函数/注册名不等于生产接通或自然效果已验证。

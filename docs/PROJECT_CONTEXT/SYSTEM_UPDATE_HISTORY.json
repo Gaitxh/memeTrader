@@ -2,6 +2,17 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260906-market-api-and-discovery-curves",
+      "recorded_at": "2026-09-05T16:15:00Z",
+      "title": "互补行情源与分链发现曲线",
+      "problem": "Gecko已有行情被丢弃，Dex覆盖缺口导致部分币难以补全；重复曝光不能代表再次活跃。",
+      "change": "本机加密配置用户API；复用Gecko池行情，独立配额队列补原池缺价；总览增加新发现、再次活跃曲线及三链切换。",
+      "rationale": "扩大真实输入覆盖但不做跨API重复比价，不让补源或图表阻塞持仓与退出。",
+      "validation": "API与持仓集成定向测试、发现去重/现金门前复苏统计、JS语法通过；两家认证请求200。",
+      "scope": "原146策略和资金账期保留；CG为有额度和更新间隔限制的补源，非秒级承诺。新策略全方向集成继续。",
+      "status": "代码测试通过，准备受控部署。"
+    },
+    {
       "id": "20260905-held-delay-compensation-deployed",
       "recorded_at": "2026-09-05T14:02:00Z",
       "title": "持仓漏采已恢复，工程损失补款到账",
