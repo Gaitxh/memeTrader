@@ -5273,13 +5273,16 @@ def test_chain_meme_market_lanes_keep_active_fast_and_carry_slow():
         await runtime.run_forever()
 
         assert runtime.CHAIN_MEME_ACCOUNT_SNAPSHOT_INTERVAL_SECONDS == 10.0
-        assert intervals[1:5] == [
-            ("chain_meme_trader", 1),
-            ("chain_meme_market_marks", 1.0),
-            ("flat_compression_breakout_shadow", 5),
-            ("chain_meme_carried_market_marks", 15.0),
-        ]
-        assert intervals[2][1] < intervals[4][1]
+        scheduled = dict(intervals)
+        assert len(scheduled) == len(intervals)
+        assert scheduled["chain_meme_trader"] == 1
+        assert scheduled["chain_meme_market_marks"] == 1.0
+        assert scheduled["flat_compression_breakout_shadow"] == 5
+        assert scheduled["chain_meme_carried_market_marks"] == 15.0
+        assert scheduled["chain_meme_pattern_pools"] == 15
+        assert scheduled["chain_meme_pattern_participation"] == 15
+        assert scheduled["chain_meme_pattern_narrative"] == 60
+        assert scheduled["chain_meme_market_marks"] < scheduled["chain_meme_carried_market_marks"]
 
     asyncio.run(scenario())
 

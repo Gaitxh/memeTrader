@@ -2826,6 +2826,109 @@ class SolanaHeldAccountCollector:
     async def close(self) -> None:
         await self.http.aclose()
 
+    async def sample_pumpswap_participation(
+        self, pool: Mapping[str, Any], frontier: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Bounded confirmed signer-address sampling, never trade-volume inference."""
+        address = str(pool["pool_address"])
+        started = utcnow()
+        result: dict[str, Any] = {"started_at": iso(started), "complete": False,
+            "status": "UNKNOWN_RPC", "trades": [], "frontier": dict(frontier or {}),
+            "identity_unit": "signer_address_not_human", "decoder": "pump-amm-participation/v1"}
+
+        async def rpc(method, params):
+            response = await self.http.post(self.rpc_url, json={
+                "jsonrpc": "2.0", "id": 50_001, "method": method, "params": params,
+            })
+            response.raise_for_status()
+            payload = response.json()
+            if payload.get("error") or "result" not in payload:
+                raise ValueError("participation_rpc_error")
+            return payload["result"]
+
+        try:
+            options = {"limit": 1 if frontier is None else 10, "commitment": "confirmed",
+                "minContextSlot": max(int(pool["resolved_slot"]), int((frontier or {}).get("slot") or 0))}
+            if frontier and frontier.get("signature"):
+                options["until"] = frontier["signature"]
+            signatures = await rpc("getSignaturesForAddress", [address, options])
+            if not isinstance(signatures, list):
+                raise ValueError("participation_signature_shape")
+            head = signatures[0] if signatures else frontier or {"signature": None, "slot": pool["resolved_slot"]}
+            result["frontier"] = {"signature": head.get("signature"), "slot": int(head["slot"])}
+            if frontier is None:
+                result["status"] = "SEEDED_NO_WINDOW"
+            elif len(signatures) >= 10:
+                # Advance explicitly over a discarded interval, never fabricate its breadth.
+                result["status"] = "TRUNCATED_INCOMPLETE"
+            else:
+                trades = []
+                complete = True
+                for item in reversed(signatures):
+                    if item.get("err") is not None:
+                        continue  # Observed failed transaction, not a missing trade.
+                    if not frontier.get("signature") and int(item["slot"]) <= int(frontier["slot"]):
+                        continue
+                    tx = await rpc("getTransaction", [item["signature"], {
+                        "commitment": "confirmed", "encoding": "jsonParsed", "maxSupportedTransactionVersion": 0,
+                    }])
+                    parsed, valid = self._pumpswap_participation_instructions(tx, item, pool)
+                    complete = complete and valid
+                    trades.extend(parsed)
+                result.update(complete=complete, status="COMPLETE" if complete else "INCOMPLETE_DISCARDED",
+                    trades=trades if complete else [])
+        except Exception as exc:
+            result.update(status="UNKNOWN_RPC", complete=False, trades=[], reason=self._rpc_error_reason(exc))
+        result["completed_at"] = iso(utcnow())
+        return result
+
+    @staticmethod
+    def _pumpswap_participation_instructions(tx, signature, pool):
+        """Count exact verified BUY instructions; balances are not per-instruction fills."""
+        if (not isinstance(tx, Mapping) or not isinstance(tx.get("meta"), Mapping)
+                or tx["meta"].get("err") is not None or tx.get("slot") != signature.get("slot")):
+            return [], False
+        transaction = tx.get("transaction") or {}
+        if not transaction.get("signatures") or transaction["signatures"][0] != signature["signature"]:
+            return [], False
+        message = transaction.get("message") or {}
+        signers = {k["pubkey"] for k in message.get("accountKeys", []) if isinstance(k, Mapping) and k.get("signer") is True}
+        instructions = [(f"outer:{i}", ix) for i, ix in enumerate(message.get("instructions", []))]
+        instructions.extend((f"inner:{group['index']}:{i}", ix)
+            for group in tx["meta"].get("innerInstructions") or [] for i, ix in enumerate(group.get("instructions", [])))
+        types = {bytes((102,6,61,18,1,218,235,234)): ("BUY", 25),
+            bytes((198,46,21,82,180,217,232,112)): ("BUY", 25),
+            bytes((51,230,133,164,1,127,131,173)): ("SELL", 24)}
+        liquidity_ops = {bytes((242,35,198,137,82,225,242,182)), bytes((183,18,70,156,148,109,161,34))}
+        alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+        trades, lp_seen = [], False
+        expected = {0: pool["pool_address"], 2: PUMPSWAP_GLOBAL_CONFIG_PDA, 3: pool["base_mint"],
+            4: pool["quote_mint"], 7: pool["base_vault"], 8: pool["quote_vault"],
+            11: pool["base_token_program"], 12: pool["quote_token_program"]}
+        for path, ix in instructions:
+            accounts = ix.get("accounts") or []
+            if ix.get("programId") != PUMP_AMM_PROGRAM_ID or pool["pool_address"] not in accounts:
+                continue
+            try:
+                encoded = ix["data"]
+                number = 0
+                for char in encoded:
+                    number = number * 58 + alphabet.index(char)
+                raw = bytes(len(encoded) - len(encoded.lstrip("1"))) + number.to_bytes((number.bit_length() + 7) // 8, "big")
+            except (KeyError, ValueError, TypeError):
+                return [], False
+            if raw[:8] in liquidity_ops:
+                lp_seen = True
+                continue
+            operation = types.get(raw[:8])
+            if (operation is None or len(raw) != operation[1] or len(accounts) < 13
+                    or any(accounts[i] != value for i, value in expected.items())
+                    or accounts[1] not in signers or accounts[1] in expected.values()):
+                return [], False
+            trades.append({"signature": signature["signature"], "slot": signature["slot"],
+                "instruction_path": path, "side": operation[0], "signer_address": accounts[1]})
+        return ([], False) if lp_seen and trades else (trades, True)
+
     async def resolve_pumpswap_shadow_pools(
         self, candidates: list[Mapping[str, Any]],
     ) -> list[dict[str, Any]]:

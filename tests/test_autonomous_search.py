@@ -2320,6 +2320,30 @@ def test_trend_scout_verifies_two_sources_and_enters_surge_mode(tmp_path: Path):
 
 
 
+def test_pattern_scout_is_bounded_and_preserves_hourly_due_check(tmp_path: Path):
+    async def scenario():
+        store = Store(tmp_path / "bounded.sqlite3")
+        agent = AutonomousSearchAgent(store, FakeHttp(), config(
+            trend_scout_daily_limit=96, trend_scout_max_events=8,
+            trend_scout_max_web_searches=10, trend_scout_lanes_per_run=3,
+        ))
+        prompts = []
+        def search(prompt, task="trend_scout"):
+            prompts.append(prompt)
+            return {"events": []}, {"model": "fixture", "tokens_used": 1}
+        agent._run_codex_search = search
+        result, observations = await agent.scout_trends(pattern_budget=True)
+        assert result["status"] == "completed" and not observations
+        assert len(result["lane_selection"]["selected_lanes"]) == 1
+        assert "no more than 2 web searches" in prompts[0]
+        assert "Return at most 1 events" in prompts[0]
+        again, _ = await agent.scout_trends(pattern_budget=True)
+        assert again["status"] == "not_due" and again["next_interval_minutes"] >= 60
+        assert len(prompts) == 1
+        store.close()
+    asyncio.run(scenario())
+
+
 def test_trend_scout_quiet_backoff_after_empty_runs(tmp_path: Path):
     store = Store(tmp_path / "db.sqlite3")
     agent = AutonomousSearchAgent(

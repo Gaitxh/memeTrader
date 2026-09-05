@@ -60,6 +60,11 @@ def experiment_policies() -> list[dict[str, Any]]:
             if direction == "support_risk":
                 policy["entry_filter"]["evidence_basis"] = "confirmed_raw_reserves_plus_available_effective_depth"
                 policy["entry_filter"]["treatment"] = "exclude_observed_unwind_or_synthetic_support_not_regularity_alone"
+            if direction == "participation":
+                policy["entry_filter"]["identity_unit"] = "signer_address_not_human"
+                policy["entry_filter"]["largest_buyer_share_basis"] = "verified_buy_instruction_count"
+            if direction == "narrative":
+                policy["entry_filter"]["evidence_basis"] = "original_source_contract_mentions_and_independent_fact_support"
             if direction == "migration":
                 policy["entry_filter"]["evidence_basis"] = "post_deployment_migration_message_and_rpc_verified_new_pool"
             policies.append(policy)
@@ -117,7 +122,7 @@ def pattern_signal(
         if direction == "participation":
             if not age <= 900 or not evidence.get("trade_identity_verified"):
                 return False, "awaiting_verified_trade_identity"
-            passed = count >= 3 and (control or (
+            passed = count >= 3 and evidence.get("unique_buyers", 0) > 0 and (control or (
                 evidence.get("unique_buyers", 0) >= 5 and evidence.get("new_buyers_second_window", 0) >= 3
                 and evidence.get("largest_buyer_share", 1) <= 0.5))
         elif direction == "migration":

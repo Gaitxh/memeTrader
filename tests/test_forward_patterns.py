@@ -89,7 +89,7 @@ def test_pattern_same_fill_next_observation_cash_and_legacy_isolation(tmp_path, 
     store.activate_chain_meme_trader_funded_period()
     version = Store.CHAIN_MEME_TRADER_ACTIVE_VERSION
     original = store._chain_meme_trader_registration(version)["definition_json"]
-    assert store.register_chain_meme_pattern_experiments() == 14
+    assert store.register_chain_meme_pattern_experiments() == 18
     assert store.register_chain_meme_pattern_experiments() == 0
     assert store._chain_meme_trader_registration(version)["definition_json"] == original
     now = utcnow() + timedelta(seconds=1)

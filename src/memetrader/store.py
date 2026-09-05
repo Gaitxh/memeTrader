@@ -6,6 +6,7 @@ import math
 import re
 import sqlite3
 import threading
+from collections import Counter
 from contextlib import nullcontext
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
@@ -25223,7 +25224,7 @@ class Store:
     def register_chain_meme_pattern_experiments(self) -> int:
         """Append only experiments with the current shared price inputs wired."""
         ready = {"sustained_breakout", "pullback_reclaim", "conditional_runner",
-                 "quiet_reawakening", "panic_reclaim", "support_risk", "migration"}
+                 "quiet_reawakening", "panic_reclaim", "support_risk", "migration", "participation", "narrative"}
         added = 0
         for policy in experiment_policies():
             if policy["entry_family"] not in ready:
@@ -25255,12 +25256,55 @@ class Store:
                 (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, kind, source_key)).fetchone()
             return int(row[0]) if row else None
 
+    def record_chain_meme_pattern_narrative(self, record_id: int, sources: list[Observation]) -> list[str]:
+        """Bind independently supported original source mentions, not token marketing links."""
+        now = utcnow()
+        verification = self.db.execute("SELECT * FROM agent_fact_verifications WHERE id=? AND completed_at<=?",
+            (record_id, iso(now))).fetchone()
+        if (verification is None or verification["status"] != "cross_source_supported"
+                or verification["claim_status"] not in {"confirmed_fact", "probable_report"}
+                or verification["contradiction_source_count"] or float(verification["confidence"] or 0) < .8):
+            return []
+        payload = self._json_object(verification["evidence_json"])
+        if int(payload.get("distinct_origin_support_domain_count") or 0) < 2:
+            return []
+        support = {s["url"]: s for s in payload.get("sources", [])
+            if s.get("stance") == "supports" and s.get("origin_relationship") == "distinct_origin"}
+        matches: dict[str, dict[str, str]] = {}
+        for obs in sources:
+            source = support.get(obs.url)
+            if (not source or not obs.published_at or not obs.ingested_at
+                    or not 0 <= (now - obs.published_at).total_seconds() <= 1800
+                    or not obs.observed_at <= obs.ingested_at <= now):
+                continue
+            for token_id in (obs.raw or {}).get("source_contract_mentions", []):
+                matches.setdefault(token_id, {})[str(source["domain"])] = obs.url
+        stored = []
+        for token_id, domains in matches.items():
+            if len(domains) < 2:
+                continue
+            # The pool is deliberately unbound until the next exact market observation.
+            evidence_id = self.record_chain_meme_pattern_evidence(token_id, "", "narrative", {
+                "exact_token_relation": True, "independent_sources": len(domains),
+                "source_urls": sorted(domains.values()), "verification_id": record_id,
+                "basis": "original_source_contract_mentions_and_independent_fact_support",
+            }, observed_at=now, source_key=f"fact:{record_id}:{token_id}")
+            if evidence_id is not None:
+                stored.append(token_id)
+        return stored
+
     def chain_meme_pattern_context(self, token_id: str, pair_address: str,
                                    history: list[dict[str, Any]], decision_at: Any) -> dict[str, Any]:
         """Exact pre-entry evidence, separate from old runner-only shadow storage."""
         current = parse_time(decision_at)
         context: dict[str, Any] = {}
         version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        narrative = self.db.execute("SELECT * FROM chain_meme_pattern_evidence WHERE definition_version=? "
+            "AND token_id=? AND pair_address='' AND kind='narrative' AND recorded_at<=? "
+            "ORDER BY id DESC LIMIT 1", (version, token_id, iso(current))).fetchone()
+        if narrative and 0 <= (current - parse_time(narrative["recorded_at"])).total_seconds() <= 1800:
+            context["narrative"] = {**self._json_object(narrative["payload_json"]),
+                "token_id": token_id, "pair_address": pair_address, "available_at": narrative["recorded_at"]}
         def latest(kind):
             return self.db.execute("SELECT * FROM chain_meme_pattern_evidence WHERE definition_version=? "
                 "AND token_id=? AND pair_address=? AND kind=? AND observed_at<=? AND recorded_at<=? "
@@ -25290,6 +25334,24 @@ class Store:
                         post_migration_samples=len(distinct),
                         available_at=max(resolved["recorded_at"], fact["recorded_at"], post[-1]["recorded_at"]))
         context["migration"] = migration
+        scans = self.db.execute("SELECT payload_json,recorded_at FROM chain_meme_pattern_evidence "
+            "WHERE definition_version=? AND token_id=? AND pair_address=? AND kind='participation_scan' "
+            "AND recorded_at<=? ORDER BY id DESC LIMIT 2", (version, token_id, pair_address, iso(current))).fetchall()
+        if len(scans) == 2 and 0 <= (current - parse_time(scans[0]["recorded_at"])).total_seconds() <= 60:
+            recent, earlier = (self._json_object(r["payload_json"]) for r in scans)
+            if (recent.get("complete") is True and earlier.get("complete") is True
+                    and recent.get("started_at") and earlier.get("completed_at")
+                    and parse_time(earlier["completed_at"]) <= parse_time(recent["started_at"])
+                    and (parse_time(scans[0]["recorded_at"]) - parse_time(scans[1]["recorded_at"])).total_seconds() <= 90):
+                buyers = Counter(t["signer_address"] for s in (earlier, recent) for t in s.get("trades", []) if t["side"] == "BUY")
+                first = {t["signer_address"] for t in earlier.get("trades", []) if t["side"] == "BUY"}
+                second = {t["signer_address"] for t in recent.get("trades", []) if t["side"] == "BUY"}
+                context["participation"] = {"token_id": token_id, "pair_address": pair_address,
+                    "available_at": scans[0]["recorded_at"], "trade_identity_verified": True,
+                    "identity_unit": "signer_address_not_human", "unique_buyers": len(buyers),
+                    "new_buyers_second_window": len(second - first),
+                    "largest_buyer_share": max(buyers.values()) / sum(buyers.values()) if buyers else None,
+                    "largest_buyer_share_basis": "verified_buy_instruction_count"}
         vault = latest("vault_frame")
         if vault and 0 <= (current - parse_time(vault["observed_at"])).total_seconds() <= 30:
             frame = self._json_object(vault["payload_json"])

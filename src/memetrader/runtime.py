@@ -1387,6 +1387,8 @@ class Runtime:
         self.chain_meme_v21_vault_tracker = PumpSwapVaultFlowTracker()
         self._pattern_vault_tracker = PumpSwapVaultFlowTracker(summary_seconds=10)
         self._pattern_pool_targets: dict[str, dict[str, Any]] = {}
+        self._pattern_participation_frontiers: dict[str, dict[str, Any]] = {}
+        self._pattern_participation_cursor = 0
         self._pattern_pool_retry: dict[str, float] = {}
         self._chain_meme_v21_vault_retry_after: dict[str, float] = {}
         self._chain_meme_v21_vault_last_heartbeat = 0.0
@@ -5196,6 +5198,62 @@ class Runtime:
         self.store.heartbeat("chain-meme-pattern-pools", item=bool(self._pattern_pool_targets),
             error_detail=f"active={len(self._pattern_pool_targets)};attempted={len(candidates)}")
 
+    async def chain_meme_pattern_narrative_once(self) -> None:
+        """One bounded information-first scout; never enqueue legacy trade decisions."""
+        await self._chain_meme_active_idle().wait()
+        result, observations = await self.autonomous_search.scout_trends(pattern_budget=True)
+        grouped: dict[int, list[Observation]] = {}
+        for obs in observations:
+            self.store.add_observation(obs)
+            record_id = (obs.raw or {}).get("fact_verification_record_id")
+            if record_id:
+                grouped.setdefault(int(record_id), []).append(obs)
+        tokens = set()
+        for record_id, sources in grouped.items():
+            tokens.update(self.store.record_chain_meme_pattern_narrative(record_id, sources))
+        for token_id in sorted(tokens)[:2]:
+            if (token_id in getattr(self, "_pattern_watch", {})
+                    or token_id in getattr(self, "_pattern_held_tokens", set())
+                    or not self._dex_quote_low_priority_available()):
+                continue
+            chain, address = token_id.split(":", 1)
+            try:
+                quoted = await asyncio.wait_for(self._dex_batch_quote(chain, [address], fresh=True), timeout=3)
+                self._remember_pattern_quotes(quoted)
+            except (httpx.HTTPError, TimeoutError) as exc:
+                self.store.heartbeat("chain-meme-pattern-narrative", error=type(exc).__name__)
+        lane = result.get("lane_selection") or {}
+        if result.get("status") == "completed" and lane.get("run_id"):
+            self.store.finalize_trend_lane_observation_ingestion(lane["run_id"], status="completed")
+        self.store.heartbeat("chain-meme-pattern-narrative", item=bool(observations),
+            error_detail=str(result.get("status") or "unknown"))
+
+    async def chain_meme_pattern_participation_once(self) -> None:
+        """At most two resolved pools per round, behind the core held-data lane."""
+        await self._chain_meme_active_idle().wait()
+        pools = sorted(self._pattern_pool_targets.values(), key=lambda p: p["pool_address"])
+        active = {p["pool_address"] for p in pools}
+        self._pattern_participation_frontiers = {k: v for k, v in self._pattern_participation_frontiers.items() if k in active}
+        if not pools:
+            return
+        offset = self._pattern_participation_cursor % len(pools)
+        selected = (pools[offset:] + pools[:offset])[:2]
+        self._pattern_participation_cursor += len(selected)
+        for pool in selected:
+            await self._chain_meme_active_idle().wait()
+            address = pool["pool_address"]
+            frontier = self._pattern_participation_frontiers.get(address)
+            try:
+                scan = await asyncio.wait_for(self.held_accounts.sample_pumpswap_participation(pool, frontier), timeout=5)
+            except TimeoutError:
+                scan = {"complete": False, "status": "RPC_BUDGET_TIMEOUT", "completed_at": iso(utcnow()), "trades": []}
+            if scan.get("frontier"):
+                self._pattern_participation_frontiers[address] = scan["frontier"]
+            self.store.record_chain_meme_pattern_evidence(pool["token_id"], address, "participation_scan",
+                scan, observed_at=scan["completed_at"], source_key=f"{address}:{scan['completed_at']}")
+            self.store.heartbeat("chain-meme-pattern-participation", item=scan.get("complete") is True,
+                error_detail=str(scan["status"]))
+
     async def chain_meme_v21_vault_shadow_loop(
         self, *, v22: bool = False,
     ) -> None:
@@ -6875,6 +6933,14 @@ class Runtime:
                 asyncio.create_task(
                     self._periodic("chain_meme_pattern_pools", 15, self.chain_meme_pattern_pools_once),
                     name="chain_meme_pattern_pools",
+                ),
+                asyncio.create_task(
+                    self._periodic("chain_meme_pattern_participation", 15, self.chain_meme_pattern_participation_once),
+                    name="chain_meme_pattern_participation",
+                ),
+                asyncio.create_task(
+                    self._periodic("chain_meme_pattern_narrative", 60, self.chain_meme_pattern_narrative_once),
+                    name="chain_meme_pattern_narrative",
                 ),
                 asyncio.create_task(
                     self._periodic(

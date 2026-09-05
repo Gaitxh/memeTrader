@@ -13,8 +13,11 @@ import urllib.parse
 import uuid
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable
+
+from solders.pubkey import Pubkey
 
 from .collectors import (
     HttpClient,
@@ -24,6 +27,41 @@ from .collectors import (
     public_destination_addresses,
 )
 from .models import Observation, TokenCandidate, TokenSnapshot, iso, parse_time, utcnow
+
+
+def _source_contract_mentions(body: str) -> list[str]:
+    """Original visible source text only, never Agent summaries or embedded scripts."""
+    class Text(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.hidden = 0
+            self.parts = []
+        def handle_starttag(self, tag, attrs):
+            if tag in {"script", "style", "head"}:
+                self.hidden += 1
+        def handle_endtag(self, tag):
+            if tag in {"script", "style", "head"}:
+                self.hidden = max(0, self.hidden - 1)
+        def handle_data(self, data):
+            if not self.hidden:
+                self.parts.append(data)
+    parser = Text()
+    parser.feed(body[:65536])
+    text = " ".join(parser.parts)
+    result = []
+    for address in set(re.findall(r"(?<![A-Za-z0-9])[1-9A-HJ-NP-Za-km-z]{32,44}(?![A-Za-z0-9])", text)):
+        try:
+            if str(Pubkey.from_string(address)) == address:
+                result.append("solana:" + address)
+        except ValueError:
+            pass
+    # EVM addresses alone do not identify a chain.
+    chains = [chain for chain, pattern in (("bsc", r"\bBSC\b|\bBNB Chain\b"),
+              ("robinhood", r"\bRobinhood Chain\b")) if re.search(pattern, text, re.I)]
+    if len(chains) == 1:
+        result.extend(chains[0] + ":" + address.lower() for address in set(
+            re.findall(r"(?<![A-Za-z0-9])0x[0-9a-fA-F]{40}(?![A-Za-z0-9])", text)))
+    return sorted(set(result))
 from .store import Store
 from .strategy import classify_event_topic, is_promotional_market_content
 
@@ -2414,11 +2452,14 @@ class AutonomousSearchAgent:
         self,
         *,
         force: bool = False,
+        pattern_budget: bool = False,
     ) -> tuple[dict[str, Any], list[Observation]]:
         if not self.enabled or not self.config.get("trend_scout_enabled", True):
             return {"status": "disabled", "events": []}, []
         now = utcnow()
         interval_minutes = self.trend_interval_minutes(now)
+        if pattern_budget:
+            interval_minutes = max(60, interval_minutes)
         last = self.store.get_kv(TREND_RUN_KEY)
         if not force and last and now - parse_time(last) < timedelta(minutes=interval_minutes):
             return {
@@ -2427,6 +2468,8 @@ class AutonomousSearchAgent:
                 "next_interval_minutes": interval_minutes,
             }, []
         daily_limit = int(self.config.get("trend_scout_daily_limit", 96))
+        if pattern_budget:
+            daily_limit = min(24, daily_limit)
         if not self._consume_quota("trend_scout", daily_limit):
             return {"status": "quota_exhausted", "events": []}, []
         self.store.set_kv(TREND_RUN_KEY, iso(now))
@@ -2436,6 +2479,12 @@ class AutonomousSearchAgent:
         max_sources = max(2, min(6, int(self.config.get("trend_scout_max_sources_per_event", 3))))
         max_searches = max(2, min(10, int(self.config.get("trend_scout_max_web_searches", 6))))
         lanes, next_topic_cursor, lane_selection = self._trend_topic_selection(now)
+        if pattern_budget:
+            max_events, max_sources, max_searches = 1, min(3, max_sources), 2
+            lanes = lanes[:1]
+            next_topic_cursor = (int(lane_selection["cursor"]) + 1) % int(lane_selection["available_lane_count"])
+            lane_selection = {**lane_selection, "selected_lanes": lane_selection["selected_lanes"][:1],
+                "mode": "bounded_pattern_research", "next_cursor": next_topic_cursor}
         topics = [str(lane["prompt"]) for lane in lanes]
         selected_lane_ids = {str(lane["id"]) for lane in lanes}
         selected_event_topics = {
@@ -2601,6 +2650,7 @@ class AutonomousSearchAgent:
                         "domain": final_domain,
                         "platform": _social_platform_for_url(final_url),
                         "watch_account": matched_account,
+                        **({"source_contract_mentions": _source_contract_mentions(response.text)} if pattern_budget else {}),
                     }
                 )
 
@@ -2656,6 +2706,7 @@ class AutonomousSearchAgent:
                             "agent_web_search": True,
                             "agent_task": "trend_scout",
                             "trend_lane_id": lane_id,
+                            **({"source_contract_mentions": source["source_contract_mentions"]} if pattern_budget else {}),
                             "trend_lane_run_id": lane_run_id,
                             "trend_lane_taxonomy": TREND_LANE_TAXONOMY_VERSION,
                             "agent_model": metadata.get("model"),
