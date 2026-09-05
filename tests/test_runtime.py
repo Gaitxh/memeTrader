@@ -90,6 +90,47 @@ def test_chain_only_runtime_registers_and_activates_current_v22(tmp_path):
     asyncio.run(scenario())
 
 
+def test_chain_only_runtime_drains_entry_bursts_in_yielding_batches(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        config["chain_meme_trader_only_enabled"] = True
+        runtime = Runtime(config, tmp_path)
+        calls = []
+        responses = [
+            {"evaluated": 4, "admitted": 0, "rejected": 4, "intents": 0},
+            {"evaluated": 4, "admitted": 0, "rejected": 4, "intents": 0},
+            {"evaluated": 4, "admitted": 0, "rejected": 4, "intents": 0},
+            {"evaluated": 2, "admitted": 0, "rejected": 2, "intents": 0},
+        ]
+
+        def enroll(*, limit, definition_version):
+            calls.append((limit, definition_version))
+            return responses[len(calls) - 1]
+
+        observed_between_batches = []
+
+        async def observe_yield():
+            await asyncio.sleep(0)
+            observed_between_batches.append(len(calls))
+
+        runtime.store.enroll_chain_meme_trader_v6 = enroll
+        runtime._last_chain_account_snapshot_monotonic = asyncio.get_running_loop().time()
+        observer = asyncio.create_task(observe_yield())
+        await runtime.chain_meme_trader_once()
+        await observer
+
+        assert calls == [
+            (4, Store.CHAIN_MEME_TRADER_ACTIVE_VERSION),
+        ] * 4
+        assert len(observed_between_batches) == 1
+        assert 0 < observed_between_batches[0] < len(calls)
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
 def test_chain_only_v22_keeps_v20_positions_marked_without_new_v20_entries(tmp_path):
     async def scenario():
         config = initial_config()

@@ -5312,10 +5312,15 @@ class Runtime:
         """Advance every active strictly-forward, zero-extra-fee strategy account."""
         if not self.chain_meme_trader_only:
             self.store.enroll_chain_meme_trader()
-        self.store.enroll_chain_meme_trader_v6(
-            limit=4 if self.chain_meme_trader_only else 240,
-            definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
-        )
+        enrollment_batches = 8 if self.chain_meme_trader_only else 1
+        for _ in range(enrollment_batches):
+            enrollment = self.store.enroll_chain_meme_trader_v6(
+                limit=4 if self.chain_meme_trader_only else 240,
+                definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
+            )
+            if not self.chain_meme_trader_only or int(enrollment["evaluated"]) < 4:
+                break
+            await asyncio.sleep(0)
         if not self.chain_meme_trader_only:
             self.store.enroll_chain_meme_trader_executable_decay()
             self.store.enroll_chain_meme_trader_stage4_v2()
