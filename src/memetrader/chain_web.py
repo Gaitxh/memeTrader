@@ -606,10 +606,11 @@ class ChainWebData:
             corrections = Store._chain_meme_trader_market_fill_corrections_from_connection(
                 connection, active_version,
             )
-            corrections_by_position = {
-                (str(row["arm_id"]), int(row["shadow_cohort_id"])): row
-                for row in corrections
-            }
+            corrections_by_position = (
+                Store._chain_meme_trader_position_corrections_from_connection(
+                    connection, active_version,
+                )
+            )
             corrections_by_trade = {
                 int(row["source_trade_id"]): row for row in corrections
             }
@@ -718,11 +719,9 @@ class ChainWebData:
                 effective_status = str(row["status"])
                 effective_pnl = float(row["realized_pnl_usd"] or 0.0)
                 if correction is not None:
-                    replacement = str(correction["replacement_outcome"])
-                    effective_status = {
-                        "SELL": "closed", "WRITEOFF": "written_off",
-                        "UNRESOLVED": "open",
-                    }[replacement]
+                    effective_status = Store._chain_meme_trader_corrected_position_status(
+                        effective_status, correction,
+                    )
                     effective_pnl += float(
                         correction["realized_adjustment_usd"] or 0.0
                     )
@@ -1052,15 +1051,16 @@ class ChainWebData:
                 if position_key in contaminated_positions:
                     continue
                 correction = corrections_by_position.get(position_key)
+                effective_status = Store._chain_meme_trader_corrected_position_status(
+                    str(row.get("status")), correction,
+                )
+                if effective_status != "open":
+                    continue
                 if correction is not None:
-                    if str(correction["replacement_outcome"]) != "UNRESOLVED":
-                        continue
                     row["realized_pnl_usd"] = (
                         float(row.get("realized_pnl_usd") or 0.0)
                         + float(correction["realized_adjustment_usd"] or 0.0)
                     )
-                elif str(row.get("status")) != "open":
-                    continue
                 market_at = row.get("last_success_at") or row.get("market_recorded_at")
                 market_age = (
                     (current - parse_time(market_at)).total_seconds()
@@ -1722,10 +1722,11 @@ class ChainWebData:
                         connection, definition_version,
                     )
                 )
-                correction_by_version[definition_version] = {
-                    (str(row["arm_id"]), int(row["shadow_cohort_id"])): row
-                    for row in version_corrections
-                }
+                correction_by_version[definition_version] = (
+                    Store._chain_meme_trader_position_corrections_from_connection(
+                        connection, definition_version,
+                    )
+                )
                 correction_trade_by_version[definition_version] = {
                     int(row["source_trade_id"]): row for row in version_corrections
                 }
@@ -1764,10 +1765,9 @@ class ChainWebData:
                 effective_pnl = float(row["realized_pnl_usd"] or 0.0)
                 effective_closed_at = row["closed_at"]
                 if correction is not None:
-                    effective_status = {
-                        "SELL": "closed", "WRITEOFF": "written_off",
-                        "UNRESOLVED": "open",
-                    }[str(correction["replacement_outcome"])]
+                    effective_status = Store._chain_meme_trader_corrected_position_status(
+                        effective_status, correction,
+                    )
                     effective_pnl += float(
                         correction["realized_adjustment_usd"] or 0.0
                     )
@@ -2750,10 +2750,11 @@ class ChainWebData:
             corrections = Store._chain_meme_trader_market_fill_corrections_from_connection(
                 connection, active_version,
             )
-            corrections_by_position = {
-                (str(row["arm_id"]), int(row["shadow_cohort_id"])): row
-                for row in corrections
-            }
+            corrections_by_position = (
+                Store._chain_meme_trader_position_corrections_from_connection(
+                    connection, active_version,
+                )
+            )
             corrections_by_trade = {
                 int(row["source_trade_id"]): row for row in corrections
             }
@@ -2959,10 +2960,9 @@ class ChainWebData:
                     position["raw_closed_at"] = position["closed_at"]
                     position["recorded_realized_pnl_usd"] = position["realized_pnl_usd"]
                     outcome = str(correction["replacement_outcome"])
-                    position["status"] = {
-                        "SELL": "closed", "WRITEOFF": "written_off",
-                        "UNRESOLVED": "open",
-                    }[outcome]
+                    position["status"] = Store._chain_meme_trader_corrected_position_status(
+                        str(position["status"]), correction,
+                    )
                     position["realized_pnl_usd"] = (
                         float(position.get("realized_pnl_usd") or 0.0)
                         + float(correction["realized_adjustment_usd"] or 0.0)

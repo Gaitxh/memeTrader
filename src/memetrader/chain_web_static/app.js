@@ -320,7 +320,7 @@ function renderStrategyEquityChart(strategy){
   html+=`<text class="chart-label" x="${pad.l}" y="${H-4}">${esc(time(t0,true))}</text><text class="chart-label" text-anchor="end" x="${W-pad.r}" y="${H-4}">${esc(time(t1,true))}</text>`;
   svg.innerHTML=html;
   const latest=points.at(-1),pnl=latest.value;
-  note.innerHTML=`累计总 PNL <strong class="${pnlClass(pnl)}">${money(pnl)}</strong> · 整个账期，采样展示 · 数据不可用处留空 · 账户最大回撤 ${money(strategy.account?.max_drawdown_usd)}`;
+  note.innerHTML=`累计总 PNL <strong class="${pnlClass(pnl)}">${money(pnl)}</strong> · 整个账期，采样展示 · 无有效估值或账务纠正前的不可用区间留空 · 账户最大回撤 ${money(strategy.account?.max_drawdown_usd)}`;
 }
 
 function classificationLabel(value){

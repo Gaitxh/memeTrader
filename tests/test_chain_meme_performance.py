@@ -7,7 +7,9 @@ from uuid import uuid4
 
 import pytest
 
+from memetrader.chain_web import ChainWebData
 from memetrader.models import TokenCandidate, TokenSnapshot, iso, utcnow
+from memetrader.runtime import initial_config
 from memetrader.store import Store
 
 
@@ -367,6 +369,90 @@ def test_summary_excludes_contaminated_corrections_from_formal_counts(
         "open", "closed", "written_off",
     }
     store.close()
+
+
+def test_multiple_sell_corrections_accumulate_per_position_in_store_and_web(
+    tmp_path: Path,
+):
+    config = initial_config()
+    config["database"] = "multiple-sell-corrections.sqlite3"
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    store, definition, policy = _open_v22(
+        tmp_path, config["database"],
+    )
+    store.activate_chain_meme_trader_v22()
+    version = definition["version"]
+    arm_id = policy["arm_id"]
+    now = utcnow()
+    token, cohort_id, _, first_sell_id = _insert_position(
+        store, version=version, arm_id=arm_id,
+        opened_at=now - timedelta(seconds=3), status="closed", sell_gross_usd=8.0,
+    )
+    assert first_sell_id is not None
+    with store.db:
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_trades("
+            "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+            "net_cash_flow_usd,realized_pnl_usd,reason,created_at) "
+            "VALUES(?,?,?,?, 'SELL',22,22,32,'fixture_second_sell',?)",
+            (version, arm_id, cohort_id, token.token_id, iso(now - timedelta(seconds=1))),
+        )
+        second_sell_id = int(store.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+        store.db.execute(
+            "UPDATE chain_meme_trader_positions SET realized_proceeds_usd=30,"
+            "realized_pnl_usd=20 WHERE definition_version=? AND arm_id=? "
+            "AND shadow_cohort_id=?", (version, arm_id, cohort_id),
+        )
+        for source_trade_id, gross, realized in (
+            (first_sell_id, 8.0, -12.0),
+            (second_sell_id, 22.0, 32.0),
+        ):
+            store.db.execute(
+                "INSERT INTO chain_meme_trader_market_fill_corrections("
+                "source_trade_id,definition_version,arm_id,shadow_cohort_id,token_id,"
+                "source_fill_id,source_mark_id,original_gross_usd,post_liquidity_usd,"
+                "max_market_gross_usd,replacement_outcome,replacement_gross_usd,"
+                "cash_adjustment_usd,realized_adjustment_usd,replacement_observed_at,"
+                "reason,evidence_json,recorded_at) "
+                "VALUES(?,?,?,?,?,?,?,?,100000,0,'UNRESOLVED',NULL,?,?,NULL,"
+                "'fixture_unresolved','{}',?)",
+                (
+                    source_trade_id, version, arm_id, cohort_id, token.token_id,
+                    source_trade_id, source_trade_id, gross, -gross, -realized,
+                    iso(now),
+                ),
+            )
+    store.record_chain_meme_trader_account_snapshots(
+        definition_version=version, now=now,
+    )
+
+    summary = Store.chain_meme_trader_summary_from_connection(
+        store.db, arm_id=arm_id,
+    )
+    strategy = summary["strategies"][0]
+    position = next(
+        row for row in strategy["positions"]
+        if int(row["shadow_cohort_id"]) == cohort_id
+    )
+    assert position["status"] == "open"
+    assert position["realized_pnl_usd"] == pytest.approx(0.0)
+    assert position["market_fill_correction"]["correction_count"] == 2
+    assert strategy["account"]["realized_pnl_usd"] == pytest.approx(0.0)
+    assert strategy["account"]["cash_usd"] == pytest.approx(980.0)
+    store.close()
+
+    web_state = ChainWebData(config_path).state(compact=True, arm_id=arm_id)
+    web_strategy = next(
+        row for row in web_state["strategies"] if row["arm_id"] == arm_id
+    )
+    web_position = next(
+        row for row in web_state["open_positions"]
+        if int(row["shadow_cohort_id"]) == cohort_id
+    )
+    assert web_position["realized_pnl_usd"] == pytest.approx(0.0)
+    assert web_strategy["account"]["realized_pnl_usd"] == pytest.approx(0.0)
+    assert web_strategy["account"]["cash_usd"] == pytest.approx(980.0)
 
 
 def test_current_strategy_queries_use_targeted_indexes(tmp_path: Path):

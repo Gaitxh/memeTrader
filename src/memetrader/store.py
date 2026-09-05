@@ -29151,6 +29151,68 @@ class Store:
                 target["resolution_kind"] = "revision_resolution"
         return list(corrections.values())
 
+    @classmethod
+    def _chain_meme_trader_position_corrections_from_connection(
+        cls, connection: sqlite3.Connection, version: str,
+    ) -> dict[tuple[str, int], dict[str, Any]]:
+        """Aggregate trade corrections without dropping earlier partial fills."""
+        grouped: dict[tuple[str, int], dict[str, Any]] = {}
+        for row in cls._chain_meme_trader_market_fill_corrections_from_connection(
+            connection, version,
+        ):
+            key = (str(row["arm_id"]), int(row["shadow_cohort_id"]))
+            group = grouped.setdefault(key, {
+                **dict(row),
+                "source_trade_ids": [],
+                "market_fill_corrections": [],
+                "correction_count": 0,
+                "cash_adjustment_usd": 0.0,
+                "realized_adjustment_usd": 0.0,
+                "replacement_gross_usd": 0.0,
+                "replacement_outcomes": [],
+            })
+            group["source_trade_ids"].append(int(row["source_trade_id"]))
+            group["market_fill_corrections"].append(dict(row))
+            group["correction_count"] += 1
+            group["cash_adjustment_usd"] += float(row["cash_adjustment_usd"] or 0.0)
+            group["realized_adjustment_usd"] += float(
+                row["realized_adjustment_usd"] or 0.0
+            )
+            if row["replacement_gross_usd"] is not None:
+                group["replacement_gross_usd"] += float(row["replacement_gross_usd"])
+            group["replacement_outcomes"].append(str(row["replacement_outcome"]))
+        for group in grouped.values():
+            outcomes = group["replacement_outcomes"]
+            if "UNRESOLVED" in outcomes:
+                group["replacement_outcome"] = "UNRESOLVED"
+                group["replacement_gross_usd"] = None
+                group["replacement_observed_at"] = None
+            elif "WRITEOFF" in outcomes:
+                group["replacement_outcome"] = "WRITEOFF"
+                group["replacement_gross_usd"] = 0.0
+            else:
+                group["replacement_outcome"] = "SELL"
+                observed = [
+                    str(item.get("replacement_observed_at") or "")
+                    for item in group["market_fill_corrections"]
+                    if item.get("replacement_observed_at")
+                ]
+                group["replacement_observed_at"] = max(observed, default=None)
+        return grouped
+
+    @staticmethod
+    def _chain_meme_trader_corrected_position_status(
+        recorded_status: str, correction: Mapping[str, Any] | None,
+    ) -> str:
+        if correction is None:
+            return str(recorded_status)
+        outcome = str(correction["replacement_outcome"])
+        if outcome == "UNRESOLVED":
+            return "open"
+        if outcome == "WRITEOFF":
+            return "written_off"
+        return str(recorded_status)
+
     @staticmethod
     def _chain_meme_trader_accounting_contaminations_from_connection(
         connection: sqlite3.Connection, version: str, *, active_only: bool = True,
@@ -30762,12 +30824,8 @@ class Store:
                 self.db, version,
             )
         )
-        corrections_by_arm: dict[str, dict[int, Mapping[str, Any]]] = {}
         for row in effective_corrections:
             arm_id = str(row["arm_id"])
-            corrections_by_arm.setdefault(arm_id, {})[
-                int(row["shadow_cohort_id"])
-            ] = row
             net_flow_by_arm[arm_id] = (
                 net_flow_by_arm.get(arm_id, 0.0)
                 + float(row["cash_adjustment_usd"] or 0.0)
@@ -30776,6 +30834,13 @@ class Store:
                 realized_by_arm.get(arm_id, 0.0)
                 + float(row["realized_adjustment_usd"] or 0.0)
             )
+        corrections_by_arm: dict[str, dict[int, Mapping[str, Any]]] = {}
+        for (arm_id, cohort_id), row in (
+            self._chain_meme_trader_position_corrections_from_connection(
+                self.db, version,
+            ).items()
+        ):
+            corrections_by_arm.setdefault(arm_id, {})[cohort_id] = row
         contaminations_by_arm: dict[str, set[int]] = {}
         active_contaminations = (
             self._chain_meme_trader_accounting_contaminations_from_connection(
@@ -30861,11 +30926,9 @@ class Store:
             for cohort_id, row in arm_corrections.items():
                 if cohort_id in contaminations_by_arm.get(arm_id, set()):
                     continue
-                effective_status = {
-                    "SELL": "closed",
-                    "WRITEOFF": "written_off",
-                    "UNRESOLVED": "open",
-                }[str(row["replacement_outcome"])]
+                effective_status = self._chain_meme_trader_corrected_position_status(
+                    affected_statuses.get((arm_id, cohort_id), "open"), row,
+                )
                 counts = position_counts_by_arm.setdefault(
                     arm_id, {"open": 0, "closed": 0, "written_off": 0},
                 )
@@ -31189,10 +31252,11 @@ class Store:
         corrections_by_trade = {
             int(row["source_trade_id"]): row for row in correction_rows
         }
-        corrections_by_position: dict[tuple[str, int], sqlite3.Row] = {
-            (str(row["arm_id"]), int(row["shadow_cohort_id"])): row
-            for row in correction_rows
-        }
+        corrections_by_position = (
+            cls._chain_meme_trader_position_corrections_from_connection(
+                connection, version,
+            )
+        )
         correction_cash_by_arm: dict[str, float] = {}
         correction_realized_by_arm: dict[str, float] = {}
         for row in correction_rows:
@@ -31368,17 +31432,13 @@ class Store:
                         float(row["realized_pnl_usd"] or 0.0)
                         + float(correction["realized_adjustment_usd"] or 0.0)
                     )
-                    position["effective_status"] = (
-                        "written_off"
-                        if str(correction["replacement_outcome"]) == "WRITEOFF"
-                        else "closed"
-                        if str(correction["replacement_outcome"]) == "SELL"
-                        else "unresolved"
+                    position["status"] = cls._chain_meme_trader_corrected_position_status(
+                        str(row["status"]), correction,
                     )
-                    position["status"] = (
-                        "open"
-                        if position["effective_status"] == "unresolved"
-                        else position["effective_status"]
+                    position["effective_status"] = (
+                        "unresolved"
+                        if str(correction["replacement_outcome"]) == "UNRESOLVED"
+                        else position["status"]
                     )
                     if position["effective_status"] == "unresolved":
                         position["closed_at"] = None
@@ -31744,13 +31804,7 @@ class Store:
                     "terminal_return_fraction": (
                         float(position["realized_pnl_usd"] or 0.0)
                         / float(row["stake_usd"])
-                        if (
-                            correction is None
-                            and str(row["status"]) in {"closed", "written_off"}
-                            or correction is not None
-                            and str(correction["replacement_outcome"])
-                            in {"SELL", "WRITEOFF"}
-                        )
+                        if str(position["status"]) in {"closed", "written_off"}
                         and float(row["stake_usd"] or 0.0) > 0.0 else None
                     ),
                 })
@@ -31856,41 +31910,30 @@ class Store:
                 if cohort_id in formal_corrected_cohorts
                 and str(row["replacement_outcome"]) == "UNRESOLVED"
             )
+            effective_positions = [
+                (
+                    row,
+                    cls._chain_meme_trader_corrected_position_status(
+                        str(row["status"]),
+                        arm_corrections.get(int(row["shadow_cohort_id"])),
+                    ),
+                )
+                for row in current_positions
+                if int(row["shadow_cohort_id"]) not in contaminated_cohorts
+            ]
             open_position_count = sum(
-                1 for row in current_positions if str(row["status"]) == "open"
-                and int(row["shadow_cohort_id"]) not in corrected_cohorts
-                and int(row["shadow_cohort_id"]) not in contaminated_cohorts
-            ) + unresolved_position_count
+                1 for _, status in effective_positions if status == "open"
+            )
             open_position_count_all += open_position_count
             unique_held_token_ids.update(
                 str(row["token_id"])
-                for row in current_positions
-                if int(row["shadow_cohort_id"]) not in contaminated_cohorts
-                and (
-                    str(row["status"]) == "open"
-                    and int(row["shadow_cohort_id"]) not in corrected_cohorts
-                    or int(row["shadow_cohort_id"]) in formal_corrected_cohorts
-                    and str(arm_corrections[int(row["shadow_cohort_id"])]["replacement_outcome"])
-                    == "UNRESOLVED"
-                )
+                for row, status in effective_positions if status == "open"
             )
             closed_position_count = sum(
-                1 for row in current_positions if str(row["status"]) == "closed"
-                and int(row["shadow_cohort_id"]) not in corrected_cohorts
-                and int(row["shadow_cohort_id"]) not in contaminated_cohorts
-            ) + sum(
-                1 for cohort_id, row in arm_corrections.items()
-                if cohort_id in formal_corrected_cohorts
-                and str(row["replacement_outcome"]) == "SELL"
+                1 for _, status in effective_positions if status == "closed"
             )
             written_off_position_count = sum(
-                1 for row in current_positions if str(row["status"]) == "written_off"
-                and int(row["shadow_cohort_id"]) not in corrected_cohorts
-                and int(row["shadow_cohort_id"]) not in contaminated_cohorts
-            ) + sum(
-                1 for cohort_id, row in arm_corrections.items()
-                if cohort_id in formal_corrected_cohorts
-                and str(row["replacement_outcome"]) == "WRITEOFF"
+                1 for _, status in effective_positions if status == "written_off"
             )
             raw_realized_pnl = sum(
                 float(row["realized_pnl_usd"] or 0.0) for row in current_positions
@@ -31923,7 +31966,10 @@ class Store:
                 "open_position_count": open_position_count,
                 "closed_position_count": closed_position_count,
                 "written_off_position_count": written_off_position_count,
-                "market_fill_correction_count": len(arm_corrections),
+                "market_fill_correction_count": sum(
+                    int(row.get("correction_count") or 0)
+                    for row in arm_corrections.values()
+                ),
                 "accounting_contaminated_position_count": len(arm_contaminations),
                 "unresolved_corrected_position_count": unresolved_position_count,
                 "accounting_status": (
@@ -31978,20 +32024,17 @@ class Store:
                     indicative_complete if market_only_valuation else complete
                 ),
                 "win_count": sum(
-                    1 for row in current_positions
-                    if int(row["shadow_cohort_id"]) not in corrected_cohorts
-                    and int(row["shadow_cohort_id"]) not in contaminated_cohorts
-                    and str(row["status"]) in {"closed", "written_off"}
-                    and float(row["realized_pnl_usd"] or 0.0) > 0.0
-                ) + sum(
-                    1 for row in current_positions
-                    if int(row["shadow_cohort_id"]) in corrected_cohorts
-                    and int(row["shadow_cohort_id"]) not in contaminated_cohorts
-                    and str(arm_corrections[int(row["shadow_cohort_id"])]["replacement_outcome"])
-                    == "SELL"
-                    and float(row["realized_pnl_usd"] or 0.0)
-                    + float(arm_corrections[int(row["shadow_cohort_id"])]["realized_adjustment_usd"] or 0.0)
-                    > 0.0
+                    1 for row, status in effective_positions
+                    if status in {"closed", "written_off"}
+                    and (
+                        float(row["realized_pnl_usd"] or 0.0)
+                        + float(
+                            (
+                                arm_corrections.get(int(row["shadow_cohort_id"]))
+                                or {}
+                            ).get("realized_adjustment_usd") or 0.0
+                        )
+                    ) > 0.0
                 ),
                 "valuation_status": (
                     "complete_market_mark"
