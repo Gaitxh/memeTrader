@@ -2,6 +2,20 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260905-five-pattern-experiment-pairs",
+      "recorded_at": "2026-09-05T10:58:38Z",
+      "title": "五方向候选与对照：代码就绪，部署受阻",
+      "problem": "需要把静默复苏、突破、回撤、条件留仓和反转假设转为实际前向试验，不能只写报告或干扰旧策略。",
+      "change": "十个新独立ID，隔离观察数据，下一独立同池样本成交，复用持仓行情，有界低优先级补采样。",
+      "rationale": "检验机制差异，保留旧128及资金状态，优先持仓与退出，不把短样本和测试成功当作盈利证明。",
+      "validation": "五机制测试、缺证据等待、Solana/BSC同Fill及下一帧SELL双侧4%、真实DEX时间字段、行情复用与共享lane定向验证通过。",
+      "scope": "九方向中的2/3/4/5/9代码完成；1/6/7/8数据输入仍未完成。",
+      "status": "代码已推送；本机执行策略拦截重启，未部署，未绕过。",
+      "commit": "a2e6f15",
+      "deployed_at": null,
+      "runtime_verification": "10:58Z，8790健康、原128策略和同一资金账期，experiment_*数量0；未初始化或改写历史。"
+    },
+    {
       "id": "20260905-entry-dust-consistency",
       "recorded_at": "2026-09-05T10:25:28Z",
       "title": "修复入场池低于1美元仍买入",
