@@ -129,6 +129,15 @@ def test_flat_breakout_targets_are_bounded_due_and_exclude_held_tokens(
     now = utcnow()
     store.upsert_token(token, seen_at=now)
     store.register_flat_compression_breakout_shadow()
+    plan = store.db.execute(
+        "EXPLAIN QUERY PLAN SELECT 1 FROM chain_meme_trader_positions "
+        "WHERE token_id=? AND status='open'",
+        (token.token_id,),
+    ).fetchall()
+    assert any(
+        "chain_meme_trader_positions_open_token_idx" in str(row["detail"])
+        for row in plan
+    )
     feature = {
         "pair_address": "flat-pair",
         "pair_created_at": iso(now - timedelta(hours=7)),
