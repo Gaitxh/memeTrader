@@ -2967,10 +2967,24 @@ class SolanaHeldAccountCollector:
                         < PUMPSWAP_POOL_SDK_EXTEND_THRESHOLD
                     ):
                         raise PermissionError("pumpswap_current_fields_unavailable")
+                    from solders.pubkey import Pubkey
+                    creator = Pubkey.from_string(str(exact_pool["creator"]))
+                    base_key = Pubkey.from_string(base_mint)
+                    canonical_creator = Pubkey.find_program_address(
+                        [b"pool-authority", bytes(base_key)], Pubkey.from_string(PUMP_PROGRAM_ID),
+                    )[0]
+                    pool_pda = Pubkey.find_program_address([
+                        b"pool", int(exact_pool["index"]).to_bytes(2, "little"),
+                        bytes(creator), bytes(base_key), bytes(Pubkey.from_string(quote_mint)),
+                    ], Pubkey.from_string(PUMP_AMM_PROGRAM_ID))[0]
                     outcomes.append({
                         **dict(candidate),
                         "status": "RESOLVED",
                         "reason": "",
+                        "canonical_migration_pool": (
+                            int(exact_pool["index"]) == 0 and creator == canonical_creator
+                            and str(pool_pda) == str(candidate["pool_address"])
+                        ),
                         "base_mint": base_mint,
                         "quote_mint": quote_mint,
                         "lp_mint": lp_mint,

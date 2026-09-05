@@ -57,6 +57,11 @@ def experiment_policies() -> list[dict[str, Any]]:
                     "conditional_exit": {"enabled": not control, "buy_ratio_min": 0.55,
                                          "liquidity_retention_min": 0.8, "samples": 2},
                 })
+            if direction == "support_risk":
+                policy["entry_filter"]["evidence_basis"] = "confirmed_raw_reserves_plus_available_effective_depth"
+                policy["entry_filter"]["treatment"] = "exclude_observed_unwind_or_synthetic_support_not_regularity_alone"
+            if direction == "migration":
+                policy["entry_filter"]["evidence_basis"] = "post_deployment_migration_message_and_rpc_verified_new_pool"
             policies.append(policy)
     return policies
 
@@ -117,7 +122,10 @@ def pattern_signal(
                 and evidence.get("largest_buyer_share", 1) <= 0.5))
         elif direction == "migration":
             passed = bool(evidence.get("pool_rpc_verified") and (
-                control or evidence.get("migration_signature") and evidence.get("post_migration_samples", 0) >= 2))
+                control or evidence.get("canonical_migration_pool")
+                and evidence.get("migration_signature") and evidence.get("post_migration_samples", 0) >= 2
+                and evidence.get("migration_observed_at")
+                and start <= parse_time(evidence["migration_observed_at"]) <= now))
         elif direction == "support_risk":
             # Entry-only comparison. No Vault-triggered exit at a stale DEX price.
             passed = bool(evidence.get("coherent_confirmed_slot") and count >= 3 and (

@@ -223,7 +223,8 @@ function liveMetricForFamily(family){
     open,
     terminal,
     wins,
-    winRate:terminal?wins/terminal:null,
+    winRate:account.research_metrics_eligible===false?null:terminal?wins/terminal:null,
+    researchEligible:account.research_metrics_eligible!==false,
     realizedPnl:(account.capital_neutral_realized_pnl_usd??account.realized_pnl_usd)==null?null:Number(account.capital_neutral_realized_pnl_usd??account.realized_pnl_usd),
     unrealizedPnl:unrealizedPnl==null?null:Number(unrealizedPnl),
     profitLossRatio:account.profit_loss_ratio,
@@ -438,7 +439,7 @@ function renderOverviewStrategies(){
 }
 
 function renderLeaders(data){
-  const ranked=(universe?.families||[]).map(f=>({family:f,live:liveMetricForFamily(f)})).filter(x=>x.live.status==='ACTIVE_FORWARD'&&x.live.terminal>0&&x.live.pnl!=null).sort((a,b)=>maturityRank(b.live.maturity)-maturityRank(a.live.maturity)||Number(b.live.expectancy??-Infinity)-Number(a.live.expectancy??-Infinity)||Number(b.live.pnl)-Number(a.live.pnl)).slice(0,3);
+  const ranked=(universe?.families||[]).map(f=>({family:f,live:liveMetricForFamily(f)})).filter(x=>x.live.status==='ACTIVE_FORWARD'&&x.live.researchEligible&&x.live.terminal>0&&x.live.pnl!=null).sort((a,b)=>maturityRank(b.live.maturity)-maturityRank(a.live.maturity)||Number(b.live.expectancy??-Infinity)-Number(a.live.expectancy??-Infinity)||Number(b.live.pnl)-Number(a.live.pnl)).slice(0,3);
   $('#leaders').innerHTML=ranked.length?ranked.map((x,index)=>`<article class="leader-card"><div><span class="stage-no">第 ${index+1} 名</span><span class="maturity ${esc(x.live.maturity)}">${esc(maturityText(x.live.maturity))}</span></div><h3>${esc(strategyLabel(x.family))}</h3><strong class="leader-equity ${pnlClass(x.live.pnl)}">${money(x.live.pnl)}</strong><p>累计总 PNL · ${x.live.open} 个持仓 · 胜率 ${x.live.winRate==null?'等待样本':percent(x.live.winRate)}</p><small>${esc(readable(x.family.entry_family,entryLabels))} → ${esc(readable(x.family.exit_family,exitLabels))}</small></article>`).join(''):'<div class="empty">等待策略终局样本</div>';
 }
 

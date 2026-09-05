@@ -5785,10 +5785,16 @@ def test_pumpswap_current_pool_decoder_preserves_virtual_reserve_and_padding_sem
 
 
 def test_pumpswap_shadow_resolver_requires_current_layout_and_verified_bundle():
-    async def scenario(pool_size: int):
+    async def scenario(pool_size: int, canonical: bool = False):
         pool_key, creator, base_mint, quote_mint, lp_mint, base_vault, quote_vault = [
             Pubkey.new_unique() for _ in range(7)
         ]
+        if canonical:
+            from memetrader.collectors import PUMP_PROGRAM_ID, PUMP_AMM_PROGRAM_ID
+            creator = Pubkey.find_program_address([b"pool-authority", bytes(base_mint)],
+                Pubkey.from_string(PUMP_PROGRAM_ID))[0]
+            pool_key = Pubkey.find_program_address([b"pool", bytes(2), bytes(creator),
+                bytes(base_mint), bytes(quote_mint)], Pubkey.from_string(PUMP_AMM_PROGRAM_ID))[0]
         pool_raw = bytearray(301)
         pool_raw[:8] = bytes((241, 154, 109, 4, 17, 177, 109, 188))
         for offset, key in zip(
@@ -5855,6 +5861,8 @@ def test_pumpswap_shadow_resolver_requires_current_layout_and_verified_bundle():
     assert resolved["status"] == "RESOLVED"
     assert resolved["virtual_quote_reserves_raw"] == -500
     assert resolved["base_mint_decimals"] == 6
+    assert resolved["canonical_migration_pool"] is False
+    assert asyncio.run(scenario(301, canonical=True))["canonical_migration_pool"] is True
     legacy = asyncio.run(scenario(211))
     assert legacy["status"] == "UNKNOWN_IDENTITY"
     assert legacy["reason"] == "pumpswap_current_fields_unavailable"

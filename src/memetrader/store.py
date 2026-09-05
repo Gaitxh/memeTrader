@@ -2066,6 +2066,20 @@ class Store:
                     decision_eligible INTEGER NOT NULL DEFAULT 0 CHECK(decision_eligible=0),
                     affects TEXT NOT NULL DEFAULT 'none' CHECK(affects='none')
                 );
+                CREATE TABLE IF NOT EXISTS chain_meme_pattern_evidence (
+                    id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    token_id TEXT NOT NULL,
+                    pair_address TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    source_key TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    UNIQUE(definition_version,kind,source_key)
+                );
+                CREATE INDEX IF NOT EXISTS chain_meme_pattern_evidence_lookup
+                    ON chain_meme_pattern_evidence(definition_version,token_id,pair_address,kind,id DESC);
                 CREATE TABLE IF NOT EXISTS chain_meme_v21_vault_shadow_pool_targets (
                     id INTEGER PRIMARY KEY,
                     observer_version TEXT NOT NULL,
@@ -25209,7 +25223,7 @@ class Store:
     def register_chain_meme_pattern_experiments(self) -> int:
         """Append only experiments with the current shared price inputs wired."""
         ready = {"sustained_breakout", "pullback_reclaim", "conditional_runner",
-                 "quiet_reawakening", "panic_reclaim"}
+                 "quiet_reawakening", "panic_reclaim", "support_risk", "migration"}
         added = 0
         for policy in experiment_policies():
             if policy["entry_family"] not in ready:
@@ -25223,6 +25237,80 @@ class Store:
                     self.append_chain_meme_trader_policy(policy)
                     added += 1
         return added
+
+    def record_chain_meme_pattern_evidence(self, token_id: str, pair_address: str,
+                                          kind: str, payload: Mapping[str, Any],
+                                          *, observed_at: Any, source_key: str) -> int | None:
+        """Append actual evidence; it never changes a legacy shadow frame's authority."""
+        recorded = utcnow()
+        if parse_time(observed_at) > recorded:
+            return None
+        with self._lock, self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_pattern_evidence("
+                "definition_version,token_id,pair_address,kind,source_key,observed_at,recorded_at,payload_json) "
+                "VALUES(?,?,?,?,?,?,?,?)", (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, token_id,
+                pair_address, kind, source_key, iso(parse_time(observed_at)), iso(recorded), self._json(dict(payload))))
+            row = self.db.execute("SELECT id FROM chain_meme_pattern_evidence WHERE definition_version=? AND kind=? AND source_key=?",
+                (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, kind, source_key)).fetchone()
+            return int(row[0]) if row else None
+
+    def chain_meme_pattern_context(self, token_id: str, pair_address: str,
+                                   history: list[dict[str, Any]], decision_at: Any) -> dict[str, Any]:
+        """Exact pre-entry evidence, separate from old runner-only shadow storage."""
+        current = parse_time(decision_at)
+        context: dict[str, Any] = {}
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        def latest(kind):
+            return self.db.execute("SELECT * FROM chain_meme_pattern_evidence WHERE definition_version=? "
+                "AND token_id=? AND pair_address=? AND kind=? AND observed_at<=? AND recorded_at<=? "
+                "ORDER BY id DESC LIMIT 1", (version, token_id, pair_address, kind, iso(current), iso(current))).fetchone()
+        resolved = latest("pool_resolution")
+        if resolved is None or self._json_object(resolved["payload_json"]).get("status") != "RESOLVED":
+            return context
+        # A fresh price/identity observation is still required by pattern_signal.
+        migration = {"token_id": token_id, "pair_address": pair_address,
+                     "available_at": resolved["recorded_at"], "pool_rpc_verified": True,
+                     "canonical_migration_pool": self._json_object(resolved["payload_json"]).get("canonical_migration_pool") is True,
+                     "resolution_evidence_id": int(resolved["id"])}
+        addition = self.db.execute("SELECT registered_at FROM chain_meme_trader_policy_additions "
+            "WHERE definition_version=? AND arm_id=?", (version, "experiment_migration_candidate_v1")).fetchone()
+        if addition is not None:
+            fact = self.db.execute("SELECT * FROM token_launch_facts WHERE token_id=? "
+                "AND launch_event_type='migration' AND create_signature<>'' AND source_observed_at>=? "
+                "AND source_observed_at<=ingested_at AND ingested_at<=recorded_at AND recorded_at<=? "
+                "ORDER BY id DESC LIMIT 1", (token_id, addition[0], iso(current))).fetchone()
+            if fact is not None:
+                post = [h for h in history if fact["recorded_at"] < h["observed_at"]
+                        and h["observed_at"] <= h["ingested_at"] <= h["recorded_at"] <= iso(current)]
+                distinct = {h["observed_at"] for h in post}
+                if len(distinct) >= 2:
+                    migration.update(migration_signature=fact["create_signature"], launch_fact_id=int(fact["id"]),
+                        migration_observed_at=fact["source_observed_at"],
+                        post_migration_samples=len(distinct),
+                        available_at=max(resolved["recorded_at"], fact["recorded_at"], post[-1]["recorded_at"]))
+        context["migration"] = migration
+        vault = latest("vault_frame")
+        if vault and 0 <= (current - parse_time(vault["observed_at"])).total_seconds() <= 30:
+            frame = self._json_object(vault["payload_json"])
+            features = frame.get("features") or {}
+            ten = (features.get("windows") or {}).get("10") or {}
+            coherent = (0 < int(frame.get("slot_min") or 0) == int(frame.get("slot_max") or 0)
+                and int(features.get("sample_count") or 0) >= 3
+                and float(ten.get("coverage_seconds") or 0) >= 3
+                and frame.get("observer_state") not in {"PARTIAL_PAIR", "IDENTITY_INVALID"})
+            raw_change = ten.get("raw_quote_change_ratio")
+            hazard = None if raw_change is None else bool(features.get("unwind_hazard_precursor")
+                or (raw_change <= -.15 and features.get("latest_direction") in {"SELL_LIKE_NET", "LP_REMOVE_LIKE"})
+                or features.get("synthetic_support_pattern"))
+            context["support_risk"] = {"token_id": token_id, "pair_address": pair_address,
+                "available_at": vault["recorded_at"], "coherent_confirmed_slot": coherent,
+                "unwind_hazard": "UNKNOWN" if hazard is None else "HIGH" if hazard else "LOW",
+                "evidence_id": int(vault["id"]), "basis": "confirmed_raw_reserves_plus_available_effective_depth",
+                "regularity_pattern": features.get("regularity_pattern"),
+                "synthetic_support_pattern": features.get("synthetic_support_pattern"),
+                "raw_quote_change_ratio": raw_change}
+        return context
 
     def observe_chain_meme_pattern(self, token: TokenCandidate, snapshot: TokenSnapshot,
                                    *, recorded_at: Any = None) -> int:
@@ -25298,10 +25386,11 @@ class Store:
                 (version, token.token_id, pair_address),
             )}
             active = [p for p in policies if self._chain_meme_trader_policy_active_for_snapshot(p, row)]
+            context = self.chain_meme_pattern_context(token.token_id, pair_address, history, decision_at)
             ready, outcomes = [], {}
             for policy in active:
                 passed, reason = pattern_signal(history, policy, decision_at=iso(decision_at),
-                    activated_at=policy["forward_started_at"])
+                    activated_at=policy["forward_started_at"], context=context)
                 if policy["arm_id"] in already_bought:
                     passed, reason = False, "pattern_already_enrolled_at_this_pool"
                 outcomes[policy["arm_id"]] = reason
@@ -25312,6 +25401,7 @@ class Store:
             features = {"source_snapshot_id": snapshot_id, "pair_address": pair_address,
                         "observed_at": iso(snapshot.observed_at), "ready_arm_ids": ready,
                         "outcomes": outcomes, "fill_signal_snapshot_id": previous_features.get("source_snapshot_id"),
+                        "evidence": context,
                         "entry_signal_key": "isolated_patterns/v1", "policy_entry_family": "pattern_experiments"}
             projected = 0
             with self.db:
@@ -32253,7 +32343,14 @@ class Store:
             account["win_rate_fraction"] = (
                 float(account["win_count"])
                 / float(account["terminal_position_count"])
-                if account["terminal_position_count"] > 0 else None
+                if account["terminal_position_count"] > 0 and account["research_metrics_eligible"] else None
+            )
+            account["expectancy_usd"] = (
+                sum(float(row["realized_pnl_usd"] or 0.0) + float(
+                    (arm_corrections.get(int(row["shadow_cohort_id"])) or {}).get("realized_adjustment_usd") or 0.0
+                ) for row, status in effective_positions if status in {"closed", "written_off"})
+                / account["terminal_position_count"]
+                if account["terminal_position_count"] > 0 and account["research_metrics_eligible"] else None
             )
             if curve_effective_after:
                 current_curve_point = {

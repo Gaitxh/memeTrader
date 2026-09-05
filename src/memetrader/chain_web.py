@@ -984,6 +984,15 @@ class ChainWebData:
                         if terminal_pnls else None
                     ),
                 })
+                if not account["research_metrics_eligible"]:
+                    # Recorded account money and drawdown remain untouched.
+                    # Contaminated economics are not evidence of strategy quality.
+                    account.update({key: None for key in (
+                        "win_rate_fraction", "profit_loss_ratio", "profit_factor",
+                        "expectancy_usd", "tail_return_usd",
+                    )})
+                    account["metric_sample_status"] = "engineering_quarantined"
+                    account["profit_factor_status"] = "engineering_quarantined"
                 counts = decision_stats.get(policy_arm_id, {})
                 admitted = int(counts.get("admitted") or 0)
                 rejected = int(counts.get("rejected") or 0)
@@ -2291,7 +2300,8 @@ class ChainWebData:
             terminal_count = int(account.get("closed_position_count") or 0) + int(
                 account.get("written_off_position_count") or 0
             )
-            if total_pnl is None or terminal_count <= 0:
+            if (total_pnl is None or terminal_count <= 0
+                    or account.get("research_metrics_eligible") is False):
                 continue
             leaderboard.append({
                 "current": True,
@@ -2308,6 +2318,7 @@ class ChainWebData:
                     "capital_neutral_unrealized_pnl_usd"
                 ),
                 "terminal_count": terminal_count,
+                "expectancy_usd": account.get("expectancy_usd"),
                 "win_count": int(account.get("win_count") or 0),
                 "maturity": strategy.get("maturity"),
                 "forward_age_seconds": strategy.get("forward_age_seconds"),
@@ -2317,8 +2328,8 @@ class ChainWebData:
         leaderboard.sort(
             key=lambda item: (
                 maturity_order.get(str(item.get("maturity") or "waiting"), 0),
-                int(item["terminal_count"]),
-                float(item.get("total_pnl_usd") or float("-inf")),
+                float(item["expectancy_usd"]) if item["expectancy_usd"] is not None else float("-inf"),
+                float(item["total_pnl_usd"]),
             ),
             reverse=True,
         )

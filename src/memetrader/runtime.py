@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
 
 import httpx
+from solders.pubkey import Pubkey
 
 from .runtime_timing import RuntimeTiming
 
@@ -1384,6 +1385,9 @@ class Runtime:
             str(config["safety"].get("solana_rpc_url") or "https://api.mainnet-beta.solana.com")
         )
         self.chain_meme_v21_vault_tracker = PumpSwapVaultFlowTracker()
+        self._pattern_vault_tracker = PumpSwapVaultFlowTracker(summary_seconds=10)
+        self._pattern_pool_targets: dict[str, dict[str, Any]] = {}
+        self._pattern_pool_retry: dict[str, float] = {}
         self._chain_meme_v21_vault_retry_after: dict[str, float] = {}
         self._chain_meme_v21_vault_last_heartbeat = 0.0
         self.evm_route = EvmUniswapV3QuoteClient(self.evm_route_http)
@@ -5130,6 +5134,68 @@ class Runtime:
     async def chain_meme_v22_vault_shadow_enroll_once(self) -> None:
         await self.chain_meme_v21_vault_shadow_enroll_once(v22=True)
 
+    def chain_meme_combined_vault_targets(self) -> list[dict[str, Any]]:
+        """One physical subscription per address, separate logical observers."""
+        targets = self.store.chain_meme_v22_vault_shadow_account_targets()
+        for row in self._pattern_pool_targets.values():
+            common = {**row, "pool_target_id": row["evidence_id"],
+                      "observer_version": "chain-pattern-exact/v1",
+                      "decoder_version": "pump-amm-pool/v2-idl-6b5c7e-sdk-1.19.0"}
+            for number, kind, pubkey, mint, program in (
+                (1, "pool", row["pool_address"], "", self.store.PUMPSWAP_PROGRAM_ID),
+                (2, "base_vault", row["base_vault"], row["base_mint"], row["base_token_program"]),
+                (3, "quote_vault", row["quote_vault"], row["quote_mint"], row["quote_token_program"]),
+            ):
+                targets.append({**common, "id": -(row["evidence_id"] * 10 + number),
+                    "account_kind": kind, "pubkey": pubkey, "expected_mint": mint,
+                    "expected_program_owner": program})
+        return targets
+
+    async def chain_meme_pattern_pools_once(self) -> None:
+        """Bounded pre-entry Pool/Vault verification, never a trade/exit authority."""
+        await self._chain_meme_active_idle().wait()
+        watch = getattr(self, "_pattern_watch", {})
+        pool_map = {v["pair_address"]: v for v in watch.values()
+                    if v["token"].chain == "solana" and v["expires_at"] > utcnow()}
+        self._pattern_pool_targets = {k: v for k, v in self._pattern_pool_targets.items() if k in pool_map}
+        self._pattern_pool_retry = {k: v for k, v in self._pattern_pool_retry.items() if k in pool_map}
+        self._pattern_vault_tracker.retain(v["evidence_id"] for v in self._pattern_pool_targets.values())
+        now = asyncio.get_running_loop().time()
+        candidates = []
+        for address, item in pool_map.items():
+            if len(self._pattern_pool_targets) + len(candidates) >= 6 or len(candidates) >= 2:
+                break
+            if address in self._pattern_pool_targets or self._pattern_pool_retry.get(address, 0) > now:
+                continue
+            raw = item["quote"].raw or {}
+            pairs = raw.get("pairs") or [raw.get("pair", raw)]
+            exact = next((p for p in pairs if str(p.get("pairAddress")) == address), None)
+            if exact is None or str(exact.get("dexId") or "").lower() not in {"pumpswap", "pump-amm"}:
+                continue
+            try:
+                Pubkey.from_string(address)
+            except ValueError:
+                continue
+            candidates.append({"pool_address": address, "base_mint": item["token"].address,
+                "token_id": item["token"].token_id, "quote_observed_at": iso(item["quote"].observed_at),
+                "observer_version": "chain-pattern-exact/v1"})
+            self._pattern_pool_retry[address] = now + 60
+        if not candidates:
+            return
+        try:
+            outcomes = await asyncio.wait_for(self.held_accounts.resolve_pumpswap_shadow_pools(candidates), timeout=5)
+        except TimeoutError:
+            outcomes = [{**c, "status": "UNKNOWN_RPC", "reason": "pattern_rpc_budget_timeout"} for c in candidates]
+        for outcome in outcomes:
+            received = utcnow()
+            evidence_id = self.store.record_chain_meme_pattern_evidence(outcome["token_id"], outcome["pool_address"],
+                "pool_resolution", outcome, observed_at=received,
+                source_key=f"{outcome['pool_address']}:{iso(received)}")
+            if outcome.get("status") == "RESOLVED" and evidence_id is not None:
+                self._pattern_pool_targets[outcome["pool_address"]] = {**outcome, "evidence_id": evidence_id}
+        self.store.heartbeat("chain-meme-pattern-pools", item=bool(self._pattern_pool_targets),
+            error_detail=f"active={len(self._pattern_pool_targets)};attempted={len(candidates)}")
+
     async def chain_meme_v21_vault_shadow_loop(
         self, *, v22: bool = False,
     ) -> None:
@@ -5138,10 +5204,17 @@ class Runtime:
             try:
                 async for update in self.held_accounts.stream(
                     (
-                        self.store.chain_meme_v22_vault_shadow_account_targets
+                        self.chain_meme_combined_vault_targets
                         if v22 else self.store.chain_meme_v21_vault_shadow_account_targets
                     )
                 ):
+                    if update.get("observer_version") == "chain-pattern-exact/v1":
+                        frame = self._pattern_vault_tracker.push(update)
+                        if frame is not None:
+                            self.store.record_chain_meme_pattern_evidence(update["token_id"], update["pool_address"],
+                                "vault_frame", frame, observed_at=frame["observed_at"],
+                                source_key=f"{update['pool_target_id']}:{frame['observed_at']}:{frame['observer_state']}")
+                        continue
                     frame = self.chain_meme_v21_vault_tracker.push(update)
                     frame_id = (
                         (
@@ -6798,6 +6871,10 @@ class Runtime:
                     self._periodic("chain_meme_pattern_observer", 15,
                                    self.chain_meme_pattern_observer_once),
                     name="chain_meme_pattern_observer",
+                ),
+                asyncio.create_task(
+                    self._periodic("chain_meme_pattern_pools", 15, self.chain_meme_pattern_pools_once),
+                    name="chain_meme_pattern_pools",
                 ),
                 asyncio.create_task(
                     self._periodic(

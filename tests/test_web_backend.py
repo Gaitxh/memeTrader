@@ -782,11 +782,18 @@ def test_chain_web_leaderboard_contains_only_current_active_forward_strategies(
         policy for policy in historical["policies"]
         if policy.get("forward_enabled") is False
     )
+    dust_token = TokenCandidate("solana", "leaderboard-3", "Dust", "DUST")
+    store.upsert_token(dust_token)
+    dust_snapshot = store.add_snapshot(TokenSnapshot(
+        "solana", dust_token.address, 1.0, .48, 100, 50, 2, 1,
+    ))
     with store.db:
         now = iso(utcnow())
         for version, policy, pnl, source_id in (
             (Store.CHAIN_MEME_TRADER_V18_VERSION, historical_policy, 500.0, 1),
             (Store.CHAIN_MEME_TRADER_V20_VERSION, v20["policies"][0], 1.0, 2),
+            (Store.CHAIN_MEME_TRADER_V20_VERSION, v20["policies"][1], 100.0, 3),
+            (Store.CHAIN_MEME_TRADER_V20_VERSION, v20["policies"][2], 2.0, 4),
         ):
             store.db.execute(
                 "INSERT INTO chain_meme_trader_positions("
@@ -798,7 +805,8 @@ def test_chain_web_leaderboard_contains_only_current_active_forward_strategies(
                 "VALUES(?,?,?,?,?,?,?,?,?,?,?,'0','1000000000',20,1,'closed',?,?,?,?)",
                 (
                     version, policy["arm_id"], source_id,
-                    f"solana:leaderboard-{source_id}", source_id, source_id, source_id,
+                    f"solana:leaderboard-{source_id}", source_id, source_id,
+                    dust_snapshot if source_id == 3 else -1,
                     1.0, 1.04, 20.0 / 1.04, 0.0, pnl, now, now, "fixture",
                 ),
             )
@@ -813,6 +821,18 @@ def test_chain_web_leaderboard_contains_only_current_active_forward_strategies(
         for item in leaderboard
     )
     assert len({item["arm_id"] for item in leaderboard}) == len(leaderboard)
+    assert [item["arm_id"] for item in leaderboard] == [v20["policies"][2]["arm_id"], v20["policies"][0]["arm_id"]]
+    web = ChainWebData(config_path)
+    for compact in (True, False):
+        payload = web.state(compact=compact)
+        account = next(s["account"] for s in payload["strategies"] if s["arm_id"] == v20["policies"][1]["arm_id"])
+        assert account["research_metrics_eligible"] is False
+        assert account["capital_neutral_realized_pnl_usd"] == 100.0
+        assert account["expectancy_usd"] is None
+        assert account["win_rate_fraction"] is None
+        if compact:
+            assert account["metric_sample_status"] == "engineering_quarantined"
+            assert all(account[key] is None for key in ("profit_factor", "profit_loss_ratio", "tail_return_usd"))
 
 
 def test_compact_chain_web_excludes_contaminated_pnl_and_pre_correction_curve(
