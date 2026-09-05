@@ -80,6 +80,25 @@ def test_chain_diagnostics_read_bounded_timing_and_update_history(tmp_path: Path
     assert "bridge-secret" not in json.dumps(perf)
 
 
+def test_discovery_activity_counts_new_pattern_reawakening_before_buy(tmp_path):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    token = TokenCandidate("solana", "reawakening-mint", "Wake")
+    store.upsert_token(token)
+    at = iso()
+    for flag in (True, True, False):
+        snapshot_id = store.add_snapshot(TokenSnapshot("solana", token.address, 1, 100, 1000, 20, 4, 1))
+        store.db.execute("INSERT INTO chain_meme_trader_v6_entry_evaluations "
+            "(definition_version,source_snapshot_id,token_id,evaluated_at,status,reason,feature_json) "
+            "VALUES(?,?,?,?,?,?,?)", ("current", snapshot_id, token.token_id, at, "rejected", "pattern_observation",
+                json.dumps({"policy_entry_family": "pattern_experiments", "reactivation_ready": flag})))
+    store.db.commit()
+    data = ChainWebData(config_path).discovery_activity()["activity_series"]
+    assert sum(point["solana"]["reactivated"] for point in data["points"]) == 1
+    assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_trades").fetchone()[0] == 0
+    store.close()
+
+
 def test_token_detail_exposes_forward_creator_launch_shadow_without_raw_payload(tmp_path: Path):
     config_path, _ = _config(tmp_path)
     store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)

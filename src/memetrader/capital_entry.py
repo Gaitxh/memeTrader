@@ -129,6 +129,19 @@ def capital_observation_signal(history, policy, *, decision_at, activated_at, co
     if price is None or price <= 0 or liquidity is not None and liquidity < 1:
         return False, "entry_pool_price_or_liquidity_invalid"
     direction = policy["entry_filter"]["direction"]
+    if direction == "no_ca_event_flow_leader":
+        ranked = context.get("no_ca_event") or {}
+        selected = ranked.get("selected") or {}
+        at = _time(ranked.get("decision_at"))
+        if (ranked.get("action") != "SELECT" or ranked.get("authoritative_ca") is not False
+                or not _evidence_ok(ranked, decision, start)
+                or selected.get("token_id") != context.get("token_id")
+                or selected.get("pair_address") != context.get("pair_address")
+                or not at or _time(last["observed_at"]) <= at):
+            return False, "awaiting_frozen_candidates_actual_flow_and_next_frame"
+        return True, "no_ca_event_actual_flow_leader_confirmed"
+    if direction in {"prebreakout_net_accumulation", "liquidity_leads_price", "fast_stop_reclaim"}:
+        return opportunity_signal(frames, policy, decision=decision, activated=start, context=context)
     if direction in {"event_reawakening", "surface_lifecycle_pipeline"}:
         flow = context.get("amountful_flow") or {}
         if not (flow.get("complete") is True and _evidence_ok(flow, decision, start)
@@ -181,6 +194,66 @@ def capital_observation_signal(history, policy, *, decision_at, activated_at, co
                 return False, "awaiting_verified_token_creator"
         return True, "capital_broad_start_confirmed"
     return capital_entry_signal(frames, policy, decision_at, activated_at, context)
+
+
+def opportunity_signal(frames, policy, *, decision, activated, context):
+    cfg = policy["entry_filter"]
+    direction = cfg["direction"]
+    last = frames[-1]
+    span = cfg["min_span_seconds"]
+    recent = [f for f in frames if (decision - _time(f["observed_at"])).total_seconds() <= span + 45]
+    if direction == "fast_stop_reclaim":
+        stop = context.get("recent_stop") or {}
+        closed = _time(stop.get("closed_at"))
+        if (not closed or not _evidence_ok(stop, decision, activated, fresh=False)
+                or not stop.get("clean") or stop.get("status") != "closed"
+                or not cfg["stop_min_gap_seconds"] <= (decision-closed).total_seconds() < cfg["stop_max_gap_seconds"]):
+            return False, "awaiting_clean_recent_natural_stop"
+        recent = [f for f in recent if _time(f["observed_at"]) > closed]
+    if (len(recent) < cfg["min_frames"]
+            or (_time(recent[-1]["observed_at"]) - _time(recent[0]["observed_at"])).total_seconds() < span
+            or any(not 0 < (_time(b["observed_at"]) - _time(a["observed_at"])).total_seconds() <= cfg["max_gap_seconds"]
+                   for a, b in zip(recent, recent[1:]))):
+        return False, "awaiting_contiguous_opportunity_history"
+    prices = [_finite(f.get("price")) for f in recent]
+    depths = [_finite(f.get("liquidity")) for f in recent]
+    if any(x is None or x <= 0 for x in prices) or any(x is None or x < 1 for x in depths):
+        return False, "awaiting_opportunity_price_and_depth"
+    if direction == "fast_stop_reclaim":
+        entry, stop_price, stop_depth = (_finite(stop.get(k)) for k in ("entry_price", "stop_price", "stop_liquidity"))
+        if None in (entry, stop_price, stop_depth):
+            return False, "awaiting_stop_price_depth_evidence"
+        ok = (prices[-1] > prices[-2] > prices[-3]
+              and prices[-1] >= max(stop_price*cfg["stop_reclaim_multiple"], entry*cfg["entry_reclaim_multiple"])
+              and depths[-1] >= .8*stop_depth)
+        return ok, "fast_stop_reclaim_confirmed" if ok else "awaiting_fast_stop_reclaim"
+    if max(prices)/min(prices)-1 > cfg["price_range_max"]:
+        return False, "price_already_expanded"
+    if direction == "liquidity_leads_price":
+        # This is a DEX-reported depth hypothesis, not proof of LP custody or executable depth.
+        ok = depths[-1] >= depths[0]*(1+cfg["min_depth_growth"]) and depths[-1] >= depths[-2]
+        return ok, "reported_liquidity_leads_price" if ok else "awaiting_depth_expansion"
+    flow = context.get("amountful_flow") or {}
+    windows = flow.get("windows") or []
+    if (flow.get("complete") is not True or not _evidence_ok(flow, decision, activated)
+            or not flow.get("adjacent") or not flow.get("nonoverlap") or len(windows) != 2):
+        return False, "awaiting_two_complete_actual_flow_windows"
+    previous_end = None
+    for w in windows:
+        begin, end = _time(w.get("window_start")), _time(w.get("window_end"))
+        net, gross, breadth, top = (_finite(w.get(k)) for k in (
+            "net_quote_flow_raw", "gross_quote_flow_raw", "effective_breadth", "top1_notional_share"))
+        if (not begin or not end or not activated <= begin < end <= decision
+                or previous_end is not None and begin != previous_end
+                or w.get("complete") is not True or not _evidence_ok(w, decision, activated, fresh=False)
+                or None in (net, gross, breadth, top)):
+            return False, "awaiting_causal_amount_windows"
+        if (gross <= 0 or net/gross < cfg["min_net_gross_ratio"]
+                or breadth < cfg["min_effective_breadth"] or top > cfg["max_top1_notional_share"]):
+            return False, "accumulation_not_broad_or_positive"
+        previous_end = end
+    ok = prices[-1] >= (max(prices)+min(prices))/2 and depths[-1] >= .9*depths[0]
+    return ok, "prebreakout_net_accumulation_confirmed" if ok else "awaiting_accumulation_structure"
 
 
 def capital_context_from_observations(history, evidence, *, decision_at, migration_fact=None,
@@ -264,4 +337,7 @@ def capital_context_from_observations(history, evidence, *, decision_at, migrati
     event = latest("authoritative_event", 300)
     if event:
         context["event"] = event
+    ranked = latest("authoritative_no_ca_amount_rank", 300)
+    if ranked:
+        context["no_ca_event"] = ranked
     return context

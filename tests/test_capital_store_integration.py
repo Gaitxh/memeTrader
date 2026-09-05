@@ -472,3 +472,94 @@ def test_earn_exit_is_pending_until_new_original_pool_frame_and_uses_both_4pct_c
     cash = 1000 + store._chain_meme_trader_effective_net_flows(version)["earn_the_hold_v1"]
     assert cash == pytest.approx(1000 - 20 + expected_gross)
     store.close()
+
+
+def test_fast_stop_real_closed_ledger_next_frame_five_dollars_and_once(tmp_path, monkeypatch):
+    """A completed natural stop creates a new episode, never repairs its old PNL."""
+    from memetrader.capital_entry import opportunity_signal
+    from memetrader.capital_policies import opportunity_policies
+
+    store, clock = _capital_store(tmp_path, monkeypatch, "fast-stop-natural.sqlite3")
+    # Trade recorded_at uses models.iso(), so advance the same clock there too.
+    monkeypatch.setattr("memetrader.models.utcnow", lambda: clock[0])
+    assert store.register_chain_meme_opportunity_experiments() == 4
+    version, start = Store.CHAIN_MEME_TRADER_ACTIVE_VERSION, clock[0]
+    token, pair = _new_token("FastStop"), str(Pubkey.new_unique())
+    parent, arm = "authoritative_event_shock_v1", "fast_stop_reclaim_v1"
+    clock[0] = start + timedelta(seconds=1)
+    store.record_chain_meme_pattern_evidence(token.token_id, "", "authoritative_event",
+        {"source_kind": "first_party", "trusted": True, "event_type": "official_listing",
+         "contract_address": token.address}, observed_at=clock[0], source_key="fast-stop-parent-event")
+    for seconds in (2, 3):
+        _observe(store, clock, token, pair, start + timedelta(seconds=seconds), price=2)
+    original = store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE arm_id=?", (parent,)).fetchone()
+    assert original is not None and original["status"] == "open"
+
+    def market(seconds, price):
+        clock[0] = start + timedelta(seconds=seconds)
+        store.upsert_chain_meme_trader_market_mark(
+            token, _snapshot(token, pair, clock[0], price=price), recorded_at=clock[0])
+        return store.evaluate_chain_meme_trader_market_marks(
+            definition_version=version, now=clock[0], token_ids=[token.token_id])
+
+    def buys():
+        return store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_trades "
+            "WHERE arm_id=? AND side='BUY'", (arm,)).fetchone()[0]
+
+    assert market(4, 1.4) == 1
+    assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_trades WHERE side='SELL'").fetchone()[0] == 0
+    assert market(5, 1.4) == 1
+    closed = store.db.execute("SELECT * FROM chain_meme_trader_positions WHERE arm_id=?", (parent,)).fetchone()
+    assert closed["status"] == "closed" and "hard_stop" in closed["close_reason"]
+    expected_loss = 20 / 2.08 * 1.4 * .96 - 20
+    assert closed["realized_pnl_usd"] == pytest.approx(expected_loss)
+    old_trades = [tuple(r) for r in store.db.execute(
+        "SELECT * FROM chain_meme_trader_trades WHERE arm_id=? ORDER BY id", (parent,))]
+    assert len(old_trades) == 2
+    stop = store._pattern_recent_clean_stop(token.token_id, pair, clock[0], iso(start))
+    assert stop["clean"] is True
+    assert (stop["entry_price"], stop["stop_price"], stop["stop_liquidity"]) == (2, 1.4, 1000)
+    assert store.db.execute("SELECT side FROM chain_meme_trader_trades WHERE id=?",
+                            (stop["stop_trade_id"],)).fetchone()[0] == "SELL"
+    assert store.db.execute("SELECT market_post_price_usd FROM chain_meme_trader_marks WHERE id=?",
+                            (stop["stop_mark_id"],)).fetchone()[0] == 1.4
+
+    # Four post-stop observations, 50 seconds of structure, exactly 60 seconds cooling.
+    for seconds, price in ((15, 1.45), (30, 1.6), (45, 1.75), (65, 1.85)):
+        _observe(store, clock, token, pair, start + timedelta(seconds=seconds), price=price)
+        assert buys() == 0
+    features = json.loads(store.db.execute(
+        "SELECT feature_json FROM chain_meme_trader_v6_entry_evaluations ORDER BY id DESC LIMIT 1").fetchone()[0])
+    assert arm in features["ready_arm_ids"]
+    _observe(store, clock, token, pair, start + timedelta(seconds=66), price=1.9)
+    assert buys() == 1
+    new = store.db.execute("SELECT p.*,c.feature_json FROM chain_meme_trader_positions p "
+        "JOIN chain_meme_trader_v6_cohorts c ON c.id=p.shadow_cohort_id WHERE p.arm_id=?", (arm,)).fetchone()
+    assert new["stake_usd"] == 5
+    assert new["opened_at"] == iso(start + timedelta(seconds=66))
+    assert new["paper_quantity_tokens"] == pytest.approx(5 / (1.9 * 1.04))
+    assert json.loads(new["feature_json"])["event_keys"][arm] == stop["evidence_id"]
+
+    # Close the new arm normally, then confirm the same original stop cannot be consumed again.
+    assert market(67, 1.2) == 1
+    assert market(68, 1.2) == 1
+    for seconds, price in ((70, 1.90), (85, 1.92), (100, 1.94), (115, 1.96), (116, 1.98)):
+        _observe(store, clock, token, pair, start + timedelta(seconds=seconds), price=price)
+    assert buys() == 1
+    features = json.loads(store.db.execute(
+        "SELECT feature_json FROM chain_meme_trader_v6_entry_evaluations ORDER BY id DESC LIMIT 1").fetchone()[0])
+    assert features["outcomes"][arm] == "event_already_consumed"
+    assert [tuple(r) for r in store.db.execute(
+        "SELECT * FROM chain_meme_trader_trades WHERE arm_id=? ORDER BY id", (parent,))] == old_trades
+    assert store.db.execute("SELECT realized_pnl_usd FROM chain_meme_trader_positions WHERE arm_id=?",
+                            (parent,)).fetchone()[0] == pytest.approx(expected_loss)
+
+    # The pure boundary refuses a stop whose accounting evidence is not clean.
+    policy = next(p for p in opportunity_policies() if p["arm_id"] == arm)
+    frames = [{"observed_at": iso(start + timedelta(seconds=s)), "price": p, "liquidity": 1000}
+              for s, p in ((70, 1.90), (85, 1.92), (100, 1.94), (115, 1.96))]
+    assert opportunity_signal(frames, policy, decision=clock[0], activated=start,
+                              context={"recent_stop": {**stop, "clean": False}}) == (
+                                  False, "awaiting_clean_recent_natural_stop")
+    store.close()

@@ -48,7 +48,7 @@ def _article_parts(content: bytes) -> tuple[str, list[str]]:
 async def collect_okx_listing_events(
     http: Any, *, now: datetime | None = None, max_age_seconds: float = 3600,
 ) -> dict[str, list[dict[str, Any]]]:
-    """Fetch at most two recent OKX listing articles; missing CA is diagnostic only.
+    """Fetch at most two recent articles; missing CA stays explicitly unverified.
 
     The caller supplies the existing public-feed client.  Both endpoint and
     article requests are individually bounded to four seconds and failures
@@ -94,7 +94,11 @@ async def collect_okx_listing_events(
         for link in links:
             matches.extend(_CA_URL.finditer(link))
         if not matches:
-            diagnostics.append({"kind": "okx_listing_without_exact_ca", "url": url, "title": title})
+            observed = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            diagnostics.append({"kind": "okx_listing_without_exact_ca", "url": url, "title": title,
+                "source": "okx", "source_kind": "first_party", "event_type": "official_listing",
+                "identity_status": "no_exact_ca", "published_at": published.isoformat().replace("+00:00", "Z"),
+                "observed_at": observed, "ingested_at": observed})
             continue
         unique = {(m.group("host"), m.group("address")) for m in matches}
         if len(unique) != 1:

@@ -1,4 +1,5 @@
 import asyncio
+import asyncio
 from datetime import timedelta
 from types import SimpleNamespace
 
@@ -202,6 +203,48 @@ def test_participation_seed_and_truncated_windows_never_create_false_breadth():
         truncated = await collector.sample_pumpswap_participation(pool, scan["frontier"])
         assert truncated["status"] == "TRUNCATED_INCOMPLETE" and not truncated["trades"]
         assert methods.count("getTransaction") == 1
+    asyncio.run(scenario())
+
+
+def test_participation_transaction_reads_cap_concurrency_and_preserve_order():
+    async def scenario():
+        pool, _, _ = participation_fixture()
+        signatures = [
+            {"signature": f"sig-{i}", "slot": 60 + i, "blockTime": 100 + i}
+            for i in range(4)
+        ]
+        active = maximum = 0
+        calls = []
+
+        class Http:
+            async def post(self, url, *, json):
+                nonlocal active, maximum
+                method = json["method"]
+                calls.append(method)
+                if method == "getSignaturesForAddress":
+                    return httpx.Response(200, json={"result": signatures}, request=httpx.Request("POST", url))
+                active += 1
+                maximum = max(maximum, active)
+                await asyncio.sleep(0.01)
+                active -= 1
+                return httpx.Response(200, json={"result": {}}, request=httpx.Request("POST", url))
+
+        collector = SolanaHeldAccountCollector("https://rpc.invalid")
+        await collector.http.aclose()
+        collector.http = Http()
+        collector._pumpswap_participation_instructions = lambda tx, item, pool: (
+            [{"signature": item["signature"], "block_time": item["blockTime"]}], True
+        )
+        scan = await collector.sample_pumpswap_participation(
+            pool, {"signature": "prior", "slot": 50, "block_time": 99}
+        )
+        assert scan["status"] == "COMPLETE"
+        assert [trade["signature"] for trade in scan["trades"]] == [
+            item["signature"] for item in reversed(signatures)
+        ]
+        assert maximum == 2
+        assert calls.count("getTransaction") == 4
+
     asyncio.run(scenario())
 
 

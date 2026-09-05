@@ -21,7 +21,7 @@ from .forward_patterns import experiment_policies, result_driven_policies, patte
 from .capital_entry import capital_observation_signal, capital_context_from_observations
 from .capital_context import evaluate_capital_exit_context
 from .capital_cross_section import build_capital_cross_section
-from .capital_policies import capital_policies, second_discussion_policies, direct_lp_float_constrained_signal, authoritative_event_shock_signal
+from .capital_policies import capital_policies, second_discussion_policies, opportunity_policies, direct_lp_float_constrained_signal, authoritative_event_shock_signal
 from .capital_exits import evaluate_exit as evaluate_capital_exit, POST_TRIGGER_AMOUNT_QUOTE
 
 from .models import (
@@ -9171,6 +9171,7 @@ class Store:
         priority_social_account_urls: Iterable[str] = (),
         chains: Iterable[str] = (),
         prefer_fresh: bool = False,
+        priority_token_ids: Iterable[str] = (),
     ) -> list[sqlite3.Row]:
         due_at = iso(parse_time(now or utcnow()))
         selected_chains = tuple(dict.fromkeys(
@@ -9192,9 +9193,13 @@ class Store:
         )
         priority_order = ""
         priority_params: tuple[Any, ...] = ()
+        watched = tuple(dict.fromkeys(str(t) for t in priority_token_ids))[:3]
+        if watched:
+            priority_order = f"CASE WHEN token_id IN ({','.join('?' for _ in watched)}) THEN 0 ELSE 1 END,"
+            priority_params = watched
         if priority_patterns:
             matches = " OR ".join("LOWER(link.normalized_url) LIKE ?" for _ in priority_patterns)
-            priority_order = f"""
+            priority_order += f"""
                 CASE WHEN EXISTS(
                     SELECT 1 FROM token_source_links AS link
                     WHERE link.token_id=token_detail_hydration.token_id
@@ -9202,7 +9207,7 @@ class Store:
                       AND ({matches})
                 ) THEN 0 ELSE 1 END,
             """
-            priority_params = priority_patterns
+            priority_params += priority_patterns
         with self._lock:
             return list(
                 self.db.execute(
@@ -25454,6 +25459,58 @@ class Store:
                     added += 1
         return added
 
+    def register_chain_meme_opportunity_experiments(self) -> int:
+        added = 0
+        for policy in opportunity_policies():
+            with self._lock:
+                exists = self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?",
+                    (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, policy["arm_id"])).fetchone()
+                if exists is None:
+                    self.append_chain_meme_trader_policy(policy)
+                    added += 1
+        return added
+
+    def _pattern_recent_clean_stop(self, token_id, pair_address, current, activated_at):
+        """One observable natural stop, not a writeoff or retrospectively priced exit."""
+        cutoff = max(str(activated_at), iso(current - timedelta(seconds=600)))
+        candidates = self.db.execute(
+            "SELECT p.* FROM chain_meme_trader_positions p JOIN chain_meme_trader_v6_cohorts c "
+            "ON c.id=p.shadow_cohort_id WHERE p.definition_version=? AND p.token_id=? "
+            "AND c.pair_address=? AND p.status='closed' AND p.closed_at>=? AND p.closed_at<=? "
+            "AND p.close_reason LIKE '%hard_stop%' AND p.arm_id<>'fast_stop_reclaim_v1' "
+            "ORDER BY p.closed_at DESC LIMIT 12",
+            (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, token_id, pair_address, cutoff, iso(current))).fetchall()
+        for p in candidates:
+            identity = (p["definition_version"], p["arm_id"], p["shadow_cohort_id"])
+            if any(self.db.execute(
+                    f"SELECT 1 FROM {table} WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=? LIMIT 1",
+                    identity).fetchone() for table in (
+                        "chain_meme_trader_accounting_contaminations", "chain_meme_trader_market_fill_corrections",
+                        "chain_meme_trader_capital_credits")):
+                continue
+            mark = self.db.execute(
+                "SELECT id,market_post_price_usd,market_post_recorded_at,trigger_evidence_json "
+                "FROM chain_meme_trader_marks WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=? "
+                "AND reason LIKE '%hard_stop%' AND market_post_recorded_at<=? ORDER BY id DESC LIMIT 1",
+                (*identity, p["closed_at"])).fetchone()
+            trade = self.db.execute(
+                "SELECT id,created_at,recorded_at FROM chain_meme_trader_trades WHERE definition_version=? "
+                "AND arm_id=? AND shadow_cohort_id=? AND side='SELL' AND reason LIKE '%hard_stop%' "
+                "AND recorded_at<=? ORDER BY id DESC LIMIT 1", (*identity, iso(current))).fetchone()
+            if not mark or not trade or not mark["market_post_price_usd"]:
+                continue
+            post = self._json_object(mark["trigger_evidence_json"]).get("post_confirmation") or {}
+            if post.get("liquidity_usd") is None:
+                continue
+            return {"status": "closed", "clean": True, "closed_at": p["closed_at"],
+                    "observed_at": trade["created_at"], "recorded_at": trade["recorded_at"],
+                    "evidence_id": f"natural-stop:{p['shadow_cohort_id']}",
+                    "stop_trade_id": trade["id"], "stop_mark_id": mark["id"],
+                    "entry_price": p["entry_signal_price_usd"], "stop_price": mark["market_post_price_usd"],
+                    "stop_liquidity": post["liquidity_usd"], "basis": "natural_same_pool_confirmed_stop"}
+        return {}
+
     def capital_cross_section(self, targets, *, now=None):
         current = parse_time(now or utcnow())
         version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
@@ -25718,7 +25775,7 @@ class Store:
             wave_rows = {}
             if any(p.get("capital_experiment") for p in active):
                 evidence = self._capital_evidence(token.token_id, pair_address, decision_at,
-                    ("amountful_flow", "pool_surface", "authoritative_event"))
+                    ("amountful_flow", "pool_surface", "authoritative_event", "authoritative_no_ca_amount_rank"))
                 fact = self.db.execute("SELECT id,recorded_at FROM token_launch_facts WHERE token_id=? "
                     "AND launch_event_type='migration' AND source_observed_at<=ingested_at "
                     "AND ingested_at<=recorded_at AND recorded_at<=? ORDER BY id DESC LIMIT 1",
@@ -25726,6 +25783,10 @@ class Store:
                 capital_context = capital_context_from_observations(history, evidence,
                     decision_at=iso(decision_at), migration_fact=dict(fact) if fact else None,
                     cross_section=cross_section)
+                stop_policy = next((p for p in active if p["entry_family"] == "fast_stop_reclaim"), None)
+                if stop_policy:
+                    capital_context["recent_stop"] = self._pattern_recent_clean_stop(
+                        token.token_id, pair_address, decision_at, stop_policy["forward_started_at"])
                 # A new wave can only follow a genuinely closed position, never
                 # a retrospectively chosen high or an account still holding it.
                 for p in active:
@@ -25748,11 +25809,11 @@ class Store:
                             already_bought.discard(p["arm_id"])
             event_keys = {}
             for policy in active:
-                if policy.get("entry_family") not in {"event_reawakening", "surface_lifecycle_pipeline"}:
+                if policy.get("entry_family") not in {"event_reawakening", "surface_lifecycle_pipeline", "fast_stop_reclaim", "no_ca_event_flow_leader"}:
                     continue
                 arm = policy["arm_id"]
-                event = capital_context.get("event") or {}
-                event_key = event.get("evidence_id")
+                event = capital_context.get({"fast_stop_reclaim": "recent_stop", "no_ca_event_flow_leader": "no_ca_event"}.get(policy["entry_family"], "event")) or {}
+                event_key = event.get("candidate_set_source_key") if policy["entry_family"] == "no_ca_event_flow_leader" else event.get("evidence_id")
                 if arm in still_open:
                     entry_blocked[arm] = "event_position_still_open"
                 if not event_key:
@@ -25799,7 +25860,7 @@ class Store:
                     ready.append(policy["arm_id"])
             admitted_arms = [p["arm_id"] for p in active if post_valid and p["arm_id"] in pending
                              and p["arm_id"] not in already_bought and p["arm_id"] not in entry_blocked
-                             and (p.get("entry_family") not in {"event_reawakening", "surface_lifecycle_pipeline"} or
+                             and (p.get("entry_family") not in {"event_reawakening", "surface_lifecycle_pipeline", "fast_stop_reclaim", "no_ca_event_flow_leader"} or
                                   previous_features.get("event_keys", {}).get(p["arm_id"]) == event_keys.get(p["arm_id"]))]
             paired = {}
             for p in active:
@@ -25815,6 +25876,9 @@ class Store:
                             k: v.get("evidence_id") for k,v in capital_context.items() if isinstance(v, Mapping)},
                         "wave_parents": wave_rows,
                         "event_keys": event_keys,
+                        "reactivation_ready": any(p["arm_id"] in ready and (
+                            p.get("entry_family") in {"quiet_reawakening", "wave_reset_reentry", "event_reawakening", "fast_stop_reclaim"}
+                            or outcomes.get(p["arm_id"]) == "wave_reset_reentry_confirmed") for p in active),
                         "entry_routes": {p["arm_id"]: {"reason": outcomes.get(p["arm_id"]),
                             "surface": (capital_context.get("surface") or {}).get("surface"),
                             "surface_evidence_id": (capital_context.get("surface") or {}).get("evidence_id")}

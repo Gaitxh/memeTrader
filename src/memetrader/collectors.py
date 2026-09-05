@@ -2889,18 +2889,25 @@ class SolanaHeldAccountCollector:
             else:
                 trades = []
                 complete = True
-                for item in reversed(signatures):
+                transaction_slots = asyncio.Semaphore(2)
+
+                async def read_transaction(item):
                     if item.get("err") is not None:
-                        continue  # Observed failed transaction, not a missing trade.
+                        return [], True  # Observed failed transaction, not missing.
                     if not frontier.get("signature") and int(item["slot"]) <= int(frontier["slot"]):
-                        continue
-                    tx = await rpc("getTransaction", [item["signature"], {
-                        "commitment": "confirmed", "encoding": "jsonParsed", "maxSupportedTransactionVersion": 0,
-                    }])
+                        return [], True
+                    async with transaction_slots:
+                        tx = await rpc("getTransaction", [item["signature"], {
+                            "commitment": "confirmed", "encoding": "jsonParsed", "maxSupportedTransactionVersion": 0,
+                        }])
                     parsed, valid = self._pumpswap_participation_instructions(tx, item, pool)
                     received_at = iso(utcnow())
                     for trade in parsed:
                         trade.update(observed_at=received_at, recorded_at=received_at)
+                    return parsed, valid
+
+                # Same request cap, at most two in flight; preserve signature order.
+                for parsed, valid in await asyncio.gather(*(read_transaction(item) for item in reversed(signatures))):
                     complete = complete and valid
                     trades.extend(parsed)
                 result.update(complete=complete, status="COMPLETE" if complete else "INCOMPLETE_DISCARDED",
@@ -3368,6 +3375,40 @@ class SolanaHeldAccountCollector:
                     "observed_at": observed_at,
                 })
         return updates
+
+    async def bonding_curve_observations(self, tokens: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        """Read at most three mint-bound curves, without constructing sell quotes."""
+        from .pregrad_watch import bonding_curve_identity
+
+        targets, outcomes, seen = [], [], set()
+        for token in tokens[:3]:
+            if token.get("stage") in {"MIGRATED", "CURVE_COMPLETE"} or token.get("curve_complete") is True:
+                continue
+            try:
+                identity = bonding_curve_identity(token)
+            except ValueError as exc:
+                outcomes.append({"token_id": token.get("token_id"), "status": "UNKNOWN_IDENTITY",
+                                 "reason": str(exc)})
+                continue
+            if identity["token_id"] in seen:
+                continue
+            seen.add(identity["token_id"])
+            targets.append({**identity, "pubkey": identity["curve_address"],
+                            "account_kind": "bonding_curve", "expected_program_owner": PUMP_PROGRAM_ID})
+        for update in await self._initial_updates(targets):
+            decoded = update["decoded"]
+            verified = decoded.get("status") == "verified" and int(update["slot"]) > 0
+            outcomes.append({k: update[k] for k in ("token_id", "base_mint", "curve_address",
+                                                    "slot", "observed_at", "data_hash")})
+            outcomes[-1].update(status="verified" if verified else "UNKNOWN_ACCOUNT",
+                                identity_verified=verified, recorded_at=iso(utcnow()),
+                                reason=decoded.get("reason", ""),
+                                curve_complete=decoded.get("complete"),
+                                real_quote_reserves_raw=decoded.get("real_quote_reserves_raw"),
+                                real_token_reserves_raw=decoded.get("real_token_reserves_raw"),
+                                quote_mint=decoded.get("quote_mint"),
+                                creator=decoded.get("creator"), decoder_version=decoded.get("decoder_version"))
+        return outcomes
 
     async def bonding_curve_quotes(
         self,

@@ -29,6 +29,8 @@ from .market_flow import aggregate_market_frames
 from .pool_surface import collect_pumpswap_pool_surface
 from .token_origin import verify_creator_from_known_signature
 from .authoritative_events import collect_okx_listing_events
+from .pregrad_watch import PregradWatch
+from .event_candidates import freeze_event_candidates, rank_frozen_event_candidates, event_candidate_source_key
 from .capital_research import load_competing_risk_samples, seal_competing_risk_model, competing_risk_context
 
 from .autonomous_search import AutonomousSearchAgent, _canonical_social_url, _same_social_url
@@ -1325,6 +1327,7 @@ class Runtime:
                     self.store.register_chain_meme_capital_experiments()
                     self.store.register_chain_meme_result_experiments()
                     self.store.register_chain_meme_second_discussion()
+                    self.store.register_chain_meme_opportunity_experiments()
                     self.store.register_chain_meme_v22_vault_shadow(
                         position_definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
                     )
@@ -2011,7 +2014,7 @@ class Runtime:
             )
 
     async def ingest_token(self, token: TokenCandidate) -> bool:
-        self.store.record_token_launch_fact(token)
+        fact_id = self.store.record_token_launch_fact(token)
         token_created = self.store.upsert_token(token)
         discovery_cfg = self.config["sources"].get("dexscreener_discovery") or {}
         hydration_chains = {
@@ -2025,6 +2028,20 @@ class Runtime:
         }
         if token.chain.lower() in hydration_chains:
             self.store.enqueue_token_detail_hydration(token.chain, token.address)
+        if self.chain_meme_trader_only and fact_id is not None:
+            if not hasattr(self, "_pregrad_watch"):
+                self._pregrad_watch = PregradWatch()
+            fact = self.store.db.execute("SELECT * FROM token_launch_facts WHERE id=?", (fact_id,)).fetchone()
+            now = utcnow()
+            watch_result = self._pregrad_watch.observe_launch(dict(fact), now=now)
+            if fact["launch_event_type"] == "migration" and 0 <= (now-parse_time(fact["recorded_at"])).total_seconds() < 30:
+                prior = self.store.get_kv("pregrad_migration_handoff:" + token.token_id)
+                if prior != str(fact_id):
+                    self.store.requeue_token_detail_hydration(token.token_id, enqueued_at=now)
+                    self.store.set_kv("pregrad_migration_handoff:" + token.token_id, str(fact_id))
+            if watch_result:
+                self.store.record_chain_meme_pattern_evidence(token.token_id, "", "pregrad_watch", watch_result,
+                    observed_at=now, source_key=f"pregrad-launch:{fact_id}")
         self.store.heartbeat(token.source or "onchain", item=token_created)
         if token_created and self.config["notifications"].get("notify_new_tokens", False):
             self.notifier.send(
@@ -2478,6 +2495,8 @@ class Runtime:
             limit=max_hydrations,
             chains=tuple(sorted(surface_chains)) if self.chain_meme_trader_only else (),
             prefer_fresh=self.chain_meme_trader_only,
+            priority_token_ids=tuple(x["token_id"] for x in self._pregrad_watch.ranked(now=utcnow()))
+                if getattr(self, "_pregrad_watch", None) else (),
             priority_social_account_urls=(
                 () if self.chain_meme_trader_only else (
                     str(account.get("url") or "")
@@ -5791,7 +5810,10 @@ class Runtime:
                 self.store.heartbeat("chain-meme-wsol-reference", item=True,
                                      error_detail="fresh_reference_not_token_fill")
             except Exception as exc:
-                self.store.heartbeat("chain-meme-wsol-reference", error=type(exc).__name__)
+                response = getattr(getattr(exc, "__cause__", None), "response", None)
+                status = getattr(response, "status_code", None)
+                self.store.heartbeat("chain-meme-wsol-reference", error=type(exc).__name__,
+                    error_detail=f"http_status={status};failure_class={type(exc).__name__}")
                 if reference and reference.get("completed_at") and (
                     utcnow() - parse_time(reference["completed_at"])
                 ).total_seconds() < 60.0:
@@ -5838,10 +5860,97 @@ class Runtime:
             self.store.requeue_token_detail_hydration(token_id, enqueued_at=observed_at)
             recorded += 1
         diagnostics = list(result.get("diagnostics") or [])
+        for event in diagnostics[:2]:
+            if event.get("kind") == "okx_listing_without_exact_ca":
+                await self._freeze_no_ca_event(event)
         self.store.heartbeat(
             "chain-meme-authoritative-events", item=recorded > 0,
             error_detail=f"recorded={recorded};diagnostics={len(diagnostics)}",
         )
+
+    async def _freeze_no_ca_event(self, event) -> None:
+        key = event_candidate_source_key(event)
+        if not key or self.store.db.execute(
+                "SELECT 1 FROM chain_meme_pattern_evidence WHERE definition_version=? AND kind='no_ca_search_attempt' AND source_key=?",
+                (self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION, key)).fetchone():
+            return
+        symbols = {s.upper() for s in re.findall(r"\(([A-Za-z0-9]{2,15})\)", event["title"])
+                   if s.upper() not in {"USDT", "USDC", "USD", "UTC"}}
+        if len(symbols) != 1:
+            self.store.record_chain_meme_pattern_evidence("", "", "no_ca_search_attempt",
+                {"event": event, "status": "WAIT", "reason": "no_unique_search_symbol"},
+                observed_at=event["observed_at"], source_key=key)
+            return
+        query = next(iter(symbols))
+        await self._chain_meme_active_idle().wait()
+        try:
+            quoted = await asyncio.wait_for(self.dex.search(query, limit=25), timeout=3)
+        except Exception as exc:
+            self.store.heartbeat("no-ca-event", error=type(exc).__name__)
+            return  # No retrieval succeeded; never substitute later winners for a frozen set.
+        now = utcnow()
+        candidates = []
+        selected_quotes = {}
+        for token, snapshot in quoted:
+            pair = (snapshot.raw or {}).get("pair", snapshot.raw or {})
+            if token.symbol.upper() != query or token.chain not in {"solana", "bsc", "robinhood"}:
+                continue
+            candidates.append({"token_id": token.token_id, "chain": token.chain, "address": token.address,
+                "pair_address": canonical_token_address(token.chain, str(pair.get("pairAddress") or "")),
+                "provider": snapshot.provider, "name": token.name, "symbol": token.symbol,
+                "observed_at": iso(snapshot.observed_at), "recorded_at": iso(now)})
+            selected_quotes[token.token_id] = token, snapshot
+        status, reason, frozen = freeze_event_candidates(event, candidates, query=query, frozen_at=now)
+        if frozen:
+            self.store.record_chain_meme_pattern_evidence("", "", frozen["kind"], frozen["payload"],
+                observed_at=now, source_key=frozen["source_key"])
+            self._remember_pattern_quotes(selected_quotes)
+        self.store.record_chain_meme_pattern_evidence("", "", "no_ca_search_attempt",
+            {"event": event, "query": query, "status": status, "reason": reason, "count": len(candidates)},
+            observed_at=now, source_key=key)
+
+    def _rank_no_ca_events(self) -> None:
+        now = utcnow()
+        rows = self.store.db.execute(
+            "SELECT * FROM chain_meme_pattern_evidence WHERE definition_version=? AND kind='authoritative_no_ca_candidate_set' "
+            "AND recorded_at>=? ORDER BY id DESC LIMIT 2",
+            (self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION, iso(now-timedelta(minutes=5)))).fetchall()
+        for row in rows:
+            if self.store.db.execute(
+                    "SELECT 1 FROM chain_meme_pattern_evidence WHERE definition_version=? AND kind='authoritative_no_ca_amount_rank' AND source_key=?",
+                    (self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION, row["source_key"] + "|selected")).fetchone():
+                continue  # Freeze the first real winner; let later market frames arrive.
+            frozen = {**dict(row), "payload": json.loads(row["payload_json"])}
+            inputs = []
+            for member in frozen["payload"]["candidates"]:
+                inputs.extend(self.store._capital_evidence(member["token_id"], member["pair_address"], now, ("amountful_flow",))["amountful_flow"])
+            round_start = max(parse_time(row["recorded_at"]), now-timedelta(seconds=30))
+            _, _, ranked = rank_frozen_event_candidates(frozen, inputs, round_id=iso(now),
+                round_started_at=round_start, decision_at=now)
+            if ranked:
+                self.store.record_chain_meme_pattern_evidence(ranked["token_id"], ranked["pair_address"], ranked["kind"],
+                    ranked["payload"], observed_at=now, source_key=row["source_key"] + "|selected"
+                    if ranked["payload"]["action"] == "SELECT" else ranked["source_key"])
+
+    async def pregrad_watch_once(self) -> None:
+        watch = getattr(self, "_pregrad_watch", None)
+        if watch is None:
+            return
+        await self._chain_meme_active_idle().wait()
+        targets = watch.targets(now=utcnow())
+        if not targets:
+            return
+        try:
+            frames = await asyncio.wait_for(self.held_accounts.bonding_curve_observations(targets), timeout=3)
+            for frame in frames:
+                now = utcnow()
+                result = watch.apply_observation(frame, now=now)
+                if result is not None:
+                    self.store.record_chain_meme_pattern_evidence(frame["token_id"], "", "pregrad_watch", result,
+                        observed_at=frame["observed_at"], source_key=f"pregrad-curve:{frame['token_id']}:{frame['slot']}")
+            self.store.heartbeat("pregrad-watch", item=bool(frames), error_detail=f"targets={len(targets)};watch_only")
+        except Exception as exc:
+            self.store.heartbeat("pregrad-watch", error=type(exc).__name__)
 
     async def critical_onchain_exit_loop(self) -> None:
         """Drain exact-account risk exits before ordinary background quote work."""
@@ -6531,6 +6640,7 @@ class Runtime:
         """At most 30 non-held candidates; held quotes reuse the core lane."""
         self._remember_pattern_quotes({})
         watch = self._pattern_watch
+        self._rank_no_ca_events()
         projected = sampled = 0
         chains = sorted({v["token"].chain for v in watch.values()})
         cursor = getattr(self, "_pattern_chain_cursor", 0)
@@ -7515,6 +7625,7 @@ class Runtime:
                     self._periodic("chain_meme_pattern_pools", 15, self.chain_meme_pattern_pools_once),
                     name="chain_meme_pattern_pools",
                 ),
+                asyncio.create_task(self._periodic("pregrad_watch", 30, self.pregrad_watch_once), name="pregrad_watch"),
                 asyncio.create_task(
                     self._periodic("chain_meme_pattern_participation", 15, self.chain_meme_pattern_participation_once),
                     name="chain_meme_pattern_participation",

@@ -202,3 +202,32 @@ def second_discussion_policies() -> list[dict[str, Any]]:
                 p.update(capital_exit_kind=None, capital_exit_policy={})
             result.append(p)
     return result
+
+
+def opportunity_policies() -> list[dict[str, Any]]:
+    """Small new entry experiments, with a common existing exit to isolate entry."""
+    import copy
+    parent = next(p for p in capital_policies() if p["arm_id"] == "effective_breadth_v1")
+    specs = (
+        ("prebreakout_net_accumulation", "净流积累·价格未启动", 60),
+        ("liquidity_leads_price", "流动性先扩张", 120),
+        ("fast_stop_reclaim", "止损后快速收复", 30),
+        ("no_ca_event_flow_leader", "无明确合约事件·资金确认", 30),
+    )
+    result = []
+    for direction, name, span in specs:
+        p = copy.deepcopy(parent)
+        arm = direction + "_v1"
+        p.update(arm_id=arm, canonical_id=arm, name=name, entry_family=direction,
+                 source_arm_ids=[], notional_usd=5.0,
+                 description="机会型小额独立前向实验；固定既有退出，不预设有效性。",
+                 entry_filter={"direction": direction, "min_span_seconds": span,
+                               "max_gap_seconds": 45, "min_frames": 4,
+                               "price_range_max": .05, "min_depth_growth": .25,
+                               "min_net_gross_ratio": .2, "min_effective_breadth": 2,
+                               "max_top1_notional_share": .6,
+                               "stop_min_gap_seconds": 60, "stop_max_gap_seconds": 600,
+                               "stop_reclaim_multiple": 1.08, "entry_reclaim_multiple": .9},
+                 required_inputs=["post_deployment_same_pool_history", direction])
+        result.append(p)
+    return result

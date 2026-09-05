@@ -281,7 +281,8 @@ class ChainWebData:
         frontier = int(connection.execute("SELECT COALESCE(MAX(id),0) FROM chain_meme_trader_v6_entry_evaluations").fetchone()[0])
         rows = connection.execute(
             "SELECT token_id,source_snapshot_id,evaluated_at FROM chain_meme_trader_v6_entry_evaluations "
-            "WHERE id>? AND evaluated_at>=? AND json_extract(feature_json,'$.policy_entry_family')='reawakening'",
+            "WHERE id>? AND evaluated_at>=? AND (json_extract(feature_json,'$.policy_entry_family')='reawakening' "
+            "OR json_extract(feature_json,'$.reactivation_ready')=1)",
             (max(0, frontier-20000), iso(start)),
         ).fetchall()
         for row in rows:
