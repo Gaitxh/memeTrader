@@ -1,5 +1,11 @@
 # ChatGPT ↔ Codex coordination
 
+## CODEX_TO_CHATGPT C2C-20260905-133558-HELD-CATALOG-AND-DUST-CREDIT
+
+- ACK_IMPLEMENTED（代码）：observer保存快照但没登记Token，Robinhood一币四仓被held inner JOIN漏采；增加目录写入和原始身份恢复，不回填报价/交易。028/096历史原池SELL证据未决须明确提示，不用现价伪造。
+- 最新用户明确授权补当前账期dust入场本金。预核对372有效BUY/49臂/7440U，另4笔已有现金隔离不重复补。独立append-only credit、source BUY唯一；现金门/快照/Web包含补款，PNL保留原值，回撤扣外部资金。最小回归通过，待部署与一次实际补款核对。
+- 补充排查广泛缺价和交易衰减：只读多agent区分现金耗尽、数据覆盖、队列饥饿及策略自然条件；不初始化/不启用Live/不恢复定时复盘。
+
 ## CODEX_TO_CHATGPT C2C-20260905-130123-MANUAL-REVIEW-ONLY
 
 - ACK_IMPLEMENTED：用户明确“不用恢复。我手动提醒复盘”。既有两小时automation保持PAUSED，未来仅用户提醒时复盘；不恢复、不复制，不暂停行情/持仓监控/交易与已部署的有界信息采集。

@@ -2976,6 +2976,26 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS chain_meme_trader_pool_marks_time_idx
                     ON chain_meme_trader_pool_marks(recorded_at DESC,token_id,pair_address);
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_capital_credits (
+                    source_buy_trade_id INTEGER PRIMARY KEY,
+                    definition_version TEXT NOT NULL,
+                    arm_id TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    token_id TEXT NOT NULL,
+                    entry_snapshot_id INTEGER NOT NULL,
+                    entry_liquidity_usd REAL NOT NULL CHECK(entry_liquidity_usd<1),
+                    amount_usd REAL NOT NULL CHECK(amount_usd>0),
+                    reason TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_capital_credits_version_idx
+                    ON chain_meme_trader_capital_credits(definition_version,arm_id,recorded_at);
+                CREATE TRIGGER IF NOT EXISTS chain_meme_capital_credit_no_update
+                    BEFORE UPDATE ON chain_meme_trader_capital_credits
+                    BEGIN SELECT RAISE(ABORT,'capital credits are append-only'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_capital_credit_no_delete
+                    BEFORE DELETE ON chain_meme_trader_capital_credits
+                    BEGIN SELECT RAISE(ABORT,'capital credits are append-only'); END;
                 CREATE TABLE IF NOT EXISTS chain_meme_trader_market_mark_history (
                     id INTEGER PRIMARY KEY,
                     token_id TEXT NOT NULL,
@@ -25103,6 +25123,76 @@ class Store:
             self.db, version,
         )
 
+    @staticmethod
+    def chain_meme_capital_credits_from_connection(
+        connection: sqlite3.Connection, version: str,
+    ) -> dict[str, dict[str, Any]]:
+        if connection.execute("SELECT 1 FROM sqlite_master WHERE name='chain_meme_trader_capital_credits'").fetchone() is None:
+            return {}
+        return {str(row["arm_id"]): dict(row) for row in connection.execute(
+            "SELECT arm_id,SUM(amount_usd) AS amount_usd,COUNT(*) AS buy_count "
+            "FROM chain_meme_trader_capital_credits WHERE definition_version=? GROUP BY arm_id", (version,),
+        )}
+
+    def credit_chain_meme_dust_entries(self, *, recorded_at: Any = None) -> dict[str, Any]:
+        """Explicit user-authorized current-period principal top-up, never trading PNL."""
+        version, credited_at = self.CHAIN_MEME_TRADER_ACTIVE_VERSION, iso(parse_time(recorded_at or utcnow()))
+        with self._lock, self.db:
+            excluded = {(str(r["arm_id"]), int(r["shadow_cohort_id"])) for r in
+                        self._chain_meme_trader_accounting_contaminations_from_connection(self.db, version)}
+            rows = self.db.execute(
+                "SELECT t.id,t.arm_id,t.shadow_cohort_id,t.token_id,t.gross_usd AS principal,"
+                "p.entry_snapshot_id,COALESCE(e.liquidity_usd,json_extract(e.raw_json,'$.pair.liquidity.usd'),"
+                "json_extract(e.raw_json,'$.liquidity.usd')) AS entry_liquidity "
+                "FROM chain_meme_trader_trades t JOIN chain_meme_trader_positions p "
+                "ON p.definition_version=t.definition_version AND p.arm_id=t.arm_id "
+                "AND p.shadow_cohort_id=t.shadow_cohort_id "
+                "JOIN token_snapshots e ON e.id=p.entry_snapshot_id AND e.token_id=p.token_id "
+                "WHERE t.definition_version=? AND t.side='BUY' AND t.net_cash_flow_usd<0 "
+                "AND t.gross_usd>0 AND p.status<>'ineligible' "
+                "AND COALESCE(t.recorded_at,t.created_at)<=? AND entry_liquidity<1",
+                (version, credited_at),
+            ).fetchall()
+            count, amount = 0, 0.0
+            for row in rows:
+                if (str(row["arm_id"]), int(row["shadow_cohort_id"])) in excluded:
+                    continue  # This BUY was already removed from effective cash; do not refund twice.
+                cursor = self.db.execute(
+                    "INSERT OR IGNORE INTO chain_meme_trader_capital_credits VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (row["id"], version, row["arm_id"], row["shadow_cohort_id"], row["token_id"],
+                     row["entry_snapshot_id"], row["entry_liquidity"], row["principal"],
+                     "user_authorized_entry_pool_below_1_principal_topup", credited_at),
+                )
+                if cursor.rowcount:
+                    count += 1
+                    amount += float(row["principal"])
+            return {"definition_version": version, "new_credits": count, "new_amount_usd": amount,
+                    "recorded_at": credited_at,
+                    "by_arm": self.chain_meme_capital_credits_from_connection(self.db, version)}
+
+    def repair_chain_meme_orphan_token_catalog(self) -> list[str]:
+        """Restore identity from original entry evidence; never replay a quote or trade."""
+        repaired = []
+        with self._lock, self.db:
+            rows = self.db.execute(
+                "SELECT p.token_id,e.raw_json FROM chain_meme_trader_positions p "
+                "JOIN token_snapshots e ON e.id=p.entry_snapshot_id AND e.token_id=p.token_id "
+                "LEFT JOIN tokens t ON t.token_id=p.token_id "
+                "WHERE p.status='open' AND t.token_id IS NULL GROUP BY p.token_id",
+            ).fetchall()
+            for row in rows:
+                raw = self._json_object(row["raw_json"])
+                pair = raw.get("pair", raw)
+                base = pair.get("baseToken") or {}
+                token = TokenCandidate(str(pair.get("chainId") or ""), str(base.get("address") or ""),
+                                       str(base.get("name") or ""), str(base.get("symbol") or ""),
+                                       source="held_identity_repair", raw={"pair": pair})
+                if token.token_id != row["token_id"]:
+                    continue
+                self.upsert_token(token, _in_transaction=True)
+                repaired.append(token.token_id)
+        return repaired
+
     @classmethod
     def _chain_meme_trader_effective_net_flows_from_connection(
         cls, connection: sqlite3.Connection, version: str,
@@ -25134,6 +25224,8 @@ class Store:
             arm = str(row["arm_id"])
             if (arm, int(row["shadow_cohort_id"])) not in excluded:
                 flows[arm] = flows.get(arm, 0.0) + float(row["cash_adjustment_usd"] or 0.0)
+        for arm, credit in cls.chain_meme_capital_credits_from_connection(connection, version).items():
+            flows[arm] = flows.get(arm, 0.0) + float(credit["amount_usd"])
         return flows
 
     def append_chain_meme_trader_policy(
@@ -25406,6 +25498,7 @@ class Store:
             policies = [p for p in definition["policies"] if p.get("entry_match_mode") == "isolated_pattern_observer"]
             if not policies:
                 return 0
+            self.upsert_token(token, seen_at=current)
             snapshot_id = self.add_snapshot(isolated)
             row = self.db.execute("SELECT *,id AS source_snapshot_id FROM token_snapshots WHERE id=?", (snapshot_id,)).fetchone()
             # A source receipt timestamp is not a future local storage timestamp.
@@ -30118,6 +30211,12 @@ class Store:
             if restoration is not None else None
         )
         cash_by_arm: dict[str, float] = {}
+        credit_events: dict[str, list[sqlite3.Row]] = {}
+        for credit in self.db.execute(
+            "SELECT arm_id,amount_usd,recorded_at FROM chain_meme_trader_capital_credits "
+            "WHERE definition_version=? ORDER BY recorded_at DESC", (version,),
+        ):
+            credit_events.setdefault(str(credit["arm_id"]), []).append(credit)
         expected: dict[tuple[str, int], dict[str, Any]] = {}
         for trade in self.db.execute(
             "SELECT t.*,c.source_snapshot_id AS source_snapshot_id "
@@ -30130,6 +30229,10 @@ class Store:
             arm_id = str(trade["arm_id"])
             key = (arm_id, int(trade["shadow_cohort_id"]))
             cash = cash_by_arm.setdefault(arm_id, starting_cash)
+            events = credit_events.get(arm_id, [])
+            while events and parse_time(events[-1]["recorded_at"]) <= parse_time(trade["created_at"]):
+                cash += float(events.pop()["amount_usd"])
+            cash_by_arm[arm_id] = cash
             if key in expected:
                 continue
             net_flow = float(trade["net_cash_flow_usd"] or 0.0)
@@ -31214,6 +31317,8 @@ class Store:
                 realized_by_arm.get(arm_id, 0.0)
                 - float(row["realized_adjustment_usd"] or 0.0)
             )
+        for arm_id, credit in self.chain_meme_capital_credits_from_connection(self.db, version).items():
+            net_flow_by_arm[arm_id] = net_flow_by_arm.get(arm_id, 0.0) + float(credit["amount_usd"])
         corrected_keys = {
             (str(row["arm_id"]), int(row["shadow_cohort_id"]))
             for row in effective_corrections
@@ -31664,6 +31769,7 @@ class Store:
         previous_total_pnl: float | None = None
         open_position_count_all = 0
         unique_held_token_ids: set[str] = set()
+        capital_credits = cls.chain_meme_capital_credits_from_connection(connection, version)
         policies = [
             policy for policy in definition["policies"]
             if arm_id is None or str(policy.get("arm_id") or "") == arm_id
@@ -32276,16 +32382,20 @@ class Store:
                 "chain_meme_trader_trades WHERE definition_version=? AND arm_id=?",
                 (version, arm_id),
             ).fetchone()[0]
+            credit = capital_credits.get(arm_id, {})
             cash = (
                 starting_cash + float(net_cash_flow or 0.0)
                 + correction_cash_by_arm.get(arm_id, 0.0)
                 - contaminated_net_by_arm.get(arm_id, 0.0)
+                + float(credit.get("amount_usd") or 0.0)
             )
             complete = priced_position_count == open_position_count
             has_priced_open_position = priced_position_count > 0
             indicative_complete = indicative_position_count == open_position_count
             account.update({
                 "cash_usd": cash,
+                "capital_credit_usd": float(credit.get("amount_usd") or 0.0),
+                "capital_credit_count": int(credit.get("buy_count") or 0),
                 "engineering_anomaly_position_count": sum(
                     bool(p.get("engineering_anomaly")) for p in positions
                 ),

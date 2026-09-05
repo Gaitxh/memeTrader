@@ -103,6 +103,87 @@ def _insert_position(
     return token, cohort_id, buy_trade_id, sell_trade_id
 
 
+def test_dust_principal_credit_is_idempotent_cash_only_and_preserves_evidence(tmp_path, monkeypatch):
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    store.activate_chain_meme_trader_funded_period()
+    version = Store.CHAIN_MEME_TRADER_ACTIVE_VERSION
+    definition = store._chain_meme_trader_effective_definition(
+        version, store._chain_meme_trader_registration(version)["definition_json"])
+    arm = definition["policies"][0]["arm_id"]
+    now = utcnow() + timedelta(seconds=20)
+    fixtures = []
+    for index, liquidity in enumerate([.5, .5, .5, .5, .5, .5, 1.0, None]):
+        token, cohort, buy, sell = _insert_position(
+            store, version=version, arm_id=arm, opened_at=now-timedelta(seconds=5),
+            status="written_off", sell_gross_usd=0)
+        snapshot = store.add_snapshot(TokenSnapshot(
+            "solana", token.address, 1, liquidity, 1000, 100, 3, 2,
+            observed_at=now-timedelta(seconds=6), ingested_at=now-timedelta(seconds=6),
+            raw={"pair": {"pairAddress": "pair-A"}}))
+        with store.db:
+            store.db.execute("UPDATE chain_meme_trader_positions SET entry_snapshot_id=? "
+                             "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+                             (snapshot, version, arm, cohort))
+            if index == 5:
+                store.db.execute("INSERT INTO chain_meme_trader_accounting_contaminations("
+                    "definition_version,arm_id,shadow_cohort_id,source_buy_trade_id,reason,evidence_json,recorded_at) "
+                    "VALUES(?,?,?,?,'fixture','{}',?)", (version, arm, cohort, buy, iso(now)))
+        fixtures.append((token, cohort, buy, sell))
+    raw_trades = [tuple(r) for r in store.db.execute("SELECT * FROM chain_meme_trader_trades ORDER BY id")]
+    store.record_chain_meme_trader_account_snapshots(definition_version=version, now=now)
+    before = store._chain_meme_trader_effective_net_flows(version)[arm]
+    config = initial_config()
+    config["database"] = "db.sqlite3"
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    web = ChainWebData(config_path)
+    with web._connect() as connection:
+        prior_curve = web._account_curves(connection, version, None, 1000)[arm]
+    credited_at = now + timedelta(seconds=20)
+    result = store.credit_chain_meme_dust_entries(recorded_at=credited_at)
+    assert (result["new_credits"], result["new_amount_usd"]) == (5, 100)
+    assert store.credit_chain_meme_dust_entries(recorded_at=credited_at)["new_credits"] == 0
+    assert store._chain_meme_trader_effective_net_flows(version)[arm] == pytest.approx(before+100)
+    assert [tuple(r) for r in store.db.execute("SELECT * FROM chain_meme_trader_trades ORDER BY id")] == raw_trades
+    final_at = credited_at + timedelta(seconds=20)
+    monkeypatch.setattr("memetrader.chain_web.utcnow", lambda: final_at)
+    store.record_chain_meme_trader_account_snapshots(definition_version=version, now=final_at)
+    snapshot = store.db.execute("SELECT * FROM chain_meme_trader_account_snapshots "
+        "WHERE definition_version=? AND arm_id=? ORDER BY id DESC LIMIT 1", (version, arm)).fetchone()
+    assert snapshot["cash_usd"] == pytest.approx(960)
+    assert snapshot["indicative_equity_usd"] == pytest.approx(960)
+    assert snapshot["realized_pnl_usd"] == pytest.approx(-140)
+    assert snapshot["indicative_total_pnl_usd"] == pytest.approx(-140)
+    live = next(s for s in web.state(compact=True)["strategies"] if s["arm_id"] == arm)["account"]
+    assert live["cash_usd"] == pytest.approx(960)
+    assert live["capital_credit_usd"] == 100
+    assert live["capital_credit_count"] == 5
+    assert live["indicative_total_pnl_usd"] == pytest.approx(-140)
+    assert live["max_drawdown_usd"] == prior_curve["max_drawdown_usd"]
+    full = Store.chain_meme_trader_summary_from_connection(store.db, arm_id=arm)["strategies"][0]["account"]
+    assert full["cash_usd"] == pytest.approx(960)
+    assert full["capital_credit_usd"] == 100
+    with web._connect() as connection:
+        curve = web._account_curves(connection, version, None, 1000)[arm]
+    assert curve["points"][-1]["total_pnl_usd"] == -140
+    assert curve["max_drawdown_usd"] == prior_curve["max_drawdown_usd"]
+
+    # The same null must explain unresolved historical execution, not promise a new quote.
+    token, cohort, buy, sell = fixtures[-1]
+    with store.db:
+        store.db.execute("INSERT INTO chain_meme_trader_market_fill_corrections("
+            "source_trade_id,definition_version,arm_id,shadow_cohort_id,token_id,source_fill_id,source_mark_id,"
+            "original_gross_usd,post_liquidity_usd,max_market_gross_usd,replacement_outcome,"
+            "cash_adjustment_usd,realized_adjustment_usd,reason,evidence_json,recorded_at) "
+            "VALUES(?,?,?,?,?,0,0,0,1000,1000,'UNRESOLVED',0,20,'fixture','{}',?)",
+            (sell,version,arm,cohort,token.token_id,iso(final_at)))
+    unresolved = next(s for s in ChainWebData(config_path).state(compact=True)["strategies"] if s["arm_id"] == arm)["account"]
+    assert unresolved["valuation_status"] == "historical_execution_unresolved"
+    assert unresolved["unresolved_corrected_position_count"] == 1
+    assert unresolved["current_equity_usd"] is None
+    store.close()
+
+
 def test_unchanged_market_and_equity_evaluations_do_not_update_positions(
     tmp_path: Path,
 ):

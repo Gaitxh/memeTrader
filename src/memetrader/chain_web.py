@@ -229,7 +229,8 @@ class ChainWebData:
                     not effective_after or str(row["recorded_at"]) >= effective_after
                 )
                 value = row["indicative_total_pnl_usd"] if eligible else None
-                equity = row["indicative_equity_usd"] if eligible else None
+                # External principal top-ups are not performance or drawdown recovery.
+                equity = starting_cash + float(value) if value is not None else None
                 if value is not None and not math.isfinite(float(value)):
                     value = None
                 point = {"id": int(row["id"]), "recorded_at": row["recorded_at"],
@@ -688,7 +689,9 @@ class ChainWebData:
             effective_unrealized_by_arm: dict[str, float] = defaultdict(float)
             effective_value_by_arm: dict[str, float] = defaultdict(float)
             net_flows = Store._chain_meme_trader_effective_net_flows_from_connection(connection, active_version)
+            capital_credits = Store.chain_meme_capital_credits_from_connection(connection, active_version)
             priced_open_by_arm: dict[str, int] = defaultdict(int)
+            unresolved_by_arm: dict[str, int] = defaultdict(int)
             entry_anomalies_by_arm: dict[str, int] = defaultdict(int)
             effective_open_token_ids: set[str] = set()
             for row in self._rows(
@@ -735,6 +738,8 @@ class ChainWebData:
                 stats["position_count"] += 1
                 if effective_status == "open":
                     stats["open_count"] += 1
+                    if correction is not None and correction["replacement_outcome"] == "UNRESOLVED":
+                        unresolved_by_arm[arm] += 1
                     effective_open_token_ids.add(str(row["token_id"]))
                 elif effective_status in {"closed", "written_off"}:
                     stats[f"{effective_status}_count"] += 1
@@ -867,6 +872,9 @@ class ChainWebData:
                 )
                 account.update({
                     "realized_pnl_usd": realized_pnl,
+                    "capital_credit_usd": float(capital_credits.get(policy_arm_id, {}).get("amount_usd") or 0.0),
+                    "capital_credit_count": int(capital_credits.get(policy_arm_id, {}).get("buy_count") or 0),
+                    "unresolved_corrected_position_count": unresolved_by_arm[policy_arm_id],
                     "engineering_anomaly_position_count": entry_anomalies_by_arm[policy_arm_id],
                     "research_metrics_eligible": entry_anomalies_by_arm[policy_arm_id] == 0,
                     "cash_usd": starting_cash + net_flows.get(policy_arm_id, 0.0),
@@ -883,6 +891,7 @@ class ChainWebData:
                     "indicative_is_complete": indicative_complete,
                     "valuation_status": (
                         "complete_market_mark" if indicative_complete
+                        else "historical_execution_unresolved" if unresolved_by_arm[policy_arm_id]
                         else "partial_market_mark_unknown"
                     ),
                 })

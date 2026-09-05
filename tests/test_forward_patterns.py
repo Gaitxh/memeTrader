@@ -83,7 +83,7 @@ def test_conditional_exit_is_mechanism_not_nearby_tp_parameter():
     assert len(set(hashes)) == 18
 
 
-@pytest.mark.parametrize("chain", ["solana", "bsc"])
+@pytest.mark.parametrize("chain", ["solana", "bsc", "robinhood"])
 def test_pattern_same_fill_next_observation_cash_and_legacy_isolation(tmp_path, monkeypatch, chain):
     store = Store(tmp_path / "pattern.sqlite3", initial_cash_usd=1000)
     store.activate_chain_meme_trader_funded_period()
@@ -97,7 +97,6 @@ def test_pattern_same_fill_next_observation_cash_and_legacy_isolation(tmp_path, 
     token = TokenCandidate(chain=chain, address=str(Pubkey.new_unique()) if chain == "solana" else "0x" + "12" * 20,
                            name="Pattern", symbol="P", source="test")
     original_pool = "pool" if chain == "solana" else "0x" + "aB" * 20
-    store.upsert_token(token, seen_at=now)
     def observe(liquidity=10000, pair_address=original_pool):
         return store.observe_chain_meme_pattern(token, TokenSnapshot(
             chain, token.address, 2, liquidity, 100000, 500, 6, 3,
@@ -114,6 +113,16 @@ def test_pattern_same_fill_next_observation_cash_and_legacy_isolation(tmp_path, 
     assert len({r["source_entry_fill_id"] for r in rows}) == 1
     assert all(r["paper_quantity_tokens"] == pytest.approx(20 / 2.08) for r in rows)
     assert all("conditional_runner" in r["arm_id"] for r in rows)
+    assert store.db.execute("SELECT 1 FROM tokens WHERE token_id=?", (token.token_id,)).fetchone()
+    assert token.token_id in {t["token_id"] for t in store.chain_meme_trader_market_mark_targets(definition_version=version)}
+    # Historical orphan repair restores identity, not quotes, fills or prior times.
+    original_trades = [tuple(r) for r in store.db.execute("SELECT * FROM chain_meme_trader_trades ORDER BY id")]
+    with store.db:
+        store.db.execute("DELETE FROM tokens WHERE token_id=?", (token.token_id,))
+    assert store.repair_chain_meme_orphan_token_catalog() == [token.token_id]
+    assert store.repair_chain_meme_orphan_token_catalog() == []
+    assert [tuple(r) for r in store.db.execute("SELECT * FROM chain_meme_trader_trades ORDER BY id")] == original_trades
+    assert token.token_id in {t["token_id"] for t in store.chain_meme_trader_market_mark_targets(definition_version=version)}
     assert store.enroll_chain_meme_trader_v6(definition_version=version)["evaluated"] == 0
     now += timedelta(seconds=16)
     assert observe() == 0
