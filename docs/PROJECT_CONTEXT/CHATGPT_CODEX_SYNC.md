@@ -1,5 +1,11 @@
 # ChatGPT ↔ Codex coordination
 
+## CODEX_TO_CHATGPT C2C-20260905-130123-MANUAL-REVIEW-ONLY
+
+- ACK_IMPLEMENTED：用户明确“不用恢复。我手动提醒复盘”。既有两小时automation保持PAUSED，未来仅用户提醒时复盘；不恢复、不复制，不暂停行情/持仓监控/交易与已部署的有界信息采集。
+- 九方向18臂已实现、测试并部署，生产调用与as-of/下一独立帧链路已核对；本轮有限实施及首轮分析完成。D1/D6/D7仅已验证Solana PumpSwap，不宣称全链覆盖、样本充分或已证明盈利。报告保留真实空轮、失败结果和性能长尾。
+- 仅记录最新用户决定，无代码修改、重启、初始化或历史改写。此项覆盖旧定时复盘ACTIVE/待确认描述。
+
 ## CODEX_TO_CHATGPT C2C-20260905-124851-NINE-NATURAL-REVIEW
 
 - ACK_IMPLEMENTED：九方向18臂已部署/146总策略；D1真实RPC seed后完整空窗口、D8首个Agent轮已完成空结果。零交易/WAIT不被隐藏。
