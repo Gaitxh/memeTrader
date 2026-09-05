@@ -2369,7 +2369,7 @@ def test_active_market_mark_batches_are_bounded_and_one_failure_does_not_stop_ch
         runtime = Runtime.__new__(Runtime)
         runtime._chain_meme_active_idle_event = asyncio.Event()
         runtime._chain_meme_active_idle_event.set()
-        runtime._dex_quote_lock = asyncio.Semaphore(4)
+        runtime._dex_quote_lock = asyncio.Semaphore(8)
         runtime._dex_quote_backoff_until = 0.0
         runtime._dex_quote_failure_streak = 0
         runtime._dex_quote_backoff_base_seconds = 0.01
@@ -2403,7 +2403,7 @@ def test_active_market_mark_batches_are_bounded_and_one_failure_does_not_stop_ch
                 batch_times[first] = {"started": asyncio.get_running_loop().time()}
                 try:
                     await asyncio.sleep(0.08 if first == "S0" else 0.01)
-                    if first == "S120":
+                    if first == "S240":
                         raise httpx.ReadTimeout("one failed batch")
                     observed_at = utcnow()
                     return {
@@ -2430,16 +2430,16 @@ def test_active_market_mark_batches_are_bounded_and_one_failure_does_not_stop_ch
                 "chain": "solana",
                 "address": f"S{index}",
             }
-            for index in range(121)
+            for index in range(241)
         ]
         refreshed = await runtime._refresh_chain_meme_market_marks(
             targets, heartbeat_name="marks", high_priority=True,
         )
-        assert len(calls) == 5
-        assert max_inflight == 4
-        assert batch_times["S120"]["started"] < batch_times["S0"]["ended"]
-        assert refreshed == 120
-        assert len(applied) == 121
+        assert len(calls) == 9
+        assert max_inflight == 8
+        assert batch_times["S240"]["started"] < batch_times["S0"]["ended"]
+        assert refreshed == 240
+        assert len(applied) == 241
         assert sum(item["kind"] == "failure" for item in applied) == 1
         assert any(kwargs.get("error") == "ReadTimeout" for _, kwargs in heartbeats)
         assert any(kwargs.get("item") is True for _, kwargs in heartbeats)

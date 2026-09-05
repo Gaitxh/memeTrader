@@ -1401,7 +1401,7 @@ class Runtime:
         self._chain_meme_normal_slot = 0
         self._wsol_usdc_conversion: dict[str, Any] | None = None
         self._wsol_usdc_conversion_at = 0.0
-        self._dex_quote_lock = asyncio.Semaphore(4)
+        self._dex_quote_lock = asyncio.Semaphore(8)
         self._chain_meme_active_idle_event = asyncio.Event()
         self._chain_meme_active_idle_event.set()
         self.events = EventEngine(
