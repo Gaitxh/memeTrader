@@ -209,9 +209,9 @@
       "validation": "链上真实BUY/SELL raw复验，parser59项、资金门2项、origin时隙及相关测试通过；自然cohort12309独立4%双侧、现金、PNL核对一致。",
       "scope": "无初始化、无历史回填、无Live开启；定时复盘仍暂停。",
       "status": "已推送并部署；164策略展示。新18自然收益尚待样本；付费源、隐藏bundle、全量holder和RPC截断等边界见报告。",
-      "commit": "1211a42 / 4ea4e9e / e023a96 / a84119f",
-      "deployed_at": "2026-09-05T17:54:47Z",
-      "runtime_verification": "17:52短窗口入场批次P95=0.187s、策略耗时0.948s、held获取4.490s、写入退出0.069s；后台94.1MB/Web176.6MB工作集；三链无当前缺价。17:55Creator已有真实verified证据。",
+      "commit": "1211a42 / 4ea4e9e / e023a96 / a84119f / 4c7eaea",
+      "deployed_at": "2026-09-05T18:01:25Z",
+      "runtime_verification": "18:03短窗口策略耗时P95=.826s、held获取2.827s、写入退出.071s；17:47后台94.1MB/Web176.6MB工作集。Creator已verified、WSOL真实刷新；一枚BSC仍待原池价格，不能保证所有源无延迟。新18尚无自然成交，效果未证明。",
       "rollback": "按提交回退新增功能代码，不回退真实交易/资金历史。已确认7518.81U补款保留且不重复，证据不足的额外延迟损失不补造。"
     }
   ]

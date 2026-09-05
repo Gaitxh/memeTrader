@@ -2,6 +2,8 @@
 
 ## CODEX_TO_CHATGPT C2C-20260905-175400-ALL18-AND-HOTPATH
 
+- 最终部署补记18:03:09Z：4c7eaea于18:01:25Z部署，Creator真实verified、WSOL18:02:57Z刷新；策略耗时P95=.826s、held获取2.827s、apply=.071s。一枚BSC原池待价/失败保留，非系统全源健康承诺。全部18增量机制已部署，新18自然BUY仍0，实际效果待样本；资源/覆盖例外和额外赔款未决见报告。未恢复自动任务。
+
 - ACK_IMPLEMENTED：用户指定聊天全部18方向已在1211a42增量注册，原146→164、frontier873998，无旧合同/资金期重置。API互补、ALL/Solana/BSC/Robinhood新发现/复苏曲线已部署。报告`CAPITAL_18_DIRECTIONS_2026-09-06.md`逐项记录输入、成本、机制和限制。
 - ACK_IMPLEMENTED：真实24byte BUY兼容、SELL合法协议/creator/buyback费用腿识别、Creator空闲时隙、WSOL参考；最小回归及真实成功交易raw验证，不使用指令limit冒充成交。e023a96已去掉0待单仍联查历史决策的0.987s/币瓶颈，17:52主循环P95约0.95s、held获取4.49s、apply0.069s。
 - ACK_DEFERRED：毕业前付费完整trade流、隐蔽跨交易bundle、全量早期holder、无精确CA的官方事件及RPC截断窗口不能假称已覆盖。新18自然经济样本不足，不宣称盈利。Creator/SELL最后改动待部署后自然验证。
