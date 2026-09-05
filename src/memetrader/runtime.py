@@ -1300,6 +1300,7 @@ class Runtime:
             if self.strategy_focus_active:
                 if self.chain_meme_trader_only:
                     self.store.activate_chain_meme_trader_funded_period()
+                    self.store.register_chain_meme_trader_cost_coverage_scaleout()
                     self.store.register_chain_meme_v22_vault_shadow(
                         position_definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
                     )
@@ -5658,15 +5659,26 @@ class Runtime:
                 self.store.heartbeat(
                     heartbeat_name, error=type(exc).__name__,
                 )
-                self.store.apply_chain_meme_trader_market_mark_batch(
-                    [
+                failure_outcomes = [
                         {
                             "kind": "failure",
                             "token_id": str(item["token_id"]),
                             "failure_kind": type(exc).__name__,
                         }
                         for item in chunk
-                    ],
+                    ]
+                for item in chunk:
+                    for pair_address in str(item.get("entry_pair_addresses") or "").split(","):
+                        if pair_address:
+                            failure_outcomes.append({
+                                "kind": "pool_failure",
+                                "token_id": str(item["token_id"]),
+                                "pair_address": pair_address,
+                                "chain": str(item["chain"]),
+                                "failure_kind": type(exc).__name__,
+                            })
+                self.store.apply_chain_meme_trader_market_mark_batch(
+                    failure_outcomes,
                     recorded_at=utcnow(),
                 )
                 return 0
@@ -5691,11 +5703,74 @@ class Runtime:
                         "chain": target_chain,
                         "address": target_address,
                     })
+                    for pair_address in str(item.get("entry_pair_addresses") or "").split(","):
+                        if pair_address:
+                            outcomes.append({
+                                "kind": "pool_missing", "token_id": target_token_id,
+                                "pair_address": pair_address, "chain": target_chain,
+                                "address": target_address,
+                            })
                     continue
                 token, snapshot = result
                 raw = snapshot.raw if isinstance(snapshot.raw, dict) else {}
                 pair = raw.get("pair") if isinstance(raw.get("pair"), dict) else raw
                 pair_address = str(pair.get("pairAddress") or "").strip()
+                expected_pairs = {
+                    canonical_token_address(target_chain, value)
+                    for value in str(item.get("entry_pair_addresses") or "").split(",")
+                    if value
+                }
+                raw_pairs = (
+                    raw.get("pairs") if isinstance(raw.get("pairs"), list) else [pair]
+                ) if expected_pairs else []
+                observed_pairs: set[str] = set()
+                valid_pairs: set[str] = set()
+                for raw_pair in raw_pairs:
+                    if not isinstance(raw_pair, dict):
+                        continue
+                    raw_pair_address = str(raw_pair.get("pairAddress") or "").strip()
+                    if not raw_pair_address:
+                        continue
+                    pair_key = canonical_token_address(target_chain, raw_pair_address)
+                    observed_pairs.add(pair_key)
+                    pool_token = DexScreenerClient._candidate(raw_pair)
+                    pool_snapshot = DexScreenerClient._snapshot(raw_pair)
+                    if pool_token is None or pool_snapshot is None:
+                        continue
+                    pool_snapshot.observed_at = snapshot.observed_at
+                    pool_snapshot.ingested_at = snapshot.ingested_at
+                    if (
+                        float(pool_snapshot.price_usd or 0.0) <= 0.0
+                        or (
+                            pool_snapshot.liquidity_usd is not None
+                            and float(pool_snapshot.liquidity_usd) < 0.0
+                        )
+                    ):
+                        continue
+                    if canonical_token_address(target_chain, pool_token.address) != canonical_token_address(
+                        target_chain, target_address,
+                    ):
+                        continue
+                    pool_token.address = canonical_token_address(target_chain, target_address)
+                    pool_snapshot.address = pool_token.address
+                    pool_rejections = self._paper_quote_rejections(
+                        target_token_id, pool_token, pool_snapshot, received_at,
+                    )
+                    if pool_rejections:
+                        continue
+                    valid_pairs.add(pair_key)
+                    outcomes.append({
+                        "kind": "pool_visible", "token": pool_token,
+                        "snapshot": pool_snapshot, "target_token_id": target_token_id,
+                        "target_chain": target_chain, "target_address": target_address,
+                    })
+                for expected_pair in expected_pairs - valid_pairs:
+                    outcomes.append({
+                        "kind": "pool_failure" if expected_pair in observed_pairs else "pool_missing",
+                        "token_id": target_token_id, "pair_address": expected_pair,
+                        "chain": target_chain, "address": target_address,
+                        "failure_kind": "DATA_REJECTED:ENTRY_POOL_INVALID",
+                    })
                 if (
                     not pair_address
                     or float(snapshot.price_usd or 0.0) <= 0.0
@@ -5705,10 +5780,8 @@ class Runtime:
                     )
                 ):
                     outcomes.append({
-                        "kind": "missing",
-                        "token_id": target_token_id,
-                        "chain": target_chain,
-                        "address": target_address,
+                        "kind": "missing", "token_id": target_token_id,
+                        "chain": target_chain, "address": target_address,
                     })
                     continue
                 rejections = self._paper_quote_rejections(
@@ -5716,8 +5789,7 @@ class Runtime:
                 )
                 if rejections:
                     outcomes.append({
-                        "kind": "failure",
-                        "token_id": target_token_id,
+                        "kind": "failure", "token_id": target_token_id,
                         "failure_kind": "DATA_REJECTED:" + ",".join(rejections),
                     })
                     continue

@@ -265,6 +265,10 @@ class Store:
         self._last_supervised_error_record_at: dict[str, datetime] = {}
         self.db = sqlite3.connect(self.path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
+        self.db.create_function(
+            "canonical_token_address", 2, canonical_token_address,
+            deterministic=True,
+        )
         with self.db:
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("PRAGMA synchronous=NORMAL")
@@ -2903,6 +2907,8 @@ class Store:
                     ON chain_meme_trader_account_snapshots(
                         definition_version,arm_id,id DESC
                     );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_account_snapshots_frontier_idx
+                    ON chain_meme_trader_account_snapshots(definition_version,id);
                 CREATE TABLE IF NOT EXISTS chain_meme_trader_market_marks (
                     token_id TEXT PRIMARY KEY,
                     chain TEXT NOT NULL,
@@ -2926,6 +2932,30 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS chain_meme_trader_market_marks_time_idx
                     ON chain_meme_trader_market_marks(recorded_at DESC,token_id);
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_pool_marks (
+                    token_id TEXT NOT NULL,
+                    pair_address TEXT NOT NULL,
+                    chain TEXT NOT NULL,
+                    address TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    price_usd REAL NOT NULL,
+                    liquidity_usd REAL,
+                    volume_5m_usd REAL,
+                    buys_5m INTEGER,
+                    sells_5m INTEGER,
+                    observed_at TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'VISIBLE',
+                    consecutive_misses INTEGER NOT NULL DEFAULT 0,
+                    sample_sequence INTEGER NOT NULL DEFAULT 0,
+                    first_missing_at TEXT,
+                    failure_kind TEXT NOT NULL DEFAULT '',
+                    last_attempt_at TEXT,
+                    last_success_at TEXT,
+                    PRIMARY KEY(token_id,pair_address)
+                );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_pool_marks_time_idx
+                    ON chain_meme_trader_pool_marks(recorded_at DESC,token_id,pair_address);
                 CREATE TABLE IF NOT EXISTS chain_meme_trader_market_mark_history (
                     id INTEGER PRIMARY KEY,
                     token_id TEXT NOT NULL,
@@ -23161,6 +23191,42 @@ class Store:
             policies.append(policy)
         return policies
 
+    @classmethod
+    def chain_meme_trader_cost_coverage_scaleout_policy(cls) -> dict[str, Any]:
+        """Define one additive broad-entry, cost-aware scale-out challenger."""
+        return {
+            "arm_id": "broad_cost_coverage_scaleout_v1",
+            "canonical_id": "additive-broad-cost-coverage-scaleout-v1",
+            "name": "成本覆盖分批兑现 v1",
+            "description": (
+                "沿用新币宽口径入场；仅在成本后经济收益覆盖往返滑点后"
+                "分批兑现，并对剩余仓位使用经济高点回撤退出。"
+            ),
+            "family": "additive_forward_challenger",
+            "entry_family": "broad_launch",
+            "source_entry_family": "broad_launch",
+            "entry_gate": "v6_asof_family",
+            "exit_family": "cost_coverage_scaleout",
+            "exit_mode": "market_mark_cost_coverage_scaleout",
+            "execution_profile": "dexscreener-market-paper/v2-before-after",
+            "hard_stop_return": -0.20,
+            "trailing_activate_return": 0.12,
+            "trailing_drawdown": 0.15,
+            "max_hold_minutes": 15.0,
+            "take_profit": [
+                {"return": 0.12, "fraction_of_remaining": 0.50},
+                {"return": 0.30, "fraction_of_remaining": 0.50},
+                {"return": 0.60, "fraction_of_remaining": 1.00},
+            ],
+            "exact_risk_alerts": "shadow_only_no_trading_authority",
+            "research_overlay": "none",
+            "forward_enabled": True,
+            "fidelity_status": "ADDITIVE_FORWARD",
+            "fidelity_note": "新增严格前向试验；不回填、不替换既有策略",
+            "source_versions": [cls.CHAIN_MEME_TRADER_FUNDED_PERIOD_VERSION],
+            "source_arm_ids": ["broad_principal_lock_runner_v1"],
+        }
+
     def register_flat_compression_breakout_shadow(self) -> sqlite3.Row:
         """Freeze an observer-only activation point outside the strategy registry."""
         activated_at = utcnow()
@@ -25011,9 +25077,17 @@ class Store:
 
     def _chain_meme_trader_effective_net_flows(self, version: str) -> dict[str, float]:
         """Cash gates use the same corrected, unpolluted ledger as account PNL."""
+        return self._chain_meme_trader_effective_net_flows_from_connection(
+            self.db, version,
+        )
+
+    @classmethod
+    def _chain_meme_trader_effective_net_flows_from_connection(
+        cls, connection: sqlite3.Connection, version: str,
+    ) -> dict[str, float]:
         flows = {
             str(row["arm_id"]): float(row["net_flow_usd"] or 0.0)
-            for row in self.db.execute(
+            for row in connection.execute(
                 "SELECT arm_id,SUM(net_cash_flow_usd) AS net_flow_usd "
                 "FROM chain_meme_trader_trades WHERE definition_version=? GROUP BY arm_id",
                 (version,),
@@ -25021,19 +25095,19 @@ class Store:
         }
         excluded = {
             (str(row["arm_id"]), int(row["shadow_cohort_id"]))
-            for row in self._chain_meme_trader_accounting_contaminations_from_connection(
-                self.db, version,
+            for row in cls._chain_meme_trader_accounting_contaminations_from_connection(
+                connection, version,
             )
         }
         for arm, cohort in excluded:
-            net = self.db.execute(
+            net = connection.execute(
                 "SELECT SUM(net_cash_flow_usd) FROM chain_meme_trader_trades "
                 "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
                 (version, arm, cohort),
             ).fetchone()[0]
             flows[arm] = flows.get(arm, 0.0) - float(net or 0.0)
-        for row in self._chain_meme_trader_market_fill_corrections_from_connection(
-            self.db, version,
+        for row in cls._chain_meme_trader_market_fill_corrections_from_connection(
+            connection, version,
         ):
             arm = str(row["arm_id"])
             if (arm, int(row["shadow_cohort_id"])) not in excluded:
@@ -25107,6 +25181,23 @@ class Store:
                 "SELECT * FROM chain_meme_trader_policy_additions "
                 "WHERE definition_version=? AND arm_id=?", (version, arm_id),
             ).fetchone()
+
+    def register_chain_meme_trader_cost_coverage_scaleout(self) -> sqlite3.Row:
+        """Idempotently append the cost-coverage challenger at its own frontier."""
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        arm_id = "broad_cost_coverage_scaleout_v1"
+        with self._lock:
+            existing = self.db.execute(
+                "SELECT * FROM chain_meme_trader_policy_additions "
+                "WHERE definition_version=? AND arm_id=?",
+                (version, arm_id),
+            ).fetchone()
+            if existing is not None:
+                return existing
+            return self.append_chain_meme_trader_policy(
+                self.chain_meme_trader_cost_coverage_scaleout_policy(),
+                definition_version=version,
+            )
 
     def register_chain_meme_v21_vault_shadow(
         self, *, observer_version: str | None = None,
@@ -28614,16 +28705,22 @@ class Store:
         placeholders = ",".join("?" for _ in versions)
         query = (
             "WITH watched AS ("
-            f"SELECT token_id,'OPEN_POSITION' AS reason FROM chain_meme_trader_positions "
-            f"WHERE definition_version IN ({placeholders}) AND status='open' UNION ALL "
-            f"SELECT token_id,'PENDING_INTENT' FROM chain_meme_trader_order_intents "
+            "SELECT p.token_id,'OPEN_POSITION' AS reason,"
+            "COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),c.pair_address) "
+            "AS entry_pair_address FROM chain_meme_trader_positions p "
+            "LEFT JOIN token_snapshots e ON e.id=p.entry_snapshot_id AND e.token_id=p.token_id "
+            "LEFT JOIN chain_meme_trader_v6_cohorts c ON c.id=p.shadow_cohort_id "
+            "AND c.definition_version=p.definition_version "
+            f"WHERE p.definition_version IN ({placeholders}) AND p.status='open' UNION ALL "
+            f"SELECT token_id,'PENDING_INTENT',NULL FROM chain_meme_trader_order_intents "
             f"WHERE definition_version IN ({placeholders}) AND status IN ('ready','retry','submitted') "
-            "UNION ALL SELECT token_id,'RECENT_DECISION' FROM ("
+            "UNION ALL SELECT token_id,'RECENT_DECISION',NULL FROM ("
             "SELECT token_id FROM chain_meme_trader_entry_decisions "
             f"WHERE definition_version IN ({placeholders}) AND status='admitted' "
             "ORDER BY id DESC LIMIT 120)) "
             "SELECT t.token_id,t.chain,t.address,"
-            "GROUP_CONCAT(DISTINCT watched.reason) AS watch_reason "
+            "GROUP_CONCAT(DISTINCT watched.reason) AS watch_reason,"
+            "GROUP_CONCAT(DISTINCT watched.entry_pair_address) AS entry_pair_addresses "
             "FROM watched JOIN tokens t ON t.token_id=watched.token_id "
             "LEFT JOIN chain_meme_trader_market_marks m ON m.token_id=t.token_id "
             "GROUP BY t.token_id,t.chain,t.address,m.last_attempt_at "
@@ -28662,16 +28759,11 @@ class Store:
         provider = snapshot.provider or token.source or "dex-market-mark"
         transaction = nullcontext() if _in_transaction else self.db
         with self._lock, transaction:
-            if not pair_address:
-                known_pair = self.db.execute(
-                    "SELECT pair_address FROM chain_meme_trader_v6_cohorts "
-                    "WHERE token_id=? AND pair_address IS NOT NULL AND pair_address!='' "
-                    "ORDER BY id DESC LIMIT 1",
-                    (mark_token_id,),
-                ).fetchone()
-                pair_address = (
-                    str(known_pair["pair_address"] or "")
-                    if known_pair is not None else ""
+            if pair_address:
+                self.upsert_chain_meme_trader_pool_mark(
+                    token, snapshot, recorded_at=mark_at,
+                    target_token_id=mark_token_id, target_chain=mark_chain,
+                    target_address=mark_address, _in_transaction=True,
                 )
             self.db.execute(
                 "INSERT INTO chain_meme_trader_market_marks("
@@ -28796,6 +28888,98 @@ class Store:
                 )
                 self._last_chain_market_history_prune_at = attempted
 
+    def upsert_chain_meme_trader_pool_mark(
+        self, token: TokenCandidate, snapshot: TokenSnapshot, *, recorded_at: Any = None,
+        target_token_id: str | None = None, target_chain: str | None = None,
+        target_address: str | None = None, _in_transaction: bool = False,
+    ) -> None:
+        """Persist a held-token mark without collapsing distinct liquidity pools."""
+        pair = snapshot.raw.get("pair") if isinstance(snapshot.raw, Mapping) else {}
+        pair_address = str(pair.get("pairAddress") or "") if isinstance(pair, Mapping) else ""
+        if not pair_address:
+            return
+        mark_at = parse_time(recorded_at or utcnow())
+        mark_token_id = str(target_token_id or token.token_id)
+        mark_chain = str(target_chain or token.chain).lower()
+        mark_address = str(target_address or token.address)
+        pair_key = canonical_token_address(mark_chain, pair_address)
+        provider = snapshot.provider or token.source or "dex-market-mark"
+        transaction = nullcontext() if _in_transaction else self.db
+        with self._lock, transaction:
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_pool_marks("
+                "token_id,pair_address,chain,address,provider,price_usd,liquidity_usd,"
+                "volume_5m_usd,buys_5m,sells_5m,observed_at,recorded_at,status,"
+                "consecutive_misses,sample_sequence,first_missing_at,failure_kind,"
+                "last_attempt_at,last_success_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'VISIBLE',0,1,NULL,'',?,?) "
+                "ON CONFLICT(token_id,pair_address) DO UPDATE SET "
+                "chain=excluded.chain,address=excluded.address,provider=excluded.provider,"
+                "price_usd=excluded.price_usd,liquidity_usd=excluded.liquidity_usd,"
+                "volume_5m_usd=excluded.volume_5m_usd,buys_5m=excluded.buys_5m,"
+                "sells_5m=excluded.sells_5m,observed_at=excluded.observed_at,"
+                "recorded_at=excluded.recorded_at,status='VISIBLE',consecutive_misses=0,"
+                "sample_sequence=chain_meme_trader_pool_marks.sample_sequence+1,"
+                "first_missing_at=NULL,failure_kind='',last_attempt_at=excluded.last_attempt_at,"
+                "last_success_at=excluded.last_success_at "
+                "WHERE chain_meme_trader_pool_marks.observed_at IS NULL "
+                "OR excluded.observed_at>chain_meme_trader_pool_marks.observed_at",
+                (
+                    mark_token_id, pair_key, mark_chain, mark_address, provider,
+                    float(snapshot.price_usd or 0.0), snapshot.liquidity_usd,
+                    snapshot.volume_5m_usd, snapshot.buys_5m, snapshot.sells_5m,
+                    iso(snapshot.observed_at), iso(mark_at), iso(mark_at), iso(mark_at),
+                ),
+            )
+
+    def record_chain_meme_trader_pool_mark_miss(
+        self, *, token_id: str, pair_address: str, chain: str, address: str,
+        recorded_at: Any = None, _in_transaction: bool = False,
+    ) -> None:
+        """Record absence of one required entry pool, not absence of the token."""
+        attempted_at = iso(recorded_at or utcnow())
+        pair_key = canonical_token_address(chain, pair_address)
+        if not pair_key:
+            return
+        transaction = nullcontext() if _in_transaction else self.db
+        with self._lock, transaction:
+            self.db.execute(
+                "INSERT INTO chain_meme_trader_pool_marks("
+                "token_id,pair_address,chain,address,provider,price_usd,liquidity_usd,"
+                "volume_5m_usd,buys_5m,sells_5m,observed_at,recorded_at,status,"
+                "consecutive_misses,sample_sequence,first_missing_at,failure_kind,"
+                "last_attempt_at,last_success_at) "
+                "VALUES(?,?,?,?,'dexscreener',0,NULL,NULL,NULL,NULL,?,?,'MISSING',"
+                "1,0,?,'NO_VISIBLE_ENTRY_POOL_OR_PRICE',?,NULL) "
+                "ON CONFLICT(token_id,pair_address) DO UPDATE SET status='MISSING',"
+                "consecutive_misses=CASE WHEN chain_meme_trader_pool_marks.status='MISSING' "
+                "THEN chain_meme_trader_pool_marks.consecutive_misses+1 ELSE 1 END,"
+                "first_missing_at=CASE WHEN chain_meme_trader_pool_marks.status='MISSING' "
+                "THEN COALESCE(chain_meme_trader_pool_marks.first_missing_at,excluded.first_missing_at) "
+                "ELSE excluded.first_missing_at END,failure_kind='NO_VISIBLE_ENTRY_POOL_OR_PRICE',"
+                "last_attempt_at=excluded.last_attempt_at",
+                (
+                    token_id, pair_key, str(chain).lower(), address,
+                    attempted_at, attempted_at, attempted_at, attempted_at,
+                ),
+            )
+
+    def record_chain_meme_trader_pool_mark_failure(
+        self, *, token_id: str, pair_address: str, chain: str,
+        failure_kind: str, recorded_at: Any = None, _in_transaction: bool = False,
+    ) -> None:
+        attempted_at = iso(recorded_at or utcnow())
+        transaction = nullcontext() if _in_transaction else self.db
+        with self._lock, transaction:
+            self.db.execute(
+                "UPDATE chain_meme_trader_pool_marks SET last_attempt_at=?,failure_kind=? "
+                "WHERE token_id=? AND pair_address=?",
+                (
+                    attempted_at, str(failure_kind or "DATA_UNAVAILABLE")[:80], token_id,
+                    canonical_token_address(chain, pair_address),
+                ),
+            )
+
     def record_chain_meme_trader_market_mark_failure(
         self, *, token_id: str, failure_kind: str, recorded_at: Any = None,
         _in_transaction: bool = False,
@@ -28843,6 +29027,36 @@ class Store:
                         _in_transaction=True,
                     )
                     refreshed += 1
+                elif kind == "pool_visible":
+                    token = outcome.get("token")
+                    snapshot = outcome.get("snapshot")
+                    if not isinstance(token, TokenCandidate) or not isinstance(
+                        snapshot, TokenSnapshot
+                    ):
+                        continue
+                    self.upsert_chain_meme_trader_pool_mark(
+                        token, snapshot, recorded_at=batch_at,
+                        target_token_id=str(outcome.get("target_token_id") or token.token_id),
+                        target_chain=str(outcome.get("target_chain") or token.chain),
+                        target_address=str(outcome.get("target_address") or token.address),
+                        _in_transaction=True,
+                    )
+                elif kind == "pool_missing":
+                    self.record_chain_meme_trader_pool_mark_miss(
+                        token_id=str(outcome.get("token_id") or ""),
+                        pair_address=str(outcome.get("pair_address") or ""),
+                        chain=str(outcome.get("chain") or ""),
+                        address=str(outcome.get("address") or ""),
+                        recorded_at=batch_at, _in_transaction=True,
+                    )
+                elif kind == "pool_failure":
+                    self.record_chain_meme_trader_pool_mark_failure(
+                        token_id=str(outcome.get("token_id") or ""),
+                        pair_address=str(outcome.get("pair_address") or ""),
+                        chain=str(outcome.get("chain") or ""),
+                        failure_kind=str(outcome.get("failure_kind") or "DATA_UNAVAILABLE"),
+                        recorded_at=batch_at, _in_transaction=True,
+                    )
                 elif kind == "missing":
                     self.record_chain_meme_trader_market_mark_miss(
                         token_id=str(outcome.get("token_id") or ""),
@@ -29078,11 +29292,19 @@ class Store:
         if mark is None:
             return 0
         position = self.db.execute(
-            "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
-            "AND arm_id=? AND shadow_cohort_id=? AND status='open'",
+            "SELECT p.*,COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),"
+            "c.pair_address) AS entry_pair_address FROM chain_meme_trader_positions p "
+            "LEFT JOIN token_snapshots e ON e.id=p.entry_snapshot_id AND e.token_id=p.token_id "
+            "LEFT JOIN chain_meme_trader_v6_cohorts c ON c.id=p.shadow_cohort_id "
+            "AND c.definition_version=p.definition_version "
+            "WHERE p.definition_version=? AND p.arm_id=? AND p.shadow_cohort_id=? AND p.status='open'",
             (version, str(mark["arm_id"]), int(mark["shadow_cohort_id"])),
         ).fetchone()
         if position is None:
+            return 0
+        if not self.chain_meme_market_pool_matches(
+            position["token_id"], position["entry_pair_address"], mark["market_pair_address"],
+        ):
             return 0
         policy = next(
             (
@@ -29136,6 +29358,10 @@ class Store:
             return 1
         post_price = float(mark["market_post_price_usd"] or 0.0)
         post_recorded_at = mark["market_post_recorded_at"]
+        if not self.chain_meme_market_pool_matches(
+            position["token_id"], position["entry_pair_address"], mark["market_post_pair_address"],
+        ):
+            return 0
         if post_price <= 0.0 or post_recorded_at is None:
             return 0
         current_amount = max(0, int(position["amount_raw"] or 0))
@@ -29320,10 +29546,17 @@ class Store:
                 "SELECT t.*,f.id AS source_fill_id,f.intent_id,m.id AS source_mark_id,"
                 "m.market_post_price_usd,m.market_post_recorded_at,"
                 "m.market_pair_address,m.market_post_pair_address,m.trigger_evidence_json,"
+                "COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),ec.pair_address) "
+                "AS entry_pair_address,"
                 "c.source_trade_id AS correction_trade_id "
                 "FROM chain_meme_trader_trades t "
                 "JOIN chain_meme_trader_fills f ON f.id=t.execution_fill_id "
                 "JOIN chain_meme_trader_marks m ON m.id=-f.intent_id "
+                "JOIN chain_meme_trader_positions p ON p.definition_version=t.definition_version "
+                "AND p.arm_id=t.arm_id AND p.shadow_cohort_id=t.shadow_cohort_id "
+                "LEFT JOIN token_snapshots e ON e.id=p.entry_snapshot_id AND e.token_id=p.token_id "
+                "LEFT JOIN chain_meme_trader_v6_cohorts ec ON ec.id=p.shadow_cohort_id "
+                "AND ec.definition_version=p.definition_version "
                 "LEFT JOIN chain_meme_trader_market_fill_corrections c "
                 "ON c.source_trade_id=t.id "
                 "WHERE t.definition_version=? AND t.side='SELL' "
@@ -29364,12 +29597,28 @@ class Store:
                     "original_trade_preserved": True,
                 }
                 effective = effective_by_trade.get(int(row["id"]))
-                if source_dust_pool:
+                entry_pair = str(row["entry_pair_address"] or "")
+                same_entry_pool = self.chain_meme_market_pool_matches(
+                    str(row["token_id"]), entry_pair, post_pair,
+                )
+                correction_evidence.update({
+                    "entry_pair_address": entry_pair or None,
+                    "same_entry_pool": same_entry_pool,
+                })
+                if not same_entry_pool:
+                    desired_outcome = "UNRESOLVED"
+                    desired_gross = None
+                    desired_cash_adjustment = -original_gross
+                    desired_realized_adjustment = -float(row["realized_pnl_usd"] or 0.0)
+                    desired_reason = "entry_pool_identity_unproven_original_sell_quarantined"
+                    base_reason = "historical_market_fill_entry_pool_identity_unproven"
+                elif source_dust_pool:
                     desired_outcome = "WRITEOFF"
                     desired_gross = 0.0
                     desired_cash_adjustment = -original_gross
                     desired_realized_adjustment = -original_gross
                     desired_reason = "dex_pool_liquidity_below_1_usd_corrected"
+                    base_reason = "historical_dex_pool_liquidity_below_1_usd"
                     correction_evidence["terminal_frame"] = {
                         "price_usd": post_price,
                         "liquidity_usd": float(liquidity),
@@ -29387,6 +29636,7 @@ class Store:
                     desired_cash_adjustment = 0.0
                     desired_realized_adjustment = 0.0
                     desired_reason = "same_pool_visible_non_dust_original_sell_restored"
+                    base_reason = "historical_dex_pool_liquidity_below_1_usd"
                     correction_evidence["legacy_capacity_veto_removed"] = True
                 if row["correction_trade_id"] is None:
                     self.db.execute(
@@ -29404,7 +29654,8 @@ class Store:
                             original_gross, float(liquidity), float(liquidity),
                             desired_outcome, desired_gross,
                             desired_cash_adjustment, desired_realized_adjustment,
-                            post_at, "historical_dex_pool_liquidity_below_1_usd",
+                            post_at if desired_outcome != "UNRESOLVED" else None,
+                            base_reason,
                             self._json(correction_evidence), correction_at,
                         ),
                     )
@@ -29416,18 +29667,32 @@ class Store:
                             "replacement_gross_usd": desired_gross,
                             "cash_adjustment_usd": desired_cash_adjustment,
                             "realized_adjustment_usd": desired_realized_adjustment,
-                            "replacement_observed_at": post_at,
+                            "replacement_observed_at": (
+                                post_at if desired_outcome != "UNRESOLVED" else None
+                            ),
                         }
                     continue
+                desired_observed_at = (
+                    post_at if desired_outcome != "UNRESOLVED" else None
+                )
+                effective_gross = (
+                    effective["replacement_gross_usd"] if effective is not None else None
+                )
+                gross_matches = (
+                    effective_gross is None and desired_gross is None
+                ) or (
+                    effective_gross is not None and desired_gross is not None
+                    and abs(float(effective_gross) - float(desired_gross)) <= 1e-9
+                )
                 if effective is not None and (
                     str(effective["replacement_outcome"]) == desired_outcome
-                    and abs(float(effective["replacement_gross_usd"] or 0.0) - desired_gross)
-                    <= 1e-9
+                    and gross_matches
                     and abs(float(effective["cash_adjustment_usd"] or 0.0)
                             - desired_cash_adjustment) <= 1e-9
                     and abs(float(effective["realized_adjustment_usd"] or 0.0)
                             - desired_realized_adjustment) <= 1e-9
-                    and str(effective["replacement_observed_at"] or "") == post_at
+                    and str(effective["replacement_observed_at"] or "")
+                    == str(desired_observed_at or "")
                 ):
                     continue
                 inserted += self._append_chain_meme_trader_market_fill_correction_resolution(
@@ -29436,7 +29701,7 @@ class Store:
                     replacement_gross_usd=desired_gross,
                     cash_adjustment_usd=desired_cash_adjustment,
                     realized_adjustment_usd=desired_realized_adjustment,
-                    replacement_observed_at=post_at,
+                    replacement_observed_at=desired_observed_at,
                     reason=desired_reason,
                     evidence=correction_evidence,
                     recorded_at=correction_at,
@@ -29483,18 +29748,24 @@ class Store:
         funding_snapshot_frontier = (
             int(funding["activation_snapshot_id"]) if funding is not None else None
         )
+        restoration = self.db.execute(
+            "SELECT activation_trade_id FROM chain_meme_trader_fixed_funding_restorations "
+            "WHERE definition_version=?",
+            (version,),
+        ).fetchone()
+        restoration_trade_frontier = (
+            int(restoration["activation_trade_id"])
+            if restoration is not None else None
+        )
         cash_by_arm: dict[str, float] = {}
         expected: dict[tuple[str, int], dict[str, Any]] = {}
         for trade in self.db.execute(
-            "SELECT t.* FROM chain_meme_trader_trades t LEFT JOIN "
+            "SELECT t.*,c.source_snapshot_id AS source_snapshot_id "
+            "FROM chain_meme_trader_trades t LEFT JOIN "
             "chain_meme_trader_v6_cohorts c ON c.definition_version=t.definition_version "
             "AND c.id=t.shadow_cohort_id WHERE t.definition_version=? "
-            "AND t.created_at<=? AND (? IS NULL OR "
-            "COALESCE(c.source_snapshot_id,0)<=?) ORDER BY t.arm_id,t.created_at,t.id",
-            (
-                version, historical_cash_gate_through, funding_snapshot_frontier,
-                funding_snapshot_frontier,
-            ),
+            "AND t.created_at<=? ORDER BY t.arm_id,t.created_at,t.id",
+            (version, historical_cash_gate_through),
         ).fetchall():
             arm_id = str(trade["arm_id"])
             key = (arm_id, int(trade["shadow_cohort_id"]))
@@ -29505,7 +29776,19 @@ class Store:
             correction = corrections.get(int(trade["id"]))
             if correction is not None:
                 net_flow += float(correction["cash_adjustment_usd"] or 0.0)
-            if str(trade["side"]) == "BUY" and cash + net_flow < -1e-9:
+            cash_gate_applied = bool(
+                funding_snapshot_frontier is None
+                or int(trade["source_snapshot_id"] or 0) <= funding_snapshot_frontier
+                or (
+                    restoration_trade_frontier is not None
+                    and int(trade["id"]) > restoration_trade_frontier
+                )
+            )
+            if (
+                cash_gate_applied
+                and str(trade["side"]) == "BUY"
+                and cash + net_flow < -1e-9
+            ):
                 evidence = {
                     "available_cash_before_usd": cash,
                     "required_cash_usd": -net_flow,
@@ -29553,6 +29836,14 @@ class Store:
             )
         return inserted
 
+    @staticmethod
+    def chain_meme_market_pool_matches(token_id: str, entry_pair: Any, mark_pair: Any) -> bool:
+        """A token symbol/address alone does not identify the execution surface."""
+        chain = str(token_id).split(":", 1)[0]
+        return bool(entry_pair and mark_pair) and canonical_token_address(
+            chain, str(entry_pair)
+        ) == canonical_token_address(chain, str(mark_pair))
+
     def evaluate_chain_meme_trader_market_marks(
         self, *, definition_version: str | None = None, now: Any = None,
         token_ids: Iterable[str] | None = None,
@@ -29581,7 +29872,9 @@ class Store:
                 if scoped_token_ids is not None else ""
             )
             positions = self.db.execute(
-                "SELECT p.*,m.price_usd AS mark_price_usd,m.liquidity_usd AS mark_liquidity_usd,"
+                "SELECT p.*,COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),"
+                "c.pair_address) AS entry_pair_address,"
+                "m.price_usd AS mark_price_usd,m.liquidity_usd AS mark_liquidity_usd,"
                 "m.volume_5m_usd AS mark_volume_5m_usd,m.buys_5m AS mark_buys_5m,"
                 "m.sells_5m AS mark_sells_5m,m.pair_address AS mark_pair_address,"
                 "m.status AS mark_status,m.consecutive_misses,m.recorded_at AS mark_recorded_at,"
@@ -29594,14 +29887,28 @@ class Store:
                 "pm.market_pre_sequence,pm.market_pair_address AS pending_pair_address,"
                 "pm.market_post_sequence AS pending_post_sequence,"
                 "pm.trigger_evidence_json AS pending_trigger_evidence_json "
-                "FROM chain_meme_trader_positions p LEFT JOIN chain_meme_trader_market_marks m "
-                "ON m.token_id=p.token_id LEFT JOIN chain_meme_trader_marks pm "
+                "FROM chain_meme_trader_positions p "
+                "LEFT JOIN token_snapshots e ON e.id=p.entry_snapshot_id AND e.token_id=p.token_id "
+                "LEFT JOIN chain_meme_trader_v6_cohorts c ON c.id=p.shadow_cohort_id "
+                "AND c.definition_version=p.definition_version "
+                "LEFT JOIN chain_meme_trader_pool_marks m ON m.token_id=p.token_id "
+                "AND m.pair_address=canonical_token_address("
+                "substr(p.token_id,1,instr(p.token_id,':')-1),"
+                "COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),c.pair_address)) "
+                "LEFT JOIN chain_meme_trader_marks pm "
                 "ON pm.id=p.pending_mark_id WHERE p.definition_version=? AND p.status='open' "
                 f"{token_filter} ORDER BY p.token_id,p.shadow_cohort_id,p.arm_id",
                 (version, *(scoped_token_ids or [])),
             ).fetchall()
             created = 0
             for position in positions:
+                if not self.chain_meme_market_pool_matches(
+                    position["token_id"], position["entry_pair_address"],
+                    position["mark_pair_address"],
+                ):
+                    # Another pool cannot establish a price, a loss or an exit
+                    # for this position, even if its own two samples agree.
+                    continue
                 arm_id = str(position["arm_id"])
                 policy = policies.get(arm_id) or {}
                 elapsed = max(
@@ -29627,8 +29934,10 @@ class Store:
                     mark_status == "MISSING"
                     and misses >= 2
                     and missing_seconds > 60.0
-                    and str(position["mark_failure_kind"] or "")
-                    == "NO_VISIBLE_POOL_OR_PRICE"
+                    and str(position["mark_failure_kind"] or "") in {
+                        "NO_VISIBLE_POOL_OR_PRICE",
+                        "NO_VISIBLE_ENTRY_POOL_OR_PRICE",
+                    }
                     and last_attempt_age is not None
                     and 0.0 <= last_attempt_age <= 15.0
                 )
@@ -29735,7 +30044,9 @@ class Store:
                             ).total_seconds() <= 15.0
                             and float(position["mark_price_usd"] or 0.0) > 0.0
                         ):
-                            if current_pair == pending_pair:
+                            if self.chain_meme_market_pool_matches(
+                                position["token_id"], position["entry_pair_address"], pending_pair,
+                            ):
                                 pending_evidence = self._json_object(
                                     position["pending_trigger_evidence_json"]
                                 )
@@ -30563,11 +30874,15 @@ class Store:
             arm_id: [] for arm_id in policy_ids
         }
         for row in self.db.execute(
-            "SELECT arm_id,shadow_cohort_id,token_id,opened_at,amount_raw,"
-            "initial_amount_raw,stake_usd,allocated_cost_usd,"
-            "entry_execution_price_usd,entry_signal_price_usd FROM "
-            "chain_meme_trader_positions WHERE definition_version=? "
-            "AND status='open' ORDER BY arm_id,opened_at",
+            "SELECT p.arm_id,p.shadow_cohort_id,p.token_id,p.opened_at,p.amount_raw,"
+            "p.initial_amount_raw,p.stake_usd,p.allocated_cost_usd,"
+            "p.entry_execution_price_usd,p.entry_signal_price_usd,"
+            "COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),c.pair_address) "
+            "AS entry_pair_address FROM chain_meme_trader_positions p "
+            "LEFT JOIN token_snapshots e ON e.id=p.entry_snapshot_id AND e.token_id=p.token_id "
+            "LEFT JOIN chain_meme_trader_v6_cohorts c ON c.id=p.shadow_cohort_id "
+            "AND c.definition_version=p.definition_version "
+            "WHERE p.definition_version=? AND p.status='open' ORDER BY p.arm_id,p.opened_at",
             (version,),
         ).fetchall():
             key = (str(row["arm_id"]), int(row["shadow_cohort_id"]))
@@ -30583,18 +30898,16 @@ class Store:
             for rows in open_positions_by_arm.values()
             for row in rows
         }
-        marks_by_token: dict[str, sqlite3.Row] = {}
+        marks_by_token: dict[str, list[sqlite3.Row]] = {}
         if token_ids:
             placeholders = ",".join("?" for _ in token_ids)
-            marks_by_token = {
-                str(row["token_id"]): row
-                for row in self.db.execute(
+            for row in self.db.execute(
                     "SELECT token_id,price_usd,liquidity_usd,pair_address,status,observed_at,"
-                    "last_success_at,recorded_at FROM chain_meme_trader_market_marks "
+                    "last_success_at,recorded_at FROM chain_meme_trader_pool_marks "
                     f"WHERE token_id IN ({placeholders}) AND recorded_at<=?",
                     (*sorted(token_ids), iso(current)),
-                ).fetchall()
-            }
+                ).fetchall():
+                marks_by_token.setdefault(str(row["token_id"]), []).append(row)
         latest_by_arm = {
             str(row["arm_id"]): row
             for row in self.db.execute(
@@ -30626,7 +30939,14 @@ class Store:
             indicative_unrealized = 0.0
             indicative_priced = 0
             for position in open_positions:
-                mark = marks_by_token.get(str(position["token_id"]))
+                mark = next((
+                    candidate for candidate in marks_by_token.get(
+                        str(position["token_id"]), []
+                    ) if self.chain_meme_market_pool_matches(
+                        position["token_id"], position["entry_pair_address"],
+                        candidate["pair_address"],
+                    )
+                ), None)
                 if mark is None or str(mark["status"] or "") != "VISIBLE":
                     continue
                 mark_at_value = mark["last_success_at"] or mark["recorded_at"]
@@ -30935,7 +31255,7 @@ class Store:
         starting_cash = float(definition["starting_cash_usd_each_arm"])
         quote_cache: dict[tuple[int, str], sqlite3.Row | None] = {}
         local_surface_cache: dict[tuple[int, str], sqlite3.Row | None] = {}
-        indicative_snapshot_cache: dict[str, sqlite3.Row | None] = {}
+        indicative_snapshot_cache: dict[tuple[str, str], sqlite3.Row | None] = {}
         market_mark_columns = (
             {
                 str(item["name"])
@@ -31021,8 +31341,12 @@ class Store:
             )
             positions = []
             position_rows = connection.execute(
-                "SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
-                "AND arm_id=? ORDER BY opened_at DESC",
+                "SELECT p.*,COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),"
+                "c.pair_address) AS entry_pair_address FROM chain_meme_trader_positions p "
+                "LEFT JOIN token_snapshots e ON e.id=p.entry_snapshot_id AND e.token_id=p.token_id "
+                "LEFT JOIN chain_meme_trader_v6_cohorts c ON c.id=p.shadow_cohort_id "
+                "AND c.definition_version=p.definition_version WHERE p.definition_version=? "
+                "AND p.arm_id=? ORDER BY p.opened_at DESC",
                 (version, arm_id),
             ).fetchall()
             priced_recovery = priced_unrealized = 0.0
@@ -31143,22 +31467,30 @@ class Store:
                     if valuation_status == "complete_exact_jupiter" else None
                 )
                 token_id = str(row["token_id"])
-                if token_id not in indicative_snapshot_cache:
-                    market_mark = (
+                entry_pair = str(row["entry_pair_address"] or "")
+                indicative_key = (token_id, entry_pair)
+                if indicative_key not in indicative_snapshot_cache:
+                    market_marks = (
                         connection.execute(
                             "SELECT NULL AS id,price_usd,liquidity_usd,"
                             f"{optional_market_mark_projection},observed_at,"
                             "recorded_at AS ingested_at,recorded_at,provider,status,"
                             "consecutive_misses,last_attempt_at,last_success_at "
-                            "FROM chain_meme_trader_market_marks WHERE token_id=? "
+                            "FROM chain_meme_trader_pool_marks WHERE token_id=? "
                             "AND recorded_at<=?",
                             (token_id, iso(summary_at)),
-                        ).fetchone()
-                        if "chain_meme_trader_market_marks" in tables else None
+                        ).fetchall()
+                        if "chain_meme_trader_pool_marks" in tables else []
                     )
-                    indicative_snapshot_cache[token_id] = market_mark
+                    market_mark = next((
+                        candidate for candidate in market_marks
+                        if cls.chain_meme_market_pool_matches(
+                            token_id, entry_pair, candidate["pair_address"],
+                        )
+                    ), None)
+                    indicative_snapshot_cache[indicative_key] = market_mark
                     if market_mark is None and not market_only_valuation:
-                        indicative_snapshot_cache[token_id] = connection.execute(
+                        indicative_snapshot_cache[indicative_key] = connection.execute(
                             "SELECT id,price_usd,liquidity_usd,NULL AS pair_address,"
                             "volume_5m_usd,buys_5m,sells_5m,observed_at,ingested_at,"
                             "recorded_at,provider,'VISIBLE' AS status,0 AS consecutive_misses,"
@@ -31167,7 +31499,7 @@ class Store:
                             "AND recorded_at<=? ORDER BY recorded_at DESC,id DESC LIMIT 1",
                             (token_id, iso(summary_at)),
                         ).fetchone()
-                indicative_snapshot = indicative_snapshot_cache[token_id]
+                indicative_snapshot = indicative_snapshot_cache[indicative_key]
                 indicative_value = None
                 indicative_pnl = None
                 indicative_source = None

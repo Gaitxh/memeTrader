@@ -26,7 +26,7 @@ from .store import Store
 class ChainWebData:
     """Data boundary for the independent ChainMemeTrader console."""
 
-    LIVE_SPARKLINE_POINTS = 12
+    LIVE_SPARKLINE_POINTS = 32
     LIVE_DETAIL_CURVE_POINTS = 300
     LIVE_OPEN_POSITION_LIMIT = 200
     LIVE_CACHE_SECONDS = 6.0
@@ -49,6 +49,11 @@ class ChainWebData:
         self._state_cache: dict[tuple[bool, str | None], tuple[float, dict[str, Any]]] = {}
         self._universe_cache: tuple[tuple[Any, ...], dict[str, Any]] | None = None
         self._last_web_error_record_at: dict[str, float] = {}
+        self._curve_lock = threading.Lock()
+        self._curve_key: tuple[str, str | None] | None = None
+        self._curve_frontier = 0
+        self._curves: dict[str, dict[str, Any]] = {}
+        self._discovery_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self.strategy_universe_path = (
             root / "docs" / "PROJECT_CONTEXT" /
             "CHAIN_MEME_TRADER_HISTORICAL_STRATEGY_UNIVERSE_2026-09-04.json"
@@ -181,6 +186,118 @@ class ChainWebData:
         entries = json.loads(path.read_text(encoding="utf-8")).get("entries", []) if path.exists() else []
         return {"status": "ok", "generated_at": iso(), "entries": entries[-100:][::-1]}
 
+    @staticmethod
+    def _sample_curve(points: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+        if len(points) <= limit:
+            return list(points)
+        # Preserve the whole time extent, extrema and visible unknown segments.
+        width = math.ceil((len(points) - 2) / max(1, (limit - 2) // 3))
+        sampled = [points[0]]
+        for start in range(1, len(points) - 1, width):
+            bucket = points[start:min(start + width, len(points) - 1)]
+            valid = [p for p in bucket if p["total_pnl_usd"] is not None]
+            selected = []
+            if valid:
+                selected += [min(valid, key=lambda p: p["total_pnl_usd"]),
+                             max(valid, key=lambda p: p["total_pnl_usd"])]
+            missing = next((p for p in bucket if p["total_pnl_usd"] is None), None)
+            if missing is not None:
+                selected.append(missing)
+            sampled.extend({p["id"]: p for p in sorted(selected, key=lambda p: p["id"])}.values())
+        return [*sampled, points[-1]]
+
+    def _account_curves(self, connection: sqlite3.Connection, version: str,
+                        effective_after: str | None, starting_cash: float = 0.0) -> dict[str, dict[str, Any]]:
+        # One bounded, incremental cache shared by every Web viewer. Drawdown
+        # consumes every eligible snapshot before display points are reduced.
+        with self._curve_lock:
+            key = (version, effective_after)
+            if key != self._curve_key:
+                self._curve_key, self._curve_frontier, self._curves = key, 0, {}
+            cursor = connection.execute(
+                "SELECT id,arm_id,recorded_at,realized_pnl_usd,indicative_unrealized_pnl_usd,"
+                "indicative_total_pnl_usd,indicative_equity_usd,ledger_trade_frontier_id "
+                "FROM chain_meme_trader_account_snapshots WHERE definition_version=? AND id>? "
+                "ORDER BY id", (version, self._curve_frontier),
+            )
+            for row in cursor:
+                history = self._curves.setdefault(str(row["arm_id"]), {
+                    "points": [], "peak": starting_cash, "max_drawdown_usd": 0.0,
+                    "max_drawdown_fraction": 0.0, "valid_points": 0, "missing_points": 0,
+                })
+                eligible = row["ledger_trade_frontier_id"] is not None and (
+                    not effective_after or str(row["recorded_at"]) >= effective_after
+                )
+                value = row["indicative_total_pnl_usd"] if eligible else None
+                equity = row["indicative_equity_usd"] if eligible else None
+                if value is not None and not math.isfinite(float(value)):
+                    value = None
+                point = {"id": int(row["id"]), "recorded_at": row["recorded_at"],
+                         "realized_pnl_usd": row["realized_pnl_usd"] if eligible else None,
+                         "unrealized_pnl_usd": row["indicative_unrealized_pnl_usd"] if eligible else None,
+                         "total_pnl_usd": value}
+                history["points"].append(point)
+                if len(history["points"]) > self.LIVE_DETAIL_CURVE_POINTS * 2:
+                    history["points"] = self._sample_curve(history["points"], self.LIVE_DETAIL_CURVE_POINTS)
+                if equity is not None and math.isfinite(float(equity)):
+                    equity = float(equity)
+                    history["valid_points"] += 1
+                    history["peak"] = max(history["peak"] if history["peak"] is not None else equity, equity)
+                    drawdown = history["peak"] - equity
+                    history["max_drawdown_usd"] = max(history["max_drawdown_usd"], drawdown)
+                    if history["peak"] > 0:
+                        history["max_drawdown_fraction"] = max(history["max_drawdown_fraction"], drawdown / history["peak"])
+                else:
+                    history["missing_points"] += 1
+                self._curve_frontier = int(row["id"])
+            return {arm: {**history, "points": self._sample_curve(history["points"], self.LIVE_DETAIL_CURVE_POINTS)}
+                    for arm, history in self._curves.items()}
+
+    def discovery_state(self, chain: str = "all") -> dict[str, Any]:
+        if chain not in {"all", "solana", "bsc", "robinhood"}:
+            raise ValueError("unsupported discovery chain")
+        with self._cache_lock:
+            cached = self._discovery_cache.get(chain)
+            if cached and time.monotonic() - cached[0] < 5.0:
+                return cached[1]
+        with self._connect() as connection:
+            active = connection.execute(
+                "SELECT definition_version FROM chain_meme_trader_v6_activations "
+                "WHERE entry_execution_enabled=1 ORDER BY activated_at DESC,rowid DESC LIMIT 1"
+            ).fetchone()
+            where, values = ("e.chain IN ('solana','bsc','robinhood')", ()) if chain == "all" else ("e.chain=?", (chain,))
+            tokens = self._rows(connection,
+                "SELECT e.token_id,t.name,t.symbol,t.source,e.role,e.first_local_discovery,"
+                "e.new_token,e.snapshot_count,e.no_pair,e.observed_at,e.recorded_at "
+                "FROM token_discovery_exposures e LEFT JOIN tokens t ON t.token_id=e.token_id "
+                f"WHERE {where} ORDER BY e.id DESC LIMIT 60", values)
+            round_where = "chain_scope IN ('solana','bsc','robinhood','bsc,robinhood,solana')" if chain == "all" else "instr(','||chain_scope||',', ','||?||',')>0"
+            rounds = self._rows(connection,
+                "SELECT provider,surface,status,chain_scope,returned_count,exposed_token_count,"
+                "first_local_discovery_count,new_token_count,error_type,started_at,completed_at "
+                f"FROM token_discovery_rounds WHERE {round_where} ORDER BY id DESC LIMIT 12", values)
+            funnel = self._rows(connection,
+                "SELECT arm_id,SUM(status='admitted') AS admitted,SUM(status='rejected') AS rejected "
+                "FROM chain_meme_trader_entry_decisions WHERE definition_version=? "
+                + ("" if chain == "all" else "AND token_id LIKE ? ") + "GROUP BY arm_id",
+                (str(active[0]) if active else "",) + (() if chain == "all" else (chain + ":%",)))
+            heartbeat = connection.execute(
+                "SELECT COALESCE(last_item_at,last_ok_at) AS updated_at "
+                "FROM source_health WHERE source='chain-meme-trader'"
+            ).fetchone()
+            now = utcnow()
+            heartbeat_at = heartbeat[0] if heartbeat else None
+            heartbeat_age = (now - parse_time(heartbeat_at)).total_seconds() if heartbeat_at else None
+            payload = {"status": "ok", "chain": chain, "generated_at": iso(now),
+                       "system": {"runtime_status": "running" if heartbeat_age is not None
+                                  and 0 <= heartbeat_age <= 30 else "stale",
+                                  "heartbeat_age_seconds": heartbeat_age},
+                       "tokens": tokens, "rounds": rounds, "funnel": funnel,
+                       "latest_at": tokens[0]["observed_at"] if tokens else None}
+        with self._cache_lock:
+            self._discovery_cache[chain] = (time.monotonic(), payload)
+        return payload
+
     def performance_state(self) -> dict[str, Any]:
         """Small on-demand diagnostics; no ledger aggregation or external requests."""
         versions = tuple(dict.fromkeys((Store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
@@ -199,11 +316,19 @@ class ChainWebData:
                 "'geckoterminal:bsc','geckoterminal:robinhood',"
                 "'flat-compression-breakout-shadow') ORDER BY source")
             held = self._rows(connection,
-                "SELECT t.chain,m.last_success_at,m.last_attempt_at,m.failure_kind AS last_failure_kind "
-                "FROM (SELECT DISTINCT token_id FROM chain_meme_trader_positions WHERE status='open' "
-                f"AND definition_version IN ({','.join('?' for _ in versions)})) p "
-                "JOIN tokens t ON t.token_id=p.token_id "
-                "LEFT JOIN chain_meme_trader_market_marks m ON m.token_id=p.token_id", versions)
+                "SELECT t.chain,CASE WHEN COUNT(m.last_success_at)=COUNT(*) THEN "
+                "MIN(m.last_success_at) END AS last_success_at,MIN(m.last_attempt_at) AS last_attempt_at,"
+                "MAX(COALESCE(m.failure_kind,'')) AS last_failure_kind FROM ("
+                "SELECT DISTINCT p.token_id,CASE WHEN p.token_id LIKE 'solana:%' THEN "
+                "COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),c.pair_address) ELSE "
+                "LOWER(COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),c.pair_address)) END AS pair_address "
+                "FROM chain_meme_trader_positions p "
+                "LEFT JOIN token_snapshots e ON e.id=p.entry_snapshot_id AND e.token_id=p.token_id "
+                "LEFT JOIN chain_meme_trader_v6_cohorts c ON c.id=p.shadow_cohort_id "
+                "AND c.definition_version=p.definition_version WHERE p.status='open' "
+                f"AND p.definition_version IN ({','.join('?' for _ in versions)})) p "
+                "JOIN tokens t ON t.token_id=p.token_id LEFT JOIN chain_meme_trader_pool_marks m "
+                "ON m.token_id=p.token_id AND m.pair_address=p.pair_address GROUP BY t.chain,p.token_id", versions)
         now = utcnow()
         by_chain: dict[str, Any] = {}
         for item in held:
@@ -222,7 +347,7 @@ class ChainWebData:
         return {"status": "ok", "generated_at": iso(now),
                 "timing": json.loads(row["payload_json"]) if row else None,
                 "timing_recorded_at": row["recorded_at"] if row else None,
-                "held_by_chain": by_chain, "sources": sources,
+                "held_by_chain": by_chain, "held_age_basis": "oldest_required_entry_pool_per_token", "sources": sources,
                 "ui": {"visible_seconds": 5, "hidden_seconds": 30, "token_detail_seconds": 10},
                 "storage": {"database_bytes": self.database.stat().st_size,
                             "wal_bytes": Path(str(self.database)+"-wal").stat().st_size if Path(str(self.database)+"-wal").exists() else 0,
@@ -414,6 +539,7 @@ class ChainWebData:
         current_iso = iso(current)
         locked_by_config = not self.live_enabled
         with self._connect() as connection:
+            connection.execute("BEGIN")
             heartbeat = connection.execute(
                 "SELECT last_item_at,last_ok_at FROM source_health "
                 "WHERE source='chain-meme-trader'"
@@ -536,53 +662,13 @@ class ChainWebData:
                     tuple(account_values),
                 ).fetchall()
             }
-            curve_rows = connection.execute(
-                "SELECT recorded_at,arm_id,realized_pnl_usd,"
-                "indicative_unrealized_pnl_usd,indicative_total_pnl_usd,"
-                "executable_unrealized_pnl_usd,executable_total_pnl_usd "
-                "FROM chain_meme_trader_account_snapshots "
-                f"WHERE {account_where} ORDER BY id DESC LIMIT ?",
-                (
-                    *account_values,
-                    max(
-                        self.LIVE_SPARKLINE_POINTS,
-                        len(policies) * self.LIVE_SPARKLINE_POINTS,
-                    ),
-                ),
-            ).fetchall()
-            curves_by_arm: dict[str, list[dict[str, Any]]] = {}
-            for row in reversed(curve_rows):
-                curve = curves_by_arm.setdefault(str(row["arm_id"]), [])
-                curve.append({
-                    "recorded_at": row["recorded_at"],
-                    "realized_pnl_usd": row["realized_pnl_usd"],
-                    "unrealized_pnl_usd": row["indicative_unrealized_pnl_usd"],
-                    "total_pnl_usd": row["indicative_total_pnl_usd"],
-                })
-                if len(curve) > self.LIVE_SPARKLINE_POINTS:
-                    del curve[:-self.LIVE_SPARKLINE_POINTS]
-            if arm_id:
-                focused_curve_rows = connection.execute(
-                    "SELECT recorded_at,arm_id,realized_pnl_usd,"
-                    "indicative_unrealized_pnl_usd,indicative_total_pnl_usd,"
-                    "executable_unrealized_pnl_usd,executable_total_pnl_usd "
-                    "FROM chain_meme_trader_account_snapshots "
-                    f"WHERE {account_where} AND arm_id=? "
-                    "ORDER BY id DESC LIMIT ?",
-                    (
-                        *account_values, arm_id,
-                        self.LIVE_DETAIL_CURVE_POINTS,
-                    ),
-                ).fetchall()
-                curves_by_arm[arm_id] = [
-                    {
-                        "recorded_at": row["recorded_at"],
-                        "realized_pnl_usd": row["realized_pnl_usd"],
-                        "unrealized_pnl_usd": row["indicative_unrealized_pnl_usd"],
-                        "total_pnl_usd": row["indicative_total_pnl_usd"],
-                    }
-                    for row in reversed(focused_curve_rows)
-                ]
+            curve_history = self._account_curves(connection, active_version, accounting_effective_after,
+                                                 float(definition.get("starting_cash_usd_each_arm") or 0.0))
+            curves_by_arm = {
+                arm: self._sample_curve(history["points"], self.LIVE_DETAIL_CURVE_POINTS
+                                        if arm == arm_id else self.LIVE_SPARKLINE_POINTS)
+                for arm, history in curve_history.items()
+            }
             latest_snapshot_at = max(
                 (
                     str(item.get("recorded_at") or "")
@@ -599,6 +685,8 @@ class ChainWebData:
             terminal_rows_by_arm: dict[str, list[tuple[str, float]]] = {}
             effective_realized_by_arm: dict[str, float] = defaultdict(float)
             effective_unrealized_by_arm: dict[str, float] = defaultdict(float)
+            effective_value_by_arm: dict[str, float] = defaultdict(float)
+            net_flows = Store._chain_meme_trader_effective_net_flows_from_connection(connection, active_version)
             priced_open_by_arm: dict[str, int] = defaultdict(int)
             effective_open_token_ids: set[str] = set()
             for row in self._rows(
@@ -608,10 +696,17 @@ class ChainWebData:
                 "p.remaining_quantity_tokens,p.entry_signal_price_usd,"
                 "p.entry_execution_price_usd,p.allocated_cost_usd,p.realized_pnl_usd,"
                 "p.opened_at,p.closed_at,m.pair_address,m.price_usd,m.liquidity_usd,"
+                "COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),c.pair_address) AS entry_pair_address,"
                 "m.status AS market_status,m.observed_at AS market_observed_at,"
                 "m.recorded_at AS market_recorded_at,m.last_success_at "
-                "FROM chain_meme_trader_positions p LEFT JOIN "
-                "chain_meme_trader_market_marks m ON m.token_id=p.token_id "
+                "FROM chain_meme_trader_positions p "
+                "LEFT JOIN token_snapshots e ON e.id=p.entry_snapshot_id AND e.token_id=p.token_id "
+                "LEFT JOIN chain_meme_trader_v6_cohorts c ON c.id=p.shadow_cohort_id "
+                "AND c.definition_version=p.definition_version "
+                "LEFT JOIN chain_meme_trader_pool_marks m ON m.token_id=p.token_id "
+                "AND m.pair_address=CASE WHEN p.token_id LIKE 'solana:%' THEN "
+                "COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),c.pair_address) ELSE "
+                "LOWER(COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),c.pair_address)) END "
                 "WHERE p.definition_version=? AND p.status<>'ineligible'",
                 (active_version,),
             ):
@@ -659,6 +754,10 @@ class ChainWebData:
                     )
                     fresh_market = bool(
                         row.get("market_status") == "VISIBLE"
+                        and correction is None
+                        and Store.chain_meme_market_pool_matches(
+                            row["token_id"], row.get("entry_pair_address"), row.get("pair_address"),
+                        )
                         and row.get("pair_address")
                         and float(row.get("price_usd") or 0.0) > 0.0
                         and market_age is not None and 0.0 <= market_age <= 15.0
@@ -695,6 +794,7 @@ class ChainWebData:
                             )
                         )
                         effective_unrealized_by_arm[arm] += indicative_value - remaining_cost
+                        effective_value_by_arm[arm] += indicative_value
                         priced_open_by_arm[arm] += 1
             effective_open_position_count = sum(
                 stats["open_count"] for stats in position_stats.values()
@@ -763,6 +863,14 @@ class ChainWebData:
                 )
                 account.update({
                     "realized_pnl_usd": realized_pnl,
+                    "cash_usd": starting_cash + net_flows.get(policy_arm_id, 0.0),
+                    "indicative_equity_usd": starting_cash + net_flows.get(policy_arm_id, 0.0)
+                    + effective_value_by_arm.get(policy_arm_id, 0.0) if indicative_complete else None,
+                    "current_equity_usd": starting_cash + net_flows.get(policy_arm_id, 0.0)
+                    + effective_value_by_arm.get(policy_arm_id, 0.0) if indicative_complete else None,
+                    "position_value_usd": effective_value_by_arm.get(policy_arm_id, 0.0)
+                    if indicative_complete else None,
+                    "calculated_at": current_iso,
                     "indicative_unrealized_pnl_usd": unrealized_pnl,
                     "indicative_total_pnl_usd": total_pnl,
                     "indicative_position_count": priced_open_by_arm.get(policy_arm_id, 0),
@@ -791,21 +899,6 @@ class ChainWebData:
                     and total_pnl is not None and starting_cash > 0 else None
                 )
                 curve = list(curves_by_arm.get(policy_arm_id, []))
-                if accounting_effective_after:
-                    curve_limit = (
-                        self.LIVE_DETAIL_CURVE_POINTS
-                        if arm_id == policy_arm_id else self.LIVE_SPARKLINE_POINTS
-                    )
-                    curve = [
-                        *curve[-max(0, curve_limit - 1):],
-                        {
-                            "recorded_at": current_iso,
-                            "realized_pnl_usd": realized_pnl,
-                            "unrealized_pnl_usd": unrealized_pnl,
-                            "total_pnl_usd": total_pnl,
-                            "synthetic_effective_point": True,
-                        },
-                    ]
                 terminal_pnls = [
                     value for _closed_at, value in sorted(
                         terminal_rows_by_arm.get(policy_arm_id, []),
@@ -873,9 +966,13 @@ class ChainWebData:
                     "expectancy_usd": (
                         sum(terminal_pnls) / len(terminal_pnls) if terminal_pnls else None
                     ),
-                    "max_drawdown_usd": max_drawdown,
-                    "max_drawdown_fraction": max_drawdown_fraction,
-                    "max_drawdown_basis": "realized_terminal_pnl",
+                    "realized_max_drawdown_usd": max_drawdown,
+                    "max_drawdown_usd": (curve_history.get(policy_arm_id) or {}).get("max_drawdown_usd")
+                    if (curve_history.get(policy_arm_id) or {}).get("valid_points") else None,
+                    "max_drawdown_fraction": (curve_history.get(policy_arm_id) or {}).get("max_drawdown_fraction")
+                    if capital_model == "legacy_cash_limited" and (curve_history.get(policy_arm_id) or {}).get("valid_points") else None,
+                    "max_drawdown_basis": "full_eligible_account_equity_snapshots",
+                    "drawdown_missing_snapshot_count": (curve_history.get(policy_arm_id) or {}).get("missing_points", 0),
                     "tail_return_usd": (
                         sum(sorted(terminal_pnls)[:tail_count]) / tail_count
                         if terminal_pnls else None
@@ -906,9 +1003,11 @@ class ChainWebData:
                     "forward_started_at": forward_started_at,
                     "forward_age_seconds": forward_age_seconds,
                     "eligible_opportunity_count": admitted + rejected,
+                    "entry_decisions": {"admitted": admitted, "rejected": rejected},
                     "maturity": maturity,
                     "account": account,
                     "curve": curve,
+                    "curve_scope": "full_period_sampled",
                 })
 
             open_filter = (
@@ -928,11 +1027,18 @@ class ChainWebData:
                 "p.allocated_cost_usd,p.realized_pnl_usd,"
                 "p.status,p.opened_at,p.closed_at,p.close_reason,p.last_evaluated_at,"
                 "m.pair_address,m.provider AS market_provider,m.price_usd,m.liquidity_usd,"
+                "COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),c.pair_address) AS entry_pair_address,"
                 "m.status AS market_status,m.consecutive_misses,"
                 "m.observed_at AS market_observed_at,"
                 "m.recorded_at AS market_recorded_at,m.last_success_at "
-                "FROM chain_meme_trader_positions p LEFT JOIN "
-                "chain_meme_trader_market_marks m ON m.token_id=p.token_id "
+                "FROM chain_meme_trader_positions p "
+                "LEFT JOIN token_snapshots e ON e.id=p.entry_snapshot_id AND e.token_id=p.token_id "
+                "LEFT JOIN chain_meme_trader_v6_cohorts c ON c.id=p.shadow_cohort_id "
+                "AND c.definition_version=p.definition_version "
+                "LEFT JOIN chain_meme_trader_pool_marks m ON m.token_id=p.token_id "
+                "AND m.pair_address=CASE WHEN p.token_id LIKE 'solana:%' THEN "
+                "COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),c.pair_address) ELSE "
+                "LOWER(COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),c.pair_address)) END "
                 f"WHERE p.definition_version=? AND {open_filter} "
                 "ORDER BY p.opened_at DESC LIMIT ?",
                 open_values,
@@ -966,6 +1072,10 @@ class ChainWebData:
                 )
                 fresh_market = bool(
                     row.get("market_status") == "VISIBLE"
+                    and correction is None
+                    and Store.chain_meme_market_pool_matches(
+                        row["token_id"], row.get("entry_pair_address"), row.get("pair_address"),
+                    )
                     and row.get("pair_address")
                     and float(row.get("price_usd") or 0.0) > 0.0
                     and (
@@ -3200,6 +3310,16 @@ class ChainWebHandler(BaseHTTPRequestHandler):
                     {"status": "error", "error": type(exc).__name__},
                     HTTPStatus.SERVICE_UNAVAILABLE,
                 )
+            return
+        if route == "/api/discovery":
+            try:
+                chain = str(parse_qs(parsed.query).get("chain", ["all"])[0]).lower()
+                self._send_json(self.server.data.discovery_state(chain))
+            except ValueError as exc:
+                self._send_json({"status": "error", "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            except (OSError, sqlite3.Error) as exc:
+                self.server.data.record_web_error(route, exc)
+                self._send_json({"status": "error", "error": type(exc).__name__}, HTTPStatus.SERVICE_UNAVAILABLE)
             return
         if route == "/api/live":
             try:

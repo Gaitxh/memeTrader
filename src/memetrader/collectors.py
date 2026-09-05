@@ -2022,6 +2022,7 @@ class DexScreenerClient:
         normalized_chain = self._chain(str(chain)).lower()
         unique = list(dict.fromkeys(str(value).strip() for value in addresses if str(value).strip()))
         by_token: dict[str, tuple[TokenCandidate, TokenSnapshot]] = {}
+        pools_by_token: dict[str, list[dict[str, Any]]] = {}
         for offset in range(0, len(unique), 30):
             chunk = unique[offset : offset + 30]
             requested = {
@@ -2050,9 +2051,12 @@ class DexScreenerClient:
                 )
                 candidate.address = canonical_address
                 snap.address = canonical_address
+                pools_by_token.setdefault(candidate.token_id, []).append(pair)
                 current = by_token.get(candidate.token_id)
                 if current is None or (snap.liquidity_usd or 0.0) > (current[1].liquidity_usd or 0.0):
                     by_token[candidate.token_id] = (candidate, snap)
+        for token_id, (_, snapshot) in by_token.items():
+            snapshot.raw["pairs"] = pools_by_token.get(token_id, [])
         return by_token
 
     async def batch_quote_fresh(

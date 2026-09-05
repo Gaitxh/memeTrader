@@ -214,7 +214,7 @@ def test_chain_meme_trader_api_and_static_page_preserve_forward_contract(tmp_pat
     assert "profit_loss_ratio" in app
     assert "profit_factor" in app
     assert "收益因子" in app
-    assert "已实现曲线最大回撤" in app
+    assert "账户最大回撤" in app
     assert "strategyMetrics" in app
     assert "总资产实时曲线" not in index
     assert "UNKNOWN" in app
@@ -239,9 +239,7 @@ def test_chain_meme_trader_api_and_static_page_preserve_forward_contract(tmp_pat
         assert "strategy_registry" not in live
         assert "positions" not in live["strategies"][0]
         assert live["open_positions"] == []
-        assert len(live["strategies"][0]["curve"]) == (
-            ChainWebData.LIVE_SPARKLINE_POINTS
-        )
+        assert len(live["strategies"][0]["curve"]) == 15
         assert live["strategies"][0]["account"]["metric_sample_status"] == "no_closed_results"
         assert live["strategies"][0]["account"]["expectancy_usd"] is None
         assert live["strategies"][0]["account"]["profit_factor"] is None
@@ -259,7 +257,7 @@ def test_chain_meme_trader_api_and_static_page_preserve_forward_contract(tmp_pat
             if item["arm_id"] == live["strategies"][0]["arm_id"]
         )
         assert len(focused_strategy["curve"]) == 15
-        assert len(focused_strategy["curve"]) > len(live["strategies"][0]["curve"])
+        assert focused_strategy["curve"] == live["strategies"][0]["curve"]
         universe_response = httpx.get(f"http://127.0.0.1:{port}/api/strategy-universe")
         assert universe_response.status_code == 200
         assert len(universe_response.json()["families"]) == 124
@@ -334,12 +332,12 @@ def test_chain_web_profit_factor_and_drawdown_use_effective_results_and_own_curv
             store.db.execute(
                 "INSERT INTO chain_meme_trader_account_snapshots("
                 "definition_version,arm_id,recorded_at,cash_usd,realized_pnl_usd,"
-                "indicative_unrealized_pnl_usd,indicative_total_pnl_usd,"
+                "indicative_unrealized_pnl_usd,indicative_total_pnl_usd,indicative_equity_usd,"
                 "indicative_position_count,indicative_is_complete,open_position_count,"
                 "closed_position_count,written_off_position_count,priced_position_count,"
                 "valuation_status,ledger_trade_frontier_id) "
-                "VALUES(?,?,?,?,?,0,?,0,1,0,2,0,0,'complete_market_mark',0)",
-                (version, arm_id, recorded_at, 1000.0 + total_pnl, total_pnl, total_pnl),
+                "VALUES(?,?,?,?,?,0,?,?,0,1,0,2,0,0,'complete_market_mark',0)",
+                (version, arm_id, recorded_at, 1000.0 + total_pnl, total_pnl, total_pnl, 1000.0 + total_pnl),
             )
     store.close()
 
@@ -349,9 +347,10 @@ def test_chain_web_profit_factor_and_drawdown_use_effective_results_and_own_curv
     )
     assert account["profit_factor"] == pytest.approx(1.6)
     assert account["profit_factor_status"] == "available"
-    assert account["max_drawdown_usd"] == pytest.approx(5.0)
-    assert account["max_drawdown_fraction"] == pytest.approx(5.0 / 1008.0)
-    assert account["max_drawdown_basis"] == "realized_terminal_pnl"
+    assert account["max_drawdown_usd"] == pytest.approx(9.0)
+    assert account["max_drawdown_fraction"] == pytest.approx(9.0 / 1012.0)
+    assert account["max_drawdown_basis"] == "full_eligible_account_equity_snapshots"
+    assert account["realized_max_drawdown_usd"] == pytest.approx(5.0)
 
 
 def test_strategy_universe_refreshes_for_additive_strategy_versions(tmp_path: Path):
@@ -1035,7 +1034,9 @@ def test_chain_meme_trader_web_switches_to_active_v6_matrix(tmp_path: Path):
     assert 'id="reverseability-table"' in (static / "index.html").read_text(encoding="utf-8")
     app = (static / "app.js").read_text(encoding="utf-8")
     assert "renderReverseability(data)" in app
-    assert "实际参与 / 历史现金门跳过" in app
+    assert "实际参与 / 现金不足跳过" in app
+    assert "discoveryView.funnel.map" in app
+    assert "n+(d.rejected||0)" in app
     assert "renderStrategyPool(data)" in app
     assert "renderStages(strategies)" not in app
     assert "renderStrategyRegistry(data)" in app
