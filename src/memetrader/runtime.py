@@ -9,6 +9,7 @@ import math
 import os
 import re
 import secrets
+import sqlite3
 import tempfile
 import threading
 import urllib.parse
@@ -24,6 +25,11 @@ from solders.pubkey import Pubkey
 
 from .runtime_timing import RuntimeTiming
 from .market_api import CoinGeckoDemoPoolClient
+from .market_flow import aggregate_market_frames
+from .pool_surface import collect_pumpswap_pool_surface
+from .token_origin import verify_creator_from_known_signature
+from .authoritative_events import collect_okx_listing_events
+from .capital_research import load_competing_risk_samples, seal_competing_risk_model, competing_risk_context
 
 from .autonomous_search import AutonomousSearchAgent, _canonical_social_url, _same_social_url
 from .collectors import (
@@ -1316,6 +1322,7 @@ class Runtime:
                     self.store.activate_chain_meme_trader_funded_period()
                     self.store.register_chain_meme_trader_cost_coverage_scaleout()
                     self.store.register_chain_meme_pattern_experiments()
+                    self.store.register_chain_meme_capital_experiments()
                     self.store.register_chain_meme_v22_vault_shadow(
                         position_definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
                     )
@@ -1412,6 +1419,11 @@ class Runtime:
         self._pattern_pool_targets: dict[str, dict[str, Any]] = {}
         self._pattern_participation_frontiers: dict[str, dict[str, Any]] = {}
         self._pattern_participation_cursor = 0
+        self._pattern_amountful_windows: dict[str, list[dict[str, Any]]] = {}
+        self._pattern_surface_cache: dict[str, dict[str, Any]] = {}
+        self._pattern_surface_retry: dict[str, float] = {}
+        self._pattern_surface_next_at = 0.0
+        self._pattern_origin_cache: dict[str, dict[str, Any]] = {}
         self._pattern_pool_retry: dict[str, float] = {}
         self._chain_meme_v21_vault_retry_after: dict[str, float] = {}
         self._chain_meme_v21_vault_last_heartbeat = 0.0
@@ -1431,10 +1443,12 @@ class Runtime:
         self._jupiter_background_epoch_started = 0.0
         self._jupiter_background_epoch_requests = 0
         self._jupiter_background_epoch_seconds = 5.0
+        self._capital_quote_next_at = 0.0
         self._chain_meme_quote_version_cursor = 0
         self._chain_meme_normal_slot = 0
         self._wsol_usdc_conversion: dict[str, Any] | None = None
         self._wsol_usdc_conversion_at = 0.0
+        self._wsol_usdc_reference_next_at = 0.0
         self._dex_quote_lock = asyncio.Semaphore(8)
         self._chain_meme_active_idle_event = asyncio.Event()
         self._chain_meme_active_idle_event.set()
@@ -5282,9 +5296,12 @@ class Runtime:
         """Bounded pre-entry Pool/Vault verification, never a trade/exit authority."""
         await self._chain_meme_active_idle().wait()
         watch = getattr(self, "_pattern_watch", {})
+        held = getattr(self, "_pattern_held_tokens", set())
         pool_map = {v["pair_address"]: v for v in watch.values()
-                    if v["token"].chain == "solana" and v["expires_at"] > utcnow()}
-        self._pattern_pool_targets = {k: v for k, v in self._pattern_pool_targets.items() if k in pool_map}
+                    if v["token"].chain == "solana"
+                    and (v["expires_at"] > utcnow() or v["token"].token_id in held)}
+        self._pattern_pool_targets = {k: v for k, v in self._pattern_pool_targets.items()
+                                      if k in pool_map or v["token_id"] in held}
         self._pattern_pool_retry = {k: v for k, v in self._pattern_pool_retry.items() if k in pool_map}
         self._pattern_vault_tracker.retain(v["evidence_id"] for v in self._pattern_pool_targets.values())
         now = asyncio.get_running_loop().time()
@@ -5308,6 +5325,7 @@ class Runtime:
                 "observer_version": "chain-pattern-exact/v1"})
             self._pattern_pool_retry[address] = now + 60
         if not candidates:
+            await self._chain_meme_pattern_surface_once()
             return
         try:
             outcomes = await asyncio.wait_for(self.held_accounts.resolve_pumpswap_shadow_pools(candidates), timeout=5)
@@ -5319,9 +5337,110 @@ class Runtime:
                 "pool_resolution", outcome, observed_at=received,
                 source_key=f"{outcome['pool_address']}:{iso(received)}")
             if outcome.get("status") == "RESOLVED" and evidence_id is not None:
-                self._pattern_pool_targets[outcome["pool_address"]] = {**outcome, "evidence_id": evidence_id}
+                self._pattern_pool_targets[outcome["pool_address"]] = {
+                    **outcome, "evidence_id": evidence_id,
+                    "observed_at": iso(received), "recorded_at": iso(utcnow())}
         self.store.heartbeat("chain-meme-pattern-pools", item=bool(self._pattern_pool_targets),
             error_detail=f"active={len(self._pattern_pool_targets)};attempted={len(candidates)}")
+        await self._chain_meme_pattern_surface_once()
+
+    async def _chain_meme_pattern_surface_once(self) -> None:
+        """One low-priority surface lookup per 15s; each pool retries after 60s."""
+        active = self._pattern_pool_targets
+        cache = {k: v for k, v in getattr(self, "_pattern_surface_cache", {}).items() if k in active}
+        retry = {k: v for k, v in getattr(self, "_pattern_surface_retry", {}).items() if k in active}
+        self._pattern_surface_cache, self._pattern_surface_retry = cache, retry
+        now = asyncio.get_running_loop().time()
+        if now < getattr(self, "_pattern_surface_next_at", 0):
+            return
+        due = sorted((p for p in active.values() if retry.get(p["pool_address"], 0) <= now),
+                     key=lambda p: (retry.get(p["pool_address"], 0), p["pool_address"]))
+        if not due:
+            return
+        pool = due[0]
+        address = pool["pool_address"]
+        self._pattern_surface_next_at, retry[address] = now + 15, now + 60
+        await self._chain_meme_active_idle().wait()
+        try:
+            surface = await asyncio.wait_for(collect_pumpswap_pool_surface(self.held_accounts, pool), timeout=5)
+        except TimeoutError:
+            received = iso(utcnow())
+            surface = {"status": "UNKNOWN_RPC", "complete": False, "surface": "UNKNOWN",
+                       "reason": "pattern_surface_rpc_budget_timeout",
+                       "observed_at": received, "recorded_at": received}
+        surface = {**surface, "token_id": pool["token_id"], "pool_address": address}
+        evidence_id = self.store.record_chain_meme_pattern_evidence(pool["token_id"], address,
+            "pool_surface", surface, observed_at=surface["observed_at"],
+            source_key=f"{address}:{surface['recorded_at']}")
+        cache[address] = {**surface, "evidence_id": evidence_id, "recorded_at": iso(utcnow())}
+        if surface.get("complete") is True:
+            await self._chain_meme_pattern_origin_once(pool)
+        self.store.heartbeat("chain-meme-pattern-surface", item=surface.get("complete") is True,
+                             error_detail=str(surface.get("status", "UNKNOWN")))
+
+    async def _chain_meme_pattern_origin_once(self, pool: Mapping[str, Any]) -> None:
+        """Verify one known Pump create signature once per active pool."""
+        active = self._pattern_pool_targets
+        cache = {
+            key: value for key, value in getattr(self, "_pattern_origin_cache", {}).items()
+            if key in active
+        }
+        self._pattern_origin_cache = cache
+        address = str(pool.get("pool_address") or "")
+        token_id = str(pool.get("token_id") or "")
+        mint = str(pool.get("base_mint") or token_id.partition(":")[2])
+        if (
+            not address or not token_id or not mint or address in cache
+            or len(cache) >= 6 or not self._chain_meme_active_idle().is_set()
+        ):
+            return
+        fact = self.store.db.execute(
+            "SELECT id,create_signature FROM token_launch_facts "
+            "WHERE token_id=? AND launch_event_type='create' AND create_signature<>'' "
+            "ORDER BY source_observed_at,id LIMIT 1",
+            (token_id,),
+        ).fetchone()
+        if fact is None:
+            return
+        signature = str(fact["create_signature"])
+        existing_row = self.store.db.execute(
+            "SELECT id,payload_json FROM chain_meme_pattern_evidence "
+            "WHERE definition_version=? AND token_id=? AND pair_address=? "
+            "AND kind='token_origin' ORDER BY id DESC LIMIT 1",
+            (self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION, token_id, address),
+        ).fetchone()
+        existing = (
+            self.store._json_object(existing_row["payload_json"])
+            if existing_row is not None else None
+        )
+        try:
+            result = await asyncio.wait_for(
+                verify_creator_from_known_signature(
+                    self.held_accounts, mint, signature,
+                    existing_evidence=existing,
+                ),
+                timeout=4,
+            )
+        except TimeoutError:
+            result = {
+                "status": "unverified", "reason": "origin_rpc_timeout",
+                "mint": mint, "create_signature": signature,
+                "creator_address": None, "proof": None,
+            }
+        cache[address] = dict(result)
+        if result.get("status") != "verified":
+            return
+        evidence_id = (
+            int(existing_row["id"])
+            if existing_row is not None and result.get("rpc_requested") is False
+            else self.store.record_chain_meme_pattern_evidence(
+                token_id, address, "token_origin", result,
+                observed_at=utcnow(),
+                source_key=f"pump-create-origin/v1:{signature}:{mint}",
+            )
+        )
+        cache[address] = {**result, "evidence_id": evidence_id,
+                          "launch_fact_id": int(fact["id"])}
 
     async def chain_meme_pattern_narrative_once(self) -> None:
         """One bounded information-first scout; never enqueue legacy trade decisions."""
@@ -5359,6 +5478,8 @@ class Runtime:
         pools = sorted(self._pattern_pool_targets.values(), key=lambda p: p["pool_address"])
         active = {p["pool_address"] for p in pools}
         self._pattern_participation_frontiers = {k: v for k, v in self._pattern_participation_frontiers.items() if k in active}
+        windows = {k: v for k, v in getattr(self, "_pattern_amountful_windows", {}).items() if k in active}
+        self._pattern_amountful_windows = windows
         if not pools:
             return
         offset = self._pattern_participation_cursor % len(pools)
@@ -5374,8 +5495,68 @@ class Runtime:
                 scan = {"complete": False, "status": "RPC_BUDGET_TIMEOUT", "completed_at": iso(utcnow()), "trades": []}
             if scan.get("frontier"):
                 self._pattern_participation_frontiers[address] = scan["frontier"]
-            self.store.record_chain_meme_pattern_evidence(pool["token_id"], address, "participation_scan",
+            scan_id = self.store.record_chain_meme_pattern_evidence(pool["token_id"], address, "participation_scan",
                 scan, observed_at=scan["completed_at"], source_key=f"{address}:{scan['completed_at']}")
+            received = iso(utcnow())
+            # Actual recording time is conservatively the completion of the
+            # evidence write. Never substitute receipt time for event coverage.
+            frame_scan = {**{k: v for k, v in scan.items() if k != "trades"}, "recorded_at": received}
+            rows = scan.get("trades", [])
+            if len(rows) > 128:
+                frame_scan.update(complete=False, truncated=True)
+            current = {"window_start": scan.get("coverage_start"), "window_end": scan.get("coverage_end"),
+                       "trades": rows[:128], "scan": frame_scan, "evidence_id": scan_id}
+            windows[address] = [*windows.get(address, []), current][-2:]
+            surface = getattr(self, "_pattern_surface_cache", {}).get(address, {})
+            origin = getattr(self, "_pattern_origin_cache", {}).get(address, {})
+            creator = (
+                str(origin.get("creator_address") or "")
+                if origin.get("status") == "verified"
+                and origin.get("creator_identity_kind") == "token_creator"
+                and origin.get("creator_identity_verified") is True
+                else ""
+            )
+            resolver = {"status": "verified" if surface.get("complete") is True else "unknown",
+                "pool_address": address, "base_mint": pool["base_mint"], "quote_mint": pool["quote_mint"],
+                "base_decimals": surface.get("base_decimals"), "quote_decimals": surface.get("quote_decimals"),
+                "observed_at": surface.get("observed_at"), "recorded_at": surface.get("recorded_at")}
+            conversion, conversion_basis = None, None
+            if pool["quote_mint"] == SOLANA_USDC_MINT:
+                conversion = {"quote_mint": SOLANA_USDC_MINT, "usd_per_quote": 1.0,
+                    "observed_at": received, "recorded_at": received, "max_age_seconds": 30}
+                conversion_basis = "USDC_unit_accounting_reference_not_executable_fill"
+            elif pool["quote_mint"] == SOLANA_WRAPPED_SOL_MINT:
+                reference = getattr(self, "_wsol_usdc_conversion", None)
+                if reference and reference.get("completed_at"):
+                    age = (parse_time(received) - parse_time(reference["completed_at"])).total_seconds()
+                    input_raw = int(reference.get("input_amount_raw") or 0)
+                    output_raw = int(reference.get("minimum_output_amount_raw") or 0)
+                    if 0 <= age <= 30 and input_raw > 0 and output_raw > 0:
+                        conversion = {"quote_mint": SOLANA_WRAPPED_SOL_MINT,
+                            "usd_per_quote": output_raw / 1_000_000 / (input_raw / 1_000_000_000),
+                            "observed_at": reference["completed_at"], "recorded_at": reference["completed_at"],
+                            "max_age_seconds": 30}
+                        conversion_basis = "WSOL_USDC_reference_quote_estimate_not_executable_fill"
+            aggregate = aggregate_market_frames(windows[address], resolver=resolver, decision_at=received,
+                creator_address=creator or None, quote_conversion=conversion)
+            flow = {**aggregate["windows"][-1], **aggregate, "token_id": pool["token_id"],
+                "pool_address": address, "base_mint": pool["base_mint"], "quote_mint": pool["quote_mint"],
+                "observed_at": scan.get("observed_at", scan["completed_at"]), "recorded_at": received,
+                "source_evidence_ids": [w["evidence_id"] for w in windows[address]],
+                "surface_evidence_id": surface.get("evidence_id"), "conversion_basis": conversion_basis,
+                "conversion_is_execution_evidence": False,
+                "creator_identity_kind": "token_creator" if creator else None,
+                "creator_identity_verified": bool(creator),
+                "creator_origin_evidence_id": origin.get("evidence_id") if creator else None,
+                "creator_origin_proof": origin.get("proof") if creator else None}
+            if conversion_basis and pool["quote_mint"] == SOLANA_WRAPPED_SOL_MINT:
+                flow["conversion_reference_amounts"] = dict(reference)
+            self.store.record_chain_meme_pattern_evidence(pool["token_id"], address, "amountful_flow",
+                flow, observed_at=flow["observed_at"], source_key=f"{address}:{scan['completed_at']}")
+            if pool["token_id"] in getattr(self, "_pattern_held_tokens", set()):
+                self.store.evaluate_chain_meme_trader_market_marks(
+                    definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
+                    token_ids=[pool["token_id"]])
             self.store.heartbeat("chain-meme-pattern-participation", item=scan.get("complete") is True,
                 error_detail=str(scan["status"]))
 
@@ -5397,6 +5578,10 @@ class Runtime:
                             self.store.record_chain_meme_pattern_evidence(update["token_id"], update["pool_address"],
                                 "vault_frame", frame, observed_at=frame["observed_at"],
                                 source_key=f"{update['pool_target_id']}:{frame['observed_at']}:{frame['observer_state']}")
+                            if update["token_id"] in getattr(self, "_pattern_held_tokens", set()):
+                                self.store.evaluate_chain_meme_trader_market_marks(
+                                    definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
+                                    token_ids=[update["token_id"]])
                         continue
                     frame = self.chain_meme_v21_vault_tracker.push(update)
                     frame_id = (
@@ -5440,30 +5625,7 @@ class Runtime:
         if not targets:
             self.store.heartbeat("chain-meme-local-surface", item=False, error="")
             return
-        loop_now = asyncio.get_running_loop().time()
-        if (
-            self._wsol_usdc_conversion is None
-            or loop_now - self._wsol_usdc_conversion_at >= 30.0
-        ):
-            try:
-                async with self._jupiter_quote_lock:
-                    conversion = await self.jupiter.quote(
-                        SOLANA_WRAPPED_SOL_MINT,
-                        SOLANA_USDC_MINT,
-                        1_000_000_000,
-                        slippage_bps=400,
-                    )
-                self._wsol_usdc_conversion = {
-                    "input_amount_raw": 1_000_000_000,
-                    "minimum_output_amount_raw": int(
-                        conversion["other_amount_threshold"]
-                    ),
-                    "completed_at": str(conversion["completed_at"]),
-                }
-                self._wsol_usdc_conversion_at = asyncio.get_running_loop().time()
-            except Exception:
-                if loop_now - self._wsol_usdc_conversion_at >= 60.0:
-                    self._wsol_usdc_conversion = None
+        await self.chain_meme_wsol_reference_once(observed_pool=True)
         curve_targets = [
             item for item in targets
             if str(item.get("surface_type") or "") == "pump_bonding_curve"
@@ -5530,6 +5692,105 @@ class Runtime:
                 str(quotes[0].get("status") or "local_surface_unknown")
                 if quotes and healthy == 0 else ""
             ),
+        )
+
+    async def chain_meme_wsol_reference_once(
+        self, *, observed_pool: bool | None = None,
+    ) -> None:
+        """Refresh one shared WSOL/USDC reference at most once per 30 seconds."""
+        has_pool = bool(self._pattern_pool_targets) if observed_pool is None else observed_pool
+        loop_now = asyncio.get_running_loop().time()
+        reference = getattr(self, "_wsol_usdc_conversion", None)
+        if reference and reference.get("completed_at"):
+            age = (utcnow() - parse_time(reference["completed_at"])).total_seconds()
+            if 0.0 <= age <= 30.0:
+                return
+        if (
+            not has_pool
+            or loop_now < getattr(self, "_wsol_usdc_reference_next_at", 0.0)
+            or not self._chain_meme_active_idle().is_set()
+            or self._jupiter_background_dispatch_lock.locked()
+            or self._jupiter_quote_lock.locked()
+        ):
+            return
+        async with self._jupiter_background_dispatch_lock:
+            if not self._chain_meme_active_idle().is_set() or self._jupiter_quote_lock.locked():
+                return
+            if loop_now - self._jupiter_background_epoch_started >= self._jupiter_background_epoch_seconds:
+                self._jupiter_background_epoch_started = loop_now
+                self._jupiter_background_epoch_requests = 0
+            if self._jupiter_background_epoch_requests >= 3:
+                return
+            self._wsol_usdc_reference_next_at = loop_now + 30.0
+            self._jupiter_background_epoch_requests += 1
+
+            async def request_reference():
+                async with self._jupiter_quote_lock:
+                    return await self.jupiter.quote(
+                        SOLANA_WRAPPED_SOL_MINT, SOLANA_USDC_MINT,
+                        1_000_000_000, slippage_bps=400,
+                    )
+            try:
+                conversion = await asyncio.wait_for(request_reference(), timeout=3)
+                minimum = int(conversion["other_amount_threshold"])
+                if minimum <= 0:
+                    raise ValueError("wsol_reference_nonpositive")
+                self._wsol_usdc_conversion = {
+                    "input_amount_raw": 1_000_000_000,
+                    "minimum_output_amount_raw": minimum,
+                    "completed_at": str(conversion.get("completed_at") or iso()),
+                }
+                self._wsol_usdc_conversion_at = asyncio.get_running_loop().time()
+            except Exception:
+                if reference and reference.get("completed_at") and (
+                    utcnow() - parse_time(reference["completed_at"])
+                ).total_seconds() < 60.0:
+                    self._wsol_usdc_conversion = reference
+                else:
+                    self._wsol_usdc_conversion = None
+
+    async def chain_meme_authoritative_events_once(self) -> None:
+        """Persist each exact first-party listing once, then queue normal hydration."""
+        await self._chain_meme_active_idle().wait()
+        result = await collect_okx_listing_events(self.http, now=utcnow())
+        recorded = 0
+        for event in list(result.get("events") or [])[:2]:
+            chain = str(event.get("chain") or "").lower()
+            address = canonical_token_address(chain, str(event.get("contract_address") or ""))
+            published_at = str(event.get("published_at") or "")
+            url = str(event.get("url") or "")
+            if not chain or not address or not published_at or not url:
+                continue
+            token_id = f"{chain}:{address}"
+            source_key = f"{url}|{published_at}|{address}"
+            exists = self.store.db.execute(
+                "SELECT 1 FROM chain_meme_pattern_evidence "
+                "WHERE definition_version=? AND kind='authoritative_event' AND source_key=?",
+                (self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION, source_key),
+            ).fetchone()
+            if exists is not None:
+                continue
+            observed_at = parse_time(event.get("observed_at") or utcnow())
+            evidence_id = self.store.record_chain_meme_pattern_evidence(
+                token_id, "", "authoritative_event", event,
+                observed_at=observed_at, source_key=source_key,
+            )
+            if evidence_id is None:
+                continue
+            token = TokenCandidate(
+                chain=chain, address=address,
+                name=str(event.get("title") or address), symbol="",
+                first_seen_at=parse_time(published_at),
+                source="okx:official_listing", url=url, raw=dict(event),
+            )
+            self.store.upsert_token(token, seen_at=observed_at)
+            self.store.enqueue_token_detail_hydration(chain, address, enqueued_at=observed_at)
+            self.store.requeue_token_detail_hydration(token_id, enqueued_at=observed_at)
+            recorded += 1
+        diagnostics = list(result.get("diagnostics") or [])
+        self.store.heartbeat(
+            "chain-meme-authoritative-events", item=recorded > 0,
+            error_detail=f"recorded={recorded};diagnostics={len(diagnostics)}",
         )
 
     async def critical_onchain_exit_loop(self) -> None:
@@ -6127,9 +6388,16 @@ class Runtime:
 
     async def flat_compression_breakout_shadow_once(self) -> None:
         """Refresh one non-held mature-token batch after the held-token lane."""
-        targets = self.store.due_flat_compression_breakout_shadow_targets(
-            limit=30,
-        )
+        def read_targets():
+            # The measured 1.23s grouping query must not stop the event loop
+            # from receiving held quotes or running an already-triggered exit.
+            db = sqlite3.connect(self.store.path.resolve().as_uri() + "?mode=ro", uri=True)
+            db.row_factory = sqlite3.Row
+            try:
+                return self.store.due_flat_compression_breakout_shadow_targets(limit=30, connection=db)
+            finally:
+                db.close()
+        targets = await asyncio.to_thread(read_targets)
         if not targets:
             self.store.heartbeat("flat-compression-breakout-shadow", item=False)
             return
@@ -6148,7 +6416,8 @@ class Runtime:
         """Bounded passive watch: reuse discovery/held/flat quotes, no I/O here."""
         current = utcnow()
         watch = getattr(self, "_pattern_watch", {})
-        watch = {k: v for k, v in watch.items() if current < v["expires_at"]}
+        watch = {k: v for k, v in watch.items()
+                 if current < v["expires_at"] or k in getattr(self, "_pattern_held_tokens", set())}
         for token, snapshot in quoted.values():
             token_id, chain = token.token_id, token.chain
             if token_id in watch:
@@ -6184,6 +6453,8 @@ class Runtime:
             chains = chains[offset:] + chains[:offset]
         self._pattern_chain_cursor = cursor + 1
         requested = False
+        cross_section = self.store.capital_cross_section(
+            [(k, item["pair_address"]) for k, item in watch.items()])
         for chain in chains:
             await self._chain_meme_active_idle().wait()
             targets = [v for v in watch.values() if v["token"].chain == chain]
@@ -6220,7 +6491,14 @@ class Runtime:
                 received = utcnow()
                 if self._paper_quote_rejections(token.token_id, token, observation, received):
                     continue
-                projected += self.store.observe_chain_meme_pattern(token, observation, recorded_at=received)
+                context = dict(cross_section.get(token.token_id) or {})
+                model = getattr(self, "_capital_risk_model", None)
+                if model:
+                    context["competing_risk"] = competing_risk_context(model, token_id=token.token_id,
+                        liquidity_usd=observation.liquidity_usd, observed_at=iso(observation.observed_at),
+                        recorded_at=iso(received), decision_at=iso(received))
+                projected += self.store.observe_chain_meme_pattern(token, observation, recorded_at=received,
+                    cross_section=context)
                 item["sampled_at"] = snapshot.observed_at
                 sampled += 1
         self.store.heartbeat("chain-meme-pattern-observer", item=sampled > 0,
@@ -6402,6 +6680,78 @@ class Runtime:
                 int(case_id), completed_at=utcnow(),
             )
         self.store.heartbeat("chain-meme-postbuy-research", item=True)
+
+    async def seal_capital_research_once(self) -> None:
+        """One frozen deployment model; no recurring or main-loop training."""
+        key = "capital_research:competing_risk_v1:" + self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        existing = self.store.get_kv(key)
+        if existing:
+            self._capital_risk_model = existing
+            return
+        cutoff = iso(utcnow())
+        def read_samples():
+            connection = sqlite3.connect(self.store.path.resolve().as_uri() + "?mode=ro", uri=True)
+            try:
+                return load_competing_risk_samples(connection, self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION, cutoff)
+            finally:
+                connection.close()
+        try:
+            source = await asyncio.to_thread(read_samples)
+            model = seal_competing_risk_model(source, trained_at=iso(utcnow()))
+            self.store.set_kv(key, model)
+            self._capital_risk_model = model
+            self.store.heartbeat("capital-research-seal", item=True,
+                error_detail=f"samples={len(model['samples'])};bins={len(model['bins'])};sealed_once")
+        except Exception as exc:
+            self.store.heartbeat("capital-research-seal", error=type(exc).__name__)
+
+    async def capital_quote_once(self) -> None:
+        """One real-mint-amount USDC quote on the shared background budget."""
+        loop_now = asyncio.get_running_loop().time()
+        if (loop_now < getattr(self, "_capital_quote_next_at", 0)
+                or self._jupiter_background_dispatch_lock.locked()
+                or self._jupiter_quote_lock.locked()
+                or not self._chain_meme_active_idle().is_set()):
+            return
+        async with self._jupiter_background_dispatch_lock:
+            if loop_now - self._jupiter_background_epoch_started >= self._jupiter_background_epoch_seconds:
+                self._jupiter_background_epoch_started = loop_now
+                self._jupiter_background_epoch_requests = 0
+            if self._jupiter_background_epoch_requests >= 3:
+                return
+            task = self.store.due_capital_quote(now=utcnow())
+            if task is None:
+                return
+            self._capital_quote_next_at = loop_now + 2
+            requested_at, quote, error_code = utcnow(), None, ""
+            token_id = str(task.get("token_id") or "")
+            amount = task.get("input_amount_raw")
+            if not token_id.startswith("solana:") or not token_id.partition(":")[2]:
+                error_code = "UNSUPPORTED_CHAIN"
+            elif type(amount) is not int or amount <= 0:
+                error_code = "INVALID_REAL_MINT_AMOUNT"
+            else:
+                self._jupiter_background_epoch_requests += 1
+                async def request_quote():
+                    async with self._jupiter_quote_lock:
+                        return await self.jupiter.quote(token_id.partition(":")[2], SOLANA_USDC_MINT,
+                                                        amount, slippage_bps=400)
+                try:
+                    quote = await asyncio.wait_for(request_quote(), timeout=4)
+                except TimeoutError:
+                    error_code = "QUOTE_TIMEOUT"
+                except JupiterNoRouteError:
+                    error_code = "NO_ROUTE"
+                except JupiterQuoteProtocolError:
+                    error_code = "QUOTE_PROTOCOL_INVALID"
+                except Exception as exc:
+                    error_code = type(exc).__name__
+            self.store.record_capital_quote(task, quote, requested_at=requested_at,
+                                            completed_at=utcnow(), error_code=error_code)
+            if quote is not None and task.get("kind") == "valuation":
+                self.store.evaluate_chain_meme_trader_market_marks(
+                    definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION, token_ids=[token_id])
+            self.store.heartbeat("capital-quote", item=quote is not None, error=error_code)
 
     async def onchain_paper_position_monitor_once(self) -> None:
         """Passively value one exact remaining position; never mutate or sell it."""
@@ -7051,6 +7401,11 @@ class Runtime:
                     name="complementary_market_data",
                 ),
                 asyncio.create_task(
+                    self._periodic("capital_quote", 2, self.capital_quote_once),
+                    name="capital_quote",
+                ),
+                asyncio.create_task(self.seal_capital_research_once(), name="capital_research_seal"),
+                asyncio.create_task(
                     self._periodic(
                         "chain_meme_market_marks",
                         self.CHAIN_MEME_ACTIVE_MARK_INTERVAL_SECONDS,
@@ -7081,6 +7436,20 @@ class Runtime:
                 asyncio.create_task(
                     self._periodic("chain_meme_pattern_narrative", 60, self.chain_meme_pattern_narrative_once),
                     name="chain_meme_pattern_narrative",
+                ),
+                asyncio.create_task(
+                    self._periodic(
+                        "chain_meme_wsol_reference", 30,
+                        self.chain_meme_wsol_reference_once,
+                    ),
+                    name="chain_meme_wsol_reference",
+                ),
+                asyncio.create_task(
+                    self._periodic(
+                        "chain_meme_authoritative_events", 120,
+                        self.chain_meme_authoritative_events_once,
+                    ),
+                    name="chain_meme_authoritative_events",
                 ),
                 asyncio.create_task(
                     self._periodic(
@@ -7245,6 +7614,10 @@ class Runtime:
         ]
         if self.strategy_focus_active:
             tasks.extend([
+                asyncio.create_task(
+                    self._periodic("capital_quote", 2, self.capital_quote_once),
+                    name="capital_quote",
+                ),
                 asyncio.create_task(
                     self._periodic(
                         "chain_meme_trader", 5, self.chain_meme_trader_once

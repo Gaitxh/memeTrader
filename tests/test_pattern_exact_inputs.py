@@ -266,6 +266,281 @@ def test_scan_preserves_block_frontier_and_actual_local_receipts():
     asyncio.run(scenario())
 
 
+def test_runtime_amountful_flow_requires_real_adjacent_scans_and_reference_time(tmp_path, monkeypatch):
+    from memetrader.collectors import SOLANA_WRAPPED_SOL_MINT
+    runtime = Runtime.__new__(Runtime)
+    runtime.store = Store(tmp_path / "flow-inputs.sqlite3", initial_cash_usd=1000)
+    runtime._pattern_pool_targets = {"pool": dict(pool_address="pool", token_id="solana:base",
+        base_mint="base", quote_mint=SOLANA_WRAPPED_SOL_MINT)}
+    runtime._pattern_participation_frontiers = {}
+    runtime._pattern_participation_cursor = 0
+    now = utcnow()
+    monkeypatch.setattr("memetrader.runtime.utcnow", lambda: now)
+    monkeypatch.setattr("memetrader.store.utcnow", lambda: now)
+    surface = dict(complete=True, base_decimals=6, quote_decimals=9,
+                   observed_at=iso(now - timedelta(seconds=5)), recorded_at=iso(now - timedelta(seconds=4)),
+                   evidence_id=123, pool_creator="not_token_creator")
+    runtime._pattern_surface_cache = {"pool": surface}
+    runtime._pattern_origin_cache = {"pool": dict(
+        status="verified", creator_address="token-creator",
+        creator_identity_kind="token_creator", creator_identity_verified=True,
+        evidence_id=321, proof={"proof_version": "pump-create-origin/v1"},
+    )}
+    runtime._wsol_usdc_conversion = dict(input_amount_raw=1_000_000_000,
+        minimum_output_amount_raw=150_000_000, completed_at=iso(now - timedelta(seconds=2)))
+    start = int(now.timestamp()) - 30
+    scans = []
+    for number in range(4):
+        left, right = start + number * 5, start + (number + 1) * 5
+        when = iso(now + timedelta(seconds=number))
+        scan = dict(complete=True, coverage_complete=True, coverage_start=left, coverage_end=right,
+                    started_at=when, completed_at=when, observed_at=when, recorded_at=when,
+                    status="COMPLETE", trades=[dict(signature=str(number), instruction_path="outer:0",
+                        side="BUY", signer_address="buyer", block_time=right,
+                        observed_at=when, recorded_at=when, base_amount_raw=1_000_000,
+                        quote_amount_raw=2_000_000_000, amount_complete=True, amount_source="parsed_spl_transfer",
+                        pool_address="pool", base_mint="base", quote_mint=SOLANA_WRAPPED_SOL_MINT),
+                        dict(signature=f"creator-{number}", instruction_path="outer:1",
+                        side="SELL", signer_address="token-creator", block_time=right,
+                        observed_at=when, recorded_at=when, base_amount_raw=500_000,
+                        quote_amount_raw=1_000_000_000, amount_complete=True, amount_source="parsed_spl_transfer",
+                        pool_address="pool", base_mint="base", quote_mint=SOLANA_WRAPPED_SOL_MINT)])
+        scans.append(scan)
+    scans[2].update(coverage_complete=False, complete=False, status="TRUNCATED_INCOMPLETE")
+    async def sample(pool, frontier):
+        return scans.pop(0)
+    runtime.held_accounts = SimpleNamespace(sample_pumpswap_participation=sample)
+    async def scenario():
+        nonlocal now
+        outcomes = []
+        for number in range(4):
+            await runtime.chain_meme_pattern_participation_once()
+            row = runtime.store.db.execute("SELECT payload_json FROM chain_meme_pattern_evidence "
+                "WHERE kind='amountful_flow' ORDER BY id DESC LIMIT 1").fetchone()
+            outcomes.append(runtime.store._json_object(row[0]))
+            now += timedelta(seconds=1)
+        assert [row["complete"] for row in outcomes] == [False, True, False, False]
+        second = outcomes[1]
+        assert second["buy_quote_notional"] == 2 and second["buy_quote_notional_usd"] == 300
+        assert second["repeat_buyer_notional_share"] == 1
+        assert second["creator_sell_quote_notional_raw"] == 1_000_000_000
+        assert second["creator_identity_kind"] == "token_creator"
+        assert second["creator_identity_verified"] is True
+        assert second["creator_origin_evidence_id"] == 321
+        assert "reference_quote_estimate" in second["conversion_basis"]
+        assert second["conversion_is_execution_evidence"] is False
+        assert len(second["source_evidence_ids"]) == 2
+        assert len(runtime._pattern_amountful_windows["pool"]) == 2
+    asyncio.run(scenario())
+    runtime.store.close()
+
+
+def test_runtime_origin_verifies_known_create_signature_once_per_pool(tmp_path, monkeypatch):
+    runtime = Runtime.__new__(Runtime)
+    runtime.store = Store(tmp_path / "origin.sqlite3", initial_cash_usd=1000)
+    now = utcnow()
+    mint, pair = str(Pubkey.new_unique()), str(Pubkey.new_unique())
+    token = TokenCandidate("solana", mint, "Origin", "ORG", first_seen_at=now,
+        source="pumpportal:create", raw={"pump_event_type": "create", "txType": "create",
+        "signature": "known-create", "traderPublicKey": "unverified-feed-value"})
+    runtime.store.record_token_launch_fact(token, ingested_at=now)
+    pool = dict(token_id=token.token_id, pool_address=pair, base_mint=mint)
+    runtime._pattern_pool_targets = {pair: pool}
+    runtime._pattern_origin_cache = {}
+    runtime._chain_meme_active_idle_event = asyncio.Event()
+    runtime._chain_meme_active_idle_event.set()
+    runtime.held_accounts = SimpleNamespace()
+    calls = []
+
+    async def verify(collector, expected_mint, signature, **kwargs):
+        calls.append((expected_mint, signature))
+        return dict(status="verified", reason="verified", mint=expected_mint,
+            create_signature=signature, creator_address="chain-creator",
+            creator_identity_kind="token_creator", creator_identity_verified=True,
+            proof={"proof_version": "pump-create-origin/v1", "program_id": "pump"})
+
+    monkeypatch.setattr("memetrader.runtime.verify_creator_from_known_signature", verify)
+
+    async def scenario():
+        await runtime._chain_meme_pattern_origin_once(pool)
+        await runtime._chain_meme_pattern_origin_once(pool)
+
+    asyncio.run(scenario())
+    assert calls == [(mint, "known-create")]
+    row = runtime.store.db.execute(
+        "SELECT payload_json FROM chain_meme_pattern_evidence WHERE kind='token_origin'"
+    ).fetchone()
+    payload = runtime.store._json_object(row[0])
+    assert payload["creator_address"] == "chain-creator"
+    assert runtime._pattern_origin_cache[pair]["evidence_id"] is not None
+    runtime.store.close()
+
+
+def test_runtime_wsol_reference_is_independent_shared_and_bounded():
+    from memetrader.collectors import SOLANA_WRAPPED_SOL_MINT
+    runtime = Runtime.__new__(Runtime)
+    runtime._pattern_pool_targets = {"pool": {"quote_mint": SOLANA_WRAPPED_SOL_MINT}}
+    runtime._wsol_usdc_conversion = None
+    runtime._wsol_usdc_conversion_at = 0
+    runtime._wsol_usdc_reference_next_at = 0
+    runtime._jupiter_background_dispatch_lock = asyncio.Lock()
+    runtime._jupiter_quote_lock = asyncio.Lock()
+    runtime._jupiter_background_epoch_started = 0
+    runtime._jupiter_background_epoch_requests = 0
+    runtime._jupiter_background_epoch_seconds = 5
+    runtime._chain_meme_active_idle_event = asyncio.Event()
+    runtime._chain_meme_active_idle_event.set()
+    calls = []
+
+    async def quote(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"other_amount_threshold": "150000000", "completed_at": iso()}
+
+    runtime.jupiter = SimpleNamespace(quote=quote)
+
+    async def scenario():
+        await runtime.chain_meme_wsol_reference_once()
+        await runtime.chain_meme_wsol_reference_once()
+        runtime._chain_meme_active_idle_event.clear()
+        runtime._wsol_usdc_conversion["completed_at"] = iso(utcnow() - timedelta(seconds=31))
+        runtime._wsol_usdc_reference_next_at = 0
+        await runtime.chain_meme_wsol_reference_once()
+
+    asyncio.run(scenario())
+    assert len(calls) == 1
+    assert runtime._wsol_usdc_conversion["minimum_output_amount_raw"] == 150_000_000
+    assert runtime._jupiter_background_epoch_requests == 1
+
+
+def test_runtime_authoritative_event_records_once_before_pending_hydration(tmp_path, monkeypatch):
+    runtime = Runtime.__new__(Runtime)
+    runtime.store = Store(tmp_path / "authoritative.sqlite3", initial_cash_usd=1000)
+    runtime._chain_meme_active_idle_event = asyncio.Event()
+    runtime._chain_meme_active_idle_event.set()
+    runtime.http = SimpleNamespace()
+    now = utcnow()
+    address = str(Pubkey.new_unique())
+    event = dict(source="okx", source_kind="first_party", trusted=True,
+        event_type="official_listing", title="OKX will list ORG",
+        url="https://www.okx.com/help/official-origin", chain="solana",
+        contract_address=address, published_at=iso(now - timedelta(seconds=5)),
+        observed_at=iso(now), ingested_at=iso(now), source_host="www.okx.com",
+        next_frame_trade_required=True)
+
+    async def collect(http, **kwargs):
+        return {"events": [event], "diagnostics": []}
+
+    monkeypatch.setattr("memetrader.runtime.collect_okx_listing_events", collect)
+
+    async def scenario():
+        await runtime.chain_meme_authoritative_events_once()
+        await runtime.chain_meme_authoritative_events_once()
+
+    asyncio.run(scenario())
+    assert runtime.store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_pattern_evidence WHERE kind='authoritative_event'"
+    ).fetchone()[0] == 1
+    token_id = f"solana:{address}"
+    token = runtime.store.db.execute("SELECT source,url FROM tokens WHERE token_id=?", (token_id,)).fetchone()
+    assert (token["source"], token["url"]) == ("okx:official_listing", event["url"])
+    assert runtime.store.token_detail_hydration(token_id)["status"] == "pending"
+    runtime.store.close()
+
+
+def test_runtime_surface_cache_is_low_frequency_and_held_pool_survives_watch_expiry(tmp_path, monkeypatch):
+    runtime = Runtime.__new__(Runtime)
+    runtime.store = Store(tmp_path / "surface-inputs.sqlite3", initial_cash_usd=1000)
+    token = TokenCandidate("solana", str(Pubkey.new_unique()), "M", "M")
+    now = utcnow()
+    pool = dict(token_id=token.token_id, pool_address="pool", base_mint=token.address, evidence_id=1)
+    runtime._pattern_pool_targets = {"pool": pool}
+    runtime._pattern_pool_retry = {}
+    runtime._pattern_vault_tracker = PumpSwapVaultFlowTracker(summary_seconds=10)
+    runtime._pattern_watch = {token.token_id: dict(token=token, pair_address="pool",
+        expires_at=now - timedelta(seconds=1), quote=SimpleNamespace(observed_at=now), bucket="early")}
+    runtime._pattern_held_tokens = {token.token_id}
+    runtime.held_accounts = SimpleNamespace()
+    calls = []
+    async def surface(collector, candidate):
+        calls.append(candidate)
+        return dict(status="RESOLVED", complete=True, surface="NORMAL_DIRECT", observed_at=iso(now), recorded_at=iso(now))
+    monkeypatch.setattr("memetrader.runtime.collect_pumpswap_pool_surface", surface)
+    async def scenario():
+        runtime._remember_pattern_quotes({})
+        assert token.token_id in runtime._pattern_watch
+        await runtime.chain_meme_pattern_pools_once()
+        await runtime.chain_meme_pattern_pools_once()
+        assert len(calls) == 1 and "pool" in runtime._pattern_pool_targets
+        assert runtime._pattern_surface_cache["pool"]["surface"] == "NORMAL_DIRECT"
+        runtime._pattern_watch = {}
+        await runtime.chain_meme_pattern_pools_once()
+        assert "pool" in runtime._pattern_pool_targets
+        runtime._pattern_held_tokens.clear()
+        await runtime.chain_meme_pattern_pools_once()
+        assert runtime._pattern_pool_targets == {} and runtime._pattern_surface_cache == {}
+    asyncio.run(scenario())
+    runtime.store.close()
+
+
+@pytest.mark.parametrize("case", ["empty", "real_amount", "budget", "unsupported", "missing_raw", "no_route", "timeout"])
+def test_capital_quote_background_uses_real_raw_shared_budget_and_cancels_timeout(case):
+    from memetrader.collectors import SOLANA_USDC_MINT, JupiterNoRouteError
+    runtime = Runtime.__new__(Runtime)
+    task = dict(token_id="solana:" + str(Pubkey.new_unique()), pair_address="pool", arm_id="arm",
+                shadow_cohort_id=1, mark_id=7, input_amount_raw=12_345,
+                requested_synthetic_amount_raw=999_000_000_000, mint_decimals=6, kind="exit")
+    if case == "unsupported":
+        task["token_id"] = "bsc:0x123"
+    elif case == "missing_raw":
+        del task["input_amount_raw"]
+    calls, recorded, cancellations = [], [], []
+    expected_quote = dict(input_mint=task["token_id"].partition(":")[2], in_amount="12345",
+        output_mint=SOLANA_USDC_MINT, out_amount="1100000", other_amount_threshold="1000000",
+        slippage_bps=400, route_plan=[dict(amm_key="pool")])
+    async def quote(*args, **kwargs):
+        calls.append((args, kwargs))
+        if case == "no_route":
+            raise JupiterNoRouteError("No route")
+        if case == "timeout":
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancellations.append(True)
+                raise
+        return expected_quote
+    runtime.jupiter = SimpleNamespace(quote=quote)
+    runtime.store = SimpleNamespace(due_capital_quote=lambda **kwargs: None if case == "empty" else task,
+        record_capital_quote=lambda *args, **kwargs: recorded.append((args, kwargs)), heartbeat=lambda *args, **kwargs: None)
+    async def scenario():
+        runtime._jupiter_background_dispatch_lock = asyncio.Lock()
+        runtime._jupiter_quote_lock = asyncio.Lock()
+        runtime._jupiter_background_epoch_started = asyncio.get_running_loop().time()
+        runtime._jupiter_background_epoch_seconds = 5
+        runtime._jupiter_background_epoch_requests = 3 if case == "budget" else 0
+        await runtime.capital_quote_once()
+        if case != "timeout":
+            await runtime.capital_quote_once()
+        if case in {"empty", "budget"}:
+            assert not calls and not recorded
+            return
+        assert len(recorded) == 1 and recorded[0][0][0] is task
+        if case in {"unsupported", "missing_raw"}:
+            assert not calls and recorded[0][0][1] is None
+            return
+        assert calls == [((task["token_id"].partition(":")[2], SOLANA_USDC_MINT, 12_345), {"slippage_bps": 400})]
+        assert runtime._jupiter_background_epoch_requests == 1
+        if case == "real_amount":
+            assert recorded[0][0][1] is expected_quote
+            assert recorded[0][1]["error_code"] == ""
+        else:
+            assert recorded[0][0][1] is None
+            assert recorded[0][1]["error_code"] == ("QUOTE_TIMEOUT" if case == "timeout" else "NO_ROUTE")
+        if case == "timeout":
+            assert cancellations == [True]
+        assert not runtime._jupiter_quote_lock.locked()
+    asyncio.run(scenario())
+
+
 def test_participation_two_complete_windows_and_count_share(tmp_path, monkeypatch):
     store = Store(tmp_path / "participation.sqlite3", initial_cash_usd=1000)
     store.activate_chain_meme_trader_funded_period()
