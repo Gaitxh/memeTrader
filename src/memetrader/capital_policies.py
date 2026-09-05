@@ -170,3 +170,35 @@ def capital_policies() -> list[dict[str, Any]]:
             policy["description"] = "按实际同一交易原子组调整参与广度；无法覆盖未公开的跨交易bundle。"
         policies.append(policy)
     return policies
+
+
+def second_discussion_policies() -> list[dict[str, Any]]:
+    """Separate second-discussion mechanisms, never revisions of the first 18."""
+    import copy
+    parent = next(p for p in capital_policies() if p["arm_id"] == "high_recall_exit_pipeline_v1")
+    result = []
+    for direction, name in (("event_reawakening", "官方事件后复苏"),
+                            ("surface_lifecycle_pipeline", "按池类型分流的生命周期")):
+        p = copy.deepcopy(parent)
+        arm = direction + "_v1"
+        p.update(arm_id=arm, canonical_id=arm, name=name, entry_family=direction,
+                 source_arm_ids=[parent["arm_id"]],
+                 description="第二次独立讨论新增方向；实际来源和池身份确认后下一帧入场，尚未证明盈利。",
+                 entry_filter={"direction": direction, "min_mature_age_seconds": 3600,
+                               "min_effective_breadth": 2, "min_pool_supply_share": .5,
+                               "min_absorption_frames": 2,
+                               "event_types": ["official_listing", "official_launch", "migration", "contract_upgrade"]},
+                 notional_usd=5.0 if direction == "surface_lifecycle_pipeline" else 20.0)
+        result.append(p)
+    parents = {p["arm_id"]: p for p in capital_policies()}
+    for kind in ("vault_hazard", "earn_the_hold", "failed_continuation_profit_lock"):
+        for control in (False, True):
+            p = copy.deepcopy(parents[kind + "_v1"])
+            arm = f"paired_{kind}_{'control' if control else 'candidate'}_v1"
+            p.update(arm_id=arm, canonical_id=arm, name=kind + ("·同入场对照" if control else "·同入场候选"),
+                     paired_entry_group=kind, source_arm_ids=[kind + "_v1"])
+            p["entry_filter"]["paired_entry_kind"] = kind
+            if control:
+                p.update(capital_exit_kind=None, capital_exit_policy={})
+            result.append(p)
+    return result

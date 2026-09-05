@@ -116,6 +116,8 @@ def capital_entry_signal(history: Sequence[Mapping[str, Any]], policy: Mapping[s
 
 def capital_observation_signal(history, policy, *, decision_at, activated_at, context):
     """Dispatch new experiments only; never reinterpret an old strategy contract."""
+    if policy.get("paired_entry_group"):
+        policy = {**policy, "capital_exit_kind": policy["entry_filter"]["paired_entry_kind"]}
     activated = _time(activated_at)
     frames = [h for h in history if activated and _time(h.get("observed_at"))
               and _time(h["observed_at"]) >= activated]
@@ -127,6 +129,35 @@ def capital_observation_signal(history, policy, *, decision_at, activated_at, co
     if price is None or price <= 0 or liquidity is not None and liquidity < 1:
         return False, "entry_pool_price_or_liquidity_invalid"
     direction = policy["entry_filter"]["direction"]
+    if direction in {"event_reawakening", "surface_lifecycle_pipeline"}:
+        flow = context.get("amountful_flow") or {}
+        if not (flow.get("complete") is True and _evidence_ok(flow, decision, start)
+                and (_finite(flow.get("net_quote_flow_usd")) or 0) > 0
+                and (_finite(flow.get("effective_breadth")) or 0) >= policy["entry_filter"]["min_effective_breadth"]):
+            return False, "awaiting_positive_actual_flow_and_breadth"
+        age = _finite(last.get("pool_age_seconds"))
+        if age is not None and age >= policy["entry_filter"]["min_mature_age_seconds"]:
+            valid, reason = authoritative_event_shock_signal(frames, policy, decision_at, activated_at, context)
+            if not valid:
+                return False, reason
+            event_at = _time(context["event"]["recorded_at"])
+            post = [h for h in frames if _time(h["observed_at"]) > event_at]
+            if len(post) < 2 or post[-1]["price"] <= post[-2]["price"] or (
+                    _finite(post[-1].get("liquidity")) is None or _finite(post[-2].get("liquidity")) is None
+                    or post[-1]["liquidity"] < post[-2]["liquidity"]):
+                return False, "awaiting_post_event_price_and_depth_reclaim"
+            return True, "mature_event_reawakening_confirmed"
+        if direction == "event_reawakening":
+            return False, "awaiting_mature_event_pool"
+        surface = context.get("surface") or {}
+        if not (surface.get("complete") is True and _evidence_ok(surface, decision, start, fresh=False)):
+            return False, "surface_pipeline_awaiting_verified_pool"
+        if surface.get("surface") == "NORMAL_DIRECT":
+            return direct_lp_float_constrained_signal(frames, policy, decision_at, activated_at, context)
+        if surface.get("canonical_migration_pool") is True:
+            route = {**policy, "entry_filter": {**policy["entry_filter"], "direction": "migration_absorption"}}
+            return capital_entry_signal(frames, route, decision_at, activated_at, context)
+        return False, "pregraduation_watch_only_or_unsupported_surface"
     if direction == "direct_lp_float_constrained":
         return direct_lp_float_constrained_signal(frames, policy, decision_at, activated_at, context)
     if direction == "authoritative_event_shock":

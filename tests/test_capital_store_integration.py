@@ -83,6 +83,82 @@ def test_result_experiments_preserve_parents_and_single_slot_does_not_queue(tmp_
     store.close()
 
 
+def test_second_discussion_event_is_after_publication_next_frame_and_once_per_event(tmp_path, monkeypatch):
+    store, clock = _capital_store(tmp_path, monkeypatch, "second-discussion.sqlite3")
+    old = [tuple(r) for r in store.db.execute("SELECT * FROM chain_meme_trader_policy_additions ORDER BY id")]
+    assert store.register_chain_meme_second_discussion() == 8
+    assert store.register_chain_meme_second_discussion() == 0
+    assert [tuple(r) for r in store.db.execute("SELECT * FROM chain_meme_trader_policy_additions ORDER BY id LIMIT 18")] == old
+    token, pair = _new_token("MatureEvent"), str(Pubkey.new_unique())
+    start = clock[0]
+    arm = "event_reawakening_v1"
+    def event(seconds, key):
+        clock[0] = start + timedelta(seconds=seconds)
+        return store.record_chain_meme_pattern_evidence(token.token_id, "", "authoritative_event",
+            {"source_kind": "first_party", "trusted": True, "event_type": "official_listing",
+             "contract_address": token.address}, observed_at=clock[0], source_key=key)
+    def observe(seconds, price):
+        clock[0] = start + timedelta(seconds=seconds)
+        store.record_chain_meme_pattern_evidence(token.token_id, pair, "amountful_flow",
+            {"complete": True, "net_quote_flow_usd": 5, "effective_breadth": 3},
+            observed_at=clock[0], source_key=f"test-flow-{seconds}")
+        snap = _snapshot(token, pair, clock[0], price=price)
+        snap.raw["pair"]["pairCreatedAt"] = round((start - timedelta(hours=2)).timestamp()*1000)
+        store.observe_chain_meme_pattern(token, snap, recorded_at=clock[0])
+    def buys():
+        return store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_trades WHERE arm_id=? AND side='BUY'", (arm,)).fetchone()[0]
+    observe(1, 1)
+    assert buys() == 0
+    first = event(2, "official-event-one")
+    observe(3, 1)
+    observe(4, 1.1)
+    assert buys() == 0
+    observe(5, 1.2)
+    assert buys() == 1
+    sizes = {r["arm_id"]: (r["stake_usd"], r["paper_quantity_tokens"]) for r in store.db.execute(
+        "SELECT * FROM chain_meme_trader_positions WHERE arm_id IN (?,?)",
+        (arm, "surface_lifecycle_pipeline_v1"))}
+    assert sizes[arm] == pytest.approx((20, 20/(1.2*1.04)))
+    assert sizes["surface_lifecycle_pipeline_v1"] == pytest.approx((5, 5/(1.2*1.04)))
+    feature = json.loads(store.db.execute("SELECT c.feature_json FROM chain_meme_trader_positions p JOIN chain_meme_trader_v6_cohorts c ON c.id=p.shadow_cohort_id WHERE p.arm_id=?", (arm,)).fetchone()[0])
+    assert feature["event_keys"][arm] == first
+    # Entry-only fixture releases positions; the same event still must not buy again.
+    store.db.execute("UPDATE chain_meme_trader_positions SET status='closed',closed_at=? WHERE arm_id IN (?,?)", (iso(start+timedelta(seconds=6)), arm, "surface_lifecycle_pipeline_v1"))
+    store.db.commit()
+    observe(7, 1.3)
+    observe(8, 1.4)
+    assert buys() == 1
+    event(9, "official-event-two")
+    observe(10, 1.5)
+    observe(11, 1.6)
+    assert buys() == 1
+    observe(12, 1.7)
+    assert buys() == 2
+    store.close()
+
+
+def test_exit_pairs_share_the_same_buy_fill_with_equal_size(tmp_path, monkeypatch):
+    store, clock = _capital_store(tmp_path, monkeypatch, "paired-exits.sqlite3")
+    assert store.register_chain_meme_second_discussion() == 8
+    token, pair = _new_token("Paired"), str(Pubkey.new_unique())
+    start = clock[0]
+    clock[0] = start + timedelta(seconds=1)
+    store.record_chain_meme_pattern_evidence(token.token_id, pair, "pool_surface",
+        {"complete": True, "base_decimals": 6}, observed_at=clock[0], source_key="paired-surface")
+    _record_actual_flow(store, clock, token, pair, start+timedelta(seconds=2), net_raw=5_000_000)
+    _observe(store, clock, token, pair, start+timedelta(seconds=3), buys=4, sells=2)
+    assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_trades WHERE arm_id LIKE 'paired_%'").fetchone()[0] == 0
+    _observe(store, clock, token, pair, start+timedelta(seconds=4), buys=4, sells=2)
+    for kind in ("vault_hazard", "earn_the_hold", "failed_continuation_profit_lock"):
+        rows = store.db.execute("SELECT shadow_cohort_id,source_entry_fill_id,opened_at,stake_usd,paper_quantity_tokens "
+            "FROM chain_meme_trader_positions WHERE arm_id IN (?,?) ORDER BY arm_id",
+            (f"paired_{kind}_candidate_v1", f"paired_{kind}_control_v1")).fetchall()
+        assert len(rows) == 2
+        assert tuple(rows[0]) == tuple(rows[1])
+        assert rows[0]["stake_usd"] == 20
+    store.close()
+
+
 def test_market_entry_does_not_scan_historical_reservations_when_none_pending(tmp_path, monkeypatch):
     store, clock = _capital_store(tmp_path, monkeypatch, "empty-reservations.sqlite3")
     clock[0] += timedelta(seconds=1)

@@ -21,7 +21,7 @@ from .forward_patterns import experiment_policies, result_driven_policies, patte
 from .capital_entry import capital_observation_signal, capital_context_from_observations
 from .capital_context import evaluate_capital_exit_context
 from .capital_cross_section import build_capital_cross_section
-from .capital_policies import capital_policies, direct_lp_float_constrained_signal, authoritative_event_shock_signal
+from .capital_policies import capital_policies, second_discussion_policies, direct_lp_float_constrained_signal, authoritative_event_shock_signal
 from .capital_exits import evaluate_exit as evaluate_capital_exit, POST_TRIGGER_AMOUNT_QUOTE
 
 from .models import (
@@ -25442,6 +25442,18 @@ class Store:
                     added += 1
         return added
 
+    def register_chain_meme_second_discussion(self) -> int:
+        added = 0
+        for policy in second_discussion_policies():
+            with self._lock:
+                exists = self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?",
+                    (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, policy["arm_id"])).fetchone()
+                if exists is None:
+                    self.append_chain_meme_trader_policy(policy)
+                    added += 1
+        return added
+
     def capital_cross_section(self, targets, *, now=None):
         current = parse_time(now or utcnow())
         version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
@@ -25652,6 +25664,8 @@ class Store:
                 (token.token_id, iso(decision_at - timedelta(minutes=20)), iso(decision_at)),
             ).fetchall()[::-1]:
                 source_raw = self._json_object(source["raw_json"])
+                if source_raw.get("allocation_source_snapshot_id"):
+                    continue  # A sizing projection is not another market observation.
                 source_pair = source_raw.get("pair", source_raw)
                 source_address = canonical_token_address(token.chain, str(source_pair.get("pairAddress") or ""))
                 created = source_pair.get("pairCreatedAt")
@@ -25732,6 +25746,34 @@ class Store:
                         gap = (decision_at-parse_time(prior["closed_at"])).total_seconds()
                         if 600 <= gap <= 14400 and p["arm_id"] not in still_open:
                             already_bought.discard(p["arm_id"])
+            event_keys = {}
+            for policy in active:
+                if policy.get("entry_family") not in {"event_reawakening", "surface_lifecycle_pipeline"}:
+                    continue
+                arm = policy["arm_id"]
+                event = capital_context.get("event") or {}
+                event_key = event.get("evidence_id")
+                if arm in still_open:
+                    entry_blocked[arm] = "event_position_still_open"
+                if not event_key:
+                    continue
+                event_keys[arm] = event_key
+                used = self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_positions p JOIN chain_meme_trader_v6_cohorts c "
+                    "ON c.id=p.shadow_cohort_id WHERE p.definition_version=? AND p.arm_id=? AND p.token_id=? "
+                    "AND json_extract(c.feature_json,?)=? LIMIT 1",
+                    (version, arm, token.token_id, '$.event_keys."'+arm+'"', event_key)).fetchone()
+                if used:
+                    entry_blocked[arm] = "event_already_consumed"
+                elif arm not in still_open:
+                    closed = self.db.execute(
+                        "SELECT MAX(closed_at) FROM chain_meme_trader_positions "
+                        "WHERE definition_version=? AND arm_id=? AND token_id=?",
+                        (version, arm, token.token_id)).fetchone()[0]
+                    if closed and event["recorded_at"] <= closed:
+                        entry_blocked[arm] = "event_predates_previous_exit"
+                    else:
+                        already_bought.discard(arm)
             ready, outcomes = [], {}
             for policy in active:
                 if policy.get("capital_experiment"):
@@ -25756,13 +25798,27 @@ class Store:
                 if passed:
                     ready.append(policy["arm_id"])
             admitted_arms = [p["arm_id"] for p in active if post_valid and p["arm_id"] in pending
-                             and p["arm_id"] not in already_bought and p["arm_id"] not in entry_blocked]
+                             and p["arm_id"] not in already_bought and p["arm_id"] not in entry_blocked
+                             and (p.get("entry_family") not in {"event_reawakening", "surface_lifecycle_pipeline"} or
+                                  previous_features.get("event_keys", {}).get(p["arm_id"]) == event_keys.get(p["arm_id"]))]
+            paired = {}
+            for p in active:
+                if p.get("paired_entry_group"):
+                    paired.setdefault(p["paired_entry_group"], []).append(p["arm_id"])
+            for arms in paired.values():
+                if len(arms) != 2 or not all(arm in admitted_arms for arm in arms):
+                    admitted_arms = [arm for arm in admitted_arms if arm not in arms]
             features = {"source_snapshot_id": snapshot_id, "pair_address": pair_address,
                         "observed_at": iso(snapshot.observed_at), "ready_arm_ids": ready,
                         "outcomes": outcomes, "fill_signal_snapshot_id": previous_features.get("source_snapshot_id"),
                         "evidence": context, "capital_evidence_ids": {
                             k: v.get("evidence_id") for k,v in capital_context.items() if isinstance(v, Mapping)},
                         "wave_parents": wave_rows,
+                        "event_keys": event_keys,
+                        "entry_routes": {p["arm_id"]: {"reason": outcomes.get(p["arm_id"]),
+                            "surface": (capital_context.get("surface") or {}).get("surface"),
+                            "surface_evidence_id": (capital_context.get("surface") or {}).get("evidence_id")}
+                            for p in active if p.get("entry_family") == "surface_lifecycle_pipeline"},
                         "entry_signal_key": "isolated_patterns/v1", "policy_entry_family": "pattern_experiments"}
             projected = 0
             with self.db:
@@ -25772,11 +25828,27 @@ class Store:
                         notional = float(p.get("notional_usd") or definition["policy_notional_usd"])
                         by_notional.setdefault(notional, []).append(p["arm_id"])
                 net_flows = self._chain_meme_trader_effective_net_flows(version) if by_notional else {}
-                for notional, cohort_arms in by_notional.items():
+                for arms in paired.values():
+                    if not all(float(definition["starting_cash_usd_each_arm"]) + net_flows.get(arm, 0) >= 20 for arm in arms):
+                        for group_arms in by_notional.values():
+                            group_arms[:] = [arm for arm in group_arms if arm not in arms]
+                by_notional = {n: arms for n, arms in by_notional.items() if arms}
+                for group_index, (notional, cohort_arms) in enumerate(by_notional.items()):
+                    allocation_snapshot_id = snapshot_id
+                    allocation_at = decision_at
+                    if group_index:
+                        # The legacy cohort key is unique per snapshot. Distinct order
+                        # sizes need distinct fills, but reuse the same source receipt.
+                        allocation_snapshot_id = self.add_snapshot(replace(isolated, raw={
+                            **isolated.raw, "allocation_source_snapshot_id": snapshot_id,
+                            "allocation_notional_usd": notional}))
+                        allocation_at = max(decision_at, parse_time(self.db.execute(
+                            "SELECT recorded_at FROM token_snapshots WHERE id=?",
+                            (allocation_snapshot_id,)).fetchone()[0]))
                     episode = self.db.execute("SELECT COALESCE(MAX(episode_no),0)+1 FROM chain_meme_trader_v6_cohorts WHERE definition_version=? AND token_id=?", (version, token.token_id)).fetchone()[0]
                     cursor = self.db.execute(
                         "INSERT INTO chain_meme_trader_v6_cohorts(definition_version,token_id,entry_family,source_snapshot_id,pair_address,decided_at,episode_no,feature_json) VALUES(?,?,'broad_launch',?,?,?,?,?)",
-                        (version, token.token_id, snapshot_id, pair_address, iso(decision_at), episode, self._json(features)))
+                        (version, token.token_id, allocation_snapshot_id, pair_address, iso(allocation_at), episode, self._json(features)))
                     cohort = int(cursor.lastrowid)
                     for arm in cohort_arms:
                         cash = float(definition["starting_cash_usd_each_arm"]) + net_flows.get(arm, 0)
@@ -25785,12 +25857,12 @@ class Store:
                             "WHERE definition_version=? AND arm_id=? AND status='open'", (version, arm)).fetchone()[0] if arm == "finite_capital_ranker_v1" else 0
                         enough = enough and slots < 3
                         self.db.execute("INSERT INTO chain_meme_trader_entry_decisions(definition_version,arm_id,shadow_cohort_id,token_id,baseline_quote_result_id,decided_at,status,reason) VALUES(?,?,?,?,?,?,?,?)",
-                            (version, arm, cohort, token.token_id, snapshot_id, iso(decision_at),
+                            (version, arm, cohort, token.token_id, allocation_snapshot_id, iso(allocation_at),
                              "admitted" if enough else "rejected", "pattern_next_observation" if enough else
                              "ranker_concurrent_slot_limit" if slots >= 3 else "entry_cash_below_order_size"))
                     projected += self._project_chain_meme_trader_market_entry(version=version, cohort_id=cohort,
-                        token_id=token.token_id, snapshot_id=snapshot_id, market_price=float(snapshot.price_usd),
-                        filled_at=iso(decision_at), reason="pattern_next_observation",
+                        token_id=token.token_id, snapshot_id=allocation_snapshot_id, market_price=float(snapshot.price_usd),
+                        filled_at=iso(allocation_at), reason="pattern_next_observation",
                         definition={**definition, "policy_notional_usd": notional},
                         net_flow_by_arm=net_flows)
                 self.db.execute("INSERT INTO chain_meme_trader_v6_entry_evaluations(definition_version,source_snapshot_id,token_id,evaluated_at,status,entry_family,reason,feature_json) VALUES(?,?,?,?,?,NULL,'pattern_observation',?)",

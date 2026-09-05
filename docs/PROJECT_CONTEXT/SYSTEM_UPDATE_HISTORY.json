@@ -2,6 +2,17 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260906-independent-event-and-paired-exits",
+      "recorded_at": "2026-09-05T19:40:00Z",
+      "title": "独立事件复苏、池类型分流和同入场退出对照",
+      "problem": "第二篇不能被缩为第一篇新增两条；原实验缺同BUY退出对照；同帧不同下单规模会违反cohort唯一约束。",
+      "change": "新增事件/池类型两臂和三组候选对照共8臂；事件键防重复，配对共享BUY；不同规模明确allocation映射，不重复采样。",
+      "rationale": "真实验证不同入场和退出机制，保持现有策略及自然历史，不能以名称数量宣称覆盖全部。",
+      "validation": "事件后两帧信号/下一帧入场、一次一事件、5U/20U独立数量、三组同BUY，以及原有两种规模回归通过。",
+      "scope": "原166保留，部署后174；PREGRAD、无CA冻结排名及额外机会研究继续。",
+      "status": "代码/测试通过，准备部署"
+    },
+    {
       "id": "20260906-exact-original-pool-and-result-arms",
       "recorded_at": "2026-09-05T19:15:00Z",
       "title": "补采漏失原池，新增两项结果驱动实验",

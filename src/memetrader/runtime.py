@@ -1324,6 +1324,7 @@ class Runtime:
                     self.store.register_chain_meme_pattern_experiments()
                     self.store.register_chain_meme_capital_experiments()
                     self.store.register_chain_meme_result_experiments()
+                    self.store.register_chain_meme_second_discussion()
                     self.store.register_chain_meme_v22_vault_shadow(
                         position_definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
                     )
