@@ -40,11 +40,11 @@
   "active_cycle": {
     "priority": "P1",
     "cycle_id": "funding-20260905-fixed-1000",
-    "status": "NINE_DIRECTIONS_18_ARMS_DEPLOYED_146_NATURAL_INPUTS_OBSERVATION",
-    "objective": "7102626 deployed at12:26:54Z after renewed explicit user restart authorization.146 strategies including all18 pattern arms; four new D1/D8 registered at12:26:57Z/frontier844074. Original142/funding/history preserved,8790 healthy. Continue bounded real input coverage/economic observation, not another restart. No reset/backfill/Live/alpha claim.",
+    "status": "NINE_DIRECTIONS_18_ARMS_RUNNING_FIRST_WINDOW_REVIEW_AUTOMATION_CHOICE_PENDING",
+    "objective": "146 strategies/all18 pattern arms deployed.7e51bae at12:44:51Z adds20min mature observation without extra slots and truthful hourly scout result; original funding/history preserved. D1RPC and D8scout real empty windows observed;41 matched runner pairs not profitable. Existing2h automation confirmed PAUSED; user asked whether to restore, no duplicate or automatic resume. Runtime healthy. Natural economic validation continues, no reset/backfill/Live/alpha claim.",
     "scope_guard": "The one user-authorized initialization was used at 2026-09-05T07:37:08.842373Z, snapshot frontier 829428. Never repeat it automatically. Old positions continue exiting in their old funding period; proceeds must not fund new accounts. Preserve all history and IDs. No MAE/MFE, no manual strategy selection, no future data or historical backfill. Valid same-pool liquidity below 1 USD writes off remaining Paper cost. Live stays locked: balance sizing and mocked tests do not resolve Paper-fill signal/exit coupling or constitute mainnet validation.",
-    "fact_cutoff_utc": "2026-09-05T12:27:20Z",
-    "latest_result_message_id": "C2C-20260905-122720-ALL-PATTERNS-DEPLOYED",
+    "fact_cutoff_utc": "2026-09-05T12:48:21Z",
+    "latest_result_message_id": "C2C-20260905-124851-NINE-NATURAL-REVIEW",
     "current_result_report": "docs/PROJECT_CONTEXT/NINE_DIRECTION_IMPLEMENTATION_2026-09-05.md",
     "historical_snapshot_warning": "The older narrative snapshots below are retained history, not current runtime authority. In particular unconstrained funding and unconditional stability claims are superseded by current_result_report.",
     "latest_result_snapshot": "Commits 769dc47/15b4d73/3883c0b pushed; pool identity and full-period sampled account UI deployed without reset. Four historical cross-pool SELL corrections preserved raw trades and quarantined 86 capital-path-contaminated samples. Multiple SELL corrections on one position now aggregate; two affected API realized PNL values match effective ledgers within 6e-13U. 305 post-deployment SELLs had no pool/time-order mismatch. New independent cost-coverage scaleout started 2026-09-05T09:00:51.814712Z at snapshot frontier833371; existing127 unchanged, now128. At09:04 short-window strategy period p95=1.097s and batch apply/exit p95=.0995s; external fetch p95=8.418s. Full-period curves use incremental indexed reads and bounded sampling; MDD is calculated before display sampling. Discovery supports ALL/Solana/BSC/Robinhood with actual decision counts. Two affected accounts still have unresolved historical execution evidence and no fabricated equity; per-token freshness long tails and Live Paper-fill coupling remain explicit limitations.",
@@ -877,7 +877,7 @@
       "next_sync_event": "natural Flat Compression Breakout evidence, sustained provider outage, or evidence-backed additive strategy synthesis"
     }
   ],
-  "last_codex_reply_id": "C2C-20260905-122720-ALL-PATTERNS-DEPLOYED",
+  "last_codex_reply_id": "C2C-20260905-124851-NINE-NATURAL-REVIEW",
   "forced_attention_message_id": null,
   "forced_attention_instruction": "No forced attention remains from C2C-20260904-115000. Await natural runner/Vault Shadow evidence before additive result-driven synthesis; preserve the old 124 and keep Live locked.",
   "attention_required": false,
