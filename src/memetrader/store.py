@@ -2983,10 +2983,11 @@ class Store:
                     shadow_cohort_id INTEGER NOT NULL,
                     token_id TEXT NOT NULL,
                     entry_snapshot_id INTEGER NOT NULL,
-                    entry_liquidity_usd REAL NOT NULL CHECK(entry_liquidity_usd<1),
+                    entry_liquidity_usd REAL,
                     amount_usd REAL NOT NULL CHECK(amount_usd>0),
                     reason TEXT NOT NULL,
-                    recorded_at TEXT NOT NULL
+                    recorded_at TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL DEFAULT '{}'
                 );
                 CREATE INDEX IF NOT EXISTS chain_meme_trader_capital_credits_version_idx
                     ON chain_meme_trader_capital_credits(definition_version,arm_id,recorded_at);
@@ -25158,7 +25159,10 @@ class Store:
                 if (str(row["arm_id"]), int(row["shadow_cohort_id"])) in excluded:
                     continue  # This BUY was already removed from effective cash; do not refund twice.
                 cursor = self.db.execute(
-                    "INSERT OR IGNORE INTO chain_meme_trader_capital_credits VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT OR IGNORE INTO chain_meme_trader_capital_credits("
+                    "source_buy_trade_id,definition_version,arm_id,shadow_cohort_id,token_id,"
+                    "entry_snapshot_id,entry_liquidity_usd,amount_usd,reason,recorded_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?)",
                     (row["id"], version, row["arm_id"], row["shadow_cohort_id"], row["token_id"],
                      row["entry_snapshot_id"], row["entry_liquidity"], row["principal"],
                      "user_authorized_entry_pool_below_1_principal_topup", credited_at),
@@ -25169,6 +25173,61 @@ class Store:
             return {"definition_version": version, "new_credits": count, "new_amount_usd": amount,
                     "recorded_at": credited_at,
                     "by_arm": self.chain_meme_capital_credits_from_connection(self.db, version)}
+
+    def credit_chain_meme_update_delay_losses(
+        self, source_buy_trade_ids: list[int], *, evidence: Mapping[str, Any], recorded_at: Any = None,
+    ) -> dict[str, Any]:
+        """Operator-confirmed affected BUYs only; compensate closed actual loss, not hypothetical profit."""
+        version, credited_at = self.CHAIN_MEME_TRADER_ACTIVE_VERSION, iso(parse_time(recorded_at or utcnow()))
+        if not evidence:
+            raise ValueError("confirmed acquisition failure evidence is required")
+        count, amount, pending = 0, 0.0, []
+        with self._lock, self.db:
+            excluded = {(str(r["arm_id"]), int(r["shadow_cohort_id"])) for r in
+                        self._chain_meme_trader_accounting_contaminations_from_connection(self.db, version)}
+            corrected = {(str(r["arm_id"]), int(r["shadow_cohort_id"])) for r in
+                         self._chain_meme_trader_market_fill_corrections_from_connection(self.db, version)}
+            for buy_id in dict.fromkeys(source_buy_trade_ids):
+                row = self.db.execute(
+                    "SELECT p.*,e.liquidity_usd AS entry_liquidity FROM chain_meme_trader_positions p "
+                    "JOIN chain_meme_trader_trades t ON t.definition_version=p.definition_version "
+                    "AND t.arm_id=p.arm_id AND t.shadow_cohort_id=p.shadow_cohort_id "
+                    "AND t.token_id=p.token_id AND t.side='BUY' "
+                    "LEFT JOIN token_snapshots e ON e.id=p.entry_snapshot_id AND e.token_id=p.token_id "
+                    "WHERE p.definition_version=? AND t.id=?", (version, buy_id),
+                ).fetchone()
+                if row is None:
+                    raise ValueError(f"affected BUY {buy_id} is not in the current period")
+                key = (str(row["arm_id"]), int(row["shadow_cohort_id"]))
+                if key in excluded or key in corrected:
+                    pending.append(buy_id)
+                    continue
+                if row["status"] not in {"closed", "written_off"} or not row["closed_at"] or row["closed_at"] > credited_at:
+                    pending.append(buy_id)
+                    continue
+                ledger = self.db.execute(
+                    "SELECT SUM(net_cash_flow_usd) AS net,MAX(COALESCE(recorded_at,created_at)) AS last_at "
+                    "FROM chain_meme_trader_trades WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+                    (version, *key),
+                ).fetchone()
+                loss = max(0.0, -float(ledger["net"] or 0.0))
+                if ledger["last_at"] > credited_at:
+                    pending.append(buy_id)
+                    continue
+                if loss <= 0:
+                    continue
+                cursor = self.db.execute(
+                    "INSERT OR IGNORE INTO chain_meme_trader_capital_credits VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (buy_id, version, *key, row["token_id"], row["entry_snapshot_id"], row["entry_liquidity"],
+                     loss, "user_authorized_confirmed_update_delay_actual_loss", credited_at,
+                     self._json({"failure": dict(evidence), "closed_at": row["closed_at"],
+                                 "actual_net_cash_flow_usd": ledger["net"], "last_trade_at": ledger["last_at"]})),
+                )
+                if cursor.rowcount:
+                    count += 1
+                    amount += loss
+        return {"definition_version": version, "new_credits": count, "new_amount_usd": amount,
+                "pending_buy_ids": pending, "recorded_at": credited_at}
 
     def repair_chain_meme_orphan_token_catalog(self) -> list[str]:
         """Restore identity from original entry evidence; never replay a quote or trade."""

@@ -317,7 +317,8 @@ class ChainWebData:
                 "'geckoterminal:bsc','geckoterminal:robinhood',"
                 "'flat-compression-breakout-shadow') ORDER BY source")
             held = self._rows(connection,
-                "SELECT t.chain,CASE WHEN COUNT(m.last_success_at)=COUNT(*) THEN "
+                "SELECT COALESCE(t.chain,substr(p.token_id,1,instr(p.token_id,':')-1)) AS chain,"
+                "CASE WHEN COUNT(m.last_success_at)=COUNT(*) THEN "
                 "MIN(m.last_success_at) END AS last_success_at,MIN(m.last_attempt_at) AS last_attempt_at,"
                 "MAX(COALESCE(m.failure_kind,'')) AS last_failure_kind FROM ("
                 "SELECT DISTINCT p.token_id,CASE WHEN p.token_id LIKE 'solana:%' THEN "
@@ -328,8 +329,8 @@ class ChainWebData:
                 "LEFT JOIN chain_meme_trader_v6_cohorts c ON c.id=p.shadow_cohort_id "
                 "AND c.definition_version=p.definition_version WHERE p.status='open' "
                 f"AND p.definition_version IN ({','.join('?' for _ in versions)})) p "
-                "JOIN tokens t ON t.token_id=p.token_id LEFT JOIN chain_meme_trader_pool_marks m "
-                "ON m.token_id=p.token_id AND m.pair_address=p.pair_address GROUP BY t.chain,p.token_id", versions)
+                "LEFT JOIN tokens t ON t.token_id=p.token_id LEFT JOIN chain_meme_trader_pool_marks m "
+                "ON m.token_id=p.token_id AND m.pair_address=p.pair_address GROUP BY p.token_id", versions)
         now = utcnow()
         by_chain: dict[str, Any] = {}
         for item in held:

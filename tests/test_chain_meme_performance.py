@@ -184,6 +184,48 @@ def test_dust_principal_credit_is_idempotent_cash_only_and_preserves_evidence(tm
     store.close()
 
 
+def test_confirmed_update_delay_credit_uses_closed_net_loss_and_never_duplicates(tmp_path):
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    store.activate_chain_meme_trader_funded_period()
+    version = Store.CHAIN_MEME_TRADER_ACTIVE_VERSION
+    definition = store._chain_meme_trader_effective_definition(
+        version, store._chain_meme_trader_registration(version)["definition_json"])
+    arm = definition["policies"][0]["arm_id"]
+    now = utcnow() + timedelta(seconds=20)
+    cases = []
+    for status, proceeds, liquidity in [("closed", 12, 1000), ("closed", 30, 1000),
+                                        ("open", 0, 1000), ("written_off", 0, .5)]:
+        token, cohort, buy, _ = _insert_position(store, version=version, arm_id=arm,
+            opened_at=now-timedelta(seconds=5), status=status, sell_gross_usd=proceeds)
+        snapshot = store.add_snapshot(TokenSnapshot("solana", token.address, 1, liquidity, 1000, 100, 3, 2,
+            observed_at=now-timedelta(seconds=6), ingested_at=now-timedelta(seconds=6)))
+        with store.db:
+            # Market projection stores the shared entry-fill ID in the legacy source field, not ledger BUY ID.
+            store.db.execute("UPDATE chain_meme_trader_positions SET entry_snapshot_id=?,source_buy_trade_id=90000+source_buy_trade_id WHERE source_buy_trade_id=?",
+                             (snapshot, buy))
+        cases.append((token, buy))
+    # Missing catalog identities remain visible in monitoring instead of disappearing from its denominator.
+    with store.db:
+        store.db.execute("DELETE FROM tokens WHERE token_id=?", (cases[2][0].token_id,))
+    config = initial_config()
+    config["database"] = "db.sqlite3"
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    coverage = ChainWebData(config_path).performance_state()["held_by_chain"]["solana"]
+    assert (coverage["tokens"], coverage["missing"]) == (1, 1)
+    assert store.credit_chain_meme_dust_entries(recorded_at=now)["new_amount_usd"] == 20
+    original = [tuple(r) for r in store.db.execute("SELECT * FROM chain_meme_trader_trades ORDER BY id")]
+    cash_before = store._chain_meme_trader_effective_net_flows(version)[arm]
+    ids = [buy for _, buy in cases]
+    result = store.credit_chain_meme_update_delay_losses(ids, evidence={"cause": "confirmed orphan catalog"}, recorded_at=now)
+    assert (result["new_credits"], result["new_amount_usd"]) == (1, 8)
+    assert result["pending_buy_ids"] == [ids[2]]
+    assert store.credit_chain_meme_update_delay_losses(ids, evidence={"cause": "same failure"}, recorded_at=now)["new_credits"] == 0
+    assert store._chain_meme_trader_effective_net_flows(version)[arm] == pytest.approx(cash_before+8)
+    assert [tuple(r) for r in store.db.execute("SELECT * FROM chain_meme_trader_trades ORDER BY id")] == original
+    store.close()
+
+
 def test_unchanged_market_and_equity_evaluations_do_not_update_positions(
     tmp_path: Path,
 ):
