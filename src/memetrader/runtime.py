@@ -32,6 +32,7 @@ from .authoritative_events import collect_okx_listing_events
 from .pregrad_watch import PregradWatch
 from .event_candidates import freeze_event_candidates, rank_frozen_event_candidates, event_candidate_source_key
 from .capital_research import load_competing_risk_samples, seal_competing_risk_model, competing_risk_context
+from .capital_duration_risk import load_duration_risk_samples, seal_duration_risk_model, duration_risk_context
 
 from .autonomous_search import AutonomousSearchAgent, _canonical_social_url, _same_social_url
 from .collectors import (
@@ -1328,6 +1329,8 @@ class Runtime:
                     self.store.register_chain_meme_result_experiments()
                     self.store.register_chain_meme_second_discussion()
                     self.store.register_chain_meme_opportunity_experiments()
+                    self.store.register_chain_meme_duration_risk_experiment()
+                    self.store.register_chain_meme_direct_lp_amount_specific_experiment()
                     self.store.register_chain_meme_v22_vault_shadow(
                         position_definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
                     )
@@ -2218,8 +2221,9 @@ class Runtime:
         if not self._market_pool_gaps:
             return
         now = asyncio.get_running_loop().time()
-        due = [(key, item) for key, item in self._market_pool_gaps.items()
-               if float(item["next_attempt"]) <= now]
+        due = sorted(((key, item) for key, item in self._market_pool_gaps.items()
+                      if float(item["next_attempt"]) <= now),
+                     key=lambda row: float(row[1]["next_attempt"]))
         if not due:
             return
         chain = str(due[0][1]["chain"])
@@ -5338,7 +5342,7 @@ class Runtime:
         return targets
 
     async def chain_meme_pattern_pools_once(self) -> None:
-        """Bounded pre-entry Pool/Vault verification, never a trade/exit authority."""
+        """Shared bounded Pool/Vault verification, with held-first leased slots."""
         await self._chain_meme_active_idle().wait()
         watch = getattr(self, "_pattern_watch", {})
         held = getattr(self, "_pattern_held_tokens", set())
@@ -5350,9 +5354,24 @@ class Runtime:
         self._pattern_pool_retry = {k: v for k, v in self._pattern_pool_retry.items() if k in pool_map}
         self._pattern_vault_tracker.retain(v["evidence_id"] for v in self._pattern_pool_targets.values())
         now = asyncio.get_running_loop().time()
+        # Keep retained pools' flow baselines intact; rotate only after enough
+        # residence for two nominal 45s participation rounds across six pools.
+        selected = {k: v for k, v in getattr(self, "_pattern_pool_selected_at", {}).items()
+                    if k in pool_map or k in self._pattern_pool_targets}
+        for address in self._pattern_pool_targets:
+            selected.setdefault(address, now)
+        self._pattern_pool_selected_at = selected
+        victims = sorted((address for address, target in self._pattern_pool_targets.items()
+                          if target["token_id"] not in held
+                          or (address in pool_map and now - selected[address] >= 120)),
+                         key=lambda address: (self._pattern_pool_targets[address]["token_id"] in held,
+                                              selected[address], address))
+        replacements = {}
+        free_slots = 6 - len(self._pattern_pool_targets)
         candidates = []
-        for address, item in pool_map.items():
-            if len(self._pattern_pool_targets) + len(candidates) >= 6 or len(candidates) >= 2:
+        for address, item in sorted(pool_map.items(), key=lambda row:
+                (row[1]["token"].token_id not in held, selected.get(row[0], 0), row[0])):
+            if len(candidates) >= 2:
                 break
             if address in self._pattern_pool_targets or self._pattern_pool_retry.get(address, 0) > now:
                 continue
@@ -5364,6 +5383,12 @@ class Runtime:
             try:
                 Pubkey.from_string(address)
             except ValueError:
+                continue
+            if free_slots:
+                free_slots -= 1
+            elif item["token"].token_id in held and victims:
+                replacements[address] = victims.pop(0)
+            else:
                 continue
             candidates.append({"pool_address": address, "base_mint": item["token"].address,
                 "token_id": item["token"].token_id, "quote_observed_at": iso(item["quote"].observed_at),
@@ -5382,9 +5407,17 @@ class Runtime:
                 "pool_resolution", outcome, observed_at=received,
                 source_key=f"{outcome['pool_address']}:{iso(received)}")
             if outcome.get("status") == "RESOLVED" and evidence_id is not None:
+                retired = replacements.get(outcome["pool_address"])
+                if retired is not None:
+                    self._pattern_pool_targets.pop(retired, None)
+                    # A later readmission has a real sampling gap, not adjacent windows.
+                    getattr(self, "_pattern_participation_frontiers", {}).pop(retired, None)
+                    getattr(self, "_pattern_amountful_windows", {}).pop(retired, None)
                 self._pattern_pool_targets[outcome["pool_address"]] = {
                     **outcome, "evidence_id": evidence_id,
                     "observed_at": iso(received), "recorded_at": iso(utcnow())}
+                selected[outcome["pool_address"]] = now
+        self._pattern_vault_tracker.retain(v["evidence_id"] for v in self._pattern_pool_targets.values())
         self.store.heartbeat("chain-meme-pattern-pools", item=bool(self._pattern_pool_targets),
             error_detail=f"active={len(self._pattern_pool_targets)};attempted={len(candidates)}")
         await self._chain_meme_pattern_surface_once()
@@ -6333,6 +6366,7 @@ class Runtime:
         ) -> int:
             batch_started = asyncio.get_running_loop().time()
             timing = getattr(self, "runtime_timing", None)
+            fetch_metric = "held_fetch" if high_priority else "observer_fetch_with_wait"
             if not high_priority:
                 await self._chain_meme_active_idle().wait()
             try:
@@ -6342,7 +6376,7 @@ class Runtime:
                 )
             except Exception as exc:
                 if timing is not None:
-                    timing.observe("held_fetch", asyncio.get_running_loop().time()-batch_started, failures=1)
+                    timing.observe(fetch_metric, asyncio.get_running_loop().time()-batch_started, failures=1)
                     if high_priority:
                         timing.observe_retrieval(chain=chain,
                             duration_seconds=asyncio.get_running_loop().time()-batch_started,
@@ -6378,7 +6412,7 @@ class Runtime:
             received_at = utcnow()
             apply_started = asyncio.get_running_loop().time()
             if timing is not None:
-                timing.observe("held_fetch", apply_started-batch_started, items=len(chunk))
+                timing.observe(fetch_metric, apply_started-batch_started, items=len(chunk))
             outcomes = []
             priced_tokens = 0
             for item in chunk:
@@ -6523,7 +6557,8 @@ class Runtime:
                 heartbeat_name, item=refreshed_count > 0,
             )
             if timing is not None:
-                timing.observe("held_apply_exit", asyncio.get_running_loop().time()-apply_started, items=refreshed_count)
+                timing.observe("held_apply_exit" if high_priority else "observer_apply_exit",
+                    asyncio.get_running_loop().time()-apply_started, items=refreshed_count)
             if observe_flat_breakout:
                 self.store.observe_flat_compression_breakout_market_batch(
                     outcomes, recorded_at=received_at,
@@ -6669,6 +6704,7 @@ class Runtime:
                 except (httpx.HTTPError, TimeoutError) as exc:
                     self.store.heartbeat("chain-meme-pattern-observer", error=type(exc).__name__)
             for item in targets:
+                await self._chain_meme_active_idle().wait()
                 token = item["token"]
                 snapshot = item["quote"]
                 if (item.get("sampled_at") == snapshot.observed_at
@@ -6693,10 +6729,23 @@ class Runtime:
                     context["competing_risk"] = competing_risk_context(model, token_id=token.token_id,
                         liquidity_usd=observation.liquidity_usd, observed_at=iso(observation.observed_at),
                         recorded_at=iso(received), decision_at=iso(received))
+                phase_started = asyncio.get_running_loop().time()
+                duration_model = getattr(self, "_duration_risk_model", None)
+                if duration_model:
+                    context["duration_risk"] = duration_risk_context(duration_model,
+                        token_id=token.token_id, liquidity_usd=observation.liquidity_usd,
+                        observed_at=iso(observation.observed_at), recorded_at=iso(received),
+                        decision_at=iso(received))
                 projected += self.store.observe_chain_meme_pattern(token, observation, recorded_at=received,
                     cross_section=context)
+                if hasattr(self, "runtime_timing"):
+                    self.runtime_timing.observe("pattern_token_compute",
+                        asyncio.get_running_loop().time() - phase_started, items=1)
                 item["sampled_at"] = snapshot.observed_at
                 sampled += 1
+                # Independent candidate work must not monopolize the event loop
+                # while held-market responses and exits are already ready.
+                await asyncio.sleep(0)
         self.store.heartbeat("chain-meme-pattern-observer", item=sampled > 0,
             error_detail=f"watched={len(watch)};sampled={sampled};projected={projected}")
 
@@ -6901,6 +6950,37 @@ class Runtime:
         except Exception as exc:
             self.store.heartbeat("capital-research-seal", error=type(exc).__name__)
 
+    async def seal_duration_research_once(self) -> None:
+        """One bounded read-only seal at this new strategy's actual deployment cutoff."""
+        version = self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        key = "capital_research:duration_competing_risk_v1:" + version
+        existing = self.store.get_kv(key)
+        if existing:
+            self._duration_risk_model = existing
+            return
+        row = self.store.db.execute(
+            "SELECT activated_at FROM chain_meme_trader_policy_additions "
+            "WHERE definition_version=? AND arm_id='duration_competing_risk_v1'", (version,)).fetchone()
+        if row is None:
+            return
+        cutoff = row["activated_at"]
+        def read_samples():
+            connection = sqlite3.connect(self.store.path.resolve().as_uri() + "?mode=ro", uri=True)
+            try:
+                return load_duration_risk_samples(connection, version, cutoff)
+            finally:
+                connection.close()
+        try:
+            await self._chain_meme_active_idle().wait()
+            source = await asyncio.to_thread(read_samples)
+            model = seal_duration_risk_model(source, trained_at=iso(utcnow()))
+            self.store.set_kv(key, model)
+            self._duration_risk_model = model
+            self.store.heartbeat("duration-research-seal", item=True,
+                error_detail=f"samples={len(model['samples'])};censored={model['right_censored']};sealed_once")
+        except Exception as exc:
+            self.store.heartbeat("duration-research-seal", error=type(exc).__name__)
+
     async def capital_quote_once(self) -> None:
         """One real-mint-amount USDC quote on the shared background budget."""
         loop_now = asyncio.get_running_loop().time()
@@ -6915,14 +6995,25 @@ class Runtime:
                 self._jupiter_background_epoch_requests = 0
             if self._jupiter_background_epoch_requests >= 3:
                 return
-            task = self.store.due_capital_quote(now=utcnow())
+            task = self.store.due_capital_quote(now=utcnow(), task_kind="exit")
+            preflight = False
+            if task is None:
+                task = self.store.due_direct_lp_entry_preflight_quote(now=utcnow())
+                preflight = task is not None
+            if task is None:
+                task = self.store.due_capital_quote(now=utcnow(), task_kind="valuation")
+            if task is None:
+                task = self.store.due_capital_quote(now=utcnow(), task_kind="shadow")
             if task is None:
                 return
             self._capital_quote_next_at = loop_now + 2
             requested_at, quote, error_code = utcnow(), None, ""
             token_id = str(task.get("token_id") or "")
             amount = task.get("input_amount_raw")
-            if not token_id.startswith("solana:") or not token_id.partition(":")[2]:
+            input_mint = str(task.get("input_mint") or token_id.partition(":")[2])
+            output_mint = str(task.get("output_mint") or SOLANA_USDC_MINT)
+            if (not token_id.startswith("solana:") or not token_id.partition(":")[2]
+                    or not input_mint or not output_mint):
                 error_code = "UNSUPPORTED_CHAIN"
             elif type(amount) is not int or amount <= 0:
                 error_code = "INVALID_REAL_MINT_AMOUNT"
@@ -6930,8 +7021,8 @@ class Runtime:
                 self._jupiter_background_epoch_requests += 1
                 async def request_quote():
                     async with self._jupiter_quote_lock:
-                        return await self.jupiter.quote(token_id.partition(":")[2], SOLANA_USDC_MINT,
-                                                        amount, slippage_bps=400)
+                        return await self.jupiter.quote(input_mint, output_mint, amount,
+                                                        slippage_bps=int(task.get("slippage_bps") or 400))
                 try:
                     quote = await asyncio.wait_for(request_quote(), timeout=4)
                 except TimeoutError:
@@ -6942,9 +7033,15 @@ class Runtime:
                     error_code = "QUOTE_PROTOCOL_INVALID"
                 except Exception as exc:
                     error_code = type(exc).__name__
-            self.store.record_capital_quote(task, quote, requested_at=requested_at,
-                                            completed_at=utcnow(), error_code=error_code)
-            if quote is not None and task.get("kind") == "valuation":
+            if preflight:
+                self.store.record_direct_lp_entry_preflight_quote(
+                    task, quote, requested_at=requested_at,
+                    completed_at=utcnow(), error_code=error_code,
+                )
+            else:
+                self.store.record_capital_quote(task, quote, requested_at=requested_at,
+                                                completed_at=utcnow(), error_code=error_code)
+            if not preflight and quote is not None and task.get("kind") == "valuation":
                 self.store.evaluate_chain_meme_trader_market_marks(
                     definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION, token_ids=[token_id])
             self.store.heartbeat("capital-quote", item=quote is not None, error=error_code)
@@ -7601,6 +7698,7 @@ class Runtime:
                     name="capital_quote",
                 ),
                 asyncio.create_task(self.seal_capital_research_once(), name="capital_research_seal"),
+                asyncio.create_task(self.seal_duration_research_once(), name="duration_research_seal"),
                 asyncio.create_task(
                     self._periodic(
                         "chain_meme_market_marks",

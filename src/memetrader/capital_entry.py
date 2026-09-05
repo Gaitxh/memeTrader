@@ -18,6 +18,16 @@ def _finite(value: Any) -> float | None:
     return result if math.isfinite(result) else None
 
 
+def _integer(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        return None
+    return result if str(value).strip() == str(result) else None
+
+
 def _num(policy: Mapping[str, Any], key: str) -> float | None:
     return _finite((policy.get("entry_filter") or {}).get(key))
 
@@ -104,6 +114,20 @@ def capital_entry_signal(history: Sequence[Mapping[str, Any]], policy: Mapping[s
         b, d, mb, md = _finite(r.get("cross_section_breadth")), _finite(r.get("depth_health")), _num(policy, "min_breadth"), _num(policy, "min_depth_health")
         if None in (b, d, mb, md): return False, "wait_regime_asof_sample"
         ok = r.get("throttle") == "allow" and b >= mb and d >= md; return ok, "market_regime_allowed" if ok else "market_regime_throttled"
+    if direction == "duration_competing_risk":
+        r = context.get("duration_risk") or {}
+        cutoff, trained = _time(r.get("cutoff_at")), _time(r.get("trained_at"))
+        if (not r.get("sealed") or not _evidence_ok(r, decision, activated)
+                or not cutoff or not trained or not cutoff <= trained <= decision
+                or r.get("sample_status") != "sufficient_sample"):
+            return False, "wait_duration_risk_bin_maturity"
+        probabilities = (r.get("gap_sensitivity") or {}).get(str(filt["horizon_seconds"]), {})
+        profit, loss, writeoff = (_finite(probabilities.get(k, 0)) for k in ("profit_exit", "loss_exit", "writeoff_exit"))
+        if None in (profit, loss, writeoff):
+            return False, "wait_duration_risk_probabilities"
+        gap = _finite(probabilities.get("observation_gap", 0))
+        ok = gap is not None and profit > loss + writeoff + gap
+        return ok, "duration_profit_incidence_preferred" if ok else "duration_loss_incidence_preferred"
     if direction == "competing_risk":
         r = context.get("competing_risk"); cutoff = _time(r.get("cutoff_at")) if isinstance(r, Mapping) else None; trained = _time(r.get("trained_at")) if isinstance(r, Mapping) else None; minimum = _num(policy, "min_sealed_samples") if isinstance(r, Mapping) else None; ids = r.get("sealed_sample_ids") if isinstance(r, Mapping) else None
         if not isinstance(r, Mapping) or not _evidence_ok(r, decision, activated) or r.get("sealed") is not True or not cutoff or not trained or cutoff > trained or trained > decision or not isinstance(ids, list) or minimum is None or len(ids) < minimum or r.get("sample_status") != "sufficient_sample": return False, "wait_competing_risk_maturity"
@@ -129,6 +153,91 @@ def capital_observation_signal(history, policy, *, decision_at, activated_at, co
     if price is None or price <= 0 or liquidity is not None and liquidity < 1:
         return False, "entry_pool_price_or_liquidity_invalid"
     direction = policy["entry_filter"]["direction"]
+    if direction == "direct_lp_amount_specific_confirmed":
+        direct_policy = {
+            **policy,
+            "entry_filter": {
+                **policy["entry_filter"],
+                "direction": "direct_lp_float_constrained",
+            },
+        }
+        direct_ok, direct_reason = direct_lp_float_constrained_signal(
+            frames, direct_policy, decision_at, activated_at, context,
+        )
+        if not direct_ok:
+            return False, direct_reason
+        flow = context.get("amountful_flow") or {}
+        selected_token = str(context.get("token_id") or "")
+        selected_pair = str(context.get("pair_address") or "")
+        resolver = flow.get("resolver") or {}
+        conversion = flow.get("quote_conversion") or {}
+        resolver_observed = _time(resolver.get("observed_at"))
+        resolver_recorded = _time(resolver.get("recorded_at"))
+        conversion_observed = _time(conversion.get("observed_at"))
+        conversion_recorded = _time(conversion.get("recorded_at"))
+        flow_recorded = _time(flow.get("recorded_at"))
+        minimum_flow = _num(policy, "min_actual_net_flow_usd")
+        minimum_breadth = _num(policy, "min_effective_breadth")
+        net_flow = _finite(flow.get("net_quote_flow_usd"))
+        net_flow_raw = _integer(flow.get("net_quote_flow_raw"))
+        quote_decimals = resolver.get("quote_decimals")
+        usd_per_quote = _finite(conversion.get("usd_per_quote"))
+        conversion_max_age = _finite(conversion.get("max_age_seconds"))
+        breadth = _finite(flow.get("effective_breadth"))
+        if (
+            flow.get("complete") is not True
+            or flow.get("scan_complete") is not True
+            or flow.get("usd_conversion_complete") is not True
+            or flow.get("future_data_rejected") is True
+            or not _evidence_ok(flow, decision, start)
+            or resolver.get("status") != "verified"
+            or resolver.get("pool_address") != selected_pair
+            or resolver.get("base_mint") != selected_token.partition(":")[2]
+            or conversion.get("quote_mint") != resolver.get("quote_mint")
+            or None in (resolver_observed, resolver_recorded,
+                        conversion_observed, conversion_recorded, flow_recorded)
+            or not resolver_observed <= resolver_recorded <= flow_recorded
+            or not conversion_observed <= conversion_recorded <= flow_recorded
+            or conversion_max_age is None or not 0 < conversion_max_age <= 30
+            or (flow_recorded - conversion_observed).total_seconds() > conversion_max_age
+            or type(quote_decimals) is not int or not 0 <= quote_decimals <= 18
+            or None in (minimum_flow, minimum_breadth, net_flow, net_flow_raw,
+                        usd_per_quote, breadth)
+            or net_flow_raw <= 0 or usd_per_quote <= 0
+            or not math.isclose(net_flow, net_flow_raw * usd_per_quote / 10**quote_decimals,
+                                rel_tol=1e-9, abs_tol=1e-9)
+            or net_flow <= minimum_flow
+            or breadth < minimum_breadth
+        ):
+            return False, "wait_direct_lp_positive_actual_flow"
+        preflight = context.get("direct_lp_preflight") or {}
+        preflight_at = _time(preflight.get("completed_at") or preflight.get("recorded_at"))
+        max_age = _num(policy, "max_preflight_age_seconds")
+        buy_input = _integer(preflight.get("buy_input_amount_raw"))
+        buy_minimum = _integer(preflight.get("buy_minimum_output_raw"))
+        sell_input = _integer(preflight.get("sell_input_amount_raw"))
+        sell_minimum = _integer(preflight.get("sell_minimum_output_raw"))
+        if (
+            preflight.get("complete") is not True
+            or preflight.get("quote_only_pretrade") is not True
+            or preflight.get("is_fill") is not False
+            or preflight.get("exact_pool_route") is not True
+            or preflight.get("token_id") != selected_token
+            or preflight.get("pair_address") != selected_pair
+            or preflight.get("amountful_evidence_id") != flow.get("evidence_id")
+            or preflight.get("surface_evidence_id") != (context.get("surface") or {}).get("evidence_id")
+            or buy_input != 5_000_000
+            or buy_minimum is None or buy_minimum <= 0
+            or sell_input != buy_minimum
+            or sell_minimum is None or sell_minimum <= 0
+            or not _evidence_ok(preflight, decision, start)
+            or not preflight_at
+            or max_age is None
+            or not 0 <= (decision - preflight_at).total_seconds() <= max_age
+            or _time(last.get("observed_at")) <= preflight_at
+        ):
+            return False, "wait_direct_lp_amount_specific_preflight"
+        return True, "direct_lp_amount_specific_actual_flow_confirmed"
     if direction == "no_ca_event_flow_leader":
         ranked = context.get("no_ca_event") or {}
         selected = ranked.get("selected") or {}
@@ -340,4 +449,7 @@ def capital_context_from_observations(history, evidence, *, decision_at, migrati
     ranked = latest("authoritative_no_ca_amount_rank", 300)
     if ranked:
         context["no_ca_event"] = ranked
+    preflight = latest("direct_lp_entry_preflight", 35)
+    if preflight:
+        context["direct_lp_preflight"] = preflight
     return context

@@ -21,7 +21,7 @@ from .forward_patterns import experiment_policies, result_driven_policies, patte
 from .capital_entry import capital_observation_signal, capital_context_from_observations
 from .capital_context import evaluate_capital_exit_context
 from .capital_cross_section import build_capital_cross_section
-from .capital_policies import capital_policies, second_discussion_policies, opportunity_policies, direct_lp_float_constrained_signal, authoritative_event_shock_signal
+from .capital_policies import capital_policies, second_discussion_policies, opportunity_policies, direct_lp_amount_specific_policy, direct_lp_float_constrained_signal, authoritative_event_shock_signal
 from .capital_exits import evaluate_exit as evaluate_capital_exit, POST_TRIGGER_AMOUNT_QUOTE
 
 from .models import (
@@ -2793,6 +2793,8 @@ class Store:
                 CREATE INDEX IF NOT EXISTS chain_meme_trader_positions_open_token_idx
                     ON chain_meme_trader_positions(token_id)
                     WHERE status='open';
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_positions_token_history_idx
+                    ON chain_meme_trader_positions(definition_version,token_id,arm_id,shadow_cohort_id);
                 CREATE TABLE IF NOT EXISTS chain_meme_trader_entry_decisions (
                     id INTEGER PRIMARY KEY,
                     definition_version TEXT NOT NULL,
@@ -25435,6 +25437,18 @@ class Store:
             result[kind] = [{**dict(r), "payload": self._json_object(r["payload_json"])} for r in rows]
         return result
 
+    def register_chain_meme_duration_risk_experiment(self) -> int:
+        from .capital_duration_risk import duration_risk_policy
+        policy = duration_risk_policy()
+        with self._lock:
+            exists = self.db.execute(
+                "SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?",
+                (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, policy["arm_id"])).fetchone()
+            if exists is not None:
+                return 0
+            self.append_chain_meme_trader_policy(policy)
+            return 1
+
     def register_chain_meme_result_experiments(self) -> int:
         added = 0
         for policy in result_driven_policies():
@@ -25470,6 +25484,19 @@ class Store:
                     self.append_chain_meme_trader_policy(policy)
                     added += 1
         return added
+
+    def register_chain_meme_direct_lp_amount_specific_experiment(self) -> int:
+        policy = direct_lp_amount_specific_policy()
+        with self._lock:
+            exists = self.db.execute(
+                "SELECT 1 FROM chain_meme_trader_policy_additions "
+                "WHERE definition_version=? AND arm_id=?",
+                (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, policy["arm_id"]),
+            ).fetchone()
+            if exists is not None:
+                return 0
+            self.append_chain_meme_trader_policy(policy)
+            return 1
 
     def _pattern_recent_clean_stop(self, token_id, pair_address, current, activated_at):
         """One observable natural stop, not a writeoff or retrospectively priced exit."""
@@ -25775,7 +25802,8 @@ class Store:
             wave_rows = {}
             if any(p.get("capital_experiment") for p in active):
                 evidence = self._capital_evidence(token.token_id, pair_address, decision_at,
-                    ("amountful_flow", "pool_surface", "authoritative_event", "authoritative_no_ca_amount_rank"))
+                    ("amountful_flow", "pool_surface", "authoritative_event", "authoritative_no_ca_amount_rank",
+                     "direct_lp_entry_preflight"))
                 fact = self.db.execute("SELECT id,recorded_at FROM token_launch_facts WHERE token_id=? "
                     "AND launch_event_type='migration' AND source_observed_at<=ingested_at "
                     "AND ingested_at<=recorded_at AND recorded_at<=? ORDER BY id DESC LIMIT 1",
@@ -25783,6 +25811,22 @@ class Store:
                 capital_context = capital_context_from_observations(history, evidence,
                     decision_at=iso(decision_at), migration_fact=dict(fact) if fact else None,
                     cross_section=cross_section)
+                preflight_policy = next((p for p in active
+                    if p.get("entry_family") == "direct_lp_amount_specific_confirmed"), None)
+                if preflight_policy:
+                    _, preflight_reason = capital_observation_signal(
+                        history, preflight_policy, decision_at=iso(decision_at),
+                        activated_at=preflight_policy["forward_started_at"], context=capital_context,
+                    )
+                    surface = capital_context.get("surface") or {}
+                    flow = capital_context.get("amountful_flow") or {}
+                    if (preflight_reason == "wait_direct_lp_amount_specific_preflight"
+                            and surface.get("evidence_id") and flow.get("evidence_id")):
+                        self.request_direct_lp_entry_preflight(
+                            token.token_id, pair_address, trigger_snapshot_id=snapshot_id,
+                            surface_evidence_id=int(surface["evidence_id"]),
+                            amountful_evidence_id=int(flow["evidence_id"]), now=decision_at,
+                        )
                 stop_policy = next((p for p in active if p["entry_family"] == "fast_stop_reclaim"), None)
                 if stop_policy:
                     capital_context["recent_stop"] = self._pattern_recent_clean_stop(
@@ -25809,10 +25853,14 @@ class Store:
                             already_bought.discard(p["arm_id"])
             event_keys = {}
             for policy in active:
-                if policy.get("entry_family") not in {"event_reawakening", "surface_lifecycle_pipeline", "fast_stop_reclaim", "no_ca_event_flow_leader"}:
+                if policy.get("entry_family") not in {"event_reawakening", "surface_lifecycle_pipeline", "fast_stop_reclaim", "no_ca_event_flow_leader", "direct_lp_amount_specific_confirmed"}:
                     continue
                 arm = policy["arm_id"]
-                event = capital_context.get({"fast_stop_reclaim": "recent_stop", "no_ca_event_flow_leader": "no_ca_event"}.get(policy["entry_family"], "event")) or {}
+                event = capital_context.get({
+                    "fast_stop_reclaim": "recent_stop",
+                    "no_ca_event_flow_leader": "no_ca_event",
+                    "direct_lp_amount_specific_confirmed": "direct_lp_preflight",
+                }.get(policy["entry_family"], "event")) or {}
                 event_key = event.get("candidate_set_source_key") if policy["entry_family"] == "no_ca_event_flow_leader" else event.get("evidence_id")
                 if arm in still_open:
                     entry_blocked[arm] = "event_position_still_open"
@@ -25860,7 +25908,7 @@ class Store:
                     ready.append(policy["arm_id"])
             admitted_arms = [p["arm_id"] for p in active if post_valid and p["arm_id"] in pending
                              and p["arm_id"] not in already_bought and p["arm_id"] not in entry_blocked
-                             and (p.get("entry_family") not in {"event_reawakening", "surface_lifecycle_pipeline", "fast_stop_reclaim", "no_ca_event_flow_leader"} or
+                             and (p.get("entry_family") not in {"event_reawakening", "surface_lifecycle_pipeline", "fast_stop_reclaim", "no_ca_event_flow_leader", "direct_lp_amount_specific_confirmed"} or
                                   previous_features.get("event_keys", {}).get(p["arm_id"]) == event_keys.get(p["arm_id"]))]
             paired = {}
             for p in active:
@@ -30143,11 +30191,533 @@ class Store:
                 (self._json(new_state), position["definition_version"], position["arm_id"], position["shadow_cohort_id"]))
         return action, reason, evidence
 
-    def due_capital_quote(self, now: Any = None) -> dict[str, Any] | None:
-        """Claim one current-period real-amount task; pending exits precede valuations."""
+    def request_direct_lp_entry_preflight(
+        self, token_id: str, pair_address: str, *, trigger_snapshot_id: int,
+        surface_evidence_id: int, amountful_evidence_id: int, now: Any = None,
+    ) -> int | None:
+        """Append one exact B02 pre-entry request from real as-of evidence."""
+        current = parse_time(now) if now is not None else utcnow()
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        arm_id = "direct_lp_amount_specific_confirmed_v1"
+        with self._lock, self.db:
+            policy_row = self.db.execute(
+                "SELECT * FROM chain_meme_trader_policy_additions "
+                "WHERE definition_version=? AND arm_id=?",
+                (version, arm_id),
+            ).fetchone()
+            snapshot = self.db.execute(
+                "SELECT * FROM token_snapshots WHERE id=? AND token_id=?",
+                (int(trigger_snapshot_id), str(token_id)),
+            ).fetchone()
+            surface = self.db.execute(
+                "SELECT * FROM chain_meme_pattern_evidence WHERE id=? "
+                "AND definition_version=? AND token_id=? AND pair_address=? AND kind='pool_surface'",
+                (int(surface_evidence_id), version, str(token_id), str(pair_address)),
+            ).fetchone()
+            flow = self.db.execute(
+                "SELECT * FROM chain_meme_pattern_evidence WHERE id=? "
+                "AND definition_version=? AND token_id=? AND pair_address=? AND kind='amountful_flow'",
+                (int(amountful_evidence_id), version, str(token_id), str(pair_address)),
+            ).fetchone()
+            if policy_row is None or snapshot is None or surface is None or flow is None:
+                return None
+            policy = self._json_object(policy_row["policy_json"])
+            config = policy.get("entry_filter") or {}
+            activated = parse_time(policy_row["activated_at"])
+            snapshot_observed = parse_time(snapshot["observed_at"])
+            snapshot_ingested = parse_time(snapshot["ingested_at"])
+            snapshot_recorded = parse_time(snapshot["recorded_at"])
+            surface_observed = parse_time(surface["observed_at"])
+            surface_recorded = parse_time(surface["recorded_at"])
+            flow_observed = parse_time(flow["observed_at"])
+            flow_recorded = parse_time(flow["recorded_at"])
+            raw = self._json_object(snapshot["raw_json"])
+            market_pair = str((raw.get("pair", raw) or {}).get("pairAddress") or "")
+            surface_payload = self._json_object(surface["payload_json"])
+            flow_payload = self._json_object(flow["payload_json"])
+            resolver = flow_payload.get("resolver") or {}
+            conversion = flow_payload.get("quote_conversion") or {}
+            if not all(resolver.get(key) for key in ("observed_at", "recorded_at")) or not all(
+                conversion.get(key) for key in ("observed_at", "recorded_at")
+            ):
+                return None
+            try:
+                breadth = float(flow_payload["effective_breadth"])
+                net_flow = float(flow_payload["net_quote_flow_usd"])
+                net_flow_raw = flow_payload["net_quote_flow_raw"]
+                quote_decimals = resolver["quote_decimals"]
+                usd_per_quote = float(conversion["usd_per_quote"])
+                conversion_max_age = float(conversion["max_age_seconds"])
+                resolver_observed = parse_time(resolver["observed_at"])
+                resolver_recorded = parse_time(resolver["recorded_at"])
+                conversion_observed = parse_time(conversion["observed_at"])
+                conversion_recorded = parse_time(conversion["recorded_at"])
+                minimum_breadth = float(config["min_effective_breadth"])
+                minimum_flow = float(config["min_actual_net_flow_usd"])
+                notional = float(config["preflight_notional_usd"])
+                slippage = int(config["preflight_slippage_bps"])
+                max_age = float(config["max_preflight_age_seconds"])
+            except (KeyError, TypeError, ValueError):
+                return None
+            token_address = str(token_id).partition(":")[2]
+            valid = bool(
+                str(token_id).startswith("solana:")
+                and token_address
+                and self.chain_meme_market_pool_matches(token_id, pair_address, market_pair)
+                and int(trigger_snapshot_id) > int(policy_row["activation_snapshot_id"])
+                and activated <= snapshot_observed <= snapshot_ingested <= snapshot_recorded <= current
+                and activated <= surface_observed <= surface_recorded <= current
+                and activated <= flow_observed <= flow_recorded <= current
+                and 0 <= (current - snapshot_observed).total_seconds() <= max_age
+                and 0 <= (current - surface_observed).total_seconds() <= 120
+                and 0 <= (current - flow_observed).total_seconds() <= 30
+                and snapshot["price_usd"] is not None and float(snapshot["price_usd"]) > 0
+                and snapshot["liquidity_usd"] is not None and float(snapshot["liquidity_usd"]) >= 1
+                and surface_payload.get("status") == "RESOLVED"
+                and surface_payload.get("complete") is True
+                and surface_payload.get("surface") == "NORMAL_DIRECT"
+                and surface_payload.get("pool_address") == pair_address
+                and surface_payload.get("base_mint") == token_address
+                and type(surface_payload.get("base_decimals")) is int
+                and 0 <= int(surface_payload["base_decimals"]) <= 18
+                and flow_payload.get("complete") is True
+                and flow_payload.get("scan_complete") is True
+                and flow_payload.get("usd_conversion_complete") is True
+                and flow_payload.get("future_data_rejected") is not True
+                and str(flow_payload.get("conversion_basis") or "")
+                and resolver.get("status") == "verified"
+                and resolver.get("pool_address") == pair_address
+                and resolver.get("base_mint") == token_address
+                and resolver.get("quote_mint")
+                and conversion.get("quote_mint") == resolver.get("quote_mint")
+                and resolver_observed <= resolver_recorded <= flow_recorded
+                and conversion_observed <= conversion_recorded <= flow_recorded
+                and 0 < conversion_max_age <= 30
+                and (flow_recorded - conversion_observed).total_seconds() <= conversion_max_age
+                and type(net_flow_raw) is int and net_flow_raw > 0
+                and type(quote_decimals) is int and 0 <= quote_decimals <= 18
+                and math.isfinite(usd_per_quote) and usd_per_quote > 0
+                and math.isfinite(net_flow) and net_flow > minimum_flow
+                and math.isclose(net_flow, net_flow_raw * usd_per_quote / 10**quote_decimals,
+                                 rel_tol=1e-9, abs_tol=1e-9)
+                and math.isfinite(breadth) and breadth >= minimum_breadth
+                and notional == 5.0 and slippage == 400 and max_age == 35.0
+            )
+            if not valid:
+                return None
+            unresolved = self.db.execute(
+                "SELECT 1 FROM chain_meme_pattern_evidence r WHERE r.definition_version=? "
+                "AND r.token_id=? AND r.pair_address=? AND r.kind='direct_lp_entry_preflight_request' "
+                "AND r.recorded_at>=? AND NOT EXISTS (SELECT 1 FROM chain_meme_pattern_evidence f "
+                "WHERE f.definition_version=r.definition_version AND f.kind='direct_lp_entry_preflight' "
+                "AND f.source_key=r.source_key||':complete') LIMIT 1",
+                (version, token_id, pair_address, iso(current - timedelta(seconds=max_age))),
+            ).fetchone()
+            if unresolved is not None:
+                return None
+            recent = self.db.execute(
+                "SELECT id FROM chain_meme_pattern_evidence WHERE definition_version=? "
+                "AND token_id=? AND pair_address=? AND kind='direct_lp_entry_preflight' "
+                "AND observed_at>=? ORDER BY id DESC LIMIT 1",
+                (version, token_id, pair_address, iso(current - timedelta(seconds=max_age))),
+            ).fetchone()
+            if recent is not None:
+                return None
+            source_key = (
+                f"direct-lp-entry:{arm_id}:{token_id}:{pair_address}:"
+                f"{int(trigger_snapshot_id)}:{int(surface_evidence_id)}:{int(amountful_evidence_id)}"
+            )
+            payload = {
+                "status": "PENDING", "arm_id": arm_id,
+                "token_id": token_id, "pair_address": pair_address,
+                "trigger_snapshot_id": int(trigger_snapshot_id),
+                "surface_evidence_id": int(surface_evidence_id),
+                "amountful_evidence_id": int(amountful_evidence_id),
+                "trigger_observed_at": snapshot["observed_at"],
+                "trigger_recorded_at": snapshot["recorded_at"],
+                "buy_input_amount_raw": 5_000_000,
+                "slippage_bps": 400,
+                "requested_at": iso(current),
+                "deadline_at": iso(current + timedelta(seconds=max_age)),
+                "quote_only_pretrade": True, "is_fill": False,
+            }
+            self.db.execute(
+                "INSERT OR IGNORE INTO chain_meme_pattern_evidence("
+                "definition_version,token_id,pair_address,kind,source_key,observed_at,recorded_at,payload_json) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (version, token_id, pair_address, "direct_lp_entry_preflight_request",
+                 source_key, iso(current), iso(current), self._json(payload)),
+            )
+            row = self.db.execute(
+                "SELECT id FROM chain_meme_pattern_evidence WHERE definition_version=? "
+                "AND kind='direct_lp_entry_preflight_request' AND source_key=?",
+                (version, source_key),
+            ).fetchone()
+            return int(row["id"]) if row else None
+
+    def _finish_direct_lp_entry_preflight_locked(
+        self, request: Mapping[str, Any], *, complete: bool, reason: str,
+        current: datetime, buy: Mapping[str, Any] | None = None,
+        sell: Mapping[str, Any] | None = None,
+    ) -> int:
+        request_payload = self._json_object(request["payload_json"])
+        source_key = str(request["source_key"]) + ":complete"
+        buy_payload, sell_payload = dict(buy or {}), dict(sell or {})
+        buy_minimum = int(buy_payload.get("minimum_output_raw") or 0)
+        sell_minimum = int(sell_payload.get("minimum_output_raw") or 0)
+        payload = {
+            **{key: request_payload.get(key) for key in (
+                "arm_id", "token_id", "pair_address", "trigger_snapshot_id",
+                "surface_evidence_id", "amountful_evidence_id",
+                "trigger_observed_at", "trigger_recorded_at", "buy_input_amount_raw",
+                "slippage_bps", "deadline_at",
+            )},
+            "request_evidence_id": int(request["id"]),
+            "complete": bool(complete),
+            "status": "QUOTED" if complete else "WAIT",
+            "reason": str(reason),
+            "buy_quote_evidence_id": buy_payload.get("evidence_id"),
+            "sell_quote_evidence_id": sell_payload.get("evidence_id"),
+            "buy_minimum_output_raw": buy_minimum or None,
+            "sell_input_amount_raw": sell_payload.get("input_amount_raw"),
+            "sell_minimum_output_raw": sell_minimum or None,
+            "round_trip_min_return": (
+                sell_minimum / int(request_payload["buy_input_amount_raw"]) - 1.0
+                if complete and sell_minimum > 0 else None
+            ),
+            "exact_pool_route": bool(complete),
+            "quote_only_pretrade": True,
+            "is_fill": False,
+            "jupiter_fill_id": None,
+            "network_fee_profitability": "unknown",
+            "completed_at": iso(current),
+        }
+        self.db.execute(
+            "INSERT OR IGNORE INTO chain_meme_pattern_evidence("
+            "definition_version,token_id,pair_address,kind,source_key,observed_at,recorded_at,payload_json) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (request["definition_version"], request["token_id"], request["pair_address"],
+             "direct_lp_entry_preflight", source_key, iso(current), iso(current), self._json(payload)),
+        )
+        row = self.db.execute(
+            "SELECT id FROM chain_meme_pattern_evidence WHERE definition_version=? "
+            "AND kind='direct_lp_entry_preflight' AND source_key=?",
+            (request["definition_version"], source_key),
+        ).fetchone()
+        return int(row["id"]) if row else 0
+
+    def due_direct_lp_entry_preflight_quote(self, now: Any = None) -> dict[str, Any] | None:
+        """Return one buy or reverse-sell preflight leg; no open position is used."""
         current = parse_time(now) if now is not None else utcnow()
         version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
         with self._lock, self.db:
+            requests = self.db.execute(
+                "SELECT * FROM chain_meme_pattern_evidence WHERE definition_version=? "
+                "AND kind='direct_lp_entry_preflight_request' AND recorded_at>=? "
+                "ORDER BY id LIMIT 12",
+                (version, iso(current - timedelta(seconds=45))),
+            ).fetchall()
+            for request in requests:
+                final_key = str(request["source_key"]) + ":complete"
+                if self.db.execute(
+                    "SELECT 1 FROM chain_meme_pattern_evidence WHERE definition_version=? "
+                    "AND kind='direct_lp_entry_preflight' AND source_key=?",
+                    (version, final_key),
+                ).fetchone():
+                    continue
+                request_payload = self._json_object(request["payload_json"])
+                deadline = parse_time(request_payload["deadline_at"])
+                buy_key = str(request["source_key"]) + ":buy"
+                buy_row = self.db.execute(
+                    "SELECT * FROM chain_meme_pattern_evidence WHERE definition_version=? "
+                    "AND kind='direct_lp_entry_preflight_quote' AND source_key=?",
+                    (version, buy_key),
+                ).fetchone()
+                if current > deadline:
+                    buy = self._json_object(buy_row["payload_json"]) if buy_row else None
+                    self._finish_direct_lp_entry_preflight_locked(
+                        request, complete=False, reason="preflight_deadline_expired",
+                        current=current, buy=buy,
+                    )
+                    continue
+                token_mint = str(request["token_id"]).partition(":")[2]
+                if buy_row is None:
+                    phase, input_mint, output_mint = "buy", self.JUPITER_USDC_MINT, token_mint
+                    amount = int(request_payload["buy_input_amount_raw"])
+                    buy_evidence_id = None
+                else:
+                    buy = self._json_object(buy_row["payload_json"])
+                    if buy.get("complete") is not True:
+                        self._finish_direct_lp_entry_preflight_locked(
+                            request, complete=False, reason=str(buy.get("reason") or "buy_quote_invalid"),
+                            current=current, buy=buy,
+                        )
+                        continue
+                    phase, input_mint, output_mint = "sell", token_mint, self.JUPITER_USDC_MINT
+                    amount = int(buy.get("minimum_output_raw") or 0)
+                    buy_evidence_id = int(buy_row["id"])
+                    if amount <= 0:
+                        self._finish_direct_lp_entry_preflight_locked(
+                            request, complete=False, reason="buy_minimum_output_missing",
+                            current=current, buy=buy,
+                        )
+                        continue
+                return {
+                    "lane": "direct_lp_entry_preflight", "phase": phase,
+                    "request_evidence_id": int(request["id"]),
+                    "request_source_key": str(request["source_key"]),
+                    "definition_version": version, "token_id": str(request["token_id"]),
+                    "pair_address": str(request["pair_address"]),
+                    "input_mint": input_mint, "output_mint": output_mint,
+                    "input_amount_raw": amount, "slippage_bps": 400,
+                    "claimed_at": iso(current), "deadline_at": iso(deadline),
+                    "buy_quote_evidence_id": buy_evidence_id,
+                }
+        return None
+
+    def record_direct_lp_entry_preflight_quote(
+        self, task: Mapping[str, Any], quote: Mapping[str, Any] | None, *,
+        requested_at: Any, completed_at: Any, error_code: str = "",
+    ) -> int:
+        """Append one verified quote-only leg and terminal B02 evidence when due."""
+        current = utcnow()
+        requested, completed = parse_time(requested_at), parse_time(completed_at)
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        with self._lock, self.db:
+            request = self.db.execute(
+                "SELECT * FROM chain_meme_pattern_evidence WHERE id=? AND definition_version=? "
+                "AND kind='direct_lp_entry_preflight_request' AND source_key=?",
+                (int(task.get("request_evidence_id") or 0), version,
+                 str(task.get("request_source_key") or "")),
+            ).fetchone()
+            if request is None:
+                return 0
+            phase = str(task.get("phase") or "")
+            quote_key = str(request["source_key"]) + ":" + phase
+            if phase not in {"buy", "sell"} or self.db.execute(
+                "SELECT 1 FROM chain_meme_pattern_evidence WHERE definition_version=? "
+                "AND kind='direct_lp_entry_preflight_quote' AND source_key=?",
+                (version, quote_key),
+            ).fetchone():
+                return 0
+            request_payload = self._json_object(request["payload_json"])
+            token_mint = str(request["token_id"]).partition(":")[2]
+            expected_input = self.JUPITER_USDC_MINT if phase == "buy" else token_mint
+            expected_output = token_mint if phase == "buy" else self.JUPITER_USDC_MINT
+            failure = str(error_code or "")
+            output = minimum = 0
+            route_ok = False
+            try:
+                if (
+                    task.get("lane") != "direct_lp_entry_preflight"
+                    or task.get("definition_version") != version
+                    or task.get("token_id") != request["token_id"]
+                    or task.get("pair_address") != request["pair_address"]
+                    or task.get("input_mint") != expected_input
+                    or task.get("output_mint") != expected_output
+                    or int(task.get("slippage_bps") or -1) != 400
+                    or (phase == "buy" and (
+                        expected_input != self.JUPITER_USDC_MINT
+                        or int(request_payload.get("buy_input_amount_raw") or 0) != 5_000_000
+                        or int(task.get("input_amount_raw") or 0)
+                            != int(request_payload.get("buy_input_amount_raw") or 0)
+                    ))
+                    or not parse_time(task["claimed_at"]) <= requested <= completed <= current
+                    or completed > parse_time(request_payload["deadline_at"])
+                ):
+                    raise ValueError("PREFLIGHT_TASK_OR_TIME_MISMATCH")
+                if quote is None or failure:
+                    raise ValueError(failure or "QUOTE_UNAVAILABLE")
+                if (
+                    quote.get("provider") != "jupiter"
+                    or quote.get("transaction") or quote.get("swapTransaction")
+                    or quote.get("input_mint") != expected_input
+                    or quote.get("output_mint") != expected_output
+                    or int(quote.get("in_amount") or 0) != int(task["input_amount_raw"])
+                    or int(quote.get("slippage_bps") or -1) != 400
+                    or quote.get("requested_at") is None or quote.get("completed_at") is None
+                    or not requested <= parse_time(quote["requested_at"]) <= parse_time(quote["completed_at"]) <= completed
+                ):
+                    raise ValueError("QUOTE_PROTOCOL_AMOUNT_OR_TIME_MISMATCH")
+                output = int(quote.get("out_amount") or quote.get("output_amount_raw") or 0)
+                minimum = int(quote.get("other_amount_threshold") or 0)
+                if not 0 < minimum <= output:
+                    raise ValueError("QUOTE_OUTPUT_INVALID")
+                routes = quote.get("route_plan")
+                if not isinstance(routes, list) or not routes:
+                    raise ValueError("QUOTE_ROUTE_MISSING")
+                adjacent = [route for route in routes if isinstance(route, Mapping) and (
+                    route.get("output_mint") == token_mint if phase == "buy"
+                    else route.get("input_mint") == token_mint)]
+                route_ok = bool(adjacent and all(
+                    route.get("amm_key") == request["pair_address"] for route in adjacent
+                ))
+                if phase == "sell":
+                    route_ok = bool(route_ok and sum(
+                        int(route.get("in_amount") or 0) for route in adjacent
+                    ) == int(task["input_amount_raw"]))
+                if not route_ok:
+                    raise ValueError("QUOTE_ORIGINAL_POOL_ROUTE_MISMATCH")
+                if phase == "sell":
+                    buy_row = self.db.execute(
+                        "SELECT * FROM chain_meme_pattern_evidence WHERE id=? "
+                        "AND definition_version=? AND kind='direct_lp_entry_preflight_quote' "
+                        "AND source_key=?",
+                        (int(task.get("buy_quote_evidence_id") or 0), version,
+                         str(request["source_key"]) + ":buy"),
+                    ).fetchone()
+                    buy_payload = self._json_object(buy_row["payload_json"]) if buy_row else {}
+                    if (
+                        buy_payload.get("complete") is not True
+                        or not buy_payload.get("completed_at")
+                        or int(buy_payload.get("minimum_output_raw") or 0)
+                            != int(task["input_amount_raw"])
+                        or parse_time(buy_payload.get("completed_at"))
+                            > parse_time(task.get("claimed_at"))
+                    ):
+                        raise ValueError("BUY_MINIMUM_SELL_AMOUNT_MISMATCH")
+            except (KeyError, TypeError, ValueError) as exc:
+                failure = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
+            payload = {
+                "phase": phase, "complete": not failure, "reason": failure or "quoted",
+                "request_evidence_id": int(request["id"]),
+                "token_id": request["token_id"], "pair_address": request["pair_address"],
+                "input_mint": expected_input, "output_mint": expected_output,
+                "input_amount_raw": int(task.get("input_amount_raw") or 0),
+                "output_amount_raw": output or None,
+                "minimum_output_raw": minimum or None,
+                "slippage_bps": 400, "exact_pool_route": route_ok and not failure,
+                "requested_at": iso(requested), "completed_at": iso(completed),
+                "provider": "jupiter" if quote and quote.get("provider") == "jupiter" else None,
+                "route_plan": list(quote.get("route_plan") or []) if quote else [],
+                "quote_only_pretrade": True, "is_fill": False,
+            }
+            self.db.execute(
+                "INSERT INTO chain_meme_pattern_evidence("
+                "definition_version,token_id,pair_address,kind,source_key,observed_at,recorded_at,payload_json) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (version, request["token_id"], request["pair_address"],
+                 "direct_lp_entry_preflight_quote", quote_key, iso(current), iso(current), self._json(payload)),
+            )
+            evidence_id = int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+            payload["evidence_id"] = evidence_id
+            if phase == "buy" and not failure:
+                return evidence_id
+            buy_row = self.db.execute(
+                "SELECT * FROM chain_meme_pattern_evidence WHERE definition_version=? "
+                "AND kind='direct_lp_entry_preflight_quote' AND source_key=?",
+                (version, str(request["source_key"]) + ":buy"),
+            ).fetchone()
+            buy_payload = self._json_object(buy_row["payload_json"]) if buy_row else {}
+            if buy_row:
+                buy_payload["evidence_id"] = int(buy_row["id"])
+            self._finish_direct_lp_entry_preflight_locked(
+                request, complete=not failure,
+                reason="fresh_exact_five_usdc_round_trip" if not failure else failure,
+                current=current, buy=buy_payload,
+                sell={**payload, "evidence_id": evidence_id} if phase == "sell" else None,
+            )
+            return evidence_id
+
+    def due_capital_quote(
+        self, now: Any = None, *, task_kind: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Claim one current-period real-amount task; pending exits precede valuations."""
+        if task_kind not in {None, "exit", "valuation", "shadow"}:
+            raise ValueError("invalid capital quote task kind")
+        current = parse_time(now) if now is not None else utcnow()
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        with self._lock, self.db:
+            if task_kind == "shadow":
+                representative = self.db.execute(
+                    "WITH base AS (SELECT p.*,COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),"
+                    "c.pair_address) AS entry_pair_address FROM chain_meme_trader_positions p "
+                    "LEFT JOIN token_snapshots e ON e.id=p.entry_snapshot_id AND e.token_id=p.token_id "
+                    "LEFT JOIN chain_meme_trader_v6_cohorts c ON c.id=p.shadow_cohort_id "
+                    "AND c.definition_version=p.definition_version WHERE p.definition_version=? "
+                    "AND p.status='open' AND p.pending_mark_id IS NULL AND p.token_id LIKE 'solana:%' "
+                    "AND p.remaining_quantity_tokens IS NOT NULL AND p.remaining_quantity_tokens>0 "
+                    "AND p.opened_at<=?), grouped AS (SELECT base.*,ROW_NUMBER() OVER (PARTITION BY "
+                    "token_id,entry_pair_address,remaining_quantity_tokens ORDER BY opened_at,"
+                    "shadow_cohort_id,arm_id) AS group_rank,COALESCE(json_extract(capital_exit_state_json,"
+                    "'$.shadow_quote_lane.next_attempt_at'),'') AS shadow_next FROM base "
+                    "WHERE entry_pair_address IS NOT NULL AND entry_pair_address!='') "
+                    "SELECT * FROM grouped WHERE group_rank=1 AND shadow_next<=? "
+                    "ORDER BY shadow_next,opened_at,shadow_cohort_id,arm_id LIMIT 1",
+                    (version, iso(current), iso(current)),
+                ).fetchone()
+                if representative is None:
+                    return None
+                pair = str(representative["entry_pair_address"])
+                members = self.db.execute(
+                    "SELECT p.*,COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),c.pair_address) "
+                    "AS entry_pair_address FROM chain_meme_trader_positions p "
+                    "LEFT JOIN token_snapshots e ON e.id=p.entry_snapshot_id AND e.token_id=p.token_id "
+                    "LEFT JOIN chain_meme_trader_v6_cohorts c ON c.id=p.shadow_cohort_id "
+                    "AND c.definition_version=p.definition_version WHERE p.definition_version=? "
+                    "AND p.status='open' AND p.pending_mark_id IS NULL AND p.token_id=? "
+                    "AND COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),c.pair_address)=? "
+                    "AND p.remaining_quantity_tokens=? ORDER BY p.shadow_cohort_id,p.arm_id",
+                    (version, representative["token_id"], pair,
+                     representative["remaining_quantity_tokens"]),
+                ).fetchall()
+                surface = self.db.execute(
+                    "SELECT id,payload_json FROM chain_meme_pattern_evidence WHERE definition_version=? "
+                    "AND token_id=? AND pair_address=? AND kind='pool_surface' AND observed_at<=? "
+                    "AND recorded_at<=? ORDER BY id DESC LIMIT 1",
+                    (version, representative["token_id"], pair, iso(current), iso(current)),
+                ).fetchone()
+                fact = self._json_object(surface["payload_json"]) if surface else {}
+                decimals = fact.get("base_decimals")
+                quantity = float(representative["remaining_quantity_tokens"])
+                real_raw = 0
+                if (surface is not None and fact.get("status") == "RESOLVED"
+                        and fact.get("complete") is True and fact.get("pool_address") == pair
+                        and fact.get("base_mint") == str(representative["token_id"]).partition(":")[2]
+                        and type(decimals) is int and 0 <= decimals <= 18
+                        and math.isfinite(quantity) and quantity > 0):
+                    real_raw = int(Decimal(str(quantity)) * (Decimal(10) ** decimals))
+                next_at = iso(current + timedelta(seconds=30))
+                if not 0 < real_raw <= 2**64 - 1:
+                    for member in members:
+                        state = self._json_object(member["capital_exit_state_json"])
+                        lane = dict(state.get("shadow_quote_lane") or {})
+                        lane.update(next_attempt_at=next_at,
+                                    last_error="MISSING_EXACT_SURFACE_OR_REAL_QUANTITY")
+                        state["shadow_quote_lane"] = lane
+                        self.db.execute("UPDATE chain_meme_trader_positions SET capital_exit_state_json=? "
+                            "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+                            (self._json(state), version, member["arm_id"], member["shadow_cohort_id"]))
+                    return None
+                representative_state = self._json_object(representative["capital_exit_state_json"])
+                sequence = int((representative_state.get("shadow_quote_lane") or {}).get("attempt_sequence") or 0) + 1
+                group_key = hashlib.sha256(
+                    f"{version}:{representative['token_id']}:{pair}:{real_raw}".encode()
+                ).hexdigest()
+                task_id = hashlib.sha256(f"shadow:{group_key}:{sequence}:{iso(current)}".encode()).hexdigest()
+                member_keys = [{"arm_id": str(member["arm_id"]),
+                    "shadow_cohort_id": int(member["shadow_cohort_id"])} for member in members]
+                task = {"task_id": task_id, "definition_version": version,
+                    "token_id": str(representative["token_id"]), "pair_address": pair,
+                    "arm_id": str(representative["arm_id"]),
+                    "shadow_cohort_id": int(representative["shadow_cohort_id"]),
+                    "mark_id": None, "kind": "shadow", "input_amount_raw": real_raw,
+                    "remaining_quantity_tokens": quantity, "mint_decimals": decimals,
+                    "quantity_epoch": f"shadow:{pair}:{real_raw}",
+                    "surface_evidence_id": int(surface["id"]), "shadow_group_key": group_key,
+                    "shadow_members": member_keys, "claimed_at": iso(current),
+                    "extra_fee_usd": 0.0, "slippage_bps": 400,
+                    "quote_only": True, "is_fill": False}
+                for member in members:
+                    state = self._json_object(member["capital_exit_state_json"])
+                    lane = dict(state.get("shadow_quote_lane") or {})
+                    lane.update(attempt_sequence=sequence, task_id=task_id,
+                                group_key=group_key, next_attempt_at=next_at)
+                    state["shadow_quote_lane"] = lane
+                    self.db.execute("UPDATE chain_meme_trader_positions SET capital_exit_state_json=? "
+                        "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+                        (self._json(state), version, member["arm_id"], member["shadow_cohort_id"]))
+                return task
             rows = self.db.execute(
                 "SELECT p.*,COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),c.pair_address) "
                 "AS entry_pair_address,m.recorded_at AS trigger_at,m.sell_amount_raw,m.status AS mark_status,"
@@ -30174,6 +30744,8 @@ class Store:
                 state = self._json_object(position["capital_exit_state_json"])
                 lane = dict(state.get("quote_lane") or {})
                 kind = "exit" if position["pending_mark_id"] is not None else "valuation"
+                if task_kind is not None and kind != task_kind:
+                    continue
                 lane["exit_next_attempt_at" if kind == "exit" else "next_attempt_at"] = iso(
                     current + timedelta(seconds=2 if kind == "exit" else 30))
                 pair = str(position["entry_pair_address"] or "")
@@ -30230,6 +30802,125 @@ class Store:
             source_key = "capital-quote:" + str(task.get("task_id") or "")
             if self.db.execute("SELECT 1 FROM chain_meme_pattern_evidence WHERE definition_version=? "
                 "AND kind='capital_valuation' AND source_key=?", (version, source_key)).fetchone():
+                return 0
+            if task.get("kind") == "shadow":
+                valid, failure, minimum = False, str(error_code or ""), None
+                group = []
+                try:
+                    if (version != self.CHAIN_MEME_TRADER_ACTIVE_VERSION or not task.get("task_id")
+                            or task.get("quote_only") is not True or task.get("is_fill") is not False
+                            or task.get("mark_id") is not None):
+                        raise ValueError("WRONG_SHADOW_TASK")
+                    representative = self.db.execute(
+                        "SELECT p.*,COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),c.pair_address) "
+                        "AS entry_pair_address FROM chain_meme_trader_positions p "
+                        "LEFT JOIN token_snapshots e ON e.id=p.entry_snapshot_id AND e.token_id=p.token_id "
+                        "LEFT JOIN chain_meme_trader_v6_cohorts c ON c.id=p.shadow_cohort_id "
+                        "AND c.definition_version=p.definition_version WHERE p.definition_version=? "
+                        "AND p.arm_id=? AND p.shadow_cohort_id=?",
+                        (version, task.get("arm_id"), task.get("shadow_cohort_id")),
+                    ).fetchone()
+                    if (representative is None or representative["status"] != "open"
+                            or representative["pending_mark_id"] is not None
+                            or representative["entry_pair_address"] != task.get("pair_address")
+                            or float(representative["remaining_quantity_tokens"] or 0)
+                                != float(task.get("remaining_quantity_tokens") or 0)):
+                        raise ValueError("SHADOW_REPRESENTATIVE_CHANGED")
+                    group = self.db.execute(
+                        "SELECT p.*,COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),c.pair_address) "
+                        "AS entry_pair_address FROM chain_meme_trader_positions p "
+                        "LEFT JOIN token_snapshots e ON e.id=p.entry_snapshot_id AND e.token_id=p.token_id "
+                        "LEFT JOIN chain_meme_trader_v6_cohorts c ON c.id=p.shadow_cohort_id "
+                        "AND c.definition_version=p.definition_version WHERE p.definition_version=? "
+                        "AND p.status='open' AND p.pending_mark_id IS NULL AND p.token_id=? "
+                        "AND COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),c.pair_address)=? "
+                        "AND p.remaining_quantity_tokens=? ORDER BY p.shadow_cohort_id,p.arm_id",
+                        (version, task["token_id"], task["pair_address"],
+                         representative["remaining_quantity_tokens"]),
+                    ).fetchall()
+                    expected_members = {(str(row["arm_id"]), int(row["shadow_cohort_id"])) for row in group}
+                    supplied_members = {(str(row.get("arm_id") or ""),
+                        int(row.get("shadow_cohort_id") or 0)) for row in task.get("shadow_members") or []}
+                    if not expected_members or expected_members != supplied_members:
+                        raise ValueError("SHADOW_GROUP_CHANGED")
+                    surface = self.db.execute(
+                        "SELECT payload_json FROM chain_meme_pattern_evidence WHERE id=? "
+                        "AND definition_version=? AND token_id=? AND pair_address=? AND kind='pool_surface'",
+                        (int(task.get("surface_evidence_id") or 0), version,
+                         task["token_id"], task["pair_address"]),
+                    ).fetchone()
+                    fact = self._json_object(surface["payload_json"]) if surface else {}
+                    decimals = fact.get("base_decimals")
+                    real_raw = int(Decimal(str(representative["remaining_quantity_tokens"]))
+                                   * (Decimal(10) ** int(decimals))) if type(decimals) is int else 0
+                    if (surface is None or fact.get("status") != "RESOLVED" or fact.get("complete") is not True
+                            or fact.get("pool_address") != task["pair_address"]
+                            or fact.get("base_mint") != str(task["token_id"]).partition(":")[2]
+                            or not 0 <= int(decimals) <= 18 or real_raw != task.get("input_amount_raw")
+                            or task.get("quantity_epoch") != f"shadow:{task['pair_address']}:{real_raw}"):
+                        raise ValueError("SHADOW_SURFACE_OR_REAL_QUANTITY_CHANGED")
+                    for row in group:
+                        lane = self._json_object(row["capital_exit_state_json"]).get("shadow_quote_lane") or {}
+                        if lane.get("task_id") != task["task_id"] or lane.get("group_key") != task.get("shadow_group_key"):
+                            raise ValueError("SHADOW_LANE_CHANGED")
+                    if requested_at is None or completed_at is None:
+                        raise ValueError("MISSING_QUOTE_TIMES")
+                    requested, completed = parse_time(requested_at), parse_time(completed_at)
+                    if not parse_time(task["claimed_at"]) <= requested <= completed <= current:
+                        raise ValueError("FUTURE_OR_REVERSED_QUOTE_TIME")
+                    if quote is None or failure:
+                        raise ValueError(failure or "QUOTE_UNAVAILABLE")
+                    if (quote.get("provider") != "jupiter" or quote.get("transaction")
+                            or quote.get("swapTransaction")
+                            or quote.get("input_mint") != task["token_id"].partition(":")[2]
+                            or quote.get("output_mint") != self.JUPITER_USDC_MINT
+                            or int(quote.get("in_amount") or 0) != task["input_amount_raw"]
+                            or int(quote.get("slippage_bps") or 0) != 400
+                            or quote.get("requested_at") is None or quote.get("completed_at") is None
+                            or not requested <= parse_time(quote["requested_at"])
+                                <= parse_time(quote["completed_at"]) <= completed):
+                        raise ValueError("SHADOW_QUOTE_PROTOCOL_AMOUNT_OR_TIME_MISMATCH")
+                    minimum, output = int(quote.get("other_amount_threshold") or 0), int(quote.get("out_amount") or 0)
+                    routes = quote.get("route_plan")
+                    source_hops = [row for row in routes if row.get("input_mint") == quote["input_mint"]] \
+                        if isinstance(routes, list) else []
+                    if (not 0 < minimum <= output or not source_hops
+                            or any(row.get("amm_key") != task["pair_address"] for row in source_hops)
+                            or sum(int(row.get("in_amount") or 0) for row in source_hops)
+                                != task["input_amount_raw"]):
+                        raise ValueError("SHADOW_QUOTE_OUTPUT_OR_ENTRY_POOL_MISMATCH")
+                    valid = True
+                except (ValueError, TypeError, KeyError, AttributeError, ArithmeticError) as exc:
+                    failure = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
+                recovery = minimum / 1_000_000 if valid and minimum is not None else None
+                payload = {"task": dict(task), "quote": dict(quote) if quote is not None else None,
+                    "complete": valid, "status": "QUOTED" if valid else "UNKNOWN",
+                    "error_code": failure, "kind": "shadow", "quote_only": True, "is_fill": False,
+                    "shadow_group_key": task.get("shadow_group_key"),
+                    "shadow_members": list(task.get("shadow_members") or []),
+                    "input_amount_raw": task.get("input_amount_raw"),
+                    "shadow_min_executable_recovery_usd": recovery,
+                    "remaining_min_executable_recovery_usd": None,
+                    "requested_at": iso(requested_at) if isinstance(requested_at, datetime) else requested_at,
+                    "completed_at": iso(completed_at) if isinstance(completed_at, datetime) else completed_at,
+                    "slippage_already_in_minimum": True}
+                self.db.execute("INSERT INTO chain_meme_pattern_evidence("
+                    "definition_version,token_id,pair_address,kind,source_key,observed_at,recorded_at,payload_json) "
+                    "VALUES(?,?,?,'capital_valuation',?,?,?,?)",
+                    (version, str(task.get("token_id") or ""), str(task.get("pair_address") or ""),
+                     source_key, iso(current), iso(current), self._json(payload)))
+                evidence_id = int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+                for row in group:
+                    state = self._json_object(row["capital_exit_state_json"])
+                    lane = dict(state.get("shadow_quote_lane") or {})
+                    if lane.get("task_id") == task.get("task_id"):
+                        lane.pop("task_id", None)
+                        lane.update(last_evidence_id=evidence_id, last_error=failure,
+                                    last_complete=valid)
+                        state["shadow_quote_lane"] = lane
+                        self.db.execute("UPDATE chain_meme_trader_positions SET capital_exit_state_json=? "
+                            "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+                            (self._json(state), version, row["arm_id"], row["shadow_cohort_id"]))
                 return 0
             position = self.db.execute("SELECT * FROM chain_meme_trader_positions WHERE definition_version=? "
                 "AND arm_id=? AND shadow_cohort_id=?", (version, task.get("arm_id"), task.get("shadow_cohort_id"))).fetchone()

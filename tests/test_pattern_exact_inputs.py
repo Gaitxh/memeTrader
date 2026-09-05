@@ -139,6 +139,90 @@ def test_preentry_pool_targets_share_existing_stream_without_fake_holders(tmp_pa
     runtime.store.close()
 
 
+def test_runtime_shared_pool_slots_prioritize_held_and_lease_continuous_frames():
+    runtime = Runtime.__new__(Runtime)
+    now = utcnow()
+    tokens = [TokenCandidate("solana", str(Pubkey.new_unique()), "M", "M") for _ in range(8)]
+    pools = [str(Pubkey.new_unique()) for _ in tokens]
+    runtime._pattern_watch = {token.token_id: dict(token=token, pair_address=pool,
+        expires_at=now + timedelta(minutes=15), quote=SimpleNamespace(observed_at=now,
+            raw={"pair": {"pairAddress": pool, "dexId": "pumpswap"}}))
+        for token, pool in zip(tokens[:7], pools[:7])}
+    originals = {pool: dict(pool_address=pool, token_id=token.token_id, evidence_id=i + 1)
+                 for i, (token, pool) in enumerate(zip(tokens[:6], pools[:6]))}
+    runtime._pattern_pool_targets = dict(originals)
+    runtime._pattern_pool_retry = {}
+    runtime._pattern_held_tokens = {tokens[6].token_id}
+    runtime._pattern_vault_tracker = PumpSwapVaultFlowTracker(summary_seconds=10)
+    runtime._pattern_participation_frontiers = {pool: object() for pool in originals}
+    runtime._pattern_amountful_windows = {pool: [object(), object()] for pool in originals}
+    frontiers = dict(runtime._pattern_participation_frontiers)
+    windows = dict(runtime._pattern_amountful_windows)
+    calls = []
+    fail = False
+    async def resolve(candidates):
+        calls.append(candidates)
+        assert len(candidates) <= 2
+        return [{**candidate, "status": "UNKNOWN_RPC" if fail else "RESOLVED"}
+                for candidate in candidates]
+    async def no_surface():
+        pass
+    runtime.held_accounts = SimpleNamespace(resolve_pumpswap_shadow_pools=resolve)
+    runtime._chain_meme_pattern_surface_once = no_surface
+    runtime.store = SimpleNamespace(record_chain_meme_pattern_evidence=lambda *a, **k: 100 + len(calls),
+                                    heartbeat=lambda *a, **k: None)
+
+    async def scenario():
+        nonlocal fail
+        await runtime.chain_meme_pattern_pools_once()
+        assert len(runtime._pattern_pool_targets) == 6 and pools[6] in runtime._pattern_pool_targets
+        retained = set(originals) & set(runtime._pattern_pool_targets)
+        assert len(retained) == 5
+        for pool in retained:
+            assert runtime._pattern_pool_targets[pool] is originals[pool]
+            assert runtime._pattern_participation_frontiers[pool] is frontiers[pool]
+            assert runtime._pattern_amountful_windows[pool] is windows[pool]
+        retired = (set(originals) - retained).pop()
+        assert retired not in runtime._pattern_amountful_windows
+        assert retired not in runtime._pattern_participation_frontiers
+
+        # Eight eligible held pools compete for six slots, without per-tick churn.
+        runtime._pattern_held_tokens = {token.token_id for token in tokens}
+        runtime._pattern_watch[tokens[7].token_id] = dict(token=tokens[7], pair_address=pools[7],
+            expires_at=now + timedelta(minutes=15), quote=SimpleNamespace(observed_at=now,
+                raw={"pair": {"pairAddress": pools[7], "dexId": "pumpswap"}}))
+        before = dict(runtime._pattern_pool_targets)
+        await runtime.chain_meme_pattern_pools_once()
+        assert len(calls) == 1 and runtime._pattern_pool_targets == before
+
+        for pool in runtime._pattern_pool_selected_at:
+            runtime._pattern_pool_selected_at[pool] -= 121
+        fail = True
+        await runtime.chain_meme_pattern_pools_once()
+        assert runtime._pattern_pool_targets == before  # Failed verification keeps coverage.
+        fail = False
+        runtime._pattern_pool_retry.clear()
+        await runtime.chain_meme_pattern_pools_once()
+        assert len(runtime._pattern_pool_targets) == 6
+        assert pools[7] in runtime._pattern_pool_targets and retired in runtime._pattern_pool_targets
+        for pool in set(before) & set(runtime._pattern_pool_targets):
+            assert runtime._pattern_pool_targets[pool] is before[pool]
+        after = dict(runtime._pattern_pool_targets)
+        await runtime.chain_meme_pattern_pools_once()
+        for pool in (pools[7], retired):
+            assert runtime._pattern_pool_targets[pool] is after[pool]  # New leases cannot reverse.
+
+        # Closed positions which also left watch release their slots.
+        closed = next(iter(runtime._pattern_pool_targets))
+        closed_id = runtime._pattern_pool_targets[closed]["token_id"]
+        runtime._pattern_held_tokens.remove(closed_id)
+        runtime._pattern_watch.pop(closed_id)
+        await runtime.chain_meme_pattern_pools_once()
+        assert closed not in runtime._pattern_pool_targets
+
+    asyncio.run(scenario())
+
+
 def participation_fixture(track_volume=b"\x01"):
     pool = dict(pool_address="pool", base_mint="base", quote_mint="quote", base_vault="bv",
         quote_vault="qv", base_token_program="bp", quote_token_program="qp", resolved_slot=50)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 from datetime import timedelta
 
 import pytest
@@ -11,6 +12,73 @@ import memetrader.runtime as runtime_module
 from memetrader.models import TokenCandidate, TokenSnapshot, iso, utcnow
 from memetrader.runtime import Runtime
 from memetrader.store import Store
+
+
+def test_pattern_observer_yields_between_tokens_without_resampling():
+    async def run():
+        runtime = Runtime.__new__(Runtime)
+        runtime._chain_meme_active_idle_event = asyncio.Event()
+        runtime._chain_meme_active_idle_event.set()
+        runtime._remember_pattern_quotes = lambda quotes: None
+        runtime._rank_no_ca_events = lambda: None
+        runtime._paper_quote_rejections = lambda *args: []
+        tokens = [TokenCandidate("solana", str(Pubkey.new_unique()), "Token", "ABC") for _ in range(2)]
+        now = utcnow()
+        runtime._pattern_watch = {token.token_id: {"token": token,
+            "quote": _snapshot(token, "pair-" + token.address, now),
+            "pair_address": "pair-" + token.address} for token in tokens}
+        runtime._pattern_held_tokens = set(runtime._pattern_watch)
+        calls, ready, timing = [], [], []
+        def observe(token, *args, **kwargs):
+            if calls:
+                assert ready == ["held_response"]
+            else:
+                asyncio.get_running_loop().call_soon(ready.append, "held_response")
+            calls.append(token.token_id)
+            return 0
+        runtime.store = SimpleNamespace(capital_cross_section=lambda *args: {},
+            observe_chain_meme_pattern=observe, heartbeat=lambda *args, **kwargs: None)
+        runtime.runtime_timing = SimpleNamespace(observe=lambda name, duration, **kwargs: timing.append(name))
+        await runtime.chain_meme_pattern_observer_once()
+        assert calls == [token.token_id for token in tokens]
+        assert timing == ["pattern_token_compute", "pattern_token_compute"]
+        await runtime.chain_meme_pattern_observer_once()
+        assert len(calls) == 2
+    asyncio.run(run())
+
+
+def test_held_metrics_exclude_background_waits():
+    async def run():
+        runtime = Runtime.__new__(Runtime)
+        runtime._chain_meme_active_idle_event = asyncio.Event()
+        runtime._chain_meme_active_idle_event.set()
+        names, retrieval = [], []
+        runtime.runtime_timing = SimpleNamespace(
+            observe=lambda name, *args, **kwargs: names.append(name),
+            observe_retrieval=lambda **kwargs: retrieval.append(kwargs))
+        runtime.store = SimpleNamespace(heartbeat=lambda *args, **kwargs: None,
+            apply_chain_meme_trader_market_mark_batch=lambda *args, **kwargs: None)
+        async def failed(*args, **kwargs):
+            raise TimeoutError()
+        runtime._dex_batch_quote = failed
+        target = {"token_id": "solana:test", "chain": "solana", "address": "test"}
+        for high_priority in (False, True):
+            await runtime._refresh_chain_meme_market_marks([target], heartbeat_name="test",
+                high_priority=high_priority)
+        assert names == ["observer_fetch_with_wait", "held_fetch"]
+        assert len(retrieval) == 1 and retrieval[0]["failed"] == 1
+    asyncio.run(run())
+
+
+def test_same_token_history_uses_token_prefix_index(tmp_path):
+    store = Store(tmp_path / "token-history-index.db")
+    plan = " ".join(str(row[3]) for row in store.db.execute(
+        "EXPLAIN QUERY PLAN SELECT DISTINCT p.arm_id FROM chain_meme_trader_positions p "
+        "JOIN chain_meme_trader_v6_cohorts c ON c.id=p.shadow_cohort_id "
+        "WHERE p.definition_version=? AND p.token_id=? AND c.pair_address=?", ("v", "solana:x", "p")))
+    assert "chain_meme_trader_positions_token_history_idx" in plan
+    assert "definition_version=? AND token_id=?" in plan
+    store.close()
 
 
 def _snapshot(token, pair, when, *, price=2.0):

@@ -1,3 +1,4 @@
+import asyncio
 import json
 from datetime import timedelta
 
@@ -6,6 +7,8 @@ from solders.pubkey import Pubkey
 
 from memetrader.capital_policies import capital_policies
 from memetrader.models import TokenCandidate, TokenSnapshot, iso, utcnow
+import memetrader.runtime as runtime_module
+from memetrader.runtime import Runtime
 from memetrader.store import Store
 
 
@@ -163,6 +166,90 @@ def test_old_strategies_have_no_capital_quote_work(tmp_path):
     assert store.due_capital_quote() is None
     assert store.db.execute("SELECT COUNT(*) FROM chain_meme_pattern_evidence").fetchone()[0] == 0
     store.close()
+
+
+def test_shared_recovery_shadow_quotes_equal_positions_once_without_accounting_change(
+    tmp_path, monkeypatch,
+):
+    store = Store(tmp_path / "shared-shadow.sqlite3", initial_cash_usd=1000)
+    tick, token, pair, _ = setup(store, monkeypatch, pending=False)
+    monkeypatch.setattr(runtime_module, "utcnow", lambda: tick[0])
+    version = store.CHAIN_MEME_TRADER_ACTIVE_VERSION
+    try:
+        with store.db:
+            store.db.execute("UPDATE chain_meme_trader_positions "
+                "SET arm_id='recovery-shadow-base-v1'")
+        original = dict(store.db.execute("SELECT * FROM chain_meme_trader_positions").fetchone())
+        peer = dict(original)
+        peer.update(arm_id="recovery-shadow-peer-v1",
+                    source_buy_trade_id=int(original["source_buy_trade_id"]) + 1,
+                    capital_exit_state_json="{}")
+        columns = list(peer)
+        with store.db:
+            store.db.execute(
+                f"INSERT INTO chain_meme_trader_positions({','.join(columns)}) "
+                f"VALUES({','.join('?' for _ in columns)})",
+                tuple(peer[column] for column in columns),
+            )
+        before_cash = store.db.execute(
+            "SELECT COALESCE(SUM(net_cash_flow_usd),0) FROM chain_meme_trader_trades"
+        ).fetchone()[0]
+        before_positions = [tuple(row) for row in store.db.execute(
+            "SELECT status,amount_raw,remaining_quantity_tokens,realized_proceeds_usd,"
+            "allocated_cost_usd,realized_pnl_usd FROM chain_meme_trader_positions ORDER BY arm_id"
+        )]
+
+        class Jupiter:
+            def __init__(self):
+                self.calls = []
+
+            async def quote(self, input_mint, output_mint, amount, *, slippage_bps):
+                self.calls.append((input_mint, output_mint, amount, slippage_bps))
+                return dict(provider="jupiter", input_mint=input_mint, output_mint=output_mint,
+                    in_amount=str(amount), out_amount="12500000", other_amount_threshold="12000000",
+                    slippage_bps=slippage_bps, requested_at=iso(tick[0]), completed_at=iso(tick[0]),
+                    route_plan=[dict(amm_key=pair, input_mint=input_mint,
+                                     output_mint=output_mint, in_amount=str(amount))])
+
+        jupiter = Jupiter()
+
+        async def run():
+            runtime = Runtime.__new__(Runtime)
+            runtime.store, runtime.jupiter = store, jupiter
+            runtime._chain_meme_active_idle_event = asyncio.Event()
+            runtime._chain_meme_active_idle_event.set()
+            runtime._jupiter_background_dispatch_lock = asyncio.Lock()
+            runtime._jupiter_quote_lock = asyncio.Lock()
+            runtime._jupiter_background_epoch_started = 0.0
+            runtime._jupiter_background_epoch_seconds = 5.0
+            runtime._jupiter_background_epoch_requests = 0
+            runtime._capital_quote_next_at = 0.0
+            await runtime.capital_quote_once()
+            runtime._capital_quote_next_at = 0.0
+            await runtime.capital_quote_once()
+
+        asyncio.run(run())
+        assert jupiter.calls == [(token.address, store.JUPITER_USDC_MINT, 10_123_456, 400)]
+        evidence = store.db.execute(
+            "SELECT payload_json FROM chain_meme_pattern_evidence "
+            "WHERE kind='capital_valuation' AND json_extract(payload_json,'$.kind')='shadow'"
+        ).fetchall()
+        assert len(evidence) == 1
+        payload = json.loads(evidence[0][0])
+        assert payload["complete"] and payload["quote_only"] and payload["is_fill"] is False
+        assert payload["input_amount_raw"] == 10_123_456
+        assert len(payload["shadow_members"]) == 2
+        assert payload["remaining_min_executable_recovery_usd"] is None
+        assert store.db.execute(
+            "SELECT COALESCE(SUM(net_cash_flow_usd),0) FROM chain_meme_trader_trades"
+        ).fetchone()[0] == before_cash
+        assert [tuple(row) for row in store.db.execute(
+            "SELECT status,amount_raw,remaining_quantity_tokens,realized_proceeds_usd,"
+            "allocated_cost_usd,realized_pnl_usd FROM chain_meme_trader_positions ORDER BY arm_id"
+        )] == before_positions
+        assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_fills").fetchone()[0] == 0
+    finally:
+        store.close()
 
 
 def test_recovery_valuation_reaches_real_evaluator_and_queues_later_quote(tmp_path, monkeypatch):

@@ -268,6 +268,42 @@ def test_per_pool_due_and_unavailable_budget_are_silent_without_http(tmp_path):
     asyncio.run(scenario())
 
 
+def test_original_pool_due_order_rotates_past_repeated_missing_chain(tmp_path):
+    async def scenario():
+        runtime = make_runtime(tmp_path)
+        rh = TokenCandidate("robinhood", "0x" + "1" * 40, "Missing RH", "RH")
+        sol = TokenCandidate("solana", "S" * 32, "Waiting Solana", "SOL")
+        targets = [target_for(rh, "rh-pool"), target_for(sol, "sol-pool")]
+        calls = []
+        async def exact(chain, addresses):
+            calls.append((chain, addresses))
+            assert len(addresses) <= 30
+            return {} if chain == "robinhood" else {
+                "sol-pool": pair_payload(sol, "sol-pool", provider="dexscreener")}
+        runtime.dex.exact_pools_fresh = exact
+        runtime.coingecko = FakeCoinGecko(available=False)
+        runtime.store.chain_meme_trader_market_mark_targets = lambda **kwargs: targets
+        runtime.store.evaluate_chain_meme_trader_market_marks = lambda **kwargs: None
+        for target in targets:
+            runtime._queue_market_pool_gap(target, target["entry_pair_addresses"], [])
+        await runtime.complementary_market_data_once()
+        # At the next periodic tick RH is due again, but SOL is still unattempted.
+        runtime._market_pool_gaps[(rh.token_id, "rh-pool")]["next_attempt"] = (
+            asyncio.get_running_loop().time() - 1)
+        await runtime.complementary_market_data_once()
+        mark = runtime.store.db.execute(
+            "SELECT provider FROM chain_meme_trader_pool_marks WHERE token_id=? AND pair_address=?",
+            (sol.token_id, "sol-pool"),
+        ).fetchone()
+        assert mark["provider"] == "dexscreener"
+        await runtime.complementary_market_data_once()
+        assert calls == [("robinhood", ["rh-pool"]), ("solana", ["sol-pool"]),
+                         ("robinhood", ["rh-pool"])]
+        assert runtime.coingecko.calls == []
+        await runtime.close()
+    asyncio.run(scenario())
+
+
 def test_exact_original_pool_recovers_dust_without_spending_complement_quota(tmp_path):
     from memetrader.collectors import DexScreenerClient
     async def scenario():

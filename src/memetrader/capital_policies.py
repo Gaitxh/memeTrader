@@ -231,3 +231,43 @@ def opportunity_policies() -> list[dict[str, Any]]:
                  required_inputs=["post_deployment_same_pool_history", direction])
         result.append(p)
     return result
+
+
+def direct_lp_amount_specific_policy() -> dict[str, Any]:
+    """Return the independent B02 pre-entry sellability experiment."""
+    import copy
+    parent = next(
+        policy for policy in capital_policies()
+        if policy["arm_id"] == "direct_lp_float_constrained_v1"
+    )
+    policy = copy.deepcopy(parent)
+    policy.update(
+        arm_id="direct_lp_amount_specific_confirmed_v1",
+        canonical_id="direct_lp_amount_specific_confirmed_v1",
+        name="direct_lp_amount_specific_confirmed",
+        entry_family="direct_lp_amount_specific_confirmed",
+        source_arm_ids=[parent["arm_id"]],
+        notional_usd=5.0,
+        description=(
+            "NORMAL_DIRECT池5U拟买最低数量的原池反向可卖性与真实资金确认；"
+            "quote仅为入场前证据，不是Jupiter成交。"
+        ),
+        required_inputs=[
+            "snapshot", "pool_surface", "mint_permission", "amountful_flow",
+            "direct_lp_entry_preflight", "next_frame_trade",
+        ],
+        entry_filter={
+            "direction": "direct_lp_amount_specific_confirmed",
+            "min_pool_supply_share": 0.5,
+            "min_actual_net_flow_usd": 0.0,
+            "min_effective_breadth": 2.0,
+            "preflight_notional_usd": 5.0,
+            "preflight_slippage_bps": 400,
+            # Two roughly 15-second observer frames are required after the
+            # quote: one to signal and the next to create the Paper BUY.
+            "max_preflight_age_seconds": 35.0,
+        },
+        fidelity_status="HYPOTHESIS_ONLY",
+        no_historical_backfill=True,
+    )
+    return policy

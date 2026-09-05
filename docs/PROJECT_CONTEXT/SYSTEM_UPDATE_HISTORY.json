@@ -2,6 +2,17 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260906-held-priority-and-duration",
+      "recorded_at": "2026-09-05T20:49:00Z",
+      "title": "持仓优先与逐币查询加速，新增两种独立实验",
+      "problem": "逐币已买查询扫描整个资金期；六个精确池名额被非持仓占用；Direct预检时限不足两帧；时长统计需区分失联删失。",
+      "change": "token覆盖索引、逐币yield、held计时分离；精确池held优先公平轮转；Direct5U原池实际金额双报价及duration5U独立实验。",
+      "rationale": "先消除确定的处理/覆盖阻塞，再按真实时点验证有差异的新机制，旧账户与规则不改。",
+      "validation": "定向查询/调度、6槽保留连续性、Direct15秒两帧、duration真实Store/不可变时序/失联敏感性通过。",
+      "scope": "178旧策略/资金期保留；新2臂部署后180；共享Recovery接线及真实性能仍待验收。",
+      "status": "代码已测，待本阶段部署"
+    },
+    {
       "id": "20260906-pregrad-event-opportunity",
       "recorded_at": "2026-09-05T20:12:00Z",
       "title": "预毕业观察、无CA冻结事件与三种主动机会",
@@ -10,7 +21,7 @@
       "rationale": "把明确假设做成可证伪前向实验，保持真实时点、旧规则和核心后台资源优先。",
       "validation": "预毕业、冻结集合、真实资金缺项WAIT、下一帧5U、真实止损再入场、并发上限和计数定向测试通过。",
       "scope": "174旧策略与资金期保留，部署后178；资金流覆盖及延迟仍需核对，不宣称已证明盈利或全部任务完成。",
-      "status": "代码/测试完成，待部署"
+      "status": "8e3cc74已部署，20:13:26Z/frontier906746，178策略、原资金期保留；20:16:31Z确认误核销额外补20U独立资本，原PNL不变。"
     },
     {
       "id": "20260906-independent-event-and-paired-exits",
