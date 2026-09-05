@@ -26047,6 +26047,15 @@ class Store:
                     pair_address = str(pair.get("pairAddress") or "")
                     if not pair_address:
                         raise ValueError("missing_pair_address")
+                    liquidity = row["liquidity_usd"]
+                    if liquidity is None and isinstance(pair.get("liquidity"), Mapping):
+                        liquidity = pair["liquidity"].get("usd")
+                    features.update({
+                        "pair_address": pair_address,
+                        "entry_liquidity_usd": liquidity,
+                    })
+                    if liquidity is not None and float(liquidity) < 1.0:
+                        raise ValueError("entry_pool_liquidity_below_1_usd")
                     proposed_family = None
                     if age_seconds <= 900 and (
                         (m5_trades is not None and m5_trades >= 3)
@@ -31405,7 +31414,9 @@ class Store:
             )
             positions = []
             position_rows = connection.execute(
-                "SELECT p.*,COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),"
+                "SELECT p.*,COALESCE(e.liquidity_usd,json_extract(e.raw_json,'$.pair.liquidity.usd'),"
+                "json_extract(e.raw_json,'$.liquidity.usd')) AS entry_liquidity_usd,"
+                "COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),"
                 "c.pair_address) AS entry_pair_address FROM chain_meme_trader_positions p "
                 "LEFT JOIN token_snapshots e ON e.id=p.entry_snapshot_id AND e.token_id=p.token_id "
                 "LEFT JOIN chain_meme_trader_v6_cohorts c ON c.id=p.shadow_cohort_id "
@@ -31421,6 +31432,12 @@ class Store:
             direct_position_count = 0
             for row in position_rows:
                 position = dict(row)
+                position["engineering_anomaly"] = (
+                    "entry_pool_liquidity_below_1_usd"
+                    if row["entry_liquidity_usd"] is not None
+                    and float(row["entry_liquidity_usd"]) < 1.0 else None
+                )
+                position["research_metrics_eligible"] = not position["engineering_anomaly"]
                 correction = arm_corrections.get(int(row["shadow_cohort_id"]))
                 if correction is not None:
                     position["recorded_status"] = str(row["status"])
@@ -31957,6 +31974,12 @@ class Store:
             indicative_complete = indicative_position_count == open_position_count
             account.update({
                 "cash_usd": cash,
+                "engineering_anomaly_position_count": sum(
+                    bool(p.get("engineering_anomaly")) for p in positions
+                ),
+                "research_metrics_eligible": not any(
+                    p.get("engineering_anomaly") for p in positions
+                ),
                 "executable_equity_usd": cash + priced_recovery if complete else None,
                 "realized_pnl_usd": realized_pnl,
                 "executable_unrealized_pnl_usd": priced_unrealized if complete else None,

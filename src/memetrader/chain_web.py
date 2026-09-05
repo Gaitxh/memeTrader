@@ -689,6 +689,7 @@ class ChainWebData:
             effective_value_by_arm: dict[str, float] = defaultdict(float)
             net_flows = Store._chain_meme_trader_effective_net_flows_from_connection(connection, active_version)
             priced_open_by_arm: dict[str, int] = defaultdict(int)
+            entry_anomalies_by_arm: dict[str, int] = defaultdict(int)
             effective_open_token_ids: set[str] = set()
             for row in self._rows(
                 connection,
@@ -696,6 +697,8 @@ class ChainWebData:
                 "p.amount_raw,p.initial_amount_raw,p.paper_quantity_tokens,"
                 "p.remaining_quantity_tokens,p.entry_signal_price_usd,"
                 "p.entry_execution_price_usd,p.allocated_cost_usd,p.realized_pnl_usd,"
+                "COALESCE(e.liquidity_usd,json_extract(e.raw_json,'$.pair.liquidity.usd'),"
+                "json_extract(e.raw_json,'$.liquidity.usd')) AS entry_liquidity_usd,"
                 "p.opened_at,p.closed_at,m.pair_address,m.price_usd,m.liquidity_usd,"
                 "COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),c.pair_address) AS entry_pair_address,"
                 "m.status AS market_status,m.observed_at AS market_observed_at,"
@@ -712,6 +715,8 @@ class ChainWebData:
                 (active_version,),
             ):
                 arm = str(row["arm_id"])
+                if row["entry_liquidity_usd"] is not None and float(row["entry_liquidity_usd"]) < 1.0:
+                    entry_anomalies_by_arm[arm] += 1
                 key = (arm, int(row["shadow_cohort_id"]))
                 if key in contaminated_positions:
                     continue
@@ -862,6 +867,8 @@ class ChainWebData:
                 )
                 account.update({
                     "realized_pnl_usd": realized_pnl,
+                    "engineering_anomaly_position_count": entry_anomalies_by_arm[policy_arm_id],
+                    "research_metrics_eligible": entry_anomalies_by_arm[policy_arm_id] == 0,
                     "cash_usd": starting_cash + net_flows.get(policy_arm_id, 0.0),
                     "indicative_equity_usd": starting_cash + net_flows.get(policy_arm_id, 0.0)
                     + effective_value_by_arm.get(policy_arm_id, 0.0) if indicative_complete else None,

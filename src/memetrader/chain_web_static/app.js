@@ -246,6 +246,8 @@ function liveMetricForFamily(family){
 }
 
 function strategyMetrics(live){
+  const anomalies=Number(live.strategy?.account?.engineering_anomaly_position_count||0);
+  if(anomalies)return `<small class="strategy-metrics">含 ${anomalies} 笔入场池低于 $1 的工程异常；原收支保留，不能据此评价策略</small>`;
   const value=(v,format=money)=>v==null?'—':format(v);
   const sample=live.metricSampleCount?`${live.metricSampleCount} 笔${live.metricSampleStatus==='insufficient_sample'?'，样本不足':''}`:'暂无闭仓样本';
   const factor=live.profitFactor==null?(live.profitFactorStatus==='no_losses'?'暂无亏损样本':'—'):Number(live.profitFactor).toFixed(2);
@@ -345,6 +347,7 @@ function renderUniverseDetail(family){
     const pnl=positionPnl(item);
     const records=trades.filter(trade=>String(trade.shadow_cohort_id||'')===String(item.shadow_cohort_id||'')&&trade.token_id===item.token_id);
     const contaminated=item.accounting_status==='ACCOUNTING_CONTAMINATED';
+    if(item.engineering_anomaly)return `<article class="position-record">${tokenLink(item.token_id)}<p>工程异常：入场时池价值低于 $1</p><small>原始记录保留，不改写收益；已实现 PNL ${money(pnl.realized)}，不作为自然策略亏损评价。</small></article>`;
     return `<article class="position-record"><div class="position-record-head"><div><span class="status-pill ${esc(item.status)}">${item.status==='open'?'持有中':item.status==='closed'?'已卖出':'已核销'}</span>${tokenLink(item.token_id)}</div><small>${time(item.opened_at,true)} 开仓</small></div><div class="position-pnl-grid"><span>持仓时长<strong>${esc(durationText(item.opened_at,item.closed_at))}</strong></span><span>未实现 PNL<strong class="${pnlClass(pnl.unrealized)}">${pnl.unrealized==null?'—':money(pnl.unrealized)}</strong></span><span>已实现 PNL<strong class="${pnlClass(pnl.realized)}">${pnl.realized==null?'—':money(pnl.realized)}</strong></span><span>总 PNL<strong class="${pnlClass(pnl.total)}">${pnl.total==null?'价格待更新':money(pnl.total)}</strong></span></div><small class="position-note">${contaminated?'已排除，不计统计':item.status==='open'?(item.indicative_value_usd==null?'当前没有有效价格，不按 0 计':`当前价值 ${money(item.indicative_value_usd)}`):esc(reasonText(item.close_reason))}</small><div class="position-transactions">${records.length?records.map(record=>`<p><time>${time(record.created_at)}</time><strong>${esc(sideText(record.side))}</strong><span>${record.side==='BUY'?`投入 ${money(Math.abs(Number(record.net_cash_flow_usd??record.gross_usd)))}`:`回收 ${money(record.gross_usd)} · PNL ${money(record.realized_pnl_usd)}`}</span></p>`).join(''):'<p class="empty">当前返回范围内没有该仓位的交易记录</p>'}</div></article>`;
   }).join('');
   target.innerHTML=`<div class="detail-title"><div><p class="eyebrow">独立策略账户</p><h2>${esc(strategyLabel(family))}</h2><small class="strategy-identity">唯一编号 #${String(strategyIndex(family)).padStart(3,'0')}</small></div><span class="contract-state ${canRun?'active_forward':'retry'}">${esc(fidelityLabel(family))}</span></div>

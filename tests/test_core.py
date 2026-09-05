@@ -8979,6 +8979,47 @@ def test_chain_meme_partial_exit_trailing_uses_actual_economic_high_water(
     store.close()
 
 
+@pytest.mark.parametrize("liquidity,raw_liquidity,admitted", [
+    (0.0, None, False), (0.99, None, False), (None, 0.48, False),
+    (1.0, None, True), (10000.0, None, True), (None, None, True),
+])
+def test_chain_meme_entry_rejects_explicit_dust_not_unknown(
+    tmp_path: Path, liquidity, raw_liquidity, admitted,
+):
+    store = Store(tmp_path / "entry-dust.sqlite3", initial_cash_usd=1000)
+    store.register_chain_meme_trader_v20()
+    store.activate_chain_meme_trader_v20()
+    version = Store.CHAIN_MEME_TRADER_V20_VERSION
+    now = utcnow()
+    token = TokenCandidate(chain="solana", address=str(Pubkey.new_unique()),
+                           name="Dust", symbol="DUST", source="dexscreener")
+    store.upsert_token(token, seen_at=now)
+    snapshot_id = store.add_snapshot(TokenSnapshot(
+        "solana", token.address, 2.0, liquidity, 100000, 250, 2, 1,
+        observed_at=now, ingested_at=now, provider="dexscreener",
+        raw={"pair": {
+            "chainId": "solana", "dexId": "pumpswap", "pairAddress": "entry-dust-pair",
+            "pairCreatedAt": round((now - timedelta(minutes=1)).timestamp() * 1000),
+            "priceUsd": "2", "baseToken": {"address": token.address},
+            "liquidity": {"usd": raw_liquidity},
+            "txns": {"m5": {"buys": 2, "sells": 1}, "h1": {"buys": 2, "sells": 1}},
+            "volume": {"m5": 250, "h1": 250},
+        }},
+    ))
+    result = store.enroll_chain_meme_trader_v6(definition_version=version)
+    assert result["admitted"] == int(admitted)
+    evaluation = store.db.execute(
+        "SELECT * FROM chain_meme_trader_v6_entry_evaluations WHERE definition_version=?", (version,),
+    ).fetchone()
+    if not admitted:
+        assert evaluation["reason"] == "entry_pool_liquidity_below_1_usd"
+        assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_v6_entry_fills").fetchone()[0] == 0
+        assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_positions").fetchone()[0] == 0
+        assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_trades").fetchone()[0] == 0
+    assert store.db.execute("SELECT COUNT(*) FROM token_snapshots").fetchone()[0] == 1
+    store.close()
+
+
 def test_chain_meme_market_entry_uses_real_quantity_and_two_sided_slippage_identity(
     tmp_path: Path,
 ):
@@ -9068,6 +9109,25 @@ def test_chain_meme_market_entry_uses_real_quantity_and_two_sided_slippage_ident
     assert marked_position["holding_seconds"] >= 0.0
     assert summary["unique_held_token_count"] == 1
 
+    # Represent a pre-fix source record in this fixture only. Annotation must
+    # never refund its BUY or manufacture a counterfactual account trajectory.
+    historical_id = store.add_snapshot(TokenSnapshot(
+        "solana", token.address, 2.0, 0.48, 100000, 250, 2, 1,
+        observed_at=observed, ingested_at=observed, provider="dexscreener",
+        raw={"pair": {"pairAddress": "pair-accounting"}},
+    ))
+    with store.db:
+        store.db.execute("UPDATE chain_meme_trader_positions SET entry_snapshot_id=? WHERE definition_version=?",
+                         (historical_id, version))
+    ledger_before = [tuple(r) for r in store.db.execute("SELECT * FROM chain_meme_trader_trades")]
+    annotated = Store.chain_meme_trader_summary_from_connection(store.db)
+    annotated_arm = next(s for s in annotated["strategies"] if s["arm_id"] == position["arm_id"])
+    assert annotated_arm["positions"][0]["engineering_anomaly"] == "entry_pool_liquidity_below_1_usd"
+    assert annotated_arm["account"]["research_metrics_eligible"] is False
+    assert annotated_arm["account"]["cash_usd"] == pytest.approx(account["cash_usd"])
+    assert annotated_arm["account"]["indicative_total_pnl_usd"] == pytest.approx(expected_total_pnl)
+    assert ledger_before == [tuple(r) for r in store.db.execute("SELECT * FROM chain_meme_trader_trades")]
+
     empty = next(item for item in summary["strategies"] if item["account"]["open_position_count"] == 0)
     assert empty["account"]["cash_usd"] == pytest.approx(1000.0)
     assert empty["account"]["indicative_equity_usd"] == pytest.approx(1000.0)
@@ -9075,9 +9135,9 @@ def test_chain_meme_market_entry_uses_real_quantity_and_two_sided_slippage_ident
     assert empty["account"]["valuation_status"] == "complete_market_mark"
 
     missing_at = utcnow()
-    store.record_chain_meme_trader_market_mark_miss(
+    store.record_chain_meme_trader_pool_mark_miss(
         token_id=token.token_id, chain="solana", address=token.address,
-        recorded_at=missing_at,
+        pair_address="pair-accounting", recorded_at=missing_at,
     )
     partial = Store.chain_meme_trader_summary_from_connection(store.db)
     partial_strategy = next(

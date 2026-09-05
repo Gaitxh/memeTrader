@@ -594,6 +594,10 @@ def test_chain_web_reports_distinct_tokens_holding_duration_and_trade_markers(
                 "DELETE FROM chain_meme_trader_market_marks WHERE token_id=?",
                 (token.token_id,),
             )
+            mark_store.db.execute(
+                "DELETE FROM chain_meme_trader_pool_marks WHERE token_id=?",
+                (token.token_id,),
+            )
         mark_store.upsert_chain_meme_trader_market_mark(
             token,
             TokenSnapshot(
