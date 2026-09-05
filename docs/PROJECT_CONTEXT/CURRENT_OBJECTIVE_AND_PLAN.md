@@ -1,5 +1,13 @@
 # 当前目标与执行计划
 
+## 当前推进：全方向新策略与数据覆盖（2026-09-05 14:38Z）
+
+当前active goal要求完整实现用户指定“设计新策略”讨论中的15个方向及第20节组合方向，不受“下一批仅三条”建议限制。全范围：Vault Hazard、Earn-the-Hold、Failed Continuation、Wave Reset、Migration Absorption、Executable Recovery、Capital Velocity、Effective Breadth、Price-to-Flow Fragility、Churn Resistant、Creator/Early Holder Distribution、Bundle-adjusted Breadth、Finite-capital Ranker、Market Regime、Competing Risk，以及High Recall→Earn Hold→Harvest→Exit→Wave Reset组合。只有实际资源不可用且留证才可跳过；纯函数/注册名不等于生产接通或自然效果已验证。
+
+最新补充“后来很少交易可能在数据端”已多agent只读分层：14:08—14:38Z新Token Sol509→补全445→BUY85、BSC158→157→30、Robinhood281→16→8。551现金拒绝逐条均为真实匹配账户不足20U，非空eligible误标；Robinhood无池及hydrated后缺普通后续快照则是独立覆盖瓶颈。持仓当前无长期missing，但全轮配置1s/实际P95约8.79s。完整证据与分母见`HELD_CATALOG_AND_CAPITAL_CREDIT_2026-09-05.md`最新节。
+
+执行接续：先用已有采集、amountful转账与严格时点框架补全新策略需要的连续输入；分阶段接入新entry/exit、同Fill对照与production调度，最小相关测试后增量部署，分别报告代码/源覆盖/自然交易。已有146、固定1000U账期、开放仓位、已到账补款和历史不重置不重复；未决历史成交不伪造；Live锁定、自动复盘保持PAUSED。当前并行纯模块尚未接入Runtime，不宣称新方向已部署。
+
 ## 最新修复结果（2026-09-05 14:02Z）
 
 9eac92c/664ea9a已推送并于13:58Z部署：漏采Robinhood一币四仓已恢复且用两份新原池行情完成退出；当前账期372笔/49策略dust入场补7440U，另4笔确认漏采仓实际净亏损补78.80766270074568U，总7518.807662700746U。原交易与PNL不改写，补款独立资本事件、不重复，保留146策略/旧账期/全部历史、不初始化。028/096历史SELL证据未决明确展示待核查，不用现价冒充历史成交。多agent实查934条主判断中84.4%现金拒绝、0过期，判断P95约10秒；Robinhood存在Gecko有池而Dex无池的覆盖差异，不能说全是余额或采集端完全正常。详细账本、原因、实测和限制：`HELD_CATALOG_AND_CAPITAL_CREDIT_2026-09-05.md`。工程漏采已补款样本同样不用于策略优劣判断；定时复盘保持暂停。
