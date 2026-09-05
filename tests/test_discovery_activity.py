@@ -14,7 +14,7 @@ def test_discovery_activity_counts_first_tokens_not_duplicate_polls_or_strategy_
         CREATE TABLE token_discovery_exposures(id INTEGER PRIMARY KEY,chain TEXT,token_id TEXT,
           first_local_discovery INTEGER,recorded_at TEXT,observed_at TEXT);
         CREATE TABLE chain_meme_trader_v6_entry_evaluations(id INTEGER PRIMARY KEY,token_id TEXT,
-          source_snapshot_id INTEGER,feature_json TEXT,decided_at TEXT);
+          source_snapshot_id INTEGER,feature_json TEXT,evaluated_at TEXT);
     """)
     at = iso(now - timedelta(minutes=2))
     db.executemany("INSERT INTO token_discovery_exposures VALUES(?,?,?,?,?,?)", [

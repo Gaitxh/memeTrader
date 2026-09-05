@@ -25,4 +25,12 @@ CoinGecko免费源不是秒级报价源，补源只能改善覆盖，不能保�
 
 本文件初始提交时部署待执行；之后追加实际验证。旧策略和账期不重置。全部新增策略、最终计算/资源复核及故障补偿仍在继续，不宣称整个用户目标完成。
 
+### 部署回读（16:29Z）
+
+46fdbe6已推送并受控重启；原资金期仍为funding-20260905-fixed-1000，146策略、Live锁定，交易与账户快照继续增长。Gecko三链源继续成功，Robinhood已有本轮geckoterminal行情入库；CoinGecko补池任务已实际成功，13次本机日/月用量，31条缓存，1个待补原池。不是仅配置密钥。
+
+部署暴露发现曲线SQL引用了不存在的decided_at，测试夹具也错用了同列。已改为生产真实evaluated_at，最近回归通过；只重启Web后接口返回60个分钟桶，Solana/BSC/Robinhood均有新增计数，复苏0如实展示。
+
+16:25Z持仓130个Token，三链年龄中位约6.7–8.4秒，一Solana尾部33秒。最近持仓轮间隔P95约22秒、HTTP P95约16秒、应用退出P95约0.086秒；启动后窗口并不与前窗口完全同负载，不能据此宣称加速，后续需定位公共阻塞与外部长尾。未重置或改写收益。
+
 接口依据：[CoinGecko Demo pools](https://docs.coingecko.com/demo/reference/pools-addresses)、[CoinGecko密钥](https://docs.coingecko.com/docs/setting-up-your-api-key)、[Jupiter plans](https://developers.jup.ag/docs/portal/plans)。具体账号有效额度以供应商后台为准，不自动购买。

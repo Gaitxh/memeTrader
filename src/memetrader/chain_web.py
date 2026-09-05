@@ -280,13 +280,13 @@ class ChainWebData:
             counts[(str(row["at"])[:16], str(row["chain"]), "new")].add(str(row["token_id"]))
         frontier = int(connection.execute("SELECT COALESCE(MAX(id),0) FROM chain_meme_trader_v6_entry_evaluations").fetchone()[0])
         rows = connection.execute(
-            "SELECT token_id,source_snapshot_id,decided_at FROM chain_meme_trader_v6_entry_evaluations "
-            "WHERE id>? AND decided_at>=? AND json_extract(feature_json,'$.policy_entry_family')='reawakening'",
+            "SELECT token_id,source_snapshot_id,evaluated_at FROM chain_meme_trader_v6_entry_evaluations "
+            "WHERE id>? AND evaluated_at>=? AND json_extract(feature_json,'$.policy_entry_family')='reawakening'",
             (max(0, frontier-20000), iso(start)),
         ).fetchall()
         for row in rows:
             chain_name = str(row["token_id"]).split(":", 1)[0]
-            counts[(str(row["decided_at"])[:16], chain_name, "reactivated")].add(str(row["token_id"]))
+            counts[(str(row["evaluated_at"])[:16], chain_name, "reactivated")].add(str(row["token_id"]))
         points = []
         minute = start
         while minute <= now:
