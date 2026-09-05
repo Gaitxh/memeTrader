@@ -211,6 +211,84 @@ def _record_actual_flow(store, clock, token, pair, when, *, net_raw=-1_000_000):
     )
 
 
+def test_observed_buyer_real_store_seal_five_dollar_buy_distribution_and_next_pool_sell(tmp_path, monkeypatch):
+    from memetrader.early_observed_buyers import ARM_ID
+    from memetrader.market_flow import aggregate_market_frames
+    store, clock = _capital_store(tmp_path, monkeypatch, "observed-buyer-lifecycle.sqlite3")
+    monkeypatch.setattr("memetrader.models.utcnow", lambda: clock[0])
+    version, start = Store.CHAIN_MEME_TRADER_ACTIVE_VERSION, clock[0]
+    parents = [tuple(r) for r in store.db.execute("SELECT * FROM chain_meme_trader_policy_additions ORDER BY id")]
+    assert store.register_chain_meme_evidence_completion_experiments() == 4
+    assert store.register_chain_meme_evidence_completion_experiments() == 0
+    assert [tuple(r) for r in store.db.execute("SELECT * FROM chain_meme_trader_policy_additions ORDER BY id LIMIT 18")] == parents
+    token, pair = _new_token("ObservedBuyer"), str(Pubkey.new_unique())
+    store.upsert_token(token)
+    windows, scan_ids = [], []
+    def flow(lo, hi, buyers, selling=False):
+        clock[0] = start + timedelta(seconds=hi+1)
+        received = iso(clock[0])
+        ident = dict(pool_address=pair, base_mint=token.address, quote_mint="USDC")
+        amounts = [("BUY", who, 1_000_000) for who in buyers]
+        if selling:
+            amounts += [("SELL", "early", 200_000_000), ("SELL", "outside", 100_000_000)]
+        rows = [dict(**ident, signature=f"{lo}-{i}", instruction_path="0.1", slot=100+hi,
+            side=side, signer_address=who, base_amount_raw=1_000_000, quote_amount_raw=raw,
+            amount_complete=True, amount_source="parsed_spl_transfer",
+            block_time=iso(start+timedelta(seconds=lo+(i+1)/(len(amounts)+1)*(hi-lo))),
+            observed_at=received, recorded_at=received) for i,(side,who,raw) in enumerate(amounts)]
+        scan = dict(complete=True, coverage_complete=True, status="COMPLETE",
+            coverage_start=iso(start+timedelta(seconds=lo)), coverage_end=iso(start+timedelta(seconds=hi)),
+            observed_at=received, recorded_at=received, trades=rows)
+        scan_id = store.record_chain_meme_pattern_evidence(token.token_id, pair, "participation_scan",
+            scan, observed_at=clock[0], source_key=f"scan-{lo}")
+        scan_ids.append(scan_id)
+        windows.append(dict(window_start=scan["coverage_start"], window_end=scan["coverage_end"], trades=rows, scan=scan))
+        aggregate = aggregate_market_frames(windows[-2:], resolver={**ident, "status":"verified",
+            "base_decimals":6, "quote_decimals":6, "observed_at":received, "recorded_at":received},
+            decision_at=received, quote_conversion=dict(quote_mint="USDC", usd_per_quote=1.0,
+                observed_at=received, recorded_at=received, max_age_seconds=30))
+        payload = {**aggregate["windows"][-1], **aggregate, "token_id":token.token_id,
+                   **ident, "source_evidence_ids":scan_ids[-2:],
+                   "conversion_basis":"USDC_unit_accounting_reference_not_executable_fill"}
+        store.record_chain_meme_pattern_evidence(token.token_id, pair, "amountful_flow", payload,
+            observed_at=clock[0], source_key=f"flow-{lo}")
+        store.seal_chain_meme_observed_buyers(token.token_id, pair, aggregate["windows"][-1], scan_id)
+    flow(1,11,["early","first2","first3"])
+    sealed = store.db.execute("SELECT payload_json FROM chain_meme_pattern_evidence WHERE kind='observed_buyer_cohort'").fetchone()[0]
+    flow(11,21,["late1","late2","late3"])
+    cohorts = store.db.execute("SELECT payload_json FROM chain_meme_pattern_evidence WHERE kind='observed_buyer_cohort'").fetchall()
+    assert len(cohorts) == 1 and cohorts[0][0] == sealed
+    assert json.loads(sealed)["buyer_addresses"] == ["early","first2","first3"]
+    _observe(store, clock, token, pair, start+timedelta(seconds=22), buys=4, sells=2)
+    assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_trades WHERE arm_id=?",(ARM_ID,)).fetchone()[0] == 0
+    _observe(store, clock, token, pair, start+timedelta(seconds=23), buys=4, sells=2)
+    position = store.db.execute("SELECT * FROM chain_meme_trader_positions WHERE arm_id=?",(ARM_ID,)).fetchone()
+    assert position["stake_usd"] == 5 and position["remaining_quantity_tokens"] == pytest.approx(5/2.08)
+    def mark(second, liquidity):
+        clock[0] = start+timedelta(seconds=second)
+        store.upsert_chain_meme_trader_market_mark(token,
+            _snapshot(token,pair,clock[0],liquidity=liquidity),recorded_at=clock[0])
+    mark(35,1000)
+    flow(54,64,[f"warm{i}" for i in range(8)])
+    flow(64,74,[f"warm{i}" for i in range(8)])
+    for lo,hi,breadth in [(74,84,4),(84,94,2)]:
+        flow(lo,hi,[f"new{i}" for i in range(breadth)],selling=True)
+        mark(hi+1,800)
+        store.evaluate_chain_meme_trader_market_marks(definition_version=version,now=clock[0],token_ids=[token.token_id])
+        pending = store.db.execute("SELECT pending_mark_id FROM chain_meme_trader_positions WHERE arm_id=?",(ARM_ID,)).fetchone()[0]
+        assert (pending is not None) == (hi == 94)
+    pending_mark = store.db.execute("SELECT * FROM chain_meme_trader_marks WHERE id=?",(pending,)).fetchone()
+    assert pending_mark["status"] == "pending" and pending_mark["reason"] == "dynamic_distribution_confirmed"
+    assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_trades WHERE arm_id=? AND side='SELL'",(ARM_ID,)).fetchone()[0] == 0
+    mark(96,800)
+    store.evaluate_chain_meme_trader_market_marks(definition_version=version,now=clock[0],token_ids=[token.token_id])
+    sell = store.db.execute("SELECT * FROM chain_meme_trader_trades WHERE arm_id=? AND side='SELL'",(ARM_ID,)).fetchone()
+    assert sell is not None and sell["net_cash_flow_usd"] == pytest.approx(5/2.08*2*.96)
+    assert store.db.execute("SELECT status FROM chain_meme_trader_positions WHERE arm_id=?",(ARM_ID,)).fetchone()[0] == "closed"
+    assert [tuple(r) for r in store.db.execute("SELECT * FROM chain_meme_trader_policy_additions ORDER BY id LIMIT 18")] == parents
+    store.close()
+
+
 def test_registers_18_idempotently_without_rewriting_old_146_or_frontiers(tmp_path, monkeypatch):
     store = Store(tmp_path / "registration.sqlite3", initial_cash_usd=1000)
     activation = store.activate_chain_meme_trader_funded_period()

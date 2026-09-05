@@ -25449,6 +25449,45 @@ class Store:
             self.append_chain_meme_trader_policy(policy)
             return 1
 
+    def register_chain_meme_evidence_completion_experiments(self) -> int:
+        from .capital_policies import event_actual_flow_policy
+        from .migration_absorption import migration_amount_absorption_policy
+        from .early_observed_buyers import observed_buyer_policy
+        from .capital_common_funding import common_funding_policy
+        added = 0
+        for policy in (event_actual_flow_policy(), migration_amount_absorption_policy(),
+                       observed_buyer_policy(), common_funding_policy()):
+            with self._lock:
+                exists = self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?",
+                    (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, policy["arm_id"])).fetchone()
+                if exists is None:
+                    if policy["entry_family"] == "early_observed_buyer_distribution":
+                        policy["activation_evidence_id"] = int(self.db.execute(
+                            "SELECT COALESCE(MAX(id),0) FROM chain_meme_pattern_evidence").fetchone()[0])
+                    self.append_chain_meme_trader_policy(policy)
+                    added += 1
+        return added
+
+    def seal_chain_meme_observed_buyers(self, token_id, pair_address, window, source_evidence_id):
+        from .early_observed_buyers import ARM_ID, seal_observed_buyers
+        with self._lock, self.db:
+            row = self.db.execute("SELECT activated_at,policy_json FROM chain_meme_trader_policy_additions "
+                "WHERE definition_version=? AND arm_id=?", (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, ARM_ID)).fetchone()
+            if row is None:
+                return
+            existing = self.db.execute("SELECT 1 FROM chain_meme_pattern_evidence WHERE definition_version=? "
+                "AND token_id=? AND pair_address=? AND kind='observed_buyer_cohort' LIMIT 1",
+                (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, token_id, pair_address)).fetchone()
+            if existing:
+                return
+            cohort = seal_observed_buyers(window, source_evidence_id=source_evidence_id,
+                activation_evidence_id=self._json_object(row["policy_json"])["activation_evidence_id"],
+                activated_at=row["activated_at"], now=iso(utcnow()))
+            if cohort:
+                self.record_chain_meme_pattern_evidence(token_id, pair_address, "observed_buyer_cohort", cohort,
+                    observed_at=cohort["sealed_at"], source_key=cohort["cohort_id"])
+
     def register_chain_meme_result_experiments(self) -> int:
         added = 0
         for policy in result_driven_policies():
@@ -25803,11 +25842,14 @@ class Store:
             if any(p.get("capital_experiment") for p in active):
                 evidence = self._capital_evidence(token.token_id, pair_address, decision_at,
                     ("amountful_flow", "pool_surface", "authoritative_event", "authoritative_no_ca_amount_rank",
-                     "direct_lp_entry_preflight"))
-                fact = self.db.execute("SELECT id,recorded_at FROM token_launch_facts WHERE token_id=? "
-                    "AND launch_event_type='migration' AND source_observed_at<=ingested_at "
-                    "AND ingested_at<=recorded_at AND recorded_at<=? ORDER BY id DESC LIMIT 1",
+                     "direct_lp_entry_preflight", "observed_buyer_cohort"))
+                fact = self.db.execute("SELECT * FROM token_launch_facts WHERE token_id=? "
+                    "AND launch_event_type='migration' AND julianday(recorded_at)<=julianday(?) ORDER BY id DESC LIMIT 1",
                     (token.token_id, iso(decision_at))).fetchone()
+                if fact and (not all(fact[k] for k in ("source_observed_at", "ingested_at", "recorded_at"))
+                        or not parse_time(fact["source_observed_at"]) <= parse_time(fact["ingested_at"])
+                        <= parse_time(fact["recorded_at"]) <= decision_at):
+                    fact = None
                 capital_context = capital_context_from_observations(history, evidence,
                     decision_at=iso(decision_at), migration_fact=dict(fact) if fact else None,
                     cross_section=cross_section)
@@ -25853,7 +25895,7 @@ class Store:
                             already_bought.discard(p["arm_id"])
             event_keys = {}
             for policy in active:
-                if policy.get("entry_family") not in {"event_reawakening", "surface_lifecycle_pipeline", "fast_stop_reclaim", "no_ca_event_flow_leader", "direct_lp_amount_specific_confirmed"}:
+                if policy.get("entry_family") not in {"event_reawakening", "surface_lifecycle_pipeline", "fast_stop_reclaim", "no_ca_event_flow_leader", "direct_lp_amount_specific_confirmed", "official_event_actual_flow"}:
                     continue
                 arm = policy["arm_id"]
                 event = capital_context.get({
@@ -25908,7 +25950,7 @@ class Store:
                     ready.append(policy["arm_id"])
             admitted_arms = [p["arm_id"] for p in active if post_valid and p["arm_id"] in pending
                              and p["arm_id"] not in already_bought and p["arm_id"] not in entry_blocked
-                             and (p.get("entry_family") not in {"event_reawakening", "surface_lifecycle_pipeline", "fast_stop_reclaim", "no_ca_event_flow_leader", "direct_lp_amount_specific_confirmed"} or
+                             and (p.get("entry_family") not in {"event_reawakening", "surface_lifecycle_pipeline", "fast_stop_reclaim", "no_ca_event_flow_leader", "direct_lp_amount_specific_confirmed", "official_event_actual_flow"} or
                                   previous_features.get("event_keys", {}).get(p["arm_id"]) == event_keys.get(p["arm_id"]))]
             paired = {}
             for p in active:
@@ -30181,9 +30223,34 @@ class Store:
                 "observed_at": position["mark_observed_at"], "recorded_at": position["mark_recorded_at"],
                 "price_usd": position["mark_price_usd"], "liquidity_usd": position["mark_liquidity_usd"],
                 "sample_sequence": position["sample_sequence"], "slippage_bps": 400}
-            result = evaluate_capital_exit_context(kind, dict(position), market, shared[entry_key],
-                amountful_rows=rows["amountful_flow"], vault_rows=rows["vault_frame"],
-                state=state, now=current, policy=policy["capital_exit_policy"], previous_market=prior)
+            if kind == "early_observed_buyer_distribution":
+                from .capital_context import build_capital_exit_frame
+                from .early_observed_buyers import evaluate_observed_buyer_distribution
+                cohort_key = ("observed_buyer_cohort", token, pair)
+                if cohort_key not in shared:
+                    shared[cohort_key] = self._capital_evidence(token, pair, current, ("observed_buyer_cohort",))["observed_buyer_cohort"]
+                cohort_rows = shared[cohort_key]
+                flow_row = rows["amountful_flow"][0] if rows["amountful_flow"] else {}
+                flow = flow_row.get("payload") or {}
+                window = (flow.get("windows") or [{}])[-1]
+                adapted, frame = build_capital_exit_frame(dict(position), market, shared[entry_key],
+                    rows["amountful_flow"], rows["vault_frame"], kind="creator_early_holder_distribution",
+                    state=state, now=current, previous_market=prior)
+                frame.update(buyer_cohort=cohort_rows[0]["payload"] if cohort_rows else {},
+                    distribution_window=window, source_evidence_id=(flow.get("source_evidence_ids") or [None])[-1])
+                result = evaluate_observed_buyer_distribution(adapted, frame, state,
+                    now=iso(current), policy=policy["capital_exit_policy"])
+                if result[0] != "WAIT":
+                    result[2]["capital_context"] = {
+                        "market_price_usd": frame.get("market_price_usd"),
+                        "liquidity_usd": frame.get("market_liquidity_usd"),
+                        "market_observed_at": frame.get("market_observed_at"),
+                        "effective_breadth": frame.get("effective_buyer_breadth"),
+                        "amountful_evidence_id": flow_row.get("id")}
+            else:
+                result = evaluate_capital_exit_context(kind, dict(position), market, shared[entry_key],
+                    amountful_rows=rows["amountful_flow"], vault_rows=rows["vault_frame"],
+                    state=state, now=current, policy=policy["capital_exit_policy"], previous_market=prior)
         action, reason, new_state, evidence = result
         if new_state != state:
             self.db.execute("UPDATE chain_meme_trader_positions SET capital_exit_state_json=? "

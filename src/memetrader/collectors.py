@@ -2854,6 +2854,7 @@ class SolanaHeldAccountCollector:
         started = utcnow()
         result: dict[str, Any] = {"started_at": iso(started), "complete": False,
             "status": "UNKNOWN_RPC", "trades": [], "frontier": dict(frontier or {}),
+            "observed_funding_transfers": [],
             "identity_unit": "signer_address_not_human", "decoder": "pump-amm-participation/v2",
             "coverage_complete": False, "truncated": False,
             "coverage_start": (frontier or {}).get("block_time"), "coverage_end": None}
@@ -2893,9 +2894,9 @@ class SolanaHeldAccountCollector:
 
                 async def read_transaction(item):
                     if item.get("err") is not None:
-                        return [], True  # Observed failed transaction, not missing.
+                        return [], True, []  # Observed failed transaction, not missing.
                     if not frontier.get("signature") and int(item["slot"]) <= int(frontier["slot"]):
-                        return [], True
+                        return [], True, []
                     async with transaction_slots:
                         tx = await rpc("getTransaction", [item["signature"], {
                             "commitment": "confirmed", "encoding": "jsonParsed", "maxSupportedTransactionVersion": 0,
@@ -2904,12 +2905,22 @@ class SolanaHeldAccountCollector:
                     received_at = iso(utcnow())
                     for trade in parsed:
                         trade.update(observed_at=received_at, recorded_at=received_at)
-                    return parsed, valid
+                    result_edges = []
+                    for trade in parsed:
+                        for edge in trade.pop("observed_funding_transfers", []):
+                            edge.update(observed_at=received_at, recorded_at=received_at)
+                            result_edges.append(edge)
+                    return parsed, valid, result_edges
 
                 # Same request cap, at most two in flight; preserve signature order.
-                for parsed, valid in await asyncio.gather(*(read_transaction(item) for item in reversed(signatures))):
+                for parsed, valid, edges in await asyncio.gather(*(read_transaction(item) for item in reversed(signatures))):
                     complete = complete and valid
                     trades.extend(parsed)
+                    result["observed_funding_transfers"].extend(edges)
+                unique_edges = {}
+                for edge in result["observed_funding_transfers"]:
+                    unique_edges[(edge.get("signature"), edge.get("instruction_path"))] = edge
+                result["observed_funding_transfers"] = list(unique_edges.values())
                 result.update(complete=complete, status="COMPLETE" if complete else "INCOMPLETE_DISCARDED",
                     trades=trades if complete else [])
                 coverage_start, coverage_end = result["coverage_start"], result["coverage_end"]
@@ -2984,7 +2995,78 @@ class SolanaHeldAccountCollector:
                 trade.update(actual, amount_complete=True,
                     amount_source="parsed_spl_transfer")
             trades.append(trade)
+        funding = SolanaHeldAccountCollector._pumpswap_observed_funding_transfers(
+            tx, {trade["signer_address"] for trade in trades}, pool, instructions)
+        for trade in trades:
+            trade["observed_funding_transfers"] = funding
         return ([], False) if lp_seen and trades else (trades, True)
+
+    @staticmethod
+    def _pumpswap_observed_funding_transfers(tx, signers, pool, instructions):
+        """Expose only explicit wallet funding edges in an already fetched tx."""
+        meta = tx.get("meta") or {}
+        message = (tx.get("transaction") or {}).get("message") or {}
+        keys = message.get("accountKeys", [])
+        owners, mints, pubkeys = {}, {}, set()
+        for key in keys:
+            pubkey = key.get("pubkey") if isinstance(key, Mapping) else key
+            if pubkey:
+                pubkeys.add(str(pubkey))
+        for balance in list(meta.get("preTokenBalances") or []) + list(meta.get("postTokenBalances") or []):
+            try:
+                key = keys[int(balance["accountIndex"])]
+                address = key.get("pubkey") if isinstance(key, Mapping) else key
+                owner = balance.get("owner")
+                if address and owner:
+                    owners[str(address)] = str(owner)
+                if address and balance.get("mint"):
+                    mints[str(address)] = str(balance["mint"])
+            except (KeyError, IndexError, TypeError, ValueError):
+                continue
+        excluded = {str(pool.get(k)) for k in ("pool_address", "base_vault", "quote_vault") if pool.get(k)}
+        edges, seen = [], set()
+        for path, ix in instructions:
+            parsed = ix.get("parsed") if isinstance(ix, Mapping) else None
+            info = parsed.get("info") if isinstance(parsed, Mapping) else None
+            kind = parsed.get("type") if isinstance(parsed, Mapping) else None
+            if not isinstance(info, Mapping) or kind not in {"transfer", "transferChecked"}:
+                continue
+            source, destination = str(info.get("source") or ""), str(info.get("destination") or "")
+            program = ix.get("programId")
+            if program == "11111111111111111111111111111111":
+                amount, mint = info.get("lamports"), "SOL"
+            elif program in {SPL_TOKEN_PROGRAM_ID, SPL_TOKEN_2022_PROGRAM_ID}:
+                if source not in owners or destination not in owners:
+                    continue
+                mint = info.get("mint")
+                if not mint:
+                    mint = mints.get(source) or mints.get(destination)
+                amount = info.get("amount", (info.get("tokenAmount") or {}).get("amount"))
+                if not mint:
+                    continue
+            else:
+                continue
+            source_owner, destination_owner = owners.get(source, source), owners.get(destination, destination)
+            if (not source or not destination or source in excluded or destination in excluded
+                    or destination_owner not in signers or source_owner == destination_owner
+                    or source_owner in excluded or destination_owner in excluded
+                    or source_owner not in pubkeys and source_owner not in owners.values()):
+                continue
+            try:
+                amount = int(amount)
+            except (TypeError, ValueError):
+                continue
+            if amount <= 0:
+                continue
+            key = (path, source, destination, str(mint), amount)
+            if key in seen:
+                continue
+            seen.add(key)
+            edges.append({"relation_type": "observed_funding_transfer", "edge_kind": "system" if mint == "SOL" else "spl",
+                          "signature": (tx.get("transaction") or {}).get("signatures", [None])[0],
+                          "instruction_path": path, "source": source_owner, "destination": destination_owner,
+                          "amount_raw": amount, "mint": str(mint)})
+        return edges
 
     @staticmethod
     def _pumpswap_actual_transfer_amounts(tx, signer, pool, side, instruction_path):

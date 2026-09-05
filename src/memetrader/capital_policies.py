@@ -271,3 +271,17 @@ def direct_lp_amount_specific_policy() -> dict[str, Any]:
         no_historical_backfill=True,
     )
     return policy
+
+
+def event_actual_flow_policy() -> dict[str, Any]:
+    """Keep the source-only event arm and add a monetary-confirmation arm."""
+    import copy
+    p = copy.deepcopy(next(p for p in capital_policies()
+                           if p["arm_id"] == "authoritative_event_shock_v1"))
+    p.update(arm_id="official_event_actual_flow_v1", canonical_id="official_event_actual_flow_v1",
+             name="官方事件·事件后真实资金确认", entry_family="official_event_actual_flow",
+             source_arm_ids=["authoritative_event_shock_v1"], notional_usd=5.0,
+             description="同一官方精确合约事件后，完整资金窗口正净流且有效买方广度达2；独立5U前向假设。")
+    p["entry_filter"].update(direction="official_event_actual_flow", min_effective_breadth=2)
+    p["required_inputs"] += ["post_event_complete_amountful_window"]
+    return p

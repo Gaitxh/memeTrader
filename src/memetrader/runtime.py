@@ -1331,6 +1331,7 @@ class Runtime:
                     self.store.register_chain_meme_opportunity_experiments()
                     self.store.register_chain_meme_duration_risk_experiment()
                     self.store.register_chain_meme_direct_lp_amount_specific_experiment()
+                    self.store.register_chain_meme_evidence_completion_experiments()
                     self.store.register_chain_meme_v22_vault_shadow(
                         position_definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
                     )
@@ -5600,7 +5601,9 @@ class Runtime:
             if len(rows) > 128:
                 frame_scan.update(complete=False, truncated=True)
             current = {"window_start": scan.get("coverage_start"), "window_end": scan.get("coverage_end"),
-                       "trades": rows[:128], "scan": frame_scan, "evidence_id": scan_id}
+                       "trades": rows[:128], "scan": frame_scan, "evidence_id": scan_id,
+                       "funding_edges": [{**edge, "sealed_at": received}
+                           for edge in scan.get("observed_funding_transfers", [])][:128]}
             windows[address] = [*windows.get(address, []), current][-2:]
             surface = getattr(self, "_pattern_surface_cache", {}).get(address, {})
             origin = getattr(self, "_pattern_origin_cache", {}).get(address, {})
@@ -5644,10 +5647,14 @@ class Runtime:
                 "creator_identity_verified": bool(creator),
                 "creator_origin_evidence_id": origin.get("evidence_id") if creator else None,
                 "creator_origin_proof": origin.get("proof") if creator else None}
+            edges = { (edge["signature"], edge["instruction_path"]): edge
+                      for window in windows[address] for edge in window.get("funding_edges", []) }
+            flow["observed_funding_transfers"] = list(edges.values())
             if conversion_basis and pool["quote_mint"] == SOLANA_WRAPPED_SOL_MINT:
                 flow["conversion_reference_amounts"] = dict(reference)
             self.store.record_chain_meme_pattern_evidence(pool["token_id"], address, "amountful_flow",
                 flow, observed_at=flow["observed_at"], source_key=f"{address}:{scan['completed_at']}")
+            self.store.seal_chain_meme_observed_buyers(pool["token_id"], address, aggregate["windows"][-1], scan_id)
             if pool["token_id"] in getattr(self, "_pattern_held_tokens", set()):
                 self.store.evaluate_chain_meme_trader_market_marks(
                     definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
@@ -5677,6 +5684,11 @@ class Runtime:
                                 self.store.evaluate_chain_meme_trader_market_marks(
                                     definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
                                     token_ids=[update["token_id"]])
+                        now = asyncio.get_running_loop().time()
+                        if now - self._chain_meme_v21_vault_last_heartbeat >= 10.0:
+                            self.store.heartbeat(f"chain-meme-v{22 if v22 else 21}-vault-shadow",
+                                item=frame is not None, error="")
+                            self._chain_meme_v21_vault_last_heartbeat = now
                         continue
                     frame = self.chain_meme_v21_vault_tracker.push(update)
                     frame_id = (
@@ -6506,7 +6518,8 @@ class Runtime:
                         "kind": "pool_failure",
                         "token_id": target_token_id, "pair_address": expected_pair,
                         "chain": target_chain, "address": target_address,
-                        "failure_kind": "DATA_REJECTED:ENTRY_POOL_INVALID",
+                        "failure_kind": ("DATA_REJECTED:ENTRY_POOL_INVALID" if expected_pair in observed_pairs
+                                         else "DEX_SOURCE_COVERAGE_GAP"),
                     })
                 if expected_pairs and expected_pairs <= valid_pairs:
                     priced_tokens += 1

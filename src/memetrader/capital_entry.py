@@ -153,6 +153,60 @@ def capital_observation_signal(history, policy, *, decision_at, activated_at, co
     if price is None or price <= 0 or liquidity is not None and liquidity < 1:
         return False, "entry_pool_price_or_liquidity_invalid"
     direction = policy["entry_filter"]["direction"]
+    if direction == "migration_amount_rate_absorption":
+        from .migration_absorption import build_migration_amount_absorption_context, migration_amount_absorption_signal
+        own = build_migration_amount_absorption_context(frames, context.get("amountful_flow"),
+            context.get("migration_fact"), context.get("surface"),
+            decision_at=decision_at, activated_at=activated_at)
+        return migration_amount_absorption_signal(frames, policy, decision_at=decision_at,
+            activated_at=activated_at, context=own)
+    if direction == "common_funding_adjusted_breadth":
+        from .capital_common_funding import common_funding_adjusted_breadth_signal
+        flow = context.get("amountful_flow") or {}
+        windows = flow.get("windows") or []
+        resolver = flow.get("resolver") or {}
+        if (not _evidence_ok(flow, decision, start) or not flow.get("complete")
+                or not flow.get("adjacent") or not flow.get("nonoverlap") or len(windows) != 2
+                or resolver.get("pool_address") != context.get("pair_address")
+                or resolver.get("base_mint") != str(context.get("token_id")).partition(":")[2]):
+            return False, "awaiting_common_funding_actual_windows"
+        return common_funding_adjusted_breadth_signal(dict(prior=windows[0], current=windows[1]),
+            flow.get("observed_funding_transfers") or [], decision_at, activated_at, policy["entry_filter"])
+    if direction == "early_observed_buyer_distribution":
+        cohort = context.get("observed_buyer_cohort") or {}
+        sealed = _time(cohort.get("sealed_at"))
+        flow = context.get("amountful_flow") or {}
+        age, buys, sells = (_finite(last.get(k)) for k in ("pool_age_seconds", "buys", "sells"))
+        if (not sealed or not start <= sealed <= decision or not cohort.get("buyer_addresses")
+                or cohort.get("base_mint") != str(context.get("token_id")).partition(":")[2]
+                or cohort.get("pool_address") != context.get("pair_address")
+                or flow.get("complete") is not True or not _evidence_ok(flow, decision, start)
+                or None in (age, buys, sells) or not 0 <= age <= 900 or buys+sells < 3):
+            return False, "awaiting_frozen_observed_buyer_cohort"
+        return True, "observed_buyer_cohort_entry_confirmed"
+    if direction == "official_event_actual_flow":
+        valid, reason = authoritative_event_shock_signal(frames, policy, decision_at, activated_at, context)
+        if not valid:
+            return False, reason
+        flow = context.get("amountful_flow") or {}
+        resolver = flow.get("resolver") or {}
+        windows = flow.get("windows") or []
+        latest = windows[-1] if windows else {}
+        begin, end = _time(latest.get("window_start")), _time(latest.get("window_end"))
+        event_at = _time(context["event"]["recorded_at"])
+        net, gross, breadth = (_finite(latest.get(k)) for k in (
+            "net_quote_flow_raw", "gross_quote_flow_raw", "effective_breadth"))
+        if (flow.get("complete") is not True or flow.get("scan_complete") is not True
+                or flow.get("future_data_rejected") is True or not _evidence_ok(flow, decision, start)
+                or resolver.get("status") != "verified"
+                or resolver.get("pool_address") != context.get("pair_address")
+                or resolver.get("base_mint") != str(context.get("token_id")).partition(":")[2]
+                or latest.get("complete") is not True or not _evidence_ok(latest, decision, start)
+                or not begin or not end or not event_at <= begin < end <= _time(last["observed_at"])
+                or None in (net, gross, breadth) or not 0 < net <= gross
+                or breadth < policy["entry_filter"]["min_effective_breadth"]):
+            return False, "awaiting_post_event_actual_capital_confirmation"
+        return True, "official_event_actual_flow_confirmed"
     if direction == "direct_lp_amount_specific_confirmed":
         direct_policy = {
             **policy,
@@ -376,6 +430,7 @@ def capital_context_from_observations(history, evidence, *, decision_at, migrati
         return {}
     last, now = history[-1], _time(decision_at)
     context = {"token_id": last["token_id"], "pair_address": last["pair_address"]}
+    context["migration_fact"] = migration_fact
     def latest(kind, max_age=None):
         rows = evidence.get(kind) or []
         for row in sorted(rows, key=lambda r: r["recorded_at"], reverse=True):
@@ -452,4 +507,7 @@ def capital_context_from_observations(history, evidence, *, decision_at, migrati
     preflight = latest("direct_lp_entry_preflight", 35)
     if preflight:
         context["direct_lp_preflight"] = preflight
+    cohort = latest("observed_buyer_cohort")
+    if cohort:
+        context["observed_buyer_cohort"] = cohort
     return context

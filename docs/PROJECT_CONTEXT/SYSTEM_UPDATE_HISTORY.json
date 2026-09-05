@@ -2,6 +2,17 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260906-actual-flow-evidence-completion",
+      "recorded_at": "2026-09-05T21:27:19Z",
+      "title": "四项真实资金实验与恢复状态修正",
+      "problem": "事件后真实资金、迁移卖压速率、冻结观察买家和共同资金关系仍缺实际机制；共享Vault漏恢复心跳；同秒ISO精度导致合法迁移证据被拒绝。",
+      "change": "四个5U独立策略接真实输入及下一帧交易；复用已有RPC转账信息；修正时间比较、覆盖缺口分类和Vault心跳，重复曝光不冒充再次活跃。",
+      "rationale": "逐项落实两篇独立方向，不改原规则；现有免费数据内形成可验证行为差异，后台性能优先。",
+      "validation": "各新机制纯测试、真实Store注册/信号/BUY/派发SELL与运行心跳、同秒精度定向测试通过。",
+      "scope": "180旧策略与资金期保留，待部署184；早期群仅first-observed，资金关系不等同控制人。",
+      "status": "已测试，待增量部署"
+    },
+    {
       "id": "20260906-held-priority-and-duration",
       "recorded_at": "2026-09-05T20:49:00Z",
       "title": "持仓优先与逐币查询加速，新增两种独立实验",
@@ -10,7 +21,7 @@
       "rationale": "先消除确定的处理/覆盖阻塞，再按真实时点验证有差异的新机制，旧账户与规则不改。",
       "validation": "定向查询/调度、6槽保留连续性、Direct15秒两帧、duration真实Store/不可变时序/失联敏感性通过。",
       "scope": "178旧策略/资金期保留；新2臂部署后180；共享Recovery接线及真实性能仍待验收。",
-      "status": "代码已测，待本阶段部署"
+      "status": "fc3c0f3已部署，20:53:56Z/frontier917071增量180；原资金期保留，共享Recovery已有真实quote-only帧，详见EVIDENCE_COMPLETION_2026-09-06.md"
     },
     {
       "id": "20260906-pregrad-event-opportunity",
