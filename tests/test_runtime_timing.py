@@ -73,3 +73,25 @@ def test_runtime_timing_empty_snapshot_and_missing_intervals():
     assert component["actual_interval_seconds"] == {"p50": None, "p95": None}
     assert component["duration_seconds"] == {"p50": 0.25, "p95": 0.25}
     assert component["configured_interval_seconds"] is None
+
+
+def test_retrieval_curve_weights_tokens_without_dividing_batch_latency():
+    from datetime import timezone, timedelta
+    timing = RuntimeTiming()
+    at = datetime(2026, 9, 6, tzinfo=timezone.utc)
+    timing.observe_retrieval(chain="solana", duration_seconds=2, tokens=30,
+                             priced=29, failed=0, observed_at=at)
+    timing.observe_retrieval(chain="solana", duration_seconds=8, tokens=10,
+                             priced=0, failed=10, observed_at=at)
+    timing.observe_retrieval(chain="bsc", duration_seconds=4, tokens=5,
+                             priced=5, failed=0, observed_at=at)
+    series = timing.snapshot()["held_retrieval"]
+    sol = series["points"][0]["chains"]["solana"]
+    assert sol["weighted_seconds"] / sol["token_attempts"] == 3.5
+    assert sol["priced_tokens"] == 29
+    assert sol["failed_tokens"] == 10
+    for i in range(1, 125):
+        timing.observe_retrieval(chain="bsc", duration_seconds=1, tokens=1,
+                                 priced=1, failed=0, observed_at=at+timedelta(seconds=i*10))
+    assert len(timing.snapshot()["held_retrieval"]["points"]) == 120
+    assert sol["token_attempts"] == 40  # Previously published points are immutable.

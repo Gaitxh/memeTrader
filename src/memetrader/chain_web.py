@@ -303,7 +303,10 @@ class ChainWebData:
 
     def discovery_activity(self) -> dict[str, Any]:
         with self._connect() as connection:
-            return {"status": "ok", "activity_series": self._discovery_activity_series(connection)}
+            timing = connection.execute("SELECT payload_json,recorded_at FROM runtime_timing_latest WHERE id=1").fetchone()
+            return {"status": "ok", "activity_series": self._discovery_activity_series(connection),
+                    "retrieval_series": json.loads(timing["payload_json"]).get("held_retrieval") if timing else None,
+                    "timing_recorded_at": timing["recorded_at"] if timing else None}
 
     def discovery_state(self, chain: str = "all") -> dict[str, Any]:
         if chain not in {"all", "solana", "bsc", "robinhood"}:

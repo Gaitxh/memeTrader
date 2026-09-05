@@ -59,7 +59,8 @@ def _config(tmp_path: Path) -> tuple[Path, dict]:
 def test_chain_diagnostics_read_bounded_timing_and_update_history(tmp_path: Path):
     config_path, _ = _config(tmp_path)
     store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
-    store.record_runtime_timing({"components": {"chain_meme_trader": {"sample_count": 3}}})
+    store.record_runtime_timing({"components": {"chain_meme_trader": {"sample_count": 3}},
+                               "held_retrieval": {"points": [{"observed_at": "2026-09-06T00:00:00Z", "chains": {}}]}})
     store.close()
     data = ChainWebData(config_path)
     assert data.update_history()["entries"] == []
@@ -75,6 +76,7 @@ def test_chain_diagnostics_read_bounded_timing_and_update_history(tmp_path: Path
     assert perf["timing"]["components"]["chain_meme_trader"]["sample_count"] == 3
     assert perf["held_by_chain"] == {}
     assert perf["ui"]["visible_seconds"] == 5
+    assert data.discovery_activity()["retrieval_series"]["points"][0]["observed_at"] == "2026-09-06T00:00:00Z"
     assert "bridge-secret" not in json.dumps(perf)
 
 

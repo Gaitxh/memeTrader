@@ -2397,6 +2397,8 @@ def test_paper_quote_identity_is_chain_aware_and_solana_case_sensitive():
 def test_active_market_mark_batches_are_bounded_and_one_failure_does_not_stop_chain():
     async def scenario():
         runtime = Runtime.__new__(Runtime)
+        from memetrader.runtime_timing import RuntimeTiming
+        runtime.runtime_timing = RuntimeTiming()
         runtime._chain_meme_active_idle_event = asyncio.Event()
         runtime._chain_meme_active_idle_event.set()
         runtime._dex_quote_lock = asyncio.Semaphore(8)
@@ -2488,6 +2490,11 @@ def test_active_market_mark_batches_are_bounded_and_one_failure_does_not_stop_ch
         assert sum(item["kind"] == "failure" for item in applied) == 1
         assert any(kwargs.get("error") == "ReadTimeout" for _, kwargs in heartbeats)
         assert any(kwargs.get("item") is True for _, kwargs in heartbeats)
+        points = runtime.runtime_timing.snapshot()["held_retrieval"]["points"]
+        counts = [p["chains"]["solana"] for p in points]
+        assert sum(p["token_attempts"] for p in counts) == 241
+        assert sum(p["priced_tokens"] for p in counts) == 240
+        assert sum(p["failed_tokens"] for p in counts) == 1
 
     asyncio.run(scenario())
 

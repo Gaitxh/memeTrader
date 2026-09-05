@@ -133,6 +133,7 @@ let errors = [];
 let activeDrawerKind = null;
 let discoveryView = null;
 let discoveryActivity = null, activityRequestedAt = 0, activityLoading = false;
+let retrievalSeries = null, retrievalRecordedAt = null;
 let discoveryLoading = false;
 let discoveryRequestedAt = 0;
 
@@ -641,6 +642,17 @@ function miniSeriesChart(points,key,label,lineClass,transactions=[],formatter=mo
   const last=valid.at(-1),lastX=x(new Date(last.observed_at).getTime()).toFixed(1),lastY=y(Number(last[key])).toFixed(1);
   return `<svg class="mini-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Token ${esc(label)}变化"><path class="${esc(lineClass)}" d="${path}"/><circle class="series-last ${esc(lineClass)}" cx="${lastX}" cy="${lastY}" r="4"/>${markers}</svg><div class="chart-range"><span>最低 ${formatter(min)}</span><span>${valid.length} 个后端快照点</span><span>最高 ${formatter(max)}</span></div>`;
 }
+function renderRetrievalCurve(){
+  const selected=$('#retrieval-chain').value,chains=selected==='all'?['solana','bsc','robinhood']:[selected];
+  const points=(retrievalSeries?.points||[]).map(p=>{
+    const sum=chains.reduce((a,c)=>{const s=p.chains[c]||{};for(const k of Object.keys(a))a[k]+=Number(s[k]||0);return a;},{token_attempts:0,priced_tokens:0,failed_tokens:0,weighted_seconds:0});
+    return {observed_at:p.observed_at,...sum,seconds:sum.token_attempts?sum.weighted_seconds/sum.token_attempts:null};
+  }).filter(p=>p.seconds!=null);
+  if(!points.length){$('#retrieval-curve').innerHTML='<p class="empty">所选链暂无持仓检索计时样本</p>';return;}
+  const latest=points.at(-1),attempts=points.reduce((n,p)=>n+p.token_attempts,0),priced=points.reduce((n,p)=>n+p.priced_tokens,0),failed=points.reduce((n,p)=>n+p.failed_tokens,0);
+  const stale=Date.now()-new Date(retrievalRecordedAt).getTime()>30000;
+  $('#retrieval-curve').innerHTML=`<p><strong>${latest.seconds.toFixed(2)} 秒</strong> · ${stale?'后台计时已过期':'最近时段平均'} · 原池有效报价 ${priced}/${attempts} 币次 · 请求失败 ${failed} 币次</p>${miniSeriesChart(points,'seconds','单币检索耗时','price-line',[],x=>`${x.toFixed(2)} 秒`)}<div class="chart-range"><span>${time(points[0].observed_at)}</span><span>后台记录 ${time(retrievalRecordedAt)}</span><span>${time(latest.observed_at)}</span></div>`;
+}
 function renderDiscoveryActivity(){
   const series=discoveryActivity?.points||[],selected=$('#activity-chain').value;
   const chains=selected==='all'?['solana','bsc','robinhood']:[selected];
@@ -659,8 +671,8 @@ function renderDiscoveryActivity(){
 async function refreshDiscoveryActivity(){
   if(activityLoading||Date.now()-activityRequestedAt<20000)return;
   activityLoading=true;activityRequestedAt=Date.now();
-  try{const r=await fetch('/api/discovery-activity',{cache:'no-store'});if(!r.ok)throw new Error(`HTTP ${r.status}`);const d=await r.json();discoveryActivity=d.activity_series;renderDiscoveryActivity();}
-  catch(e){$('#discovery-curve-note').textContent=`曲线更新失败：${e.message}`;}
+  try{const r=await fetch('/api/discovery-activity',{cache:'no-store'});if(!r.ok)throw new Error(`HTTP ${r.status}`);const d=await r.json();discoveryActivity=d.activity_series;retrievalSeries=d.retrieval_series;retrievalRecordedAt=d.timing_recorded_at;renderDiscoveryActivity();renderRetrievalCurve();}
+  catch(e){$('#discovery-curve-note').textContent=`曲线更新失败：${e.message}`;$('#retrieval-curve').innerHTML=`<p class="empty">检索计时更新失败：${esc(e.message)}</p>`;}
   finally{activityLoading=false;}
 }
 function miniPriceChart(points,transactions=[]){
@@ -864,6 +876,7 @@ $('#updates-refresh').addEventListener('click',refreshUpdates);
 $('#performance-refresh').addEventListener('click',refreshPerformance);
 $('#discovery-chain').addEventListener('change',()=>{discoveryView=null;refreshDiscovery(true);});
 $('#activity-chain').addEventListener('change',renderDiscoveryActivity);
+$('#retrieval-chain').addEventListener('change',renderRetrievalCurve);
 $('#overview-sort').addEventListener('change',renderOverviewStrategies);
 document.body.addEventListener('click',event=>{
   const wallet=event.target.closest('[data-wallet-detail]');if(wallet){openWalletDetail(wallet.dataset.walletDetail);return;}

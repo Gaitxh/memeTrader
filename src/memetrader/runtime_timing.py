@@ -28,6 +28,23 @@ class RuntimeTiming:
 
     def __init__(self) -> None:
         self._components: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self._retrieval: deque[dict[str, Any]] = deque(maxlen=120)
+
+    def observe_retrieval(self, *, chain: str, duration_seconds: float,
+                          tokens: int, priced: int, failed: int,
+                          observed_at: datetime) -> None:
+        """Token-weighted batch latency, not elapsed divided by batch size."""
+        bucket = int(observed_at.timestamp()) // 10 * 10
+        if not self._retrieval or self._retrieval[-1]["timestamp"] != bucket:
+            self._retrieval.append({"timestamp": bucket, "chains": {}})
+        counts = self._retrieval[-1]["chains"].setdefault(chain, {
+            "token_attempts": 0, "priced_tokens": 0, "failed_tokens": 0,
+            "weighted_seconds": 0.0,
+        })
+        counts["token_attempts"] += tokens
+        counts["priced_tokens"] += priced
+        counts["failed_tokens"] += failed
+        counts["weighted_seconds"] += duration_seconds * tokens
 
     def observe(
         self,
@@ -85,4 +102,11 @@ class RuntimeTiming:
         return {
             "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "components": components,
+            "held_retrieval": {
+                "bucket_seconds": 10, "scope": "active_held_primary_lane",
+                "points": [{
+                    "observed_at": datetime.fromtimestamp(p["timestamp"], timezone.utc).isoformat(),
+                    "chains": {chain: dict(counts) for chain, counts in p["chains"].items()},
+                } for p in self._retrieval],
+            },
         }

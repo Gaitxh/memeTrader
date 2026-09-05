@@ -17,6 +17,40 @@ from memetrader.runtime import Runtime
 from memetrader.store import Store
 
 
+def test_pattern_watch_releases_aged_early_slots_and_bounds_nonheld(monkeypatch):
+    now = utcnow()
+    monkeypatch.setattr("memetrader.runtime.utcnow", lambda: now)
+    runtime = Runtime.__new__(Runtime)
+    runtime._pattern_held_tokens = set()
+
+    def quotes(prefix, count, age):
+        rows = {}
+        for i in range(count):
+            token = TokenCandidate("bsc", f"0x{prefix}{i}", "fixture")
+            snap = SimpleNamespace(price_usd=1, observed_at=now,
+                raw={"pair": {"pairAddress": f"pool-{prefix}{i}",
+                              "pairCreatedAt": (now-timedelta(seconds=age)).timestamp()*1000}})
+            rows[token.token_id] = (token, snap)
+        return rows
+
+    first = quotes("old", 3, 895)
+    runtime._remember_pattern_quotes(first)
+    assert len(runtime._pattern_watch) == 3
+    held_id = next(iter(first))
+    runtime._pattern_held_tokens.add(held_id)
+    expiry = runtime._pattern_watch[held_id]["expires_at"]
+    now += timedelta(seconds=10)
+    runtime._remember_pattern_quotes(quotes("new", 10, 20))
+    assert runtime._pattern_watch[held_id]["bucket"] == "growth"
+    assert runtime._pattern_watch[held_id]["expires_at"] == expiry
+    assert sum(v["bucket"] == "early" for v in runtime._pattern_watch.values()) == 3
+    runtime._remember_pattern_quotes(quotes("grow", 10, 2000))
+    assert sum(v["bucket"] == "growth" for k,v in runtime._pattern_watch.items() if k not in runtime._pattern_held_tokens) == 4
+    now += timedelta(minutes=16)
+    runtime._remember_pattern_quotes({})
+    assert set(runtime._pattern_watch) == {held_id}
+
+
 def test_migration_and_reserve_context_require_actual_asof_identity(tmp_path, monkeypatch):
     store = Store(tmp_path / "evidence.sqlite3", initial_cash_usd=1000)
     store.activate_chain_meme_trader_funded_period()

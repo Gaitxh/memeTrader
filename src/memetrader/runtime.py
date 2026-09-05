@@ -6208,6 +6208,10 @@ class Runtime:
             except Exception as exc:
                 if timing is not None:
                     timing.observe("held_fetch", asyncio.get_running_loop().time()-batch_started, failures=1)
+                    if high_priority:
+                        timing.observe_retrieval(chain=chain,
+                            duration_seconds=asyncio.get_running_loop().time()-batch_started,
+                            tokens=len(chunk), priced=0, failed=len(chunk), observed_at=utcnow())
                 self.store.heartbeat(
                     heartbeat_name, error=type(exc).__name__,
                 )
@@ -6241,6 +6245,7 @@ class Runtime:
             if timing is not None:
                 timing.observe("held_fetch", apply_started-batch_started, items=len(chunk))
             outcomes = []
+            priced_tokens = 0
             for item in chunk:
                 target_token_id = str(item["token_id"])
                 target_chain = str(item["chain"]).strip().lower()
@@ -6334,6 +6339,8 @@ class Runtime:
                         "chain": target_chain, "address": target_address,
                         "failure_kind": "DATA_REJECTED:ENTRY_POOL_INVALID",
                     })
+                if expected_pairs and expected_pairs <= valid_pairs:
+                    priced_tokens += 1
                 if (
                     not pair_address
                     or float(snapshot.price_usd or 0.0) <= 0.0
@@ -6362,6 +6369,11 @@ class Runtime:
                     "target_chain": target_chain,
                     "target_address": target_address,
                 })
+                if not expected_pairs:
+                    priced_tokens += 1
+            if timing is not None and high_priority:
+                timing.observe_retrieval(chain=chain, duration_seconds=apply_started-batch_started,
+                    tokens=len(chunk), priced=priced_tokens, failed=0, observed_at=received_at)
             refreshed_count = self.store.apply_chain_meme_trader_market_mark_batch(
                 outcomes, recorded_at=received_at,
             )
@@ -6447,9 +6459,21 @@ class Runtime:
     def _remember_pattern_quotes(self, quoted: dict) -> None:
         """Bounded passive watch: reuse discovery/held/flat quotes, no I/O here."""
         current = utcnow()
-        watch = getattr(self, "_pattern_watch", {})
-        watch = {k: v for k, v in watch.items()
-                 if current < v["expires_at"] or k in getattr(self, "_pattern_held_tokens", set())}
+        held = getattr(self, "_pattern_held_tokens", set())
+        watch, occupied = {}, {}
+        for key, item in getattr(self, "_pattern_watch", {}).items():
+            if current >= item["expires_at"] and key not in held:
+                continue
+            created = item.get("pool_created_at_ms")
+            if created is not None:
+                age = current.timestamp() - created / 1000
+                item["bucket"] = "early" if age < 900 else "growth" if age < 21600 else "mature"
+            slot = (item["token"].chain, item["bucket"])
+            if key not in held:
+                if occupied.get(slot, 0) >= (4 if item["bucket"] == "growth" else 3):
+                    continue
+                occupied[slot] = occupied.get(slot, 0) + 1
+            watch[key] = item
         for token, snapshot in quoted.values():
             token_id, chain = token.token_id, token.chain
             if token_id in watch:
@@ -6463,18 +6487,22 @@ class Runtime:
             created = pair.get("pairCreatedAt")
             if not address or not created or snapshot.price_usd is None or snapshot.price_usd <= 0:
                 continue
-            age = snapshot.observed_at.timestamp() - float(created) / 1000
+            age = current.timestamp() - float(created) / 1000
             bucket = "early" if age < 900 else "growth" if age < 21600 else "mature"
             capacity = 4 if bucket == "growth" else 3
-            if age < 0 or sum(v["token"].chain == chain and v["bucket"] == bucket for v in watch.values()) >= capacity:
+            slot = (chain, bucket)
+            if age < 0 or (token_id not in held and occupied.get(slot, 0) >= capacity):
                 continue
             watch[token_id] = {"token": token, "bucket": bucket, "quote": snapshot,
+                "pool_created_at_ms": float(created),
                 "pair_address": canonical_token_address(chain, address),
                 "expires_at": current + timedelta(minutes=20 if bucket == "mature" else 15)}
+            if token_id not in held:
+                occupied[slot] = occupied.get(slot, 0) + 1
         self._pattern_watch = watch
 
     async def chain_meme_pattern_observer_once(self) -> None:
-        """At most 30 shared candidates; low priority and isolated from old entries."""
+        """At most 30 non-held candidates; held quotes reuse the core lane."""
         self._remember_pattern_quotes({})
         watch = self._pattern_watch
         projected = sampled = 0
