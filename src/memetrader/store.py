@@ -29805,14 +29805,21 @@ class Store:
         failure_kind: str, recorded_at: Any = None, _in_transaction: bool = False,
     ) -> None:
         attempted_at = iso(recorded_at or utcnow())
+        pair_key = canonical_token_address(chain, pair_address)
+        if not pair_key:
+            return
         transaction = nullcontext() if _in_transaction else self.db
         with self._lock, transaction:
             self.db.execute(
-                "UPDATE chain_meme_trader_pool_marks SET last_attempt_at=?,failure_kind=? "
-                "WHERE token_id=? AND pair_address=?",
+                "INSERT INTO chain_meme_trader_pool_marks("
+                "token_id,pair_address,chain,address,provider,price_usd,observed_at,recorded_at,"
+                "status,last_attempt_at,failure_kind) VALUES(?,?,?,?,'dexscreener',0,?,?,'UNKNOWN',?,?) "
+                "ON CONFLICT(token_id,pair_address) DO UPDATE SET "
+                "last_attempt_at=excluded.last_attempt_at,failure_kind=excluded.failure_kind",
                 (
-                    attempted_at, str(failure_kind or "DATA_UNAVAILABLE")[:80], token_id,
-                    canonical_token_address(chain, pair_address),
+                    token_id, pair_key, str(chain).lower(), token_id.partition(":")[2],
+                    attempted_at, attempted_at, attempted_at,
+                    str(failure_kind or "DATA_UNAVAILABLE")[:80],
                 ),
             )
 

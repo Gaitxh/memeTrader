@@ -2,6 +2,17 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260906-quote-side-original-pool",
+      "recorded_at": "2026-09-05T21:43:00Z",
+      "title": "修复原池报价方向反转导致的持仓缺价",
+      "problem": "QQQ入场GT原池以QQQ为base，而Dex同池以QQQ为quote；只取base的解析拒绝合法同池行情。首次失败UPDATE零行造成0失败的假象。",
+      "change": "同原池quote USD使用base USD/priceNative，买卖方向反转、base市值不沿用；首次失败记录UNKNOWN，补采成功更新恢复心跳。",
+      "rationale": "恢复真实持仓估值与退出判断，不借用别池价格、不把无法取价当撤池，不更改历史入场。",
+      "validation": "真实GT历史身份与当前Dex精确池已核对；32byte池ID、quote换算与方向、缺比例拒绝、首次失败不核销、已有成功不覆写及补采调度两项回归通过。",
+      "scope": "184策略/原资金期保留；无新增API请求、无重置、无历史PNL重写。",
+      "status": "定向测试通过，待局部部署"
+    },
+    {
       "id": "20260906-actual-flow-evidence-completion",
       "recorded_at": "2026-09-05T21:27:19Z",
       "title": "四项真实资金实验与恢复状态修正",
@@ -10,7 +21,7 @@
       "rationale": "逐项落实两篇独立方向，不改原规则；现有免费数据内形成可验证行为差异，后台性能优先。",
       "validation": "各新机制纯测试、真实Store注册/信号/BUY/派发SELL与运行心跳、同秒精度定向测试通过。",
       "scope": "180旧策略与资金期保留，待部署184；早期群仅first-observed，资金关系不等同控制人。",
-      "status": "已测试，待增量部署"
+      "status": "7b66aa5已部署；21:31:40Z/frontier927746增量184，原资金期保留；自然效果尚需样本。"
     },
     {
       "id": "20260906-held-priority-and-duration",

@@ -2201,6 +2201,43 @@ class Runtime:
         snapshot.market_cap_usd = pair.get("marketCap")
         return snapshot
 
+    @staticmethod
+    def _held_pool_quote(pair: dict[str, Any], target_token_id: str):
+        """Read either side of this exact pool; never borrow another pool's price."""
+        chain, _, address = target_token_id.partition(":")
+        target = canonical_token_address(chain, address)
+        if str(pair.get("chainId") or "").lower() != chain.lower():
+            return None, None
+        base = pair.get("baseToken") or {}
+        quote = pair.get("quoteToken") or {}
+        oriented = pair
+        if canonical_token_address(chain, str(base.get("address") or "")) != target:
+            if canonical_token_address(chain, str(quote.get("address") or "")) != target:
+                return None, None
+            try:
+                base_usd, base_in_quote = float(pair["priceUsd"]), float(pair["priceNative"])
+                quote_usd = base_usd / base_in_quote
+                if not all(math.isfinite(x) and x > 0 for x in (base_usd, base_in_quote, quote_usd)):
+                    return None, None
+            except (KeyError, TypeError, ValueError, ZeroDivisionError):
+                return None, None
+            # Counts and metadata refer to the reported base, not the held quote.
+            oriented = {**pair, "baseToken": quote, "quoteToken": base,
+                "priceUsd": quote_usd, "priceNative": 1 / base_in_quote,
+                "marketCap": None, "fdv": None, "info": {},
+                "txns": {k: {"buys": v.get("sells"), "sells": v.get("buys")}
+                    for k, v in (pair.get("txns") or {}).items() if isinstance(v, dict)}}
+        token = DexScreenerClient._candidate(oriented)
+        snapshot = (Runtime._complement_snapshot(oriented) if pair.get("observedAt")
+                    else DexScreenerClient._snapshot(oriented))
+        if token and snapshot and oriented is not pair:
+            snapshot.raw = {"pair": pair, "target_pricing": {
+                "token_id": target_token_id, "side": "quote",
+                "method": "same_pool_base_usd_divided_by_base_in_quote",
+                "base_price_usd": base_usd, "base_in_quote": base_in_quote}}
+            token.raw = dict(snapshot.raw)
+        return token, snapshot
+
     def _queue_market_pool_gap(self, item: Mapping[str, Any], pair: str,
                                versions: list[str]) -> None:
         chain = str(item["chain"]).lower()
@@ -2254,13 +2291,15 @@ class Runtime:
         def usable(item, pair):
             if pair is None or canonical_token_address(chain, str(pair.get("pairAddress") or "")) != canonical_token_address(chain, item["pair_address"]):
                 return False
-            token = DexScreenerClient._candidate(pair)
-            snapshot = self._complement_snapshot(pair)
+            token, snapshot = self._held_pool_quote(pair, str(item["token_id"]))
             return token is not None and snapshot is not None and not self._paper_quote_rejections(
                 str(item["token_id"]), token, snapshot, utcnow())
         uncovered = [(key, item) for key, item in chunk
                      if not usable(item, pairs.get(key[1]))
                      and float(item["next_complement_attempt"]) <= now]
+        if exact_received:
+            self.store.heartbeat("dexscreener:original_pool", item=any(
+                usable(item, pairs.get(key[1])) for key, item in chunk))
         if uncovered and self.coingecko.available():
             for _, item in uncovered:
                 item["next_complement_attempt"] = now + 60
@@ -2277,8 +2316,7 @@ class Runtime:
                 continue  # HTTP failure or quota exhaustion is never pool absence.
             if canonical_token_address(chain, str(pair.get("pairAddress") or "")) != key[1]:
                 continue
-            token = DexScreenerClient._candidate(pair)
-            snapshot = self._complement_snapshot(pair)
+            token, snapshot = self._held_pool_quote(pair, str(item["token_id"]))
             if token is None or snapshot is None or self._paper_quote_rejections(
                 str(item["token_id"]), token, snapshot, received,
             ):
@@ -6477,8 +6515,7 @@ class Runtime:
                         continue
                     pair_key = canonical_token_address(target_chain, raw_pair_address)
                     observed_pairs.add(pair_key)
-                    pool_token = DexScreenerClient._candidate(raw_pair)
-                    pool_snapshot = DexScreenerClient._snapshot(raw_pair)
+                    pool_token, pool_snapshot = self._held_pool_quote(raw_pair, target_token_id)
                     if pool_token is None or pool_snapshot is None:
                         continue
                     pool_snapshot.observed_at = snapshot.observed_at

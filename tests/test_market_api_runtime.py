@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
+import pytest
 
 from memetrader.models import TokenCandidate, TokenSnapshot, iso, utcnow
 from memetrader.runtime import Runtime, initial_config
@@ -300,6 +301,10 @@ def test_original_pool_due_order_rotates_past_repeated_missing_chain(tmp_path):
         assert calls == [("robinhood", ["rh-pool"]), ("solana", ["sol-pool"]),
                          ("robinhood", ["rh-pool"])]
         assert runtime.coingecko.calls == []
+        health = runtime.store.db.execute(
+            "SELECT * FROM source_health WHERE source='dexscreener:original_pool'"
+        ).fetchone()
+        assert health["last_item_at"] is not None and not health["last_error"]
         await runtime.close()
     asyncio.run(scenario())
 
@@ -336,6 +341,61 @@ def test_exact_original_pool_recovers_dust_without_spending_complement_quota(tmp
         assert mark["provider"] == "dexscreener"
         assert evaluations == [{"definition_version": "current-period", "token_ids": [token.token_id]}]
         assert calls == [(f"https://api.dexscreener.com/latest/dex/pairs/solana/{pool}", 0)]
+        assert runtime.coingecko.calls == []
+        await runtime.close()
+    asyncio.run(scenario())
+
+
+def test_first_pool_failure_then_same_pool_quote_side_recovery(tmp_path):
+    async def scenario():
+        runtime = make_runtime(tmp_path)
+        held = TokenCandidate("robinhood", "0x" + "d5" * 20, "Held QQQ", "QQQ")
+        base = TokenCandidate("robinhood", "0x" + "df" * 20, "Pool base", "BIRK")
+        pool = "0x" + "ab" * 32  # V4 pool ID is not a 20-byte token address.
+        target = target_for(held, pool)
+        runtime.store.record_chain_meme_trader_pool_mark_failure(
+            token_id=held.token_id, pair_address=pool, chain=held.chain,
+            failure_kind="DEX_SOURCE_COVERAGE_GAP")
+        row = runtime.store.db.execute(
+            "SELECT * FROM chain_meme_trader_pool_marks WHERE token_id=? AND pair_address=?",
+            (held.token_id, pool)).fetchone()
+        assert row["status"] == "UNKNOWN" and row["last_attempt_at"]
+        assert row["last_success_at"] is None and row["first_missing_at"] is None
+        assert row["sample_sequence"] == row["consecutive_misses"] == 0
+        payload = pair_payload(base, pool, provider="dexscreener")
+        payload.update(quoteToken={"address": held.address.upper(), "name": held.name, "symbol": held.symbol},
+                       priceUsd="0.00001486", priceNative="0.00000002090", marketCap=123_456)
+        token, snap = runtime._held_pool_quote(payload, held.token_id)
+        assert token.token_id == held.token_id
+        expected = .00001486 / .00000002090
+        assert snap.price_usd == pytest.approx(expected)
+        assert snap.buys_5m == 3 and snap.sells_5m == 8
+        assert snap.market_cap_usd is None
+        assert snap.raw["pair"]["baseToken"]["address"] == base.address
+        assert snap.raw["target_pricing"]["side"] == "quote"
+        assert runtime._held_pool_quote({**payload, "priceNative": None}, held.token_id) == (None, None)
+        assert runtime._held_pool_quote(payload, "bsc:" + held.address) == (None, None)
+        async def exact(chain, pools):
+            return {pool: payload}
+        runtime.dex.exact_pools_fresh = exact
+        runtime.coingecko = FakeCoinGecko(available=False)
+        runtime.store.chain_meme_trader_market_mark_targets = lambda **kwargs: [target]
+        runtime.store.evaluate_chain_meme_trader_market_marks = lambda **kwargs: None
+        runtime._queue_market_pool_gap(target, pool, [])
+        await runtime.complementary_market_data_once()
+        row = runtime.store.db.execute(
+            "SELECT * FROM chain_meme_trader_pool_marks WHERE token_id=? AND pair_address=?",
+            (held.token_id, pool)).fetchone()
+        assert row["status"] == "VISIBLE" and row["last_success_at"]
+        assert row["price_usd"] == pytest.approx(expected) and row["sample_sequence"] == 1
+        runtime.store.record_chain_meme_trader_pool_mark_failure(
+            token_id=held.token_id, pair_address=pool, chain=held.chain, failure_kind="HTTP_TIMEOUT")
+        after = runtime.store.db.execute(
+            "SELECT * FROM chain_meme_trader_pool_marks WHERE token_id=? AND pair_address=?",
+            (held.token_id, pool)).fetchone()
+        assert after["price_usd"] == row["price_usd"]
+        assert after["last_success_at"] == row["last_success_at"]
+        assert after["sample_sequence"] == 1 and after["first_missing_at"] is None
         assert runtime.coingecko.calls == []
         await runtime.close()
     asyncio.run(scenario())

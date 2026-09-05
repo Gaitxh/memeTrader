@@ -41,4 +41,14 @@ WOFI cohort12462原池J8nq…XpS7曾被RH反复missing饿死，公平补采修�
 
 ## 待本阶段部署后的回执
 
-代码通过最小测试，部署前180、部署目标184。实际激活时间/frontier、最终资源与状态另行追加，不提前写已部署。
+7b66aa5已提交推送，21:31:37Z重启，四臂实际激活21:31:40.298067Z–21:31:40.371770Z/frontier927746。8790实际184、原资金期保留，stderr0。共享Vault21:32:29Z已恢复真实item心跳，旧Vault四个传输错误自动更新为fixed；没有把重复Jupiter错误抹掉。
+
+## 额外确定故障：原池base/quote方向不同导致QQQ缺价
+
+当前期cohort12728，Robinhood QQQ原池0xb04513d07d3483682421b776debca1aaf240dd410c7d61bfeb63881a19f2627a。不是legacy排除或池子消失。入场snapshot903699的原始GT证据为QQQ/BIRK，QQQ base USD720.220599993854；当前Dex同一池返回BIRK/QQQ，priceUsd为BIRK，原解析只取base而拒绝目标QQQ。
+
+21:37的精确请求HTTP200、同池且liq9791.64；后一次仅为确认priceNative语义的精确响应为base USD.00001486/base-in-quote .00000002090，按同池两值换算quote USD约711.005。保留原响应，不与其他池或其他API互验，不把base价格拿作QQQ。quote方向买卖次数反向、base市值和项目资料不挪到quote；只有明确两端identity和正有限比率才支持。参考字段：[DexScreener官方API](https://docs.dexscreener.com/api/reference)。新增定向测试覆盖32byte pool ID、大小写、同池换算、次数、市值清空和缺比率拒绝。
+
+另修首次pool_failure只有UPDATE导致零行、失败次数假0：首次建立UNKNOWN记录，last_success=NULL、missing计数0；重复失败不改变旧价/成功时间，不是撤池或0估值。原池补采成功现在回写来源恢复心跳。两项最小回归通过；待这项局部修复部署。不改入场历史，也没有发现当时入场价格身份错误。
+
+当前Jupiter WSOL参考仍间歇出现协议不匹配拒绝；一次独立只读请求HTTP200、400bps、正输出、无transaction、真实route有效，只能说明该次恢复，不能宣称错误永久消除。系统继续保留这种拒绝而不放宽成交证据。[Jupiter官方order接口](https://developers.jup.ag/docs/api-reference/swap/order)允许无taker的quote-only，未签名/发送任何交易。

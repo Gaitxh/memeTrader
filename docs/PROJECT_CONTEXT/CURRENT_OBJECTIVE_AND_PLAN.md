@@ -1,5 +1,9 @@
 # 当前目标与执行计划
 
+## 184已增量运行；修复确定的原池报价方向缺口（2026-09-06）
+
+7b66aa5已推送，四个新增5U机制于21:31:40Z/frontier927746激活；8790实际184、原资金期保留。共享Vault恢复心跳已正常、四个旧传输告警自动fixed。单币QQQ缺价定位为GT以QQQ/base建仓而Dex同池以BIRK/base返回，非池撤回/非legacy。现代码按同池baseUSD/priceNative换算quoteUSD，交换买卖方向、不复用base市值；首次失败插入UNKNOWN不假称0次，原池补采成功心跳已补。两个最小回归通过，待局部修复部署；新策略和旧账户不重置。详细回执见EVIDENCE_COMPLETION_2026-09-06.md。
+
 ## 当前交付：180运行、四项实际证据机制待增量部署（2026-09-06 05:27北京时间）
 
 fc3c0f3已推送并于20:53:49Z重启，180个策略、原funding-20260905-fixed-1000不变。Direct LP与duration真实激活20:53:56Z/frontier917071；共享Recovery已有真实quote-only帧，不修改SELL/PNL。逐币查询覆盖索引实际三个查询为.138/.039/.017ms；20:55短窗口主判断启动间隔P95 2.73s、held间隔4.77s，held fetch3.95s/apply.05s；这是有样本数的短窗口，不是全币SLA。
