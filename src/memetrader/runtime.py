@@ -5725,8 +5725,12 @@ class Runtime:
         if (
             not has_pool
             or loop_now < getattr(self, "_wsol_usdc_reference_next_at", 0.0)
-            or not self._chain_meme_active_idle().is_set()
-            or self._jupiter_background_dispatch_lock.locked()
+        ):
+            return
+        await self._chain_meme_active_idle().wait()
+        loop_now = asyncio.get_running_loop().time()
+        if (
+            self._jupiter_background_dispatch_lock.locked()
             or self._jupiter_quote_lock.locked()
         ):
             return

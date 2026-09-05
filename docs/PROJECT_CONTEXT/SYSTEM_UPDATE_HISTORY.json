@@ -198,6 +198,21 @@
       "deployed_at": "2026-09-05T09:13:32.544752Z",
       "runtime_verification": "128策略继续；新策略frontier833371未改变；心跳约0.67秒；Web stderr无新增错误。",
       "rollback": "按Git定位派生修复；源交易及其逐笔纠正证据均保留。"
+    },
+    {
+      "id": "20260906-all18-hotpath-and-chain-parser",
+      "recorded_at": "2026-09-05T17:55:28Z",
+      "title": "18个方向增量接入，修复入场卡顿和链上金额解析",
+      "problem": "每个新币即使0待买单仍联查历史决策约0.987秒；合法24byte BUY和SELL费用腿被丢弃，Creator取证错失空闲时隙。",
+      "change": "跳过空预留联查；兼容官方BUY格式和身份核实费用腿；共享USD参考与Creator一次来源验证；18方向独立加入，原146保留为164。",
+      "rationale": "修真实公共层缺陷而不降低身份/时序/资金门槛；持仓退出优先，新能力不以卡顿为代价。",
+      "validation": "链上真实BUY/SELL raw复验，parser59项、资金门2项、origin时隙及相关测试通过；自然cohort12309独立4%双侧、现金、PNL核对一致。",
+      "scope": "无初始化、无历史回填、无Live开启；定时复盘仍暂停。",
+      "status": "已推送并部署；164策略展示。新18自然收益尚待样本；付费源、隐藏bundle、全量holder和RPC截断等边界见报告。",
+      "commit": "1211a42 / 4ea4e9e / e023a96 / a84119f",
+      "deployed_at": "2026-09-05T17:54:47Z",
+      "runtime_verification": "17:52短窗口入场批次P95=0.187s、策略耗时0.948s、held获取4.490s、写入退出0.069s；后台94.1MB/Web176.6MB工作集；三链无当前缺价。17:55Creator已有真实verified证据。",
+      "rollback": "按提交回退新增功能代码，不回退真实交易/资金历史。已确认7518.81U补款保留且不重复，证据不足的额外延迟损失不补造。"
     }
   ]
 }

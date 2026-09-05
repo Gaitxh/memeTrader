@@ -473,12 +473,16 @@ def test_runtime_wsol_reference_is_independent_shared_and_bounded():
         runtime._chain_meme_active_idle_event.clear()
         runtime._wsol_usdc_conversion["completed_at"] = iso(utcnow() - timedelta(seconds=31))
         runtime._wsol_usdc_reference_next_at = 0
-        await runtime.chain_meme_wsol_reference_once()
+        pending = asyncio.create_task(runtime.chain_meme_wsol_reference_once())
+        await asyncio.sleep(0)
+        assert not pending.done() and len(calls) == 1
+        runtime._chain_meme_active_idle_event.set()
+        await pending
 
     asyncio.run(scenario())
-    assert len(calls) == 1
+    assert len(calls) == 2
     assert runtime._wsol_usdc_conversion["minimum_output_amount_raw"] == 150_000_000
-    assert runtime._jupiter_background_epoch_requests == 1
+    assert runtime._jupiter_background_epoch_requests == 2
 
 
 def test_runtime_authoritative_event_records_once_before_pending_hydration(tmp_path, monkeypatch):
