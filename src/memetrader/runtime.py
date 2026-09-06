@@ -1331,6 +1331,7 @@ class Runtime:
                     self._chain_paper_execution = normalize_execution_settings(
                         config.get("chain_paper_execution", {}))
                     self.store.activate_chain_paper_execution(self._chain_paper_execution)
+                    self.store.activate_chain_market_entry_post_observation()
                     self.store.register_chain_meme_trader_cost_coverage_scaleout()
                     self.store.register_chain_meme_pattern_experiments()
                     self.store.register_chain_meme_capital_experiments()

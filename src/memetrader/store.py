@@ -7339,6 +7339,10 @@ class Store:
                 {**policy, "_execution": dict(execution_fields)}
                 for policy in definition["policies"]
             ]
+        timing = connection.execute("SELECT value_json FROM kv WHERE key=?",
+            (f"market-entry-post-observation/v1:{definition_version}",)).fetchone()
+        if timing is not None:
+            definition["post_observation_execution"] = json.loads(timing[0])
         return definition
 
     def _chain_meme_trader_effective_definition(
@@ -7347,6 +7351,21 @@ class Store:
         return self.chain_meme_trader_effective_definition_from_connection(
             self.db, definition_version, raw_json,
         )
+
+    def activate_chain_market_entry_post_observation(self, *, definition_version=None):
+        """Start an execution epoch without changing strategy/funding/history."""
+        version = definition_version or self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        key = f"market-entry-post-observation/v1:{version}"
+        with self._lock, self.db:
+            self.db.execute("INSERT OR IGNORE INTO kv(key,value_json,updated_at) VALUES(?,?,?)",
+                (key, self._json({"contract": "market-entry-post-observation/v1",
+                    "activated_at": iso(), "activation_snapshot_id": int(self.db.execute(
+                        "SELECT COALESCE(MAX(id),0) FROM token_snapshots").fetchone()[0])}), iso()))
+            self._market_entry_pending_tokens = {str(r[0]) for r in self.db.execute(
+                "SELECT token_id FROM chain_meme_trader_order_intents WHERE definition_version=? "
+                "AND side='BUY' AND status IN ('ready','retry')", (version,))}
+            return self._json_object(self.db.execute(
+                "SELECT value_json FROM kv WHERE key=?", (key,)).fetchone()[0])
 
     def activate_chain_paper_execution(
         self, settings: Mapping[str, Any] | None = None, *, activated_at: Any = None,
@@ -12014,11 +12033,15 @@ class Store:
             return pending
 
     def add_snapshot(self, snap: TokenSnapshot) -> int:
+        with self._lock, self.db:
+            return self._add_snapshot_locked(snap)
+
+    def _add_snapshot_locked(self, snap: TokenSnapshot) -> int:
+        """Append within the caller's transaction, including entry receipt projection."""
         token_id = f"{snap.chain.lower()}:{snap.address}"
         ingested_at = snap.ingested_at or utcnow()
-        with self._lock, self.db:
-            recorded_at = utcnow()
-            cursor = self.db.execute(
+        recorded_at = utcnow()
+        cursor = self.db.execute(
                 """
                 INSERT INTO token_snapshots(
                     token_id,observed_at,ingested_at,recorded_at,provider,price_usd,liquidity_usd,market_cap_usd,volume_5m_usd,
@@ -12034,14 +12057,14 @@ class Store:
                     None if snap.sellable is None else int(snap.sellable), self._json(snap.raw),
                 ),
             )
-            snapshot_id = int(cursor.lastrowid)
-            self._observe_liquidity_survival_snapshot_locked(
-                snapshot_id,
-                snap,
-                ingested_at=ingested_at,
-                recorded_at=recorded_at,
-            )
-            return snapshot_id
+        snapshot_id = int(cursor.lastrowid)
+        self._observe_liquidity_survival_snapshot_locked(
+            snapshot_id,
+            snap,
+            ingested_at=ingested_at,
+            recorded_at=recorded_at,
+        )
+        return snapshot_id
 
     @classmethod
     def _liquidity_survival_definition(cls) -> dict[str, Any]:
@@ -27730,6 +27753,7 @@ class Store:
         definition: Mapping[str, Any],
         funding_mode: str = "legacy_cash_limited",
         net_flow_by_arm: dict[str, float] | None = None,
+        signal_price_usd: float | None = None,
     ) -> int:
         """Project one visible DEX price into eligible Paper accounts."""
         notional = float(definition["policy_notional_usd"])
@@ -27798,7 +27822,8 @@ class Store:
                 (
                     version, arm_id, int(cohort_id), token_id, int(entry_fill["id"]),
                     int(entry_fill["id"]), int(snapshot_id), int(snapshot_id),
-                    market_price, adverse_entry_price, paper_quantity, paper_quantity,
+                    signal_price_usd if signal_price_usd is not None else market_price,
+                    adverse_entry_price, paper_quantity, paper_quantity,
                     normalized_units, normalized_units, required_cash,
                     market_price, filled_at, reason,
                 ),
@@ -27828,6 +27853,69 @@ class Store:
             net_flow_by_arm[arm_id] = net_flow - required_cash
             projected += 1
         return projected
+
+    def _settle_pending_market_entry_observation(self, token, snapshot, recorded_at):
+        """Consume the first eligible receipt, not a later historical best quote."""
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        if token.token_id not in getattr(self, "_market_entry_pending_tokens", set()):
+            return
+        if snapshot.ingested_at is None:
+            # DS leaves ingestion unset. This is the actual receipt boundary;
+            # preserve its observed time, including stale/cached observations.
+            snapshot = replace(snapshot, ingested_at=recorded_at)
+        pair = snapshot.raw.get("pair") or {}
+        if (snapshot.token_id != token.token_id or pair.get("chainId") != token.chain
+                or canonical_token_address(token.chain, (pair.get("baseToken") or {}).get("address", "")) != token.address
+                or snapshot.ingested_at is None
+                or not snapshot.observed_at <= snapshot.ingested_at <= recorded_at
+                or not 0 <= (recorded_at - snapshot.observed_at).total_seconds() <= 15):
+            return
+        registration = self._chain_meme_trader_registration(version)
+        definition = self._chain_meme_trader_effective_definition(version, registration["definition_json"])
+        if not (math.isfinite(float(snapshot.price_usd or 0)) and float(snapshot.price_usd or 0) > 0
+                and pool_has_trade_liquidity(snapshot.liquidity_usd, definition)):
+            return
+        for intent in self.db.execute(
+            "SELECT i.id AS intent_id,i.created_at,i.expires_at,c.* FROM chain_meme_trader_order_intents i "
+            "JOIN chain_meme_trader_v6_cohorts c ON c.id=i.shadow_cohort_id "
+            "AND c.definition_version=i.definition_version WHERE i.definition_version=? "
+            "AND i.side='BUY' AND i.status IN ('ready','retry') AND i.token_id=? ORDER BY i.id",
+            (version, token.token_id)).fetchall():
+            features = self._json_object(intent["feature_json"])
+            if (features.get("entry_execution_timing") != "market-entry-post-observation/v1"
+                    or not parse_time(intent["created_at"]) < snapshot.observed_at
+                    or recorded_at > parse_time(intent["expires_at"])
+                    or not self.chain_meme_market_pool_matches(token.token_id,
+                        intent["pair_address"], pair.get("pairAddress"))):
+                continue
+            cohort_id = int(intent["id"])
+            receipt_key = f"market-entry-post-observation/receipt:{version}:{cohort_id}"
+            if self.db.execute("SELECT 1 FROM kv WHERE key=?", (receipt_key,)).fetchone():
+                continue
+            receipt_id = self._add_snapshot_locked(replace(snapshot,
+                provider="market-entry-confirmation:" + snapshot.provider))
+            filled_at = max(recorded_at, utcnow())
+            confirmation = {"signal_snapshot_id": int(intent["source_snapshot_id"]),
+                "receipt_snapshot_id": receipt_id,
+                "decision_at": intent["created_at"], "observed_at": iso(snapshot.observed_at),
+                "ingested_at": iso(snapshot.ingested_at), "received_at": iso(recorded_at),
+                "recorded_at": iso(filled_at),
+                "provider": snapshot.provider, "pair_address": pair.get("pairAddress"),
+                "price_usd": snapshot.price_usd, "liquidity_usd": snapshot.liquidity_usd,
+                "execution_settings": definition.get("paper_execution_settings")}
+            self.db.execute("INSERT OR IGNORE INTO kv(key,value_json,updated_at) VALUES(?,?,?)",
+                (receipt_key, self._json(confirmation), iso(filled_at)))
+            if int(self.db.execute("SELECT changes()").fetchone()[0]) != 1:
+                continue  # Never replace a frozen first receipt with this later price.
+            projected = self._project_chain_meme_trader_market_entry(version=version, cohort_id=cohort_id,
+                token_id=token.token_id, snapshot_id=receipt_id,
+                market_price=float(snapshot.price_usd), signal_price_usd=float(features["price_usd"]),
+                filled_at=iso(filled_at), reason=features.get("entry_decision_reason", "entry")
+                    + ":" + features["entry_execution_timing"],
+                definition=definition, funding_mode=features.get("paper_funding_mode", "legacy_cash_limited"))
+            self.db.execute("UPDATE chain_meme_trader_order_intents SET status=?,completed_at=?,"
+                "reason=CASE WHEN ?=0 THEN reason||':no_account_projected_at_first_receipt' ELSE reason END WHERE id=?",
+                ("filled" if projected else "failed", iso(filled_at), projected, intent["intent_id"]))
 
     def enroll_chain_meme_trader_v6(
         self, *, limit: int = 240, definition_version: str | None = None,
@@ -27867,7 +27955,8 @@ class Store:
             )
             rows = self.db.execute(
                 "SELECT s.id AS source_snapshot_id,s.* FROM token_snapshots s "
-                "WHERE s.id>? AND s.recorded_at>=? AND s.provider NOT LIKE 'strategy-observer:%' AND NOT EXISTS(SELECT 1 FROM "
+                "WHERE s.id>? AND s.recorded_at>=? AND s.provider NOT LIKE 'strategy-observer:%' "
+                "AND s.provider NOT LIKE 'market-entry-confirmation:%' AND NOT EXISTS(SELECT 1 FROM "
                 "chain_meme_trader_v6_entry_evaluations e WHERE "
                 "e.definition_version=? AND e.source_snapshot_id=s.id) "
                 "ORDER BY s.id LIMIT ?",
@@ -28249,6 +28338,9 @@ class Store:
                             reason = "all_entry_accounts_cash_below_20usdc"
                     features.update({
                         "decision_at": iso(decision_at),
+                        "entry_decision_reason": reason,
+                        "entry_execution_timing": ("market-entry-post-observation/v1"
+                            if definition.get("post_observation_execution") else "legacy_signal_frame"),
                         "signal_age_seconds": signal_age_seconds,
                         "observation_age_seconds": observation_age_seconds,
                         "receipt_age_seconds": receipt_age_seconds,
@@ -28335,7 +28427,7 @@ class Store:
                         )
                     if str(definition.get("buy_execution") or "") == (
                         "dexscreener_snapshot_4pct_adverse_fill"
-                    ):
+                    ) and not definition.get("post_observation_execution"):
                         self._project_chain_meme_trader_market_entry(
                             version=version,
                             cohort_id=cohort_id,
@@ -28365,6 +28457,8 @@ class Store:
                             ),
                         )
                         intents += int(self.db.execute("SELECT changes()").fetchone()[0])
+                        if definition.get("post_observation_execution"):
+                            self._market_entry_pending_tokens.add(token_id)
                     admitted += 1
                 else:
                     rejected += 1
@@ -29203,6 +29297,17 @@ class Store:
             if str(definition.get("sell_execution") or "") == (
                 "dexscreener_market_mark_only"
             ):
+                if definition.get("post_observation_execution"):
+                    self.db.execute("UPDATE chain_meme_trader_order_intents SET status='cancelled',completed_at=? "
+                        "WHERE definition_version=? AND side='SELL' AND status IN ('ready','retry')",
+                        (iso(current), version))
+                    self.db.execute("UPDATE chain_meme_trader_order_intents SET status='failed',completed_at=? "
+                        "WHERE definition_version=? AND side='BUY' AND status IN ('ready','retry') AND expires_at<?",
+                        (iso(current), version, iso(current)))
+                    self._market_entry_pending_tokens = {str(r[0]) for r in self.db.execute(
+                        "SELECT token_id FROM chain_meme_trader_order_intents WHERE definition_version=? "
+                        "AND side='BUY' AND status IN ('ready','retry')", (version,))}
+                    return None
                 self.db.execute(
                     "UPDATE chain_meme_trader_order_intents SET status='cancelled',"
                     "completed_at=? WHERE definition_version=? "
@@ -30711,8 +30816,9 @@ class Store:
             "LEFT JOIN chain_meme_trader_v6_cohorts c ON c.id=p.shadow_cohort_id "
             "AND c.definition_version=p.definition_version "
             f"WHERE p.definition_version IN ({placeholders}) AND p.status='open' UNION ALL "
-            f"SELECT token_id,'PENDING_INTENT',NULL FROM chain_meme_trader_order_intents "
-            f"WHERE definition_version IN ({placeholders}) AND status IN ('ready','retry','submitted') "
+            "SELECT i.token_id,'PENDING_INTENT',c.pair_address FROM chain_meme_trader_order_intents i "
+            "LEFT JOIN chain_meme_trader_v6_cohorts c ON c.id=i.shadow_cohort_id AND c.definition_version=i.definition_version "
+            f"WHERE i.definition_version IN ({placeholders}) AND i.status IN ('ready','retry','submitted') "
             "UNION ALL SELECT token_id,'RECENT_DECISION',NULL FROM ("
             "SELECT token_id FROM chain_meme_trader_entry_decisions "
             f"WHERE definition_version IN ({placeholders}) AND status='admitted' "
@@ -30930,6 +31036,10 @@ class Store:
                     iso(snapshot.observed_at), iso(mark_at), iso(mark_at), iso(mark_at),
                 ),
             )
+
+            if (int(self.db.execute("SELECT changes()").fetchone()[0]) == 1
+                    and mark_token_id == token.token_id):
+                self._settle_pending_market_entry_observation(token, snapshot, mark_at)
 
     def record_chain_meme_trader_pool_mark_miss(
         self, *, token_id: str, pair_address: str, chain: str, address: str,
@@ -32665,19 +32775,21 @@ class Store:
             * sold_amount / current_amount
         )
         sell_execution = sell_terms(formal_quantity, post_price, definition)
-        gross = sell_execution["net_usd"]
+        gross = sell_execution["gross_usd"]
+        net = sell_execution["net_usd"]
         if amountful_quote is not None:
             task = amountful_quote["task"]
             if (position["pending_mark_id"] != mark_id
                     or current_amount != task["current_synthetic_amount_raw"]
                     or sold_amount != task["requested_synthetic_amount_raw"]):
                 return 0
-            gross = float(amountful_quote["net_recovery_usd"])
+            gross = int(amountful_quote["minimum_output_raw"]) / 1_000_000.0
+            net = float(amountful_quote["net_recovery_usd"])
             trigger_evidence["amountful_quote_fill"] = {
                 "evidence_id": amountful_quote["evidence_id"], "input_amount_raw": task["input_amount_raw"],
                 "synthetic_amount_debited_raw": sold_amount,
                 "minimum_output_usdc_raw": amountful_quote["minimum_output_raw"],
-                "extra_fee_usd": task["extra_fee_usd"], "net_recovery_usd": gross,
+                "extra_fee_usd": task["extra_fee_usd"], "net_recovery_usd": net,
                 "completed_at": completed_at, "adapter": "jupiter-amountful-market-paper/v1"}
             self.db.execute("UPDATE chain_meme_trader_marks SET trigger_evidence_json=? WHERE id=?",
                             (self._json(trigger_evidence), mark_id))
@@ -32766,7 +32878,7 @@ class Store:
         )
         if amountful_quote is not None:
             remaining_quantity = float(position["remaining_quantity_tokens"]) * new_amount / current_amount
-        new_proceeds = float(position["realized_proceeds_usd"] or 0.0) + gross
+        new_proceeds = float(position["realized_proceeds_usd"] or 0.0) + net
         new_allocated = float(position["allocated_cost_usd"] or 0.0) + cost_delta
         cumulative_pnl = new_proceeds - new_allocated
         closes = new_amount <= 0
@@ -32790,7 +32902,7 @@ class Store:
             marker_id=f"staged-probe-formal-fill:{fill_id}",
             observed_at=post_observed_at, recorded_at=post_recorded_at,
             formal_quantity_tokens=formal_quantity,
-            formal_net_recovery_usd=gross, closes=closes,
+            formal_net_recovery_usd=net, closes=closes,
         )
         current_tp = int(position["next_tp_index"] or 0)
         reason = str(mark["reason"]) + (
@@ -32881,7 +32993,7 @@ class Store:
             "execution_fill_id,recorded_at) VALUES(?,?,?,?,NULL,'SELL',?,?,?,?,?,?,?)",
             (
                 version, str(position["arm_id"]), int(position["shadow_cohort_id"]),
-                str(position["token_id"]), gross, gross, gross - cost_delta,
+                str(position["token_id"]), gross, net, net - cost_delta,
                 reason, completed_at, fill_id, iso(),
             ),
         )
