@@ -39,23 +39,27 @@
   },
   "active_cycle": {
     "priority": "P0",
-    "cycle_id": "funding-20260906-v002-final-1000",
-    "status": "FINAL_V002_DEPLOYED_AND_REINITIALIZED",
-    "latest_implementation": "269deeb fixes three substantive V002 defects and a production GIL/SQLite mutex deadlock; b680335 selects final period. Compact current hard-stop field corrected. 206 strategies/122 V002; API version/history verified.",
-    "objective": "Approved phase1 proposal implemented and 122 selected slots actually revised, not merely documented. Full execution mapping and individual evidence/changes/limits are in the delivery reports. Profitability remains unproven; external coverage limits remain.",
-    "scope_guard": "Latest explicit initialization used at 2026-09-06T15:29:28.508111Z frontier1130786, all206 start1000U. Preserve both prior funding ledgers and open positions; no further reset without new user request. Stop their new entries. Manual Paper defaults buy4%,sell4%,extra0U,pool1000U. No future data/backfill, no historical refund/VOID, no Live or automatic review.",
-    "fact_cutoff_utc": "2026-09-06T15:32:50Z",
+    "cycle_id": "all-history-finalists-20260907",
+    "status": "REVIEWED_AND_ADDITIVELY_DEPLOYED_ECONOMIC_VALIDATION_PENDING",
+    "latest_implementation": "b14d926 pushed: seven new hypothesis strategies plus one matched exit baseline, registered at 2026-09-06T17:48:55.073054Z frontier1214643. 206 to 214, original127 definition and79 addition hashes and funding activation unchanged. Nineteen targeted tests pass; real BUY/SELL observed but not evidence of alpha.",
+    "objective": "All obtainable historical periods and versions reviewed, local up/normal/failure/crash precursors compared, external sources corrected, six Chat roles R1/R2/R3 and engineering/risk R4 received. Twelve finalists comprise five reused and seven new mechanisms; two reused arms remain coverage-unproven reserves. No profitable strategy has been established.",
+    "scope_guard": "No reset this cycle. Funding-20260906-v002-final-1000 activation remains2026-09-06T15:29:28.508111Z/frontier1130786. Existing ledgers/open positions/rules preserved. New eight accounts1000U each,5U orders,max4 positions; five exit arms share explicit matched-entry admission. Manual costs4/4/0,pool1000. No backfill, future data, historical refund/VOID, Live or resumed automatic review.",
+    "fact_cutoff_utc": "2026-09-06T17:52:34Z",
     "evidence": [
-      "docs/PROJECT_CONTEXT/IMPLEMENTATION_DELIVERY_2026-09-06.md",
-      "docs/PROJECT_CONTEXT/STRATEGY_V002_EXECUTION_TABLE_2026-09-06.md",
+      "docs/PROJECT_CONTEXT/RESEARCH_2026-09-07/SYNTHESIS.md",
+      "docs/PROJECT_CONTEXT/RESEARCH_2026-09-07/FINAL_CONTRACT.md",
+      "docs/PROJECT_CONTEXT/RESEARCH_2026-09-07/DEPLOYMENT.md",
       "docs/PROJECT_CONTEXT/CURRENT_OBJECTIVE_AND_PLAN.md"
     ],
     "remaining_limits": [
       "Robinhood original-pool coverage/data age",
       "Free source quotas and Four public RPC restrictions",
       "Pons V2 external access",
-      "Natural strategy evidence not mature",
-      "GUI control unavailable; API and JS verified"
+      "No established alpha; two reused finalists have no natural BUY coverage",
+      "Legacy L0 profit-lock principal flag wiring remains unresolved and excluded from working representatives",
+      "Fixed-target observation timestamps not independently exported; no iid bootstrap confidence claims",
+      "Heavy /api/state timed out at10s; regular /api/live214 strategies returned1.048s",
+      "GUI control unavailable; actual Chat model/thinking selection cannot be verified"
     ]
   },
   "review_artifacts": {

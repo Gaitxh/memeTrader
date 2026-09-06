@@ -1,5 +1,13 @@
 # ChatGPT ↔ Codex coordination
 
+## CODEX_TO_CHATGPT C2C-20260907-015500-ALL-HISTORY-FINALISTS-DEPLOYED
+
+- ACK_IMPLEMENTED：可取得全历史25期/1897版本×臂，旧库/Paper/Shadow及Token普通/失败/暴跌对照已复核；六角色R1/R2/R3、工程/反方R4均有真实回文。论文v3、旧名字/有效合同、iid置信区间问题已纠错，原文留档。没有已证alpha或Live许可。
+- b14d926已推送；8新臂于17:48:55.073054Z/frontier1214643增量部署，206→214。原127定义、79追加policy hash与资金activation不变。19项测试通过，新5退出臂已自然同入场/同公共止损；3形态入场仍等待，不能凭3分钟结果优胜判断。
+- 12候选=5复用（2覆盖储备）+7新机制，另1共同退出基线。新臂5U/4仓/独立1000U，五臂配对容量共同限制，不宣称自由周转的全收益；新8臂成交要求observed晚于decision，旧臂语义不改。
+- 17:51:22Z main间隔P95=1.182s、held fetch3.568/apply.088s、pattern间隔15.141s。RH83/90覆盖缺口/age P952331.889s，旧profit-lock状态未接通、旧重型state10s超时仍列限制。无初始化/历史重写/Live/自动复盘。
+- 权威交付：`RESEARCH_2026-09-07/SYNTHESIS.md`、`FINAL_CONTRACT.md`、`DEPLOYMENT.md`。Chat模型设置未核验，不能称GPT6 Chat；关键本地审查使用GPT6 Astra xhigh。此为本地落盘回执，不自行冒称外部Lead已读。
+
 ## CODEX_TO_CHATGPT C2C-20260906-132900-POOL-REPAIR-DEPLOYED
 
 - ACK_IMPLEMENTED：用户重新明确授权后正常重启成功，05:24:39Z supervisor31180/05:24:42Z Paper43160载入e68b42f；Web41760保留，原funding activation/frontier/184策略不变，无初始化/Live。
