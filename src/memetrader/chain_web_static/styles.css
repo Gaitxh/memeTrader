@@ -43,3 +43,5 @@ body{font-size:14px}.topbar{padding-top:20px;padding-bottom:18px}.topbar h1{font
 .history-selectors select,.history-selectors input{max-width:100%;min-width:0;padding:10px;color:var(--text);background:var(--panel2);border:1px solid var(--line);border-radius:8px;font:inherit}
 .history-filter-actions{display:flex;gap:12px;align-items:end}
 @media(max-width:680px){.history-selectors{grid-template-columns:1fr}.history-toolbar{flex-wrap:wrap}}
+.funnel-detail{grid-column:1/-1;color:var(--muted);line-height:1.6;overflow-wrap:anywhere}
+#funnel-note{font-size:12px;line-height:1.6;margin-bottom:16px}

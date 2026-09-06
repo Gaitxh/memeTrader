@@ -513,7 +513,14 @@ function renderFunnel(strategies){
   const currentChain=$('#discovery-chain')?.value||'all';
   if(discoveryView?.chain===currentChain)strategies=discoveryView.funnel.map(row=>({arm_id:row.arm_id,entry_decisions:row}));
   const max=Math.max(1,...strategies.map(s=>(s.entry_decisions||{}).admitted||0));
-  $('#funnel').innerHTML=strategies.map(s=>{const d=s.entry_decisions||{},n=d.admitted||0;return `<div class="funnel-row"><span class="funnel-label">${esc(strategyLabelForArm(s.arm_id))}</span><span class="bar"><i style="width:${Math.max(n?3:0,n/max*100)}%"></i></span><span class="funnel-count">${n} / ${n+(d.rejected||0)}</span></div>`}).join('');
+  const meta=discoveryView?.chain===currentChain?discoveryView.funnel_meta:null;
+  if($('#funnel-note'))$('#funnel-note').textContent=`放行 / 入场判定为本账期累计，不等于成交。信号前统计只使用最近 30 分钟、最多 ${meta?.row_limit||4000} 条已有评估帧；重复采样不等于独立机会。${meta?`统计更新 ${time(meta.generated_at)}`:''}`;
+  $('#funnel').innerHTML=strategies.map(s=>{
+    const d=s.entry_decisions||{},n=d.admitted||0;
+    const reasons=(d.signal_reasons||[]).map(r=>`${reasonText(r.reason)} × ${r.count}`).join('；');
+    const detail=d.signal_observations==null?'本窗口没有逐策略信号前记录，不能据此判定没有行情输入':`近期评估 ${d.signal_observations} 帧 · 信号就绪 ${d.signal_ready} 帧（非 BUY） · 最近 ${time(d.signal_last_at)}`;
+    return `<div class="funnel-row"><span class="funnel-label">${esc(strategyLabelForArm(s.arm_id))}</span><span class="bar"><i style="width:${Math.max(n?3:0,n/max*100)}%"></i></span><span class="funnel-count">${n} / ${n+(d.rejected||0)}</span><small class="funnel-detail">${esc(detail)}${reasons?`<br>${esc(reasons)}`:''}</small></div>`;
+  }).join('');
 }
 
 function renderChart(strategies){

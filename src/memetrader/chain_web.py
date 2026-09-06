@@ -9,7 +9,7 @@ import shutil
 import sqlite3
 import threading
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -31,6 +31,7 @@ class ChainWebData:
     LIVE_OPEN_POSITION_LIMIT = 200
     LIVE_CACHE_SECONDS = 6.0
     STATE_CACHE_MAX_ENTRIES = 16
+    SIGNAL_FUNNEL_ROW_LIMIT = 4000
 
     def __init__(self, config_path: str | Path):
         config, root = load_config(config_path)
@@ -55,6 +56,7 @@ class ChainWebData:
         self._curves: dict[str, dict[str, Any]] = {}
         self._discovery_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._discovery_series_cache: tuple[float, dict[str, Any]] | None = None
+        self._signal_funnel_cache: tuple[float, str, dict[str, Any]] | None = None
         self.strategy_universe_path = (
             root / "docs" / "PROJECT_CONTEXT" /
             "CHAIN_MEME_TRADER_HISTORICAL_STRATEGY_UNIVERSE_2026-09-04.json"
@@ -555,6 +557,62 @@ class ChainWebData:
                     "retrieval_series": json.loads(timing["payload_json"]).get("held_retrieval") if timing else None,
                     "timing_recorded_at": timing["recorded_at"] if timing else None}
 
+    def _signal_funnel(self, connection: sqlite3.Connection, version: str) -> dict[str, Any]:
+        # One bounded read shared by all chain selectors; never re-evaluate old signals.
+        with self._cache_lock:
+            cached = self._signal_funnel_cache
+            if cached and cached[1] == version and time.monotonic() - cached[0] < 20:
+                return cached[2]
+            registration = connection.execute(
+                "SELECT definition_json FROM chain_meme_trader_v6_registrations WHERE definition_version=?",
+                (version,),
+            ).fetchone()
+            definition = Store.chain_meme_trader_effective_definition_from_connection(
+                connection, version, registration[0]) if registration else {}
+            policies = {str(p["arm_id"]): p for p in definition.get("policies", [])}
+            now = utcnow()
+            cutoff = iso(now - timedelta(minutes=30))
+            rows = connection.execute(
+                "SELECT token_id,evaluated_at,json_extract(feature_json,'$.outcomes') AS outcomes,"
+                "json_extract(feature_json,'$.ready_arm_ids') AS ready FROM "
+                "(SELECT token_id,evaluated_at,feature_json,definition_version FROM "
+                "chain_meme_trader_v6_entry_evaluations ORDER BY id DESC LIMIT ?) "
+                "WHERE definition_version=? AND evaluated_at>=? AND evaluated_at<=? "
+                "ORDER BY evaluated_at DESC",
+                (self.SIGNAL_FUNNEL_ROW_LIMIT, version, cutoff, iso(now)),
+            ).fetchall()
+            chains = {chain: {} for chain in ("all", "solana", "bsc", "robinhood")}
+            for row in rows:
+                chain = str(row["token_id"]).split(":", 1)[0]
+                if chain not in chains or chain == "all":
+                    continue
+                outcomes = json.loads(row["outcomes"] or "{}")
+                ready = set(json.loads(row["ready"] or "[]"))
+                for arm_id, reason in outcomes.items():
+                    policy = policies.get(arm_id)
+                    if not policy or str(row["evaluated_at"]) < str(policy.get("forward_started_at") or ""):
+                        continue
+                    for scope in ("all", chain):
+                        item = chains[scope].setdefault(arm_id, {
+                            "signal_observations": 0, "signal_ready": 0,
+                            "signal_last_at": row["evaluated_at"], "signal_reasons": Counter(),
+                        })
+                        item["signal_observations"] += 1
+                        item["signal_ready"] += int(arm_id in ready)
+                        item["signal_reasons"][str(reason)] += 1
+            for arms in chains.values():
+                for item in arms.values():
+                    item["signal_reasons"] = [{"reason": reason, "count": count}
+                        for reason, count in item["signal_reasons"].most_common(3)]
+            payload = {"arms": list(policies), "chains": chains, "meta": {
+                "generated_at": iso(now), "window_minutes": 30,
+                "row_limit": self.SIGNAL_FUNNEL_ROW_LIMIT, "rows_considered": len(rows),
+                "earliest_evaluation_at": min((r["evaluated_at"] for r in rows), default=None),
+                "counts_are": "recorded_evaluation_frames_not_unique_opportunities_or_trades",
+            }}
+            self._signal_funnel_cache = (time.monotonic(), version, payload)
+            return payload
+
     def discovery_state(self, chain: str = "all") -> dict[str, Any]:
         if chain not in {"all", "solana", "bsc", "robinhood"}:
             raise ValueError("unsupported discovery chain")
@@ -583,6 +641,13 @@ class ChainWebData:
                 "FROM chain_meme_trader_entry_decisions WHERE definition_version=? "
                 + ("" if chain == "all" else "AND token_id LIKE ? ") + "GROUP BY arm_id",
                 (str(active[0]) if active else "",) + (() if chain == "all" else (chain + ":%",)))
+            signals = self._signal_funnel(connection, str(active[0]) if active else "")
+            decisions = {row["arm_id"]: row for row in funnel}
+            funnel = [dict(decisions.get(arm_id, {"arm_id": arm_id, "admitted": 0, "rejected": 0}),
+                           **signals["chains"][chain].get(arm_id, {
+                               "signal_observations": None, "signal_ready": None,
+                               "signal_last_at": None, "signal_reasons": [],
+                           })) for arm_id in dict.fromkeys([*signals["arms"], *decisions])]
             heartbeat = connection.execute(
                 "SELECT COALESCE(last_item_at,last_ok_at) AS updated_at "
                 "FROM source_health WHERE source='chain-meme-trader'"
@@ -595,6 +660,7 @@ class ChainWebData:
                                   and 0 <= heartbeat_age <= 30 else "stale",
                                   "heartbeat_age_seconds": heartbeat_age},
                        "tokens": tokens, "rounds": rounds, "funnel": funnel,
+                       "funnel_meta": signals["meta"],
                        "activity_series": self._discovery_activity_series(connection),
                        "latest_at": tokens[0]["observed_at"] if tokens else None}
         with self._cache_lock:

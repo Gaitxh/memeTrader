@@ -99,6 +99,49 @@ def test_discovery_activity_counts_new_pattern_reawakening_before_buy(tmp_path):
     store.close()
 
 
+def test_discovery_funnel_keeps_zero_signal_arms_and_counts_recorded_frames(tmp_path):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    now = utcnow()
+    started = iso(now - timedelta(minutes=10))
+    definition = {"policies": [{"arm_id": arm} for arm in ("waiting", "ready", "unrecorded")]}
+    store.db.execute("INSERT INTO chain_meme_trader_v6_registrations VALUES(?,?,?,?)",
+                     ("test-funnel", started, 0, json.dumps(definition)))
+    store.db.execute("INSERT INTO chain_meme_trader_v6_activations VALUES(?,?,?,?,?,?)",
+                     ("test-funnel", started, 0, "base", 0, 1))
+    for i, (chain, age, version) in enumerate((
+        ("solana", 5, "test-funnel"), ("bsc", 4, "test-funnel"),
+        ("solana", 11, "test-funnel"), ("solana", -1, "test-funnel"),
+        ("solana", 3, "old-period"),
+    )):
+        store.db.execute("INSERT INTO chain_meme_trader_v6_entry_evaluations "
+            "(definition_version,source_snapshot_id,token_id,evaluated_at,status,reason,feature_json) "
+            "VALUES(?,?,?,?,?,?,?)", (version, i, chain + ":mint", iso(now - timedelta(minutes=age)),
+            "rejected", "pattern_observation", json.dumps({
+                "outcomes": {"waiting": "wait_amountful_flow_provenance", "ready": "signal_ready"},
+                "ready_arm_ids": ["ready"], "private_payload": "do-not-expose"})))
+    store.db.commit()
+    store.close()
+    data = ChainWebData(config_path)
+    payload = data.discovery_state()
+    rows = {row["arm_id"]: row for row in payload["funnel"]}
+    assert set(rows) == {"waiting", "ready", "unrecorded"}
+    assert rows["waiting"]["signal_observations"] == 2
+    assert rows["waiting"]["signal_ready"] == 0
+    assert rows["waiting"]["admitted"] == rows["ready"]["admitted"] == 0
+    assert rows["ready"]["signal_ready"] == 2  # Never reported as BUY.
+    assert rows["unrecorded"]["signal_observations"] is None
+    assert "do-not-expose" not in json.dumps(payload)
+    sol = {r["arm_id"]: r for r in data.discovery_state("solana")["funnel"]}
+    assert sol["waiting"]["signal_observations"] == 1
+    assert data.discovery_state("robinhood")["funnel"][0]["signal_observations"] is None
+    assert data.discovery_state("bsc")["funnel_meta"] == payload["funnel_meta"]
+    # The global rowid tail is bounded before filtering; it is not a full-period scan.
+    bounded = ChainWebData(config_path)
+    bounded.SIGNAL_FUNNEL_ROW_LIMIT = 1
+    assert bounded.discovery_state()["funnel_meta"]["rows_considered"] == 0
+
+
 def test_token_detail_exposes_forward_creator_launch_shadow_without_raw_payload(tmp_path: Path):
     config_path, _ = _config(tmp_path)
     store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
