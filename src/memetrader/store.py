@@ -25044,28 +25044,41 @@ class Store:
                 "WHERE definition_version=?", (version,),
             ).fetchone()
 
-    def activate_chain_meme_trader_funded_period(self) -> sqlite3.Row:
-        """One user-authorized funding period; old positions retain their ledger namespace.
-
-        definition_version already keys positions and their cash flows. Reusing
-        that boundary isolates old SELL proceeds without rewriting strategy IDs,
-        frozen rules, history, or cash flows after an arbitrary trade frontier.
-        """
-        version = self.CHAIN_MEME_TRADER_FUNDED_PERIOD_VERSION
-        source_version = self.CHAIN_MEME_TRADER_V22_VERSION
-        self.activate_chain_meme_trader_v22()
+    def activate_chain_meme_trader_funding_epoch(
+        self, *, target_version: str, source_version: str, at: Any = None,
+    ) -> sqlite3.Row:
+        """Start one explicit 1000U epoch from the source's complete policy set."""
         with self._lock, self.db:
             existing = self.db.execute(
                 "SELECT * FROM chain_meme_trader_v6_activations WHERE definition_version=?",
-                (version,),
+                (target_version,),
             ).fetchone()
             if existing is not None:
                 return existing
+            if not target_version or not source_version or target_version == source_version:
+                raise ValueError("funding epoch requires distinct source and target versions")
             source = self._chain_meme_trader_registration(source_version)
-            definition = self._chain_meme_trader_effective_definition(
+            source_activation = self.db.execute(
+                "SELECT 1 FROM chain_meme_trader_v6_activations WHERE definition_version=?",
+                (source_version,),
+            ).fetchone()
+            if source is None or source_activation is None:
+                raise ValueError("funding epoch source must be registered and activated")
+            effective = self._chain_meme_trader_effective_definition(
                 source_version, source["definition_json"],
             )
-            activated_at = iso()
+            additions = self.db.execute(
+                "SELECT * FROM chain_meme_trader_policy_additions "
+                "WHERE definition_version=? ORDER BY id",
+                (source_version,),
+            ).fetchall()
+            addition_ids = {str(row["arm_id"]) for row in additions}
+            definition = dict(effective)
+            definition["policies"] = [
+                dict(policy) for policy in effective["policies"]
+                if str(policy.get("arm_id") or "") not in addition_ids
+            ]
+            activated_at = iso(parse_time(at or utcnow()))
             frontier = int(self.db.execute(
                 "SELECT COALESCE(MAX(id),0) FROM token_snapshots"
             ).fetchone()[0])
@@ -25077,24 +25090,33 @@ class Store:
             definition.pop("paper_funding", None)
             definition["runtime_policy_additions"] = []
             definition.update({
-                "version": version, "previous_version": source_version,
-                "funding_period": version, "funding_source_version": source_version,
+                "version": target_version, "previous_version": source_version,
+                "funding_period": target_version, "funding_source_version": source_version,
+                "funding_source_policy_additions": [
+                    {
+                        "source_addition_id": int(row["id"]),
+                        "arm_id": str(row["arm_id"]),
+                        "behavior_contract_hash": str(row["behavior_contract_hash"]),
+                    }
+                    for row in additions
+                ],
                 "capital_model": "legacy_cash_limited",
                 "starting_cash_usd_each_arm": 1000.0,
                 "strategy_logic_changed": False,
                 "reset_reason": "user_authorized_independent_funding_period",
                 "no_historical_backfill": True,
+                "strategy_count": len(definition["policies"]),
             })
             payload = self._json(definition)
             self.db.execute(
                 "INSERT INTO chain_meme_trader_v6_registrations("
                 "definition_version,code_registered_at,code_snapshot_frontier,definition_json) "
-                "VALUES(?,?,?,?)", (version, activated_at, frontier, payload),
+                "VALUES(?,?,?,?)", (target_version, activated_at, frontier, payload),
             )
             self.db.execute(
                 "INSERT INTO chain_meme_trader_registrations("
                 "definition_version,registered_at,activation_exploration_buy_trade_id,definition_json) "
-                "VALUES(?,?,?,?)", (version, activated_at, frontier, payload),
+                "VALUES(?,?,?,?)", (target_version, activated_at, frontier, payload),
             )
             self.db.execute(
                 "INSERT OR IGNORE INTO chain_meme_trader_primary_stops("
@@ -25105,12 +25127,32 @@ class Store:
                 "INSERT INTO chain_meme_trader_v6_activations("
                 "definition_version,activated_at,activation_snapshot_id,v5_definition_version,"
                 "v5_source_frontier,entry_execution_enabled) VALUES(?,?,?,?,?,1)",
-                (version, activated_at, frontier, source_version, frontier),
+                (target_version, activated_at, frontier, source_version, frontier),
             )
+            for row in additions:
+                self.db.execute(
+                    "INSERT INTO chain_meme_trader_policy_additions("
+                    "definition_version,arm_id,canonical_id,registered_at,activated_at,"
+                    "activation_snapshot_id,activation_evaluation_id,behavior_contract_hash,"
+                    "policy_json) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (
+                        target_version, str(row["arm_id"]), str(row["canonical_id"]),
+                        activated_at, activated_at, frontier, 0,
+                        str(row["behavior_contract_hash"]), str(row["policy_json"]),
+                    ),
+                )
             return self.db.execute(
                 "SELECT * FROM chain_meme_trader_v6_activations WHERE definition_version=?",
-                (version,),
+                (target_version,),
             ).fetchone()
+
+    def activate_chain_meme_trader_funded_period(self) -> sqlite3.Row:
+        """Activate the original fixed funding period without changing its public contract."""
+        self.activate_chain_meme_trader_v22()
+        return self.activate_chain_meme_trader_funding_epoch(
+            target_version=self.CHAIN_MEME_TRADER_FUNDED_PERIOD_VERSION,
+            source_version=self.CHAIN_MEME_TRADER_V22_VERSION,
+        )
 
     def activate_chain_meme_trader_unconstrained_paper_funding(
         self, *, definition_version: str | None = None, activated_at: Any = None,
