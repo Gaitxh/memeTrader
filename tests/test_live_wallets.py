@@ -13,6 +13,43 @@ from memetrader.models import TokenCandidate, TokenSnapshot, utcnow
 from memetrader.store import Store
 
 
+@pytest.mark.parametrize("held", [12345, 0])
+def test_writeoff_is_one_full_sell_instruction_not_a_paper_sell(tmp_path, monkeypatch, held):
+    database = tmp_path / "writeoff.sqlite3"
+    store = Store(database)
+    version, arm, token = "test-period", "test-arm", "solana:test-mint"
+    with store.db:
+        trade_id = store.db.execute(
+            "INSERT INTO chain_meme_trader_trades(definition_version,arm_id,shadow_cohort_id,"
+            "token_id,side,gross_usd,net_cash_flow_usd,realized_pnl_usd,reason,created_at) "
+            "VALUES(?,?,1,?,'WRITEOFF',0,0,-20,'dust_pool',?)",
+            (version, arm, token, live_module._now()),
+        ).lastrowid
+    manager = SolanaLiveWalletManager(tmp_path, database)
+    manager._write({"wallets": [{"id": "test-wallet", "address": "test-owner", "enabled": True,
+        "entry_enabled": False, "definition_version": version, "strategy_id": arm,
+        "last_trade_id": 0}], "positions": {"test-wallet": {
+            "1": {"token_id": token, "amount_raw": held}} if held else {}}})
+    requests, sends = [], []
+    monkeypatch.setattr(manager, "_quote", lambda *args: requests.append(args) or {"outAmount": "1"})
+    monkeypatch.setattr(manager, "_swap_transaction", lambda *args: "unsigned-fixture")
+    monkeypatch.setattr(manager, "_sign_and_send", lambda *args: sends.append(args) or "mock-signature")
+    monkeypatch.setattr(manager, "_confirm", lambda signature: True)
+    assert manager.sync_once() == int(held > 0)
+    assert manager.sync_once() == 0
+    assert len(sends) == int(held > 0)
+    assert requests == ([("test-mint", live_module.USDC_MINT, held)] if held else [])
+    wallet = manager._read()["wallets"][0]
+    assert wallet["last_trade_id"] == trade_id
+    records = [json.loads(line) for line in manager.execution_log_path.read_text().splitlines()]
+    assert len(records) == 1
+    assert records[0]["side"] == "SELL" and records[0]["paper_side"] == "WRITEOFF"
+    assert records[0]["status"] == ("confirmed" if held else "ignored_no_live_position")
+    assert [row[0] for row in store.db.execute("SELECT side FROM chain_meme_trader_trades")] == ["WRITEOFF"]
+    assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_fills").fetchone()[0] == 0
+    store.close()
+
+
 def test_live_wallet_binds_one_strategy_and_mirrors_only_new_forward_trade(tmp_path, monkeypatch):
     monkeypatch.setattr(live_module, "_dpapi_protect", lambda value: bytes(reversed(value)))
     monkeypatch.setattr(live_module, "_dpapi_unprotect", lambda value: bytes(reversed(value)))

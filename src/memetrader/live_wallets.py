@@ -472,6 +472,12 @@ class SolanaLiveWalletManager:
             if row is None:
                 return None
             trade = dict(row)
+            trade["paper_side"] = trade["side"]
+            if trade["side"] == "WRITEOFF":
+                # An accounting loss is still a full exit instruction for a real
+                # wallet. Keep the Paper event separate from actual execution.
+                trade["side"] = "SELL"
+                trade["sell_fraction"] = 1.0
             if trade["side"] == "SELL" and trade.get("execution_fill_id") is not None:
                 ratio = connection.execute(
                     "SELECT CAST(f.input_amount_raw AS REAL)/NULLIF("
@@ -554,7 +560,8 @@ class SolanaLiveWalletManager:
                         held = int((live_positions.get(position_key) or {}).get("amount_raw") or 0)
                         if held <= 0:
                             wallet["last_trade_id"] = int(trade["id"])
-                            self._append_execution({"wallet_id": wallet["id"], "paper_trade_id": trade["id"], "status": "ignored_no_live_position"})
+                            self._write(state)
+                            self._append_execution({"wallet_id": wallet["id"], "paper_trade_id": trade["id"], "side": trade["side"], "paper_side": trade.get("paper_side", trade["side"]), "status": "ignored_no_live_position"})
                             continue
                         amount_raw = max(1, math.floor(held * float(trade.get("sell_fraction") or 1.0)))
                         input_mint, output_mint = mint, USDC_MINT
@@ -563,6 +570,7 @@ class SolanaLiveWalletManager:
                     transaction = self._swap_transaction(quote, str(wallet["address"]))
                     wallet["pending"] = {
                         "paper_trade_id": int(trade["id"]), "side": str(trade["side"]),
+                        "paper_side": str(trade.get("paper_side", trade["side"])),
                         "cohort_id": position_key, "mint": mint, "amount_raw": amount_raw,
                         "before_raw": before, "prepared_at": _now(), "signature": None,
                     }
@@ -573,7 +581,7 @@ class SolanaLiveWalletManager:
                     confirmed = self._confirm(signature)
                     if confirmed is not True:
                         self._stop_with_error(state, wallet, "交易失败或确认超时，已自动暂停")
-                        self._append_execution({"wallet_id": wallet["id"], "paper_trade_id": trade["id"], "side": trade["side"], "status": "failed_or_unknown", "signature": signature})
+                        self._append_execution({"wallet_id": wallet["id"], "paper_trade_id": trade["id"], "side": trade["side"], "paper_side": trade.get("paper_side", trade["side"]), "status": "failed_or_unknown", "signature": signature})
                         continue
                     if trade["side"] == "BUY":
                         after = self._token_balance_raw(str(wallet["address"]), mint)
@@ -598,10 +606,10 @@ class SolanaLiveWalletManager:
                         "error": None,
                     })
                     self._write(state)
-                    self._append_execution({"wallet_id": wallet["id"], "paper_trade_id": trade["id"], "side": trade["side"], "status": "confirmed", "signature": signature, "amount_raw": amount_raw})
+                    self._append_execution({"wallet_id": wallet["id"], "paper_trade_id": trade["id"], "side": trade["side"], "paper_side": trade.get("paper_side", trade["side"]), "status": "confirmed", "signature": signature, "amount_raw": amount_raw})
                     self._balance_cache.pop(str(wallet["id"]), None)
                     completed += 1
                 except LiveWalletError as exc:
                     self._stop_with_error(state, wallet, str(exc))
-                    self._append_execution({"wallet_id": wallet["id"], "paper_trade_id": trade["id"], "side": trade["side"], "status": "error", "error": str(exc)})
+                    self._append_execution({"wallet_id": wallet["id"], "paper_trade_id": trade["id"], "side": trade["side"], "paper_side": trade.get("paper_side", trade["side"]), "status": "error", "error": str(exc)})
         return completed
