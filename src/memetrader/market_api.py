@@ -232,7 +232,8 @@ class GeckoTerminalPoolClient:
         lifetimes = []
         for directive in (headers["cache-control"] or "").split(","):
             name, _, value = directive.strip().partition("=")
-            if name.lower() in {"max-age", "s-maxage"}:
+            # This is a single-user client, not a shared intermediary cache.
+            if name.lower() == "max-age":
                 lifetime = _number(value.strip('"'))
                 if lifetime is not None:
                     lifetimes.append(max(0.0, lifetime))

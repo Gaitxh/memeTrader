@@ -208,7 +208,7 @@ def test_public_exact_pool_client_preserves_cache_generation_and_identity(valida
         assert list(first) == ["pool-A"] and first["pool-A"]["provider"] == "geckoterminal"
         assert "/pools/pool-A" in str(calls[0].url)
         assert calls[0].url.params["include"] == "base_token,quote_token,dex"
-        clock.advance(54)
+        clock.advance(24)
         cached = await client.get_pools("solana", ["pool-A"])
         assert len(calls) == 1 and cached["pool-A"]["observedAt"] == first["pool-A"]["observedAt"]
         assert cached["pool-A"]["raw"]["http_cache"]["local_cache_hit"] is True
@@ -217,10 +217,10 @@ def test_public_exact_pool_client_preserves_cache_generation_and_identity(valida
         assert same["pool-A"]["observedAt"] == first["pool-A"]["observedAt"]
         assert same["pool-A"]["raw"]["http_cache"]["received_at"] != first["pool-A"]["observedAt"]
         assert same["pool-A"]["raw"]["http_cache"]["generation_reused"] is True
-        clock.advance(56)
+        clock.advance(26)
         fresh = await client.get_pools("solana", ["pool-A"])
         assert fresh["pool-A"]["observedAt"] != first["pool-A"]["observedAt"]
-        clock.advance(56)
+        clock.advance(26)
         assert await client.get_pools("solana", ["pool-A"]) == {}
         await http.close()
 

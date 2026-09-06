@@ -22,3 +22,9 @@
 - `tests/test_paper_execution.py`：6通过，涵盖三链真实DS parser/首次原池后帧、信号与receipt身份、重复/陈旧/NULL/错池拒绝、过期、资金在等待期间耗尽而0投影、不得稍后重放、非零手续费毛净字段。
 - 较早相邻验证：paper_execution + research_finalists + chain_meme_pool_identity 共30通过；之后receipt修订重跑最邻近6项通过，不夸称整个系统无缺陷。
 - 六独立Chat R2都指出receipt身份/零投影问题；本地独立工程agent追加parser实接线核验。模型与证据限制详见本轮各角色原文。
+
+## 实际部署（274195c）
+
+2026-09-06T19:25:25.323327Z 新执行epoch生效，frontier1272816。按原 scripts/run_paper.ps1 仅重启Paper进程，Web未停。资金期仍为 funding-20260906-v002-final-1000、激活15:29:28.508111Z/frontier1130786；127 base定义摘要00365d12fed418a79d1f2fc13d4e21943473e06a4d5ac2708a0baeb1ca9ebc00与87个addition policy摘要逐一相同，没有账户初始化。
+
+实际自然receipt：signal1272818/decision19:25:31.574327 → Gecko observed19:26:03.080625/received19:26:03.085151 → 独立receipt1273059；signal1273006/decision19:25:53.821967 → DS observed19:25:57.204971/received19:25:57.205538 → receipt1273051；signal1273049/decision19:25:56.792919 → DS observed19:25:59.731047/received19:25:59.731553 → receipt1273053。这些证明当前后帧接线已在运行，不证明经济效果。交易主键继续从457960推进到458202，未清库。
