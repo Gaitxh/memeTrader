@@ -63,6 +63,24 @@ def test_cohort_namespace_next_fill_and_old_primary_frontier(tmp_path, monkeypat
     store.close()
 
 
+def test_passive_broad_arms_cannot_leak_into_regular_twenty_dollar_lane(tmp_path, monkeypatch):
+    clock = [utcnow()]
+    monkeypatch.setattr("memetrader.store.utcnow", lambda: clock[0])
+    monkeypatch.setattr("memetrader.models.utcnow", lambda: clock[0])
+    store = Store(tmp_path / "isolated-broad.sqlite3", initial_cash_usd=1000)
+    store.activate_chain_meme_trader_funded_period()
+    store.register_chain_meme_staged_probe()
+    store.register_chain_meme_wallet_observers()
+    token, pair = TokenCandidate("solana", str(Pubkey.new_unique()), "Broad", "BRD"), str(Pubkey.new_unique())
+    clock[0] += timedelta(seconds=5)
+    store.upsert_token(token, seen_at=clock[0])
+    store.add_snapshot(_snapshot(token, pair, clock[0]))
+    store.enroll_chain_meme_trader_v6(definition_version=Store.CHAIN_MEME_TRADER_ACTIVE_VERSION)
+    assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_entry_decisions WHERE "
+        "arm_id LIKE 'staged_probe_%' OR arm_id LIKE 'watched_wallet_%'").fetchone()[0] == 0
+    store.close()
+
+
 def test_runtime_passive_cohort_consumes_received_batches_without_requests(monkeypatch):
     import asyncio
     from types import SimpleNamespace

@@ -25568,6 +25568,7 @@ class Store:
     def register_chain_meme_universe_outcomes(
         self, *, source_definition_version: str | None = None,
         observer_version: str | None = None, registered_at: Any = None,
+        include_migration_short_trajectory: bool = False,
     ) -> sqlite3.Row:
         """Freeze a chain-cohort outcome frontier without enrolling old cohorts."""
         source_version = str(
@@ -25586,6 +25587,13 @@ class Store:
             "affects": "none",
             "no_historical_backfill": True,
         }
+        if include_migration_short_trajectory:
+            definition["migration_short_trajectory"] = {
+                "enabled": True,
+                "scope": "cohort_visible_migration_fact_within_30_seconds",
+                "target_offsets_seconds": [60, 120],
+                "anchor": "migration_source_observed_at",
+            }
         with self._lock, self.db:
             existing = self.db.execute(
                 "SELECT * FROM chain_meme_universe_outcome_registrations "
@@ -25615,7 +25623,7 @@ class Store:
     ) -> dict[str, int]:
         """Append four pending targets for a bounded batch of post-frontier cohorts."""
         outcome_version = str(observer_version or self.CHAIN_MEME_UNIVERSE_OUTCOME_VERSION)
-        batch_limit = max(1, min(256, int(limit)))
+        batch_limit = max(1, min(8, int(limit)))
         with self._lock, self.db:
             registration = self.db.execute(
                 "SELECT * FROM chain_meme_universe_outcome_registrations "
@@ -25623,13 +25631,17 @@ class Store:
             ).fetchone()
             if registration is None:
                 return {"cohorts_enrolled": 0, "targets_enrolled": 0}
+            observer_definition = self._json_object(registration["definition_json"])
+            migration_short = bool(
+                (observer_definition.get("migration_short_trajectory") or {}).get("enabled")
+            )
             cursor = int(self.db.execute(
                 "SELECT COALESCE(MAX(source_cohort_id),?) "
                 "FROM chain_meme_universe_outcomes WHERE observer_version=?",
                 (int(registration["activation_cohort_id"]), outcome_version),
             ).fetchone()[0])
             cohorts = self.db.execute(
-                "SELECT id,decided_at FROM chain_meme_trader_v6_cohorts "
+                "SELECT id,token_id,decided_at FROM chain_meme_trader_v6_cohorts "
                 "WHERE definition_version=? AND id>? ORDER BY id LIMIT ?",
                 (
                     str(registration["source_definition_version"]), cursor,
@@ -25647,6 +25659,47 @@ class Store:
                         (
                             outcome_version, int(cohort["id"]), int(horizon),
                             iso(decided_at + timedelta(minutes=int(horizon))),
+                        ),
+                    )
+                    inserted += int(self.db.execute("SELECT changes()").fetchone()[0])
+                if not migration_short:
+                    continue
+                fact = self.db.execute(
+                    "SELECT id,source_observed_at FROM token_launch_facts "
+                    "WHERE token_id=? AND launch_event_type='migration' "
+                    "AND create_signature<>'' "
+                    "AND source_observed_at<=ingested_at "
+                    "AND ingested_at<=recorded_at AND recorded_at<=? "
+                    "AND source_observed_at<=? "
+                    "AND (julianday(?) - julianday(source_observed_at))*86400 BETWEEN 0 AND 30 "
+                    "ORDER BY recorded_at DESC,id DESC LIMIT 1",
+                    (
+                        str(cohort["token_id"]), iso(decided_at), iso(decided_at),
+                        iso(decided_at),
+                    ),
+                ).fetchone()
+                if fact is None:
+                    continue
+                migration_at = parse_time(fact["source_observed_at"])
+                for offset_seconds in (60, 120):
+                    target_at = migration_at + timedelta(seconds=offset_seconds)
+                    deadline_at = target_at + timedelta(
+                        seconds=self.CHAIN_MEME_UNIVERSE_OUTCOME_FRESH_SECONDS
+                    )
+                    reason = (
+                        "migration_short_trajectory["
+                        f"source_fact_id={int(fact['id'])},"
+                        f"migration_observed_at={iso(migration_at)},"
+                        f"offset_seconds={offset_seconds},"
+                        f"deadline_at={iso(deadline_at)}]"
+                    )
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO chain_meme_universe_outcomes("
+                        "observer_version,source_cohort_id,horizon_minutes,target_at,status,reason) "
+                        "VALUES(?,?,?,?,'PENDING',?)",
+                        (
+                            outcome_version, int(cohort["id"]),
+                            offset_seconds // 60, iso(target_at), reason,
                         ),
                     )
                     inserted += int(self.db.execute("SELECT changes()").fetchone()[0])
@@ -25722,11 +25775,14 @@ class Store:
                     reason = "first_stored_exact_pool_snapshot" if snapshot is not None else "no_fresh_stored_exact_pool_snapshot"
                 if not terminal:
                     continue
+                outcome_reason = (
+                    f"{target['reason']}|{reason}" if target["reason"] else reason
+                )
                 if snapshot is None:
                     self.db.execute(
                         "UPDATE chain_meme_universe_outcomes SET status='UNKNOWN',"
                         "reason=?,evaluated_at=? WHERE id=? AND status='PENDING'",
-                        (reason, iso(evaluated), int(target["id"])),
+                        (outcome_reason, iso(evaluated), int(target["id"])),
                     )
                     unknown += int(self.db.execute("SELECT changes()").fetchone()[0])
                     continue
@@ -25738,7 +25794,7 @@ class Store:
                     (
                         int(snapshot["id"]), str(snapshot["observed_at"]),
                         str(snapshot["ingested_at"]), str(snapshot["recorded_at"]),
-                        float(snapshot["price_usd"]), snapshot["liquidity_usd"], reason,
+                        float(snapshot["price_usd"]), snapshot["liquidity_usd"], outcome_reason,
                         iso(evaluated), int(target["id"]),
                     ),
                 )
@@ -25941,6 +25997,9 @@ class Store:
 
     def chain_meme_wallet_watchlist(self, *, now: Any = None) -> dict[str, Any]:
         """Read the immutable watchlist, attempting a late seal when initially empty."""
+        stored = self.get_kv(f"chain-meme-wallet-watchlist:{self.CHAIN_MEME_TRADER_ACTIVE_VERSION}", {})
+        if isinstance(stored, dict) and stored.get("addresses"):
+            return stored
         return self.seal_chain_meme_wallet_watchlist(now=now)
 
     def chain_meme_wallet_participation_hits(
@@ -25970,7 +26029,11 @@ class Store:
             if shared is not None:
                 shared[cache_key] = cached
         combined = dict(scan or cached or {"complete": False, "trades": []})
-        watchlist = self.chain_meme_wallet_watchlist(now=current)
+        watchlist = shared.get("wallet-watchlist") if shared is not None else None
+        if watchlist is None:
+            watchlist = self.chain_meme_wallet_watchlist(now=current)
+            if shared is not None:
+                shared["wallet-watchlist"] = watchlist
         hits, evidence = participation_hits(watchlist, combined, token_id=token_id,
             pair_address=pair_address, not_before=not_before, now=current)
         return {"watchlist": watchlist, "participation_scan": combined,
@@ -27636,6 +27699,8 @@ class Store:
                     snapshot_policies = [
                         policy for policy in policies
                         if self._chain_meme_trader_policy_active_for_snapshot(policy, row)
+                        and policy.get("entry_match_mode") not in {
+                            "isolated_pattern_observer", "isolated_cohort_observer"}
                     ]
                     raw = self._json_object(row["raw_json"])
                     pair = raw.get("pair") if isinstance(raw.get("pair"), Mapping) else raw

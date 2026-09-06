@@ -6930,6 +6930,8 @@ class Runtime:
         closures, bought = await asyncio.to_thread(
             self.store.chain_meme_cohort_receipts, state.get("clone_episodes", {}))
         pending = getattr(self, "_cohort_pending", {})
+        dispatched = set()
+        compute_seconds = 0.0
         sampled = projected = 0
         for _ in range(min(len(batches), 8)):
             received, values = batches.popleft()
@@ -6994,14 +6996,23 @@ class Runtime:
                     continue
                 if identity not in quotes:
                     continue
+                if identity in dispatched or sampled >= 8 or compute_seconds >= .25:
+                    continue
                 await self._chain_meme_active_idle().wait()
                 token, snapshot = quotes[identity]
+                compute_started = asyncio.get_running_loop().time()
                 projected += await asyncio.to_thread(self.store.observe_chain_meme_pattern,
                     token, snapshot, recorded_at=now, cohort_signals=item["signals"])
+                compute_seconds += asyncio.get_running_loop().time() - compute_started
+                dispatched.add(identity)
                 sampled += 1
             await asyncio.sleep(0)
         state["activated_at"] = iso(self._cohort_started_at)
         self._cohort_state, self._cohort_pending = state, pending
+        # Round-robin pending identities; bounded work must not starve the tail.
+        for identity in dispatched:
+            if identity in pending:
+                pending[identity] = pending.pop(identity)
         last_saved = getattr(self, "_cohort_saved_at", None)
         if last_saved is None or (utcnow() - last_saved).total_seconds() >= 60:
             await asyncio.to_thread(self.store.set_kv,

@@ -56,6 +56,29 @@ def _cohort(
     return int(cursor.lastrowid)
 
 
+def _migration_fact(
+    store: Store, *, token_id: str, observed_at, ingested_at=None,
+    recorded_at=None, suffix: str,
+) -> int:
+    ingested_at = ingested_at or observed_at
+    recorded_at = recorded_at or ingested_at
+    cursor = store.db.execute(
+        "INSERT INTO token_launch_facts("
+        "event_fingerprint,token_id,chain,launch_provider,launch_surface,"
+        "launch_event_type,address,creator_address,create_signature,bonding_curve_key,"
+        "pool_label,token_pairing,source_observed_at,ingested_at,recorded_at,"
+        "raw_payload_hash,definition_version) "
+        "VALUES(?,?,'bsc','fixture','four_meme','migration',?,'creator',?,'curve',"
+        "'pool','BNB',?,?,?,?,'fixture/v1')",
+        (
+            f"migration-{suffix}", token_id, token_id.partition(":")[2],
+            f"signature-{suffix}", iso(observed_at), iso(ingested_at),
+            iso(recorded_at), f"hash-{suffix}",
+        ),
+    )
+    return int(cursor.lastrowid)
+
+
 def test_chain_outcomes_start_after_frontier_and_enroll_in_bounded_batches(tmp_path):
     store = Store(tmp_path / "chain-outcome-frontier.sqlite3", initial_cash_usd=1000)
     start = parse_time("2026-09-06T12:00:00Z")
@@ -178,4 +201,128 @@ def test_chain_outcomes_use_only_stored_causal_same_pool_snapshots(tmp_path):
     assert store.finalize_chain_meme_universe_outcomes(
         now=h240 + timedelta(seconds=40), limit=16,
     ) == {"targets_checked": 0, "observed": 0, "unknown": 0}
+    store.close()
+
+
+def test_migration_short_trajectory_is_fact_visible_and_anchored_to_migration_time(
+    tmp_path,
+):
+    store = Store(tmp_path / "chain-outcome-migration-short.sqlite3", initial_cash_usd=1000)
+    migration_at = parse_time("2026-09-06T12:00:00Z")
+    observer = "chain-outcome-test/migration-short-v1"
+    registration = store.register_chain_meme_universe_outcomes(
+        source_definition_version=SOURCE_VERSION,
+        observer_version=observer,
+        registered_at=migration_at - timedelta(minutes=1),
+        include_migration_short_trajectory=True,
+    )
+    definition = json.loads(registration["definition_json"])
+    assert definition["migration_short_trajectory"]["target_offsets_seconds"] == [60, 120]
+    assert definition["migration_short_trajectory"]["anchor"] == (
+        "migration_source_observed_at"
+    )
+
+    eligible_token, eligible_pair = "bsc:0xeligible", "0xpool-eligible"
+    eligible_fact = _migration_fact(
+        store, token_id=eligible_token, observed_at=migration_at,
+        ingested_at=migration_at + timedelta(seconds=5),
+        recorded_at=migration_at + timedelta(seconds=10), suffix="eligible",
+    )
+    decided = migration_at + timedelta(seconds=20)
+    eligible_source = _snapshot(
+        store, token_id=eligible_token, pair_address=eligible_pair,
+        observed_at=decided - timedelta(seconds=1),
+    )
+    eligible_cohort = _cohort(
+        store, token_id=eligible_token, pair_address=eligible_pair,
+        source_snapshot_id=eligible_source, decided_at=decided, episode_no=1,
+    )
+
+    future_token, future_pair = "bsc:0xfuture", "0xpool-future"
+    future_decided = migration_at + timedelta(seconds=20)
+    _migration_fact(
+        store, token_id=future_token,
+        observed_at=future_decided + timedelta(seconds=1),
+        recorded_at=future_decided + timedelta(seconds=1), suffix="future",
+    )
+    future_source = _snapshot(
+        store, token_id=future_token, pair_address=future_pair,
+        observed_at=future_decided - timedelta(seconds=1),
+    )
+    future_cohort = _cohort(
+        store, token_id=future_token, pair_address=future_pair,
+        source_snapshot_id=future_source, decided_at=future_decided, episode_no=1,
+    )
+
+    late_token, late_pair = "bsc:0xlate", "0xpool-late"
+    late_decided = migration_at + timedelta(seconds=20)
+    _migration_fact(
+        store, token_id=late_token, observed_at=migration_at,
+        ingested_at=migration_at + timedelta(seconds=5),
+        recorded_at=late_decided + timedelta(seconds=1), suffix="late-recorded",
+    )
+    late_source = _snapshot(
+        store, token_id=late_token, pair_address=late_pair,
+        observed_at=late_decided - timedelta(seconds=1),
+    )
+    late_cohort = _cohort(
+        store, token_id=late_token, pair_address=late_pair,
+        source_snapshot_id=late_source, decided_at=late_decided, episode_no=1,
+    )
+
+    assert store.enroll_chain_meme_universe_outcomes(
+        observer_version=observer, limit=99,
+    ) == {"cohorts_enrolled": 3, "targets_enrolled": 14}
+    eligible = {
+        int(row["horizon_minutes"]): row
+        for row in store.db.execute(
+            "SELECT * FROM chain_meme_universe_outcomes WHERE observer_version=? "
+            "AND source_cohort_id=?", (observer, eligible_cohort),
+        )
+    }
+    assert set(eligible) == {0, 1, 2, 15, 60, 240}
+    assert eligible[1]["target_at"] == iso(migration_at + timedelta(seconds=60))
+    assert eligible[2]["target_at"] == iso(migration_at + timedelta(seconds=120))
+    assert f"source_fact_id={eligible_fact}" in eligible[1]["reason"]
+    assert "offset_seconds=60" in eligible[1]["reason"]
+    assert f"deadline_at={iso(migration_at + timedelta(seconds=90))}" in eligible[1]["reason"]
+    for cohort_id in (future_cohort, late_cohort):
+        assert [
+            int(row[0]) for row in store.db.execute(
+                "SELECT horizon_minutes FROM chain_meme_universe_outcomes "
+                "WHERE observer_version=? AND source_cohort_id=? ORDER BY horizon_minutes",
+                (observer, cohort_id),
+            )
+        ] == [0, 15, 60, 240]
+
+    h1_snapshot = _snapshot(
+        store, token_id=eligible_token, pair_address=eligible_pair,
+        observed_at=migration_at + timedelta(seconds=65), price=1.5,
+    )
+    cohort_anchored_but_later = _snapshot(
+        store, token_id=eligible_token, pair_address=eligible_pair,
+        observed_at=decided + timedelta(seconds=60), price=9.0,
+    )
+    h2_snapshot = _snapshot(
+        store, token_id=eligible_token, pair_address=eligible_pair,
+        observed_at=migration_at + timedelta(seconds=125), price=2.0,
+    )
+    result = store.finalize_chain_meme_universe_outcomes(
+        observer_version=observer,
+        now=migration_at + timedelta(seconds=151), limit=16,
+    )
+    assert result == {"targets_checked": 5, "observed": 5, "unknown": 0}
+    finalized = {
+        int(row["horizon_minutes"]): row
+        for row in store.db.execute(
+            "SELECT * FROM chain_meme_universe_outcomes WHERE observer_version=? "
+            "AND source_cohort_id=? AND horizon_minutes IN (1,2)",
+            (observer, eligible_cohort),
+        )
+    }
+    assert int(finalized[1]["outcome_snapshot_id"]) == h1_snapshot
+    assert int(finalized[1]["outcome_snapshot_id"]) != cohort_anchored_but_later
+    assert int(finalized[2]["outcome_snapshot_id"]) == h2_snapshot
+    assert finalized[1]["reason"].endswith("|first_stored_exact_pool_snapshot")
+    assert f"source_fact_id={eligible_fact}" in finalized[2]["reason"]
     store.close()
