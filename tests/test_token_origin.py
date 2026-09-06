@@ -8,6 +8,8 @@ from memetrader.token_origin import (
     CREATE_DISCRIMINATOR,
     CREATE_V2_DISCRIMINATOR,
     PUMP_PROGRAM_ID,
+    TOKEN_2022_PROGRAM_ID,
+    TOKEN_PROGRAM_ID,
     creator_from_create_transaction,
     verify_creator_from_known_signature,
 )
@@ -72,6 +74,41 @@ def transaction(discriminator=CREATE_DISCRIMINATOR, *, signature="sig", changes=
     return tx, str(mint), str(user), str(creator), str(fee_recipient)
 
 
+def add_issuance(tx, mint, user, creator, _fee, *, program=TOKEN_PROGRAM_ID):
+    message = tx["transaction"]["message"]
+    message["instructions"][0]["accounts"][2] = str(Pubkey.find_program_address(
+        [b"bonding-curve", bytes(mint)], Pubkey.from_string(PUMP_PROGRAM_ID))[0])
+    bonding_curve = message["instructions"][0]["accounts"][2]
+    account_keys = message["accountKeys"]
+    account_keys.extend([
+        {"pubkey": str(Pubkey.new_unique()), "signer": False, "writable": True},
+        {"pubkey": str(Pubkey.new_unique()), "signer": False, "writable": True},
+    ])
+    tx["meta"].update({
+        "innerInstructions": [{"index": 0, "instructions": [
+            {"programId": program, "parsed": {
+                "type": "mintTo", "info": {"mint": str(mint), "amount": "100"},
+            }},
+            {"programId": program, "parsed": {
+                "type": "burnChecked", "info": {
+                    "mint": str(mint), "tokenAmount": {"amount": "10"},
+                },
+            }},
+        ]}],
+        "preTokenBalances": [],
+        "postTokenBalances": [
+            {
+                "accountIndex": 4, "mint": str(mint), "owner": bonding_curve,
+                "programId": program, "uiTokenAmount": {"amount": "70"},
+            },
+            {
+                "accountIndex": 5, "mint": str(mint), "owner": str(creator),
+                "programId": program, "uiTokenAmount": {"amount": "20"},
+            },
+        ],
+    })
+
+
 @pytest.mark.parametrize("discriminator,kind", [
     (CREATE_DISCRIMINATOR, "create"),
     (CREATE_V2_DISCRIMINATOR, "create_v2"),
@@ -86,6 +123,74 @@ def test_decodes_official_creator_argument_not_user_or_fee_recipient(discriminat
     assert result["proof"]["instruction_kind"] == kind
     assert result["proof"]["mint_signer"] is True
     assert result["proof"]["scope"].startswith("initial_creator_only")
+
+
+@pytest.mark.parametrize("program", [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID])
+def test_complete_issuance_snapshot_closes_net_supply_and_keeps_protocol_separate(program):
+    def changes(tx, mint, user, creator, fee):
+        add_issuance(tx, mint, user, creator, fee, program=program)
+
+    tx, mint, _, creator, _ = transaction(changes=changes)
+    snapshot = creator_from_create_transaction(tx, mint, "sig")["issuance_holder_snapshot"]
+    assert snapshot["status"] == "complete"
+    assert snapshot["complete"] is True
+    assert snapshot["token_program"] == program
+    assert snapshot["minted_raw"] == 100
+    assert snapshot["burned_raw"] == 10
+    assert snapshot["total_supply_raw"] == snapshot["post_balance_sum_raw"] == 90
+    assert snapshot["owner_count"] == snapshot["token_account_count"] == 2
+    owners = {item["owner"]: item for item in snapshot["owners"]}
+    bonding_curve = tx["transaction"]["message"]["instructions"][0]["accounts"][2]
+    assert owners[bonding_curve] == {
+        "owner": bonding_curve, "amount_raw": 70, "role": "derived_bonding_curve",
+        "is_on_curve": False,
+    }
+    assert owners[creator]["role"] == "creator_address"
+    assert snapshot["identity_scope"].startswith("token_account_owner_address")
+
+
+@pytest.mark.parametrize("mutation,reason", [
+    ("unparsed", "unparsed_token_instruction"),
+    ("preexisting", "preexisting_mint_balance"),
+    ("bad_index", "post_balance_shape"),
+    ("missing_owner", "post_balance_shape"),
+    ("duplicate", "post_balance_shape"),
+    ("mismatch", "post_balance_supply_mismatch"),
+    ("invalid_owner", "invalid_token_owner"),
+    ("no_slot", "transaction_time_or_slot_unavailable"),
+])
+def test_incomplete_issuance_evidence_stays_unknown(mutation, reason):
+    def changes(tx, mint, user, creator, fee):
+        add_issuance(tx, mint, user, creator, fee)
+        meta = tx["meta"]
+        if mutation == "unparsed":
+            meta["innerInstructions"][0]["instructions"][0] = {
+                "programId": TOKEN_PROGRAM_ID, "accounts": [0], "data": "raw",
+            }
+        elif mutation == "preexisting":
+            meta["preTokenBalances"] = [{
+                "accountIndex": 4, "mint": str(mint), "owner": str(creator),
+                "programId": TOKEN_PROGRAM_ID, "uiTokenAmount": {"amount": "1"},
+            }]
+        elif mutation == "bad_index":
+            meta["postTokenBalances"][0]["accountIndex"] = 99
+        elif mutation == "missing_owner":
+            del meta["postTokenBalances"][0]["owner"]
+        elif mutation == "duplicate":
+            meta["postTokenBalances"].append(dict(meta["postTokenBalances"][0]))
+        elif mutation == "mismatch":
+            meta["postTokenBalances"][0]["uiTokenAmount"]["amount"] = "69"
+        elif mutation == "invalid_owner":
+            meta["postTokenBalances"][0]["owner"] = "not-an-address"
+        elif mutation == "no_slot":
+            del tx["slot"]
+
+    tx, mint, _, _, _ = transaction(changes=changes)
+    snapshot = creator_from_create_transaction(tx, mint, "sig")["issuance_holder_snapshot"]
+    assert snapshot["status"] == "unknown"
+    assert snapshot["complete"] is False
+    assert snapshot["reason"] == reason
+    assert snapshot["owners"] == []
 
 
 def test_requires_exact_signature_mint_signer_and_pump_program():

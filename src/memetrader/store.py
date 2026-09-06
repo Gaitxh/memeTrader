@@ -25577,16 +25577,17 @@ class Store:
         from .capital_policies import event_actual_flow_policy
         from .migration_absorption import migration_amount_absorption_policy
         from .early_observed_buyers import observed_buyer_policy
+        from .issuance_holders import issuance_holder_policy
         from .capital_common_funding import common_funding_policy
         added = 0
         for policy in (event_actual_flow_policy(), migration_amount_absorption_policy(),
-                       observed_buyer_policy(), common_funding_policy()):
+                       observed_buyer_policy(), common_funding_policy(), issuance_holder_policy()):
             with self._lock:
                 exists = self.db.execute(
                     "SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?",
                     (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, policy["arm_id"])).fetchone()
                 if exists is None:
-                    if policy["entry_family"] == "early_observed_buyer_distribution":
+                    if policy["entry_family"] in {"early_observed_buyer_distribution", "issuance_holder_distribution"}:
                         policy["activation_evidence_id"] = int(self.db.execute(
                             "SELECT COALESCE(MAX(id),0) FROM chain_meme_pattern_evidence").fetchone()[0])
                     self.append_chain_meme_trader_policy(policy)
@@ -25976,7 +25977,7 @@ class Store:
             if any(p.get("capital_experiment") for p in active):
                 evidence = self._capital_evidence(token.token_id, pair_address, decision_at,
                     ("amountful_flow", "pool_surface", "authoritative_event", "authoritative_no_ca_amount_rank",
-                     "direct_lp_entry_preflight", "observed_buyer_cohort"))
+                     "direct_lp_entry_preflight", "observed_buyer_cohort", "token_origin"))
                 fact = self.db.execute("SELECT * FROM token_launch_facts WHERE token_id=? "
                     "AND launch_event_type='migration' AND julianday(recorded_at)<=julianday(?) ORDER BY id DESC LIMIT 1",
                     (token.token_id, iso(decision_at))).fetchone()
@@ -27028,7 +27029,7 @@ class Store:
                     if liquidity is None:
                         raise ValueError("entry_pool_liquidity_unknown")
                     if float(liquidity) < CHAIN_MEME_MIN_POOL_LIQUIDITY_USD:
-                        raise ValueError("entry_pool_liquidity_below_1000_usd")
+                        raise ValueError("entry_pool_liquidity_below_100_usd")
                     proposed_family = None
                     if age_seconds <= 900 and (
                         (m5_trades is not None and m5_trades >= 3)
@@ -30428,12 +30429,13 @@ class Store:
                 "observed_at": position["mark_observed_at"], "recorded_at": position["mark_recorded_at"],
                 "price_usd": position["mark_price_usd"], "liquidity_usd": position["mark_liquidity_usd"],
                 "sample_sequence": position["sample_sequence"], "slippage_bps": 400}
-            if kind == "early_observed_buyer_distribution":
+            if kind in {"early_observed_buyer_distribution", "issuance_holder_distribution"}:
                 from .capital_context import build_capital_exit_frame
                 from .early_observed_buyers import evaluate_observed_buyer_distribution
-                cohort_key = ("observed_buyer_cohort", token, pair)
+                cohort_kind = "token_origin" if kind == "issuance_holder_distribution" else "observed_buyer_cohort"
+                cohort_key = (cohort_kind, token, pair)
                 if cohort_key not in shared:
-                    shared[cohort_key] = self._capital_evidence(token, pair, current, ("observed_buyer_cohort",))["observed_buyer_cohort"]
+                    shared[cohort_key] = self._capital_evidence(token, pair, current, (cohort_kind,))[cohort_kind]
                 cohort_rows = shared[cohort_key]
                 flow_row = rows["amountful_flow"][0] if rows["amountful_flow"] else {}
                 flow = flow_row.get("payload") or {}
@@ -30441,9 +30443,19 @@ class Store:
                 adapted, frame = build_capital_exit_frame(dict(position), market, shared[entry_key],
                     rows["amountful_flow"], rows["vault_frame"], kind="creator_early_holder_distribution",
                     state=state, now=current, previous_market=prior)
-                frame.update(buyer_cohort=cohort_rows[0]["payload"] if cohort_rows else {},
+                cohort = cohort_rows[0]["payload"] if cohort_rows else {}
+                evaluator = evaluate_observed_buyer_distribution
+                if kind == "issuance_holder_distribution":
+                    from .issuance_holders import issuance_cohort, evaluate_issuance_distribution
+                    origin = ({**cohort, "evidence_id": cohort_rows[0]["id"],
+                               "observed_at": cohort_rows[0]["observed_at"],
+                               "recorded_at": cohort_rows[0]["recorded_at"]} if cohort_rows else {})
+                    cohort = issuance_cohort(origin, flow.get("resolver") or {}, policy=policy,
+                        activated_at=policy.get("forward_started_at"), now=iso(current)) or {}
+                    evaluator = evaluate_issuance_distribution
+                frame.update(buyer_cohort=cohort,
                     distribution_window=window, source_evidence_id=(flow.get("source_evidence_ids") or [None])[-1])
-                result = evaluate_observed_buyer_distribution(adapted, frame, state,
+                result = evaluator(adapted, frame, state,
                     now=iso(current), policy=policy["capital_exit_policy"])
                 if result[0] != "WAIT":
                     result[2]["capital_context"] = {
@@ -31325,7 +31337,7 @@ class Store:
             )
             evidence = self._json_object(mark["trigger_evidence_json"])
             reason = (
-                "dex_pool_liquidity_below_1000_usd_writeoff"
+                "dex_pool_liquidity_below_100_usd_writeoff"
                 if "terminal_dust_pool" in evidence
                 else "dex_pair_missing_over_60_seconds_writeoff"
             )
@@ -31431,7 +31443,7 @@ class Store:
             }
             self.db.execute(
                 "UPDATE chain_meme_trader_marks SET action='RUG_EXIT',"
-                "reason=reason||':dex_pool_liquidity_below_1000_usd',"
+                "reason=reason||':dex_pool_liquidity_below_100_usd',"
                 "trigger_evidence_json=? WHERE id=? AND status IN ('pending','retry')",
                 (self._json(trigger_evidence), int(mark_id)),
             )
@@ -32046,7 +32058,7 @@ class Store:
                         }
                         self.db.execute(
                             "UPDATE chain_meme_trader_marks SET action='RUG_EXIT',"
-                            "reason=reason||':dex_pool_liquidity_below_1000_usd',"
+                            "reason=reason||':dex_pool_liquidity_below_100_usd',"
                             "trigger_evidence_json=? WHERE id=?",
                             (self._json(pending_evidence), pending_id),
                         )
@@ -32163,7 +32175,7 @@ class Store:
                                 )
                     continue
                 if fresh_visible_dust:
-                    action, reason = "RUG_EXIT", "dex_pool_liquidity_below_1000_usd"
+                    action, reason = "RUG_EXIT", "dex_pool_liquidity_below_100_usd"
                     trigger_evidence = {
                         "terminal_dust_pool": {
                             "sample_sequence": int(position["sample_sequence"] or 0),
@@ -33711,7 +33723,7 @@ class Store:
                     ):
                         indicative_value = 0.0
                         indicative_pnl = -remaining_cost
-                        indicative_source = "dex_pool_below_1000_usd_full_loss"
+                        indicative_source = "dex_pool_below_100_usd_full_loss"
                         dust_pool_full_loss = True
                     else:
                         indicative_pnl = indicative_value - remaining_cost

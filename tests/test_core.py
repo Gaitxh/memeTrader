@@ -8431,7 +8431,7 @@ def test_chain_meme_market_exit_sells_when_same_pool_at_liquidity_floor(
         store.upsert_chain_meme_trader_market_mark(
             token,
             TokenSnapshot(
-                "solana", token.address, 2.0, 1000.0, 100_000, 0.0, 0, 0,
+                "solana", token.address, 2.0, 100.0, 100_000, 0.0, 0, 0,
                 observed_at=observed_at, ingested_at=observed_at,
                 provider="dexscreener", raw={"pair": {"pairAddress": "pair-A"}},
             ),
@@ -8494,8 +8494,8 @@ def test_chain_meme_market_exit_post_confirmation_below_floor_is_writeoff(tmp_pa
         ),
     )
     for price, liquidity, at in (
-        (2.0, 1000.0, trigger_at),
-        (2.0, 999.99, trigger_at + timedelta(seconds=1)),
+        (2.0, 100.0, trigger_at),
+        (2.0, 99.99, trigger_at + timedelta(seconds=1)),
     ):
         store.upsert_chain_meme_trader_market_mark(
             token,
@@ -8521,11 +8521,11 @@ def test_chain_meme_market_exit_post_confirmation_below_floor_is_writeoff(tmp_pa
         "definition_version=? AND arm_id=? AND shadow_cohort_id=?",
         (version, policy["arm_id"], cohort_id),
     ).fetchone()
-    assert writeoff["close_reason"] == "dex_pool_liquidity_below_1000_usd_writeoff"
+    assert writeoff["close_reason"] == "dex_pool_liquidity_below_100_usd_writeoff"
     store.close()
 
 
-@pytest.mark.parametrize("liquidity", [0.05, 999.99])
+@pytest.mark.parametrize("liquidity", [0.05, 99.99])
 def test_chain_meme_fresh_visible_pool_below_floor_is_immediate_writeoff(
     tmp_path: Path, liquidity,
 ):
@@ -8580,7 +8580,7 @@ def test_chain_meme_fresh_visible_pool_below_floor_is_immediate_writeoff(
         (version, policy["arm_id"], cohort_id),
     ).fetchone()
     assert position["status"] == "written_off"
-    assert position["close_reason"] == "dex_pool_liquidity_below_1000_usd_writeoff"
+    assert position["close_reason"] == "dex_pool_liquidity_below_100_usd_writeoff"
     assert store.db.execute(
         "SELECT COUNT(*) FROM chain_meme_trader_trades WHERE definition_version=? "
         "AND arm_id=? AND shadow_cohort_id=? AND side='WRITEOFF'",
@@ -9049,7 +9049,7 @@ def test_chain_meme_partial_exit_trailing_uses_actual_economic_high_water(
 
 @pytest.mark.parametrize("liquidity,raw_liquidity,admitted", [
     (0.0, None, False), (0.99, None, False), (None, 0.48, False),
-    (999.99, None, False), (1000.0, None, True), (10000.0, None, True), (None, None, False),
+    (99.99, None, False), (100.0, None, True), (10000.0, None, True), (None, None, False),
 ])
 def test_chain_meme_entry_enforces_shared_liquidity_floor(
     tmp_path: Path, liquidity, raw_liquidity, admitted,
@@ -9082,7 +9082,7 @@ def test_chain_meme_entry_enforces_shared_liquidity_floor(
     if not admitted:
         assert evaluation["reason"] == (
             "entry_pool_liquidity_unknown" if liquidity is None and raw_liquidity is None
-            else "entry_pool_liquidity_below_1000_usd")
+            else "entry_pool_liquidity_below_100_usd")
         assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_v6_entry_fills").fetchone()[0] == 0
         assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_positions").fetchone()[0] == 0
         assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_trades").fetchone()[0] == 0

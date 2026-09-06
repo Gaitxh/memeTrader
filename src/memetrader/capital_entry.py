@@ -175,8 +175,14 @@ def capital_observation_signal(history, policy, *, decision_at, activated_at, co
             return False, "awaiting_common_funding_actual_windows"
         return common_funding_adjusted_breadth_signal(dict(prior=windows[0], current=windows[1]),
             flow.get("observed_funding_transfers") or [], decision_at, activated_at, policy["entry_filter"])
-    if direction == "early_observed_buyer_distribution":
-        cohort = context.get("observed_buyer_cohort") or {}
+    if direction in {"early_observed_buyer_distribution", "issuance_holder_distribution"}:
+        if direction == "issuance_holder_distribution":
+            from .issuance_holders import issuance_cohort
+            cohort = issuance_cohort(context.get("token_origin") or {},
+                (context.get("amountful_flow") or {}).get("resolver") or {},
+                policy=policy, activated_at=activated_at, now=decision_at) or {}
+        else:
+            cohort = context.get("observed_buyer_cohort") or {}
         sealed = _time(cohort.get("sealed_at"))
         flow = context.get("amountful_flow") or {}
         age, buys, sells = (_finite(last.get(k)) for k in ("pool_age_seconds", "buys", "sells"))
@@ -185,8 +191,10 @@ def capital_observation_signal(history, policy, *, decision_at, activated_at, co
                 or cohort.get("pool_address") != context.get("pair_address")
                 or flow.get("complete") is not True or not _evidence_ok(flow, decision, start)
                 or None in (age, buys, sells) or not 0 <= age <= 900 or buys+sells < 3):
-            return False, "awaiting_frozen_observed_buyer_cohort"
-        return True, "observed_buyer_cohort_entry_confirmed"
+            return False, ("awaiting_exact_issuance_holder_cohort" if direction == "issuance_holder_distribution"
+                           else "awaiting_frozen_observed_buyer_cohort")
+        return True, ("issuance_holder_cohort_entry_confirmed" if direction == "issuance_holder_distribution"
+                      else "observed_buyer_cohort_entry_confirmed")
     if direction == "official_event_actual_flow":
         valid, reason = authoritative_event_shock_signal(frames, policy, decision_at, activated_at, context)
         if not valid:
@@ -513,4 +521,7 @@ def capital_context_from_observations(history, evidence, *, decision_at, migrati
     cohort = latest("observed_buyer_cohort")
     if cohort:
         context["observed_buyer_cohort"] = cohort
+    origin = latest("token_origin")
+    if origin:
+        context["token_origin"] = origin
     return context

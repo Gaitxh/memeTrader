@@ -2,6 +2,18 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260906-floor100-issuance-holder-experiment",
+      "recorded_at": "2026-09-06T10:05:31Z",
+      "deployed_at": "2026-09-06T10:05:31Z",
+      "title": "按最新要求降低共享原池门槛至100，完成发行后持有人独立实验",
+      "problem": "用户修改统一池门槛；原first-observed买家不能代表发行后持有人，已有create响应尚未利用其数量闭合的余额证据。",
+      "change": "共享100U门槛同步入场/退出/估值及新原因码，历史原因不改。复用原create RPC附加完整post-state owner证据，新增issuance_holder_distribution_5u_v1，后续只匹配owner签名实际SELL，未知不冒充完整。",
+      "rationale": "用原有有界低优先级采集补新实验输入，不增加RPC，不改旧策略，不退款或重置账户。",
+      "validation": "100U门槛18项及JS语法通过；解析14项、整合后受影响10项通过；新时序边界及旧/新5U完整生命周期3项通过。旧61条追加记录hash一致，原127及资金期保留。",
+      "scope": "新实验18:01:10/frontier1044784开始；189策略。18:05:31按原脚本载入最终100门槛。",
+      "status": "后续新增思路进入研究/方案待用户确认阶段，不自动部署；自然盈利效果尚未验证。"
+    },
+    {
       "id": "20260906-fixed-slippage-router-recovery",
       "recorded_at": "2026-09-06T09:49:00Z",
       "deployed_at": "2026-09-06T09:47:10Z",

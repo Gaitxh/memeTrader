@@ -65,8 +65,8 @@ def test_volatility_treatment_differs_from_fixed_return_control():
 
 
 @pytest.mark.parametrize("chain,post_liquidity,expected_buys", [
-    ("solana", 1000, 2), ("bsc", 1000, 2), ("robinhood", 1000, 2),
-    ("solana", 999, 0), ("solana", None, 0),
+    ("solana", 100, 2), ("bsc", 100, 2), ("robinhood", 100, 2),
+    ("solana", 99, 0), ("solana", None, 0),
 ])
 def test_new_arms_preserve_registry_and_use_next_frame_five_dollar_fills(tmp_path, monkeypatch, chain, post_liquidity, expected_buys):
     store = Store(tmp_path / "patterns.sqlite3", initial_cash_usd=1000)
@@ -115,7 +115,7 @@ def test_new_arms_preserve_registry_and_use_next_frame_five_dollar_fills(tmp_pat
     store.close()
 
 
-@pytest.mark.parametrize("liquidity", [999, None])
+@pytest.mark.parametrize("liquidity", [99, None])
 def test_pattern_signal_shared_floor_rejects_low_and_missing_liquidity(liquidity):
     seq = _frames([1, 1.001, .999, 1.002, 1, 1.001, 1, 1.02, 1.06])
     seq[-1]["liquidity"] = liquidity
@@ -123,4 +123,4 @@ def test_pattern_signal_shared_floor_rejects_low_and_missing_liquidity(liquidity
         decision_at=seq[-1]["recorded_at"], activated_at=seq[0]["recorded_at"])
     assert not accepted
     assert reason == ("entry_pool_liquidity_unknown" if liquidity is None
-                      else "entry_pool_liquidity_below_1000_usd")
+                      else "entry_pool_liquidity_below_100_usd")

@@ -21,6 +21,8 @@ from solders.pubkey import Pubkey
 
 
 PUMP_PROGRAM_ID = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+TOKEN_2022_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 CREATE_DISCRIMINATOR = bytes((24, 30, 200, 40, 5, 28, 7, 119))
 CREATE_V2_DISCRIMINATOR = bytes((214, 144, 76, 236, 95, 139, 49, 180))
 IDL_URL = "https://github.com/pump-fun/pump-public-docs/blob/main/idl/pump.json"
@@ -133,6 +135,238 @@ def _creator_argument(data: bytes) -> tuple[str, str, int] | None:
     return kind, creator, offset
 
 
+def _raw_token_amount(balance: Mapping[str, Any]) -> int | None:
+    ui_amount = balance.get("uiTokenAmount")
+    if not isinstance(ui_amount, Mapping):
+        return None
+    raw = ui_amount.get("amount")
+    if isinstance(raw, str) and raw.isdigit():
+        return int(raw)
+    if type(raw) is int and raw >= 0:
+        return raw
+    return None
+
+
+def _issuance_unknown(
+    reason: str, *, mint: str, signature: str,
+    transaction: Mapping[str, Any], token_program: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "snapshot_version": "pump-create-issuance-holders/v1",
+        "status": "unknown",
+        "complete": False,
+        "reason": reason,
+        "mint": mint,
+        "create_signature": signature,
+        "slot": transaction.get("slot"),
+        "block_time": transaction.get("blockTime"),
+        "token_program": token_program,
+        "minted_raw": None,
+        "burned_raw": None,
+        "total_supply_raw": None,
+        "post_balance_sum_raw": None,
+        "owner_count": 0,
+        "token_account_count": 0,
+        "coverage": "unknown",
+        "identity_scope": "token_account_owner_address_not_human_or_custody_identity",
+        "owners": [],
+    }
+
+
+def _issuance_holder_snapshot(
+    transaction: Mapping[str, Any], message: Mapping[str, Any],
+    meta: Mapping[str, Any], keys: list[str], *, mint: str, signature: str,
+    creator: str, user: str, bonding_curve: str | None,
+) -> dict[str, Any]:
+    """Close initial supply against the same transaction's parsed SPL evidence."""
+    if (type(transaction.get("slot")) is not int or transaction["slot"] < 0
+            or type(transaction.get("blockTime")) is not int or transaction["blockTime"] < 0):
+        return _issuance_unknown("transaction_time_or_slot_unavailable", mint=mint,
+                                 signature=signature, transaction=transaction)
+    token_programs = {TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID}
+    all_instructions: list[Mapping[str, Any]] = []
+    outer = message.get("instructions")
+    if isinstance(outer, list):
+        all_instructions.extend(item for item in outer if isinstance(item, Mapping))
+    inner = meta.get("innerInstructions")
+    if not isinstance(inner, list):
+        return _issuance_unknown(
+            "inner_instructions_unavailable", mint=mint, signature=signature,
+            transaction=transaction,
+        )
+    for group in inner:
+        if not isinstance(group, Mapping) or not isinstance(group.get("instructions"), list):
+            return _issuance_unknown(
+                "inner_instruction_shape", mint=mint, signature=signature,
+                transaction=transaction,
+            )
+        all_instructions.extend(
+            item for item in group["instructions"] if isinstance(item, Mapping)
+        )
+
+    minted = burned = 0
+    supply_programs: set[str] = set()
+    for instruction in all_instructions:
+        program = _instruction_program(instruction, keys)
+        if program not in token_programs:
+            continue
+        parsed = instruction.get("parsed")
+        if not isinstance(parsed, Mapping):
+            return _issuance_unknown(
+                "unparsed_token_instruction", mint=mint, signature=signature,
+                transaction=transaction, token_program=program,
+            )
+        kind, info = parsed.get("type"), parsed.get("info")
+        if not isinstance(kind, str) or not isinstance(info, Mapping):
+            return _issuance_unknown(
+                "parsed_token_instruction_shape", mint=mint, signature=signature,
+                transaction=transaction, token_program=program,
+            )
+        if str(info.get("mint") or "") != mint:
+            continue
+        if kind in {"mintTo", "mintToChecked", "burn", "burnChecked"}:
+            amount_value = info.get("amount")
+            if amount_value is None and isinstance(info.get("tokenAmount"), Mapping):
+                amount_value = info["tokenAmount"].get("amount")
+            if isinstance(amount_value, str) and amount_value.isdigit():
+                amount = int(amount_value)
+            elif type(amount_value) is int and amount_value >= 0:
+                amount = amount_value
+            else:
+                return _issuance_unknown(
+                    "supply_instruction_amount", mint=mint, signature=signature,
+                    transaction=transaction, token_program=program,
+                )
+            supply_programs.add(program)
+            if kind.startswith("mintTo"):
+                minted += amount
+            else:
+                burned += amount
+        elif ("mint" in kind.lower() or "burn" in kind.lower()) \
+                and not kind.lower().startswith("initialize"):
+            return _issuance_unknown(
+                "unsupported_supply_instruction", mint=mint, signature=signature,
+                transaction=transaction, token_program=program,
+            )
+    if minted <= 0:
+        return _issuance_unknown(
+            "mint_to_not_proven", mint=mint, signature=signature,
+            transaction=transaction,
+        )
+    if burned > minted or len(supply_programs) != 1:
+        return _issuance_unknown(
+            "net_supply_not_proven", mint=mint, signature=signature,
+            transaction=transaction,
+        )
+    token_program = next(iter(supply_programs))
+
+    pre_balances, post_balances = meta.get("preTokenBalances"), meta.get("postTokenBalances")
+    if not isinstance(pre_balances, list) or not isinstance(post_balances, list):
+        return _issuance_unknown(
+            "token_balances_unavailable", mint=mint, signature=signature,
+            transaction=transaction, token_program=token_program,
+        )
+    seen_pre: set[int] = set()
+    for balance in pre_balances:
+        if not isinstance(balance, Mapping) or str(balance.get("mint") or "") != mint:
+            continue
+        account_index = balance.get("accountIndex")
+        amount = _raw_token_amount(balance)
+        if (
+            type(account_index) is not int or not 0 <= account_index < len(keys)
+            or account_index in seen_pre or amount is None
+            or balance.get("programId") != token_program
+        ):
+            return _issuance_unknown(
+                "pre_balance_shape", mint=mint, signature=signature,
+                transaction=transaction, token_program=token_program,
+            )
+        seen_pre.add(account_index)
+        if amount != 0:
+            return _issuance_unknown(
+                "preexisting_mint_balance", mint=mint, signature=signature,
+                transaction=transaction, token_program=token_program,
+            )
+
+    seen_post: set[int] = set()
+    by_owner: dict[str, int] = {}
+    owner_on_curve: dict[str, bool] = {}
+    matching_post = 0
+    for balance in post_balances:
+        if not isinstance(balance, Mapping) or str(balance.get("mint") or "") != mint:
+            continue
+        matching_post += 1
+        account_index = balance.get("accountIndex")
+        owner = balance.get("owner")
+        amount = _raw_token_amount(balance)
+        if (
+            type(account_index) is not int or not 0 <= account_index < len(keys)
+            or account_index in seen_post or not isinstance(owner, str) or not owner
+            or amount is None or balance.get("programId") != token_program
+        ):
+            return _issuance_unknown(
+                "post_balance_shape", mint=mint, signature=signature,
+                transaction=transaction, token_program=token_program,
+            )
+        seen_post.add(account_index)
+        try:
+            owner_on_curve[owner] = Pubkey.from_string(owner).is_on_curve()
+        except ValueError:
+            return _issuance_unknown("invalid_token_owner", mint=mint, signature=signature,
+                                     transaction=transaction, token_program=token_program)
+        if amount > 0:
+            by_owner[owner] = by_owner.get(owner, 0) + amount
+    post_sum = sum(by_owner.values())
+    total_supply = minted - burned
+    if matching_post == 0 or post_sum != total_supply:
+        return _issuance_unknown(
+            "post_balance_supply_mismatch", mint=mint, signature=signature,
+            transaction=transaction, token_program=token_program,
+        )
+
+    derived_curve = str(Pubkey.find_program_address(
+        [b"bonding-curve", bytes(Pubkey.from_string(mint))], Pubkey.from_string(PUMP_PROGRAM_ID))[0])
+
+    def role(owner: str) -> str:
+        if owner == bonding_curve == derived_curve:
+            return "derived_bonding_curve"
+        if owner == creator and owner == user:
+            return "creator_and_create_user"
+        if owner == creator:
+            return "creator_address"
+        if owner == user:
+            return "create_user"
+        if not owner_on_curve[owner]:
+            return "off_curve_program_owner"
+        return "token_account_owner"
+
+    owners = [
+        {"owner": owner, "amount_raw": amount, "role": role(owner),
+         "is_on_curve": owner_on_curve[owner]}
+        for owner, amount in sorted(by_owner.items())
+    ]
+    return {
+        "snapshot_version": "pump-create-issuance-holders/v1",
+        "status": "complete",
+        "complete": True,
+        "reason": "net_supply_closed_by_post_token_balances",
+        "mint": mint,
+        "create_signature": signature,
+        "slot": transaction.get("slot"),
+        "block_time": transaction.get("blockTime"),
+        "token_program": token_program,
+        "minted_raw": minted,
+        "burned_raw": burned,
+        "total_supply_raw": total_supply,
+        "post_balance_sum_raw": post_sum,
+        "owner_count": len(owners),
+        "token_account_count": matching_post,
+        "coverage": "complete_same_transaction_post_token_balances",
+        "identity_scope": "token_account_owner_address_not_human_or_custody_identity",
+        "owners": owners,
+    }
+
+
 def creator_from_create_transaction(
     transaction: Mapping[str, Any], expected_mint: str,
     expected_signature: str,
@@ -196,13 +430,14 @@ def creator_from_create_transaction(
             "index": index,
             "offset": creator_offset,
             "user": user,
+            "bonding_curve": _address(accounts[2], keys),
             "discriminator": data[:8].hex(),
         })
     if len(matches) != 1:
         reason = "create_instruction_not_found" if not matches else "ambiguous_create_instructions"
         return _unverified(reason, signature=signature, mint=mint)
     match = matches[0]
-    return {
+    result = {
         "status": "verified",
         "reason": "pump_create_creator_argument_verified",
         "mint": mint,
@@ -229,6 +464,12 @@ def creator_from_create_transaction(
             "scope": "initial_creator_only_not_pool_creator_fee_recipient_or_human",
         },
     }
+    result["issuance_holder_snapshot"] = _issuance_holder_snapshot(
+        transaction, message, meta, keys, mint=mint, signature=signature,
+        creator=match["creator"], user=match["user"],
+        bonding_curve=match["bonding_curve"],
+    )
+    return result
 
 
 def _existing_verified(
@@ -298,7 +539,8 @@ async def verify_creator_from_known_signature(
 
 
 __all__ = [
-    "PUMP_PROGRAM_ID", "CREATE_DISCRIMINATOR", "CREATE_V2_DISCRIMINATOR",
+    "PUMP_PROGRAM_ID", "TOKEN_PROGRAM_ID", "TOKEN_2022_PROGRAM_ID",
+    "CREATE_DISCRIMINATOR", "CREATE_V2_DISCRIMINATOR",
     "IDL_URL", "CREATE_V2_DOC_URL", "creator_from_create_transaction",
     "verify_creator_from_known_signature",
 ]

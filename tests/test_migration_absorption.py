@@ -180,7 +180,7 @@ def test_store_migration_amount_signal_then_real_15_second_frame_buys_five_usdc(
         (store.CHAIN_MEME_TRADER_ACTIVE_VERSION,),
     ).fetchone()
     assert parent_before is not None
-    assert store.register_chain_meme_evidence_completion_experiments() == 4
+    assert store.register_chain_meme_evidence_completion_experiments() == 5
     new_before = store.db.execute(
         "SELECT id,activated_at,policy_json FROM chain_meme_trader_policy_additions "
         "WHERE definition_version=? AND arm_id=?",

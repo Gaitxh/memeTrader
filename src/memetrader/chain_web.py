@@ -1604,7 +1604,7 @@ class ChainWebData:
                         if indicative_value is not None else None
                     ),
                     "indicative_source": (
-                        "dex_pool_below_1000_usd_full_loss"
+                        "dex_pool_below_100_usd_full_loss"
                         if fresh_market and row.get("liquidity_usd") is not None
                         and float(row["liquidity_usd"]) < CHAIN_MEME_MIN_POOL_LIQUIDITY_USD
                         else "dex_price_mark_4pct_haircut" if fresh_market else None

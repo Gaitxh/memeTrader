@@ -296,18 +296,28 @@ def _record_actual_flow(store, clock, token, pair, when, *, net_raw=-1_000_000):
     )
 
 
-def test_observed_buyer_real_store_seal_five_dollar_buy_distribution_and_next_pool_sell(tmp_path, monkeypatch):
-    from memetrader.early_observed_buyers import ARM_ID
+@pytest.mark.parametrize("ARM_ID", ["early_observed_buyer_distribution_v1", "issuance_holder_distribution_5u_v1"])
+def test_observed_buyer_real_store_seal_five_dollar_buy_distribution_and_next_pool_sell(tmp_path, monkeypatch, ARM_ID):
     from memetrader.market_flow import aggregate_market_frames
     store, clock = _capital_store(tmp_path, monkeypatch, "observed-buyer-lifecycle.sqlite3")
     monkeypatch.setattr("memetrader.models.utcnow", lambda: clock[0])
     version, start = Store.CHAIN_MEME_TRADER_ACTIVE_VERSION, clock[0]
     parents = [tuple(r) for r in store.db.execute("SELECT * FROM chain_meme_trader_policy_additions ORDER BY id")]
-    assert store.register_chain_meme_evidence_completion_experiments() == 4
+    assert store.register_chain_meme_evidence_completion_experiments() == 5
     assert store.register_chain_meme_evidence_completion_experiments() == 0
     assert [tuple(r) for r in store.db.execute("SELECT * FROM chain_meme_trader_policy_additions ORDER BY id LIMIT 18")] == parents
     token, pair = _new_token("ObservedBuyer"), str(Pubkey.new_unique())
     store.upsert_token(token)
+    if ARM_ID == "issuance_holder_distribution_5u_v1":
+        clock[0] = start + timedelta(milliseconds=500)
+        store.record_chain_meme_pattern_evidence(token.token_id, pair, "token_origin", {
+            "status": "verified", "create_signature": "create-fixture",
+            "issuance_holder_snapshot": {"complete": True, "mint": token.address,
+                "create_signature": "create-fixture", "slot": 10, "block_time": int(start.timestamp()),
+                "total_supply_raw": 1000, "owners": [
+                    {"owner": "curve", "amount_raw": 900, "is_on_curve": False},
+                    {"owner": "early", "amount_raw": 100, "is_on_curve": True}]}},
+            observed_at=clock[0], source_key="create-fixture")
     windows, scan_ids = [], []
     def flow(lo, hi, buyers, selling=False):
         clock[0] = start + timedelta(seconds=hi+1)
@@ -353,19 +363,19 @@ def test_observed_buyer_real_store_seal_five_dollar_buy_distribution_and_next_po
         clock[0] = start+timedelta(seconds=second)
         store.upsert_chain_meme_trader_market_mark(token,
             _snapshot(token,pair,clock[0],liquidity=liquidity),recorded_at=clock[0])
-    mark(35,1000)
+    mark(35,10000)
     flow(54,64,[f"warm{i}" for i in range(8)])
     flow(64,74,[f"warm{i}" for i in range(8)])
     for lo,hi,breadth in [(74,84,4),(84,94,2)]:
         flow(lo,hi,[f"new{i}" for i in range(breadth)],selling=True)
-        mark(hi+1,800)
+        mark(hi+1,8000)
         store.evaluate_chain_meme_trader_market_marks(definition_version=version,now=clock[0],token_ids=[token.token_id])
         pending = store.db.execute("SELECT pending_mark_id FROM chain_meme_trader_positions WHERE arm_id=?",(ARM_ID,)).fetchone()[0]
         assert (pending is not None) == (hi == 94)
     pending_mark = store.db.execute("SELECT * FROM chain_meme_trader_marks WHERE id=?",(pending,)).fetchone()
     assert pending_mark["status"] == "pending" and pending_mark["reason"] == "dynamic_distribution_confirmed"
     assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_trades WHERE arm_id=? AND side='SELL'",(ARM_ID,)).fetchone()[0] == 0
-    mark(96,800)
+    mark(96,8000)
     store.evaluate_chain_meme_trader_market_marks(definition_version=version,now=clock[0],token_ids=[token.token_id])
     sell = store.db.execute("SELECT * FROM chain_meme_trader_trades WHERE arm_id=? AND side='SELL'",(ARM_ID,)).fetchone()
     assert sell is not None and sell["net_cash_flow_usd"] == pytest.approx(5/2.08*2*.96)
