@@ -29,7 +29,8 @@ from .market_api import CoinGeckoDemoPoolClient, GeckoTerminalPoolClient
 from .market_flow import aggregate_market_frames
 from .pool_surface import collect_pumpswap_pool_surface
 from .token_origin import verify_creator_from_known_signature
-from .authoritative_events import collect_okx_listing_events
+from .authoritative_events import (collect_okx_listing_events, collect_kraken_listing_events,
+                                   collect_coinbase_status_observations)
 from .pregrad_watch import PregradWatch
 from .event_candidates import freeze_event_candidates, rank_frozen_event_candidates, event_candidate_source_key
 from .capital_research import load_competing_risk_samples, seal_competing_risk_model, competing_risk_context
@@ -1348,6 +1349,7 @@ class Runtime:
                     self._chain_outcome_version = f"{self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION}/outcomes-v1"
                     self.store.register_chain_meme_universe_outcomes(
                         observer_version=self._chain_outcome_version,
+                        include_migration_short_trajectory=True,
                     )
                     self.store.register_chain_meme_v22_vault_shadow(
                         position_definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
@@ -1456,6 +1458,9 @@ class Runtime:
         self._chain_meme_v21_vault_retry_after: dict[str, float] = {}
         self._chain_meme_v21_vault_last_heartbeat = 0.0
         self.evm_route = EvmUniswapV3QuoteClient(self.evm_route_http)
+        from .pons_observer import PonsV1Observer, FourMemeObserver
+        self._native_launch_observers = [FourMemeObserver(self.evm_route), PonsV1Observer(self.evm_route)]
+        self._native_launch_cursor = 0
         self.evm_aggregator = (
             EvmZeroXPriceClient(self.evm_route_http, zerox_api_key)
             if zerox_api_key else None
@@ -6091,10 +6096,74 @@ class Runtime:
                 else:
                     self._wsol_usdc_conversion = None
 
-    async def chain_meme_authoritative_events_once(self) -> None:
+    async def chain_meme_native_launch_once(self) -> None:
+        """One bounded low-priority native discovery window; never a BUY signal."""
+        if self._critical_onchain_exit_event.is_set() or self._evm_route_quote_lock.locked():
+            return
+        await self._chain_meme_active_idle().wait()
+        observers = self._native_launch_observers
+        observer = observers[self._native_launch_cursor % len(observers)]
+        self._native_launch_cursor += 1
+        retry = getattr(self, "_native_launch_retry", {})
+        self._native_launch_retry = retry
+        if retry.get(observer.CHAIN, utcnow()) > utcnow():
+            return
+        source = f"native-launch:{observer.CHAIN}"
+        try:
+            result = await asyncio.wait_for(observer.observe(), timeout=4)
+        except asyncio.TimeoutError:
+            retry[observer.CHAIN] = utcnow() + timedelta(minutes=5)
+            self.store.heartbeat(source, error="native_rpc_timeout")
+            return
+        if result["status"] == "ERROR":
+            retry[observer.CHAIN] = utcnow() + timedelta(minutes=5)
+            self.store.heartbeat(source, error=str(result.get("error") or "native_rpc_error"))
+            return
+        events = list(result.get("events") or [])[:200]
+        # Decoding is shared; only a small FIFO subset receives new discovery work.
+        observed = parse_time(result["observed_at"])
+        round_id = self.store.start_token_discovery_round(provider="native-launch",
+            surface=observer.ERROR_PREFIX, mode="poll", chain_scope=observer.CHAIN)
+        queued = 0
+        for event in events[:8]:
+            address = canonical_token_address(observer.CHAIN, str(event.get("token") or ""))
+            if not address:
+                continue
+            token_id = f"{observer.CHAIN}:{address}"
+            key = f"{observer.CHAIN}:{event['transaction_hash']}:{event['log_index']}"
+            await self._chain_meme_active_idle().wait()
+            known = self.store.token_discovery_known(token_id)
+            evidence_id = self.store.record_chain_meme_pattern_evidence(token_id,
+                str(event.get("pool") or ""), "evm_native_launch", event,
+                observed_at=observed, source_key=key)
+            if evidence_id is None:
+                continue
+            if not known:
+                self.store.upsert_token(TokenCandidate(observer.CHAIN, address,
+                    str(event.get("name") or address), str(event.get("symbol") or ""),
+                    source=source, first_seen_at=observed, raw=event), seen_at=observed)
+            self.store.enqueue_token_detail_hydration(observer.CHAIN, address, enqueued_at=observed)
+            self.store.add_token_discovery_exposure(round_id, token_id=token_id,
+                chain=observer.CHAIN, role="identity", first_local_discovery=not known,
+                source_link_count=0, new_source_link_count=0)
+            queued += 1
+        self.store.finish_token_discovery_round(round_id, status="completed",
+            requested_count=1, returned_count=len(events))
+        self.store.heartbeat(source, item=queued > 0,
+            error_detail=f"events={len(events)};queued={queued};unprocessed={max(0,len(events)-8)};"
+                         f"skipped_blocks={result.get('skipped_blocks',0)};finality=false")
+
+    async def chain_meme_extra_official_once(self) -> None:
+        # Existing OKX cadence is unchanged; supplementary sources rotate separately.
+        cursor = getattr(self, "_extra_official_cursor", 0)
+        self._extra_official_cursor = cursor + 1
+        collector = collect_kraken_listing_events if cursor % 2 == 0 else collect_coinbase_status_observations
+        await self.chain_meme_authoritative_events_once(collector=collector)
+
+    async def chain_meme_authoritative_events_once(self, collector=collect_okx_listing_events) -> None:
         """Persist each exact first-party listing once, then queue normal hydration."""
         await self._chain_meme_active_idle().wait()
-        result = await collect_okx_listing_events(self.http, now=utcnow())
+        result = await collector(self.http, now=utcnow())
         recorded = 0
         for event in list(result.get("events") or [])[:2]:
             chain = str(event.get("chain") or "").lower()
@@ -6123,7 +6192,7 @@ class Runtime:
                 chain=chain, address=address,
                 name=str(event.get("title") or address), symbol="",
                 first_seen_at=parse_time(published_at),
-                source="okx:official_listing", url=url, raw=dict(event),
+                source=f"{event.get('source','official')}:official_listing", url=url, raw=dict(event),
             )
             self.store.upsert_token(token, seen_at=observed_at)
             self.store.enqueue_token_detail_hydration(chain, address, enqueued_at=observed_at)
@@ -6131,10 +6200,13 @@ class Runtime:
             recorded += 1
         diagnostics = list(result.get("diagnostics") or [])
         for event in diagnostics[:2]:
-            if event.get("kind") == "okx_listing_without_exact_ca":
+            if event.get("kind") in {"okx_listing_without_exact_ca", "kraken_listing_without_exact_ca"}:
                 await self._freeze_no_ca_event(event)
+        if collector is not collect_okx_listing_events:
+            self.store.set_kv(f"official-observer:{collector.__name__}",
+                {"observed_at": iso(utcnow()), "diagnostics": diagnostics[:10], "decision_authority": False})
         self.store.heartbeat(
-            "chain-meme-authoritative-events", item=recorded > 0,
+            "chain-meme-authoritative-events" if collector is collect_okx_listing_events else "chain-meme-extra-official", item=recorded > 0,
             error_detail=f"recorded={recorded};diagnostics={len(diagnostics)}",
         )
 
@@ -6146,6 +6218,8 @@ class Runtime:
             return
         symbols = {s.upper() for s in re.findall(r"\(([A-Za-z0-9]{2,15})\)", event["title"])
                    if s.upper() not in {"USDT", "USDC", "USD", "UTC"}}
+        if event.get("source") == "kraken" and event.get("search_symbol"):
+            symbols.add(str(event["search_symbol"]))
         if len(symbols) != 1:
             self.store.record_chain_meme_pattern_evidence("", "", "no_ca_search_attempt",
                 {"event": event, "status": "WAIT", "reason": "no_unique_search_symbol"},
@@ -8101,6 +8175,14 @@ class Runtime:
                         self.chain_meme_wsol_reference_once,
                     ),
                     name="chain_meme_wsol_reference",
+                ),
+                asyncio.create_task(
+                    self._periodic("chain_meme_native_launch", 30, self.chain_meme_native_launch_once),
+                    name="chain_meme_native_launch",
+                ),
+                asyncio.create_task(
+                    self._periodic("chain_meme_extra_official", 240, self.chain_meme_extra_official_once),
+                    name="chain_meme_extra_official",
                 ),
                 asyncio.create_task(
                     self._periodic(

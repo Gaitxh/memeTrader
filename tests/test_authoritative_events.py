@@ -2,7 +2,7 @@ import json
 from datetime import datetime, timezone
 import httpx
 
-from memetrader.authoritative_events import collect_okx_listing_events
+from memetrader.authoritative_events import collect_coinbase_status_observations, collect_kraken_listing_events, collect_okx_listing_events
 
 
 class Response:
@@ -18,6 +18,29 @@ class Http:
         self.article = httpx.Response(200, text=article, request=httpx.Request("GET", "https://www.okx.com/help/list-cat"))
     async def get_public_document(self, url, **kwargs):
         return self.api if url.endswith("announcements") else self.article
+
+
+class RssHttp:
+    def __init__(self, url, content):
+        self.response = httpx.Response(200, content=content.encode(), request=httpx.Request("GET", url))
+    async def get_public_document(self, url, **kwargs):
+        return self.response
+
+
+def test_kraken_rss_is_no_ca_candidate_not_trade_event():
+    rss = '<rss><channel><item><title>SOFID is available for trading!</title><link>https://blog.kraken.com/product/asset-listings/sofid-is-available-for-trading</link><pubDate>Fri, 04 Sep 2026 15:09:16 +0000</pubDate></item></channel></rss>'
+    result = __import__("asyncio").run(collect_kraken_listing_events(
+        RssHttp("https://blog.kraken.com/feed", rss), now=datetime(2026, 9, 4, 16, 0, tzinfo=timezone.utc)))
+    assert result["events"] == []
+    assert result["diagnostics"][0]["kind"] == "kraken_listing_without_exact_ca"
+
+
+def test_coinbase_status_rss_is_observation_only():
+    rss = '<rss><channel><item><title>Delayed Sends/Receives - Mina</title><link>https://status.exchange.coinbase.com/incidents/x</link><pubDate>Thu, 03 Sep 2026 21:00:23 -0700</pubDate></item></channel></rss>'
+    result = __import__("asyncio").run(collect_coinbase_status_observations(
+        RssHttp("https://status.exchange.coinbase.com/history.rss", rss), now=datetime(2026, 9, 4, 5, 0, tzinfo=timezone.utc)))
+    assert result["events"] == []
+    assert result["diagnostics"][0]["kind"] == "coinbase_status_observation"
 
 
 def test_okx_returns_only_exact_explorer_ca_and_preserves_timestamps():

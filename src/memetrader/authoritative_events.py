@@ -3,18 +3,23 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 import re
 from typing import Any, Mapping
 from urllib.parse import urlparse
+import xml.etree.ElementTree as ET
 
 
 OKX_ENDPOINT = "https://www.okx.com/api/v5/support/announcements"
+KRAKEN_ENDPOINT = "https://blog.kraken.com/feed"
+COINBASE_STATUS_ENDPOINT = "https://status.exchange.coinbase.com/history.rss"
 _CA_URL = re.compile(
     r"https?://(?:www\.)?(?P<host>solscan\.io|explorer\.solana\.com|bscscan\.com)"
     r"/(?:token|address)/(?P<address>0x[0-9a-fA-F]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})"
 )
 _LISTING_WORDS = re.compile(r"\b(list|listing|list(?:ed|ing)|launch|上线|上币)\b", re.I)
+_KRAKEN_LISTING_WORDS = re.compile(r"\b(list|listing|list(?:ed|ing)|launch|available for trading|asset listing)\b", re.I)
 
 
 def _time(value: Any) -> datetime | None:
@@ -23,6 +28,71 @@ def _time(value: Any) -> datetime | None:
         return datetime.fromtimestamp(value, timezone.utc)
     except (TypeError, ValueError, OverflowError):
         return None
+
+
+def _rss_time(value: Any) -> datetime | None:
+    try:
+        parsed = parsedate_to_datetime(str(value))
+        return (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+async def collect_kraken_listing_events(
+    http: Any, *, now: datetime | None = None, max_age_seconds: float = 3600,
+) -> dict[str, list[dict[str, Any]]]:
+    """Read Kraken's first-party RSS; no-CA listings remain frozen diagnostics."""
+    now = now or datetime.now(timezone.utc)
+    try:
+        response = await asyncio.wait_for(http.get_public_document(KRAKEN_ENDPOINT, maximum_bytes=524_288), timeout=4)
+        if urlparse(str(getattr(response, "url", KRAKEN_ENDPOINT))).netloc.lower() != "blog.kraken.com":
+            raise ValueError("kraken_feed_redirected_official_host")
+        root = ET.fromstring(getattr(response, "content", b""))
+    except Exception as exc:
+        return {"events": [], "diagnostics": [{"kind": "kraken_fetch_failed", "error": type(exc).__name__}]}
+    diagnostics: list[dict[str, Any]] = []
+    for item in list(root.findall("./channel/item"))[:10]:
+        title = (item.findtext("title") or "").strip()
+        published = _rss_time(item.findtext("pubDate"))
+        url = (item.findtext("link") or "").strip()
+        parsed_url = urlparse(url)
+        if parsed_url.scheme != "https" or parsed_url.netloc.lower() != "blog.kraken.com":
+            continue
+        if not published or published > now or (now - published).total_seconds() > max_age_seconds:
+            continue
+        if not _KRAKEN_LISTING_WORDS.search(title):
+            continue
+        observed = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        diagnostics.append({"kind": "kraken_listing_without_exact_ca", "url": url, "title": title,
+            "source": "kraken", "source_kind": "first_party", "event_type": "official_listing",
+            "search_symbol": (re.match(r"^([A-Z][A-Z0-9]{1,14}) is available for trading", title).group(1)
+                if re.match(r"^([A-Z][A-Z0-9]{1,14}) is available for trading", title) else None),
+            "identity_status": "no_exact_ca", "published_at": published.isoformat().replace("+00:00", "Z"),
+            "observed_at": observed, "ingested_at": observed})
+    return {"events": [], "diagnostics": diagnostics}
+
+
+async def collect_coinbase_status_observations(
+    http: Any, *, now: datetime | None = None, max_age_seconds: float = 3600,
+) -> dict[str, list[dict[str, Any]]]:
+    """Read Coinbase's first-party incident RSS as observation-only input."""
+    now = now or datetime.now(timezone.utc)
+    try:
+        response = await asyncio.wait_for(http.get_public_document(COINBASE_STATUS_ENDPOINT, maximum_bytes=524_288), timeout=4)
+        if urlparse(str(getattr(response, "url", COINBASE_STATUS_ENDPOINT))).netloc.lower() != "status.exchange.coinbase.com":
+            raise ValueError("coinbase_status_redirected_official_host")
+        root = ET.fromstring(getattr(response, "content", b""))
+    except Exception as exc:
+        return {"events": [], "diagnostics": [{"kind": "coinbase_status_fetch_failed", "error": type(exc).__name__}]}
+    diagnostics: list[dict[str, Any]] = []
+    for item in list(root.findall("./channel/item"))[:10]:
+        published = _rss_time(item.findtext("pubDate"))
+        if not published or published > now or (now - published).total_seconds() > max_age_seconds:
+            continue
+        diagnostics.append({"kind": "coinbase_status_observation", "source": "coinbase_status",
+            "source_kind": "first_party", "event_type": "service_status", "title": (item.findtext("title") or "").strip(),
+            "url": (item.findtext("link") or "").strip(), "published_at": published.isoformat().replace("+00:00", "Z")})
+    return {"events": [], "diagnostics": diagnostics}
 
 
 class _ArticleParser(HTMLParser):
