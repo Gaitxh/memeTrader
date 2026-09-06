@@ -31,6 +31,7 @@ from .paper_execution import (
     execution_definition_fields,
     normalize_execution_settings,
     pool_is_below_floor,
+    pool_has_trade_liquidity,
     sell_terms,
 )
 
@@ -26675,7 +26676,7 @@ class Store:
                 and parse_time(pre_observed) < snapshot.observed_at
                 and 0 < (snapshot.observed_at - parse_time(pre_observed)).total_seconds() <= 60
                 and isolated.liquidity_usd is not None
-                and not pool_is_below_floor(isolated.liquidity_usd, definition))
+                and pool_has_trade_liquidity(isolated.liquidity_usd, definition))
             already_bought = {str(r[0]) for r in self.db.execute(
                 "SELECT DISTINCT p.arm_id FROM chain_meme_trader_positions p JOIN chain_meme_trader_v6_cohorts c "
                 "ON c.id=p.shadow_cohort_id WHERE p.definition_version=? AND p.token_id=? AND c.pair_address=?",
@@ -26781,7 +26782,7 @@ class Store:
                 if (0 <= float(latest.get("pool_age_seconds") or -1) <= 900
                         and activity
                         and latest.get("liquidity") is not None
-                        and not pool_is_below_floor(latest.get("liquidity"), definition)):
+                        and pool_has_trade_liquidity(latest.get("liquidity"), definition)):
                     initial_opportunity = {"opportunity_id": f"passive-broad:{token.token_id}:{pair_address}",
                         "source_snapshot_id": latest["id"], "token_id": token.token_id,
                         "pair_address": pair_address, "broad_like": True, "original_pool": True,
@@ -27959,7 +27960,7 @@ class Store:
                         "pair_address": pair_address,
                         "entry_liquidity_usd": liquidity,
                     })
-                    if liquidity is None:
+                    if liquidity is None or not math.isfinite(float(liquidity)) or float(liquidity) < 0:
                         raise ValueError("entry_pool_liquidity_unknown")
                     if pool_is_below_floor(liquidity, definition):
                         raise ValueError("entry_pool_liquidity_below_configured_floor")
@@ -31733,7 +31734,7 @@ class Store:
                 and 0 <= (current - flow_observed).total_seconds() <= 30
                 and snapshot["price_usd"] is not None and float(snapshot["price_usd"]) > 0
                 and snapshot["liquidity_usd"] is not None
-                and not pool_is_below_floor(snapshot["liquidity_usd"], effective)
+                and pool_has_trade_liquidity(snapshot["liquidity_usd"], effective)
                 and surface_payload.get("status") == "RESOLVED"
                 and surface_payload.get("complete") is True
                 and surface_payload.get("surface") == "NORMAL_DIRECT"
@@ -32660,7 +32661,7 @@ class Store:
             post_confirmation.get("liquidity_usd")
             if isinstance(post_confirmation, Mapping) else None
         )
-        if post_liquidity is None:
+        if post_liquidity is None or not math.isfinite(float(post_liquidity)) or float(post_liquidity) < 0:
             return 0
         if pool_is_below_floor(post_liquidity, definition):
             trigger_evidence["terminal_dust_pool"] = {
@@ -33346,7 +33347,7 @@ class Store:
                         and position["mark_pair_address"]
                         and (
                             position["mark_liquidity_usd"] is not None
-                            and not pool_is_below_floor(position["mark_liquidity_usd"], definition)
+                            and pool_has_trade_liquidity(position["mark_liquidity_usd"], definition)
                         )
                     ):
                         post_mark_at = parse_time(position["mark_last_success_at"])
@@ -33695,7 +33696,7 @@ class Store:
                         and position["mark_pair_address"]
                         and (
                             position["mark_liquidity_usd"] is not None
-                            and not pool_is_below_floor(position["mark_liquidity_usd"], definition)
+                            and pool_has_trade_liquidity(position["mark_liquidity_usd"], definition)
                         )
                         and 0.0 <= (
                             current - parse_time(position["mark_recorded_at"])

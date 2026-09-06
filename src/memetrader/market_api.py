@@ -152,7 +152,11 @@ def normalize_gecko_pool(
     transactions = attrs.get("transactions")
     transactions = transactions if isinstance(transactions, Mapping) else {}
     price = attrs.get("base_token_price_usd")
-    reserve = attrs.get("reserve_in_usd")
+    reserve = _number(attrs.get("reserve_in_usd"))
+    if reserve is not None and reserve < 0:
+        # Observed on BSC v4 pools: negative reserve is a provider error,
+        # not positive trade capacity and not evidence of a dead pool.
+        reserve = None
 
     return {
         "chainId": chain,
@@ -171,7 +175,7 @@ def normalize_gecko_pool(
         "dexId": dex_id,
         "priceUsd": str(price) if price is not None else None,
         "priceNative": _number(attrs.get("base_token_price_quote_token")),
-        "liquidity": {"usd": _number(reserve)},
+        "liquidity": {"usd": reserve},
         "volume": {window: _number(volumes.get(window)) for window in ("m5", "h1")},
         "txns": {
             window: {

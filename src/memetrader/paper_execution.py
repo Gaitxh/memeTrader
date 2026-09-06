@@ -126,3 +126,14 @@ def pool_is_below_floor(liquidity_usd: Any, definition: Mapping[str, Any]) -> bo
     liquidity = _number(liquidity_usd, "liquidity_usd")
     floor = _number(definition.get("min_pool_liquidity_usd", 1000.0), "min_pool_liquidity_usd")
     return 0.0 <= liquidity < floor
+
+
+def pool_has_trade_liquidity(liquidity_usd: Any, definition: Mapping[str, Any]) -> bool:
+    """Affirm usable liquidity; unknown/invalid is not the inverse of dust."""
+    if liquidity_usd is None:
+        return False
+    try:
+        liquidity = _number(liquidity_usd, "liquidity_usd")
+    except ValueError:
+        return False
+    return liquidity >= max(0.0, float(definition.get("min_pool_liquidity_usd", 1000.0)))

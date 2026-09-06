@@ -67,7 +67,8 @@ const strategyMemberFor = (family,arm='',version='') => (family?.members||[]).fi
   (!arm||m.arm_id===arm)&&(!version||m.version===version)
 )||null;
 const strategyLabel = (family, strategy=null, revision=null) => {
-  const index=strategyIndex(family), value=revision??strategy?.strategy_revision??family?.strategy_revision;
+  const index=strategyIndex(family), current=strategy||currentStrategyForFamily(family);
+  const value=revision??current?.strategy_revision??family?.strategy_revision;
   return `策略 ${String(index||'—').padStart(3,'0')}${value!=null&&String(value)!==''?`-V${String(value).padStart(3,'0')}`:''}`;
 };
 const strategyLabelFromMetadata = (item,version='') => {
@@ -336,7 +337,8 @@ function compareStrategyFamilies(a,b,sort){
 
 function ingestStrategyHistory(data){
   const version=String(data?.version||'');
-  if(activeEpochVersion!==null&&version&&version!==activeEpochVersion){
+  const epochChanged=activeEpochVersion!==null&&version&&version!==activeEpochVersion;
+  if(epochChanged){
     strategyHistories=new Map();
   }
   if(version)activeEpochVersion=version;
@@ -353,6 +355,7 @@ function ingestStrategyHistory(data){
     history.sort((a,b)=>a.ts-b.ts);
     strategyHistories.set(key,history);
   });
+  return epochChanged;
 }
 
 function strategySparkline(strategy){
@@ -449,7 +452,7 @@ function renderUniverse(){
   });
   $('#universe-count').textContent=`显示 ${rows.length} / ${families.length} · ${time(state?.generated_at||universe.generated_at)} 刷新`;
   $('#universe-refresh').textContent=`${active} 个前向运行 · ${replicas} 个历史规则 · ${successors} 个 DexScreener 继承策略`;
-  $('#canonical-universe tbody').innerHTML=rows.map((f,index)=>{const live=liveMetricForFamily(f),id=f.canonical_id||f.behavior_contract_hash;return `<tr class="strategy-row ${selectedCanonical===id?'selected':''}" data-canonical="${esc(id)}"><td>${index+1}</td><td><strong>${esc(strategyLabel(f))}</strong><small>唯一编号 #${String(strategyIndex(f)).padStart(3,'0')}</small></td><td><span class="status-pill ${live.status==='ACTIVE_FORWARD'?'closed':'retry'}">${esc(fidelityLabel(f))}</span></td><td><span class="maturity ${esc(live.maturity)}">${esc(maturityText(live.maturity))}</span><small>运行 ${esc(elapsedText(live.forwardAgeSeconds))}</small></td><td>${esc(readable(f.entry_family,entryLabels))}</td><td>${esc(readable(f.exit_family,exitLabels))}</td>${accountCells(live)}<td class="${pnlClass(live.pnl)}">${live.pnl==null?esc(live.pendingText):money(live.pnl)}${strategyMetrics(live)}</td><td class="${pnlClass(live.realizedPnl)}">${live.realizedPnl==null?'—':money(live.realizedPnl)}</td><td class="${pnlClass(live.unrealizedPnl)}">${live.unrealizedPnl==null?esc(live.pendingText):money(live.unrealizedPnl)}</td><td>${strategySparkline(live.strategy)}</td><td>${live.open}</td><td>${live.terminal}</td><td>${live.winRate==null?'等待样本':percent(live.winRate)}</td><td>${time(live.updatedAt)}</td></tr>`;}).join('')||'<tr><td colspan="16" class="empty">没有符合当前筛选条件的策略</td></tr>';
+  $('#canonical-universe tbody').innerHTML=rows.map((f,index)=>{const live=liveMetricForFamily(f),id=f.canonical_id||f.behavior_contract_hash;return `<tr class="strategy-row ${selectedCanonical===id?'selected':''}" data-canonical="${esc(id)}"><td>${index+1}</td><td><strong>${esc(strategyLabel(f,live.strategy))}</strong><small>唯一编号 #${String(strategyIndex(f)).padStart(3,'0')}</small></td><td><span class="status-pill ${live.status==='ACTIVE_FORWARD'?'closed':'retry'}">${esc(fidelityLabel(f))}</span></td><td><span class="maturity ${esc(live.maturity)}">${esc(maturityText(live.maturity))}</span><small>运行 ${esc(elapsedText(live.forwardAgeSeconds))}</small></td><td>${esc(readable(live.strategy?.entry_family||f.entry_family,entryLabels))}</td><td>${esc(readable(live.strategy?.exit_family||f.exit_family,exitLabels))}</td>${accountCells(live)}<td class="${pnlClass(live.pnl)}">${live.pnl==null?esc(live.pendingText):money(live.pnl)}${strategyMetrics(live)}</td><td class="${pnlClass(live.realizedPnl)}">${live.realizedPnl==null?'—':money(live.realizedPnl)}</td><td class="${pnlClass(live.unrealizedPnl)}">${live.unrealizedPnl==null?esc(live.pendingText):money(live.unrealizedPnl)}</td><td>${strategySparkline(live.strategy)}</td><td>${live.open}</td><td>${live.terminal}</td><td>${live.winRate==null?'等待样本':percent(live.winRate)}</td><td>${time(live.updatedAt)}</td></tr>`;}).join('')||'<tr><td colspan="16" class="empty">没有符合当前筛选条件的策略</td></tr>';
   $$('#canonical-universe tbody tr[data-canonical]').forEach(row=>row.addEventListener('click',()=>{const family=families.find(f=>(f.canonical_id||`C-${f.behavior_contract_hash}`)===row.dataset.canonical);renderUniverseDetail(family);refreshLive();}));
   const selected=families.find(f=>(f.canonical_id||f.behavior_contract_hash)===selectedCanonical)||rows[0]||families[0];
   if(selected)renderUniverseDetail(selected);
@@ -490,7 +493,7 @@ function renderOverviewStrategies(){
   const target=$('#overview-strategies tbody');
   if(!target||!universe)return;
   const ranked=(universe.families||[]).map(f=>({family:f,live:liveMetricForFamily(f)})).sort((a,b)=>compareStrategyFamilies(a.family,b.family,$('#overview-sort')?.value||'maturity'));
-  target.innerHTML=ranked.map((item,index)=>`<tr class="strategy-row" data-overview-strategy="${esc(item.family.canonical_id||item.family.behavior_contract_hash)}"><td>${index+1}</td><td><strong>${esc(strategyLabel(item.family))}</strong><small>唯一编号 #${String(strategyIndex(item.family)).padStart(3,'0')} · ${esc(readable(item.family.entry_family,entryLabels))} → ${esc(readable(item.family.exit_family,exitLabels))}</small></td><td><span class="status-pill ${item.live.status==='ACTIVE_FORWARD'?'closed':'retry'}">${esc(fidelityLabel(item.family))}</span></td><td><span class="maturity ${esc(item.live.maturity)}">${esc(maturityText(item.live.maturity))}</span><small>运行 ${esc(elapsedText(item.live.forwardAgeSeconds))}</small></td>${accountCells(item.live)}<td class="${pnlClass(item.live.pnl)}">${item.live.pnl==null?esc(item.live.pendingText):money(item.live.pnl)}</td><td class="${pnlClass(item.live.realizedPnl)}">${item.live.realizedPnl==null?'—':money(item.live.realizedPnl)}</td><td class="${pnlClass(item.live.unrealizedPnl)}">${item.live.unrealizedPnl==null?esc(item.live.pendingText):money(item.live.unrealizedPnl)}</td><td>${strategySparkline(item.live.strategy)}</td><td>${item.live.open}</td><td>${item.live.terminal}</td><td>${item.live.winRate==null?'等待样本':percent(item.live.winRate)}</td><td>${time(item.live.updatedAt)}</td></tr>`).join('');
+  target.innerHTML=ranked.map((item,index)=>`<tr class="strategy-row" data-overview-strategy="${esc(item.family.canonical_id||item.family.behavior_contract_hash)}"><td>${index+1}</td><td><strong>${esc(strategyLabel(item.family,item.live.strategy))}</strong><small>唯一编号 #${String(strategyIndex(item.family)).padStart(3,'0')} · ${esc(readable(item.live.strategy?.entry_family||item.family.entry_family,entryLabels))} → ${esc(readable(item.live.strategy?.exit_family||item.family.exit_family,exitLabels))}</small></td><td><span class="status-pill ${item.live.status==='ACTIVE_FORWARD'?'closed':'retry'}">${esc(fidelityLabel(item.family))}</span></td><td><span class="maturity ${esc(item.live.maturity)}">${esc(maturityText(item.live.maturity))}</span><small>运行 ${esc(elapsedText(item.live.forwardAgeSeconds))}</small></td>${accountCells(item.live)}<td class="${pnlClass(item.live.pnl)}">${item.live.pnl==null?esc(item.live.pendingText):money(item.live.pnl)}</td><td class="${pnlClass(item.live.realizedPnl)}">${item.live.realizedPnl==null?'—':money(item.live.realizedPnl)}</td><td class="${pnlClass(item.live.unrealizedPnl)}">${item.live.unrealizedPnl==null?esc(item.live.pendingText):money(item.live.unrealizedPnl)}</td><td>${strategySparkline(item.live.strategy)}</td><td>${item.live.open}</td><td>${item.live.terminal}</td><td>${item.live.winRate==null?'等待样本':percent(item.live.winRate)}</td><td>${time(item.live.updatedAt)}</td></tr>`).join('');
   $$('[data-overview-strategy]').forEach(row=>row.addEventListener('click',()=>{
     selectedCanonical=row.dataset.overviewStrategy;
     location.hash='#/strategies';
@@ -953,7 +956,7 @@ function renderVisible(data){
 function render(data){ingestStrategyHistory(data);state=data;renderRuntime(data);renderVisible(data);}
 
 function renderLive(data,focusedArm=null){
-  ingestStrategyHistory(data);
+  const epochChanged=ingestStrategyHistory(data);
   const previous=new Map((state?.strategies||[]).map(strategy=>[strategy.arm_id,strategy]));
   const hasFocusedPositions=Boolean(focusedArm)&&Array.isArray(data.open_positions);
   const mergedStrategies=(data.strategies||[]).map(strategy=>{
@@ -967,7 +970,7 @@ function renderLive(data,focusedArm=null){
     return merged;
   });
   state={...state,...data,system:{...(state?.system||{}),...(data.system||{})},discovery:{...(state?.discovery||{}),...(data.discovery||{})},trading:{...(state?.trading||{}),...(data.trading||{})},strategies:mergedStrategies}; const strategies=mergedStrategies;
-  if(universe&&Number(universe.families?.length||0)!==strategies.length)refreshUniverse();
+  if(universe&&(epochChanged||Number(universe.families?.length||0)!==strategies.length))refreshUniverse();
   renderRuntime(state);renderVisible(state);if(activeTokenId&&Date.now()-tokenDetailRefreshedAt>=10000)openToken(activeTokenId,false);
 }
 
