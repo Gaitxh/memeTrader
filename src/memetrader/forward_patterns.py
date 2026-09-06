@@ -5,6 +5,8 @@ transaction counts never stand in for independent wallets or transaction flow.
 """
 from __future__ import annotations
 
+import math
+from statistics import median
 from typing import Any, Mapping
 
 from .models import parse_time
@@ -104,6 +106,114 @@ def result_driven_policies() -> list[dict[str, Any]]:
     return result
 
 
+def cycle_and_volatility_policies() -> list[dict[str, Any]]:
+    """Two new mechanisms with controls, without changing the existing factory."""
+    import copy
+    template = experiment_policies()[0]
+    specs = (
+        ("observed_cycle_reset_reacceleration", "首波深重置后二次启动", "cycle_reset", {
+            "min_age_seconds": 1800, "min_frames": 16, "min_span_seconds": 720,
+            "base_from_seconds": 300, "base_to_seconds": 60, "base_min_frames": 6,
+            "base_min_span_seconds": 180, "base_range_max": 1.08,
+            "trigger_min": 1.12, "trigger_max": 1.35, "volume_acceleration_min": 1.5,
+            "liquidity_retention_min": 0.8, "buy_ratio_min": 0.6, "count_min": 6,
+            "peak_age_min_seconds": 360, "peak_age_max_seconds": 900,
+            "first_wave_min": 1.35, "trough_peak_min": 0.50, "trough_peak_max": 0.75,
+            "base_peak_volume_max": 0.5, "trigger_peak_max": 0.90,
+        }),
+        ("volatility_scaled_depth_flow_momentum", "波动率归一化资金压力动量", "volatility_flow", {
+            "min_age_seconds": 900, "max_age_seconds": 21600, "min_frames": 9,
+            "min_span_seconds": 120, "max_span_seconds": 600,
+            "sigma_floor": 0.005, "mad_scale": 1.4826, "z_min": 2.0,
+            "trigger_min": 1.04, "trigger_max": 1.25, "control_trigger_min": 1.08,
+            "liquidity_retention_min": 0.85, "buy_ratio_min": 0.6,
+            "count_min": 8, "pressure_min": 0.02,
+        }),
+    )
+    result = []
+    for prefix, name, direction, thresholds in specs:
+        for control in (False, True):
+            arm = prefix + ("_control_v1" if control else "_v1")
+            policy = copy.deepcopy(template)
+            policy.update(arm_id=arm, canonical_id=arm, name=name + ("·对照" if control else "·候选"),
+                          entry_family=direction, source_entry_family=direction, notional_usd=5.0,
+                          description="独立5U因果实验；只用部署后同池价格、流动性与5分钟聚合量，尚未证明盈利。",
+                          entry_filter={"direction": direction, "control": control,
+                                        "contract": "cycle-volatility/v1", "max_gap_seconds": 90,
+                                        **thresholds})
+            result.append(policy)
+    return result
+
+
+def _cycle_volatility_signal(selected, cfg):
+    direction, control = cfg["direction"], cfg["control"]
+    window = selected if direction == "cycle_reset" else selected[-cfg["min_frames"]:]
+    if len(window) < cfg["min_frames"]:
+        return False, "awaiting_cycle_volatility_sequence"
+    last = window[-1]
+    times = [parse_time(f["observed_at"]) for f in window]
+    span = (times[-1] - times[0]).total_seconds()
+    if span < cfg["min_span_seconds"] or span > cfg.get("max_span_seconds", 1200):
+        return False, "cycle_volatility_window_not_ready"
+    if any((b - a).total_seconds() > cfg["max_gap_seconds"] for a, b in zip(times, times[1:])):
+        return False, "observation_gap_not_market_quiet"
+    if any(f.get("price") is None or not math.isfinite(f["price"]) or f["price"] <= 0 for f in window):
+        return False, "awaiting_valid_price_sequence"
+    age = last["pool_age_seconds"]
+    if not cfg["min_age_seconds"] <= age <= cfg.get("max_age_seconds", math.inf):
+        return False, "cycle_volatility_age_not_met"
+    if (buy_ratio(last) or 0) < cfg["buy_ratio_min"] or (last.get("buys") or 0) + (last.get("sells") or 0) < cfg["count_min"]:
+        return False, "cycle_volatility_buy_pressure_not_met"
+    if direction == "cycle_reset":
+        base_indices = [i for i, t in enumerate(times)
+                        if cfg["base_to_seconds"] <= (times[-1] - t).total_seconds() <= cfg["base_from_seconds"]]
+        if len(base_indices) < cfg["base_min_frames"] or (times[base_indices[-1]] - times[base_indices[0]]).total_seconds() < cfg["base_min_span_seconds"]:
+            return False, "awaiting_observed_reset_base"
+        base = [window[i] for i in base_indices]
+        if any(f.get("volume") is None or f.get("liquidity") is None or f["liquidity"] < 1 for f in [*base, last]):
+            return False, "awaiting_reset_volume_liquidity"
+        base_prices = [f["price"] for f in base]
+        base_volume = median(f["volume"] for f in base)
+        passed = (max(base_prices) / min(base_prices) <= cfg["base_range_max"]
+                  and cfg["trigger_min"] <= last["price"] / median(base_prices) <= cfg["trigger_max"]
+                  and base_volume > 0 and last["volume"] >= base_volume * cfg["volume_acceleration_min"]
+                  and last["liquidity"] >= median(f["liquidity"] for f in base) * cfg["liquidity_retention_min"])
+        if passed and not control:
+            pre_base = window[:base_indices[0]]
+            peak_index = max(range(len(pre_base)), key=lambda i: pre_base[i]["price"]) if pre_base else 0
+            if peak_index == 0:
+                return False, "awaiting_observed_first_wave"
+            peak = window[peak_index]["price"]
+            peak_age = (times[-1] - times[peak_index]).total_seconds()
+            trough = min(f["price"] for f in window[peak_index + 1:base_indices[0] + 1])
+            peak_frames = window[max(0, peak_index - 1):peak_index + 2]
+            if any(f.get("volume") is None for f in peak_frames):
+                return False, "awaiting_first_wave_volume"
+            passed = (cfg["peak_age_min_seconds"] <= peak_age <= cfg["peak_age_max_seconds"]
+                      and peak / min(f["price"] for f in window[:peak_index]) >= cfg["first_wave_min"]
+                      and cfg["trough_peak_min"] <= trough / peak <= cfg["trough_peak_max"]
+                      and base_volume <= median(f["volume"] for f in peak_frames) * cfg["base_peak_volume_max"]
+                      and last["price"] <= peak * cfg["trigger_peak_max"])
+    else:
+        if any(f.get("liquidity") is None or f["liquidity"] < 1 for f in window):
+            return False, "awaiting_volatility_liquidity"
+        if any(f.get("volume") is None or (buy_ratio(f) or 0) < cfg["buy_ratio_min"] for f in window[-2:]):
+            return False, "awaiting_sustained_buy_pressure"
+        baseline = [math.log(b["price"] / a["price"]) / math.sqrt((tb - ta).total_seconds() / 60)
+                    for a, b, ta, tb in zip(window[:6], window[1:7], times[:6], times[1:7])]
+        center = median(baseline)
+        sigma = max(cfg["sigma_floor"], cfg["mad_scale"] * median(abs(x - center) for x in baseline))
+        trigger = last["price"] / window[-3]["price"]
+        z = math.log(trigger) / (sigma * math.sqrt((times[-1] - times[-3]).total_seconds() / 60))
+        # This is an aggregate-count/volume proxy, not observed signed money flow or LOB OFI.
+        pressures = [(2 * buy_ratio(f) - 1) * f["volume"] / f["liquidity"] for f in window[-2:]]
+        passed = (cfg["trigger_min"] <= trigger <= cfg["trigger_max"]
+                  and min(f["liquidity"] for f in window[-3:]) >= median(f["liquidity"] for f in window[:7]) * cfg["liquidity_retention_min"]
+                  and pressures[0] > 0 and pressures[1] >= max(pressures[0], cfg["pressure_min"])
+                  and (trigger >= cfg["control_trigger_min"] if control else z >= cfg["z_min"]))
+    return bool(passed), direction + ("_passed" if passed else "_conditions_not_met")
+
+
 def pattern_signal(
     history: list[dict[str, Any]], policy: Mapping[str, Any], *,
     decision_at: str, activated_at: str,
@@ -173,6 +283,8 @@ def pattern_signal(
             selected.append(frame)
     if len(selected) < 3 or selected[-1] is not last:
         return False, "awaiting_distinct_observation_sequence"
+    if direction in {"cycle_reset", "volatility_flow"}:
+        return _cycle_volatility_signal(selected, cfg)
     tail = selected[-12:]
     if any((parse_time(b["observed_at"]) - parse_time(a["observed_at"])).total_seconds() > cfg["max_gap_seconds"]
            for a, b in zip(tail, tail[1:])):

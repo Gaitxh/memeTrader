@@ -25521,6 +25521,21 @@ class Store:
                     added += 1
         return added
 
+    def register_chain_meme_cycle_volatility_experiments(self) -> int:
+        from .forward_patterns import cycle_and_volatility_policies
+        added = 0
+        # All four controls/candidates start at one timestamp and snapshot frontier.
+        with self._lock, self.db:
+            at = utcnow()
+            for policy in cycle_and_volatility_policies():
+                exists = self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?",
+                    (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, policy["arm_id"])).fetchone()
+                if exists is None:
+                    self.append_chain_meme_trader_policy(policy, activated_at=at)
+                    added += 1
+        return added
+
     def register_chain_meme_capital_experiments(self) -> int:
         """Append independently funded experiments at their actual deployment frontier."""
         added = 0
@@ -25884,6 +25899,17 @@ class Store:
             policies = [p for p in definition["policies"] if p.get("entry_match_mode") == "isolated_pattern_observer"]
             if not policies:
                 return 0
+            previous = self.db.execute(
+                "SELECT feature_json FROM chain_meme_trader_v6_entry_evaluations WHERE definition_version=? "
+                "AND token_id=? AND reason='pattern_observation' ORDER BY id DESC LIMIT 1", (version, token.token_id),
+            ).fetchone()
+            previous_features = self._json_object(previous["feature_json"]) if previous else {}
+            pre_observed = previous_features.get("observed_at")
+            if (pre_observed and previous_features.get("pair_address") == pair_address
+                    and snapshot.observed_at <= parse_time(pre_observed)):
+                # A cached/late receipt is not a new signal or its confirmation.
+                # In particular, do not overwrite the pending independently observed signal.
+                return 0
             self.upsert_token(token, seen_at=current)
             snapshot_id = self.add_snapshot(isolated)
             row = self.db.execute("SELECT *,id AS source_snapshot_id FROM token_snapshots WHERE id=?", (snapshot_id,)).fetchone()
@@ -25915,13 +25941,7 @@ class Store:
                     "recorded_at": source["recorded_at"]})
             if not history or history[-1]["id"] != snapshot_id:
                 return 0
-            previous = self.db.execute(
-                "SELECT feature_json FROM chain_meme_trader_v6_entry_evaluations WHERE definition_version=? "
-                "AND token_id=? AND reason='pattern_observation' ORDER BY id DESC LIMIT 1", (version, token.token_id),
-            ).fetchone()
-            previous_features = self._json_object(previous["feature_json"]) if previous else {}
             pending = previous_features.get("ready_arm_ids", [])
-            pre_observed = previous_features.get("observed_at")
             post_valid = bool(pre_observed and previous_features.get("pair_address") == pair_address
                 and parse_time(pre_observed) < snapshot.observed_at
                 and 0 < (snapshot.observed_at - parse_time(pre_observed)).total_seconds() <= 60
@@ -26079,7 +26099,7 @@ class Store:
                         "wave_parents": wave_rows,
                         "event_keys": event_keys,
                         "reactivation_ready": any(p["arm_id"] in ready and (
-                            p.get("entry_family") in {"quiet_reawakening", "wave_reset_reentry", "event_reawakening", "fast_stop_reclaim"}
+                            p.get("entry_family") in {"quiet_reawakening", "wave_reset_reentry", "event_reawakening", "fast_stop_reclaim", "cycle_reset"}
                             or outcomes.get(p["arm_id"]) == "wave_reset_reentry_confirmed") for p in active),
                         "entry_routes": {p["arm_id"]: {"reason": outcomes.get(p["arm_id"]),
                             "surface": (capital_context.get("surface") or {}).get("surface"),

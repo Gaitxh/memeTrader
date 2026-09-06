@@ -1333,6 +1333,7 @@ class Runtime:
                     self.store.register_chain_meme_duration_risk_experiment()
                     self.store.register_chain_meme_direct_lp_amount_specific_experiment()
                     self.store.register_chain_meme_evidence_completion_experiments()
+                    self.store.register_chain_meme_cycle_volatility_experiments()
                     self.store.register_chain_meme_v22_vault_shadow(
                         position_definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
                     )
