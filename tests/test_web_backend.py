@@ -80,6 +80,33 @@ def test_chain_diagnostics_read_bounded_timing_and_update_history(tmp_path: Path
     assert "bridge-secret" not in json.dumps(perf)
 
 
+def test_performance_separates_coverage_gap_from_request_failure(tmp_path):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    token = TokenCandidate("bsc", "0x" + "12" * 20, "Original pool")
+    store.upsert_token(token)
+    for index, failure in enumerate(("DEX_SOURCE_COVERAGE_GAP", "ReadTimeout")):
+        pool = "0x" + str(index + 1) * 40
+        snapshot = TokenSnapshot("bsc", token.address, 1, 10000, 100000, 2000, 10, 5,
+            raw={"pair": {"chainId": "bsc", "pairAddress": pool,
+                          "baseToken": {"address": token.address}, "priceUsd": "1"}})
+        entry_id = store.add_snapshot(snapshot)
+        store.upsert_chain_meme_trader_pool_mark(token, snapshot)
+        store.db.execute("UPDATE chain_meme_trader_pool_marks SET failure_kind=? WHERE token_id=? AND pair_address=?",
+                         (failure, token.token_id, pool))
+        store.db.execute("INSERT INTO chain_meme_trader_positions "
+            "(definition_version,arm_id,shadow_cohort_id,token_id,source_buy_trade_id,baseline_quote_result_id,"
+            "entry_snapshot_id,entry_signal_price_usd,amount_raw,stake_usd,highest_signal_price_usd,status,opened_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", (store.CHAIN_MEME_TRADER_ACTIVE_VERSION, "arm", index,
+            token.token_id, -index - 1, -1, entry_id, 1, "1000000", 20, 1, "open", iso()))
+    store.db.commit()
+    store.close()
+    group = ChainWebData(config_path).performance_state()["held_by_chain"]["bsc"]
+    assert group["tokens"] == 1 and group["missing"] == 0
+    assert group["coverage_gaps"] == 1 and group["failures"] == 1
+    assert group["age_max_seconds"] is not None
+
+
 def test_discovery_activity_counts_new_pattern_reawakening_before_buy(tmp_path):
     config_path, _ = _config(tmp_path)
     store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)

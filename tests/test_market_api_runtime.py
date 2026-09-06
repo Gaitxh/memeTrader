@@ -645,6 +645,43 @@ def test_exact_empty_with_unavailable_cg_is_coverage_failure_not_writeoff(tmp_pa
     asyncio.run(scenario())
 
 
+def test_exact_coverage_backoff_does_not_delay_independent_pool_fallback(tmp_path):
+    async def scenario():
+        runtime = make_runtime(tmp_path)
+        token = TokenCandidate("robinhood", "0x" + "13" * 20, "Fallback")
+        pool = "0x" + "ab" * 20
+        target = target_for(token, pool)
+        runtime.store.chain_meme_trader_market_mark_targets = lambda **kwargs: [target]
+        runtime.coingecko = FakeCoinGecko(available=False)
+        calls = {"dex": 0, "public": 0}
+        async def empty_exact(chain, addresses):
+            calls["dex"] += 1
+            runtime._queue_market_pool_gap(target, pool, [])  # Hot-lane refresh while request is in flight.
+            return {}
+        async def public(chain, addresses):
+            calls["public"] += 1
+            return {pool: pair_payload(token, pool, provider="geckoterminal")}
+        runtime.dex.exact_pools_fresh = empty_exact
+        runtime.gecko_pools.get_pools = public
+        runtime._queue_market_pool_gap(target, pool, [])
+        await runtime.complementary_market_data_once()
+        key = (token.token_id, pool)
+        retry_at = runtime._market_pool_gaps[key]["next_primary_attempt"]
+        assert retry_at > asyncio.get_running_loop().time() + 50
+        # The hot lane can report the same gap again without resetting its retry clock.
+        runtime._queue_market_pool_gap(target, pool, [])
+        assert runtime._market_pool_gaps[key]["next_primary_attempt"] == retry_at
+        runtime._market_pool_gaps[key]["next_attempt"] = 0
+        await runtime.complementary_market_data_once()
+        assert calls == {"dex": 1, "public": 2}
+        runtime._market_pool_gaps[key].update(next_attempt=0, next_primary_attempt=0)
+        await runtime.complementary_market_data_once()
+        assert calls == {"dex": 2, "public": 3}
+        assert runtime.coingecko.calls == []
+        await runtime.close()
+    asyncio.run(scenario())
+
+
 def test_partial_exact_response_marks_only_uncovered_pool_as_coverage_failure(tmp_path):
     async def scenario():
         runtime = make_runtime(tmp_path)

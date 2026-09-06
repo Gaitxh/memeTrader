@@ -688,7 +688,8 @@ class ChainWebData:
                 "SELECT COALESCE(t.chain,substr(p.token_id,1,instr(p.token_id,':')-1)) AS chain,"
                 "CASE WHEN COUNT(m.last_success_at)=COUNT(*) THEN "
                 "MIN(m.last_success_at) END AS last_success_at,MIN(m.last_attempt_at) AS last_attempt_at,"
-                "MAX(COALESCE(m.failure_kind,'')) AS last_failure_kind FROM ("
+                "MAX(m.failure_kind='DEX_SOURCE_COVERAGE_GAP') AS coverage_gap,"
+                "MAX(COALESCE(m.failure_kind,'') NOT IN ('','DEX_SOURCE_COVERAGE_GAP')) AS request_failure FROM ("
                 "SELECT DISTINCT p.token_id,CASE WHEN p.token_id LIKE 'solana:%' THEN "
                 "COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),c.pair_address) ELSE "
                 "LOWER(COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),c.pair_address)) END AS pair_address "
@@ -702,9 +703,10 @@ class ChainWebData:
         now = utcnow()
         by_chain: dict[str, Any] = {}
         for item in held:
-            group = by_chain.setdefault(item["chain"], {"tokens": 0, "missing": 0, "failures": 0, "ages": []})
+            group = by_chain.setdefault(item["chain"], {"tokens": 0, "missing": 0, "failures": 0, "coverage_gaps": 0, "ages": []})
             group["tokens"] += 1
-            group["failures"] += int(bool(item["last_failure_kind"]))
+            group["failures"] += int(bool(item["request_failure"]))
+            group["coverage_gaps"] += int(bool(item["coverage_gap"]))
             if item["last_success_at"]:
                 group["ages"].append(max(0.0, (now - parse_time(item["last_success_at"])).total_seconds()))
             else:

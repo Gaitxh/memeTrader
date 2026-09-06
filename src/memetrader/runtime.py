@@ -2249,12 +2249,16 @@ class Runtime:
         if key not in self._market_pool_gaps and len(self._market_pool_gaps) >= 300:
             return
         previous = self._market_pool_gaps.get(key, {})
-        self._market_pool_gaps[key] = {
+        previous.update({
             **dict(item), "pair_address": pair, "versions": versions or [self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION],
             "next_attempt": previous.get("next_attempt", 0.0),
             "next_complement_attempt": previous.get("next_complement_attempt", 0.0),
             "next_public_attempt": previous.get("next_public_attempt", 0.0),
-        }
+            "next_primary_attempt": previous.get("next_primary_attempt", 0.0),
+        })
+        # Preserve the object used by an in-flight fallback while the hot lane
+        # refreshes this gap; otherwise its retry deadline can be lost.
+        self._market_pool_gaps[key] = previous
 
     async def complementary_market_data_once(self) -> None:
         """Fetch only uncovered original pools, outside the held-token hot loop."""
@@ -2291,13 +2295,21 @@ class Runtime:
         # Only the same-provider exact request yields to the held-token lane or
         # its cooldown.  The independently budgeted fallback must remain able
         # to recover held positions during a prolonged primary-source outage.
-        if self._dex_quote_low_priority_available():
+        primary_due = [(key, item) for key, item in chunk
+                       if float(item.get("next_primary_attempt", 0.0)) <= now]
+        if primary_due and self._dex_quote_low_priority_available():
             try:
                 pairs = await self.dex.exact_pools_fresh(
-                    chain, [str(item["pair_address"]) for _, item in chunk],
+                    chain, [str(item["pair_address"]) for _, item in primary_due],
                 )
                 exact_received = True
                 pool_failure_kind = "DEX_SOURCE_COVERAGE_GAP"
+                # A successful empty exact response proves a provider coverage
+                # gap, not a dead pool. Avoid retrying that same gap every 10s;
+                # primary token batches and independent fallback remain unchanged.
+                for key, item in primary_due:
+                    if key[1] not in pairs:
+                        item["next_primary_attempt"] = now + 60
             except Exception as exc:
                 self._notify_source_error("dexscreener:original_pool", exc)
                 pool_failure_kind = type(exc).__name__
