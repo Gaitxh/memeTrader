@@ -2,6 +2,23 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260906-codex-astra-tooling",
+      "recorded_at": "2026-09-06T06:26:00Z",
+      "title": "更新 Codex 执行规则与 Windows 运维能力",
+      "problem": "旧规则中的强制 ChatGPT 同步与持续研究措辞可能盖过最新暂停要求；终端操作缺少集中且轻量的 Windows 路由。",
+      "change": "更新项目与用户级 AGENTS.md，明确最新请求、计划确认、独立判断、按成本分工和按风险验证；更新 memetrader-forward；安装 windows-project-ops 与来自 openai/skills 的 gh-fix-ci（调整重复审批措辞）；通过 Codex CLI 安装并启用 OpenAI Developers 插件。",
+      "rationale": "依据 GPT-6 Astra 官方指导减少冲突指令和重复验证，复用已有浏览器/GitHub/官方隧道；不以全部任务最高推理或增加权限代替有效工具使用。",
+      "validation": "3 个 skill 的官方 quick_validate 通过，Codex TOML 可解析，CLI 确认 openai-developers@openai-curated 已安装且 enabled。校验依赖 PyYAML 6.0.3 仅位于 data/tmp 隔离目录。安装不等于外部账户已连接或新增工具已在当前会话加载。",
+      "scope": "仅代理指令、skill、插件安装与本记录；未修改交易源码、生产配置/依赖、数据库、账户、全局模型默认值或权限；未重启交易服务、未创建 API 密钥、未恢复自动复盘。先前交易修复方案仍等待用户确认。",
+      "sources": [
+        "https://developers.openai.com/api/docs/guides/latest-model",
+        "https://learn.chatgpt.com/docs/agent-configuration/agents-md",
+        "https://learn.chatgpt.com/docs/plugins",
+        "https://github.com/openai/skills/tree/main/skills/.curated/gh-fix-ci"
+      ],
+      "status": "配置与安装校验完成；新增 skill 下轮可用，插件新增工具在新会话加载并按需连接。"
+    },
+    {
       "id": "20260906-historical-writeoff-review-label",
       "recorded_at": "2026-09-06T05:40:00Z",
       "title": "让历史核销证据疑点在结果与交易历史中可见",
