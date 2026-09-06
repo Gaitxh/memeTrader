@@ -1,0 +1,252 @@
+{
+  "cutoff": "2026-09-06T19:59:50.320792+00:00",
+  "positions": 72,
+  "unique_tokens": 10,
+  "cohorts": 11,
+  "summary": [
+    {
+      "arm": "round2_chase_candidate_v1",
+      "buy": 5,
+      "sell": 2,
+      "writeoff": 0,
+      "open": 3,
+      "terminal": 2,
+      "realized": 0.5926421245921141,
+      "cash": 985.5926421245921
+    },
+    {
+      "arm": "round2_chase_control_v1",
+      "buy": 7,
+      "sell": 3,
+      "writeoff": 0,
+      "open": 4,
+      "terminal": 3,
+      "realized": -0.5380310229803733,
+      "cash": 979.4619689770196
+    },
+    {
+      "arm": "round2_giveback_duration_candidate_v1",
+      "buy": 7,
+      "sell": 3,
+      "writeoff": 0,
+      "open": 4,
+      "terminal": 3,
+      "realized": -0.5380310229803733,
+      "cash": 979.4619689770196
+    },
+    {
+      "arm": "round2_giveback_duration_control_v1",
+      "buy": 7,
+      "sell": 3,
+      "writeoff": 0,
+      "open": 4,
+      "terminal": 3,
+      "realized": -0.5380310229803733,
+      "cash": 979.4619689770196
+    },
+    {
+      "arm": "round2_response_exhaustion_candidate_v1",
+      "buy": 7,
+      "sell": 3,
+      "writeoff": 0,
+      "open": 4,
+      "terminal": 3,
+      "realized": -0.5380310229803733,
+      "cash": 979.4619689770196
+    },
+    {
+      "arm": "round2_response_exhaustion_control_v1",
+      "buy": 7,
+      "sell": 3,
+      "writeoff": 0,
+      "open": 4,
+      "terminal": 3,
+      "realized": -0.5380310229803733,
+      "cash": 979.4619689770196
+    },
+    {
+      "arm": "round2_runner_requalification_candidate_v1",
+      "buy": 6,
+      "sell": 3,
+      "writeoff": 0,
+      "open": 4,
+      "terminal": 2,
+      "realized": -0.8375464681650562,
+      "cash": 981.662453531835
+    },
+    {
+      "arm": "round2_runner_requalification_control_v1",
+      "buy": 6,
+      "sell": 3,
+      "writeoff": 0,
+      "open": 4,
+      "terminal": 2,
+      "realized": -0.8375464681650562,
+      "cash": 981.662453531835
+    },
+    {
+      "arm": "round2_slow_grace_candidate_v1",
+      "buy": 10,
+      "sell": 6,
+      "writeoff": 0,
+      "open": 4,
+      "terminal": 6,
+      "realized": -1.7172061250622015,
+      "cash": 978.2827938749379
+    },
+    {
+      "arm": "round2_slow_grace_control_v1",
+      "buy": 10,
+      "sell": 6,
+      "writeoff": 0,
+      "open": 4,
+      "terminal": 6,
+      "realized": -1.7172061250622015,
+      "cash": 978.2827938749379
+    }
+  ],
+  "errors": [],
+  "exit_reasons": {
+    "market_mark_hard_stop:dex_mark_paper_fill": 19,
+    "market_mark_trailing_exit:dex_mark_paper_fill": 8,
+    "round2_slow_grace_armed:dex_mark_paper_fill": 3,
+    "finalist_progress_clock_armed:dex_mark_paper_fill": 3
+  },
+  "chase_receipts": {
+    "28538": {
+      "outcomes": {
+        "round2_chase_candidate_v1": {
+          "allowed": true,
+          "budget": 0.04,
+          "price_drift": 0
+        },
+        "round2_chase_control_v1": {
+          "allowed": true,
+          "budget": null,
+          "price_drift": 0
+        }
+      },
+      "receipt_price_usd": 0.01398,
+      "receipt_snapshot_id": 1287249,
+      "received_at": "2026-09-06T19:52:30.977070Z",
+      "signal_price_usd": 0.01398,
+      "signal_snapshot_id": 1287128
+    },
+    "28540": {
+      "outcomes": {
+        "round2_chase_candidate_v1": {
+          "allowed": true,
+          "budget": 0.04,
+          "price_drift": 0
+        },
+        "round2_chase_control_v1": {
+          "allowed": true,
+          "budget": null,
+          "price_drift": 0
+        }
+      },
+      "receipt_price_usd": 0.00003981,
+      "receipt_snapshot_id": 1287277,
+      "received_at": "2026-09-06T19:52:32.157830Z",
+      "signal_price_usd": 0.00003981,
+      "signal_snapshot_id": 1287156
+    },
+    "28542": {
+      "outcomes": {
+        "round2_chase_candidate_v1": {
+          "allowed": true,
+          "budget": 0.04,
+          "price_drift": 0
+        },
+        "round2_chase_control_v1": {
+          "allowed": true,
+          "budget": null,
+          "price_drift": 0
+        }
+      },
+      "receipt_price_usd": 0.1176,
+      "receipt_snapshot_id": 1287281,
+      "received_at": "2026-09-06T19:52:32.317043Z",
+      "signal_price_usd": 0.1176,
+      "signal_snapshot_id": 1287159
+    },
+    "28548": {
+      "outcomes": {
+        "round2_chase_candidate_v1": {
+          "allowed": true,
+          "budget": 0.04,
+          "price_drift": 0
+        },
+        "round2_chase_control_v1": {
+          "allowed": true,
+          "budget": null,
+          "price_drift": 0
+        }
+      },
+      "receipt_price_usd": 0.00001288,
+      "receipt_snapshot_id": 1287325,
+      "received_at": "2026-09-06T19:52:35.087980Z",
+      "signal_price_usd": 0.00001288,
+      "signal_snapshot_id": 1287205
+    },
+    "28634": {
+      "outcomes": {
+        "round2_chase_candidate_v1": {
+          "allowed": false,
+          "budget": 0.04,
+          "price_drift": 0.16424294268605655
+        },
+        "round2_chase_control_v1": {
+          "allowed": true,
+          "budget": null,
+          "price_drift": 0.16424294268605655
+        }
+      },
+      "receipt_price_usd": 0.0001361,
+      "receipt_snapshot_id": 1287853,
+      "received_at": "2026-09-06T19:53:51.232874Z",
+      "signal_price_usd": 0.0001169,
+      "signal_snapshot_id": 1287668
+    },
+    "28895": {
+      "outcomes": {
+        "round2_chase_candidate_v1": {
+          "allowed": true,
+          "budget": 0.04,
+          "price_drift": 0
+        },
+        "round2_chase_control_v1": {
+          "allowed": true,
+          "budget": null,
+          "price_drift": 0
+        }
+      },
+      "receipt_price_usd": 0.0001905,
+      "receipt_snapshot_id": 1289762,
+      "received_at": "2026-09-06T19:58:41.914865Z",
+      "signal_price_usd": 0.0001905,
+      "signal_snapshot_id": 1289736
+    },
+    "28961": {
+      "outcomes": {
+        "round2_chase_candidate_v1": {
+          "allowed": false,
+          "budget": 0.04,
+          "price_drift": 0.18982229402261708
+        },
+        "round2_chase_control_v1": {
+          "allowed": true,
+          "budget": null,
+          "price_drift": 0.18982229402261708
+        }
+      },
+      "receipt_price_usd": 0.0001473,
+      "receipt_snapshot_id": 1290241,
+      "received_at": "2026-09-06T19:59:45.520027Z",
+      "signal_price_usd": 0.0001238,
+      "signal_snapshot_id": 1290135
+    }
+  },
+  "read_seconds": 0.02138310000009369,
+  "interpretation": "Natural Paper, not Live; short immature window. Account positions are repeated exposures, not iid opportunities. Errors[] covers only bounded ledger/PnL/frontier checks."
+}

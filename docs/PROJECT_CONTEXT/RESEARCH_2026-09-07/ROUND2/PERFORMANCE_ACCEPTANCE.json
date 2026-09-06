@@ -1,0 +1,3991 @@
+{
+  "before": {
+    "status": "ok",
+    "generated_at": "2026-09-06T19:51:45.62428Z",
+    "timing": {
+      "components": {
+        "capital_quote": {
+          "actual_interval_seconds": {
+            "p50": 2.0591593500030285,
+            "p95": 3.2392318699989118
+          },
+          "configured_interval_seconds": 2,
+          "duration_seconds": {
+            "p50": 0.000005449997843243182,
+            "p95": 0.08717855000177041
+          },
+          "failures": 0,
+          "interval_sample_count": 120,
+          "items": 0,
+          "sample_count": 120
+        },
+        "chain_meme_account_snapshot": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 0.1924177500004589,
+            "p95": 0.3811933949968077
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 0,
+          "sample_count": 120
+        },
+        "chain_meme_authoritative_events": {
+          "actual_interval_seconds": {
+            "p50": 120.09837739999784,
+            "p95": 120.30743715999998
+          },
+          "configured_interval_seconds": 120,
+          "duration_seconds": {
+            "p50": 0.9138578999954916,
+            "p95": 6.017580334998273
+          },
+          "failures": 0,
+          "interval_sample_count": 13,
+          "items": 0,
+          "sample_count": 14
+        },
+        "chain_meme_carried_market_marks": {
+          "actual_interval_seconds": {
+            "p50": 15.091103899998416,
+            "p95": 16.05576699000012
+          },
+          "configured_interval_seconds": 15,
+          "duration_seconds": {
+            "p50": 0.00041139999666484073,
+            "p95": 0.0018505350039049518
+          },
+          "failures": 0,
+          "interval_sample_count": 103,
+          "items": 0,
+          "sample_count": 104
+        },
+        "chain_meme_cohort_observer": {
+          "actual_interval_seconds": {
+            "p50": 10.089626050001243,
+            "p95": 11.643687409994524
+          },
+          "configured_interval_seconds": 10,
+          "duration_seconds": {
+            "p50": 3.348848250003357,
+            "p95": 10.416911129999782
+          },
+          "failures": 0,
+          "interval_sample_count": 120,
+          "items": 0,
+          "sample_count": 120
+        },
+        "chain_meme_entry_batch": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 0.012554149998322828,
+            "p95": 1.0312221200059866
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 1395,
+          "sample_count": 120
+        },
+        "chain_meme_extra_official": {
+          "actual_interval_seconds": {
+            "p50": 240.04526149999947,
+            "p95": 240.41889632499988
+          },
+          "configured_interval_seconds": 240,
+          "duration_seconds": {
+            "p50": 1.7312938000031863,
+            "p95": 5.498905600002761
+          },
+          "failures": 0,
+          "interval_sample_count": 6,
+          "items": 0,
+          "sample_count": 7
+        },
+        "chain_meme_market_marks": {
+          "actual_interval_seconds": {
+            "p50": 1.9972427499997139,
+            "p95": 8.341315530002248
+          },
+          "configured_interval_seconds": 1,
+          "duration_seconds": {
+            "p50": 1.7174501499976031,
+            "p95": 6.8349776549956
+          },
+          "failures": 0,
+          "interval_sample_count": 120,
+          "items": 0,
+          "sample_count": 120
+        },
+        "chain_meme_native_launch": {
+          "actual_interval_seconds": {
+            "p50": 30.077291599998716,
+            "p95": 31.035857150000083
+          },
+          "configured_interval_seconds": 30,
+          "duration_seconds": {
+            "p50": 1.7069758999969054,
+            "p95": 8.788682929999773
+          },
+          "failures": 0,
+          "interval_sample_count": 51,
+          "items": 0,
+          "sample_count": 52
+        },
+        "chain_meme_pattern_narrative": {
+          "actual_interval_seconds": {
+            "p50": 60.13047010000446,
+            "p95": 61.140403080004035
+          },
+          "configured_interval_seconds": 60,
+          "duration_seconds": {
+            "p50": 1.2186514499990153,
+            "p95": 7.344203849999758
+          },
+          "failures": 0,
+          "interval_sample_count": 25,
+          "items": 0,
+          "sample_count": 26
+        },
+        "chain_meme_pattern_observer": {
+          "actual_interval_seconds": {
+            "p50": 15.01500909999595,
+            "p95": 20.115174019999536
+          },
+          "configured_interval_seconds": 15,
+          "duration_seconds": {
+            "p50": 9.301880750001146,
+            "p95": 19.87766673499609
+          },
+          "failures": 0,
+          "interval_sample_count": 99,
+          "items": 0,
+          "sample_count": 100
+        },
+        "chain_meme_pattern_participation": {
+          "actual_interval_seconds": {
+            "p50": 15.097210899999482,
+            "p95": 16.055778170002668
+          },
+          "configured_interval_seconds": 15,
+          "duration_seconds": {
+            "p50": 4.025179199998092,
+            "p95": 10.932446589995374
+          },
+          "failures": 0,
+          "interval_sample_count": 102,
+          "items": 0,
+          "sample_count": 103
+        },
+        "chain_meme_pattern_pools": {
+          "actual_interval_seconds": {
+            "p50": 15.097612599998683,
+            "p95": 16.05524952999767
+          },
+          "configured_interval_seconds": 15,
+          "duration_seconds": {
+            "p50": 5.094220600003609,
+            "p95": 14.27342765999856
+          },
+          "failures": 0,
+          "interval_sample_count": 102,
+          "items": 0,
+          "sample_count": 103
+        },
+        "chain_meme_trader": {
+          "actual_interval_seconds": {
+            "p50": 1.0744494999999006,
+            "p95": 1.5303455049997863
+          },
+          "configured_interval_seconds": 1,
+          "duration_seconds": {
+            "p50": 0.023252899998624343,
+            "p95": 1.2402734550018064
+          },
+          "failures": 0,
+          "interval_sample_count": 120,
+          "items": 0,
+          "sample_count": 120
+        },
+        "chain_meme_v22_vault_shadow_enroll": {
+          "actual_interval_seconds": {
+            "p50": 15.096088050002436,
+            "p95": 16.055718100000377
+          },
+          "configured_interval_seconds": 15,
+          "duration_seconds": {
+            "p50": 0.003942700001061894,
+            "p95": 0.33746735000240724
+          },
+          "failures": 0,
+          "interval_sample_count": 102,
+          "items": 0,
+          "sample_count": 103
+        },
+        "chain_meme_wsol_reference": {
+          "actual_interval_seconds": {
+            "p50": 5.062396249999438,
+            "p95": 6.159069799996723
+          },
+          "configured_interval_seconds": 5,
+          "duration_seconds": {
+            "p50": 0.00001875000452855602,
+            "p95": 2.0728777700001935
+          },
+          "failures": 0,
+          "interval_sample_count": 120,
+          "items": 0,
+          "sample_count": 120
+        },
+        "chain_universe_outcomes": {
+          "actual_interval_seconds": {
+            "p50": 30.04554569999891,
+            "p95": 31.109861249999085
+          },
+          "configured_interval_seconds": 30,
+          "duration_seconds": {
+            "p50": 1.3624414000005345,
+            "p95": 8.997203894999616
+          },
+          "failures": 0,
+          "interval_sample_count": 51,
+          "items": 0,
+          "sample_count": 52
+        },
+        "cohort_passive_compute": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 3.348807399997895,
+            "p95": 10.41684853999722
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 989,
+          "sample_count": 120
+        },
+        "complementary_market_data": {
+          "actual_interval_seconds": {
+            "p50": 10.0755390000013,
+            "p95": 10.950235939997947
+          },
+          "configured_interval_seconds": 10,
+          "duration_seconds": {
+            "p50": 0.043950700001005316,
+            "p95": 4.728901419998143
+          },
+          "failures": 0,
+          "interval_sample_count": 120,
+          "items": 0,
+          "sample_count": 120
+        },
+        "flat_compression_breakout_shadow": {
+          "actual_interval_seconds": {
+            "p50": 5.146820549998665,
+            "p95": 24.59313292999941
+          },
+          "configured_interval_seconds": 5,
+          "duration_seconds": {
+            "p50": 3.019208699999581,
+            "p95": 24.38101538000301
+          },
+          "failures": 0,
+          "interval_sample_count": 120,
+          "items": 0,
+          "sample_count": 120
+        },
+        "held_apply_exit": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 0.04042899999694782,
+            "p95": 0.05891498499804583
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 36564,
+          "sample_count": 120
+        },
+        "held_fetch": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 1.0704469500014966,
+            "p95": 3.503098400003362
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 86894,
+          "sample_count": 120
+        },
+        "multichain_meme_data": {
+          "actual_interval_seconds": {
+            "p50": 90.03640779999841,
+            "p95": 90.21120023999829
+          },
+          "configured_interval_seconds": 90,
+          "duration_seconds": {
+            "p50": 34.28829279999627,
+            "p95": 39.285789465001656
+          },
+          "failures": 0,
+          "interval_sample_count": 17,
+          "items": 0,
+          "sample_count": 18
+        },
+        "observer_apply_exit": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 0.004721400000562426,
+            "p95": 0.006876049999846145
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 90,
+          "sample_count": 27
+        },
+        "observer_fetch_with_wait": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 2.03674769999634,
+            "p95": 6.638621310000599
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 90,
+          "sample_count": 27
+        },
+        "pattern_token_compute": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 0.03732915000000503,
+            "p95": 0.05696989499956544
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 11628,
+          "sample_count": 120
+        },
+        "pregrad_watch": {
+          "actual_interval_seconds": {
+            "p50": 30.077292400004808,
+            "p95": 31.0358578499945
+          },
+          "configured_interval_seconds": 30,
+          "duration_seconds": {
+            "p50": 1.9455058999992616,
+            "p95": 9.609158734998344
+          },
+          "failures": 0,
+          "interval_sample_count": 51,
+          "items": 0,
+          "sample_count": 52
+        }
+      },
+      "generated_at": "2026-09-06T19:51:38.114381Z",
+      "held_retrieval": {
+        "bucket_seconds": 10,
+        "points": [
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 22,
+                "token_attempts": 24,
+                "weighted_seconds": 68.47646879995591
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 9,
+                "token_attempts": 97,
+                "weighted_seconds": 245.8518285998798
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 129,
+                "token_attempts": 321,
+                "weighted_seconds": 436.4988434002371
+              }
+            },
+            "observed_at": "2026-09-07T03:31:40+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 33,
+                "token_attempts": 36,
+                "weighted_seconds": 120.6737579999899
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 12,
+                "token_attempts": 144,
+                "weighted_seconds": 430.8390300000028
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 103,
+                "token_attempts": 244,
+                "weighted_seconds": 272.45880479977495
+              }
+            },
+            "observed_at": "2026-09-07T03:31:50+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 44,
+                "token_attempts": 48,
+                "weighted_seconds": 112.7980619999289
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 16,
+                "token_attempts": 192,
+                "weighted_seconds": 397.4502384000225
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 175,
+                "token_attempts": 431,
+                "weighted_seconds": 467.41624170063733
+              }
+            },
+            "observed_at": "2026-09-07T03:32:00+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 44,
+                "token_attempts": 48,
+                "weighted_seconds": 103.4839476000052
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 16,
+                "token_attempts": 192,
+                "weighted_seconds": 331.05438480000885
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 176,
+                "token_attempts": 432,
+                "weighted_seconds": 366.43129979986406
+              }
+            },
+            "observed_at": "2026-09-07T03:32:10+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 33,
+                "token_attempts": 36,
+                "weighted_seconds": 87.1054716000217
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 16,
+                "token_attempts": 192,
+                "weighted_seconds": 273.17887319996953
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 159,
+                "token_attempts": 402,
+                "weighted_seconds": 265.8304734002886
+              }
+            },
+            "observed_at": "2026-09-07T03:32:20+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 33,
+                "token_attempts": 36,
+                "weighted_seconds": 106.08903000000282
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 8,
+                "token_attempts": 96,
+                "weighted_seconds": 316.61400300002424
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 129,
+                "token_attempts": 321,
+                "weighted_seconds": 608.8044533004868
+              }
+            },
+            "observed_at": "2026-09-07T03:32:30+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 44,
+                "token_attempts": 48,
+                "weighted_seconds": 98.90672999990056
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 18,
+                "token_attempts": 222,
+                "weighted_seconds": 337.6359300002223
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 172,
+                "token_attempts": 428,
+                "weighted_seconds": 291.91545019994373
+              }
+            },
+            "observed_at": "2026-09-07T03:32:40+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 55,
+                "token_attempts": 60,
+                "weighted_seconds": 121.93773839995265
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 18,
+                "token_attempts": 210,
+                "weighted_seconds": 353.44115760026034
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 172,
+                "token_attempts": 416,
+                "weighted_seconds": 400.14911360006954
+              }
+            },
+            "observed_at": "2026-09-07T03:32:50+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 11,
+                "token_attempts": 12,
+                "weighted_seconds": 53.107449600007385
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 4,
+                "token_attempts": 39,
+                "weighted_seconds": 143.8410132000572
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 65,
+                "token_attempts": 164,
+                "weighted_seconds": 287.90302739948675
+              }
+            },
+            "observed_at": "2026-09-07T03:33:00+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 21,
+                "token_attempts": 23,
+                "weighted_seconds": 115.02194889998646
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 6,
+                "token_attempts": 74,
+                "weighted_seconds": 297.689895800082
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 64,
+                "token_attempts": 160,
+                "weighted_seconds": 435.71995379995496
+              }
+            },
+            "observed_at": "2026-09-07T03:33:10+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 33,
+                "token_attempts": 36,
+                "weighted_seconds": 96.13809239992406
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 9,
+                "token_attempts": 108,
+                "weighted_seconds": 267.0461304000055
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 143,
+                "token_attempts": 384,
+                "weighted_seconds": 406.0277250002255
+              }
+            },
+            "observed_at": "2026-09-07T03:33:20+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 41,
+                "token_attempts": 45,
+                "weighted_seconds": 102.14266060000227
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 12,
+                "token_attempts": 144,
+                "weighted_seconds": 256.2013956001756
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 144,
+                "token_attempts": 372,
+                "weighted_seconds": 330.85484760011605
+              }
+            },
+            "observed_at": "2026-09-07T03:33:30+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 30,
+                "token_attempts": 33,
+                "weighted_seconds": 66.73591540009511
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 12,
+                "token_attempts": 144,
+                "weighted_seconds": 241.11177780025173
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 160,
+                "token_attempts": 428,
+                "weighted_seconds": 344.637434299766
+              }
+            },
+            "observed_at": "2026-09-07T03:33:40+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 40,
+                "token_attempts": 44,
+                "weighted_seconds": 115.42435739995562
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 9,
+                "token_attempts": 108,
+                "weighted_seconds": 224.66589659983583
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 155,
+                "token_attempts": 381,
+                "weighted_seconds": 470.7326840999158
+              }
+            },
+            "observed_at": "2026-09-07T03:33:50+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 30,
+                "token_attempts": 33,
+                "weighted_seconds": 67.46465880000324
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 12,
+                "token_attempts": 144,
+                "weighted_seconds": 246.52828079997562
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 125,
+                "token_attempts": 368,
+                "weighted_seconds": 325.6165225995137
+              }
+            },
+            "observed_at": "2026-09-07T03:34:00+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 50,
+                "token_attempts": 55,
+                "weighted_seconds": 115.14834650000557
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 12,
+                "token_attempts": 144,
+                "weighted_seconds": 201.86891940026544
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 199,
+                "token_attempts": 518,
+                "weighted_seconds": 274.1299006000627
+              }
+            },
+            "observed_at": "2026-09-07T03:34:10+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 40,
+                "token_attempts": 44,
+                "weighted_seconds": 92.26616409985581
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 12,
+                "token_attempts": 144,
+                "weighted_seconds": 214.5669402002095
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 156,
+                "token_attempts": 386,
+                "weighted_seconds": 334.60104869987845
+              }
+            },
+            "observed_at": "2026-09-07T03:34:20+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 22,
+                "weighted_seconds": 44.85378370000399
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 6,
+                "token_attempts": 59,
+                "weighted_seconds": 107.65115650004736
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 80,
+                "token_attempts": 206,
+                "weighted_seconds": 306.7002646998517
+              }
+            },
+            "observed_at": "2026-09-07T03:34:30+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 40,
+                "token_attempts": 44,
+                "weighted_seconds": 117.76308829990012
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 12,
+                "token_attempts": 92,
+                "weighted_seconds": 272.83007789978
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 125,
+                "token_attempts": 376,
+                "weighted_seconds": 542.7395042002754
+              }
+            },
+            "observed_at": "2026-09-07T03:34:40+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 30,
+                "token_attempts": 33,
+                "weighted_seconds": 68.26280339989171
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 9,
+                "token_attempts": 69,
+                "weighted_seconds": 163.00050549990556
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 151,
+                "token_attempts": 420,
+                "weighted_seconds": 505.6195499997557
+              }
+            },
+            "observed_at": "2026-09-07T03:34:50+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 50,
+                "token_attempts": 55,
+                "weighted_seconds": 74.84870029997546
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 15,
+                "token_attempts": 115,
+                "weighted_seconds": 186.6878558999524
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 209,
+                "token_attempts": 570,
+                "weighted_seconds": 424.7082130001945
+              }
+            },
+            "observed_at": "2026-09-07T03:35:00+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 47,
+                "token_attempts": 52,
+                "weighted_seconds": 83.33579110002029
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 18,
+                "token_attempts": 138,
+                "weighted_seconds": 214.82146969989844
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 200,
+                "token_attempts": 550,
+                "weighted_seconds": 296.3289249999798
+              }
+            },
+            "observed_at": "2026-09-07T03:35:10+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 45,
+                "token_attempts": 50,
+                "weighted_seconds": 98.61033900007897
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 12,
+                "token_attempts": 92,
+                "weighted_seconds": 160.16722290010512
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 160,
+                "token_attempts": 440,
+                "weighted_seconds": 383.7218610000127
+              }
+            },
+            "observed_at": "2026-09-07T03:35:20+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 27,
+                "token_attempts": 30,
+                "weighted_seconds": 44.10021500007133
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 9,
+                "token_attempts": 69,
+                "weighted_seconds": 82.80819029991108
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 151,
+                "token_attempts": 390,
+                "weighted_seconds": 264.6001980004803
+              }
+            },
+            "observed_at": "2026-09-07T03:35:30+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 36,
+                "token_attempts": 40,
+                "weighted_seconds": 78.2604299999366
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 12,
+                "token_attempts": 92,
+                "weighted_seconds": 215.73703069975454
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 160,
+                "token_attempts": 468,
+                "weighted_seconds": 497.0718345997666
+              }
+            },
+            "observed_at": "2026-09-07T03:35:40+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 36,
+                "token_attempts": 40,
+                "weighted_seconds": 84.80457099991327
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 14,
+                "token_attempts": 94,
+                "weighted_seconds": 119.96377489990846
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 129,
+                "token_attempts": 342,
+                "weighted_seconds": 518.4188012002633
+              }
+            },
+            "observed_at": "2026-09-07T03:35:50+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 9,
+                "token_attempts": 10,
+                "weighted_seconds": 27.246545999951195
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 8,
+                "token_attempts": 48,
+                "weighted_seconds": 8.638716000015847
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 51,
+                "token_attempts": 135,
+                "weighted_seconds": 210.85777349995624
+              }
+            },
+            "observed_at": "2026-09-07T03:36:00+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 22,
+                "weighted_seconds": 106.4603603999276
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 8,
+                "token_attempts": 48,
+                "weighted_seconds": 44.91210720007075
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 80,
+                "token_attempts": 216,
+                "weighted_seconds": 806.4244427999802
+              }
+            },
+            "observed_at": "2026-09-07T03:36:10+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 44,
+                "token_attempts": 48,
+                "weighted_seconds": 105.21200400000089
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 12,
+                "token_attempts": 72,
+                "weighted_seconds": 25.87627680011792
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 149,
+                "token_attempts": 398,
+                "weighted_seconds": 454.85870009980135
+              }
+            },
+            "observed_at": "2026-09-07T03:36:20+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 44,
+                "token_attempts": 48,
+                "weighted_seconds": 94.42408559995238
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 120,
+                "weighted_seconds": 59.372030400205404
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 189,
+                "token_attempts": 518,
+                "weighted_seconds": 654.422062999758
+              }
+            },
+            "observed_at": "2026-09-07T03:36:30+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 44,
+                "token_attempts": 48,
+                "weighted_seconds": 98.65625639990321
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 16,
+                "token_attempts": 96,
+                "weighted_seconds": 33.79097759997239
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 171,
+                "token_attempts": 445,
+                "weighted_seconds": 568.2465193998578
+              }
+            },
+            "observed_at": "2026-09-07T03:36:40+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 55,
+                "token_attempts": 60,
+                "weighted_seconds": 110.10796560000745
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 16,
+                "token_attempts": 96,
+                "weighted_seconds": 27.036350400012452
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 160,
+                "token_attempts": 428,
+                "weighted_seconds": 423.3674870993709
+              }
+            },
+            "observed_at": "2026-09-07T03:36:50+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 55,
+                "token_attempts": 60,
+                "weighted_seconds": 96.93490919991746
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 120,
+                "weighted_seconds": 41.99938080017455
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 200,
+                "token_attempts": 535,
+                "weighted_seconds": 534.0360514995045
+              }
+            },
+            "observed_at": "2026-09-07T03:37:00+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 44,
+                "token_attempts": 48,
+                "weighted_seconds": 90.22270439993008
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 120,
+                "weighted_seconds": 44.029610399971716
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 181,
+                "token_attempts": 488,
+                "weighted_seconds": 524.0055385994347
+              }
+            },
+            "observed_at": "2026-09-07T03:37:10+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 55,
+                "token_attempts": 60,
+                "weighted_seconds": 94.57655519995023
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 108,
+                "weighted_seconds": 33.499774800104205
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 198,
+                "token_attempts": 535,
+                "weighted_seconds": 459.2502026004222
+              }
+            },
+            "observed_at": "2026-09-07T03:37:20+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 22,
+                "token_attempts": 24,
+                "weighted_seconds": 46.03847520001
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 8,
+                "token_attempts": 36,
+                "weighted_seconds": 63.020820600067964
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 80,
+                "token_attempts": 214,
+                "weighted_seconds": 454.4865948994484
+              }
+            },
+            "observed_at": "2026-09-07T03:37:30+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 11,
+                "token_attempts": 12,
+                "weighted_seconds": 108.95772239996586
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 4,
+                "token_attempts": 19,
+                "weighted_seconds": 88.47656470006041
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 56,
+                "token_attempts": 109,
+                "weighted_seconds": 609.9156437000856
+              }
+            },
+            "observed_at": "2026-09-07T03:37:40+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 52,
+                "token_attempts": 57,
+                "weighted_seconds": 152.59167639987572
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 16,
+                "token_attempts": 76,
+                "weighted_seconds": 115.12943980014097
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 163,
+                "token_attempts": 462,
+                "weighted_seconds": 682.7150721003491
+              }
+            },
+            "observed_at": "2026-09-07T03:37:50+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 30,
+                "token_attempts": 33,
+                "weighted_seconds": 80.08655710005405
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 16,
+                "token_attempts": 76,
+                "weighted_seconds": 137.79612060018553
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 157,
+                "token_attempts": 417,
+                "weighted_seconds": 439.02889139986655
+              }
+            },
+            "observed_at": "2026-09-07T03:38:00+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 50,
+                "token_attempts": 55,
+                "weighted_seconds": 96.35802770013106
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 16,
+                "token_attempts": 76,
+                "weighted_seconds": 120.28678080007376
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 196,
+                "token_attempts": 510,
+                "weighted_seconds": 387.5585564997891
+              }
+            },
+            "observed_at": "2026-09-07T03:38:10+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 50,
+                "token_attempts": 55,
+                "weighted_seconds": 85.01799129999563
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 95,
+                "weighted_seconds": 172.48543710006925
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 164,
+                "token_attempts": 435,
+                "weighted_seconds": 240.37841400026082
+              }
+            },
+            "observed_at": "2026-09-07T03:38:20+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 50,
+                "token_attempts": 55,
+                "weighted_seconds": 69.08152680008789
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 95,
+                "weighted_seconds": 156.00717600013013
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 196,
+                "token_attempts": 521,
+                "weighted_seconds": 283.5349591996419
+              }
+            },
+            "observed_at": "2026-09-07T03:38:30+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 40,
+                "token_attempts": 44,
+                "weighted_seconds": 68.4238621000477
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 16,
+                "token_attempts": 76,
+                "weighted_seconds": 139.73402559999522
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 193,
+                "token_attempts": 518,
+                "weighted_seconds": 506.0604479003305
+              }
+            },
+            "observed_at": "2026-09-07T03:38:40+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 50,
+                "token_attempts": 55,
+                "weighted_seconds": 75.18973989990627
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 95,
+                "weighted_seconds": 175.85364310009754
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 152,
+                "token_attempts": 410,
+                "weighted_seconds": 227.08268230014073
+              }
+            },
+            "observed_at": "2026-09-07T03:38:50+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 22,
+                "weighted_seconds": 81.29992199991102
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 8,
+                "token_attempts": 38,
+                "weighted_seconds": 174.93967469999188
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 76,
+                "token_attempts": 202,
+                "weighted_seconds": 326.79213200007507
+              }
+            },
+            "observed_at": "2026-09-07T03:39:00+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 22,
+                "token_attempts": 23,
+                "weighted_seconds": 100.56713300005504
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 4,
+                "token_attempts": 19,
+                "weighted_seconds": 119.79366810009378
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 78,
+                "token_attempts": 210,
+                "weighted_seconds": 481.5088889997787
+              }
+            },
+            "observed_at": "2026-09-07T03:39:10+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 44,
+                "token_attempts": 44,
+                "weighted_seconds": 67.3599168000801
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 97,
+                "weighted_seconds": 204.42945989988948
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 156,
+                "token_attempts": 420,
+                "weighted_seconds": 352.5530835002792
+              }
+            },
+            "observed_at": "2026-09-07T03:39:20+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 33,
+                "token_attempts": 33,
+                "weighted_seconds": 66.64312710003287
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 12,
+                "token_attempts": 57,
+                "weighted_seconds": 142.55484160009655
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 158,
+                "token_attempts": 408,
+                "weighted_seconds": 461.891243999984
+              }
+            },
+            "observed_at": "2026-09-07T03:39:30+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 51,
+                "token_attempts": 51,
+                "weighted_seconds": 79.22389070007921
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 95,
+                "weighted_seconds": 169.4399632002096
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 162,
+                "token_attempts": 440,
+                "weighted_seconds": 301.56326119907317
+              }
+            },
+            "observed_at": "2026-09-07T03:39:40+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 40,
+                "token_attempts": 40,
+                "weighted_seconds": 69.2455379999592
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 16,
+                "token_attempts": 76,
+                "weighted_seconds": 155.5249009001418
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 198,
+                "token_attempts": 514,
+                "weighted_seconds": 438.56586660027097
+              }
+            },
+            "observed_at": "2026-09-07T03:39:50+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 40,
+                "token_attempts": 40,
+                "weighted_seconds": 62.831815000026836
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 13,
+                "token_attempts": 73,
+                "weighted_seconds": 146.84896910004318
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 162,
+                "token_attempts": 440,
+                "weighted_seconds": 384.2568022000778
+              }
+            },
+            "observed_at": "2026-09-07T03:40:00+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 51,
+                "token_attempts": 51,
+                "weighted_seconds": 66.73701549991529
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 15,
+                "token_attempts": 90,
+                "weighted_seconds": 149.73631559999194
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 160,
+                "token_attempts": 424,
+                "weighted_seconds": 337.5591312002798
+              }
+            },
+            "observed_at": "2026-09-07T03:40:10+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 66,
+                "token_attempts": 66,
+                "weighted_seconds": 73.089828900047
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 15,
+                "token_attempts": 90,
+                "weighted_seconds": 138.0278934000089
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 240,
+                "token_attempts": 636,
+                "weighted_seconds": 375.0804378002358
+              }
+            },
+            "observed_at": "2026-09-07T03:40:20+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 22,
+                "token_attempts": 22,
+                "weighted_seconds": 70.33366780003416
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 6,
+                "token_attempts": 35,
+                "weighted_seconds": 78.61460439991788
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 80,
+                "token_attempts": 212,
+                "weighted_seconds": 309.96557960033533
+              }
+            },
+            "observed_at": "2026-09-07T03:40:30+08:00"
+          },
+          {
+            "chains": {
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 3,
+                "token_attempts": 17,
+                "weighted_seconds": 110.03857069990045
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 31,
+                "token_attempts": 90,
+                "weighted_seconds": 442.84492500009947
+              }
+            },
+            "observed_at": "2026-09-07T03:40:40+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 68,
+                "token_attempts": 76,
+                "weighted_seconds": 271.1128410997844
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 12,
+                "token_attempts": 68,
+                "weighted_seconds": 240.1649330000364
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 129,
+                "token_attempts": 314,
+                "weighted_seconds": 339.057627600283
+              }
+            },
+            "observed_at": "2026-09-07T03:40:50+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 68,
+                "token_attempts": 76,
+                "weighted_seconds": 135.26518379990011
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 15,
+                "token_attempts": 85,
+                "weighted_seconds": 132.78747939996538
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 200,
+                "token_attempts": 505,
+                "weighted_seconds": 452.3881453007343
+              }
+            },
+            "observed_at": "2026-09-07T03:41:00+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 85,
+                "token_attempts": 95,
+                "weighted_seconds": 182.29370260012365
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 12,
+                "token_attempts": 68,
+                "weighted_seconds": 113.74119450005674
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 160,
+                "token_attempts": 404,
+                "weighted_seconds": 331.63217720005196
+              }
+            },
+            "observed_at": "2026-09-07T03:41:10+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 68,
+                "token_attempts": 76,
+                "weighted_seconds": 136.98877260003792
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 15,
+                "token_attempts": 85,
+                "weighted_seconds": 116.8664014000824
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 200,
+                "token_attempts": 505,
+                "weighted_seconds": 326.18134579960315
+              }
+            },
+            "observed_at": "2026-09-07T03:41:20+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 85,
+                "token_attempts": 95,
+                "weighted_seconds": 147.80914529999427
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 12,
+                "token_attempts": 68,
+                "weighted_seconds": 86.61196210001799
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 186,
+                "token_attempts": 464,
+                "weighted_seconds": 262.56199300004664
+              }
+            },
+            "observed_at": "2026-09-07T03:41:30+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 85,
+                "token_attempts": 95,
+                "weighted_seconds": 159.24334529993212
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 15,
+                "token_attempts": 85,
+                "weighted_seconds": 158.90602950011817
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 174,
+                "token_attempts": 445,
+                "weighted_seconds": 374.3509821999978
+              }
+            },
+            "observed_at": "2026-09-07T03:41:40+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 69,
+                "token_attempts": 77,
+                "weighted_seconds": 121.39078500006144
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 12,
+                "token_attempts": 68,
+                "weighted_seconds": 117.63416559994948
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 160,
+                "token_attempts": 404,
+                "weighted_seconds": 378.6758526003978
+              }
+            },
+            "observed_at": "2026-09-07T03:41:50+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 36,
+                "token_attempts": 40,
+                "weighted_seconds": 31.74933799993596
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 6,
+                "token_attempts": 34,
+                "weighted_seconds": 124.46994210002595
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 80,
+                "token_attempts": 202,
+                "weighted_seconds": 390.1664709002507
+              }
+            },
+            "observed_at": "2026-09-07T03:42:00+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 36,
+                "token_attempts": 40,
+                "weighted_seconds": 70.51483599992935
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 7,
+                "token_attempts": 35,
+                "weighted_seconds": 113.56588790000387
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 82,
+                "token_attempts": 200,
+                "weighted_seconds": 751.5346559993486
+              }
+            },
+            "observed_at": "2026-09-07T03:42:10+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 72,
+                "token_attempts": 80,
+                "weighted_seconds": 52.358408000000054
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 16,
+                "token_attempts": 72,
+                "weighted_seconds": 73.2985703999293
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 164,
+                "token_attempts": 400,
+                "weighted_seconds": 666.1393249999674
+              }
+            },
+            "observed_at": "2026-09-07T03:42:20+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 90,
+                "token_attempts": 100,
+                "weighted_seconds": 55.02004599999054
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 90,
+                "weighted_seconds": 25.369284600194078
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 205,
+                "token_attempts": 500,
+                "weighted_seconds": 578.0640440004208
+              }
+            },
+            "observed_at": "2026-09-07T03:42:30+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 90,
+                "token_attempts": 100,
+                "weighted_seconds": 64.64655200004927
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 90,
+                "weighted_seconds": 34.06115699997463
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 186,
+                "token_attempts": 430,
+                "weighted_seconds": 562.7948180003295
+              }
+            },
+            "observed_at": "2026-09-07T03:42:40+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 90,
+                "token_attempts": 100,
+                "weighted_seconds": 45.193966000224464
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 90,
+                "weighted_seconds": 47.77629119997437
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 205,
+                "token_attempts": 500,
+                "weighted_seconds": 621.1407920000056
+              }
+            },
+            "observed_at": "2026-09-07T03:42:50+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 69,
+                "token_attempts": 77,
+                "weighted_seconds": 101.32875190006598
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 90,
+                "weighted_seconds": 30.7186055999191
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 183,
+                "token_attempts": 470,
+                "weighted_seconds": 542.3366300005728
+              }
+            },
+            "observed_at": "2026-09-07T03:43:00+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 68,
+                "token_attempts": 76,
+                "weighted_seconds": 149.80216930007737
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 16,
+                "token_attempts": 72,
+                "weighted_seconds": 21.182747399783693
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 164,
+                "token_attempts": 400,
+                "weighted_seconds": 393.3649640002841
+              }
+            },
+            "observed_at": "2026-09-07T03:43:10+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 85,
+                "token_attempts": 95,
+                "weighted_seconds": 163.12865149983554
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 16,
+                "token_attempts": 72,
+                "weighted_seconds": 72.2196702000947
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 204,
+                "token_attempts": 499,
+                "weighted_seconds": 446.359772599586
+              }
+            },
+            "observed_at": "2026-09-07T03:43:20+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 34,
+                "token_attempts": 38,
+                "weighted_seconds": 167.34813159993791
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 8,
+                "token_attempts": 36,
+                "weighted_seconds": 112.16408400009095
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 80,
+                "token_attempts": 197,
+                "weighted_seconds": 343.0780758002729
+              }
+            },
+            "observed_at": "2026-09-07T03:43:30+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 32,
+                "token_attempts": 36,
+                "weighted_seconds": 135.7313975999714
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 8,
+                "token_attempts": 37,
+                "weighted_seconds": 111.25471180000022
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 103,
+                "token_attempts": 234,
+                "weighted_seconds": 498.94843560032314
+              }
+            },
+            "observed_at": "2026-09-07T03:43:40+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 64,
+                "token_attempts": 72,
+                "weighted_seconds": 133.21547459998692
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 16,
+                "token_attempts": 76,
+                "weighted_seconds": 123.7654813001136
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 184,
+                "token_attempts": 474,
+                "weighted_seconds": 508.1478028001002
+              }
+            },
+            "observed_at": "2026-09-07T03:43:50+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 96,
+                "token_attempts": 108,
+                "weighted_seconds": 171.96702659978473
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 24,
+                "token_attempts": 114,
+                "weighted_seconds": 155.9632993001651
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 205,
+                "token_attempts": 500,
+                "weighted_seconds": 265.568000000203
+              }
+            },
+            "observed_at": "2026-09-07T03:44:00+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 64,
+                "token_attempts": 72,
+                "weighted_seconds": 137.67920460015011
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 16,
+                "token_attempts": 76,
+                "weighted_seconds": 116.45069599991257
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 191,
+                "token_attempts": 460,
+                "weighted_seconds": 323.73650300040026
+              }
+            },
+            "observed_at": "2026-09-07T03:44:10+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 80,
+                "token_attempts": 90,
+                "weighted_seconds": 158.98435920003976
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 95,
+                "weighted_seconds": 141.73697140000877
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 178,
+                "token_attempts": 440,
+                "weighted_seconds": 395.1340460000938
+              }
+            },
+            "observed_at": "2026-09-07T03:44:20+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 80,
+                "token_attempts": 90,
+                "weighted_seconds": 133.62426360000973
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 95,
+                "weighted_seconds": 119.65173049981968
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 241,
+                "token_attempts": 590,
+                "weighted_seconds": 322.751629999766
+              }
+            },
+            "observed_at": "2026-09-07T03:44:30+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 80,
+                "token_attempts": 90,
+                "weighted_seconds": 164.01929399982328
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 95,
+                "weighted_seconds": 137.8287245998872
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 169,
+                "token_attempts": 410,
+                "weighted_seconds": 294.8893500002305
+              }
+            },
+            "observed_at": "2026-09-07T03:44:40+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 80,
+                "token_attempts": 90,
+                "weighted_seconds": 157.61179259995697
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 95,
+                "weighted_seconds": 139.6033435999925
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 205,
+                "token_attempts": 500,
+                "weighted_seconds": 366.08045999964816
+              }
+            },
+            "observed_at": "2026-09-07T03:44:50+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 64,
+                "token_attempts": 72,
+                "weighted_seconds": 126.73057680000784
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 95,
+                "weighted_seconds": 135.01658969994605
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 205,
+                "token_attempts": 500,
+                "weighted_seconds": 377.1618360008142
+              }
+            },
+            "observed_at": "2026-09-07T03:45:00+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 80,
+                "token_attempts": 90,
+                "weighted_seconds": 170.28736200011917
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 16,
+                "token_attempts": 76,
+                "weighted_seconds": 118.28557159987395
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 164,
+                "token_attempts": 400,
+                "weighted_seconds": 355.97562199975073
+              }
+            },
+            "observed_at": "2026-09-07T03:45:10+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 64,
+                "token_attempts": 72,
+                "weighted_seconds": 135.37447739990603
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 16,
+                "token_attempts": 76,
+                "weighted_seconds": 115.84159590012132
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 205,
+                "token_attempts": 497,
+                "weighted_seconds": 379.5215268000102
+              }
+            },
+            "observed_at": "2026-09-07T03:45:20+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 96,
+                "token_attempts": 108,
+                "weighted_seconds": 169.08724080004322
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 24,
+                "token_attempts": 114,
+                "weighted_seconds": 149.09572840006877
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 205,
+                "token_attempts": 495,
+                "weighted_seconds": 338.32372139971994
+              }
+            },
+            "observed_at": "2026-09-07T03:45:30+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 64,
+                "token_attempts": 72,
+                "weighted_seconds": 129.00624659993628
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 16,
+                "token_attempts": 76,
+                "weighted_seconds": 113.7820890000512
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 199,
+                "token_attempts": 486,
+                "weighted_seconds": 341.55555540067144
+              }
+            },
+            "observed_at": "2026-09-07T03:45:40+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 64,
+                "token_attempts": 72,
+                "weighted_seconds": 123.69799260016589
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 95,
+                "weighted_seconds": 142.67806990002282
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 170,
+                "token_attempts": 405,
+                "weighted_seconds": 354.8021082000341
+              }
+            },
+            "observed_at": "2026-09-07T03:45:50+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 80,
+                "token_attempts": 90,
+                "weighted_seconds": 169.44511320002493
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 16,
+                "token_attempts": 76,
+                "weighted_seconds": 100.7784319999264
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 205,
+                "token_attempts": 495,
+                "weighted_seconds": 318.25191269958304
+              }
+            },
+            "observed_at": "2026-09-07T03:46:00+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 80,
+                "token_attempts": 90,
+                "weighted_seconds": 155.54661480004143
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 95,
+                "weighted_seconds": 133.7710789001867
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 164,
+                "token_attempts": 396,
+                "weighted_seconds": 285.95980290033185
+              }
+            },
+            "observed_at": "2026-09-07T03:46:10+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 64,
+                "token_attempts": 72,
+                "weighted_seconds": 120.07578419992933
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 95,
+                "weighted_seconds": 141.62645980000525
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 205,
+                "token_attempts": 495,
+                "weighted_seconds": 386.6981427001374
+              }
+            },
+            "observed_at": "2026-09-07T03:46:20+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 48,
+                "token_attempts": 54,
+                "weighted_seconds": 176.48864460003097
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 4,
+                "token_attempts": 19,
+                "weighted_seconds": 29.161135400085186
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 82,
+                "token_attempts": 198,
+                "weighted_seconds": 277.9500000002663
+              }
+            },
+            "observed_at": "2026-09-07T03:46:30+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 17,
+                "token_attempts": 19,
+                "weighted_seconds": 157.75203720008722
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 8,
+                "token_attempts": 38,
+                "weighted_seconds": 306.07007659995725
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 40,
+                "token_attempts": 97,
+                "weighted_seconds": 515.473756299958
+              }
+            },
+            "observed_at": "2026-09-07T03:46:40+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 51,
+                "token_attempts": 57,
+                "weighted_seconds": 157.5130399999398
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 12,
+                "token_attempts": 57,
+                "weighted_seconds": 108.77336219980498
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 120,
+                "token_attempts": 291,
+                "weighted_seconds": 378.74372530027904
+              }
+            },
+            "observed_at": "2026-09-07T03:46:50+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 51,
+                "token_attempts": 57,
+                "weighted_seconds": 134.3713820000412
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 12,
+                "token_attempts": 57,
+                "weighted_seconds": 121.8659638999452
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 157,
+                "token_attempts": 381,
+                "weighted_seconds": 430.9135032004997
+              }
+            },
+            "observed_at": "2026-09-07T03:47:00+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 85,
+                "token_attempts": 95,
+                "weighted_seconds": 181.2831020999438
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 95,
+                "weighted_seconds": 158.47711139986495
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 163,
+                "token_attempts": 395,
+                "weighted_seconds": 313.8344225993642
+              }
+            },
+            "observed_at": "2026-09-07T03:47:10+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 85,
+                "token_attempts": 95,
+                "weighted_seconds": 156.78663580026478
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 95,
+                "weighted_seconds": 122.63309080003819
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 215,
+                "token_attempts": 515,
+                "weighted_seconds": 351.17786380048346
+              }
+            },
+            "observed_at": "2026-09-07T03:47:20+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 68,
+                "token_attempts": 76,
+                "weighted_seconds": 145.09606879993953
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 16,
+                "token_attempts": 76,
+                "weighted_seconds": 118.39439980005409
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 183,
+                "token_attempts": 448,
+                "weighted_seconds": 331.9514004002049
+              }
+            },
+            "observed_at": "2026-09-07T03:47:30+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 68,
+                "token_attempts": 76,
+                "weighted_seconds": 164.6164730999517
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 16,
+                "token_attempts": 76,
+                "weighted_seconds": 151.29217969999445
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 122,
+                "token_attempts": 298,
+                "weighted_seconds": 251.98850099986885
+              }
+            },
+            "observed_at": "2026-09-07T03:47:40+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 68,
+                "token_attempts": 76,
+                "weighted_seconds": 158.51268700007495
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 16,
+                "token_attempts": 76,
+                "weighted_seconds": 136.41350390017033
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 175,
+                "token_attempts": 418,
+                "weighted_seconds": 251.72806539984595
+              }
+            },
+            "observed_at": "2026-09-07T03:47:50+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 33,
+                "token_attempts": 37,
+                "weighted_seconds": 145.0178518000539
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 8,
+                "token_attempts": 38,
+                "weighted_seconds": 174.65695850011252
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 65,
+                "token_attempts": 164,
+                "weighted_seconds": 367.0779862999989
+              }
+            },
+            "observed_at": "2026-09-07T03:48:00+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 16,
+                "token_attempts": 18,
+                "weighted_seconds": 156.31593479998992
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 4,
+                "token_attempts": 19,
+                "weighted_seconds": 143.66742839992366
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 38,
+                "token_attempts": 97,
+                "weighted_seconds": 486.9198869000975
+              }
+            },
+            "observed_at": "2026-09-07T03:48:10+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 64,
+                "token_attempts": 72,
+                "weighted_seconds": 128.6677332000254
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 16,
+                "token_attempts": 80,
+                "weighted_seconds": 159.35405400014133
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 152,
+                "token_attempts": 376,
+                "weighted_seconds": 373.08752280026965
+              }
+            },
+            "observed_at": "2026-09-07T03:48:20+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 64,
+                "token_attempts": 72,
+                "weighted_seconds": 110.00624219997553
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 16,
+                "token_attempts": 80,
+                "weighted_seconds": 150.78888999996707
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 173,
+                "token_attempts": 436,
+                "weighted_seconds": 290.6261474003404
+              }
+            },
+            "observed_at": "2026-09-07T03:48:30+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 80,
+                "token_attempts": 90,
+                "weighted_seconds": 122.05297440002323
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 100,
+                "weighted_seconds": 160.942800000048
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 201,
+                "token_attempts": 498,
+                "weighted_seconds": 315.7257671999687
+              }
+            },
+            "observed_at": "2026-09-07T03:48:40+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 80,
+                "token_attempts": 90,
+                "weighted_seconds": 147.9401441999653
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 100,
+                "weighted_seconds": 167.4900140000682
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 163,
+                "token_attempts": 401,
+                "weighted_seconds": 347.2625006999442
+              }
+            },
+            "observed_at": "2026-09-07T03:48:50+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 80,
+                "token_attempts": 90,
+                "weighted_seconds": 110.87829000000784
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 25,
+                "token_attempts": 121,
+                "weighted_seconds": 164.84758850002981
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 180,
+                "token_attempts": 460,
+                "weighted_seconds": 282.94422680026037
+              }
+            },
+            "observed_at": "2026-09-07T03:49:00+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 64,
+                "token_attempts": 72,
+                "weighted_seconds": 167.82299819996115
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 15,
+                "token_attempts": 63,
+                "weighted_seconds": 66.14738549998583
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 128,
+                "token_attempts": 338,
+                "weighted_seconds": 406.2221430002828
+              }
+            },
+            "observed_at": "2026-09-07T03:49:10+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 64,
+                "token_attempts": 72,
+                "weighted_seconds": 130.59081359999254
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 84,
+                "weighted_seconds": 121.34885909983859
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 179,
+                "token_attempts": 458,
+                "weighted_seconds": 261.0858473998087
+              }
+            },
+            "observed_at": "2026-09-07T03:49:20+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 48,
+                "token_attempts": 54,
+                "weighted_seconds": 174.89516040004673
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 15,
+                "token_attempts": 63,
+                "weighted_seconds": 171.04354470015824
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 73,
+                "token_attempts": 186,
+                "weighted_seconds": 268.7918701998424
+              }
+            },
+            "observed_at": "2026-09-07T03:49:30+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 16,
+                "token_attempts": 18,
+                "weighted_seconds": 131.32733759997063
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 5,
+                "token_attempts": 21,
+                "weighted_seconds": 149.4030552000695
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 35,
+                "token_attempts": 93,
+                "weighted_seconds": 379.0776912001238
+              }
+            },
+            "observed_at": "2026-09-07T03:49:40+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 51,
+                "token_attempts": 57,
+                "weighted_seconds": 87.55517109995708
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 15,
+                "token_attempts": 75,
+                "weighted_seconds": 208.51591499995266
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 118,
+                "token_attempts": 295,
+                "weighted_seconds": 628.6089954004492
+              }
+            },
+            "observed_at": "2026-09-07T03:49:50+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 80,
+                "token_attempts": 90,
+                "weighted_seconds": 123.22585800015077
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 25,
+                "token_attempts": 125,
+                "weighted_seconds": 221.21539749987278
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 174,
+                "token_attempts": 470,
+                "weighted_seconds": 373.9814922000078
+              }
+            },
+            "observed_at": "2026-09-07T03:50:00+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 96,
+                "token_attempts": 108,
+                "weighted_seconds": 131.09795100001793
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 25,
+                "token_attempts": 125,
+                "weighted_seconds": 186.31772749995434
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 185,
+                "token_attempts": 468,
+                "weighted_seconds": 332.59333419968607
+              }
+            },
+            "observed_at": "2026-09-07T03:50:10+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 96,
+                "token_attempts": 108,
+                "weighted_seconds": 99.44753039968782
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 35,
+                "token_attempts": 175,
+                "weighted_seconds": 225.2367499999309
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 204,
+                "token_attempts": 528,
+                "weighted_seconds": 248.39378959966416
+              }
+            },
+            "observed_at": "2026-09-07T03:50:20+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 80,
+                "token_attempts": 90,
+                "weighted_seconds": 139.85559000002104
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 25,
+                "token_attempts": 125,
+                "weighted_seconds": 154.85920999999507
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 201,
+                "token_attempts": 500,
+                "weighted_seconds": 319.7459529998596
+              }
+            },
+            "observed_at": "2026-09-07T03:50:30+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 96,
+                "token_attempts": 108,
+                "weighted_seconds": 154.04806799988728
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 30,
+                "token_attempts": 150,
+                "weighted_seconds": 176.9482625000819
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 173,
+                "token_attempts": 468,
+                "weighted_seconds": 272.0797097994946
+              }
+            },
+            "observed_at": "2026-09-07T03:50:40+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 96,
+                "token_attempts": 108,
+                "weighted_seconds": 130.09793759998865
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 30,
+                "token_attempts": 150,
+                "weighted_seconds": 145.88251500008482
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 204,
+                "token_attempts": 528,
+                "weighted_seconds": 228.8545715995133
+              }
+            },
+            "observed_at": "2026-09-07T03:50:50+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 32,
+                "token_attempts": 36,
+                "weighted_seconds": 138.36060359999829
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 10,
+                "token_attempts": 50,
+                "weighted_seconds": 241.4638100000957
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 68,
+                "token_attempts": 176,
+                "weighted_seconds": 384.1868215998693
+              }
+            },
+            "observed_at": "2026-09-07T03:51:00+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 17,
+                "token_attempts": 19,
+                "weighted_seconds": 126.78687839995109
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 5,
+                "token_attempts": 24,
+                "weighted_seconds": 159.22168560011778
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 49,
+                "token_attempts": 117,
+                "weighted_seconds": 332.49284310015355
+              }
+            },
+            "observed_at": "2026-09-07T03:51:10+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 88,
+                "token_attempts": 98,
+                "weighted_seconds": 131.0477659000244
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 104,
+                "weighted_seconds": 206.91327539984195
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 121,
+                "token_attempts": 279,
+                "weighted_seconds": 453.6182513997992
+              }
+            },
+            "observed_at": "2026-09-07T03:51:20+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 72,
+                "token_attempts": 80,
+                "weighted_seconds": 32.024617999995826
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 20,
+                "token_attempts": 104,
+                "weighted_seconds": 169.61171240001568
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 158,
+                "token_attempts": 342,
+                "weighted_seconds": 353.32467600026575
+              }
+            },
+            "observed_at": "2026-09-07T03:51:30+08:00"
+          }
+        ],
+        "scope": "active_held_primary_lane"
+      }
+    },
+    "timing_recorded_at": "2026-09-06T19:51:38.114839Z",
+    "held_by_chain": {
+      "bsc": {
+        "tokens": 20,
+        "missing": 0,
+        "failures": 1,
+        "coverage_gaps": 1,
+        "age_p50_seconds": 1.334026,
+        "age_p95_seconds": 47.110172,
+        "age_max_seconds": 47.110172
+      },
+      "robinhood": {
+        "tokens": 20,
+        "missing": 0,
+        "failures": 0,
+        "coverage_gaps": 15,
+        "age_p50_seconds": 372.791775,
+        "age_p95_seconds": 372.791775,
+        "age_max_seconds": 372.791775
+      },
+      "solana": {
+        "tokens": 78,
+        "missing": 0,
+        "failures": 28,
+        "coverage_gaps": 15,
+        "age_p50_seconds": 25.072453,
+        "age_p95_seconds": 33.40174,
+        "age_max_seconds": 33.40174
+      }
+    },
+    "held_age_basis": "oldest_required_entry_pool_per_token",
+    "sources": [
+      {
+        "source": "chain-meme-carried-market-marks",
+        "last_ok_at": "2026-09-06T19:51:38.113669Z",
+        "last_item_at": "2026-09-06T19:16:12.683996Z",
+        "last_error_at": "2026-09-06T18:16:50.780347Z",
+        "last_error": ""
+      },
+      {
+        "source": "chain-meme-market-marks",
+        "last_ok_at": "2026-09-06T19:51:45.495839Z",
+        "last_item_at": "2026-09-06T19:51:45.495839Z",
+        "last_error_at": "2026-09-06T18:16:53.227756Z",
+        "last_error": ""
+      },
+      {
+        "source": "chain-meme-trader",
+        "last_ok_at": "2026-09-06T19:51:44.627173Z",
+        "last_item_at": "2026-09-06T19:51:44.627173Z",
+        "last_error_at": null,
+        "last_error": ""
+      },
+      {
+        "source": "dexscreener:hydration",
+        "last_ok_at": "2026-09-06T19:51:32.139681Z",
+        "last_item_at": "2026-09-06T19:51:29.700449Z",
+        "last_error_at": "2026-09-06T04:45:22.265398Z",
+        "last_error": ""
+      },
+      {
+        "source": "flat-compression-breakout-shadow",
+        "last_ok_at": "2026-09-06T19:51:31.603131Z",
+        "last_item_at": "2026-09-06T19:50:41.450004Z",
+        "last_error_at": "2026-09-06T18:16:51.346933Z",
+        "last_error": ""
+      },
+      {
+        "source": "geckoterminal:bsc",
+        "last_ok_at": "2026-09-06T19:51:05.703862Z",
+        "last_item_at": "2026-09-06T19:51:05.668833Z",
+        "last_error_at": "2026-09-06T19:27:03.381863Z",
+        "last_error": ""
+      },
+      {
+        "source": "geckoterminal:robinhood",
+        "last_ok_at": "2026-09-06T19:51:09.225757Z",
+        "last_item_at": "2026-09-06T19:51:09.225757Z",
+        "last_error_at": "2026-09-06T19:34:39.646646Z",
+        "last_error": ""
+      },
+      {
+        "source": "geckoterminal:solana",
+        "last_ok_at": "2026-09-06T19:51:02.603814Z",
+        "last_item_at": "2026-09-06T19:51:02.447039Z",
+        "last_error_at": "2026-09-06T11:23:39.780014Z",
+        "last_error": ""
+      },
+      {
+        "source": "multichain_meme_data",
+        "last_ok_at": "2026-09-06T19:51:32.189683Z",
+        "last_item_at": null,
+        "last_error_at": null,
+        "last_error": ""
+      },
+      {
+        "source": "pumpportal:create",
+        "last_ok_at": "2026-09-06T19:51:45.452147Z",
+        "last_item_at": "2026-09-06T19:51:45.452147Z",
+        "last_error_at": null,
+        "last_error": ""
+      },
+      {
+        "source": "pumpportal:migration",
+        "last_ok_at": "2026-09-06T19:50:35.970406Z",
+        "last_item_at": "2026-09-06T18:48:24.274523Z",
+        "last_error_at": null,
+        "last_error": ""
+      }
+    ],
+    "ui": {
+      "visible_seconds": 5,
+      "hidden_seconds": 30,
+      "token_detail_seconds": 10
+    },
+    "storage": {
+      "database_bytes": 14868234240,
+      "wal_bytes": 196346872,
+      "free_bytes": 50815238144
+    }
+  },
+  "after": {
+    "status": "ok",
+    "generated_at": "2026-09-06T19:57:38.01006Z",
+    "timing": {
+      "components": {
+        "capital_quote": {
+          "actual_interval_seconds": {
+            "p50": 2.0564251999967382,
+            "p95": 2.5705312600010073
+          },
+          "configured_interval_seconds": 2,
+          "duration_seconds": {
+            "p50": 0.000004699999408330768,
+            "p95": 0.7865518249978776
+          },
+          "failures": 0,
+          "interval_sample_count": 33,
+          "items": 0,
+          "sample_count": 34
+        },
+        "chain_meme_account_snapshot": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 0.20999599999777274,
+            "p95": 0.4830622800014678
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 0,
+          "sample_count": 7
+        },
+        "chain_meme_authoritative_events": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": 120,
+          "duration_seconds": {
+            "p50": 4.679377599997679,
+            "p95": 4.679377599997679
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 0,
+          "sample_count": 1
+        },
+        "chain_meme_carried_market_marks": {
+          "actual_interval_seconds": {
+            "p50": 15.049729550002667,
+            "p95": 15.099142259998189
+          },
+          "configured_interval_seconds": 15,
+          "duration_seconds": {
+            "p50": 0.00023830000282032415,
+            "p95": 0.0007446999981766566
+          },
+          "failures": 0,
+          "interval_sample_count": 4,
+          "items": 0,
+          "sample_count": 5
+        },
+        "chain_meme_cohort_observer": {
+          "actual_interval_seconds": {
+            "p50": 10.032503800000995,
+            "p95": 10.12573059999886
+          },
+          "configured_interval_seconds": 10,
+          "duration_seconds": {
+            "p50": 4.211010499995609,
+            "p95": 6.187833069999759
+          },
+          "failures": 0,
+          "interval_sample_count": 6,
+          "items": 0,
+          "sample_count": 7
+        },
+        "chain_meme_entry_batch": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 0.012253400003828574,
+            "p95": 0.9763812999997754
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 85,
+          "sample_count": 75
+        },
+        "chain_meme_extra_official": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": 240,
+          "duration_seconds": {
+            "p50": 7.9089587999988,
+            "p95": 7.9089587999988
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 0,
+          "sample_count": 1
+        },
+        "chain_meme_market_marks": {
+          "actual_interval_seconds": {
+            "p50": 1.8925104000009014,
+            "p95": 5.067942440000473
+          },
+          "configured_interval_seconds": 1,
+          "duration_seconds": {
+            "p50": 1.5758841999995639,
+            "p95": 3.8202432150002954
+          },
+          "failures": 0,
+          "interval_sample_count": 29,
+          "items": 0,
+          "sample_count": 30
+        },
+        "chain_meme_native_launch": {
+          "actual_interval_seconds": {
+            "p50": 30.10379869999815,
+            "p95": 30.11450815999524
+          },
+          "configured_interval_seconds": 30,
+          "duration_seconds": {
+            "p50": 2.4177318999936688,
+            "p95": 9.155634639994968
+          },
+          "failures": 0,
+          "interval_sample_count": 2,
+          "items": 0,
+          "sample_count": 3
+        },
+        "chain_meme_pattern_narrative": {
+          "actual_interval_seconds": {
+            "p50": 60.016481899998325,
+            "p95": 60.016481899998325
+          },
+          "configured_interval_seconds": 60,
+          "duration_seconds": {
+            "p50": 2.30525155000214,
+            "p95": 4.379415714999049
+          },
+          "failures": 0,
+          "interval_sample_count": 1,
+          "items": 0,
+          "sample_count": 2
+        },
+        "chain_meme_pattern_observer": {
+          "actual_interval_seconds": {
+            "p50": 15.046685699999216,
+            "p95": 15.102326315000028
+          },
+          "configured_interval_seconds": 15,
+          "duration_seconds": {
+            "p50": 7.467460399995616,
+            "p95": 9.121165060000202
+          },
+          "failures": 0,
+          "interval_sample_count": 4,
+          "items": 0,
+          "sample_count": 5
+        },
+        "chain_meme_pattern_participation": {
+          "actual_interval_seconds": {
+            "p50": 15.049106000002212,
+            "p95": 15.099251259997253
+          },
+          "configured_interval_seconds": 15,
+          "duration_seconds": {
+            "p50": 2.541669099999126,
+            "p95": 4.550343320003594
+          },
+          "failures": 0,
+          "interval_sample_count": 4,
+          "items": 0,
+          "sample_count": 5
+        },
+        "chain_meme_pattern_pools": {
+          "actual_interval_seconds": {
+            "p50": 15.048445799999172,
+            "p95": 15.100163315001918
+          },
+          "configured_interval_seconds": 15,
+          "duration_seconds": {
+            "p50": 5.523623300003237,
+            "p95": 9.293034960002114
+          },
+          "failures": 0,
+          "interval_sample_count": 4,
+          "items": 0,
+          "sample_count": 5
+        },
+        "chain_meme_trader": {
+          "actual_interval_seconds": {
+            "p50": 1.0754353999946034,
+            "p95": 1.363442560002295
+          },
+          "configured_interval_seconds": 1,
+          "duration_seconds": {
+            "p50": 0.022343000000546454,
+            "p95": 1.0765147250032894
+          },
+          "failures": 0,
+          "interval_sample_count": 63,
+          "items": 0,
+          "sample_count": 64
+        },
+        "chain_meme_v22_vault_shadow_enroll": {
+          "actual_interval_seconds": {
+            "p50": 15.050042899998516,
+            "p95": 15.098597279997922
+          },
+          "configured_interval_seconds": 15,
+          "duration_seconds": {
+            "p50": 0.003114499995717779,
+            "p95": 0.0052455800017924045
+          },
+          "failures": 0,
+          "interval_sample_count": 4,
+          "items": 0,
+          "sample_count": 5
+        },
+        "chain_meme_wsol_reference": {
+          "actual_interval_seconds": {
+            "p50": 5.009266300003219,
+            "p95": 5.501361480003469
+          },
+          "configured_interval_seconds": 5,
+          "duration_seconds": {
+            "p50": 0.000009499999578110874,
+            "p95": 1.1558021099961473
+          },
+          "failures": 0,
+          "interval_sample_count": 14,
+          "items": 0,
+          "sample_count": 15
+        },
+        "chain_universe_outcomes": {
+          "actual_interval_seconds": {
+            "p50": 30.085392150002008,
+            "p95": 30.15041350500469
+          },
+          "configured_interval_seconds": 30,
+          "duration_seconds": {
+            "p50": 0.7727838999999221,
+            "p95": 4.359308020000753
+          },
+          "failures": 0,
+          "interval_sample_count": 2,
+          "items": 0,
+          "sample_count": 3
+        },
+        "cohort_passive_compute": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 4.711938950000331,
+            "p95": 6.243758600001456
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 33,
+          "sample_count": 6
+        },
+        "complementary_market_data": {
+          "actual_interval_seconds": {
+            "p50": 10.080373199998576,
+            "p95": 10.155134149995137
+          },
+          "configured_interval_seconds": 10,
+          "duration_seconds": {
+            "p50": 1.2065401500003645,
+            "p95": 2.0032867900026754
+          },
+          "failures": 0,
+          "interval_sample_count": 7,
+          "items": 0,
+          "sample_count": 8
+        },
+        "flat_compression_breakout_shadow": {
+          "actual_interval_seconds": {
+            "p50": 5.282783800001198,
+            "p95": 16.164333779997833
+          },
+          "configured_interval_seconds": 5,
+          "duration_seconds": {
+            "p50": 8.381617750001169,
+            "p95": 22.64344057499693
+          },
+          "failures": 0,
+          "interval_sample_count": 5,
+          "items": 0,
+          "sample_count": 6
+        },
+        "held_apply_exit": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 0.03838740000355756,
+            "p95": 0.0753508099976898
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 1756,
+          "sample_count": 120
+        },
+        "held_fetch": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 0.938950300002034,
+            "p95": 1.9529612749975056
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 3636,
+          "sample_count": 120
+        },
+        "multichain_meme_data": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": 90,
+          "duration_seconds": {
+            "p50": 32.27660350000224,
+            "p95": 32.27660350000224
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 0,
+          "sample_count": 1
+        },
+        "pattern_token_compute": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 0.038898800001334166,
+            "p95": 0.059989125002175514
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 372,
+          "sample_count": 120
+        },
+        "pregrad_watch": {
+          "actual_interval_seconds": {
+            "p50": 30.103127600003063,
+            "p95": 30.113220200004797
+          },
+          "configured_interval_seconds": 30,
+          "duration_seconds": {
+            "p50": 0.6419048999960069,
+            "p95": 1.6157691600026736
+          },
+          "failures": 0,
+          "interval_sample_count": 2,
+          "items": 0,
+          "sample_count": 3
+        }
+      },
+      "generated_at": "2026-09-06T19:57:35.837991Z",
+      "held_retrieval": {
+        "bucket_seconds": 10,
+        "points": [
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 13,
+                "token_attempts": 15,
+                "weighted_seconds": 6.928880999985267
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 6,
+                "token_attempts": 23,
+                "weighted_seconds": 104.56172369995329
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 34,
+                "token_attempts": 76,
+                "weighted_seconds": 151.77511079987744
+              }
+            },
+            "observed_at": "2026-09-07T03:56:20+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 27,
+                "token_attempts": 31,
+                "weighted_seconds": 27.0299615000622
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 6,
+                "token_attempts": 23,
+                "weighted_seconds": 170.5656172000381
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 54,
+                "token_attempts": 139,
+                "weighted_seconds": 441.22318109991465
+              }
+            },
+            "observed_at": "2026-09-07T03:56:30+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 56,
+                "token_attempts": 64,
+                "weighted_seconds": 102.95283200009726
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 30,
+                "token_attempts": 120,
+                "weighted_seconds": 208.6901808003313
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 156,
+                "token_attempts": 335,
+                "weighted_seconds": 347.249184600194
+              }
+            },
+            "observed_at": "2026-09-07T03:56:40+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 70,
+                "token_attempts": 80,
+                "weighted_seconds": 103.9165503999684
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 30,
+                "token_attempts": 120,
+                "weighted_seconds": 199.3818815998966
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 178,
+                "token_attempts": 398,
+                "weighted_seconds": 323.68160079975496
+              }
+            },
+            "observed_at": "2026-09-07T03:56:50+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 70,
+                "token_attempts": 80,
+                "weighted_seconds": 87.7518335999921
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 30,
+                "token_attempts": 120,
+                "weighted_seconds": 172.7548055999796
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 199,
+                "token_attempts": 430,
+                "weighted_seconds": 220.5220840000402
+              }
+            },
+            "observed_at": "2026-09-07T03:57:00+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 70,
+                "token_attempts": 80,
+                "weighted_seconds": 113.23262239992619
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 30,
+                "token_attempts": 120,
+                "weighted_seconds": 197.0934096001438
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 180,
+                "token_attempts": 400,
+                "weighted_seconds": 308.6351420003484
+              }
+            },
+            "observed_at": "2026-09-07T03:57:10+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 70,
+                "token_attempts": 80,
+                "weighted_seconds": 101.05584479996469
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 25,
+                "token_attempts": 115,
+                "weighted_seconds": 184.9701192999346
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 161,
+                "token_attempts": 370,
+                "weighted_seconds": 251.55290899936517
+              }
+            },
+            "observed_at": "2026-09-07T03:57:20+08:00"
+          },
+          {
+            "chains": {
+              "bsc": {
+                "failed_tokens": 0,
+                "priced_tokens": 42,
+                "token_attempts": 48,
+                "weighted_seconds": 48.371468800120056
+              },
+              "robinhood": {
+                "failed_tokens": 0,
+                "priced_tokens": 15,
+                "token_attempts": 69,
+                "weighted_seconds": 87.18455900009576
+              },
+              "solana": {
+                "failed_tokens": 0,
+                "priced_tokens": 144,
+                "token_attempts": 300,
+                "weighted_seconds": 150.0904460001766
+              }
+            },
+            "observed_at": "2026-09-07T03:57:30+08:00"
+          }
+        ],
+        "scope": "active_held_primary_lane"
+      }
+    },
+    "timing_recorded_at": "2026-09-06T19:57:35.838037Z",
+    "held_by_chain": {
+      "bsc": {
+        "tokens": 16,
+        "missing": 0,
+        "failures": 1,
+        "coverage_gaps": 1,
+        "age_p50_seconds": 0.338682,
+        "age_p95_seconds": 22.263007,
+        "age_max_seconds": 22.263007
+      },
+      "robinhood": {
+        "tokens": 22,
+        "missing": 0,
+        "failures": 0,
+        "coverage_gaps": 18,
+        "age_p50_seconds": 32.402727,
+        "age_p95_seconds": 32.402727,
+        "age_max_seconds": 32.402727
+      },
+      "solana": {
+        "tokens": 80,
+        "missing": 0,
+        "failures": 29,
+        "coverage_gaps": 15,
+        "age_p50_seconds": 12.319552,
+        "age_p95_seconds": 42.485921,
+        "age_max_seconds": 42.485921
+      }
+    },
+    "held_age_basis": "oldest_required_entry_pool_per_token",
+    "sources": [
+      {
+        "source": "chain-meme-carried-market-marks",
+        "last_ok_at": "2026-09-06T19:57:24.527715Z",
+        "last_item_at": "2026-09-06T19:16:12.683996Z",
+        "last_error_at": "2026-09-06T18:16:50.780347Z",
+        "last_error": ""
+      },
+      {
+        "source": "chain-meme-market-marks",
+        "last_ok_at": "2026-09-06T19:57:37.863952Z",
+        "last_item_at": "2026-09-06T19:57:37.863952Z",
+        "last_error_at": "2026-09-06T18:16:53.227756Z",
+        "last_error": ""
+      },
+      {
+        "source": "chain-meme-trader",
+        "last_ok_at": "2026-09-06T19:57:37.653373Z",
+        "last_item_at": "2026-09-06T19:57:37.653373Z",
+        "last_error_at": null,
+        "last_error": ""
+      },
+      {
+        "source": "dexscreener:hydration",
+        "last_ok_at": "2026-09-06T19:56:56.218883Z",
+        "last_item_at": "2026-09-06T19:56:56.218883Z",
+        "last_error_at": "2026-09-06T04:45:22.265398Z",
+        "last_error": ""
+      },
+      {
+        "source": "flat-compression-breakout-shadow",
+        "last_ok_at": "2026-09-06T19:57:35.204091Z",
+        "last_item_at": "2026-09-06T19:52:20.781585Z",
+        "last_error_at": "2026-09-06T18:16:51.346933Z",
+        "last_error": ""
+      },
+      {
+        "source": "geckoterminal:bsc",
+        "last_ok_at": "2026-09-06T19:56:27.548897Z",
+        "last_item_at": "2026-09-06T19:56:27.547131Z",
+        "last_error_at": "2026-09-06T19:27:03.381863Z",
+        "last_error": ""
+      },
+      {
+        "source": "geckoterminal:robinhood",
+        "last_ok_at": "2026-09-06T19:56:32.005127Z",
+        "last_item_at": "2026-09-06T19:56:32.005127Z",
+        "last_error_at": "2026-09-06T19:34:39.646646Z",
+        "last_error": ""
+      },
+      {
+        "source": "geckoterminal:solana",
+        "last_ok_at": "2026-09-06T19:56:25.109354Z",
+        "last_item_at": "2026-09-06T19:56:25.085068Z",
+        "last_error_at": "2026-09-06T11:23:39.780014Z",
+        "last_error": ""
+      },
+      {
+        "source": "multichain_meme_data",
+        "last_ok_at": "2026-09-06T19:56:56.26614Z",
+        "last_item_at": null,
+        "last_error_at": null,
+        "last_error": ""
+      },
+      {
+        "source": "pumpportal:create",
+        "last_ok_at": "2026-09-06T19:57:35.830792Z",
+        "last_item_at": "2026-09-06T19:57:35.830792Z",
+        "last_error_at": null,
+        "last_error": ""
+      },
+      {
+        "source": "pumpportal:migration",
+        "last_ok_at": "2026-09-06T19:56:52.401661Z",
+        "last_item_at": "2026-09-06T18:48:24.274523Z",
+        "last_error_at": null,
+        "last_error": ""
+      }
+    ],
+    "ui": {
+      "visible_seconds": 5,
+      "hidden_seconds": 30,
+      "token_detail_seconds": 10
+    },
+    "storage": {
+      "database_bytes": 14904922112,
+      "wal_bytes": 196346872,
+      "free_bytes": 50756681728
+    }
+  },
+  "interpretation": "Different load and very short post-restart window; no causal speedup claim. Complete external quote age differs from loop/HTTP latency. No SLA assertion."
+}
