@@ -206,6 +206,7 @@ class Store:
     )
     PUMPSWAP_PROGRAM_ID = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
     CHAIN_MEME_TRADER_REVIEWED_PERIOD_VERSION = "chain-meme-trader/funding-20260906-reviewed-1000"
+    CHAIN_MEME_TRADER_FINAL_V002_PERIOD_VERSION = "chain-meme-trader/funding-20260906-v002-final-1000"
     CHAIN_MEME_TRADER_ACTIVE_VERSION = CHAIN_MEME_TRADER_REVIEWED_PERIOD_VERSION
     CHAIN_MEME_TRADER_STAGE4_EXEC_DECAY_VERSION = (
         "chain-meme-trader/stage4-executable-decay-challenger-v1"
@@ -25148,6 +25149,7 @@ class Store:
     def activate_chain_meme_trader_funding_epoch(
         self, *, target_version: str, source_version: str, at: Any = None,
         apply_strategy_revisions: bool = False,
+        previous_period_version: str | None = None,
     ) -> sqlite3.Row:
         """Start one explicit 1000U epoch from the source's complete policy set."""
         with self._lock, self.db:
@@ -25169,6 +25171,14 @@ class Store:
             effective = self._chain_meme_trader_effective_definition(
                 source_version, source["definition_json"],
             )
+            previous_policies = {}
+            if previous_period_version:
+                previous = self._chain_meme_trader_registration(previous_period_version)
+                if previous is None:
+                    raise ValueError("previous funding period must be registered")
+                previous_policies = {p["arm_id"]: p for p in
+                    self._chain_meme_trader_effective_definition(
+                        previous_period_version, previous["definition_json"])["policies"]}
             additions = self.db.execute(
                 "SELECT * FROM chain_meme_trader_policy_additions "
                 "WHERE definition_version=? ORDER BY id",
@@ -25193,12 +25203,13 @@ class Store:
                 if int(policy.get("strategy_revision") or 1) > int(original.get("strategy_revision") or 1):
                     revised_ids.append(policy["arm_id"])
                     policy["revision_history"] = [
-                        *list(original.get("revision_history") or [{"revision": 1,
+                        *list(previous_policies.get(policy["arm_id"], original).get("revision_history") or [{"revision": 1,
                             "reason": "原规则保留在历史账期", "changes": "历史交易不按新版重算",
                             "source_definition_version": source_version}]),
                         {"revision": policy["strategy_revision"], "changed_at": activated_at,
                          "reason": policy.pop("revision_reason"), "changes": policy.pop("revision_changes"),
-                         "basis": policy.pop("revision_basis"), "source_definition_version": source_version},
+                         "basis": policy.pop("revision_basis"), "source_definition_version": source_version,
+                         "previous_period_version": previous_period_version},
                     ]
                     policy["behavior_contract_hash"] = self.chain_meme_trader_behavior_hash(
                         policy, definition_version=target_version)
@@ -25220,7 +25231,7 @@ class Store:
             definition.pop("paper_funding", None)
             definition["runtime_policy_additions"] = []
             definition.update({
-                "version": target_version, "previous_version": source_version,
+                "version": target_version, "previous_version": previous_period_version or source_version,
                 "funding_period": target_version, "funding_source_version": source_version,
                 "funding_source_policy_additions": [
                     {
@@ -25254,6 +25265,13 @@ class Store:
                 "definition_version,stopped_at,source_frontier,reason) VALUES(?,?,?,?)",
                 (source_version, activated_at, frontier, "new_funding_period_old_positions_keep_exiting"),
             )
+            if previous_period_version and previous_period_version != source_version:
+                self.db.execute(
+                    "INSERT OR IGNORE INTO chain_meme_trader_primary_stops("
+                    "definition_version,stopped_at,source_frontier,reason) VALUES(?,?,?,?)",
+                    (previous_period_version, activated_at, frontier,
+                     "user_reauthorized_funding_period_old_positions_keep_exiting"),
+                )
             self.db.execute(
                 "INSERT INTO chain_meme_trader_v6_activations("
                 "definition_version,activated_at,activation_snapshot_id,v5_definition_version,"
@@ -25292,6 +25310,10 @@ class Store:
             target_version=self.CHAIN_MEME_TRADER_ACTIVE_VERSION,
             source_version=self.CHAIN_MEME_TRADER_FUNDED_PERIOD_VERSION,
             apply_strategy_revisions=True,
+            previous_period_version=(self.CHAIN_MEME_TRADER_REVIEWED_PERIOD_VERSION
+                if self.CHAIN_MEME_TRADER_ACTIVE_VERSION == self.CHAIN_MEME_TRADER_FINAL_V002_PERIOD_VERSION
+                and self._chain_meme_trader_registration(self.CHAIN_MEME_TRADER_REVIEWED_PERIOD_VERSION)
+                is not None else None),
         )
 
     def activate_chain_meme_trader_unconstrained_paper_funding(
@@ -27791,6 +27813,11 @@ class Store:
         version = definition_version or self.CHAIN_MEME_TRADER_V6_VERSION
         evaluated = admitted = rejected = intents = 0
         with self._lock, self.db:
+            if self.db.execute(
+                "SELECT 1 FROM chain_meme_trader_primary_stops WHERE definition_version=?",
+                (version,),
+            ).fetchone() is not None:
+                return {"evaluated": 0, "admitted": 0, "rejected": 0, "intents": 0}
             registration = self.db.execute(
                 "SELECT r.definition_json,a.activated_at,a.activation_snapshot_id "
                 "FROM chain_meme_trader_v6_registrations r "
@@ -33621,9 +33648,12 @@ class Store:
                             action is None
                             and policy.get("runner_review_minutes") is not None
                             and elapsed >= float(policy["runner_review_minutes"])
-                            and economic_return is not None and economic_return <= 0.0
                         ):
-                            action, reason = "RUNNER_REVIEW_EXIT", "market_mark_runner_not_profitable"
+                            if policy.get("exit_family") == "principal_lock_runner":
+                                if float(position["realized_proceeds_usd"] or 0.0) < float(position["stake_usd"]):
+                                    action, reason = "RUNNER_REVIEW_EXIT", "market_mark_principal_not_recovered_at_review"
+                            elif economic_return is not None and economic_return <= 0.0:
+                                action, reason = "RUNNER_REVIEW_EXIT", "market_mark_runner_not_profitable"
                         if action is None and economic_return is not None:
                             tp_index = int(position["next_tp_index"] or 0)
                             tiers = list(policy.get("take_profit") or [])

@@ -108,7 +108,8 @@ def test_all_17_actual_policies_become_explicit_l0_replacements():
         assert revised["arm_id"] == original["arm_id"]
         assert revised["canonical_id"] == original["canonical_id"]
         assert revised.get("notional_usd") == original.get("notional_usd")
-        assert revised.get("capital_exit_kind") == original.get("capital_exit_kind")
+        if arm_id not in {"event_reawakening_v1", "surface_lifecycle_pipeline_v1"}:
+            assert revised.get("capital_exit_kind") == original.get("capital_exit_kind")
         assert revised["strategy_revision"] == int(original.get("strategy_revision") or 1) + 1
         assert revised["entry_family"] == "evidence_extension_l0"
         assert revised["entry_revision_kind"] == ENTRY_REVISION_KIND
@@ -179,3 +180,73 @@ def test_unowned_policy_is_unchanged():
     policy = {"arm_id": "unowned", "entry_family": "broad_launch", "value": [1]}
     revised = revise_evidence_extension(policy)
     assert revised == policy and revised is not policy
+
+
+def _with_observation_time(frame, observed):
+    return {**frame, "observed_at": observed.isoformat(),
+            "ingested_at": (observed + timedelta(milliseconds=100)).isoformat(),
+            "recorded_at": (observed + timedelta(milliseconds=200)).isoformat()}
+
+
+def test_denser_confirmation_keeps_elapsed_window_without_lowering_minimum_span():
+    policy = revise_evidence_extension(_actual_policies()["capital_velocity_v1"])
+    rows, decision = _passing_history(policy)
+    start = datetime.fromisoformat(rows[0]["observed_at"])
+    middle = _with_observation_time(rows[0], start + timedelta(seconds=10))
+    middle.update(price=100.5, volume=1200)
+    for history in (rows, [rows[0], middle, rows[1]]):
+        assert evaluate_evidence_extension_entry(
+            history, policy, decision_at=decision.isoformat(),
+            activated_at=(decision - timedelta(hours=2)).isoformat(),
+        ) == (True, "replacement_continuation_confirmed")
+    assert evaluate_evidence_extension_entry(
+        [middle, rows[1]], policy, decision_at=decision.isoformat(),
+        activated_at=(decision - timedelta(hours=2)).isoformat(),
+    )[1] == "replacement_l0_span_not_met"
+
+
+def test_time_selected_quiet_window_keeps_intermediate_counterexample():
+    policy = revise_evidence_extension(_actual_policies()["event_reawakening_v1"])
+    rows, decision = _passing_history(policy)
+    start = decision - timedelta(seconds=31)
+    rows = [_with_observation_time(frame, start + timedelta(seconds=10 * i))
+            for i, frame in enumerate(rows)]
+    active = _with_observation_time(rows[0], start + timedelta(seconds=15))
+    active.update(buys=20, volume=2000)
+    for history, expected in (
+        (rows, (True, "replacement_reawakening_confirmed")),
+        (rows[:2] + [active] + rows[2:],
+         (False, "replacement_reawakening_conditions_not_met")),
+    ):
+        assert evaluate_evidence_extension_entry(
+            history, policy, decision_at=decision.isoformat(),
+            activated_at=(decision - timedelta(hours=2)).isoformat(),
+        ) == expected
+
+
+@pytest.mark.parametrize("arm_id", ["event_reawakening_v1", "surface_lifecycle_pipeline_v1"])
+def test_l0_replacements_exit_on_available_frames_without_actual_flow(arm_id):
+    from memetrader.strategy_revisions import evaluate_l0_loss_deterioration, revision_spec
+
+    original = _actual_policies()[arm_id]
+    policy = revision_spec(original)
+    assert original["capital_exit_kind"] == "high_recall_exit_pipeline"
+    assert policy["capital_exit_kind"] == "l0_loss_deterioration"
+    assert policy["max_hold_minutes"] == 15
+    assert policy["hard_stop_return"] == original["hard_stop_return"]
+    opened = datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc)
+    position = {"opened_at": opened.isoformat(), "token_id": "solana:token",
+                "pair_address": "pool", "remaining_cost_usd": 20.0}
+    state = None
+    for seconds, price, expected in ((60, 1.0, "HOLD"), (65, .99, "HOLD"), (70, .98, "SELL")):
+        observed = opened + timedelta(seconds=seconds)
+        frame = {"frame_id": str(seconds), "token_id": position["token_id"],
+                 "pair_address": position["pair_address"], "original_pool": True,
+                 "observed_at": observed.isoformat(), "recorded_at": observed.isoformat(),
+                 "price_usd": price, "liquidity_usd": 10_000.0, "net_recovery_usd": 19.0}
+        action, reason, state, evidence = evaluate_l0_loss_deterioration(
+            position, frame, state, now=observed, policy=policy["capital_exit_policy"],
+        )
+        assert action == expected
+    assert reason == "l0_loss_deterioration_armed"
+    assert evidence["required_fill"] == "next_original_pool_frame"

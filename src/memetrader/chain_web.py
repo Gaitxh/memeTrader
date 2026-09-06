@@ -797,6 +797,7 @@ class ChainWebData:
     def performance_state(self) -> dict[str, Any]:
         """Small on-demand diagnostics; no ledger aggregation or external requests."""
         versions = tuple(dict.fromkeys((Store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
+            Store.CHAIN_MEME_TRADER_REVIEWED_PERIOD_VERSION,
             Store.CHAIN_MEME_TRADER_FUNDED_PERIOD_VERSION,
             Store.CHAIN_MEME_TRADER_V22_VERSION, Store.CHAIN_MEME_TRADER_V21_VERSION,
             Store.CHAIN_MEME_TRADER_V20_VERSION)))

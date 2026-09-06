@@ -343,11 +343,11 @@ def revision_spec(policy: Mapping[str, Any]) -> dict[str, Any]:
     elif arm_id == "broad_principal_lock_runner_v1":
         revised.update({
             "name": "较早本金回收趋势Runner",
-            "description": "成本后经济收益达到40%时卖出75%剩余仓位；仅实际累计回款覆盖原投入才标记回本，保留趋势仓。",
+            "description": "成本后经济收益达到40%时卖出75%剩余仓位；仅实际累计净回款覆盖原投入才标记回本。30分钟仍未实际回本则退出，即使有未实现浮盈；已回本才保留趋势仓。",
             "take_profit": [{"return": .40, "fraction_of_remaining": .75}],
             "trailing_activate_return": .40,
             "runner_review_minutes": 30.0,
-            "revision_changes": ["本金目标由80%收益卖60%改为40%收益卖75%", "30分钟仍未回本时回收资本，原硬止损和runner退出保留"],
+            "revision_changes": ["本金目标由80%收益卖60%改为40%收益卖75%", "30分钟按实际累计净回款而非浮盈判断是否覆盖原始成本，未覆盖即回收资本；原硬止损和runner退出保留"],
         })
     elif arm_id == "broad_cost_coverage_scaleout_v1":
         revised.update({
@@ -360,15 +360,15 @@ def revision_spec(policy: Mapping[str, Any]) -> dict[str, Any]:
     elif arm_id.startswith("l0_continuation_failure_"):
         candidate = arm_id == "l0_continuation_failure_candidate_v1"
         revised.update({
-            "name": "滚动衰退释放资本" if candidate else "十分钟未回本释放资本",
-            "description": "同入场、同10分钟未回本和30分钟最长持有；候选额外使用持有60秒后的连续L0恶化退出，取消狭窄固定检查点。",
+            "name": "滚动衰退释放资本" if candidate else "十分钟净收益未转正释放资本",
+            "description": "同入场、同10分钟经济净收益未转正退出和30分钟最长持有；候选额外使用持有60秒后的连续L0恶化退出，取消狭窄固定检查点。",
             "capital_exit_kind": "l0_loss_deterioration" if candidate else None,
             "capital_exit_policy": copy.deepcopy(L0_LOSS_DETERIORATION_POLICY) if candidate else {},
             "exit_family": "l0_rolling_loss" if candidate else "l0_time_budget",
             "runner_review_minutes": 10.0,
             "max_hold_minutes": 30.0,
             "paired_entry_group": "l0_rolling_loss_revision_v2",
-            "revision_changes": ["取消60/120秒窄检查点，候选使用滚动的连续衰退帧", "两臂均10分钟未回本退出、30分钟最长持有；同入场保留"],
+            "revision_changes": ["取消60/120秒窄检查点，候选使用滚动的连续衰退帧", "两臂均10分钟经济净收益未转正退出、30分钟最长持有；同入场保留"],
         })
     elif arm_id.startswith("l0_profit_lock_"):
         candidate = arm_id == "l0_profit_lock_candidate_v1"

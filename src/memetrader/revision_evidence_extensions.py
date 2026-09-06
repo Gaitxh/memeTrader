@@ -152,6 +152,34 @@ def revise_evidence_extension(policy: Mapping[str, Any]) -> dict[str, Any]:
         "fidelity_status": "REPLACED_FORWARD",
         "no_historical_backfill": True,
     })
+    if int(thresholds.get("min_frames", 1)) > 1:
+        revised["revision_changes"].append(
+            "按原最小时距选择最近合格时间基线，保留其后全部帧，不因采样加密缩短确认窗口"
+        )
+    if arm_id in {"event_reawakening_v1", "surface_lifecycle_pipeline_v1"}:
+        from .strategy_revisions import L0_LOSS_DETERIORATION_POLICY
+
+        revised.update({
+            "name": spec["name"] + "与L0衰退退出",
+            "description": revised["description"] + (
+                "退出同步改用已有原池L0：持有60秒后记录基线，连续两帧价格下降且"
+                "流动性不增长、净回收低于剩余成本时下一帧退出；最多持有15分钟。"
+            ),
+            "capital_exit_kind": "l0_loss_deterioration",
+            "capital_exit_policy": copy.deepcopy(L0_LOSS_DETERIORATION_POLICY),
+            "exit_family": "l0_loss_deterioration_time_budget",
+            "max_hold_minutes": 15.0,
+        })
+        revised["revision_changes"][1] = (
+            "保留原策略ID、名义金额、独立账户、原硬止损和下一独立帧成交合同"
+        )
+        revised["revision_changes"].append(
+            "替换仍依赖缺失真实资金流和深度的旧退出，改用L0连续亏损恶化退出及15分钟资本期限"
+        )
+        revised["revision_basis"] += (
+            "；旧high_recall_exit_pipeline缺资金流或深度时在120秒期限后仍WAIT，"
+            "不适用于本次纯L0替代入口，故同步替换退出输入合同"
+        )
     # Former candidate/control labels no longer imply a shared entry mechanism.
     revised.pop("paired_entry_group", None)
     revised.pop("paired_opportunity_group", None)
@@ -238,9 +266,12 @@ def evaluate_evidence_extension_entry(
         return False, "awaiting_replacement_l0_sequence"
     window = frames[-minimum:]
     if minimum > 1:
-        span = (window[-1]["observed_dt"] - window[0]["observed_dt"]).total_seconds()
-        if span < float(cfg.get("min_span", 0.0)):
+        start = next((i for i in range(len(frames) - minimum, -1, -1)
+                      if (last["observed_dt"] - frames[i]["observed_dt"]).total_seconds()
+                      >= float(cfg.get("min_span", 0.0))), None)
+        if start is None:
             return False, "replacement_l0_span_not_met"
+        window = frames[start:]
         if any((right["observed_dt"] - left["observed_dt"]).total_seconds() > 90
                for left, right in zip(window, window[1:])):
             return False, "replacement_l0_gap_too_large"

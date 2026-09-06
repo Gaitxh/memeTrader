@@ -5576,18 +5576,20 @@ class Runtime:
     async def chain_meme_universe_outcomes_once(self) -> None:
         """Low-priority bounded research reads; never request market data."""
         await self._chain_meme_active_idle().wait()
-        enrolled = await asyncio.to_thread(
-            self.store.enroll_chain_meme_universe_outcomes,
+        # Shared SQLite writer stays on the event-loop thread: worker queries
+        # invoking Python SQL functions can invert the GIL/SQLite mutex order.
+        enrolled = self.store.enroll_chain_meme_universe_outcomes(
             observer_version=self._chain_outcome_version, limit=8,
         )
+        await asyncio.sleep(0)
         await self._chain_meme_active_idle().wait()
-        finalized = await asyncio.to_thread(
-            self.store.finalize_chain_meme_universe_outcomes,
+        finalized = self.store.finalize_chain_meme_universe_outcomes(
             observer_version=self._chain_outcome_version, limit=32,
         )
         if finalized["observed"] or finalized["unknown"]:
+            await asyncio.sleep(0)
             await self._chain_meme_active_idle().wait()
-            await asyncio.to_thread(self.store.update_chain_opportunity_regimes, self._chain_outcome_version)
+            self.store.update_chain_opportunity_regimes(self._chain_outcome_version)
         self.store.heartbeat("chain_universe_outcomes", item=bool(
             enrolled["targets_enrolled"] or finalized["observed"] or finalized["unknown"]))
 
@@ -7026,8 +7028,7 @@ class Runtime:
             return
         await self._chain_meme_active_idle().wait()
         state = getattr(self, "_cohort_state", {})
-        closures, bought = await asyncio.to_thread(
-            self.store.chain_meme_cohort_receipts, state.get("clone_episodes", {}))
+        closures, bought = self.store.chain_meme_cohort_receipts(state.get("clone_episodes", {}))
         pending = getattr(self, "_cohort_pending", {})
         dispatched = set()
         compute_seconds = 0.0
@@ -7104,11 +7105,12 @@ class Runtime:
                 await self._chain_meme_active_idle().wait()
                 token, snapshot = quotes[identity]
                 compute_started = asyncio.get_running_loop().time()
-                projected += await asyncio.to_thread(self.store.observe_chain_meme_pattern,
+                projected += self.store.observe_chain_meme_pattern(
                     token, snapshot, recorded_at=now, cohort_signals=item["signals"])
                 compute_seconds += asyncio.get_running_loop().time() - compute_started
                 dispatched.add(identity)
                 sampled += 1
+                await asyncio.sleep(0)
             await asyncio.sleep(0)
         state["activated_at"] = iso(self._cohort_started_at)
         self._cohort_state, self._cohort_pending = state, pending
@@ -7118,7 +7120,7 @@ class Runtime:
                 pending[identity] = pending.pop(identity)
         last_saved = getattr(self, "_cohort_saved_at", None)
         if last_saved is None or (utcnow() - last_saved).total_seconds() >= 60:
-            await asyncio.to_thread(self.store.set_kv,
+            self.store.set_kv(
                 f"passive-cohort:{self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION}", state)
             self._cohort_saved_at = utcnow()
         self.store.heartbeat("chain-meme-cohort-observer", item=sampled > 0,
@@ -7211,6 +7213,7 @@ class Runtime:
         carry_versions = [
             version
             for version in (
+                self.store.CHAIN_MEME_TRADER_REVIEWED_PERIOD_VERSION,
                 self.store.CHAIN_MEME_TRADER_FUNDED_PERIOD_VERSION,
                 self.store.CHAIN_MEME_TRADER_V22_VERSION,
                 self.store.CHAIN_MEME_TRADER_V21_VERSION,
