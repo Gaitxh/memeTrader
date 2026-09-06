@@ -2527,6 +2527,9 @@ class Store:
                 CREATE INDEX IF NOT EXISTS chain_meme_pattern_evaluations_token_idx
                     ON chain_meme_trader_v6_entry_evaluations(definition_version,token_id,id DESC)
                     WHERE reason='pattern_observation';
+                CREATE INDEX IF NOT EXISTS chain_meme_cohort_evaluations_token_idx
+                    ON chain_meme_trader_v6_entry_evaluations(definition_version,token_id,id DESC)
+                    WHERE reason='cohort_observation';
                 CREATE INDEX IF NOT EXISTS chain_meme_trader_v6_cohorts_token_idx
                     ON chain_meme_trader_v6_cohorts(
                         definition_version,token_id,decided_at,id
@@ -25822,6 +25825,223 @@ class Store:
                     added += 1
         return added
 
+    def register_chain_meme_staged_probe(self) -> int:
+        """Append the three forward-only S03 arms at one deployment frontier."""
+        from .staged_probe import staged_probe_policies
+        added = 0
+        with self._lock, self.db:
+            at = utcnow()
+            for policy in staged_probe_policies():
+                exists = self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_policy_additions "
+                    "WHERE definition_version=? AND arm_id=?",
+                    (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, policy["arm_id"]),
+                ).fetchone()
+                if exists is None:
+                    self.append_chain_meme_trader_policy(policy, activated_at=at)
+                    added += 1
+        return added
+
+    def register_chain_meme_cohort_experiments(self) -> int:
+        from .cohort_experiments import cohort_experiment_policies
+        added = 0
+        with self._lock, self.db:
+            at = utcnow()
+            for policy in cohort_experiment_policies():
+                if self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?",
+                    (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, policy["arm_id"])).fetchone() is None:
+                    self.append_chain_meme_trader_policy(policy, activated_at=at)
+                    added += 1
+        return added
+
+    def register_chain_meme_mature_acceptance(self) -> int:
+        """Append the single forward-only S07 mature-token experiment."""
+        from .mature_acceptance import mature_acceptance_policy
+        policy = mature_acceptance_policy()
+        with self._lock:
+            exists = self.db.execute(
+                "SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?",
+                (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, policy["arm_id"]),
+            ).fetchone()
+            if exists is not None:
+                return 0
+            self.append_chain_meme_trader_policy(policy)
+        return 1
+
+    def register_chain_meme_wallet_observers(self) -> int:
+        """Append C01/S05/S06 at one frontier and retain one watchlist epoch."""
+        from .wallet_observer_experiments import wallet_observer_policies
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        at = utcnow()
+        added = 0
+        with self._lock, self.db:
+            for policy in wallet_observer_policies():
+                if self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?",
+                    (version, policy["arm_id"]),
+                ).fetchone() is None:
+                    self.append_chain_meme_trader_policy(policy, activated_at=at)
+                    added += 1
+            key = f"chain-meme-wallet-watchlist:{version}"
+            if self.db.execute("SELECT 1 FROM kv WHERE key=?", (key,)).fetchone() is None:
+                activated = self.db.execute(
+                    "SELECT MIN(activated_at) FROM chain_meme_trader_policy_additions "
+                    "WHERE definition_version=? AND arm_id LIKE 'watched_wallet_%'",
+                    (version,),
+                ).fetchone()[0]
+                self.db.execute(
+                    "INSERT INTO kv(key,value_json,updated_at) VALUES(?,?,?)",
+                    (key, self._json({"version": "wallet-watchlist/v1",
+                        "status": "UNSEALED", "activated_at": activated,
+                        "addresses": []}), iso(at)),
+                )
+        self.seal_chain_meme_wallet_watchlist(now=at)
+        return added
+
+    def seal_chain_meme_wallet_watchlist(self, *, now: Any = None) -> dict[str, Any]:
+        """Seal up to 20 locally observed decoded swap signers; never score them."""
+        from .wallet_observer_experiments import seal_watchlist
+        current = parse_time(now or utcnow())
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        key = f"chain-meme-wallet-watchlist:{version}"
+        with self._lock, self.db:
+            stored = self.get_kv(key, {})
+            if isinstance(stored, dict) and stored.get("addresses"):
+                return stored
+            activated_at = stored.get("activated_at") if isinstance(stored, dict) else None
+            if not activated_at:
+                return {}
+            rows = self.db.execute(
+                "SELECT observed_at,recorded_at,payload_json FROM chain_meme_pattern_evidence "
+                "WHERE definition_version=? AND kind='participation_scan' AND recorded_at<=? "
+                "ORDER BY id DESC LIMIT 20",
+                (version, iso(current)),
+            ).fetchall()
+            candidates = []
+            for row in rows:
+                payload = self._json_object(row["payload_json"])
+                for trade in payload.get("trades", []) if isinstance(payload.get("trades"), list) else []:
+                    if (not trade.get("signer_address") or not trade.get("signature")
+                            or not trade.get("instruction_path")
+                            or trade.get("side") not in {"BUY", "SELL"}):
+                        continue
+                    candidates.append({"address": trade["signer_address"],
+                        "observed_at": trade.get("observed_at") or row["observed_at"],
+                        "recorded_at": trade.get("recorded_at") or row["recorded_at"]})
+            sealed = seal_watchlist(candidates, activated_at=activated_at, now=current)
+            if sealed is None:
+                return dict(stored)
+            sealed["status"] = "SEALED"
+            self.db.execute(
+                "UPDATE kv SET value_json=?,updated_at=? WHERE key=?",
+                (self._json(sealed), iso(current), key),
+            )
+            return sealed
+
+    def chain_meme_wallet_watchlist(self, *, now: Any = None) -> dict[str, Any]:
+        """Read the immutable watchlist, attempting a late seal when initially empty."""
+        return self.seal_chain_meme_wallet_watchlist(now=now)
+
+    def chain_meme_wallet_participation_hits(
+        self, token_id: str, pair_address: str, *, not_before: Any, now: Any,
+        scan: Mapping[str, Any] | None = None, shared: dict | None = None,
+    ) -> dict[str, Any]:
+        """Return bounded raw participation plus positive post-activation matches."""
+        from .wallet_observer_experiments import participation_hits
+        current = parse_time(now)
+        cache_key = ("wallet-participation", token_id, pair_address)
+        cached = shared.get(cache_key) if shared is not None else None
+        if scan is None and cached is None:
+            rows = self.db.execute(
+                "SELECT payload_json FROM chain_meme_pattern_evidence WHERE definition_version=? "
+                "AND token_id=? AND pair_address=? AND kind='participation_scan' "
+                "AND observed_at<=? AND recorded_at<=? ORDER BY id DESC LIMIT 2",
+                (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, token_id, pair_address,
+                 iso(current), iso(current)),
+            ).fetchall()
+            payloads = [self._json_object(row["payload_json"]) for row in rows[::-1]]
+            trades = []
+            for payload in payloads:
+                if isinstance(payload.get("trades"), list):
+                    trades.extend(payload["trades"])
+            cached = {"complete": bool(payloads) and all(p.get("complete") is True for p in payloads),
+                "trades": trades}
+            if shared is not None:
+                shared[cache_key] = cached
+        combined = dict(scan or cached or {"complete": False, "trades": []})
+        watchlist = self.chain_meme_wallet_watchlist(now=current)
+        hits, evidence = participation_hits(watchlist, combined, token_id=token_id,
+            pair_address=pair_address, not_before=not_before, now=current)
+        return {"watchlist": watchlist, "participation_scan": combined,
+            "hits": hits, "evidence": evidence}
+
+    def chain_meme_cohort_receipts(self, episodes: Mapping[str, Any]) -> tuple[dict, list[str]]:
+        """At most five frozen episodes; formal ledger receipts, not inferred closes."""
+        closures, bought = {}, []
+        with self._lock:
+            for episode_id, episode in list(episodes.items())[:5]:
+                frozen = episode.get("frozen") or {}
+                payload = frozen.get("payload") or frozen
+                leader = payload.get("liquidity_leader") or {}
+                members = [leader, payload.get("m5volume_leader") or {},
+                           (episode.get("handoff_state") or {}).get("handoff_target") or {}]
+                unique_members = {(m.get("token_id"), m.get("pair_address")): m for m in members
+                                  if m.get("token_id") and m.get("pair_address")}
+                for member in unique_members.values():
+                    rows = self.db.execute(
+                        "SELECT p.arm_id,p.token_id,p.closed_at,p.status,c.pair_address,c.feature_json,"
+                        "(SELECT MAX(t.recorded_at) FROM chain_meme_trader_trades t WHERE t.definition_version=p.definition_version "
+                        "AND t.arm_id=p.arm_id AND t.shadow_cohort_id=p.shadow_cohort_id AND t.side!='BUY') AS close_receipt "
+                        "FROM chain_meme_trader_positions p JOIN chain_meme_trader_v6_cohorts c ON c.id=p.shadow_cohort_id "
+                        "WHERE p.definition_version=? AND p.token_id=? AND c.pair_address=? "
+                        "AND p.arm_id IN ('clone_liquidity_leader_v1','clone_m5volume_leader_v1','clone_liquidity_handoff_v1') "
+                        "ORDER BY p.shadow_cohort_id DESC LIMIT 6",
+                        (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, member["token_id"], member["pair_address"])).fetchall()
+                    for row in rows:
+                        features = self._json_object(row["feature_json"])
+                        key = features.get("event_keys", {}).get(row["arm_id"])
+                        if key != f"{episode_id}|{row['arm_id']}":
+                            continue
+                        bought.append(key)
+                        if (row["arm_id"] == "clone_liquidity_leader_v1" and row["status"] in {"closed", "written_off"}
+                                and row["token_id"] == leader.get("token_id")):
+                            closures[episode_id] = {"token_id": row["token_id"], "pair_address": row["pair_address"],
+                                "closed_at": row["closed_at"], "closed_recorded_at": row["close_receipt"]}
+        return closures, bought
+
+    def update_chain_opportunity_regimes(self, observer_version: str, now: Any = None) -> dict:
+        """One bounded mature-outcome read; labels have no execution authority."""
+        from .opportunity_regime import classify_opportunity_regimes
+        current = parse_time(now or utcnow())
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT o.source_cohort_id,o.target_at,o.status,o.outcome_observed_at AS observed_at,"
+                "o.evaluated_at AS recorded_at,o.outcome_price_usd AS h15price,o.outcome_liquidity_usd AS h15liq,"
+                "c.token_id,c.pair_address,h.outcome_price_usd AS h0price,"
+                "s.observed_at AS baseline_at,json_extract(s.raw_json,'$.pair.pairCreatedAt') AS created_ms "
+                "FROM chain_meme_universe_outcomes o JOIN chain_meme_trader_v6_cohorts c ON c.id=o.source_cohort_id "
+                "JOIN chain_meme_universe_outcomes h ON h.observer_version=o.observer_version "
+                "AND h.source_cohort_id=o.source_cohort_id AND h.horizon_minutes=0 "
+                "JOIN token_snapshots s ON s.id=h.outcome_snapshot_id "
+                "WHERE o.observer_version=? AND o.status IN ('OBSERVED','UNKNOWN') AND o.target_at>=? "
+                "AND o.target_at<=? AND o.horizon_minutes=15 ORDER BY o.target_at DESC,o.id DESC LIMIT 1000",
+                (observer_version, iso(current - timedelta(hours=2)), iso(current))).fetchall()
+            supplied = []
+            for row in rows:
+                item = dict(row)
+                age = (parse_time(row["baseline_at"]).timestamp() - float(row["created_ms"]) / 1000
+                       if row["created_ms"] else None)
+                item["chain"] = row["token_id"].partition(":")[0]
+                item["lifecycle"] = ("unknown" if age is None else "early" if age < 900
+                                     else "growth" if age < 21600 else "mature")
+                supplied.append(item)
+            key = f"opportunity-regime:{observer_version}"
+            result = classify_opportunity_regimes(supplied, (self.get_kv(key, {}) or {}).get("state"), current)
+            result["scope"] = "bounded_enrolled_cohorts_not_full_market;latest_1000_due_rows"
+            self.set_kv(key, result)
+            return result
+
     def _capital_evidence(self, token_id, pair_address, current, kinds):
         result = {}
         for kind in kinds:
@@ -26071,7 +26291,9 @@ class Store:
             "ORDER BY id DESC LIMIT 1", (version, token_id, iso(current))).fetchone()
         if narrative and 0 <= (current - parse_time(narrative["recorded_at"])).total_seconds() <= 1800:
             context["narrative"] = {**self._json_object(narrative["payload_json"]),
-                "token_id": token_id, "pair_address": pair_address, "available_at": narrative["recorded_at"]}
+                "evidence_id": int(narrative["id"]), "token_id": token_id,
+                "pair_address": pair_address, "observed_at": narrative["observed_at"],
+                "recorded_at": narrative["recorded_at"], "available_at": narrative["recorded_at"]}
         def latest(kind):
             return self.db.execute("SELECT * FROM chain_meme_pattern_evidence WHERE definition_version=? "
                 "AND token_id=? AND pair_address=? AND kind=? AND observed_at<=? AND recorded_at<=? "
@@ -26104,6 +26326,16 @@ class Store:
         scans = self.db.execute("SELECT payload_json,recorded_at FROM chain_meme_pattern_evidence "
             "WHERE definition_version=? AND token_id=? AND pair_address=? AND kind='participation_scan' "
             "AND recorded_at<=? ORDER BY id DESC LIMIT 2", (version, token_id, pair_address, iso(current))).fetchall()
+        scan_payloads = [self._json_object(row["payload_json"]) for row in scans[::-1]]
+        if scan_payloads:
+            scan_trades = []
+            for payload in scan_payloads:
+                if isinstance(payload.get("trades"), list):
+                    scan_trades.extend(payload["trades"])
+            context["wallet_participation_scan"] = {
+                "complete": all(payload.get("complete") is True for payload in scan_payloads),
+                "trades": scan_trades,
+            }
         if len(scans) == 2 and 0 <= (current - parse_time(scans[0]["recorded_at"])).total_seconds() <= 60:
             recent, earlier = (self._json_object(r["payload_json"]) for r in scans)
             if (recent.get("complete") is True and earlier.get("complete") is True
@@ -26142,13 +26374,16 @@ class Store:
         return context
 
     def observe_chain_meme_pattern(self, token: TokenCandidate, snapshot: TokenSnapshot,
-                                   *, recorded_at: Any = None, cross_section: Mapping[str, Any] | None = None) -> int:
+                                   *, recorded_at: Any = None, cross_section: Mapping[str, Any] | None = None,
+                                   cohort_signals: Mapping[str, Any] | None = None) -> int:
         """One shared observation; separate signals from next-observed BUY fills.
 
         These isolated snapshots do not create extra opportunities for old arms.
         All pattern arms signalling on one sample share the later cohort/fill.
         """
         current = parse_time(recorded_at or utcnow())
+        cohort_mode = cohort_signals is not None
+        observation_reason = "cohort_observation" if cohort_mode else "pattern_observation"
         snapshot = replace(snapshot, ingested_at=snapshot.ingested_at or current)
         raw = dict(snapshot.raw or {})
         pair = raw.get("pair", raw)
@@ -26161,7 +26396,8 @@ class Store:
                 or float(snapshot.price_usd or 0) <= 0):
             return 0
         isolated = replace(snapshot, provider="strategy-observer:" + snapshot.provider,
-                           raw={"pair": pair, "upstream_provider": snapshot.provider})
+                           raw={"pair": pair, "upstream_provider": snapshot.provider,
+                                **({"cohort_observer": True} if cohort_mode else {})})
         if isolated.liquidity_usd is None and isinstance(pair.get("liquidity"), Mapping):
             isolated = replace(isolated, liquidity_usd=pair["liquidity"].get("usd"))
         version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
@@ -26170,12 +26406,13 @@ class Store:
             if registration is None:
                 return 0
             definition = self._chain_meme_trader_effective_definition(version, registration["definition_json"])
-            policies = [p for p in definition["policies"] if p.get("entry_match_mode") == "isolated_pattern_observer"]
+            match_mode = "isolated_cohort_observer" if cohort_mode else "isolated_pattern_observer"
+            policies = [p for p in definition["policies"] if p.get("entry_match_mode") == match_mode]
             if not policies:
                 return 0
             previous = self.db.execute(
                 "SELECT feature_json FROM chain_meme_trader_v6_entry_evaluations WHERE definition_version=? "
-                "AND token_id=? AND reason='pattern_observation' ORDER BY id DESC LIMIT 1", (version, token.token_id),
+                "AND token_id=? AND reason=? ORDER BY id DESC LIMIT 1", (version, token.token_id, observation_reason),
             ).fetchone()
             previous_features = self._json_object(previous["feature_json"]) if previous else {}
             pre_observed = previous_features.get("observed_at")
@@ -26193,12 +26430,13 @@ class Store:
             for source in self.db.execute(
                 "SELECT * FROM token_snapshots WHERE token_id=? AND observed_at>=? AND observed_at<=? "
                 "AND provider LIKE 'strategy-observer:%' "
+                "AND COALESCE(json_extract(raw_json,'$.cohort_observer'),0)=? "
                 "AND COALESCE(json_extract(raw_json,'$.allocation_source_snapshot_id'),0)=0 "
                 "AND canonical_token_address(?,COALESCE(json_extract(raw_json,'$.pair.pairAddress'),"
                 "json_extract(raw_json,'$.pairAddress')))=? "
                 "ORDER BY observed_at DESC,id DESC LIMIT 80",
                 (token.token_id, iso(decision_at - timedelta(minutes=20)), iso(decision_at),
-                 token.chain, pair_address),
+                 int(cohort_mode), token.chain, pair_address),
             ).fetchall()[::-1]:
                 source_raw = self._json_object(source["raw_json"])
                 source_pair = source_raw.get("pair", source_raw)
@@ -26243,10 +26481,10 @@ class Store:
                 elif p.get("entry_filter", {}).get("required_market_surface") == "solana_pumpswap" and (
                         token.chain != "solana" or pair.get("dexId") != "pumpswap"):
                     entry_blocked[p["arm_id"]] = "strategy_market_surface_not_supported"
-            context = self.chain_meme_pattern_context(token.token_id, pair_address, history, decision_at)
+            context = {} if cohort_mode else self.chain_meme_pattern_context(token.token_id, pair_address, history, decision_at)
             capital_context = {}
             wave_rows = {}
-            if any(p.get("capital_experiment") for p in active):
+            if not cohort_mode and any(p.get("capital_experiment") for p in active):
                 evidence = self._capital_evidence(token.token_id, pair_address, decision_at,
                     ("amountful_flow", "pool_surface", "authoritative_event", "authoritative_no_ca_amount_rank",
                      "direct_lp_entry_preflight", "observed_buyer_cohort", "token_origin"))
@@ -26300,7 +26538,139 @@ class Store:
                         gap = (decision_at-parse_time(prior["closed_at"])).total_seconds()
                         if 600 <= gap <= 14400 and p["arm_id"] not in still_open:
                             already_bought.discard(p["arm_id"])
+            mature_result = None
+            mature_policy = next((p for p in active
+                if p.get("entry_family") == "mature_new_acceptance"), None)
+            if not cohort_mode and mature_policy is not None:
+                from .mature_acceptance import evaluate_mature_acceptance
+                mature_result = evaluate_mature_acceptance(
+                    history, context.get("narrative"),
+                    previous_features.get("mature_acceptance_state"),
+                    decision_at=iso(decision_at),
+                    activated_at=mature_policy["forward_started_at"],
+                )
+            wallet_entry_results = {}
+            wallet_entry_policies = [p for p in active
+                if p.get("entry_family") == "wallet_confirmed_broad_opportunity"]
+            if not cohort_mode and wallet_entry_policies:
+                from .wallet_observer_experiments import evaluate_wallet_confirmed_entry
+                prior_states = previous_features.get("wallet_entry_states") or {}
+                latest = history[-1]
+                activity = (float(latest.get("buys") or 0) + float(latest.get("sells") or 0) >= 3
+                    or float(latest.get("volume") or 0) >= 200)
+                initial_opportunity = None
+                if (0 <= float(latest.get("pool_age_seconds") or -1) <= 900
+                        and activity
+                        and float(latest.get("liquidity") or 0) >= CHAIN_MEME_MIN_POOL_LIQUIDITY_USD):
+                    initial_opportunity = {"opportunity_id": f"passive-broad:{token.token_id}:{pair_address}",
+                        "source_snapshot_id": latest["id"], "token_id": token.token_id,
+                        "pair_address": pair_address, "broad_like": True, "original_pool": True,
+                        "observed_at": latest["observed_at"], "recorded_at": latest["recorded_at"]}
+                wallet_observations = {}
+                for wallet_policy in wallet_entry_policies:
+                    arm = wallet_policy["arm_id"]
+                    prior_state = dict(prior_states.get(arm) or {})
+                    frozen = prior_state.get("opportunity")
+                    if isinstance(frozen, Mapping) and (
+                            frozen.get("token_id") != token.token_id
+                            or frozen.get("pair_address") != pair_address):
+                        prior_state = {"seen_opportunity_ids": prior_state.get("seen_opportunity_ids", [])}
+                        frozen = None
+                    opportunity = ({**dict(frozen), "broad_like": True, "original_pool": True}
+                        if isinstance(frozen, Mapping) else initial_opportunity)
+                    if opportunity is None:
+                        wallet_entry_results[arm] = ("WAIT", "awaiting_wallet_broad_opportunity",
+                            prior_state, {"strategy": "watched_wallet_confirmed_entry"})
+                        continue
+                    seen = set(str(value) for value in prior_state.get("seen_opportunity_ids", []))
+                    if (not isinstance(frozen, Mapping)
+                            and str(opportunity["opportunity_id"]) in seen):
+                        wallet_entry_results[arm] = ("WAIT", "wallet_opportunity_already_consumed",
+                            prior_state, {"strategy": "watched_wallet_confirmed_entry",
+                                "opportunity_id": opportunity["opportunity_id"]})
+                        continue
+                    observation_key = (opportunity["opportunity_id"], opportunity["recorded_at"])
+                    if observation_key not in wallet_observations:
+                        wallet_observations[observation_key] = self.chain_meme_wallet_participation_hits(
+                            token.token_id, pair_address, not_before=opportunity["recorded_at"],
+                            now=decision_at, scan=context.get("wallet_participation_scan"),
+                        )
+                    result = evaluate_wallet_confirmed_entry(
+                        opportunity, wallet_observations[observation_key], prior_state, now=decision_at,
+                        role=wallet_policy["wallet_entry_role"],
+                        policy=wallet_policy["wallet_entry_policy"],
+                    )
+                    if isinstance(result[2].get("opportunity"), dict):
+                        result[2]["opportunity"]["source_snapshot_id"] = opportunity.get("source_snapshot_id")
+                    result[3]["opportunity_source_snapshot_id"] = opportunity.get("source_snapshot_id")
+                    wallet_entry_results[arm] = result
             event_keys = {}
+            accepted_cohort_signals = {}
+            if cohort_mode:
+                # The separate namespace cannot consume or overwrite old pattern intents.
+                candidates = {**previous_features.get("cohort_signals", {}), **dict(cohort_signals)}
+                for policy in active:
+                    arm = policy["arm_id"]
+                    signal = candidates.get(arm) or {}
+                    selected = signal.get("selected") or {}
+                    signal_at = signal.get("observed_at")
+                    captured_at = signal.get("recorded_at")
+                    if (not signal_at or not captured_at or not signal.get("decision_key")
+                            or selected.get("token_id") != token.token_id
+                            or canonical_token_address(token.chain, str(selected.get("pair_address") or "")) != pair_address
+                            or not parse_time(policy["forward_started_at"]) <= parse_time(signal_at)
+                            <= parse_time(captured_at) <= decision_at
+                            or not 0 <= (decision_at - parse_time(signal_at)).total_seconds() <= 60):
+                        continue
+                    event_keys[arm] = str(signal["decision_key"])
+                    accepted_cohort_signals[arm] = signal
+                    used = self.db.execute(
+                        "SELECT 1 FROM chain_meme_trader_positions p JOIN chain_meme_trader_v6_cohorts c "
+                        "ON c.id=p.shadow_cohort_id WHERE p.definition_version=? AND p.arm_id=? AND p.token_id=? "
+                        "AND json_extract(c.feature_json,?)=? LIMIT 1",
+                        (version, arm, token.token_id, '$.event_keys."'+arm+'"', event_keys[arm])).fetchone()
+                    if used or arm in still_open:
+                        entry_blocked[arm] = "cohort_event_consumed_or_position_open"
+                    else:
+                        already_bought.discard(arm)
+            if mature_result is not None:
+                mature_arm = mature_policy["arm_id"]
+                mature_episode = mature_result[2].get("episode") or {}
+                mature_event_key = mature_episode.get("episode_id")
+                if mature_event_key:
+                    event_keys[mature_arm] = str(mature_event_key)
+                    used = self.db.execute(
+                        "SELECT 1 FROM chain_meme_trader_positions p JOIN chain_meme_trader_v6_cohorts c "
+                        "ON c.id=p.shadow_cohort_id WHERE p.definition_version=? AND p.arm_id=? AND p.token_id=? "
+                        "AND json_extract(c.feature_json,?)=? LIMIT 1",
+                        (version, mature_arm, token.token_id,
+                         '$.event_keys."'+mature_arm+'"', str(mature_event_key)),
+                    ).fetchone()
+                    if mature_arm in still_open:
+                        entry_blocked[mature_arm] = "mature_acceptance_position_still_open"
+                    elif used:
+                        entry_blocked[mature_arm] = "mature_acceptance_event_already_consumed"
+                    else:
+                        already_bought.discard(mature_arm)
+            for arm, result in wallet_entry_results.items():
+                opportunity = result[2].get("opportunity") or {}
+                opportunity_id = opportunity.get("opportunity_id")
+                if not opportunity_id:
+                    continue
+                event_key = f"wallet-opportunity:{opportunity_id}"
+                event_keys[arm] = event_key
+                used = self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_positions p JOIN chain_meme_trader_v6_cohorts c "
+                    "ON c.id=p.shadow_cohort_id WHERE p.definition_version=? AND p.arm_id=? AND p.token_id=? "
+                    "AND json_extract(c.feature_json,?)=? LIMIT 1",
+                    (version, arm, token.token_id, '$.event_keys."'+arm+'"', event_key),
+                ).fetchone()
+                if arm in still_open:
+                    entry_blocked[arm] = "wallet_entry_position_still_open"
+                elif used:
+                    entry_blocked[arm] = "wallet_opportunity_already_consumed"
+                else:
+                    already_bought.discard(arm)
             for policy in active:
                 if policy.get("entry_family") not in {"event_reawakening", "surface_lifecycle_pipeline", "fast_stop_reclaim", "no_ca_event_flow_leader", "direct_lp_amount_specific_confirmed", "official_event_actual_flow"}:
                     continue
@@ -26334,7 +26704,16 @@ class Store:
                         already_bought.discard(arm)
             ready, outcomes = [], {}
             for policy in active:
-                if policy.get("capital_experiment"):
+                if cohort_mode:
+                    passed = policy["arm_id"] in accepted_cohort_signals
+                    reason = "cohort_frozen_opportunity_ready" if passed else "wait_passive_cohort_opportunity"
+                elif policy["arm_id"] in wallet_entry_results:
+                    passed = wallet_entry_results[policy["arm_id"]][0] == "READY"
+                    reason = wallet_entry_results[policy["arm_id"]][1]
+                elif (mature_result is not None
+                        and policy.get("entry_family") == "mature_new_acceptance"):
+                    passed, reason = mature_result[:2]
+                elif policy.get("capital_experiment"):
                     own_context = dict(capital_context)
                     if policy["arm_id"] in wave_rows:
                         own_context.update(capital_context_from_observations(history, evidence,
@@ -26357,7 +26736,8 @@ class Store:
                     ready.append(policy["arm_id"])
             admitted_arms = [p["arm_id"] for p in active if post_valid and p["arm_id"] in pending
                              and p["arm_id"] not in already_bought and p["arm_id"] not in entry_blocked
-                             and (p.get("entry_family") not in {"event_reawakening", "surface_lifecycle_pipeline", "fast_stop_reclaim", "no_ca_event_flow_leader", "direct_lp_amount_specific_confirmed", "official_event_actual_flow"} or
+                             and (not cohort_mode or previous_features.get("event_keys", {}).get(p["arm_id"]) == event_keys.get(p["arm_id"]) and p["arm_id"] in accepted_cohort_signals)
+                             and (p.get("entry_family") not in {"event_reawakening", "surface_lifecycle_pipeline", "fast_stop_reclaim", "no_ca_event_flow_leader", "direct_lp_amount_specific_confirmed", "official_event_actual_flow", "mature_new_acceptance", "wallet_confirmed_broad_opportunity"} or
                                   previous_features.get("event_keys", {}).get(p["arm_id"]) == event_keys.get(p["arm_id"]))]
             paired = {}
             for p in active:
@@ -26381,7 +26761,20 @@ class Store:
                             "surface_evidence_id": (capital_context.get("surface") or {}).get("evidence_id")}
                             for p in active if p.get("entry_family") == "surface_lifecycle_pipeline"},
                         "entry_signal_key": "isolated_patterns/v1", "policy_entry_family": "pattern_experiments"}
+            if mature_result is not None:
+                features.update(mature_acceptance_state=mature_result[2],
+                    mature_acceptance_evidence=mature_result[3])
+            if wallet_entry_results:
+                features.update(
+                    wallet_entry_states={arm: result[2] for arm, result in wallet_entry_results.items()},
+                    wallet_entry_evidence={arm: result[3] for arm, result in wallet_entry_results.items()},
+                )
+            if cohort_mode:
+                features.update(cohort_signals=accepted_cohort_signals,
+                    entry_signal_key="isolated_cohorts/v1", policy_entry_family="cohort_experiments")
             projected = 0
+            mature_projected = False
+            wallet_projected_arms = set()
             with self.db:
                 by_notional = {}
                 for p in active:
@@ -26421,13 +26814,41 @@ class Store:
                             (version, arm, cohort, token.token_id, allocation_snapshot_id, iso(allocation_at),
                              "admitted" if enough else "rejected", "pattern_next_observation" if enough else
                              "ranker_concurrent_slot_limit" if slots >= 3 else "entry_cash_below_order_size"))
-                    projected += self._project_chain_meme_trader_market_entry(version=version, cohort_id=cohort,
+                    group_projected = self._project_chain_meme_trader_market_entry(version=version, cohort_id=cohort,
                         token_id=token.token_id, snapshot_id=allocation_snapshot_id, market_price=float(snapshot.price_usd),
                         filled_at=iso(allocation_at), reason="pattern_next_observation",
                         definition={**definition, "policy_notional_usd": notional},
                         net_flow_by_arm=net_flows)
-                self.db.execute("INSERT INTO chain_meme_trader_v6_entry_evaluations(definition_version,source_snapshot_id,token_id,evaluated_at,status,entry_family,reason,feature_json) VALUES(?,?,?,?,?,NULL,'pattern_observation',?)",
-                    (version, snapshot_id, token.token_id, iso(decision_at), "admitted" if projected else "rejected", self._json(features)))
+                    projected += group_projected
+                    if (mature_policy is not None and mature_policy["arm_id"] in cohort_arms
+                            and self.db.execute(
+                                "SELECT 1 FROM chain_meme_trader_positions WHERE definition_version=? "
+                                "AND arm_id=? AND shadow_cohort_id=?",
+                                (version, mature_policy["arm_id"], cohort),
+                            ).fetchone() is not None):
+                        mature_projected = True
+                    for arm in set(cohort_arms) & set(wallet_entry_results):
+                        if self.db.execute(
+                            "SELECT 1 FROM chain_meme_trader_positions WHERE definition_version=? "
+                            "AND arm_id=? AND shadow_cohort_id=?", (version, arm, cohort),
+                        ).fetchone() is not None:
+                            wallet_projected_arms.add(arm)
+                if mature_projected:
+                    consumed = dict(features["mature_acceptance_state"])
+                    consumed.pop("episode", None)
+                    consumed["status"] = "CONSUMED"
+                    features["mature_acceptance_state"] = consumed
+                for arm in wallet_projected_arms:
+                    consumed = dict(features["wallet_entry_states"][arm])
+                    opportunity = consumed.pop("opportunity", {})
+                    seen = list(consumed.get("seen_opportunity_ids") or [])[-7:]
+                    opportunity_id = opportunity.get("opportunity_id")
+                    if opportunity_id and opportunity_id not in seen:
+                        seen.append(opportunity_id)
+                    consumed.update(status="CONSUMED", seen_opportunity_ids=seen)
+                    features["wallet_entry_states"][arm] = consumed
+                self.db.execute("INSERT INTO chain_meme_trader_v6_entry_evaluations(definition_version,source_snapshot_id,token_id,evaluated_at,status,entry_family,reason,feature_json) VALUES(?,?,?,?,?,NULL,?,?)",
+                    (version, snapshot_id, token.token_id, iso(decision_at), "admitted" if projected else "rejected", observation_reason, self._json(features)))
             return projected
 
     def register_chain_meme_v21_vault_shadow(
@@ -27151,7 +27572,7 @@ class Store:
                 int(self.db.execute(
                     "SELECT COALESCE(MAX(source_snapshot_id),0) FROM "
                     "chain_meme_trader_v6_entry_evaluations WHERE "
-                    "definition_version=? AND reason!='pattern_observation'",
+                    "definition_version=? AND reason NOT IN ('pattern_observation','cohort_observation')",
                     (version,),
                 ).fetchone()[0]),
             )
@@ -30657,6 +31078,172 @@ class Store:
         )
         return 1
 
+    @staticmethod
+    def _is_chain_meme_staged_probe(policy: Mapping[str, Any]) -> bool:
+        return str(policy.get("probe_kind") or "") == "bounded_5u_then_shadow_15u"
+
+    def _advance_chain_meme_staged_probe(
+        self, position: Mapping[str, Any], policy: Mapping[str, Any], current: datetime,
+    ) -> tuple[str, str, Mapping[str, Any]] | None:
+        """Advance S03 from only the current exact-pool mark."""
+        if not self._is_chain_meme_staged_probe(policy):
+            return None
+        from .staged_probe import SHADOW_BUY, evaluate_staged_probe
+
+        outer = self._json_object(position["capital_exit_state_json"])
+        previous = outer.get("staged_probe")
+        previous = dict(previous) if isinstance(previous, Mapping) else {}
+        price = position["mark_price_usd"]
+        remaining_quantity = float(position["remaining_quantity_tokens"] or 0.0)
+        frame = {
+            "frame_id": (
+                f"staged-probe:{position['sample_sequence']}:"
+                f"{position['mark_observed_at']}"
+            ),
+            "token_id": str(position["token_id"]),
+            "pair_address": str(position["mark_pair_address"] or ""),
+            "original_pool": (
+                str(position["mark_status"] or "") == "VISIBLE"
+                and self.chain_meme_market_pool_matches(
+                    str(position["token_id"]), position["entry_pair_address"],
+                    position["mark_pair_address"],
+                )
+            ),
+            "observed_at": position["mark_observed_at"],
+            "recorded_at": position["mark_recorded_at"],
+            "price_usd": price,
+            "liquidity_usd": position["mark_liquidity_usd"],
+            "net_recovery_usd": (
+                remaining_quantity * float(price) * 0.96
+                if price is not None else None
+            ),
+        }
+        adapted = {
+            **dict(position),
+            "pair_address": str(position["entry_pair_address"] or ""),
+            "probe_cost_usd": float(position["stake_usd"]),
+        }
+        action, reason, new_state, evidence = evaluate_staged_probe(
+            adapted, frame, previous, now=current,
+            policy=policy.get("probe_policy") or None,
+        ) if policy.get("probe_policy") else evaluate_staged_probe(
+            adapted, frame, previous, now=current,
+        )
+        if action == SHADOW_BUY:
+            totals = self.db.execute(
+                "SELECT COALESCE(SUM(CAST(json_extract(capital_exit_state_json,"
+                "'$.staged_probe.shadow_fill.notional_usd') AS REAL)),0),"
+                "COALESCE(SUM(CAST(json_extract(capital_exit_state_json,"
+                "'$.staged_probe.shadow_exit.shadow_net_recovery_usd') AS REAL)),0) "
+                "FROM chain_meme_trader_positions WHERE definition_version=? AND arm_id=?",
+                (str(position["definition_version"]), str(position["arm_id"])),
+            ).fetchone()
+            spent, recovered = float(totals[0]), float(totals[1])
+            available = 1000.0 - spent + recovered
+            requested = float((new_state.get("shadow_fill") or {}).get("notional_usd") or 0.0)
+            if requested <= 0.0 or available + 1e-9 < requested:
+                new_state.pop("shadow_fill", None)
+                new_state["status"] = "COMPLETE_NO_SHADOW"
+                new_state["budget_rejected"] = {
+                    "reason": "shadow_account_cash_below_15_usd",
+                    "available_cash_usd": available,
+                    "requested_cash_usd": requested,
+                    "frame_id": frame["frame_id"],
+                    "observed_at": frame["observed_at"],
+                }
+                action, reason = "HOLD", "shadow_account_cash_below_15_usd"
+            else:
+                new_state["shadow_account"] = {
+                    "starting_cash_usd": 1000.0,
+                    "cash_before_fill_usd": available,
+                    "cash_after_fill_usd": available - requested,
+                    "formal_ledger_affected": False,
+                }
+        if new_state != previous:
+            outer["staged_probe"] = new_state
+            self.db.execute(
+                "UPDATE chain_meme_trader_positions SET capital_exit_state_json=? "
+                "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+                (
+                    self._json(outer), str(position["definition_version"]),
+                    str(position["arm_id"]), int(position["shadow_cohort_id"]),
+                ),
+            )
+        return action, reason, evidence
+
+    def _settle_chain_meme_staged_probe_shadow(
+        self, *, position: Mapping[str, Any], policy: Mapping[str, Any],
+        marker_id: str, observed_at: Any, recorded_at: Any,
+        formal_quantity_tokens: float, formal_net_recovery_usd: float,
+        closes: bool, writeoff: bool = False, confirmed_at: Any = None,
+    ) -> None:
+        """Settle only S03 Shadow state; never append to the formal ledger."""
+        if not self._is_chain_meme_staged_probe(policy):
+            return
+        outer = self._json_object(position["capital_exit_state_json"])
+        previous = outer.get("staged_probe")
+        if not isinstance(previous, Mapping) or previous.get("status") != "SHADOW_OPEN":
+            return
+        state = dict(previous)
+        shadow_fill = state.get("shadow_fill")
+        if not isinstance(shadow_fill, Mapping):
+            return
+        if writeoff:
+            shadow_cost = float(shadow_fill.get("notional_usd") or 0.0)
+            state["status"] = "SHADOW_CLOSED"
+            state["shadow_exit"] = {
+                "marker_id": marker_id,
+                "observed_at": observed_at,
+                "recorded_at": recorded_at,
+                "confirmed_at": confirmed_at,
+                "evidence_kind": "fresh_pool_below_floor" if observed_at else "confirmed_pool_missing",
+                "formal_exit_quantity_tokens": formal_quantity_tokens,
+                "formal_exit_net_recovery_usd": 0.0,
+                "net_exit_price_per_token_usd": 0.0,
+                "shadow_net_recovery_usd": 0.0,
+                "shadow_net_pnl_usd": -shadow_cost,
+                "shadow_return": -1.0,
+                "settlement_kind": "terminal_formal_writeoff",
+                "affects_formal_pnl": False,
+                "formal_quantity_unchanged": True,
+            }
+        else:
+            from .staged_probe import evaluate_staged_probe
+            frame = {
+                "frame_id": marker_id,
+                "event_kind": "formal_exit_quote",
+                "token_id": str(position["token_id"]),
+                "pair_address": str(position["entry_pair_address"] or ""),
+                "original_pool": True,
+                "observed_at": observed_at,
+                "recorded_at": recorded_at,
+                "formal_exit_quantity_tokens": formal_quantity_tokens,
+                "formal_exit_net_recovery_usd": formal_net_recovery_usd,
+                "formal_exit_closes_position": closes,
+            }
+            adapted = {**dict(position), "pair_address": frame["pair_address"]}
+            _, _, state, _ = evaluate_staged_probe(
+                adapted, frame, state, now=recorded_at,
+                policy=policy.get("probe_policy") or None,
+            ) if policy.get("probe_policy") else evaluate_staged_probe(
+                adapted, frame, state, now=recorded_at,
+            )
+            state["formal_exit_settlement"] = {
+                "marker_id": marker_id,
+                "kind": "final_close" if closes else "partial_exit_shadow_remains_open",
+                "formal_quantity_tokens": formal_quantity_tokens,
+                "formal_net_recovery_usd": formal_net_recovery_usd,
+            }
+        outer["staged_probe"] = state
+        self.db.execute(
+            "UPDATE chain_meme_trader_positions SET capital_exit_state_json=? "
+            "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+            (
+                self._json(outer), str(position["definition_version"]),
+                str(position["arm_id"]), int(position["shadow_cohort_id"]),
+            ),
+        )
+
     def _capital_exit_result(self, position, policy, current, shared):
         """Bounded, shared input reads; only additive arms carry these states."""
         kind = policy["capital_exit_kind"]
@@ -30685,6 +31272,31 @@ class Store:
             evaluator = (evaluate_l0_continuation_failure if kind == "l0_continuation_failure"
                          else evaluate_l0_profit_lock)
             result = evaluator(adapted, frame, state, now=current, policy=policy["capital_exit_policy"])
+        elif kind == "watched_wallet_distribution":
+            from .wallet_observer_experiments import evaluate_wallet_distribution_exit
+            wallet = self.chain_meme_wallet_participation_hits(
+                token, pair, not_before=position["opened_at"], now=current,
+                shared=shared,
+            )
+            mark_pair = canonical_token_address(
+                str(token).partition(":")[0], str(position["mark_pair_address"] or "")
+            )
+            frame = {
+                "frame_id": f"wallet:{position['sample_sequence']}:{position['mark_observed_at']}",
+                "token_id": token,
+                "pair_address": mark_pair,
+                "original_pool": position["mark_status"] == "VISIBLE" and mark_pair == pair,
+                "observed_at": position["mark_observed_at"],
+                "recorded_at": position["mark_recorded_at"],
+                "price_usd": position["mark_price_usd"],
+                "liquidity_usd": position["mark_liquidity_usd"],
+                "watchlist": wallet["watchlist"],
+                "participation_scan": wallet["participation_scan"],
+            }
+            result = evaluate_wallet_distribution_exit(
+                {**dict(position), "pair_address": pair}, frame, state,
+                now=current, policy=policy["wallet_exit_policy"],
+            )
         elif kind == "executable_recovery_decay":
             evidence_id = (state.get("quote_lane") or {}).get("last_evidence_id")
             row = self.db.execute("SELECT * FROM chain_meme_pattern_evidence WHERE id=? "
@@ -31636,6 +32248,15 @@ class Store:
                 if "terminal_dust_pool" in evidence
                 else "dex_pair_missing_over_60_seconds_writeoff"
             )
+            dust = evidence.get("terminal_dust_pool") or {}
+            self._settle_chain_meme_staged_probe_shadow(
+                position=position, policy=policy,
+                marker_id=f"staged-probe-writeoff:{mark_id}",
+                observed_at=dust.get("observed_at"), recorded_at=dust.get("recorded_at"),
+                confirmed_at=completed_at,
+                formal_quantity_tokens=float(position["remaining_quantity_tokens"] or 0.0),
+                formal_net_recovery_usd=0.0, closes=True, writeoff=True,
+            )
             self.db.execute(
                 "UPDATE chain_meme_trader_positions SET status='written_off',amount_raw='0',"
                 "remaining_quantity_tokens=0,"
@@ -31782,6 +32403,21 @@ class Store:
         new_allocated = float(position["allocated_cost_usd"] or 0.0) + cost_delta
         cumulative_pnl = new_proceeds - new_allocated
         closes = new_amount <= 0
+        formal_quantity = (
+            float(position["remaining_quantity_tokens"] or 0.0)
+            * sold_amount / current_amount
+        )
+        post_observed_at = (
+            post_confirmation.get("observed_at")
+            if isinstance(post_confirmation, Mapping) else post_recorded_at
+        )
+        self._settle_chain_meme_staged_probe_shadow(
+            position=position, policy=policy,
+            marker_id=f"staged-probe-formal-fill:{fill_id}",
+            observed_at=post_observed_at, recorded_at=post_recorded_at,
+            formal_quantity_tokens=formal_quantity,
+            formal_net_recovery_usd=gross, closes=closes,
+        )
         current_tp = int(position["next_tp_index"] or 0)
         reason = str(mark["reason"]) + (
             ":jupiter_amountful_paper_fill" if amountful_quote is not None else ":dex_mark_paper_fill")
@@ -32281,6 +32917,8 @@ class Store:
                     continue
                 arm_id = str(position["arm_id"])
                 policy = policies.get(arm_id) or {}
+                if position["pending_mark_id"] is None:
+                    self._advance_chain_meme_staged_probe(position, policy, current)
                 elapsed = max(
                     0.0,
                     (current - parse_time(position["opened_at"])).total_seconds() / 60.0,

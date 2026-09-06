@@ -14,6 +14,7 @@ import tempfile
 import threading
 import urllib.parse
 import urllib.request
+from collections import deque
 from dataclasses import asdict
 from datetime import timedelta
 from decimal import Decimal, ROUND_DOWN
@@ -1335,6 +1336,15 @@ class Runtime:
                     self.store.register_chain_meme_evidence_completion_experiments()
                     self.store.register_chain_meme_cycle_volatility_experiments()
                     self.store.register_chain_meme_l0_experiments()
+                    self.store.register_chain_meme_cohort_experiments()
+                    self.store.register_chain_meme_staged_probe()
+                    self.store.register_chain_meme_mature_acceptance()
+                    self.store.register_chain_meme_wallet_observers()
+                    self._cohort_started_at = utcnow()
+                    self._cohort_state = self.store.get_kv(
+                        f"passive-cohort:{self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION}", {})
+                    # Restart can resume frozen episodes, but never replays missed quotes.
+                    self._cohort_started_at = parse_time(self._cohort_state.get("activated_at") or self._cohort_started_at)
                     self._chain_outcome_version = f"{self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION}/outcomes-v1"
                     self.store.register_chain_meme_universe_outcomes(
                         observer_version=self._chain_outcome_version,
@@ -5547,6 +5557,9 @@ class Runtime:
             self.store.finalize_chain_meme_universe_outcomes,
             observer_version=self._chain_outcome_version, limit=32,
         )
+        if finalized["observed"] or finalized["unknown"]:
+            await self._chain_meme_active_idle().wait()
+            await asyncio.to_thread(self.store.update_chain_opportunity_regimes, self._chain_outcome_version)
         self.store.heartbeat("chain_universe_outcomes", item=bool(
             enrolled["targets_enrolled"] or finalized["observed"] or finalized["unknown"]))
 
@@ -6859,6 +6872,11 @@ class Runtime:
     def _remember_pattern_quotes(self, quoted: dict) -> None:
         """Bounded passive watch: reuse discovery/held/flat quotes, no I/O here."""
         current = utcnow()
+        if quoted and hasattr(self, "_cohort_started_at"):
+            if not hasattr(self, "_cohort_batches"):
+                self._cohort_batches = deque(maxlen=8)
+            # References only; the low-priority worker does parsing and calculation.
+            self._cohort_batches.append((current, list(quoted.values())[:200]))
         held = getattr(self, "_pattern_held_tokens", set())
         watch, occupied = {}, {}
         for key, item in getattr(self, "_pattern_watch", {}).items():
@@ -6900,6 +6918,101 @@ class Runtime:
             if token_id not in held:
                 occupied[slot] = occupied.get(slot, 0) + 1
         self._pattern_watch = watch
+
+    async def chain_meme_cohort_observer_once(self) -> None:
+        from .cohort_experiments import consume_passive_cohort_batch
+        phase_started = asyncio.get_running_loop().time()
+        batches = getattr(self, "_cohort_batches", None)
+        if not batches:
+            return
+        await self._chain_meme_active_idle().wait()
+        state = getattr(self, "_cohort_state", {})
+        closures, bought = await asyncio.to_thread(
+            self.store.chain_meme_cohort_receipts, state.get("clone_episodes", {}))
+        pending = getattr(self, "_cohort_pending", {})
+        sampled = projected = 0
+        for _ in range(min(len(batches), 8)):
+            received, values = batches.popleft()
+            frames, quotes = [], {}
+            for token, snapshot in values:
+                raw = snapshot.raw or {}
+                pair = raw.get("pair", raw)
+                address = canonical_token_address(token.chain, str(pair.get("pairAddress") or ""))
+                created = pair.get("pairCreatedAt")
+                if not created or not address or self._paper_quote_rejections(token.token_id, token, snapshot, received):
+                    continue
+                age = snapshot.observed_at.timestamp() - float(created) / 1000
+                if age < 0:
+                    continue
+                identity = (token.token_id, address)
+                histories = state.get("token_frames", {}).get(f"{identity[0]}|{identity[1]}", [])
+                first_seen = (histories[0].get("discovered_at") if histories else None) or iso(received)
+                # This is local first observation, not a claimed global creation time.
+                frames.append({"token_id": token.token_id, "pair_address": address, "chain": token.chain,
+                    "lifecycle": "early" if age < 900 else "growth" if age < 21600 else "mature",
+                    "normalized_symbol": (token.symbol or "").strip().casefold(),
+                    "observed_at": iso(snapshot.observed_at), "recorded_at": iso(received),
+                    "discovered_at": first_seen, "original_pool": True,
+                    "price_usd": snapshot.price_usd, "liquidity_usd": snapshot.liquidity_usd,
+                    "volume_5m_usd": snapshot.volume_5m_usd,
+                    "pool_age_seconds": age, "buys_5m": snapshot.buys_5m, "sells_5m": snapshot.sells_5m,
+                    "is_held": token.token_id in getattr(self, "_pattern_held_tokens", set())})
+                quotes[identity] = (token, snapshot)
+            now = utcnow()
+            state, signals = consume_passive_cohort_batch(frames, state, now=now,
+                activated_at=self._cohort_started_at, closed_leaders=closures, already_bought=bought)
+            for frame in frames:
+                activity = ((float(frame["buys_5m"] or 0) + float(frame["sells_5m"] or 0) >= 3)
+                            or float(frame["volume_5m_usd"] or 0) >= 200)
+                if not (0 <= frame["pool_age_seconds"] <= 900 and activity
+                        and frame["liquidity_usd"] is not None and frame["liquidity_usd"] >= 100
+                        and self._cohort_started_at <= parse_time(frame["observed_at"]) <= received <= now
+                        and (now - parse_time(frame["observed_at"])).total_seconds() <= 30):
+                    continue
+                identity = (frame["token_id"], frame["pair_address"])
+                arms = ["staged_probe_20u_once_control_v1", "staged_probe_5u_only_control_v1",
+                        "staged_probe_5u_conditional_15u_shadow_v1"]
+                if frame["chain"] == "solana":
+                    arms.extend(("watched_wallet_distribution_candidate_v1", "watched_wallet_distribution_control_v1"))
+                episode = f"passive-broad:{identity[0]}:{identity[1]}"
+                for arm in arms:
+                    signals.setdefault(identity, {})[arm] = {"episode_id": episode,
+                        "decision_key": f"{episode}|{arm}", "selected": {
+                            "token_id": identity[0], "pair_address": identity[1]},
+                        "decision_evidence": dict(frame), "scope": "same_passive_broad_initial_opportunity"}
+            for identity, arm_signals in signals.items():
+                if identity not in quotes:
+                    continue
+                _, snapshot = quotes[identity]
+                pending[identity] = {"expires": now + timedelta(seconds=60), "signals": {
+                    arm: {**signal, "observed_at": iso(snapshot.observed_at), "recorded_at": iso(received)}
+                    for arm, signal in arm_signals.items()}}
+            for identity in list(pending):
+                item = pending[identity]
+                if item["expires"] < now:
+                    pending.pop(identity, None)
+                    continue
+                if identity not in quotes:
+                    continue
+                await self._chain_meme_active_idle().wait()
+                token, snapshot = quotes[identity]
+                projected += await asyncio.to_thread(self.store.observe_chain_meme_pattern,
+                    token, snapshot, recorded_at=now, cohort_signals=item["signals"])
+                sampled += 1
+            await asyncio.sleep(0)
+        state["activated_at"] = iso(self._cohort_started_at)
+        self._cohort_state, self._cohort_pending = state, pending
+        last_saved = getattr(self, "_cohort_saved_at", None)
+        if last_saved is None or (utcnow() - last_saved).total_seconds() >= 60:
+            await asyncio.to_thread(self.store.set_kv,
+                f"passive-cohort:{self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION}", state)
+            self._cohort_saved_at = utcnow()
+        self.store.heartbeat("chain-meme-cohort-observer", item=sampled > 0,
+            error_detail=f"tokens={len(state.get('token_frames', {}))};clone_episodes={len(state.get('clone_episodes', {}))};"
+                         f"resilience_episodes={len(state.get('resilience_episodes', {}))};sampled={sampled};projected={projected};extra_requests=0")
+        if hasattr(self, "runtime_timing"):
+            self.runtime_timing.observe("cohort_passive_compute",
+                asyncio.get_running_loop().time() - phase_started, items=sampled)
 
     async def chain_meme_pattern_observer_once(self) -> None:
         """At most 30 non-held candidates; held quotes reuse the core lane."""
@@ -7953,6 +8066,10 @@ class Runtime:
                     self._periodic("chain_meme_pattern_observer", 15,
                                    self.chain_meme_pattern_observer_once),
                     name="chain_meme_pattern_observer",
+                ),
+                asyncio.create_task(
+                    self._periodic("chain_meme_cohort_observer", 10, self.chain_meme_cohort_observer_once),
+                    name="chain_meme_cohort_observer",
                 ),
                 asyncio.create_task(
                     self._periodic("chain_meme_pattern_pools", 15, self.chain_meme_pattern_pools_once),
