@@ -60,6 +60,21 @@ def _entry_frame(target, observed):
     }
 
 
+def test_clone_entry_shared_floor_can_be_lowered_or_raised():
+    from memetrader.cohort_experiments import CLONE_EPISODE_POLICY
+    now = datetime(2026, 9, 6, tzinfo=UTC)
+    _, episode, evidence = _clone_episode(now)
+    target = evidence["liquidity_leader"]
+    frame = _entry_frame(target, now + timedelta(seconds=1))
+    frame["liquidity_usd"] = 100.0
+    def evaluate(floor):
+        return evaluate_clone_leader_entry(episode, frame, leader_kind="liquidity",
+            decision_at=now + timedelta(seconds=2), activated_at=now - timedelta(hours=1),
+            policy={**CLONE_EPISODE_POLICY, "min_pool_liquidity_usd": floor})[0]
+    assert evaluate(100.0) == "SELECT"
+    assert evaluate(1000.0) == "WAIT"
+
+
 def test_policy_shapes_use_opportunity_pairing_not_same_buy_pairing():
     policies = cohort_experiment_policies()
     assert len(policies) == 5

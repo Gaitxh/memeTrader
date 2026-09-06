@@ -73,6 +73,25 @@ def test_engineering_rows_excluded_not_added_to_profit(db, table):
     assert source["excluded"]["engineering_pollution"] == 1
 
 
+def test_position_void_known_by_cutoff_is_excluded_but_future_void_is_not(db):
+    assert len(load_competing_risk_samples(db, "v", CUTOFF)["samples"]) == 21
+    db.execute("""CREATE TABLE chain_meme_trader_position_voids(
+        definition_version,arm_id,shadow_cohort_id,source_buy_trade_id,
+        reason,evidence_json,archive_json,recorded_at)""")
+    db.execute(
+        "INSERT INTO chain_meme_trader_position_voids VALUES(?,?,?,?,?,?,?,?)",
+        ("v", "a", 20, 40, "void", "{}", "{}", CLOSE),
+    )
+    db.execute(
+        "INSERT INTO chain_meme_trader_position_voids VALUES(?,?,?,?,?,?,?,?)",
+        ("v", "a", 21, 42, "future", "{}", "{}", "2026-09-05T12:03:00Z"),
+    )
+    source = load_competing_risk_samples(db, "v", CUTOFF)
+    assert len(source["samples"]) == 20
+    assert source["excluded"]["engineering_pollution"] == 1
+    assert {sample["shadow_cohort_id"] for sample in source["samples"]} == set(range(1, 20)) | {21}
+
+
 @pytest.mark.parametrize("sql", [
     "UPDATE token_snapshots SET recorded_at='2026-09-05T12:00:02Z' WHERE id=21",
     "UPDATE token_snapshots SET ingested_at=NULL WHERE id=21",

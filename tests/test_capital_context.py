@@ -139,6 +139,13 @@ def test_builds_market_value_cost_partial_and_actual_native_flow():
     )[0] == SELL
 
 
+def test_capital_context_uses_sell_slippage_and_one_fixed_fee():
+    mark = {**market(), "slippage_bps": 200, "additional_fee_usd_each_fill": 0.5}
+    _, frame = build_capital_exit_frame(position(), mark, entry(), [], [],
+        kind="price_to_flow_fragility", now=stamp(81))
+    assert frame["net_market_position_value_usd"] == pytest.approx(97.5)
+
+
 def test_counts_or_unverified_conversion_never_become_flow_but_market_survives():
     invalid = flow(2, 80, usd_conversion_complete=False)
     adapted_position, frame = build_capital_exit_frame(

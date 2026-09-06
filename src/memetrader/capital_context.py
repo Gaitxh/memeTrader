@@ -272,9 +272,11 @@ def build_capital_exit_frame(
     slippage_bps = _number(market_mark.get("slippage_bps", 400))
     if slippage_bps is not None and not 0.0 <= slippage_bps < 10_000.0:
         slippage_bps = None
+    extra_fee = _number(market_mark.get("additional_fee_usd_each_fill", 0.0))
     net_market_value = (
-        market_value * (1.0 - slippage_bps / 10_000.0)
-        if market_value is not None and slippage_bps is not None else None
+        max(0.0, market_value * (1.0 - slippage_bps / 10_000.0) - extra_fee)
+        if market_value is not None and slippage_bps is not None
+        and extra_fee is not None and extra_fee >= 0.0 else None
     )
     stake, realized, remaining_cost = (
         position["stake_usd"], position["realized_proceeds_usd"], position["remaining_cost_usd"]

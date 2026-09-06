@@ -60,11 +60,31 @@ const strategyIndex = (family) => {
   const explicit=Number(family?.display_index||0);
   return explicit>0?explicit:0;
 };
-const strategyLabel = (family) => `策略 ${String(strategyIndex(family)||'—').padStart(3,'0')}`;
-const strategyFamilyForArm = (arm) => (universe?.families||[]).find(f=>(f.active_arm_ids||[]).includes(arm));
-const strategyLabelForArm = (arm) => {
-  const family=strategyFamilyForArm(arm);
-  return family?strategyLabel(family):'历史策略';
+const strategyFamilyForArmVersion = (arm,version='') => (universe?.families||[]).find(f=>
+  (f.active_arm_ids||[]).includes(arm) || (f.members||[]).some(m=>m.arm_id===arm&&(!version||m.version===version))
+);
+const strategyMemberFor = (family,arm='',version='') => (family?.members||[]).find(m=>
+  (!arm||m.arm_id===arm)&&(!version||m.version===version)
+)||null;
+const strategyLabel = (family, strategy=null, revision=null) => {
+  const index=strategyIndex(family), value=revision??strategy?.strategy_revision??family?.strategy_revision;
+  return `策略 ${String(index||'—').padStart(3,'0')}${value!=null&&String(value)!==''?`-V${String(value).padStart(3,'0')}`:''}`;
+};
+const strategyLabelFromMetadata = (item,version='') => {
+  const family=strategyFamilyForArmVersion(item?.arm_id||'',version), index=item?.strategy_display_index??(family?strategyIndex(family):null);
+  const revision=item?.strategy_revision??(family?strategyMemberFor(family,item?.arm_id||'',version)?.strategy_revision:null);
+  return index!=null?`策略 ${String(index).padStart(3,'0')}${revision!=null&&String(revision)!==''?`-V${String(revision).padStart(3,'0')}`:''}`:'历史策略';
+};
+const strategyLabelForArm = (arm,version='',metadata=null) => {
+  const family=strategyFamilyForArmVersion(arm,version), revision=metadata?.strategy_revision??
+    (version&&family?strategyMemberFor(family,arm,version)?.strategy_revision:null);
+  return family?strategyLabel(family,null,revision):'历史策略';
+};
+const revisionHistoryMarkup = (family,strategy) => {
+  const history=Array.isArray(strategy?.revision_history)?strategy.revision_history:
+    Array.isArray(family?.revision_history)?family.revision_history:[];
+  if(!history.length)return '<p class="empty">暂无版本迭代记录</p>';
+  return `<div class="revision-history">${history.map(item=>`<article><strong>V${esc(item?.revision??'—')}</strong><time>${esc(time(item?.changed_at,true))}</time><p>${esc(item?.reason||'未说明原因')}</p><small>修改：${esc(Array.isArray(item?.changes)?item.changes.join('、'):item?.changes||'未说明')} · 基础：${esc(item?.basis||'未说明')} · 来源期：${esc(item?.source_definition_version||'未说明')}</small></article>`).join('')}</div><small>版本迭代记录只说明规则变化与来源，不构成盈利证明。</small>`;
 };
 const sideText = (side) => ({BUY:'买入',SELL:'卖出',WRITEOFF:'剩余仓位核销（无成交）'})[side]||'状态更新';
 const exitActionText = (action) => ({HARD_STOP:'止损',FLOW_EXIT:'买盘转弱退出',TAKE_PROFIT_1:'第一档止盈',TRAILING_EXIT:'高点回撤退出'})[action]||'策略退出';
@@ -169,7 +189,7 @@ function route(){
   clearTimeout(errorTimer);
   if(page==='errors')refreshErrors();
   if(page==='updates')refreshUpdates();
-  if(page==='system')refreshPerformance();
+  if(page==='system'){refreshPerformance();refreshPaperSettings();}
   if(page==='discovery')refreshDiscovery(true);
   closeDrawer(false);
   if(state)renderVisible(state);
@@ -193,6 +213,36 @@ async function refreshPerformance(){
     const rows=Object.fromEntries(Object.entries(data.timing?.components||{}).map(([name,v])=>[name,{...v,interval_p50_seconds:v.actual_interval_seconds?.p50,interval_p95_seconds:v.actual_interval_seconds?.p95,duration_p50_seconds:v.duration_seconds?.p50,duration_p95_seconds:v.duration_seconds?.p95}]));
     target.innerHTML=`<p class="delta">统计更新 ${time(data.timing_recorded_at,true)} · 每类最多最近 120 次观测 · 页面可见 5 秒 / 隐藏 30 秒</p><div class="table-wrap"><table><thead><tr><th>功能</th><th>预定义周期</th><th>实际周期中位数 / 较慢5%</th><th>处理耗时中位数 / 较慢5%</th><th>样本</th></tr></thead><tbody>${Object.entries(rows).map(([name,v])=>`<tr><td>${esc(labels[name]||'后台观察任务')}</td><td>${seconds(v.configured_interval_seconds)}</td><td>${seconds(v.interval_p50_seconds)} / ${seconds(v.interval_p95_seconds)}</td><td>${seconds(v.duration_p50_seconds)} / ${seconds(v.duration_p95_seconds)}</td><td>${Number(v.sample_count||0)}</td></tr>`).join('')||'<tr><td colspan="5">等待新运行进程产生真实计时</td></tr>'}</tbody></table></div><h3>所有账期仍持有的币</h3><div class="table-wrap"><table><thead><tr><th>链</th><th>去重币数</th><th>无成功价格</th><th>源覆盖缺口 / 请求错误</th><th>数据年龄中位数 / 较旧5% / 最旧</th></tr></thead><tbody>${Object.entries(data.held_by_chain||{}).map(([chain,v])=>`<tr><td>${esc(chain)}</td><td>${v.tokens}</td><td>${v.missing}</td><td>${v.coverage_gaps||0} / ${v.failures}</td><td>${seconds(v.age_p50_seconds)} / ${seconds(v.age_p95_seconds)} / ${seconds(v.age_max_seconds)}</td></tr>`).join('')}</tbody></table></div><p class="delta">数据年龄按有效原池报价的观察时点计算，不是请求间隔；补源缓存重复接收不会刷新年龄。源覆盖缺口不等于池子消失或所有补源失败；缺价和失败的币均未排除。</p>`;
   }catch(error){target.textContent=`速度诊断暂不可用：${error.message}`;}
+}
+
+let paperSettingsDirty=false;
+let paperEffectiveSettings={};
+const paperSettingFields={
+  buy_slippage_pct:'#paper-buy-slippage', sell_slippage_pct:'#paper-sell-slippage',
+  additional_fee_usd_each_fill:'#paper-extra-fee', min_pool_liquidity_usd:'#paper-pool-floor',
+};
+function renderPaperSettings(payload){
+  const effective=payload?.effective||{},configured=payload?.configured||{};
+  paperEffectiveSettings={...effective};
+  const buy=effective.buy_slippage_pct, sell=effective.sell_slippage_pct;
+  if($('#side-slippage'))$('#side-slippage').textContent=buy==null||sell==null?'—':`${buy}%/${sell}%`;
+  if($('#system-buy-slippage'))$('#system-buy-slippage').textContent=buy==null?'—':`${buy}%`;
+  if($('#system-sell-slippage'))$('#system-sell-slippage').textContent=sell==null?'—':`${sell}%`;
+  if($('#system-extra-fee'))$('#system-extra-fee').textContent=effective.additional_fee_usd_each_fill==null?'—':`$${effective.additional_fee_usd_each_fill}`;
+  if($('#system-pool-floor'))$('#system-pool-floor').textContent=effective.min_pool_liquidity_usd==null?'—':`$${effective.min_pool_liquidity_usd}`;
+  if(!paperSettingsDirty)Object.entries(paperSettingFields).forEach(([key,selector])=>{
+    const input=$(selector),value=configured[key]??effective[key];
+    if(input&&value!=null)input.value=value;
+  });
+  const state=$('#paper-settings-state'),note=$('#paper-settings-note');
+  if(state)state.textContent=payload?.restart_required?'已保存，待重启生效':'当前已生效';
+  const summary=values=>`买 ${values.buy_slippage_pct??'—'}% · 卖 ${values.sell_slippage_pct??'—'}% · 手续费 $${values.additional_fee_usd_each_fill??'—'} / 边 · 池阈值 $${values.min_pool_liquidity_usd??'—'}`;
+  if(note)note.textContent=`当前生效：${summary(effective)}；已保存：${summary(configured)}。${payload?.restart_required?'等待后台受控重启后生效。':''}只影响新的 Paper 执行与估值；不重算历史、不自动启用 Live、不重置资金期。`;
+}
+async function refreshPaperSettings(initial=false){
+  if(lastPage!=='system'&&!initial)return;
+  try{const response=await fetch('/api/paper-settings',{cache:'no-store'}),payload=await response.json();if(!response.ok)throw new Error(payload.error||`HTTP ${response.status}`);renderPaperSettings(payload);}
+  catch(error){const state=$('#paper-settings-state'),note=$('#paper-settings-note');if(state)state.textContent='读取失败';if(note)note.textContent=`Paper 设置读取失败：${error.message}`;}
 }
 
 function renderRuntime(data){
@@ -352,7 +402,7 @@ function renderUniverseDetail(family){
   const live=liveMetricForFamily(family), members=family.members||[], strategy=live.strategy||{};
   const trades=(strategy.trades||[]).slice(0,30);
   const positions=(strategy.positions||[]).slice(0,30);
-  const canRun=live.status==='ACTIVE_FORWARD',notional=state?.definition?.policy_notional_usd,slippageBps=state?.definition?.slippage_bps;
+  const canRun=live.status==='ACTIVE_FORWARD',notional=state?.definition?.policy_notional_usd;
   const positionCards=positions.map(item=>{
     const pnl=positionPnl(item);
     const records=trades.filter(trade=>String(trade.shadow_cohort_id||'')===String(item.shadow_cohort_id||'')&&trade.token_id===item.token_id);
@@ -360,14 +410,15 @@ function renderUniverseDetail(family){
     if(item.engineering_anomaly)return `<article class="position-record">${tokenLink(item.token_id)}<p>工程异常：入场时池价值低于 $1</p><small>原始记录保留，不改写收益；已实现 PNL ${money(pnl.realized)}，不作为自然策略亏损评价。</small></article>`;
     return `<article class="position-record"><div class="position-record-head"><div><span class="status-pill ${esc(item.status)}">${item.status==='open'?'持有中':item.status==='closed'?'已卖出':'已核销'}</span>${tokenLink(item.token_id)}</div><small>${time(item.opened_at,true)} 开仓</small></div><div class="position-pnl-grid"><span>持仓时长<strong>${esc(durationText(item.opened_at,item.closed_at))}</strong></span><span>未实现 PNL<strong class="${pnlClass(pnl.unrealized)}">${pnl.unrealized==null?'—':money(pnl.unrealized)}</strong></span><span>已实现 PNL<strong class="${pnlClass(pnl.realized)}">${pnl.realized==null?'—':money(pnl.realized)}</strong></span><span>总 PNL<strong class="${pnlClass(pnl.total)}">${pnl.total==null?(item.market_fill_correction?.replacement_outcome==='UNRESOLVED'?'历史成交待核查':'持仓行情待更新'):money(pnl.total)}</strong></span></div><small class="position-note">${contaminated?'已排除，不计统计':item.status==='open'?(item.indicative_value_usd==null?'当前没有有效价格，不按 0 计':`当前价值 ${money(item.indicative_value_usd)}`):esc(reasonText(item.close_reason))}</small><div class="position-transactions">${records.length?records.map(record=>`<p><time>${time(record.created_at)}</time><strong>${esc(sideText(record.side))}</strong><span>${record.side==='BUY'?`投入 ${money(Math.abs(Number(record.net_cash_flow_usd??record.gross_usd)))}`:`回收 ${money(record.gross_usd)} · PNL ${money(record.realized_pnl_usd)}`}</span></p>`).join(''):'<p class="empty">当前返回范围内没有该仓位的交易记录</p>'}</div></article>`;
   }).join('');
-  target.innerHTML=`<div class="detail-title"><div><p class="eyebrow">独立策略账户</p><h2>${esc(strategyLabel(family))}</h2><small class="strategy-identity">唯一编号 #${String(strategyIndex(family)).padStart(3,'0')}</small></div><span class="contract-state ${canRun?'active_forward':'retry'}">${esc(fidelityLabel(family))}</span></div>
+  target.innerHTML=`<div class="detail-title"><div><p class="eyebrow">独立策略账户</p><h2>${esc(strategyLabel(family,strategy))}</h2><small class="strategy-identity">唯一编号 #${String(strategyIndex(family)).padStart(3,'0')}</small></div><span class="contract-state ${canRun?'active_forward':'retry'}">${esc(fidelityLabel(family))}</span></div>
     <p>${esc(readable(family.entry_family,entryLabels))}入场，${esc(readable(family.exit_family,exitLabels))}。</p>
     <div class="detail-live-grid"><div><span>账户总价值</span><strong>${money(live.equity)}</strong><small>余额 ${money(live.cash)} + 持仓 ${money(live.positionValue)}</small></div><div><span>最大回撤</span><strong>${money(live.maxDrawdown)}</strong><small>${live.maxDrawdownFraction==null?'等待有效估值':(live.maxDrawdownFraction*100).toFixed(1)+'% · 完整有效估值历史'}</small></div><div><span>累计总 PNL</span><strong class="${pnlClass(live.pnl)}">${live.pnl==null?esc(live.pendingText):money(live.pnl)}</strong></div><div><span>已实现 PNL</span><strong class="${pnlClass(live.realizedPnl)}">${live.realizedPnl==null?'—':money(live.realizedPnl)}</strong></div><div><span>未实现 PNL</span><strong class="${pnlClass(live.unrealizedPnl)}">${live.unrealizedPnl==null?esc(live.pendingText):money(live.unrealizedPnl)}</strong></div><div><span>样本成熟度</span><strong>${esc(maturityText(live.maturity))}</strong><small>运行 ${esc(elapsedText(live.forwardAgeSeconds))}</small></div></div>
     <section class="contract-section"><h3>累计 PNL 实时曲线</h3><p id="strategy-equity-note">等待首个策略盈亏快照</p><svg id="strategy-equity-chart" class="strategy-equity-chart" viewBox="0 0 720 180" role="img" aria-label="当前策略累计盈亏实时曲线"></svg></section>
     <section class="contract-section"><h3>入场规则</h3><p>${esc(readable(strategy.source_entry_family||family.entry_family,entryLabels))}</p><small>只使用当时已经采集到的 Token、交易量、价格与池信息，不使用之后才出现的数据。</small></section>
     <section class="contract-section"><h3>复刻状态</h3><p>${esc(fidelityLabel(family))}</p><small>${esc(family.fidelity_note||'等待历史合同核验')}</small></section>
-    <section class="contract-section"><h3>退出规则</h3><p>${esc(readable(family.exit_family,exitLabels))}</p><small>最长持有 ${Number(strategy.max_hold_minutes||240)} 分钟；${strategy.hard_stop_return==null?'无额外固定止损':`回撤到 ${percent(strategy.hard_stop_return)} 触发止损`}。池和价格连续不可见超过 1 分钟时，剩余仓位按全部亏损处理。</small></section>
-    <section class="contract-section"><h3>当前结果</h3>${live.capitalCredit?`<p>工程异常补款 ${money(live.capitalCredit)}；已计入现金，不计入 PNL 或收益回撤。</p>`:''}${live.pendingText==='历史成交待核查'?'<p>历史卖出缺少原入场池的有效成交证据；刷新当前价格不能补齐过去成交，总估值暂不可确定。</p>':''}<p>已观察 ${live.opportunityCount} 个符合策略条件的机会，已完成 ${live.terminal} 笔，其中盈利 ${live.wins} 笔，胜率 ${live.winRate==null?'等待样本':percent(live.winRate)}；当前持仓 ${live.open} 笔。</p><p>账户现金 ${strategy.account?.cash_usd==null?'待更新':money(strategy.account.cash_usd)}。${strategy.account?.capital_model==='unconstrained_research_notional'?'研究资金不受余额限制。':'初始资金 1000 USDC；现金不足暂停新买入，已有持仓继续退出。'}</p><small>单笔 ${notional==null?'—':`${money(notional)} USDC`}，买卖各按 ${slippageBps==null?'—':`${Number(slippageBps)/100}%`} 滑点。</small></section>
+    <section class="contract-section"><h3>退出规则</h3><p>${esc(readable(family.exit_family,exitLabels))}</p><small>最长持有 ${Number(strategy.max_hold_minutes||240)} 分钟；${strategy.hard_stop_return==null?'无额外固定止损':`回撤到 ${percent(strategy.hard_stop_return)} 触发止损`}。新鲜原池流动性低于 ${paperEffectiveSettings.min_pool_liquidity_usd==null?'—':money(paperEffectiveSettings.min_pool_liquidity_usd)} 时按剩余全损；缺失或陈旧时等待，不等于无池。核销会发出卖出指令，但不代表成交。</small></section>
+    <section class="contract-section"><h3>版本迭代历史</h3>${revisionHistoryMarkup(family,strategy)}</section>
+    <section class="contract-section"><h3>当前结果</h3>${live.capitalCredit?`<p>工程异常补款 ${money(live.capitalCredit)}；已计入现金，不计入 PNL 或收益回撤。</p>`:''}${live.pendingText==='历史成交待核查'?'<p>历史卖出缺少原入场池的有效成交证据；刷新当前价格不能补齐过去成交，总估值暂不可确定。</p>':''}<p>已观察 ${live.opportunityCount} 个符合策略条件的机会，已完成 ${live.terminal} 笔，其中盈利 ${live.wins} 笔，胜率 ${live.winRate==null?'等待样本':percent(live.winRate)}；当前持仓 ${live.open} 笔。</p><p>账户现金 ${strategy.account?.cash_usd==null?'待更新':money(strategy.account.cash_usd)}。${strategy.account?.capital_model==='unconstrained_research_notional'?'研究资金不受余额限制。':'初始资金 1000 USDC；现金不足暂停新买入，已有持仓继续退出。'}</p><small>普通单笔 ${notional==null?'—':`${money(notional)} USDC`}；当前买入滑点 ${paperEffectiveSettings.buy_slippage_pct??'—'}%，卖出滑点 ${paperEffectiveSettings.sell_slippage_pct??'—'}%，每次成交额外费用 ${money(paperEffectiveSettings.additional_fee_usd_each_fill)}。小额实验沿用各自下单规模。</small></section>
     <section class="contract-section"><h3>操作记录</h3><button class="table-action" data-strategy-history="${esc(strategy.arm_id||'')}">查看全部交易历史</button><p>下方为最近 ${trades.length} 条预览；完整历史可翻页查看，不限制总条数。</p><div class="strategy-log">${trades.length?trades.map(item=>`<button data-token="${esc(item.token_id)}"><time>${time(item.created_at,true)}</time><strong>${esc(sideText(item.side))}</strong><span>${esc(shortToken(item.token_id))}</span><em class="${pnlClass(item.realized_pnl_usd)}">${item.side==='BUY'?money(item.gross_usd):money(item.realized_pnl_usd)}</em><small>${esc(reasonText(item.reason))}</small></button>`).join(''):'<p class="empty">当前预览暂无操作，请查看完整历史</p>'}</div></section>
     <section class="contract-section"><h3>仓位与持仓时长（最近 ${positions.length} 笔预览）</h3><div class="position-records">${positionCards||'<p class="empty">当前没有仓位记录</p>'}</div><nav class="history-cohorts">${positions.map(item=>`<button class="table-action" data-strategy-history="${esc(strategy.arm_id||'')}" data-history-cohort="${esc(item.shadow_cohort_id)}">${esc(shortToken(item.token_id))} · 本次持仓全部操作</button>`).join('')}</nav></section>
     <section class="contract-section"><h3>历史来源</h3><p>这个策略由 ${members.length} 个历史版本中的相同行为归纳而来。</p><small>历史总计 ${family.historical_terminal_projected_sum||0} 个完成样本，描述性 PNL ${money(family.historical_realized_pnl_projected_sum_usd)}；当前策略从真实部署时间开始累计，不回填部署前事件。</small></section>`;
@@ -491,7 +542,7 @@ function renderTrading(data,strategies){
     ['提交交易',lastAttempt?.requested_at,lastAttempt?`${lastAttempt.side} · ${lastAttempt.terminal_status||'等待'}`:'等待'],
     ['成交并形成仓位',lastFill?.filled_at,lastFill?`${lastFill.side} · ${money(lastFill.gross_usd)}`:'等待'],
   ].map(([k,at,v],i)=>`<article class="lifecycle-step"><span>${i+1}</span><div><strong>${esc(k)}</strong><p>${esc(v||'—')}</p><small>${time(at,true)}</small></div></article>`).join('');
-  $('#open-positions tbody').innerHTML=positions.length?positions.map(p=>`<tr><td><strong>${esc(p.strategy_name)}</strong></td><td>${tokenLink(p.token_id)}</td><td>${esc(durationText(p.opened_at))}</td><td>${money(p.stake_usd)}</td><td>${tokenQuantity(p.remaining_quantity_tokens)}</td><td class="${pnlClass(p.indicative_unrealized_pnl_usd)}">${p.indicative_unrealized_pnl_usd==null?'价格待更新':money(p.indicative_unrealized_pnl_usd)}<small>${p.indicative_source==='dex_pool_below_100_usd_full_loss'?'原池流动性低于 $100，剩余仓位按全损':p.indicative_source==='dex_pool_below_1000_usd_full_loss'?'原池流动性低于 $1,000，剩余仓位按全损':p.indicative_source==='dex_pool_below_1_usd_full_loss'?'池价值低于 $1，剩余仓位按全损':p.indicative_source==='dex_price_mark_4pct_haircut'?'公开池价格，已扣 4% 卖出滑点':p.indicative_source==='route_verified_pumpswap_minimum_estimate'?'PumpSwap 本池估算':p.indicative_source==='pump_curve_full_position_minimum_estimate'?'Pump 曲线估算':'暂无价格，不按 0 计'}</small></td><td>${money(p.indicative_price_usd)}</td><td>${money(p.indicative_liquidity_usd)}</td><td><span class="status-pill ${p.indicative_sellability==='MARK_SELLABLE'?'closed':'retry'}">${esc(sellabilityText(p.indicative_sellability))}</span></td><td>${esc(localSurfaceText(p))}</td><td>${time(p.indicative_mark_at||p.local_surface_at||p.latest_quote_at||p.mark_as_of)}</td></tr>`).join(''):'<tr><td colspan="11" class="empty">当前没有开放仓位</td></tr>';
+  $('#open-positions tbody').innerHTML=positions.length?positions.map(p=>`<tr><td><strong>${esc(p.strategy_name)}</strong></td><td>${tokenLink(p.token_id)}</td><td>${esc(durationText(p.opened_at))}</td><td>${money(p.stake_usd)}</td><td>${tokenQuantity(p.remaining_quantity_tokens)}</td><td class="${pnlClass(p.indicative_unrealized_pnl_usd)}">${p.indicative_unrealized_pnl_usd==null?'价格待更新':money(p.indicative_unrealized_pnl_usd)}<small>${p.indicative_source==='dex_pool_below_floor_full_loss'?`原池流动性低于 $${Number(p.indicative_pool_floor_usd??paperEffectiveSettings.min_pool_liquidity_usd??0).toLocaleString()}，剩余仓位按全损`:p.indicative_source==='dex_pool_below_100_usd_full_loss'?'原池流动性低于 $100，剩余仓位按全损':p.indicative_source==='dex_price_mark_sell_slippage_haircut'?`公开池价格，已扣 ${p.indicative_sell_slippage_pct??paperEffectiveSettings.sell_slippage_pct??'—'}% 卖出滑点`:p.indicative_source==='dex_price_mark_4pct_haircut'?'公开池价格，已扣 4% 卖出滑点':p.indicative_source==='route_verified_pumpswap_minimum_estimate'?'PumpSwap 本池估算':p.indicative_source==='pump_curve_full_position_minimum_estimate'?'Pump 曲线估算':'暂无价格，不按 0 计'}</small></td><td>${money(p.indicative_price_usd)}</td><td>${money(p.indicative_liquidity_usd)}</td><td><span class="status-pill ${p.indicative_sellability==='MARK_SELLABLE'?'closed':'retry'}">${esc(sellabilityText(p.indicative_sellability))}</span></td><td>${esc(localSurfaceText(p))}</td><td>${time(p.indicative_mark_at||p.local_surface_at||p.latest_quote_at||p.mark_as_of)}</td></tr>`).join(''):'<tr><td colspan="11" class="empty">当前没有开放仓位</td></tr>';
   $('#exit-queue tbody').innerHTML=(t.exit_queue||[]).length?t.exit_queue.map(x=>`<tr><td>${time(x.recorded_at)}</td><td>${esc(strategyName(x.arm_id))}</td><td>${tokenLink(x.token_id)}</td><td>${esc(exitActionText(x.action))}</td><td><span class="status-pill ${esc(x.status)}">${esc(queueStatusText(x.status))}</span></td><td>${x.attempt_count||0}</td><td>${time(x.next_attempt_at)}</td><td class="reason">${esc(reasonText(x.reason))}</td></tr>`).join(''):'<tr><td colspan="8" class="empty">当前没有退出队列</td></tr>';
 }
 
@@ -710,7 +761,7 @@ function drawerOpen(kind,kicker,title,body){
 let historyView=null;
 function historyPeriodControls(view){
   const period=view.periods?.find(item=>item.version===view.version),arms=period?.arms||[];
-  return `<div class="history-selectors"><label>历史账期<select data-history-period>${(view.periods||[]).map(item=>`<option value="${esc(item.version)}" ${item.version===view.version?'selected':''}>${item.version===view.activeVersion?'当前账期':'历史账期'} · ${esc(time(item.activated_at||item.registered_at||item.first_trade_at,true))} · ${item.trade_count} 条交易</option>`).join('')}</select></label><label>本账期策略<select data-history-arm>${arms.map((item,index)=>`<option value="${esc(item.arm_id)}" ${item.arm_id===view.arm?'selected':''}>${esc(view.version===view.activeVersion?strategyLabelForArm(item.arm_id):`历史策略 ${index+1}`)} · ${item.trade_count} 条交易</option>`).join('')}</select></label><label class="history-token-filter">查找 Token 地址<input data-history-token value="${esc(view.token||'')}" placeholder="粘贴完整地址，留空查看全部币"></label><div class="history-filter-actions"><button class="table-action" data-history-page="filter">查找</button><button class="table-action" data-history-page="clear-token">全部币</button></div></div><p class="history-note">各账期独立保留，不合并账户和收益。记录范围：${esc(time(period?.first_trade_at,true))} — ${esc(time(period?.last_trade_at,true))}。${view.cohort!=null?'<button class="table-action" data-history-page="all">取消本次持仓筛选</button>':''}</p>`;
+  return `<div class="history-selectors"><label>历史账期<select data-history-period>${(view.periods||[]).map(item=>`<option value="${esc(item.version)}" ${item.version===view.version?'selected':''}>${item.version===view.activeVersion?'当前账期':'历史账期'} · ${esc(time(item.activated_at||item.registered_at||item.first_trade_at,true))} · ${item.trade_count} 条交易</option>`).join('')}</select></label><label>本账期策略<select data-history-arm>${arms.map(item=>`<option value="${esc(item.arm_id)}" ${item.arm_id===view.arm?'selected':''}>${esc(strategyLabelFromMetadata(item,view.version))} · ${item.trade_count} 条交易</option>`).join('')}</select></label><label class="history-token-filter">查找 Token 地址<input data-history-token value="${esc(view.token||'')}" placeholder="粘贴完整地址，留空查看全部币"></label><div class="history-filter-actions"><button class="table-action" data-history-page="filter">查找</button><button class="table-action" data-history-page="clear-token">全部币</button></div></div><p class="history-note">各账期独立保留，不合并账户和收益。记录范围：${esc(time(period?.first_trade_at,true))} — ${esc(time(period?.last_trade_at,true))}。${view.cohort!=null?'<button class="table-action" data-history-page="all">取消本次持仓筛选</button>':''}</p>`;
 }
 function selectHistoryPeriod(view,version,arm){
   const period=view.periods.find(item=>item.version===version);
@@ -737,8 +788,9 @@ async function loadStrategyHistory(view,cursor=null,stack=[]){
     view.through=data.through_id;view.cursor=cursor;view.stack=stack;view.next=data.next_before_id;
     const rows=data.trades||[],start=stack.length*50;
     const statusLabel={RECORDED:'账本记录',CORRECTED:'有历史纠正',EXCLUDED:'工程污染 · 不计统计',UNRESOLVED:'历史成交待核查',VOIDED:'整笔作废 · 资金与收益已撤销'};
-    const period=view.periods?.find(item=>item.version===view.version),armIndex=period?.arms.findIndex(item=>item.arm_id===view.arm)??-1;
-    $('#drawer-title').textContent=`${view.version===view.activeVersion?strategyLabelForArm(view.arm):`历史策略 ${armIndex+1}`} · ${view.cohort==null?'本账期全部交易':'本次持仓操作'}`;
+    const period=view.periods?.find(item=>item.version===view.version);
+    const historyArm=period?.arms?.find(item=>item.arm_id===view.arm);
+    $('#drawer-title').textContent=`${strategyLabelFromMetadata(historyArm||{arm_id:view.arm},view.version)} · ${view.cohort==null?'本账期全部交易':'本次持仓操作'}`;
     $('#drawer-body').innerHTML=`<div class="history-toolbar"><p>共 ${data.total} 条 · ${rows.length?`${start+1}–${start+rows.length}`:'0'} 条<br><small>读取于 ${esc(time(data.generated_at,true))}；翻页固定本次记录范围，刷新可查看新成交。</small></p><button class="table-action" data-history-page="refresh">刷新至最新</button></div><p class="history-note">现金流：买入为支出，卖出为扣除交易费用后的回收额；核销不产生现金回收。工程补款单列，不计策略盈利。带纠正标记的记录可展开查看原始账本。</p><div class="history-scroll"><table class="history-table"><thead><tr><th>时间 / 本次持仓</th><th>Token</th><th>操作</th><th>净现金流</th><th>本次已实现 PNL</th><th>说明</th></tr></thead><tbody>${rows.map(item=>`<tr><td><time>${esc(time(item.created_at,true))}</time><small>本次开仓 ${esc(time(item.opened_at,true))}</small></td><td>${tokenLink(item.token_id,item.token_symbol||item.token_name||shortToken(item.token_id))}<small>${esc(chainLabelForToken(item.token_id))} · ${esc(shortToken(item.token_id))}</small></td><td>${esc(sideText(item.effective_side))}</td><td class="${pnlClass(item.effective_cash_flow_usd)}">${money(item.effective_cash_flow_usd)}</td><td class="${pnlClass(item.effective_realized_pnl_usd)}">${money(item.effective_realized_pnl_usd)}</td><td><span>${esc(reasonText(item.reason))}</span><small>${esc(statusLabel[item.accounting_status]||'待核查')}${item.engineering_anomaly?' · 入场池低于 $1':''}</small>${item.capital_credit_usd!=null?`<small class="history-credit">独立补款 +${money(item.capital_credit_usd)} · ${esc(time(item.capital_credit_at,true))}</small>`:''}<details><summary>查看原始记录</summary><p>记录 #${item.id} · ${esc(sideText(item.side))}<br>现金流 ${money(item.net_cash_flow_usd)} · 已实现 ${money(item.realized_pnl_usd)}</p></details></td></tr>`).join('')||'<tr><td colspan="6" class="empty">当前账期没有匹配的交易记录</td></tr>'}</tbody></table></div><nav class="history-toolbar" aria-label="交易历史分页"><button class="table-action" data-history-page="previous" ${stack.length?'':'disabled'}>上一页</button><span>第 ${stack.length+1} 页</span><button class="table-action" data-history-page="next" ${view.next==null?'disabled':''}>下一页</button></nav>`;
     $('#drawer-body').insertAdjacentHTML('afterbegin',historyPeriodControls(view));
     $('#drawer-body').insertAdjacentHTML('afterbegin',`<p class="history-note">本策略有 ${data.voided_position_count||0} 笔作废持仓，默认不计入正式历史。<button class="table-action" data-history-page="voids">${view.includeVoided?'隐藏作废归档':'包含作废归档'}</button></p>`);
@@ -957,6 +1009,17 @@ window.addEventListener('hashchange',()=>{route();if(lastPage==='wallets')refres
 $('#drawer-close').addEventListener('click',()=>closeDrawer());$('#scrim').addEventListener('click',()=>closeDrawer());
 $('#updates-refresh').addEventListener('click',refreshUpdates);
 $('#performance-refresh').addEventListener('click',refreshPerformance);
+Object.values(paperSettingFields).forEach(selector=>$(selector)?.addEventListener('input',()=>{paperSettingsDirty=true;}));
+$('#paper-settings-form')?.addEventListener('submit',async event=>{
+  event.preventDefault();
+  const form=event.currentTarget,button=$('#paper-settings-save'),note=$('#paper-settings-note'),stateEl=$('#paper-settings-state');
+  const body=Object.fromEntries(Object.entries(paperSettingFields).map(([key,selector])=>[key,Number($(selector).value)]));
+  if(!Number.isFinite(body.buy_slippage_pct)||body.buy_slippage_pct<0||body.buy_slippage_pct>50||!Number.isFinite(body.sell_slippage_pct)||body.sell_slippage_pct<0||body.sell_slippage_pct>50||!Number.isFinite(body.additional_fee_usd_each_fill)||body.additional_fee_usd_each_fill<0||!Number.isFinite(body.min_pool_liquidity_usd)||body.min_pool_liquidity_usd<0){if(note)note.textContent='请输入合法范围：滑点 0–50%，手续费和池阈值不得小于 0。';return;}
+  if(button)button.disabled=true;
+  try{const response=await fetch('/api/paper-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}),payload=await response.json();if(!response.ok)throw new Error(payload.error||`HTTP ${response.status}`);paperSettingsDirty=false;renderPaperSettings(payload);if(stateEl)stateEl.textContent=payload.restart_required?'已保存，待重启生效':'当前已生效';}
+  catch(error){if(note)note.textContent=`Paper 设置保存失败：${error.message}`;}
+  finally{if(button)button.disabled=false;}
+});
 $('#discovery-chain').addEventListener('change',()=>{discoveryView=null;refreshDiscovery(true);});
 $('#activity-chain').addEventListener('change',renderDiscoveryActivity);
 $('#retrieval-chain').addEventListener('change',renderRetrievalCurve);
@@ -1022,4 +1085,4 @@ document.body.addEventListener('click',async event=>{
 $('#toggle-strategies')?.addEventListener('click',()=>{showAllStrategies=!showAllStrategies;if(state)renderStrategyRegistry(state);});
 $('#toggle-strategy-pool')?.addEventListener('click',()=>{showAllStrategyPool=!showAllStrategyPool;if(state)renderStrategyPool(state);});
 ['#universe-search','#universe-state','#universe-class','#universe-version','#universe-sort'].forEach(selector=>$(selector)?.addEventListener(selector==='#universe-search'?'input':'change',renderUniverse));
-bindTokenLinks();route();refreshUniverse();refreshFull();
+bindTokenLinks();route();refreshPaperSettings(true);refreshUniverse();refreshFull();

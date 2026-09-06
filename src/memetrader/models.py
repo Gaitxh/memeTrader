@@ -7,7 +7,7 @@ from typing import Any
 UTC = timezone.utc
 
 # Shared forward execution floor; historical fills keep their recorded policy.
-CHAIN_MEME_MIN_POOL_LIQUIDITY_USD = 100.0
+CHAIN_MEME_MIN_POOL_LIQUIDITY_USD = 1000.0
 
 # EVM addresses are case-insensitive.  Solana addresses are base58 and must
 # retain their exact case because changing it changes the token identity.

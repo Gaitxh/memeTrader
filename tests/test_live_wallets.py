@@ -180,8 +180,8 @@ def test_live_wallet_accepts_appended_strategy_but_keeps_real_balance_gate(
     monkeypatch.setattr(live_module, "_dpapi_unprotect", lambda value: bytes(reversed(value)))
     database = tmp_path / "forward.sqlite3"
     store = Store(database, initial_cash_usd=1000)
-    registration = store.register_chain_meme_trader_v22()
-    store.activate_chain_meme_trader_v22()
+    store.activate_chain_meme_trader_funded_period()
+    registration = store._chain_meme_trader_registration(store.CHAIN_MEME_TRADER_ACTIVE_VERSION)
     source = Store._json_object(registration["definition_json"])["policies"][-1]
     appended = dict(source)
     for field in ("stage", "behavior_contract_hash"):

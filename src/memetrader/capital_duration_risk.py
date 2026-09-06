@@ -91,6 +91,16 @@ def load_duration_risk_samples(db: sqlite3.Connection, definition_version: str,
         """, (definition_version, low, high, cutoff_sql, max_cohorts))
     excluded: Counter = Counter()
     seen: set[str] = set()
+    pollution_tables = [
+        "chain_meme_trader_accounting_contaminations",
+        "chain_meme_trader_market_fill_corrections",
+        "chain_meme_trader_capital_credits",
+    ]
+    if db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' "
+        "AND name='chain_meme_trader_position_voids'"
+    ).fetchone():
+        pollution_tables.append("chain_meme_trader_position_voids")
     for row in candidates:
         if len(result["samples"]) >= max_samples:
             break
@@ -119,9 +129,7 @@ def load_duration_risk_samples(db: sqlite3.Connection, definition_version: str,
             continue
         key = (definition_version, row["arm_id"], row["shadow_cohort_id"])
         polluted = False
-        for table in ("chain_meme_trader_accounting_contaminations",
-                      "chain_meme_trader_market_fill_corrections",
-                      "chain_meme_trader_capital_credits"):
+        for table in pollution_tables:
             if db.execute(f"SELECT 1 FROM {table} WHERE definition_version=? AND arm_id=? "
                           "AND shadow_cohort_id=? AND recorded_at<=? LIMIT 1",
                           (*key, cutoff_sql)).fetchone():

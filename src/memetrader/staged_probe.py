@@ -119,8 +119,10 @@ def evaluate_staged_probe(
     same net per-token exit marker without entering the formal ledger.
     """
     policy = _policy_snapshot(policy)
+    execution = dict(policy.get("_execution", {}))
     new_state, evidence, error = _begin(
-        "staged_probe_5u_shadow_15u", policy, position, frame, state, now
+        "staged_probe_5u_shadow_15u", {k: v for k, v in policy.items() if k != "_execution"},
+        position, frame, state, now
     )
     if error:
         return _result(WAIT, error, new_state, evidence)
@@ -146,8 +148,9 @@ def evaluate_staged_probe(
     if status == "QUALIFIED":
         if price is None or liquidity is None:
             return _result(WAIT, "shadow_entry_frame_missing", new_state, evidence)
-        if liquidity < CHAIN_MEME_MIN_POOL_LIQUIDITY_USD:
-            evidence["minimum_pool_liquidity_usd"] = CHAIN_MEME_MIN_POOL_LIQUIDITY_USD
+        minimum_liquidity = float(execution.get("min_pool_liquidity_usd", CHAIN_MEME_MIN_POOL_LIQUIDITY_USD))
+        if liquidity < minimum_liquidity:
+            evidence["minimum_pool_liquidity_usd"] = minimum_liquidity
             return _result(
                 WAIT, "shadow_entry_pool_liquidity_below_shared_floor",
                 new_state, evidence,
@@ -157,8 +160,10 @@ def evaluate_staged_probe(
         if qualified_at is None or observed_at is None or observed_at <= qualified_at:
             return _result(WAIT, "independent_post_confirmation_frame_required", new_state, evidence)
         shadow_cost = float(policy["shadow_notional_usd"])
+        buy_slippage = int(execution.get("buy_slippage_bps", policy["entry_slippage_bps"]))
+        fee = float(execution.get("additional_fee_usd_each_fill", 0.0))
         adverse_price = price * (
-            1.0 + int(policy["entry_slippage_bps"]) / 10_000.0
+            1.0 + buy_slippage / 10_000.0
         )
         shadow_fill = {
             "frame_id": str(frame["frame_id"]),
@@ -167,8 +172,10 @@ def evaluate_staged_probe(
             "market_price_usd": price,
             "execution_price_usd": adverse_price,
             "notional_usd": shadow_cost,
+            "total_cost_usd": shadow_cost + fee,
+            "fee_usd": fee,
             "quantity_tokens": shadow_cost / adverse_price,
-            "entry_slippage_bps": int(policy["entry_slippage_bps"]),
+            "entry_slippage_bps": buy_slippage,
         }
         new_state["status"] = "SHADOW_OPEN"
         new_state["shadow_fill"] = shadow_fill
@@ -269,7 +276,7 @@ def _record_shadow_exit(
     formal_quantity = _number(marker.get("formal_exit_quantity_tokens"))
     formal_recovery = _number(marker.get("formal_exit_net_recovery_usd"))
     shadow_quantity = _number(shadow_fill.get("quantity_tokens"))
-    shadow_cost = _number(shadow_fill.get("notional_usd"))
+    shadow_cost = _number(shadow_fill.get("total_cost_usd", shadow_fill.get("notional_usd")))
     if (
         formal_quantity is None
         or formal_quantity <= 0.0
@@ -281,8 +288,10 @@ def _record_shadow_exit(
         or shadow_cost <= 0.0
     ):
         return _result(WAIT, "formal_exit_quote_values_required", state, evidence)
-    net_unit_price = formal_recovery / formal_quantity
-    shadow_recovery = shadow_quantity * net_unit_price
+    # A fixed fee cannot be scaled by the formal/shadow quantity ratio.
+    exit_fee = _number(marker.get("formal_exit_fee_usd")) or 0.0
+    net_unit_price = (formal_recovery + exit_fee) / formal_quantity
+    shadow_recovery = max(0.0, shadow_quantity * net_unit_price - exit_fee)
     shadow_pnl = shadow_recovery - shadow_cost
     shadow_exit = {
         "marker_id": str(marker["frame_id"]),

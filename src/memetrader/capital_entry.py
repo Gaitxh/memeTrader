@@ -153,7 +153,8 @@ def capital_observation_signal(history, policy, *, decision_at, activated_at, co
     price, liquidity = _finite(last.get("price")), _finite(last.get("liquidity"))
     if liquidity is None:
         return False, "entry_pool_liquidity_unknown"
-    if price is None or price <= 0 or liquidity is not None and liquidity < CHAIN_MEME_MIN_POOL_LIQUIDITY_USD:
+    if price is None or price <= 0 or liquidity is not None and liquidity < float(
+            policy.get("_execution", {}).get("min_pool_liquidity_usd", CHAIN_MEME_MIN_POOL_LIQUIDITY_USD)):
         return False, "entry_pool_price_or_liquidity_invalid"
     direction = policy["entry_filter"]["direction"]
     if direction == "migration_amount_rate_absorption":

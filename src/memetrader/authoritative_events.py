@@ -14,12 +14,17 @@ import xml.etree.ElementTree as ET
 OKX_ENDPOINT = "https://www.okx.com/api/v5/support/announcements"
 KRAKEN_ENDPOINT = "https://blog.kraken.com/feed"
 COINBASE_STATUS_ENDPOINT = "https://status.exchange.coinbase.com/history.rss"
+KUCOIN_ENDPOINT = (
+    "https://api.kucoin.com/api/v3/announcements"
+    "?currentPage=1&pageSize=10&annType=new-listings&lang=en_US"
+)
 _CA_URL = re.compile(
     r"https?://(?:www\.)?(?P<host>solscan\.io|explorer\.solana\.com|bscscan\.com)"
     r"/(?:token|address)/(?P<address>0x[0-9a-fA-F]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})"
 )
 _LISTING_WORDS = re.compile(r"\b(list|listing|list(?:ed|ing)|launch|上线|上币)\b", re.I)
 _KRAKEN_LISTING_WORDS = re.compile(r"\b(list|listing|list(?:ed|ing)|launch|available for trading|asset listing)\b", re.I)
+_KUCOIN_SYMBOL = re.compile(r"\(([A-Z][A-Z0-9]{1,14})\)")
 
 
 def _time(value: Any) -> datetime | None:
@@ -93,6 +98,90 @@ async def collect_coinbase_status_observations(
             "source_kind": "first_party", "event_type": "service_status", "title": (item.findtext("title") or "").strip(),
             "url": (item.findtext("link") or "").strip(), "published_at": published.isoformat().replace("+00:00", "Z")})
     return {"events": [], "diagnostics": diagnostics}
+
+
+async def collect_kucoin_listing_events(
+    http: Any, *, now: datetime | None = None, max_age_seconds: float = 3600,
+) -> dict[str, list[dict[str, Any]]]:
+    """Read KuCoin's public first-party announcement API once, at most 10 items."""
+    now = now or datetime.now(timezone.utc)
+    try:
+        response = await asyncio.wait_for(
+            http.get_public_document(KUCOIN_ENDPOINT, maximum_bytes=524_288),
+            timeout=4,
+        )
+        if urlparse(str(getattr(response, "url", KUCOIN_ENDPOINT))).netloc.lower() != "api.kucoin.com":
+            raise ValueError("kucoin_endpoint_redirected_official_host")
+        payload = response.json()
+        if not isinstance(payload, Mapping) or payload.get("code") != "200000":
+            raise ValueError("kucoin_api_not_success")
+    except Exception as exc:
+        return {"events": [], "diagnostics": [{
+            "kind": "kucoin_fetch_failed", "error": type(exc).__name__,
+        }]}
+
+    data = payload.get("data") if isinstance(payload.get("data"), Mapping) else {}
+    items = data.get("items") if isinstance(data.get("items"), list) else []
+    events: list[dict[str, Any]] = []
+    diagnostics: list[dict[str, Any]] = []
+    for item in items[:10]:
+        if not isinstance(item, Mapping):
+            continue
+        title = str(item.get("annTitle") or "").strip()
+        description = str(item.get("annDesc") or "").strip()
+        url = str(item.get("annUrl") or "").strip()
+        published = _time(item.get("cTime"))
+        parsed_url = urlparse(url)
+        kinds = item.get("annType") if isinstance(item.get("annType"), list) else []
+        if (
+            "new-listings" not in kinds
+            or not _LISTING_WORDS.search(f"{title} {description}")
+            or parsed_url.scheme != "https"
+            or parsed_url.netloc.lower() not in {"www.kucoin.com", "kucoin.com"}
+            or not parsed_url.path.startswith("/announcement/")
+            or not published or published > now
+            or (now - published).total_seconds() > max_age_seconds
+        ):
+            continue
+        matches = list(_CA_URL.finditer(f"{title} {description} {url}"))
+        unique = {(match.group("host"), match.group("address")) for match in matches}
+        observed = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        common = {
+            "url": url,
+            "title": title,
+            "source": "kucoin",
+            "source_kind": "first_party",
+            "event_type": "official_listing",
+            "published_at": published.isoformat().replace("+00:00", "Z"),
+            "observed_at": observed,
+            "ingested_at": observed,
+        }
+        if not unique:
+            symbol = _KUCOIN_SYMBOL.search(title)
+            diagnostics.append({
+                **common,
+                "kind": "kucoin_listing_without_exact_ca",
+                "search_symbol": symbol.group(1) if symbol else None,
+                "identity_status": "no_exact_ca",
+            })
+            continue
+        if len(unique) != 1:
+            diagnostics.append({
+                **common,
+                "kind": "kucoin_ambiguous_contract_set",
+                "candidates": sorted(unique),
+            })
+            continue
+        host, address = next(iter(unique))
+        events.append({
+            **common,
+            "trusted": True,
+            "chain": "bsc" if host == "bscscan.com" else "solana",
+            "contract_address": address,
+            "source_host": "api.kucoin.com",
+            "next_frame_trade_required": True,
+        })
+    return {"events": events, "diagnostics": diagnostics}
 
 
 class _ArticleParser(HTMLParser):

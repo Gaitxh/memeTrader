@@ -359,6 +359,7 @@ def freeze_clone_episode(
 def _entry_frame(
     frame: Mapping[str, Any], target: Mapping[str, Any], *, after: datetime,
     decision: datetime, activated: datetime, maximum_age: float,
+    minimum_liquidity: float = CHAIN_MEME_MIN_POOL_LIQUIDITY_USD,
 ) -> dict[str, Any] | None:
     parsed = _market_candidate(frame, decision, activated, maximum_age, require_volume=False)
     if (
@@ -368,7 +369,7 @@ def _entry_frame(
         or parsed["chain"] != target.get("chain")
         or parsed["lifecycle"] != target.get("lifecycle")
         or _time(parsed["observed_at"]) <= after
-        or parsed["liquidity_usd"] < CHAIN_MEME_MIN_POOL_LIQUIDITY_USD
+        or parsed["liquidity_usd"] < minimum_liquidity
     ):
         return None
     return parsed
@@ -389,6 +390,7 @@ def evaluate_clone_leader_entry(
     parsed = _entry_frame(
         frame, target, after=frozen_at, decision=decision, activated=activated,
         maximum_age=float(policy["maximum_snapshot_age_seconds"]),
+        minimum_liquidity=float(policy.get("min_pool_liquidity_usd", CHAIN_MEME_MIN_POOL_LIQUIDITY_USD)),
     )
     if parsed is None:
         return _result(WAIT, "awaiting_clone_leader_next_original_pool_frame", {}, {"target": target})
@@ -538,6 +540,7 @@ def evaluate_relative_resilience_entry(
     parsed = _entry_frame(
         frame, target, after=armed_at, decision=decision, activated=activated,
         maximum_age=float(policy["maximum_snapshot_age_seconds"]),
+        minimum_liquidity=float(policy.get("min_pool_liquidity_usd", CHAIN_MEME_MIN_POOL_LIQUIDITY_USD)),
     )
     if parsed is None:
         return _result(WAIT, "awaiting_relative_resilience_next_original_pool_frame", state, {"target": target})
@@ -686,6 +689,7 @@ def evaluate_clone_handoff_entry(
     parsed = _entry_frame(
         frame, target, after=armed_at, decision=decision, activated=activated,
         maximum_age=float(policy["maximum_snapshot_age_seconds"]),
+        minimum_liquidity=float(policy.get("min_pool_liquidity_usd", CHAIN_MEME_MIN_POOL_LIQUIDITY_USD)),
     )
     if parsed is None:
         return _result(WAIT, "awaiting_clone_handoff_next_original_pool_frame", state, {"target": target})
@@ -775,6 +779,7 @@ def consume_passive_cohort_batch(
     *, now: Any, activated_at: Any,
     closed_leaders: Mapping[str, Mapping[str, Any]] | None = None,
     already_bought: Iterable[str] = (),
+    min_pool_liquidity_usd: float = CHAIN_MEME_MIN_POOL_LIQUIDITY_USD,
 ) -> tuple[dict[str, Any], dict[tuple[str, str], dict[str, Any]]]:
     """Consume one existing natural quote batch without requesting more data.
 
@@ -868,6 +873,7 @@ def consume_passive_cohort_batch(
                 action, _, _, evidence = evaluate_clone_leader_entry(
                     frozen, frame, leader_kind=leader_kind,
                     decision_at=decision, activated_at=activated,
+                    policy={**CLONE_EPISODE_POLICY, "min_pool_liquidity_usd": min_pool_liquidity_usd},
                 )
                 if action == SELECT:
                     _emit_signal(signals, episode_id=episode_id, arm_id=arm_id,
@@ -885,6 +891,7 @@ def consume_passive_cohort_batch(
                 action, _, _, evidence = evaluate_clone_handoff_entry(
                     frozen, handoff_state, frame,
                     decision_at=decision, activated_at=activated,
+                    policy={**CLONE_HANDOFF_POLICY, "min_pool_liquidity_usd": min_pool_liquidity_usd},
                 )
                 if action == SELECT:
                     _emit_signal(signals, episode_id=episode_id,
@@ -995,7 +1002,7 @@ def consume_passive_cohort_batch(
                     action, _, _, evidence = evaluate_relative_resilience_entry(
                         evaluator_state, target_frame, arm_kind=arm_kind,
                         decision_at=decision, activated_at=activated,
-                        policy=PASSIVE_RELATIVE_RESILIENCE_POLICY,
+                        policy={**PASSIVE_RELATIVE_RESILIENCE_POLICY, "min_pool_liquidity_usd": min_pool_liquidity_usd},
                     )
                     if action == SELECT:
                         _emit_signal(signals, episode_id=episode_id, arm_id=arm_id,

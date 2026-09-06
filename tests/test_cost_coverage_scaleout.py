@@ -88,7 +88,7 @@ def test_cost_coverage_scaleout_append_is_idempotent_and_forward_only(
 ):
     store = Store(tmp_path / "cost-coverage-frontier.sqlite3", initial_cash_usd=1000)
     store.activate_chain_meme_trader_funded_period()
-    version = Store.CHAIN_MEME_TRADER_FUNDED_PERIOD_VERSION
+    version = Store.CHAIN_MEME_TRADER_ACTIVE_VERSION
     registration = store._chain_meme_trader_registration(version)
     before = store._chain_meme_trader_effective_definition(
         version, registration["definition_json"],
@@ -154,7 +154,7 @@ def test_cost_coverage_scaleout_uses_economic_return_and_remaining_fraction(
     store = Store(tmp_path / "cost-coverage-exits.sqlite3", initial_cash_usd=1000)
     store.activate_chain_meme_trader_funded_period()
     store.register_chain_meme_trader_cost_coverage_scaleout()
-    version = Store.CHAIN_MEME_TRADER_FUNDED_PERIOD_VERSION
+    version = Store.CHAIN_MEME_TRADER_ACTIVE_VERSION
     policy = Store.chain_meme_trader_cost_coverage_scaleout_policy()
     started = utcnow()
     token, cohort_id = _seed_position(

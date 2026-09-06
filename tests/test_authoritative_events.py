@@ -2,7 +2,7 @@ import json
 from datetime import datetime, timezone
 import httpx
 
-from memetrader.authoritative_events import collect_coinbase_status_observations, collect_kraken_listing_events, collect_okx_listing_events
+from memetrader.authoritative_events import collect_coinbase_status_observations, collect_kraken_listing_events, collect_kucoin_listing_events, collect_okx_listing_events
 
 
 class Response:
@@ -25,6 +25,47 @@ class RssHttp:
         self.response = httpx.Response(200, content=content.encode(), request=httpx.Request("GET", url))
     async def get_public_document(self, url, **kwargs):
         return self.response
+
+
+class KucoinHttp:
+    def __init__(self, payload):
+        self.response = httpx.Response(
+            200, json=payload,
+            request=httpx.Request("GET", "https://api.kucoin.com/api/v3/announcements"),
+        )
+        self.calls = []
+    async def get_public_document(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        return self.response
+
+
+def test_kucoin_public_listing_feed_keeps_unknown_ca_diagnostic():
+    now = datetime(2026, 9, 6, 13, 0, tzinfo=timezone.utc)
+    exact = "https://solscan.io/token/So11111111111111111111111111111111111111112"
+    items = [
+        {
+            "annTitle": "CAT (CAT) Gets Listed!",
+            "annType": ["latest-announcements", "new-listings"],
+            "annDesc": f"KuCoin will list CAT. Contract: {exact}",
+            "annUrl": "https://www.kucoin.com/announcement/cat-gets-listed",
+            "cTime": int(now.timestamp() * 1000),
+        },
+        {
+            "annTitle": "DOG (DOG) Gets Listed!",
+            "annType": ["new-listings"],
+            "annDesc": "KuCoin will list DOG.",
+            "annUrl": "https://www.kucoin.com/announcement/dog-gets-listed",
+            "cTime": int(now.timestamp() * 1000),
+        },
+    ]
+    http = KucoinHttp({"code": "200000", "data": {"items": items}})
+    result = __import__("asyncio").run(collect_kucoin_listing_events(http, now=now))
+    assert len(http.calls) == 1
+    assert http.calls[0][1]["maximum_bytes"] == 524_288
+    assert result["events"][0]["contract_address"].startswith("So")
+    assert result["events"][0]["next_frame_trade_required"] is True
+    assert result["diagnostics"][0]["kind"] == "kucoin_listing_without_exact_ca"
+    assert result["diagnostics"][0]["search_symbol"] == "DOG"
 
 
 def test_kraken_rss_is_no_ca_candidate_not_trade_event():

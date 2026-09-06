@@ -244,7 +244,7 @@ def test_fresh_dust_on_entry_pool_still_writes_off(tmp_path):
         (version, policy["arm_id"], cohort_id),
     ).fetchone()
     assert row["status"] == "written_off"
-    assert row["close_reason"] == "dex_pool_liquidity_below_100_usd_writeoff"
+    assert row["close_reason"] == "dex_pool_liquidity_below_configured_floor_writeoff"
     store.close()
 
 

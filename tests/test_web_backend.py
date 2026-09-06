@@ -1316,6 +1316,10 @@ def test_chain_meme_trader_web_switches_to_active_v6_matrix(tmp_path: Path):
         definition_version=Store.CHAIN_MEME_TRADER_V6_VERSION,
     )
     store.heartbeat("chain-meme-trader", item=True)
+    store.activate_chain_paper_execution({
+        "buy_slippage_pct": 3, "sell_slippage_pct": 5,
+        "additional_fee_usd_each_fill": 0.25, "min_pool_liquidity_usd": 1000,
+    })
     store.close()
 
     payload = ChainWebData(config_path).state()
@@ -1331,7 +1335,15 @@ def test_chain_meme_trader_web_switches_to_active_v6_matrix(tmp_path: Path):
     assert {item["exit_family"] for item in payload["strategies"]} == {
         "fast_escape", "balanced_harvest", "peak_guard", "postbuy_research",
     }
-    assert payload["definition"]["additional_fee_usd_each_fill"] == 0.0
+    assert payload["definition"]["additional_fee_usd_each_fill"] == 0.25
+    for item in payload["strategy_registry"]:
+        cost = item["cost_contract"]
+        if item["definition_version"] == Store.CHAIN_MEME_TRADER_V6_VERSION:
+            assert cost["slippage_bps"] is None
+            assert (cost["buy_slippage_bps"], cost["sell_slippage_bps"]) == (300, 500)
+            assert cost["additional_fee_usd_each_fill"] == 0.25
+        else:
+            assert cost["additional_fee_usd_each_fill"] == 0.0
     assert payload["definition"]["no_historical_backfill"] is True
     assert payload["trading"]["intent_counts"] == {}
     assert payload["trading"]["entry_participant_outcomes"] == []

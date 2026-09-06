@@ -5,10 +5,12 @@ import hashlib
 import json
 import math
 import mimetypes
+import os
 import shutil
 import sqlite3
 import threading
 import time
+import tempfile
 from collections import Counter, defaultdict
 from datetime import timedelta
 from http import HTTPStatus
@@ -19,6 +21,11 @@ from urllib.parse import parse_qs, urlparse
 
 from .live_wallets import LiveWalletError, SolanaLiveWalletManager
 from .models import CHAIN_MEME_MIN_POOL_LIQUIDITY_USD, iso, parse_time, utcnow
+from .paper_execution import (
+    effective_execution_settings,
+    execution_definition_fields,
+    normalize_execution_settings,
+)
 from .runtime import load_config
 from .store import Store
 
@@ -37,6 +44,7 @@ class ChainWebData:
         config, root = load_config(config_path)
         self.config = config
         self.root = root
+        self.config_path = Path(config_path).resolve()
         self.live_enabled = bool((config.get("live") or {}).get("enabled", False))
         database = Path(str(config["database"]))
         self.database = database if database.is_absolute() else root / database
@@ -106,6 +114,87 @@ class ChainWebData:
         if "leaderboard" in payload:
             payload["leaderboard"] = [row for row in payload["leaderboard"]
                                       if not affected[str(row.get("arm_id") or "")]]
+
+    @staticmethod
+    def _paper_setting_values(definition: dict[str, Any] | None) -> dict[str, float]:
+        definition = definition or {}
+        slip_bps = definition.get("slippage_bps", 400)
+        return normalize_execution_settings({
+            "buy_slippage_pct": float(definition.get("buy_slippage_bps", slip_bps)) / 100.0,
+            "sell_slippage_pct": float(definition.get("sell_slippage_bps", slip_bps)) / 100.0,
+            "additional_fee_usd_each_fill": definition.get("additional_fee_usd_each_fill", 0.0),
+            "min_pool_liquidity_usd": definition.get("min_pool_liquidity_usd", CHAIN_MEME_MIN_POOL_LIQUIDITY_USD),
+        })
+
+    @staticmethod
+    def _overlay_effective_execution_settings(connection: sqlite3.Connection,
+                                               definition: dict[str, Any]) -> dict[str, Any]:
+        settings = effective_execution_settings(connection)
+        if settings is None:
+            return definition
+        result = dict(definition)
+        result.update(execution_definition_fields(settings))
+        return result
+
+    def _active_paper_definition(self) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT definition_version FROM chain_meme_trader_v6_activations "
+                "WHERE entry_execution_enabled=1 ORDER BY activated_at DESC,rowid DESC LIMIT 1"
+            ).fetchone()
+            if row is None:
+                return None
+            registration = connection.execute(
+                "SELECT definition_json FROM chain_meme_trader_registrations WHERE definition_version=?",
+                (str(row[0]),),
+            ).fetchone()
+            if registration is None:
+                return None
+            return Store.chain_meme_trader_effective_definition_from_connection(
+                connection, str(row[0]), registration[0],
+            )
+
+    def paper_settings(self) -> dict[str, Any]:
+        raw = self.config.get("chain_paper_execution") or {}
+        configured = normalize_execution_settings({
+            "buy_slippage_pct": raw.get("buy_slippage_pct", 4.0),
+            "sell_slippage_pct": raw.get("sell_slippage_pct", 4.0),
+            "additional_fee_usd_each_fill": raw.get("additional_fee_usd_each_fill", 0.0),
+            "min_pool_liquidity_usd": raw.get("min_pool_liquidity_usd", CHAIN_MEME_MIN_POOL_LIQUIDITY_USD),
+        })
+        with self._connect() as connection:
+            effective = effective_execution_settings(connection)
+        effective = effective or self._paper_setting_values(self._active_paper_definition())
+        return {"status": "ok", "effective": effective, "configured": configured,
+                "restart_required": any(abs(effective[key] - configured[key]) > 1e-12 for key in configured)}
+
+    def update_paper_settings(self, payload: Any) -> dict[str, Any]:
+        keys = {"buy_slippage_pct", "sell_slippage_pct", "additional_fee_usd_each_fill", "min_pool_liquidity_usd"}
+        if not isinstance(payload, dict) or set(payload) != keys:
+            raise ValueError("Paper 设置字段无效")
+        try:
+            values = normalize_execution_settings(payload)
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("Paper 设置数值无效") from None
+        try:
+            config = json.loads(self.config_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("无法读取当前配置") from exc
+        if not isinstance(config, dict):
+            raise ValueError("当前配置格式无效")
+        config["chain_paper_execution"] = values
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temp_name = tempfile.mkstemp(prefix=".config-", suffix=".tmp", dir=self.config_path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(config, handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+            os.replace(temp_name, self.config_path)
+        finally:
+            if os.path.exists(temp_name):
+                os.unlink(temp_name)
+        self.config = config
+        return self.paper_settings()
 
     def strategy_history(
         self, arm_id: str, *, version: str = "", limit: int = 50,
@@ -269,6 +358,10 @@ class ChainWebData:
                 ).fetchall()
             }
         periods: dict[str, dict[str, Any]] = {}
+        report = (json.loads(self.strategy_universe_path.read_text(encoding="utf-8"))
+                  if self.strategy_universe_path.exists() else {})
+        display_by_canonical = {str(f.get("canonical_id")): index
+            for index, f in enumerate(report.get("behavior_families", []), 1)}
         for version_key, registration in registrations.items():
             if version and version_key != version:
                 continue
@@ -282,10 +375,14 @@ class ChainWebData:
                 "first_trade_at": None, "last_trade_at": None,
                 "trade_count": 0, "arms": [],
             })
-            for policy in definition.get("policies", []):
+            for policy_index, policy in enumerate(definition.get("policies", []), 1):
                 policy_arm = str(policy.get("arm_id") or "")
                 if policy_arm and (not arm_id or policy_arm == arm_id):
                     item["arms"].append({"arm_id": policy_arm, "name": policy.get("name"),
+                                         "strategy_revision": int(policy.get("strategy_revision") or 1),
+                                         "strategy_display_index": display_by_canonical.get(
+                                             str(policy.get("canonical_id")),
+                                             policy_index if policy_index > len(display_by_canonical) else None),
                                          "trade_count": 0, "first_trade_at": None, "last_trade_at": None})
         for row in rows:
             version_key = str(row["definition_version"])
@@ -700,6 +797,7 @@ class ChainWebData:
     def performance_state(self) -> dict[str, Any]:
         """Small on-demand diagnostics; no ledger aggregation or external requests."""
         versions = tuple(dict.fromkeys((Store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
+            Store.CHAIN_MEME_TRADER_FUNDED_PERIOD_VERSION,
             Store.CHAIN_MEME_TRADER_V22_VERSION, Store.CHAIN_MEME_TRADER_V21_VERSION,
             Store.CHAIN_MEME_TRADER_V20_VERSION)))
         with self._connect() as connection:
@@ -1006,6 +1104,11 @@ class ChainWebData:
             definition = Store.chain_meme_trader_effective_definition_from_connection(
                 connection, active_version, registration["definition_json"],
             )
+            definition = self._overlay_effective_execution_settings(connection, definition)
+            paper_values = self._paper_setting_values(definition)
+            sell_slippage = paper_values["sell_slippage_pct"] / 100.0
+            pool_floor = paper_values["min_pool_liquidity_usd"]
+            extra_fee = paper_values["additional_fee_usd_each_fill"]
             policies = list(definition.get("policies") or [])
             corrections = Store._chain_meme_trader_market_fill_corrections_from_connection(
                 connection, active_version,
@@ -1180,18 +1283,8 @@ class ChainWebData:
                         and market_age is not None and 0.0 <= market_age <= 15.0
                         and observed_age is not None and 0.0 <= observed_age <= 15.0
                     )
-                    entry_price = float(
-                        row.get("entry_execution_price_usd")
-                        or row.get("entry_signal_price_usd") or 0.0
-                    )
-                    initial_raw = int(
-                        row.get("initial_amount_raw") or row.get("amount_raw") or 0
-                    )
-                    if fresh_market and entry_price > 0.0 and initial_raw > 0:
-                        remaining_fraction = max(
-                            0.0,
-                            min(1.0, int(row.get("amount_raw") or 0) / initial_raw),
-                        )
+                    remaining_quantity = row.get("remaining_quantity_tokens")
+                    if fresh_market and remaining_quantity is not None and math.isfinite(float(remaining_quantity)) and float(remaining_quantity) >= 0.0:
                         remaining_cost = max(
                             0.0,
                             float(row.get("stake_usd") or 0.0)
@@ -1200,15 +1293,8 @@ class ChainWebData:
                         indicative_value = (
                             0.0
                             if row.get("liquidity_usd") is not None
-                            and float(row["liquidity_usd"]) < CHAIN_MEME_MIN_POOL_LIQUIDITY_USD
-                            else max(
-                                0.0,
-                                float(row.get("stake_usd") or 0.0)
-                                * remaining_fraction
-                                * float(row.get("price_usd") or 0.0)
-                                / entry_price
-                                * (1.0 - int(definition.get("slippage_bps") or 400) / 10_000.0),
-                            )
+                            and float(row["liquidity_usd"]) < pool_floor
+                            else max(0.0, float(remaining_quantity) * float(row.get("price_usd") or 0.0) * (1.0 - sell_slippage) - extra_fee)
                         )
                         effective_unrealized_by_arm[arm] += indicative_value - remaining_cost
                         effective_value_by_arm[arm] += indicative_value
@@ -1237,6 +1323,7 @@ class ChainWebData:
                 "max_hold_minutes", "fixed_horizon_minutes", "forward_enabled",
                 "fidelity_status", "forward_started_at",
                 "forward_activation_snapshot_id", "runtime_addition_id",
+                "strategy_revision", "revision_history",
             }
             for policy in policies:
                 policy_arm_id = str(policy.get("arm_id") or "")
@@ -1478,7 +1565,10 @@ class ChainWebData:
                 "ORDER BY p.opened_at DESC LIMIT ?",
                 open_values,
             )
-            slippage = int(definition.get("slippage_bps") or 400) / 10_000.0
+            paper_values = self._paper_setting_values(definition)
+            slippage = paper_values["sell_slippage_pct"] / 100.0
+            pool_floor = paper_values["min_pool_liquidity_usd"]
+            extra_fee = paper_values["additional_fee_usd_each_fill"]
             open_positions: list[dict[str, Any]] = []
             for row in open_rows:
                 position_key = (
@@ -1540,42 +1630,19 @@ class ChainWebData:
                     - float(row.get("allocated_cost_usd") or 0.0),
                 )
                 indicative_value = None
-                if fresh_market and entry_price > 0.0 and initial_raw > 0:
+                remaining_quantity = row.get("remaining_quantity_tokens")
+                if fresh_market and remaining_quantity is not None and math.isfinite(float(remaining_quantity)) and float(remaining_quantity) >= 0.0:
                     liquidity = row.get("liquidity_usd")
-                    if liquidity is not None and float(liquidity) < CHAIN_MEME_MIN_POOL_LIQUIDITY_USD:
+                    if liquidity is not None and float(liquidity) < pool_floor:
                         indicative_value = 0.0
                     else:
-                        candidate_value = max(
-                            0.0,
-                            float(row.get("stake_usd") or 0.0)
-                            * remaining_fraction
-                            * float(row.get("price_usd") or 0.0)
-                            / entry_price
-                            * (1.0 - slippage),
-                        )
+                        candidate_value = max(0.0, float(remaining_quantity) * float(row.get("price_usd") or 0.0) * (1.0 - slippage) - extra_fee)
                         indicative_value = candidate_value
                 holding_seconds = (
                     current - parse_time(row["opened_at"])
                 ).total_seconds()
                 paper_quantity = row.get("paper_quantity_tokens")
                 remaining_quantity = row.get("remaining_quantity_tokens")
-                if paper_quantity is None:
-                    entry_execution_price = float(
-                        row.get("entry_execution_price_usd") or 0.0
-                    )
-                    if entry_execution_price > 0.0:
-                        paper_quantity = (
-                            float(row.get("stake_usd") or 0.0)
-                            / entry_execution_price
-                        )
-                if remaining_quantity is None and paper_quantity is not None:
-                    initial_raw = int(row.get("initial_amount_raw") or 0)
-                    if initial_raw > 0:
-                        remaining_quantity = (
-                            float(paper_quantity)
-                            * int(row.get("amount_raw") or 0)
-                            / initial_raw
-                        )
                 open_positions.append({
                     "arm_id": row["arm_id"],
                     "shadow_cohort_id": row["shadow_cohort_id"],
@@ -1604,11 +1671,13 @@ class ChainWebData:
                         if indicative_value is not None else None
                     ),
                     "indicative_source": (
-                        "dex_pool_below_100_usd_full_loss"
+                        "dex_pool_below_floor_full_loss"
                         if fresh_market and row.get("liquidity_usd") is not None
-                        and float(row["liquidity_usd"]) < CHAIN_MEME_MIN_POOL_LIQUIDITY_USD
-                        else "dex_price_mark_4pct_haircut" if fresh_market else None
+                        and float(row["liquidity_usd"]) < pool_floor
+                        else "dex_price_mark_sell_slippage_haircut" if fresh_market else None
                     ),
+                    "indicative_pool_floor_usd": pool_floor if fresh_market else None,
+                    "indicative_sell_slippage_pct": paper_values["sell_slippage_pct"] if fresh_market else None,
                     "indicative_price_usd": row["price_usd"],
                     "indicative_liquidity_usd": row["liquidity_usd"],
                     "indicative_market_status": row["market_status"],
@@ -1617,7 +1686,7 @@ class ChainWebData:
                     "indicative_sellability": (
                         "DUST_POOL_WRITEOFF"
                         if fresh_market and row.get("liquidity_usd") is not None
-                        and float(row["liquidity_usd"]) < CHAIN_MEME_MIN_POOL_LIQUIDITY_USD
+                        and float(row["liquidity_usd"]) < pool_floor
                         else "MARK_SELLABLE" if fresh_market
                         else "PAIR_MISSING" if row.get("market_status") == "MISSING"
                         else "STALE_MARK" if row.get("market_status") == "VISIBLE"
@@ -1823,9 +1892,10 @@ class ChainWebData:
                 "latest_account_snapshot_at": latest_snapshot_at,
                 "notional_usd": float(definition.get("policy_notional_usd", 20.0)),
                 "slippage_bps": int(definition.get("slippage_bps", 400)),
-                "extra_fee_usd": float(
-                    definition.get("additional_fee_usd_each_fill", 0.0)
-                ),
+                "buy_slippage_bps": int(definition.get("buy_slippage_bps", definition.get("slippage_bps", 400))),
+                "sell_slippage_bps": int(definition.get("sell_slippage_bps", definition.get("slippage_bps", 400))),
+                "extra_fee_usd": float(definition.get("additional_fee_usd_each_fill", 0.0)),
+                "min_pool_liquidity_usd": float(definition.get("min_pool_liquidity_usd", CHAIN_MEME_MIN_POOL_LIQUIDITY_USD)),
                 "capital_model": capital_model,
                 "open_position_count": effective_open_position_count,
                 "unique_held_token_count": len(effective_open_token_ids),
@@ -1870,6 +1940,9 @@ class ChainWebData:
             )
             self._annotate_research_results(summary)
             active_version = str(summary.get("version") or Store.CHAIN_MEME_TRADER_VERSION)
+            definition = self._overlay_effective_execution_settings(
+                connection, dict(summary.get("definition") or {})
+            )
             exit_challenger = (
                 Store.chain_meme_trader_executable_decay_summary_from_connection(connection)
             )
@@ -2270,6 +2343,10 @@ class ChainWebData:
             for version_item in versions:
                 definition_version = str(version_item["definition_version"])
                 definition = version_item.get("definition") or {}
+                if definition_version == active_version:
+                    definition = self._overlay_effective_execution_settings(connection, definition)
+                buy_bps = int(definition.get("buy_slippage_bps", definition.get("slippage_bps", 400)))
+                sell_bps = int(definition.get("sell_slippage_bps", definition.get("slippage_bps", 400)))
                 if definition_version.startswith("chain-meme-trader/v2-"):
                     lineage_role = "BASELINE_12"
                 elif definition_version.startswith((
@@ -2417,7 +2494,10 @@ class ChainWebData:
                         "paired_comparison_required": True,
                         "cost_contract": {
                             "notional_usd": float(definition.get("policy_notional_usd", 20.0)),
-                            "slippage_bps": int(definition.get("slippage_bps", 400)),
+                            "slippage_bps": buy_bps if buy_bps == sell_bps else None,
+                            "buy_slippage_bps": buy_bps,
+                            "sell_slippage_bps": sell_bps,
+                            "min_pool_liquidity_usd": definition.get("min_pool_liquidity_usd"),
                             "additional_fee_usd_each_fill": float(
                                 definition.get("additional_fee_usd_each_fill", 0.0)
                             ),
@@ -2981,6 +3061,8 @@ class ChainWebData:
             families.append({
                 **family,
                 "display_index": display_index,
+                "strategy_revision": int(active_policy.get("strategy_revision") or 1),
+                "revision_history": active_policy.get("revision_history") or [],
                 "entry_family": str(
                     active_policy.get("entry_family") or family.get("entry_family") or ""
                 ),
@@ -3044,6 +3126,8 @@ class ChainWebData:
                 "canonical_id": canonical_id,
                 "behavior_contract_hash": fingerprint,
                 "display_index": len(families) + 1,
+                "strategy_revision": int(active_policy.get("strategy_revision") or 1),
+                "revision_history": active_policy.get("revision_history") or [],
                 "name": str(active_policy.get("name") or arm_id),
                 "description": str(active_policy.get("description") or ""),
                 "entry_family": str(active_policy.get("entry_family") or ""),
@@ -3191,7 +3275,11 @@ class ChainWebData:
                 "WHERE definition_version=?", (active_version,),
             ).fetchone()
             definition = Store._json_object(registration["definition_json"]) if registration else {}
-            slippage = int(definition.get("slippage_bps") or 400) / 10_000.0
+            definition = self._overlay_effective_execution_settings(connection, definition)
+            paper_values = self._paper_setting_values(definition)
+            slippage = paper_values["sell_slippage_pct"] / 100.0
+            pool_floor = paper_values["min_pool_liquidity_usd"]
+            extra_fee = paper_values["additional_fee_usd_each_fill"]
             corrections = Store._chain_meme_trader_market_fill_corrections_from_connection(
                 connection, active_version,
             )
@@ -3385,6 +3473,7 @@ class ChainWebData:
             positions = self._rows(
                 connection,
                 "SELECT arm_id,shadow_cohort_id,status,stake_usd,amount_raw,initial_amount_raw,"
+                "paper_quantity_tokens,remaining_quantity_tokens,"
                 "entry_signal_price_usd,entry_execution_price_usd,allocated_cost_usd,"
                 "realized_pnl_usd,opened_at,"
                 "closed_at,close_reason,last_evaluated_at FROM chain_meme_trader_positions "
@@ -3435,25 +3524,16 @@ class ChainWebData:
                 )
                 position["indicative_value_usd"] = None
                 position["indicative_unrealized_pnl_usd"] = None
+                remaining_quantity = position.get("remaining_quantity_tokens")
                 if (
                     not contaminated
                     and str(position.get("status")) == "open"
                     and latest_price > 0.0
                     and market.get("liquidity_usd") is not None
-                    and float(
-                        position.get("entry_execution_price_usd")
-                        or position.get("entry_signal_price_usd")
-                        or 0.0
-                    ) > 0.0
-                    and int(position.get("initial_amount_raw") or position.get("amount_raw") or 0) > 0
+                    and remaining_quantity is not None
+                    and math.isfinite(float(remaining_quantity))
+                    and float(remaining_quantity) >= 0.0
                 ):
-                    initial_raw = int(position.get("initial_amount_raw") or position["amount_raw"])
-                    remaining_raw = int(position.get("amount_raw") or 0)
-                    remaining_fraction = max(0.0, min(1.0, remaining_raw / initial_raw))
-                    entry_price = float(
-                        position.get("entry_execution_price_usd")
-                        or position.get("entry_signal_price_usd")
-                    )
                     remaining_cost = max(
                         0.0,
                         float(position["stake_usd"])
@@ -3462,12 +3542,8 @@ class ChainWebData:
                     position["indicative_value_usd"] = (
                         0.0
                         if market.get("liquidity_usd") is not None
-                        and float(market["liquidity_usd"]) < CHAIN_MEME_MIN_POOL_LIQUIDITY_USD
-                        else max(
-                            0.0,
-                            float(position["stake_usd"]) * remaining_fraction * latest_price
-                            / entry_price * (1.0 - slippage),
-                        )
+                        and float(market["liquidity_usd"]) < pool_floor
+                        else max(0.0, float(remaining_quantity) * latest_price * (1.0 - slippage) - extra_fee)
                     )
                     position["indicative_unrealized_pnl_usd"] = (
                         float(position["indicative_value_usd"]) - remaining_cost
@@ -3785,6 +3861,13 @@ class ChainWebHandler(BaseHTTPRequestHandler):
                     HTTPStatus.SERVICE_UNAVAILABLE,
                 )
             return
+        if route == "/api/paper-settings":
+            try:
+                self._send_json(self.server.data.paper_settings())
+            except (OSError, sqlite3.Error, ValueError) as exc:
+                self.server.data.record_web_error(route, exc)
+                self._send_json({"status": "error", "error": type(exc).__name__}, HTTPStatus.SERVICE_UNAVAILABLE)
+            return
         if route == "/api/strategy-history":
             try:
                 query = parse_qs(parsed.query)
@@ -3903,6 +3986,7 @@ class ChainWebHandler(BaseHTTPRequestHandler):
             "/api/wallets/bind": self.server.data.bind_wallet,
             "/api/wallets/live": self.server.data.set_wallet_live,
             "/api/errors/status": self.server.data.update_error,
+            "/api/paper-settings": self.server.data.update_paper_settings,
         }
         action = actions.get(route)
         if action is None:

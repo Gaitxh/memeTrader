@@ -12,6 +12,7 @@ import secrets
 import sqlite3
 import tempfile
 import threading
+import time
 import urllib.parse
 import urllib.request
 from collections import deque
@@ -29,7 +30,7 @@ from .market_api import CoinGeckoDemoPoolClient, GeckoTerminalPoolClient
 from .market_flow import aggregate_market_frames
 from .pool_surface import collect_pumpswap_pool_surface
 from .token_origin import verify_creator_from_known_signature
-from .authoritative_events import (collect_okx_listing_events, collect_kraken_listing_events,
+from .authoritative_events import (collect_okx_listing_events, collect_kraken_listing_events, collect_kucoin_listing_events,
                                    collect_coinbase_status_observations)
 from .pregrad_watch import PregradWatch
 from .event_candidates import freeze_event_candidates, rank_frozen_event_candidates, event_candidate_source_key
@@ -1326,6 +1327,10 @@ class Runtime:
             if self.strategy_focus_active:
                 if self.chain_meme_trader_only:
                     self.store.activate_chain_meme_trader_funded_period()
+                    from .paper_execution import normalize_execution_settings
+                    self._chain_paper_execution = normalize_execution_settings(
+                        config.get("chain_paper_execution", {}))
+                    self.store.activate_chain_paper_execution(self._chain_paper_execution)
                     self.store.register_chain_meme_trader_cost_coverage_scaleout()
                     self.store.register_chain_meme_pattern_experiments()
                     self.store.register_chain_meme_capital_experiments()
@@ -2113,17 +2118,31 @@ class Runtime:
 
     def _notify_source_error(self, source: str, exc: Exception) -> None:
         now = utcnow()
+        error = f"{type(exc).__name__}: {exc}"[:500]
+        detail = str(exc)[:500]
+        if isinstance(exc, httpx.HTTPStatusError):
+            status = exc.response.status_code
+            host = exc.request.url.host
+            # Pool batches vary on every retry; their URLs must not create a
+            # new error case (or disclose query credentials) on every request.
+            error = f"HTTPStatusError:{status}"
+            detail = f"host={host}; status={status}"
+            if source.startswith("geckoterminal:") and status == 429:
+                delay = max(60.0, CoinGeckoDemoPoolClient._retry_after_seconds(
+                    exc.response.headers.get("Retry-After"), now))
+                self._gecko_pool_backoff_until = max(
+                    self._gecko_pool_backoff_until, time.monotonic() + delay)
         cooldown = float(self.config["notifications"].get("source_error_cooldown_minutes", 30))
         key = f"source_error_alert:{source}"
         previous = self.store.get_kv(key)
-        self.store.heartbeat(source, error=f"{type(exc).__name__}: {exc}"[:500])
+        self.store.heartbeat(source, error=error, error_detail=detail)
         if previous and now - parse_time(previous) < timedelta(minutes=cooldown):
             return
         self.store.set_kv(key, iso(now))
         self.notifier.send(
             "source_error",
             source,
-            {"error": type(exc).__name__, "detail": str(exc)[:500]},
+            {"error": type(exc).__name__, "detail": detail},
         )
 
     @staticmethod
@@ -2440,6 +2459,10 @@ class Runtime:
             ))
 
     async def _poll_gecko_network(self, network: str) -> None:
+        # Discovery and original-pool fallback share one public host budget.
+        # A local skip is neither an empty discovery round nor source recovery.
+        if asyncio.get_running_loop().time() < self._gecko_pool_backoff_until:
+            return
         name = f"geckoterminal:{network}"
         round_id = self.store.start_token_discovery_round(
             provider="geckoterminal",
@@ -6157,7 +6180,9 @@ class Runtime:
         # Existing OKX cadence is unchanged; supplementary sources rotate separately.
         cursor = getattr(self, "_extra_official_cursor", 0)
         self._extra_official_cursor = cursor + 1
-        collector = collect_kraken_listing_events if cursor % 2 == 0 else collect_coinbase_status_observations
+        collectors = (collect_kraken_listing_events, collect_kucoin_listing_events,
+                      collect_coinbase_status_observations)
+        collector = collectors[cursor % len(collectors)]
         await self.chain_meme_authoritative_events_once(collector=collector)
 
     async def chain_meme_authoritative_events_once(self, collector=collect_okx_listing_events) -> None:
@@ -7036,12 +7061,16 @@ class Runtime:
                 quotes[identity] = (token, snapshot)
             now = utcnow()
             state, signals = consume_passive_cohort_batch(frames, state, now=now,
-                activated_at=self._cohort_started_at, closed_leaders=closures, already_bought=bought)
+                activated_at=self._cohort_started_at, closed_leaders=closures, already_bought=bought,
+                min_pool_liquidity_usd=getattr(self, "_chain_paper_execution", {}).get(
+                    "min_pool_liquidity_usd", 1000.0))
             for frame in frames:
                 activity = ((float(frame["buys_5m"] or 0) + float(frame["sells_5m"] or 0) >= 3)
                             or float(frame["volume_5m_usd"] or 0) >= 200)
                 if not (0 <= frame["pool_age_seconds"] <= 900 and activity
-                        and frame["liquidity_usd"] is not None and frame["liquidity_usd"] >= 100
+                        and frame["liquidity_usd"] is not None
+                        and frame["liquidity_usd"] >= getattr(self, "_chain_paper_execution", {}).get(
+                            "min_pool_liquidity_usd", 1000.0)
                         and self._cohort_started_at <= parse_time(frame["observed_at"]) <= received <= now
                         and (now - parse_time(frame["observed_at"])).total_seconds() <= 30):
                     continue
@@ -7183,6 +7212,7 @@ class Runtime:
         carry_versions = [
             version
             for version in (
+                self.store.CHAIN_MEME_TRADER_FUNDED_PERIOD_VERSION,
                 self.store.CHAIN_MEME_TRADER_V22_VERSION,
                 self.store.CHAIN_MEME_TRADER_V21_VERSION,
                 self.store.CHAIN_MEME_TRADER_V20_VERSION,
@@ -7363,10 +7393,18 @@ class Runtime:
             self._capital_risk_model = existing
             return
         cutoff = iso(utcnow())
+        sample_version = self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        registration = self.store._chain_meme_trader_registration(sample_version)
+        definition = json.loads(registration["definition_json"]) if registration else {}
+        if definition.get("funding_source_version"):
+            activation = self.store.db.execute(
+                "SELECT activated_at FROM chain_meme_trader_v6_activations WHERE definition_version=?",
+                (sample_version,)).fetchone()
+            sample_version, cutoff = definition["funding_source_version"], activation["activated_at"]
         def read_samples():
             connection = sqlite3.connect(self.store.path.resolve().as_uri() + "?mode=ro", uri=True)
             try:
-                return load_competing_risk_samples(connection, self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION, cutoff)
+                return load_competing_risk_samples(connection, sample_version, cutoff)
             finally:
                 connection.close()
         try:
@@ -7393,10 +7431,13 @@ class Runtime:
         if row is None:
             return
         cutoff = row["activated_at"]
+        registration = self.store._chain_meme_trader_registration(version)
+        definition = json.loads(registration["definition_json"])
+        sample_version = definition.get("funding_source_version") or version
         def read_samples():
             connection = sqlite3.connect(self.store.path.resolve().as_uri() + "?mode=ro", uri=True)
             try:
-                return load_duration_risk_samples(connection, version, cutoff)
+                return load_duration_risk_samples(connection, sample_version, cutoff)
             finally:
                 connection.close()
         try:
@@ -7451,7 +7492,7 @@ class Runtime:
                 async def request_quote():
                     async with self._jupiter_quote_lock:
                         return await self.jupiter.quote(input_mint, output_mint, amount,
-                                                        slippage_bps=int(task.get("slippage_bps") or 400))
+                                                        slippage_bps=int(task.get("slippage_bps", 400)))
                 try:
                     quote = await asyncio.wait_for(request_quote(), timeout=4)
                 except TimeoutError:

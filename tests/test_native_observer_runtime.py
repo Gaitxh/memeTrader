@@ -5,6 +5,20 @@ from memetrader.runtime import Runtime
 from memetrader.models import iso, utcnow
 
 
+def test_official_sources_rotate_without_new_hot_path_calls():
+    runtime = Runtime.__new__(Runtime)
+    collectors = []
+    async def collect(*, collector):
+        collectors.append(collector.__name__)
+    runtime.chain_meme_authoritative_events_once = collect
+    async def run():
+        for _ in range(4):
+            await runtime.chain_meme_extra_official_once()
+    asyncio.run(run())
+    assert collectors == ["collect_kraken_listing_events", "collect_kucoin_listing_events",
+                          "collect_coinbase_status_observations", "collect_kraken_listing_events"]
+
+
 def test_native_event_only_queues_bounded_identity_hydration():
     at = iso(utcnow())
     events = [{"token": "0x" + f"{i:040x}", "event": "TokenCreate",

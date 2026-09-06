@@ -6,7 +6,7 @@ import pytest
 from solders.pubkey import Pubkey
 
 from memetrader.capital_policies import capital_policies
-from memetrader.models import TokenCandidate, TokenSnapshot, iso, utcnow
+from memetrader.models import CHAIN_MEME_MIN_POOL_LIQUIDITY_USD, TokenCandidate, TokenSnapshot, iso, utcnow
 import memetrader.runtime as runtime_module
 from memetrader.runtime import Runtime
 from memetrader.store import Store
@@ -52,15 +52,15 @@ def setup(store, monkeypatch, *, pending=True, fraction=.4):
             store.db.execute("UPDATE chain_meme_trader_positions SET pending_mark_id=?", (mark_id,))
     tick[0] += timedelta(seconds=1)
     store.upsert_chain_meme_trader_market_mark(token, TokenSnapshot(
-        "solana", token.address, 2, 1000, 100000, 500, 5, 2,
+        "solana", token.address, 2, CHAIN_MEME_MIN_POOL_LIQUIDITY_USD, 100000, 500, 5, 2,
         observed_at=tick[0], ingested_at=tick[0],
         raw={"pair": {"pairAddress": pair}}), recorded_at=tick[0])
     return tick, token, pair, mark_id
 
 
 @pytest.mark.parametrize("liquidity,status,settled,mark_status", [
-    (999, "written_off", 1, "pending"), (None, "open", 0, "pending"),
-    (999, "written_off", 1, "retry"),
+    (CHAIN_MEME_MIN_POOL_LIQUIDITY_USD - 1, "written_off", 1, "pending"), (None, "open", 0, "pending"),
+    (CHAIN_MEME_MIN_POOL_LIQUIDITY_USD - 1, "written_off", 1, "retry"),
 ])
 def test_exact_quote_arms_also_obey_pool_floor(tmp_path, monkeypatch, liquidity, status, settled, mark_status):
     store = Store(tmp_path / "exact-floor.sqlite3", initial_cash_usd=1000)
@@ -84,7 +84,7 @@ def test_exact_quote_arms_also_obey_pool_floor(tmp_path, monkeypatch, liquidity,
 def quote_for(store, task, when, minimum=12_000_000):
     return dict(provider="jupiter", input_mint=task["token_id"].partition(":")[2], output_mint=store.JUPITER_USDC_MINT,
                 in_amount=str(task["input_amount_raw"]), out_amount=str(minimum + 500_000),
-                other_amount_threshold=str(minimum), slippage_bps=400,
+                other_amount_threshold=str(minimum), slippage_bps=task["slippage_bps"],
                 requested_at=iso(when), completed_at=iso(when + timedelta(milliseconds=100)),
                 route_plan=[dict(amm_key=task["pair_address"], input_mint=task["token_id"].partition(":")[2],
                                  output_mint=store.JUPITER_USDC_MINT, in_amount=str(task["input_amount_raw"]))])
@@ -151,6 +151,42 @@ def test_invalid_quotes_are_evidence_only_and_do_not_settle(tmp_path, monkeypatc
     store.close()
 
 
+@pytest.mark.parametrize("bad_slippage", [None, False, "0"])
+def test_zero_slippage_still_requires_explicit_integer_quote_field(
+    tmp_path, monkeypatch, bad_slippage,
+):
+    store = Store(tmp_path / f"zero-{bad_slippage!r}.sqlite3", initial_cash_usd=1000)
+    tick, _, _, _ = setup(store, monkeypatch)
+    store.activate_chain_paper_execution({
+        "buy_slippage_pct": 0,
+        "sell_slippage_pct": 0,
+        "additional_fee_usd_each_fill": 0,
+        "min_pool_liquidity_usd": 1000,
+    })
+    task = store.due_capital_quote(now=tick[0])
+    assert task["slippage_bps"] == 0
+    requested = tick[0]
+    quote = quote_for(store, task, requested)
+    if bad_slippage is None:
+        quote.pop("slippage_bps")
+    else:
+        quote["slippage_bps"] = bad_slippage
+    tick[0] += timedelta(seconds=1)
+    assert store.record_capital_quote(
+        task, quote, requested_at=requested, completed_at=tick[0]
+    ) == 0
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_fills"
+    ).fetchone()[0] == 0
+    evidence = json.loads(store.db.execute(
+        "SELECT payload_json FROM chain_meme_pattern_evidence "
+        "WHERE kind='capital_valuation'"
+    ).fetchone()[0])
+    assert not evidence["complete"]
+    assert evidence["error_code"] == "QUOTE_PROTOCOL_OR_AMOUNT_MISMATCH"
+    store.close()
+
+
 def test_valuation_throttle_full_close_and_dex_settlement_is_skipped(tmp_path, monkeypatch):
     store = Store(tmp_path / "valuation.sqlite3", initial_cash_usd=1000)
     tick, token, pair, _ = setup(store, monkeypatch, pending=False)
@@ -200,6 +236,12 @@ def test_shared_recovery_shadow_quotes_equal_positions_once_without_accounting_c
 ):
     store = Store(tmp_path / "shared-shadow.sqlite3", initial_cash_usd=1000)
     tick, token, pair, _ = setup(store, monkeypatch, pending=False)
+    store.activate_chain_paper_execution({
+        "buy_slippage_pct": 4,
+        "sell_slippage_pct": 4,
+        "additional_fee_usd_each_fill": 1,
+        "min_pool_liquidity_usd": 1000,
+    })
     monkeypatch.setattr(runtime_module, "utcnow", lambda: tick[0])
     version = store.CHAIN_MEME_TRADER_ACTIVE_VERSION
     try:
@@ -265,6 +307,7 @@ def test_shared_recovery_shadow_quotes_equal_positions_once_without_accounting_c
         payload = json.loads(evidence[0][0])
         assert payload["complete"] and payload["quote_only"] and payload["is_fill"] is False
         assert payload["input_amount_raw"] == 10_123_456
+        assert payload["shadow_min_executable_recovery_usd"] == pytest.approx(11)
         assert len(payload["shadow_members"]) == 2
         assert payload["remaining_min_executable_recovery_usd"] is None
         assert store.db.execute(

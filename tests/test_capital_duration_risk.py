@@ -99,6 +99,27 @@ def test_loader_recovers_profit_and_loss_from_immutable_sell_cost():
     assert {s["event_type"] for s in source["samples"]} == {"profit_exit", "loss_exit"}
 
 
+def test_loader_excludes_only_position_voids_known_by_cutoff():
+    db = _db()
+    _episode(db, 1, "solana:past-void", "closed")
+    _episode(db, 2, "solana:future-void", "closed")
+    assert len(load_duration_risk_samples(db, "v", CUTOFF)["samples"]) == 2
+    db.execute("""CREATE TABLE chain_meme_trader_position_voids(
+        definition_version,arm_id,shadow_cohort_id,source_buy_trade_id,
+        reason,evidence_json,archive_json,recorded_at)""")
+    db.execute(
+        "INSERT INTO chain_meme_trader_position_voids VALUES(?,?,?,?,?,?,?,?)",
+        ("v", "arm", 1, 2, "void", "{}", "{}", "2026-09-05T12:06:00Z"),
+    )
+    db.execute(
+        "INSERT INTO chain_meme_trader_position_voids VALUES(?,?,?,?,?,?,?,?)",
+        ("v", "arm", 2, 4, "future", "{}", "{}", "2026-09-05T12:11:00Z"),
+    )
+    source = load_duration_risk_samples(db, "v", CUTOFF)
+    assert [sample["shadow_cohort_id"] for sample in source["samples"]] == [2]
+    assert source["excluded"]["engineering_pollution"] == 1
+
+
 def test_future_mutable_writeoff_time_does_not_change_asof_ledger():
     db = _db()
     _episode(db, 1, "solana:writeoff", "closed")

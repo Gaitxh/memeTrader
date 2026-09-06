@@ -321,7 +321,8 @@ def evaluate_mature_acceptance(
     if gap > float(policy["maximum_confirmation_gap_seconds"]):
         state["status"] = "EXPIRED"
         return False, "mature_acceptance_confirmation_expired", state, evidence
-    if float(last["liquidity"]) < CHAIN_MEME_MIN_POOL_LIQUIDITY_USD:
+    if float(last["liquidity"]) < float(policy.get("_execution", {}).get(
+            "min_pool_liquidity_usd", CHAIN_MEME_MIN_POOL_LIQUIDITY_USD)):
         return False, "mature_acceptance_pool_liquidity_below_shared_floor", state, evidence
 
     baseline = episode["baseline"]

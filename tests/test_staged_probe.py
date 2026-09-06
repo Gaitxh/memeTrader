@@ -75,6 +75,32 @@ def _open_shadow(opened):
     return position, state
 
 
+def test_shadow_uses_configured_buy_cost_and_does_not_scale_fixed_exit_fee():
+    from memetrader.staged_probe import STAGED_PROBE_POLICY
+    opened = datetime(2026, 9, 6, tzinfo=UTC)
+    position, state = _open_shadow(opened)
+    state["status"] = "QUALIFIED"
+    policy = {**STAGED_PROBE_POLICY, "_execution": {
+        "buy_slippage_bps": 200, "additional_fee_usd_each_fill": 0.5,
+        "min_pool_liquidity_usd": 100.0,
+    }}
+    frame = _frame(opened, 130, "configured-buy", price=2.0, liquidity=100.0)
+    action, _, state, _ = evaluate_staged_probe(position, frame, state,
+        now=frame["recorded_at"], policy=policy)
+    assert action == SHADOW_BUY
+    assert state["shadow_fill"]["quantity_tokens"] == pytest.approx(15 / 2.04)
+    assert state["shadow_fill"]["total_cost_usd"] == 15.5
+    marker = _frame(opened, 140, "configured-sell", event_kind="formal_exit_quote",
+        formal_exit_closes_position=True, formal_exit_quantity_tokens=4,
+        formal_exit_net_recovery_usd=11.5, formal_exit_fee_usd=0.5)
+    action, _, state, _ = evaluate_staged_probe(position, marker, state,
+        now=marker["recorded_at"], policy=policy)
+    assert action == SHADOW_EXIT
+    expected_recovery = (15 / 2.04) * 3 - 0.5
+    assert state["shadow_exit"]["shadow_net_recovery_usd"] == pytest.approx(expected_recovery)
+    assert state["shadow_exit"]["shadow_net_pnl_usd"] == pytest.approx(expected_recovery - 15.5)
+
+
 def test_staged_probe_policies_are_three_unique_same_entry_risk_baselines():
     policies = staged_probe_policies()
     assert [policy["arm_id"] for policy in policies] == [
@@ -169,7 +195,8 @@ def test_staged_probe_does_not_buy_shadow_below_shared_liquidity_floor():
         WAIT, "shadow_entry_pool_liquidity_below_shared_floor"
     )
     assert "shadow_fill" not in state
-    assert evidence["minimum_pool_liquidity_usd"] == 100.0
+    from memetrader.models import CHAIN_MEME_MIN_POOL_LIQUIDITY_USD
+    assert evidence["minimum_pool_liquidity_usd"] == CHAIN_MEME_MIN_POOL_LIQUIDITY_USD
 
 
 def test_staged_probe_accepts_market_improvement_but_not_partial_improvement():

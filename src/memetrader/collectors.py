@@ -1716,6 +1716,7 @@ class GeckoNewPoolsCollector:
         response = await self.http.get(
             f"https://api.geckoterminal.com/api/v2/networks/{self.network}/new_pools",
             params={"include": "base_token,quote_token,dex", "page": 1}, ttl=20,
+            retry_429=False,
         )
         payload = response.json()
         from .market_api import normalize_gecko_pool

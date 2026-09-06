@@ -7612,8 +7612,8 @@ def test_chain_meme_funded_period_preserves_rules_and_old_sell_cash(tmp_path: Pa
     old_position = tuple(store.db.execute(
         "SELECT * FROM chain_meme_trader_positions WHERE definition_version=?", (old,),
     ).fetchone())
-    activated = store.activate_chain_meme_trader_funded_period()
-    assert dict(store.activate_chain_meme_trader_funded_period()) == dict(activated)
+    activated = store.activate_chain_meme_trader_funding_epoch(target_version=new, source_version=old)
+    assert dict(store.activate_chain_meme_trader_funding_epoch(target_version=new, source_version=old)) == dict(activated)
     new_definition = store._chain_meme_trader_effective_definition(
         new, store._chain_meme_trader_registration(new)["definition_json"],
     )
@@ -8172,6 +8172,26 @@ def test_successful_source_heartbeat_closes_only_recovered_transport_errors(
     store.close()
 
 
+def test_quote_recovery_needs_real_item_and_quiet_period_not_partial_pool(tmp_path, monkeypatch):
+    store = Store(tmp_path / "quote-recovery.sqlite3", initial_cash_usd=1000)
+    now = utcnow()
+    old = now - timedelta(minutes=11)
+    ids = []
+    for source, error_type, at in (
+        ("capital-quote", "QUOTE_TIMEOUT", old),
+        ("capital-quote", "QUOTE_TIMEOUT:new", now),
+        ("geckoterminal:original_pool", "HTTPStatusError:429", old),
+    ):
+        ids.append(store.record_system_error(area="runtime", component=source,
+            error_type=error_type, observed_at=at))
+    store.heartbeat("capital-quote")
+    assert store.db.execute("SELECT status FROM system_error_cases WHERE id=?", (ids[0],)).fetchone()[0] == "new"
+    store.heartbeat("capital-quote", item=True)
+    store.heartbeat("geckoterminal:original_pool", item=True)
+    assert [r[0] for r in store.db.execute("SELECT status FROM system_error_cases ORDER BY id")] == ["fixed", "new", "new"]
+    store.close()
+
+
 def _seed_chain_market_position(
     store: Store,
     *,
@@ -8431,7 +8451,7 @@ def test_chain_meme_market_exit_sells_when_same_pool_at_liquidity_floor(
         store.upsert_chain_meme_trader_market_mark(
             token,
             TokenSnapshot(
-                "solana", token.address, 2.0, 100.0, 100_000, 0.0, 0, 0,
+                "solana", token.address, 2.0, 1000.0, 100_000, 0.0, 0, 0,
                 observed_at=observed_at, ingested_at=observed_at,
                 provider="dexscreener", raw={"pair": {"pairAddress": "pair-A"}},
             ),
@@ -8525,7 +8545,7 @@ def test_chain_meme_market_exit_post_confirmation_below_floor_is_writeoff(tmp_pa
     store.close()
 
 
-@pytest.mark.parametrize("liquidity", [0.05, 99.99])
+@pytest.mark.parametrize("liquidity", [0.05, 999.99])
 def test_chain_meme_fresh_visible_pool_below_floor_is_immediate_writeoff(
     tmp_path: Path, liquidity,
 ):
@@ -8580,7 +8600,7 @@ def test_chain_meme_fresh_visible_pool_below_floor_is_immediate_writeoff(
         (version, policy["arm_id"], cohort_id),
     ).fetchone()
     assert position["status"] == "written_off"
-    assert position["close_reason"] == "dex_pool_liquidity_below_100_usd_writeoff"
+    assert position["close_reason"] == "dex_pool_liquidity_below_configured_floor_writeoff"
     assert store.db.execute(
         "SELECT COUNT(*) FROM chain_meme_trader_trades WHERE definition_version=? "
         "AND arm_id=? AND shadow_cohort_id=? AND side='WRITEOFF'",
@@ -9049,7 +9069,7 @@ def test_chain_meme_partial_exit_trailing_uses_actual_economic_high_water(
 
 @pytest.mark.parametrize("liquidity,raw_liquidity,admitted", [
     (0.0, None, False), (0.99, None, False), (None, 0.48, False),
-    (99.99, None, False), (100.0, None, True), (10000.0, None, True), (None, None, False),
+        (999.99, None, False), (1000.0, None, True), (10000.0, None, True), (None, None, False),
 ])
 def test_chain_meme_entry_enforces_shared_liquidity_floor(
     tmp_path: Path, liquidity, raw_liquidity, admitted,
@@ -9082,7 +9102,7 @@ def test_chain_meme_entry_enforces_shared_liquidity_floor(
     if not admitted:
         assert evaluation["reason"] == (
             "entry_pool_liquidity_unknown" if liquidity is None and raw_liquidity is None
-            else "entry_pool_liquidity_below_100_usd")
+            else "entry_pool_liquidity_below_configured_floor")
         assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_v6_entry_fills").fetchone()[0] == 0
         assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_positions").fetchone()[0] == 0
         assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_trades").fetchone()[0] == 0

@@ -4607,6 +4607,35 @@ def test_reverse_news_only_runs_for_tokens_with_real_momentum(tmp_path, monkeypa
     asyncio.run(scenario())
 
 
+def test_gecko_429_is_one_safe_case_and_pauses_discovery_without_fake_success(tmp_path, monkeypatch):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        runtime = Runtime(config, tmp_path)
+        for pool in ("pool-one", "pool-two"):
+            request = httpx.Request("GET", f"https://api.geckoterminal.com/pools/{pool}?key=PRIVATE")
+            response = httpx.Response(429, headers={"Retry-After": "120"}, request=request)
+            runtime._notify_source_error("geckoterminal:original_pool",
+                httpx.HTTPStatusError("too many requests", request=request, response=response))
+        cases = runtime.store.db.execute("SELECT * FROM system_error_cases").fetchall()
+        assert len(cases) == 1 and cases[0]["error_type"] == "HTTPStatusError:429"
+        assert "PRIVATE" not in json.dumps([dict(r) for r in cases])
+        assert runtime._gecko_pool_backoff_until - asyncio.get_running_loop().time() > 119
+
+        class Uncalled:
+            def __init__(self, *args):
+                pytest.fail("discovery must share original-pool cooldown")
+
+        monkeypatch.setattr("memetrader.runtime.GeckoNewPoolsCollector", Uncalled)
+        await runtime._poll_gecko_network("bsc")
+        assert runtime.store.db.execute("SELECT COUNT(*) FROM token_discovery_rounds").fetchone()[0] == 0
+        assert runtime.store.db.execute("SELECT 1 FROM source_health WHERE source='geckoterminal:bsc'").fetchone() is None
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
 def test_event_evaluation_reserves_budget_for_fresh_eligible_event(tmp_path):
     async def scenario():
         config = initial_config()

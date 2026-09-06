@@ -23,6 +23,16 @@ from .capital_context import evaluate_capital_exit_context
 from .capital_cross_section import build_capital_cross_section
 from .capital_policies import capital_policies, second_discussion_policies, opportunity_policies, direct_lp_amount_specific_policy, direct_lp_float_constrained_signal, authoritative_event_shock_signal
 from .capital_exits import evaluate_exit as evaluate_capital_exit, POST_TRIGGER_AMOUNT_QUOTE
+from .paper_execution import (
+    CURRENT_EXECUTION_SETTINGS_KEY,
+    EXECUTION_SETTINGS_KEY_PREFIX,
+    buy_terms,
+    effective_execution_settings,
+    execution_definition_fields,
+    normalize_execution_settings,
+    pool_is_below_floor,
+    sell_terms,
+)
 
 from .models import (
     CHAIN_MEME_MIN_POOL_LIQUIDITY_USD,
@@ -194,7 +204,8 @@ class Store:
         "chain-meme-trader/flat-compression-breakout-shadow/v1-observer-only"
     )
     PUMPSWAP_PROGRAM_ID = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
-    CHAIN_MEME_TRADER_ACTIVE_VERSION = CHAIN_MEME_TRADER_FUNDED_PERIOD_VERSION
+    CHAIN_MEME_TRADER_REVIEWED_PERIOD_VERSION = "chain-meme-trader/funding-20260906-reviewed-1000"
+    CHAIN_MEME_TRADER_ACTIVE_VERSION = CHAIN_MEME_TRADER_REVIEWED_PERIOD_VERSION
     CHAIN_MEME_TRADER_STAGE4_EXEC_DECAY_VERSION = (
         "chain-meme-trader/stage4-executable-decay-challenger-v1"
     )
@@ -7317,6 +7328,15 @@ class Store:
                 definition["paper_funding"] = dict(restored)
                 definition["capital_model"] = "legacy_cash_limited"
                 definition["starting_cash_usd_each_arm"] = float(restored["starting_cash_usd"])
+        execution_settings = effective_execution_settings(connection)
+        if execution_settings is not None:
+            execution_fields = execution_definition_fields(execution_settings)
+            definition.update(execution_fields)
+            definition["paper_execution_settings"] = execution_settings
+            definition["policies"] = [
+                {**policy, "_execution": dict(execution_fields)}
+                for policy in definition["policies"]
+            ]
         return definition
 
     def _chain_meme_trader_effective_definition(
@@ -7325,6 +7345,59 @@ class Store:
         return self.chain_meme_trader_effective_definition_from_connection(
             self.db, definition_version, raw_json,
         )
+
+    def activate_chain_paper_execution(
+        self, settings: Mapping[str, Any] | None = None, *, activated_at: Any = None,
+    ) -> dict[str, Any]:
+        """Append one immutable execution setting snapshot and move its pointer."""
+        normalized = normalize_execution_settings(settings)
+        with self._lock, self.db:
+            current = effective_execution_settings(self.db)
+            pointer = self.db.execute(
+                "SELECT value_json FROM kv WHERE key=?", (CURRENT_EXECUTION_SETTINGS_KEY,)
+            ).fetchone()
+            if current == normalized and pointer is not None:
+                current_pointer = self._json_object(pointer["value_json"])
+                active = self.db.execute(
+                    "SELECT value_json FROM kv WHERE key=?",
+                    (str(current_pointer.get("activation_key") or ""),),
+                ).fetchone()
+                if active is not None:
+                    return self._json_object(active["value_json"])
+            when = iso(parse_time(activated_at or utcnow()))
+            digest = hashlib.sha256(
+                self._json(normalized).encode("utf-8")
+            ).hexdigest()[:12]
+            compact = re.sub(r"[^0-9]", "", when)[:14]
+            activation_key = f"{EXECUTION_SETTINGS_KEY_PREFIX}{compact}:{digest}"
+            payload = {
+                "activation_key": activation_key,
+                "activated_at": when,
+                "activation_snapshot_id": int(self.db.execute(
+                    "SELECT COALESCE(MAX(id),0) FROM token_snapshots"
+                ).fetchone()[0]),
+                "activation_evaluation_id": int(self.db.execute(
+                    "SELECT COALESCE(MAX(id),0) FROM chain_meme_trader_v6_entry_evaluations"
+                ).fetchone()[0]),
+                "settings": normalized,
+                "definition_fields": execution_definition_fields(normalized),
+            }
+            self.db.execute(
+                "INSERT OR IGNORE INTO kv(key,value_json,updated_at) VALUES(?,?,?)",
+                (activation_key, self._json(payload), when),
+            )
+            stored = self.db.execute(
+                "SELECT value_json FROM kv WHERE key=?", (activation_key,)
+            ).fetchone()
+            if stored is None or self._json_object(stored["value_json"]) != payload:
+                raise ValueError("paper execution activation key collision")
+            self.db.execute(
+                "INSERT INTO kv(key,value_json,updated_at) VALUES(?,?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at",
+                (CURRENT_EXECUTION_SETTINGS_KEY,
+                 self._json({"activation_key": activation_key, "activated_at": when}), when),
+            )
+            return payload
 
     @staticmethod
     def _chain_meme_trader_policy_active_for_snapshot(
@@ -17895,7 +17968,7 @@ class Store:
                     "WriteTimeout",
                 )
                 recovered = self.db.execute(
-                    "SELECT id,error_type,message_safe FROM system_error_cases "
+                    "SELECT id,error_type,message_safe,last_seen_at FROM system_error_cases "
                     "WHERE area='runtime' AND component=? AND status='new'",
                     (source,),
                 ).fetchall()
@@ -17906,10 +17979,24 @@ class Store:
                         error_type == "RuntimeError"
                         and message.startswith("held_account_subscription_rejected")
                     )
-                    if is_transient:
+                    # An empty response or a successful *different* pool does
+                    # not establish recovery. Single quote lanes and discovery
+                    # can recover after a quiet interval and a real new item.
+                    retryable = (
+                        error_type == "QUOTE_TIMEOUT"
+                        or error_type == "JupiterQuoteError"
+                        or (error_type.startswith("HTTPStatusError")
+                            and bool(re.search(r"\b(?:429|5\d\d)\b", error_type + " " + message)))
+                    )
+                    confirmed_recovery = (
+                        item and retryable and not source.endswith(":original_pool")
+                        and (now_dt - parse_time(case["last_seen_at"])).total_seconds() >= 600
+                    )
+                    if is_transient or confirmed_recovery:
                         self.update_system_error_case_from_connection(
                             self.db, int(case["id"]), status="fixed",
-                            note="数据源后续成功，瞬时传输错误已自动恢复。",
+                            note=("同源获得新数据且该错误至少10分钟未复现，自动记录恢复；复发会重新打开。"
+                                  if confirmed_recovery else "数据源后续成功，瞬时传输错误已自动恢复。"),
                             evidence_safe=f"source={source}; recovered_at={now}",
                             actor="system",
                         )
@@ -20098,7 +20185,9 @@ class Store:
             ).fetchone()
             if registration is None:
                 return {"inserted": 0, "modeled_executable": 0}
-            definition = self._json_object(registration["definition_json"])
+            definition = self._chain_meme_trader_effective_definition(
+                version, registration["definition_json"],
+            )
             rows = self.db.execute(
                 """
                 SELECT o.*,c.token_id,c.chain,b.snapshot_id AS baseline_snapshot_id,
@@ -23624,7 +23713,10 @@ class Store:
             behavior["capital_experiment"] = True
             behavior["required_inputs"] = list(policy.get("required_inputs") or [])
             behavior["notional_usd"] = float(policy.get("notional_usd") or 20)
-        for name in ("entry_match_mode", "research_overlay"):
+        if policy.get("revision_exit_kind"):
+            behavior["revision_exit_kind"] = str(policy["revision_exit_kind"])
+            behavior["revision_exit_policy"] = dict(policy.get("revision_exit_policy") or {})
+        for name in ("entry_match_mode", "entry_revision_kind", "capital_revision_kind", "research_overlay"):
             if policy.get(name) is not None:
                 behavior[name] = str(policy[name])
         for name in (
@@ -23707,6 +23799,11 @@ class Store:
                 m5_trades is None
                 or m5_trades < int(entry_filter["min_m5_trades"])
             )
+        ):
+            return False
+        if (
+            "min_m5_volume_usd" in entry_filter
+            and (m5_volume_usd is None or m5_volume_usd < float(entry_filter["min_m5_volume_usd"]))
         ):
             return False
         if (
@@ -25049,6 +25146,7 @@ class Store:
 
     def activate_chain_meme_trader_funding_epoch(
         self, *, target_version: str, source_version: str, at: Any = None,
+        apply_strategy_revisions: bool = False,
     ) -> sqlite3.Row:
         """Start one explicit 1000U epoch from the source's complete policy set."""
         with self._lock, self.db:
@@ -25085,11 +25183,39 @@ class Store:
             frontier = int(self.db.execute(
                 "SELECT COALESCE(MAX(id),0) FROM token_snapshots"
             ).fetchone()[0])
-            for policy in definition["policies"]:
+            revised_ids = []
+            def prepare_policy(original):
+                policy = dict(original)
+                if apply_strategy_revisions:
+                    from .strategy_revisions import revision_spec
+                    policy = revision_spec(policy)
+                if int(policy.get("strategy_revision") or 1) > int(original.get("strategy_revision") or 1):
+                    revised_ids.append(policy["arm_id"])
+                    policy["revision_history"] = [
+                        *list(original.get("revision_history") or [{"revision": 1,
+                            "reason": "原规则保留在历史账期", "changes": "历史交易不按新版重算",
+                            "source_definition_version": source_version}]),
+                        {"revision": policy["strategy_revision"], "changed_at": activated_at,
+                         "reason": policy.pop("revision_reason"), "changes": policy.pop("revision_changes"),
+                         "basis": policy.pop("revision_basis"), "source_definition_version": source_version},
+                    ]
+                    policy["behavior_contract_hash"] = self.chain_meme_trader_behavior_hash(
+                        policy, definition_version=target_version)
+                    policy["fidelity_status"] = "REVISED_FORWARD"
+                    policy["fidelity_note"] = "按用户授权原编号换版；旧规则和收益在旧账期保留，新版效果待前向检验。"
                 policy["original_forward_started_at"] = policy.get("forward_started_at")
                 policy["forward_started_at"] = activated_at
                 policy["forward_activation_snapshot_id"] = frontier
                 policy.pop("runtime_addition_id", None)
+                return policy
+
+            definition["policies"] = [prepare_policy(p) for p in definition["policies"]]
+            revised_additions = {}
+            if apply_strategy_revisions:
+                for row in additions:
+                    policy = prepare_policy(self._json_object(row["policy_json"]))
+                    if str(row["arm_id"]) in revised_ids:
+                        revised_additions[str(row["arm_id"])] = policy
             definition.pop("paper_funding", None)
             definition["runtime_policy_additions"] = []
             definition.update({
@@ -25105,7 +25231,8 @@ class Store:
                 ],
                 "capital_model": "legacy_cash_limited",
                 "starting_cash_usd_each_arm": 1000.0,
-                "strategy_logic_changed": False,
+                "strategy_logic_changed": bool(revised_ids),
+                "revised_strategy_ids": revised_ids,
                 "reset_reason": "user_authorized_independent_funding_period",
                 "no_historical_backfill": True,
                 "strategy_count": len(definition["policies"]),
@@ -25133,6 +25260,7 @@ class Store:
                 (target_version, activated_at, frontier, source_version, frontier),
             )
             for row in additions:
+                revised = revised_additions.get(str(row["arm_id"]))
                 self.db.execute(
                     "INSERT INTO chain_meme_trader_policy_additions("
                     "definition_version,arm_id,canonical_id,registered_at,activated_at,"
@@ -25141,7 +25269,8 @@ class Store:
                     (
                         target_version, str(row["arm_id"]), str(row["canonical_id"]),
                         activated_at, activated_at, frontier, 0,
-                        str(row["behavior_contract_hash"]), str(row["policy_json"]),
+                        str(revised["behavior_contract_hash"]) if revised else str(row["behavior_contract_hash"]),
+                        self._json(revised) if revised else str(row["policy_json"]),
                     ),
                 )
             return self.db.execute(
@@ -25150,11 +25279,18 @@ class Store:
             ).fetchone()
 
     def activate_chain_meme_trader_funded_period(self) -> sqlite3.Row:
-        """Activate the original fixed funding period without changing its public contract."""
+        """Activate the user-authorized current period once, preserving its source."""
         self.activate_chain_meme_trader_v22()
-        return self.activate_chain_meme_trader_funding_epoch(
+        original = self.activate_chain_meme_trader_funding_epoch(
             target_version=self.CHAIN_MEME_TRADER_FUNDED_PERIOD_VERSION,
             source_version=self.CHAIN_MEME_TRADER_V22_VERSION,
+        )
+        if self.CHAIN_MEME_TRADER_ACTIVE_VERSION == self.CHAIN_MEME_TRADER_FUNDED_PERIOD_VERSION:
+            return original
+        return self.activate_chain_meme_trader_funding_epoch(
+            target_version=self.CHAIN_MEME_TRADER_ACTIVE_VERSION,
+            source_version=self.CHAIN_MEME_TRADER_FUNDED_PERIOD_VERSION,
+            apply_strategy_revisions=True,
         )
 
     def activate_chain_meme_trader_unconstrained_paper_funding(
@@ -25974,6 +26110,18 @@ class Store:
                 "ORDER BY id DESC LIMIT 20",
                 (version, iso(current)),
             ).fetchall()
+            if not rows:
+                registration = self._chain_meme_trader_registration(version)
+                definition = self._json_object(registration["definition_json"]) if registration else {}
+                source = definition.get("funding_source_version")
+                if source:
+                    # Historical signers can seed a watchlist, not confirm a new trade.
+                    # Positive matches still require post-seal, post-activation activity.
+                    rows = self.db.execute(
+                        "SELECT observed_at,recorded_at,payload_json FROM chain_meme_pattern_evidence "
+                        "WHERE definition_version=? AND kind='participation_scan' AND recorded_at<=? "
+                        "ORDER BY id DESC LIMIT 20", (source, activated_at),
+                    ).fetchall()
             candidates = []
             for row in rows:
                 payload = self._json_object(row["payload_json"])
@@ -26511,6 +26659,11 @@ class Store:
                     "pair_address": source_address, "price": source["price_usd"],
                     "liquidity": source["liquidity_usd"], "volume": source["volume_5m_usd"],
                     "buys": source["buys_5m"], "sells": source["sells_5m"],
+                    "prior55_trades": (
+                        max(0, int(source_pair["txns"]["h1"].get("buys") or 0)
+                            + int(source_pair["txns"]["h1"].get("sells") or 0)
+                            - int(source["buys_5m"] or 0) - int(source["sells_5m"] or 0))
+                        if isinstance(source_pair.get("txns", {}).get("h1"), Mapping) else None),
                     "pool_age_seconds": (parse_time(source["observed_at"]) - datetime.fromtimestamp(float(created) / 1000, tz=timezone.utc)).total_seconds(),
                     "observed_at": source["observed_at"], "ingested_at": source["ingested_at"],
                     "recorded_at": source["recorded_at"]})
@@ -26521,7 +26674,7 @@ class Store:
                 and parse_time(pre_observed) < snapshot.observed_at
                 and 0 < (snapshot.observed_at - parse_time(pre_observed)).total_seconds() <= 60
                 and isolated.liquidity_usd is not None
-                and float(isolated.liquidity_usd) >= CHAIN_MEME_MIN_POOL_LIQUIDITY_USD)
+                and not pool_is_below_floor(isolated.liquidity_usd, definition))
             already_bought = {str(r[0]) for r in self.db.execute(
                 "SELECT DISTINCT p.arm_id FROM chain_meme_trader_positions p JOIN chain_meme_trader_v6_cohorts c "
                 "ON c.id=p.shadow_cohort_id WHERE p.definition_version=? AND p.token_id=? AND c.pair_address=?",
@@ -26605,12 +26758,14 @@ class Store:
             mature_policy = next((p for p in active
                 if p.get("entry_family") == "mature_new_acceptance"), None)
             if not cohort_mode and mature_policy is not None:
-                from .mature_acceptance import evaluate_mature_acceptance
+                from .mature_acceptance import MATURE_ACCEPTANCE_POLICY, evaluate_mature_acceptance
                 mature_result = evaluate_mature_acceptance(
                     history, context.get("narrative"),
                     previous_features.get("mature_acceptance_state"),
                     decision_at=iso(decision_at),
                     activated_at=mature_policy["forward_started_at"],
+                    policy={**MATURE_ACCEPTANCE_POLICY,
+                            "_execution": dict(mature_policy.get("_execution") or {})},
                 )
             wallet_entry_results = {}
             wallet_entry_policies = [p for p in active
@@ -26624,7 +26779,8 @@ class Store:
                 initial_opportunity = None
                 if (0 <= float(latest.get("pool_age_seconds") or -1) <= 900
                         and activity
-                        and float(latest.get("liquidity") or 0) >= CHAIN_MEME_MIN_POOL_LIQUIDITY_USD):
+                        and latest.get("liquidity") is not None
+                        and not pool_is_below_floor(latest.get("liquidity"), definition)):
                     initial_opportunity = {"opportunity_id": f"passive-broad:{token.token_id}:{pair_address}",
                         "source_snapshot_id": latest["id"], "token_id": token.token_id,
                         "pair_address": pair_address, "broad_like": True, "original_pool": True,
@@ -26776,6 +26932,14 @@ class Store:
                 elif (mature_result is not None
                         and policy.get("entry_family") == "mature_new_acceptance"):
                     passed, reason = mature_result[:2]
+                elif policy.get("entry_revision_kind"):
+                    from .strategy_revisions import revision_entry_signal
+                    passed, reason = revision_entry_signal(history, policy,
+                        decision_at=iso(decision_at), activated_at=policy["forward_started_at"])
+                elif policy.get("capital_revision_kind"):
+                    from .strategy_revisions import revision_context_signal
+                    passed, reason = revision_context_signal(history, policy, context=capital_context,
+                        decision_at=iso(decision_at), activated_at=policy["forward_started_at"])
                 elif policy.get("capital_experiment"):
                     own_context = dict(capital_context)
                     if policy["arm_id"] in wave_rows:
@@ -26846,7 +27010,13 @@ class Store:
                         by_notional.setdefault(notional, []).append(p["arm_id"])
                 net_flows = self._chain_meme_trader_effective_net_flows(version) if by_notional else {}
                 for arms in paired.values():
-                    if not all(float(definition["starting_cash_usd_each_arm"]) + net_flows.get(arm, 0) >= 20 for arm in arms):
+                    if not all(
+                        float(definition["starting_cash_usd_each_arm"]) + net_flows.get(arm, 0)
+                        >= float(next(p.get("notional_usd") or definition["policy_notional_usd"]
+                                      for p in active if p["arm_id"] == arm))
+                        + float(definition.get("additional_fee_usd_each_fill") or 0.0)
+                        for arm in arms
+                    ):
                         for group_arms in by_notional.values():
                             group_arms[:] = [arm for arm in group_arms if arm not in arms]
                 by_notional = {n: arms for n, arms in by_notional.items() if arms}
@@ -26869,7 +27039,9 @@ class Store:
                     cohort = int(cursor.lastrowid)
                     for arm in cohort_arms:
                         cash = float(definition["starting_cash_usd_each_arm"]) + net_flows.get(arm, 0)
-                        enough = cash + 1e-9 >= notional
+                        enough = cash + 1e-9 >= (
+                            notional + float(definition.get("additional_fee_usd_each_fill") or 0.0)
+                        )
                         slots = self.db.execute("SELECT COUNT(*) FROM chain_meme_trader_positions "
                             "WHERE definition_version=? AND arm_id=? AND status='open'", (version, arm)).fetchone()[0] if arm == "finite_capital_ranker_v1" else 0
                         enough = enough and slots < 3
@@ -26967,9 +27139,10 @@ class Store:
         self, *, position_definition_version: str | None = None,
     ) -> sqlite3.Row:
         position_version = position_definition_version or self.CHAIN_MEME_TRADER_V22_VERSION
-        self._active_vault_observer_version = self.CHAIN_MEME_V22_VAULT_SHADOW_VERSION + (
-            "/funding-20260905" if position_version == self.CHAIN_MEME_TRADER_FUNDED_PERIOD_VERSION else ""
-        )
+        suffix = ("/funding-20260905" if position_version == self.CHAIN_MEME_TRADER_FUNDED_PERIOD_VERSION
+                  else "" if position_version == self.CHAIN_MEME_TRADER_V22_VERSION
+                  else "/" + position_version.rsplit("/", 1)[-1])
+        self._active_vault_observer_version = self.CHAIN_MEME_V22_VAULT_SHADOW_VERSION + suffix
         return self.register_chain_meme_v21_vault_shadow(
             observer_version=self._active_vault_observer_version,
             position_definition_version=position_version,
@@ -27512,13 +27685,14 @@ class Store:
         net_flow_by_arm: dict[str, float] | None = None,
     ) -> int:
         """Project one visible DEX price into eligible Paper accounts."""
-        required_cash = float(definition["policy_notional_usd"])
-        adverse_entry_price = market_price * (
-            1.0 + int(definition["slippage_bps"]) / 10_000.0
-        )
-        if market_price <= 0.0 or adverse_entry_price <= 0.0:
+        notional = float(definition["policy_notional_usd"])
+        try:
+            terms = buy_terms(notional, market_price, definition)
+        except ValueError:
             return 0
-        paper_quantity = required_cash / adverse_entry_price
+        adverse_entry_price = terms["execution_price_usd"]
+        paper_quantity = terms["quantity_tokens"]
+        required_cash = terms["total_cost_usd"]
         normalized_units = str(max(1, round(paper_quantity * 1_000_000_000)))
         synthetic_execution_id = -int(cohort_id)
         self.db.execute(
@@ -27529,8 +27703,8 @@ class Store:
             "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 version, int(cohort_id), synthetic_execution_id, synthetic_execution_id,
-                token_id, str(round(required_cash * 1_000_000)), normalized_units, market_price, adverse_entry_price,
-                paper_quantity, int(definition["slippage_bps"]), filled_at,
+                token_id, str(round(notional * 1_000_000)), normalized_units, market_price, adverse_entry_price,
+                paper_quantity, int(definition.get("buy_slippage_bps", definition.get("slippage_bps", 400))), filled_at,
             ),
         )
         entry_fill = self.db.execute(
@@ -27590,7 +27764,7 @@ class Store:
                 "net_cash_flow_usd,reason,created_at,recorded_at) "
                 "VALUES(?,?,?,?, 'BUY',?,?,?,?,?)",
                 (
-                    version, arm_id, int(cohort_id), token_id, required_cash,
+                    version, arm_id, int(cohort_id), token_id, notional,
                     -required_cash, reason + ":dex_mark_paper_fill", filled_at, iso(),
                 ),
             )
@@ -27786,8 +27960,8 @@ class Store:
                     })
                     if liquidity is None:
                         raise ValueError("entry_pool_liquidity_unknown")
-                    if float(liquidity) < CHAIN_MEME_MIN_POOL_LIQUIDITY_USD:
-                        raise ValueError("entry_pool_liquidity_below_100_usd")
+                    if pool_is_below_floor(liquidity, definition):
+                        raise ValueError("entry_pool_liquidity_below_configured_floor")
                     proposed_family = None
                     if age_seconds <= 900 and (
                         (m5_trades is not None and m5_trades >= 3)
@@ -27995,15 +28169,17 @@ class Store:
                             available_cash = (
                                 float(definition["starting_cash_usd_each_arm"])
                                 + net_flow
-                                - float(definition["policy_notional_usd"])
+                                - (float(definition["policy_notional_usd"])
+                                   + float(definition.get("additional_fee_usd_each_fill") or 0.0))
                                 * pending_arm_count
                             )
                             arm_available_cash[arm_id] = available_cash
                             arm_pending_reservations[arm_id] = pending_arm_count
                             if (
                                 funding_mode != "legacy_cash_limited"
-                                or available_cash + 1e-9 >= float(
-                                    definition["policy_notional_usd"]
+                                or available_cash + 1e-9 >= (
+                                    float(definition["policy_notional_usd"])
+                                    + float(definition.get("additional_fee_usd_each_fill") or 0.0)
                                 )
                             ):
                                 participating_arm_ids.append(arm_id)
@@ -28965,7 +29141,9 @@ class Store:
                 (version,),
             ).fetchone() is None:
                 return None
-            definition = self._json_object(registration["definition_json"])
+            definition = self._chain_meme_trader_effective_definition(
+                version, registration["definition_json"],
+            )
             # DexScreener-market Paper settles only on its independent
             # post-trigger DEX frame.  Sending its raw token amount to the
             # generic Jupiter route executor can apply a wrong token decimal
@@ -29004,7 +29182,9 @@ class Store:
                         f"{version}:SELL:{int(mark['id'])}", version, str(mark["arm_id"]),
                         int(mark["shadow_cohort_id"]), token_id, int(mark["id"]),
                         token_id.split(":", 1)[1], self.JUPITER_USDC_MINT,
-                        str(mark["sell_amount_raw"]), int(definition["slippage_bps"]),
+                        str(mark["sell_amount_raw"]), int(
+                            definition.get("sell_slippage_bps", definition["slippage_bps"])
+                        ),
                         str(mark["reason"]), str(mark["recorded_at"]),
                         iso(current + timedelta(days=1)), mark["next_attempt_at"],
                     ),
@@ -31160,6 +31340,12 @@ class Store:
         previous = dict(previous) if isinstance(previous, Mapping) else {}
         price = position["mark_price_usd"]
         remaining_quantity = float(position["remaining_quantity_tokens"] or 0.0)
+        execution = dict(policy.get("_execution") or {})
+        probe_policy = {**dict(policy.get("probe_policy") or {}), "_execution": execution}
+        recovery = (
+            sell_terms(remaining_quantity, float(price), execution)["net_usd"]
+            if price is not None else None
+        )
         frame = {
             "frame_id": (
                 f"staged-probe:{position['sample_sequence']}:"
@@ -31178,10 +31364,7 @@ class Store:
             "recorded_at": position["mark_recorded_at"],
             "price_usd": price,
             "liquidity_usd": position["mark_liquidity_usd"],
-            "net_recovery_usd": (
-                remaining_quantity * float(price) * 0.96
-                if price is not None else None
-            ),
+            "net_recovery_usd": recovery,
         }
         adapted = {
             **dict(position),
@@ -31190,14 +31373,12 @@ class Store:
         }
         action, reason, new_state, evidence = evaluate_staged_probe(
             adapted, frame, previous, now=current,
-            policy=policy.get("probe_policy") or None,
-        ) if policy.get("probe_policy") else evaluate_staged_probe(
-            adapted, frame, previous, now=current,
+            policy=probe_policy,
         )
         if action == SHADOW_BUY:
             totals = self.db.execute(
                 "SELECT COALESCE(SUM(CAST(json_extract(capital_exit_state_json,"
-                "'$.staged_probe.shadow_fill.notional_usd') AS REAL)),0),"
+                "'$.staged_probe.shadow_fill.total_cost_usd') AS REAL)),0),"
                 "COALESCE(SUM(CAST(json_extract(capital_exit_state_json,"
                 "'$.staged_probe.shadow_exit.shadow_net_recovery_usd') AS REAL)),0) "
                 "FROM chain_meme_trader_positions WHERE definition_version=? AND arm_id=?",
@@ -31205,7 +31386,7 @@ class Store:
             ).fetchone()
             spent, recovered = float(totals[0]), float(totals[1])
             available = 1000.0 - spent + recovered
-            requested = float((new_state.get("shadow_fill") or {}).get("notional_usd") or 0.0)
+            requested = float((new_state.get("shadow_fill") or {}).get("total_cost_usd") or 0.0)
             if requested <= 0.0 or available + 1e-9 < requested:
                 new_state.pop("shadow_fill", None)
                 new_state["status"] = "COMPLETE_NO_SHADOW"
@@ -31254,7 +31435,7 @@ class Store:
         if not isinstance(shadow_fill, Mapping):
             return
         if writeoff:
-            shadow_cost = float(shadow_fill.get("notional_usd") or 0.0)
+            shadow_cost = float(shadow_fill.get("total_cost_usd") or 0.0)
             state["status"] = "SHADOW_CLOSED"
             state["shadow_exit"] = {
                 "marker_id": marker_id,
@@ -31284,14 +31465,16 @@ class Store:
                 "recorded_at": recorded_at,
                 "formal_exit_quantity_tokens": formal_quantity_tokens,
                 "formal_exit_net_recovery_usd": formal_net_recovery_usd,
+                "formal_exit_fee_usd": float(
+                    (policy.get("_execution") or {}).get("additional_fee_usd_each_fill") or 0.0
+                ),
                 "formal_exit_closes_position": closes,
             }
             adapted = {**dict(position), "pair_address": frame["pair_address"]}
             _, _, state, _ = evaluate_staged_probe(
                 adapted, frame, state, now=recorded_at,
-                policy=policy.get("probe_policy") or None,
-            ) if policy.get("probe_policy") else evaluate_staged_probe(
-                adapted, frame, state, now=recorded_at,
+                policy={**dict(policy.get("probe_policy") or {}),
+                        "_execution": dict(policy.get("_execution") or {})},
             )
             state["formal_exit_settlement"] = {
                 "marker_id": marker_id,
@@ -31309,16 +31492,24 @@ class Store:
             ),
         )
 
-    def _capital_exit_result(self, position, policy, current, shared):
+    def _capital_exit_result(self, position, policy, current, shared, *, state_key=None):
         """Bounded, shared input reads; only additive arms carry these states."""
         kind = policy["capital_exit_kind"]
         state = self._json_object(position["capital_exit_state_json"])
+        outer_state = state
+        if state_key is not None:
+            state = dict(outer_state.get(state_key) or {})
         token, pair = position["token_id"], position["entry_pair_address"]
-        if kind in {"l0_continuation_failure", "l0_profit_lock"}:
+        if kind in {"l0_continuation_failure", "l0_profit_lock", "l0_loss_deterioration"}:
             from .l0_experiments import evaluate_l0_continuation_failure, evaluate_l0_profit_lock
             price = position["mark_price_usd"]
-            net = (float(position["remaining_quantity_tokens"] or 0) * float(price) * .96
-                   if price is not None else None)
+            net = (
+                sell_terms(
+                    float(position["remaining_quantity_tokens"] or 0), float(price),
+                    policy.get("_execution") or {},
+                )["net_usd"]
+                if price is not None else None
+            )
             frame = {
                 "frame_id": f"l0:{position['sample_sequence']}:{position['mark_observed_at']}",
                 "token_id": token, "pair_address": position["mark_pair_address"],
@@ -31336,6 +31527,9 @@ class Store:
                 "remaining_cost_usd": float(position["stake_usd"]) - float(position["allocated_cost_usd"] or 0)}
             evaluator = (evaluate_l0_continuation_failure if kind == "l0_continuation_failure"
                          else evaluate_l0_profit_lock)
+            if kind == "l0_loss_deterioration":
+                from .strategy_revisions import evaluate_l0_loss_deterioration
+                evaluator = evaluate_l0_loss_deterioration
             result = evaluator(adapted, frame, state, now=current, policy=policy["capital_exit_policy"])
         elif kind == "watched_wallet_distribution":
             from .wallet_observer_experiments import evaluate_wallet_distribution_exit
@@ -31400,7 +31594,9 @@ class Store:
             market = {"token_id": token, "pair_address": pair, "status": position["mark_status"],
                 "observed_at": position["mark_observed_at"], "recorded_at": position["mark_recorded_at"],
                 "price_usd": position["mark_price_usd"], "liquidity_usd": position["mark_liquidity_usd"],
-                "sample_sequence": position["sample_sequence"], "slippage_bps": 400}
+                "sample_sequence": position["sample_sequence"],
+                "slippage_bps": int((policy.get("_execution") or {}).get("sell_slippage_bps", 400)),
+                "additional_fee_usd_each_fill": float((policy.get("_execution") or {}).get("additional_fee_usd_each_fill", 0.0))}
             if kind in {"early_observed_buyer_distribution", "issuance_holder_distribution"}:
                 from .capital_context import build_capital_exit_frame
                 from .early_observed_buyers import evaluate_observed_buyer_distribution
@@ -31442,9 +31638,10 @@ class Store:
                     state=state, now=current, policy=policy["capital_exit_policy"], previous_market=prior)
         action, reason, new_state, evidence = result
         if new_state != state:
+            stored_state = {**outer_state, state_key: new_state} if state_key is not None else new_state
             self.db.execute("UPDATE chain_meme_trader_positions SET capital_exit_state_json=? "
                 "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
-                (self._json(new_state), position["definition_version"], position["arm_id"], position["shadow_cohort_id"]))
+                (self._json(stored_state), position["definition_version"], position["arm_id"], position["shadow_cohort_id"]))
         return action, reason, evidence
 
     def request_direct_lp_entry_preflight(
@@ -31478,6 +31675,12 @@ class Store:
             if policy_row is None or snapshot is None or surface is None or flow is None:
                 return None
             policy = self._json_object(policy_row["policy_json"])
+            registration = self._chain_meme_trader_registration(version)
+            if registration is None:
+                return None
+            effective = self._chain_meme_trader_effective_definition(
+                version, registration["definition_json"],
+            )
             config = policy.get("entry_filter") or {}
             activated = parse_time(policy_row["activated_at"])
             snapshot_observed = parse_time(snapshot["observed_at"])
@@ -31528,7 +31731,8 @@ class Store:
                 and 0 <= (current - surface_observed).total_seconds() <= 120
                 and 0 <= (current - flow_observed).total_seconds() <= 30
                 and snapshot["price_usd"] is not None and float(snapshot["price_usd"]) > 0
-                and snapshot["liquidity_usd"] is not None and float(snapshot["liquidity_usd"]) >= CHAIN_MEME_MIN_POOL_LIQUIDITY_USD
+                and snapshot["liquidity_usd"] is not None
+                and not pool_is_below_floor(snapshot["liquidity_usd"], effective)
                 and surface_payload.get("status") == "RESOLVED"
                 and surface_payload.get("complete") is True
                 and surface_payload.get("surface") == "NORMAL_DIRECT"
@@ -31592,7 +31796,8 @@ class Store:
                 "trigger_observed_at": snapshot["observed_at"],
                 "trigger_recorded_at": snapshot["recorded_at"],
                 "buy_input_amount_raw": 5_000_000,
-                "slippage_bps": 400,
+                "buy_slippage_bps": int(effective.get("buy_slippage_bps", 400)),
+                "sell_slippage_bps": int(effective.get("sell_slippage_bps", 400)),
                 "requested_at": iso(current),
                 "deadline_at": iso(current + timedelta(seconds=max_age)),
                 "quote_only_pretrade": True, "is_fill": False,
@@ -31626,7 +31831,7 @@ class Store:
                 "arm_id", "token_id", "pair_address", "trigger_snapshot_id",
                 "surface_evidence_id", "amountful_evidence_id",
                 "trigger_observed_at", "trigger_recorded_at", "buy_input_amount_raw",
-                "slippage_bps", "deadline_at",
+                "buy_slippage_bps", "sell_slippage_bps", "deadline_at",
             )},
             "request_evidence_id": int(request["id"]),
             "complete": bool(complete),
@@ -31725,7 +31930,10 @@ class Store:
                     "definition_version": version, "token_id": str(request["token_id"]),
                     "pair_address": str(request["pair_address"]),
                     "input_mint": input_mint, "output_mint": output_mint,
-                    "input_amount_raw": amount, "slippage_bps": 400,
+                    "input_amount_raw": amount,
+                    "slippage_bps": int(request_payload[
+                        "buy_slippage_bps" if phase == "buy" else "sell_slippage_bps"
+                    ]),
                     "claimed_at": iso(current), "deadline_at": iso(deadline),
                     "buy_quote_evidence_id": buy_evidence_id,
                 }
@@ -31760,6 +31968,9 @@ class Store:
             token_mint = str(request["token_id"]).partition(":")[2]
             expected_input = self.JUPITER_USDC_MINT if phase == "buy" else token_mint
             expected_output = token_mint if phase == "buy" else self.JUPITER_USDC_MINT
+            expected_slippage = int(request_payload[
+                "buy_slippage_bps" if phase == "buy" else "sell_slippage_bps"
+            ])
             failure = str(error_code or "")
             output = minimum = 0
             route_ok = False
@@ -31771,7 +31982,8 @@ class Store:
                     or task.get("pair_address") != request["pair_address"]
                     or task.get("input_mint") != expected_input
                     or task.get("output_mint") != expected_output
-                    or int(task.get("slippage_bps") or -1) != 400
+                    or type(task.get("slippage_bps")) is not int
+                    or int(task["slippage_bps"]) != expected_slippage
                     or (phase == "buy" and (
                         expected_input != self.JUPITER_USDC_MINT
                         or int(request_payload.get("buy_input_amount_raw") or 0) != 5_000_000
@@ -31790,7 +32002,8 @@ class Store:
                     or quote.get("input_mint") != expected_input
                     or quote.get("output_mint") != expected_output
                     or int(quote.get("in_amount") or 0) != int(task["input_amount_raw"])
-                    or int(quote.get("slippage_bps") or -1) != 400
+                    or type(quote.get("slippage_bps")) is not int
+                    or int(quote["slippage_bps"]) != expected_slippage
                     or quote.get("requested_at") is None or quote.get("completed_at") is None
                     or not requested <= parse_time(quote["requested_at"]) <= parse_time(quote["completed_at"]) <= completed
                 ):
@@ -31842,7 +32055,7 @@ class Store:
                 "input_amount_raw": int(task.get("input_amount_raw") or 0),
                 "output_amount_raw": output or None,
                 "minimum_output_raw": minimum or None,
-                "slippage_bps": 400, "exact_pool_route": route_ok and not failure,
+                "slippage_bps": expected_slippage, "exact_pool_route": route_ok and not failure,
                 "requested_at": iso(requested), "completed_at": iso(completed),
                 "provider": "jupiter" if quote and quote.get("provider") == "jupiter" else None,
                 "route_plan": list(quote.get("route_plan") or []) if quote else [],
@@ -31884,6 +32097,16 @@ class Store:
         current = parse_time(now) if now is not None else utcnow()
         version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
         with self._lock, self.db:
+            registration = self._chain_meme_trader_registration(version)
+            if registration is None:
+                return None
+            definition = self._chain_meme_trader_effective_definition(
+                version, registration["definition_json"],
+            )
+            execution = execution_definition_fields(
+                definition.get("paper_execution_settings")
+                or normalize_execution_settings()
+            )
             if task_kind == "shadow":
                 representative = self.db.execute(
                     "WITH base AS (SELECT p.*,COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),"
@@ -31962,7 +32185,8 @@ class Store:
                     "quantity_epoch": f"shadow:{pair}:{real_raw}",
                     "surface_evidence_id": int(surface["id"]), "shadow_group_key": group_key,
                     "shadow_members": member_keys, "claimed_at": iso(current),
-                    "extra_fee_usd": 0.0, "slippage_bps": 400,
+                    "extra_fee_usd": execution["additional_fee_usd_each_fill"],
+                    "slippage_bps": execution["sell_slippage_bps"],
                     "quote_only": True, "is_fill": False}
                 for member in members:
                     state = self._json_object(member["capital_exit_state_json"])
@@ -32037,7 +32261,9 @@ class Store:
                             remaining_quantity_tokens=float(quantity), mint_decimals=decimals,
                             quantity_epoch=f"{synthetic}:{quantity}:{position['last_fill_id']}",
                             surface_evidence_id=int(surface["id"]), trigger_at=position["trigger_at"],
-                            claimed_at=iso(current), extra_fee_usd=0.0)
+                            claimed_at=iso(current),
+                            extra_fee_usd=execution["additional_fee_usd_each_fill"],
+                            slippage_bps=execution["sell_slippage_bps"])
                         lane.update(attempt_sequence=sequence, task=task)
                 if task is None:
                     lane["last_error"] = "MISSING_EXACT_SURFACE_OR_REAL_QUANTITY"
@@ -32131,7 +32357,8 @@ class Store:
                             or quote.get("input_mint") != task["token_id"].partition(":")[2]
                             or quote.get("output_mint") != self.JUPITER_USDC_MINT
                             or int(quote.get("in_amount") or 0) != task["input_amount_raw"]
-                            or int(quote.get("slippage_bps") or 0) != 400
+                            or type(quote.get("slippage_bps")) is not int
+                            or quote["slippage_bps"] != int(task["slippage_bps"])
                             or quote.get("requested_at") is None or quote.get("completed_at") is None
                             or not requested <= parse_time(quote["requested_at"])
                                 <= parse_time(quote["completed_at"]) <= completed):
@@ -32148,7 +32375,10 @@ class Store:
                     valid = True
                 except (ValueError, TypeError, KeyError, AttributeError, ArithmeticError) as exc:
                     failure = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
-                recovery = minimum / 1_000_000 if valid and minimum is not None else None
+                recovery = (
+                    max(0.0, minimum / 1_000_000 - float(task.get("extra_fee_usd") or 0.0))
+                    if valid and minimum is not None else None
+                )
                 payload = {"task": dict(task), "quote": dict(quote) if quote is not None else None,
                     "complete": valid, "status": "QUOTED" if valid else "UNKNOWN",
                     "error_code": failure, "kind": "shadow", "quote_only": True, "is_fill": False,
@@ -32212,7 +32442,8 @@ class Store:
                         or quote.get("input_mint") != task["token_id"].partition(":")[2]
                         or quote.get("output_mint") != self.JUPITER_USDC_MINT
                         or int(quote.get("in_amount") or 0) != task["input_amount_raw"]
-                        or int(quote.get("slippage_bps") or 0) != 400):
+                        or type(quote.get("slippage_bps")) is not int
+                        or quote["slippage_bps"] != int(task["slippage_bps"])):
                     raise ValueError("QUOTE_PROTOCOL_OR_AMOUNT_MISMATCH")
                 if quote.get("requested_at") is None or quote.get("completed_at") is None:
                     raise ValueError("MISSING_PROVIDER_QUOTE_TIMES")
@@ -32309,7 +32540,7 @@ class Store:
             )
             evidence = self._json_object(mark["trigger_evidence_json"])
             reason = (
-                "dex_pool_liquidity_below_100_usd_writeoff"
+                "dex_pool_liquidity_below_configured_floor_writeoff"
                 if "terminal_dust_pool" in evidence
                 else "dex_pair_missing_over_60_seconds_writeoff"
             )
@@ -32371,13 +32602,12 @@ class Store:
         )
         if sold_amount <= 0 or entry_price <= 0:
             return 0
-        gross = max(
-            0.0,
-            float(position["stake_usd"])
-            * sold_amount / initial_amount
-            * post_price / entry_price
-            * (1.0 - int(definition["slippage_bps"]) / 10_000.0),
+        formal_quantity = (
+            float(position["remaining_quantity_tokens"] or 0.0)
+            * sold_amount / current_amount
         )
+        sell_execution = sell_terms(formal_quantity, post_price, definition)
+        gross = sell_execution["net_usd"]
         if amountful_quote is not None:
             task = amountful_quote["task"]
             if (position["pending_mark_id"] != mark_id
@@ -32393,6 +32623,20 @@ class Store:
                 "completed_at": completed_at, "adapter": "jupiter-amountful-market-paper/v1"}
             self.db.execute("UPDATE chain_meme_trader_marks SET trigger_evidence_json=? WHERE id=?",
                             (self._json(trigger_evidence), mark_id))
+        trigger_evidence["paper_execution"] = {
+            "buy_slippage_bps": int(definition.get(
+                "buy_slippage_bps", definition.get("slippage_bps", 400)
+            )),
+            "sell_slippage_bps": int(
+                amountful_quote["task"]["slippage_bps"] if amountful_quote is not None
+                else definition.get("sell_slippage_bps", definition.get("slippage_bps", 400))
+            ),
+            "additional_fee_usd_each_fill": float(
+                amountful_quote["task"]["extra_fee_usd"] if amountful_quote is not None
+                else definition.get("additional_fee_usd_each_fill", 0.0)
+            ),
+            "slippage_already_in_exact_minimum": amountful_quote is not None,
+        }
         post_confirmation = trigger_evidence.get("post_confirmation")
         if amountful_quote is not None:
             # Exact-quote arms share the pool floor, without changing their quote contract.
@@ -32417,14 +32661,14 @@ class Store:
         )
         if post_liquidity is None:
             return 0
-        if post_liquidity is not None and float(post_liquidity) < CHAIN_MEME_MIN_POOL_LIQUIDITY_USD:
+        if pool_is_below_floor(post_liquidity, definition):
             trigger_evidence["terminal_dust_pool"] = {
                 **dict(post_confirmation or {}),
                 "confirmed_at": post_recorded_at,
             }
             self.db.execute(
                 "UPDATE chain_meme_trader_marks SET action='RUG_EXIT',"
-                "reason=reason||':dex_pool_liquidity_below_100_usd',"
+                "reason=reason||':dex_pool_liquidity_below_configured_floor',"
                 "trigger_evidence_json=? WHERE id=? AND status IN ('pending','retry')",
                 (self._json(trigger_evidence), int(mark_id)),
             )
@@ -32468,16 +32712,23 @@ class Store:
         new_allocated = float(position["allocated_cost_usd"] or 0.0) + cost_delta
         cumulative_pnl = new_proceeds - new_allocated
         closes = new_amount <= 0
-        formal_quantity = (
-            float(position["remaining_quantity_tokens"] or 0.0)
-            * sold_amount / current_amount
-        )
         post_observed_at = (
             post_confirmation.get("observed_at")
             if isinstance(post_confirmation, Mapping) else post_recorded_at
         )
+        settlement_policy = policy
+        if amountful_quote is not None:
+            settlement_policy = {
+                **policy,
+                "_execution": {
+                    **dict(policy.get("_execution") or {}),
+                    "additional_fee_usd_each_fill": float(
+                        amountful_quote["task"]["extra_fee_usd"]
+                    ),
+                },
+            }
         self._settle_chain_meme_staged_probe_shadow(
-            position=position, policy=policy,
+            position=position, policy=settlement_policy,
             marker_id=f"staged-probe-formal-fill:{fill_id}",
             observed_at=post_observed_at, recorded_at=post_recorded_at,
             formal_quantity_tokens=formal_quantity,
@@ -32492,10 +32743,9 @@ class Store:
         high_after_fill = float(position["highest_signal_price_usd"] or post_price)
         post_fill_economic_value = (
             new_proceeds
-            + float(position["stake_usd"])
-            * max(0.0, min(1.0, new_amount / initial_amount))
-            * post_price / entry_price
-            * (1.0 - int(definition["slippage_bps"]) / 10_000.0)
+            + sell_terms(
+                float(remaining_quantity or 0.0), post_price, definition,
+            )["net_usd"]
         )
         high_economic_after_fill = max(
             float(position["highest_economic_value_usd"] or post_fill_economic_value),
@@ -32546,7 +32796,7 @@ class Store:
             ),
         )
         if principal_target_fill:
-            evidence = self._json_object(mark["trigger_evidence_json"])
+            evidence = dict(trigger_evidence)
             evidence["principal_lock_settlement"] = {
                 "target_initial_debit_usd": float(position["stake_usd"]),
                 "cumulative_realized_proceeds_usd": new_proceeds,
@@ -32561,9 +32811,10 @@ class Store:
             )
         else:
             self.db.execute(
-                "UPDATE chain_meme_trader_marks SET status='filled',next_attempt_at=NULL "
+                "UPDATE chain_meme_trader_marks SET status='filled',next_attempt_at=NULL,"
+                "trigger_evidence_json=? "
                 "WHERE id=?",
-                (int(mark_id),),
+                (self._json(trigger_evidence), int(mark_id)),
             )
         self.db.execute(
             "INSERT INTO chain_meme_trader_trades("
@@ -33027,7 +33278,7 @@ class Store:
                     and position["mark_pair_address"]
                     and float(position["mark_price_usd"] or 0.0) > 0.0
                     and position["mark_liquidity_usd"] is not None
-                    and 0.0 <= float(position["mark_liquidity_usd"]) < CHAIN_MEME_MIN_POOL_LIQUIDITY_USD
+                    and pool_is_below_floor(position["mark_liquidity_usd"], definition)
                     and dust_mark_at is not None
                     and dust_observed_at is not None
                     and parse_time(position["opened_at"])
@@ -33056,7 +33307,7 @@ class Store:
                         }
                         self.db.execute(
                             "UPDATE chain_meme_trader_marks SET action='RUG_EXIT',"
-                            "reason=reason||':dex_pool_liquidity_below_100_usd',"
+                            "reason=reason||':dex_pool_liquidity_below_configured_floor',"
                             "trigger_evidence_json=? WHERE id=?",
                             (self._json(pending_evidence), pending_id),
                         )
@@ -33094,7 +33345,7 @@ class Store:
                         and position["mark_pair_address"]
                         and (
                             position["mark_liquidity_usd"] is not None
-                            and float(position["mark_liquidity_usd"]) >= CHAIN_MEME_MIN_POOL_LIQUIDITY_USD
+                            and not pool_is_below_floor(position["mark_liquidity_usd"], definition)
                         )
                     ):
                         post_mark_at = parse_time(position["mark_last_success_at"])
@@ -33173,7 +33424,7 @@ class Store:
                                 )
                     continue
                 if fresh_visible_dust:
-                    action, reason = "RUG_EXIT", "dex_pool_liquidity_below_100_usd"
+                    action, reason = "RUG_EXIT", "dex_pool_liquidity_below_configured_floor"
                     trigger_evidence = {
                         "terminal_dust_pool": {
                             "sample_sequence": int(position["sample_sequence"] or 0),
@@ -33216,29 +33467,19 @@ class Store:
                         high = max(
                             float(position["highest_signal_price_usd"] or 0.0), mark_price,
                         )
-                        sell_factor = 1.0 - int(definition["slippage_bps"]) / 10_000.0
-                        initial_amount = max(
-                            1, int(position["initial_amount_raw"] or position["amount_raw"] or 1),
-                        )
-                        remaining_fraction = max(
-                            0.0,
-                            min(1.0, int(position["amount_raw"] or 0) / initial_amount),
-                        )
                         stake = max(1e-12, float(position["stake_usd"] or 0.0))
                         realized_proceeds = float(position["realized_proceeds_usd"] or 0.0)
-                        economic_return = (
-                            (
-                                realized_proceeds
-                                + stake * remaining_fraction
-                                * mark_price * sell_factor / entry_price
-                            ) / stake - 1.0
+                        current_recovery = sell_terms(
+                            float(position["remaining_quantity_tokens"] or 0.0),
+                            mark_price, definition,
+                        )["net_usd"]
+                        current_economic_value = (
+                            realized_proceeds + current_recovery
                             if entry_price > 0 else None
                         )
-                        current_economic_value = (
-                            realized_proceeds
-                            + stake * remaining_fraction
-                            * mark_price * sell_factor / entry_price
-                            if entry_price > 0 else None
+                        economic_return = (
+                            current_economic_value / stake - 1.0
+                            if current_economic_value is not None else None
                         )
                         high_economic_value = (
                             max(
@@ -33434,6 +33675,15 @@ class Store:
                             trigger_evidence.update(capital_evidence)
                             sell_amount = max(1, min(int(position["amount_raw"]), int(
                                 int(position["amount_raw"])*float(capital_evidence.get("sell_fraction", 1)))))
+                if policy.get("revision_exit_kind") and action is None:
+                    revised = self._capital_exit_result(position, {
+                        **policy, "capital_exit_kind": policy["revision_exit_kind"],
+                        "capital_exit_policy": policy["revision_exit_policy"],
+                    }, current, capital_shared, state_key="revision_loss_exit")
+                    if revised and revised[0] == "SELL":
+                        action, reason = "CAPITAL_EXIT", revised[1]
+                        trigger_evidence.update(revised[2])
+                        sell_amount = int(position["amount_raw"])
                 if action is None or sell_amount <= 0:
                     continue
                 if (market_only_exit and action != "RUG_EXIT"
@@ -33444,7 +33694,7 @@ class Store:
                         and position["mark_pair_address"]
                         and (
                             position["mark_liquidity_usd"] is not None
-                            and float(position["mark_liquidity_usd"]) >= CHAIN_MEME_MIN_POOL_LIQUIDITY_USD
+                            and not pool_is_below_floor(position["mark_liquidity_usd"], definition)
                         )
                         and 0.0 <= (
                             current - parse_time(position["mark_recorded_at"])
@@ -33758,13 +34008,12 @@ class Store:
                     remaining_fraction = max(
                         0.0, min(1.0, remaining_raw / initial_raw)
                     )
-                    gross_mark = (
-                        float(position["stake_usd"]) * remaining_fraction
-                        * current_price / entry_price
-                        * (1.0 - int(definition["slippage_bps"]) / 10_000.0)
-                    )
+                    quantity = position["remaining_quantity_tokens"]
+                    gross_mark = sell_terms(
+                        float(quantity or 0.0), current_price, definition,
+                    )["net_usd"]
                     indicative_value = max(0.0, gross_mark)
-                    if snapshot["liquidity_usd"] is not None and float(snapshot["liquidity_usd"]) < CHAIN_MEME_MIN_POOL_LIQUIDITY_USD:
+                    if pool_is_below_floor(snapshot["liquidity_usd"], definition):
                         indicative_value = 0.0
                     remaining_cost = max(
                         0.0,
@@ -33840,7 +34089,6 @@ class Store:
         """Persist all DEX-mark accounts from one shared set of rows."""
         policy_ids = [str(item["arm_id"]) for item in definition["policies"]]
         starting_cash = float(definition["starting_cash_usd_each_arm"])
-        slippage_factor = 1.0 - int(definition["slippage_bps"]) / 10_000.0
         position_counts_by_arm = {
             str(row["arm_id"]): {
                 "open": int(row["open_count"] or 0),
@@ -33994,6 +34242,7 @@ class Store:
         for row in self.db.execute(
             "SELECT p.arm_id,p.shadow_cohort_id,p.token_id,p.opened_at,p.amount_raw,"
             "p.initial_amount_raw,p.stake_usd,p.allocated_cost_usd,"
+            "p.remaining_quantity_tokens,"
             "p.entry_execution_price_usd,p.entry_signal_price_usd,"
             "COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),c.pair_address) "
             "AS entry_pair_address FROM chain_meme_trader_positions p "
@@ -34113,14 +34362,13 @@ class Store:
                     float(position["stake_usd"])
                     - float(position["allocated_cost_usd"] or 0.0),
                 )
-                if liquidity is not None and float(liquidity) < CHAIN_MEME_MIN_POOL_LIQUIDITY_USD:
+                if pool_is_below_floor(liquidity, definition):
                     recovery = 0.0
                 else:
-                    recovery = max(
-                        0.0,
-                        float(position["stake_usd"]) * remaining_fraction
-                        * float(mark["price_usd"]) / entry_price * slippage_factor,
-                    )
+                    recovery = sell_terms(
+                        float(position["remaining_quantity_tokens"] or 0.0),
+                        float(mark["price_usd"]), definition,
+                    )["net_usd"]
                 indicative_value += recovery
                 indicative_unrealized += recovery - remaining_cost
                 indicative_priced += 1
@@ -34703,12 +34951,10 @@ class Store:
                     initial_raw = int(row["initial_amount_raw"] or row["amount_raw"])
                     remaining_raw = int(row["amount_raw"] or 0)
                     remaining_fraction = max(0.0, min(1.0, remaining_raw / initial_raw))
-                    indicative_value = max(
-                        0.0,
-                        float(row["stake_usd"]) * remaining_fraction
-                        * current_price / entry_price
-                        * (1.0 - int(definition["slippage_bps"]) / 10_000.0),
-                    )
+                    indicative_value = sell_terms(
+                        float(row["remaining_quantity_tokens"] or 0.0),
+                        current_price, definition,
+                    )["net_usd"]
                     mark_liquidity = indicative_snapshot["liquidity_usd"]
                     remaining_cost = max(
                         0.0,
@@ -34716,16 +34962,15 @@ class Store:
                         - float(row["allocated_cost_usd"] or 0.0),
                     )
                     if (
-                        mark_liquidity is not None
-                        and float(mark_liquidity) < CHAIN_MEME_MIN_POOL_LIQUIDITY_USD
+                        pool_is_below_floor(mark_liquidity, definition)
                     ):
                         indicative_value = 0.0
                         indicative_pnl = -remaining_cost
-                        indicative_source = "dex_pool_below_100_usd_full_loss"
+                        indicative_source = "dex_pool_below_configured_floor_full_loss"
                         dust_pool_full_loss = True
                     else:
                         indicative_pnl = indicative_value - remaining_cost
-                        indicative_source = "dex_price_mark_4pct_haircut"
+                        indicative_source = "dex_price_mark_configured_execution"
                 elif (
                     not market_only_valuation
                     and

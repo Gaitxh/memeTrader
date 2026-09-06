@@ -174,8 +174,11 @@ def test_chain_discovery_filters_before_limit_and_reports_actual_decision_funnel
     bsc = web.discovery_state("bsc")
     assert [item["token_id"] for item in bsc["tokens"]] == [bsc_token.token_id]
     assert [item["chain_scope"] for item in bsc["rounds"]] == ["bsc"]
-    assert bsc["funnel"] == [{"arm_id": arm_id, "admitted": 2, "rejected": 1}]
+    bsc_funnel = next(item for item in bsc["funnel"] if item["arm_id"] == arm_id)
+    assert (bsc_funnel["admitted"], bsc_funnel["rejected"]) == (2, 1)
+    assert bsc_funnel["signal_observations"] is None  # Missing observations are not zero.
+    assert len(bsc["funnel"]) == len(Store._json_object(registration["definition_json"])["policies"])
 
     all_chains = web.discovery_state("all")
     all_funnel = next(item for item in all_chains["funnel"] if item["arm_id"] == arm_id)
-    assert all_funnel == {"arm_id": arm_id, "admitted": 3, "rejected": 1}
+    assert (all_funnel["admitted"], all_funnel["rejected"]) == (3, 1)
