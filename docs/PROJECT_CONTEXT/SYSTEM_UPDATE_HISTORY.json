@@ -2,6 +2,17 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260906-historical-writeoff-review-label",
+      "recorded_at": "2026-09-06T05:40:00Z",
+      "title": "让历史核销证据疑点在结果与交易历史中可见",
+      "problem": "报告已标记证据不足，但部分策略仍显示正常研究指标，容易将工程疑点当自然亏损评价。",
+      "change": "56筆未决记录涉及24策略，按账期与持仓身份附加待核查标记，暂停相关策略优劣指标；不重复标记已补款项。",
+      "rationale": "保留账户原收支和PNL，区分记录金额与可用于研究的可靠经济证据。",
+      "validation": "3个compact/full/历史分页回归和JS语法通过；生产只读映射184策略中56笔/24arm。",
+      "scope": "只读Web解释层，不改策略、账本、现金、持仓、历史和补款，无热路径开销。",
+      "status": "代码已测，等待Web部署。"
+    },
+    {
       "id": "20260906-pool-continuity-public-fallback",
       "recorded_at": "2026-09-06T05:20:00Z",
       "title": "中断错误的连续缺池计时，补充公共原池行情",

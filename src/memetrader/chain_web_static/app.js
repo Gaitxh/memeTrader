@@ -42,7 +42,7 @@ const strategyName = (arm) => {
 };
 const outcomeCount = (account={}) => Number(account.closed_position_count||0)+Number(account.written_off_position_count||0);
 const isMature = (strategy) => outcomeCount(strategy.account) >= 30;
-const maturityText = (value) => ({mature:'成熟样本',provisional:'暂定样本',early:'早期样本',waiting:'等待机会'})[value]||'等待样本';
+const maturityText = (value) => ({mature:'成熟样本',provisional:'暂定样本',early:'早期样本',waiting:'等待机会',evidence_review:'历史证据待核查'})[value]||'等待样本';
 const maturityRank = (value) => ({mature:3,provisional:2,early:1,waiting:0})[value]??0;
 const elapsedText = (seconds) => {
   const n=Number(seconds);
@@ -252,6 +252,8 @@ function liveMetricForFamily(family){
 
 function strategyMetrics(live){
   const anomalies=Number(live.strategy?.account?.engineering_anomaly_position_count||0);
+  const reviews=Number(live.strategy?.account?.historical_writeoff_review_count||0);
+  if(reviews)return `<small class="strategy-metrics">${reviews} 笔历史核销证据待核查；${anomalies?`另有 ${anomalies} 笔工程异常；`:''}原收支与 PNL 保留，暂不用于评价策略优劣</small>`;
   if(anomalies)return `<small class="strategy-metrics">含 ${anomalies} 笔低流动性入场或持仓漏采工程异常；原收支保留，不能据此评价策略</small>`;
   const value=(v,format=money)=>v==null?'—':format(v);
   const sample=live.metricSampleCount?`${live.metricSampleCount} 笔${live.metricSampleStatus==='insufficient_sample'?'，样本不足':''}`:'暂无闭仓样本';
@@ -726,6 +728,13 @@ async function loadStrategyHistory(view,cursor=null,stack=[]){
     $('#drawer-title').textContent=`${view.version===view.activeVersion?strategyLabelForArm(view.arm):`历史策略 ${armIndex+1}`} · ${view.cohort==null?'本账期全部交易':'本次持仓操作'}`;
     $('#drawer-body').innerHTML=`<div class="history-toolbar"><p>共 ${data.total} 条 · ${rows.length?`${start+1}–${start+rows.length}`:'0'} 条<br><small>读取于 ${esc(time(data.generated_at,true))}；翻页固定本次记录范围，刷新可查看新成交。</small></p><button class="table-action" data-history-page="refresh">刷新至最新</button></div><p class="history-note">现金流：买入为支出，卖出为扣除交易费用后的回收额；核销不产生现金回收。工程补款单列，不计策略盈利。带纠正标记的记录可展开查看原始账本。</p><div class="history-scroll"><table class="history-table"><thead><tr><th>时间 / 本次持仓</th><th>Token</th><th>操作</th><th>净现金流</th><th>本次已实现 PNL</th><th>说明</th></tr></thead><tbody>${rows.map(item=>`<tr><td><time>${esc(time(item.created_at,true))}</time><small>本次开仓 ${esc(time(item.opened_at,true))}</small></td><td>${tokenLink(item.token_id,item.token_symbol||item.token_name||shortToken(item.token_id))}<small>${esc(chainLabelForToken(item.token_id))} · ${esc(shortToken(item.token_id))}</small></td><td>${esc(sideText(item.effective_side))}</td><td class="${pnlClass(item.effective_cash_flow_usd)}">${money(item.effective_cash_flow_usd)}</td><td class="${pnlClass(item.effective_realized_pnl_usd)}">${money(item.effective_realized_pnl_usd)}</td><td><span>${esc(reasonText(item.reason))}</span><small>${esc(statusLabel[item.accounting_status]||'待核查')}${item.engineering_anomaly?' · 入场池低于 $1':''}</small>${item.capital_credit_usd!=null?`<small class="history-credit">独立补款 +${money(item.capital_credit_usd)} · ${esc(time(item.capital_credit_at,true))}</small>`:''}<details><summary>查看原始记录</summary><p>记录 #${item.id} · ${esc(sideText(item.side))}<br>现金流 ${money(item.net_cash_flow_usd)} · 已实现 ${money(item.realized_pnl_usd)}</p></details></td></tr>`).join('')||'<tr><td colspan="6" class="empty">当前账期没有匹配的交易记录</td></tr>'}</tbody></table></div><nav class="history-toolbar" aria-label="交易历史分页"><button class="table-action" data-history-page="previous" ${stack.length?'':'disabled'}>上一页</button><span>第 ${stack.length+1} 页</span><button class="table-action" data-history-page="next" ${view.next==null?'disabled':''}>下一页</button></nav>`;
     $('#drawer-body').insertAdjacentHTML('afterbegin',historyPeriodControls(view));
+    const historyRows=$('#drawer-body').querySelectorAll('tbody tr');
+    rows.forEach((row,index)=>{
+      if(!row.research_review_status)return;
+      const note=document.createElement('small');
+      note.textContent='历史核销证据待核查；原账本金额保留，未认定为自然策略亏损';
+      historyRows[index].lastElementChild.append(note);
+    });
     $('#token-drawer').scrollTop=0;
   }catch(error){if(historyView===view&&activeDrawerKind==='strategy-history')$('#drawer-body').innerHTML=`${historyPeriodControls(view)}<p class="empty">交易历史读取失败：${esc(error.message)}</p><button class="table-action" data-history-page="refresh">重试</button>`;}
   finally{view.loading=false;}

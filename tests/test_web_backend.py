@@ -1054,6 +1054,66 @@ def test_strategy_history_paginates_complete_ledger_and_preserves_accounting_sta
         data.strategy_history(arm_id, version=version, limit=0)
 
 
+@pytest.mark.parametrize("compact", [True, False])
+def test_historical_review_labels_do_not_rewrite_cash_or_pnl(tmp_path: Path, compact):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    registration = store.register_chain_meme_trader_v22()
+    store.activate_chain_meme_trader_v22()
+    version = Store.CHAIN_MEME_TRADER_V22_VERSION
+    arm = json.loads(registration["definition_json"])["policies"][0]["arm_id"]
+    token_id, cohort, now = "solana:review-test", 123, iso()
+    with store.db:
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_positions(definition_version,arm_id,shadow_cohort_id,"
+            "token_id,source_buy_trade_id,baseline_quote_result_id,entry_snapshot_id,entry_signal_price_usd,"
+            "entry_execution_price_usd,paper_quantity_tokens,remaining_quantity_tokens,amount_raw,"
+            "initial_amount_raw,stake_usd,highest_signal_price_usd,status,realized_pnl_usd,opened_at,closed_at,close_reason) "
+            "VALUES(?,?,?,?, -1,-1,-1,1,1.04,?,0,'0','1000',20,1,'written_off',-20,?,?,?)",
+            (version, arm, cohort, token_id, 20 / 1.04, now, now, "pool_missing"),
+        )
+        for side, gross, flow, pnl in [("BUY", 20, -20, None), ("WRITEOFF", 0, 0, -20)]:
+            store.db.execute(
+                "INSERT INTO chain_meme_trader_trades(definition_version,arm_id,shadow_cohort_id,"
+                "token_id,side,gross_usd,net_cash_flow_usd,realized_pnl_usd,reason,created_at,recorded_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (version, arm, cohort, token_id, side, gross, flow, pnl, "fixture", now, now),
+            )
+        writeoff_id = store.db.execute("SELECT last_insert_rowid()").fetchone()[0]
+    store.close()
+    baseline = ChainWebData(config_path).state(compact=compact, arm_id=arm)
+    before = next(row for row in baseline["strategies"] if row["arm_id"] == arm)
+    path = tmp_path / "docs/PROJECT_CONTEXT/MISSING_WRITEOFF_EVIDENCE_2026-09-06.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"definition_version": version, "candidates": [{
+        "cohort_id": cohort, "token_id": token_id,
+        "evidence_grade": "UNRESOLVED_HISTORICAL_BATCH_ABSENCE",
+        "trades": [{"arm_id": arm, "writeoff_trade_id": writeoff_id}],
+    }]}), encoding="utf-8")
+    data = ChainWebData(config_path)
+    result = data.state(compact=compact, arm_id=arm)
+    after = next(row for row in result["strategies"] if row["arm_id"] == arm)
+    for field in ("cash_usd", "realized_pnl_usd", "capital_neutral_total_pnl_usd",
+                  "current_equity_usd", "closed_position_count", "written_off_position_count"):
+        assert after["account"].get(field) == before["account"].get(field), field
+    assert after["account"]["realized_pnl_usd"] == -20
+    assert after["account"]["historical_writeoff_review_count"] == 1
+    assert after["account"]["research_metrics_eligible"] is False
+    assert after["account"]["expectancy_usd"] is None
+    assert after["maturity"] == "evidence_review"
+    assert not any(row["arm_id"] == arm for row in result.get("leaderboard", []))
+    history = data.strategy_history(arm, version=version)["trades"]
+    written = next(row for row in history if row["id"] == writeoff_id)
+    assert written["accounting_status"] == "RECORDED"
+    assert written["effective_realized_pnl_usd"] == -20
+    assert written["research_review_writeoff_trade_id"] == writeoff_id
+    assert written["capital_credit_usd"] is None
+    other_period = dict(written)
+    other_period.pop("research_review_status")
+    data._annotate_writeoff_review(other_period, version + "-old")
+    assert "research_review_status" not in other_period
+
+
 def test_chain_web_uses_latest_append_only_market_fill_resolution(tmp_path: Path):
     config_path, _ = _config(tmp_path)
     store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)

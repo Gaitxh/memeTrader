@@ -59,6 +59,51 @@ class ChainWebData:
             root / "docs" / "PROJECT_CONTEXT" /
             "CHAIN_MEME_TRADER_HISTORICAL_STRATEGY_UNIVERSE_2026-09-04.json"
         )
+        # Read the finite historical review once, never on the trading hot path.
+        # This is a research annotation, not a fill/cash/position correction.
+        self._writeoff_reviews: dict[tuple[str, str, int, str], int] = {}
+        review_path = root / "docs/PROJECT_CONTEXT/MISSING_WRITEOFF_EVIDENCE_2026-09-06.json"
+        if review_path.exists():
+            review = json.loads(review_path.read_text(encoding="utf-8"))
+            for candidate in review.get("candidates", []):
+                if not str(candidate.get("evidence_grade") or "").startswith(("UNRESOLVED_", "SUSPECT_")):
+                    continue
+                for trade in candidate.get("trades", []):
+                    self._writeoff_reviews[(review["definition_version"], trade["arm_id"],
+                        int(candidate["cohort_id"]), candidate["token_id"])] = int(trade["writeoff_trade_id"])
+
+    def _annotate_writeoff_review(self, row: dict[str, Any], version: str, arm_id: str = "") -> None:
+        key = (version, str(row.get("arm_id") or arm_id),
+               int(row.get("shadow_cohort_id") or 0), str(row.get("token_id") or ""))
+        if key in self._writeoff_reviews:
+            row["research_review_status"] = "historical_writeoff_evidence_unresolved"
+            row["research_review_writeoff_trade_id"] = self._writeoff_reviews[key]
+
+    def _annotate_research_results(self, payload: dict[str, Any]) -> None:
+        version = str(payload.get("version") or "")
+        affected = defaultdict(int)
+        for reviewed_version, arm_id, _, _ in self._writeoff_reviews:
+            if reviewed_version == version:
+                affected[arm_id] += 1
+        for strategy in payload.get("strategies", []):
+            arm_id = str(strategy.get("arm_id") or "")
+            if affected[arm_id]:
+                account = strategy["account"]
+                account["historical_writeoff_review_count"] = affected[arm_id]
+                account["research_metrics_eligible"] = False
+                account["metric_sample_status"] = "historical_evidence_unresolved"
+                account["profit_factor_status"] = "historical_evidence_unresolved"
+                for field in ("win_rate_fraction", "profit_loss_ratio", "profit_factor",
+                              "expectancy_usd", "tail_return_usd"):
+                    account[field] = None
+                strategy["maturity"] = "evidence_review"
+            for row in [*strategy.get("positions", []), *strategy.get("trades", [])]:
+                self._annotate_writeoff_review(row, version, arm_id)
+        for row in [*payload.get("open_positions", []), *payload.get("recent_activity", [])]:
+            self._annotate_writeoff_review(row, version)
+        if "leaderboard" in payload:
+            payload["leaderboard"] = [row for row in payload["leaderboard"]
+                                      if not affected[str(row.get("arm_id") or "")]]
 
     def strategy_history(
         self, arm_id: str, *, version: str = "", limit: int = 50,
@@ -137,6 +182,7 @@ class ChainWebData:
             )
             row["effective_side"] = correction["replacement_outcome"] if correction and not unresolved else row["side"]
             row["engineering_anomaly"] = row["entry_liquidity_usd"] is not None and row["entry_liquidity_usd"] < 1
+            self._annotate_writeoff_review(row, version, arm_id)
         return {"status": "ok", "version": version, "arm_id": arm_id,
                 "generated_at": iso(), "total": total, "through_id": through_id,
                 "next_before_id": int(rows[-1]["id"]) if more else None, "trades": rows}
@@ -751,6 +797,8 @@ class ChainWebData:
             self._compact_state_uncached(arm_id=cache_key[1])
             if compact else self._state_uncached(arm_id=cache_key[1])
         )
+        if compact:
+            self._annotate_research_results(payload)
         with self._cache_lock:
             self._state_cache[cache_key] = (time.monotonic(), payload)
             while len(self._state_cache) > self.STATE_CACHE_MAX_ENTRIES:
@@ -1691,6 +1739,7 @@ class ChainWebData:
                 curve_limit=240,
                 arm_id=arm_id,
             )
+            self._annotate_research_results(summary)
             active_version = str(summary.get("version") or Store.CHAIN_MEME_TRADER_VERSION)
             exit_challenger = (
                 Store.chain_meme_trader_executable_decay_summary_from_connection(connection)
