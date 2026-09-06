@@ -51,7 +51,34 @@ def setup(store, monkeypatch, *, pending=True, fraction=.4):
             mark_id = store.db.execute("SELECT last_insert_rowid()").fetchone()[0]
             store.db.execute("UPDATE chain_meme_trader_positions SET pending_mark_id=?", (mark_id,))
     tick[0] += timedelta(seconds=1)
+    store.upsert_chain_meme_trader_market_mark(token, TokenSnapshot(
+        "solana", token.address, 2, 1000, 100000, 500, 5, 2,
+        observed_at=tick[0], ingested_at=tick[0],
+        raw={"pair": {"pairAddress": pair}}), recorded_at=tick[0])
     return tick, token, pair, mark_id
+
+
+@pytest.mark.parametrize("liquidity,status,settled,mark_status", [
+    (999, "written_off", 1, "pending"), (None, "open", 0, "pending"),
+    (999, "written_off", 1, "retry"),
+])
+def test_exact_quote_arms_also_obey_pool_floor(tmp_path, monkeypatch, liquidity, status, settled, mark_status):
+    store = Store(tmp_path / "exact-floor.sqlite3", initial_cash_usd=1000)
+    tick, token, pair, _ = setup(store, monkeypatch)
+    task = store.due_capital_quote(now=tick[0])
+    with store.db:
+        store.db.execute("UPDATE chain_meme_trader_marks SET status=? WHERE id=?", (mark_status, task["mark_id"]))
+    requested = tick[0]
+    quote = quote_for(store, task, requested)
+    tick[0] += timedelta(seconds=1)
+    store.upsert_chain_meme_trader_market_mark(token, TokenSnapshot(
+        "solana", token.address, 2, liquidity, 100000, 500, 5, 2,
+        observed_at=tick[0], ingested_at=tick[0],
+        raw={"pair": {"pairAddress": pair}}), recorded_at=tick[0])
+    assert store.record_capital_quote(task, quote, requested_at=requested, completed_at=tick[0]) == settled
+    assert store.db.execute("SELECT status FROM chain_meme_trader_positions").fetchone()[0] == status
+    assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_trades WHERE side='SELL'").fetchone()[0] == 0
+    store.close()
 
 
 def quote_for(store, task, when, minimum=12_000_000):

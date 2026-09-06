@@ -9,7 +9,7 @@ import math
 from statistics import median
 from typing import Any, Mapping
 
-from .models import parse_time
+from .models import CHAIN_MEME_MIN_POOL_LIQUIDITY_USD, parse_time
 
 
 DIRECTIONS = {
@@ -231,8 +231,10 @@ def pattern_signal(
     if not frames or frames[-1] is not last or not 0 <= (now - parse_time(last["observed_at"])).total_seconds() <= 30:
         return False, "stale_or_noncausal_observation"
     liquidity = last.get("liquidity")
-    if liquidity is not None and liquidity < 1:
-        return False, "entry_pool_liquidity_below_1_usd"
+    if liquidity is None:
+        return False, "entry_pool_liquidity_unknown"
+    if liquidity is not None and liquidity < CHAIN_MEME_MIN_POOL_LIQUIDITY_USD:
+        return False, "entry_pool_liquidity_below_1000_usd"
     if not last.get("price") or last["price"] <= 0:
         return False, "invalid_price"
     cfg = policy["entry_filter"]

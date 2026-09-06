@@ -18,7 +18,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .live_wallets import LiveWalletError, SolanaLiveWalletManager
-from .models import iso, parse_time, utcnow
+from .models import CHAIN_MEME_MIN_POOL_LIQUIDITY_USD, iso, parse_time, utcnow
 from .runtime import load_config
 from .store import Store
 
@@ -1146,6 +1146,7 @@ class ChainWebData:
                         )
                         and row.get("pair_address")
                         and float(row.get("price_usd") or 0.0) > 0.0
+                        and row.get("liquidity_usd") is not None
                         and market_age is not None and 0.0 <= market_age <= 15.0
                         and observed_age is not None and 0.0 <= observed_age <= 15.0
                     )
@@ -1169,7 +1170,7 @@ class ChainWebData:
                         indicative_value = (
                             0.0
                             if row.get("liquidity_usd") is not None
-                            and float(row["liquidity_usd"]) < 1.0
+                            and float(row["liquidity_usd"]) < CHAIN_MEME_MIN_POOL_LIQUIDITY_USD
                             else max(
                                 0.0,
                                 float(row.get("stake_usd") or 0.0)
@@ -1484,8 +1485,8 @@ class ChainWebData:
                     and row.get("pair_address")
                     and float(row.get("price_usd") or 0.0) > 0.0
                     and (
-                        row.get("liquidity_usd") is None
-                        or float(row["liquidity_usd"]) >= 0.0
+                        row.get("liquidity_usd") is not None
+                        and float(row["liquidity_usd"]) >= 0.0
                     )
                     and market_age is not None
                     and 0.0 <= market_age <= 15.0
@@ -1511,7 +1512,7 @@ class ChainWebData:
                 indicative_value = None
                 if fresh_market and entry_price > 0.0 and initial_raw > 0:
                     liquidity = row.get("liquidity_usd")
-                    if liquidity is not None and float(liquidity) < 1.0:
+                    if liquidity is not None and float(liquidity) < CHAIN_MEME_MIN_POOL_LIQUIDITY_USD:
                         indicative_value = 0.0
                     else:
                         candidate_value = max(
@@ -1573,9 +1574,9 @@ class ChainWebData:
                         if indicative_value is not None else None
                     ),
                     "indicative_source": (
-                        "dex_pool_below_1_usd_full_loss"
+                        "dex_pool_below_1000_usd_full_loss"
                         if fresh_market and row.get("liquidity_usd") is not None
-                        and float(row["liquidity_usd"]) < 1.0
+                        and float(row["liquidity_usd"]) < CHAIN_MEME_MIN_POOL_LIQUIDITY_USD
                         else "dex_price_mark_4pct_haircut" if fresh_market else None
                     ),
                     "indicative_price_usd": row["price_usd"],
@@ -1586,7 +1587,7 @@ class ChainWebData:
                     "indicative_sellability": (
                         "DUST_POOL_WRITEOFF"
                         if fresh_market and row.get("liquidity_usd") is not None
-                        and float(row["liquidity_usd"]) < 1.0
+                        and float(row["liquidity_usd"]) < CHAIN_MEME_MIN_POOL_LIQUIDITY_USD
                         else "MARK_SELLABLE" if fresh_market
                         else "PAIR_MISSING" if row.get("market_status") == "MISSING"
                         else "STALE_MARK" if row.get("market_status") == "VISIBLE"
@@ -3408,6 +3409,7 @@ class ChainWebData:
                     not contaminated
                     and str(position.get("status")) == "open"
                     and latest_price > 0.0
+                    and market.get("liquidity_usd") is not None
                     and float(
                         position.get("entry_execution_price_usd")
                         or position.get("entry_signal_price_usd")
@@ -3430,7 +3432,7 @@ class ChainWebData:
                     position["indicative_value_usd"] = (
                         0.0
                         if market.get("liquidity_usd") is not None
-                        and float(market["liquidity_usd"]) < 1.0
+                        and float(market["liquidity_usd"]) < CHAIN_MEME_MIN_POOL_LIQUIDITY_USD
                         else max(
                             0.0,
                             float(position["stake_usd"]) * remaining_fraction * latest_price

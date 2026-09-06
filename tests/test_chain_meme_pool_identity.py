@@ -106,7 +106,7 @@ def test_sibling_pool_cannot_exit_write_off_or_create_indicative_profit(tmp_path
 
     for at in (first + timedelta(seconds=2), first + timedelta(seconds=3)):
         store.upsert_chain_meme_trader_market_mark(
-            token, _snapshot(token, pair="pair-A", price=2.0, liquidity=10.0, at=at),
+            token, _snapshot(token, pair="pair-A", price=2.0, liquidity=1000.0, at=at),
             recorded_at=at,
         )
         store.evaluate_chain_meme_trader_market_marks(
@@ -244,7 +244,7 @@ def test_fresh_dust_on_entry_pool_still_writes_off(tmp_path):
         (version, policy["arm_id"], cohort_id),
     ).fetchone()
     assert row["status"] == "written_off"
-    assert row["close_reason"] == "dex_pool_liquidity_below_1_usd_writeoff"
+    assert row["close_reason"] == "dex_pool_liquidity_below_1000_usd_writeoff"
     store.close()
 
 
@@ -269,7 +269,7 @@ def test_batch_response_keeps_entry_pool_when_sibling_pool_has_more_liquidity(tm
 
         async def batch_quote(chain, addresses, *, fresh=False, high_priority=False):
             at = utcnow()
-            pool_a = raw_pair("pair-A", 2.0, 10.0)
+            pool_a = raw_pair("pair-A", 2.0, 1000.0)
             pool_b = raw_pair("pair-B", 20.0, 50_000.0)
             selected = _snapshot(
                 token, pair="pair-B", price=20.0, liquidity=50_000.0, at=at,

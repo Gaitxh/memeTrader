@@ -25,6 +25,7 @@ from .capital_policies import capital_policies, second_discussion_policies, oppo
 from .capital_exits import evaluate_exit as evaluate_capital_exit, POST_TRIGGER_AMOUNT_QUOTE
 
 from .models import (
+    CHAIN_MEME_MIN_POOL_LIQUIDITY_USD,
     CandidateDecision,
     EventView,
     Observation,
@@ -25945,7 +25946,8 @@ class Store:
             post_valid = bool(pre_observed and previous_features.get("pair_address") == pair_address
                 and parse_time(pre_observed) < snapshot.observed_at
                 and 0 < (snapshot.observed_at - parse_time(pre_observed)).total_seconds() <= 60
-                and (isolated.liquidity_usd is None or float(isolated.liquidity_usd) >= 1))
+                and isolated.liquidity_usd is not None
+                and float(isolated.liquidity_usd) >= CHAIN_MEME_MIN_POOL_LIQUIDITY_USD)
             already_bought = {str(r[0]) for r in self.db.execute(
                 "SELECT DISTINCT p.arm_id FROM chain_meme_trader_positions p JOIN chain_meme_trader_v6_cohorts c "
                 "ON c.id=p.shadow_cohort_id WHERE p.definition_version=? AND p.token_id=? AND c.pair_address=?",
@@ -27023,8 +27025,10 @@ class Store:
                         "pair_address": pair_address,
                         "entry_liquidity_usd": liquidity,
                     })
-                    if liquidity is not None and float(liquidity) < 1.0:
-                        raise ValueError("entry_pool_liquidity_below_1_usd")
+                    if liquidity is None:
+                        raise ValueError("entry_pool_liquidity_unknown")
+                    if float(liquidity) < CHAIN_MEME_MIN_POOL_LIQUIDITY_USD:
+                        raise ValueError("entry_pool_liquidity_below_1000_usd")
                     proposed_family = None
                     if age_seconds <= 900 and (
                         (m5_trades is not None and m5_trades >= 3)
@@ -30540,7 +30544,7 @@ class Store:
                 and 0 <= (current - surface_observed).total_seconds() <= 120
                 and 0 <= (current - flow_observed).total_seconds() <= 30
                 and snapshot["price_usd"] is not None and float(snapshot["price_usd"]) > 0
-                and snapshot["liquidity_usd"] is not None and float(snapshot["liquidity_usd"]) >= 1
+                and snapshot["liquidity_usd"] is not None and float(snapshot["liquidity_usd"]) >= CHAIN_MEME_MIN_POOL_LIQUIDITY_USD
                 and surface_payload.get("status") == "RESOLVED"
                 and surface_payload.get("complete") is True
                 and surface_payload.get("surface") == "NORMAL_DIRECT"
@@ -31321,7 +31325,7 @@ class Store:
             )
             evidence = self._json_object(mark["trigger_evidence_json"])
             reason = (
-                "dex_pool_liquidity_below_1_usd_writeoff"
+                "dex_pool_liquidity_below_1000_usd_writeoff"
                 if "terminal_dust_pool" in evidence
                 else "dex_pair_missing_over_60_seconds_writeoff"
             )
@@ -31397,19 +31401,38 @@ class Store:
             self.db.execute("UPDATE chain_meme_trader_marks SET trigger_evidence_json=? WHERE id=?",
                             (self._json(trigger_evidence), mark_id))
         post_confirmation = trigger_evidence.get("post_confirmation")
+        if amountful_quote is not None:
+            # Exact-quote arms share the pool floor, without changing their quote contract.
+            pool = self.db.execute(
+                "SELECT * FROM chain_meme_trader_pool_marks WHERE token_id=? AND pair_address=?",
+                (position["token_id"], canonical_token_address(
+                    str(position["token_id"]).partition(":")[0], position["entry_pair_address"])),
+            ).fetchone()
+            if (pool is None or pool["status"] != "VISIBLE" or pool["observed_at"] is None
+                    or not parse_time(mark["recorded_at"]) < parse_time(pool["observed_at"])
+                    <= parse_time(pool["recorded_at"]) <= parse_time(completed_at)
+                    or (parse_time(completed_at) - parse_time(pool["observed_at"])).total_seconds() > 15):
+                return 0
+            post_confirmation = dict(pool)
+            post_recorded_at = pool["recorded_at"]
+            trigger_evidence["post_confirmation"] = post_confirmation
+            self.db.execute("UPDATE chain_meme_trader_marks SET trigger_evidence_json=? WHERE id=?",
+                            (self._json(trigger_evidence), mark_id))
         post_liquidity = (
             post_confirmation.get("liquidity_usd")
             if isinstance(post_confirmation, Mapping) else None
         )
-        if post_liquidity is not None and float(post_liquidity) < 1.0:
+        if post_liquidity is None:
+            return 0
+        if post_liquidity is not None and float(post_liquidity) < CHAIN_MEME_MIN_POOL_LIQUIDITY_USD:
             trigger_evidence["terminal_dust_pool"] = {
                 **dict(post_confirmation or {}),
                 "confirmed_at": post_recorded_at,
             }
             self.db.execute(
                 "UPDATE chain_meme_trader_marks SET action='RUG_EXIT',"
-                "reason=reason||':dex_pool_liquidity_below_1_usd',"
-                "trigger_evidence_json=? WHERE id=? AND status='pending'",
+                "reason=reason||':dex_pool_liquidity_below_1000_usd',"
+                "trigger_evidence_json=? WHERE id=? AND status IN ('pending','retry')",
                 (self._json(trigger_evidence), int(mark_id)),
             )
             return self._settle_chain_meme_trader_market_exit(
@@ -31994,7 +32017,7 @@ class Store:
                     and position["mark_pair_address"]
                     and float(position["mark_price_usd"] or 0.0) > 0.0
                     and position["mark_liquidity_usd"] is not None
-                    and 0.0 <= float(position["mark_liquidity_usd"]) < 1.0
+                    and 0.0 <= float(position["mark_liquidity_usd"]) < CHAIN_MEME_MIN_POOL_LIQUIDITY_USD
                     and dust_mark_at is not None
                     and dust_observed_at is not None
                     and parse_time(position["opened_at"])
@@ -32023,7 +32046,7 @@ class Store:
                         }
                         self.db.execute(
                             "UPDATE chain_meme_trader_marks SET action='RUG_EXIT',"
-                            "reason=reason||':dex_pool_liquidity_below_1_usd',"
+                            "reason=reason||':dex_pool_liquidity_below_1000_usd',"
                             "trigger_evidence_json=? WHERE id=?",
                             (self._json(pending_evidence), pending_id),
                         )
@@ -32060,8 +32083,8 @@ class Store:
                         and position["pending_recorded_at"] is not None
                         and position["mark_pair_address"]
                         and (
-                            position["mark_liquidity_usd"] is None
-                            or float(position["mark_liquidity_usd"]) > 0.0
+                            position["mark_liquidity_usd"] is not None
+                            and float(position["mark_liquidity_usd"]) >= CHAIN_MEME_MIN_POOL_LIQUIDITY_USD
                         )
                     ):
                         post_mark_at = parse_time(position["mark_last_success_at"])
@@ -32140,7 +32163,7 @@ class Store:
                                 )
                     continue
                 if fresh_visible_dust:
-                    action, reason = "RUG_EXIT", "dex_pool_liquidity_below_1_usd"
+                    action, reason = "RUG_EXIT", "dex_pool_liquidity_below_1000_usd"
                     trigger_evidence = {
                         "terminal_dust_pool": {
                             "sample_sequence": int(position["sample_sequence"] or 0),
@@ -32410,8 +32433,8 @@ class Store:
                         and position["mark_recorded_at"] is not None
                         and position["mark_pair_address"]
                         and (
-                            position["mark_liquidity_usd"] is None
-                            or float(position["mark_liquidity_usd"]) > 0.0
+                            position["mark_liquidity_usd"] is not None
+                            and float(position["mark_liquidity_usd"]) >= CHAIN_MEME_MIN_POOL_LIQUIDITY_USD
                         )
                         and 0.0 <= (
                             current - parse_time(position["mark_recorded_at"])
@@ -32704,8 +32727,8 @@ class Store:
                         str(snapshot["status"] or "") == "VISIBLE"
                         and snapshot["pair_address"]
                         and (
-                            snapshot["liquidity_usd"] is None
-                            or float(snapshot["liquidity_usd"]) > 0.0
+                            snapshot["liquidity_usd"] is not None
+                            and float(snapshot["liquidity_usd"]) >= 0.0
                         )
                         and mark_age is not None and 0.0 <= mark_age <= 15.0
                         and observed_age is not None and 0.0 <= observed_age <= 15.0
@@ -32731,6 +32754,8 @@ class Store:
                         * (1.0 - int(definition["slippage_bps"]) / 10_000.0)
                     )
                     indicative_value = max(0.0, gross_mark)
+                    if snapshot["liquidity_usd"] is not None and float(snapshot["liquidity_usd"]) < CHAIN_MEME_MIN_POOL_LIQUIDITY_USD:
+                        indicative_value = 0.0
                     remaining_cost = max(
                         0.0,
                         float(position["stake_usd"])
@@ -33053,7 +33078,7 @@ class Store:
                 if not (
                     mark["pair_address"]
                     and float(mark["price_usd"] or 0.0) > 0.0
-                    and (liquidity is None or float(liquidity) >= 0.0)
+                    and liquidity is not None and float(liquidity) >= 0.0
                     and mark_age is not None and 0.0 <= mark_age <= 15.0
                     and observed_age is not None and 0.0 <= observed_age <= 15.0
                     and parse_time(position["opened_at"])
@@ -33078,7 +33103,7 @@ class Store:
                     float(position["stake_usd"])
                     - float(position["allocated_cost_usd"] or 0.0),
                 )
-                if liquidity is not None and float(liquidity) < 1.0:
+                if liquidity is not None and float(liquidity) < CHAIN_MEME_MIN_POOL_LIQUIDITY_USD:
                     recovery = 0.0
                 else:
                     recovery = max(
@@ -33641,8 +33666,8 @@ class Store:
                     and indicative_snapshot["pair_address"]
                     and float(indicative_snapshot["price_usd"] or 0.0) > 0.0
                     and (
-                        indicative_snapshot["liquidity_usd"] is None
-                        or float(indicative_snapshot["liquidity_usd"]) >= 0.0
+                        indicative_snapshot["liquidity_usd"] is not None
+                        and float(indicative_snapshot["liquidity_usd"]) >= 0.0
                     )
                     and indicative_mark_age is not None
                     and 0.0 <= indicative_mark_age <= 15.0
@@ -33682,11 +33707,11 @@ class Store:
                     )
                     if (
                         mark_liquidity is not None
-                        and float(mark_liquidity) < 1.0
+                        and float(mark_liquidity) < CHAIN_MEME_MIN_POOL_LIQUIDITY_USD
                     ):
                         indicative_value = 0.0
                         indicative_pnl = -remaining_cost
-                        indicative_source = "dex_pool_below_1_usd_full_loss"
+                        indicative_source = "dex_pool_below_1000_usd_full_loss"
                         dust_pool_full_loss = True
                     else:
                         indicative_pnl = indicative_value - remaining_cost

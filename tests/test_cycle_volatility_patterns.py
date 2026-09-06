@@ -64,8 +64,11 @@ def test_volatility_treatment_differs_from_fixed_return_control():
     assert not _signal(bad, "volatility_flow")
 
 
-@pytest.mark.parametrize("chain", ["solana", "bsc", "robinhood"])
-def test_new_arms_preserve_registry_and_use_next_frame_five_dollar_fills(tmp_path, monkeypatch, chain):
+@pytest.mark.parametrize("chain,post_liquidity,expected_buys", [
+    ("solana", 1000, 2), ("bsc", 1000, 2), ("robinhood", 1000, 2),
+    ("solana", 999, 0), ("solana", None, 0),
+])
+def test_new_arms_preserve_registry_and_use_next_frame_five_dollar_fills(tmp_path, monkeypatch, chain, post_liquidity, expected_buys):
     store = Store(tmp_path / "patterns.sqlite3", initial_cash_usd=1000)
     store.activate_chain_meme_trader_funded_period()
     version = store.CHAIN_MEME_TRADER_ACTIVE_VERSION
@@ -86,9 +89,9 @@ def test_new_arms_preserve_registry_and_use_next_frame_five_dollar_fills(tmp_pat
     token = TokenCandidate(chain, address, "Cycle")
     created = round((now - timedelta(hours=1)).timestamp() * 1000)
 
-    def observe(price):
+    def observe(price, liquidity=10000):
         return store.observe_chain_meme_pattern(token, TokenSnapshot(
-            chain, address, price, 10000, 100000, 2000, 15, 5,
+            chain, address, price, liquidity, 100000, 2000, 15, 5,
             observed_at=now, ingested_at=now, provider="dexscreener",
             raw={"pair": {"chainId": chain, "pairAddress": pool, "pairCreatedAt": created,
                           "baseToken": {"address": address}, "priceUsd": str(price)}},
@@ -99,10 +102,25 @@ def test_new_arms_preserve_registry_and_use_next_frame_five_dollar_fills(tmp_pat
         assert observe(frame["price"]) == 0  # Signal frame is not a fill.
     assert observe(seq[-1]["price"]) == 0  # Same observed timestamp is not confirmation.
     now += timedelta(seconds=16)
-    assert observe(1.1) == 2
+    assert observe(1.1, post_liquidity) == expected_buys
     positions = store.db.execute("SELECT * FROM chain_meme_trader_positions WHERE definition_version=?", (version,)).fetchall()
+    if not expected_buys:
+        assert not positions
+        store.close()
+        return
     assert len(positions) == 2 and len({r["source_entry_fill_id"] for r in positions}) == 1
     assert len({r["arm_id"] for r in positions}) == 2
     assert all(r["paper_quantity_tokens"] == pytest.approx(5 / (1.1 * 1.04)) for r in positions)
     assert all(value == pytest.approx(-5) for value in store._chain_meme_trader_effective_net_flows(version).values())
     store.close()
+
+
+@pytest.mark.parametrize("liquidity", [999, None])
+def test_pattern_signal_shared_floor_rejects_low_and_missing_liquidity(liquidity):
+    seq = _frames([1, 1.001, .999, 1.002, 1, 1.001, 1, 1.02, 1.06])
+    seq[-1]["liquidity"] = liquidity
+    accepted, reason = pattern_signal(seq, _policy("volatility_flow"),
+        decision_at=seq[-1]["recorded_at"], activated_at=seq[0]["recorded_at"])
+    assert not accepted
+    assert reason == ("entry_pool_liquidity_unknown" if liquidity is None
+                      else "entry_pool_liquidity_below_1000_usd")

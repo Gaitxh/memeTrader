@@ -8408,7 +8408,7 @@ def test_chain_meme_market_mark_requires_post_open_and_fresh_structural_evidence
     store.close()
 
 
-def test_chain_meme_market_exit_sells_when_same_pool_visible_above_reported_liquidity(
+def test_chain_meme_market_exit_sells_when_same_pool_at_liquidity_floor(
     tmp_path: Path,
 ):
     store = Store(tmp_path / "market-pool-capacity.sqlite3", initial_cash_usd=1000)
@@ -8431,7 +8431,7 @@ def test_chain_meme_market_exit_sells_when_same_pool_visible_above_reported_liqu
         store.upsert_chain_meme_trader_market_mark(
             token,
             TokenSnapshot(
-                "solana", token.address, 2.0, 10.0, 100_000, 0.0, 0, 0,
+                "solana", token.address, 2.0, 1000.0, 100_000, 0.0, 0, 0,
                 observed_at=observed_at, ingested_at=observed_at,
                 provider="dexscreener", raw={"pair": {"pairAddress": "pair-A"}},
             ),
@@ -8477,7 +8477,7 @@ def test_chain_meme_market_exit_sells_when_same_pool_visible_above_reported_liqu
     store.close()
 
 
-def test_chain_meme_market_exit_post_confirmation_below_one_is_writeoff(tmp_path: Path):
+def test_chain_meme_market_exit_post_confirmation_below_floor_is_writeoff(tmp_path: Path):
     store = Store(tmp_path / "market-post-dust-writeoff.sqlite3", initial_cash_usd=1000)
     registration = store.register_chain_meme_trader_v20()
     store.activate_chain_meme_trader_v20()
@@ -8494,8 +8494,8 @@ def test_chain_meme_market_exit_post_confirmation_below_one_is_writeoff(tmp_path
         ),
     )
     for price, liquidity, at in (
-        (2.0, 10.0, trigger_at),
-        (2.0, 0.99, trigger_at + timedelta(seconds=1)),
+        (2.0, 1000.0, trigger_at),
+        (2.0, 999.99, trigger_at + timedelta(seconds=1)),
     ):
         store.upsert_chain_meme_trader_market_mark(
             token,
@@ -8521,12 +8521,13 @@ def test_chain_meme_market_exit_post_confirmation_below_one_is_writeoff(tmp_path
         "definition_version=? AND arm_id=? AND shadow_cohort_id=?",
         (version, policy["arm_id"], cohort_id),
     ).fetchone()
-    assert writeoff["close_reason"] == "dex_pool_liquidity_below_1_usd_writeoff"
+    assert writeoff["close_reason"] == "dex_pool_liquidity_below_1000_usd_writeoff"
     store.close()
 
 
-def test_chain_meme_fresh_visible_pool_below_one_usd_is_immediate_writeoff(
-    tmp_path: Path,
+@pytest.mark.parametrize("liquidity", [0.05, 999.99])
+def test_chain_meme_fresh_visible_pool_below_floor_is_immediate_writeoff(
+    tmp_path: Path, liquidity,
 ):
     store = Store(tmp_path / "market-dust-pool-writeoff.sqlite3", initial_cash_usd=1000)
     registration = store.register_chain_meme_trader_v20()
@@ -8542,7 +8543,7 @@ def test_chain_meme_fresh_visible_pool_below_one_usd_is_immediate_writeoff(
     store.upsert_chain_meme_trader_market_mark(
         token,
         TokenSnapshot(
-            "solana", token.address, 5.12, 0.05, 100_000, 0.0, 1, 1,
+            "solana", token.address, 5.12, liquidity, 100_000, 0.0, 1, 1,
             observed_at=observed_at, ingested_at=observed_at,
             provider="dexscreener", raw={"pair": {"pairAddress": "pair-A"}},
         ),
@@ -8579,7 +8580,7 @@ def test_chain_meme_fresh_visible_pool_below_one_usd_is_immediate_writeoff(
         (version, policy["arm_id"], cohort_id),
     ).fetchone()
     assert position["status"] == "written_off"
-    assert position["close_reason"] == "dex_pool_liquidity_below_1_usd_writeoff"
+    assert position["close_reason"] == "dex_pool_liquidity_below_1000_usd_writeoff"
     assert store.db.execute(
         "SELECT COUNT(*) FROM chain_meme_trader_trades WHERE definition_version=? "
         "AND arm_id=? AND shadow_cohort_id=? AND side='WRITEOFF'",
@@ -9048,9 +9049,9 @@ def test_chain_meme_partial_exit_trailing_uses_actual_economic_high_water(
 
 @pytest.mark.parametrize("liquidity,raw_liquidity,admitted", [
     (0.0, None, False), (0.99, None, False), (None, 0.48, False),
-    (1.0, None, True), (10000.0, None, True), (None, None, True),
+    (999.99, None, False), (1000.0, None, True), (10000.0, None, True), (None, None, False),
 ])
-def test_chain_meme_entry_rejects_explicit_dust_not_unknown(
+def test_chain_meme_entry_enforces_shared_liquidity_floor(
     tmp_path: Path, liquidity, raw_liquidity, admitted,
 ):
     store = Store(tmp_path / "entry-dust.sqlite3", initial_cash_usd=1000)
@@ -9079,7 +9080,9 @@ def test_chain_meme_entry_rejects_explicit_dust_not_unknown(
         "SELECT * FROM chain_meme_trader_v6_entry_evaluations WHERE definition_version=?", (version,),
     ).fetchone()
     if not admitted:
-        assert evaluation["reason"] == "entry_pool_liquidity_below_1_usd"
+        assert evaluation["reason"] == (
+            "entry_pool_liquidity_unknown" if liquidity is None and raw_liquidity is None
+            else "entry_pool_liquidity_below_1000_usd")
         assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_v6_entry_fills").fetchone()[0] == 0
         assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_positions").fetchone()[0] == 0
         assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_trades").fetchone()[0] == 0
