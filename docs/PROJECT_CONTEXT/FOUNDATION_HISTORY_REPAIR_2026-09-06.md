@@ -70,6 +70,8 @@
 
 剩余BSC慢池已逐项定位：用户原例Token `0x1a5f9d77ca46646cd4937fd8d093f460b66f4444`，当前cohort14149/broad_principal_lock_runner_v1剩余20U，原池 `0xae76531f57d2e1cf9e42bb7514720d745377f54e2979534a6e852e7d1cf95be7`。CoinGecko04:55:10Z确有新鲜price.00117636465334758、liq980.573；Dex对该64hex原池仍coverage gap，另一池的成功不能替代它。补源轮询约10秒、同池CG最短60秒，因此年龄增长不是主循环再次卡死。配额当时可用（day188/month7708），VISIBLE、misses0，不当死亡池。该低频覆盖限制单独报告，不能拿Solana秒级数字覆盖它，也不因现在仍持仓认定自然20U亏损。
 
+继续核查免费补源能力：官方[公共API说明](https://apiguide.geckoterminal.com/faq)给出30请求/分钟，[接口记录](https://apiguide.geckoterminal.com/changelogs)列出pool/multi能力。一笔真实只读公共pool-detail请求接受此64hexID并200（1.39秒），同原池price.00117636465334758、liq979.9563；响应明确max-age30、s-maxage60。当前公共collector无exact方法，不能声称已接线，也不能仅把轮询缩到10秒就声称市场信息加速。下一步可最小接公共同池补源以减Demo额度依赖，但须尊重实际缓存/额度和原池判别，不新增多源重复核对。此探测未写交易/行情账本，不影响历史收益。
+
 当前184唯一ID全部有可达处理分支：90普通/缺省、14dex_visible、24exact_entry_family归主admission（128）；56 isolated由20 pattern和36capital处理，16种capital exit overlay有明确evaluator。主family分布broad36/reawakening32/shadow14/flow32/dex继承14。未发现unknown handler，但分支存在不等于所有自然输入均已证明正确。
 
 确证并已局部修复的多源问题：生产snapshot1005378的Gecko原文h1 volume30849.6037588876、buys462/sells336实际存在，normalize却仅保留m5，致prior55等输入丢失；现保留h1，缺失保持None。Gecko发现入口以前没有调用Dex已有的本地上下文触发器，现先记录discovery建立forward cohort后再按相同candidate scope触发，不增网络调用、不放宽clean-onchain。原observer复制把Gecko标成Dex，现保留provider与观察时戳。真实Runtime/Store以及Dex/Gecko参数化来源测试通过。该生产帧还存在现金不足，不能将输入缺陷直接称漏买损失。
