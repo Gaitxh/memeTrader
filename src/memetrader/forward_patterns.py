@@ -220,6 +220,9 @@ def pattern_signal(
     context: Mapping[str, Any] | None = None,
 ) -> tuple[bool, str]:
     """Observe a signal. Execution must use a separate later same-pool sample."""
+    if policy.get("entry_filter", {}).get("contract") == "all-history-finalists/20260907-v1":
+        from .research_finalists import finalist_signal
+        return finalist_signal(history, policy, decision_at=decision_at, activated_at=activated_at)
     if not history:
         return False, "awaiting_observation"
     now, start = parse_time(decision_at), parse_time(activated_at)

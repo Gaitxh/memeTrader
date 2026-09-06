@@ -26013,6 +26013,19 @@ class Store:
                     added += 1
         return added
 
+    def register_chain_meme_research_finalists(self) -> int:
+        from .research_finalists import finalist_policies
+        added = 0
+        with self._lock, self.db:
+            at = utcnow()
+            for policy in finalist_policies():
+                if self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?",
+                    (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, policy["arm_id"])).fetchone() is None:
+                    self.append_chain_meme_trader_policy(policy, activated_at=at)
+                    added += 1
+        return added
+
     def register_chain_meme_capital_experiments(self) -> int:
         """Append independently funded experiments at their actual deployment frontier."""
         added = 0
@@ -26646,7 +26659,7 @@ class Store:
             if not policies:
                 return 0
             previous = self.db.execute(
-                "SELECT feature_json FROM chain_meme_trader_v6_entry_evaluations WHERE definition_version=? "
+                "SELECT feature_json,evaluated_at FROM chain_meme_trader_v6_entry_evaluations WHERE definition_version=? "
                 "AND token_id=? AND reason=? ORDER BY id DESC LIMIT 1", (version, token.token_id, observation_reason),
             ).fetchone()
             previous_features = self._json_object(previous["feature_json"]) if previous else {}
@@ -26682,6 +26695,7 @@ class Store:
                 history.append({"id": int(source["id"]), "token_id": token.token_id,
                     "pair_address": source_address, "price": source["price_usd"],
                     "liquidity": source["liquidity_usd"], "volume": source["volume_5m_usd"],
+                    "upstream_provider": source_raw.get("upstream_provider"),
                     "buys": source["buys_5m"], "sells": source["sells_5m"],
                     "prior55_trades": (
                         max(0, int(source_pair["txns"]["h1"].get("buys") or 0)
@@ -26986,20 +27000,27 @@ class Store:
                 if passed:
                     ready.append(policy["arm_id"])
             admitted_arms = [p["arm_id"] for p in active if post_valid and p["arm_id"] in pending
+                             and (not p.get("require_post_decision_observation") or previous is not None
+                                  and snapshot.observed_at > parse_time(previous["evaluated_at"]))
                              and p["arm_id"] not in already_bought and p["arm_id"] not in entry_blocked
                              and (not cohort_mode or previous_features.get("event_keys", {}).get(p["arm_id"]) == event_keys.get(p["arm_id"]) and p["arm_id"] in accepted_cohort_signals)
                              and (p.get("entry_family") not in {"event_reawakening", "surface_lifecycle_pipeline", "fast_stop_reclaim", "no_ca_event_flow_leader", "direct_lp_amount_specific_confirmed", "official_event_actual_flow", "mature_new_acceptance", "wallet_confirmed_broad_opportunity"} or
                                   previous_features.get("event_keys", {}).get(p["arm_id"]) == event_keys.get(p["arm_id"]))]
             paired = {}
+            paired_rejections = {}
             for p in active:
                 if p.get("paired_entry_group"):
                     paired.setdefault(p["paired_entry_group"], []).append(p["arm_id"])
             for arms in paired.values():
-                if len(arms) != 2 or not all(arm in admitted_arms for arm in arms):
+                expected = {int(p.get("paired_entry_size", 2)) for p in active if p["arm_id"] in arms}
+                if expected != {len(arms)} or not all(arm in admitted_arms for arm in arms):
+                    if expected == {5} and post_valid and any(arm in pending for arm in arms):
+                        paired_rejections.update({arm: "paired_group_not_all_eligible" for arm in arms})
                     admitted_arms = [arm for arm in admitted_arms if arm not in arms]
             features = {"source_snapshot_id": snapshot_id, "pair_address": pair_address,
                         "observed_at": iso(snapshot.observed_at), "ready_arm_ids": ready,
-                        "outcomes": outcomes, "fill_signal_snapshot_id": previous_features.get("source_snapshot_id"),
+                        "outcomes": outcomes, "paired_rejections": paired_rejections,
+                        "fill_signal_snapshot_id": previous_features.get("source_snapshot_id"),
                         "evidence": context, "capital_evidence_ids": {
                             k: v.get("evidence_id") for k,v in capital_context.items() if isinstance(v, Mapping)},
                         "wave_parents": wave_rows,
@@ -27041,6 +27062,8 @@ class Store:
                         + float(definition.get("additional_fee_usd_each_fill") or 0.0)
                         for arm in arms
                     ):
+                        if len(arms) == 5 and any(arm in admitted_arms for arm in arms):
+                            paired_rejections.update({arm: "paired_group_cash_blocked" for arm in arms})
                         for group_arms in by_notional.values():
                             group_arms[:] = [arm for arm in group_arms if arm not in arms]
                 by_notional = {n: arms for n, arms in by_notional.items() if arms}
@@ -31529,7 +31552,8 @@ class Store:
         if state_key is not None:
             state = dict(outer_state.get(state_key) or {})
         token, pair = position["token_id"], position["entry_pair_address"]
-        if kind in {"l0_continuation_failure", "l0_profit_lock", "l0_loss_deterioration"}:
+        from .research_finalists import EXIT_KINDS, evaluate_finalist_exit
+        if kind in {"l0_continuation_failure", "l0_profit_lock", "l0_loss_deterioration"} | EXIT_KINDS:
             from .l0_experiments import evaluate_l0_continuation_failure, evaluate_l0_profit_lock
             price = position["mark_price_usd"]
             net = (
@@ -31559,6 +31583,11 @@ class Store:
             if kind == "l0_loss_deterioration":
                 from .strategy_revisions import evaluate_l0_loss_deterioration
                 evaluator = evaluate_l0_loss_deterioration
+            if kind in EXIT_KINDS:
+                adapted["pair_address"] = canonical_token_address(str(token).partition(":")[0], str(pair))
+                frame.update(provider=position["mark_provider"], volume=position["mark_volume_5m_usd"],
+                             buys=position["mark_buys_5m"], sells=position["mark_sells_5m"])
+                evaluator = evaluate_finalist_exit
             result = evaluator(adapted, frame, state, now=current, policy=policy["capital_exit_policy"])
         elif kind == "watched_wallet_distribution":
             from .wallet_observer_experiments import evaluate_wallet_distribution_exit
@@ -33228,7 +33257,7 @@ class Store:
                 "m.volume_5m_usd AS mark_volume_5m_usd,m.buys_5m AS mark_buys_5m,"
                 "m.sells_5m AS mark_sells_5m,m.pair_address AS mark_pair_address,"
                 "m.status AS mark_status,m.consecutive_misses,m.recorded_at AS mark_recorded_at,"
-                "m.observed_at AS mark_observed_at,"
+                "m.observed_at AS mark_observed_at,m.provider AS mark_provider,"
                 "m.last_success_at AS mark_last_success_at,m.first_missing_at,"
                 "m.last_attempt_at AS mark_last_attempt_at,"
                 "m.failure_kind AS mark_failure_kind,m.sample_sequence,"
@@ -33391,6 +33420,8 @@ class Store:
                         pending_pair = str(position["pending_pair_address"] or "")
                         if (
                             post_mark_at > parse_time(position["pending_recorded_at"])
+                            and (not policy.get("require_post_decision_observation") or
+                                 post_observed_at > parse_time(position["pending_recorded_at"]))
                             and post_sequence > max(pre_sequence, prior_post_sequence)
                             and parse_time(position["opened_at"])
                             <= post_observed_at <= post_mark_at <= current
