@@ -10,7 +10,7 @@
       "rationale": "优先保证真实退出与可核查账本，不改策略阈值，不用来源无覆盖伪造死亡池。",
       "validation": "20,635仓位聚合及最近500 BUY/SELL核对；实际Store和分页回归；BSC误核销26笔520U已定位。详见FOUNDATION_HISTORY_REPAIR_2026-09-06.md。",
       "scope": "184策略和原资金期保留，无初始化、无Live、无自动复盘；补款不计PNL。",
-      "status": "修复与验证中；部署和补款回执待追加。"
+      "status": "9c1e796已于03:32:45Z部署；26笔/25策略520U独立补款到账，原交易和PNL保留。其余57笔missing历史证据不足，逐项留证，未推算赔付。"
     },
     {
       "id": "20260906-quote-side-original-pool",

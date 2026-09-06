@@ -777,6 +777,7 @@ class ChainWebData:
                 if "ledger_trade_frontier_id" in account_columns
                 else "NULL AS ledger_trade_frontier_id"
             )
+            # Seek the latest eligible row per arm; the time index sorts the full history.
             latest_accounts = {
                 str(row["arm_id"]): dict(row)
                 for row in connection.execute(
@@ -786,11 +787,14 @@ class ChainWebData:
                     "s.indicative_unrealized_pnl_usd,s.indicative_total_pnl_usd,"
                     "s.indicative_position_count,s.indicative_is_complete,"
                     f"s.valuation_status,{ledger_projection} "
-                    "FROM chain_meme_trader_account_snapshots s "
-                    "JOIN (SELECT arm_id,MAX(id) AS id FROM "
-                    f"chain_meme_trader_account_snapshots WHERE {account_where} "
-                    "GROUP BY arm_id) latest ON latest.id=s.id",
-                    tuple(account_values),
+                    "FROM json_each(?) policy "
+                    "JOIN chain_meme_trader_account_snapshots s ON s.id=("
+                    "SELECT id FROM chain_meme_trader_account_snapshots "
+                    "INDEXED BY chain_meme_trader_account_snapshots_latest_idx "
+                    f"WHERE {account_where} AND arm_id=policy.value "
+                    "ORDER BY id DESC LIMIT 1)",
+                    (json.dumps([str(policy["arm_id"]) for policy in policies]),
+                     *account_values),
                 ).fetchall()
             }
             curve_history = self._account_curves(connection, active_version, accounting_effective_after,

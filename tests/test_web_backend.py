@@ -384,6 +384,7 @@ def test_strategy_universe_refreshes_for_additive_strategy_versions(tmp_path: Pa
     )
     store.close()
 
+
     source_universe = (
         Path(__file__).parents[1] / "docs" / "PROJECT_CONTEXT" /
         "CHAIN_MEME_TRADER_HISTORICAL_STRATEGY_UNIVERSE_2026-09-04.json"
@@ -4366,3 +4367,57 @@ def test_event_detail_exposes_safe_separate_fact_verification(tmp_path: Path):
     assert "parent-run-secret" not in serialized
     assert "subject-secret" not in serialized
     assert '"claim_sha256"' not in serialized
+
+
+def test_compact_state_latest_accounts_are_per_registered_arm_and_eligible_frontier(
+    tmp_path: Path,
+):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    registration = store.register_chain_meme_trader_v22()
+    store.activate_chain_meme_trader_v22()
+    version = Store.CHAIN_MEME_TRADER_V22_VERSION
+    policies = Store._json_object(registration["definition_json"])["policies"]
+    arm0, arm1, arm2 = (str(policy["arm_id"]) for policy in policies[:3])
+    now = utcnow()
+
+    def add_snapshot(snapshot_version: str, arm: str, recorded_at: str,
+                     cash: float, frontier: int | None) -> None:
+        with store.db:
+            store.db.execute(
+                "INSERT INTO chain_meme_trader_account_snapshots("
+                "definition_version,arm_id,recorded_at,cash_usd,realized_pnl_usd,"
+                "indicative_unrealized_pnl_usd,indicative_total_pnl_usd,indicative_equity_usd,"
+                "indicative_position_count,indicative_is_complete,open_position_count,"
+                "closed_position_count,written_off_position_count,priced_position_count,"
+                "valuation_status,ledger_trade_frontier_id) "
+                "VALUES(?,?,?,?,?,0,?,?,0,1,0,0,0,0,'complete_market_mark',?)",
+                (snapshot_version, arm, recorded_at, cash, cash - 1000.0,
+                 cash - 1000.0, cash, frontier),
+            )
+
+    old = iso(now - timedelta(seconds=60))
+    newer = iso(now - timedelta(seconds=10))
+    add_snapshot(version, arm0, old, 1010.0, 10)
+    add_snapshot(version, arm0, iso(now - timedelta(seconds=1)), 1099.0, None)
+    add_snapshot(version, arm1, old, 1001.0, 11)
+    add_snapshot(version, arm1, newer, 1002.0, 12)
+    add_snapshot(version, arm1, iso(now - timedelta(seconds=1)), 1099.0, None)
+    add_snapshot("other-definition", arm0, iso(now - timedelta(seconds=2)), 1999.0, 99)
+    with store.db:
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_accounting_contaminations("
+            "definition_version,arm_id,shadow_cohort_id,source_buy_trade_id,reason,"
+            "evidence_json,recorded_at) VALUES(?,?,?,?,?,'{}',?)",
+            (version, arm0, 777001, 0, "fixture", iso(now - timedelta(seconds=30))),
+        )
+    store.close()
+
+    live = ChainWebData(config_path).state(compact=True)
+    accounts = {
+        item["arm_id"]: item["account"] for item in live["strategies"]
+        if item["arm_id"] in {arm0, arm1, arm2}
+    }
+    assert accounts[arm0]["recorded_at"] is None
+    assert accounts[arm1]["recorded_at"] == newer
+    assert accounts[arm2]["recorded_at"] is None
