@@ -1817,6 +1817,15 @@ class Runtime:
             return max(default_fee, float(paper.get("pump_swap_fee_bps", 125)))
         return default_fee
 
+    def _held_pool_quote_rejections(self, token_id, token, snapshot, received_at) -> list[str]:
+        reasons = self._paper_quote_rejections(token_id, token, snapshot, received_at)
+        liquidity = snapshot.liquidity_usd
+        if liquidity is None or not math.isfinite(float(liquidity)) or float(liquidity) < 0:
+            reasons.append("quote_liquidity_unavailable")
+        if snapshot.price_usd is not None and not math.isfinite(float(snapshot.price_usd)):
+            reasons.append("quote_price_unavailable")
+        return list(dict.fromkeys(reasons))
+
     def _classify_observation(self, obs: Observation) -> Observation:
         if obs.role.lower() == "feature" and is_promotional_market_content(obs.title, obs.text):
             obs.role = "promotion"
@@ -2362,11 +2371,14 @@ class Runtime:
             if pair is None or canonical_token_address(chain, str(pair.get("pairAddress") or "")) != canonical_token_address(chain, item["pair_address"]):
                 return False
             token, snapshot = self._held_pool_quote(pair, str(item["token_id"]))
-            return token is not None and snapshot is not None and not self._paper_quote_rejections(
+            return token is not None and snapshot is not None and not self._held_pool_quote_rejections(
                 str(item["token_id"]), token, snapshot, utcnow())
         uncovered = [(key, item) for key, item in chunk
                      if not usable(item, pairs.get(key[1]))]
         if exact_received:
+            for key, item in primary_due:
+                if not usable(item, pairs.get(key[1])):
+                    item["next_primary_attempt"] = now + 60
             self.store.heartbeat("dexscreener:original_pool", item=any(
                 usable(item, pairs.get(key[1])) for key, item in chunk))
         public_due = [(key, item) for key, item in uncovered
@@ -2429,7 +2441,7 @@ class Runtime:
                 })
                 continue
             token, snapshot = self._held_pool_quote(pair, str(item["token_id"]))
-            if token is None or snapshot is None or self._paper_quote_rejections(
+            if token is None or snapshot is None or self._held_pool_quote_rejections(
                 str(item["token_id"]), token, snapshot, received,
             ):
                 outcomes.append({
@@ -2531,7 +2543,7 @@ class Runtime:
                         )
                         if (
                             pair_address in held_pools.get(token.token_id, set())
-                            and not self._paper_quote_rejections(
+                            and not self._held_pool_quote_rejections(
                                 token.token_id, token, snapshot, utcnow(),
                             )
                         ):
@@ -6801,6 +6813,7 @@ class Runtime:
                 ) if expected_pairs else []
                 observed_pairs: set[str] = set()
                 valid_pairs: set[str] = set()
+                invalid_pool_reasons: dict[str, list[str]] = {}
                 for raw_pair in raw_pairs:
                     if not isinstance(raw_pair, dict):
                         continue
@@ -6815,24 +6828,17 @@ class Runtime:
                     pool_snapshot.observed_at = snapshot.observed_at
                     pool_snapshot.ingested_at = snapshot.ingested_at
                     pool_snapshot.provider = snapshot.provider
-                    if (
-                        float(pool_snapshot.price_usd or 0.0) <= 0.0
-                        or (
-                            pool_snapshot.liquidity_usd is not None
-                            and float(pool_snapshot.liquidity_usd) < 0.0
-                        )
-                    ):
-                        continue
                     if canonical_token_address(target_chain, pool_token.address) != canonical_token_address(
                         target_chain, target_address,
                     ):
                         continue
                     pool_token.address = canonical_token_address(target_chain, target_address)
                     pool_snapshot.address = pool_token.address
-                    pool_rejections = self._paper_quote_rejections(
+                    pool_rejections = self._held_pool_quote_rejections(
                         target_token_id, pool_token, pool_snapshot, received_at,
                     )
                     if pool_rejections:
+                        invalid_pool_reasons[pair_key] = pool_rejections
                         continue
                     valid_pairs.add(pair_key)
                     getattr(self, "_market_pool_gaps", {}).pop((target_token_id, pair_key), None)
@@ -6849,8 +6855,11 @@ class Runtime:
                         "kind": "pool_failure",
                         "token_id": target_token_id, "pair_address": expected_pair,
                         "chain": target_chain, "address": target_address,
-                        "failure_kind": ("DATA_REJECTED:ENTRY_POOL_INVALID" if expected_pair in observed_pairs
-                                         else "DEX_SOURCE_COVERAGE_GAP"),
+                        "failure_kind": (
+                            "DATA_REJECTED:" + ",".join(invalid_pool_reasons[expected_pair])
+                            if expected_pair in invalid_pool_reasons else
+                            "DATA_REJECTED:ENTRY_POOL_INVALID" if expected_pair in observed_pairs
+                            else "DEX_SOURCE_COVERAGE_GAP"),
                     })
                 if expected_pairs and expected_pairs <= valid_pairs:
                     priced_tokens += 1
@@ -6867,7 +6876,7 @@ class Runtime:
                         "chain": target_chain, "address": target_address,
                     })
                     continue
-                rejections = self._paper_quote_rejections(
+                rejections = self._held_pool_quote_rejections(
                     target_token_id, token, snapshot, received_at,
                 )
                 if rejections:

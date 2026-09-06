@@ -1202,6 +1202,8 @@ class ChainWebData:
             net_flows = Store._chain_meme_trader_effective_net_flows_from_connection(connection, active_version)
             capital_credits = Store.chain_meme_capital_credits_from_connection(connection, active_version)
             priced_open_by_arm: dict[str, int] = defaultdict(int)
+            unavailable_reasons_by_arm: dict[str, Counter] = defaultdict(Counter)
+            unavailable_reason_by_position: dict[tuple[str, int], str] = {}
             unresolved_by_arm: dict[str, int] = defaultdict(int)
             entry_anomalies_by_arm: dict[str, int] = defaultdict(int)
             effective_open_token_ids: set[str] = set()
@@ -1216,7 +1218,7 @@ class ChainWebData:
                 "p.opened_at,p.closed_at,m.pair_address,m.price_usd,m.liquidity_usd,"
                 "COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),c.pair_address) AS entry_pair_address,"
                 "m.status AS market_status,m.observed_at AS market_observed_at,"
-                "m.recorded_at AS market_recorded_at,m.last_success_at "
+                "m.recorded_at AS market_recorded_at,m.last_success_at,m.failure_kind AS market_failure_kind "
                 "FROM chain_meme_trader_positions p "
                 "LEFT JOIN token_snapshots e ON e.id=p.entry_snapshot_id AND e.token_id=p.token_id "
                 "LEFT JOIN chain_meme_trader_v6_cohorts c ON c.id=p.shadow_cohort_id "
@@ -1300,6 +1302,30 @@ class ChainWebData:
                         effective_unrealized_by_arm[arm] += indicative_value - remaining_cost
                         effective_value_by_arm[arm] += indicative_value
                         priced_open_by_arm[arm] += 1
+                    else:
+                        if correction is not None:
+                            unavailable_reason = "historical_execution_unresolved"
+                        elif row.get("market_status") != "VISIBLE" or not Store.chain_meme_market_pool_matches(
+                            row["token_id"], row.get("entry_pair_address"), row.get("pair_address"),
+                        ):
+                            unavailable_reason = "original_pool_evidence_missing"
+                        elif row.get("liquidity_usd") is None or (
+                            "quote_liquidity_unavailable" in str(row.get("market_failure_kind") or "")
+                            and (market_age is None or observed_age is None or not (
+                                0.0 <= market_age <= 15.0 and 0.0 <= observed_age <= 15.0
+                            ))
+                        ):
+                            unavailable_reason = "liquidity_unknown"
+                        elif float(row.get("price_usd") or 0.0) <= 0.0:
+                            unavailable_reason = "price_unknown"
+                        elif market_age is None or observed_age is None or not (
+                            0.0 <= market_age <= 15.0 and 0.0 <= observed_age <= 15.0
+                        ):
+                            unavailable_reason = "market_mark_expired"
+                        else:
+                            unavailable_reason = "position_quantity_unknown"
+                        unavailable_reasons_by_arm[arm][unavailable_reason] += 1
+                        unavailable_reason_by_position[key] = unavailable_reason
             effective_open_position_count = sum(
                 stats["open_count"] for stats in position_stats.values()
             )
@@ -1389,6 +1415,7 @@ class ChainWebData:
                     "indicative_total_pnl_usd": total_pnl,
                     "indicative_position_count": priced_open_by_arm.get(policy_arm_id, 0),
                     "indicative_is_complete": indicative_complete,
+                    "valuation_unavailable_reasons": dict(unavailable_reasons_by_arm[policy_arm_id]),
                     "valuation_status": (
                         "complete_market_mark" if indicative_complete
                         else "historical_execution_unresolved" if unresolved_by_arm[policy_arm_id]
@@ -1666,6 +1693,9 @@ class ChainWebData:
                     "market_age_seconds": market_age,
                     "market_observed_age_seconds": observed_age,
                     "market_is_fresh": fresh_market,
+                    "valuation_unavailable_reason": unavailable_reason_by_position.get(
+                        (str(row["arm_id"]), int(row["shadow_cohort_id"])),
+                    ) if indicative_value is None else None,
                     "remaining_cost_usd": remaining_cost,
                     "indicative_value_usd": indicative_value,
                     "indicative_unrealized_pnl_usd": (
@@ -1707,7 +1737,9 @@ class ChainWebData:
                     strategies = [
                         ({
                             **strategy,
-                            "positions": detail_strategy.get("positions") or [],
+                            "positions": [{**position, "valuation_unavailable_reason":
+                                unavailable_reason_by_position.get((arm_id, int(position["shadow_cohort_id"])))}
+                                for position in detail_strategy.get("positions") or []],
                             "trades": detail_strategy.get("trades") or [],
                         }
                          if str(strategy.get("arm_id") or "") == arm_id else strategy)

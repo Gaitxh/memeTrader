@@ -72,6 +72,76 @@ def test_compact_strategy_detail_preserves_current_hard_stop(tmp_path: Path):
     assert strategy["hard_stop_return"] == policy["hard_stop_return"]
 
 
+@pytest.mark.parametrize("missing_reason", [
+    "liquidity_unknown", "market_mark_expired", "original_pool_evidence_missing",
+    "retained_liquidity_unknown_stale", "retained_liquidity_unknown_fresh",
+])
+def test_compact_valuation_reports_missing_reason_without_changing_account_value(
+    tmp_path: Path, monkeypatch, missing_reason,
+):
+    from test_funding_epoch import _snapshot
+
+    config_path, _ = _config(tmp_path)
+    clock = [utcnow()]
+    monkeypatch.setattr("memetrader.store.utcnow", lambda: clock[0])
+    monkeypatch.setattr("memetrader.models.utcnow", lambda: clock[0])
+    monkeypatch.setattr("memetrader.chain_web.utcnow", lambda: clock[0])
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    try:
+        store.activate_chain_meme_trader_funded_period()
+        version = Store.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        tokens = []
+        for _ in range(2):
+            clock[0] += timedelta(seconds=1)
+            token = TokenCandidate("solana", str(Pubkey.new_unique()), "Valuation", "VAL", source="fixture")
+            pair = str(Pubkey.new_unique())
+            store.upsert_token(token, seen_at=clock[0])
+            snapshot = _snapshot(token, pair, clock[0])
+            store.add_snapshot(snapshot)
+            store.enroll_chain_meme_trader_v6(definition_version=version)
+            tokens.append((token, pair, snapshot))
+        arm = "canonical-1c2ac45bb5154011"
+        assert store.db.execute(
+            "SELECT COUNT(*) FROM chain_meme_trader_positions WHERE definition_version=? AND arm_id=?",
+            (version, arm),
+        ).fetchone()[0] == 2
+        clock[0] += timedelta(seconds=20)
+        for i, (token, pair, original) in enumerate(tokens):
+            if i == 0 and missing_reason == "original_pool_evidence_missing":
+                continue
+            mark = (original if i == 0 and missing_reason in {
+                        "market_mark_expired", "retained_liquidity_unknown_stale"}
+                    else _snapshot(token, pair, clock[0]))
+            if i == 0 and missing_reason == "liquidity_unknown":
+                mark.liquidity_usd = None
+            store.upsert_chain_meme_trader_market_mark(token, mark, recorded_at=mark.observed_at)
+            if i == 0 and missing_reason.startswith("retained_liquidity_unknown"):
+                store.record_chain_meme_trader_pool_mark_failure(
+                    token_id=token.token_id, pair_address=pair, chain=token.chain,
+                    failure_kind="DATA_REJECTED:quote_liquidity_unavailable", recorded_at=clock[0],
+                )
+        ledger_before = store._chain_meme_trader_effective_net_flows(version)
+        live = ChainWebData(config_path).state(compact=True, arm_id=arm)
+        strategy = next(item for item in live["strategies"] if item["arm_id"] == arm)
+        account = strategy["account"]
+        complete = missing_reason == "retained_liquidity_unknown_fresh"
+        expected_reason = (None if complete else "liquidity_unknown"
+                           if missing_reason == "retained_liquidity_unknown_stale" else missing_reason)
+        assert account["valuation_unavailable_reasons"] == ({} if complete else {expected_reason: 1})
+        assert account["open_position_count"] == 2
+        assert account["indicative_position_count"] == (2 if complete else 1)
+        assert (account["indicative_total_pnl_usd"] is not None) == complete
+        assert (account["position_value_usd"] is not None) == complete
+        assert account["cash_usd"] == 1000 + ledger_before[arm]
+        for positions in (live["open_positions"], strategy["positions"]):
+            missing = next(p for p in positions if p["arm_id"] == arm and p["token_id"] == tokens[0][0].token_id)
+            assert missing["valuation_unavailable_reason"] == expected_reason
+            assert (missing["indicative_unrealized_pnl_usd"] is not None) == complete
+        assert store._chain_meme_trader_effective_net_flows(version) == ledger_before
+    finally:
+        store.close()
+
+
 def test_chain_diagnostics_read_bounded_timing_and_update_history(tmp_path: Path):
     config_path, _ = _config(tmp_path)
     store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
