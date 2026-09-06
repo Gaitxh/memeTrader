@@ -103,6 +103,9 @@ class Store:
     TOKEN_UNIVERSE_HORIZONS_MINUTES = (15, 60, 240)
     TOKEN_UNIVERSE_BASELINE_WINDOW_MINUTES = 5
     TOKEN_UNIVERSE_OUTCOME_GRACE_MINUTES = 30
+    CHAIN_MEME_UNIVERSE_OUTCOME_VERSION = "chain-meme-universe-outcomes/v1"
+    CHAIN_MEME_UNIVERSE_OUTCOME_HORIZONS_MINUTES = (0, 15, 60, 240)
+    CHAIN_MEME_UNIVERSE_OUTCOME_FRESH_SECONDS = 30
     MISSED_OPPORTUNITY_AUDIT_VERSION = "missed-opportunity-audit/v1"
     MISSED_OPPORTUNITY_NO_DECISION_ATTRIBUTION_VERSION = "missed-opportunity-no-decision-attribution/v1"
     TOKEN_UNIVERSE_OUTCOME_QUALITY_VERSION = "token-universe-outcome-quality/v1"
@@ -2528,6 +2531,36 @@ class Store:
                     ON chain_meme_trader_v6_cohorts(
                         definition_version,token_id,decided_at,id
                     );
+                CREATE TABLE IF NOT EXISTS chain_meme_universe_outcome_registrations (
+                    observer_version TEXT PRIMARY KEY,
+                    source_definition_version TEXT NOT NULL,
+                    registered_at TEXT NOT NULL,
+                    activation_cohort_id INTEGER NOT NULL,
+                    definition_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS chain_meme_universe_outcomes (
+                    id INTEGER PRIMARY KEY,
+                    observer_version TEXT NOT NULL,
+                    source_cohort_id INTEGER NOT NULL,
+                    horizon_minutes INTEGER NOT NULL,
+                    target_at TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('PENDING','OBSERVED','UNKNOWN')),
+                    outcome_snapshot_id INTEGER,
+                    outcome_observed_at TEXT,
+                    outcome_ingested_at TEXT,
+                    outcome_recorded_at TEXT,
+                    outcome_price_usd REAL,
+                    outcome_liquidity_usd REAL,
+                    reason TEXT NOT NULL DEFAULT '',
+                    evaluated_at TEXT,
+                    UNIQUE(observer_version,source_cohort_id,horizon_minutes),
+                    FOREIGN KEY(observer_version)
+                        REFERENCES chain_meme_universe_outcome_registrations(observer_version),
+                    FOREIGN KEY(source_cohort_id) REFERENCES chain_meme_trader_v6_cohorts(id),
+                    FOREIGN KEY(outcome_snapshot_id) REFERENCES token_snapshots(id)
+                );
+                CREATE INDEX IF NOT EXISTS chain_meme_universe_outcomes_due_idx
+                    ON chain_meme_universe_outcomes(observer_version,status,target_at,id);
                 CREATE TABLE IF NOT EXISTS chain_meme_trader_primary_stops (
                     definition_version TEXT PRIMARY KEY,
                     stopped_at TEXT NOT NULL,
@@ -25487,6 +25520,189 @@ class Store:
                 "WHERE definition_version=? AND arm_id=?", (version, arm_id),
             ).fetchone()
 
+    def register_chain_meme_universe_outcomes(
+        self, *, source_definition_version: str | None = None,
+        observer_version: str | None = None, registered_at: Any = None,
+    ) -> sqlite3.Row:
+        """Freeze a chain-cohort outcome frontier without enrolling old cohorts."""
+        source_version = str(
+            source_definition_version or self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        )
+        outcome_version = str(observer_version or self.CHAIN_MEME_UNIVERSE_OUTCOME_VERSION)
+        definition = {
+            "observer_version": outcome_version,
+            "source_definition_version": source_version,
+            "horizons_minutes": list(self.CHAIN_MEME_UNIVERSE_OUTCOME_HORIZONS_MINUTES),
+            "fresh_window_seconds": self.CHAIN_MEME_UNIVERSE_OUTCOME_FRESH_SECONDS,
+            "snapshot_source": "stored_exact_pool_only",
+            "missing_terminal_status": "UNKNOWN",
+            "external_requests": False,
+            "decision_eligible": False,
+            "affects": "none",
+            "no_historical_backfill": True,
+        }
+        with self._lock, self.db:
+            existing = self.db.execute(
+                "SELECT * FROM chain_meme_universe_outcome_registrations "
+                "WHERE observer_version=?", (outcome_version,),
+            ).fetchone()
+            if existing is not None:
+                return existing
+            frontier = int(self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM chain_meme_trader_v6_cohorts"
+            ).fetchone()[0])
+            self.db.execute(
+                "INSERT INTO chain_meme_universe_outcome_registrations("
+                "observer_version,source_definition_version,registered_at,"
+                "activation_cohort_id,definition_json) VALUES(?,?,?,?,?)",
+                (
+                    outcome_version, source_version, iso(registered_at or utcnow()),
+                    frontier, self._json(definition),
+                ),
+            )
+            return self.db.execute(
+                "SELECT * FROM chain_meme_universe_outcome_registrations "
+                "WHERE observer_version=?", (outcome_version,),
+            ).fetchone()
+
+    def enroll_chain_meme_universe_outcomes(
+        self, *, observer_version: str | None = None, limit: int = 32,
+    ) -> dict[str, int]:
+        """Append four pending targets for a bounded batch of post-frontier cohorts."""
+        outcome_version = str(observer_version or self.CHAIN_MEME_UNIVERSE_OUTCOME_VERSION)
+        batch_limit = max(1, min(256, int(limit)))
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT * FROM chain_meme_universe_outcome_registrations "
+                "WHERE observer_version=?", (outcome_version,),
+            ).fetchone()
+            if registration is None:
+                return {"cohorts_enrolled": 0, "targets_enrolled": 0}
+            cursor = int(self.db.execute(
+                "SELECT COALESCE(MAX(source_cohort_id),?) "
+                "FROM chain_meme_universe_outcomes WHERE observer_version=?",
+                (int(registration["activation_cohort_id"]), outcome_version),
+            ).fetchone()[0])
+            cohorts = self.db.execute(
+                "SELECT id,decided_at FROM chain_meme_trader_v6_cohorts "
+                "WHERE definition_version=? AND id>? ORDER BY id LIMIT ?",
+                (
+                    str(registration["source_definition_version"]), cursor,
+                    batch_limit,
+                ),
+            ).fetchall()
+            inserted = 0
+            for cohort in cohorts:
+                decided_at = parse_time(cohort["decided_at"])
+                for horizon in self.CHAIN_MEME_UNIVERSE_OUTCOME_HORIZONS_MINUTES:
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO chain_meme_universe_outcomes("
+                        "observer_version,source_cohort_id,horizon_minutes,target_at,status) "
+                        "VALUES(?,?,?,?,'PENDING')",
+                        (
+                            outcome_version, int(cohort["id"]), int(horizon),
+                            iso(decided_at + timedelta(minutes=int(horizon))),
+                        ),
+                    )
+                    inserted += int(self.db.execute("SELECT changes()").fetchone()[0])
+            return {"cohorts_enrolled": len(cohorts), "targets_enrolled": inserted}
+
+    def finalize_chain_meme_universe_outcomes(
+        self, *, observer_version: str | None = None, now: Any = None,
+        limit: int = 16,
+    ) -> dict[str, int]:
+        """Resolve due targets from stored same-pool causal snapshots only."""
+        outcome_version = str(observer_version or self.CHAIN_MEME_UNIVERSE_OUTCOME_VERSION)
+        evaluated = parse_time(now or utcnow())
+        due_limit = max(1, min(128, int(limit)))
+        observed = unknown = 0
+        with self._lock, self.db:
+            registration = self.db.execute(
+                "SELECT 1 FROM chain_meme_universe_outcome_registrations "
+                "WHERE observer_version=?", (outcome_version,),
+            ).fetchone()
+            if registration is None:
+                return {"targets_checked": 0, "observed": 0, "unknown": 0}
+            targets = self.db.execute(
+                "SELECT o.*,c.token_id,c.pair_address,c.decided_at,c.source_snapshot_id "
+                "FROM chain_meme_universe_outcomes o "
+                "JOIN chain_meme_trader_v6_cohorts c ON c.id=o.source_cohort_id "
+                "WHERE o.observer_version=? AND o.status='PENDING' AND o.target_at<=? "
+                "ORDER BY o.target_at,o.id LIMIT ?",
+                (outcome_version, iso(evaluated), due_limit),
+            ).fetchall()
+            for target in targets:
+                target_at = parse_time(target["target_at"])
+                deadline = target_at + timedelta(
+                    seconds=self.CHAIN_MEME_UNIVERSE_OUTCOME_FRESH_SECONDS
+                )
+                chain = str(target["token_id"]).partition(":")[0]
+                common = (
+                    "token_id=? AND price_usd>0 AND observed_at IS NOT NULL "
+                    "AND ingested_at IS NOT NULL AND recorded_at IS NOT NULL "
+                    "AND observed_at<=ingested_at AND ingested_at<=recorded_at "
+                    "AND canonical_token_address(?,COALESCE("
+                    "json_extract(raw_json,'$.pair.pairAddress'),"
+                    "json_extract(raw_json,'$.market_pair.pairAddress'),"
+                    "json_extract(raw_json,'$.pairAddress'),''))="
+                    "canonical_token_address(?,?)"
+                )
+                if int(target["horizon_minutes"]) == 0:
+                    snapshot = self.db.execute(
+                        "SELECT * FROM token_snapshots WHERE id=? AND " + common
+                        + " AND recorded_at<=? LIMIT 1",
+                        (
+                            int(target["source_snapshot_id"]), str(target["token_id"]),
+                            chain, chain, str(target["pair_address"]),
+                            str(target["decided_at"]),
+                        ),
+                    ).fetchone()
+                    terminal = True
+                    reason = "cohort_source_snapshot" if snapshot is not None else "invalid_cohort_source_snapshot"
+                else:
+                    upper = min(evaluated, deadline)
+                    snapshot = self.db.execute(
+                        "SELECT * FROM token_snapshots WHERE " + common
+                        + " AND observed_at>=? AND observed_at<=? "
+                        "AND ingested_at>=? AND ingested_at<=? "
+                        "AND recorded_at>=? AND recorded_at<=? "
+                        "ORDER BY recorded_at,ingested_at,observed_at,id LIMIT 1",
+                        (
+                            str(target["token_id"]), chain, chain,
+                            str(target["pair_address"]), iso(target_at), iso(upper),
+                            iso(target_at), iso(upper), iso(target_at), iso(upper),
+                        ),
+                    ).fetchone()
+                    terminal = snapshot is not None or evaluated >= deadline
+                    reason = "first_stored_exact_pool_snapshot" if snapshot is not None else "no_fresh_stored_exact_pool_snapshot"
+                if not terminal:
+                    continue
+                if snapshot is None:
+                    self.db.execute(
+                        "UPDATE chain_meme_universe_outcomes SET status='UNKNOWN',"
+                        "reason=?,evaluated_at=? WHERE id=? AND status='PENDING'",
+                        (reason, iso(evaluated), int(target["id"])),
+                    )
+                    unknown += int(self.db.execute("SELECT changes()").fetchone()[0])
+                    continue
+                self.db.execute(
+                    "UPDATE chain_meme_universe_outcomes SET status='OBSERVED',"
+                    "outcome_snapshot_id=?,outcome_observed_at=?,outcome_ingested_at=?,"
+                    "outcome_recorded_at=?,outcome_price_usd=?,outcome_liquidity_usd=?,"
+                    "reason=?,evaluated_at=? WHERE id=? AND status='PENDING'",
+                    (
+                        int(snapshot["id"]), str(snapshot["observed_at"]),
+                        str(snapshot["ingested_at"]), str(snapshot["recorded_at"]),
+                        float(snapshot["price_usd"]), snapshot["liquidity_usd"], reason,
+                        iso(evaluated), int(target["id"]),
+                    ),
+                )
+                observed += int(self.db.execute("SELECT changes()").fetchone()[0])
+            return {
+                "targets_checked": len(targets), "observed": observed,
+                "unknown": unknown,
+            }
+
     def register_chain_meme_trader_cost_coverage_scaleout(self) -> sqlite3.Row:
         """Idempotently append the cost-coverage challenger at its own frontier."""
         version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
@@ -25547,6 +25763,20 @@ class Store:
                     (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, policy["arm_id"])).fetchone()
                 if exists is None:
                     self.append_chain_meme_trader_policy(policy)
+                    added += 1
+        return added
+
+    def register_chain_meme_l0_experiments(self) -> int:
+        from .l0_experiments import l0_experiment_policies
+        added = 0
+        with self._lock, self.db:
+            at = utcnow()
+            for policy in l0_experiment_policies():
+                exists = self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?",
+                    (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, policy["arm_id"])).fetchone()
+                if exists is None:
+                    self.append_chain_meme_trader_policy(policy, activated_at=at)
                     added += 1
         return added
 
@@ -30390,7 +30620,30 @@ class Store:
         kind = policy["capital_exit_kind"]
         state = self._json_object(position["capital_exit_state_json"])
         token, pair = position["token_id"], position["entry_pair_address"]
-        if kind == "executable_recovery_decay":
+        if kind in {"l0_continuation_failure", "l0_profit_lock"}:
+            from .l0_experiments import evaluate_l0_continuation_failure, evaluate_l0_profit_lock
+            price = position["mark_price_usd"]
+            net = (float(position["remaining_quantity_tokens"] or 0) * float(price) * .96
+                   if price is not None else None)
+            frame = {
+                "frame_id": f"l0:{position['sample_sequence']}:{position['mark_observed_at']}",
+                "token_id": token, "pair_address": position["mark_pair_address"],
+                "original_pool": position["mark_status"] == "VISIBLE"
+                    and canonical_token_address(str(token).partition(":")[0], str(position["mark_pair_address"] or ""))
+                    == canonical_token_address(str(token).partition(":")[0], str(pair)),
+                "observed_at": position["mark_observed_at"],
+                "recorded_at": position["mark_recorded_at"],
+                "price_usd": price, "liquidity_usd": position["mark_liquidity_usd"],
+                "net_recovery_usd": net,
+                "economic_value_usd": float(position["realized_proceeds_usd"] or 0) + net
+                    if net is not None else None,
+            }
+            adapted = {**dict(position), "pair_address": pair,
+                "remaining_cost_usd": float(position["stake_usd"]) - float(position["allocated_cost_usd"] or 0)}
+            evaluator = (evaluate_l0_continuation_failure if kind == "l0_continuation_failure"
+                         else evaluate_l0_profit_lock)
+            result = evaluator(adapted, frame, state, now=current, policy=policy["capital_exit_policy"])
+        elif kind == "executable_recovery_decay":
             evidence_id = (state.get("quote_lane") or {}).get("last_evidence_id")
             row = self.db.execute("SELECT * FROM chain_meme_pattern_evidence WHERE id=? "
                 "AND kind='capital_valuation' AND token_id=? AND pair_address=?",

@@ -1334,6 +1334,11 @@ class Runtime:
                     self.store.register_chain_meme_direct_lp_amount_specific_experiment()
                     self.store.register_chain_meme_evidence_completion_experiments()
                     self.store.register_chain_meme_cycle_volatility_experiments()
+                    self.store.register_chain_meme_l0_experiments()
+                    self._chain_outcome_version = f"{self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION}/outcomes-v1"
+                    self.store.register_chain_meme_universe_outcomes(
+                        observer_version=self._chain_outcome_version,
+                    )
                     self.store.register_chain_meme_v22_vault_shadow(
                         position_definition_version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
                     )
@@ -5530,6 +5535,21 @@ class Runtime:
                     "expected_program_owner": program})
         return targets
 
+    async def chain_meme_universe_outcomes_once(self) -> None:
+        """Low-priority bounded research reads; never request market data."""
+        await self._chain_meme_active_idle().wait()
+        enrolled = await asyncio.to_thread(
+            self.store.enroll_chain_meme_universe_outcomes,
+            observer_version=self._chain_outcome_version, limit=8,
+        )
+        await self._chain_meme_active_idle().wait()
+        finalized = await asyncio.to_thread(
+            self.store.finalize_chain_meme_universe_outcomes,
+            observer_version=self._chain_outcome_version, limit=32,
+        )
+        self.store.heartbeat("chain_universe_outcomes", item=bool(
+            enrolled["targets_enrolled"] or finalized["observed"] or finalized["unknown"]))
+
     async def chain_meme_pattern_pools_once(self) -> None:
         """Shared bounded Pool/Vault verification, with held-first leased slots."""
         await self._chain_meme_active_idle().wait()
@@ -7907,6 +7927,10 @@ class Runtime:
                 asyncio.create_task(
                     self._periodic("capital_quote", 2, self.capital_quote_once),
                     name="capital_quote",
+                ),
+                asyncio.create_task(
+                    self._periodic("chain_universe_outcomes", 30, self.chain_meme_universe_outcomes_once),
+                    name="chain_universe_outcomes",
                 ),
                 asyncio.create_task(self.seal_capital_research_once(), name="capital_research_seal"),
                 asyncio.create_task(self.seal_duration_research_once(), name="duration_research_seal"),
