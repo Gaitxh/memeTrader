@@ -6045,8 +6045,12 @@ class Runtime:
             except Exception as exc:
                 response = getattr(getattr(exc, "__cause__", None), "response", None)
                 status = getattr(response, "status_code", None)
+                detail = f"http_status={status};failure_class={type(exc).__name__}"
+                if isinstance(exc, JupiterQuoteProtocolError):
+                    # The client message contains only local validation field names.
+                    detail += f";protocol_reason={str(exc)[:200]}"
                 self.store.heartbeat("chain-meme-wsol-reference", error=type(exc).__name__,
-                    error_detail=f"http_status={status};failure_class={type(exc).__name__}")
+                    error_detail=detail)
                 if reference and reference.get("completed_at") and (
                     utcnow() - parse_time(reference["completed_at"])
                 ).total_seconds() < 60.0:

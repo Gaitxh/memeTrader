@@ -2173,6 +2173,9 @@ class JupiterQuoteClient:
                 params={
                     "inputMint": input_mint, "outputMint": output_mint,
                     "amount": amount, "slippageBps": slippage_bps,
+                    # RFQ can return zero-slippage minimums despite a fixed request.
+                    # Keep the requested cost contract instead of inventing a new minimum.
+                    **({"excludeRouters": "jupiterz"} if slippage_bps > 0 else {}),
                 },
                 headers={"x-api-key": self._api_key} if self._api_key else None,
             )

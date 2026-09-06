@@ -606,9 +606,10 @@ def test_runtime_origin_verifies_known_create_signature_once_per_pool(tmp_path, 
 
 
 def test_runtime_wsol_reference_is_independent_shared_and_bounded():
-    from memetrader.collectors import SOLANA_WRAPPED_SOL_MINT
+    from memetrader.collectors import SOLANA_WRAPPED_SOL_MINT, JupiterQuoteProtocolError
     runtime = Runtime.__new__(Runtime)
-    runtime.store = SimpleNamespace(heartbeat=lambda *args, **kwargs: None)
+    heartbeats = []
+    runtime.store = SimpleNamespace(heartbeat=lambda *args, **kwargs: heartbeats.append(kwargs))
     runtime._pattern_pool_targets = {"pool": {"quote_mint": SOLANA_WRAPPED_SOL_MINT}}
     runtime._wsol_usdc_conversion = None
     runtime._wsol_usdc_conversion_at = 0
@@ -639,11 +640,22 @@ def test_runtime_wsol_reference_is_independent_shared_and_bounded():
         assert not pending.done() and len(calls) == 1
         runtime._chain_meme_active_idle_event.set()
         await pending
+        assert runtime._wsol_usdc_conversion["minimum_output_amount_raw"] == 150_000_000
+
+        async def invalid_quote(*args, **kwargs):
+            raise JupiterQuoteProtocolError("Jupiter quote response does not match the requested route: slippageBps")
+
+        runtime.jupiter = SimpleNamespace(quote=invalid_quote)
+        runtime._wsol_usdc_conversion["completed_at"] = iso(utcnow() - timedelta(seconds=61))
+        runtime._wsol_usdc_reference_next_at = 0
+        await runtime.chain_meme_wsol_reference_once()
 
     asyncio.run(scenario())
     assert len(calls) == 2
-    assert runtime._wsol_usdc_conversion["minimum_output_amount_raw"] == 150_000_000
-    assert runtime._jupiter_background_epoch_requests == 2
+    assert runtime._wsol_usdc_conversion is None
+    assert runtime._jupiter_background_epoch_requests == 3
+    assert "protocol_reason=Jupiter quote response" in heartbeats[-1]["error_detail"]
+    assert heartbeats[-1]["error_detail"].endswith("slippageBps")
 
 
 def test_runtime_authoritative_event_records_once_before_pending_hydration(tmp_path, monkeypatch):

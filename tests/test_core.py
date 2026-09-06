@@ -12643,13 +12643,14 @@ def test_dexscreener_batch_quote_keeps_solana_address_matching_case_sensitive():
     ) == {}
 
 
-def test_jupiter_quote_is_normalized_and_never_exposes_transaction():
+@pytest.mark.parametrize("slippage_bps", [0, 100, 400])
+def test_jupiter_quote_is_normalized_and_never_exposes_transaction(slippage_bps):
     class Response:
         def json(self):
             return {
                 "inputMint": "SOL", "inAmount": "100", "outputMint": "TOKEN",
                 "outAmount": "90", "otherAmountThreshold": "89", "swapMode": "ExactIn",
-                "slippageBps": 100, "priceImpactPct": "0.1",
+                "slippageBps": slippage_bps, "priceImpactPct": "0.1",
                 "platformFee": {"amount": "0", "feeBps": 0}, "contextSlot": 7,
                 "timeTaken": 0.01, "requestId": "secret-id",
                 "transaction": "",
@@ -12666,13 +12667,14 @@ def test_jupiter_quote_is_normalized_and_never_exposes_transaction():
             assert url == JupiterQuoteClient.BASE
             assert kwargs["params"] == {
                 "inputMint": "SOL", "outputMint": "TOKEN", "amount": 100,
-                "slippageBps": 100,
+                "slippageBps": slippage_bps,
+                **({"excludeRouters": "jupiterz"} if slippage_bps > 0 else {}),
             }
             self.headers.append(kwargs.get("headers"))
             return Response()
 
     http = Http()
-    result = asyncio.run(JupiterQuoteClient(http).quote(" SOL ", "TOKEN", 100, slippage_bps=100))
+    result = asyncio.run(JupiterQuoteClient(http).quote(" SOL ", "TOKEN", 100, slippage_bps=slippage_bps))
     assert result["out_amount"] == "90"
     assert result["price_impact_bps"] == pytest.approx(1000.0)
     assert result["price_impact_source"] == "priceImpactPct_decimal_ratio"
@@ -12681,7 +12683,7 @@ def test_jupiter_quote_is_normalized_and_never_exposes_transaction():
     assert http.headers == [None]
     keyed_http = Http()
     asyncio.run(JupiterQuoteClient(keyed_http, "test-key").quote(
-        "SOL", "TOKEN", 100, slippage_bps=100,
+        "SOL", "TOKEN", 100, slippage_bps=slippage_bps,
     ))
     assert keyed_http.headers == [{"x-api-key": "test-key"}]
 
@@ -13184,20 +13186,24 @@ def test_jupiter_quote_rejects_transaction_and_maps_no_route(response_body):
         asyncio.run(JupiterQuoteClient(ErrorHttp()).quote("SOL", "TOKEN", 1))
 
 
-def test_jupiter_quote_rejects_mismatched_response():
+@pytest.mark.parametrize("input_mint,response_slippage,reason", [
+    ("OTHER", 400, "inputMint"), ("SOL", 0, "slippageBps"),
+])
+def test_jupiter_quote_rejects_mismatched_response(input_mint, response_slippage, reason):
     class Response:
         def raise_for_status(self): return None
         def json(self):
             return {
-                "inputMint": "OTHER", "outputMint": "TOKEN", "inAmount": "1",
-                "outAmount": "2", "routePlan": [{"swapInfo": {}}], "transaction": None,
+                "inputMint": input_mint, "outputMint": "TOKEN", "inAmount": "1",
+                "outAmount": "2", "otherAmountThreshold": "2", "slippageBps": response_slippage,
+                "routePlan": [{"swapInfo": {}}], "transaction": None,
             }
 
     class Http:
         async def get(self, *_args, **_kwargs): return Response()
 
-    with pytest.raises(JupiterQuoteProtocolError, match="requested route: inputMint"):
-        asyncio.run(JupiterQuoteClient(Http()).quote("SOL", "TOKEN", 1))
+    with pytest.raises(JupiterQuoteProtocolError, match="requested route: " + reason):
+        asyncio.run(JupiterQuoteClient(Http()).quote("SOL", "TOKEN", 1, slippage_bps=400))
 
 
 def test_initial_page_and_old_polled_news_are_not_entry_evidence():

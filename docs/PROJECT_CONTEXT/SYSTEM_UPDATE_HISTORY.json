@@ -2,6 +2,18 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260906-fixed-slippage-router-recovery",
+      "recorded_at": "2026-09-06T09:49:00Z",
+      "deployed_at": "2026-09-06T09:47:10Z",
+      "title": "修复固定4%报价选中零滑点RFQ造成的间歇协议错误",
+      "problem": "WSOL共享报价间歇协议异常；两个只读探针证明Metis回显400bps而JupiterZ回0，原错误日志未指出差异字段。",
+      "change": "正滑点Jupiter请求排除jupiterz，保留其他路由及原校验；WSOL日志补充安全protocol_reason。更新4个已真实恢复的旧source错误及本协议修复项，当前原池429不关闭。",
+      "rationale": "避免不兼容路由消耗共享报价预算，不放松4%成本、不生成假minimum、不增加行情请求或历史补款。",
+      "validation": "9个针对性测试通过。17:47:10仅重启Paper；17:48:01新WSOL换算成功，health running、交易418444继续产生，资金期不变。",
+      "scope": "Jupiter quote-only路由、WSOL错误原因、07事件状态；无历史VOID、补款或账户初始化。",
+      "status": "已部署。报告QUOTE_ROUTING_RECOVERY_2026-09-06.md；上游缓存年龄、原池限流和未覆盖输入仍如实保留。"
+    },
+    {
       "id": "20260906-post-signal-rejection-funnel",
       "recorded_at": "2026-09-06T09:34:00Z",
       "deployed_at": "2026-09-06T09:33:16Z",
