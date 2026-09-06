@@ -1320,6 +1320,7 @@ class ChainWebData:
             )
             starting_cash = float(definition.get("starting_cash_usd_each_arm") or 0.0)
             compact_policy_keys = {
+                "hard_stop_return",
                 "arm_id", "stage", "name", "entry_family", "exit_family", "exit_mode",
                 "max_hold_minutes", "fixed_horizon_minutes", "forward_enabled",
                 "fidelity_status", "forward_started_at",

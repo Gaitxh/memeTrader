@@ -1,6 +1,10 @@
 {
   "schema_version": "strategy-revision-candidates/v3",
-  "implementation_status": "ALL_122_IMPLEMENTED_PENDING_FINAL_DEPLOYMENT",
+  "implementation_status": "ALL_122_V002_DEPLOYED",
+  "deployed_definition_version": "chain-meme-trader/funding-20260906-v002-final-1000",
+  "deployed_at": "2026-09-06T15:29:28.508111Z",
+  "deployment_snapshot_frontier": 1130786,
+  "per_strategy_execution_table": "docs/PROJECT_CONTEXT/STRATEGY_V002_EXECUTION_TABLE_2026-09-06.md",
   "implementation_display_format": "策略XXX-V002; preserve display_index",
   "implementation_policy_source": "src/memetrader/strategy_revisions.py; revision_main_extensions.py; revision_evidence_extensions.py",
   "selection_record_note": "Below groups, reasons and metrics preserve the earlier selection snapshot. All 122 now have implemented V002 rules; former REVIEW_ONLY dispositions are superseded by IMPLEMENTATION_DELIVERY_2026-09-06.md and each policy revision_history.",

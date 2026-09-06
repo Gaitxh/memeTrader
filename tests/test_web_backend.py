@@ -56,6 +56,22 @@ def _config(tmp_path: Path) -> tuple[Path, dict]:
     return path, config
 
 
+def test_compact_strategy_detail_preserves_current_hard_stop(tmp_path: Path):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    try:
+        store.activate_chain_meme_trader_funded_period()
+        version = store.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        definition = store._chain_meme_trader_effective_definition(
+            version, store._chain_meme_trader_registration(version)["definition_json"])
+        policy = next(p for p in definition["policies"] if p.get("hard_stop_return") is not None)
+    finally:
+        store.close()
+    live = ChainWebData(config_path).state(compact=True, arm_id=policy["arm_id"])
+    strategy = next(item for item in live["strategies"] if item["arm_id"] == policy["arm_id"])
+    assert strategy["hard_stop_return"] == policy["hard_stop_return"]
+
+
 def test_chain_diagnostics_read_bounded_timing_and_update_history(tmp_path: Path):
     config_path, _ = _config(tmp_path)
     store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
