@@ -7161,7 +7161,6 @@ class Runtime:
                 except (httpx.HTTPError, TimeoutError) as exc:
                     self.store.heartbeat("chain-meme-pattern-observer", error=type(exc).__name__)
             for item in targets:
-                await self._chain_meme_active_idle().wait()
                 token = item["token"]
                 snapshot = item["quote"]
                 if (item.get("sampled_at") == snapshot.observed_at

@@ -26409,7 +26409,8 @@ class Store:
         current = parse_time(now or utcnow())
         version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
         row = self.db.execute("SELECT MIN(activated_at) FROM chain_meme_trader_policy_additions "
-            "WHERE definition_version=? AND arm_id IN ('finite_capital_ranker_v1','market_regime_throttle_v1')",
+            "WHERE definition_version=? AND arm_id IN ('finite_capital_ranker_v1','market_regime_throttle_v1') "
+            "AND COALESCE(json_extract(policy_json,'$.entry_revision_kind'),'')<>'evidence_extension_l0'",
             (version,)).fetchone()
         if not row or not row[0]:
             return {}

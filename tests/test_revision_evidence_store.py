@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from solders.pubkey import Pubkey
@@ -15,6 +17,7 @@ from memetrader.capital_policies import (
 )
 from memetrader.migration_absorption import migration_amount_absorption_policy
 from memetrader.models import TokenCandidate, TokenSnapshot
+from memetrader.runtime import Runtime
 from memetrader.store import Store
 
 
@@ -169,6 +172,8 @@ def test_revised_evidence_arm_uses_l0_then_next_frame_buy_and_can_time_exit(
             "chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?",
             (source_version, arm_id),
         ).fetchone()[:] == (source_hash, source_json)
+        if arm_id == "finite_capital_ranker_v1":
+            assert store.capital_cross_section([], now=clock[0]) == {}
 
         token = TokenCandidate(
             "solana", str(Pubkey.new_unique()), "Extension", "EXT", source="test"
@@ -266,3 +271,52 @@ def test_revised_evidence_arm_uses_l0_then_next_frame_buy_and_can_time_exit(
         assert closed["close_reason"].startswith("market_mark_max_hold")
     finally:
         store.close()
+
+
+def test_pattern_observer_waits_once_per_chain_not_again_per_token():
+    async def run():
+        runtime = Runtime.__new__(Runtime)
+        runtime._chain_meme_active_idle_event = asyncio.Event()
+        runtime._chain_meme_active_idle_event.set()
+        runtime._remember_pattern_quotes = lambda quoted: None
+        runtime._rank_no_ca_events = lambda: None
+        runtime._paper_quote_rejections = lambda *args: []
+        now = datetime(2026, 9, 6, 15, 0, tzinfo=UTC)
+        created_at = now - timedelta(seconds=120)
+        tokens = [
+            TokenCandidate(
+                "solana", str(Pubkey.new_unique()), "Extension", f"E{index}",
+                source="test",
+            )
+            for index in range(2)
+        ]
+        pairs = [str(Pubkey.new_unique()) for _ in tokens]
+        runtime._pattern_watch = {
+            token.token_id: {
+                "token": token,
+                "pair_address": pair,
+                "quote": _snapshot(
+                    token, pair, now, created_at, price=1.0, liquidity=10_000,
+                    volume=1_000, buys=14, sells=6,
+                ),
+            }
+            for token, pair in zip(tokens, pairs)
+        }
+        runtime._pattern_held_tokens = set(runtime._pattern_watch)
+        observed = []
+
+        def observe(token, *args, **kwargs):
+            observed.append(token.token_id)
+            if len(observed) == 1:
+                runtime._chain_meme_active_idle_event.clear()
+            return 0
+
+        runtime.store = SimpleNamespace(
+            capital_cross_section=lambda *args: {},
+            observe_chain_meme_pattern=observe,
+            heartbeat=lambda *args, **kwargs: None,
+        )
+        await asyncio.wait_for(runtime.chain_meme_pattern_observer_once(), timeout=.2)
+        assert observed == [token.token_id for token in tokens]
+
+    asyncio.run(run())
