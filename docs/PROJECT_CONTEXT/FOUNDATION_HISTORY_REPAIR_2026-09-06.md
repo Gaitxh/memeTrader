@@ -2,6 +2,8 @@
 
 ## 连续缺池计时与公共精确池补源（2026-09-06 13:20，代码已测待部署）
 
+部署状态更新13:22：e68b42f已推送。重启调用在执行前被安全policy拒绝；Paper12948与Web41760仍12:52启动，/health running且原funding保留。未采用其他路径绕过拦截，未初始化/清仓/补历史。待人工或执行环境完成正常重启后，核验自然公共原池mark及新连续性逻辑，再比较时延。05:21:35Z仍为旧进程窗口：120样本主判断interval P952.231秒、held fetch .957秒、apply .100秒、entry .035秒，补源12.688秒；各计时失败0，不宣称新代码提速。
+
 明确的新公共缺陷：pool/token mark failure 以前只更新failure_kind，旧first_missing/misses仍存；下一missing恢复结构性reason后沿用旧窗口，可能把网络未知期当连续缺池。现在失败中断episode，MISSING转UNKNOWN、清计数/起点；新missing重新计时超过60秒。保留已见价格、last_success及新鲜原池liquidity<1的既定终局，不改旧策略阈值。pool中断后重计时、fresh dust及旧token-level断言3个定向测试通过。
 
 公共Gecko精确池补源复用现有gap队列，置于Dex覆盖缺口后、Demo预算前。单池用pool-detail，多池用multi；只用同chain/token/original pool，held主源恢复时丢弃晚到fallback。公共同host请求起点至少2.1秒，复用发现器同一HttpClient；429不原地重试并尊重Retry-After，404仅该批延后。公共源失败仍可走已有Demo预算，不增加热持仓路径等待。ETag/Date同代及本地缓存保留原observedAt和值，不把重复缓存当新SELL帧；HTTP Age/Cache-Control及receipt另存。normalizer保留base/quote比值，正确支持原池反向报价。两个market API/Runtime文件33实例通过（含缓存不增加sample/历史、不跨源重复、HTTP失败后Demo恢复、原源抢先恢复、host预算）。单次线上multi探测429未重试；先前单池200只说明能力，部署后自然补源尚待验收。
