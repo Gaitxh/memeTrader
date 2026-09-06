@@ -2,6 +2,17 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260906-latest-account-index-seek",
+      "recorded_at": "2026-09-06T03:54:00Z",
+      "title": "账户查询取消历史全扫描并记录工程补款回执",
+      "problem": "实时状态每次聚合54万条账户快照；时间索引还会触发排序，使API持续约10.7秒。",
+      "change": "一条SQL按登记策略逐arm读取最新合格快照，复用现有latest索引，保留纠正时间和ledger条件；未改账本、策略或采集调度。",
+      "rationale": "减少Web历史扫描占用，让资源优先后台。",
+      "validation": "最新有效快照与完整曲线最大回撤定向回归通过；部署后API两次4.126/3.076秒、轻量performance .024秒，不能称长期SLA。",
+      "scope": "仅8790重启；原184策略、资金期、Paper进程和历史保留。独立520U补款已到账，不计收益。",
+      "status": "0eabfb4已推送/部署；历史57笔missing仍缺充分归因证据，后台长尾仍存在，详情见本轮修复报告。"
+    },
+    {
       "id": "20260906-foundation-history-coverage-repair",
       "recorded_at": "2026-09-06T03:23:06Z",
       "title": "修复来源漏池误核销、历史窗口污染及交易记录截断",
