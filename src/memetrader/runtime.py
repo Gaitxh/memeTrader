@@ -1189,6 +1189,7 @@ class Runtime:
     MAX_DIRECT_BROWSER_EXACT_CONTEXT_PER_CYCLE = 4
     MAX_DIRECT_ONCHAIN_CONTEXT_PER_CYCLE = 1
     CHAIN_MEME_ACCOUNT_SNAPSHOT_INTERVAL_SECONDS = 10.0
+    CHAIN_MEME_ENTRY_WORK_BUDGET_SECONDS = 0.8
     CHAIN_MEME_ACTIVE_MARK_INTERVAL_SECONDS = 1.0
     CHAIN_MEME_CARRIED_MARK_INTERVAL_SECONDS = 15.0
     DIRECT_CONTEXT_LANE_CURSOR_KEY = "token_context:hydration_fair_lane_cursor:v2"
@@ -2405,6 +2406,10 @@ class Runtime:
             held_outcomes = []
             held_token_ids: set[str] = set()
             duplicates = 0
+            candidate_chains = (
+                {"solana"} if self.chain_meme_trader_only else
+                {str(chain).lower() for chain in self.config["candidate"].get("chains", [])}
+            )
             for token in tokens:
                 known_before = self.store.token_discovery_known(token.token_id)
                 created = await self.ingest_token(token)
@@ -2456,6 +2461,15 @@ class Runtime:
                     snapshot_count=snapshot_count,
                     observed_at=token.first_seen_at,
                 )
+                # First discovery creates the forward cohort needed by the
+                # same local trigger used for Dex hydration; no extra quote.
+                if snapshot_count and snapshot.chain.lower() in candidate_chains:
+                    self.autonomous_search.resolve_token_context_trigger(
+                        token,
+                        momentum_score=CandidateEvaluator._momentum_score(snapshot),
+                        snapshot_observed_at=snapshot.observed_at,
+                        snapshot_id=snapshot_id,
+                    )
             if held_outcomes:
                 received = utcnow()
                 self.store.apply_chain_meme_trader_market_mark_batch(
@@ -6177,6 +6191,7 @@ class Runtime:
         if not self.chain_meme_trader_only:
             self.store.enroll_chain_meme_trader()
         enrollment_batches = 8 if self.chain_meme_trader_only else 1
+        enrollment_started = asyncio.get_running_loop().time()
         for _ in range(enrollment_batches):
             phase_started = asyncio.get_running_loop().time()
             enrollment = self.store.enroll_chain_meme_trader_v6(
@@ -6187,7 +6202,12 @@ class Runtime:
                 self.runtime_timing.observe("chain_meme_entry_batch",
                     asyncio.get_running_loop().time() - phase_started,
                     items=int(enrollment["evaluated"]))
-            if not self.chain_meme_trader_only or int(enrollment["evaluated"]) < 4:
+            if (
+                not self.chain_meme_trader_only
+                or int(enrollment["evaluated"]) < 4
+                or asyncio.get_running_loop().time() - enrollment_started
+                >= self.CHAIN_MEME_ENTRY_WORK_BUDGET_SECONDS
+            ):
                 break
             await asyncio.sleep(0)
         if not self.chain_meme_trader_only:
@@ -6856,6 +6876,7 @@ class Runtime:
                 if observation is None:
                     continue
                 observation.observed_at, observation.ingested_at = snapshot.observed_at, snapshot.ingested_at
+                observation.provider = snapshot.provider
                 received = utcnow()
                 if self._paper_quote_rejections(token.token_id, token, observation, received):
                     continue

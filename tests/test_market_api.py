@@ -129,6 +129,8 @@ def run(awaitable):
 
 def test_normalize_gecko_pool_is_identity_bound_and_keeps_receipt_provenance():
     payload = gecko_payload()
+    payload["data"][0]["attributes"]["volume_usd"]["h1"] = "120.5"
+    payload["data"][0]["attributes"]["transactions"]["h1"] = {"buys": 9, "sells": 4}
     pair = normalize_gecko_pool(payload["data"][0], payload["included"], "solana", START)
     assert pair is not None
     assert (pair["chainId"], pair["tokenAddress"], pair["pairAddress"]) == (
@@ -141,6 +143,8 @@ def test_normalize_gecko_pool_is_identity_bound_and_keeps_receipt_provenance():
     assert pair["liquidity"]["usd"] == pytest.approx(4567.8)
     assert pair["volume"]["m5"] == pytest.approx(90.5)
     assert pair["txns"]["m5"] == {"buys": 7, "sells": 3}
+    assert pair["volume"]["h1"] - pair["volume"]["m5"] == 30.0
+    assert sum(pair["txns"]["h1"].values()) - sum(pair["txns"]["m5"].values()) == 3
     assert pair["pairCreatedAt"] == 1_788_606_000_000
     assert pair["marketCap"] == pytest.approx(65432)
     assert pair["fdv"] == pytest.approx(123456)
@@ -159,10 +163,14 @@ def test_normalize_gecko_pool_is_identity_bound_and_keeps_receipt_provenance():
 
     missing_counts = copy.deepcopy(payload["data"][0])
     missing_counts["attributes"]["transactions"]["m5"] = {}
+    missing_counts["attributes"]["transactions"].pop("h1")
+    missing_counts["attributes"]["volume_usd"].pop("h1")
     normalized = normalize_gecko_pool(
         missing_counts, payload["included"], "solana", START, provider="geckoterminal"
     )
     assert normalized["txns"]["m5"] == {"buys": None, "sells": None}
+    assert normalized["txns"]["h1"] == {"buys": None, "sells": None}
+    assert normalized["volume"]["h1"] is None
     assert normalized["source"] == "geckoterminal"
 
 

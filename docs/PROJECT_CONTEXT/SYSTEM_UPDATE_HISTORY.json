@@ -2,6 +2,17 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260906-all-strategy-history-compute-isolation",
+      "recorded_at": "2026-09-06T04:40:00Z",
+      "title": "全部策略历史入口、原池特征窗口与独立入场修复",
+      "problem": "旧账期无可见入口；同币其他池挤占原池80帧特征窗；旧cohort可误阻追加策略首次前向；账户历史扫描拖慢判断。",
+      "change": "按需加载25个历史账期及全部arm，稳定分页与Token查询；同池过滤前置；追加arm按自身frontier独立首次入场；三处快照索引查找和有界入场批次。",
+      "rationale": "保留全部原始历史和独立资金/退出状态，降低公共计算延迟，不通过改旧策略阈值造交易。",
+      "validation": "当前184arm历史覆盖无缺口，旧77孤立arm可查询；真实Store窗口、frontier不回填不重复、快照frontier/补款、历史页及Runtime让出执行测试通过。",
+      "scope": "不初始化、不Live、不恢复自动复盘；本轮工程修复不是新增策略；后端实测与实际浏览器验收仍待部署。",
+      "status": "代码已修测，待本阶段部署。全部184策略源适配检查同时发现Gecko接线/字段缺失，修复纳入同阶段；历史未证损失不推算补款。"
+    },
+    {
       "id": "20260906-latest-account-index-seek",
       "recorded_at": "2026-09-06T03:54:00Z",
       "title": "账户查询取消历史全扫描并记录工程补款回执",

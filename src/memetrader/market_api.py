@@ -151,11 +151,8 @@ def normalize_gecko_pool(
     volumes = volumes if isinstance(volumes, Mapping) else {}
     transactions = attrs.get("transactions")
     transactions = transactions if isinstance(transactions, Mapping) else {}
-    tx_m5 = transactions.get("m5")
-    tx_m5 = tx_m5 if isinstance(tx_m5, Mapping) else {}
     price = attrs.get("base_token_price_usd")
     reserve = attrs.get("reserve_in_usd")
-    volume_m5 = volumes.get("m5")
 
     return {
         "chainId": chain,
@@ -174,12 +171,14 @@ def normalize_gecko_pool(
         "dexId": dex_id,
         "priceUsd": str(price) if price is not None else None,
         "liquidity": {"usd": _number(reserve)},
-        "volume": {"m5": _number(volume_m5)},
+        "volume": {window: _number(volumes.get(window)) for window in ("m5", "h1")},
         "txns": {
-            "m5": {
-                "buys": _count(tx_m5.get("buys")),
-                "sells": _count(tx_m5.get("sells")),
+            window: {
+                side: _count((transactions.get(window) or {}).get(side))
+                if isinstance(transactions.get(window), Mapping) else None
+                for side in ("buys", "sells")
             }
+            for window in ("m5", "h1")
         },
         "pairCreatedAt": _created_millis(attrs.get("pool_created_at")),
         "marketCap": _number(attrs.get("market_cap_usd")),

@@ -8222,6 +8222,60 @@ def _seed_chain_market_position(
     return token, cohort_id
 
 
+def test_pattern_original_pool_history_is_not_truncated_by_sibling_pool(tmp_path: Path, monkeypatch):
+    from dataclasses import replace
+    from memetrader.forward_patterns import pattern_signal
+
+    clock = [utcnow()]
+    monkeypatch.setattr("memetrader.store.utcnow", lambda: clock[0])
+    monkeypatch.setattr("memetrader.models.utcnow", lambda: clock[0])
+    store = Store(tmp_path / "pattern-pool-window.sqlite3", initial_cash_usd=1000)
+    store.activate_chain_meme_trader_funded_period()
+    assert store.register_chain_meme_pattern_experiments() == 18
+    start = clock[0] + timedelta(seconds=1)
+    end = start + timedelta(seconds=79 * 11)
+    tokens = [TokenCandidate("bsc", "0x" + suffix * 40, "Fixture", "FIX") for suffix in ("1", "2")]
+    pair = "0x" + "ab" * 20
+    captured = {}
+
+    def capture(history, policy, **kwargs):
+        captured[history[-1]["token_id"]] = [
+            {k: v for k, v in h.items() if k not in {"id", "token_id"}} for h in history]
+        return pattern_signal(history, policy, **kwargs)
+
+    monkeypatch.setattr("memetrader.store.pattern_signal", capture)
+    for token in tokens:
+        store.upsert_token(token, seen_at=start)
+    final = []
+    for index in range(80):
+        clock[0] = start + timedelta(seconds=index * 11)
+        hot = (end - clock[0]).total_seconds() < 100
+        for token_index, token in enumerate(tokens):
+            snap = TokenSnapshot(token.chain, token.address, 1.2 if hot else 1,
+                10_000, 100_000, 1500 if hot else 100, 10 if hot else 1, 2 if hot else 0,
+                observed_at=clock[0], ingested_at=clock[0], provider="dexscreener", raw={"pair": {
+                    "chainId": "bsc", "pairAddress": pair.upper(), "baseToken": {"address": token.address},
+                    "pairCreatedAt": round((start-timedelta(seconds=22_000)).timestamp()*1000)}})
+            if index == 79:
+                final.append(snap)
+                continue
+            store.add_snapshot(replace(snap, provider="strategy-observer:dexscreener"))
+            if token_index == 1 and index == 75:
+                store.add_snapshot(replace(snap, provider="strategy-observer:geckoterminal",
+                    raw={"pair": {**snap.raw["pair"], "pairAddress": "0x" + "cd" * 20}}))
+    outcomes = []
+    for token, snap in zip(tokens, final):
+        assert store.observe_chain_meme_pattern(token, snap, recorded_at=end) == 0
+        row = store.db.execute("SELECT feature_json FROM chain_meme_trader_v6_entry_evaluations "
+            "WHERE token_id=? ORDER BY id DESC LIMIT 1", (token.token_id,)).fetchone()
+        outcomes.append(json.loads(row[0])["outcomes"])
+    assert len(captured[tokens[0].token_id]) == len(captured[tokens[1].token_id]) == 80
+    assert captured[tokens[0].token_id] == captured[tokens[1].token_id]
+    assert outcomes[0] == outcomes[1]
+    assert outcomes[0]["experiment_quiet_reawakening_candidate_v1"] == "awaiting_distinct_observation_sequence"
+    store.close()
+
+
 def test_chain_meme_market_mark_rejects_out_of_order_observation(tmp_path: Path):
     store = Store(tmp_path / "market-mark-monotonic.sqlite3", initial_cash_usd=1000)
     token = TokenCandidate(
@@ -9025,6 +9079,50 @@ def test_chain_meme_entry_rejects_explicit_dust_not_unknown(
         assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_positions").fetchone()[0] == 0
         assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_trades").fetchone()[0] == 0
     assert store.db.execute("SELECT COUNT(*) FROM token_snapshots").fetchone()[0] == 1
+    store.close()
+
+
+def test_market_account_latest_seek_refreshes_trade_frontier_and_capital_credit(tmp_path: Path, monkeypatch):
+    clock = [utcnow()]
+    monkeypatch.setattr("memetrader.store.utcnow", lambda: clock[0])
+    monkeypatch.setattr("memetrader.models.utcnow", lambda: clock[0])
+    store = Store(tmp_path / "account-latest-seek.sqlite3", initial_cash_usd=1000)
+    store.activate_chain_meme_trader_funded_period()
+    version = Store.CHAIN_MEME_TRADER_ACTIVE_VERSION
+    arm = Store.chain_meme_trader_v22_policies()[0]["arm_id"]
+    queries = []
+    store.db.set_trace_callback(queries.append)
+
+    def snapshot():
+        clock[0] += timedelta(seconds=11)
+        store.record_chain_meme_trader_account_snapshots(definition_version=version, now=clock[0])
+        return store.db.execute("SELECT * FROM chain_meme_trader_account_snapshots "
+            "WHERE definition_version=? AND arm_id=? ORDER BY id DESC LIMIT 1", (version, arm)).fetchone()
+
+    initial = snapshot()
+    assert initial["cash_usd"] == pytest.approx(1000)
+    assert snapshot()["id"] == initial["id"]  # Existing unchanged-payload suppression remains.
+    with store.db:
+        buy = store.db.execute("INSERT INTO chain_meme_trader_trades("
+            "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,net_cash_flow_usd,"
+            "realized_pnl_usd,reason,created_at,recorded_at) VALUES(?,?,1,'solana:fixture','BUY',20,-20,0,'fixture',?,?)",
+            (version, arm, iso(clock[0]), iso(clock[0]))).lastrowid
+    after_trade = snapshot()
+    assert after_trade["cash_usd"] == pytest.approx(980)
+    assert after_trade["ledger_trade_frontier_id"] == buy
+    with store.db:
+        store.db.execute("INSERT INTO chain_meme_trader_capital_credits("
+            "source_buy_trade_id,definition_version,arm_id,shadow_cohort_id,token_id,entry_snapshot_id,"
+            "amount_usd,reason,recorded_at) VALUES(?,?,?,1,'solana:fixture',1,7,'fixture',?)",
+            (buy, version, arm, iso(clock[0])))
+    after_credit = snapshot()
+    assert after_credit["id"] > after_trade["id"]
+    assert after_credit["ledger_trade_frontier_id"] == buy
+    assert after_credit["cash_usd"] == pytest.approx(987)
+    assert after_credit["realized_pnl_usd"] == after_trade["realized_pnl_usd"] == 0
+    latest_queries = [q for q in queries if "WITH requested_arms(arm_id)" in q]
+    assert latest_queries and all("ORDER BY id DESC LIMIT 1" in q and "GROUP BY" not in q for q in latest_queries)
+    store.db.set_trace_callback(None)
     store.close()
 
 

@@ -25786,8 +25786,11 @@ class Store:
                 "SELECT * FROM token_snapshots WHERE token_id=? AND observed_at>=? AND observed_at<=? "
                 "AND provider LIKE 'strategy-observer:%' "
                 "AND COALESCE(json_extract(raw_json,'$.allocation_source_snapshot_id'),0)=0 "
+                "AND canonical_token_address(?,COALESCE(json_extract(raw_json,'$.pair.pairAddress'),"
+                "json_extract(raw_json,'$.pairAddress')))=? "
                 "ORDER BY observed_at DESC,id DESC LIMIT 80",
-                (token.token_id, iso(decision_at - timedelta(minutes=20)), iso(decision_at)),
+                (token.token_id, iso(decision_at - timedelta(minutes=20)), iso(decision_at),
+                 token.chain, pair_address),
             ).fetchall()[::-1]:
                 source_raw = self._json_object(source["raw_json"])
                 source_pair = source_raw.get("pair", source_raw)
@@ -26760,6 +26763,7 @@ class Store:
                 token_id = str(row["token_id"])
                 snapshot_id = int(row["source_snapshot_id"])
                 family = None
+                episode_arm_ids: set[str] | None = None
                 funding_mode = "legacy_cash_limited"
                 snapshot_policies: list[Mapping[str, Any]] = []
                 eligible_policy_ids: set[str] = set()
@@ -27012,6 +27016,23 @@ class Store:
                             and cooldown_seconds >= required_cooldown
                         ):
                             family = proposed_family
+                        elif required_cooldown is None:
+                            episode_arm_ids = {
+                                str(policy["arm_id"])
+                                for policy in snapshot_policies
+                                if (
+                                    policy.get("runtime_addition_id") is not None
+                                    and str(policy["arm_id"]) in eligible_policy_ids
+                                    and str(policy.get("entry_family") or "")
+                                    == proposed_family
+                                    and int(previous["source_snapshot_id"])
+                                    <= int(policy["forward_activation_snapshot_id"])
+                                )
+                            }
+                            if episode_arm_ids:
+                                family = proposed_family
+                            else:
+                                reason = "family_episode_already_enrolled_or_cooldown_active"
                         else:
                             reason = "family_episode_already_enrolled_or_cooldown_active"
                     pending_buy_count = int(self.db.execute(
@@ -27059,6 +27080,10 @@ class Store:
                                 str(policy.get("entry_family")) in {
                                     family, "market_visible",
                                 }
+                            )
+                            and (
+                                episode_arm_ids is None
+                                or str(policy["arm_id"]) in episode_arm_ids
                             )
                         ]
                         for arm_id in family_arms:
@@ -27162,6 +27187,8 @@ class Store:
                         if not policy_matches:
                             continue
                         arm_id = str(policy["arm_id"])
+                        if episode_arm_ids is not None and arm_id not in episode_arm_ids:
+                            continue
                         participates = arm_id in participating_arm_ids
                         self.db.execute(
                             "INSERT INTO chain_meme_trader_entry_decisions("
@@ -32676,17 +32703,18 @@ class Store:
         sorted_contaminated_keys = sorted(contaminated_keys)
         for start in range(0, len(sorted_contaminated_keys), 400):
             key_chunk = sorted_contaminated_keys[start:start + 400]
-            key_filter = " OR ".join(
-                "(arm_id=? AND shadow_cohort_id=?)" for _ in key_chunk
-            )
-            values: list[Any] = [version]
+            key_rows = ",".join("(?,?)" for _ in key_chunk)
+            values: list[Any] = []
             for key in key_chunk:
                 values.extend(key)
+            values.append(version)
             for row in self.db.execute(
-                "SELECT arm_id,COALESCE(SUM(net_cash_flow_usd),0.0) "
-                "AS net_flow_usd,COALESCE(SUM(realized_pnl_usd),0.0) "
-                "AS realized_usd FROM chain_meme_trader_trades "
-                f"WHERE definition_version=? AND ({key_filter}) GROUP BY arm_id",
+                f"WITH affected(arm_id,shadow_cohort_id) AS (VALUES {key_rows}) "
+                "SELECT t.arm_id,COALESCE(SUM(t.net_cash_flow_usd),0.0) "
+                "AS net_flow_usd,COALESCE(SUM(t.realized_pnl_usd),0.0) "
+                "AS realized_usd FROM affected a CROSS JOIN chain_meme_trader_trades t "
+                "WHERE t.definition_version=? AND t.arm_id=a.arm_id "
+                "AND t.shadow_cohort_id=a.shadow_cohort_id GROUP BY t.arm_id",
                 tuple(values),
             ).fetchall():
                 arm_id = str(row["arm_id"])
@@ -32721,16 +32749,16 @@ class Store:
         affected_statuses: dict[tuple[str, int], str] = {}
         for start in range(0, len(affected_keys), 400):
             key_chunk = affected_keys[start:start + 400]
-            key_filter = " OR ".join(
-                "(arm_id=? AND shadow_cohort_id=?)" for _ in key_chunk
-            )
-            values: list[Any] = [version]
+            key_rows = ",".join("(?,?)" for _ in key_chunk)
+            values: list[Any] = []
             for key in key_chunk:
                 values.extend(key)
+            values.append(version)
             for row in self.db.execute(
-                "SELECT arm_id,shadow_cohort_id,status FROM "
-                "chain_meme_trader_positions WHERE definition_version=? AND "
-                f"({key_filter})",
+                f"WITH affected(arm_id,shadow_cohort_id) AS (VALUES {key_rows}) "
+                "SELECT p.arm_id,p.shadow_cohort_id,p.status FROM affected a "
+                "CROSS JOIN chain_meme_trader_positions p WHERE p.definition_version=? "
+                "AND p.arm_id=a.arm_id AND p.shadow_cohort_id=a.shadow_cohort_id",
                 tuple(values),
             ).fetchall():
                 affected_statuses[(
@@ -32794,11 +32822,12 @@ class Store:
         latest_by_arm = {
             str(row["arm_id"]): row
             for row in self.db.execute(
-                "SELECT s.* FROM chain_meme_trader_account_snapshots s JOIN ("
-                "SELECT arm_id,MAX(id) AS latest_id FROM chain_meme_trader_account_snapshots "
-                "WHERE definition_version=? GROUP BY arm_id"
-                ") latest ON latest.latest_id=s.id",
-                (version,),
+                "WITH requested_arms(arm_id) AS (VALUES "
+                + ",".join("(?)" for _ in policy_ids)
+                + ") SELECT s.* FROM requested_arms a JOIN chain_meme_trader_account_snapshots s "
+                "ON s.id=(SELECT id FROM chain_meme_trader_account_snapshots "
+                "WHERE definition_version=? AND arm_id=a.arm_id ORDER BY id DESC LIMIT 1)",
+                (*policy_ids, version),
             ).fetchall()
         }
         inserted = 0

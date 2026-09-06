@@ -694,6 +694,19 @@ function drawerOpen(kind,kicker,title,body){
   $('#token-drawer').classList.add('open');$('#scrim').classList.add('open');$('#token-drawer').setAttribute('aria-hidden','false');
 }
 let historyView=null;
+function historyPeriodControls(view){
+  const period=view.periods?.find(item=>item.version===view.version),arms=period?.arms||[];
+  return `<div class="history-selectors"><label>历史账期<select data-history-period>${(view.periods||[]).map(item=>`<option value="${esc(item.version)}" ${item.version===view.version?'selected':''}>${item.version===view.activeVersion?'当前账期':'历史账期'} · ${esc(time(item.activated_at||item.registered_at||item.first_trade_at,true))} · ${item.trade_count} 条交易</option>`).join('')}</select></label><label>本账期策略<select data-history-arm>${arms.map((item,index)=>`<option value="${esc(item.arm_id)}" ${item.arm_id===view.arm?'selected':''}>${esc(view.version===view.activeVersion?strategyLabelForArm(item.arm_id):`历史策略 ${index+1}`)} · ${item.trade_count} 条交易</option>`).join('')}</select></label><label class="history-token-filter">查找 Token 地址<input data-history-token value="${esc(view.token||'')}" placeholder="粘贴完整地址，留空查看全部币"></label><div class="history-filter-actions"><button class="table-action" data-history-page="filter">查找</button><button class="table-action" data-history-page="clear-token">全部币</button></div></div><p class="history-note">各账期独立保留，不合并账户和收益。记录范围：${esc(time(period?.first_trade_at,true))} — ${esc(time(period?.last_trade_at,true))}。${view.cohort!=null?'<button class="table-action" data-history-page="all">取消本次持仓筛选</button>':''}</p>`;
+}
+function selectHistoryPeriod(view,version,arm){
+  const period=view.periods.find(item=>item.version===version);
+  if(!period)return;
+  const selected=period.arms.find(item=>item.arm_id===arm)||period.arms[0];
+  const next={...view,version,arm:selected?.arm_id||'',cohort:null,through:null,stack:[],cursor:null,loading:false};
+  historyView=next;
+  if(next.arm)loadStrategyHistory(next);
+  else $('#drawer-body').innerHTML=`${historyPeriodControls(next)}<p class="empty">此账期没有已登记策略或交易记录，其他账期可在上方选择。</p>`;
+}
 async function loadStrategyHistory(view,cursor=null,stack=[]){
   if(view.loading)return;
   view.loading=true;
@@ -701,6 +714,7 @@ async function loadStrategyHistory(view,cursor=null,stack=[]){
   if(view.through!=null)query.set('through_id',view.through);
   if(cursor!=null)query.set('before_id',cursor);
   if(view.cohort!=null)query.set('cohort_id',view.cohort);
+  if(view.token)query.set('token_id',view.token);
   try{
     const response=await fetch(`/api/strategy-history?${query}`,{cache:'no-store'});
     const data=await response.json();if(!response.ok)throw new Error(data.error||`HTTP ${response.status}`);
@@ -708,16 +722,26 @@ async function loadStrategyHistory(view,cursor=null,stack=[]){
     view.through=data.through_id;view.cursor=cursor;view.stack=stack;view.next=data.next_before_id;
     const rows=data.trades||[],start=stack.length*50;
     const statusLabel={RECORDED:'账本记录',CORRECTED:'有历史纠正',EXCLUDED:'工程污染 · 不计统计',UNRESOLVED:'历史成交待核查'};
-    $('#drawer-title').textContent=`${strategyLabelForArm(view.arm)} · ${view.cohort==null?'全部交易历史':'本次持仓操作'}`;
-    $('#drawer-body').innerHTML=`<div class="history-toolbar"><p>共 ${data.total} 条 · ${rows.length?`${start+1}–${start+rows.length}`:'0'} 条<br><small>读取于 ${esc(time(data.generated_at,true))}；翻页固定本次记录范围，刷新可查看新成交。</small></p><button class="table-action" data-history-page="refresh">刷新至最新</button></div><p class="history-note">现金流：买入为支出，卖出为扣成本后的回收；核销不产生现金回收。工程补款单列，不计策略盈利。带纠正标记的记录可展开查看原始账本。</p><div class="history-scroll"><table class="history-table"><thead><tr><th>时间 / 本次持仓</th><th>Token</th><th>操作</th><th>净现金流</th><th>本次已实现 PNL</th><th>说明</th></tr></thead><tbody>${rows.map(item=>`<tr><td><time>${esc(time(item.created_at,true))}</time><small>本次开仓 ${esc(time(item.opened_at,true))}</small></td><td>${tokenLink(item.token_id,item.token_symbol||item.token_name||shortToken(item.token_id))}<small>${esc(chainLabelForToken(item.token_id))} · ${esc(shortToken(item.token_id))}</small></td><td>${esc(sideText(item.effective_side))}</td><td class="${pnlClass(item.effective_cash_flow_usd)}">${money(item.effective_cash_flow_usd)}</td><td class="${pnlClass(item.effective_realized_pnl_usd)}">${money(item.effective_realized_pnl_usd)}</td><td><span>${esc(reasonText(item.reason))}</span><small>${esc(statusLabel[item.accounting_status]||'待核查')}${item.engineering_anomaly?' · 入场池低于 $1':''}</small>${item.capital_credit_usd!=null?`<small class="history-credit">独立补款 +${money(item.capital_credit_usd)} · ${esc(time(item.capital_credit_at,true))}</small>`:''}<details><summary>查看原始记录</summary><p>记录 #${item.id} · ${esc(sideText(item.side))}<br>现金流 ${money(item.net_cash_flow_usd)} · 已实现 ${money(item.realized_pnl_usd)}</p></details></td></tr>`).join('')||'<tr><td colspan="6" class="empty">当前账期没有匹配的交易记录</td></tr>'}</tbody></table></div><nav class="history-toolbar" aria-label="交易历史分页"><button class="table-action" data-history-page="previous" ${stack.length?'':'disabled'}>上一页</button><span>第 ${stack.length+1} 页</span><button class="table-action" data-history-page="next" ${view.next==null?'disabled':''}>下一页</button></nav>`;
-  }catch(error){if(historyView===view&&activeDrawerKind==='strategy-history')$('#drawer-body').innerHTML=`<p class="empty">交易历史读取失败：${esc(error.message)}</p><button class="table-action" data-history-page="refresh">重试</button>`;}
+    const period=view.periods?.find(item=>item.version===view.version),armIndex=period?.arms.findIndex(item=>item.arm_id===view.arm)??-1;
+    $('#drawer-title').textContent=`${view.version===view.activeVersion?strategyLabelForArm(view.arm):`历史策略 ${armIndex+1}`} · ${view.cohort==null?'本账期全部交易':'本次持仓操作'}`;
+    $('#drawer-body').innerHTML=`<div class="history-toolbar"><p>共 ${data.total} 条 · ${rows.length?`${start+1}–${start+rows.length}`:'0'} 条<br><small>读取于 ${esc(time(data.generated_at,true))}；翻页固定本次记录范围，刷新可查看新成交。</small></p><button class="table-action" data-history-page="refresh">刷新至最新</button></div><p class="history-note">现金流：买入为支出，卖出为扣除交易费用后的回收额；核销不产生现金回收。工程补款单列，不计策略盈利。带纠正标记的记录可展开查看原始账本。</p><div class="history-scroll"><table class="history-table"><thead><tr><th>时间 / 本次持仓</th><th>Token</th><th>操作</th><th>净现金流</th><th>本次已实现 PNL</th><th>说明</th></tr></thead><tbody>${rows.map(item=>`<tr><td><time>${esc(time(item.created_at,true))}</time><small>本次开仓 ${esc(time(item.opened_at,true))}</small></td><td>${tokenLink(item.token_id,item.token_symbol||item.token_name||shortToken(item.token_id))}<small>${esc(chainLabelForToken(item.token_id))} · ${esc(shortToken(item.token_id))}</small></td><td>${esc(sideText(item.effective_side))}</td><td class="${pnlClass(item.effective_cash_flow_usd)}">${money(item.effective_cash_flow_usd)}</td><td class="${pnlClass(item.effective_realized_pnl_usd)}">${money(item.effective_realized_pnl_usd)}</td><td><span>${esc(reasonText(item.reason))}</span><small>${esc(statusLabel[item.accounting_status]||'待核查')}${item.engineering_anomaly?' · 入场池低于 $1':''}</small>${item.capital_credit_usd!=null?`<small class="history-credit">独立补款 +${money(item.capital_credit_usd)} · ${esc(time(item.capital_credit_at,true))}</small>`:''}<details><summary>查看原始记录</summary><p>记录 #${item.id} · ${esc(sideText(item.side))}<br>现金流 ${money(item.net_cash_flow_usd)} · 已实现 ${money(item.realized_pnl_usd)}</p></details></td></tr>`).join('')||'<tr><td colspan="6" class="empty">当前账期没有匹配的交易记录</td></tr>'}</tbody></table></div><nav class="history-toolbar" aria-label="交易历史分页"><button class="table-action" data-history-page="previous" ${stack.length?'':'disabled'}>上一页</button><span>第 ${stack.length+1} 页</span><button class="table-action" data-history-page="next" ${view.next==null?'disabled':''}>下一页</button></nav>`;
+    $('#drawer-body').insertAdjacentHTML('afterbegin',historyPeriodControls(view));
+  }catch(error){if(historyView===view&&activeDrawerKind==='strategy-history')$('#drawer-body').innerHTML=`${historyPeriodControls(view)}<p class="empty">交易历史读取失败：${esc(error.message)}</p><button class="table-action" data-history-page="refresh">重试</button>`;}
   finally{view.loading=false;}
 }
-function openStrategyHistory(arm,cohort=null){
+async function openStrategyHistory(arm,cohort=null){
   if(!arm)return;
-  historyView={arm,cohort,version:state?.version||'',through:null,stack:[],cursor:null,loading:false};
+  const view={arm,cohort,version:state?.version||'',through:null,stack:[],cursor:null,loading:false,periods:[]};
+  historyView=view;
   drawerOpen('strategy-history','策略账本','读取完整历史…','<p class="empty">正在读取交易记录…</p>');
-  loadStrategyHistory(historyView);
+  try{
+    const response=await fetch('/api/strategy-history-periods',{cache:'no-store'}),data=await response.json();
+    if(!response.ok)throw new Error(data.error||`HTTP ${response.status}`);
+    if(historyView!==view||activeDrawerKind!=='strategy-history')return;
+    view.activeVersion=data.active_version;
+    view.periods=(data.periods||[]).sort((a,b)=>Number(b.version===data.active_version)-Number(a.version===data.active_version)||String(b.activated_at||b.registered_at||b.first_trade_at||'').localeCompare(String(a.activated_at||a.registered_at||a.first_trade_at||'')));
+    await loadStrategyHistory(view);
+  }catch(error){if(historyView===view&&activeDrawerKind==='strategy-history')$('#drawer-body').innerHTML=`<p class="empty">历史账期读取失败：${esc(error.message)}</p><button class="table-action" data-strategy-history="${esc(arm)}">重试读取账期</button>`;}
 }
 const listValue=(payload,...keys)=>{for(const key of keys){if(payload&&payload[key]!=null)return payload[key];}return null;};
 const errorRows=(payload)=>{const rows=listValue(payload,'errors','cases','items','data');return Array.isArray(rows)?rows:Array.isArray(payload)?payload:[];};
@@ -911,12 +935,25 @@ document.body.addEventListener('click',event=>{
   const page=event.target.closest('[data-history-page]');if(page&&historyView&&!historyView.loading){
     const v=historyView;
     if(page.dataset.historyPage==='refresh'){v.through=null;loadStrategyHistory(v);}
+    else if(page.dataset.historyPage==='all'){v.cohort=null;v.through=null;loadStrategyHistory(v);}
+    else if(page.dataset.historyPage==='filter'){v.token=$('[data-history-token]').value.trim();v.through=null;v.cohort=null;loadStrategyHistory(v);}
+    else if(page.dataset.historyPage==='clear-token'){v.token='';v.through=null;loadStrategyHistory(v);}
     else if(page.dataset.historyPage==='next'&&v.next!=null)loadStrategyHistory(v,v.next,[...v.stack,v.cursor]);
     else if(page.dataset.historyPage==='previous'&&v.stack.length)loadStrategyHistory(v,v.stack.at(-1),v.stack.slice(0,-1));
     return;
   }
   const wallet=event.target.closest('[data-wallet-detail]');if(wallet){openWalletDetail(wallet.dataset.walletDetail);return;}
   const error=event.target.closest('[data-error-detail]');if(error){openError(error.dataset.errorDetail);}
+});
+document.body.addEventListener('change',event=>{
+  if(activeDrawerKind!=='strategy-history'||!historyView)return;
+  if(event.target.matches('[data-history-period]'))selectHistoryPeriod(historyView,event.target.value,historyView.arm);
+  else if(event.target.matches('[data-history-arm]'))selectHistoryPeriod(historyView,historyView.version,event.target.value);
+});
+document.body.addEventListener('keydown',event=>{
+  if(event.key==='Enter'&&event.target.matches('[data-history-token]')&&historyView&&!historyView.loading){
+    event.preventDefault();historyView.token=event.target.value.trim();historyView.through=null;historyView.cohort=null;loadStrategyHistory(historyView);
+  }
 });
 document.body.addEventListener('submit',async event=>{
   const form=event.target.closest('[data-error-form]');if(!form)return;event.preventDefault();

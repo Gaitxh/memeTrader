@@ -63,7 +63,7 @@ class ChainWebData:
     def strategy_history(
         self, arm_id: str, *, version: str = "", limit: int = 50,
         before_id: int | None = None, through_id: int | None = None,
-        cohort_id: int | None = None,
+        cohort_id: int | None = None, token_id: str = "",
     ) -> dict[str, Any]:
         """Bounded pages over the complete ledger, independent of live previews."""
         if not arm_id or not 1 <= limit <= 100 or any(
@@ -79,6 +79,15 @@ class ChainWebData:
                 version = str(active[0]) if active else Store.CHAIN_MEME_TRADER_VERSION
             where = "t.definition_version=? AND t.arm_id=?"
             args: list[Any] = [version, arm_id]
+            if token_id.strip():
+                chain, separator, address = token_id.strip().partition(":")
+                if separator:
+                    chains = [chain.lower()]
+                else:
+                    chains, address = ["solana", "bsc", "robinhood"], chain
+                token_ids = [f"{chain}:{address if chain == 'solana' else address.lower()}" for chain in chains]
+                where += " AND t.token_id IN (" + ",".join("?" for _ in token_ids) + ")"
+                args.extend(token_ids)
             if cohort_id is not None:
                 where += " AND t.shadow_cohort_id=?"
                 args.append(cohort_id)
@@ -131,6 +140,95 @@ class ChainWebData:
         return {"status": "ok", "version": version, "arm_id": arm_id,
                 "generated_at": iso(), "total": total, "through_id": through_id,
                 "next_before_id": int(rows[-1]["id"]) if more else None, "trades": rows}
+
+    def strategy_history_periods(
+        self, *, arm_id: str = "", version: str = "",
+    ) -> dict[str, Any]:
+        """List independently selectable ledger versions, including legacy orphans."""
+        with self._connect() as connection:
+            active = connection.execute(
+                "SELECT definition_version FROM chain_meme_trader_v6_activations "
+                "WHERE entry_execution_enabled=1 ORDER BY activated_at DESC,rowid DESC LIMIT 1"
+            ).fetchone()
+            active_version = str(active[0]) if active else Store.CHAIN_MEME_TRADER_VERSION
+            predicates, values = [], []
+            if version:
+                predicates.append("definition_version=?")
+                values.append(version)
+            if arm_id:
+                predicates.append("arm_id=?")
+                values.append(arm_id)
+            where = " WHERE " + " AND ".join(predicates) if predicates else ""
+            rows = self._rows(
+                connection,
+                "SELECT definition_version,arm_id,COUNT(*) AS trade_count,"
+                "MIN(created_at) AS first_trade_at,MAX(created_at) AS last_trade_at "
+                "FROM chain_meme_trader_trades" + where +
+                " GROUP BY definition_version,arm_id ORDER BY MIN(id)",
+                tuple(values),
+            )
+            registrations = {
+                str(row["definition_version"]): (row["definition_json"], row["registered_at"])
+                for row in connection.execute(
+                    "SELECT definition_version,definition_json,registered_at "
+                    "FROM chain_meme_trader_registrations"
+                ).fetchall()
+            }
+            for row in connection.execute(
+                "SELECT definition_version,definition_json,code_registered_at "
+                "FROM chain_meme_trader_v6_registrations"
+            ).fetchall():
+                registrations[str(row["definition_version"])] = (
+                    Store.chain_meme_trader_effective_definition_from_connection(
+                        connection, str(row["definition_version"]), row["definition_json"],
+                    ), row["code_registered_at"],
+                )
+            activated = {
+                str(row["definition_version"]): row["activated_at"]
+                for row in connection.execute(
+                    "SELECT definition_version,MAX(activated_at) AS activated_at "
+                    "FROM chain_meme_trader_v6_activations GROUP BY definition_version"
+                ).fetchall()
+            }
+        periods: dict[str, dict[str, Any]] = {}
+        for version_key, registration in registrations.items():
+            if version and version_key != version:
+                continue
+            try:
+                definition = registration[0] if isinstance(registration[0], dict) else Store._json_object(registration[0])
+            except (TypeError, ValueError, json.JSONDecodeError):
+                definition = {}
+            item = periods.setdefault(version_key, {
+                "version": version_key, "label": version_key,
+                "registered_at": registration[1], "activated_at": activated.get(version_key),
+                "first_trade_at": None, "last_trade_at": None,
+                "trade_count": 0, "arms": [],
+            })
+            for policy in definition.get("policies", []):
+                policy_arm = str(policy.get("arm_id") or "")
+                if policy_arm and (not arm_id or policy_arm == arm_id):
+                    item["arms"].append({"arm_id": policy_arm, "name": policy.get("name"),
+                                         "trade_count": 0, "first_trade_at": None, "last_trade_at": None})
+        for row in rows:
+            version_key = str(row["definition_version"])
+            item = periods.setdefault(version_key, {
+                "version": version_key, "label": version_key,
+                "registered_at": None, "activated_at": activated.get(version_key),
+                "first_trade_at": None, "last_trade_at": None,
+                "trade_count": 0, "arms": [],
+            })
+            item["trade_count"] += int(row["trade_count"])
+            item["first_trade_at"] = min(filter(None, (item["first_trade_at"], row["first_trade_at"])), default=None)
+            item["last_trade_at"] = max(filter(None, (item["last_trade_at"], row["last_trade_at"])), default=None)
+            existing = next((a for a in item["arms"] if a["arm_id"] == str(row["arm_id"])), None)
+            if existing is None:
+                existing = {"arm_id": str(row["arm_id"]), "name": None}
+                item["arms"].append(existing)
+            existing.update({"trade_count": int(row["trade_count"]),
+                             "first_trade_at": row["first_trade_at"], "last_trade_at": row["last_trade_at"]})
+        return {"status": "ok", "active_version": active_version,
+                "arm_id": arm_id or None, "version": version or None,
+                "generated_at": iso(), "periods": [item for item in periods.values() if not arm_id or item["arms"]]}
 
     def wallet_state(self, *, refresh: bool = False) -> dict[str, Any]:
         payload = self.wallets.snapshot(refresh=refresh)
@@ -3510,12 +3608,23 @@ class ChainWebHandler(BaseHTTPRequestHandler):
                 self._send_json(self.server.data.strategy_history(
                     query.get("arm_id", [""])[0], version=query.get("version", [""])[0],
                     limit=int(query.get("limit", ["50"])[0]), **cursors,
+                    token_id=query.get("token_id", [""])[0],
                 ))
             except ValueError as exc:
                 self._send_json({"status": "error", "error": str(exc)}, HTTPStatus.BAD_REQUEST)
             except (OSError, sqlite3.Error) as exc:
                 self.server.data.record_web_error(route, exc)
                 self._send_json({"status": "error", "error": type(exc).__name__}, HTTPStatus.SERVICE_UNAVAILABLE)
+            return
+        if route == "/api/strategy-history-periods":
+            try:
+                query = parse_qs(parsed.query)
+                self._send_json(self.server.data.strategy_history_periods(
+                    arm_id=query.get("arm_id", [""])[0].strip(),
+                    version=query.get("version", [""])[0].strip(),
+                ))
+            except (ValueError, sqlite3.Error, OSError) as exc:
+                self._send_json({"status": "error", "error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
         if route == "/api/strategy-universe":
             try:

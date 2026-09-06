@@ -154,7 +154,8 @@ def test_pattern_same_fill_next_observation_cash_and_legacy_isolation(tmp_path, 
     store.close()
 
 
-def test_runtime_reuses_held_quote_and_real_dex_receipt(tmp_path):
+@pytest.mark.parametrize("provider", ["dexscreener", "geckoterminal"])
+def test_runtime_reuses_held_quote_and_real_dex_receipt(tmp_path, provider):
     import asyncio
     from memetrader.collectors import DexScreenerClient
     from memetrader.runtime import Runtime
@@ -169,6 +170,7 @@ def test_runtime_reuses_held_quote_and_real_dex_receipt(tmp_path):
                 liquidity={"usd": 10000}, txns={"m5": {"buys": 6, "sells": 3}}, volume={"m5": 500})
     token, snapshot = DexScreenerClient._candidate(pair), DexScreenerClient._snapshot(pair)
     assert snapshot.ingested_at is None  # Real provider's default, not a hand-filled fixture.
+    snapshot.provider = provider
     runtime.store.upsert_token(token)
     runtime._remember_pattern_quotes({token.token_id: (token, snapshot)})
     runtime._pattern_held_tokens = {token.token_id}
@@ -180,6 +182,12 @@ def test_runtime_reuses_held_quote_and_real_dex_receipt(tmp_path):
         await runtime.chain_meme_pattern_observer_once()
     asyncio.run(scenario())
     assert runtime.store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_v6_entry_evaluations WHERE reason='pattern_observation'").fetchone()[0] == 1
+    observation = runtime.store.db.execute(
+        "SELECT provider,raw_json,observed_at FROM token_snapshots WHERE provider LIKE 'strategy-observer:%'"
+    ).fetchone()
+    assert observation["provider"] == "strategy-observer:" + provider
+    assert json.loads(observation["raw_json"])["upstream_provider"] == provider
+    assert observation["observed_at"] == iso(snapshot.observed_at)
     runtime.store.close()
 
 

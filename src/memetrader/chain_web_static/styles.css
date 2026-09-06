@@ -38,3 +38,8 @@ body{font-size:14px}.topbar{padding-top:20px;padding-bottom:18px}.topbar h1{font
 .history-table details{margin-top:8px;font-size:14px}.history-table summary{cursor:pointer}
 .history-table .history-credit{color:#67d4cf}.history-cohorts{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
 .history-toolbar button:disabled{opacity:.4;cursor:default}
+.history-selectors{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin:16px 0}
+.history-selectors label{display:flex;flex-direction:column;gap:8px;font-size:14px;color:var(--muted)}
+.history-selectors select,.history-selectors input{max-width:100%;min-width:0;padding:10px;color:var(--text);background:var(--panel2);border:1px solid var(--line);border-radius:8px;font:inherit}
+.history-filter-actions{display:flex;gap:12px;align-items:end}
+@media(max-width:680px){.history-selectors{grid-template-columns:1fr}.history-toolbar{flex-wrap:wrap}}

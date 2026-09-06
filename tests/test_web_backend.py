@@ -4369,6 +4369,44 @@ def test_event_detail_exposes_safe_separate_fact_verification(tmp_path: Path):
     assert '"claim_sha256"' not in serialized
 
 
+def test_strategy_history_periods_exposes_legacy_versions_and_arm_filter(tmp_path: Path):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    registration = store.register_chain_meme_trader_v22()
+    store.activate_chain_meme_trader_v22()
+    appended = dict(Store._json_object(registration["definition_json"])["policies"][-1])
+    for field in ("stage", "behavior_contract_hash"):
+        appended.pop(field, None)
+    appended.update(arm_id="zero-trade-archive-arm", canonical_id="zero-trade-archive", name="Zero trade archive")
+    store.append_chain_meme_trader_policy(appended, definition_version=Store.CHAIN_MEME_TRADER_V22_VERSION)
+    version_a = "legacy-period-a"
+    version_b = "legacy-period-b"
+    stamp = iso(utcnow())
+    with store.db:
+        for version, arm in ((version_a, "old-arm"), (version_b, "new-arm"), (version_b, "other-arm")):
+            store.db.execute(
+                "INSERT INTO chain_meme_trader_trades("
+                "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+                "net_cash_flow_usd,realized_pnl_usd,reason,created_at,recorded_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (version, arm, 1, f"solana:{arm}", "BUY", 10.0, -10.0, None,
+                 "fixture", stamp, stamp),
+            )
+    store.close()
+    data = ChainWebData(config_path)
+    periods = {item["version"]: item for item in data.strategy_history_periods()["periods"]}
+    assert periods[version_a]["trade_count"] == 1
+    assert periods[version_a]["arms"][0]["arm_id"] == "old-arm"
+    assert periods[version_b]["trade_count"] == 2
+    token_page = data.strategy_history("old-arm", version=version_a, token_id="old-arm")
+    assert token_page["total"] == 1
+    assert data.strategy_history("old-arm", version=version_a, token_id="other-token")["total"] == 0
+    current = periods[Store.CHAIN_MEME_TRADER_V22_VERSION]
+    assert any(arm["arm_id"] == "zero-trade-archive-arm" and arm["trade_count"] == 0 for arm in current["arms"])
+    filtered = data.strategy_history_periods(arm_id="old-arm")
+    assert [(item["version"], item["trade_count"]) for item in filtered["periods"]] == [(version_a, 1)]
+
+
 def test_compact_state_latest_accounts_are_per_registered_arm_and_eligible_frontier(
     tmp_path: Path,
 ):

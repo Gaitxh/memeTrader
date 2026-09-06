@@ -5,6 +5,7 @@ from datetime import timedelta
 import httpx
 import json
 import pytest
+import time
 
 from memetrader.collectors import DexScreenerClient, HttpClient
 from memetrader.models import TokenCandidate, TokenSnapshot, iso, utcnow
@@ -20,6 +21,43 @@ def make_runtime(tmp_path):
         return {}
     runtime.dex.exact_pools_fresh = no_exact
     return runtime
+
+
+def test_chain_entry_burst_yields_to_execution_after_work_budget(tmp_path):
+    async def scenario():
+        runtime = make_runtime(tmp_path)
+        runtime.chain_meme_trader_only = True
+        runtime.CHAIN_MEME_ENTRY_WORK_BUDGET_SECONDS = 0.01
+        enroll_calls = 0
+        execution_checks = 0
+
+        def slow_enroll(*, limit, definition_version):
+            nonlocal enroll_calls
+            enroll_calls += 1
+            time.sleep(0.02)
+            return {"evaluated": 4}
+
+        def due_execution(*, definition_version=None):
+            nonlocal execution_checks
+            execution_checks += 1
+            return None
+
+        runtime.store.enroll_chain_meme_trader_v6 = slow_enroll
+        runtime.store.due_chain_meme_trader_execution = due_execution
+        runtime._last_chain_account_snapshot_monotonic = (
+            asyncio.get_running_loop().time()
+        )
+
+        await runtime.chain_meme_trader_once()
+
+        assert enroll_calls == 1
+        assert execution_checks == 1
+        await runtime.chain_meme_trader_once()
+        assert enroll_calls == 2
+        assert execution_checks == 2
+        await runtime.close()
+
+    asyncio.run(scenario())
 
 
 def pair_payload(token: TokenCandidate, pool: str, *, provider="coingecko-demo", observed=None):
@@ -88,6 +126,8 @@ def test_gecko_one_poll_uses_received_market_pair_without_dex_duplicate(tmp_path
                 "pool-gecko", provider="geckoterminal", observed=observed,
             )},
         )
+        token.raw["market_pair"]["volume"]["m5"] = 200_000.0
+        token.raw["market_pair"]["txns"]["m5"] = {"buys": 300, "sells": 100}
 
         class Gecko:
             def __init__(self, http, network):
@@ -109,6 +149,17 @@ def test_gecko_one_poll_uses_received_market_pair_without_dex_duplicate(tmp_path
         assert snapshot.price_usd == 1.25
         assert snapshot.observed_at == observed
         assert runtime.store.token_detail_hydration(token.token_id)["status"] == "hydrated"
+        shadow = runtime.store.db.execute(
+            "SELECT c.*,s.provider,s.raw_json FROM onchain_only_shadow_cohorts c "
+            "JOIN token_snapshots s ON s.id=c.trigger_snapshot_id WHERE c.token_id=?",
+            (token.token_id,),
+        ).fetchone()
+        assert shadow is not None and shadow["baseline_status"] == "valid"
+        assert shadow["momentum_score"] >= 80
+        assert shadow["provider"] == "geckoterminal"
+        assert json.loads(shadow["raw_json"])["pair"]["pairAddress"] == "pool-gecko"
+        assert shadow["trigger_observed_at"] == iso(observed)
+        assert shadow["trigger_observed_at"] <= shadow["trigger_ingested_at"] <= shadow["trigger_recorded_at"]
         await runtime.close()
 
     asyncio.run(scenario())
