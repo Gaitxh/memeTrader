@@ -48,6 +48,29 @@ def test_chase_budget_is_not_execution_or_profit_proof():
     assert not chase_decision(None, 1, None)[0]
 
 
+def test_chase_fingerprint_correction_preserves_registration(tmp_path,monkeypatch):
+    store=Store(tmp_path/"fingerprint.sqlite3",initial_cash_usd=1000)
+    store.activate_chain_meme_trader_funded_period()
+    original=Store.chain_meme_trader_behavior_hash
+    # Reproduce a registration made by the old hash, respecting immutability.
+    with monkeypatch.context() as m:
+        m.setattr(Store,"chain_meme_trader_behavior_hash",classmethod(
+            lambda cls,p,definition_version="":original(
+                {k:v for k,v in p.items() if k!="entry_chase_budget_fraction"},
+                definition_version=definition_version)))
+        store.register_chain_meme_research_round2()
+    version=store.CHAIN_MEME_TRADER_ACTIVE_VERSION
+    candidate="round2_chase_candidate_v1"
+    control="round2_chase_control_v1"
+    controls=store.db.execute("SELECT behavior_contract_hash FROM chain_meme_trader_policy_additions WHERE arm_id=?",(control,)).fetchone()[0]
+    raw=store._chain_meme_trader_registration(version)["definition_json"]
+    effective=store._chain_meme_trader_effective_definition(version,raw)
+    p={p["arm_id"]:p for p in effective["policies"]}
+    assert p[candidate]["behavior_contract_hash"]!=p[control]["behavior_contract_hash"]
+    assert store.db.execute("SELECT behavior_contract_hash FROM chain_meme_trader_policy_additions WHERE arm_id=?",(candidate,)).fetchone()[0]==controls
+    store.close()
+
+
 def test_slow_clock_grants_only_one_small_progress_extension():
     rows = [(s, {"economic_value_usd": 5+s*.0001}) for s in range(0,301,30)]
     out = evaluate("slow_grace", rows)

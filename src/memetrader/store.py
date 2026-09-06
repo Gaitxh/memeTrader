@@ -7302,6 +7302,10 @@ class Store:
                     ),
                     "runtime_addition_id": int(row["id"]),
                 })
+                if policy.get("entry_chase_budget_fraction") is not None:
+                    # Correct the derived fingerprint; preserve the original registration.
+                    policy["behavior_contract_hash"] = cls.chain_meme_trader_behavior_hash(
+                        policy, definition_version=definition_version)
                 policies.append(policy)
                 additions.append({
                     "id": int(row["id"]),
@@ -23750,6 +23754,7 @@ class Store:
             "flow_grace_minutes", "minimum_buy_ratio", "runner_review_minutes",
             "dex_research_delay_minutes", "dex_research_min_buy_ratio",
             "dex_research_min_volume_5m_usd", "dex_positive_trailing_drawdown",
+            "entry_chase_budget_fraction",
         ):
             if policy.get(name) is not None:
                 behavior[name] = float(policy[name])
