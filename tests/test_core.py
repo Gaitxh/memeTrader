@@ -13090,7 +13090,7 @@ def test_jupiter_quote_rejects_mismatched_response():
     class Http:
         async def get(self, *_args, **_kwargs): return Response()
 
-    with pytest.raises(JupiterQuoteError, match="requested route"):
+    with pytest.raises(JupiterQuoteProtocolError, match="requested route: inputMint"):
         asyncio.run(JupiterQuoteClient(Http()).quote("SOL", "TOKEN", 1))
 
 

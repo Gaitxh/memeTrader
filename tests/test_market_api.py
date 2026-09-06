@@ -214,20 +214,22 @@ def test_absent_or_wrong_identity_pool_is_unavailable_not_dead_and_not_cached():
 def test_evm_pool_selection_and_cache_key_are_case_insensitive_only_for_0x():
     clock = Clock()
     payload = gecko_payload("0xabc")
-    payload["data"][0]["id"] = "eth_0xabc"
-    payload["data"][0]["relationships"]["base_token"]["data"]["id"] = "eth_0xbase"
-    payload["data"][0]["relationships"]["quote_token"]["data"]["id"] = "eth_0xquote"
-    payload["included"][0]["id"] = "eth_0xbase"
+    payload["data"][0]["id"] = "eth_0xABC"
+    payload["data"][0]["relationships"]["base_token"]["data"]["id"] = "eth_0xBASE"
+    payload["data"][0]["relationships"]["quote_token"]["data"]["id"] = "eth_0xQUOTE"
+    payload["included"][0]["id"] = "eth_0xBASE"
     payload["included"][0]["attributes"]["address"] = "0xbase"
-    payload["included"][1]["id"] = "eth_0xquote"
+    payload["included"][1]["id"] = "eth_0xQUOTE"
     payload["included"][1]["attributes"]["address"] = "0xquote"
     http = Http([Response(payload=payload)])
     client = CoinGeckoDemoPoolClient(http, "key", now_fn=clock)
     first = run(client.get_pools("eth", ["0xAbC"]))
-    assert first["0xAbC"]["pairAddress"] == "0xabc"
+    assert list(first) == ["0xabc"]
+    assert first["0xabc"]["pairAddress"] == "0xabc"
     clock.advance(10)
     second = run(client.get_pools("eth", ["0xABC"]))
-    assert second["0xABC"]["observedAt"] == first["0xAbC"]["observedAt"]
+    assert list(second) == ["0xabc"]
+    assert second["0xabc"]["observedAt"] == first["0xabc"]["observedAt"]
     assert len(http.client.calls) == 1
 
 

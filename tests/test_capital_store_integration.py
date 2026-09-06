@@ -44,6 +44,91 @@ def _capital_store(tmp_path, monkeypatch, name):
     return store, clock
 
 
+def test_old_pattern_history_ignores_five_dollar_projection_before_limit(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from memetrader.forward_patterns import pattern_signal
+
+    clock = [utcnow()]
+    monkeypatch.setattr("memetrader.store.utcnow", lambda: clock[0])
+    monkeypatch.setattr("memetrader.models.utcnow", lambda: clock[0])
+    store = Store(tmp_path / "old-pattern-allocation.sqlite3", initial_cash_usd=1000)
+    store.activate_chain_meme_trader_funded_period()
+    assert store.register_chain_meme_pattern_experiments() == 18
+    start = clock[0] + timedelta(seconds=1)
+    end = start + timedelta(seconds=79 * 11)
+    tokens = [_new_token("Unmodified"), _new_token("WithFiveDollarCopy")]
+    pair = str(Pubkey.new_unique())
+    captured = {}
+
+    def capture_history(history, policy, **kwargs):
+        captured[history[-1]["token_id"]] = [
+            {k: v for k, v in frame.items() if k not in {"id", "token_id"}}
+            for frame in history
+        ]
+        return pattern_signal(history, policy, **kwargs)
+
+    monkeypatch.setattr("memetrader.store.pattern_signal", capture_history)
+    for token in tokens:
+        store.upsert_token(token, seen_at=start)
+    final_snapshots = []
+    for index in range(80):
+        clock[0] = start + timedelta(seconds=index * 11)
+        hot = (end - clock[0]).total_seconds() < 100
+        for token_index, token in enumerate(tokens):
+            snap = _snapshot(token, pair, clock[0], price=1.2 if hot else 1,
+                             liquidity=10_000, buys=10 if hot else 1, sells=2 if hot else 0)
+            snap.raw["pair"]["pairCreatedAt"] = round((start - timedelta(seconds=22_000)).timestamp() * 1000)
+            snap = replace(snap, volume_5m_usd=1500 if hot else 100)
+            if index == 79:
+                final_snapshots.append(snap)
+                continue
+            source_id = store.add_snapshot(replace(snap, provider="strategy-observer:dexscreener"))
+            if token_index == 1 and index == 75:
+                # The same persisted sizing projection created for a separate 5U cohort.
+                store.add_snapshot(replace(snap, provider="strategy-observer:dexscreener", raw={
+                    **snap.raw, "allocation_source_snapshot_id": source_id,
+                    "allocation_notional_usd": 5.0,
+                }))
+    outcomes = []
+    for token, snap in zip(tokens, final_snapshots):
+        assert store.observe_chain_meme_pattern(token, snap, recorded_at=end) == 0
+        row = store.db.execute(
+            "SELECT feature_json FROM chain_meme_trader_v6_entry_evaluations "
+            "WHERE token_id=? ORDER BY id DESC LIMIT 1", (token.token_id,),
+        ).fetchone()
+        outcomes.append(json.loads(row[0])["outcomes"])
+    assert len(captured[tokens[0].token_id]) == len(captured[tokens[1].token_id]) == 80
+    assert captured[tokens[0].token_id] == captured[tokens[1].token_id]
+    assert outcomes[0] == outcomes[1]
+    assert outcomes[0]["experiment_quiet_reawakening_candidate_v1"] == "awaiting_distinct_observation_sequence"
+    assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_trades WHERE side='BUY'").fetchone()[0] == 0
+    store.close()
+
+
+def test_capital_cross_section_uses_real_frames_not_sizing_copies(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    store, clock = _capital_store(tmp_path, monkeypatch, "cross-section-allocation.sqlite3")
+    token, pair = _new_token("Ranked"), str(Pubkey.new_unique())
+    store.upsert_token(token, seen_at=clock[0])
+    genuine_ids = []
+    for index in range(17):
+        clock[0] += timedelta(seconds=1)
+        snap = replace(_snapshot(token, pair, clock[0]), provider="strategy-observer:dexscreener")
+        source_id = store.add_snapshot(snap)
+        genuine_ids.append(source_id)
+        if index == 15:
+            store.add_snapshot(replace(snap, raw={**snap.raw,
+                "allocation_source_snapshot_id": source_id, "allocation_notional_usd": 5.0}))
+    captured = []
+    monkeypatch.setattr(store, "_capital_evidence", lambda *a, **k: {"amountful_flow": ({"fixture": True}, 1)})
+    monkeypatch.setattr("memetrader.store.build_capital_cross_section",
+                        lambda items, **kwargs: captured.extend(items) or {})
+    store.capital_cross_section([(token.token_id, pair)], now=clock[0])
+    assert [frame["id"] for frame in captured[0]["history"]] == genuine_ids[-16:]
+    store.close()
+
+
 def test_result_experiments_preserve_parents_and_single_slot_does_not_queue(tmp_path, monkeypatch):
     from memetrader.forward_patterns import experiment_policies, result_driven_policies
     from memetrader.capital_exits import EARN_THE_HOLD_POLICY

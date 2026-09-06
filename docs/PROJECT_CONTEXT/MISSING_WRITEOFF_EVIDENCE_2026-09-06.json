@@ -1,0 +1,903 @@
+{
+  "definition_version": "chain-meme-trader/funding-20260905-fixed-1000",
+  "read_only": true,
+  "excluded_target": "bsc:0x1a5f9d77ca46646cd4937fd8d093f460b66f4444",
+  "excluded_writeoff_count": 26,
+  "all_period_buckets": {
+    "dust": 2961,
+    "missing": 83
+  },
+  "covered_groups": 29,
+  "covered_writeoffs": 57,
+  "additional_confirmed_credit_usd": 0,
+  "limitations": [
+    "No historical HTTP response body or per-pool quota outcome archived in inspected terminal marks.",
+    "Current CoinGecko monthly249 minus Sep6 daily9 establishes240 earlier-month calls, not their exact exhaustion time. The excluded BSC case confirms unsupported pool-absence classification; quota exhaustion at that instant remains unproven.",
+    "Market mark history begins 2026-09-05T21:16:35.812186Z; exact pool updates overwrite pool_marks and do not append to history.",
+    "No same-pool valid token_snapshot found during these29 missing intervals.",
+    "Later recovery is suspicion only, not a historical executable fill or compensation basis."
+  ],
+  "known_code_evidence": {
+    "commit": "2bd972cd1c051ee68e850318296b525e35987eea",
+    "committed_at": "2026-09-05T19:18:45Z",
+    "change": "Previously token batch omission emitted pool_missing; fixed to pool_failure with exact request confirmation. Earlier deployed versions per candidate not independently reconstructed."
+  },
+  "candidates": [
+    {
+      "token_id": "robinhood:0x6866659217450bb50bd0d837190b110bf38fcb04",
+      "entry_pool": "0xe29702572ee396827eac20828211e71d2e7e80a522b4785bf95a10db3183356c",
+      "cohort_id": 8918,
+      "entry_provider": "dexscreener",
+      "writeoff_at": "2026-09-05T09:02:06.916289Z",
+      "evidence_grade": "UNRESOLVED_HISTORICAL_BATCH_ABSENCE",
+      "additional_credit_confirmed": false,
+      "later_same_pool_natural_mark": null,
+      "trades": [
+        {
+          "arm_id": "dex-successor-120-f98e117baa206954",
+          "actual_buy_trade_id": 359754,
+          "writeoff_trade_id": 383977,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        }
+      ]
+    },
+    {
+      "token_id": "solana:6TasPQnBQPY19kKi8ymTnsP8C3xYRo3X6sj5bXz6pump",
+      "entry_pool": "H9WjH6x5yxpWtnwqmHmU7z1Wg1kGpahieMpNtBqGqX9Z",
+      "cohort_id": 9419,
+      "entry_provider": "dexscreener",
+      "writeoff_at": "2026-09-05T09:02:07.610836Z",
+      "evidence_grade": "UNRESOLVED_HISTORICAL_BATCH_ABSENCE",
+      "additional_credit_confirmed": false,
+      "later_same_pool_natural_mark": null,
+      "trades": [
+        {
+          "arm_id": "canonical-0d7caccf76779d74",
+          "actual_buy_trade_id": 377003,
+          "writeoff_trade_id": 383979,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        },
+        {
+          "arm_id": "canonical-63e62a12e74b6320",
+          "actual_buy_trade_id": 377009,
+          "writeoff_trade_id": 383980,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        },
+        {
+          "arm_id": "canonical-75dadf52fc0cdd9e",
+          "actual_buy_trade_id": 377011,
+          "writeoff_trade_id": 383981,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        },
+        {
+          "arm_id": "canonical-aa5d0c9d6721fb48",
+          "actual_buy_trade_id": 377015,
+          "writeoff_trade_id": 383982,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        },
+        {
+          "arm_id": "canonical-ca8f32cf0d565e07",
+          "actual_buy_trade_id": 377016,
+          "writeoff_trade_id": 383983,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        }
+      ]
+    },
+    {
+      "token_id": "bsc:0xb69861b5064233cf136b7c1b97497763e85e7777",
+      "entry_pool": "0x52A3f750212945663b5d6309cD1B1d309E9110CB",
+      "cohort_id": 9531,
+      "entry_provider": "dexscreener",
+      "writeoff_at": "2026-09-05T09:16:51.820200Z",
+      "evidence_grade": "UNRESOLVED_HISTORICAL_BATCH_ABSENCE",
+      "additional_credit_confirmed": false,
+      "later_same_pool_natural_mark": null,
+      "trades": [
+        {
+          "arm_id": "canonical-0d7caccf76779d74",
+          "actual_buy_trade_id": 379060,
+          "writeoff_trade_id": 385853,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        },
+        {
+          "arm_id": "canonical-ca8f32cf0d565e07",
+          "actual_buy_trade_id": 379066,
+          "writeoff_trade_id": 385854,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        }
+      ]
+    },
+    {
+      "token_id": "robinhood:0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+      "entry_pool": "0x24107d152f14a76d292123265ae3f3c71f863fc2f4ef7ba49d64e78d28ea379e",
+      "cohort_id": 9647,
+      "entry_provider": "dexscreener",
+      "writeoff_at": "2026-09-05T09:27:39.235264Z",
+      "evidence_grade": "SUSPECT_LATER_SAME_POOL_RECOVERY",
+      "additional_credit_confirmed": false,
+      "later_same_pool_natural_mark": {
+        "provider": "dexscreener",
+        "observed_at": "2026-09-05T11:47:10.412607Z",
+        "price_usd": 0.9999,
+        "liquidity_usd": 542735.38
+      },
+      "trades": [
+        {
+          "arm_id": "canonical-0cd0f3c790d85ca5",
+          "actual_buy_trade_id": 381392,
+          "writeoff_trade_id": 387070,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        },
+        {
+          "arm_id": "canonical-0d7caccf76779d74",
+          "actual_buy_trade_id": 381393,
+          "writeoff_trade_id": 387071,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        },
+        {
+          "arm_id": "canonical-63e62a12e74b6320",
+          "actual_buy_trade_id": 381396,
+          "writeoff_trade_id": 387072,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        },
+        {
+          "arm_id": "canonical-831b37e3aaeaa64d",
+          "actual_buy_trade_id": 381397,
+          "writeoff_trade_id": 387073,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        },
+        {
+          "arm_id": "canonical-ca8f32cf0d565e07",
+          "actual_buy_trade_id": 381399,
+          "writeoff_trade_id": 387074,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        }
+      ]
+    },
+    {
+      "token_id": "solana:3846eC2Mcvh7ujMfW7LZ6gktYvngiG7TzrpzGcfGpump",
+      "entry_pool": "7meYPsatF3WbeVcnBGESn7Toh4yPKM5WSjEPxffcPk2r",
+      "cohort_id": 9727,
+      "entry_provider": "dexscreener",
+      "writeoff_at": "2026-09-05T09:02:40.467667Z",
+      "evidence_grade": "UNRESOLVED_HISTORICAL_BATCH_ABSENCE",
+      "additional_credit_confirmed": false,
+      "later_same_pool_natural_mark": null,
+      "trades": [
+        {
+          "arm_id": "dex-successor-049-5ce40de1d93304fb",
+          "actual_buy_trade_id": 383362,
+          "writeoff_trade_id": 384174,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        }
+      ]
+    },
+    {
+      "token_id": "bsc:0x9491cca7c742c2ca5b6a1213ab130db28d867777",
+      "entry_pool": "0x34adDD8995A4b85c92cfcd3FebFaB7023eae5BA5",
+      "cohort_id": 9954,
+      "entry_provider": "dexscreener",
+      "writeoff_at": "2026-09-05T09:29:41.311483Z",
+      "evidence_grade": "UNRESOLVED_HISTORICAL_BATCH_ABSENCE",
+      "additional_credit_confirmed": false,
+      "later_same_pool_natural_mark": null,
+      "trades": [
+        {
+          "arm_id": "canonical-4a27a58cc5902ea9",
+          "actual_buy_trade_id": 386765,
+          "writeoff_trade_id": 387275,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        },
+        {
+          "arm_id": "canonical-a0b46b71b30d8575",
+          "actual_buy_trade_id": 386768,
+          "writeoff_trade_id": 387276,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        }
+      ]
+    },
+    {
+      "token_id": "solana:4Sg2e4QQCC44FqXcfo1Z3eZNdNFpjDfwymH1Vqr4pump",
+      "entry_pool": "8sPfH2if8SjYFAdQutjZj4ogMx3zvqviyUoTezBRHZcy",
+      "cohort_id": 9983,
+      "entry_provider": "dexscreener",
+      "writeoff_at": "2026-09-05T09:30:35.146923Z",
+      "evidence_grade": "UNRESOLVED_HISTORICAL_BATCH_ABSENCE",
+      "additional_credit_confirmed": false,
+      "later_same_pool_natural_mark": null,
+      "trades": [
+        {
+          "arm_id": "dex-successor-049-5ce40de1d93304fb",
+          "actual_buy_trade_id": 387062,
+          "writeoff_trade_id": 387315,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        }
+      ]
+    },
+    {
+      "token_id": "bsc:0x43c5e0e9de6bd4a4b927e7318d8d277106487777",
+      "entry_pool": "0xCA30dA3Ff6C236965078EBAD42451df67CecEA31",
+      "cohort_id": 10035,
+      "entry_provider": "dexscreener",
+      "writeoff_at": "2026-09-05T09:32:05.753913Z",
+      "evidence_grade": "UNRESOLVED_HISTORICAL_BATCH_ABSENCE",
+      "additional_credit_confirmed": false,
+      "later_same_pool_natural_mark": null,
+      "trades": [
+        {
+          "arm_id": "canonical-2390fb342a6e90b6",
+          "actual_buy_trade_id": 387351,
+          "writeoff_trade_id": 387421,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        },
+        {
+          "arm_id": "canonical-4a27a58cc5902ea9",
+          "actual_buy_trade_id": 387352,
+          "writeoff_trade_id": 387422,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        },
+        {
+          "arm_id": "canonical-a0b46b71b30d8575",
+          "actual_buy_trade_id": 387353,
+          "writeoff_trade_id": 387423,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        },
+        {
+          "arm_id": "dex-successor-046-546560b93b10c79c",
+          "actual_buy_trade_id": 387354,
+          "writeoff_trade_id": 387424,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        },
+        {
+          "arm_id": "dex-successor-049-5ce40de1d93304fb",
+          "actual_buy_trade_id": 387355,
+          "writeoff_trade_id": 387425,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        }
+      ]
+    },
+    {
+      "token_id": "solana:66pVRuxTbjjA86NQRsUhuExPScCZYGN519xXqj1Mpump",
+      "entry_pool": "D7JQS3vepr27kCmYNdyYpSiYGdMQYuyAkXCCPfn9xrpf",
+      "cohort_id": 10066,
+      "entry_provider": "dexscreener",
+      "writeoff_at": "2026-09-05T09:39:51.710128Z",
+      "evidence_grade": "UNRESOLVED_HISTORICAL_BATCH_ABSENCE",
+      "additional_credit_confirmed": false,
+      "later_same_pool_natural_mark": null,
+      "trades": [
+        {
+          "arm_id": "broad_cost_coverage_scaleout_v1",
+          "actual_buy_trade_id": 387748,
+          "writeoff_trade_id": 388103,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        }
+      ]
+    },
+    {
+      "token_id": "solana:EKvgzNbdkbRj4xpUvqXZAPPzCzeuFYb6Mx5PgesPpump",
+      "entry_pool": "7iqqgQWm2A1VHGSA3wcea72UwakaMgRfDobdLsFeeAGy",
+      "cohort_id": 10179,
+      "entry_provider": "dexscreener",
+      "writeoff_at": "2026-09-05T09:51:21.287740Z",
+      "evidence_grade": "UNRESOLVED_HISTORICAL_BATCH_ABSENCE",
+      "additional_credit_confirmed": false,
+      "later_same_pool_natural_mark": null,
+      "trades": [
+        {
+          "arm_id": "broad_cost_coverage_scaleout_v1",
+          "actual_buy_trade_id": 388771,
+          "writeoff_trade_id": 388805,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        }
+      ]
+    },
+    {
+      "token_id": "bsc:0xebdde33509ffe09257e5bf86c6a8cdee38bd93d7",
+      "entry_pool": "0x11E1259f1CA217490fe17Ecf0076e6f217AAF235",
+      "cohort_id": 10398,
+      "entry_provider": "dexscreener",
+      "writeoff_at": "2026-09-05T10:24:39.649417Z",
+      "evidence_grade": "SUSPECT_LATER_SAME_POOL_RECOVERY",
+      "additional_credit_confirmed": false,
+      "later_same_pool_natural_mark": {
+        "provider": "dexscreener",
+        "observed_at": "2026-09-05T10:33:44.583002Z",
+        "price_usd": 0.000137,
+        "liquidity_usd": 57533.93
+      },
+      "trades": [
+        {
+          "arm_id": "canonical-2390fb342a6e90b6",
+          "actual_buy_trade_id": 390267,
+          "writeoff_trade_id": 390351,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        },
+        {
+          "arm_id": "canonical-4a27a58cc5902ea9",
+          "actual_buy_trade_id": 390268,
+          "writeoff_trade_id": 390352,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        },
+        {
+          "arm_id": "canonical-63e62a12e74b6320",
+          "actual_buy_trade_id": 390269,
+          "writeoff_trade_id": 390353,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        },
+        {
+          "arm_id": "canonical-831b37e3aaeaa64d",
+          "actual_buy_trade_id": 390270,
+          "writeoff_trade_id": 390354,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        },
+        {
+          "arm_id": "canonical-a0b46b71b30d8575",
+          "actual_buy_trade_id": 390271,
+          "writeoff_trade_id": 390355,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        }
+      ]
+    },
+    {
+      "token_id": "solana:2m21LSoCHat6TfxJEjDz5toUhfbHKjW2dYusRCmdpump",
+      "entry_pool": "54EtADwBW8ZfKvYdJjYTEEcF3YFta9x7Eg77yyV3SeWg",
+      "cohort_id": 10453,
+      "entry_provider": "dexscreener",
+      "writeoff_at": "2026-09-05T10:36:46.367892Z",
+      "evidence_grade": "UNRESOLVED_HISTORICAL_BATCH_ABSENCE",
+      "additional_credit_confirmed": false,
+      "later_same_pool_natural_mark": null,
+      "trades": [
+        {
+          "arm_id": "dex-successor-049-5ce40de1d93304fb",
+          "actual_buy_trade_id": 391215,
+          "writeoff_trade_id": 391310,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        }
+      ]
+    },
+    {
+      "token_id": "bsc:0xa6d636931e512dabb7d45934badf423a09d47777",
+      "entry_pool": "0x7be97C737c94E35412092A72E339fC10Cc527b7a",
+      "cohort_id": 10555,
+      "entry_provider": "dexscreener",
+      "writeoff_at": "2026-09-05T10:55:25.331529Z",
+      "evidence_grade": "UNRESOLVED_HISTORICAL_BATCH_ABSENCE",
+      "additional_credit_confirmed": false,
+      "later_same_pool_natural_mark": null,
+      "trades": [
+        {
+          "arm_id": "dex-successor-049-5ce40de1d93304fb",
+          "actual_buy_trade_id": 391869,
+          "writeoff_trade_id": 392096,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        }
+      ]
+    },
+    {
+      "token_id": "bsc:0x5ea9ffaf5ac344d4f0d882454c960347dfe67777",
+      "entry_pool": "0x2f7fB1373913A2Da01eA5351f4a1B69FbCEeE425",
+      "cohort_id": 10959,
+      "entry_provider": "dexscreener",
+      "writeoff_at": "2026-09-05T12:18:44.451997Z",
+      "evidence_grade": "UNRESOLVED_HISTORICAL_BATCH_ABSENCE",
+      "additional_credit_confirmed": false,
+      "later_same_pool_natural_mark": null,
+      "trades": [
+        {
+          "arm_id": "canonical-4a27a58cc5902ea9",
+          "actual_buy_trade_id": 400052,
+          "writeoff_trade_id": 400170,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        },
+        {
+          "arm_id": "canonical-a0b46b71b30d8575",
+          "actual_buy_trade_id": 400053,
+          "writeoff_trade_id": 400171,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        }
+      ]
+    },
+    {
+      "token_id": "solana:GdFE9TBKqFyQqzTTkRBExGSbwNwvUZX2vpiQehsmpump",
+      "entry_pool": "6qm7Wt3REvddqC2nbYDYghyg5GBm1pqtiW2ruT2WT3ZQ",
+      "cohort_id": 11049,
+      "entry_provider": "dexscreener",
+      "writeoff_at": "2026-09-05T12:44:45.932669Z",
+      "evidence_grade": "UNRESOLVED_HISTORICAL_BATCH_ABSENCE",
+      "additional_credit_confirmed": false,
+      "later_same_pool_natural_mark": null,
+      "trades": [
+        {
+          "arm_id": "dex-successor-049-5ce40de1d93304fb",
+          "actual_buy_trade_id": 400730,
+          "writeoff_trade_id": 400882,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        }
+      ]
+    },
+    {
+      "token_id": "solana:FkB22WDUWo3bvMdeXsmrcn1cNtKFgL3G2pr32edYpump",
+      "entry_pool": "Gzuz1YAhijhMFFAXr4EVhwusRh9yYZwxMYALzGRNvRQM",
+      "cohort_id": 11187,
+      "entry_provider": "dexscreener",
+      "writeoff_at": "2026-09-05T13:40:57.740318Z",
+      "evidence_grade": "UNRESOLVED_HISTORICAL_BATCH_ABSENCE",
+      "additional_credit_confirmed": false,
+      "later_same_pool_natural_mark": null,
+      "trades": [
+        {
+          "arm_id": "broad_cost_coverage_scaleout_v1",
+          "actual_buy_trade_id": 401695,
+          "writeoff_trade_id": 401848,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 5,
+          "final_position_pnl_usd": -0.43823863397401297,
+          "existing_credit_usd": 0
+        }
+      ]
+    },
+    {
+      "token_id": "bsc:0x2f94272e212e1802e60db5ea1e70dbfef6b07777",
+      "entry_pool": "0x0baAD0675b39B12e27611ceB907d771f2d9f2f64",
+      "cohort_id": 11223,
+      "entry_provider": "dexscreener",
+      "writeoff_at": "2026-09-05T13:57:56.956990Z",
+      "evidence_grade": "UNRESOLVED_HISTORICAL_BATCH_ABSENCE",
+      "additional_credit_confirmed": false,
+      "later_same_pool_natural_mark": null,
+      "trades": [
+        {
+          "arm_id": "broad_cost_coverage_scaleout_v1",
+          "actual_buy_trade_id": 401954,
+          "writeoff_trade_id": 402069,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        }
+      ]
+    },
+    {
+      "token_id": "solana:6YHk79hYLzv9cTDfgfyUT9VwcXD1gNwebHGkwAtPpump",
+      "entry_pool": "HPKfuUGFEsVHs4Da5jgFtmCiMN7XKTcyQ15VBVu5izVC",
+      "cohort_id": 11686,
+      "entry_provider": "dexscreener",
+      "writeoff_at": "2026-09-05T15:23:10.482151Z",
+      "evidence_grade": "UNRESOLVED_HISTORICAL_BATCH_ABSENCE",
+      "additional_credit_confirmed": false,
+      "later_same_pool_natural_mark": null,
+      "trades": [
+        {
+          "arm_id": "dex-successor-049-5ce40de1d93304fb",
+          "actual_buy_trade_id": 406922,
+          "writeoff_trade_id": 407132,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        }
+      ]
+    },
+    {
+      "token_id": "solana:54F19i4oBmbKmAAXzUMzUM3gHLafKvUhPWfWY3SbZqrB",
+      "entry_pool": "B6HzdUidKmnYFJsUXzoMgScSBdbgiJvvkiFZUQfJNWQD",
+      "cohort_id": 12258,
+      "entry_provider": "geckoterminal",
+      "writeoff_at": "2026-09-05T17:22:54.724503Z",
+      "evidence_grade": "SUSPECT_LATER_SAME_POOL_RECOVERY",
+      "additional_credit_confirmed": false,
+      "later_same_pool_natural_mark": {
+        "provider": "coingecko-demo",
+        "observed_at": "2026-09-05T17:36:45.325516Z",
+        "price_usd": 8.15200191299235e-10,
+        "liquidity_usd": 1.3099
+      },
+      "trades": [
+        {
+          "arm_id": "dex-successor-049-5ce40de1d93304fb",
+          "actual_buy_trade_id": 411751,
+          "writeoff_trade_id": 411918,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        }
+      ]
+    },
+    {
+      "token_id": "solana:GsW9DUYeqFeGYLZ6wFsvw8V9U8YfHLvoXdyqGj3AP38L",
+      "entry_pool": "EJ7dXWmBTSuHzifg6L6obttqp7GnFGEam3591QXxDwBd",
+      "cohort_id": 12377,
+      "entry_provider": "geckoterminal",
+      "writeoff_at": "2026-09-05T18:59:57.886128Z",
+      "evidence_grade": "ALREADY_CREDITED",
+      "additional_credit_confirmed": false,
+      "later_same_pool_natural_mark": null,
+      "trades": [
+        {
+          "arm_id": "broad_cost_coverage_scaleout_v1",
+          "actual_buy_trade_id": 412305,
+          "writeoff_trade_id": 412388,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 20
+        }
+      ]
+    },
+    {
+      "token_id": "robinhood:0xc952ba7405591bf91d404bf5d2d2dc31c127e711",
+      "entry_pool": "0x2d04c8f9107cbc176502d6dc7ebf93bad31cd91c",
+      "cohort_id": 12378,
+      "entry_provider": "geckoterminal",
+      "writeoff_at": "2026-09-05T18:59:58.516822Z",
+      "evidence_grade": "UNRESOLVED_HISTORICAL_BATCH_ABSENCE",
+      "additional_credit_confirmed": false,
+      "later_same_pool_natural_mark": null,
+      "trades": [
+        {
+          "arm_id": "dex-successor-049-5ce40de1d93304fb",
+          "actual_buy_trade_id": 412307,
+          "writeoff_trade_id": 412413,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        }
+      ]
+    },
+    {
+      "token_id": "solana:BQWziHLUa1pmzsupkv6gisBGgzAbEyNHyDUJGe162LyC",
+      "entry_pool": "35iYG8HNToSXpgtPNacKvrAfDZivz8Hcx65n9JwyGpHr",
+      "cohort_id": 12411,
+      "entry_provider": "geckoterminal",
+      "writeoff_at": "2026-09-05T19:15:14.909364Z",
+      "evidence_grade": "UNRESOLVED_HISTORICAL_BATCH_ABSENCE",
+      "additional_credit_confirmed": false,
+      "later_same_pool_natural_mark": null,
+      "trades": [
+        {
+          "arm_id": "canonical-0df3639e1824ad0f",
+          "actual_buy_trade_id": 412484,
+          "writeoff_trade_id": 412512,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        },
+        {
+          "arm_id": "canonical-22dbe223b3814f7f",
+          "actual_buy_trade_id": 412485,
+          "writeoff_trade_id": 412513,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        },
+        {
+          "arm_id": "canonical-2d3874b5b4dfe162",
+          "actual_buy_trade_id": 412486,
+          "writeoff_trade_id": 412514,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        },
+        {
+          "arm_id": "canonical-744153cee3d16c08",
+          "actual_buy_trade_id": 412487,
+          "writeoff_trade_id": 412515,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        },
+        {
+          "arm_id": "canonical-83fdc6be4ed5e6bf",
+          "actual_buy_trade_id": 412488,
+          "writeoff_trade_id": 412516,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        },
+        {
+          "arm_id": "canonical-d276043eb5aa27c2",
+          "actual_buy_trade_id": 412489,
+          "writeoff_trade_id": 412517,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        },
+        {
+          "arm_id": "canonical-d785aa5181f97422",
+          "actual_buy_trade_id": 412490,
+          "writeoff_trade_id": 412518,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        },
+        {
+          "arm_id": "canonical-eaaf188e7835376f",
+          "actual_buy_trade_id": 412491,
+          "writeoff_trade_id": 412519,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        }
+      ]
+    },
+    {
+      "token_id": "robinhood:0xb3e254e57ecc1916149f39ccf484fe050542ff54",
+      "entry_pool": "0xf749375318d3ee91376b4e5b89976331427eca09",
+      "cohort_id": 12498,
+      "entry_provider": "geckoterminal",
+      "writeoff_at": "2026-09-05T20:14:57.617100Z",
+      "evidence_grade": "UNRESOLVED_FALLBACK_QUOTA_TIMING",
+      "additional_credit_confirmed": false,
+      "later_same_pool_natural_mark": null,
+      "trades": [
+        {
+          "arm_id": "broad_principal_lock_runner_v1",
+          "actual_buy_trade_id": 413430,
+          "writeoff_trade_id": 414126,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        }
+      ]
+    },
+    {
+      "token_id": "robinhood:0x4c8dc7634f5e569bf3a60fb4897530c51f57f319",
+      "entry_pool": "0x39522456051eee6fe6795abe82a352674d5a6d7e",
+      "cohort_id": 12499,
+      "entry_provider": "geckoterminal",
+      "writeoff_at": "2026-09-05T20:14:57.617100Z",
+      "evidence_grade": "UNRESOLVED_FALLBACK_QUOTA_TIMING",
+      "additional_credit_confirmed": false,
+      "later_same_pool_natural_mark": null,
+      "trades": [
+        {
+          "arm_id": "broad_principal_lock_runner_v1",
+          "actual_buy_trade_id": 413431,
+          "writeoff_trade_id": 414124,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        }
+      ]
+    },
+    {
+      "token_id": "robinhood:0x52402f033b09be82d8ee0f33e88f43cabf64ba51",
+      "entry_pool": "0x31c42ead12357536a5037a72f1dba69232c4f216",
+      "cohort_id": 12720,
+      "entry_provider": "geckoterminal",
+      "writeoff_at": "2026-09-05T20:14:57.617100Z",
+      "evidence_grade": "UNRESOLVED_FALLBACK_QUOTA_TIMING",
+      "additional_credit_confirmed": false,
+      "later_same_pool_natural_mark": null,
+      "trades": [
+        {
+          "arm_id": "canonical-ddd57b024d84a00b",
+          "actual_buy_trade_id": 413847,
+          "writeoff_trade_id": 414125,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        }
+      ]
+    },
+    {
+      "token_id": "robinhood:0x7d322a38c09c149f73ae95d3dc0cb05f2c2356df",
+      "entry_pool": "0x4e6ace5e82d5ec13ec2c48ec39c3f7cd6f365ac0",
+      "cohort_id": 12769,
+      "entry_provider": "geckoterminal",
+      "writeoff_at": "2026-09-05T20:25:47.537533Z",
+      "evidence_grade": "UNRESOLVED_FALLBACK_QUOTA_TIMING",
+      "additional_credit_confirmed": false,
+      "later_same_pool_natural_mark": null,
+      "trades": [
+        {
+          "arm_id": "canonical-75dadf52fc0cdd9e",
+          "actual_buy_trade_id": 414172,
+          "writeoff_trade_id": 414205,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        }
+      ]
+    },
+    {
+      "token_id": "robinhood:0x6be219d20fefaa8957f2b79ce102558d5660366a",
+      "entry_pool": "0x6934c5a9894494c21926f0389a9d63f49bdcf995",
+      "cohort_id": 12777,
+      "entry_provider": "geckoterminal",
+      "writeoff_at": "2026-09-05T20:29:27.150333Z",
+      "evidence_grade": "UNRESOLVED_FALLBACK_QUOTA_TIMING",
+      "additional_credit_confirmed": false,
+      "later_same_pool_natural_mark": null,
+      "trades": [
+        {
+          "arm_id": "canonical-75dadf52fc0cdd9e",
+          "actual_buy_trade_id": 414217,
+          "writeoff_trade_id": 414236,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        },
+        {
+          "arm_id": "canonical-831b37e3aaeaa64d",
+          "actual_buy_trade_id": 414218,
+          "writeoff_trade_id": 414237,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        }
+      ]
+    },
+    {
+      "token_id": "robinhood:0x5174ec882e98341f54c84a790b8f0983b3af671a",
+      "entry_pool": "0xd3f781addfb37256b79462cef8052f330397a343",
+      "cohort_id": 12778,
+      "entry_provider": "geckoterminal",
+      "writeoff_at": "2026-09-05T20:29:27.150333Z",
+      "evidence_grade": "UNRESOLVED_FALLBACK_QUOTA_TIMING",
+      "additional_credit_confirmed": false,
+      "later_same_pool_natural_mark": null,
+      "trades": [
+        {
+          "arm_id": "canonical-75dadf52fc0cdd9e",
+          "actual_buy_trade_id": 414219,
+          "writeoff_trade_id": 414234,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        },
+        {
+          "arm_id": "canonical-831b37e3aaeaa64d",
+          "actual_buy_trade_id": 414220,
+          "writeoff_trade_id": 414235,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        }
+      ]
+    },
+    {
+      "token_id": "robinhood:0x7f8b8cd8291cca68490b127875281200e653b66c",
+      "entry_pool": "0xc1b31b7240bc0b6babcc1d00716461c79c9a71a7",
+      "cohort_id": 12780,
+      "entry_provider": "geckoterminal",
+      "writeoff_at": "2026-09-05T20:29:27.150333Z",
+      "evidence_grade": "UNRESOLVED_FALLBACK_QUOTA_TIMING",
+      "additional_credit_confirmed": false,
+      "later_same_pool_natural_mark": null,
+      "trades": [
+        {
+          "arm_id": "canonical-75dadf52fc0cdd9e",
+          "actual_buy_trade_id": 414223,
+          "writeoff_trade_id": 414238,
+          "initial_principal_usd": 20,
+          "writeoff_booked_loss_usd": 20,
+          "final_position_pnl_usd": -20,
+          "existing_credit_usd": 0
+        }
+      ]
+    }
+  ]
+}

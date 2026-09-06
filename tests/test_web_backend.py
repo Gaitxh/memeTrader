@@ -935,6 +935,124 @@ def test_compact_chain_web_excludes_contaminated_pnl_and_pre_correction_curve(
     assert live["recent_activity"] == []
 
 
+def test_strategy_history_paginates_complete_ledger_and_preserves_accounting_status(tmp_path: Path):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    version = Store.CHAIN_MEME_TRADER_VERSION
+    arm_id = "history-arm"
+    now = utcnow()
+
+    def add_trade(cohort: int, side: str = "SELL", pnl: float | None = 0.0) -> int:
+        with store.db:
+            store.db.execute(
+                "INSERT INTO chain_meme_trader_trades("
+                "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+                "net_cash_flow_usd,realized_pnl_usd,reason,created_at,recorded_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (version, arm_id, cohort, f"solana:history-{cohort}", side, 10.0,
+                 10.0 if side != "BUY" else -10.0, pnl, "fixture", iso(now), iso(now)),
+            )
+            return int(store.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+
+    first_buy = add_trade(42, "BUY", None)
+    old_ids = [first_buy]
+    old_ids.extend(add_trade(42) for _ in range(100))
+    unresolved_id = add_trade(43, "SELL", 99.0)
+    contaminated_id = add_trade(44, "SELL", 88.0)
+    with store.db:
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_capital_credits("
+            "source_buy_trade_id,definition_version,arm_id,shadow_cohort_id,token_id,"
+            "entry_snapshot_id,entry_liquidity_usd,amount_usd,reason,recorded_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (first_buy, version, arm_id, 42, "solana:history-42", -1, None, 7.5,
+             "delay", iso(now)),
+        )
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_market_fill_corrections("
+            "source_trade_id,definition_version,arm_id,shadow_cohort_id,token_id,"
+            "source_fill_id,source_mark_id,original_gross_usd,post_liquidity_usd,"
+            "max_market_gross_usd,replacement_outcome,replacement_gross_usd,"
+            "cash_adjustment_usd,realized_adjustment_usd,replacement_observed_at,"
+            "reason,evidence_json,recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (unresolved_id, version, arm_id, 43, "solana:history-43", -1, -1, 10.0,
+             10.0, 10.0, "UNRESOLVED", None, 0.0, 0.0, None, "fixture", "{}", iso(now)),
+        )
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_accounting_contaminations("
+            "definition_version,arm_id,shadow_cohort_id,source_buy_trade_id,reason,"
+            "evidence_json,recorded_at) VALUES(?,?,?,?,?,'{}',?)",
+            (version, arm_id, 44, contaminated_id, "fixture", iso(now)),
+        )
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_trades("
+            "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+            "net_cash_flow_usd,realized_pnl_usd,reason,created_at,recorded_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (version, "other-arm", 42, "solana:other", "SELL", 1.0, 1.0, 1.0,
+             "other", iso(now), iso(now)),
+        )
+    store.close()
+
+    data = ChainWebData(config_path)
+    first = data.strategy_history(arm_id, version=version, limit=50)
+    through_id = first["through_id"]
+    assert first["total"] == 103
+    assert through_id == max(old_ids + [unresolved_id, contaminated_id])
+
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    with store.db:
+        store.db.execute(
+            "INSERT INTO chain_meme_trader_trades("
+            "definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,"
+            "net_cash_flow_usd,realized_pnl_usd,reason,created_at,recorded_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (version, arm_id, 42, "solana:new", "SELL", 1.0, 1.0, 1.0,
+             "new", iso(now), iso(now)),
+        )
+        new_id = int(store.db.execute("SELECT last_insert_rowid()").fetchone()[0])
+    store.close()
+    assert new_id > through_id
+
+    # A fixed frontier excludes the newly inserted row while before_id walks every old row.
+    seen = []
+    before_id = None
+    while True:
+        page = data.strategy_history(arm_id, version=version, limit=50,
+                                      before_id=before_id, through_id=through_id)
+        seen.extend(row["id"] for row in page["trades"])
+        before_id = page["next_before_id"]
+        if before_id is None:
+            break
+    assert set(seen) == set(old_ids + [unresolved_id, contaminated_id])
+    assert len(seen) == len(set(seen)) == 103
+    assert min(seen) == first_buy
+
+    cohort = data.strategy_history(arm_id, version=version, cohort_id=42, limit=100)
+    assert cohort["total"] == 102
+    assert all(row["shadow_cohort_id"] == 42 for row in cohort["trades"])
+    rows = {row["id"]: row for row in data.strategy_history(
+        arm_id, version=version, cohort_id=43, limit=10)["trades"]}
+    assert rows[unresolved_id]["accounting_status"] == "UNRESOLVED"
+    assert rows[unresolved_id]["effective_realized_pnl_usd"] is None
+    assert rows[unresolved_id]["capital_credit_usd"] is None
+    rows = {row["id"]: row for row in data.strategy_history(
+        arm_id, version=version, cohort_id=44, limit=10)["trades"]}
+    assert rows[contaminated_id]["accounting_status"] == "EXCLUDED"
+    assert rows[contaminated_id]["effective_realized_pnl_usd"] is None
+    cohort_page = data.strategy_history(arm_id, version=version, cohort_id=42, limit=100)
+    cohort_tail = data.strategy_history(
+        arm_id, version=version, cohort_id=42, limit=10,
+        before_id=cohort_page["next_before_id"], through_id=cohort_page["through_id"],
+    )
+    credit = next(row for row in cohort_page["trades"] + cohort_tail["trades"]
+                  if row["id"] == first_buy)
+    assert credit["capital_credit_usd"] == 7.5
+    assert credit["effective_realized_pnl_usd"] is None
+    with pytest.raises(ValueError):
+        data.strategy_history(arm_id, version=version, limit=0)
+
+
 def test_chain_web_uses_latest_append_only_market_fill_resolution(tmp_path: Path):
     config_path, _ = _config(tmp_path)
     store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)

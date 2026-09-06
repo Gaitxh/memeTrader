@@ -2,6 +2,17 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260906-foundation-history-coverage-repair",
+      "recorded_at": "2026-09-06T03:23:06Z",
+      "title": "修复来源漏池误核销、历史窗口污染及交易记录截断",
+      "problem": "Dex空响应且备用源未补齐被当成池死亡；金额副本挤占真实行情窗口；近期交易被两次截断，部分NULL PNL未正确处理。",
+      "change": "来源遗漏与真实池失效分开，独立限额补源不中断；历史窗口提前排除金额副本；交易历史独立稳定分页并保留未知、纠正和补款。",
+      "rationale": "优先保证真实退出与可核查账本，不改策略阈值，不用来源无覆盖伪造死亡池。",
+      "validation": "20,635仓位聚合及最近500 BUY/SELL核对；实际Store和分页回归；BSC误核销26笔520U已定位。详见FOUNDATION_HISTORY_REPAIR_2026-09-06.md。",
+      "scope": "184策略和原资金期保留，无初始化、无Live、无自动复盘；补款不计PNL。",
+      "status": "修复与验证中；部署和补款回执待追加。"
+    },
+    {
       "id": "20260906-quote-side-original-pool",
       "recorded_at": "2026-09-05T21:43:00Z",
       "title": "修复原池报价方向反转导致的持仓缺价",

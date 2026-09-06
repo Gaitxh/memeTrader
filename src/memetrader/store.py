@@ -25594,6 +25594,7 @@ class Store:
                 continue
             rows = self.db.execute("SELECT * FROM token_snapshots WHERE token_id=? "
                 "AND provider LIKE 'strategy-observer:%' AND observed_at>=? AND recorded_at<=? "
+                "AND COALESCE(json_extract(raw_json,'$.allocation_source_snapshot_id'),0)=0 "
                 "ORDER BY observed_at DESC,id DESC LIMIT 16",
                 (token_id, max(start, iso(current-timedelta(seconds=300))), iso(current))).fetchall()
             history = []
@@ -25783,12 +25784,12 @@ class Store:
             history = []
             for source in self.db.execute(
                 "SELECT * FROM token_snapshots WHERE token_id=? AND observed_at>=? AND observed_at<=? "
-                "AND provider LIKE 'strategy-observer:%' ORDER BY observed_at DESC,id DESC LIMIT 80",
+                "AND provider LIKE 'strategy-observer:%' "
+                "AND COALESCE(json_extract(raw_json,'$.allocation_source_snapshot_id'),0)=0 "
+                "ORDER BY observed_at DESC,id DESC LIMIT 80",
                 (token.token_id, iso(decision_at - timedelta(minutes=20)), iso(decision_at)),
             ).fetchall()[::-1]:
                 source_raw = self._json_object(source["raw_json"])
-                if source_raw.get("allocation_source_snapshot_id"):
-                    continue  # A sizing projection is not another market observation.
                 source_pair = source_raw.get("pair", source_raw)
                 source_address = canonical_token_address(token.chain, str(source_pair.get("pairAddress") or ""))
                 created = source_pair.get("pairCreatedAt")

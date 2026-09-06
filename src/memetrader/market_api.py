@@ -57,7 +57,12 @@ def _pool_key(address: str) -> str:
 
 def _resource_id_matches(value: Any, network: str, address: str) -> bool:
     resource_id = str(value or "").strip()
-    return not resource_id or resource_id == f"{network}_{address}"
+    prefix = f"{network}_"
+    return (
+        not resource_id
+        or resource_id.startswith(prefix)
+        and _pool_key(resource_id[len(prefix):]) == _pool_key(address)
+    )
 
 
 def _created_millis(value: Any) -> int | None:
@@ -340,7 +345,7 @@ class CoinGeckoDemoPoolClient:
             if cached is None:
                 missing.append(address)
             else:
-                result[address] = copy.deepcopy(cached[1])
+                result[_pool_key(address)] = copy.deepcopy(cached[1])
         if not missing or self._availability_reason(now) != "available":
             return result
 
@@ -400,12 +405,11 @@ class CoinGeckoDemoPoolClient:
             address_key = _pool_key(address)
             if address_key not in requested:
                 continue
-            requested_address = requested[address_key]
             self._cache[(chain, address_key)] = (
                 received_at + timedelta(seconds=self.cache_ttl_seconds),
                 copy.deepcopy(normalized),
             )
-            result[requested_address] = normalized
+            result[address_key] = normalized
         self._prune_cache(received_at)
         self._last_error = ""
         return result

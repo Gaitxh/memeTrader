@@ -60,6 +60,78 @@ class ChainWebData:
             "CHAIN_MEME_TRADER_HISTORICAL_STRATEGY_UNIVERSE_2026-09-04.json"
         )
 
+    def strategy_history(
+        self, arm_id: str, *, version: str = "", limit: int = 50,
+        before_id: int | None = None, through_id: int | None = None,
+        cohort_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Bounded pages over the complete ledger, independent of live previews."""
+        if not arm_id or not 1 <= limit <= 100 or any(
+            value is not None and value < 0 for value in (before_id, through_id, cohort_id)
+        ):
+            raise ValueError("策略或分页参数无效")
+        with self._connect() as connection:
+            if not version:
+                active = connection.execute(
+                    "SELECT definition_version FROM chain_meme_trader_v6_activations "
+                    "WHERE entry_execution_enabled=1 ORDER BY activated_at DESC,rowid DESC LIMIT 1"
+                ).fetchone()
+                version = str(active[0]) if active else Store.CHAIN_MEME_TRADER_VERSION
+            where = "t.definition_version=? AND t.arm_id=?"
+            args: list[Any] = [version, arm_id]
+            if cohort_id is not None:
+                where += " AND t.shadow_cohort_id=?"
+                args.append(cohort_id)
+            if through_id is None:
+                through_id = int(connection.execute(
+                    f"SELECT COALESCE(MAX(t.id),0) FROM chain_meme_trader_trades t WHERE {where}", args,
+                ).fetchone()[0])
+            where += " AND t.id<=?"
+            args.append(through_id)
+            total = int(connection.execute(
+                f"SELECT COUNT(*) FROM chain_meme_trader_trades t WHERE {where}", args,
+            ).fetchone()[0])
+            if before_id is not None:
+                where += " AND t.id<?"
+                args.append(before_id)
+            rows = self._rows(connection,
+                "SELECT t.*,n.name AS token_name,n.symbol AS token_symbol,n.chain,"
+                "p.opened_at,p.closed_at,p.status AS position_status,"
+                "s.liquidity_usd AS entry_liquidity_usd,c.amount_usd AS capital_credit_usd,"
+                "c.recorded_at AS capital_credit_at "
+                "FROM chain_meme_trader_trades t LEFT JOIN tokens n ON n.token_id=t.token_id "
+                "LEFT JOIN chain_meme_trader_positions p ON p.definition_version=t.definition_version "
+                "AND p.arm_id=t.arm_id AND p.shadow_cohort_id=t.shadow_cohort_id "
+                "LEFT JOIN token_snapshots s ON s.id=p.entry_snapshot_id "
+                "LEFT JOIN chain_meme_trader_capital_credits c ON c.source_buy_trade_id=t.id "
+                f"WHERE {where} ORDER BY t.id DESC LIMIT ?", (*args, limit + 1),
+            )
+            corrections = {int(item["source_trade_id"]): item for item in
+                Store._chain_meme_trader_market_fill_corrections_from_connection(connection, version)}
+            excluded = {(item["arm_id"], int(item["shadow_cohort_id"])) for item in
+                Store._chain_meme_trader_accounting_contaminations_from_connection(connection, version)}
+        more = len(rows) > limit
+        rows = rows[:limit]
+        for row in rows:
+            correction = corrections.get(int(row["id"]))
+            contaminated = (arm_id, int(row["shadow_cohort_id"])) in excluded
+            unresolved = bool(correction and correction["replacement_outcome"] == "UNRESOLVED")
+            row["accounting_status"] = (
+                "EXCLUDED" if contaminated else "UNRESOLVED" if unresolved
+                else "CORRECTED" if correction else "RECORDED"
+            )
+            row["effective_cash_flow_usd"] = None if contaminated or unresolved or row["net_cash_flow_usd"] is None else (
+                float(row["net_cash_flow_usd"]) + float((correction or {}).get("cash_adjustment_usd") or 0)
+            )
+            row["effective_realized_pnl_usd"] = None if contaminated or unresolved or row["realized_pnl_usd"] is None else (
+                float(row["realized_pnl_usd"]) + float((correction or {}).get("realized_adjustment_usd") or 0)
+            )
+            row["effective_side"] = correction["replacement_outcome"] if correction and not unresolved else row["side"]
+            row["engineering_anomaly"] = row["entry_liquidity_usd"] is not None and row["entry_liquidity_usd"] < 1
+        return {"status": "ok", "version": version, "arm_id": arm_id,
+                "generated_at": iso(), "total": total, "through_id": through_id,
+                "next_before_id": int(rows[-1]["id"]) if more else None, "trades": rows}
+
     def wallet_state(self, *, refresh: bool = False) -> dict[str, Any]:
         payload = self.wallets.snapshot(refresh=refresh)
         live = self.state(compact=True)
@@ -3425,6 +3497,21 @@ class ChainWebHandler(BaseHTTPRequestHandler):
                     {"status": "error", "error": type(exc).__name__},
                     HTTPStatus.SERVICE_UNAVAILABLE,
                 )
+            return
+        if route == "/api/strategy-history":
+            try:
+                query = parse_qs(parsed.query)
+                cursors = {key: int(query[key][0]) if key in query else None
+                           for key in ("before_id", "through_id", "cohort_id")}
+                self._send_json(self.server.data.strategy_history(
+                    query.get("arm_id", [""])[0], version=query.get("version", [""])[0],
+                    limit=int(query.get("limit", ["50"])[0]), **cursors,
+                ))
+            except ValueError as exc:
+                self._send_json({"status": "error", "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            except (OSError, sqlite3.Error) as exc:
+                self.server.data.record_web_error(route, exc)
+                self._send_json({"status": "error", "error": type(exc).__name__}, HTTPStatus.SERVICE_UNAVAILABLE)
             return
         if route == "/api/strategy-universe":
             try:

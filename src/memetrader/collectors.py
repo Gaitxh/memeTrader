@@ -1181,7 +1181,11 @@ class HttpClient:
             await asyncio.sleep(wait)
         self._last[host] = time.monotonic()
 
-    async def get(self, url: str, *, params: dict[str, Any] | None = None, ttl: float = 0, headers: dict[str, str] | None = None) -> httpx.Response:
+    async def get(
+        self, url: str, *, params: dict[str, Any] | None = None,
+        ttl: float = 0, headers: dict[str, str] | None = None,
+        retry_429: bool = True,
+    ) -> httpx.Response:
         key = url + "?" + urllib.parse.urlencode(sorted((params or {}).items()), doseq=True)
         now = time.monotonic()
         cached = self._cache.get(key)
@@ -1195,7 +1199,7 @@ class HttpClient:
         host = urllib.parse.urlparse(url).netloc.lower()
         await self._reserve_host_request_start(host)
         response = await self.client.get(url, params=params, headers=headers)
-        if response.status_code == 429:
+        if response.status_code == 429 and retry_429:
             retry = min(15.0, float(response.headers.get("Retry-After", "2") or 2))
             async with self._locks[host]:
                 await self._reserve_locked_host_request_start(
@@ -2021,6 +2025,7 @@ class DexScreenerClient:
         addresses: list[str] | tuple[str, ...],
         *,
         ttl: float = 8,
+        retry_429: bool = True,
     ) -> dict[str, tuple[TokenCandidate, TokenSnapshot]]:
         """Hydrate up to many token details through DexScreener's documented 30-address endpoint."""
         normalized_chain = self._chain(str(chain)).lower()
@@ -2037,6 +2042,7 @@ class DexScreenerClient:
             response = await self.http.get(
                 f"{self.BASE}/tokens/v1/{normalized_chain}/{joined}",
                 ttl=ttl,
+                retry_429=retry_429,
             )
             payload = response.json()
             if isinstance(payload, dict):
@@ -2069,14 +2075,18 @@ class DexScreenerClient:
         addresses: list[str] | tuple[str, ...],
     ) -> dict[str, tuple[TokenCandidate, TokenSnapshot]]:
         """Fetch current held-token marks without reusing the hydration cache."""
-        return await self.batch_quote(chain, addresses, ttl=0)
+        return await self.batch_quote(chain, addresses, ttl=0, retry_429=False)
 
     async def exact_pools_fresh(self, chain: str, addresses: list[str]) -> dict[str, dict[str, Any]]:
         """Recover known held pools omitted from the token-address endpoint."""
         chain = self._chain(chain.lower())
         requested = {canonical_token_address(chain, p) for p in addresses}
         joined = urllib.parse.quote(",".join(dict.fromkeys(addresses)), safe=",")
-        response = await self.http.get(f"{self.BASE}/latest/dex/pairs/{chain}/{joined}", ttl=0)
+        response = await self.http.get(
+            f"{self.BASE}/latest/dex/pairs/{chain}/{joined}",
+            ttl=0,
+            retry_429=False,
+        )
         received = iso(utcnow())
         return {
             canonical_token_address(chain, str(p.get("pairAddress") or "")): {
@@ -2187,19 +2197,37 @@ class JupiterQuoteClient:
             raise ValueError("Jupiter quote response must be an object")
         if any(payload.get(key) for key in ("transaction", "swapTransaction")):
             raise JupiterQuoteProtocolError("Jupiter quote response contains a transaction")
-        if (
-            str(payload.get("inputMint") or "") != input_mint
-            or str(payload.get("outputMint") or "") != output_mint
-            or str(payload.get("inAmount") or "") != str(amount)
-            or int(payload.get("slippageBps") if payload.get("slippageBps") is not None else -1) != slippage_bps
-            or str(payload.get("swapMode") or "ExactIn") != "ExactIn"
-            or int(payload.get("outAmount") or 0) <= 0
-            or int(payload.get("otherAmountThreshold") or 0) <= 0
-            or int(payload.get("otherAmountThreshold") or 0) > int(payload.get("outAmount") or 0)
-            or not isinstance(payload.get("routePlan"), list)
-            or not payload.get("routePlan")
-        ):
-            raise JupiterQuoteError("Jupiter quote response does not match the requested route")
+        def response_int(key: str, default: int = 0) -> int | None:
+            try:
+                return int(payload.get(key) if payload.get(key) is not None else default)
+            except (TypeError, ValueError):
+                return None
+
+        out_amount = response_int("outAmount")
+        threshold = response_int("otherAmountThreshold")
+        response_slippage = response_int("slippageBps", -1)
+        mismatches = []
+        if str(payload.get("inputMint") or "") != input_mint:
+            mismatches.append("inputMint")
+        if str(payload.get("outputMint") or "") != output_mint:
+            mismatches.append("outputMint")
+        if str(payload.get("inAmount") or "") != str(amount):
+            mismatches.append("inAmount")
+        if response_slippage != slippage_bps:
+            mismatches.append("slippageBps")
+        if str(payload.get("swapMode") or "ExactIn") != "ExactIn":
+            mismatches.append("swapMode")
+        if out_amount is None or out_amount <= 0:
+            mismatches.append("outAmount")
+        if threshold is None or threshold <= 0 or out_amount is None or threshold > out_amount:
+            mismatches.append("otherAmountThreshold")
+        if not isinstance(payload.get("routePlan"), list) or not payload.get("routePlan"):
+            mismatches.append("routePlan")
+        if mismatches:
+            raise JupiterQuoteProtocolError(
+                "Jupiter quote response does not match the requested route: "
+                + ",".join(mismatches)
+            )
 
         def text(value: Any) -> str | None:
             return str(value) if value is not None else None

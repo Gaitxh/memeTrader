@@ -2280,13 +2280,27 @@ class Runtime:
             return
         for _, item in chunk:
             item["next_attempt"] = now + 10
-        try:
-            pairs = await self.dex.exact_pools_fresh(chain, [str(item["pair_address"]) for _, item in chunk])
-            exact_received = True
-        except Exception as exc:
-            self._notify_source_error("dexscreener:original_pool", exc)
-            pairs = {}
-            exact_received = False
+        pairs = {}
+        exact_received = False
+        pool_failure_kind = "DATA_UNAVAILABLE"
+        # Only the same-provider exact request yields to the held-token lane or
+        # its cooldown.  The independently budgeted fallback must remain able
+        # to recover held positions during a prolonged primary-source outage.
+        if self._dex_quote_low_priority_available():
+            try:
+                pairs = await self.dex.exact_pools_fresh(
+                    chain, [str(item["pair_address"]) for _, item in chunk],
+                )
+                exact_received = True
+                pool_failure_kind = "DEX_SOURCE_COVERAGE_GAP"
+            except Exception as exc:
+                self._notify_source_error("dexscreener:original_pool", exc)
+                pool_failure_kind = type(exc).__name__
+        # The primary held refresh may have recovered a pool while this request
+        # was in flight.  Do not spend fallback quota or apply an older result.
+        chunk = [(key, item) for key, item in chunk if key in self._market_pool_gaps]
+        if not chunk:
+            return
         # Route only still-uncovered identities to the quota-limited provider.
         def usable(item, pair):
             if pair is None or canonical_token_address(chain, str(pair.get("pairAddress") or "")) != canonical_token_address(chain, item["pair_address"]):
@@ -2307,19 +2321,35 @@ class Runtime:
         outcomes = []
         received = utcnow()
         for key, item in chunk:
+            if key not in self._market_pool_gaps:
+                continue
             pair = pairs.get(canonical_token_address(chain, str(item["pair_address"])))
             if pair is None:
-                if exact_received:
-                    outcomes.append({"kind": "pool_missing", "token_id": item["token_id"],
-                                     "pair_address": item["pair_address"], "chain": chain,
-                                     "address": item["address"]})
-                continue  # HTTP failure or quota exhaustion is never pool absence.
+                outcomes.append({
+                    "kind": "pool_failure", "token_id": item["token_id"],
+                    "pair_address": item["pair_address"], "chain": chain,
+                    "address": item["address"],
+                    "failure_kind": pool_failure_kind,
+                })
+                continue  # A provider coverage gap is never structural pool absence.
             if canonical_token_address(chain, str(pair.get("pairAddress") or "")) != key[1]:
+                outcomes.append({
+                    "kind": "pool_failure", "token_id": item["token_id"],
+                    "pair_address": item["pair_address"], "chain": chain,
+                    "address": item["address"],
+                    "failure_kind": "DATA_REJECTED:ENTRY_POOL_INVALID",
+                })
                 continue
             token, snapshot = self._held_pool_quote(pair, str(item["token_id"]))
             if token is None or snapshot is None or self._paper_quote_rejections(
                 str(item["token_id"]), token, snapshot, received,
             ):
+                outcomes.append({
+                    "kind": "pool_failure", "token_id": item["token_id"],
+                    "pair_address": item["pair_address"], "chain": chain,
+                    "address": item["address"],
+                    "failure_kind": "DATA_REJECTED:ENTRY_POOL_INVALID",
+                })
                 continue
             token.source = snapshot.provider
             self._market_complement_pools.add(key)
@@ -2333,7 +2363,10 @@ class Runtime:
                 self.store.evaluate_chain_meme_trader_market_marks(
                     definition_version=version, token_ids=[str(item["token_id"]) for _, item in chunk],
                 )
-        self.store.heartbeat("coingecko:gap_recovery", item=bool(outcomes))
+        self.store.heartbeat("coingecko:gap_recovery", item=any(
+            str(outcome.get("kind") or "") == "pool_visible"
+            for outcome in outcomes
+        ))
 
     async def _poll_gecko_network(self, network: str) -> None:
         name = f"geckoterminal:{network}"
@@ -2346,6 +2379,31 @@ class Runtime:
         try:
             tokens = await GeckoNewPoolsCollector(self.http, network).poll()
             self.store.heartbeat(name, item=bool(tokens))
+            active_version = self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION
+            held_versions = [active_version, *getattr(self, "_chain_carry_versions", [])]
+            if not self.chain_meme_trader_only:
+                held_versions.extend([
+                    self.store.CHAIN_MEME_TRADER_V13_VERSION,
+                    self.store.CHAIN_MEME_TRADER_V11_VERSION,
+                ])
+            held_targets = self.store.chain_meme_trader_market_mark_targets(
+                definition_versions=list(dict.fromkeys(held_versions)),
+            ) if tokens else []
+            held_pools: dict[str, set[str]] = {}
+            for target in held_targets:
+                if "OPEN_POSITION" not in str(target.get("watch_reason") or "").split(","):
+                    continue
+                target_chain = str(target.get("chain") or "").lower()
+                if target_chain != str(network).lower():
+                    continue
+                target_token_id = str(target.get("token_id") or "")
+                for address in str(target.get("entry_pair_addresses") or "").split(","):
+                    if address:
+                        held_pools.setdefault(target_token_id, set()).add(
+                            canonical_token_address(target_chain, address)
+                        )
+            held_outcomes = []
+            held_token_ids: set[str] = set()
             duplicates = 0
             for token in tokens:
                 known_before = self.store.token_discovery_known(token.token_id)
@@ -2370,6 +2428,24 @@ class Runtime:
                             metadata={"provider": "geckoterminal", "chain": token.chain},
                         )
                         self._remember_pattern_quotes({token.token_id: (token, snapshot)})
+                        pair_address = canonical_token_address(
+                            token.chain, str(pair.get("pairAddress") or ""),
+                        )
+                        if (
+                            pair_address in held_pools.get(token.token_id, set())
+                            and not self._paper_quote_rejections(
+                                token.token_id, token, snapshot, utcnow(),
+                            )
+                        ):
+                            held_outcomes.append({
+                                "kind": "pool_visible", "token": token,
+                                "snapshot": snapshot, "target_token_id": token.token_id,
+                                "target_chain": token.chain,
+                                "target_address": token.address,
+                            })
+                            held_token_ids.add(token.token_id)
+                            self._market_pool_gaps.pop((token.token_id, pair_address), None)
+                            self._market_complement_pools.add((token.token_id, pair_address))
                 self.store.add_token_discovery_exposure(
                     round_id,
                     token_id=token.token_id,
@@ -2380,6 +2456,16 @@ class Runtime:
                     snapshot_count=snapshot_count,
                     observed_at=token.first_seen_at,
                 )
+            if held_outcomes:
+                received = utcnow()
+                self.store.apply_chain_meme_trader_market_mark_batch(
+                    held_outcomes, recorded_at=received,
+                )
+                for version in dict.fromkeys(held_versions):
+                    self.store.evaluate_chain_meme_trader_market_marks(
+                        definition_version=version,
+                        token_ids=sorted(held_token_ids),
+                    )
             self.store.finish_token_discovery_round(
                 round_id,
                 status="completed",
