@@ -1172,9 +1172,10 @@ class HttpClient:
         self, host: str, *, not_before: float = 0.0,
     ) -> None:
         now = time.monotonic()
+        interval = max(self.min_host_interval, 2.1) if host == "api.geckoterminal.com" else self.min_host_interval
         wait = max(
             0.0,
-            self.min_host_interval - (now - self._last[host]),
+            interval - (now - self._last[host]),
             float(not_before) - now,
         )
         if wait > 0:

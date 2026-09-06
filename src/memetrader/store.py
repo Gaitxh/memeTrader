@@ -29855,6 +29855,9 @@ class Store:
                 "token_id,pair_address,chain,address,provider,price_usd,observed_at,recorded_at,"
                 "status,last_attempt_at,failure_kind) VALUES(?,?,?,?,'dexscreener',0,?,?,'UNKNOWN',?,?) "
                 "ON CONFLICT(token_id,pair_address) DO UPDATE SET "
+                "status=CASE WHEN chain_meme_trader_pool_marks.status='MISSING' "
+                "THEN 'UNKNOWN' ELSE chain_meme_trader_pool_marks.status END,"
+                "consecutive_misses=0,first_missing_at=NULL,"
                 "last_attempt_at=excluded.last_attempt_at,failure_kind=excluded.failure_kind",
                 (
                     token_id, pair_key, str(chain).lower(), token_id.partition(":")[2],
@@ -29872,7 +29875,10 @@ class Store:
         transaction = nullcontext() if _in_transaction else self.db
         with self._lock, transaction:
             self.db.execute(
-                "UPDATE chain_meme_trader_market_marks SET last_attempt_at=?,failure_kind=? "
+                "UPDATE chain_meme_trader_market_marks SET "
+                "status=CASE WHEN status='MISSING' THEN 'UNKNOWN' ELSE status END,"
+                "consecutive_misses=0,first_missing_at=NULL,"
+                "last_attempt_at=?,failure_kind=? "
                 "WHERE token_id=?",
                 (attempted_at, str(failure_kind or "DATA_UNAVAILABLE")[:80], token_id),
             )

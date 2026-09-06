@@ -8,6 +8,7 @@ import pytest
 
 from memetrader.market_api import (
     CoinGeckoDemoPoolClient,
+    GeckoTerminalPoolClient,
     normalize_gecko_pool,
 )
 
@@ -131,6 +132,7 @@ def test_normalize_gecko_pool_is_identity_bound_and_keeps_receipt_provenance():
     payload = gecko_payload()
     payload["data"][0]["attributes"]["volume_usd"]["h1"] = "120.5"
     payload["data"][0]["attributes"]["transactions"]["h1"] = {"buys": 9, "sells": 4}
+    payload["data"][0]["attributes"]["base_token_price_quote_token"] = "0.125"
     pair = normalize_gecko_pool(payload["data"][0], payload["included"], "solana", START)
     assert pair is not None
     assert (pair["chainId"], pair["tokenAddress"], pair["pairAddress"]) == (
@@ -140,6 +142,7 @@ def test_normalize_gecko_pool_is_identity_bound_and_keeps_receipt_provenance():
     assert pair["quoteToken"]["address"] == "QUOTE"
     assert pair["dexId"] == "raydium"
     assert pair["priceUsd"] == "0.0123"
+    assert pair["priceNative"] == 0.125
     assert pair["liquidity"]["usd"] == pytest.approx(4567.8)
     assert pair["volume"]["m5"] == pytest.approx(90.5)
     assert pair["txns"]["m5"] == {"buys": 7, "sells": 3}
@@ -172,6 +175,85 @@ def test_normalize_gecko_pool_is_identity_bound_and_keeps_receipt_provenance():
     assert normalized["txns"]["h1"] == {"buys": None, "sells": None}
     assert normalized["volume"]["h1"] is None
     assert normalized["source"] == "geckoterminal"
+    unknown_ratio = gecko_payload()
+    assert normalize_gecko_pool(unknown_ratio["data"][0], unknown_ratio["included"],
+                                "solana", START)["priceNative"] is None
+
+
+@pytest.mark.parametrize("validator", ["etag", "date"])
+def test_public_exact_pool_client_preserves_cache_generation_and_identity(validator):
+    import httpx
+    from memetrader.collectors import HttpClient
+
+    async def scenario():
+        clock = Clock()
+        payload = gecko_payload()
+        unsolicited = copy.deepcopy(payload["data"][0])
+        unsolicited["id"], unsolicited["attributes"]["address"] = "solana_other", "other"
+        payload["data"].append(unsolicited)
+        bad_identity = copy.deepcopy(payload["data"][0])
+        bad_identity["id"] = "bsc_pool-A"
+        payload["data"].append(bad_identity)
+        calls = []
+        def respond(request):
+            calls.append(request)
+            headers = {"cache-control": "public, max-age=30, s-maxage=60", "age": "5",
+                       validator: '"generation-1"' if validator == "etag" else "Sat, 05 Sep 2026 12:00:00 GMT"}
+            if len(calls) == 3:
+                headers[validator] = '"generation-2"' if validator == "etag" else "Sat, 05 Sep 2026 12:02:00 GMT"
+            return httpx.Response(200, json=payload if len(calls) <= 3 else {"data": []}, headers=headers)
+        http = HttpClient(transport=httpx.MockTransport(respond), min_host_interval=0)
+        client = GeckoTerminalPoolClient(http, now_fn=clock)
+        first = await client.get_pools("solana", ["pool-A", "pool-A"])
+        assert list(first) == ["pool-A"] and first["pool-A"]["provider"] == "geckoterminal"
+        assert "/pools/pool-A" in str(calls[0].url)
+        assert calls[0].url.params["include"] == "base_token,quote_token,dex"
+        clock.advance(54)
+        cached = await client.get_pools("solana", ["pool-A"])
+        assert len(calls) == 1 and cached["pool-A"]["observedAt"] == first["pool-A"]["observedAt"]
+        assert cached["pool-A"]["raw"]["http_cache"]["local_cache_hit"] is True
+        clock.advance(2)
+        same = await client.get_pools("solana", ["pool-A"])
+        assert same["pool-A"]["observedAt"] == first["pool-A"]["observedAt"]
+        assert same["pool-A"]["raw"]["http_cache"]["received_at"] != first["pool-A"]["observedAt"]
+        assert same["pool-A"]["raw"]["http_cache"]["generation_reused"] is True
+        clock.advance(56)
+        fresh = await client.get_pools("solana", ["pool-A"])
+        assert fresh["pool-A"]["observedAt"] != first["pool-A"]["observedAt"]
+        clock.advance(56)
+        assert await client.get_pools("solana", ["pool-A"]) == {}
+        await http.close()
+
+        single_http = HttpClient(transport=httpx.MockTransport(lambda request:
+            httpx.Response(200, json={"data": payload["data"][0], "included": payload["included"]})),
+            min_host_interval=0)
+        single = await GeckoTerminalPoolClient(single_http).get_pools("solana", ["pool-A"])
+        assert list(single) == ["pool-A"]
+        await single_http.close()
+
+    asyncio.run(scenario())
+
+
+def test_public_exact_pool_client_429_propagates_without_retry():
+    import httpx
+    from memetrader.collectors import HttpClient
+
+    async def scenario():
+        calls = []
+        def respond(request):
+            calls.append(request)
+            return httpx.Response(429, headers={"Retry-After": "30"})
+        http = HttpClient(transport=httpx.MockTransport(respond), min_host_interval=0)
+        client = GeckoTerminalPoolClient(http)
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.get_pools("bsc", ["0x" + "a" * 64])
+        assert len(calls) == 1
+        with pytest.raises(ValueError, match="max_30"):
+            await client.get_pools("bsc", [str(i) for i in range(31)])
+        assert len(calls) == 1
+        await http.close()
+
+    asyncio.run(scenario())
 
 
 def test_success_uses_exact_endpoint_no_redirect_and_cache_keeps_observed_time():

@@ -20,6 +20,7 @@ def make_runtime(tmp_path):
     async def no_exact(chain, addresses):
         return {}
     runtime.dex.exact_pools_fresh = no_exact
+    runtime.gecko_pools.get_pools = no_exact
     return runtime
 
 
@@ -330,16 +331,21 @@ def test_dex_gap_queues_then_wrong_token_and_wrong_pool_are_refused(tmp_path):
     asyncio.run(scenario())
 
 
-def test_cached_observation_does_not_advance_market_sample_or_old_period(tmp_path):
+@pytest.mark.parametrize("provider", ["coingecko-demo", "geckoterminal"])
+def test_cached_observation_does_not_advance_market_sample_or_old_period(tmp_path, provider):
     async def scenario():
         runtime = make_runtime(tmp_path)
         token = TokenCandidate("solana", "C" * 32, "Cached observation", "CCH")
         pool = "cached-pool"
         target = target_for(token, pool)
         observed = utcnow()
-        same_pair = pair_payload(token, pool, observed=observed)
+        same_pair = pair_payload(token, pool, observed=observed, provider=provider)
         coingecko = FakeCoinGecko([{pool: same_pair}, {pool: same_pair}])
-        runtime.coingecko = coingecko
+        if provider == "geckoterminal":
+            runtime.gecko_pools = coingecko
+            runtime.coingecko = FakeCoinGecko()
+        else:
+            runtime.coingecko = coingecko
         runtime.store.chain_meme_trader_market_mark_targets = lambda **kwargs: [target]
         runtime._queue_market_pool_gap(target, pool, [])
         old_counts = tuple(runtime.store.db.execute(
@@ -354,6 +360,7 @@ def test_cached_observation_does_not_advance_market_sample_or_old_period(tmp_pat
             "SELECT sample_sequence,observed_at,provider FROM chain_meme_trader_market_marks "
             "WHERE token_id=?", (token.token_id,),
         ).fetchone()
+        same_pair["raw"] = {"http_cache": {"local_cache_hit": True}}
         next(iter(runtime._market_pool_gaps.values()))["next_attempt"] = 0.0
         next(iter(runtime._market_pool_gaps.values()))["next_complement_attempt"] = 0.0
         await runtime.complementary_market_data_once()
@@ -362,7 +369,12 @@ def test_cached_observation_does_not_advance_market_sample_or_old_period(tmp_pat
             "WHERE token_id=?", (token.token_id,),
         ).fetchone()
         assert tuple(second) == tuple(first)
-        assert first["provider"] == "coingecko-demo"
+        assert first["provider"] == provider
+        if provider == "geckoterminal":
+            assert runtime.coingecko.calls == []
+            assert runtime.store.db.execute(
+                "SELECT COUNT(*) FROM source_health WHERE source='coingecko:gap_recovery'"
+            ).fetchone()[0] == 0
         new_counts = tuple(runtime.store.db.execute(
             "SELECT "
             "(SELECT COUNT(*) FROM chain_meme_trader_v6_activations),"
@@ -371,6 +383,85 @@ def test_cached_observation_does_not_advance_market_sample_or_old_period(tmp_pat
         ).fetchone())
         assert new_counts == old_counts
         await runtime.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("status_code", [404, 429])
+def test_public_pool_error_defers_without_blocking_demo(tmp_path, status_code):
+    async def scenario():
+        runtime = make_runtime(tmp_path)
+        token = TokenCandidate("solana", "P" * 32, "Public fallback", "PUB")
+        pool = "public-pool"
+        target = target_for(token, pool)
+        calls = []
+
+        async def fail(chain, addresses):
+            calls.append((chain, addresses))
+            response = httpx.Response(status_code, headers={"Retry-After": "120"},
+                request=httpx.Request("GET", "https://api.geckoterminal.com/api/v2/networks/solana/pools/public-pool"))
+            response.raise_for_status()
+
+        runtime.gecko_pools.get_pools = fail
+        runtime.coingecko = FakeCoinGecko([{pool: pair_payload(token, pool)}])
+        runtime.store.chain_meme_trader_market_mark_targets = lambda **kwargs: [target]
+        runtime._queue_market_pool_gap(target, pool, [])
+        started = asyncio.get_running_loop().time()
+        await runtime.complementary_market_data_once()
+        assert len(calls) == len(runtime.coingecko.calls) == 1
+        mark = runtime.store.db.execute(
+            "SELECT provider,status,consecutive_misses FROM chain_meme_trader_pool_marks WHERE token_id=?",
+            (token.token_id,),
+        ).fetchone()
+        assert tuple(mark) == ("coingecko-demo", "VISIBLE", 0)
+        gap = next(iter(runtime._market_pool_gaps.values()))
+        assert gap["next_public_attempt"] >= started + 120
+        assert (runtime._gecko_pool_backoff_until > started) == (status_code == 429)
+        gap["next_attempt"] = 0
+        await runtime.complementary_market_data_once()
+        assert len(calls) == len(runtime.coingecko.calls) == 1
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_primary_recovery_during_public_fetch_discards_late_fallback(tmp_path):
+    async def scenario():
+        runtime = make_runtime(tmp_path)
+        token = TokenCandidate("solana", "R" * 32, "Recovered", "REC")
+        target = target_for(token, "recovered-pool")
+        runtime.store.chain_meme_trader_market_mark_targets = lambda **kwargs: [target]
+        runtime.coingecko = FakeCoinGecko()
+        runtime._queue_market_pool_gap(target, "recovered-pool", [])
+
+        async def recover(chain, addresses):
+            runtime._market_pool_gaps.clear()
+            return {"recovered-pool": pair_payload(token, "recovered-pool", provider="geckoterminal")}
+
+        runtime.gecko_pools.get_pools = recover
+        await runtime.complementary_market_data_once()
+        assert runtime.coingecko.calls == []
+        assert runtime.store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_pool_marks").fetchone()[0] == 0
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_public_gecko_host_pacing_leaves_other_sources_unchanged(monkeypatch):
+    async def scenario():
+        http = HttpClient(min_host_interval=0.25)
+        waits = []
+
+        async def record_wait(seconds):
+            waits.append(seconds)
+
+        monkeypatch.setattr("memetrader.collectors.asyncio.sleep", record_wait)
+        for host in ("api.geckoterminal.com", "api.dexscreener.com"):
+            http._last[host] = time.monotonic()
+            await http._reserve_host_request_start(host)
+        assert 2.0 < waits[0] <= 2.1
+        assert 0.2 < waits[1] <= 0.25
+        await http.close()
 
     asyncio.run(scenario())
 

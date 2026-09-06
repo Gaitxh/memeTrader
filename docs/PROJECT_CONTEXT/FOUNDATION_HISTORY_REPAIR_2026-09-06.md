@@ -1,5 +1,15 @@
 # 端到端核查、交易历史修复与已知故障处置
 
+## 连续缺池计时与公共精确池补源（2026-09-06 13:20，代码已测待部署）
+
+明确的新公共缺陷：pool/token mark failure 以前只更新failure_kind，旧first_missing/misses仍存；下一missing恢复结构性reason后沿用旧窗口，可能把网络未知期当连续缺池。现在失败中断episode，MISSING转UNKNOWN、清计数/起点；新missing重新计时超过60秒。保留已见价格、last_success及新鲜原池liquidity<1的既定终局，不改旧策略阈值。pool中断后重计时、fresh dust及旧token-level断言3个定向测试通过。
+
+公共Gecko精确池补源复用现有gap队列，置于Dex覆盖缺口后、Demo预算前。单池用pool-detail，多池用multi；只用同chain/token/original pool，held主源恢复时丢弃晚到fallback。公共同host请求起点至少2.1秒，复用发现器同一HttpClient；429不原地重试并尊重Retry-After，404仅该批延后。公共源失败仍可走已有Demo预算，不增加热持仓路径等待。ETag/Date同代及本地缓存保留原observedAt和值，不把重复缓存当新SELL帧；HTTP Age/Cache-Control及receipt另存。normalizer保留base/quote比值，正确支持原池反向报价。两个market API/Runtime文件33实例通过（含缓存不增加sample/历史、不跨源重复、HTTP失败后Demo恢复、原源抢先恢复、host预算）。单次线上multi探测429未重试；先前单池200只说明能力，部署后自然补源尚待验收。
+
+57历史missing补款归因复核没有新增确证金额：全局error825虽在cohort12378的missing窗口中，却没有token/pool/chunk身份，不能证明该仓请求超时；BUY412307的20U不直接补，此前子审阅中“可执行补款候选”的过强归因撤回。BUY412305已有20U独立补款，不重复。57笔WRITEOFF共1125U，position最终realized合计-1120.438238634U（含此前部分SELL）；原始账本保留。
+
+纠正此前报告表达：57笔的未决等级目前只在证据报告，不是全部生产质量排除。31笔/-620U仍在11个eligible arm，另26笔/-500.438238634U的13个arm因其他工程异常quarantine；账户原PNL均保留。不能声称57笔已从全部正式指标剔除。缺历史原池原始响应不能擅自改UNRESOLVED fill或抹去已记亏损，本轮研究结论须明确这些样本不确定性。
+
 ## 范围与边界
 
 当前用户要求：多源互补、采集到结果整链路准确稳定、单策略完整可读交易历史，以及有池误核销个案。生产资金期 `chain-meme-trader/funding-20260905-fixed-1000` 保留；184 策略、旧合同、开放仓和原始交易不重置。本轮不是策略研究或自动复盘。以下测试样本不属于自然前向表现。

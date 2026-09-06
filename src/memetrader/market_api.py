@@ -1,8 +1,8 @@
 """Quota-bounded complementary market API clients.
 
-This module does not choose or cross-check providers.  It exposes one queued
-CoinGecko Demo pool-batch call and a pure normalizer so Runtime can use the same
-shape for already-fetched Gecko payloads without another request.
+This module does not choose or cross-check providers. It exposes public Gecko
+and quota-bounded CoinGecko Demo exact-pool calls, preserving cached observation
+times, and a normalizer for already-fetched Gecko payloads.
 """
 
 from __future__ import annotations
@@ -170,6 +170,7 @@ def normalize_gecko_pool(
         },
         "dexId": dex_id,
         "priceUsd": str(price) if price is not None else None,
+        "priceNative": _number(attrs.get("base_token_price_quote_token")),
         "liquidity": {"usd": _number(reserve)},
         "volume": {window: _number(volumes.get(window)) for window in ("m5", "h1")},
         "txns": {
@@ -189,6 +190,76 @@ def normalize_gecko_pool(
         "observedAt": receipt,
         "raw": {"provider": provider_name, "pool": copy.deepcopy(dict(pool))},
     }
+
+
+class GeckoTerminalPoolClient:
+    """Public exact pools; caller owns shared host pacing and fallback policy."""
+
+    def __init__(self, http: Any, *, now_fn: Callable[[], datetime] = _utcnow):
+        self.http, self._now = http, now_fn
+        self._cache: dict[tuple[str, str], tuple[datetime, dict[str, Any]]] = {}
+
+    async def get_pools(self, network: str, addresses: list[str]) -> dict[str, dict[str, Any]]:
+        chain = str(network).strip()
+        requested = list(dict.fromkeys(_pool_key(a) for a in addresses if str(a).strip()))
+        if not chain or len(requested) > 30:
+            raise ValueError("geckoterminal_network_required_batch_max_30")
+        now = self._now()
+        result, missing = {}, []
+        for address in requested:
+            cached = self._cache.get((chain, address))
+            if cached and cached[0] > now:
+                result[address] = copy.deepcopy(cached[1])
+                result[address]["raw"]["http_cache"]["local_cache_hit"] = True
+            else:
+                missing.append(address)
+        if not missing:
+            return result
+        url = ("https://api.geckoterminal.com/api/v2/networks/"
+               f"{urllib.parse.quote(chain, safe='')}/pools/"
+               + ("multi/" if len(missing) > 1 else "")
+               + urllib.parse.quote(",".join(missing), safe=","))
+        response = await self.http.get(url, params={"include": "base_token,quote_token,dex"},
+                                       retry_429=False)
+        response.raise_for_status()
+        received = self._now()
+        payload = response.json()
+        headers = {key: response.headers.get(key) for key in ("age", "etag", "date", "cache-control")}
+        lifetimes = []
+        for directive in (headers["cache-control"] or "").split(","):
+            name, _, value = directive.strip().partition("=")
+            if name.lower() in {"max-age", "s-maxage"}:
+                lifetime = _number(value.strip('"'))
+                if lifetime is not None:
+                    lifetimes.append(max(0.0, lifetime))
+        ttl = max(0.0, max(lifetimes, default=30.0) - max(0.0, _number(headers["age"]) or 0.0))
+        data = payload.get("data", [])
+        for pool in ([data] if isinstance(data, Mapping) else data):
+            pair = normalize_gecko_pool(pool, payload.get("included", []), chain, received,
+                                        provider="geckoterminal")
+            if pair is None or _pool_key(pair["pairAddress"]) not in missing:
+                continue
+            key = (chain, _pool_key(pair["pairAddress"]))
+            previous = self._cache.get(key)
+            same_generation = False
+            if previous:
+                old_headers = previous[1]["raw"]["http_cache"]
+                same_generation = (
+                    bool(headers["etag"]) and headers["etag"] == old_headers.get("etag")
+                    or not headers["etag"] and bool(headers["date"])
+                    and headers["date"] == old_headers.get("date")
+                )
+                if same_generation:
+                    pair = copy.deepcopy(previous[1])
+            pair["raw"]["http_cache"] = {**headers, "received_at": _iso(received),
+                "local_cache_hit": False, "generation_reused": same_generation,
+                "observation_basis": "first_local_receipt_of_cache_generation"}
+            self._cache.pop(key, None)
+            self._cache[key] = (received + timedelta(seconds=ttl), copy.deepcopy(pair))
+            result[key[1]] = pair
+        while len(self._cache) > 300:
+            self._cache.pop(next(iter(self._cache)))
+        return result
 
 
 class CoinGeckoDemoPoolClient:
@@ -414,4 +485,4 @@ class CoinGeckoDemoPoolClient:
         return result
 
 
-__all__ = ["CoinGeckoDemoPoolClient", "normalize_gecko_pool"]
+__all__ = ["CoinGeckoDemoPoolClient", "GeckoTerminalPoolClient", "normalize_gecko_pool"]

@@ -8393,13 +8393,18 @@ def test_chain_meme_market_mark_requires_post_open_and_fresh_structural_evidence
     )
     assert store.evaluate_chain_meme_trader_market_marks(
         definition_version=version, now=fresh_structural_at,
-    ) == 1
-    written = store.db.execute(
+    ) == 0
+    interrupted = store.db.execute(
+        "SELECT status,consecutive_misses,first_missing_at FROM "
+        "chain_meme_trader_market_marks WHERE token_id=?", (token.token_id,),
+    ).fetchone()
+    assert tuple(interrupted) == ("MISSING", 1, iso(fresh_structural_at))
+    still_open = store.db.execute(
         "SELECT status FROM chain_meme_trader_positions WHERE definition_version=? "
         "AND arm_id=? AND shadow_cohort_id=?",
         (version, policy["arm_id"], cohort_id),
     ).fetchone()
-    assert written["status"] == "written_off"
+    assert still_open["status"] == "open"
     store.close()
 
 

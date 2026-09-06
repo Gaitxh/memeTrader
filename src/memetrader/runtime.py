@@ -24,7 +24,7 @@ import httpx
 from solders.pubkey import Pubkey
 
 from .runtime_timing import RuntimeTiming
-from .market_api import CoinGeckoDemoPoolClient
+from .market_api import CoinGeckoDemoPoolClient, GeckoTerminalPoolClient
 from .market_flow import aggregate_market_frames
 from .pool_surface import collect_pumpswap_pool_surface
 from .token_origin import verify_creator_from_known_signature
@@ -1413,6 +1413,8 @@ class Runtime:
         self.jupiter = JupiterQuoteClient(self.jupiter_http, jupiter_api_key)
         self.coingecko_http = HttpClient(timeout=6, min_host_interval=1.05)
         self.coingecko = CoinGeckoDemoPoolClient(self.coingecko_http, coingecko_api_key, store=self.store)
+        self.gecko_pools = GeckoTerminalPoolClient(self.http)
+        self._gecko_pool_backoff_until = 0.0
         self._market_pool_gaps: dict[tuple[str, str], dict[str, Any]] = {}
         self._market_complement_pools: set[tuple[str, str]] = set()
         self.store.set_kv("market_api:configured", {
@@ -2250,6 +2252,7 @@ class Runtime:
             **dict(item), "pair_address": pair, "versions": versions or [self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION],
             "next_attempt": previous.get("next_attempt", 0.0),
             "next_complement_attempt": previous.get("next_complement_attempt", 0.0),
+            "next_public_attempt": previous.get("next_public_attempt", 0.0),
         }
 
     async def complementary_market_data_once(self) -> None:
@@ -2310,12 +2313,44 @@ class Runtime:
             return token is not None and snapshot is not None and not self._paper_quote_rejections(
                 str(item["token_id"]), token, snapshot, utcnow())
         uncovered = [(key, item) for key, item in chunk
-                     if not usable(item, pairs.get(key[1]))
-                     and float(item["next_complement_attempt"]) <= now]
+                     if not usable(item, pairs.get(key[1]))]
         if exact_received:
             self.store.heartbeat("dexscreener:original_pool", item=any(
                 usable(item, pairs.get(key[1])) for key, item in chunk))
+        public_due = [(key, item) for key, item in uncovered
+                      if float(item.get("next_public_attempt", 0.0)) <= now]
+        if public_due and now >= self._gecko_pool_backoff_until:
+            try:
+                public_pairs = await self.gecko_pools.get_pools(
+                    chain, [str(item["pair_address"]) for _, item in public_due],
+                )
+                pairs.update(public_pairs)
+                observed_responses = [pair for pair in public_pairs.values()
+                    if not (pair.get("raw", {}).get("http_cache", {}).get("local_cache_hit"))]
+                if observed_responses:
+                    self.store.heartbeat("geckoterminal:original_pool", item=any(
+                        not pair.get("raw", {}).get("http_cache", {}).get("generation_reused")
+                        for pair in observed_responses))
+            except Exception as exc:
+                delay = 60.0
+                if isinstance(exc, httpx.HTTPStatusError):
+                    delay = max(delay, CoinGeckoDemoPoolClient._retry_after_seconds(
+                        exc.response.headers.get("Retry-After"), utcnow()))
+                retry_at = asyncio.get_running_loop().time() + delay
+                for _, item in public_due:
+                    item["next_public_attempt"] = retry_at
+                if not isinstance(exc, httpx.HTTPStatusError) or exc.response.status_code == 429:
+                    self._gecko_pool_backoff_until = retry_at
+                self._notify_source_error("geckoterminal:original_pool", exc)
+        # A primary refresh may finish during the public fallback; do not
+        # consume Demo quota for an identity that has already recovered.
+        uncovered = [(key, item) for key, item in uncovered
+                     if key in self._market_pool_gaps
+                     and not usable(item, pairs.get(key[1]))
+                     and float(item["next_complement_attempt"]) <= now]
+        demo_attempted = False
         if uncovered and self.coingecko.available():
+            demo_attempted = True
             for _, item in uncovered:
                 item["next_complement_attempt"] = now + 60
             pairs.update(await self.coingecko.get_pools(chain, [str(item["pair_address"]) for _, item in uncovered]))
@@ -2364,10 +2399,12 @@ class Runtime:
                 self.store.evaluate_chain_meme_trader_market_marks(
                     definition_version=version, token_ids=[str(item["token_id"]) for _, item in chunk],
                 )
-        self.store.heartbeat("coingecko:gap_recovery", item=any(
-            str(outcome.get("kind") or "") == "pool_visible"
-            for outcome in outcomes
-        ))
+        if demo_attempted:
+            self.store.heartbeat("coingecko:gap_recovery", item=any(
+                outcome.get("kind") == "pool_visible"
+                and outcome["snapshot"].provider == "coingecko-demo"
+                for outcome in outcomes
+            ))
 
     async def _poll_gecko_network(self, network: str) -> None:
         name = f"geckoterminal:{network}"

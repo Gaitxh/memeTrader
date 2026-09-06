@@ -196,12 +196,34 @@ def test_network_failure_after_structural_misses_does_not_write_off(tmp_path):
     assert store.evaluate_chain_meme_trader_market_marks(
         definition_version=version, now=checked_at,
     ) == 0
+    interrupted = store.db.execute(
+        "SELECT status,consecutive_misses,first_missing_at FROM "
+        "chain_meme_trader_pool_marks WHERE token_id=? AND pair_address=?",
+        (token.token_id, "pair-A"),
+    ).fetchone()
+    assert tuple(interrupted) == ("UNKNOWN", 0, None)
+    fresh_missing = checked_at + timedelta(seconds=1)
+    store.record_chain_meme_trader_pool_mark_miss(
+        token_id=token.token_id, pair_address="pair-A", chain=token.chain,
+        address=token.address, recorded_at=fresh_missing,
+    )
+    assert store.evaluate_chain_meme_trader_market_marks(
+        definition_version=version, now=fresh_missing,
+    ) == 0
     row = store.db.execute(
         "SELECT status,pending_mark_id FROM chain_meme_trader_positions WHERE "
         "definition_version=? AND arm_id=? AND shadow_cohort_id=?",
         (version, policy["arm_id"], cohort_id),
     ).fetchone()
     assert (row["status"], row["pending_mark_id"]) == ("open", None)
+    confirmed = fresh_missing + timedelta(seconds=61)
+    store.record_chain_meme_trader_pool_mark_miss(
+        token_id=token.token_id, pair_address="pair-A", chain=token.chain,
+        address=token.address, recorded_at=confirmed,
+    )
+    assert store.evaluate_chain_meme_trader_market_marks(
+        definition_version=version, now=confirmed,
+    ) == 1
     store.close()
 
 
