@@ -26049,6 +26049,19 @@ class Store:
                     added += 1
         return added
 
+    def register_chain_meme_research_round2(self) -> int:
+        from .research_round2 import round2_policies
+        added = 0
+        with self._lock, self.db:
+            at = utcnow()
+            for policy in round2_policies():
+                if self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?",
+                    (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, policy["arm_id"])).fetchone() is None:
+                    self.append_chain_meme_trader_policy(policy, activated_at=at)
+                    added += 1
+        return added
+
     def register_chain_meme_capital_experiments(self) -> int:
         """Append independently funded experiments at their actual deployment frontier."""
         added = 0
@@ -26983,6 +26996,7 @@ class Store:
                     else:
                         already_bought.discard(arm)
             ready, outcomes = [], {}
+            chase_consumed = dict(previous_features.get("round2_chase_consumed") or {})
             for policy in active:
                 if cohort_mode:
                     passed = policy["arm_id"] in accepted_cohort_signals
@@ -27019,10 +27033,13 @@ class Store:
                     passed, reason = False, "pattern_already_enrolled_at_this_pool"
                 if policy["arm_id"] in entry_blocked:
                     passed, reason = False, entry_blocked[policy["arm_id"]]
+                if policy.get("entry_chase_role") and pair_address in chase_consumed:
+                    passed, reason = False, "round2_chase_original_opportunity_consumed"
                 outcomes[policy["arm_id"]] = reason
                 if passed:
                     ready.append(policy["arm_id"])
             admitted_arms = [p["arm_id"] for p in active if post_valid and p["arm_id"] in pending
+                             and not (p.get("entry_chase_role") and pair_address in chase_consumed)
                              and (not p.get("require_post_decision_observation") or previous is not None
                                   and snapshot.observed_at > parse_time(previous["evaluated_at"]))
                              and p["arm_id"] not in already_bought and p["arm_id"] not in entry_blocked
@@ -27037,7 +27054,7 @@ class Store:
             for arms in paired.values():
                 expected = {int(p.get("paired_entry_size", 2)) for p in active if p["arm_id"] in arms}
                 if expected != {len(arms)} or not all(arm in admitted_arms for arm in arms):
-                    if expected == {5} and post_valid and any(arm in pending for arm in arms):
+                    if post_valid and any(arm in pending for arm in arms):
                         paired_rejections.update({arm: "paired_group_not_all_eligible" for arm in arms})
                     admitted_arms = [arm for arm in admitted_arms if arm not in arms]
             features = {"source_snapshot_id": snapshot_id, "pair_address": pair_address,
@@ -27085,11 +27102,34 @@ class Store:
                         + float(definition.get("additional_fee_usd_each_fill") or 0.0)
                         for arm in arms
                     ):
-                        if len(arms) == 5 and any(arm in admitted_arms for arm in arms):
+                        if any(arm in admitted_arms for arm in arms):
                             paired_rejections.update({arm: "paired_group_cash_blocked" for arm in arms})
                         for group_arms in by_notional.values():
                             group_arms[:] = [arm for arm in group_arms if arm not in arms]
                 by_notional = {n: arms for n, arms in by_notional.items() if arms}
+                chase_arms = [p for p in active if p.get("entry_chase_role") and
+                    any(p["arm_id"] in arms for arms in by_notional.values())]
+                if chase_arms:
+                    from .research_round2 import chase_decision
+                    signal_id = previous_features.get("source_snapshot_id")
+                    signal = next((f for f in history if f["id"] == signal_id), {})
+                    chase_receipt = {"signal_snapshot_id": signal_id, "receipt_snapshot_id": snapshot_id,
+                        "signal_price_usd": signal.get("price"), "receipt_price_usd": snapshot.price_usd,
+                        "received_at": iso(decision_at), "outcomes": {}}
+                    for p in chase_arms:
+                        allowed, drift = chase_decision(signal.get("price"), snapshot.price_usd,
+                            p["entry_chase_budget_fraction"])
+                        chase_receipt["outcomes"][p["arm_id"]] = {
+                            "allowed": allowed, "price_drift": drift, "budget": p["entry_chase_budget_fraction"]}
+                        if not allowed:
+                            for arms in by_notional.values():
+                                arms[:] = [arm for arm in arms if arm != p["arm_id"]]
+                    chase_consumed[pair_address] = chase_receipt
+                    ready[:] = [arm for arm in ready if arm not in {p["arm_id"] for p in chase_arms}]
+                    features["round2_chase_receipt"] = chase_receipt
+                    by_notional = {n: arms for n, arms in by_notional.items() if arms}
+                if chase_consumed:
+                    features["round2_chase_consumed"] = chase_consumed
                 for group_index, (notional, cohort_arms) in enumerate(by_notional.items()):
                     allocation_snapshot_id = snapshot_id
                     allocation_at = decision_at
@@ -31663,7 +31703,8 @@ class Store:
             state = dict(outer_state.get(state_key) or {})
         token, pair = position["token_id"], position["entry_pair_address"]
         from .research_finalists import EXIT_KINDS, evaluate_finalist_exit
-        if kind in {"l0_continuation_failure", "l0_profit_lock", "l0_loss_deterioration"} | EXIT_KINDS:
+        from .research_round2 import EXIT_KINDS as ROUND2_EXIT_KINDS, evaluate_round2_exit
+        if kind in {"l0_continuation_failure", "l0_profit_lock", "l0_loss_deterioration"} | EXIT_KINDS | ROUND2_EXIT_KINDS:
             from .l0_experiments import evaluate_l0_continuation_failure, evaluate_l0_profit_lock
             price = position["mark_price_usd"]
             net = (
@@ -31693,11 +31734,11 @@ class Store:
             if kind == "l0_loss_deterioration":
                 from .strategy_revisions import evaluate_l0_loss_deterioration
                 evaluator = evaluate_l0_loss_deterioration
-            if kind in EXIT_KINDS:
+            if kind in EXIT_KINDS | ROUND2_EXIT_KINDS:
                 adapted["pair_address"] = canonical_token_address(str(token).partition(":")[0], str(pair))
                 frame.update(provider=position["mark_provider"], volume=position["mark_volume_5m_usd"],
                              buys=position["mark_buys_5m"], sells=position["mark_sells_5m"])
-                evaluator = evaluate_finalist_exit
+                evaluator = evaluate_round2_exit if kind in ROUND2_EXIT_KINDS else evaluate_finalist_exit
             result = evaluator(adapted, frame, state, now=current, policy=policy["capital_exit_policy"])
         elif kind == "watched_wallet_distribution":
             from .wallet_observer_experiments import evaluate_wallet_distribution_exit
@@ -32946,6 +32987,24 @@ class Store:
                 # with proceeds that did not exist at that earlier time.
                 high_after_fill = post_price
                 high_economic_after_fill = post_fill_economic_value
+        if not closes and policy.get("runner_epoch_after_partial"):
+            runner_state = self._json_object(position["capital_exit_state_json"])
+            if not runner_state.get("runner_epoch"):
+                # Receipt, not TP signal, starts the fixed-quantity qualification.
+                runner_state.update(runner_epoch={"fill_id": fill_id, "filled_at": completed_at,
+                    "quantity_tokens": float(remaining_quantity),
+                    "net_value_usd": post_fill_economic_value - new_proceeds,
+                    "remaining_cost_usd": float(position["stake_usd"]) - new_allocated,
+                    "liquidity_usd": float(post_confirmation["liquidity_usd"]),
+                    "provider": post_confirmation.get("provider")},
+                    runner_observable_since=completed_at, runner_qualified=False)
+                runner_state["window"] = [{"at": post_confirmation["observed_at"],
+                    "price": post_price, "value": post_fill_economic_value,
+                    "liquidity": float(post_liquidity), "provider": post_confirmation.get("provider"),
+                    "share": None, "volume": None}]
+                self.db.execute("UPDATE chain_meme_trader_positions SET capital_exit_state_json=? "
+                    "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+                    (self._json(runner_state), version, position["arm_id"], position["shadow_cohort_id"]))
         self.db.execute(
             "UPDATE chain_meme_trader_positions SET amount_raw=?,remaining_quantity_tokens=?,"
             "realized_proceeds_usd=?,"
@@ -33551,6 +33610,7 @@ class Store:
                                 )
                                 pending_evidence["post_confirmation"] = {
                                     "sample_sequence": post_sequence,
+                                    "provider": position["mark_provider"],
                                     "pair_address": current_pair,
                                     "price_usd": float(position["mark_price_usd"]),
                                     "liquidity_usd": position["mark_liquidity_usd"],
