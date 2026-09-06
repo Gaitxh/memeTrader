@@ -26740,6 +26740,18 @@ class Store:
             definition = self._chain_meme_trader_effective_definition(
                 version, registration["definition_json"],
             )
+            # This writer consumes non-observer snapshots in ascending id order
+            # and records every outcome in the same transaction.  Observer
+            # evaluations can race ahead, so they must not advance this lane.
+            source_frontier = max(
+                int(registration["activation_snapshot_id"]),
+                int(self.db.execute(
+                    "SELECT COALESCE(MAX(source_snapshot_id),0) FROM "
+                    "chain_meme_trader_v6_entry_evaluations WHERE "
+                    "definition_version=? AND reason!='pattern_observation'",
+                    (version,),
+                ).fetchone()[0]),
+            )
             rows = self.db.execute(
                 "SELECT s.id AS source_snapshot_id,s.* FROM token_snapshots s "
                 "WHERE s.id>? AND s.recorded_at>=? AND s.provider NOT LIKE 'strategy-observer:%' AND NOT EXISTS(SELECT 1 FROM "
@@ -26747,7 +26759,7 @@ class Store:
                 "e.definition_version=? AND e.source_snapshot_id=s.id) "
                 "ORDER BY s.id LIMIT ?",
                 (
-                    int(registration["activation_snapshot_id"]),
+                    source_frontier,
                     str(registration["activated_at"]), version,
                     max(1, int(limit)),
                 ),

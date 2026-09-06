@@ -60,6 +60,12 @@
 
 #### 全部184路由与多源适配核查结果
 
+部署回执：8bc7455于04:42:49Z受控部署，原184/资金期激活07:37:08.842373Z/frontier829428保持；自然交易继续到417006。9个相关测试实例整合通过。实际Chrome已验证策略137/138粘贴混合大小写Token地址各返回完整BUY+2SELL；138本期100条可50+50翻页，返回首页记录一致；25账期可切换，v22历史312423条中的选中arm4328条可分页，无JS错误。补款仍403笔8058.807662700746U，未重复。
+
+真实部署后账户快照P95约.546秒（5样本），此前约3.94秒；但入场批次仍P959.16秒，不能称实时问题已解决。继续定位到入场源查询每tick从activation重新扫描已处理历史：同生产只读无候选LIMIT4仍8.093秒。修复以主串行入场流程真正消费frontier为下界，排除异步pattern_observation，保留NOT EXISTS。全仓仅两个evaluation writer，所有主入场异常/过期行亦顺序落拒绝记录；不使用异步较大ID跳过低ID普通帧。修后同只读空查询.101ms，frontier查询.281ms；两个实际Store测试覆盖追加arm/旧arm隔离、异步高ID、过期行和新鲜行正常消费。该第二段性能修复待受控部署测全链路。
+
+另真实传输失败为多源ConnectTimeout，不是本轮Dex429；held计时包括共享最长30秒backoff及同步阻塞，不能当成纯HTTP响应。改善公共SQL后再看余下长尾，不伪报固定1秒数据年龄。
+
 当前184唯一ID全部有可达处理分支：90普通/缺省、14dex_visible、24exact_entry_family归主admission（128）；56 isolated由20 pattern和36capital处理，16种capital exit overlay有明确evaluator。主family分布broad36/reawakening32/shadow14/flow32/dex继承14。未发现unknown handler，但分支存在不等于所有自然输入均已证明正确。
 
 确证并已局部修复的多源问题：生产snapshot1005378的Gecko原文h1 volume30849.6037588876、buys462/sells336实际存在，normalize却仅保留m5，致prior55等输入丢失；现保留h1，缺失保持None。Gecko发现入口以前没有调用Dex已有的本地上下文触发器，现先记录discovery建立forward cohort后再按相同candidate scope触发，不增网络调用、不放宽clean-onchain。原observer复制把Gecko标成Dex，现保留provider与观察时戳。真实Runtime/Store以及Dex/Gecko参数化来源测试通过。该生产帧还存在现金不足，不能将输入缺陷直接称漏买损失。
