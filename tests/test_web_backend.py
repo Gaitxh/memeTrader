@@ -932,7 +932,12 @@ def test_compact_chain_web_excludes_contaminated_pnl_and_pre_correction_curve(
     assert strategy["account"]["terminal_position_count"] == 0
     assert strategy["maturity"] == "waiting"
     assert strategy["curve"]
-    assert all(point["total_pnl_usd"] == 0.0 for point in strategy["curve"])
+    # Full-period plots retain the invalid interval as a gap, not fake zero PNL.
+    assert all(point["total_pnl_usd"] is None for point in strategy["curve"]
+               if point["recorded_at"] < iso(contamination_at))
+    valid_points = [point for point in strategy["curve"]
+                    if point["recorded_at"] >= iso(contamination_at)]
+    assert valid_points and all(point["total_pnl_usd"] == 0.0 for point in valid_points)
     assert live["recent_activity"] == []
 
 

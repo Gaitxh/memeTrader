@@ -717,19 +717,28 @@ async function loadStrategyHistory(view,cursor=null,stack=[]){
   if(cursor!=null)query.set('before_id',cursor);
   if(view.cohort!=null)query.set('cohort_id',view.cohort);
   if(view.token)query.set('token_id',view.token);
+  if(view.includeVoided)query.set('include_voided','1');
   try{
     const response=await fetch(`/api/strategy-history?${query}`,{cache:'no-store'});
     const data=await response.json();if(!response.ok)throw new Error(data.error||`HTTP ${response.status}`);
     if(historyView!==view||activeDrawerKind!=='strategy-history')return;
     view.through=data.through_id;view.cursor=cursor;view.stack=stack;view.next=data.next_before_id;
     const rows=data.trades||[],start=stack.length*50;
-    const statusLabel={RECORDED:'账本记录',CORRECTED:'有历史纠正',EXCLUDED:'工程污染 · 不计统计',UNRESOLVED:'历史成交待核查'};
+    const statusLabel={RECORDED:'账本记录',CORRECTED:'有历史纠正',EXCLUDED:'工程污染 · 不计统计',UNRESOLVED:'历史成交待核查',VOIDED:'整笔作废 · 资金与收益已撤销'};
     const period=view.periods?.find(item=>item.version===view.version),armIndex=period?.arms.findIndex(item=>item.arm_id===view.arm)??-1;
     $('#drawer-title').textContent=`${view.version===view.activeVersion?strategyLabelForArm(view.arm):`历史策略 ${armIndex+1}`} · ${view.cohort==null?'本账期全部交易':'本次持仓操作'}`;
     $('#drawer-body').innerHTML=`<div class="history-toolbar"><p>共 ${data.total} 条 · ${rows.length?`${start+1}–${start+rows.length}`:'0'} 条<br><small>读取于 ${esc(time(data.generated_at,true))}；翻页固定本次记录范围，刷新可查看新成交。</small></p><button class="table-action" data-history-page="refresh">刷新至最新</button></div><p class="history-note">现金流：买入为支出，卖出为扣除交易费用后的回收额；核销不产生现金回收。工程补款单列，不计策略盈利。带纠正标记的记录可展开查看原始账本。</p><div class="history-scroll"><table class="history-table"><thead><tr><th>时间 / 本次持仓</th><th>Token</th><th>操作</th><th>净现金流</th><th>本次已实现 PNL</th><th>说明</th></tr></thead><tbody>${rows.map(item=>`<tr><td><time>${esc(time(item.created_at,true))}</time><small>本次开仓 ${esc(time(item.opened_at,true))}</small></td><td>${tokenLink(item.token_id,item.token_symbol||item.token_name||shortToken(item.token_id))}<small>${esc(chainLabelForToken(item.token_id))} · ${esc(shortToken(item.token_id))}</small></td><td>${esc(sideText(item.effective_side))}</td><td class="${pnlClass(item.effective_cash_flow_usd)}">${money(item.effective_cash_flow_usd)}</td><td class="${pnlClass(item.effective_realized_pnl_usd)}">${money(item.effective_realized_pnl_usd)}</td><td><span>${esc(reasonText(item.reason))}</span><small>${esc(statusLabel[item.accounting_status]||'待核查')}${item.engineering_anomaly?' · 入场池低于 $1':''}</small>${item.capital_credit_usd!=null?`<small class="history-credit">独立补款 +${money(item.capital_credit_usd)} · ${esc(time(item.capital_credit_at,true))}</small>`:''}<details><summary>查看原始记录</summary><p>记录 #${item.id} · ${esc(sideText(item.side))}<br>现金流 ${money(item.net_cash_flow_usd)} · 已实现 ${money(item.realized_pnl_usd)}</p></details></td></tr>`).join('')||'<tr><td colspan="6" class="empty">当前账期没有匹配的交易记录</td></tr>'}</tbody></table></div><nav class="history-toolbar" aria-label="交易历史分页"><button class="table-action" data-history-page="previous" ${stack.length?'':'disabled'}>上一页</button><span>第 ${stack.length+1} 页</span><button class="table-action" data-history-page="next" ${view.next==null?'disabled':''}>下一页</button></nav>`;
     $('#drawer-body').insertAdjacentHTML('afterbegin',historyPeriodControls(view));
+    $('#drawer-body').insertAdjacentHTML('afterbegin',`<p class="history-note">本策略有 ${data.voided_position_count||0} 笔作废持仓，默认不计入正式历史。<button class="table-action" data-history-page="voids">${view.includeVoided?'隐藏作废归档':'包含作废归档'}</button></p>`);
     const historyRows=$('#drawer-body').querySelectorAll('tbody tr');
     rows.forEach((row,index)=>{
+      if(row.accounting_status==='VOIDED'){
+        const note=document.createElement('small');
+        note.textContent=`作废于 ${time(row.voided_at,true)}：${row.void_reason}。原始买卖仅作归档，不计资金或收益。`;
+        historyRows[index].lastElementChild.append(note);
+        historyRows[index].children[2].textContent='已作废';
+        return;
+      }
       if(!row.research_review_status)return;
       const note=document.createElement('small');
       note.textContent='历史核销证据待核查；原账本金额保留，未认定为自然策略亏损';
@@ -945,6 +954,7 @@ document.body.addEventListener('click',event=>{
   const page=event.target.closest('[data-history-page]');if(page&&historyView&&!historyView.loading){
     const v=historyView;
     if(page.dataset.historyPage==='refresh'){v.through=null;loadStrategyHistory(v);}
+    else if(page.dataset.historyPage==='voids'){v.includeVoided=!v.includeVoided;v.through=null;loadStrategyHistory(v);}
     else if(page.dataset.historyPage==='all'){v.cohort=null;v.through=null;loadStrategyHistory(v);}
     else if(page.dataset.historyPage==='filter'){v.token=$('[data-history-token]').value.trim();v.through=null;v.cohort=null;loadStrategyHistory(v);}
     else if(page.dataset.historyPage==='clear-token'){v.token='';v.through=null;loadStrategyHistory(v);}

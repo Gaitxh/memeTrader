@@ -3005,6 +3005,23 @@ class Store:
                 CREATE TRIGGER IF NOT EXISTS chain_meme_capital_credit_no_delete
                     BEFORE DELETE ON chain_meme_trader_capital_credits
                     BEGIN SELECT RAISE(ABORT,'capital credits are append-only'); END;
+                CREATE TABLE IF NOT EXISTS chain_meme_trader_position_voids (
+                    definition_version TEXT NOT NULL,
+                    arm_id TEXT NOT NULL,
+                    shadow_cohort_id INTEGER NOT NULL,
+                    source_buy_trade_id INTEGER NOT NULL UNIQUE,
+                    reason TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL,
+                    archive_json TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    PRIMARY KEY(definition_version,arm_id,shadow_cohort_id)
+                );
+                CREATE TRIGGER IF NOT EXISTS chain_meme_position_void_no_update
+                    BEFORE UPDATE ON chain_meme_trader_position_voids
+                    BEGIN SELECT RAISE(ABORT,'position voids are append-only'); END;
+                CREATE TRIGGER IF NOT EXISTS chain_meme_position_void_no_delete
+                    BEFORE DELETE ON chain_meme_trader_position_voids
+                    BEGIN SELECT RAISE(ABORT,'position voids are append-only'); END;
                 CREATE TABLE IF NOT EXISTS chain_meme_trader_market_mark_history (
                     id INTEGER PRIMARY KEY,
                     token_id TEXT NOT NULL,
@@ -25152,11 +25169,102 @@ class Store:
     ) -> dict[str, dict[str, Any]]:
         if connection.execute("SELECT 1 FROM sqlite_master WHERE name='chain_meme_trader_capital_credits'").fetchone() is None:
             return {}
+        void_filter = ""
+        if connection.execute("SELECT 1 FROM sqlite_master WHERE name='chain_meme_trader_position_voids'").fetchone():
+            void_filter = (
+                " AND NOT EXISTS (SELECT 1 FROM chain_meme_trader_position_voids v "
+                "WHERE v.definition_version=c.definition_version AND v.arm_id=c.arm_id "
+                "AND v.shadow_cohort_id=c.shadow_cohort_id)"
+            )
         return {str(row["arm_id"]): dict(row) for row in connection.execute(
             "SELECT arm_id,SUM(amount_usd) AS amount_usd,COUNT(*) AS buy_count,"
             "SUM(reason='user_authorized_confirmed_update_delay_actual_loss') AS update_delay_count "
-            "FROM chain_meme_trader_capital_credits WHERE definition_version=? GROUP BY arm_id", (version,),
+            "FROM chain_meme_trader_capital_credits c WHERE definition_version=?"
+            + void_filter + " GROUP BY arm_id", (version,),
         )}
+
+    def void_chain_meme_trader_positions(
+        self, source_buy_trade_ids: Iterable[int], *, definition_version: str,
+        reason: str, evidence: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Operator-authorized whole-lifecycle exclusion, never a replacement fill.
+
+        Raw trades/fills/credits remain immutable evidence. Effective cash removes
+        all lifecycle flows, corrections and earlier credits exactly once.
+        """
+        buy_ids = sorted({int(value) for value in source_buy_trade_ids})
+        if not reason.strip() or not evidence:
+            raise ValueError("position void requires a reason and supporting evidence")
+        version, recorded_at = str(definition_version), iso()
+        with self._lock, self.db:
+            positions = []
+            for buy_id in buy_ids:
+                row = self.db.execute(
+                    "SELECT p.* FROM chain_meme_trader_trades t JOIN "
+                    "chain_meme_trader_positions p ON p.definition_version=t.definition_version "
+                    "AND p.arm_id=t.arm_id AND p.shadow_cohort_id=t.shadow_cohort_id "
+                    "AND p.token_id=t.token_id WHERE t.id=? AND t.side='BUY' "
+                    "AND t.definition_version=?", (buy_id, version),
+                ).fetchone()
+                if row is None:
+                    raise ValueError(f"BUY {buy_id} has no position in {version}")
+                positions.append(row)
+            before = self._chain_meme_trader_effective_net_flows(version)
+            corrections = self._chain_meme_trader_market_fill_corrections_from_connection(self.db, version)
+            voided = already = 0
+            for row in positions:
+                key = (version, str(row["arm_id"]), int(row["shadow_cohort_id"]))
+                if self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_position_voids WHERE "
+                    "definition_version=? AND arm_id=? AND shadow_cohort_id=?", key,
+                ).fetchone():
+                    already += 1
+                    continue
+                trades = [dict(item) for item in self.db.execute(
+                    "SELECT * FROM chain_meme_trader_trades WHERE definition_version=? "
+                    "AND arm_id=? AND shadow_cohort_id=? ORDER BY id", key,
+                )]
+                credits = [dict(item) for item in self.db.execute(
+                    "SELECT * FROM chain_meme_trader_capital_credits WHERE definition_version=? "
+                    "AND arm_id=? AND shadow_cohort_id=?", key,
+                )]
+                marks = [dict(item) for item in self.db.execute(
+                    "SELECT * FROM chain_meme_trader_marks WHERE definition_version=? "
+                    "AND arm_id=? AND shadow_cohort_id=?", key,
+                )]
+                archive = {
+                    "position": dict(row), "trades": trades, "marks": marks,
+                    "capital_credits": credits,
+                    "fill_corrections": [dict(item) for item in corrections
+                        if str(item["arm_id"]) == key[1] and int(item["shadow_cohort_id"]) == key[2]],
+                }
+                original_buy_id = min(int(t["id"]) for t in trades if t["side"] == "BUY")
+                self.db.execute(
+                    "INSERT INTO chain_meme_trader_position_voids VALUES(?,?,?,?,?,?,?,?)",
+                    (*key, original_buy_id, reason, self._json(dict(evidence)), self._json(archive), recorded_at),
+                )
+                self.db.execute(
+                    "UPDATE chain_meme_trader_positions SET status='ineligible',pending_mark_id=NULL "
+                    "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?", key,
+                )
+                self.db.execute(
+                    "UPDATE chain_meme_trader_marks SET status='exhausted',next_attempt_at=NULL "
+                    "WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=? "
+                    "AND status IN ('pending','quoting','retry')", key,
+                )
+                self.db.execute(
+                    "UPDATE chain_meme_trader_order_intents SET status='cancelled',"
+                    "completed_at=?,next_attempt_at=NULL WHERE definition_version=? "
+                    "AND arm_id=? AND shadow_cohort_id=? AND execution_mode='paper' "
+                    "AND status IN ('ready','submitted','retry')", (recorded_at, *key),
+                )
+                voided += 1
+            after = self._chain_meme_trader_effective_net_flows(version)
+            by_arm = {arm: after.get(arm, 0.0) - before.get(arm, 0.0)
+                      for arm in sorted({str(row["arm_id"]) for row in positions})}
+            return {"definition_version": version, "requested": len(buy_ids), "voided": voided,
+                    "already_voided": already, "cash_adjustment_usd": sum(by_arm.values()),
+                    "cash_adjustment_by_arm": by_arm, "recorded_at": recorded_at}
 
     def credit_chain_meme_dust_entries(self, *, recorded_at: Any = None) -> dict[str, Any]:
         """Explicit user-authorized current-period principal top-up, never trading PNL."""
@@ -30103,6 +30211,21 @@ class Store:
         return str(recorded_status)
 
     @staticmethod
+    def _chain_meme_trader_position_voids_from_connection(
+        connection: sqlite3.Connection, version: str,
+    ) -> list[dict[str, Any]]:
+        if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='chain_meme_trader_position_voids'"
+        ).fetchone() is None:
+            return []
+        # Do not load archived lifecycle JSON in the runtime/Web hot path.
+        return [dict(row) for row in connection.execute(
+            "SELECT definition_version,arm_id,shadow_cohort_id,source_buy_trade_id,"
+            "reason,evidence_json,recorded_at FROM chain_meme_trader_position_voids "
+            "WHERE definition_version=? ORDER BY source_buy_trade_id", (version,),
+        )]
+
+    @staticmethod
     def _chain_meme_trader_accounting_contaminations_from_connection(
         connection: sqlite3.Connection, version: str, *, active_only: bool = True,
     ) -> list[dict[str, Any]]:
@@ -30150,6 +30273,11 @@ class Store:
                     "evidence_json": str(row["evidence_json"]),
                     "recorded_at": str(row["recorded_at"]),
                 })
+        for row in Store._chain_meme_trader_position_voids_from_connection(connection, version):
+            key = (str(row["arm_id"]), int(row["shadow_cohort_id"]))
+            rows[key] = {**row, "base_recorded_at": row["recorded_at"],
+                         "resolution_status": "ACTIVE", "resolution_revision": 0,
+                         "manual_void": True}
         resolved = list(rows.values())
         if active_only:
             resolved = [
@@ -31613,7 +31741,11 @@ class Store:
         )
         existing_by_key = {
             (str(row["arm_id"]), int(row["shadow_cohort_id"])): row
-            for row in existing_rows
+            for row in existing_rows if not row.get("manual_void")
+        }
+        manual_void_keys = {
+            (str(row["arm_id"]), int(row["shadow_cohort_id"]))
+            for row in existing_rows if row.get("manual_void")
         }
         funding = self.db.execute(
             "SELECT activation_snapshot_id FROM "
@@ -31687,6 +31819,8 @@ class Store:
         inserted = 0
         resolution_at = iso()
         for key, evidence in expected.items():
+            if key in manual_void_keys:
+                continue  # Operator voids are final; legacy cash replay cannot revise them.
             existing = existing_by_key.get(key)
             if existing is None:
                 self.db.execute(
@@ -33290,6 +33424,8 @@ class Store:
             direct_recovery = direct_unrealized = 0.0
             direct_position_count = 0
             for row in position_rows:
+                if arm_contaminations.get(int(row["shadow_cohort_id"]), {}).get("manual_void"):
+                    continue  # Archived, not a formal position or research observation.
                 position = dict(row)
                 position["engineering_anomaly"] = (
                     "entry_pool_liquidity_below_1_usd"
@@ -33715,9 +33851,15 @@ class Store:
                         direct_position_count += 1
                 positions.append(position)
             trades = []
+            void_trade_filter = (
+                " AND NOT EXISTS (SELECT 1 FROM chain_meme_trader_position_voids v "
+                "WHERE v.definition_version=t.definition_version AND v.arm_id=t.arm_id "
+                "AND v.shadow_cohort_id=t.shadow_cohort_id)"
+                if any(item.get("manual_void") for item in arm_contaminations.values()) else ""
+            )
             for trade_row in connection.execute(
-                "SELECT * FROM chain_meme_trader_trades WHERE definition_version=? "
-                "AND arm_id=? ORDER BY id DESC LIMIT ?",
+                "SELECT t.* FROM chain_meme_trader_trades t WHERE definition_version=? "
+                "AND arm_id=?" + void_trade_filter + " ORDER BY id DESC LIMIT ?",
                 (version, arm_id, trade_limit),
             ):
                 trade = dict(trade_row)
@@ -33811,12 +33953,11 @@ class Store:
             written_off_position_count = sum(
                 1 for _, status in effective_positions if status == "written_off"
             )
-            raw_realized_pnl = sum(
-                float(row["realized_pnl_usd"] or 0.0) for row in current_positions
-            )
-            realized_pnl = (
-                raw_realized_pnl + correction_realized_by_arm.get(arm_id, 0.0)
-                - contaminated_realized_by_arm.get(arm_id, 0.0)
+            realized_pnl = sum(
+                float(row["realized_pnl_usd"] or 0.0)
+                + float(arm_corrections.get(int(row["shadow_cohort_id"]), {}).get(
+                    "realized_adjustment_usd") or 0.0)
+                for row, _ in effective_positions
             )
             net_cash_flow = connection.execute(
                 "SELECT COALESCE(SUM(net_cash_flow_usd),0.0) FROM "

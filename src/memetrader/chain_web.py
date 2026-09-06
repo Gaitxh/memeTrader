@@ -109,6 +109,7 @@ class ChainWebData:
         self, arm_id: str, *, version: str = "", limit: int = 50,
         before_id: int | None = None, through_id: int | None = None,
         cohort_id: int | None = None, token_id: str = "",
+        include_voided: bool = False,
     ) -> dict[str, Any]:
         """Bounded pages over the complete ledger, independent of live previews."""
         if not arm_id or not 1 <= limit <= 100 or any(
@@ -124,6 +125,15 @@ class ChainWebData:
                 version = str(active[0]) if active else Store.CHAIN_MEME_TRADER_VERSION
             where = "t.definition_version=? AND t.arm_id=?"
             args: list[Any] = [version, arm_id]
+            voids = {int(item["shadow_cohort_id"]): item for item in
+                     Store._chain_meme_trader_position_voids_from_connection(connection, version)
+                     if item["arm_id"] == arm_id}
+            if voids and not include_voided:
+                where += (
+                    " AND NOT EXISTS (SELECT 1 FROM chain_meme_trader_position_voids v "
+                    "WHERE v.definition_version=t.definition_version AND v.arm_id=t.arm_id "
+                    "AND v.shadow_cohort_id=t.shadow_cohort_id)"
+                )
             if token_id.strip():
                 chain, separator, address = token_id.strip().partition(":")
                 if separator:
@@ -168,10 +178,11 @@ class ChainWebData:
         rows = rows[:limit]
         for row in rows:
             correction = corrections.get(int(row["id"]))
+            void = voids.get(int(row["shadow_cohort_id"]))
             contaminated = (arm_id, int(row["shadow_cohort_id"])) in excluded
             unresolved = bool(correction and correction["replacement_outcome"] == "UNRESOLVED")
             row["accounting_status"] = (
-                "EXCLUDED" if contaminated else "UNRESOLVED" if unresolved
+                "VOIDED" if void else "EXCLUDED" if contaminated else "UNRESOLVED" if unresolved
                 else "CORRECTED" if correction else "RECORDED"
             )
             row["effective_cash_flow_usd"] = None if contaminated or unresolved or row["net_cash_flow_usd"] is None else (
@@ -181,11 +192,18 @@ class ChainWebData:
                 float(row["realized_pnl_usd"]) + float((correction or {}).get("realized_adjustment_usd") or 0)
             )
             row["effective_side"] = correction["replacement_outcome"] if correction and not unresolved else row["side"]
+            if void:
+                row["void_reason"] = void["reason"]
+                row["voided_at"] = void["recorded_at"]
+                row["voided_capital_credit_usd"] = row["capital_credit_usd"]
+                row["capital_credit_usd"] = None
+                row["effective_side"] = "VOIDED"
             row["engineering_anomaly"] = row["entry_liquidity_usd"] is not None and row["entry_liquidity_usd"] < 1
             self._annotate_writeoff_review(row, version, arm_id)
         return {"status": "ok", "version": version, "arm_id": arm_id,
                 "generated_at": iso(), "total": total, "through_id": through_id,
-                "next_before_id": int(rows[-1]["id"]) if more else None, "trades": rows}
+                "next_before_id": int(rows[-1]["id"]) if more else None, "trades": rows,
+                "include_voided": include_voided, "voided_position_count": len(voids)}
 
     def strategy_history_periods(
         self, *, arm_id: str = "", version: str = "",
@@ -213,6 +231,18 @@ class ChainWebData:
                 " GROUP BY definition_version,arm_id ORDER BY MIN(id)",
                 tuple(values),
             )
+            if connection.execute("SELECT 1 FROM sqlite_master WHERE name='chain_meme_trader_position_voids'").fetchone():
+                archived_counts = {
+                    (item["definition_version"], item["arm_id"]): int(item["n"])
+                    for item in connection.execute(
+                        "SELECT v.definition_version,v.arm_id,COUNT(*) AS n "
+                        "FROM chain_meme_trader_position_voids v JOIN chain_meme_trader_trades t "
+                        "ON t.definition_version=v.definition_version AND t.arm_id=v.arm_id "
+                        "AND t.shadow_cohort_id=v.shadow_cohort_id GROUP BY v.definition_version,v.arm_id"
+                    )
+                }
+                for row in rows:
+                    row["trade_count"] -= archived_counts.get((row["definition_version"], row["arm_id"]), 0)
             registrations = {
                 str(row["definition_version"]): (row["definition_json"], row["registered_at"])
                 for row in connection.execute(
@@ -1880,6 +1910,12 @@ class ChainWebData:
                 ))
                 recent_fills.sort(key=lambda row: str(row.get("filled_at") or ""), reverse=True)
                 recent_fills = recent_fills[:120]
+            voided_positions = {(item["arm_id"], int(item["shadow_cohort_id"])) for item in
+                Store._chain_meme_trader_position_voids_from_connection(connection, active_version)}
+            recent_fills = [item for item in recent_fills
+                           if (item["arm_id"], int(item["shadow_cohort_id"])) not in voided_positions]
+            recent_intents = [item for item in recent_intents
+                             if (item["arm_id"], int(item["shadow_cohort_id"])) not in voided_positions]
             recent_participant_outcomes = (
                 self._rows(
                     connection,
@@ -3658,6 +3694,7 @@ class ChainWebHandler(BaseHTTPRequestHandler):
                     query.get("arm_id", [""])[0], version=query.get("version", [""])[0],
                     limit=int(query.get("limit", ["50"])[0]), **cursors,
                     token_id=query.get("token_id", [""])[0],
+                    include_voided=query.get("include_voided", ["0"])[0] == "1",
                 ))
             except ValueError as exc:
                 self._send_json({"status": "error", "error": str(exc)}, HTTPStatus.BAD_REQUEST)
