@@ -66,6 +66,10 @@
 
 另真实传输失败为多源ConnectTimeout，不是本轮Dex429；held计时包括共享最长30秒backoff及同步阻塞，不能当成纯HTTP响应。改善公共SQL后再看余下长尾，不伪报固定1秒数据年龄。
 
+84c20b6已04:52:45Z受控部署并推送。04:55:51Z最近120样本：主判断间隔P50/P95=1.009/1.175秒、duration P95=.295秒；入场批次P95=.034秒；持仓fetch P95=1.003秒、apply/exit=.056秒，累计fetch失败0。21个Solana持仓Token原池年龄.751秒；1个BSC原池年龄49.985秒。SQLite约11.24GB、WAL97.72MB、盘余53.59GB。短窗样本不能证明长期免费源SLA；不将UI刷新等同后台频率。
+
+剩余BSC慢池已逐项定位：用户原例Token `0x1a5f9d77ca46646cd4937fd8d093f460b66f4444`，当前cohort14149/broad_principal_lock_runner_v1剩余20U，原池 `0xae76531f57d2e1cf9e42bb7514720d745377f54e2979534a6e852e7d1cf95be7`。CoinGecko04:55:10Z确有新鲜price.00117636465334758、liq980.573；Dex对该64hex原池仍coverage gap，另一池的成功不能替代它。补源轮询约10秒、同池CG最短60秒，因此年龄增长不是主循环再次卡死。配额当时可用（day188/month7708），VISIBLE、misses0，不当死亡池。该低频覆盖限制单独报告，不能拿Solana秒级数字覆盖它，也不因现在仍持仓认定自然20U亏损。
+
 当前184唯一ID全部有可达处理分支：90普通/缺省、14dex_visible、24exact_entry_family归主admission（128）；56 isolated由20 pattern和36capital处理，16种capital exit overlay有明确evaluator。主family分布broad36/reawakening32/shadow14/flow32/dex继承14。未发现unknown handler，但分支存在不等于所有自然输入均已证明正确。
 
 确证并已局部修复的多源问题：生产snapshot1005378的Gecko原文h1 volume30849.6037588876、buys462/sells336实际存在，normalize却仅保留m5，致prior55等输入丢失；现保留h1，缺失保持None。Gecko发现入口以前没有调用Dex已有的本地上下文触发器，现先记录discovery建立forward cohort后再按相同candidate scope触发，不增网络调用、不放宽clean-onchain。原observer复制把Gecko标成Dex，现保留provider与观察时戳。真实Runtime/Store以及Dex/Gecko参数化来源测试通过。该生产帧还存在现金不足，不能将输入缺陷直接称漏买损失。

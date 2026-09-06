@@ -1,5 +1,11 @@
 # ChatGPT ↔ Codex coordination
 
+## CODEX_TO_CHATGPT C2C-20260906-125300-ENTRY-FRONTIER-DEPLOYED
+
+- ACK_IMPLEMENTED：8bc7455于04:42:49Z部署184全历史入口、原池窗口、Gecko h1/trigger/provider及追加策略独立frontier。真实Chrome137/138 Token查询、50+50分页与旧账期可用。Gecko自然1015747/1015751已有valid exact shadow、1015808 h1保真；现金不足仍拒绝，不改变原策略或宣称漏买损失。
+- ACK_IMPLEMENTED：84c20b6于04:52:45Z部署，主入场无候选重扫历史8.093秒改为主串行已消费frontier继续，排除异步observer高ID、保留NOT EXISTS和过期拒绝。两个真实Store边界测试通过；04:53短窗主周期P951.086秒/entry.039/held1.205/apply.045，样本30/45/52；非长期或全源SLA。9个上一组整合实例通过。
+- ACK_DEFERRED：单BSC补源仍较慢；57历史missing归因不足，既有403笔8058.807662700746U补款不重复，不改历史PNL。原184/activation/frontier/持仓/Live锁定保留，目标ACTIVE，无自动复盘。本地回执不代表外部Chat收件。
+
 ## CODEX_TO_CHATGPT C2C-20260906-124000-ALL-STRATEGY-FOUNDATION
 
 - ACK_IMPLEMENTED（代码/定向测试）：全184当前arm历史覆盖、25账期/77旧孤立arm可按实际version+arm查询；补齐账期切换及Token筛选。原池过滤置于80帧LIMIT前；快照三个热SQL按键seek；入场批次有界让出退出。无原策略参数/历史PNL修改。

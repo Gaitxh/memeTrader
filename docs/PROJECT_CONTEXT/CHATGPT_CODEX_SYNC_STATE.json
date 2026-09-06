@@ -40,11 +40,11 @@
   "active_cycle": {
     "priority": "P0",
     "cycle_id": "funding-20260905-fixed-1000",
-    "status": "ALL_STRATEGY_HISTORY_AND_FOUNDATION_REPAIRS_IN_PROGRESS",
-    "objective": "Preserve184 strategies, original funding/contracts/open positions/history and manual followup. All184 current history arms plus77 orphan historical arms exposed across25periods. Same-pool history LIMIT, account snapshot seeks, entry work budget and appended-policy first-frontier isolation repaired with targeted tests; deployment and actual browser QA pending. Full184 routing scan identified Gecko source-context/field projection defects, being repaired without changing strategy gates. Previous26 BUY losses/25strategies520U separate credits remain, total403 credits8058.807662700746U; no original PNL rewriting.57 legacy missing cases still need causal evidence. Latest pre-deploy04:37 held fetchP95=33.92s/main intervalP95=15.80s; do not claim stable SLA. No reset/new strategy research/Live/automatic review.",
+    "status": "ALL184_HISTORY_SOURCE_PARITY_AND_ENTRY_FRONTIER_DEPLOYED",
+    "objective": "8bc7455 deployed04:42:49Z and84c20b6 deployed04:52:45Z, pushed. Preserve184 original strategies/funding/contracts/open positions/history/Live lock/manual followup. Actual Chrome verified137/138 NUKE BUY+2SELL, current100record pagination and25periods incl77 orphan arms; full184 handler/history coverage. Fixed original-pool LIMIT, Gecko h1/trigger/provider, snapshot seeks, appended-arm first-frontier isolation. Empty admission rescanned history8.093s; now main-writer frontier excludes async observer high IDs, same RO query.101ms. Two Store boundary tests plus previous9 integrated instances pass.04:53 short-window main intervalP951.086s(n30), entry.039s(n45), held1.205s/apply.045s(n52); not sustained SLA. One BSC complementary source remains slower.403 credits8058.807662700746U unchanged,57 legacy missing cases still evidence-limited. Goal remainsACTIVE; no reset/new strategy/automatic review.",
     "scope_guard": "The one user-authorized initialization was used at 2026-09-05T07:37:08.842373Z, snapshot frontier 829428. Never repeat it automatically. Old positions continue exiting in their old funding period; proceeds must not fund new accounts. Preserve all history and IDs. No MAE/MFE, no manual strategy selection, no future data or historical backfill. Valid same-pool liquidity below 1 USD writes off remaining Paper cost. Live stays locked: balance sizing and mocked tests do not resolve Paper-fill signal/exit coupling or constitute mainnet validation.",
-    "fact_cutoff_utc": "2026-09-06T04:40:00Z",
-    "latest_result_message_id": "C2C-20260906-124000-ALL-STRATEGY-FOUNDATION",
+    "fact_cutoff_utc": "2026-09-06T04:53:27Z",
+    "latest_result_message_id": "C2C-20260906-125300-ENTRY-FRONTIER-DEPLOYED",
     "current_result_report": "docs/PROJECT_CONTEXT/FOUNDATION_HISTORY_REPAIR_2026-09-06.md",
     "historical_snapshot_warning": "The older narrative snapshots below are retained history, not current runtime authority. In particular unconstrained funding and unconditional stability claims are superseded by current_result_report.",
     "latest_result_snapshot": "Commits 769dc47/15b4d73/3883c0b pushed; pool identity and full-period sampled account UI deployed without reset. Four historical cross-pool SELL corrections preserved raw trades and quarantined 86 capital-path-contaminated samples. Multiple SELL corrections on one position now aggregate; two affected API realized PNL values match effective ledgers within 6e-13U. 305 post-deployment SELLs had no pool/time-order mismatch. New independent cost-coverage scaleout started 2026-09-05T09:00:51.814712Z at snapshot frontier833371; existing127 unchanged, now128. At09:04 short-window strategy period p95=1.097s and batch apply/exit p95=.0995s; external fetch p95=8.418s. Full-period curves use incremental indexed reads and bounded sampling; MDD is calculated before display sampling. Discovery supports ALL/Solana/BSC/Robinhood with actual decision counts. Two affected accounts still have unresolved historical execution evidence and no fabricated equity; per-token freshness long tails and Live Paper-fill coupling remain explicit limitations.",
@@ -885,7 +885,7 @@
       "next_sync_event": "natural Flat Compression Breakout evidence, sustained provider outage, or evidence-backed additive strategy synthesis"
     }
   ],
-  "last_codex_reply_id": "C2C-20260906-124000-ALL-STRATEGY-FOUNDATION",
+  "last_codex_reply_id": "C2C-20260906-125300-ENTRY-FRONTIER-DEPLOYED",
   "forced_attention_message_id": null,
   "forced_attention_instruction": "No forced attention remains from C2C-20260904-115000. Await natural runner/Vault Shadow evidence before additive result-driven synthesis; preserve the old 124 and keep Live locked.",
   "attention_required": false,
