@@ -147,6 +147,16 @@ def test_discovery_funnel_keeps_zero_signal_arms_and_counts_recorded_frames(tmp_
             "rejected", "pattern_observation", json.dumps({
                 "outcomes": {"waiting": "wait_amountful_flow_provenance", "ready": "signal_ready"},
                 "ready_arm_ids": ["ready"], "private_payload": "do-not-expose"})))
+    for i, (chain, age, version, reason) in enumerate((
+        ("solana", 2, "test-funnel", "insufficient_cash"),
+        ("bsc", 1, "test-funnel", "strategy_open_slot_limit"),
+        ("solana", -1, "test-funnel", "future-excluded"),
+        ("solana", 31, "test-funnel", "old-excluded"),
+        ("solana", 1, "old-period", "wrong-period-excluded"),
+    )):
+        store.db.execute("INSERT INTO chain_meme_trader_entry_decisions "
+            "(definition_version,arm_id,shadow_cohort_id,token_id,baseline_quote_result_id,decided_at,status,reason) "
+            "VALUES(?,'ready',?,?,1,?,'rejected',?)", (version, i, chain + ":mint", iso(now - timedelta(minutes=age)), reason))
     store.db.commit()
     store.close()
     data = ChainWebData(config_path)
@@ -158,9 +168,13 @@ def test_discovery_funnel_keeps_zero_signal_arms_and_counts_recorded_frames(tmp_
     assert rows["waiting"]["admitted"] == rows["ready"]["admitted"] == 0
     assert rows["ready"]["signal_ready"] == 2  # Never reported as BUY.
     assert rows["unrecorded"]["signal_observations"] is None
+    assert rows["ready"]["recent_rejected"] == 2
+    assert {r["reason"] for r in rows["ready"]["rejection_reasons"]} == {"insufficient_cash", "strategy_open_slot_limit"}
+    assert rows["unrecorded"]["decision_last_at"] is None
     assert "do-not-expose" not in json.dumps(payload)
     sol = {r["arm_id"]: r for r in data.discovery_state("solana")["funnel"]}
     assert sol["waiting"]["signal_observations"] == 1
+    assert sol["ready"]["recent_rejected"] == 1
     assert data.discovery_state("robinhood")["funnel"][0]["signal_observations"] is None
     assert data.discovery_state("bsc")["funnel_meta"] == payload["funnel_meta"]
     # The global rowid tail is bounded before filtering; it is not a full-period scan.

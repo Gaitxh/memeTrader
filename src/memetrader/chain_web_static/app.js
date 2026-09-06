@@ -72,6 +72,9 @@ const queueStatusText = (status) => ({filled:'已卖出',quoting:'等待下一�
 const sellabilityText = (status) => ({MARK_SELLABLE:'池与价格可见'})[status]||'等待新行情';
 const reasonText = (reason='') => {
   const value=String(reason);
+  const known={entry_cash_below_order_size:'策略可用现金不足本次下单金额',entry_cash_below_20usdc:'策略可用现金不足 20 USDC',insufficient_cash:'策略可用现金不足',strategy_open_slot_limit:'已达到策略同时持仓上限',entry_pool_liquidity_unknown:'等待原池流动性数据',entry_pool_liquidity_below_1000_usd:'原池流动性低于 1000 美元，禁止买入',entry_pool_price_or_liquidity_invalid:'原池价格或流动性未达到入场要求',capital_broad_start_not_ready:'资本策略启动条件未满足',awaiting_distinct_observation_sequence:'等待下一次独立观察',wait_amountful_flow_provenance:'等待可追溯的实际资金流证据',family_episode_already_enrolled_or_cooldown_active:'本轮已参与或仍在再入场冷却期',pattern_next_observation:'独立后帧确认入场'};
+  if(known[value])return known[value];
+  if(value.startsWith('wait_')||value.startsWith('awaiting_')||value.includes('not_ready')||value.includes('not_met')||value.includes('rejected'))return value;
   if(value.includes('take_profit'))return '达到分批止盈条件';
   if(value.includes('trailing'))return '从高点回撤，保护利润';
   if(value.includes('hard_stop'))return '触发止损';
@@ -514,12 +517,14 @@ function renderFunnel(strategies){
   if(discoveryView?.chain===currentChain)strategies=discoveryView.funnel.map(row=>({arm_id:row.arm_id,entry_decisions:row}));
   const max=Math.max(1,...strategies.map(s=>(s.entry_decisions||{}).admitted||0));
   const meta=discoveryView?.chain===currentChain?discoveryView.funnel_meta:null;
-  if($('#funnel-note'))$('#funnel-note').textContent=`放行 / 入场判定为本账期累计，不等于成交。信号前统计只使用最近 30 分钟、最多 ${meta?.row_limit||4000} 条已有评估帧；重复采样不等于独立机会。${meta?`统计更新 ${time(meta.generated_at)}`:''}`;
+  if($('#funnel-note'))$('#funnel-note').textContent=`放行 / 入场判定为本账期累计，不等于成交。近期信号评估和入场判定分别最多取 ${meta?.row_limit||4000} 条、且在最近 30 分钟内；高负载时覆盖窗口更短。重复采样不等于独立机会。${meta?`统计更新 ${time(meta.generated_at)}`:''}`;
   $('#funnel').innerHTML=strategies.map(s=>{
     const d=s.entry_decisions||{},n=d.admitted||0;
     const reasons=(d.signal_reasons||[]).map(r=>`${reasonText(r.reason)} × ${r.count}`).join('；');
     const detail=d.signal_observations==null?'本窗口没有逐策略信号前记录，不能据此判定没有行情输入':`近期评估 ${d.signal_observations} 帧 · 信号就绪 ${d.signal_ready} 帧（非 BUY） · 最近 ${time(d.signal_last_at)}`;
-    return `<div class="funnel-row"><span class="funnel-label">${esc(strategyLabelForArm(s.arm_id))}</span><span class="bar"><i style="width:${Math.max(n?3:0,n/max*100)}%"></i></span><span class="funnel-count">${n} / ${n+(d.rejected||0)}</span><small class="funnel-detail">${esc(detail)}${reasons?`<br>${esc(reasons)}`:''}</small></div>`;
+    const rejected=(d.rejection_reasons||[]).map(r=>`${reasonText(r.reason)} × ${r.count}`).join('；');
+    const post=d.decision_last_at?`近期入场判定：放行 ${d.recent_admitted} / 拒绝 ${d.recent_rejected} · ${rejected||'无已记录拒绝'}（不等于成交）`:'近期有界样本未记录信号后的入场判定';
+    return `<div class="funnel-row"><span class="funnel-label">${esc(strategyLabelForArm(s.arm_id))}</span><span class="bar"><i style="width:${Math.max(n?3:0,n/max*100)}%"></i></span><span class="funnel-count">${n} / ${n+(d.rejected||0)}</span><small class="funnel-detail">${esc(detail)}${reasons?`<br>${esc(reasons)}`:''}<br>${esc(post)}</small></div>`;
   }).join('');
 }
 

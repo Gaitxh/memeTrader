@@ -604,11 +604,38 @@ class ChainWebData:
                 for item in arms.values():
                     item["signal_reasons"] = [{"reason": reason, "count": count}
                         for reason, count in item["signal_reasons"].most_common(3)]
-            payload = {"arms": list(policies), "chains": chains, "meta": {
+            decision_rows = connection.execute(
+                "SELECT * FROM (SELECT arm_id,token_id,decided_at,status,reason,definition_version "
+                "FROM chain_meme_trader_entry_decisions ORDER BY id DESC LIMIT ?) "
+                "WHERE definition_version=? AND decided_at>=? AND decided_at<=? ORDER BY decided_at DESC",
+                (self.SIGNAL_FUNNEL_ROW_LIMIT, version, cutoff, iso(now)),
+            ).fetchall()
+            decisions = {scope: {} for scope in chains}
+            for row in decision_rows:
+                arm_id, chain = str(row["arm_id"]), str(row["token_id"]).split(":", 1)[0]
+                policy = policies.get(arm_id)
+                if not policy or chain not in chains or chain == "all" or str(row["decided_at"]) < str(policy.get("forward_started_at") or ""):
+                    continue
+                for scope in ("all", chain):
+                    item = decisions[scope].setdefault(arm_id, {
+                        "recent_admitted": 0, "recent_rejected": 0,
+                        "decision_last_at": row["decided_at"], "rejection_reasons": Counter(),
+                    })
+                    item["recent_" + row["status"]] += 1
+                    if row["status"] == "rejected":
+                        item["rejection_reasons"][row["reason"]] += 1
+            for arms in decisions.values():
+                for item in arms.values():
+                    item["rejection_reasons"] = [{"reason": reason, "count": count}
+                        for reason, count in item["rejection_reasons"].most_common(3)]
+            payload = {"arms": list(policies), "chains": chains, "decision_chains": decisions, "meta": {
                 "generated_at": iso(now), "window_minutes": 30,
                 "row_limit": self.SIGNAL_FUNNEL_ROW_LIMIT, "rows_considered": len(rows),
                 "earliest_evaluation_at": min((r["evaluated_at"] for r in rows), default=None),
                 "counts_are": "recorded_evaluation_frames_not_unique_opportunities_or_trades",
+                "decision_rows_considered": len(decision_rows),
+                "decision_earliest_at": min((r["decided_at"] for r in decision_rows), default=None),
+                "decision_counts_are": "bounded_recent_entry_decisions_not_buy_fills",
             }}
             self._signal_funnel_cache = (time.monotonic(), version, payload)
             return payload
@@ -647,6 +674,9 @@ class ChainWebData:
                            **signals["chains"][chain].get(arm_id, {
                                "signal_observations": None, "signal_ready": None,
                                "signal_last_at": None, "signal_reasons": [],
+                           }), **signals["decision_chains"][chain].get(arm_id, {
+                               "recent_admitted": 0, "recent_rejected": 0,
+                               "decision_last_at": None, "rejection_reasons": [],
                            })) for arm_id in dict.fromkeys([*signals["arms"], *decisions])]
             heartbeat = connection.execute(
                 "SELECT COALESCE(last_item_at,last_ok_at) AS updated_at "
