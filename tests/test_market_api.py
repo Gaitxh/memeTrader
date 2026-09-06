@@ -234,6 +234,43 @@ def test_public_exact_pool_client_preserves_cache_generation_and_identity(valida
     asyncio.run(scenario())
 
 
+def test_public_exact_pool_unchanged_content_with_new_response_date_is_new_observation():
+    import httpx
+    from memetrader.collectors import HttpClient
+
+    async def scenario():
+        clock = Clock()
+        calls = []
+
+        def respond(request):
+            calls.append(request)
+            return httpx.Response(200, json=gecko_payload(), headers={
+                "etag": 'W/"unchanged-quiet-pool"', "cache-control": "max-age=30",
+                "date": ("Sat, 05 Sep 2026 12:00:00 GMT" if len(calls) <= 2
+                         else "Sat, 05 Sep 2026 12:01:02 GMT"),
+            })
+
+        http = HttpClient(transport=httpx.MockTransport(respond), min_host_interval=0)
+        client = GeckoTerminalPoolClient(http, now_fn=clock)
+        first = (await client.get_pools("solana", ["pool-A"]))["pool-A"]
+        clock.advance(31)
+        old = (await client.get_pools("solana", ["pool-A"]))["pool-A"]
+        assert old["observedAt"] == first["observedAt"]
+        assert old["raw"]["http_cache"]["generation_reused"] is True
+        clock.advance(31)
+        refreshed = (await client.get_pools("solana", ["pool-A"]))["pool-A"]
+        assert refreshed["observedAt"] == "2026-09-05T12:01:02Z"
+        assert refreshed["priceUsd"] == first["priceUsd"]
+        assert refreshed["liquidity"] == first["liquidity"]
+        assert refreshed["raw"]["http_cache"]["generation_reused"] is False
+        clock.advance(1)
+        local = (await client.get_pools("solana", ["pool-A"]))["pool-A"]
+        assert local["observedAt"] == refreshed["observedAt"] and len(calls) == 3
+        await http.close()
+
+    asyncio.run(scenario())
+
+
 def test_public_exact_pool_client_429_propagates_without_retry():
     import httpx
     from memetrader.collectors import HttpClient

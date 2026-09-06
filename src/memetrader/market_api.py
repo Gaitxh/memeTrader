@@ -246,6 +246,9 @@ class GeckoTerminalPoolClient:
                 old_headers = previous[1]["raw"]["http_cache"]
                 same_generation = (
                     bool(headers["etag"]) and headers["etag"] == old_headers.get("etag")
+                    # ETag validates content, not its age. An unchanged quiet pool
+                    # can have a newly generated/validated response with a new Date.
+                    and (not headers["date"] or headers["date"] == old_headers.get("date"))
                     or not headers["etag"] and bool(headers["date"])
                     and headers["date"] == old_headers.get("date")
                 )
