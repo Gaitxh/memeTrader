@@ -92,7 +92,33 @@ def test_revision_spec_keeps_unselected_contracts_unchanged():
         "arm_id": "experiment_narrative_candidate_v1",
         "strategy_revision": 1,
     }
-    assert revision_spec(input_only) == input_only
+    replacement = revision_spec(input_only)
+    assert replacement["strategy_revision"] == 2
+    assert replacement["entry_revision_kind"] == "evidence_extension_l0"
+    assert replacement["revision_history"][0]["strategy_revision"] == 1
+
+
+def test_capital_release_revisions_preserve_slots_and_change_actual_exit_rules():
+    from memetrader.l0_experiments import l0_experiment_policies
+    from memetrader.store import Store
+    policies = [Store.chain_meme_trader_v21_policies()[-1],
+                Store.chain_meme_trader_cost_coverage_scaleout_policy(),
+                *l0_experiment_policies()]
+    revised = [revision_spec(policy) for policy in policies]
+    for old, new in zip(policies, revised):
+        assert new["arm_id"] == old["arm_id"]
+        assert new["strategy_revision"] == 2
+        assert new["revision_changes"]
+        assert new["revision_history"][0]["name"] == old["name"]
+        assert new["entry_family"] == old["entry_family"]
+        assert new.get("notional_usd", 20) == old.get("notional_usd", 20)
+    assert revised[0]["take_profit"] == [{"return": .4, "fraction_of_remaining": .75}]
+    assert revised[1]["take_profit"] == [{"return": .3, "fraction_of_remaining": 1.0}]
+    assert revised[2]["capital_exit_kind"] == "l0_loss_deterioration"
+    assert revised[3]["capital_exit_kind"] is None
+    assert revised[2]["runner_review_minutes"] == revised[3]["runner_review_minutes"] == 10
+    assert revised[4]["take_profit"][0]["fraction_of_remaining"] == .5
+    assert revised[5]["take_profit"][0]["fraction_of_remaining"] == 1
 
 
 def test_group_revisions_preserve_main_coverage_and_existing_exits():

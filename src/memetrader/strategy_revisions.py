@@ -9,6 +9,12 @@ import copy
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
+from .revision_main_extensions import revise_main_extension
+from .revision_evidence_extensions import (
+    evaluate_evidence_extension_entry,
+    revise_evidence_extension,
+)
+
 from .capital_exits import (
     HOLD,
     SELL,
@@ -226,6 +232,17 @@ _CONDITIONAL_RUNNER_METADATA = {
     "basis": "当前forward_patterns conditional_runner分支是单帧broad_launch_pattern",
 }
 
+_CAPITAL_RELEASE_ARMS = frozenset({
+    "broad_principal_lock_runner_v1", "broad_cost_coverage_scaleout_v1",
+    "l0_continuation_failure_candidate_v1", "l0_continuation_failure_control_v1",
+    "l0_profit_lock_candidate_v1", "l0_profit_lock_control_v1",
+})
+_CAPITAL_RELEASE_METADATA = {
+    "reason": "资金占用和亏损集中；固定时点易错过可用帧，分批兑现不保证及时回收资本",
+    "changes": [],
+    "basis": "125/128的旧经济样本受污染，不用于证明策略无效；190至193存在低余额与大量开放仓，新增资本释放假设待自然验证",
+}
+
 
 def revision_spec(policy: Mapping[str, Any]) -> dict[str, Any]:
     """Return a copied revision-2 policy, or an unchanged copy for other arms."""
@@ -238,6 +255,15 @@ def revision_spec(policy: Mapping[str, Any]) -> dict[str, Any]:
         metadata = _ADDITIVE_L0_EXIT_METADATA
     elif arm_id in CONDITIONAL_RUNNER_ARMS:
         metadata = _CONDITIONAL_RUNNER_METADATA
+    elif arm_id in _CAPITAL_RELEASE_ARMS:
+        metadata = _CAPITAL_RELEASE_METADATA
+    extension = revise_evidence_extension(revise_main_extension(policy))
+    if extension != policy:
+        metadata = {
+            "reason": extension["revision_reason"],
+            "changes": extension["revision_changes"],
+            "basis": extension["revision_basis"],
+        }
     if metadata is None:
         return revised
 
@@ -253,6 +279,10 @@ def revision_spec(policy: Mapping[str, Any]) -> dict[str, Any]:
     history = copy.deepcopy(revised.get("revision_history") or [])
     if not history:
         history.append(source)
+
+    if extension != policy:
+        revised = extension
+        revised["source_entry_family"] = policy.get("entry_family")
 
     revised.update({
         "strategy_revision": 2,
@@ -310,6 +340,46 @@ def revision_spec(policy: Mapping[str, Any]) -> dict[str, Any]:
         revised["entry_match_mode"] = "isolated_pattern_observer"
         revised["entry_revision_kind"] = "conditional_runner_confirmation"
         revised["paired_entry_group"] = "conditional_runner_revision_v2"
+    elif arm_id == "broad_principal_lock_runner_v1":
+        revised.update({
+            "name": "较早本金回收趋势Runner",
+            "description": "成本后经济收益达到40%时卖出75%剩余仓位；仅实际累计回款覆盖原投入才标记回本，保留趋势仓。",
+            "take_profit": [{"return": .40, "fraction_of_remaining": .75}],
+            "trailing_activate_return": .40,
+            "runner_review_minutes": 30.0,
+            "revision_changes": ["本金目标由80%收益卖60%改为40%收益卖75%", "30分钟仍未回本时回收资本，原硬止损和runner退出保留"],
+        })
+    elif arm_id == "broad_cost_coverage_scaleout_v1":
+        revised.update({
+            "name": "成本后整仓兑现",
+            "description": "成本后经济收益达到30%时一次兑现；比较整仓资本回收与旧多档卖出的费用及占用。",
+            "exit_family": "cost_coverage_full_realize",
+            "take_profit": [{"return": .30, "fraction_of_remaining": 1.0}],
+            "revision_changes": ["三次分档卖出替换为净收益30%整仓兑现", "保留20%硬止损、追踪和15分钟最长持有；避免多笔固定费用"],
+        })
+    elif arm_id.startswith("l0_continuation_failure_"):
+        candidate = arm_id == "l0_continuation_failure_candidate_v1"
+        revised.update({
+            "name": "滚动衰退释放资本" if candidate else "十分钟未回本释放资本",
+            "description": "同入场、同10分钟未回本和30分钟最长持有；候选额外使用持有60秒后的连续L0恶化退出，取消狭窄固定检查点。",
+            "capital_exit_kind": "l0_loss_deterioration" if candidate else None,
+            "capital_exit_policy": copy.deepcopy(L0_LOSS_DETERIORATION_POLICY) if candidate else {},
+            "exit_family": "l0_rolling_loss" if candidate else "l0_time_budget",
+            "runner_review_minutes": 10.0,
+            "max_hold_minutes": 30.0,
+            "paired_entry_group": "l0_rolling_loss_revision_v2",
+            "revision_changes": ["取消60/120秒窄检查点，候选使用滚动的连续衰退帧", "两臂均10分钟未回本退出、30分钟最长持有；同入场保留"],
+        })
+    elif arm_id.startswith("l0_profit_lock_"):
+        candidate = arm_id == "l0_profit_lock_candidate_v1"
+        revised.update({
+            "name": "分半兑现后连续恶化锁利" if candidate else "整仓快速锁利",
+            "description": "净经济收益25%时，候选兑现一半并保留原连续恶化锁利，对照整仓兑现；最多持有60分钟。",
+            "take_profit": [{"return": .25, "fraction_of_remaining": .5 if candidate else 1.0}],
+            "max_hold_minutes": 60.0,
+            "paired_entry_group": "l0_staged_profit_revision_v2",
+            "revision_changes": ["新增净收益25%兑现：候选半仓，对照全仓", "60分钟资本占用上限，保留同入场和候选原L0恶化锁利"],
+        })
     return revised
 
 
@@ -405,6 +475,10 @@ def revision_entry_signal(
 ) -> tuple[bool, str]:
     """Confirm a revised entry using only recent identity-bound L0 frames."""
     kind = str(policy.get("entry_revision_kind") or "")
+    if kind == "evidence_extension_l0":
+        return evaluate_evidence_extension_entry(
+            history, policy, decision_at=decision_at, activated_at=activated_at,
+        )
     needed = (
         2 if kind == "conditional_runner_confirmation"
         else 3 if kind == "mature_confirmation"

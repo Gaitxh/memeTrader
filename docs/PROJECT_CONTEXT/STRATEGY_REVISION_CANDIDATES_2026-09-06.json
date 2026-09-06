@@ -1,5 +1,9 @@
 {
-  "schema_version": "strategy-revision-candidates/v2",
+  "schema_version": "strategy-revision-candidates/v3",
+  "implementation_status": "ALL_122_IMPLEMENTED_PENDING_FINAL_DEPLOYMENT",
+  "implementation_display_format": "策略XXX-V002; preserve display_index",
+  "implementation_policy_source": "src/memetrader/strategy_revisions.py; revision_main_extensions.py; revision_evidence_extensions.py",
+  "selection_record_note": "Below groups, reasons and metrics preserve the earlier selection snapshot. All 122 now have implemented V002 rules; former REVIEW_ONLY dispositions are superseded by IMPLEMENTATION_DELIVERY_2026-09-06.md and each policy revision_history.",
   "generated_at": "2026-09-06T13:27:32.461903Z",
   "active_definition_version": "chain-meme-trader/funding-20260905-fixed-1000",
   "source": {
@@ -17,8 +21,8 @@
   },
   "summary": {
     "candidate_count": 122,
-    "actual_strategy_revision_2_count": 59,
-    "review_only_or_input_dependency_count": 63,
+    "actual_strategy_revision_2_count": 122,
+    "review_only_or_input_dependency_count": 0,
     "zero_buy_age_ge_10h_count": 15,
     "buy_1_to_2_age_ge_10h_count": 37,
     "large_total_loss_count": 37,
@@ -60,7 +64,7 @@
     "Engineering-ineligible rows remain listed but cannot support economic tuning.",
     "Zero BUY supplies no return sample; input/event/state audit precedes any threshold change.",
     "The 32 low-frequency reawakening siblings all bought cohort 10237, so they represent one observed opportunity rather than 32 independent outcomes.",
-    "Input-dependent arms with no implementable behavior change remain at their old revision; inclusion in this review does not itself create V002.",
+    "All 122 now have a rule change or explicitly labelled alternative using available inputs; old evidence labels are not reused to claim unavailable events, wallets or decoded flow.",
     "This file is a revision review matrix, not registration or deployment authority."
   ],
   "revision_groups": {
