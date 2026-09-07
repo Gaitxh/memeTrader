@@ -7347,6 +7347,16 @@ class Store:
             (f"market-entry-post-observation/v1:{definition_version}",)).fetchone()
         if timing is not None:
             definition["post_observation_execution"] = json.loads(timing[0])
+        controls = connection.execute("SELECT value_json FROM kv WHERE key=?",
+            (f"chain-meme-account-convergence/v1:{definition_version}",)).fetchone()
+        if controls is not None:
+            control = json.loads(controls[0])
+            definition["account_control_activation"] = control["activated_at"]
+            for policy in definition["policies"]:
+                state = control["arms"].get(policy["arm_id"])
+                if state:
+                    policy.update(account_lifecycle=state["state"], entry_paused=True,
+                                  retirement_representative=state.get("representative"))
         return definition
 
     def _chain_meme_trader_effective_definition(
@@ -7428,6 +7438,8 @@ class Store:
     def _chain_meme_trader_policy_active_for_snapshot(
         policy: Mapping[str, Any], snapshot: Mapping[str, Any],
     ) -> bool:
+        if policy.get("entry_paused"):
+            return False
         frontier = policy.get("forward_activation_snapshot_id")
         started_at = policy.get("forward_started_at")
         if frontier is None or started_at is None:
@@ -27888,6 +27900,9 @@ class Store:
             "definition_version=? AND shadow_cohort_id=? AND status='admitted' "
             "ORDER BY arm_id", (version, int(cohort_id)),
         ).fetchall()
+        # Already admitted/queued observations must not reopen a paused account.
+        paused = {p["arm_id"] for p in definition["policies"] if p.get("entry_paused")}
+        decisions = [d for d in decisions if str(d["arm_id"]) not in paused]
         if net_flow_by_arm is None:
             net_flow_by_arm = self._chain_meme_trader_effective_net_flows(version)
         pair_blocked = self._chain_meme_primary_pair_blocked(definition["policies"], {

@@ -626,7 +626,7 @@ def test_strategy_universe_refreshes_for_additive_strategy_versions(tmp_path: Pa
         "canonical_id": "web-additive-forward-v1",
         "name": "Web additive forward",
     })
-    store.append_chain_meme_trader_policy(appended)
+    store.append_chain_meme_trader_policy(appended, definition_version=Store.CHAIN_MEME_TRADER_V22_VERSION)
     assert store.record_chain_meme_trader_account_snapshots(
         definition_version=Store.CHAIN_MEME_TRADER_V22_VERSION,
     ) == 1
@@ -642,8 +642,26 @@ def test_strategy_universe_refreshes_for_additive_strategy_versions(tmp_path: Pa
     )
     assert len(live["strategies"]) == 128
     assert appended_live["maturity"] == "waiting"
+    # Lifecycle changes invalidate the universe cache without changing funding/accounts.
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    store.db.execute("INSERT INTO kv(key,value_json,updated_at) VALUES(?,?,?)", (
+        f"chain-meme-account-convergence/v1:{Store.CHAIN_MEME_TRADER_V22_VERSION}",
+        json.dumps({"activated_at":"2026-09-07T15:00:00Z","arms":{
+            "web_additive_forward_v1":{"state":"RETIRED_DUPLICATE"},
+            "broad_mature_continuity_control_v1":{"state":"PAUSED_NEW_ENTRY"}}}),
+        "2026-09-07T15:00:00Z"))
+    store.db.commit()
+    store.close()
+    retired_universe=web_data.strategy_universe()
+    assert len(retired_universe["families"]) == 128
+    assert retired_universe["summary"]["retired_duplicate_accounts"] == 1
+    assert retired_universe["summary"]["paused_entry_accounts"] == 1
+    assert retired_universe["families"][-1]["default_visible"] is False
+    paused=next(f for f in retired_universe["families"] if "broad_mature_continuity_control_v1" in f["active_arm_ids"])
+    assert paused["default_visible"] is True and paused["realtime_state"] == "PAUSED_NEW_ENTRY"
+    assert len(ChainWebData(config_path).state(compact=True)["strategies"]) == 128
     assert appended_live["account"]["capital_neutral_total_pnl_usd"] == 0.0
-    assert appended_live["account"]["account_return_fraction"] is None
+    assert appended_live["account"]["account_return_fraction"] == 0.0
 
 
 def test_chain_web_reports_distinct_tokens_holding_duration_and_trade_markers(

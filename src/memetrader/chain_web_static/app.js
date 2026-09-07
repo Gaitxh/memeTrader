@@ -362,6 +362,8 @@ function strategyMetrics(live){
 }
 
 function fidelityLabel(family){
+  if(family?.account_lifecycle==='RETIRED_DUPLICATE')return '重复账户已退役 · 持仓继续退出';
+  if(family?.account_lifecycle==='PAUSED_NEW_ENTRY')return '暂停新入场 · 持仓继续退出';
   const value=family?.fidelity_status||family?.realtime_state;
   return ({REPLICA_ELIGIBLE:'原历史规则',REPLICA_WITH_ENGINEERING_CORRECTION:'历史规则·统一成交口径',DEXSCREENER_SUCCESSOR:'DexScreener 新前向策略',ADDITIVE_FORWARD:'新增前向策略',COVERAGE_UNAVAILABLE:'缺少原始证据，未交易',ACTIVE_FORWARD:'前向运行',FROZEN_HISTORY:'仅历史记录'})[value]||'待核验';
 }
@@ -476,7 +478,8 @@ function renderUniverseDetail(family){
 
 function renderUniverse(){
   if(!universe||universe.status!=='ok')return;
-  const families=universe.families||[];
+  const allFamilies=universe.families||[];
+  const families=allFamilies.filter(f=>f.default_visible!==false||$('#universe-show-retired')?.checked);
   const active=families.filter(f=>liveMetricForFamily(f).status==='ACTIVE_FORWARD').length;
   const replicas=families.filter(f=>f.fidelity_status==='REPLICA_WITH_ENGINEERING_CORRECTION').length;
   const successors=families.filter(f=>f.fidelity_status==='DEXSCREENER_SUCCESSOR').length;
@@ -495,7 +498,7 @@ function renderUniverse(){
   }).sort((a,b)=>{
     return compareStrategyFamilies(a,b,sort);
   });
-  $('#universe-count').textContent=`显示 ${rows.length} / ${families.length} · ${time(state?.generated_at||universe.generated_at)} 刷新`;
+  $('#universe-count').textContent=`显示 ${rows.length} / ${families.length} · ${allFamilies.filter(f=>f.default_visible===false).length} 个重复账户已退役，历史保留 · ${time(state?.generated_at||universe.generated_at)} 刷新`;
   $('#universe-refresh').textContent=`${active} 个前向运行 · ${replicas} 个历史规则 · ${successors} 个 DexScreener 继承策略`;
   $('#canonical-universe tbody').innerHTML=rows.map((f,index)=>{const live=liveMetricForFamily(f),id=f.canonical_id||f.behavior_contract_hash;return `<tr class="strategy-row ${selectedCanonical===id?'selected':''}" data-canonical="${esc(id)}"><td>${index+1}</td><td><strong>${esc(strategyLabel(f,live.strategy))}</strong><small>唯一编号 #${String(strategyIndex(f)).padStart(3,'0')}</small></td><td><span class="status-pill ${live.status==='ACTIVE_FORWARD'?'closed':'retry'}">${esc(fidelityLabel(f))}</span></td><td><span class="maturity ${esc(live.maturity)}">${esc(maturityText(live.maturity))}</span><small>运行 ${esc(elapsedText(live.forwardAgeSeconds))}</small></td><td>${esc(readable(live.strategy?.entry_family||f.entry_family,entryLabels))}</td><td>${esc(readable(live.strategy?.exit_family||f.exit_family,exitLabels))}</td>${accountCells(live)}<td class="${pnlClass(live.pnl)}">${live.pnl==null?esc(live.pendingText):money(live.pnl)}${strategyMetrics(live)}</td><td class="${pnlClass(live.realizedPnl)}">${live.realizedPnl==null?'—':money(live.realizedPnl)}</td><td class="${pnlClass(live.unrealizedPnl)}">${live.unrealizedPnl==null?esc(live.pendingText):money(live.unrealizedPnl)}</td><td>${strategySparkline(live.strategy)}</td><td>${live.open}</td><td>${live.terminal}</td><td>${live.winRate==null?'等待样本':percent(live.winRate)}</td><td>${time(live.updatedAt)}</td></tr>`;}).join('')||'<tr><td colspan="16" class="empty">没有符合当前筛选条件的策略</td></tr>';
   $$('#canonical-universe tbody tr[data-canonical]').forEach(row=>row.addEventListener('click',()=>{const family=families.find(f=>(f.canonical_id||`C-${f.behavior_contract_hash}`)===row.dataset.canonical);renderUniverseDetail(family);refreshLive();}));
@@ -537,7 +540,7 @@ function renderSummary(data, strategies){
 function renderOverviewStrategies(){
   const target=$('#overview-strategies tbody');
   if(!target||!universe)return;
-  const ranked=(universe.families||[]).map(f=>({family:f,live:liveMetricForFamily(f)})).sort((a,b)=>compareStrategyFamilies(a.family,b.family,$('#overview-sort')?.value||'maturity'));
+  const ranked=(universe.families||[]).filter(f=>f.default_visible!==false).map(f=>({family:f,live:liveMetricForFamily(f)})).sort((a,b)=>compareStrategyFamilies(a.family,b.family,$('#overview-sort')?.value||'maturity'));
   target.innerHTML=ranked.map((item,index)=>`<tr class="strategy-row" data-overview-strategy="${esc(item.family.canonical_id||item.family.behavior_contract_hash)}"><td>${index+1}</td><td><strong>${esc(strategyLabel(item.family,item.live.strategy))}</strong><small>唯一编号 #${String(strategyIndex(item.family)).padStart(3,'0')} · ${esc(readable(item.live.strategy?.entry_family||item.family.entry_family,entryLabels))} → ${esc(readable(item.live.strategy?.exit_family||item.family.exit_family,exitLabels))}</small></td><td><span class="status-pill ${item.live.status==='ACTIVE_FORWARD'?'closed':'retry'}">${esc(fidelityLabel(item.family))}</span></td><td><span class="maturity ${esc(item.live.maturity)}">${esc(maturityText(item.live.maturity))}</span><small>运行 ${esc(elapsedText(item.live.forwardAgeSeconds))}</small></td>${accountCells(item.live)}<td class="${pnlClass(item.live.pnl)}">${item.live.pnl==null?esc(item.live.pendingText):money(item.live.pnl)}</td><td class="${pnlClass(item.live.realizedPnl)}">${item.live.realizedPnl==null?'—':money(item.live.realizedPnl)}</td><td class="${pnlClass(item.live.unrealizedPnl)}">${item.live.unrealizedPnl==null?esc(item.live.pendingText):money(item.live.unrealizedPnl)}</td><td>${strategySparkline(item.live.strategy)}</td><td>${item.live.open}</td><td>${item.live.terminal}</td><td>${item.live.winRate==null?'等待样本':percent(item.live.winRate)}</td><td>${time(item.live.updatedAt)}</td></tr>`).join('');
   $$('[data-overview-strategy]').forEach(row=>row.addEventListener('click',()=>{
     selectedCanonical=row.dataset.overviewStrategy;
@@ -1132,5 +1135,5 @@ document.body.addEventListener('click',async event=>{
 });
 $('#toggle-strategies')?.addEventListener('click',()=>{showAllStrategies=!showAllStrategies;if(state)renderStrategyRegistry(state);});
 $('#toggle-strategy-pool')?.addEventListener('click',()=>{showAllStrategyPool=!showAllStrategyPool;if(state)renderStrategyPool(state);});
-['#universe-search','#universe-state','#universe-class','#universe-version','#universe-sort'].forEach(selector=>$(selector)?.addEventListener(selector==='#universe-search'?'input':'change',renderUniverse));
+['#universe-search','#universe-state','#universe-class','#universe-version','#universe-sort','#universe-show-retired'].forEach(selector=>$(selector)?.addEventListener(selector==='#universe-search'?'input':'change',renderUniverse));
 bindTokenLinks();route();refreshPaperSettings(true);refreshUniverse();refreshFull();

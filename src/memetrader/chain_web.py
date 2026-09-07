@@ -1357,6 +1357,7 @@ class ChainWebData:
                 "fidelity_status", "forward_started_at",
                 "forward_activation_snapshot_id", "runtime_addition_id",
                 "strategy_revision", "revision_history",
+                "account_lifecycle", "entry_paused", "retirement_representative",
             }
             for policy in policies:
                 policy_arm_id = str(policy.get("arm_id") or "")
@@ -3030,9 +3031,11 @@ class ChainWebData:
                 "SELECT COALESCE(MAX(id),0) FROM chain_meme_trader_account_snapshots "
                 "WHERE definition_version=?", (active_version,),
             ).fetchone()[0])
+            control_row = connection.execute("SELECT updated_at FROM kv WHERE key=?",
+                (f"chain-meme-account-convergence/v1:{active_version}",)).fetchone()
             cache_key = (
                 modified_at, active_version, addition_frontier,
-                accounting_frontier, result_frontier,
+                accounting_frontier, result_frontier, control_row[0] if control_row else None,
             )
             with self._cache_lock:
                 if self._universe_cache is not None and self._universe_cache[0] == cache_key:
@@ -3204,6 +3207,16 @@ class ChainWebData:
                 "historical_realized_pnl_projected_sum_usd": 0.0,
                 "historical_metric_warning": "new forward strategy; no historical backfill",
             })
+        lifecycle_by_arm = {p["arm_id"]: p for p in active_policies}
+        for family in families:
+            policy = next((lifecycle_by_arm[a] for a in family.get("active_arm_ids", [])
+                           if a in lifecycle_by_arm), {})
+            lifecycle = policy.get("account_lifecycle")
+            family["default_visible"] = lifecycle != "RETIRED_DUPLICATE"
+            if lifecycle:
+                family.update(account_lifecycle=lifecycle, realtime_state=lifecycle,
+                              forward_enabled=False,
+                              retirement_representative=policy.get("retirement_representative"))
         payload = {
             "status": "ok",
             "generated_at": iso(utcnow()),
@@ -3215,6 +3228,8 @@ class ChainWebData:
                     report.get("behavior_families", [])
                 ),
                 "behavior_contract_families": len(families),
+                "retired_duplicate_accounts": sum(not f["default_visible"] for f in families),
+                "paused_entry_accounts": sum(f.get("account_lifecycle") == "PAUSED_NEW_ENTRY" for f in families),
                 "active_forward_families": sum(
                     family["realtime_state"] == "ACTIVE_FORWARD" for family in families
                 ),
