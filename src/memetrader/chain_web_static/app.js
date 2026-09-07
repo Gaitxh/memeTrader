@@ -209,14 +209,55 @@ async function refreshUpdates(){
   }catch(error){target.textContent=`更新记录读取失败：${error.message}`;}
 }
 
+const performanceTasks={
+  chain_meme_trader:['交易与持仓','策略判断与交易推进','检查入场条件、推进待成交意向并更新账户。','参与 Paper 买卖'],
+  chain_meme_market_marks:['交易与持仓','当前持仓行情与退出','批量更新当前账期持仓的原池行情，检查是否需要退出。','参与持仓退出'],
+  chain_meme_carried_market_marks:['交易与持仓','旧账期持仓行情与退出','继续管理旧账期尚未平仓的币。','参与旧仓退出'],
+  complementary_market_data:['交易与持仓','持仓缺失行情补源','主源缺少完整原池行情时，按额度尝试其他来源。','支持估值与退出'],
+  capital_quote:['交易与持仓','特殊策略的数量报价','核对指定数量代币可换回多少 USDC，优先处理退出。','特殊报价合同使用'],
+  multichain_meme_data:['发现与信号','多链新币与新池发现','从共享来源发现 Solana、BSC、Robinhood 的代币并补行情。','提供候选与行情'],
+  chain_meme_native_launch:['发现与信号','链上发行与迁移发现','采集发行平台的新币和迁移事件。','提供发现线索'],
+  pregrad_watch:['发现与信号','新币迁移前进度','跟踪尚未迁移到交易池的新币发行进度。','提供观察证据'],
+  chain_meme_pattern_pools:['发现与信号','原池与资金账户核验','核验候选币和持仓币的资金池及链上账户状态。','支持策略与退出'],
+  chain_meme_pattern_participation:['发现与信号','买卖参与者与金额流','采集有限资金池中的实际交易、买卖地址和金额。','提供策略证据'],
+  chain_meme_wsol_reference:['发现与信号','SOL 美元换算参考','更新共享 SOL→USDC 参考，供池内金额换算。','不是目标币成交价'],
+  chain_meme_pattern_narrative:['发现与信号','热点与叙事调查','按预算调查新鲜信息并关联代币，不把宣传当买入依据。','提供调查证据'],
+  chain_meme_authoritative_events:['发现与信号','OKX 官方公告','提取带明确链和合约地址的公告，保存待核线索。','公告不直接买入'],
+  chain_meme_extra_official:['发现与信号','其他官方公告与状态','轮流采集 Kraken、KuCoin、Coinbase 的官方信息。','提供信息线索'],
+  chain_meme_pattern_observer:['发现与信号','价格形态策略观察','跟踪突破、回撤、延续等形态，向相应实验策略提供判断。','可触发 Paper 策略'],
+  chain_meme_cohort_observer:['发现与信号','代币组对比策略观察','复用已收到的行情，比较同类代币的强弱和接力机会。','可触发 Paper 策略'],
+  chain_universe_outcomes:['研究与观察准备','候选币后续表现记录','用已保存行情跟踪发现后的结果，缺数据也保留。','不直接买卖'],
+  chain_meme_v22_vault_shadow_enroll:['研究与观察准备','资金池观察名单准备','核验资金池及代币账户，加入链上资金变化观察名单。','本步骤不直接买卖'],
+  flat_compression_breakout_shadow:['研究与观察准备','静默后突破研究','跟踪低活跃到放量突破，登记 Shadow 结果并更新共享行情。','本任务不直接买卖'],
+  chain_meme_entry_batch:['内部步骤','入场条件分批处理','策略主循环内部的一批候选判断。','属于策略主循环'],
+  chain_meme_account_snapshot:['内部步骤','账户余额与盈亏快照','保存各账户现金、仓位估值及盈亏。','属于账户处理'],
+  held_fetch:['内部步骤','持仓行情：排队与请求','持仓刷新内部等待和获取行情的耗时。','属于持仓刷新'],
+  held_apply_exit:['内部步骤','持仓行情：入库与退出判断','收到持仓行情后保存数据并判断退出。','属于持仓刷新'],
+  observer_fetch_with_wait:['内部步骤','候选行情：排队与请求','观察候选币时等待主任务让路并获取行情。','属于观察任务'],
+  observer_apply_exit:['内部步骤','候选行情：保存与关联处理','保存候选行情；由调用方决定是否附带退出判断。','属于观察任务'],
+  pattern_token_compute:['内部步骤','单币价格形态计算','价格形态观察任务内部的单个代币计算。','属于形态观察'],
+  cohort_passive_compute:['内部步骤','代币组对比计算','代币组观察任务内部处理已收到批次的耗时。','属于代币组观察'],
+};
+
 async function refreshPerformance(){
-  const target=$('#performance-content'),seconds=x=>x==null?'待采样':`${Number(x).toFixed(2)} 秒`;
+  const target=$('#performance-content'),seconds=(x,empty='暂无数据')=>x==null?empty:`${Number(x).toFixed(2)} 秒`;
   try{
     const response=await fetch('/api/performance',{cache:'no-store'}),data=await response.json();
     if(!response.ok)throw new Error(data.error||'读取失败');
-    const labels={chain_meme_trader:'策略判断与账户',chain_meme_market_marks:'当前持仓采集轮次',chain_meme_carried_market_marks:'旧账期持仓采集轮次',multichain_meme_data:'多链发现轮次',flat_compression_breakout_shadow:'静默突破观察',held_fetch:'持仓批次：排队与请求',held_apply_exit:'持仓批次：写入与退出判断'};
-    const rows=Object.fromEntries(Object.entries(data.timing?.components||{}).map(([name,v])=>[name,{...v,interval_p50_seconds:v.actual_interval_seconds?.p50,interval_p95_seconds:v.actual_interval_seconds?.p95,duration_p50_seconds:v.duration_seconds?.p50,duration_p95_seconds:v.duration_seconds?.p95}]));
-    target.innerHTML=`<p class="delta">统计更新 ${time(data.timing_recorded_at,true)} · 每类最多最近 120 次观测 · 页面可见 5 秒 / 隐藏 30 秒</p><div class="table-wrap"><table><thead><tr><th>功能</th><th>预定义周期</th><th>实际周期中位数 / 较慢5%</th><th>处理耗时中位数 / 较慢5%</th><th>样本</th></tr></thead><tbody>${Object.entries(rows).map(([name,v])=>`<tr><td>${esc(labels[name]||'后台观察任务')}</td><td>${seconds(v.configured_interval_seconds)}</td><td>${seconds(v.interval_p50_seconds)} / ${seconds(v.interval_p95_seconds)}</td><td>${seconds(v.duration_p50_seconds)} / ${seconds(v.duration_p95_seconds)}</td><td>${Number(v.sample_count||0)}</td></tr>`).join('')||'<tr><td colspan="5">等待新运行进程产生真实计时</td></tr>'}</tbody></table></div><h3>所有账期仍持有的币</h3><div class="table-wrap"><table><thead><tr><th>链</th><th>去重币数</th><th>无成功价格</th><th>源覆盖缺口 / 请求错误</th><th>数据年龄中位数 / 较旧5% / 最旧</th></tr></thead><tbody>${Object.entries(data.held_by_chain||{}).map(([chain,v])=>`<tr><td>${esc(chain)}</td><td>${v.tokens}</td><td>${v.missing}</td><td>${v.coverage_gaps||0} / ${v.failures}</td><td>${seconds(v.age_p50_seconds)} / ${seconds(v.age_p95_seconds)} / ${seconds(v.age_max_seconds)}</td></tr>`).join('')}</tbody></table></div><p class="delta">数据年龄按有效原池报价的观察时点计算，不是请求间隔；补源缓存重复接收不会刷新年龄。源覆盖缺口不等于池子消失或所有补源失败；缺价和失败的币均未排除。</p>`;
+    const rows=Object.entries(data.timing?.components||{}).map(([name,v])=>({name,v,info:performanceTasks[name]||['其他计时','未分类任务',`任务标识：${name}`,'用途待核对']}));
+    const table=items=>`<div class="table-wrap"><table><thead><tr><th>功能与用途</th><th>交易关系</th><th>调度方式</th><th>实际周期中位数 / 较慢5%</th><th>处理耗时中位数 / 较慢5%</th><th>计时次数</th></tr></thead><tbody>${items.map(({name,v,info})=>{
+      const step=info[0]==='内部步骤',count=Number(v.sample_count||0);
+      const schedule=step?'随主任务执行':seconds(v.configured_interval_seconds,'未提供独立周期');
+      const interval=step?'无独立周期':Number(v.interval_sample_count||0)?`${seconds(v.actual_interval_seconds?.p50)} / ${seconds(v.actual_interval_seconds?.p95)}`:count?'尚不足两轮':'尚未记录运行';
+      const duration=count?`${seconds(v.duration_seconds?.p50)} / ${seconds(v.duration_seconds?.p95)}`:'尚无耗时样本';
+      return `<tr><td><strong>${esc(info[1])}</strong><small>${esc(info[2])}</small><details><summary>技术标识</summary><code>${esc(name)}</code></details></td><td>${esc(info[3])}</td><td>${schedule}</td><td>${interval}</td><td>${duration}</td><td>${count}</td></tr>`;
+    }).join('')}</tbody></table></div>`;
+    const steps=rows.filter(row=>row.info[0]==='内部步骤'),expanded=target.querySelector('[data-performance-steps]')?.open;
+    const groups=['交易与持仓','发现与信号','研究与观察准备','其他计时'].map(group=>{
+      const items=rows.filter(row=>row.info[0]===group);
+      return items.length?`<h3>${group} · ${items.length} 项</h3>${table(items)}`:'';
+    }).join('');
+    target.innerHTML=`<p class="delta">统计更新 ${time(data.timing_recorded_at,true)} · 当前 ${rows.length-steps.length} 项任务计时、${steps.length} 项内部步骤计时，不是同等数量的独立进程或 Agent。</p><p class="delta">计时次数是函数运行次数，不是新行情或交易数；任务可能因无候选、冷却或预算限制直接返回。内部步骤没有自己的周期，因此显示“随主任务执行”；独立任务尚未形成两轮间隔时显示“尚不足两轮”。每项保留最近最多120次计时，步骤耗时可能包含在主任务中，不能相加当总耗时。</p>${groups||'<p class="empty">等待后台首次上报计时；仅凭这里暂无记录不能判断服务已停止。</p>'}${steps.length?`<details data-performance-steps ${expanded?'open':''}><summary>内部步骤计时 · ${steps.length} 项（属于上方任务，点击展开）</summary>${table(steps)}</details>`:''}<h3>所有账期仍持有的币</h3><div class="table-wrap"><table><thead><tr><th>链</th><th>去重币数</th><th>无成功价格</th><th>源覆盖缺口 / 请求错误</th><th>数据年龄中位数 / 较旧5% / 最旧</th></tr></thead><tbody>${Object.entries(data.held_by_chain||{}).map(([chain,v])=>`<tr><td>${esc(chain)}</td><td>${v.tokens}</td><td>${v.missing}</td><td>${v.coverage_gaps||0} / ${v.failures}</td><td>${v.age_max_seconds==null?'无可用观察时间':`${seconds(v.age_p50_seconds)} / ${seconds(v.age_p95_seconds)} / ${seconds(v.age_max_seconds)}`}</td></tr>`).join('')}</tbody></table></div><p class="delta">数据年龄按有效原池报价的观察时点计算，不是请求间隔；补源缓存重复接收不会刷新年龄。源覆盖缺口不等于池子消失或所有补源失败；缺价和失败的币均未排除。</p>`;
   }catch(error){target.textContent=`速度诊断暂不可用：${error.message}`;}
 }
 
