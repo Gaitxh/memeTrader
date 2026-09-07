@@ -2681,7 +2681,9 @@ class Runtime:
                 seen_once.append(candidate)
         return [*unseen, *seen_once, *same_cycle_duplicates]
 
-    async def poll_dexscreener_discovery_once(self) -> None:
+    async def poll_dexscreener_discovery_once(
+        self, *, discovery_only: bool = False, hydration_only: bool = False,
+    ) -> None:
         cfg = self.config["sources"].get("dexscreener_discovery") or {}
         if not cfg.get("enabled", True):
             return
@@ -2703,11 +2705,13 @@ class Runtime:
             }
         max_items = int(cfg.get("max_items_per_surface", 40))
         max_hydrations = int(cfg.get("max_hydrations_per_cycle", 180))
+        if hydration_only:
+            max_hydrations = min(30, max_hydrations // 6)
         direct_context_candidates: list[tuple[int, TokenCandidate, TokenSnapshot, float, dict[str, Any]]] = []
         onchain_context_candidates: list[
             tuple[int, TokenCandidate, TokenSnapshot, float, dict[str, Any]]
         ] = []
-        for surface in self.dex.DISCOVERY_SURFACES:
+        for surface in (() if hydration_only else self.dex.DISCOVERY_SURFACES):
             await self._chain_meme_active_idle().wait()
             source = f"dexscreener:{surface}"
             round_id = self.store.start_token_discovery_round(
@@ -2771,6 +2775,8 @@ class Runtime:
                 duplicate_token_count=max(0, len(by_token) - first_discoveries),
             )
 
+        if discovery_only or max_hydrations <= 0:
+            return
         due = self.store.due_token_detail_hydrations(
             limit=max_hydrations,
             chains=tuple(sorted(surface_chains)) if self.chain_meme_trader_only else (),
@@ -3076,6 +3082,12 @@ class Runtime:
                 event_relation=trigger,
             )
 
+    async def chain_meme_token_details_once(self) -> None:
+        """Spread the existing 180-target/90s hydration budget over six small turns."""
+        if not self._dex_quote_low_priority_available():
+            return
+        await self.poll_dexscreener_discovery_once(hydration_only=True)
+
     async def poll_multichain_meme_data_once(self) -> None:
         """Collect shared Solana/BSC/Robinhood discovery without legacy feeds or Agents."""
         cfg = self.config["sources"].get("multichain_meme_data") or {}
@@ -3087,7 +3099,7 @@ class Runtime:
             )
         )
         await asyncio.gather(*(self._poll_gecko_network(chain) for chain in chains))
-        await self.poll_dexscreener_discovery_once()
+        await self.poll_dexscreener_discovery_once(discovery_only=self.chain_meme_trader_only)
         self.store.heartbeat("multichain_meme_data")
 
     async def poll_external_once(self) -> None:
@@ -8210,6 +8222,10 @@ class Runtime:
                         self.poll_multichain_meme_data_once,
                     ),
                     name="multichain_meme_data",
+                ),
+                asyncio.create_task(
+                    self._periodic("chain_meme_token_details", 15, self.chain_meme_token_details_once),
+                    name="chain_meme_token_details",
                 ),
                 asyncio.create_task(
                     self._periodic(

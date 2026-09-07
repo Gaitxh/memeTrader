@@ -1986,6 +1986,46 @@ def test_pump_stream_records_create_migration_and_empty_windows(tmp_path, monkey
     asyncio.run(scenario())
 
 
+def test_fast_hydration_is_bounded_and_yields_to_held_and_backoff(tmp_path):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        config["chain_meme_trader_only_enabled"] = True
+        runtime = Runtime(config, tmp_path)
+        batches = []
+
+        class Dex:
+            DISCOVERY_SURFACES = {"must_not_poll": None}
+
+            async def discover_surface(self, *args, **kwargs):
+                raise AssertionError("fast hydration must not repeat discovery")
+
+            async def batch_quote(self, chain, addresses):
+                batches.append(list(addresses))
+                return {}
+
+        runtime.dex = Dex()
+        for index in range(31):
+            await runtime.ingest_token(TokenCandidate("solana", f"token{index:027d}", "Queued token"))
+        runtime._chain_meme_active_idle().clear()
+        await runtime.chain_meme_token_details_once()
+        assert not batches
+        runtime._chain_meme_active_idle().set()
+        runtime._dex_quote_backoff_until = asyncio.get_running_loop().time() + 30
+        await runtime.chain_meme_token_details_once()
+        assert not batches
+        runtime._dex_quote_backoff_until = 0
+        await runtime.chain_meme_token_details_once()
+        assert sum(map(len, batches)) == 30
+        await runtime.chain_meme_token_details_once()
+        assert sum(map(len, batches)) == 31
+        assert len(set(address for batch in batches for address in batch)) == 31
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
 def test_dexscreener_discovery_persists_provenance_and_hydrates_bounded_token(tmp_path):
     async def scenario():
         config = initial_config()
@@ -2217,6 +2257,7 @@ def test_chain_only_multichain_data_persists_shared_chain_token_snapshots(
         monkeypatch.setattr("memetrader.runtime.GeckoNewPoolsCollector", Gecko)
         runtime.dex = Dex()
         await runtime.poll_multichain_meme_data_once()
+        await runtime.chain_meme_token_details_once()
 
         assert runtime.store.db.execute(
             "SELECT COUNT(*) FROM tokens WHERE address=?",
