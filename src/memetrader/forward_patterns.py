@@ -310,7 +310,9 @@ def pattern_signal(
         if not control:
             passed = passed and all(b >= a for a, b in zip(previous_prices, previous_prices[1:]))
             passed = passed and all(buy_ratio(f) is not None and buy_ratio(f) >= 0.55 for f in last3[-2:])
-            passed = passed and last3[-1].get("volume", 0) >= last3[0].get("volume", 0)
+            passed = (passed and last3[-1].get("volume") is not None
+                      and last3[0].get("volume") is not None
+                      and last3[-1]["volume"] >= last3[0]["volume"])
     elif direction == "pullback_reclaim":
         peak_index = max(range(len(prices) - 1), key=prices.__getitem__)
         peak = prices[peak_index]

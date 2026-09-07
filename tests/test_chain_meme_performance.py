@@ -232,6 +232,36 @@ def test_confirmed_update_delay_credit_uses_closed_net_loss_and_never_duplicates
     store.close()
 
 
+def test_held_age_uses_observation_not_later_receipt(tmp_path, monkeypatch):
+    store, definition, policy = _open_v22(tmp_path, "age.sqlite3")
+    observed = utcnow()
+    token, _, _, _ = _insert_position(
+        store, version=definition["version"], arm_id=policy["arm_id"],
+        opened_at=observed-timedelta(seconds=1),
+    )
+    receipt = observed + timedelta(seconds=10)
+    store.upsert_chain_meme_trader_pool_mark(
+        token, TokenSnapshot(
+            token.chain, token.address, 1, 10000, 10000, 100, 5, 2,
+            observed_at=observed, ingested_at=receipt,
+            raw={"pair": {"pairAddress": "pair-A"}},
+        ), recorded_at=receipt,
+    )
+    config = initial_config()
+    config["database"] = "age.sqlite3"
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    monkeypatch.setattr("memetrader.chain_web.utcnow", lambda: receipt+timedelta(seconds=2))
+    result = ChainWebData(config_path).performance_state()
+    group = result["held_by_chain"]["solana"]
+    assert group["tokens"] == 1 and group["missing"] == 0
+    assert group["age_max_seconds"] == pytest.approx(12)
+    assert group["age_p50_seconds"] == pytest.approx(12)
+    assert group["receipt_age_max_seconds"] == pytest.approx(2)
+    assert result["held_age_basis"] == "oldest_required_entry_pool_observed_at_per_token"
+    store.close()
+
+
 def test_unchanged_market_and_equity_evaluations_do_not_update_positions(
     tmp_path: Path,
 ):
@@ -307,7 +337,7 @@ def test_market_exit_evaluation_can_be_scoped_to_refreshed_tokens(tmp_path: Path
             TokenSnapshot(
                 "solana", token.address, 1.0, 100_000, 100_000, 100, 5, 2,
                 observed_at=now, ingested_at=now, provider="dexscreener",
-                raw={"pair": {"pairAddress": f"pair-{token.address}"}},
+                raw={"pair": {"pairAddress": "pair-A"}},
             ),
             recorded_at=now,
         )
@@ -377,7 +407,7 @@ def test_market_account_snapshot_sql_aggregation_preserves_effective_results(
         TokenSnapshot(
             "solana", open_token.address, 2.0, 100_000, 100_000, 100, 5, 2,
             observed_at=now, ingested_at=now, provider="dexscreener",
-            raw={"pair": {"pairAddress": "pair-open"}},
+            raw={"pair": {"pairAddress": "pair-A"}},
         ),
         recorded_at=now,
     )

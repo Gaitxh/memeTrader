@@ -139,6 +139,7 @@ def test_revised_evidence_arm_uses_l0_then_next_frame_buy_and_can_time_exit(
 ):
     clock = [datetime(2026, 9, 6, 15, 0, tzinfo=UTC)]
     monkeypatch.setattr("memetrader.store.utcnow", lambda: clock[0])
+    monkeypatch.setattr("memetrader.models.utcnow", lambda: clock[0])
     store = Store(tmp_path / f"{arm_id}.sqlite3", initial_cash_usd=1_000)
     source_version = Store.CHAIN_MEME_TRADER_ACTIVE_VERSION
     source_policy = _policies()[arm_id]
@@ -273,7 +274,7 @@ def test_revised_evidence_arm_uses_l0_then_next_frame_buy_and_can_time_exit(
         store.close()
 
 
-def test_pattern_observer_waits_once_per_chain_not_again_per_token():
+def test_pattern_observer_waits_once_per_chain_not_again_per_token(monkeypatch):
     async def run():
         runtime = Runtime.__new__(Runtime)
         runtime._chain_meme_active_idle_event = asyncio.Event()
@@ -282,6 +283,7 @@ def test_pattern_observer_waits_once_per_chain_not_again_per_token():
         runtime._rank_no_ca_events = lambda: None
         runtime._paper_quote_rejections = lambda *args: []
         now = datetime(2026, 9, 6, 15, 0, tzinfo=UTC)
+        monkeypatch.setattr("memetrader.runtime.utcnow", lambda: now)
         created_at = now - timedelta(seconds=120)
         tokens = [
             TokenCandidate(

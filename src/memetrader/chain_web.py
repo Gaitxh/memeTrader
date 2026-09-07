@@ -817,6 +817,7 @@ class ChainWebData:
                 "SELECT COALESCE(t.chain,substr(p.token_id,1,instr(p.token_id,':')-1)) AS chain,"
                 "CASE WHEN COUNT(m.last_success_at)=COUNT(*) THEN "
                 "MIN(m.last_success_at) END AS last_success_at,MIN(m.last_attempt_at) AS last_attempt_at,"
+                "CASE WHEN COUNT(m.observed_at)=COUNT(*) THEN MIN(m.observed_at) END AS observed_at,"
                 "MAX(m.failure_kind='DEX_SOURCE_COVERAGE_GAP') AS coverage_gap,"
                 "MAX(COALESCE(m.failure_kind,'') NOT IN ('','DEX_SOURCE_COVERAGE_GAP')) AS request_failure FROM ("
                 "SELECT DISTINCT p.token_id,CASE WHEN p.token_id LIKE 'solana:%' THEN "
@@ -832,23 +833,27 @@ class ChainWebData:
         now = utcnow()
         by_chain: dict[str, Any] = {}
         for item in held:
-            group = by_chain.setdefault(item["chain"], {"tokens": 0, "missing": 0, "failures": 0, "coverage_gaps": 0, "ages": []})
+            group = by_chain.setdefault(item["chain"], {"tokens": 0, "missing": 0, "failures": 0, "coverage_gaps": 0, "ages": [], "receipt_ages": []})
             group["tokens"] += 1
             group["failures"] += int(bool(item["request_failure"]))
             group["coverage_gaps"] += int(bool(item["coverage_gap"]))
-            if item["last_success_at"]:
-                group["ages"].append(max(0.0, (now - parse_time(item["last_success_at"])).total_seconds()))
+            if item["observed_at"]:
+                group["ages"].append(max(0.0, (now - parse_time(item["observed_at"])).total_seconds()))
             else:
                 group["missing"] += 1
+            if item["last_success_at"]:
+                group["receipt_ages"].append(max(0.0, (now - parse_time(item["last_success_at"])).total_seconds()))
         for group in by_chain.values():
             ages = sorted(group.pop("ages"))
+            receipt_ages = group.pop("receipt_ages")
             group.update({"age_p50_seconds": ages[(len(ages)-1)//2] if ages else None,
                           "age_p95_seconds": ages[min(len(ages)-1, math.ceil(len(ages)*.95)-1)] if ages else None,
-                          "age_max_seconds": ages[-1] if ages else None})
+                          "age_max_seconds": ages[-1] if ages else None,
+                          "receipt_age_max_seconds": max(receipt_ages) if receipt_ages else None})
         return {"status": "ok", "generated_at": iso(now),
                 "timing": json.loads(row["payload_json"]) if row else None,
                 "timing_recorded_at": row["recorded_at"] if row else None,
-                "held_by_chain": by_chain, "held_age_basis": "oldest_required_entry_pool_per_token", "sources": sources,
+                "held_by_chain": by_chain, "held_age_basis": "oldest_required_entry_pool_observed_at_per_token", "sources": sources,
                 "ui": {"visible_seconds": 5, "hidden_seconds": 30, "token_detail_seconds": 10},
                 "storage": {"database_bytes": self.database.stat().st_size,
                             "wal_bytes": Path(str(self.database)+"-wal").stat().st_size if Path(str(self.database)+"-wal").exists() else 0,

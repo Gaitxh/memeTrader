@@ -1137,14 +1137,14 @@ class HttpClient:
         self.conditional_store = conditional_store
         self._last: dict[str, float] = defaultdict(float)
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
-        self._cache: dict[str, tuple[float, Any]] = {}
+        self._cache: dict[str, tuple[float, Any, datetime]] = {}
 
     def _prune_cache(self, now: float) -> None:
         if len(self._cache) < self.MAX_CACHE_ENTRIES:
             return
         expired = [
-            key for key, (expires_at, _) in self._cache.items()
-            if expires_at <= now
+            key for key, entry in self._cache.items()
+            if entry[0] <= now
         ]
         for key in expired:
             self._cache.pop(key, None)
@@ -1196,6 +1196,7 @@ class HttpClient:
         self._prune_cache(now)
         if ttl and cached and cached[0] > now:
             response = httpx.Response(200, request=httpx.Request("GET", url), json=cached[1])
+            response.extensions["observed_at"] = cached[2]
             return response
         host = urllib.parse.urlparse(url).netloc.lower()
         await self._reserve_host_request_start(host)
@@ -1208,11 +1209,12 @@ class HttpClient:
                 )
                 response = await self.client.get(url, params=params, headers=headers)
         response.raise_for_status()
+        response.extensions["observed_at"] = utcnow()
         if ttl:
             try:
                 now = time.monotonic()
                 self._prune_cache(now)
-                self._cache[key] = (now + ttl, response.json())
+                self._cache[key] = (now + ttl, response.json(), response.extensions["observed_at"])
                 self._prune_cache(now)
             except Exception:
                 pass
@@ -1975,7 +1977,7 @@ class DexScreenerClient:
         )
 
     @staticmethod
-    def _snapshot(pair: dict[str, Any]) -> TokenSnapshot | None:
+    def _snapshot(pair: dict[str, Any], *, observed_at: datetime | None = None) -> TokenSnapshot | None:
         candidate = DexScreenerClient._candidate(pair)
         if not candidate:
             return None
@@ -1986,14 +1988,14 @@ class DexScreenerClient:
             chain=candidate.chain, address=candidate.address, price_usd=_float(pair.get("priceUsd")),
             liquidity_usd=_float(liquidity), market_cap_usd=_float(pair.get("marketCap") or pair.get("fdv")),
             volume_5m_usd=_float(volume), buys_5m=_int(tx.get("buys")), sells_5m=_int(tx.get("sells")),
-            observed_at=utcnow(), provider="dexscreener", raw={"pair": pair},
+            observed_at=observed_at or utcnow(), provider="dexscreener", raw={"pair": pair},
         )
 
     async def search(self, query: str, limit: int = 30) -> list[tuple[TokenCandidate, TokenSnapshot]]:
         response = await self.http.get(f"{self.BASE}/latest/dex/search", params={"q": query}, ttl=12)
         by_token: dict[str, tuple[TokenCandidate, TokenSnapshot]] = {}
         for pair in response.json().get("pairs", [])[:limit]:
-            candidate, snap = self._candidate(pair), self._snapshot(pair)
+            candidate, snap = self._candidate(pair), self._snapshot(pair, observed_at=response.extensions.get("observed_at"))
             if candidate and snap:
                 current = by_token.get(candidate.token_id)
                 if current is None or (snap.liquidity_usd or 0.0) > (current[1].liquidity_usd or 0.0):
@@ -2007,7 +2009,7 @@ class DexScreenerClient:
             payload = payload.get("pairs") or []
         ranked: list[tuple[float, TokenCandidate, TokenSnapshot]] = []
         for pair in payload if isinstance(payload, list) else []:
-            candidate, snap = self._candidate(pair), self._snapshot(pair)
+            candidate, snap = self._candidate(pair), self._snapshot(pair, observed_at=response.extensions.get("observed_at"))
             if (
                 candidate
                 and snap
@@ -2050,7 +2052,7 @@ class DexScreenerClient:
             if isinstance(payload, dict):
                 payload = payload.get("pairs") or []
             for pair in payload if isinstance(payload, list) else []:
-                candidate, snap = self._candidate(pair), self._snapshot(pair)
+                candidate, snap = self._candidate(pair), self._snapshot(pair, observed_at=response.extensions.get("observed_at"))
                 if not candidate or not snap or candidate.chain.lower() != normalized_chain:
                     continue
                 requested_address = requested.get(

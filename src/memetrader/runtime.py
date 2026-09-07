@@ -2319,8 +2319,14 @@ class Runtime:
         if not self._market_pool_gaps:
             return
         now = asyncio.get_running_loop().time()
+        primary_available = self._dex_quote_low_priority_available()
+        public_available = now >= self._gecko_pool_backoff_until
+        demo_available = self.coingecko.available()
         due = sorted(((key, item) for key, item in self._market_pool_gaps.items()
-                      if float(item["next_attempt"]) <= now),
+                      if float(item["next_attempt"]) <= now and (
+                          primary_available and float(item.get("next_primary_attempt", 0.0)) <= now
+                          or public_available and float(item.get("next_public_attempt", 0.0)) <= now
+                          or demo_available and float(item.get("next_complement_attempt", 0.0)) <= now)),
                      key=lambda row: float(row[1]["next_attempt"]))
         if not due:
             return

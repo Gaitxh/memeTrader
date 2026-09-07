@@ -26706,7 +26706,8 @@ class Store:
             previous_features = self._json_object(previous["feature_json"]) if previous else {}
             pre_observed = previous_features.get("observed_at")
             if (pre_observed and previous_features.get("pair_address") == pair_address
-                    and snapshot.observed_at <= parse_time(pre_observed)):
+                    and (snapshot.observed_at <= parse_time(pre_observed)
+                         or snapshot.observed_at <= parse_time(previous["evaluated_at"]))):
                 # A cached/late receipt is not a new signal or its confirmation.
                 # In particular, do not overwrite the pending independently observed signal.
                 return 0
@@ -27045,8 +27046,8 @@ class Store:
                     ready.append(policy["arm_id"])
             admitted_arms = [p["arm_id"] for p in active if post_valid and p["arm_id"] in pending
                              and not (p.get("entry_chase_role") and pair_address in chase_consumed)
-                             and (not p.get("require_post_decision_observation") or previous is not None
-                                  and snapshot.observed_at > parse_time(previous["evaluated_at"]))
+                             and previous is not None
+                             and snapshot.observed_at > parse_time(previous["evaluated_at"])
                              and p["arm_id"] not in already_bought and p["arm_id"] not in entry_blocked
                              and (not cohort_mode or previous_features.get("event_keys", {}).get(p["arm_id"]) == event_keys.get(p["arm_id"]) and p["arm_id"] in accepted_cohort_signals)
                              and (p.get("entry_family") not in {"event_reawakening", "surface_lifecycle_pipeline", "fast_stop_reclaim", "no_ca_event_flow_leader", "direct_lp_amount_specific_confirmed", "official_event_actual_flow", "mature_new_acceptance", "wallet_confirmed_broad_opportunity"} or
@@ -27792,6 +27793,24 @@ class Store:
                     inserted += int(cursor.rowcount == 1)
         return inserted
 
+    @staticmethod
+    def _chain_meme_primary_pair_blocked(policies, eligible_arm_ids):
+        """Keep declared primary-lane pairs together; isolated experiments own their gates."""
+        groups = {}
+        for policy in policies:
+            if policy.get("paired_entry_group") and policy.get("entry_match_mode") not in {
+                "isolated_pattern_observer", "isolated_cohort_observer"
+            }:
+                groups.setdefault(policy["paired_entry_group"], []).append(policy)
+        eligible = set(eligible_arm_ids)
+        blocked = set()
+        for members in groups.values():
+            arms = {p["arm_id"] for p in members}
+            if ({int(p.get("paired_entry_size", 2)) for p in members} != {len(arms)}
+                    or not arms <= eligible):
+                blocked.update(arms)
+        return blocked
+
     def _project_chain_meme_trader_market_entry(
         self, *, version: str, cohort_id: int, token_id: str, snapshot_id: int,
         market_price: float, filled_at: str, reason: str,
@@ -27837,22 +27856,29 @@ class Store:
         ).fetchall()
         if net_flow_by_arm is None:
             net_flow_by_arm = self._chain_meme_trader_effective_net_flows(version)
+        pair_blocked = self._chain_meme_primary_pair_blocked(definition["policies"], {
+            str(d["arm_id"]) for d in decisions
+            if funding_mode != "legacy_cash_limited" or
+            float(definition["starting_cash_usd_each_arm"]) + net_flow_by_arm.get(str(d["arm_id"]), 0.0)
+                + 1e-9 >= required_cash
+        })
         for decision in decisions:
             arm_id = str(decision["arm_id"])
             net_flow = net_flow_by_arm.get(arm_id, 0.0)
             available_cash = float(definition["starting_cash_usd_each_arm"]) + net_flow
             if (
-                funding_mode == "legacy_cash_limited"
-                and available_cash + 1e-9 < required_cash
+                arm_id in pair_blocked or (funding_mode == "legacy_cash_limited"
+                and available_cash + 1e-9 < required_cash)
             ):
                 self.db.execute(
                     "INSERT OR IGNORE INTO chain_meme_trader_entry_participant_outcomes("
                     "definition_version,shadow_cohort_id,arm_id,entry_decision_id,entry_fill_id,"
                     "outcome,available_cash_usd,recorded_at,funding_mode) "
-                    "VALUES(?,?,?,?,?,'skipped_cash_unavailable_at_fill',?,?,?)",
+                    "VALUES(?,?,?,?,?,?,?,?,?)",
                     (
                         version, int(cohort_id), arm_id, int(decision["id"]),
-                        int(entry_fill["id"]), available_cash, filled_at, funding_mode,
+                        int(entry_fill["id"]), "skipped_cash_unavailable_at_fill",
+                        available_cash, filled_at, funding_mode,
                     ),
                 )
                 continue
@@ -28369,6 +28395,11 @@ class Store:
                                 )
                             ):
                                 participating_arm_ids.append(arm_id)
+                        pair_blocked = self._chain_meme_primary_pair_blocked(
+                            definition["policies"], participating_arm_ids)
+                        participating_arm_ids = [arm for arm in participating_arm_ids if arm not in pair_blocked]
+                        features["paired_rejections"] = {arm: "paired_group_not_all_eligible"
+                            for arm in family_arms if arm in pair_blocked}
                         shared_available_cash = (
                             min(arm_available_cash.values()) if arm_available_cash else 0.0
                         )
@@ -31734,6 +31765,11 @@ class Store:
             }
             adapted = {**dict(position), "pair_address": pair,
                 "remaining_cost_usd": float(position["stake_usd"]) - float(position["allocated_cost_usd"] or 0)}
+            adapted["pair_address"] = canonical_token_address(str(token).partition(":")[0], str(pair))
+            frame["pair_address"] = canonical_token_address(str(token).partition(":")[0], str(frame["pair_address"] or ""))
+            if kind == "l0_profit_lock":
+                adapted["cost_covered"] = (float(position["stake_usd"]) > 0
+                    and float(position["realized_proceeds_usd"] or 0) >= float(position["stake_usd"]))
             evaluator = (evaluate_l0_continuation_failure if kind == "l0_continuation_failure"
                          else evaluate_l0_profit_lock)
             if kind == "l0_loss_deterioration":
@@ -33596,8 +33632,7 @@ class Store:
                         pending_pair = str(position["pending_pair_address"] or "")
                         if (
                             post_mark_at > parse_time(position["pending_recorded_at"])
-                            and (not policy.get("require_post_decision_observation") or
-                                 post_observed_at > parse_time(position["pending_recorded_at"]))
+                            and post_observed_at > parse_time(position["pending_recorded_at"])
                             and post_sequence > max(pre_sequence, prior_post_sequence)
                             and parse_time(position["opened_at"])
                             <= post_observed_at <= post_mark_at <= current
