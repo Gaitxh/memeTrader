@@ -1351,6 +1351,7 @@ class Runtime:
                     self.store.register_chain_meme_research_round2()
                     self.store.register_chain_meme_resource_bound_research()
                     self.store.register_chain_meme_inventory_research()
+                    self.store.register_chain_meme_archive_research()
                     self._cohort_started_at = utcnow()
                     self._cohort_state = self.store.get_kv(
                         f"passive-cohort:{self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION}", {})

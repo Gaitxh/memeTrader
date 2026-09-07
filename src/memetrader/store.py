@@ -26140,6 +26140,19 @@ class Store:
                     added += 1
         return added
 
+    def register_chain_meme_archive_research(self) -> int:
+        from .archive_research import archive_policies
+        added = 0
+        with self._lock, self.db:
+            at = utcnow()
+            for policy in archive_policies():
+                if self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?",
+                    (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, policy["arm_id"])).fetchone() is None:
+                    self.append_chain_meme_trader_policy(policy, activated_at=at)
+                    added += 1
+        return added
+
     def register_chain_meme_capital_experiments(self) -> int:
         """Append independently funded experiments at their actual deployment frontier."""
         added = 0
@@ -27087,6 +27100,7 @@ class Store:
             prior_resource_opportunities = previous_features.get("resource_bound_opportunities") or {}
             resource_opportunities = dict(prior_resource_opportunities)
             inventory_evidence = {}
+            archive_evidence = {}
             for policy in active:
                 if cohort_mode:
                     passed = policy["arm_id"] in accepted_cohort_signals
@@ -27116,6 +27130,11 @@ class Store:
                             "direction": "wave_reset_reentry", "min_gap_seconds": 600, "max_gap_seconds": 14400}}
                     passed, reason = capital_observation_signal(history, selected_policy,
                         decision_at=iso(decision_at), activated_at=policy["forward_started_at"], context=own_context)
+                elif policy.get("entry_filter", {}).get("contract") == "archive-path-activity/20260908-v1":
+                    from .archive_research import archive_signal
+                    passed, reason, entry_evidence = archive_signal(history, policy,
+                        decision_at=iso(decision_at), activated_at=policy["forward_started_at"])
+                    archive_evidence[policy["arm_id"]] = entry_evidence
                 elif policy.get("entry_filter", {}).get("contract") == "inventory-cost-space/20260908-v1":
                     from .inventory_research import research_signal
                     passed, reason, entry_evidence = research_signal(history, policy,
@@ -27153,7 +27172,14 @@ class Store:
                              and (p.get("entry_family") not in {"event_reawakening", "surface_lifecycle_pipeline", "fast_stop_reclaim", "no_ca_event_flow_leader", "direct_lp_amount_specific_confirmed", "official_event_actual_flow", "mature_new_acceptance", "wallet_confirmed_broad_opportunity"} or
                                   previous_features.get("event_keys", {}).get(p["arm_id"]) == event_keys.get(p["arm_id"]))]
             from .inventory_research import CONTRACT as INVENTORY_CONTRACT, post_signal_compatible
+            from .archive_research import CONTRACT as ARCHIVE_CONTRACT, post_signal_compatible as archive_post_compatible
             for p in active:
+                if p["arm_id"] in admitted_arms and p.get("entry_filter", {}).get("contract") == ARCHIVE_CONTRACT:
+                    if not archive_post_compatible(history[-1],
+                            previous_features.get("archive_research_evidence", {}).get(p["arm_id"], {}),
+                            decision_at=iso(decision_at)):
+                        admitted_arms.remove(p["arm_id"])
+                        outcomes[p["arm_id"]] = "archive_post_source_or_time_boundary"
                 if p["arm_id"] in admitted_arms and p.get("entry_filter", {}).get("contract") == INVENTORY_CONTRACT:
                     if not post_signal_compatible(history[-1],
                             previous_features.get("inventory_research_evidence", {}).get(p["arm_id"], {}), p):
@@ -27198,6 +27224,8 @@ class Store:
                 features["resource_bound_opportunities"] = resource_opportunities
             if inventory_evidence:
                 features["inventory_research_evidence"] = inventory_evidence
+            if archive_evidence:
+                features["archive_research_evidence"] = archive_evidence
             if cohort_mode:
                 features.update(cohort_signals=accepted_cohort_signals,
                     entry_signal_key="isolated_cohorts/v1", policy_entry_family="cohort_experiments")
@@ -31861,7 +31889,8 @@ class Store:
         from .research_round2 import EXIT_KINDS as ROUND2_EXIT_KINDS, evaluate_round2_exit
         from .resource_bound_research import EXIT_KIND as RESOURCE_EXIT_KIND, evaluate_resource_exit
         from .inventory_research import EXIT_KIND as INVENTORY_EXIT_KIND, evaluate_inventory_exit
-        l0_research_kinds = EXIT_KINDS | ROUND2_EXIT_KINDS | {RESOURCE_EXIT_KIND, INVENTORY_EXIT_KIND}
+        from .archive_research import EXIT_KIND as ARCHIVE_EXIT_KIND, evaluate_plateau_exit
+        l0_research_kinds = EXIT_KINDS | ROUND2_EXIT_KINDS | {RESOURCE_EXIT_KIND, INVENTORY_EXIT_KIND, ARCHIVE_EXIT_KIND}
         if kind in {"l0_continuation_failure", "l0_profit_lock", "l0_loss_deterioration"} | l0_research_kinds:
             from .l0_experiments import evaluate_l0_continuation_failure, evaluate_l0_profit_lock
             price = position["mark_price_usd"]
@@ -31910,7 +31939,10 @@ class Store:
                         entry_raw = self._json_object(entry_row[0]) if entry_row else {}
                         state["entry_inventory"] = inventory_fields(entry_raw.get("pair") or {})
                     frame["entry_inventory"] = state["entry_inventory"]
-                evaluator = (evaluate_inventory_exit if kind == INVENTORY_EXIT_KIND else
+                if kind == ARCHIVE_EXIT_KIND:
+                    frame["boundary_at"] = self._json_object(position["mark_inventory_json"]).get("boundary_at")
+                evaluator = (evaluate_plateau_exit if kind == ARCHIVE_EXIT_KIND else
+                             evaluate_inventory_exit if kind == INVENTORY_EXIT_KIND else
                              evaluate_resource_exit if kind == RESOURCE_EXIT_KIND else
                              evaluate_round2_exit if kind in ROUND2_EXIT_KINDS else evaluate_finalist_exit)
             result = evaluator(adapted, frame, state, now=current, policy=policy["capital_exit_policy"])
