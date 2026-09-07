@@ -9288,13 +9288,17 @@ class Store:
         with self._lock, self.db:
             self._enqueue_token_detail_hydration_locked(chain, address, enqueued_at=enqueued_at)
 
-    def requeue_token_detail_hydration(self, token_id: str, *, enqueued_at=None) -> bool:
+    def requeue_token_detail_hydration(self, token_id: str, *, enqueued_at=None,
+                                      no_pair_only: bool = False) -> bool:
         queued = parse_time(enqueued_at or utcnow())
         with self._lock, self.db:
             row = self.db.execute(
-                "SELECT token_id FROM token_detail_hydration WHERE token_id=?",
+                "SELECT token_id,status,last_attempt_at FROM token_detail_hydration WHERE token_id=?",
                 (str(token_id),),
             ).fetchone()
+            if no_pair_only and (row is None or row["status"] != "no_pair"
+                    or row["last_attempt_at"] and parse_time(row["last_attempt_at"]) >= queued):
+                return False
             if row is None:
                 token = self.db.execute(
                     "SELECT chain,address FROM tokens WHERE token_id=?", (str(token_id),)

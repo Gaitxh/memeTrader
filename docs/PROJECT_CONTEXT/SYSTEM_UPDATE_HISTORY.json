@@ -2,6 +2,18 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260908-new-evidence-cross-chain-refresh",
+      "recorded_at": "2026-09-07T19:16:00.219893+00:00",
+      "deployed_at": "2026-09-07T19:10:12.705207Z",
+      "title": "新来源唤醒无池补全与各链候选批量刷新",
+      "problem": "新发现来源没有唤醒no_pair长退避；候选观察一轮全局只刷新一条链。",
+      "change": "仅新的且晚于尝试的来源唤醒no_pair；每到期链一次批量请求，保留总目标上限和持仓优先。",
+      "rationale": "减少已取得信息未被及时消费与跨链排队等待，不改交易合同。",
+      "validation": "12个定向用例通过；部署后health/live/performance正常，注册/激活/全部旧策略增量摘要一致。",
+      "scope": "Paper，仅运行修复，无账户重置、Live或新增Agent。",
+      "status": "已部署；负载15→22币，持仓刷新中位1.445→1.472秒。详见SPEED_COVERAGE_20260908.md。"
+    },
+    {
       "id": "20260908-inventory-cost-space-research",
       "recorded_at": "2026-09-07T18:50:15Z",
       "deployed_at": "2026-09-07T18:44:56.378434Z",

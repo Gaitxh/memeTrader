@@ -2983,6 +2983,41 @@ def test_new_solana_tokens_enter_durable_batch_hydration_and_missing_pair_retrie
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("status", ["no_pair", "error", "hydrated"])
+@pytest.mark.parametrize("fresh_link", [False, True])
+def test_new_discovery_link_wakes_only_later_no_pair_attempt(tmp_path, status, fresh_link):
+    async def scenario():
+        runtime = Runtime.__new__(Runtime)
+        runtime.store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+        at = utcnow() - timedelta(minutes=1)
+        token = TokenCandidate("solana", "R" * 32, "Rediscovered")
+        runtime.store.enqueue_token_detail_hydration(token.chain, token.address, enqueued_at=at)
+        link = {"token_id": token.token_id, "chain": token.chain, "address": token.address,
+            "provider": "dexscreener", "discovery_surface": "token_profiles", "role": "identity",
+            "original_url": "https://example.org/first", "normalized_url": "https://example.org/first",
+            "link_kind": "website", "verification_status": "provider_metadata"}
+        runtime.store.upsert_token_source_link(link, observed_at=at)
+        runtime.store.mark_token_detail_hydration(token.token_id, status, now=at + timedelta(seconds=10))
+        original = dict(runtime.store.token_detail_hydration(token.token_id))
+        if fresh_link:
+            link = {**link, "original_url": "https://example.org/new", "normalized_url": "https://example.org/new"}
+        round_id = runtime.store.start_token_discovery_round(
+            provider="dexscreener", surface="token_profiles", mode="poll", chain_scope="solana")
+        await runtime._persist_dex_discovery_links(round_id, [link], {"solana"}, observed_at=at + timedelta(seconds=20))
+        row = runtime.store.token_detail_hydration(token.token_id)
+        if fresh_link and status == "no_pair":
+            assert row["status"] == "pending" and row["attempts"] == original["attempts"]
+            assert row["next_attempt_at"] == iso(at + timedelta(seconds=20))
+            # Another cached source received after the attempt must not revive it.
+            runtime.store.mark_token_detail_hydration(token.token_id, "no_pair", now=at + timedelta(seconds=30))
+            assert not runtime.store.requeue_token_detail_hydration(token.token_id,
+                enqueued_at=at + timedelta(seconds=20), no_pair_only=True)
+        else:
+            assert dict(row) == original
+        runtime.store.close()
+    asyncio.run(scenario())
+
+
 def test_due_hydration_prioritizes_exact_high_impact_social_links_without_dropping_fifo(tmp_path):
     store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
     now = utcnow()

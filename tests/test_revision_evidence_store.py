@@ -322,3 +322,48 @@ def test_pattern_observer_waits_once_per_chain_not_again_per_token(monkeypatch):
         assert observed == [token.token_id for token in tokens]
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("available", [True, False])
+def test_pattern_observer_batches_each_due_chain_with_shared_priority_gate(monkeypatch, available):
+    async def run():
+        runtime = Runtime.__new__(Runtime)
+        runtime.chain_meme_trader_only = False
+        runtime._rank_no_ca_events = lambda: None
+        runtime._paper_quote_rejections = lambda *args: []
+        runtime._dex_quote_low_priority_available = lambda: available
+        now = datetime(2026, 9, 6, 15, 0, tzinfo=UTC)
+        monkeypatch.setattr("memetrader.runtime.utcnow", lambda: now)
+        runtime._pattern_watch = {}
+        for chain in ("bsc", "robinhood", "solana"):
+            for i in range(2):
+                address = str(Pubkey.new_unique()) if chain == "solana" else "0x" + str(i+1) * 40
+                token = TokenCandidate(chain, address, "Due")
+                pair = str(Pubkey.new_unique()) if chain == "solana" else "0x" + str(i+3) * 40
+                old = now - timedelta(seconds=46)
+                runtime._pattern_watch[token.token_id] = {"token": token, "pair_address": pair,
+                    "sampled_at": old, "quote": _snapshot(token, pair, old, old-timedelta(minutes=2),
+                        price=1., liquidity=10000, volume=1000, buys=14, sells=6)}
+        def remember(quoted):
+            for token_id, (_, snapshot) in quoted.items():
+                runtime._pattern_watch[token_id]["quote"] = snapshot
+        runtime._remember_pattern_quotes = remember
+        calls, observed = [], []
+        async def fresh(chain, addresses, **kwargs):
+            assert kwargs == {"fresh": True, "high_priority": False}
+            calls.append((chain, list(addresses)))
+            result = {}
+            for token_id, item in runtime._pattern_watch.items():
+                if item["token"].chain == chain:
+                    result[token_id] = (item["token"], _snapshot(item["token"], item["pair_address"],
+                        now, now-timedelta(minutes=3), price=1., liquidity=10000, volume=1000, buys=14, sells=6))
+            return result
+        runtime._dex_batch_quote = fresh
+        runtime.store = SimpleNamespace(capital_cross_section=lambda *args: {},
+            observe_chain_meme_pattern=lambda token, *args, **kwargs: observed.append(token.token_id) or 0,
+            heartbeat=lambda *args, **kwargs: None)
+        await runtime.chain_meme_pattern_observer_once()
+        assert [chain for chain, _ in calls] == (["bsc", "robinhood", "solana"] if available else [])
+        assert all(len(addresses) == 2 for _, addresses in calls)
+        assert len(observed) == (6 if available else 0)
+    asyncio.run(run())

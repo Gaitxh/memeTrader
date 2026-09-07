@@ -3125,6 +3125,10 @@ class Runtime:
             self.store.enqueue_token_detail_hydration(
                 first["chain"], first["address"], enqueued_at=observed_at,
             )
+            if new_links:
+                self.store.requeue_token_detail_hydration(
+                    token_id, enqueued_at=observed_at, no_pair_only=True,
+                )
             first_local = not known_before and new_links > 0
             first_discoveries += int(first_local)
             exposure_id = self.store.add_token_discovery_exposure(
@@ -7331,7 +7335,6 @@ class Runtime:
             offset = cursor % len(chains)
             chains = chains[offset:] + chains[:offset]
         self._pattern_chain_cursor = cursor + 1
-        requested = False
         cross_section = self.store.capital_cross_section(
             [(k, item["pair_address"]) for k, item in watch.items()])
         for chain in chains:
@@ -7343,8 +7346,7 @@ class Runtime:
                    if v["token"].token_id not in getattr(self, "_pattern_held_tokens", set())
                    and ((utcnow() - v["quote"].observed_at).total_seconds() > 15
                         or v.get("sampled_at") == v["quote"].observed_at)]
-            if due and not requested and self._dex_quote_low_priority_available():
-                requested = True
+            if due and self._dex_quote_low_priority_available():
                 try:
                     quoted = await asyncio.wait_for(self._dex_batch_quote(
                         chain, due, fresh=True, high_priority=False), timeout=3)
