@@ -1,0 +1,810 @@
+{
+  "observer_timeout_review": {
+    "case": [
+      {
+        "id": 48,
+        "area": "runtime",
+        "component": "chain-meme-pattern-observer",
+        "error_type": "TimeoutError",
+        "message_safe": "TimeoutError",
+        "first_seen_at": "2026-09-05T11:35:17.095597Z",
+        "last_seen_at": "2026-09-07T05:16:32.329965Z",
+        "occurrence_count": 162
+      }
+    ],
+    "observed_occurrence": [
+      {
+        "id": 2534,
+        "case_id": 48,
+        "observed_at": "2026-09-07T05:16:32.329965Z",
+        "context_safe_json": "{\"source\": \"chain-meme-pattern-observer\"}"
+      }
+    ],
+    "latest_predeployment_occurrence": [
+      {
+        "id": 2502,
+        "case_id": 48,
+        "observed_at": "2026-09-07T05:04:23.105255Z",
+        "context_safe_json": "{\"source\": \"chain-meme-pattern-observer\"}"
+      }
+    ],
+    "read_SQL_count": 3,
+    "max_SQL_seconds": 0.01189890000387095,
+    "interpretation": "Existing case predates deployment. Current runtime.py:7176-7182 bounds low-priority non-held batch quote by asyncio.wait_for(timeout=3), catches HTTPError/TimeoutError, records observer heartbeat and continues targets. Evidence supports handled request/budget timeout, not an uncaught NULL observer/local-compute crash; does not establish underlying network cause."
+  },
+  "deployment_at": "2026-09-07T05:14:03.4322224Z",
+  "trade_lower_exclusive": 477064,
+  "trade_upper_inclusive": 477096,
+  "observed_query_at": "2026-09-07T05:19:17.016800Z",
+  "inspection_cap": 32,
+  "counts": {
+    "BUY": 30,
+    "SELL": 2,
+    "WRITEOFF": 0
+  },
+  "trade_ids": [
+    477065,
+    477066,
+    477067,
+    477068,
+    477069,
+    477070,
+    477071,
+    477072,
+    477073,
+    477074,
+    477075,
+    477076,
+    477077,
+    477078,
+    477079,
+    477080,
+    477081,
+    477082,
+    477083,
+    477084,
+    477085,
+    477086,
+    477087,
+    477088,
+    477089,
+    477090,
+    477091,
+    477092,
+    477093,
+    477094,
+    477095,
+    477096
+  ],
+  "first_trade_at": "2026-09-07T05:14:45.227217Z",
+  "last_trade_at": "2026-09-07T05:15:18.481823Z",
+  "timing_checks": [
+    {
+      "trade_id": 477065,
+      "side": "BUY",
+      "arm_id": "serial_conditional_runner_v1",
+      "cohort_id": 53487,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:14:29.755571Z",
+      "signal_evaluation_id": 671664,
+      "signal_snapshot_id": 1475047,
+      "receipt_snapshot_id": 1475082,
+      "observed_at": "2026-09-07T05:14:44.028973Z",
+      "receipt_at": "2026-09-07T05:14:45.217284Z",
+      "cohort_allocation_at": "2026-09-07T05:14:45.227217Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 14.273402
+    },
+    {
+      "trade_id": 477066,
+      "side": "BUY",
+      "arm_id": "direct_lp_amount_specific_confirmed_v1",
+      "cohort_id": 53488,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:14:29.755571Z",
+      "signal_evaluation_id": 671664,
+      "signal_snapshot_id": 1475047,
+      "receipt_snapshot_id": 1475082,
+      "observed_at": "2026-09-07T05:14:44.028973Z",
+      "receipt_at": "2026-09-07T05:14:45.217284Z",
+      "cohort_allocation_at": "2026-09-07T05:14:45.287825Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 14.273402
+    },
+    {
+      "trade_id": 477067,
+      "side": "BUY",
+      "arm_id": "finalist_activity_failure_v1",
+      "cohort_id": 53488,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:14:29.755571Z",
+      "signal_evaluation_id": 671664,
+      "signal_snapshot_id": 1475047,
+      "receipt_snapshot_id": 1475082,
+      "observed_at": "2026-09-07T05:14:44.028973Z",
+      "receipt_at": "2026-09-07T05:14:45.217284Z",
+      "cohort_allocation_at": "2026-09-07T05:14:45.287825Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 14.273402
+    },
+    {
+      "trade_id": 477068,
+      "side": "BUY",
+      "arm_id": "finalist_baseline_v1",
+      "cohort_id": 53488,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:14:29.755571Z",
+      "signal_evaluation_id": 671664,
+      "signal_snapshot_id": 1475047,
+      "receipt_snapshot_id": 1475082,
+      "observed_at": "2026-09-07T05:14:44.028973Z",
+      "receipt_at": "2026-09-07T05:14:45.217284Z",
+      "cohort_allocation_at": "2026-09-07T05:14:45.287825Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 14.273402
+    },
+    {
+      "trade_id": 477069,
+      "side": "BUY",
+      "arm_id": "finalist_depth_divergence_v1",
+      "cohort_id": 53488,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:14:29.755571Z",
+      "signal_evaluation_id": 671664,
+      "signal_snapshot_id": 1475047,
+      "receipt_snapshot_id": 1475082,
+      "observed_at": "2026-09-07T05:14:44.028973Z",
+      "receipt_at": "2026-09-07T05:14:45.217284Z",
+      "cohort_allocation_at": "2026-09-07T05:14:45.287825Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 14.273402
+    },
+    {
+      "trade_id": 477070,
+      "side": "BUY",
+      "arm_id": "finalist_profit_budget_v1",
+      "cohort_id": 53488,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:14:29.755571Z",
+      "signal_evaluation_id": 671664,
+      "signal_snapshot_id": 1475047,
+      "receipt_snapshot_id": 1475082,
+      "observed_at": "2026-09-07T05:14:44.028973Z",
+      "receipt_at": "2026-09-07T05:14:45.217284Z",
+      "cohort_allocation_at": "2026-09-07T05:14:45.287825Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 14.273402
+    },
+    {
+      "trade_id": 477071,
+      "side": "BUY",
+      "arm_id": "finalist_progress_clock_v1",
+      "cohort_id": 53488,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:14:29.755571Z",
+      "signal_evaluation_id": 671664,
+      "signal_snapshot_id": 1475047,
+      "receipt_snapshot_id": 1475082,
+      "observed_at": "2026-09-07T05:14:44.028973Z",
+      "receipt_at": "2026-09-07T05:14:45.217284Z",
+      "cohort_allocation_at": "2026-09-07T05:14:45.287825Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 14.273402
+    },
+    {
+      "trade_id": 477072,
+      "side": "BUY",
+      "arm_id": "round2_chase_control_v1",
+      "cohort_id": 53488,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:14:29.755571Z",
+      "signal_evaluation_id": 671664,
+      "signal_snapshot_id": 1475047,
+      "receipt_snapshot_id": 1475082,
+      "observed_at": "2026-09-07T05:14:44.028973Z",
+      "receipt_at": "2026-09-07T05:14:45.217284Z",
+      "cohort_allocation_at": "2026-09-07T05:14:45.287825Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 14.273402
+    },
+    {
+      "trade_id": 477073,
+      "side": "BUY",
+      "arm_id": "round2_giveback_duration_candidate_v1",
+      "cohort_id": 53488,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:14:29.755571Z",
+      "signal_evaluation_id": 671664,
+      "signal_snapshot_id": 1475047,
+      "receipt_snapshot_id": 1475082,
+      "observed_at": "2026-09-07T05:14:44.028973Z",
+      "receipt_at": "2026-09-07T05:14:45.217284Z",
+      "cohort_allocation_at": "2026-09-07T05:14:45.287825Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 14.273402
+    },
+    {
+      "trade_id": 477074,
+      "side": "BUY",
+      "arm_id": "round2_giveback_duration_control_v1",
+      "cohort_id": 53488,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:14:29.755571Z",
+      "signal_evaluation_id": 671664,
+      "signal_snapshot_id": 1475047,
+      "receipt_snapshot_id": 1475082,
+      "observed_at": "2026-09-07T05:14:44.028973Z",
+      "receipt_at": "2026-09-07T05:14:45.217284Z",
+      "cohort_allocation_at": "2026-09-07T05:14:45.287825Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 14.273402
+    },
+    {
+      "trade_id": 477075,
+      "side": "BUY",
+      "arm_id": "round2_response_exhaustion_candidate_v1",
+      "cohort_id": 53488,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:14:29.755571Z",
+      "signal_evaluation_id": 671664,
+      "signal_snapshot_id": 1475047,
+      "receipt_snapshot_id": 1475082,
+      "observed_at": "2026-09-07T05:14:44.028973Z",
+      "receipt_at": "2026-09-07T05:14:45.217284Z",
+      "cohort_allocation_at": "2026-09-07T05:14:45.287825Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 14.273402
+    },
+    {
+      "trade_id": 477076,
+      "side": "BUY",
+      "arm_id": "round2_response_exhaustion_control_v1",
+      "cohort_id": 53488,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:14:29.755571Z",
+      "signal_evaluation_id": 671664,
+      "signal_snapshot_id": 1475047,
+      "receipt_snapshot_id": 1475082,
+      "observed_at": "2026-09-07T05:14:44.028973Z",
+      "receipt_at": "2026-09-07T05:14:45.217284Z",
+      "cohort_allocation_at": "2026-09-07T05:14:45.287825Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 14.273402
+    },
+    {
+      "trade_id": 477077,
+      "side": "BUY",
+      "arm_id": "round2_runner_requalification_candidate_v1",
+      "cohort_id": 53488,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:14:29.755571Z",
+      "signal_evaluation_id": 671664,
+      "signal_snapshot_id": 1475047,
+      "receipt_snapshot_id": 1475082,
+      "observed_at": "2026-09-07T05:14:44.028973Z",
+      "receipt_at": "2026-09-07T05:14:45.217284Z",
+      "cohort_allocation_at": "2026-09-07T05:14:45.287825Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 14.273402
+    },
+    {
+      "trade_id": 477078,
+      "side": "BUY",
+      "arm_id": "round2_runner_requalification_control_v1",
+      "cohort_id": 53488,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:14:29.755571Z",
+      "signal_evaluation_id": 671664,
+      "signal_snapshot_id": 1475047,
+      "receipt_snapshot_id": 1475082,
+      "observed_at": "2026-09-07T05:14:44.028973Z",
+      "receipt_at": "2026-09-07T05:14:45.217284Z",
+      "cohort_allocation_at": "2026-09-07T05:14:45.287825Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 14.273402
+    },
+    {
+      "trade_id": 477079,
+      "side": "BUY",
+      "arm_id": "round2_slow_grace_candidate_v1",
+      "cohort_id": 53488,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:14:29.755571Z",
+      "signal_evaluation_id": 671664,
+      "signal_snapshot_id": 1475047,
+      "receipt_snapshot_id": 1475082,
+      "observed_at": "2026-09-07T05:14:44.028973Z",
+      "receipt_at": "2026-09-07T05:14:45.217284Z",
+      "cohort_allocation_at": "2026-09-07T05:14:45.287825Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 14.273402
+    },
+    {
+      "trade_id": 477080,
+      "side": "BUY",
+      "arm_id": "round2_slow_grace_control_v1",
+      "cohort_id": 53488,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:14:29.755571Z",
+      "signal_evaluation_id": 671664,
+      "signal_snapshot_id": 1475047,
+      "receipt_snapshot_id": 1475082,
+      "observed_at": "2026-09-07T05:14:44.028973Z",
+      "receipt_at": "2026-09-07T05:14:45.217284Z",
+      "cohort_allocation_at": "2026-09-07T05:14:45.287825Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 14.273402
+    },
+    {
+      "trade_id": 477081,
+      "side": "BUY",
+      "arm_id": "watched_wallet_confirmed_entry_control_v1",
+      "cohort_id": 53488,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:14:29.755571Z",
+      "signal_evaluation_id": 671664,
+      "signal_snapshot_id": 1475047,
+      "receipt_snapshot_id": 1475082,
+      "observed_at": "2026-09-07T05:14:44.028973Z",
+      "receipt_at": "2026-09-07T05:14:45.217284Z",
+      "cohort_allocation_at": "2026-09-07T05:14:45.287825Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 14.273402
+    },
+    {
+      "trade_id": 477082,
+      "side": "BUY",
+      "arm_id": "migration_amount_rate_absorption_v1",
+      "cohort_id": 53490,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:14:27.866941Z",
+      "signal_evaluation_id": 671628,
+      "signal_snapshot_id": 1475011,
+      "receipt_snapshot_id": 1475090,
+      "observed_at": "2026-09-07T05:14:45.075041Z",
+      "receipt_at": "2026-09-07T05:14:46.063742Z",
+      "cohort_allocation_at": "2026-09-07T05:14:46.134162Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 17.2081
+    },
+    {
+      "trade_id": 477083,
+      "side": "BUY",
+      "arm_id": "official_event_actual_flow_v1",
+      "cohort_id": 53490,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:14:27.866941Z",
+      "signal_evaluation_id": 671628,
+      "signal_snapshot_id": 1475011,
+      "receipt_snapshot_id": 1475090,
+      "observed_at": "2026-09-07T05:14:45.075041Z",
+      "receipt_at": "2026-09-07T05:14:46.063742Z",
+      "cohort_allocation_at": "2026-09-07T05:14:46.134162Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 17.2081
+    },
+    {
+      "trade_id": 477084,
+      "side": "SELL",
+      "arm_id": "common_funding_adjusted_breadth_5u_v1",
+      "cohort_id": 53246,
+      "kind": "pending_mark_original_recorded_at",
+      "fill_id": 222127,
+      "mark_id": 241775,
+      "trigger_at": "2026-09-07T05:14:45.079643Z",
+      "post_observed_at": "2026-09-07T05:14:47.214618Z",
+      "post_receipt_at": "2026-09-07T05:14:47.215537Z",
+      "passed": true,
+      "observed_minus_trigger_seconds": 2.134975
+    },
+    {
+      "trade_id": 477085,
+      "side": "BUY",
+      "arm_id": "staged_probe_5u_conditional_15u_shadow_v1",
+      "cohort_id": 53494,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:14:23.557672Z",
+      "signal_evaluation_id": 671586,
+      "signal_snapshot_id": 1474992,
+      "receipt_snapshot_id": 1475095,
+      "observed_at": "2026-09-07T05:14:51.112728Z",
+      "receipt_at": "2026-09-07T05:14:53.747747Z",
+      "cohort_allocation_at": "2026-09-07T05:14:53.822531Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 27.555056
+    },
+    {
+      "trade_id": 477086,
+      "side": "BUY",
+      "arm_id": "staged_probe_5u_only_control_v1",
+      "cohort_id": 53494,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:14:23.557672Z",
+      "signal_evaluation_id": 671586,
+      "signal_snapshot_id": 1474992,
+      "receipt_snapshot_id": 1475095,
+      "observed_at": "2026-09-07T05:14:51.112728Z",
+      "receipt_at": "2026-09-07T05:14:53.747747Z",
+      "cohort_allocation_at": "2026-09-07T05:14:53.822531Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 27.555056
+    },
+    {
+      "trade_id": 477087,
+      "side": "BUY",
+      "arm_id": "watched_wallet_distribution_candidate_v1",
+      "cohort_id": 53494,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:14:23.557672Z",
+      "signal_evaluation_id": 671586,
+      "signal_snapshot_id": 1474992,
+      "receipt_snapshot_id": 1475095,
+      "observed_at": "2026-09-07T05:14:51.112728Z",
+      "receipt_at": "2026-09-07T05:14:53.747747Z",
+      "cohort_allocation_at": "2026-09-07T05:14:53.822531Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 27.555056
+    },
+    {
+      "trade_id": 477088,
+      "side": "BUY",
+      "arm_id": "watched_wallet_distribution_control_v1",
+      "cohort_id": 53494,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:14:23.557672Z",
+      "signal_evaluation_id": 671586,
+      "signal_snapshot_id": 1474992,
+      "receipt_snapshot_id": 1475095,
+      "observed_at": "2026-09-07T05:14:51.112728Z",
+      "receipt_at": "2026-09-07T05:14:53.747747Z",
+      "cohort_allocation_at": "2026-09-07T05:14:53.822531Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 27.555056
+    },
+    {
+      "trade_id": 477089,
+      "side": "BUY",
+      "arm_id": "experiment_panic_reclaim_candidate_v1",
+      "cohort_id": 53496,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:14:46.073944Z",
+      "signal_evaluation_id": 671706,
+      "signal_snapshot_id": 1475090,
+      "receipt_snapshot_id": 1475104,
+      "observed_at": "2026-09-07T05:14:59.121384Z",
+      "receipt_at": "2026-09-07T05:14:59.655261Z",
+      "cohort_allocation_at": "2026-09-07T05:14:59.667385Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 13.04744
+    },
+    {
+      "trade_id": 477090,
+      "side": "BUY",
+      "arm_id": "experiment_panic_reclaim_control_v1",
+      "cohort_id": 53496,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:14:46.073944Z",
+      "signal_evaluation_id": 671706,
+      "signal_snapshot_id": 1475090,
+      "receipt_snapshot_id": 1475104,
+      "observed_at": "2026-09-07T05:14:59.121384Z",
+      "receipt_at": "2026-09-07T05:14:59.655261Z",
+      "cohort_allocation_at": "2026-09-07T05:14:59.667385Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 13.04744
+    },
+    {
+      "trade_id": 477091,
+      "side": "BUY",
+      "arm_id": "experiment_migration_candidate_v1",
+      "cohort_id": 53505,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:15:01.924576Z",
+      "signal_evaluation_id": 671744,
+      "signal_snapshot_id": 1475130,
+      "receipt_snapshot_id": 1475164,
+      "observed_at": "2026-09-07T05:15:15.922340Z",
+      "receipt_at": "2026-09-07T05:15:16.240437Z",
+      "cohort_allocation_at": "2026-09-07T05:15:16.249280Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 13.997764
+    },
+    {
+      "trade_id": 477092,
+      "side": "BUY",
+      "arm_id": "experiment_migration_control_v1",
+      "cohort_id": 53505,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:15:01.924576Z",
+      "signal_evaluation_id": 671744,
+      "signal_snapshot_id": 1475130,
+      "receipt_snapshot_id": 1475164,
+      "observed_at": "2026-09-07T05:15:15.922340Z",
+      "receipt_at": "2026-09-07T05:15:16.240437Z",
+      "cohort_allocation_at": "2026-09-07T05:15:16.249280Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 13.997764
+    },
+    {
+      "trade_id": 477093,
+      "side": "BUY",
+      "arm_id": "common_funding_adjusted_breadth_5u_v1",
+      "cohort_id": 53506,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:15:01.924576Z",
+      "signal_evaluation_id": 671744,
+      "signal_snapshot_id": 1475130,
+      "receipt_snapshot_id": 1475164,
+      "observed_at": "2026-09-07T05:15:15.922340Z",
+      "receipt_at": "2026-09-07T05:15:16.240437Z",
+      "cohort_allocation_at": "2026-09-07T05:15:16.326086Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 13.997764
+    },
+    {
+      "trade_id": 477094,
+      "side": "BUY",
+      "arm_id": "migration_amount_rate_absorption_v1",
+      "cohort_id": 53506,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:15:01.924576Z",
+      "signal_evaluation_id": 671744,
+      "signal_snapshot_id": 1475130,
+      "receipt_snapshot_id": 1475164,
+      "observed_at": "2026-09-07T05:15:15.922340Z",
+      "receipt_at": "2026-09-07T05:15:16.240437Z",
+      "cohort_allocation_at": "2026-09-07T05:15:16.326086Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 13.997764
+    },
+    {
+      "trade_id": 477095,
+      "side": "BUY",
+      "arm_id": "official_event_actual_flow_v1",
+      "cohort_id": 53506,
+      "kind": "pattern_prior_signal_evaluation",
+      "decision_at": "2026-09-07T05:15:01.924576Z",
+      "signal_evaluation_id": 671744,
+      "signal_snapshot_id": 1475130,
+      "receipt_snapshot_id": 1475164,
+      "observed_at": "2026-09-07T05:15:15.922340Z",
+      "receipt_at": "2026-09-07T05:15:16.240437Z",
+      "cohort_allocation_at": "2026-09-07T05:15:16.326086Z",
+      "passed": true,
+      "observed_minus_decision_seconds": 13.997764
+    },
+    {
+      "trade_id": 477096,
+      "side": "SELL",
+      "arm_id": "volatility_scaled_depth_flow_momentum_v1",
+      "cohort_id": 53242,
+      "kind": "pending_mark_original_recorded_at",
+      "fill_id": 222128,
+      "mark_id": 241776,
+      "trigger_at": "2026-09-07T05:15:17.522896Z",
+      "post_observed_at": "2026-09-07T05:15:18.479802Z",
+      "post_receipt_at": "2026-09-07T05:15:18.481823Z",
+      "passed": true,
+      "observed_minus_trigger_seconds": 0.956906
+    }
+  ],
+  "closed_checks": [
+    {
+      "arm_id": "common_funding_adjusted_breadth_5u_v1",
+      "cohort_id": 53246,
+      "trade_ids": [
+        476952,
+        477084
+      ],
+      "net_proceeds": 6.362811358154421,
+      "cost": 5,
+      "ledger_realized": 1.3628113581544206,
+      "position_realized": 1.3628113581544206,
+      "passed": true
+    }
+  ],
+  "error_tail_oldest": "2026-09-07T03:47:59.515514Z",
+  "postdeploy_error_occurrences": [
+    {
+      "id": 2539,
+      "case_id": 130,
+      "observed_at": "2026-09-07T05:18:44.767010Z"
+    },
+    {
+      "id": 2538,
+      "case_id": 154,
+      "observed_at": "2026-09-07T05:18:23.660648Z"
+    },
+    {
+      "id": 2537,
+      "case_id": 140,
+      "observed_at": "2026-09-07T05:18:04.902879Z"
+    },
+    {
+      "id": 2536,
+      "case_id": 141,
+      "observed_at": "2026-09-07T05:18:01.293138Z"
+    },
+    {
+      "id": 2535,
+      "case_id": 138,
+      "observed_at": "2026-09-07T05:17:59.517155Z"
+    },
+    {
+      "id": 2534,
+      "case_id": 48,
+      "observed_at": "2026-09-07T05:16:32.329965Z"
+    },
+    {
+      "id": 2533,
+      "case_id": 141,
+      "observed_at": "2026-09-07T05:16:10.699502Z"
+    },
+    {
+      "id": 2532,
+      "case_id": 140,
+      "observed_at": "2026-09-07T05:16:10.191976Z"
+    },
+    {
+      "id": 2531,
+      "case_id": 156,
+      "observed_at": "2026-09-07T05:16:09.274082Z"
+    },
+    {
+      "id": 2530,
+      "case_id": 138,
+      "observed_at": "2026-09-07T05:15:53.047230Z"
+    },
+    {
+      "id": 2529,
+      "case_id": 150,
+      "observed_at": "2026-09-07T05:15:45.321876Z"
+    },
+    {
+      "id": 2528,
+      "case_id": 126,
+      "observed_at": "2026-09-07T05:15:13.681482Z"
+    },
+    {
+      "id": 2527,
+      "case_id": 130,
+      "observed_at": "2026-09-07T05:14:15.089977Z"
+    },
+    {
+      "id": 2526,
+      "case_id": 148,
+      "observed_at": "2026-09-07T05:14:13.197702Z"
+    }
+  ],
+  "error_cases": [
+    {
+      "id": 48,
+      "area": "runtime",
+      "component": "chain-meme-pattern-observer",
+      "error_type": "TimeoutError",
+      "message_safe": "TimeoutError",
+      "last_seen_at": "2026-09-07T05:16:32.329965Z"
+    },
+    {
+      "id": 126,
+      "area": "runtime",
+      "component": "native-launch:bsc",
+      "error_type": "limit exceeded",
+      "message_safe": "limit exceeded",
+      "last_seen_at": "2026-09-07T05:15:13.681482Z"
+    },
+    {
+      "id": 130,
+      "area": "runtime",
+      "component": "geckoterminal:bsc",
+      "error_type": "HTTPStatusError:429",
+      "message_safe": "host=api.geckoterminal.com; status=429",
+      "last_seen_at": "2026-09-07T05:18:44.767010Z"
+    },
+    {
+      "id": 138,
+      "area": "runtime",
+      "component": "chain-meme-market-marks",
+      "error_type": "HTTPStatusError",
+      "message_safe": "HTTPStatusError",
+      "last_seen_at": "2026-09-07T05:17:59.517155Z"
+    },
+    {
+      "id": 140,
+      "area": "runtime",
+      "component": "flat-compression-breakout-shadow",
+      "error_type": "HTTPStatusError",
+      "message_safe": "HTTPStatusError",
+      "last_seen_at": "2026-09-07T05:18:04.902879Z"
+    },
+    {
+      "id": 141,
+      "area": "runtime",
+      "component": "chain-meme-pattern-observer",
+      "error_type": "HTTPStatusError",
+      "message_safe": "HTTPStatusError",
+      "last_seen_at": "2026-09-07T05:18:01.293138Z"
+    },
+    {
+      "id": 148,
+      "area": "runtime",
+      "component": "geckoterminal:solana",
+      "error_type": "HTTPStatusError:429",
+      "message_safe": "host=api.geckoterminal.com; status=429",
+      "last_seen_at": "2026-09-07T05:14:13.197702Z"
+    },
+    {
+      "id": 150,
+      "area": "runtime",
+      "component": "native-launch:robinhood",
+      "error_type": "EVM RPC eth_getLogs failed",
+      "message_safe": "EVM RPC eth_getLogs failed",
+      "last_seen_at": "2026-09-07T05:15:45.321876Z"
+    },
+    {
+      "id": 154,
+      "area": "runtime",
+      "component": "dexscreener:original_pool",
+      "error_type": "HTTPStatusError:429",
+      "message_safe": "host=api.dexscreener.com; status=429",
+      "last_seen_at": "2026-09-07T05:18:23.660648Z"
+    },
+    {
+      "id": 156,
+      "area": "runtime",
+      "component": "dexscreener:hydration",
+      "error_type": "HTTPStatusError:429",
+      "message_safe": "host=api.dexscreener.com; status=429",
+      "last_seen_at": "2026-09-07T05:16:09.274082Z"
+    }
+  ],
+  "resource_usage": {
+    "SQL_count": 77,
+    "max_SQL_seconds": 0.014905500007444061,
+    "read_analyze_seconds": 0.025332799996249378,
+    "SQL_deadline_seconds": 2,
+    "mode": "ro",
+    "short_autocommit_reads": true
+  },
+  "log_file_metadata": [
+    {
+      "Name": "runtime-crash.log",
+      "Length": 9962,
+      "LastWriteTimeUtc": "2026-09-02T19:59:52.2596418Z"
+    },
+    {
+      "Name": "paper-audit-fix-20260907.err.log",
+      "Length": 0,
+      "LastWriteTimeUtc": "2026-09-07T05:14:03.2066834Z"
+    },
+    {
+      "Name": "paper-audit-fix-20260907.out.log",
+      "Length": 0,
+      "LastWriteTimeUtc": "2026-09-07T05:14:03.2066834Z"
+    },
+    {
+      "Name": "web-audit-fix-20260907.err.log",
+      "Length": 0,
+      "LastWriteTimeUtc": "2026-09-07T05:14:03.3980020Z"
+    },
+    {
+      "Name": "web-audit-fix-20260907.out.log",
+      "Length": 129,
+      "LastWriteTimeUtc": "2026-09-07T05:14:05.6365828Z"
+    }
+  ],
+  "checked_code_commit": "03ace85 (deployment supplied by execution owner, not independently proven from runtime process)",
+  "observed_timing_anomalies": [],
+  "closed_check_failures": [],
+  "unique_signal_evaluation_count": 5,
+  "unique_buy_cohort_count": 7,
+  "boundaries": [
+    "30 BUY are pattern prior-signal-evaluation receipts, not 30 independent market signals; main immutable entry receipt path has no sample in this bounded set.",
+    "No WRITEOFF sample; only one fully terminal position in the fixed trade window; other SELL not counted as a new complete roundtrip here.",
+    "No timing anomaly in recoverable 32 trades is not proof about every rejected candidate, source identity, current unrealized value, or historical trades.",
+    "Previous defective trades 473261 and 473262 were not rewritten or included in the repaired cohort; this acceptance does not rehabilitate them.",
+    "128-row error tail starts before deployment and includes 14 post-deployment occurrences; no NULL observer error, but pattern TimeoutError and upstream errors remain.",
+    "77 SQL and 0.0253 seconds cover the successful narrow acceptance read only; earlier schema reads and one discarded output-truncated evidence read are not included in that timing count. All production reads used mode=ro and 2-second statement deadline.",
+    "No polling/waiting for more observations; upper trade frontier fixed to the initial observed 477096, not the latest available at completion."
+  ]
+}

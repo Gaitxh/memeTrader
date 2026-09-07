@@ -1,0 +1,239 @@
+{
+  "code_commit": "03ace85",
+  "deployment_started_at": "2026-09-07T05:14:03.4322224Z",
+  "before": {
+    "version": "chain-meme-trader/funding-20260906-v002-final-1000",
+    "registration_sha256": "fe1e47fbc4872998a1fb2b6cbe263950a36ba065fe1860b9493460ae19275388",
+    "additions_sha256": "2e73d30906f7c8698c73011edd2431013f75c482923ed448daecb84b628de635",
+    "addition_count": 97,
+    "funding": [
+      {
+        "definition_version": "chain-meme-trader/funding-20260906-v002-final-1000",
+        "activated_at": "2026-09-06T15:29:28.508111Z",
+        "activation_snapshot_id": 1130786,
+        "v5_definition_version": "chain-meme-trader/funding-20260905-fixed-1000",
+        "v5_source_frontier": 1130786,
+        "entry_execution_enabled": 1
+      }
+    ],
+    "max_trade": 477064,
+    "snapshot_frontier": 1474947
+  },
+  "after": {
+    "version": "chain-meme-trader/funding-20260906-v002-final-1000",
+    "registration_sha256": "fe1e47fbc4872998a1fb2b6cbe263950a36ba065fe1860b9493460ae19275388",
+    "additions_sha256": "2e73d30906f7c8698c73011edd2431013f75c482923ed448daecb84b628de635",
+    "addition_count": 97,
+    "funding": [
+      {
+        "definition_version": "chain-meme-trader/funding-20260906-v002-final-1000",
+        "activated_at": "2026-09-06T15:29:28.508111Z",
+        "activation_snapshot_id": 1130786,
+        "v5_definition_version": "chain-meme-trader/funding-20260905-fixed-1000",
+        "v5_source_frontier": 1130786,
+        "entry_execution_enabled": 1
+      }
+    ],
+    "max_trade": 477096,
+    "snapshot_frontier": 1475309
+  },
+  "performance_before": {
+    "time": "2026-09-07T05:13:58.436062Z",
+    "held": {
+      "robinhood": {
+        "tokens": 2,
+        "missing": 0,
+        "failures": 2,
+        "coverage_gaps": 0,
+        "age_p50_seconds": 51.182975,
+        "age_p95_seconds": 51.182975,
+        "age_max_seconds": 51.182975
+      },
+      "solana": {
+        "tokens": 21,
+        "missing": 0,
+        "failures": 21,
+        "coverage_gaps": 0,
+        "age_p50_seconds": 56.992183,
+        "age_p95_seconds": 56.992183,
+        "age_max_seconds": 56.992183
+      }
+    },
+    "timing": [
+      {
+        "name": "chain_meme_market_marks",
+        "duration": {
+          "p50": 0.679915050001,
+          "p95": 1.6094442599940522
+        },
+        "samples": 120,
+        "interval": {
+          "p50": 1.0303581500047585,
+          "p95": 1.8416495350007607
+        }
+      },
+      {
+        "name": "chain_meme_pattern_observer",
+        "duration": {
+          "p50": 3.7981440000075963,
+          "p95": 10.547199075001116
+        },
+        "samples": 120,
+        "interval": {
+          "p50": 15.009360349999042,
+          "p95": 15.394362074993113
+        }
+      },
+      {
+        "name": "chain_meme_trader",
+        "duration": {
+          "p50": 0.02243244999408489,
+          "p95": 0.24965640499067376
+        },
+        "samples": 120,
+        "interval": {
+          "p50": 1.0091755999965244,
+          "p95": 1.1207777000017813
+        }
+      },
+      {
+        "name": "complementary_market_data",
+        "duration": {
+          "p50": 0.050175450007373,
+          "p95": 2.242619204999207
+        },
+        "samples": 120,
+        "interval": {
+          "p50": 10.011499249994813,
+          "p95": 10.499764784996659
+        }
+      },
+      {
+        "name": "held_apply_exit",
+        "duration": {
+          "p50": 0.016106800001580268,
+          "p95": 0.04306946500219055
+        },
+        "samples": 120,
+        "interval": {
+          "p50": null,
+          "p95": null
+        }
+      },
+      {
+        "name": "held_fetch",
+        "duration": {
+          "p50": 0.6104250999997021,
+          "p95": 2.284610840000058
+        },
+        "samples": 120,
+        "interval": {
+          "p50": null,
+          "p95": null
+        }
+      }
+    ]
+  },
+  "performance_after": {
+    "time": "2026-09-07T05:15:59.910013Z",
+    "basis": "oldest_required_entry_pool_observed_at_per_token",
+    "held": {
+      "robinhood": {
+        "tokens": 1,
+        "missing": 0,
+        "failures": 1,
+        "coverage_gaps": 0,
+        "age_p50_seconds": 7.390342,
+        "age_p95_seconds": 7.390342,
+        "age_max_seconds": 7.390342,
+        "receipt_age_max_seconds": 7.389221
+      },
+      "solana": {
+        "tokens": 22,
+        "missing": 0,
+        "failures": 22,
+        "coverage_gaps": 0,
+        "age_p50_seconds": 35.45881,
+        "age_p95_seconds": 35.45881,
+        "age_max_seconds": 35.45881,
+        "receipt_age_max_seconds": 35.454201
+      }
+    },
+    "timing": [
+      {
+        "samples": 84,
+        "interval": {
+          "p50": 1.039446400012821,
+          "p95": 2.0756598500040098
+        },
+        "duration": {
+          "p50": 0.8016886499972316,
+          "p95": 1.8119560400053143
+        },
+        "name": "chain_meme_market_marks"
+      },
+      {
+        "samples": 7,
+        "interval": {
+          "p50": 15.008994299998449,
+          "p95": 15.135922150006081
+        },
+        "duration": {
+          "p50": 3.620562500000233,
+          "p95": 4.248901870004192
+        },
+        "name": "chain_meme_pattern_observer"
+      },
+      {
+        "samples": 98,
+        "interval": {
+          "p50": 1.0106047000008402,
+          "p95": 1.1698658000008433
+        },
+        "duration": {
+          "p50": 0.021681649996025953,
+          "p95": 0.2502192300024034
+        },
+        "name": "chain_meme_trader"
+      },
+      {
+        "samples": 11,
+        "interval": {
+          "p50": 10.018319400005566,
+          "p95": 10.214298079994478
+        },
+        "duration": {
+          "p50": 0.0007247000030474737,
+          "p95": 0.9407487499993294
+        },
+        "name": "complementary_market_data"
+      },
+      {
+        "samples": 120,
+        "interval": {
+          "p50": null,
+          "p95": null
+        },
+        "duration": {
+          "p50": 0.015145850004046224,
+          "p95": 0.04170675999994273
+        },
+        "name": "held_apply_exit"
+      },
+      {
+        "samples": 120,
+        "interval": {
+          "p50": null,
+          "p95": null
+        },
+        "duration": {
+          "p50": 0.4908903999894392,
+          "p95": 1.370809294995706
+        },
+        "name": "held_fetch"
+      }
+    ]
+  },
+  "limits": "Short unequal observation windows; changed age definition; no causal speedup claim. No account reset, strategy registration mutation, history rewrite or Live."
+}
+
