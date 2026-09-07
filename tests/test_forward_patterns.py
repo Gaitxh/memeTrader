@@ -154,6 +154,57 @@ def test_pattern_same_fill_next_observation_cash_and_legacy_isolation(tmp_path, 
     store.close()
 
 
+@pytest.mark.parametrize("lane", ["observer", "narrative"])
+def test_shared_pattern_quote_is_enqueued_once_and_computed_fresh(lane):
+    import asyncio
+    from collections import deque
+    from types import SimpleNamespace
+    from memetrader.collectors import DexScreenerClient
+    from memetrader.runtime import Runtime
+
+    async def scenario():
+        runtime = Runtime.__new__(Runtime)
+        runtime.chain_meme_trader_only = True
+        runtime.config = {"paper": {"max_quote_age_seconds": 45}}
+        runtime._cohort_started_at = utcnow()
+        runtime._cohort_batches = deque(maxlen=8)
+        runtime._dex_quote_lock = asyncio.Semaphore(8)
+        runtime._dex_quote_backoff_until = 0
+        runtime._dex_quote_failure_streak = 0
+        runtime._rank_no_ca_events = lambda: None
+        pair = dict(chainId="solana", pairAddress="pool", dexId="pumpswap", priceUsd="2",
+                    baseToken={"address": str(Pubkey.new_unique()), "symbol": "T"},
+                    pairCreatedAt=round((utcnow()-timedelta(seconds=120)).timestamp()*1000),
+                    liquidity={"usd": 10000}, txns={"m5": {"buys": 6, "sells": 3}}, volume={"m5": 500})
+        token, snapshot = DexScreenerClient._candidate(pair), DexScreenerClient._snapshot(pair)
+        observed = []
+        runtime.store = SimpleNamespace(
+            capital_cross_section=lambda *args: {},
+            observe_chain_meme_pattern=lambda t, s, **kw: observed.append(s.observed_at) or 0,
+            heartbeat=lambda *args, **kw: None,
+            add_observation=lambda *args: None,
+            record_chain_meme_pattern_narrative=lambda *args: {token.token_id},
+        )
+        async def batch_quote_fresh(*args):
+            return {token.token_id: (token, snapshot)}
+        runtime.dex = SimpleNamespace(batch_quote_fresh=batch_quote_fresh)
+        if lane == "observer":
+            old = DexScreenerClient._snapshot(pair)
+            old.observed_at -= timedelta(seconds=20)
+            runtime._remember_pattern_quotes({token.token_id: (token, old)})
+            runtime._cohort_batches.clear()
+            await runtime.chain_meme_pattern_observer_once()
+            assert observed == [snapshot.observed_at]
+        else:
+            async def scout_trends(**kwargs):
+                return {}, [SimpleNamespace(raw={"fact_verification_record_id": 1})]
+            runtime.autonomous_search = SimpleNamespace(scout_trends=scout_trends)
+            await runtime.chain_meme_pattern_narrative_once()
+        assert len(runtime._cohort_batches) == 1
+        assert runtime._cohort_batches[0][1][0][1].observed_at == snapshot.observed_at
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("provider", ["dexscreener", "geckoterminal"])
 def test_runtime_reuses_held_quote_and_real_dex_receipt(tmp_path, provider):
     import asyncio

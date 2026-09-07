@@ -2024,6 +2024,10 @@ def test_fast_hydration_is_bounded_and_yields_to_held_and_backoff(tmp_path):
         assert not waiting.done()
         runtime._chain_meme_active_idle().set()
         await waiting
+        assert sum(map(len, batches)) == 10
+        await runtime.chain_meme_token_details_once()
+        assert sum(map(len, batches)) == 20
+        await runtime.chain_meme_token_details_once()
         assert sum(map(len, batches)) == 30
         await runtime.chain_meme_token_details_once()
         assert sum(map(len, batches)) == 31
@@ -5371,6 +5375,36 @@ def test_paper_quote_gate_rejects_future_stale_and_wrong_token(tmp_path):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("new_data", [False, True])
+def test_decision_loop_coalesces_data_wakeups_and_keeps_idle_cadence(new_data):
+    async def scenario():
+        from types import SimpleNamespace
+        from memetrader.runtime_timing import RuntimeTiming
+        runtime = Runtime.__new__(Runtime)
+        runtime.chain_meme_trader_only = True
+        runtime._stop = asyncio.Event()
+        runtime.runtime_timing = RuntimeTiming()
+        runtime._last_timing_write = asyncio.get_running_loop().time()
+        runtime.store = SimpleNamespace(record_runtime_timing=lambda *args: None)
+        starts = []
+
+        async def action():
+            starts.append(asyncio.get_running_loop().time())
+            if len(starts) == 1 and new_data:
+                for _ in range(100):
+                    runtime._chain_meme_decision_wakeup().set()
+            if len(starts) == 2:
+                runtime._stop.set()
+
+        await asyncio.wait_for(runtime._periodic("chain_meme_trader", 1, action), timeout=2)
+        assert len(starts) == 2
+        interval = starts[1] - starts[0]
+        assert interval >= (0.19 if new_data else 0.95)
+        if new_data:
+            assert interval < 0.9
+    asyncio.run(scenario())
+
+
 def test_periodic_loops_do_not_block_each_other(tmp_path):
     async def scenario():
         config = initial_config()
@@ -5427,6 +5461,7 @@ def test_chain_meme_market_lanes_keep_active_fast_and_carry_slow():
         scheduled = dict(intervals)
         assert len(scheduled) == len(intervals)
         assert scheduled["chain_meme_trader"] == 1
+        assert scheduled["chain_meme_token_details"] == 5
         assert scheduled["chain_meme_market_marks"] == 1.0
         assert scheduled["flat_compression_breakout_shadow"] == 5
         assert scheduled["chain_meme_carried_market_marks"] == 15.0

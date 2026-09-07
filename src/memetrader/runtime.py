@@ -1565,6 +1565,13 @@ class Runtime:
             self._chain_meme_active_idle_event = idle
         return idle
 
+    def _chain_meme_decision_wakeup(self) -> asyncio.Event:
+        event = getattr(self, "_chain_meme_decision_event", None)
+        if event is None:
+            event = asyncio.Event()
+            self._chain_meme_decision_event = event
+        return event
+
     async def _dex_batch_quote(
         self,
         chain: str,
@@ -2753,7 +2760,7 @@ class Runtime:
         max_items = int(cfg.get("max_items_per_surface", 40))
         max_hydrations = int(cfg.get("max_hydrations_per_cycle", 180))
         if hydration_only:
-            max_hydrations = min(30, max_hydrations // 6)
+            max_hydrations = min(10, max_hydrations // 18)
         direct_context_candidates: list[tuple[int, TokenCandidate, TokenSnapshot, float, dict[str, Any]]] = []
         onchain_context_candidates: list[
             tuple[int, TokenCandidate, TokenSnapshot, float, dict[str, Any]]
@@ -2950,6 +2957,7 @@ class Runtime:
                     created = self.store.upsert_token(token, seen_at=snapshot.observed_at)
                     snapshot_id = self.store.add_snapshot(snapshot)
                     self.store.mark_token_detail_hydration(token_id, "hydrated")
+                    self._chain_meme_decision_wakeup().set()
                     self.store.add_token_discovery_exposure(
                         round_id,
                         token_id=token_id,
@@ -3186,8 +3194,8 @@ class Runtime:
             retry_seconds = min(60, retry_seconds * 2)
 
     async def chain_meme_token_details_once(self) -> None:
-        """Spread the existing 180-target/90s hydration budget over six small turns."""
-        # A busy held turn should delay this batch, not discard its entire 15s slot.
+        """Spread the existing 180-target/90s budget over eighteen smaller turns."""
+        # A busy held turn should delay this batch, not discard its entire slot.
         await self._chain_meme_active_idle().wait()
         if not self._dex_quote_low_priority_available():
             return
@@ -3525,6 +3533,7 @@ class Runtime:
                 snap = await self.safety.enrich_evm_execution_fields(snap)
             self.store.upsert_token(quoted_token)
             snapshot_id = self.store.add_snapshot(snap)
+            self._chain_meme_decision_wakeup().set()
             market_gate = (
                 (snap.liquidity_usd or 0) >= min_liquidity
                 and (snap.volume_5m_usd or 0) >= min_volume
@@ -5971,7 +5980,8 @@ class Runtime:
             chain, address = token_id.split(":", 1)
             try:
                 quoted = await asyncio.wait_for(self._dex_batch_quote(chain, [address], fresh=True), timeout=3)
-                self._remember_pattern_quotes(quoted)
+                if not self.chain_meme_trader_only:
+                    self._remember_pattern_quotes(quoted)
             except (httpx.HTTPError, TimeoutError) as exc:
                 self.store.heartbeat("chain-meme-pattern-narrative", error=type(exc).__name__)
         lane = result.get("lane_selection") or {}
@@ -7056,6 +7066,8 @@ class Runtime:
             refreshed_count = self.store.apply_chain_meme_trader_market_mark_batch(
                 outcomes, recorded_at=received_at,
             )
+            if refreshed_count:
+                self._chain_meme_decision_wakeup().set()
             for version in dict.fromkeys(evaluate_versions or ([evaluate_version] if evaluate_version else [])):
                 # Use this batch while its observations are fresh; waiting for
                 # every other HTTP batch can expire the 15-second exit window.
@@ -7332,7 +7344,8 @@ class Runtime:
                 try:
                     quoted = await asyncio.wait_for(self._dex_batch_quote(
                         chain, due, fresh=True, high_priority=False), timeout=3)
-                    self._remember_pattern_quotes(quoted)
+                    if not self.chain_meme_trader_only:
+                        self._remember_pattern_quotes(quoted)
                 except (httpx.HTTPError, TimeoutError) as exc:
                     self.store.heartbeat("chain-meme-pattern-observer", error=type(exc).__name__)
             for item in targets:
@@ -8270,7 +8283,11 @@ class Runtime:
             self.runtime_timing = RuntimeTiming()
             self._last_timing_write = 0.0
         previous_start = None
+        wakeup = (self._chain_meme_decision_wakeup()
+                  if name == "chain_meme_trader" and self.chain_meme_trader_only else None)
         while not self._stop.is_set():
+            if wakeup is not None:
+                wakeup.clear()
             started = asyncio.get_running_loop().time()
             failed = 0
             try:
@@ -8298,8 +8315,21 @@ class Runtime:
                 self.store.record_runtime_timing(self.runtime_timing.snapshot())
                 self._last_timing_write = started
             wait_seconds = max(0.2, interval_seconds - elapsed)
+            if wakeup is not None:
+                # Coalesce arrivals during a batch and cap decision starts at 5Hz.
+                # No new data keeps the existing one-second fallback cadence.
+                spacing = max(0.0, 0.2 - elapsed)
+                if spacing:
+                    try:
+                        await asyncio.wait_for(self._stop.wait(), timeout=spacing)
+                    except TimeoutError:
+                        pass
+                wait_seconds = max(0.0, interval_seconds - (
+                    asyncio.get_running_loop().time() - started))
+            if self._stop.is_set():
+                break
             try:
-                await asyncio.wait_for(self._stop.wait(), timeout=wait_seconds)
+                await asyncio.wait_for((wakeup or self._stop).wait(), timeout=wait_seconds)
             except TimeoutError:
                 pass
 
@@ -8332,7 +8362,7 @@ class Runtime:
                     name="multichain_meme_data",
                 ),
                 asyncio.create_task(
-                    self._periodic("chain_meme_token_details", 15, self.chain_meme_token_details_once),
+                    self._periodic("chain_meme_token_details", 5, self.chain_meme_token_details_once),
                     name="chain_meme_token_details",
                 ),
                 asyncio.create_task(
