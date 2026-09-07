@@ -854,7 +854,7 @@ class ChainWebData:
                 "timing": json.loads(row["payload_json"]) if row else None,
                 "timing_recorded_at": row["recorded_at"] if row else None,
                 "held_by_chain": by_chain, "held_age_basis": "oldest_required_entry_pool_observed_at_per_token", "sources": sources,
-                "ui": {"visible_seconds": 5, "hidden_seconds": 30, "token_detail_seconds": 10},
+                "ui": {"visible_seconds": 5, "hidden_seconds": None, "hidden_paused": True, "token_detail_seconds": 10},
                 "storage": {"database_bytes": self.database.stat().st_size,
                             "wal_bytes": Path(str(self.database)+"-wal").stat().st_size if Path(str(self.database)+"-wal").exists() else 0,
                             "free_bytes": shutil.disk_usage(self.database.parent).free}}

@@ -53,4 +53,10 @@ assert.match(context.revisionUi.lifecycle({account_lifecycle:'PAUSED_NEW_ENTRY'}
 assert.match(context.revisionUi.lifecycle({account_lifecycle:'RETIRED_DEPLETED'}), /资金接近耗尽/);
 assert.match(app, /f\.default_visible!==false\|\|\$\('#universe-show-retired'\)\?\.checked/);
 
-console.log('chain web strategy revision: ok');
+context.clearTimeout = () => {};
+context.document = {visibilityState: 'hidden'};
+context.fetch = () => { throw new Error('hidden page must not fetch live state'); };
+context.setTimeout = () => { throw new Error('hidden page must not keep polling'); };
+vm.runInContext('refreshLive()', context).then(() => {
+  console.log('chain web strategy revision and hidden polling: ok');
+});

@@ -2402,8 +2402,36 @@ class Runtime:
             token, snapshot = self._held_pool_quote(pair, str(item["token_id"]))
             return token is not None and snapshot is not None and not self._held_pool_quote_rejections(
                 str(item["token_id"]), token, snapshot, utcnow())
+        applied = set()
+
+        def apply_available_pairs():
+            # Commit each provider's successes before waiting on another pool's fallback.
+            received_at = utcnow()
+            ready, outcomes = [], []
+            for key, item in chunk:
+                if key in applied or key not in self._market_pool_gaps:
+                    continue
+                pair = pairs.get(key[1])
+                if not usable(item, pair):
+                    continue
+                token, snapshot = self._held_pool_quote(pair, str(item["token_id"]))
+                token.source = snapshot.provider
+                self._market_complement_pools.add(key)
+                ready.append(item)
+                applied.add(key)
+                outcomes.extend({"kind": kind, "token": token, "snapshot": snapshot,
+                                 "target_token_id": item["token_id"], "target_chain": chain,
+                                 "target_address": item["address"]}
+                                for kind in ("pool_visible", "visible"))
+            if outcomes:
+                self.store.apply_chain_meme_trader_market_mark_batch(outcomes, recorded_at=received_at)
+                for version in dict.fromkeys(v for item in ready for v in item["versions"]):
+                    self.store.evaluate_chain_meme_trader_market_marks(
+                        definition_version=version, token_ids=[item["token_id"] for item in ready])
+
+        apply_available_pairs()
         uncovered = [(key, item) for key, item in chunk
-                     if not usable(item, pairs.get(key[1]))]
+                     if key not in applied and not usable(item, pairs.get(key[1]))]
         if exact_received:
             for key, item in primary_due:
                 if not usable(item, pairs.get(key[1])):
@@ -2435,10 +2463,12 @@ class Runtime:
                 if not isinstance(exc, httpx.HTTPStatusError) or exc.response.status_code == 429:
                     self._gecko_pool_backoff_until = retry_at
                 self._notify_source_error("geckoterminal:original_pool", exc)
+        apply_available_pairs()
         # A primary refresh may finish during the public fallback; do not
         # consume Demo quota for an identity that has already recovered.
         uncovered = [(key, item) for key, item in uncovered
-                     if key in self._market_pool_gaps
+                      if key in self._market_pool_gaps
+                      and key not in applied
                      and not usable(item, pairs.get(key[1]))
                      and float(item["next_complement_attempt"]) <= now]
         demo_attempted = False
@@ -2450,7 +2480,7 @@ class Runtime:
         outcomes = []
         received = utcnow()
         for key, item in chunk:
-            if key not in self._market_pool_gaps:
+            if key in applied or key not in self._market_pool_gaps:
                 continue
             pair = pairs.get(canonical_token_address(chain, str(item["pair_address"])))
             if pair is None:
@@ -3084,6 +3114,8 @@ class Runtime:
 
     async def chain_meme_token_details_once(self) -> None:
         """Spread the existing 180-target/90s hydration budget over six small turns."""
+        # A busy held turn should delay this batch, not discard its entire 15s slot.
+        await self._chain_meme_active_idle().wait()
         if not self._dex_quote_low_priority_available():
             return
         await self.poll_dexscreener_discovery_once(hydration_only=True)

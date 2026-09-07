@@ -2440,6 +2440,9 @@ class Store:
                     ON chain_meme_trader_v6_entry_evaluations(
                         definition_version,source_snapshot_id,token_id
                     );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_v6_entry_eval_pool_idx
+                    ON chain_meme_trader_v6_entry_evaluations(definition_version,token_id,id DESC)
+                    WHERE COALESCE(json_extract(feature_json,'$.pair_address'),'')!='';
                 CREATE TABLE IF NOT EXISTS chain_meme_trader_v6_registrations (
                     definition_version TEXT PRIMARY KEY,
                     code_registered_at TEXT NOT NULL,
@@ -2864,6 +2867,10 @@ class Store:
                 CREATE INDEX IF NOT EXISTS chain_meme_trader_entry_decisions_status_idx
                     ON chain_meme_trader_entry_decisions(
                         definition_version,status,id DESC
+                    );
+                CREATE INDEX IF NOT EXISTS chain_meme_trader_entry_decisions_cohort_idx
+                    ON chain_meme_trader_entry_decisions(
+                        definition_version,shadow_cohort_id,status,arm_id
                     );
                 CREATE TABLE IF NOT EXISTS chain_meme_trader_marks (
                     id INTEGER PRIMARY KEY,
@@ -28401,7 +28408,7 @@ class Store:
                             str(item["arm_id"]): int(item["pending_count"] or 0)
                             for item in self.db.execute(
                                 "SELECT d.arm_id,COUNT(*) AS pending_count FROM "
-                                "chain_meme_trader_order_intents i JOIN "
+                                "chain_meme_trader_order_intents i CROSS JOIN "
                                 "chain_meme_trader_entry_decisions d ON "
                                 "d.definition_version=i.definition_version AND "
                                 "d.shadow_cohort_id=i.shadow_cohort_id WHERE "

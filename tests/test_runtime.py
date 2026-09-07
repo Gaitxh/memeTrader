@@ -2009,14 +2009,21 @@ def test_fast_hydration_is_bounded_and_yields_to_held_and_backoff(tmp_path):
         for index in range(31):
             await runtime.ingest_token(TokenCandidate("solana", f"token{index:027d}", "Queued token"))
         runtime._chain_meme_active_idle().clear()
-        await runtime.chain_meme_token_details_once()
+        waiting = asyncio.create_task(runtime.chain_meme_token_details_once())
+        await asyncio.sleep(0)
+        assert not waiting.done()
         assert not batches
-        runtime._chain_meme_active_idle().set()
         runtime._dex_quote_backoff_until = asyncio.get_running_loop().time() + 30
-        await runtime.chain_meme_token_details_once()
+        runtime._chain_meme_active_idle().set()
+        await waiting
         assert not batches
         runtime._dex_quote_backoff_until = 0
-        await runtime.chain_meme_token_details_once()
+        runtime._chain_meme_active_idle().clear()
+        waiting = asyncio.create_task(runtime.chain_meme_token_details_once())
+        await asyncio.sleep(0)
+        assert not waiting.done()
+        runtime._chain_meme_active_idle().set()
+        await waiting
         assert sum(map(len, batches)) == 30
         await runtime.chain_meme_token_details_once()
         assert sum(map(len, batches)) == 31

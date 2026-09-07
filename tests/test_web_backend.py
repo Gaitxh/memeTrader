@@ -162,6 +162,8 @@ def test_chain_diagnostics_read_bounded_timing_and_update_history(tmp_path: Path
     assert perf["timing"]["components"]["chain_meme_trader"]["sample_count"] == 3
     assert perf["held_by_chain"] == {}
     assert perf["ui"]["visible_seconds"] == 5
+    assert perf["ui"]["hidden_paused"] is True
+    assert perf["ui"]["hidden_seconds"] is None
     assert data.discovery_activity()["retrieval_series"]["points"][0]["observed_at"] == "2026-09-06T00:00:00Z"
     assert "bridge-secret" not in json.dumps(perf)
 
