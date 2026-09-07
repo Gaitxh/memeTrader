@@ -26153,6 +26153,19 @@ class Store:
                     added += 1
         return added
 
+    def register_chain_meme_lifecycle_research(self) -> int:
+        from .lifecycle_research import lifecycle_policies
+        added = 0
+        with self._lock, self.db:
+            at = utcnow()
+            for policy in lifecycle_policies():
+                if self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?",
+                    (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, policy["arm_id"])).fetchone() is None:
+                    self.append_chain_meme_trader_policy(policy, activated_at=at)
+                    added += 1
+        return added
+
     def register_chain_meme_capital_experiments(self) -> int:
         """Append independently funded experiments at their actual deployment frontier."""
         added = 0
@@ -27101,6 +27114,7 @@ class Store:
             resource_opportunities = dict(prior_resource_opportunities)
             inventory_evidence = {}
             archive_evidence = {}
+            lifecycle_evidence = {}
             for policy in active:
                 if cohort_mode:
                     passed = policy["arm_id"] in accepted_cohort_signals
@@ -27130,6 +27144,11 @@ class Store:
                             "direction": "wave_reset_reentry", "min_gap_seconds": 600, "max_gap_seconds": 14400}}
                     passed, reason = capital_observation_signal(history, selected_policy,
                         decision_at=iso(decision_at), activated_at=policy["forward_started_at"], context=own_context)
+                elif policy.get("entry_filter", {}).get("contract") == "holding-lifecycle/20260908-v1":
+                    from .lifecycle_research import lifecycle_signal
+                    passed, reason, entry_evidence = lifecycle_signal(history, policy,
+                        decision_at=iso(decision_at), activated_at=policy["forward_started_at"])
+                    lifecycle_evidence[policy["arm_id"]] = entry_evidence
                 elif policy.get("entry_filter", {}).get("contract") == "archive-path-activity/20260908-v1":
                     from .archive_research import archive_signal
                     passed, reason, entry_evidence = archive_signal(history, policy,
@@ -27174,6 +27193,12 @@ class Store:
             from .inventory_research import CONTRACT as INVENTORY_CONTRACT, post_signal_compatible
             from .archive_research import CONTRACT as ARCHIVE_CONTRACT, post_signal_compatible as archive_post_compatible
             for p in active:
+                if p["arm_id"] in admitted_arms and p.get("entry_filter", {}).get("contract") == "holding-lifecycle/20260908-v1":
+                    if not archive_post_compatible(history[-1],
+                            previous_features.get("lifecycle_research_evidence", {}).get(p["arm_id"], {}),
+                            decision_at=iso(decision_at)):
+                        admitted_arms.remove(p["arm_id"])
+                        outcomes[p["arm_id"]] = "lifecycle_post_source_or_time_boundary"
                 if p["arm_id"] in admitted_arms and p.get("entry_filter", {}).get("contract") == ARCHIVE_CONTRACT:
                     if not archive_post_compatible(history[-1],
                             previous_features.get("archive_research_evidence", {}).get(p["arm_id"], {}),
@@ -27226,6 +27251,8 @@ class Store:
                 features["inventory_research_evidence"] = inventory_evidence
             if archive_evidence:
                 features["archive_research_evidence"] = archive_evidence
+            if lifecycle_evidence:
+                features["lifecycle_research_evidence"] = lifecycle_evidence
             if cohort_mode:
                 features.update(cohort_signals=accepted_cohort_signals,
                     entry_signal_key="isolated_cohorts/v1", policy_entry_family="cohort_experiments")
@@ -31710,7 +31737,7 @@ class Store:
 
     @staticmethod
     def _is_chain_meme_staged_probe(policy: Mapping[str, Any]) -> bool:
-        return str(policy.get("probe_kind") or "") == "bounded_5u_then_shadow_15u"
+        return str(policy.get("probe_kind") or "") in {"bounded_5u_then_shadow_15u", "lifecycle_renewal_shadow"}
 
     def _advance_chain_meme_staged_probe(
         self, position: Mapping[str, Any], policy: Mapping[str, Any], current: datetime,
@@ -31750,20 +31777,27 @@ class Store:
             "price_usd": price,
             "liquidity_usd": position["mark_liquidity_usd"],
             "net_recovery_usd": recovery,
+            "provider": position["mark_provider"],
+            "boundary_at": self._json_object(position["mark_inventory_json"]).get("boundary_at"),
         }
         adapted = {
             **dict(position),
             "pair_address": str(position["entry_pair_address"] or ""),
             "probe_cost_usd": float(position["stake_usd"]),
         }
-        action, reason, new_state, evidence = evaluate_staged_probe(
+        evaluator = evaluate_staged_probe
+        if policy.get("probe_kind") == "lifecycle_renewal_shadow":
+            from .lifecycle_research import evaluate_lifecycle_probe
+            evaluator = evaluate_lifecycle_probe
+        action, reason, new_state, evidence = evaluator(
             adapted, frame, previous, now=current,
             policy=probe_policy,
         )
         if action == SHADOW_BUY:
             totals = self.db.execute(
-                "SELECT COALESCE(SUM(CAST(json_extract(capital_exit_state_json,"
-                "'$.staged_probe.shadow_fill.total_cost_usd') AS REAL)),0),"
+                "SELECT COALESCE(SUM(CAST(COALESCE(json_extract(capital_exit_state_json,"
+                "'$.staged_probe.shadow_fill.total_cost_usd'),json_extract(capital_exit_state_json,"
+                "'$.staged_probe.shadow_fill.notional_usd')) AS REAL)),0),"
                 "COALESCE(SUM(CAST(json_extract(capital_exit_state_json,"
                 "'$.staged_probe.shadow_exit.shadow_net_recovery_usd') AS REAL)),0) "
                 "FROM chain_meme_trader_positions WHERE definition_version=? AND arm_id=?",
@@ -31775,14 +31809,17 @@ class Store:
             if requested <= 0.0 or available + 1e-9 < requested:
                 new_state.pop("shadow_fill", None)
                 new_state["status"] = "COMPLETE_NO_SHADOW"
+                budget_reason = ("shadow_account_cash_below_required_notional"
+                    if policy.get("probe_kind") == "lifecycle_renewal_shadow"
+                    else "shadow_account_cash_below_15_usd")
                 new_state["budget_rejected"] = {
-                    "reason": "shadow_account_cash_below_15_usd",
+                    "reason": budget_reason,
                     "available_cash_usd": available,
                     "requested_cash_usd": requested,
                     "frame_id": frame["frame_id"],
                     "observed_at": frame["observed_at"],
                 }
-                action, reason = "HOLD", "shadow_account_cash_below_15_usd"
+                action, reason = "HOLD", budget_reason
             else:
                 new_state["shadow_account"] = {
                     "starting_cash_usd": 1000.0,
@@ -31890,7 +31927,8 @@ class Store:
         from .resource_bound_research import EXIT_KIND as RESOURCE_EXIT_KIND, evaluate_resource_exit
         from .inventory_research import EXIT_KIND as INVENTORY_EXIT_KIND, evaluate_inventory_exit
         from .archive_research import EXIT_KIND as ARCHIVE_EXIT_KIND, evaluate_plateau_exit
-        l0_research_kinds = EXIT_KINDS | ROUND2_EXIT_KINDS | {RESOURCE_EXIT_KIND, INVENTORY_EXIT_KIND, ARCHIVE_EXIT_KIND}
+        from .lifecycle_research import EXIT_KINDS as LIFECYCLE_EXIT_KINDS, evaluate_lifecycle_exit
+        l0_research_kinds = EXIT_KINDS | ROUND2_EXIT_KINDS | LIFECYCLE_EXIT_KINDS | {RESOURCE_EXIT_KIND, INVENTORY_EXIT_KIND, ARCHIVE_EXIT_KIND}
         if kind in {"l0_continuation_failure", "l0_profit_lock", "l0_loss_deterioration"} | l0_research_kinds:
             from .l0_experiments import evaluate_l0_continuation_failure, evaluate_l0_profit_lock
             price = position["mark_price_usd"]
@@ -31939,9 +31977,10 @@ class Store:
                         entry_raw = self._json_object(entry_row[0]) if entry_row else {}
                         state["entry_inventory"] = inventory_fields(entry_raw.get("pair") or {})
                     frame["entry_inventory"] = state["entry_inventory"]
-                if kind == ARCHIVE_EXIT_KIND:
+                if kind == ARCHIVE_EXIT_KIND or kind in LIFECYCLE_EXIT_KINDS:
                     frame["boundary_at"] = self._json_object(position["mark_inventory_json"]).get("boundary_at")
-                evaluator = (evaluate_plateau_exit if kind == ARCHIVE_EXIT_KIND else
+                evaluator = (evaluate_lifecycle_exit if kind in LIFECYCLE_EXIT_KINDS else
+                             evaluate_plateau_exit if kind == ARCHIVE_EXIT_KIND else
                              evaluate_inventory_exit if kind == INVENTORY_EXIT_KIND else
                              evaluate_resource_exit if kind == RESOURCE_EXIT_KIND else
                              evaluate_round2_exit if kind in ROUND2_EXIT_KINDS else evaluate_finalist_exit)

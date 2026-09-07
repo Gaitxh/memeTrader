@@ -207,8 +207,9 @@ def test_staged_probe_registers_three_isolated_arms_and_settles_shadow_off_ledge
     store.close()
 
 
+@pytest.mark.parametrize("legacy", [False, True])
 def test_staged_probe_shadow_budget_is_shared_across_candidate_positions(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, legacy,
 ):
     store, clock = _setup(tmp_path, monkeypatch, "staged-budget.sqlite3")
     store.register_chain_meme_staged_probe()
@@ -227,7 +228,8 @@ def test_staged_probe_shadow_budget_is_shared_across_candidate_positions(
     prior["capital_exit_state_json"] = json.dumps({
         "staged_probe": {
             "status": "SHADOW_OPEN",
-            "shadow_fill": {"notional_usd": 990.0},
+            "shadow_fill": ({"notional_usd": 990.0} if legacy else
+                {"notional_usd": 989.9, "fee_usd": 0.1, "total_cost_usd": 990.0}),
         }
     })
     columns = list(prior)

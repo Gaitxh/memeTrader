@@ -2,6 +2,18 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260908-lifecycle-holding-sizing",
+      "recorded_at": "2026-09-07T20:16:44.520989+00:00",
+      "deployed_at": "2026-09-07T20:07:34.247649Z",
+      "title": "全量生命周期研究与六臂持仓资金对照",
+      "problem": "漂亮上涨与持续收益混淆，异常报价反转平均收益；持仓/减仓/加仓缺少同入场对照。",
+      "change": "逐币全量读取85382份档案价格时间；6项5U/4仓共同入场Paper臂，其中条件加仓为独立5U Shadow腿；修复面积跨边界与积分回溯、旧Shadow成本预算读取。",
+      "rationale": "用因果状态检验续持/失败退出/减仓/加仓，保留未知、失败和反证；不把后验赢家标签输入策略。",
+      "validation": "15项新增定向和4项共享回归通过；两份原始档案资金核算一致；旧注册/激活/267增量摘要一致；health/live/performance正常，自然36 BUY/6独立Token。",
+      "scope": "新增268—273；旧资金期与历史不变，无账户重置、Live、新采集源、后台Agent或schema。",
+      "status": "已部署，入场批中位11.24ms、退出23.26ms；原池覆盖和免费补源配额仍有缺口。研究未证明Alpha。见LIFECYCLE_RESEARCH_20260908.md。"
+    },
+    {
       "id": "20260908-archive-path-activity",
       "recorded_at": "2026-09-07T19:28:47.734745+00:00",
       "deployed_at": "2026-09-07T19:26:01.959171Z",
