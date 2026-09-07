@@ -26067,6 +26067,19 @@ class Store:
                     added += 1
         return added
 
+    def register_chain_meme_resource_bound_research(self) -> int:
+        from .resource_bound_research import resource_policies
+        added = 0
+        with self._lock, self.db:
+            at = utcnow()
+            for policy in resource_policies():
+                if self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?",
+                    (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, policy["arm_id"])).fetchone() is None:
+                    self.append_chain_meme_trader_policy(policy, activated_at=at)
+                    added += 1
+        return added
+
     def register_chain_meme_capital_experiments(self) -> int:
         """Append independently funded experiments at their actual deployment frontier."""
         added = 0
@@ -26734,11 +26747,17 @@ class Store:
                 created = source_pair.get("pairCreatedAt")
                 if source_address != pair_address or not created:
                     continue
+                volume_fields = source_pair.get("volume") or {}
+                price_changes = source_pair.get("priceChange") or {}
+                hour_txns = (source_pair.get("txns") or {}).get("h1") or {}
                 history.append({"id": int(source["id"]), "token_id": token.token_id,
                     "pair_address": source_address, "price": source["price_usd"],
                     "liquidity": source["liquidity_usd"], "volume": source["volume_5m_usd"],
                     "upstream_provider": source_raw.get("upstream_provider"),
                     "buys": source["buys_5m"], "sells": source["sells_5m"],
+                    "volume_h1": volume_fields.get("h1"),
+                    "buys_h1": hour_txns.get("buys"), "sells_h1": hour_txns.get("sells"),
+                    "price_change_m5": price_changes.get("m5"), "price_change_h1": price_changes.get("h1"),
                     "prior55_trades": (
                         max(0, int(source_pair["txns"]["h1"].get("buys") or 0)
                             + int(source_pair["txns"]["h1"].get("sells") or 0)
@@ -27003,6 +27022,8 @@ class Store:
                         already_bought.discard(arm)
             ready, outcomes = [], {}
             chase_consumed = dict(previous_features.get("round2_chase_consumed") or {})
+            prior_resource_opportunities = previous_features.get("resource_bound_opportunities") or {}
+            resource_opportunities = dict(prior_resource_opportunities)
             for policy in active:
                 if cohort_mode:
                     passed = policy["arm_id"] in accepted_cohort_signals
@@ -27032,6 +27053,17 @@ class Store:
                             "direction": "wave_reset_reentry", "min_gap_seconds": 600, "max_gap_seconds": 14400}}
                     passed, reason = capital_observation_signal(history, selected_policy,
                         decision_at=iso(decision_at), activated_at=policy["forward_started_at"], context=own_context)
+                elif policy.get("entry_filter", {}).get("contract") == "resource-bound/20260907-v1":
+                    from .resource_bound_research import resource_entry_signal
+                    opportunity_key = policy["entry_filter"]["direction"] + ":" + pair_address
+                    if opportunity_key in prior_resource_opportunities:
+                        passed, reason = False, "resource_first_common_opportunity_consumed"
+                    else:
+                        passed, reason, entry_evidence = resource_entry_signal(history, policy,
+                            decision_at=iso(decision_at), activated_at=policy["forward_started_at"])
+                        if entry_evidence["common_ready"]:
+                            resource_opportunities[opportunity_key] = {**entry_evidence,
+                                "signal_snapshot_id": snapshot_id, "decision_at": iso(decision_at)}
                 else:
                     passed, reason = pattern_signal(history, policy, decision_at=iso(decision_at),
                         activated_at=policy["forward_started_at"], context=context)
@@ -27087,6 +27119,8 @@ class Store:
                     wallet_entry_states={arm: result[2] for arm, result in wallet_entry_results.items()},
                     wallet_entry_evidence={arm: result[3] for arm, result in wallet_entry_results.items()},
                 )
+            if resource_opportunities:
+                features["resource_bound_opportunities"] = resource_opportunities
             if cohort_mode:
                 features.update(cohort_signals=accepted_cohort_signals,
                     entry_signal_key="isolated_cohorts/v1", policy_entry_family="cohort_experiments")
@@ -31740,7 +31774,9 @@ class Store:
         token, pair = position["token_id"], position["entry_pair_address"]
         from .research_finalists import EXIT_KINDS, evaluate_finalist_exit
         from .research_round2 import EXIT_KINDS as ROUND2_EXIT_KINDS, evaluate_round2_exit
-        if kind in {"l0_continuation_failure", "l0_profit_lock", "l0_loss_deterioration"} | EXIT_KINDS | ROUND2_EXIT_KINDS:
+        from .resource_bound_research import EXIT_KIND as RESOURCE_EXIT_KIND, evaluate_resource_exit
+        l0_research_kinds = EXIT_KINDS | ROUND2_EXIT_KINDS | {RESOURCE_EXIT_KIND}
+        if kind in {"l0_continuation_failure", "l0_profit_lock", "l0_loss_deterioration"} | l0_research_kinds:
             from .l0_experiments import evaluate_l0_continuation_failure, evaluate_l0_profit_lock
             price = position["mark_price_usd"]
             net = (
@@ -31775,11 +31811,12 @@ class Store:
             if kind == "l0_loss_deterioration":
                 from .strategy_revisions import evaluate_l0_loss_deterioration
                 evaluator = evaluate_l0_loss_deterioration
-            if kind in EXIT_KINDS | ROUND2_EXIT_KINDS:
+            if kind in l0_research_kinds:
                 adapted["pair_address"] = canonical_token_address(str(token).partition(":")[0], str(pair))
                 frame.update(provider=position["mark_provider"], volume=position["mark_volume_5m_usd"],
                              buys=position["mark_buys_5m"], sells=position["mark_sells_5m"])
-                evaluator = evaluate_round2_exit if kind in ROUND2_EXIT_KINDS else evaluate_finalist_exit
+                evaluator = (evaluate_resource_exit if kind == RESOURCE_EXIT_KIND else
+                             evaluate_round2_exit if kind in ROUND2_EXIT_KINDS else evaluate_finalist_exit)
             result = evaluator(adapted, frame, state, now=current, policy=policy["capital_exit_policy"])
         elif kind == "watched_wallet_distribution":
             from .wallet_observer_experiments import evaluate_wallet_distribution_exit

@@ -1,0 +1,269 @@
+{
+  "generated_at": "2026-09-07T10:49:56.985232Z",
+  "version": "chain-meme-trader/funding-20260906-v002-final-1000",
+  "repair_boundary": "2026-09-07T09:19:47Z",
+  "cohort_query": "SELECT id,token_id,source_snapshot_id,decided_at,feature_json\n      FROM chain_meme_trader_v6_cohorts WHERE definition_version=?\n      AND entry_family='flow_burst' AND decided_at<=? ORDER BY id DESC LIMIT 10001",
+  "position_query": "SELECT p.arm_id,p.shadow_cohort_id,p.token_id,p.opened_at,p.closed_at,\n      p.status,p.close_reason,p.stake_usd,p.realized_pnl_usd\n      FROM chain_meme_trader_positions p JOIN chain_meme_trader_v6_cohorts c\n      ON c.id=p.shadow_cohort_id AND c.definition_version=p.definition_version\n      WHERE p.definition_version=? AND c.entry_family='flow_burst' AND c.decided_at<=?",
+  "cohort_limit": 10000,
+  "limit_hit": false,
+  "representative_arm": "canonical-0ad93cd8a7bec9ec",
+  "representative_selection": "largest observed flow-burst position count; alphabetical ties, no PnL selection",
+  "limitations": [
+    "Descriptive replay of existing decision features, not hypothetical executable PnL.",
+    "Old period spans execution repairs; post-repair cohort subset is reported separately.",
+    "Two positive prior baselines required to isolate duration rather than zero-baseline policy.",
+    "Rate interpretation assumes provider h1 covers pool lifetime when younger than one hour.",
+    "Underlying provider activity is aggregate reporting, not independent people or net money inflow."
+  ],
+  "windows": {
+    "current_period": {
+      "cohorts": 9,
+      "first_decided_at": "2026-09-06T15:32:58.926604Z",
+      "last_decided_at": "2026-09-07T07:27:48.532828Z",
+      "groups": {
+        "age_amplified_reject": {
+          "cohorts": 7,
+          "tokens": 7,
+          "representative_positions": 7,
+          "terminal": 7,
+          "open": 0,
+          "terminal_net_pnl_usd": -15.177088244406757,
+          "terminal_median_return": -0.3557785209959124,
+          "terminal_positive": 3,
+          "terminal_written_off": 2,
+          "terminal_tokens": 7
+        },
+        "normalized_pass": {
+          "cohorts": 2,
+          "tokens": 2,
+          "representative_positions": 2,
+          "terminal": 2,
+          "open": 0,
+          "terminal_net_pnl_usd": 1.5748717641982104,
+          "terminal_median_return": 0.039371794104955254,
+          "terminal_positive": 1,
+          "terminal_written_off": 0,
+          "terminal_tokens": 2
+        }
+      },
+      "examples": [
+        {
+          "arm_id": "canonical-0ad93cd8a7bec9ec",
+          "shadow_cohort_id": 18816,
+          "token_id": "bsc:0x253965f0a82730c2fce4f8d20a62cf7dd42b49b5",
+          "opened_at": "2026-09-06T16:16:12.029688Z",
+          "closed_at": "2026-09-06T16:22:31.371448Z",
+          "status": "written_off",
+          "close_reason": "dex_pool_liquidity_below_configured_floor_writeoff",
+          "stake_usd": 20.0,
+          "realized_pnl_usd": -20.0,
+          "features": {
+            "cohort_id": 18816,
+            "token_id": "bsc:0x253965f0a82730c2fce4f8d20a62cf7dd42b49b5",
+            "decided_at": "2026-09-06T16:16:12.029688Z",
+            "source_snapshot_id": 1154762,
+            "age_seconds": 920.2154,
+            "label": "age_amplified_reject",
+            "normalized_max_rate": 0.8860220000000001,
+            "old_max_rate": 4.714285714285714,
+            "counts_volume": [
+              9,
+              21,
+              499.6511485871,
+              1960.4166113740998
+            ]
+          }
+        },
+        {
+          "arm_id": "canonical-0ad93cd8a7bec9ec",
+          "shadow_cohort_id": 55526,
+          "token_id": "bsc:0xc2ae2bab6e0975cdd40d0d0319968c9ca15fea28",
+          "opened_at": "2026-09-07T07:27:49.639897Z",
+          "closed_at": "2026-09-07T07:35:48.318785Z",
+          "status": "written_off",
+          "close_reason": "dex_pool_liquidity_below_configured_floor_writeoff",
+          "stake_usd": 20.0,
+          "realized_pnl_usd": -12.582159205090726,
+          "features": {
+            "cohort_id": 55526,
+            "token_id": "bsc:0xc2ae2bab6e0975cdd40d0d0319968c9ca15fea28",
+            "decided_at": "2026-09-07T07:27:48.532828Z",
+            "source_snapshot_id": 1496260,
+            "age_seconds": 931.563514,
+            "label": "age_amplified_reject",
+            "normalized_max_rate": 1.7161709125605031,
+            "old_max_rate": 8.967212142419076,
+            "counts_volume": [
+              156,
+              210,
+              54440.4840213477,
+              66781.6613150043
+            ]
+          }
+        },
+        {
+          "arm_id": "canonical-0ad93cd8a7bec9ec",
+          "shadow_cohort_id": 30265,
+          "token_id": "solana:Ex7ntKfpYHh23Pmr9NvGNRU2bNqUmNnhFHkmzusf8FAM",
+          "opened_at": "2026-09-06T20:14:53.712742Z",
+          "closed_at": "2026-09-06T20:29:26.789895Z",
+          "status": "closed",
+          "close_reason": "market_mark_hard_stop:dex_mark_paper_fill",
+          "stake_usd": 20.0,
+          "realized_pnl_usd": -11.655037919826652,
+          "features": {
+            "cohort_id": 30265,
+            "token_id": "solana:Ex7ntKfpYHh23Pmr9NvGNRU2bNqUmNnhFHkmzusf8FAM",
+            "decided_at": "2026-09-06T20:14:49.802255Z",
+            "source_snapshot_id": 1297595,
+            "age_seconds": 1331.922526,
+            "label": "age_amplified_reject",
+            "normalized_max_rate": 1.0132572606718346,
+            "old_max_rate": 3.24031007751938,
+            "counts_volume": [
+              76,
+              258,
+              6324.73,
+              25794.32
+            ]
+          }
+        },
+        {
+          "arm_id": "canonical-0ad93cd8a7bec9ec",
+          "shadow_cohort_id": 17350,
+          "token_id": "solana:EUczUjrsiaAy75ZwGfU9UyhyA4YkUQBFmnRgSrFwpump",
+          "opened_at": "2026-09-06T15:32:58.926604Z",
+          "closed_at": "2026-09-06T15:35:50.623869Z",
+          "status": "closed",
+          "close_reason": "market_mark_hard_stop:dex_mark_paper_fill",
+          "stake_usd": 20.0,
+          "realized_pnl_usd": -7.115570419918248,
+          "features": {
+            "cohort_id": 17350,
+            "token_id": "solana:EUczUjrsiaAy75ZwGfU9UyhyA4YkUQBFmnRgSrFwpump",
+            "decided_at": "2026-09-06T15:32:58.926604Z",
+            "source_snapshot_id": 1131762,
+            "age_seconds": 971.834849,
+            "label": "age_amplified_reject",
+            "normalized_max_rate": 0.8750741368899766,
+            "old_max_rate": 4.29829541595709,
+            "counts_volume": [
+              964,
+              3022,
+              171742.93,
+              439516.61000000004
+            ]
+          }
+        },
+        {
+          "arm_id": "canonical-0ad93cd8a7bec9ec",
+          "shadow_cohort_id": 18817,
+          "token_id": "bsc:0x75dbf19fed73a7580ab31056a871c5b7968bcab9",
+          "opened_at": "2026-09-06T16:16:12.044587Z",
+          "closed_at": "2026-09-06T16:37:51.360607Z",
+          "status": "closed",
+          "close_reason": "market_mark_trailing_exit:dex_mark_paper_fill",
+          "stake_usd": 20.0,
+          "realized_pnl_usd": 1.8745174565524607,
+          "features": {
+            "cohort_id": 18817,
+            "token_id": "bsc:0x75dbf19fed73a7580ab31056a871c5b7968bcab9",
+            "decided_at": "2026-09-06T16:16:12.044587Z",
+            "source_snapshot_id": 1154763,
+            "age_seconds": 951.2154,
+            "label": "age_amplified_reject",
+            "normalized_max_rate": 1.0018698461538462,
+            "old_max_rate": 5.076923076923077,
+            "counts_volume": [
+              6,
+              13,
+              3366.7513,
+              14988.912491800002
+            ]
+          }
+        },
+        {
+          "arm_id": "canonical-0ad93cd8a7bec9ec",
+          "shadow_cohort_id": 21291,
+          "token_id": "solana:AL55bcvnzsq8DMq7RPMztfXZbio4YdmMtxcCgtm4GoDu",
+          "opened_at": "2026-09-06T17:31:09.731832Z",
+          "closed_at": "2026-09-06T17:51:16.483604Z",
+          "status": "closed",
+          "close_reason": "market_mark_trailing_exit:dex_mark_paper_fill",
+          "stake_usd": 20.0,
+          "realized_pnl_usd": 2.914072229140718,
+          "features": {
+            "cohort_id": 21291,
+            "token_id": "solana:AL55bcvnzsq8DMq7RPMztfXZbio4YdmMtxcCgtm4GoDu",
+            "decided_at": "2026-09-06T17:31:09.731832Z",
+            "source_snapshot_id": 1202914,
+            "age_seconds": 2043.541553,
+            "label": "normalized_pass",
+            "normalized_max_rate": 3.0809823703554904,
+            "old_max_rate": 5.831373393240326,
+            "counts_volume": [
+              322,
+              722,
+              41986.18,
+              79200.54999999999
+            ]
+          }
+        },
+        {
+          "arm_id": "canonical-0ad93cd8a7bec9ec",
+          "shadow_cohort_id": 49343,
+          "token_id": "solana:GxU33mVagfVWhJrzEusUuBebHRJTrNvmLN9PyCP5T5uy",
+          "opened_at": "2026-09-07T02:54:00.005508Z",
+          "closed_at": "2026-09-07T03:09:17.578178Z",
+          "status": "closed",
+          "close_reason": "market_mark_trailing_exit:dex_mark_paper_fill",
+          "stake_usd": 20.0,
+          "realized_pnl_usd": 14.539114219114204,
+          "features": {
+            "cohort_id": 49343,
+            "token_id": "solana:GxU33mVagfVWhJrzEusUuBebHRJTrNvmLN9PyCP5T5uy",
+            "decided_at": "2026-09-07T02:53:56.924867Z",
+            "source_snapshot_id": 1443724,
+            "age_seconds": 981.449445,
+            "label": "age_amplified_reject",
+            "normalized_max_rate": 2.382302937804878,
+            "old_max_rate": 11.536585365853659,
+            "counts_volume": [
+              86,
+              82,
+              7274.36,
+              7625.62
+            ]
+          }
+        },
+        {
+          "arm_id": "canonical-0ad93cd8a7bec9ec",
+          "shadow_cohort_id": 48953,
+          "token_id": "solana:DpdvsXhfSzCJy1AAaP8Zt5sjHGcEJEQkhqZqtYZFu2yu",
+          "opened_at": "2026-09-07T02:45:21.203307Z",
+          "closed_at": "2026-09-07T04:21:31.366306Z",
+          "status": "closed",
+          "close_reason": "market_mark_trailing_exit:dex_mark_paper_fill",
+          "stake_usd": 20.0,
+          "realized_pnl_usd": 19.762047624762204,
+          "features": {
+            "cohort_id": 48953,
+            "token_id": "solana:DpdvsXhfSzCJy1AAaP8Zt5sjHGcEJEQkhqZqtYZFu2yu",
+            "decided_at": "2026-09-07T02:45:17.411578Z",
+            "source_snapshot_id": 1441424,
+            "age_seconds": 1141.650427,
+            "label": "age_amplified_reject",
+            "normalized_max_rate": 1.9364932637794476,
+            "old_max_rate": 7.592733949236359,
+            "counts_volume": [
+              84,
+              223,
+              13131.73,
+              19024.64
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
