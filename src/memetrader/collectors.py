@@ -1136,6 +1136,8 @@ class HttpClient:
         self.feed_max_redirects = max(0, int(feed_max_redirects))
         self.conditional_store = conditional_store
         self._last: dict[str, float] = defaultdict(float)
+        self._host_backoff_until: dict[str, float] = {}
+        self.on_dex_rate_limit: Callable[[float], None] | None = None
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._cache: dict[str, tuple[float, Any, datetime]] = {}
 
@@ -1176,11 +1178,30 @@ class HttpClient:
         wait = max(
             0.0,
             interval - (now - self._last[host]),
-            float(not_before) - now,
+            max(float(not_before), self._host_backoff_until.get(host, 0.0)) - now,
         )
         if wait > 0:
             await asyncio.sleep(wait)
         self._last[host] = time.monotonic()
+
+    def _record_dex_rate_limit(self, host: str, response: httpx.Response) -> None:
+        if host != "api.dexscreener.com" or response.status_code != 429:
+            return
+        value = response.headers.get("Retry-After", "2")
+        try:
+            delay = float(value)
+        except ValueError:
+            try:
+                delay = (parsedate_to_datetime(value) - utcnow()).total_seconds()
+            except (TypeError, ValueError, OverflowError):
+                delay = 2.0
+        if not math.isfinite(delay):
+            delay = 2.0
+        self._host_backoff_until[host] = max(
+            self._host_backoff_until.get(host, 0.0), time.monotonic() + max(0.0, delay),
+        )
+        if self.on_dex_rate_limit is not None:
+            self.on_dex_rate_limit(self._host_backoff_until[host])
 
     async def get(
         self, url: str, *, params: dict[str, Any] | None = None,
@@ -1201,13 +1222,16 @@ class HttpClient:
         host = urllib.parse.urlparse(url).netloc.lower()
         await self._reserve_host_request_start(host)
         response = await self.client.get(url, params=params, headers=headers)
+        self._record_dex_rate_limit(host, response)
         if response.status_code == 429 and retry_429:
-            retry = min(15.0, float(response.headers.get("Retry-After", "2") or 2))
+            retry = (0.0 if host == "api.dexscreener.com" else
+                     min(15.0, float(response.headers.get("Retry-After", "2") or 2)))
             async with self._locks[host]:
                 await self._reserve_locked_host_request_start(
                     host, not_before=time.monotonic() + retry,
                 )
                 response = await self.client.get(url, params=params, headers=headers)
+                self._record_dex_rate_limit(host, response)
         response.raise_for_status()
         response.extensions["observed_at"] = utcnow()
         if ttl:
@@ -1751,6 +1775,7 @@ class DexScreenerClient:
     BASE = "https://api.dexscreener.com"
     DISCOVERY_SURFACES = {
         "token_profiles": ("/token-profiles/latest/v1", "identity"),
+        "profile_updates": ("/token-profiles/recent-updates/v1", "identity"),
         "community_takeovers": ("/community-takeovers/latest/v1", "identity"),
         "ads": ("/ads/latest/v1", "promotion"),
         "boosts_latest": ("/token-boosts/latest/v1", "promotion"),
@@ -2114,8 +2139,13 @@ class DexScreenerClient:
         path, role = self.DISCOVERY_SURFACES[surface]
         response = await self.http.get(f"{self.BASE}{path}", ttl=45)
         payload = response.json()
+        return self.discovery_links(surface, payload, allowed_chains, limit=limit)
+
+    def discovery_links(self, surface, payload, allowed_chains, *, limit=40):
+        _, role = self.DISCOVERY_SURFACES[surface]
         if isinstance(payload, dict):
-            payload = payload.get("items") if isinstance(payload.get("items"), list) else [payload]
+            payload = (payload["data"] if isinstance(payload.get("data"), list)
+                       else payload["items"] if isinstance(payload.get("items"), list) else [payload])
         if not isinstance(payload, list):
             raise ValueError("DexScreener discovery response must be a list or object")
         allowed = {self._chain(str(chain).lower()) for chain in allowed_chains}
@@ -2144,6 +2174,24 @@ class DexScreenerClient:
                 seen.add(key)
                 rows.append(row)
         return rows
+
+    async def stream_surface(self, surface, allowed_chains):
+        """Official metadata stream; messages are discovery leads, never quotes."""
+        path, _ = self.DISCOVERY_SURFACES[surface]
+        async with websockets.connect(
+            "wss://api.dexscreener.com" + path,
+            open_timeout=10, close_timeout=2, ping_interval=20, ping_timeout=20,
+            max_size=2_000_000, max_queue=4,
+        ) as ws:
+            async for message in ws:
+                received = utcnow()
+                payload = json.loads(message)
+                rows = self.discovery_links(surface, payload, allowed_chains, limit=90)
+                for row in rows:
+                    row["raw"] = {**row["raw"], "transport": "websocket",
+                                  "received_at": iso(received),
+                                  "initial_snapshot": isinstance(payload, dict) and "limit" in payload}
+                yield received, rows
 
 
 class JupiterQuoteClient:

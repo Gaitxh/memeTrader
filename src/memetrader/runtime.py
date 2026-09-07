@@ -1434,6 +1434,7 @@ class Runtime:
         # held-token marks to refresh materially faster than the generic
         # 600ms public-endpoint default.
         self.market_http = HttpClient(min_host_interval=0.25)
+        self.market_http.on_dex_rate_limit = self._note_dex_rate_limit
         self.jupiter_http = HttpClient(
             min_host_interval=1.05 if jupiter_api_key else 2.1
         )
@@ -1543,6 +1544,9 @@ class Runtime:
         await self.market_http.close()
         await self.http.close()
         self.store.close()
+
+    def _note_dex_rate_limit(self, deadline: float) -> None:
+        self._dex_quote_backoff_until = max(self._dex_quote_backoff_until, deadline)
 
     def _dex_quote_low_priority_available(self) -> bool:
         loop = asyncio.get_running_loop()
@@ -1842,6 +1846,19 @@ class Runtime:
 
     def _held_pool_quote_rejections(self, token_id, token, snapshot, received_at) -> list[str]:
         reasons = self._paper_quote_rejections(token_id, token, snapshot, received_at)
+        pair = snapshot.raw.get("pair", {})
+        cache = pair.get("raw", {}).get("http_cache", {})
+        if cache.get("age") is not None and cache.get("received_at"):
+            try:
+                age = float(cache["age"])
+                # Age belongs to this HTTP receipt, not an older reused generation.
+                elapsed = max(0.0, (parse_time(received_at) - parse_time(cache["received_at"])).total_seconds())
+                if math.isfinite(age) and age >= 0 and age + elapsed > float(
+                    self.config["paper"].get("max_quote_age_seconds", 45)
+                ):
+                    reasons.append("quote_upstream_cache_stale")
+            except (TypeError, ValueError, OverflowError):
+                pass
         liquidity = snapshot.liquidity_usd
         if liquidity is None or not math.isfinite(float(liquidity)) or float(liquidity) < 0:
             reasons.append("quote_liquidity_unavailable")
@@ -2762,47 +2779,15 @@ class Runtime:
                 self._notify_source_error(source, exc)
                 continue
             self.store.heartbeat(source, item=bool(links))
-            by_token: dict[str, list[dict[str, Any]]] = {}
-            for link in links:
-                token_id = str(link.get("token_id") or "")
-                chain = str(link.get("chain") or "").lower()
-                address = str(link.get("address") or "")
-                if not token_id or chain not in surface_chains or not address:
-                    continue
-                by_token.setdefault(token_id, []).append(link)
-            first_discoveries = 0
-            for token_id, token_links in by_token.items():
-                known_before = self.store.token_discovery_known(token_id)
-                new_links = 0
-                source_link_fingerprints: list[str] = []
-                for link in token_links:
-                    fingerprint, created = self.store.upsert_token_source_link(link)
-                    source_link_fingerprints.append(fingerprint)
-                    new_links += int(created)
-                    self.store.enqueue_token_detail_hydration(
-                        str(link.get("chain") or ""), str(link.get("address") or "")
-                    )
-                first_local = not known_before and new_links > 0
-                first_discoveries += int(first_local)
-                exposure_id = self.store.add_token_discovery_exposure(
-                    round_id,
-                    token_id=token_id,
-                    chain=str(token_links[0].get("chain") or ""),
-                    role=str(token_links[0].get("role") or "identity"),
-                    first_local_discovery=first_local,
-                    source_link_count=len(token_links),
-                    new_source_link_count=new_links,
-                )
-                if exposure_id is not None:
-                    self.store.link_token_discovery_exposure_source_links(
-                        exposure_id, source_link_fingerprints
-                    )
+            token_count, first_discoveries = await self._persist_dex_discovery_links(
+                round_id, links, surface_chains,
+            )
             self.store.finish_token_discovery_round(
                 round_id,
                 status="completed",
                 requested_count=1,
                 returned_count=len(links),
-                duplicate_token_count=max(0, len(by_token) - first_discoveries),
+                duplicate_token_count=max(0, token_count - first_discoveries),
             )
 
         if discovery_only or max_hydrations <= 0:
@@ -3111,6 +3096,94 @@ class Runtime:
                 momentum_score=momentum,
                 event_relation=trigger,
             )
+
+    async def _persist_dex_discovery_links(self, round_id, links, chains, *, observed_at=None):
+        by_token: dict[str, list[dict[str, Any]]] = {}
+        for link in links:
+            token_id = str(link.get("token_id") or "")
+            if token_id and link.get("chain") in chains and link.get("address"):
+                by_token.setdefault(token_id, []).append(link)
+        first_discoveries = 0
+        for token_id, token_links in by_token.items():
+            await self._chain_meme_active_idle().wait()
+            known_before = self.store.token_discovery_known(token_id)
+            new_links, fingerprints = 0, []
+            for link in token_links:
+                fingerprint, created = self.store.upsert_token_source_link(link, observed_at=observed_at)
+                fingerprints.append(fingerprint)
+                new_links += int(created)
+            first = token_links[0]
+            self.store.enqueue_token_detail_hydration(
+                first["chain"], first["address"], enqueued_at=observed_at,
+            )
+            first_local = not known_before and new_links > 0
+            first_discoveries += int(first_local)
+            exposure_id = self.store.add_token_discovery_exposure(
+                round_id, token_id=token_id, chain=first["chain"], role=first.get("role", "identity"),
+                first_local_discovery=first_local, source_link_count=len(token_links),
+                new_source_link_count=new_links, observed_at=observed_at,
+            )
+            if exposure_id is not None:
+                self.store.link_token_discovery_exposure_source_links(exposure_id, fingerprints)
+            await asyncio.sleep(0)
+        return len(by_token), first_discoveries
+
+    async def dex_discovery_stream_loop(self, surface: str) -> None:
+        cfg = self.config["sources"].get("dexscreener_discovery") or {}
+        if not cfg.get("enabled", True):
+            return
+        chains = {str(c).lower() for c in (
+            self.config["sources"].get("multichain_meme_data") or {}
+        ).get("chains", ["solana"])}
+        source = f"dexscreener:{surface}:stream"
+        seen: dict[str, str] = {}
+        retry_seconds = 5
+        while not self._stop.is_set():
+            round_id = None
+            try:
+                async for received, links in self.dex.stream_surface(surface, chains):
+                    if self._stop.is_set():
+                        return
+                    retry_seconds = 5
+                    self.store.heartbeat(source, item=bool(links))
+                    changed, updates = [], {}
+                    for link in links:
+                        key = link["token_id"]
+                        digest = hashlib.sha256(json.dumps(
+                            link["raw"]["item"], sort_keys=True, separators=(",", ":"),
+                        ).encode()).hexdigest()
+                        if seen.get(key) != digest:
+                            changed.append(link)
+                            updates[key] = digest
+                    if not changed:
+                        continue
+                    await self._chain_meme_active_idle().wait()
+                    round_id = self.store.start_token_discovery_round(
+                        provider="dexscreener", surface=surface, mode="stream_message",
+                        chain_scope=",".join(sorted(chains)), started_at=received,
+                    )
+                    count, first = await self._persist_dex_discovery_links(
+                        round_id, changed, chains, observed_at=received,
+                    )
+                    self.store.finish_token_discovery_round(
+                        round_id, status="completed", requested_count=0,
+                        returned_count=len(changed), duplicate_token_count=count-first,
+                    )
+                    round_id = None
+                    seen.update(updates)
+                    while len(seen) > 2048:
+                        seen.pop(next(iter(seen)))
+            except Exception as exc:
+                if round_id is not None:
+                    self.store.finish_token_discovery_round(
+                        round_id, status="error", error_type=type(exc).__name__,
+                    )
+                self._notify_source_error(source, exc)
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=retry_seconds)
+            except TimeoutError:
+                pass
+            retry_seconds = min(60, retry_seconds * 2)
 
     async def chain_meme_token_details_once(self) -> None:
         """Spread the existing 180-target/90s hydration budget over six small turns."""
@@ -8247,6 +8320,9 @@ class Runtime:
         if self.chain_meme_trader_only:
             tasks = [
                 asyncio.create_task(self.pump_loop(), name="pumpportal"),
+                *(asyncio.create_task(self.dex_discovery_stream_loop(surface),
+                                     name=f"dexscreener_{surface}_stream")
+                  for surface in ("profile_updates", "boosts_latest")),
                 asyncio.create_task(
                     self._periodic(
                         "multichain_meme_data",

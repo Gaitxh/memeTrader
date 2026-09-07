@@ -83,6 +83,33 @@ def pair_payload(token: TokenCandidate, pool: str, *, provider="coingecko-demo",
     }
 
 
+@pytest.mark.parametrize("age,receipt_elapsed,observed_elapsed,stale", [
+    (20, 0, 0, True), (10, 6, 6, True), (10, 2, 10, False), (None, 0, 0, False),
+])
+def test_held_quote_rejects_upstream_cache_age_without_double_counting(
+    tmp_path, age, receipt_elapsed, observed_elapsed, stale,
+):
+    async def scenario():
+        runtime = make_runtime(tmp_path)
+        runtime.config["paper"]["max_quote_age_seconds"] = 15
+        now = utcnow()
+        token = TokenCandidate("solana", "A" * 32, "Token", "TOK")
+        pair = pair_payload(token, "pool", provider="geckoterminal",
+                            observed=now-timedelta(seconds=observed_elapsed))
+        pair["raw"] = {"http_cache": {
+            "age": str(age) if age is not None else None,
+            "received_at": iso(now-timedelta(seconds=receipt_elapsed)),
+            "cache-control": "public,max-age=30,s-maxage=60",
+        }}
+        snapshot = runtime._complement_snapshot(pair)
+        reasons = runtime._held_pool_quote_rejections(token.token_id, token, snapshot, now)
+        assert ("quote_upstream_cache_stale" in reasons) is stale
+        assert "quote_stale_at_execution" not in reasons
+        assert snapshot.observed_at == now-timedelta(seconds=observed_elapsed)
+        await runtime.close()
+    asyncio.run(scenario())
+
+
 class FakeCoinGecko:
     def __init__(self, outputs=(), *, available=True):
         self.outputs = list(outputs)

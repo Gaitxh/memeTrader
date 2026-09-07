@@ -2,6 +2,18 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260908-dex-open-api-stream",
+      "recorded_at": "2026-09-07T17:18:53.266032+00:00",
+      "deployed_at": "2026-09-07T17:13:38.6406679Z",
+      "title": "官方资料/Boost推送、共享429与缓存年龄修复",
+      "problem": "已接入发现列表仍需等待90秒轮询；非batch路径的终态429没有持久共享退避；上游明确Age未参与持仓新鲜度检查。",
+      "change": "接入两路官方WebSocket、资料更新REST回退、既有队列和来源曝光；重放去重并让位持仓；终态429同步现有Runtime与host冷却；原池按Age加HTTP收件后时长拒收明确旧缓存。",
+      "rationale": "缩短发现送达，减少被限流时无效请求，提高数据时间真实性，保持行情预算及策略规则。",
+      "validation": "15个不同定向Python用例与JS语法通过；两路真实推送入库并在8790 API可见；原注册/资金激活摘要相同，部署后自然BUY/SELL继续。",
+      "scope": "无新策略、补款、历史改写、Live或Agent任务；保留REST覆盖与原池15秒标准。",
+      "status": "已部署；源端缺流动性/缺原池仍是缺口。见DEXSCREENER_OPEN_API_20260908.md。"
+    },
+    {
       "id": "20260908-backend-realtime-accuracy",
       "recorded_at": "2026-09-07T16:44:36Z",
       "deployed_at": "2026-09-07T16:43:49Z",
