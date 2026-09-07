@@ -6316,12 +6316,13 @@ class Runtime:
             self.store.heartbeat(source, error=str(result.get("error") or "native_rpc_error"))
             return
         events = list(result.get("events") or [])[:200]
-        # Decoding is shared; only a small FIFO subset receives new discovery work.
+        # The observer has advanced its block frontier; retain every bounded event.
         observed = parse_time(result["observed_at"])
         round_id = self.store.start_token_discovery_round(provider="native-launch",
             surface=observer.ERROR_PREFIX, mode="poll", chain_scope=observer.CHAIN)
         queued = 0
-        for event in events[:8]:
+        for event in events:
+            await asyncio.sleep(0)
             address = canonical_token_address(observer.CHAIN, str(event.get("token") or ""))
             if not address:
                 continue
@@ -6346,7 +6347,7 @@ class Runtime:
         self.store.finish_token_discovery_round(round_id, status="completed",
             requested_count=1, returned_count=len(events))
         self.store.heartbeat(source, item=queued > 0,
-            error_detail=f"events={len(events)};queued={queued};unprocessed={max(0,len(events)-8)};"
+            error_detail=f"events={len(events)};queued={queued};unprocessed=0;"
                          f"skipped_blocks={result.get('skipped_blocks',0)};finality=false")
 
     async def chain_meme_extra_official_once(self) -> None:
@@ -7153,7 +7154,7 @@ class Runtime:
         current = utcnow()
         if quoted and hasattr(self, "_cohort_started_at"):
             if not hasattr(self, "_cohort_batches"):
-                self._cohort_batches = deque(maxlen=8)
+                self._cohort_batches = deque(maxlen=16)
             # References only; the low-priority worker does parsing and calculation.
             if len(self._cohort_batches) == self._cohort_batches.maxlen:
                 self._cohort_dropped_batches = getattr(self, "_cohort_dropped_batches", 0) + 1
@@ -8352,7 +8353,7 @@ class Runtime:
                 asyncio.create_task(self.pump_loop(), name="pumpportal"),
                 *(asyncio.create_task(self.dex_discovery_stream_loop(surface),
                                      name=f"dexscreener_{surface}_stream")
-                  for surface in ("profile_updates", "boosts_latest")),
+                  for surface in ("token_profiles", "profile_updates", "community_takeovers", "boosts_latest")),
                 asyncio.create_task(
                     self._periodic(
                         "multichain_meme_data",
@@ -8406,7 +8407,7 @@ class Runtime:
                     name="chain_meme_pattern_observer",
                 ),
                 asyncio.create_task(
-                    self._periodic("chain_meme_cohort_observer", 10, self.chain_meme_cohort_observer_once),
+                    self._periodic("chain_meme_cohort_observer", 2, self.chain_meme_cohort_observer_once),
                     name="chain_meme_cohort_observer",
                 ),
                 asyncio.create_task(

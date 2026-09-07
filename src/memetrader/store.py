@@ -9368,6 +9368,23 @@ class Store:
         priority_order = ""
         priority_params: tuple[Any, ...] = ()
         watched = tuple(dict.fromkeys(str(t) for t in priority_token_ids))[:3]
+        if prefer_fresh:
+            # A newly received migration needs one attempt even when its mint is old
+            # and was not in the three-token pregraduation watch. Scan only the tail.
+            with self._lock:
+                migrations = self.db.execute(
+                    """SELECT DISTINCT fact.token_id FROM (
+                           SELECT token_id,launch_event_type,source_observed_at,recorded_at
+                           FROM token_launch_facts ORDER BY id DESC LIMIT 500
+                       ) AS fact JOIN token_detail_hydration AS hydration ON hydration.token_id=fact.token_id
+                       WHERE fact.launch_event_type='migration'
+                         AND fact.source_observed_at>=? AND fact.source_observed_at<=fact.recorded_at
+                         AND fact.recorded_at<=? AND hydration.status='pending'
+                         AND (hydration.last_attempt_at IS NULL OR hydration.last_attempt_at<fact.recorded_at)
+                       ORDER BY fact.recorded_at DESC LIMIT 3""",
+                    (iso(parse_time(due_at) - timedelta(seconds=30)), due_at),
+                ).fetchall()
+            watched = tuple(dict.fromkeys([*(row[0] for row in migrations), *watched]))[:3]
         if watched:
             priority_order = f"CASE WHEN token_id IN ({','.join('?' for _ in watched)}) THEN 0 ELSE 1 END,"
             priority_params = watched

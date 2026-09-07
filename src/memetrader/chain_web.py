@@ -812,6 +812,7 @@ class ChainWebData:
                 "'pumpportal','pumpportal:create','pumpportal:migration','multichain_meme_data',"
                 "'dexscreener_discovery','dexscreener:hydration','geckoterminal:solana',"
                 "'dexscreener:profile_updates:stream','dexscreener:boosts_latest:stream',"
+                "'dexscreener:token_profiles:stream','dexscreener:community_takeovers:stream',"
                 "'geckoterminal:bsc','geckoterminal:robinhood',"
                 "'flat-compression-breakout-shadow') ORDER BY source")
             held = self._rows(connection,
@@ -1845,6 +1846,7 @@ class ChainWebData:
                 "FROM source_health WHERE source IN ("
                 "'chain-meme-trader','pumpportal','dexscreener_discovery',"
                 "'dexscreener:profile_updates:stream','dexscreener:boosts_latest:stream',"
+                "'dexscreener:token_profiles:stream','dexscreener:community_takeovers:stream',"
                 "'multichain_meme_data',"
                 "'chain-meme-market-marks') ORDER BY source",
             )
@@ -1993,6 +1995,7 @@ class ChainWebData:
                 "SELECT * FROM source_health WHERE source IN ("
                 "'chain-meme-trader','pumpportal','dexscreener_discovery',"
                 "'dexscreener:profile_updates:stream','dexscreener:boosts_latest:stream',"
+                "'dexscreener:token_profiles:stream','dexscreener:community_takeovers:stream',"
                 "'onchain_only_jupiter_quote','solana-held-accounts',"
                 "'chain-meme-postbuy-research','chain-meme-market-marks',"
                 "'multichain_meme_data') "

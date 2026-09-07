@@ -107,7 +107,7 @@ const reasonText = (reason='') => {
   if(value.includes('entry')||value.includes('broad_launch'))return '策略入场条件成立';
   return value?'策略条件触发':'—';
 };
-const sourceText = (source='') => ({pumpportal:'Pump.fun 实时流','pumpportal:create':'Pump.fun 新币流','dexscreener':'DexScreener 行情','dexscreener_discovery':'DexScreener 发现','dexscreener:profile_updates':'DexScreener 资料更新轮询','dexscreener:profile_updates:stream':'DexScreener 资料更新推送','dexscreener:boosts_latest:stream':'DexScreener Boost 推送（推广线索）'})[source]||String(source||'公开数据源');
+const sourceText = (source='') => ({pumpportal:'Pump.fun 实时流','pumpportal:create':'Pump.fun 新币流','dexscreener':'DexScreener 行情','dexscreener_discovery':'DexScreener 发现','dexscreener:profile_updates':'DexScreener 资料更新轮询','dexscreener:token_profiles:stream':'DexScreener 新资料推送','dexscreener:community_takeovers:stream':'DexScreener 社区接管推送（身份线索）','dexscreener:profile_updates:stream':'DexScreener 资料更新推送','dexscreener:boosts_latest:stream':'DexScreener Boost 推送（推广线索）'})[source]||String(source||'公开数据源');
 const positionValuationText = (position={}) => {
   const status=position.valuation_status;
   if(status==='complete_exact_jupiter')return '新鲜 Jupiter 可执行报价';
@@ -529,10 +529,10 @@ function renderSummary(data, strategies){
   const errorSummary=data.error_summary||{},openErrors=Number(errorSummary.open||0),highErrors=Number(errorSummary.high||0);
   $('#summary-grid').innerHTML=[
     ['系统运行',s.runtime_status==='running'?'正常':'异常',s.heartbeat_at?`最近心跳 ${ageText(s.heartbeat_at)}`:'尚无运行心跳',s.runtime_status==='running'],
-    ['Token 发现',fresh? '正常':'等待新币',`近 5 分钟 ${fresh} 个 · 最近 ${ageText(data.discovery?.latest_at)}`,Boolean(data.discovery?.latest_at)],
+    ['Token 发现',fresh? '正常':'等待新币',`最新列表中 5 分钟内 ${fresh} 条（非发现总数） · 最近 ${ageText(data.discovery?.latest_at)}`,Boolean(data.discovery?.latest_at)],
     ['策略账户',`${active} 个前向运行`,`${replicas} 个历史规则 · ${successors} 个 Dex 继承 · 开放仓位 ${open} · 已完成 ${outcomes}`,active>0],
-    ['开放仓 / 不重复 Token',`${open} / ${openTokens}`,missing?`${marked} 个有价格 · ${missing} 个等待恢复`:'策略仓位数 / 去重后持币数',missing===0],
-    ['卖出与核销',pending?`${pending} 笔待处理`:'队列正常',`连续无池/价格超过 1 分钟才全损`,pending===0],
+    ['当前持仓 / 去重币种',`${open} 仓 / ${openTokens} 币`,missing?`${marked} 仓有价格 · ${missing} 仓等待恢复；同币可由多策略持有`:'同币可由多策略持有；不代表累计成交币数',missing===0],
+    ['卖出与核销',pending?`${pending} 笔待处理`:'队列正常',`新鲜原池流动性低于有效门槛才核销；缺失或过期不核销`,pending===0],
     ['钱包实盘',walletsNow.length?`${liveWallets} / ${walletsNow.length} 运行`:'尚未接入','每个钱包独立绑定一个策略',true],
     ['错误监督',openErrors?`${openErrors} 项待处理`:'没有未结错误',highErrors?`${highErrors} 项严重错误`:'运行报错按时间归档',openErrors===0],
     ['本地数据',gb(storage.database_bytes),`E 盘剩余 ${gb(storage.free_bytes)}`,Number(storage.free_bytes||0)>10737418240],
@@ -720,7 +720,7 @@ function renderHealth(items,data){
   const storage=s.storage||{},gb=n=>Number.isFinite(Number(n))?(Number(n)/1073741824).toFixed(2)+' GB':'—';
   const monitorOk=Number(s.held_account_states||0)>0&&Number(s.held_account_alerts||0)===0;
   const queueOk=Number(capacity.zero_attempt_failed_buy_count||0)===0;
-  const labels={'dexscreener:profile_updates:stream':'DexScreener 资料更新推送','dexscreener:boosts_latest:stream':'DexScreener Boost 推送（推广线索）','chain-meme-trader':'策略与账户','pumpportal':'Pump.fun 新币发现','dexscreener_discovery':'DexScreener Token 发现','multichain_meme_data':'三链新币与行情采集','chain-meme-market-marks':'持仓价格与池监控','onchain_only_jupiter_quote':'真实成交报价','solana-held-accounts':'链上账户监控','chain-meme-postbuy-research':'买后信息调查'};
+  const labels={'dexscreener:token_profiles:stream':'DexScreener 新资料推送','dexscreener:community_takeovers:stream':'DexScreener 社区接管推送（身份线索）','dexscreener:profile_updates:stream':'DexScreener 资料更新推送','dexscreener:boosts_latest:stream':'DexScreener Boost 推送（推广线索）','chain-meme-trader':'策略与账户','pumpportal':'Pump.fun 新币发现','dexscreener_discovery':'DexScreener Token 发现','multichain_meme_data':'三链新币与行情采集','chain-meme-market-marks':'持仓价格与池监控','onchain_only_jupiter_quote':'真实成交报价','solana-held-accounts':'链上账户监控','chain-meme-postbuy-research':'买后信息调查'};
   $('#health-grid').innerHTML=items.map(h=>{const latest=h.last_item_at||h.last_ok_at,ok=!h.last_error_at||new Date(h.last_error_at)<=new Date(h.last_ok_at||0);return `<article class="health-card ${ok?'ok':'bad'}"><span class="health-dot"></span><div><strong>${esc(labels[h.source]||'后台服务')}</strong><p>${latest?`最后活动 ${ageText(latest)}`:'尚无活动'}</p><small>${h.last_error?'最近一次运行出现错误':'运行正常'}</small></div></article>`}).join('')+`<article class="health-card ${queueOk?'ok':'bad'}"><span class="health-dot"></span><div><strong>交易队列</strong><p>${capacity.ready_buy_count||0} 笔待买</p><small>${capacity.zero_attempt_failed_buy_count||0} 笔尚未成功开始处理</small></div></article><article class="health-card ${monitorOk?'ok':'bad'}"><span class="health-dot"></span><div><strong>池与持仓监控</strong><p>${s.held_account_states||0} 已观测 · ${s.held_account_alerts||0} 告警</p><small>${s.held_account_latest_at?`最近状态 ${ageText(s.held_account_latest_at)}`:'等待首个持仓'}</small></div></article><article class="health-card ok"><span class="health-dot"></span><div><strong>模拟交易</strong><p>正在运行</p><small>公开市场价格与统一策略流程</small></div></article><article class="health-card ok"><span class="health-dot"></span><div><strong>实盘接口</strong><p>按钱包单独启用</p><small>未启用的钱包不会发送交易</small></div></article><article class="health-card ${(Number(storage.wal_bytes||0)<1073741824&&Number(storage.free_bytes||0)>10737418240)?'ok':'bad'}"><span class="health-dot"></span><div><strong>本地存储</strong><p>数据库 ${gb(storage.database_bytes)} · 临时数据 ${gb(storage.wal_bytes)}</p><small>E盘剩余 ${gb(storage.free_bytes)}</small></div></article><article class="health-card ok"><span class="health-dot"></span><div><strong>网页刷新</strong><p>可见 5 秒 · 隐藏暂停</p><small>Token 详情 10 秒 · 后台持仓行情优先 · 待退出 ${s.pending_exit_quotes||0}</small></div></article>`;
 }
 

@@ -11,7 +11,8 @@ from memetrader.models import iso, utcnow
 from memetrader.runtime import Runtime, initial_config
 
 
-@pytest.mark.parametrize("surface,role", [("profile_updates", "identity"), ("boosts_latest", "promotion")])
+@pytest.mark.parametrize("surface,role", [("token_profiles", "identity"), ("profile_updates", "identity"),
+                                        ("community_takeovers", "identity"), ("boosts_latest", "promotion")])
 def test_official_stream_handshake_and_updates_remain_discovery(monkeypatch, surface, role):
     item = {"chainId": "solana", "tokenAddress": "A" * 32,
             "url": "https://dexscreener.com/solana/pool", "updatedAt": "2020-01-01T00:00:00Z"}
@@ -48,6 +49,15 @@ def test_official_stream_handshake_and_updates_remain_discovery(monkeypatch, sur
             assert rows[0]["raw"]["initial_snapshot"] is (index == 0)
             assert rows[0]["raw"]["item"]["updatedAt"].startswith("2020-")
     asyncio.run(scenario())
+
+
+def test_discovery_limit_is_applied_after_supported_chain_filter():
+    item = {"chainId": "solana", "tokenAddress": "A" * 32,
+            "url": "https://dexscreener.com/solana/pool"}
+    payload = [None, dict(item, chainId="polygon"), dict(item, tokenAddress=""), item,
+               dict(item, tokenAddress="B" * 32), dict(item, tokenAddress="C" * 32)]
+    rows = DexScreenerClient(None).discovery_links("token_profiles", payload, {"solana"}, limit=2)
+    assert [row["token_id"] for row in rows] == ["solana:" + "A" * 32, "solana:" + "B" * 32]
 
 
 def test_stream_replay_is_deduplicated_and_enters_existing_hydration_only(tmp_path):

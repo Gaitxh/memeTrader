@@ -55,3 +55,38 @@ def test_pregrad_reorders_existing_budget_migration_requeues_once_and_new_rpc_re
         assert r.store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_trades").fetchone()[0] == 0
         r.store.close()
     asyncio.run(run())
+
+
+def test_unwatched_old_mint_fresh_migration_gets_one_existing_hydration_slot(tmp_path, monkeypatch):
+    async def run():
+        clock = [utcnow() - timedelta(days=1)]
+        monkeypatch.setattr("memetrader.models.utcnow", lambda: clock[0])
+        monkeypatch.setattr("memetrader.store.utcnow", lambda: clock[0])
+        monkeypatch.setattr("memetrader.runtime.utcnow", lambda: clock[0])
+        r = Runtime.__new__(Runtime)
+        r.config = initial_config()
+        r.chain_meme_trader_only = True
+        r.store = Store(tmp_path / "migration-priority.sqlite3", initial_cash_usd=1000)
+        r.notifier = SimpleNamespace(send=lambda *a, **kw: None)
+        old = TokenCandidate("solana", str(Pubkey.new_unique()), "old")
+        r.store.upsert_token(old)
+        r.store.mark_token_detail_hydration(old.token_id, "no_pair", now=clock[0])
+        clock[0] += timedelta(days=1)
+        new = TokenCandidate("solana", str(Pubkey.new_unique()), "new")
+        r.store.upsert_token(new)
+        migration = TokenCandidate("solana", old.address, "migrated", source="pumpportal:migration",
+                                   first_seen_at=clock[0], raw={"txType": "migration", "signature": "fresh"})
+        await r.ingest_token(migration)
+        assert not r._pregrad_watch.ranked(now=clock[0])
+        due = lambda: r.store.due_token_detail_hydrations(limit=1, now=clock[0], prefer_fresh=True)
+        assert due()[0]["token_id"] == old.token_id
+        clock[0] += timedelta(seconds=1)
+        r.store.mark_token_detail_hydration(old.token_id, "no_pair", now=clock[0])
+        await r.ingest_token(migration)
+        assert r.store.token_detail_hydration(old.token_id)["status"] == "no_pair"
+        assert due()[0]["token_id"] == new.token_id  # Attempt and replay preserve normal backoff.
+        clock[0] += timedelta(seconds=31)
+        r.store.requeue_token_detail_hydration(old.token_id, enqueued_at=clock[0])
+        assert due()[0]["token_id"] == new.token_id  # Ordinary requeue does not refresh the old migration.
+        r.store.close()
+    asyncio.run(run())

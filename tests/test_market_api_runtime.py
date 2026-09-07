@@ -252,12 +252,13 @@ def test_gecko_new_pool_cohort_batch_keeps_all_pools_and_reports_overflow(tmp_pa
         assert len({(token.token_id, snapshot.raw["pair"]["pairAddress"])
                     for token, snapshot in batch}) == 13
         assert all(snapshot.observed_at == observed for _, snapshot in batch)
-        for _ in range(8):
+        for _ in range(16):
             runtime._remember_pattern_quotes({"one": batch[0]})
-        assert len(runtime._cohort_batches) == 8
+        assert len(runtime._cohort_batches) == 16
         assert runtime._cohort_dropped_batches == 1
         assert runtime._cohort_dropped_quotes == 13
         await runtime.chain_meme_cohort_observer_once()
+        assert len(runtime._cohort_batches) == 8  # Preserve FIFO batch boundaries and per-turn budget.
         saved = runtime.store.get_kv(
             f"passive-cohort:{runtime.store.CHAIN_MEME_TRADER_ACTIVE_VERSION}", {})
         assert saved["dropped_batches"] == 1

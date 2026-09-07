@@ -5462,6 +5462,7 @@ def test_chain_meme_market_lanes_keep_active_fast_and_carry_slow():
         assert len(scheduled) == len(intervals)
         assert scheduled["chain_meme_trader"] == 1
         assert scheduled["chain_meme_token_details"] == 5
+        assert scheduled["chain_meme_cohort_observer"] == 2
         assert scheduled["chain_meme_market_marks"] == 1.0
         assert scheduled["flat_compression_breakout_shadow"] == 5
         assert scheduled["chain_meme_carried_market_marks"] == 15.0

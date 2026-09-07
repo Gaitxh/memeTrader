@@ -2151,13 +2151,15 @@ class DexScreenerClient:
         allowed = {self._chain(str(chain).lower()) for chain in allowed_chains}
         rows: list[dict[str, Any]] = []
         seen: set[tuple[str, str, str, str]] = set()
-        for item in payload[: max(1, int(limit))]:
+        accepted = 0
+        for item in payload:
             if not isinstance(item, dict):
                 continue
             chain = self._chain(str(item.get("chainId") or "").lower())
             address = str(item.get("tokenAddress") or "").strip()
             if not chain or chain not in allowed or not address:
                 continue
+            accepted += 1
             item_rows = self._source_link_rows(
                 chain=chain,
                 address=address,
@@ -2173,6 +2175,8 @@ class DexScreenerClient:
                     continue
                 seen.add(key)
                 rows.append(row)
+            if accepted >= max(1, int(limit)):
+                break
         return rows
 
     async def stream_surface(self, surface, allowed_chains):

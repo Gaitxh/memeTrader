@@ -22,7 +22,7 @@ def test_official_sources_rotate_without_new_hot_path_calls():
 def test_native_event_only_queues_bounded_identity_hydration():
     at = iso(utcnow())
     events = [{"token": "0x" + f"{i:040x}", "event": "TokenCreate",
-        "transaction_hash": f"tx{i}", "log_index": i, "observed_at": at} for i in range(10)]
+        "transaction_hash": f"tx{i}", "log_index": i, "observed_at": at} for i in range(200)]
     class Observer:
         CHAIN, ERROR_PREFIX = "bsc", "four_meme"
         async def observe(self):
@@ -45,9 +45,10 @@ def test_native_event_only_queues_bounded_identity_hydration():
         finish_token_discovery_round=lambda *a, **kw: None,
         heartbeat=lambda *a, **kw: heartbeats.append(kw))
     asyncio.run(runtime.chain_meme_native_launch_once())
-    assert len(queued) == len(recorded) == 8
+    assert len(queued) == len(recorded) == 200
+    assert all(row[1]["observed_at"].isoformat().replace("+00:00", "Z") == at for row in recorded)
     assert all(row[0][1] == "" for row in recorded)  # TokenManager is never a pool.
-    assert "unprocessed=2" in heartbeats[-1]["error_detail"]
+    assert "unprocessed=0" in heartbeats[-1]["error_detail"]
     runtime._critical_onchain_exit_event.set()
     asyncio.run(runtime.chain_meme_native_launch_once())
-    assert len(queued) == 8  # Exit-priority skip does not poll or hydrate.
+    assert len(queued) == 200  # Exit-priority skip does not poll or hydrate.
