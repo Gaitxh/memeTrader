@@ -660,6 +660,15 @@ def test_strategy_universe_refreshes_for_additive_strategy_versions(tmp_path: Pa
     paused=next(f for f in retired_universe["families"] if "broad_mature_continuity_control_v1" in f["active_arm_ids"])
     assert paused["default_visible"] is False and paused["realtime_state"] == "PAUSED_NEW_ENTRY"
     assert len(ChainWebData(config_path).state(compact=True)["strategies"]) == 128
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    store.db.execute('INSERT INTO kv(key,value_json,updated_at) VALUES(?,?,?)',(
+        f'chain-meme-account-loss-retirement/v1:{Store.CHAIN_MEME_TRADER_V22_VERSION}',
+        json.dumps({'activated_at':'2026-09-07T16:00:00Z','arms':{'broad_flash_tail_first_mover_v1':{'state':'RETIRED_DEPLETED'}}}),
+        '2026-09-07T16:00:00Z'))
+    store.db.commit();store.close()
+    depleted=web_data.strategy_universe()
+    assert depleted['summary']['depleted_retired_accounts']==1
+    assert sum(f['default_visible'] for f in depleted['families'])==125
     assert appended_live["account"]["capital_neutral_total_pnl_usd"] == 0.0
     assert appended_live["account"]["account_return_fraction"] == 0.0
 

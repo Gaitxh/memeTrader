@@ -71,6 +71,23 @@ def test_account_retirement_blocks_queued_buy_without_changing_old_contract(tmp_
     store.close()
 
 
+def test_depleted_account_stops_idle_snapshots_but_keeps_final_account(tmp_path, monkeypatch):
+    store, clock = setup_store(tmp_path, monkeypatch)
+    store.register_chain_meme_resource_bound_research()
+    version=store.CHAIN_MEME_TRADER_ACTIVE_VERSION
+    arm='resource_age_rate_candidate_v1'
+    store.record_chain_meme_trader_account_snapshots(now=clock[0],definition_version=version)
+    previous=store.db.execute('SELECT MAX(id) FROM chain_meme_trader_account_snapshots WHERE arm_id=?',(arm,)).fetchone()[0]
+    store.db.execute('INSERT INTO kv(key,value_json,updated_at) VALUES(?,?,?)',
+        (f'chain-meme-account-loss-retirement/v1:{version}',json.dumps({'activated_at':clock[0].isoformat(),'arms':{arm:{'state':'RETIRED_DEPLETED'}}}),clock[0].isoformat()))
+    clock[0]+=timedelta(seconds=61)
+    assert store.record_chain_meme_trader_account_snapshots(now=clock[0],definition_version=version)>0
+    assert store.db.execute('SELECT MAX(id) FROM chain_meme_trader_account_snapshots WHERE arm_id=?',(arm,)).fetchone()[0]==previous
+    definition=store._chain_meme_trader_effective_definition(version,store._chain_meme_trader_registration(version)['definition_json'])
+    assert next(p for p in definition['policies'] if p['arm_id']==arm)['entry_paused']
+    store.close()
+
+
 def test_age_filter_keeps_control_and_consumes_rejected_first_opportunity(tmp_path, monkeypatch):
     store, clock = setup_store(tmp_path, monkeypatch)
     store.register_chain_meme_resource_bound_research()

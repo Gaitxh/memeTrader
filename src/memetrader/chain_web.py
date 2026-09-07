@@ -3031,8 +3031,9 @@ class ChainWebData:
                 "SELECT COALESCE(MAX(id),0) FROM chain_meme_trader_account_snapshots "
                 "WHERE definition_version=?", (active_version,),
             ).fetchone()[0])
-            control_row = connection.execute("SELECT updated_at FROM kv WHERE key=?",
-                (f"chain-meme-account-convergence/v1:{active_version}",)).fetchone()
+            control_row = connection.execute("SELECT MAX(updated_at) FROM kv WHERE key IN (?,?)",
+                (f"chain-meme-account-convergence/v1:{active_version}",
+                 f"chain-meme-account-loss-retirement/v1:{active_version}")).fetchone()
             cache_key = (
                 modified_at, active_version, addition_frontier,
                 accounting_frontier, result_frontier, control_row[0] if control_row else None,
@@ -3212,7 +3213,7 @@ class ChainWebData:
             policy = next((lifecycle_by_arm[a] for a in family.get("active_arm_ids", [])
                            if a in lifecycle_by_arm), {})
             lifecycle = policy.get("account_lifecycle")
-            family["default_visible"] = lifecycle not in {"RETIRED_DUPLICATE", "PAUSED_NEW_ENTRY"}
+            family["default_visible"] = lifecycle not in {"RETIRED_DUPLICATE", "PAUSED_NEW_ENTRY", "RETIRED_DEPLETED"}
             if lifecycle:
                 family.update(account_lifecycle=lifecycle, realtime_state=lifecycle,
                               forward_enabled=False,
@@ -3230,6 +3231,7 @@ class ChainWebData:
                 "behavior_contract_families": len(families),
                 "retired_duplicate_accounts": sum(f.get("account_lifecycle") == "RETIRED_DUPLICATE" for f in families),
                 "paused_entry_accounts": sum(f.get("account_lifecycle") == "PAUSED_NEW_ENTRY" for f in families),
+                "depleted_retired_accounts": sum(f.get("account_lifecycle") == "RETIRED_DEPLETED" for f in families),
                 "active_forward_families": sum(
                     family["realtime_state"] == "ACTIVE_FORWARD" for family in families
                 ),

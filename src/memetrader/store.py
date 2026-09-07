@@ -7347,10 +7347,11 @@ class Store:
             (f"market-entry-post-observation/v1:{definition_version}",)).fetchone()
         if timing is not None:
             definition["post_observation_execution"] = json.loads(timing[0])
-        controls = connection.execute("SELECT value_json FROM kv WHERE key=?",
-            (f"chain-meme-account-convergence/v1:{definition_version}",)).fetchone()
-        if controls is not None:
-            control = json.loads(controls[0])
+        controls = connection.execute("SELECT value_json FROM kv WHERE key IN (?,?) ORDER BY updated_at",
+            (f"chain-meme-account-convergence/v1:{definition_version}",
+             f"chain-meme-account-loss-retirement/v1:{definition_version}")).fetchall()
+        for row in controls:
+            control = json.loads(row[0])
             definition["account_control_activation"] = control["activated_at"]
             for policy in definition["policies"]:
                 state = control["arms"].get(policy["arm_id"])
@@ -26721,7 +26722,7 @@ class Store:
                 return 0
             definition = self._chain_meme_trader_effective_definition(version, registration["definition_json"])
             match_mode = "isolated_cohort_observer" if cohort_mode else "isolated_pattern_observer"
-            policies = [p for p in definition["policies"] if p.get("entry_match_mode") == match_mode]
+            policies = [p for p in definition["policies"] if not p.get("entry_paused") and p.get("entry_match_mode") == match_mode]
             if not policies:
                 return 0
             previous = self.db.execute(
@@ -28086,7 +28087,7 @@ class Store:
                     max(1, int(limit)),
                 ),
             ).fetchall()
-            policies = list(definition["policies"])
+            policies = [p for p in definition["policies"] if not p.get("entry_paused")]
             allowed_chains = {
                 str(chain).strip().lower()
                 for chain in (definition.get("chains") or ["solana"])
@@ -34563,6 +34564,7 @@ class Store:
             ).fetchall()
         }
         inserted = 0
+        paused_arms = {p["arm_id"] for p in definition["policies"] if p.get("entry_paused")}
         for arm_id in policy_ids:
             arm_corrections = corrections_by_arm.get(arm_id, {})
             contaminated_cohorts = contaminations_by_arm.get(arm_id, set())
@@ -34685,6 +34687,10 @@ class Store:
                     "valuation_status", "ledger_trade_frontier_id",
                 ))
                 age = (current - parse_time(latest["recorded_at"])).total_seconds()
+                # A drained, unchanged retired account needs no periodic snapshots.
+                # A final exit or cash/correction change still produces a new snapshot.
+                if arm_id in paused_arms and no_open_positions and previous[:-1] == payload[3:-1]:
+                    continue
                 if age < 10.0 or (previous == payload[3:] and age < 60.0):
                     continue
             self.db.execute(

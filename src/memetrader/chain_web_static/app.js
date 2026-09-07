@@ -362,6 +362,7 @@ function strategyMetrics(live){
 }
 
 function fidelityLabel(family){
+  if(family?.account_lifecycle==='RETIRED_DEPLETED')return '资金接近耗尽 · 已退役';
   if(family?.account_lifecycle==='RETIRED_DUPLICATE')return '重复账户已退役 · 持仓继续退出';
   if(family?.account_lifecycle==='PAUSED_NEW_ENTRY')return '暂停新入场 · 持仓继续退出';
   const value=family?.fidelity_status||family?.realtime_state;

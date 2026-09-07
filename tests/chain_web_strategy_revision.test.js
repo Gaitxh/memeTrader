@@ -50,6 +50,7 @@ assert.match(app, /strategyLabel\(f,live\.strategy\)/);
 assert.match(app, /strategyLabel\(item\.family,item\.live\.strategy\)/);
 assert.match(context.revisionUi.lifecycle({account_lifecycle:'RETIRED_DUPLICATE',fidelity_status:'ADDITIVE_FORWARD'}), /重复账户已退役/);
 assert.match(context.revisionUi.lifecycle({account_lifecycle:'PAUSED_NEW_ENTRY'}), /暂停新入场/);
+assert.match(context.revisionUi.lifecycle({account_lifecycle:'RETIRED_DEPLETED'}), /资金接近耗尽/);
 assert.match(app, /f\.default_visible!==false\|\|\$\('#universe-show-retired'\)\?\.checked/);
 
 console.log('chain web strategy revision: ok');
