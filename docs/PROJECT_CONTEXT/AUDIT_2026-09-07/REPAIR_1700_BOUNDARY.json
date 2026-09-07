@@ -1,0 +1,1459 @@
+{
+  "before": {
+    "version": "chain-meme-trader/funding-20260906-v002-final-1000",
+    "at": "2026-09-07T09:17:32.431388+00:00",
+    "registration_sha256": "00365d12fed418a79d1f2fc13d4e21943473e06a4d5ac2708a0baeb1ca9ebc00",
+    "additions_sha256": "b8e6a07f63a60bac09b29dbad3e02d232801a882a8f6323d369afaf28e75e474",
+    "addition_count": 97,
+    "activation": {
+      "definition_version": "chain-meme-trader/funding-20260906-v002-final-1000",
+      "activated_at": "2026-09-06T15:29:28.508111Z",
+      "activation_snapshot_id": 1130786,
+      "v5_definition_version": "chain-meme-trader/funding-20260905-fixed-1000",
+      "v5_source_frontier": 1130786,
+      "entry_execution_enabled": 1
+    },
+    "max_trade": 479129,
+    "max_snapshot": 1510682,
+    "system": {
+      "runtime_status": "running",
+      "heartbeat_at": "2026-09-07T09:17:30.556504Z",
+      "heartbeat_age_seconds": 0.060549,
+      "refresh_seconds": 5,
+      "chain": "Solana / BSC / Robinhood",
+      "paper_only": true,
+      "live_locked": true,
+      "locked_by_config": true,
+      "live_adapter_status": "locked_by_config",
+      "latest_account_snapshot_at": "2026-09-07T09:17:28.550734Z",
+      "notional_usd": 20.0,
+      "slippage_bps": 400,
+      "buy_slippage_bps": 400,
+      "sell_slippage_bps": 400,
+      "extra_fee_usd": 0.0,
+      "min_pool_liquidity_usd": 1000.0,
+      "capital_model": "legacy_cash_limited",
+      "open_position_count": 94,
+      "unique_held_token_count": 15,
+      "pending_exit_quotes": 0,
+      "held_account_states": 0,
+      "held_account_healthy": 0,
+      "held_account_alerts": 0,
+      "held_account_latest_at": null,
+      "storage": {
+        "database_bytes": 18434101248,
+        "wal_bytes": 196346872,
+        "free_bytes": 45974695936,
+        "total_bytes": 214747312128
+      }
+    },
+    "strategy_count": 224,
+    "performance": {
+      "at": "2026-09-07T09:17:32.414998Z",
+      "timing": {
+        "capital_quote": {
+          "actual_interval_seconds": {
+            "p50": 2.011206300000026,
+            "p95": 2.1771203750000043
+          },
+          "configured_interval_seconds": 2.0,
+          "duration_seconds": {
+            "p50": 6.4000000747910235e-06,
+            "p95": 0.06870204499997382
+          },
+          "failures": 0,
+          "interval_sample_count": 120,
+          "items": 0,
+          "sample_count": 120
+        },
+        "chain_meme_account_snapshot": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 0.21340839999999162,
+            "p95": 0.28477901499991276
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 0,
+          "sample_count": 120
+        },
+        "chain_meme_authoritative_events": {
+          "actual_interval_seconds": {
+            "p50": 120.00637200000006,
+            "p95": 120.16412367999993
+          },
+          "configured_interval_seconds": 120.0,
+          "duration_seconds": {
+            "p50": 0.2950020499999937,
+            "p95": 1.068293584999958
+          },
+          "failures": 0,
+          "interval_sample_count": 13,
+          "items": 0,
+          "sample_count": 14
+        },
+        "chain_meme_carried_market_marks": {
+          "actual_interval_seconds": {
+            "p50": 15.00929965000006,
+            "p95": 15.210267084999725
+          },
+          "configured_interval_seconds": 15.0,
+          "duration_seconds": {
+            "p50": 0.0002548999999589796,
+            "p95": 0.0004979799998181989
+          },
+          "failures": 0,
+          "interval_sample_count": 104,
+          "items": 0,
+          "sample_count": 105
+        },
+        "chain_meme_cohort_observer": {
+          "actual_interval_seconds": {
+            "p50": 10.008809400000018,
+            "p95": 10.101918065000001
+          },
+          "configured_interval_seconds": 10.0,
+          "duration_seconds": {
+            "p50": 0.34087974999999915,
+            "p95": 1.0440073549999282
+          },
+          "failures": 0,
+          "interval_sample_count": 120,
+          "items": 0,
+          "sample_count": 120
+        },
+        "chain_meme_entry_batch": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 0.010576750000041102,
+            "p95": 0.03356507999994846
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 980,
+          "sample_count": 120
+        },
+        "chain_meme_extra_official": {
+          "actual_interval_seconds": {
+            "p50": 240.01143980000006,
+            "p95": 240.02695647500002
+          },
+          "configured_interval_seconds": 240.0,
+          "duration_seconds": {
+            "p50": 0.6764645999999175,
+            "p95": 1.7059694499999916
+          },
+          "failures": 0,
+          "interval_sample_count": 6,
+          "items": 0,
+          "sample_count": 7
+        },
+        "chain_meme_market_marks": {
+          "actual_interval_seconds": {
+            "p50": 1.0286967499999946,
+            "p95": 1.8150462650000463
+          },
+          "configured_interval_seconds": 1.0,
+          "duration_seconds": {
+            "p50": 0.7561802999999827,
+            "p95": 1.607599930000026
+          },
+          "failures": 0,
+          "interval_sample_count": 120,
+          "items": 0,
+          "sample_count": 120
+        },
+        "chain_meme_native_launch": {
+          "actual_interval_seconds": {
+            "p50": 30.012109450000025,
+            "p95": 30.20310464500001
+          },
+          "configured_interval_seconds": 30.0,
+          "duration_seconds": {
+            "p50": 1.0242151000002195,
+            "p95": 2.91494202000008
+          },
+          "failures": 0,
+          "interval_sample_count": 52,
+          "items": 0,
+          "sample_count": 53
+        },
+        "chain_meme_pattern_narrative": {
+          "actual_interval_seconds": {
+            "p50": 60.008769200000074,
+            "p95": 60.089737025000034
+          },
+          "configured_interval_seconds": 60.0,
+          "duration_seconds": {
+            "p50": 0.5298060999998597,
+            "p95": 1.1327300500000432
+          },
+          "failures": 0,
+          "interval_sample_count": 26,
+          "items": 0,
+          "sample_count": 27
+        },
+        "chain_meme_pattern_observer": {
+          "actual_interval_seconds": {
+            "p50": 15.009196750000115,
+            "p95": 15.210493444999974
+          },
+          "configured_interval_seconds": 15.0,
+          "duration_seconds": {
+            "p50": 2.787612400000171,
+            "p95": 4.1980841200000665
+          },
+          "failures": 0,
+          "interval_sample_count": 104,
+          "items": 0,
+          "sample_count": 105
+        },
+        "chain_meme_pattern_participation": {
+          "actual_interval_seconds": {
+            "p50": 15.008837699999958,
+            "p95": 15.210259319999842
+          },
+          "configured_interval_seconds": 15.0,
+          "duration_seconds": {
+            "p50": 2.4317177999998876,
+            "p95": 3.776726439999992
+          },
+          "failures": 0,
+          "interval_sample_count": 104,
+          "items": 0,
+          "sample_count": 105
+        },
+        "chain_meme_pattern_pools": {
+          "actual_interval_seconds": {
+            "p50": 15.01090645000005,
+            "p95": 15.22022927500002
+          },
+          "configured_interval_seconds": 15.0,
+          "duration_seconds": {
+            "p50": 1.9352332999999362,
+            "p95": 5.872888099999955
+          },
+          "failures": 0,
+          "interval_sample_count": 104,
+          "items": 0,
+          "sample_count": 105
+        },
+        "chain_meme_trader": {
+          "actual_interval_seconds": {
+            "p50": 1.0105119999999488,
+            "p95": 1.1433266099998376
+          },
+          "configured_interval_seconds": 1.0,
+          "duration_seconds": {
+            "p50": 0.01962700000001405,
+            "p95": 0.22428766999988736
+          },
+          "failures": 0,
+          "interval_sample_count": 120,
+          "items": 0,
+          "sample_count": 120
+        },
+        "chain_meme_v22_vault_shadow_enroll": {
+          "actual_interval_seconds": {
+            "p50": 15.010888949999867,
+            "p95": 15.231752245000019
+          },
+          "configured_interval_seconds": 15.0,
+          "duration_seconds": {
+            "p50": 0.0018879000001561508,
+            "p95": 0.002567440000029819
+          },
+          "failures": 0,
+          "interval_sample_count": 104,
+          "items": 0,
+          "sample_count": 105
+        },
+        "chain_meme_wsol_reference": {
+          "actual_interval_seconds": {
+            "p50": 5.010250599999949,
+            "p95": 5.109220610000011
+          },
+          "configured_interval_seconds": 5.0,
+          "duration_seconds": {
+            "p50": 2.9250000011415977e-05,
+            "p95": 0.9108606849998865
+          },
+          "failures": 0,
+          "interval_sample_count": 120,
+          "items": 0,
+          "sample_count": 120
+        },
+        "chain_universe_outcomes": {
+          "actual_interval_seconds": {
+            "p50": 30.011049900000046,
+            "p95": 30.261026865000034
+          },
+          "configured_interval_seconds": 30.0,
+          "duration_seconds": {
+            "p50": 0.4618665999998939,
+            "p95": 1.3055179999999602
+          },
+          "failures": 0,
+          "interval_sample_count": 52,
+          "items": 0,
+          "sample_count": 53
+        },
+        "cohort_passive_compute": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 0.3408556499998667,
+            "p95": 1.043987340000001
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 43,
+          "sample_count": 120
+        },
+        "complementary_market_data": {
+          "actual_interval_seconds": {
+            "p50": 10.008644549999985,
+            "p95": 10.116472934999905
+          },
+          "configured_interval_seconds": 10.0,
+          "duration_seconds": {
+            "p50": 0.18117304999998396,
+            "p95": 1.1765923799999656
+          },
+          "failures": 0,
+          "interval_sample_count": 120,
+          "items": 0,
+          "sample_count": 120
+        },
+        "flat_compression_breakout_shadow": {
+          "actual_interval_seconds": {
+            "p50": 8.699641250000013,
+            "p95": 9.457627564999985
+          },
+          "configured_interval_seconds": 5.0,
+          "duration_seconds": {
+            "p50": 8.471268400000099,
+            "p95": 9.248067465000043
+          },
+          "failures": 0,
+          "interval_sample_count": 120,
+          "items": 0,
+          "sample_count": 120
+        },
+        "held_apply_exit": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 0.015420250000033775,
+            "p95": 0.028453564999608712
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 16716,
+          "sample_count": 120
+        },
+        "held_fetch": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 0.569902399999819,
+            "p95": 1.1499988749999146
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 27306,
+          "sample_count": 120
+        },
+        "multichain_meme_data": {
+          "actual_interval_seconds": {
+            "p50": 90.008218,
+            "p95": 90.01900050000003
+          },
+          "configured_interval_seconds": 90.0,
+          "duration_seconds": {
+            "p50": 19.803694249999978,
+            "p95": 23.404777214999996
+          },
+          "failures": 0,
+          "interval_sample_count": 17,
+          "items": 0,
+          "sample_count": 18
+        },
+        "observer_apply_exit": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 0.0005076000001054126,
+            "p95": 0.003007139999795071
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 63,
+          "sample_count": 120
+        },
+        "observer_fetch_with_wait": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 0.9623037500000464,
+            "p95": 1.5856747950000796
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 5070,
+          "sample_count": 120
+        },
+        "pattern_token_compute": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 0.04507384999999431,
+            "p95": 0.09653264000007766
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 2667,
+          "sample_count": 120
+        },
+        "pregrad_watch": {
+          "actual_interval_seconds": {
+            "p50": 30.012065199999938,
+            "p95": 30.203108079999993
+          },
+          "configured_interval_seconds": 30.0,
+          "duration_seconds": {
+            "p50": 0.7855117999999948,
+            "p95": 1.6200258199999777
+          },
+          "failures": 0,
+          "interval_sample_count": 52,
+          "items": 0,
+          "sample_count": 53
+        }
+      },
+      "held_by_chain": {
+        "robinhood": {
+          "tokens": 4,
+          "missing": 0,
+          "failures": 0,
+          "coverage_gaps": 1,
+          "age_p50_seconds": 0.583072,
+          "age_p95_seconds": 17.991517,
+          "age_max_seconds": 17.991517,
+          "receipt_age_max_seconds": 17.99089
+        },
+        "solana": {
+          "tokens": 11,
+          "missing": 0,
+          "failures": 7,
+          "coverage_gaps": 0,
+          "age_p50_seconds": 7.988727,
+          "age_p95_seconds": 7.988727,
+          "age_max_seconds": 7.988727,
+          "receipt_age_max_seconds": 7.986131
+        }
+      }
+    }
+  },
+  "code_commit": "4686157",
+  "deployment_started_at": "2026-09-07T09:19:47.2065738Z",
+  "after_initial": {
+    "at": "2026-09-07T09:20:33.423752+00:00",
+    "version": "chain-meme-trader/funding-20260906-v002-final-1000",
+    "registration_sha256": "00365d12fed418a79d1f2fc13d4e21943473e06a4d5ac2708a0baeb1ca9ebc00",
+    "additions_sha256": "b8e6a07f63a60bac09b29dbad3e02d232801a882a8f6323d369afaf28e75e474",
+    "addition_count": 97,
+    "activation": {
+      "definition_version": "chain-meme-trader/funding-20260906-v002-final-1000",
+      "activated_at": "2026-09-06T15:29:28.508111Z",
+      "activation_snapshot_id": 1130786,
+      "v5_definition_version": "chain-meme-trader/funding-20260905-fixed-1000",
+      "v5_source_frontier": 1130786,
+      "entry_execution_enabled": 1
+    },
+    "max_trade": 479139,
+    "max_snapshot": 1511085,
+    "strategy_count": 224,
+    "system": {
+      "runtime_status": "running",
+      "heartbeat_at": "2026-09-07T09:20:30.654900Z",
+      "heartbeat_age_seconds": 0.985658,
+      "refresh_seconds": 5,
+      "chain": "Solana / BSC / Robinhood",
+      "paper_only": true,
+      "live_locked": true,
+      "locked_by_config": true,
+      "live_adapter_status": "locked_by_config",
+      "latest_account_snapshot_at": "2026-09-07T09:20:25.149894Z",
+      "notional_usd": 20.0,
+      "slippage_bps": 400,
+      "buy_slippage_bps": 400,
+      "sell_slippage_bps": 400,
+      "extra_fee_usd": 0.0,
+      "min_pool_liquidity_usd": 1000.0,
+      "capital_model": "legacy_cash_limited",
+      "open_position_count": 92,
+      "unique_held_token_count": 13,
+      "pending_exit_quotes": 0,
+      "held_account_states": 0,
+      "held_account_healthy": 0,
+      "held_account_alerts": 0,
+      "held_account_latest_at": null,
+      "storage": {
+        "database_bytes": 18441596928,
+        "wal_bytes": 196346872,
+        "free_bytes": 45967814656,
+        "total_bytes": 214747312128
+      }
+    },
+    "performance": {
+      "at": "2026-09-07T09:20:33.407563Z",
+      "timing": {
+        "capital_quote": {
+          "actual_interval_seconds": {
+            "p50": 2.0034222999997837,
+            "p95": 2.073258270000133
+          },
+          "configured_interval_seconds": 2.0,
+          "duration_seconds": {
+            "p50": 7.200000027296483e-06,
+            "p95": 0.7811285499999485
+          },
+          "failures": 0,
+          "interval_sample_count": 15,
+          "items": 0,
+          "sample_count": 16
+        },
+        "chain_meme_account_snapshot": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 0.20564329999979236,
+            "p95": 0.21465536000014254
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 0,
+          "sample_count": 3
+        },
+        "chain_meme_authoritative_events": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": 120.0,
+          "duration_seconds": {
+            "p50": 1.1831350000002203,
+            "p95": 1.1831350000002203
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 0,
+          "sample_count": 1
+        },
+        "chain_meme_carried_market_marks": {
+          "actual_interval_seconds": {
+            "p50": 15.008076200000005,
+            "p95": 15.009111200000257
+          },
+          "configured_interval_seconds": 15.0,
+          "duration_seconds": {
+            "p50": 0.0002413000001979526,
+            "p95": 0.0005518899999970017
+          },
+          "failures": 0,
+          "interval_sample_count": 2,
+          "items": 0,
+          "sample_count": 3
+        },
+        "chain_meme_cohort_observer": {
+          "actual_interval_seconds": {
+            "p50": 10.141529049999917,
+            "p95": 10.236845305000088
+          },
+          "configured_interval_seconds": 10.0,
+          "duration_seconds": {
+            "p50": 0.7037860000000364,
+            "p95": 0.8988866500001678
+          },
+          "failures": 0,
+          "interval_sample_count": 2,
+          "items": 0,
+          "sample_count": 3
+        },
+        "chain_meme_entry_batch": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 0.010643500000014683,
+            "p95": 0.036788340000202875
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 72,
+          "sample_count": 48
+        },
+        "chain_meme_extra_official": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": 240.0,
+          "duration_seconds": {
+            "p50": 1.6730468999999175,
+            "p95": 1.6730468999999175
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 0,
+          "sample_count": 1
+        },
+        "chain_meme_market_marks": {
+          "actual_interval_seconds": {
+            "p50": 1.1196498999997857,
+            "p95": 1.8084034500000132
+          },
+          "configured_interval_seconds": 1.0,
+          "duration_seconds": {
+            "p50": 0.8563423999999031,
+            "p95": 1.577706139999917
+          },
+          "failures": 0,
+          "interval_sample_count": 24,
+          "items": 0,
+          "sample_count": 25
+        },
+        "chain_meme_native_launch": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": 30.0,
+          "duration_seconds": {
+            "p50": 1.6972192000002906,
+            "p95": 1.6972192000002906
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 0,
+          "sample_count": 1
+        },
+        "chain_meme_pattern_narrative": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": 60.0,
+          "duration_seconds": {
+            "p50": 1.1692431000001307,
+            "p95": 1.1692431000001307
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 0,
+          "sample_count": 1
+        },
+        "chain_meme_pattern_observer": {
+          "actual_interval_seconds": {
+            "p50": 15.009577199999967,
+            "p95": 15.009577199999967
+          },
+          "configured_interval_seconds": 15.0,
+          "duration_seconds": {
+            "p50": 2.119103300000006,
+            "p95": 4.025742770000079
+          },
+          "failures": 0,
+          "interval_sample_count": 1,
+          "items": 0,
+          "sample_count": 2
+        },
+        "chain_meme_pattern_participation": {
+          "actual_interval_seconds": {
+            "p50": 15.009245300000202,
+            "p95": 15.009245300000202
+          },
+          "configured_interval_seconds": 15.0,
+          "duration_seconds": {
+            "p50": 1.5275159499999518,
+            "p95": 1.8505285149997917
+          },
+          "failures": 0,
+          "interval_sample_count": 1,
+          "items": 0,
+          "sample_count": 2
+        },
+        "chain_meme_pattern_pools": {
+          "actual_interval_seconds": {
+            "p50": 15.009252099999685,
+            "p95": 15.009252099999685
+          },
+          "configured_interval_seconds": 15.0,
+          "duration_seconds": {
+            "p50": 2.867338699999891,
+            "p95": 4.095115819999637
+          },
+          "failures": 0,
+          "interval_sample_count": 1,
+          "items": 0,
+          "sample_count": 2
+        },
+        "chain_meme_trader": {
+          "actual_interval_seconds": {
+            "p50": 1.0096323000002485,
+            "p95": 1.0769815800000286
+          },
+          "configured_interval_seconds": 1.0,
+          "duration_seconds": {
+            "p50": 0.020001449999881515,
+            "p95": 0.23234892000011764
+          },
+          "failures": 0,
+          "interval_sample_count": 29,
+          "items": 0,
+          "sample_count": 30
+        },
+        "chain_meme_v22_vault_shadow_enroll": {
+          "actual_interval_seconds": {
+            "p50": 15.008101699999997,
+            "p95": 15.009494270000072
+          },
+          "configured_interval_seconds": 15.0,
+          "duration_seconds": {
+            "p50": 0.001698800000212941,
+            "p95": 0.002147089999971286
+          },
+          "failures": 0,
+          "interval_sample_count": 2,
+          "items": 0,
+          "sample_count": 3
+        },
+        "chain_meme_wsol_reference": {
+          "actual_interval_seconds": {
+            "p50": 5.015184800000043,
+            "p95": 5.208888399999978
+          },
+          "configured_interval_seconds": 5.0,
+          "duration_seconds": {
+            "p50": 2.020000033553515e-05,
+            "p95": 0.5236222750002071
+          },
+          "failures": 0,
+          "interval_sample_count": 5,
+          "items": 0,
+          "sample_count": 6
+        },
+        "chain_universe_outcomes": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": 30.0,
+          "duration_seconds": {
+            "p50": 1.3757074999998622,
+            "p95": 1.3757074999998622
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 0,
+          "sample_count": 1
+        },
+        "cohort_passive_compute": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 0.8121552499999325,
+            "p95": 0.9097075549997271
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 0,
+          "sample_count": 2
+        },
+        "complementary_market_data": {
+          "actual_interval_seconds": {
+            "p50": 10.006771200000003,
+            "p95": 10.201507980000223
+          },
+          "configured_interval_seconds": 10.0,
+          "duration_seconds": {
+            "p50": 0.49339579999991656,
+            "p95": 0.9894440700000814
+          },
+          "failures": 0,
+          "interval_sample_count": 3,
+          "items": 0,
+          "sample_count": 4
+        },
+        "flat_compression_breakout_shadow": {
+          "actual_interval_seconds": {
+            "p50": 9.238681050000196,
+            "p95": 9.323145825000301
+          },
+          "configured_interval_seconds": 5.0,
+          "duration_seconds": {
+            "p50": 8.931577999999718,
+            "p95": 9.111793730000226
+          },
+          "failures": 0,
+          "interval_sample_count": 2,
+          "items": 0,
+          "sample_count": 3
+        },
+        "held_apply_exit": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 0.015213399999993271,
+            "p95": 0.02659379999995508
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 385,
+          "sample_count": 77
+        },
+        "held_fetch": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 0.6351936000000933,
+            "p95": 1.4356244799999331
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 593,
+          "sample_count": 77
+        },
+        "multichain_meme_data": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": 90.0,
+          "duration_seconds": {
+            "p50": 21.195750299999872,
+            "p95": 21.195750299999872
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 0,
+          "sample_count": 1
+        },
+        "observer_apply_exit": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 0.0005799999998998828,
+            "p95": 0.03451355499989856
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 1,
+          "sample_count": 8
+        },
+        "observer_fetch_with_wait": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 1.3999723499998709,
+            "p95": 2.0965423350001853
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 90,
+          "sample_count": 8
+        },
+        "pattern_token_compute": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": null,
+          "duration_seconds": {
+            "p50": 0.03238405000001876,
+            "p95": 0.0586859249998497
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 36,
+          "sample_count": 36
+        },
+        "pregrad_watch": {
+          "actual_interval_seconds": {
+            "p50": null,
+            "p95": null
+          },
+          "configured_interval_seconds": 30.0,
+          "duration_seconds": {
+            "p50": 1.2000000424450263e-06,
+            "p95": 1.2000000424450263e-06
+          },
+          "failures": 0,
+          "interval_sample_count": 0,
+          "items": 0,
+          "sample_count": 1
+        }
+      },
+      "held_by_chain": {
+        "robinhood": {
+          "tokens": 2,
+          "missing": 0,
+          "failures": 0,
+          "coverage_gaps": 1,
+          "age_p50_seconds": 0.719273,
+          "age_p95_seconds": 27.666405,
+          "age_max_seconds": 27.666405,
+          "receipt_age_max_seconds": 27.665392
+        },
+        "solana": {
+          "tokens": 11,
+          "missing": 0,
+          "failures": 7,
+          "coverage_gaps": 0,
+          "age_p50_seconds": 17.659746,
+          "age_p95_seconds": 17.659746,
+          "age_max_seconds": 17.659746,
+          "receipt_age_max_seconds": 17.65716
+        }
+      }
+    }
+  },
+  "identity_unchanged": {
+    "version": true,
+    "registration_sha256": true,
+    "additions_sha256": true,
+    "addition_count": true,
+    "activation": true,
+    "strategy_count": true
+  },
+  "after_observation": {
+    "at": "2026-09-07T09:22:26.378346Z",
+    "timing": {
+      "capital_quote": {
+        "actual_interval_seconds": {
+          "p50": 2.0093626000000313,
+          "p95": 2.126835389999883
+        },
+        "configured_interval_seconds": 2.0,
+        "duration_seconds": {
+          "p50": 8.199999683711212e-06,
+          "p95": 0.5445914599999468
+        },
+        "failures": 0,
+        "interval_sample_count": 74,
+        "items": 0,
+        "sample_count": 75
+      },
+      "chain_meme_account_snapshot": {
+        "actual_interval_seconds": {
+          "p50": null,
+          "p95": null
+        },
+        "configured_interval_seconds": null,
+        "duration_seconds": {
+          "p50": 0.21344550000003437,
+          "p95": 0.26479103999995457
+        },
+        "failures": 0,
+        "interval_sample_count": 0,
+        "items": 0,
+        "sample_count": 15
+      },
+      "chain_meme_authoritative_events": {
+        "actual_interval_seconds": {
+          "p50": 120.01116550000006,
+          "p95": 120.01116550000006
+        },
+        "configured_interval_seconds": 120.0,
+        "duration_seconds": {
+          "p50": 0.9292905500001325,
+          "p95": 1.1577505550002116
+        },
+        "failures": 0,
+        "interval_sample_count": 1,
+        "items": 0,
+        "sample_count": 2
+      },
+      "chain_meme_carried_market_marks": {
+        "actual_interval_seconds": {
+          "p50": 15.010213100000101,
+          "p95": 15.014704115000065
+        },
+        "configured_interval_seconds": 15.0,
+        "duration_seconds": {
+          "p50": 0.0002413000001979526,
+          "p95": 0.0005085999998755142
+        },
+        "failures": 0,
+        "interval_sample_count": 10,
+        "items": 0,
+        "sample_count": 11
+      },
+      "chain_meme_cohort_observer": {
+        "actual_interval_seconds": {
+          "p50": 10.01081824999983,
+          "p95": 10.278487545000052
+        },
+        "configured_interval_seconds": 10.0,
+        "duration_seconds": {
+          "p50": 0.18205650000027163,
+          "p95": 0.9422503000000688
+        },
+        "failures": 0,
+        "interval_sample_count": 14,
+        "items": 0,
+        "sample_count": 15
+      },
+      "chain_meme_entry_batch": {
+        "actual_interval_seconds": {
+          "p50": null,
+          "p95": null
+        },
+        "configured_interval_seconds": null,
+        "duration_seconds": {
+          "p50": 0.011075650000066162,
+          "p95": 0.024838820000013546
+        },
+        "failures": 0,
+        "interval_sample_count": 0,
+        "items": 114,
+        "sample_count": 120
+      },
+      "chain_meme_extra_official": {
+        "actual_interval_seconds": {
+          "p50": null,
+          "p95": null
+        },
+        "configured_interval_seconds": 240.0,
+        "duration_seconds": {
+          "p50": 1.6730468999999175,
+          "p95": 1.6730468999999175
+        },
+        "failures": 0,
+        "interval_sample_count": 0,
+        "items": 0,
+        "sample_count": 1
+      },
+      "chain_meme_market_marks": {
+        "actual_interval_seconds": {
+          "p50": 1.0259074500002043,
+          "p95": 1.584462614999961
+        },
+        "configured_interval_seconds": 1.0,
+        "duration_seconds": {
+          "p50": 0.7314588499998536,
+          "p95": 1.2796694799999384
+        },
+        "failures": 0,
+        "interval_sample_count": 120,
+        "items": 0,
+        "sample_count": 120
+      },
+      "chain_meme_native_launch": {
+        "actual_interval_seconds": {
+          "p50": 30.01361924999992,
+          "p95": 30.0209948400003
+        },
+        "configured_interval_seconds": 30.0,
+        "duration_seconds": {
+          "p50": 1.683681500000148,
+          "p95": 1.8598076799999033
+        },
+        "failures": 0,
+        "interval_sample_count": 4,
+        "items": 0,
+        "sample_count": 5
+      },
+      "chain_meme_pattern_narrative": {
+        "actual_interval_seconds": {
+          "p50": 60.005614700000024,
+          "p95": 60.00758569999975
+        },
+        "configured_interval_seconds": 60.0,
+        "duration_seconds": {
+          "p50": 0.6637640000003557,
+          "p95": 1.118695190000153
+        },
+        "failures": 0,
+        "interval_sample_count": 2,
+        "items": 0,
+        "sample_count": 3
+      },
+      "chain_meme_pattern_observer": {
+        "actual_interval_seconds": {
+          "p50": 15.009577199999967,
+          "p95": 15.013893240000108
+        },
+        "configured_interval_seconds": 15.0,
+        "duration_seconds": {
+          "p50": 3.164588950000052,
+          "p95": 4.056631255000184
+        },
+        "failures": 0,
+        "interval_sample_count": 9,
+        "items": 0,
+        "sample_count": 10
+      },
+      "chain_meme_pattern_participation": {
+        "actual_interval_seconds": {
+          "p50": 15.009245300000202,
+          "p95": 15.013348379999934
+        },
+        "configured_interval_seconds": 15.0,
+        "duration_seconds": {
+          "p50": 2.729256949999808,
+          "p95": 3.1479793549998245
+        },
+        "failures": 0,
+        "interval_sample_count": 9,
+        "items": 0,
+        "sample_count": 10
+      },
+      "chain_meme_pattern_pools": {
+        "actual_interval_seconds": {
+          "p50": 15.009252099999685,
+          "p95": 15.013390259999959
+        },
+        "configured_interval_seconds": 15.0,
+        "duration_seconds": {
+          "p50": 1.7804471500001,
+          "p95": 3.6598148649998605
+        },
+        "failures": 0,
+        "interval_sample_count": 9,
+        "items": 0,
+        "sample_count": 10
+      },
+      "chain_meme_trader": {
+        "actual_interval_seconds": {
+          "p50": 1.010999449999872,
+          "p95": 1.1590010049999135
+        },
+        "configured_interval_seconds": 1.0,
+        "duration_seconds": {
+          "p50": 0.02080030000001898,
+          "p95": 0.23477729000028377
+        },
+        "failures": 0,
+        "interval_sample_count": 120,
+        "items": 0,
+        "sample_count": 120
+      },
+      "chain_meme_v22_vault_shadow_enroll": {
+        "actual_interval_seconds": {
+          "p50": 15.010373400000162,
+          "p95": 15.014316109999845
+        },
+        "configured_interval_seconds": 15.0,
+        "duration_seconds": {
+          "p50": 0.0021087999998599116,
+          "p95": 0.002465150000034555
+        },
+        "failures": 0,
+        "interval_sample_count": 10,
+        "items": 0,
+        "sample_count": 11
+      },
+      "chain_meme_wsol_reference": {
+        "actual_interval_seconds": {
+          "p50": 5.012054000000262,
+          "p95": 5.28585286000025
+        },
+        "configured_interval_seconds": 5.0,
+        "duration_seconds": {
+          "p50": 2.184999993914971e-05,
+          "p95": 1.0437479000002423
+        },
+        "failures": 0,
+        "interval_sample_count": 29,
+        "items": 0,
+        "sample_count": 30
+      },
+      "chain_universe_outcomes": {
+        "actual_interval_seconds": {
+          "p50": 30.0126858000001,
+          "p95": 30.0150787399999
+        },
+        "configured_interval_seconds": 30.0,
+        "duration_seconds": {
+          "p50": 0.05799230000002353,
+          "p95": 1.2943731799999114
+        },
+        "failures": 0,
+        "interval_sample_count": 4,
+        "items": 0,
+        "sample_count": 5
+      },
+      "cohort_passive_compute": {
+        "actual_interval_seconds": {
+          "p50": null,
+          "p95": null
+        },
+        "configured_interval_seconds": null,
+        "duration_seconds": {
+          "p50": 0.18455325000013545,
+          "p95": 0.9458446299997603
+        },
+        "failures": 0,
+        "interval_sample_count": 0,
+        "items": 9,
+        "sample_count": 14
+      },
+      "complementary_market_data": {
+        "actual_interval_seconds": {
+          "p50": 10.011672299999645,
+          "p95": 10.102782429999843
+        },
+        "configured_interval_seconds": 10.0,
+        "duration_seconds": {
+          "p50": 0.17260659999988093,
+          "p95": 2.3909887250000565
+        },
+        "failures": 0,
+        "interval_sample_count": 15,
+        "items": 0,
+        "sample_count": 16
+      },
+      "flat_compression_breakout_shadow": {
+        "actual_interval_seconds": {
+          "p50": 8.937523849999707,
+          "p95": 9.689572150000231
+        },
+        "configured_interval_seconds": 5.0,
+        "duration_seconds": {
+          "p50": 8.71395339999981,
+          "p95": 9.404562160000113
+        },
+        "failures": 0,
+        "interval_sample_count": 16,
+        "items": 0,
+        "sample_count": 17
+      },
+      "held_apply_exit": {
+        "actual_interval_seconds": {
+          "p50": null,
+          "p95": null
+        },
+        "configured_interval_seconds": null,
+        "duration_seconds": {
+          "p50": 0.016170399999964502,
+          "p95": 0.029603494999878417
+        },
+        "failures": 0,
+        "interval_sample_count": 0,
+        "items": 1923,
+        "sample_count": 120
+      },
+      "held_fetch": {
+        "actual_interval_seconds": {
+          "p50": null,
+          "p95": null
+        },
+        "configured_interval_seconds": null,
+        "duration_seconds": {
+          "p50": 0.49466949999987264,
+          "p95": 1.3240628300000707
+        },
+        "failures": 0,
+        "interval_sample_count": 0,
+        "items": 2955,
+        "sample_count": 120
+      },
+      "multichain_meme_data": {
+        "actual_interval_seconds": {
+          "p50": 90.01125199999979,
+          "p95": 90.01125199999979
+        },
+        "configured_interval_seconds": 90.0,
+        "duration_seconds": {
+          "p50": 20.449791600000026,
+          "p95": 21.12115442999989
+        },
+        "failures": 0,
+        "interval_sample_count": 1,
+        "items": 0,
+        "sample_count": 2
+      },
+      "observer_apply_exit": {
+        "actual_interval_seconds": {
+          "p50": null,
+          "p95": null
+        },
+        "configured_interval_seconds": null,
+        "duration_seconds": {
+          "p50": 0.0006969999999455467,
+          "p95": 0.03301312999994938
+        },
+        "failures": 0,
+        "interval_sample_count": 0,
+        "items": 10,
+        "sample_count": 44
+      },
+      "observer_fetch_with_wait": {
+        "actual_interval_seconds": {
+          "p50": null,
+          "p95": null
+        },
+        "configured_interval_seconds": null,
+        "duration_seconds": {
+          "p50": 1.1763283499999488,
+          "p95": 1.8580150600001162
+        },
+        "failures": 0,
+        "interval_sample_count": 0,
+        "items": 510,
+        "sample_count": 44
+      },
+      "pattern_token_compute": {
+        "actual_interval_seconds": {
+          "p50": null,
+          "p95": null
+        },
+        "configured_interval_seconds": null,
+        "duration_seconds": {
+          "p50": 0.04789909999999509,
+          "p95": 0.10217738999983793
+        },
+        "failures": 0,
+        "interval_sample_count": 0,
+        "items": 238,
+        "sample_count": 120
+      },
+      "pregrad_watch": {
+        "actual_interval_seconds": {
+          "p50": 30.006073899999592,
+          "p95": 30.01931618000008
+        },
+        "configured_interval_seconds": 30.0,
+        "duration_seconds": {
+          "p50": 1.1134271500000068,
+          "p95": 2.3998027249999723
+        },
+        "failures": 0,
+        "interval_sample_count": 5,
+        "items": 0,
+        "sample_count": 6
+      }
+    },
+    "held_by_chain": {
+      "robinhood": {
+        "tokens": 2,
+        "missing": 0,
+        "failures": 0,
+        "coverage_gaps": 1,
+        "age_p50_seconds": 1.643779,
+        "age_p95_seconds": 54.923795,
+        "age_max_seconds": 54.923795,
+        "receipt_age_max_seconds": 54.923121
+      },
+      "solana": {
+        "tokens": 11,
+        "missing": 0,
+        "failures": 7,
+        "coverage_gaps": 0,
+        "age_p50_seconds": 70.938439,
+        "age_p95_seconds": 70.938439,
+        "age_max_seconds": 70.938439,
+        "receipt_age_max_seconds": 70.935868
+      }
+    },
+    "system": {
+      "runtime_status": "running",
+      "heartbeat_at": "2026-09-07T09:22:24.016992Z",
+      "heartbeat_age_seconds": 0.216284,
+      "refresh_seconds": 5,
+      "chain": "Solana / BSC / Robinhood",
+      "paper_only": true,
+      "live_locked": true,
+      "locked_by_config": true,
+      "live_adapter_status": "locked_by_config",
+      "latest_account_snapshot_at": "2026-09-07T09:22:18.964087Z",
+      "notional_usd": 20.0,
+      "slippage_bps": 400,
+      "buy_slippage_bps": 400,
+      "sell_slippage_bps": 400,
+      "extra_fee_usd": 0.0,
+      "min_pool_liquidity_usd": 1000.0,
+      "capital_model": "legacy_cash_limited",
+      "open_position_count": 92,
+      "unique_held_token_count": 13,
+      "pending_exit_quotes": 0,
+      "held_account_states": 0,
+      "held_account_healthy": 0,
+      "held_account_alerts": 0,
+      "held_account_latest_at": null,
+      "storage": {
+        "database_bytes": 18446016512,
+        "wal_bytes": 196346872,
+        "free_bytes": 45972480000,
+        "total_bytes": 214747312128
+      }
+    },
+    "cohort_sampling": {
+      "dropped_batches": 309,
+      "dropped_quotes": 2464
+    },
+    "new_trades": [
+      {
+        "id": 479140,
+        "created_at": "2026-09-07T09:20:41.965661Z",
+        "side": "SELL",
+        "reason": "market_mark_max_hold:dex_mark_paper_fill"
+      },
+      {
+        "id": 479141,
+        "created_at": "2026-09-07T09:22:11.132255Z",
+        "side": "BUY",
+        "reason": "pattern_next_observation:dex_mark_paper_fill"
+      }
+    ],
+    "max_snapshot": 1511312
+  }
+}
