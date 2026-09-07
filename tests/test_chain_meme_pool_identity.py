@@ -153,10 +153,27 @@ def test_unknown_entry_pair_never_borrows_current_token_pool_identity(tmp_path):
     store.close()
 
 
-def test_entry_pool_structural_missing_over_sixty_seconds_writes_off(tmp_path):
+@pytest.mark.parametrize("pending_exit", [False, True])
+def test_entry_pool_structural_missing_over_sixty_seconds_keeps_position_open(tmp_path, pending_exit):
     store = Store(tmp_path / "entry-pool-missing.sqlite3", initial_cash_usd=1000)
     version, policy, token, cohort_id = _seed_position(store, entry_pair="pair-A")
-    first = utcnow() - timedelta(seconds=62)
+    first = utcnow()
+    pending_mark_id = None
+    if pending_exit:
+        triggered_at = first - timedelta(seconds=1)
+        store.upsert_chain_meme_trader_market_mark(
+            token, _snapshot(token, pair="pair-A", price=2.0, liquidity=1000.0, at=triggered_at),
+            recorded_at=triggered_at,
+        )
+        store.evaluate_chain_meme_trader_market_marks(
+            definition_version=version, now=triggered_at,
+        )
+        pending_mark_id = store.db.execute(
+            "SELECT pending_mark_id FROM chain_meme_trader_positions WHERE "
+            "definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+            (version, policy["arm_id"], cohort_id),
+        ).fetchone()[0]
+        assert pending_mark_id is not None
     store.record_chain_meme_trader_pool_mark_miss(
         token_id=token.token_id, pair_address="pair-A", chain=token.chain,
         address=token.address, recorded_at=first,
@@ -168,14 +185,18 @@ def test_entry_pool_structural_missing_over_sixty_seconds_writes_off(tmp_path):
     )
     assert store.evaluate_chain_meme_trader_market_marks(
         definition_version=version, now=second,
-    ) == 1
+    ) == 0
     row = store.db.execute(
-        "SELECT status,close_reason FROM chain_meme_trader_positions WHERE "
+        "SELECT status,pending_mark_id,realized_pnl_usd,allocated_cost_usd FROM chain_meme_trader_positions WHERE "
         "definition_version=? AND arm_id=? AND shadow_cohort_id=?",
         (version, policy["arm_id"], cohort_id),
     ).fetchone()
-    assert row["status"] == "written_off"
-    assert row["close_reason"] == "dex_pair_missing_over_60_seconds_writeoff"
+    assert tuple(row) == ("open", pending_mark_id, 0.0, 0.0)
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_trades WHERE definition_version=? "
+        "AND arm_id=? AND shadow_cohort_id=? AND side IN ('SELL','WRITEOFF')",
+        (version, policy["arm_id"], cohort_id),
+    ).fetchone()[0] == 0
     store.close()
 
 
@@ -223,7 +244,17 @@ def test_network_failure_after_structural_misses_does_not_write_off(tmp_path):
     )
     assert store.evaluate_chain_meme_trader_market_marks(
         definition_version=version, now=confirmed,
-    ) == 1
+    ) == 0
+    assert store.db.execute(
+        "SELECT status FROM chain_meme_trader_positions WHERE "
+        "definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+        (version, policy["arm_id"], cohort_id),
+    ).fetchone()[0] == "open"
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM chain_meme_trader_trades WHERE definition_version=? "
+        "AND arm_id=? AND shadow_cohort_id=? AND side IN ('SELL','WRITEOFF')",
+        (version, policy["arm_id"], cohort_id),
+    ).fetchone()[0] == 0
     store.close()
 
 

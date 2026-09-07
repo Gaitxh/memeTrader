@@ -10,6 +10,7 @@ import time
 from memetrader.collectors import DexScreenerClient, HttpClient
 from memetrader.models import TokenCandidate, TokenSnapshot, iso, utcnow
 from memetrader.runtime import Runtime, initial_config
+from memetrader.runtime_timing import RuntimeTiming
 
 
 def make_runtime(tmp_path):
@@ -115,6 +116,30 @@ def target_for(token: TokenCandidate, pool: str):
     }
 
 
+def test_held_cooldown_releases_priority_without_fake_market_result(tmp_path):
+    async def scenario():
+        runtime = make_runtime(tmp_path)
+        runtime.chain_meme_trader_only = True
+        runtime.runtime_timing = RuntimeTiming()
+        token = TokenCandidate("solana", "A" * 32, "Held cooldown", "HELD")
+        target = target_for(token, "original-pool")
+        runtime.store.chain_meme_trader_market_mark_targets = lambda **kwargs: [target]
+        runtime._dex_quote_backoff_until = asyncio.get_running_loop().time() + 120
+
+        def no_result(*args, **kwargs):
+            raise AssertionError("local deferral must not write a market result")
+
+        runtime.store.apply_chain_meme_trader_market_mark_batch = no_result
+        await asyncio.wait_for(runtime.chain_meme_market_marks_once(), timeout=1)
+        assert runtime._chain_meme_active_idle().is_set()
+        assert runtime._pattern_held_tokens == {token.token_id}
+        assert (token.token_id, "original-pool") in runtime._market_pool_gaps
+        assert "held_fetch" not in runtime.runtime_timing.snapshot()["components"]
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
 def test_gecko_one_poll_uses_received_market_pair_without_dex_duplicate(tmp_path, monkeypatch):
     async def scenario():
         runtime = make_runtime(tmp_path)
@@ -161,6 +186,55 @@ def test_gecko_one_poll_uses_received_market_pair_without_dex_duplicate(tmp_path
         assert json.loads(shadow["raw_json"])["pair"]["pairAddress"] == "pool-gecko"
         assert shadow["trigger_observed_at"] == iso(observed)
         assert shadow["trigger_observed_at"] <= shadow["trigger_ingested_at"] <= shadow["trigger_recorded_at"]
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_gecko_new_pool_cohort_batch_keeps_all_pools_and_reports_overflow(tmp_path, monkeypatch):
+    async def scenario():
+        runtime = make_runtime(tmp_path)
+        observed = utcnow()
+        runtime._cohort_started_at = observed - timedelta(seconds=1)
+        tokens = []
+        for index, letter in enumerate("ABCDEFGHJKLM"):
+            token = TokenCandidate("solana", letter * 32, "New pool", "NEW")
+            token.raw = {"market_pair": pair_payload(
+                token, f"pool-{index}", provider="geckoterminal", observed=observed,
+            )}
+            tokens.append(token)
+        sibling = TokenCandidate("solana", tokens[0].address, "Sibling pool", "NEW")
+        sibling.raw = {"market_pair": pair_payload(
+            sibling, "sibling-pool", provider="geckoterminal", observed=observed,
+        )}
+        tokens.append(sibling)
+
+        class Gecko:
+            def __init__(self, http, network):
+                pass
+
+            async def poll(self):
+                return tokens
+
+        monkeypatch.setattr("memetrader.runtime.GeckoNewPoolsCollector", Gecko)
+        runtime.autonomous_search.resolve_token_context_trigger = lambda *args, **kwargs: None
+        await runtime._poll_gecko_network("solana")
+        assert len(runtime._cohort_batches) == 1
+        batch = runtime._cohort_batches[0][1]
+        assert len(batch) == len(tokens) == 13
+        assert len({(token.token_id, snapshot.raw["pair"]["pairAddress"])
+                    for token, snapshot in batch}) == 13
+        assert all(snapshot.observed_at == observed for _, snapshot in batch)
+        for _ in range(8):
+            runtime._remember_pattern_quotes({"one": batch[0]})
+        assert len(runtime._cohort_batches) == 8
+        assert runtime._cohort_dropped_batches == 1
+        assert runtime._cohort_dropped_quotes == 13
+        await runtime.chain_meme_cohort_observer_once()
+        saved = runtime.store.get_kv(
+            f"passive-cohort:{runtime.store.CHAIN_MEME_TRADER_ACTIVE_VERSION}", {})
+        assert saved["dropped_batches"] == 1
+        assert saved["dropped_quotes"] == 13
         await runtime.close()
 
     asyncio.run(scenario())

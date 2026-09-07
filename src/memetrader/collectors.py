@@ -1722,7 +1722,7 @@ class GeckoNewPoolsCollector:
         )
         payload = response.json()
         from .market_api import normalize_gecko_pool
-        received_at = utcnow()
+        received_at = response.extensions.get("observed_at") or utcnow()
         included = {item.get("id"): item for item in payload.get("included", [])}
         out: list[TokenCandidate] = []
         for pool in payload.get("data", [])[:40]:

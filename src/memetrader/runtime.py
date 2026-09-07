@@ -1352,6 +1352,8 @@ class Runtime:
                     self._cohort_started_at = utcnow()
                     self._cohort_state = self.store.get_kv(
                         f"passive-cohort:{self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION}", {})
+                    self._cohort_dropped_batches = int(self._cohort_state.get("dropped_batches", 0))
+                    self._cohort_dropped_quotes = int(self._cohort_state.get("dropped_quotes", 0))
                     # Restart can resume frozen episodes, but never replays missed quotes.
                     self._cohort_started_at = parse_time(self._cohort_state.get("activated_at") or self._cohort_started_at)
                     self._chain_outcome_version = f"{self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION}/outcomes-v1"
@@ -1565,13 +1567,15 @@ class Runtime:
         *,
         fresh: bool = False,
         high_priority: bool = False,
-    ) -> dict[str, tuple[TokenCandidate, TokenSnapshot]]:
-        """Serialize Dex quote batches and back off across lanes after transport failure."""
+    ) -> dict[str, tuple[TokenCandidate, TokenSnapshot]] | None:
+        """Share Dex cooldowns; None defers held work without claiming an HTTP result."""
         if not high_priority:
             await self._chain_meme_active_idle().wait()
         loop = asyncio.get_running_loop()
         wait = self._dex_quote_backoff_until - loop.time()
         if wait > 0:
+            if high_priority:
+                return None
             await asyncio.sleep(wait)
         while True:
             await self._dex_quote_lock.acquire()
@@ -1582,6 +1586,8 @@ class Runtime:
             if wait <= 0:
                 break
             self._dex_quote_lock.release()
+            if high_priority:
+                return None
             await asyncio.sleep(wait)
         try:
             try:
@@ -1589,6 +1595,15 @@ class Runtime:
                     quoted = await self.dex.batch_quote_fresh(chain, addresses)
                 else:
                     quoted = await self.dex.batch_quote(chain, addresses)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 429:
+                    delay = CoinGeckoDemoPoolClient._retry_after_seconds(
+                        exc.response.headers.get("Retry-After"), utcnow(),
+                    )
+                    self._dex_quote_backoff_until = max(
+                        self._dex_quote_backoff_until, loop.time() + delay,
+                    )
+                raise
             except httpx.TransportError as exc:
                 self._dex_quote_failure_streak += 1
                 base = min(
@@ -1600,10 +1615,14 @@ class Runtime:
                     f"dexscreener:{type(exc).__name__}:{self._dex_quote_failure_streak}".encode()
                 ).digest()
                 delay = base * (1.0 + int.from_bytes(digest[:2], "big") / 65535.0 * 0.2)
-                self._dex_quote_backoff_until = loop.time() + delay
+                self._dex_quote_backoff_until = max(
+                    self._dex_quote_backoff_until, loop.time() + delay,
+                )
                 raise
-            self._dex_quote_failure_streak = 0
-            self._dex_quote_backoff_until = 0.0
+            # A peer request may have started cooling down while this one was in flight.
+            if self._dex_quote_backoff_until <= loop.time():
+                self._dex_quote_failure_streak = 0
+                self._dex_quote_backoff_until = 0.0
             if getattr(self, "chain_meme_trader_only", False):
                 self._remember_pattern_quotes(quoted)
             return quoted
@@ -2519,6 +2538,7 @@ class Runtime:
                         )
             held_outcomes = []
             held_token_ids: set[str] = set()
+            new_pool_quotes = {}
             duplicates = 0
             candidate_chains = (
                 {"solana"} if self.chain_meme_trader_only else
@@ -2546,7 +2566,8 @@ class Runtime:
                             round_id=round_id, snapshot_id=snapshot_id,
                             metadata={"provider": "geckoterminal", "chain": token.chain},
                         )
-                        self._remember_pattern_quotes({token.token_id: (token, snapshot)})
+                        # One response is one passive batch; snapshot keys retain sibling pools.
+                        new_pool_quotes[snapshot_id] = (token, snapshot)
                         pair_address = canonical_token_address(
                             token.chain, str(pair.get("pairAddress") or ""),
                         )
@@ -2584,6 +2605,7 @@ class Runtime:
                         snapshot_observed_at=snapshot.observed_at,
                         snapshot_id=snapshot_id,
                     )
+            self._remember_pattern_quotes(new_pool_quotes)
             if held_outcomes:
                 received = utcnow()
                 self.store.apply_chain_meme_trader_market_mark_batch(
@@ -6774,6 +6796,14 @@ class Runtime:
                     recorded_at=utcnow(),
                 )
                 return 0
+            if quoted is None:
+                # A local cooldown is neither an empty quote nor a provider failure.
+                for item in chunk:
+                    for pair_address in str(item.get("entry_pair_addresses") or "").split(","):
+                        if pair_address:
+                            self._queue_market_pool_gap(item, pair_address,
+                                evaluate_versions or ([evaluate_version] if evaluate_version else []))
+                return 0
             received_at = utcnow()
             apply_started = asyncio.get_running_loop().time()
             if timing is not None:
@@ -6995,6 +7025,11 @@ class Runtime:
             if not hasattr(self, "_cohort_batches"):
                 self._cohort_batches = deque(maxlen=8)
             # References only; the low-priority worker does parsing and calculation.
+            if len(self._cohort_batches) == self._cohort_batches.maxlen:
+                self._cohort_dropped_batches = getattr(self, "_cohort_dropped_batches", 0) + 1
+                self._cohort_dropped_quotes = (
+                    getattr(self, "_cohort_dropped_quotes", 0) + len(self._cohort_batches[0][1])
+                )
             self._cohort_batches.append((current, list(quoted.values())[:200]))
         held = getattr(self, "_pattern_held_tokens", set())
         watch, occupied = {}, {}
@@ -7131,6 +7166,8 @@ class Runtime:
                 await asyncio.sleep(0)
             await asyncio.sleep(0)
         state["activated_at"] = iso(self._cohort_started_at)
+        state["dropped_batches"] = getattr(self, "_cohort_dropped_batches", 0)
+        state["dropped_quotes"] = getattr(self, "_cohort_dropped_quotes", 0)
         self._cohort_state, self._cohort_pending = state, pending
         # Round-robin pending identities; bounded work must not starve the tail.
         for identity in dispatched:

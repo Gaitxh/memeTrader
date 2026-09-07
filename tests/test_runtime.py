@@ -1261,6 +1261,73 @@ def test_dex_quote_transport_backoff_is_shared_across_waiting_lanes(tmp_path):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("status", [429, 503])
+def test_dex_status_backoff_survives_inflight_success_without_holding_slot(status):
+    async def scenario():
+        runtime = Runtime.__new__(Runtime)
+        runtime._chain_meme_active_idle_event = asyncio.Event()
+        runtime._chain_meme_active_idle_event.set()
+        runtime._dex_quote_lock = asyncio.Semaphore(8)
+        runtime._dex_quote_backoff_until = 0.0
+        runtime._dex_quote_failure_streak = 0
+        success_started, release_success = asyncio.Event(), asyncio.Event()
+        calls = []
+
+        async def batch_quote(chain, addresses):
+            calls.append(chain)
+            if chain == "solana":
+                success_started.set()
+                await release_success.wait()
+                return {}
+            response = httpx.Response(
+                status, headers={"Retry-After": "120"},
+                request=httpx.Request("GET", "https://api.dexscreener.com"),
+            )
+            response.raise_for_status()
+
+        runtime.dex = type("Dex", (), {"batch_quote": staticmethod(batch_quote)})()
+        success = asyncio.create_task(runtime._dex_batch_quote("solana", ["A"]))
+        await success_started.wait()
+        started = asyncio.get_running_loop().time()
+        with pytest.raises(httpx.HTTPStatusError):
+            await runtime._dex_batch_quote("bsc", ["B"])
+        deadline = runtime._dex_quote_backoff_until
+        assert (deadline >= started + 120) == (status == 429)
+        release_success.set()
+        assert await success == {}
+        assert runtime._dex_quote_backoff_until == deadline
+        if status == 429:
+            assert await runtime._dex_batch_quote("robinhood", ["C"], high_priority=True) is None
+            waiting = asyncio.create_task(runtime._dex_batch_quote("robinhood", ["C"]))
+            await asyncio.sleep(0)
+            assert calls == ["solana", "bsc"]
+            for _ in range(8):
+                await asyncio.wait_for(runtime._dex_quote_lock.acquire(), timeout=0.1)
+            for _ in range(8):
+                runtime._dex_quote_lock.release()
+            waiting.cancel()
+            await asyncio.gather(waiting, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+def test_held_quote_waiting_for_slot_defers_when_peer_starts_cooldown():
+    async def scenario():
+        runtime = Runtime.__new__(Runtime)
+        runtime._dex_quote_lock = asyncio.Semaphore(1)
+        runtime._dex_quote_backoff_until = 0.0
+        await runtime._dex_quote_lock.acquire()
+        task = asyncio.create_task(runtime._dex_batch_quote("solana", ["A"], high_priority=True))
+        await asyncio.sleep(0)
+        runtime._dex_quote_backoff_until = asyncio.get_running_loop().time() + 120
+        runtime._dex_quote_lock.release()
+        assert await asyncio.wait_for(task, timeout=0.1) is None
+        await asyncio.wait_for(runtime._dex_quote_lock.acquire(), timeout=0.1)
+        runtime._dex_quote_lock.release()
+
+    asyncio.run(scenario())
+
+
 def test_dex_quote_backoff_does_not_hold_batch_semaphore_slot():
     async def scenario():
         runtime = Runtime.__new__(Runtime)

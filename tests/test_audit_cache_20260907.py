@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import pytest
 
-from memetrader.collectors import DexScreenerClient, HttpClient
+from memetrader.collectors import DexScreenerClient, GeckoNewPoolsCollector, HttpClient
 
 
 def _pair(chain):
@@ -59,6 +59,53 @@ def test_cached_dex_payload_preserves_first_observation(monkeypatch, chain, entr
             assert first.ingested_at is None and second.ingested_at is None
             assert second.observed_at == first.observed_at
             assert second.observed_at < wall[0]
+        finally:
+            await http.close()
+
+    asyncio.run(scenario())
+
+
+def test_cached_gecko_new_pool_preserves_first_market_observation(monkeypatch):
+    async def scenario():
+        wall = [datetime(2026, 9, 7, tzinfo=timezone.utc)]
+        monkeypatch.setattr("memetrader.collectors.utcnow", lambda: wall[0])
+        calls = []
+        payload = {
+            "data": [{
+                "id": "solana_CachePool", "type": "pool",
+                "attributes": {"address": "CachePool", "base_token_price_usd": "2",
+                               "reserve_in_usd": "10000"},
+                "relationships": {
+                    "base_token": {"data": {"type": "token", "id": "solana_Base"}},
+                    "quote_token": {"data": {"type": "token", "id": "solana_Quote"}},
+                    "dex": {"data": {"type": "dex", "id": "pumpswap"}},
+                },
+            }],
+            "included": [
+                {"id": "solana_Base", "type": "token",
+                 "attributes": {"address": "Base", "name": "Cache receipt", "symbol": "CACHE"}},
+                {"id": "solana_Quote", "type": "token",
+                 "attributes": {"address": "Quote", "name": "Quote", "symbol": "Q"}},
+            ],
+        }
+
+        def handler(request):
+            calls.append(request.url)
+            return httpx.Response(200, json=payload)
+
+        http = HttpClient(transport=httpx.MockTransport(handler), min_host_interval=0)
+        collector = GeckoNewPoolsCollector(http, "solana")
+        try:
+            first = (await collector.poll())[0]
+            wall[0] += timedelta(seconds=1)
+            cached = (await collector.poll())[0]
+            assert len(calls) == 1  # Exercise the real HttpClient TTL cache.
+            assert first.token_id == cached.token_id == "solana:Base"
+            first_pair, cached_pair = first.raw["market_pair"], cached.raw["market_pair"]
+            assert first_pair["priceUsd"] == cached_pair["priceUsd"] == "2"
+            assert first_pair["liquidity"] == cached_pair["liquidity"] == {"usd": 10000.0}
+            assert first_pair["observedAt"] == "2026-09-07T00:00:00Z"
+            assert cached_pair["observedAt"] == first_pair["observedAt"]
         finally:
             await http.close()
 

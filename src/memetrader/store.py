@@ -32779,6 +32779,10 @@ class Store:
             {},
         )
         if str(mark["action"]) == "RUG_EXIT":
+            evidence = self._json_object(mark["trigger_evidence_json"])
+            if not evidence.get("terminal_dust_pool"):
+                # Missing data, including a legacy pending intent, cannot prove a writeoff.
+                return 0
             remaining_cost = max(
                 0.0,
                 float(position["stake_usd"])
@@ -32788,12 +32792,7 @@ class Store:
                 float(position["realized_proceeds_usd"] or 0.0)
                 - float(position["stake_usd"])
             )
-            evidence = self._json_object(mark["trigger_evidence_json"])
-            reason = (
-                "dex_pool_liquidity_below_configured_floor_writeoff"
-                if "terminal_dust_pool" in evidence
-                else "dex_pair_missing_over_60_seconds_writeoff"
-            )
+            reason = "dex_pool_liquidity_below_configured_floor_writeoff"
             dust = evidence.get("terminal_dust_pool") or {}
             self._settle_chain_meme_staged_probe_shadow(
                 position=position, policy=policy,
@@ -33514,27 +33513,7 @@ class Store:
                 trigger_evidence: dict[str, Any] = {}
                 sell_amount = int(position["amount_raw"] or 0)
                 mark_status = str(position["mark_status"] or "UNKNOWN")
-                misses = int(position["consecutive_misses"] or 0)
                 mark_recorded_at = position["mark_recorded_at"]
-                missing_seconds = (
-                    (current - parse_time(position["first_missing_at"])).total_seconds()
-                    if position["first_missing_at"] is not None else 0.0
-                )
-                last_attempt_age = (
-                    (current - parse_time(position["mark_last_attempt_at"])).total_seconds()
-                    if position["mark_last_attempt_at"] is not None else None
-                )
-                terminal_missing = bool(
-                    mark_status == "MISSING"
-                    and misses >= 2
-                    and missing_seconds > 60.0
-                    and str(position["mark_failure_kind"] or "") in {
-                        "NO_VISIBLE_POOL_OR_PRICE",
-                        "NO_VISIBLE_ENTRY_POOL_OR_PRICE",
-                    }
-                    and last_attempt_age is not None
-                    and 0.0 <= last_attempt_age <= 15.0
-                )
                 dust_mark_at = (
                     parse_time(mark_recorded_at)
                     if mark_recorded_at is not None else None
@@ -33584,26 +33563,6 @@ class Store:
                         created += self._settle_chain_meme_trader_market_exit(
                             version=version, mark_id=pending_id,
                             completed_at=iso(dust_mark_at), definition=definition,
-                        )
-                    elif terminal_missing:
-                        pending_evidence = self._json_object(
-                            position["pending_trigger_evidence_json"]
-                        )
-                        pending_evidence["terminal_missing"] = {
-                            "first_missing_at": position["first_missing_at"],
-                            "confirmed_at": iso(current),
-                            "consecutive_misses": misses,
-                            "failure_kind": str(position["mark_failure_kind"] or ""),
-                        }
-                        self.db.execute(
-                            "UPDATE chain_meme_trader_marks SET action='RUG_EXIT',"
-                            "reason=reason||':dex_pair_missing_over_60_seconds',"
-                            "trigger_evidence_json=? WHERE id=?",
-                            (self._json(pending_evidence), pending_id),
-                        )
-                        created += self._settle_chain_meme_trader_market_exit(
-                            version=version, mark_id=pending_id,
-                            completed_at=iso(current), definition=definition,
                         )
                     elif (
                         self._json_object(position["pending_trigger_evidence_json"]).get("required_fill")
@@ -33705,16 +33664,6 @@ class Store:
                             "liquidity_usd": float(position["mark_liquidity_usd"]),
                             "observed_at": iso(dust_observed_at),
                             "recorded_at": iso(dust_mark_at),
-                        }
-                    }
-                elif terminal_missing:
-                    action, reason = "RUG_EXIT", "dex_pair_missing_over_60_seconds"
-                    trigger_evidence = {
-                        "terminal_missing": {
-                            "first_missing_at": position["first_missing_at"],
-                            "confirmed_at": iso(current),
-                            "consecutive_misses": misses,
-                            "failure_kind": str(position["mark_failure_kind"] or ""),
                         }
                     }
                 elif elapsed >= float(policy.get("max_hold_minutes") or 240.0):

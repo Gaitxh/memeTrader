@@ -1,6 +1,8 @@
 # memeTrader 长期需求台账
 
-最后核验：2026-09-03（Asia/Shanghai）
+> 当前运行口径（2026-09-07）：下表保留历史需求及当时状态，`ACTIVE`、`PROMOTE_NOW` 或未完成项不自动构成当前执行授权。以 `CURRENT_OBJECTIVE_AND_PLAN.md` 顶部、当前代码与运行事实为准。Paper采用独立1000U资金期，现金不足限制新买入；普通执行默认双侧4%、额外0U、原池1000USD，实际值以当前execution activation为准。两小时自动复盘暂停、Live关闭，最终重新初始化授权已使用。下表无现金限制、两小时ACTIVE及原池1USD等均为历史口径。
+
+历史台账最后核验：2026-09-03（Asia/Shanghai）
 本轮实现前基线：`main` / `121d9192e898bb8f88cf84a69cd4fceceb9aafcd` / Paper / `live.enabled=false`；发布后 SHA 以 Git 为准。
 
 本文件是长期任务的逐项台账，不是某次发布的完成声明。运行事实仍以 `AGENTS.md`、当前代码、忽略的本机 `config.json`、当前 SQLite、实时 API、进程与端口检查为准。`CONTINUOUS` 表示工程链路存在但研究或运行验证必须持续，不能改成 `DONE`。
