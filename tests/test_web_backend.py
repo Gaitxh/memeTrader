@@ -658,7 +658,7 @@ def test_strategy_universe_refreshes_for_additive_strategy_versions(tmp_path: Pa
     assert retired_universe["summary"]["paused_entry_accounts"] == 1
     assert retired_universe["families"][-1]["default_visible"] is False
     paused=next(f for f in retired_universe["families"] if "broad_mature_continuity_control_v1" in f["active_arm_ids"])
-    assert paused["default_visible"] is True and paused["realtime_state"] == "PAUSED_NEW_ENTRY"
+    assert paused["default_visible"] is False and paused["realtime_state"] == "PAUSED_NEW_ENTRY"
     assert len(ChainWebData(config_path).state(compact=True)["strategies"]) == 128
     assert appended_live["account"]["capital_neutral_total_pnl_usd"] == 0.0
     assert appended_live["account"]["account_return_fraction"] == 0.0

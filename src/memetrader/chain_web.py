@@ -3212,7 +3212,7 @@ class ChainWebData:
             policy = next((lifecycle_by_arm[a] for a in family.get("active_arm_ids", [])
                            if a in lifecycle_by_arm), {})
             lifecycle = policy.get("account_lifecycle")
-            family["default_visible"] = lifecycle != "RETIRED_DUPLICATE"
+            family["default_visible"] = lifecycle not in {"RETIRED_DUPLICATE", "PAUSED_NEW_ENTRY"}
             if lifecycle:
                 family.update(account_lifecycle=lifecycle, realtime_state=lifecycle,
                               forward_enabled=False,
@@ -3228,7 +3228,7 @@ class ChainWebData:
                     report.get("behavior_families", [])
                 ),
                 "behavior_contract_families": len(families),
-                "retired_duplicate_accounts": sum(not f["default_visible"] for f in families),
+                "retired_duplicate_accounts": sum(f.get("account_lifecycle") == "RETIRED_DUPLICATE" for f in families),
                 "paused_entry_accounts": sum(f.get("account_lifecycle") == "PAUSED_NEW_ENTRY" for f in families),
                 "active_forward_families": sum(
                     family["realtime_state"] == "ACTIVE_FORWARD" for family in families
