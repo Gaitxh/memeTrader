@@ -2,6 +2,18 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260908-inventory-cost-space-research",
+      "recorded_at": "2026-09-07T18:50:15Z",
+      "deployed_at": "2026-09-07T18:44:56.378434Z",
+      "title": "双边数量与成本空间三项独立前向实验、发现并发提速",
+      "problem": "现有收益受成本、尾损和复制Token样本影响，双边数量尚未用于策略；Dex REST发现等待Gecko完成。",
+      "change": "新增5U/最多4仓的双边扩张突破、同入场收缩退出、恐慌修复成本空间三个策略；同原池数量投影和缺失边界；Dex/Gecko同轮并发，不增请求预算。",
+      "rationale": "使用已有实时字段探索真正不同的可证伪机制，保留成本、身份、严格前向与原池退出真实性；实现后修复新退出连续确认跨缺失和报价身份边界。",
+      "validation": "26个不同定向Python用例覆盖通过，包含次观测成交、同fill对照、成本核账、缺失恢复、旧策略退出回归与发现并发。原注册/激活及旧addition摘要不变；health/live/performance正常，新策略已有自然评估。",
+      "scope": "仅增量Paper。原资金期、旧账户和历史保留；没有重置、Live、额外网络采集或后台Agent。",
+      "status": "已部署，02:50新策略尚无BUY；研究不是已证Alpha。持仓短窗中位1.32秒，Solana个别原池过期仍存在。详见STRATEGY_EXPLORATION_20260908.md。"
+    },
+    {
       "id": "20260908-discovery-coverage-migration-throughput",
       "recorded_at": "2026-09-07T18:08:31.193594+00:00",
       "deployed_at": "2026-09-07T18:04:57.0584243Z",

@@ -3037,6 +3037,7 @@ class Store:
                     failure_kind TEXT NOT NULL DEFAULT '',
                     last_attempt_at TEXT,
                     last_success_at TEXT,
+                    inventory_json TEXT NOT NULL DEFAULT '{}',
                     PRIMARY KEY(token_id,pair_address)
                 );
                 CREATE INDEX IF NOT EXISTS chain_meme_trader_pool_marks_time_idx
@@ -6700,6 +6701,11 @@ class Store:
                         f"ALTER TABLE {table} "
                         "ADD COLUMN route_plan_json TEXT NOT NULL DEFAULT '[]'"
                     )
+            pool_mark_columns = {row["name"] for row in self.db.execute(
+                "PRAGMA table_info(chain_meme_trader_pool_marks)")}
+            if "inventory_json" not in pool_mark_columns:
+                self.db.execute("ALTER TABLE chain_meme_trader_pool_marks "
+                                "ADD COLUMN inventory_json TEXT NOT NULL DEFAULT '{}'")
             local_surface_columns = {
                 row["name"] for row in self.db.execute(
                     "PRAGMA table_info(chain_meme_trader_local_surface_quotes)"
@@ -26117,6 +26123,19 @@ class Store:
                     added += 1
         return added
 
+    def register_chain_meme_inventory_research(self) -> int:
+        from .inventory_research import inventory_policies
+        added = 0
+        with self._lock, self.db:
+            at = utcnow()
+            for policy in inventory_policies():
+                if self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?",
+                    (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, policy["arm_id"])).fetchone() is None:
+                    self.append_chain_meme_trader_policy(policy, activated_at=at)
+                    added += 1
+        return added
+
     def register_chain_meme_capital_experiments(self) -> int:
         """Append independently funded experiments at their actual deployment frontier."""
         added = 0
@@ -26766,6 +26785,7 @@ class Store:
             row = self.db.execute("SELECT *,id AS source_snapshot_id FROM token_snapshots WHERE id=?", (snapshot_id,)).fetchone()
             # A source receipt timestamp is not a future local storage timestamp.
             decision_at = max(current, parse_time(row["recorded_at"]))
+            from .inventory_research import inventory_fields
             history = []
             for source in self.db.execute(
                 "SELECT * FROM token_snapshots WHERE token_id=? AND observed_at>=? AND observed_at<=? "
@@ -26791,6 +26811,7 @@ class Store:
                     "pair_address": source_address, "price": source["price_usd"],
                     "liquidity": source["liquidity_usd"], "volume": source["volume_5m_usd"],
                     "upstream_provider": source_raw.get("upstream_provider"),
+                    "inventory": inventory_fields(source_pair),
                     "buys": source["buys_5m"], "sells": source["sells_5m"],
                     "volume_h1": volume_fields.get("h1"),
                     "buys_h1": hour_txns.get("buys"), "sells_h1": hour_txns.get("sells"),
@@ -27061,6 +27082,7 @@ class Store:
             chase_consumed = dict(previous_features.get("round2_chase_consumed") or {})
             prior_resource_opportunities = previous_features.get("resource_bound_opportunities") or {}
             resource_opportunities = dict(prior_resource_opportunities)
+            inventory_evidence = {}
             for policy in active:
                 if cohort_mode:
                     passed = policy["arm_id"] in accepted_cohort_signals
@@ -27090,6 +27112,11 @@ class Store:
                             "direction": "wave_reset_reentry", "min_gap_seconds": 600, "max_gap_seconds": 14400}}
                     passed, reason = capital_observation_signal(history, selected_policy,
                         decision_at=iso(decision_at), activated_at=policy["forward_started_at"], context=own_context)
+                elif policy.get("entry_filter", {}).get("contract") == "inventory-cost-space/20260908-v1":
+                    from .inventory_research import research_signal
+                    passed, reason, entry_evidence = research_signal(history, policy,
+                        decision_at=iso(decision_at), activated_at=policy["forward_started_at"])
+                    inventory_evidence[policy["arm_id"]] = entry_evidence
                 elif policy.get("entry_filter", {}).get("contract") == "resource-bound/20260907-v1":
                     from .resource_bound_research import resource_entry_signal
                     opportunity_key = policy["entry_filter"]["direction"] + ":" + pair_address
@@ -27121,6 +27148,13 @@ class Store:
                              and (not cohort_mode or previous_features.get("event_keys", {}).get(p["arm_id"]) == event_keys.get(p["arm_id"]) and p["arm_id"] in accepted_cohort_signals)
                              and (p.get("entry_family") not in {"event_reawakening", "surface_lifecycle_pipeline", "fast_stop_reclaim", "no_ca_event_flow_leader", "direct_lp_amount_specific_confirmed", "official_event_actual_flow", "mature_new_acceptance", "wallet_confirmed_broad_opportunity"} or
                                   previous_features.get("event_keys", {}).get(p["arm_id"]) == event_keys.get(p["arm_id"]))]
+            from .inventory_research import CONTRACT as INVENTORY_CONTRACT, post_signal_compatible
+            for p in active:
+                if p["arm_id"] in admitted_arms and p.get("entry_filter", {}).get("contract") == INVENTORY_CONTRACT:
+                    if not post_signal_compatible(history[-1],
+                            previous_features.get("inventory_research_evidence", {}).get(p["arm_id"], {}), p):
+                        admitted_arms.remove(p["arm_id"])
+                        outcomes[p["arm_id"]] = "inventory_post_surface_boundary"
             paired = {}
             paired_rejections = {}
             for p in active:
@@ -27158,6 +27192,8 @@ class Store:
                 )
             if resource_opportunities:
                 features["resource_bound_opportunities"] = resource_opportunities
+            if inventory_evidence:
+                features["inventory_research_evidence"] = inventory_evidence
             if cohort_mode:
                 features.update(cohort_signals=accepted_cohort_signals,
                     entry_signal_key="isolated_cohorts/v1", policy_entry_family="cohort_experiments")
@@ -31159,6 +31195,8 @@ class Store:
         mark_address = str(target_address or token.address)
         pair_key = canonical_token_address(mark_chain, pair_address)
         provider = snapshot.provider or token.source or "dex-market-mark"
+        from .inventory_research import inventory_fields
+        inventory_json = json.dumps(inventory_fields(pair), separators=(",", ":"))
         transaction = nullcontext() if _in_transaction else self.db
         with self._lock, transaction:
             self.db.execute(
@@ -31166,8 +31204,8 @@ class Store:
                 "token_id,pair_address,chain,address,provider,price_usd,liquidity_usd,"
                 "volume_5m_usd,buys_5m,sells_5m,observed_at,recorded_at,status,"
                 "consecutive_misses,sample_sequence,first_missing_at,failure_kind,"
-                "last_attempt_at,last_success_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'VISIBLE',0,1,NULL,'',?,?) "
+                "last_attempt_at,last_success_at,inventory_json) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'VISIBLE',0,1,NULL,'',?,?,?) "
                 "ON CONFLICT(token_id,pair_address) DO UPDATE SET "
                 "chain=excluded.chain,address=excluded.address,provider=excluded.provider,"
                 "price_usd=excluded.price_usd,liquidity_usd=excluded.liquidity_usd,"
@@ -31176,14 +31214,15 @@ class Store:
                 "recorded_at=excluded.recorded_at,status='VISIBLE',consecutive_misses=0,"
                 "sample_sequence=chain_meme_trader_pool_marks.sample_sequence+1,"
                 "first_missing_at=NULL,failure_kind='',last_attempt_at=excluded.last_attempt_at,"
-                "last_success_at=excluded.last_success_at "
+                "last_success_at=excluded.last_success_at,inventory_json=json_set(excluded.inventory_json,"
+                "'$.boundary_at',json_extract(chain_meme_trader_pool_marks.inventory_json,'$.boundary_at')) "
                 "WHERE chain_meme_trader_pool_marks.observed_at IS NULL "
                 "OR excluded.observed_at>chain_meme_trader_pool_marks.observed_at",
                 (
                     mark_token_id, pair_key, mark_chain, mark_address, provider,
                     float(snapshot.price_usd or 0.0), snapshot.liquidity_usd,
                     snapshot.volume_5m_usd, snapshot.buys_5m, snapshot.sells_5m,
-                    iso(snapshot.observed_at), iso(mark_at), iso(mark_at), iso(mark_at),
+                    iso(snapshot.observed_at), iso(mark_at), iso(mark_at), iso(mark_at), inventory_json,
                 ),
             )
 
@@ -31216,7 +31255,8 @@ class Store:
                 "first_missing_at=CASE WHEN chain_meme_trader_pool_marks.status='MISSING' "
                 "THEN COALESCE(chain_meme_trader_pool_marks.first_missing_at,excluded.first_missing_at) "
                 "ELSE excluded.first_missing_at END,failure_kind='NO_VISIBLE_ENTRY_POOL_OR_PRICE',"
-                "last_attempt_at=excluded.last_attempt_at",
+                "last_attempt_at=excluded.last_attempt_at,"
+                "inventory_json=json_object('boundary_at',excluded.last_attempt_at)",
                 (
                     token_id, pair_key, str(chain).lower(), address,
                     attempted_at, attempted_at, attempted_at, attempted_at,
@@ -31241,7 +31281,8 @@ class Store:
                 "status=CASE WHEN chain_meme_trader_pool_marks.status='MISSING' "
                 "THEN 'UNKNOWN' ELSE chain_meme_trader_pool_marks.status END,"
                 "consecutive_misses=0,first_missing_at=NULL,"
-                "last_attempt_at=excluded.last_attempt_at,failure_kind=excluded.failure_kind",
+                "last_attempt_at=excluded.last_attempt_at,failure_kind=excluded.failure_kind,"
+                "inventory_json=json_object('boundary_at',excluded.last_attempt_at)",
                 (
                     token_id, pair_key, str(chain).lower(), token_id.partition(":")[2],
                     attempted_at, attempted_at, attempted_at,
@@ -31815,7 +31856,8 @@ class Store:
         from .research_finalists import EXIT_KINDS, evaluate_finalist_exit
         from .research_round2 import EXIT_KINDS as ROUND2_EXIT_KINDS, evaluate_round2_exit
         from .resource_bound_research import EXIT_KIND as RESOURCE_EXIT_KIND, evaluate_resource_exit
-        l0_research_kinds = EXIT_KINDS | ROUND2_EXIT_KINDS | {RESOURCE_EXIT_KIND}
+        from .inventory_research import EXIT_KIND as INVENTORY_EXIT_KIND, evaluate_inventory_exit
+        l0_research_kinds = EXIT_KINDS | ROUND2_EXIT_KINDS | {RESOURCE_EXIT_KIND, INVENTORY_EXIT_KIND}
         if kind in {"l0_continuation_failure", "l0_profit_lock", "l0_loss_deterioration"} | l0_research_kinds:
             from .l0_experiments import evaluate_l0_continuation_failure, evaluate_l0_profit_lock
             price = position["mark_price_usd"]
@@ -31855,7 +31897,17 @@ class Store:
                 adapted["pair_address"] = canonical_token_address(str(token).partition(":")[0], str(pair))
                 frame.update(provider=position["mark_provider"], volume=position["mark_volume_5m_usd"],
                              buys=position["mark_buys_5m"], sells=position["mark_sells_5m"])
-                evaluator = (evaluate_resource_exit if kind == RESOURCE_EXIT_KIND else
+                if kind == INVENTORY_EXIT_KIND:
+                    frame["inventory"] = self._json_object(position["mark_inventory_json"])
+                    if "entry_inventory" not in state:
+                        from .inventory_research import inventory_fields
+                        entry_row = self.db.execute("SELECT raw_json FROM token_snapshots WHERE id=? AND token_id=?",
+                            (position["entry_snapshot_id"], token)).fetchone()
+                        entry_raw = self._json_object(entry_row[0]) if entry_row else {}
+                        state["entry_inventory"] = inventory_fields(entry_raw.get("pair") or {})
+                    frame["entry_inventory"] = state["entry_inventory"]
+                evaluator = (evaluate_inventory_exit if kind == INVENTORY_EXIT_KIND else
+                             evaluate_resource_exit if kind == RESOURCE_EXIT_KIND else
                              evaluate_round2_exit if kind in ROUND2_EXIT_KINDS else evaluate_finalist_exit)
             result = evaluator(adapted, frame, state, now=current, policy=policy["capital_exit_policy"])
         elif kind == "watched_wallet_distribution":
@@ -33544,6 +33596,7 @@ class Store:
                 "m.price_usd AS mark_price_usd,m.liquidity_usd AS mark_liquidity_usd,"
                 "m.volume_5m_usd AS mark_volume_5m_usd,m.buys_5m AS mark_buys_5m,"
                 "m.sells_5m AS mark_sells_5m,m.pair_address AS mark_pair_address,"
+                "m.inventory_json AS mark_inventory_json,"
                 "m.status AS mark_status,m.consecutive_misses,m.recorded_at AS mark_recorded_at,"
                 "m.observed_at AS mark_observed_at,m.provider AS mark_provider,"
                 "m.last_success_at AS mark_last_success_at,m.first_missing_at,"

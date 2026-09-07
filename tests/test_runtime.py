@@ -2267,6 +2267,19 @@ def test_chain_only_multichain_data_persists_shared_chain_token_snapshots(
 
         monkeypatch.setattr("memetrader.runtime.GeckoNewPoolsCollector", Gecko)
         runtime.dex = Dex()
+        # REST discovery must start while Gecko is still in flight. A serial
+        # implementation times out here instead of hiding a source dependency.
+        dex_started = asyncio.Event()
+        original_gecko = runtime._poll_gecko_network
+        original_dex = runtime.poll_dexscreener_discovery_once
+        async def gecko_waiting_for_dex(chain):
+            await asyncio.wait_for(dex_started.wait(), timeout=1)
+            await original_gecko(chain)
+        async def dex_starting(**kwargs):
+            dex_started.set()
+            await original_dex(**kwargs)
+        runtime._poll_gecko_network = gecko_waiting_for_dex
+        runtime.poll_dexscreener_discovery_once = dex_starting
         await runtime.poll_multichain_meme_data_once()
         await runtime.chain_meme_token_details_once()
 

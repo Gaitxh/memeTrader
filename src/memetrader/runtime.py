@@ -1350,6 +1350,7 @@ class Runtime:
                     self.store.register_chain_meme_research_finalists()
                     self.store.register_chain_meme_research_round2()
                     self.store.register_chain_meme_resource_bound_research()
+                    self.store.register_chain_meme_inventory_research()
                     self._cohort_started_at = utcnow()
                     self._cohort_state = self.store.get_kv(
                         f"passive-cohort:{self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION}", {})
@@ -3211,8 +3212,10 @@ class Runtime:
                 if str(chain).strip()
             )
         )
-        await asyncio.gather(*(self._poll_gecko_network(chain) for chain in chains))
-        await self.poll_dexscreener_discovery_once(discovery_only=self.chain_meme_trader_only)
+        await asyncio.gather(
+            *(self._poll_gecko_network(chain) for chain in chains),
+            self.poll_dexscreener_discovery_once(discovery_only=self.chain_meme_trader_only),
+        )
         self.store.heartbeat("multichain_meme_data")
 
     async def poll_external_once(self) -> None:
