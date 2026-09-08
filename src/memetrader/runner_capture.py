@@ -276,24 +276,31 @@ def runner_signal(
     if len(selected) == cfg["persistent_frames"]:
         first_at = _as_time(selected[0]["observed_at"])
         span = (observed - first_at).total_seconds() if first_at is not None else -1
-        valid = span >= cfg["persistent_minimum_span_seconds"]
+        valid = (span >= cfg["persistent_minimum_span_seconds"] and all(
+            0 < (_as_time(b["observed_at"]) - _as_time(a["observed_at"])).total_seconds()
+            <= cfg["maximum_gap_seconds"] for a, b in zip(selected, selected[1:])))
         prior_at = None
         prices: list[float] = []
         liquidities: list[float] = []
-        for frame in selected:
+        for frame in history:
             at, ing, rec = (_as_time(frame.get(k)) for k in
                             ("observed_at", "ingested_at", "recorded_at"))
+            if at is not None and first_at is not None and at < first_at:
+                continue
             fp, fl = _number(frame.get("price")), _number(frame.get("liquidity"))
             fb, fs = _number(frame.get("buys")), _number(frame.get("sells"))
             if (None in (at, ing, rec, fp, fl, fb, fs)
                     or not start <= at <= ing <= rec <= now
+                    or any(frame.get(k) != latest.get(k) for k in
+                           ("token_id", "pair_address", "upstream_provider"))
                     or fp <= 0 or fl < floor or min(fb, fs) < 0 or fb + fs < 3
                     or prior_at is not None and not 0 < (at - prior_at).total_seconds() <= cfg["maximum_gap_seconds"]):
                 valid = False
                 break
             prior_at = at
-            prices.append(float(fp))
-            liquidities.append(float(fl))
+            if frame in selected:
+                prices.append(float(fp))
+                liquidities.append(float(fl))
         if valid:
             progress = prices[-1] / prices[0] - 1.0
             efficiency = _path_efficiency(prices)
@@ -460,6 +467,10 @@ def evaluate_runner_exit(
             policy["warning_volatility_multiplier"] * local_vol),
     )
     warning = dict(new.get("warning") or {})
+    # Reclaim normally occurs outside the drawdown branch. Clear the old
+    # episode before a later fall can be misclassified as its second break.
+    if warning and price >= float(warning["peak_price"]) * policy["warning_peak_reclaim_ratio"]:
+        warning = {}
     if trigger is None and peak_return >= policy["minimum_peak_return"]:
         if drawdown <= -warning_threshold:
             prior_warning_low = float(warning.get("low_price", price)) if warning else None

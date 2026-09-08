@@ -177,6 +177,28 @@ def test_runner_exit_requires_failed_rebound_or_demand_break_after_drawdown():
     assert out[-1][1] == "runner_failed_rebound_second_break"
 
 
+def test_runner_peak_reclaim_clears_old_warning_before_new_drawdown():
+    out = exit_sequence([{"price": p, "value": p / 10}
+                         for p in (100, 97, 94, 91, 88, 84, 98, 83)])
+    assert out[5][2]["warning"] is not None
+    assert out[6][2]["warning"] is None
+    assert out[-1][0] != "SELL"
+    assert not out[-1][2]["warning"]["bounced"]
+
+
+@pytest.mark.parametrize("field,value", [("upstream_provider", "other"),
+                                        ("liquidity", 0.0)])
+def test_persistent_runner_does_not_skip_intervening_market_boundary(field, value):
+    start = utcnow()
+    history = [frame(start + timedelta(seconds=s), price=p, pc5=0, volume=4000)
+               for s, p in ((10, 1.0), (15, 1.02), (20, 1.04), (30, 1.09))]
+    history[1][field] = value
+    passed, reason, _ = runner_signal(history, policy(),
+        decision_at=history[-1]["recorded_at"], activated_at=start)
+    assert not passed
+    assert reason == "runner_wait_conditions_not_met"
+
+
 def runner_quote(token, pair, created, at, *, price=1.0):
     buys, sells, volume = 60, 40, 12_000.0
     return TokenSnapshot(
