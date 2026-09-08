@@ -2,6 +2,18 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260908-early-impulse-same-fill-three-exits",
+      "recorded_at": "2026-09-08T07:01:07.164317+00:00",
+      "deployed_at": "2026-09-08T06:57:33.703927Z",
+      "title": "早期上涨机会与退出风险拆分：三组匹配Paper实验",
+      "problem": "六小时存活标签会遗漏先大涨后崩跌的交易机会；现有Runner有明显观察高点回吐。",
+      "change": "独立复算机会富集并更正激活时点造成的重叠误差；新增同入口5U/max4的15m对照、60m追踪、10m续持检查三臂。",
+      "rationale": "分别验证机会筛选和退出机制；复用现有实时帧与执行，不把未来MFE作为入场依据。",
+      "validation": "33个不同定向测试最终通过（测试表名修正后仅重跑失败用例）；14:59验收三臂同前沿注册和首组自然同fill 3仓，旧277策略/20规则激活/1资金激活摘要不变；API正常、Live锁定。",
+      "scope": "新增独立Paper策略；未重置资金/覆盖旧合同/增加采集请求；自然退出与Alpha尚未验证。",
+      "report": "docs/PROJECT_CONTEXT/EARLY_IMPULSE_PAPER_20260908.md"
+    },
+    {
       "id": "20260908-early-riser-research-causal-source-correction",
       "recorded_at": "2026-09-08T06:29:47.504518+00:00",
       "title": "早期上涨研究：同龄覆盖与混源端点更正",

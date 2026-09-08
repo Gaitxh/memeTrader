@@ -26226,6 +26226,19 @@ class Store:
                     added += 1
         return added
 
+    def register_chain_meme_early_impulse(self) -> int:
+        from .early_impulse import impulse_policies
+        added = 0
+        with self._lock, self.db:
+            at = utcnow()
+            for policy in impulse_policies():
+                if self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?",
+                    (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, policy["arm_id"])).fetchone() is None:
+                    self.append_chain_meme_trader_policy(policy, activated_at=at)
+                    added += 1
+        return added
+
     def register_chain_meme_capital_experiments(self) -> int:
         """Append independently funded experiments at their actual deployment frontier."""
         added = 0
@@ -27218,6 +27231,11 @@ class Store:
                     passed, reason, entry_evidence = lifecycle_signal(history, policy,
                         decision_at=iso(decision_at), activated_at=policy["forward_started_at"])
                     lifecycle_evidence[policy["arm_id"]] = entry_evidence
+                elif policy.get("entry_filter", {}).get("contract") == "early-impulse-opportunity/20260908-v1":
+                    from .early_impulse import impulse_signal
+                    passed, reason, entry_evidence = impulse_signal(history, policy,
+                        decision_at=iso(decision_at), activated_at=policy["forward_started_at"])
+                    runner_evidence[policy["arm_id"]] = entry_evidence
                 elif policy.get("entry_filter", {}).get("contract") == "quiet-base-renewal/20260908-v1":
                     from .quiet_renewal import renewal_signal
                     passed, reason, entry_evidence = renewal_signal(history, policy,
@@ -27273,7 +27291,7 @@ class Store:
             from .archive_research import CONTRACT as ARCHIVE_CONTRACT, post_signal_compatible as archive_post_compatible
             from .runner_capture import CONTRACT as RUNNER_CONTRACT, post_signal_compatible as runner_post_compatible
             for p in active:
-                if p["arm_id"] in admitted_arms and p.get("entry_filter", {}).get("contract") in {RUNNER_CONTRACT, "quiet-base-renewal/20260908-v1"}:
+                if p["arm_id"] in admitted_arms and p.get("entry_filter", {}).get("contract") in {RUNNER_CONTRACT, "quiet-base-renewal/20260908-v1", "early-impulse-opportunity/20260908-v1"}:
                     if not runner_post_compatible(history[-1],
                             previous_features.get("runner_capture_evidence", {}).get(p["arm_id"], {}), p,
                             decision_at=iso(decision_at)):
@@ -32018,8 +32036,9 @@ class Store:
         from .archive_research import EXIT_KIND as ARCHIVE_EXIT_KIND, evaluate_plateau_exit
         from .lifecycle_research import EXIT_KINDS as LIFECYCLE_EXIT_KINDS, evaluate_lifecycle_exit
         from .runner_capture import EXIT_KIND as RUNNER_EXIT_KIND, evaluate_runner_exit
+        from .early_impulse import EXIT_KIND as IMPULSE_EXIT_KIND, evaluate_impulse_probation
         l0_research_kinds = (EXIT_KINDS | ROUND2_EXIT_KINDS | LIFECYCLE_EXIT_KINDS
-            | {RESOURCE_EXIT_KIND, INVENTORY_EXIT_KIND, ARCHIVE_EXIT_KIND, RUNNER_EXIT_KIND})
+            | {RESOURCE_EXIT_KIND, INVENTORY_EXIT_KIND, ARCHIVE_EXIT_KIND, RUNNER_EXIT_KIND, IMPULSE_EXIT_KIND})
         if kind in {"l0_continuation_failure", "l0_profit_lock", "l0_loss_deterioration"} | l0_research_kinds:
             from .l0_experiments import evaluate_l0_continuation_failure, evaluate_l0_profit_lock
             price = position["mark_price_usd"]
@@ -32068,9 +32087,10 @@ class Store:
                         entry_raw = self._json_object(entry_row[0]) if entry_row else {}
                         state["entry_inventory"] = inventory_fields(entry_raw.get("pair") or {})
                     frame["entry_inventory"] = state["entry_inventory"]
-                if kind == ARCHIVE_EXIT_KIND or kind in LIFECYCLE_EXIT_KINDS:
+                if kind in {ARCHIVE_EXIT_KIND, IMPULSE_EXIT_KIND} or kind in LIFECYCLE_EXIT_KINDS:
                     frame["boundary_at"] = self._json_object(position["mark_inventory_json"]).get("boundary_at")
-                evaluator = (evaluate_runner_exit if kind == RUNNER_EXIT_KIND else
+                evaluator = (evaluate_impulse_probation if kind == IMPULSE_EXIT_KIND else
+                             evaluate_runner_exit if kind == RUNNER_EXIT_KIND else
                              evaluate_lifecycle_exit if kind in LIFECYCLE_EXIT_KINDS else
                              evaluate_plateau_exit if kind == ARCHIVE_EXIT_KIND else
                              evaluate_inventory_exit if kind == INVENTORY_EXIT_KIND else
