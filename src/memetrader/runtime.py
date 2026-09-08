@@ -7178,33 +7178,31 @@ class Runtime:
 
     async def chain_meme_market_marks_once(self) -> None:
         """Refresh current-version held tokens on the high-priority DEX lane."""
-        idle = self._chain_meme_active_idle()
-        idle.clear()
-        try:
-            active_version = self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION
-            target_versions = [active_version]
-            if not self.chain_meme_trader_only:
-                target_versions.extend([
-                    self.store.CHAIN_MEME_TRADER_V13_VERSION,
-                    self.store.CHAIN_MEME_TRADER_V11_VERSION,
-                ])
-            targets = self.store.chain_meme_trader_market_mark_targets(
-                definition_versions=target_versions,
-            )
-            self._pattern_held_tokens = {str(t["token_id"]) for t in targets}
-            refreshed = await self._refresh_chain_meme_market_marks(
-                targets, heartbeat_name="chain-meme-market-marks",
-                high_priority=True,
-                evaluate_versions=[active_version, *getattr(self, "_chain_carry_versions", [])],
-            )
+        # The 8/5 quote semaphores reserve held capacity during network waits.
+        # Applying each held response and evaluating SELLs is synchronous;
+        # blocking every background worker for the whole request starves them.
+        active_version = self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        target_versions = [active_version]
+        if not self.chain_meme_trader_only:
+            target_versions.extend([
+                self.store.CHAIN_MEME_TRADER_V13_VERSION,
+                self.store.CHAIN_MEME_TRADER_V11_VERSION,
+            ])
+        targets = self.store.chain_meme_trader_market_mark_targets(
+            definition_versions=target_versions,
+        )
+        self._pattern_held_tokens = {str(t["token_id"]) for t in targets}
+        refreshed = await self._refresh_chain_meme_market_marks(
+            targets, heartbeat_name="chain-meme-market-marks",
+            high_priority=True,
+            evaluate_versions=[active_version, *getattr(self, "_chain_carry_versions", [])],
+        )
 
-            if not self.chain_meme_trader_only:
-                self.store.evaluate_chain_meme_trader_market_marks(
-                    definition_version=self.store.CHAIN_MEME_TRADER_V11_VERSION,
-                )
-            self.store.heartbeat("chain-meme-market-marks", item=refreshed > 0)
-        finally:
-            idle.set()
+        if not self.chain_meme_trader_only:
+            self.store.evaluate_chain_meme_trader_market_marks(
+                definition_version=self.store.CHAIN_MEME_TRADER_V11_VERSION,
+            )
+        self.store.heartbeat("chain-meme-market-marks", item=refreshed > 0)
 
     async def flat_compression_breakout_shadow_once(self) -> None:
         """Refresh one non-held mature-token batch after the held-token lane."""
@@ -7239,12 +7237,19 @@ class Runtime:
             if not hasattr(self, "_cohort_batches"):
                 self._cohort_batches = deque(maxlen=16)
             # References only; the low-priority worker does parsing and calculation.
+            dropped_quotes = None
             if len(self._cohort_batches) == self._cohort_batches.maxlen:
+                dropped_quotes = len(self._cohort_batches[0][1])
                 self._cohort_dropped_batches = getattr(self, "_cohort_dropped_batches", 0) + 1
                 self._cohort_dropped_quotes = (
-                    getattr(self, "_cohort_dropped_quotes", 0) + len(self._cohort_batches[0][1])
+                    getattr(self, "_cohort_dropped_quotes", 0) + dropped_quotes
                 )
             self._cohort_batches.append((current, list(quoted.values())[:200]))
+            if hasattr(self, "runtime_timing"):
+                self.runtime_timing.observe_passive_queue(
+                    depth=len(self._cohort_batches),
+                    oldest_received_at=self._cohort_batches[0][0],
+                    enqueued=True, dropped_quotes=dropped_quotes)
         held = getattr(self, "_pattern_held_tokens", set())
         watch, occupied = {}, {}
         for key, item in getattr(self, "_pattern_watch", {}).items():
@@ -7320,6 +7325,10 @@ class Runtime:
         sampled = projected = 0
         for _ in range(min(len(batches), 8)):
             received, values = batches.popleft()
+            if hasattr(self, "runtime_timing"):
+                self.runtime_timing.observe_passive_queue(
+                    depth=len(batches), oldest_received_at=batches[0][0] if batches else None,
+                    wait_seconds=(utcnow() - received).total_seconds())
             frames, quotes = [], {}
             for token, snapshot in values:
                 raw = snapshot.raw or {}

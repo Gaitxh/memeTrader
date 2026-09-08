@@ -75,6 +75,32 @@ def test_runtime_timing_empty_snapshot_and_missing_intervals():
     assert component["configured_interval_seconds"] is None
 
 
+def test_passive_queue_bounds_wait_samples_and_retains_loss_counters():
+    timing = RuntimeTiming()
+    for index in range(MAX_COMPONENTS):
+        timing.observe(f"component_{index}", 1)
+    received = datetime.fromisoformat("2026-09-08T07:00:00+00:00")
+    timing.observe_passive_queue(depth=16, oldest_received_at=received,
+                                  enqueued=True, dropped_quotes=30)
+    before = timing.snapshot()["passive_queue"]
+    for value in range(MAX_SAMPLES + 5):
+        timing.observe_passive_queue(depth=0, oldest_received_at=None, wait_seconds=value)
+    snapshot = timing.snapshot()
+    queue = snapshot["passive_queue"]
+    assert len(snapshot["components"]) == MAX_COMPONENTS
+    assert queue["wait_sample_count"] == MAX_SAMPLES
+    assert queue["wait_seconds"]["p50"] == pytest.approx(64.5)
+    assert queue["processed_batches"] == MAX_SAMPLES + 5
+    assert queue["dropped_batches"] == 1
+    assert queue["dropped_quotes"] == 30
+    assert queue["enqueued_batches"] == 1
+    assert queue["depth_batches"] == 0
+    assert queue["max_depth_batches"] == 16
+    assert queue["oldest_received_at"] is None
+    assert before["depth_batches"] == 16
+    assert before["oldest_received_at"] == received.isoformat()
+
+
 def test_retrieval_curve_weights_tokens_without_dividing_batch_latency():
     from datetime import timezone, timedelta
     timing = RuntimeTiming()

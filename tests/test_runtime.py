@@ -1376,6 +1376,78 @@ def test_low_quotes_leave_slots_for_all_held_chains_and_release_on_cancel(cancel
     asyncio.run(scenario())
 
 
+def test_low_quote_starts_while_held_market_http_is_in_flight():
+    async def scenario():
+        runtime = Runtime.__new__(Runtime)
+        runtime.chain_meme_trader_only = True
+        runtime._chain_meme_active_idle_event = asyncio.Event()
+        runtime._chain_meme_active_idle_event.set()
+        runtime._dex_quote_lock = asyncio.Semaphore(8)
+        runtime._dex_low_priority_slots = asyncio.Semaphore(5)
+        runtime._dex_quote_backoff_until = 0.0
+        runtime._dex_quote_failure_streak = 0
+        runtime._paper_quote_rejections = lambda *args: []
+        held_http_started = asyncio.Event()
+        release_held_http = asyncio.Event()
+        low_quote_started = asyncio.Event()
+        evaluations = []
+        held = TokenCandidate("solana", "held", "Held")
+
+        class FakeStore:
+            CHAIN_MEME_TRADER_ACTIVE_VERSION = "active"
+
+            @staticmethod
+            def chain_meme_trader_market_mark_targets(**kwargs):
+                assert kwargs == {"definition_versions": ["active"]}
+                return [{"token_id": held.token_id, "chain": held.chain, "address": held.address}]
+
+            @staticmethod
+            def apply_chain_meme_trader_market_mark_batch(outcomes, recorded_at):
+                return len(outcomes)
+
+            @staticmethod
+            def evaluate_chain_meme_trader_market_marks(**kwargs):
+                evaluations.append(kwargs)
+
+            @staticmethod
+            def heartbeat(*args, **kwargs):
+                return None
+
+        class Dex:
+            @staticmethod
+            async def batch_quote_fresh(chain, addresses):
+                if addresses == [held.address]:
+                    held_http_started.set()
+                    await release_held_http.wait()
+                else:
+                    assert addresses == ["low"]
+                    low_quote_started.set()
+                observed_at = utcnow()
+                return {
+                    f"{chain}:{address}": (
+                        TokenCandidate(chain, address, address),
+                        TokenSnapshot(chain, address, 1.0, 1_000, 1_000, 1, 1, 1,
+                                      observed_at=observed_at, ingested_at=observed_at,
+                                      raw={"pair": {"pairAddress": f"pair-{address}"}}),
+                    )
+                    for address in addresses
+                }
+
+        runtime.store = FakeStore()
+        runtime.dex = Dex()
+        held_task = asyncio.create_task(runtime.chain_meme_market_marks_once())
+        await asyncio.wait_for(held_http_started.wait(), timeout=1)
+        assert runtime._pattern_held_tokens == {held.token_id}
+        low_task = asyncio.create_task(runtime._dex_batch_quote("solana", ["low"], fresh=True))
+        await asyncio.wait_for(low_quote_started.wait(), timeout=1)
+        assert not held_task.done()
+        release_held_http.set()
+        await asyncio.gather(held_task, low_task)
+        assert evaluations == [{"definition_version": "active", "token_ids": [held.token_id]}]
+
+    asyncio.run(scenario())
+
+
 def test_growth_followups_reserve_first_hydration_capacity_and_rotate_chains(tmp_path):
     store = Store(tmp_path / "growth-due.sqlite3")
     now = utcnow()
