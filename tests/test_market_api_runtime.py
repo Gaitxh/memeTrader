@@ -558,7 +558,7 @@ def test_public_gecko_host_pacing_leaves_other_sources_unchanged(monkeypatch):
             waits.append(seconds)
 
         monkeypatch.setattr("memetrader.collectors.asyncio.sleep", record_wait)
-        for host in ("api.geckoterminal.com", "api.dexscreener.com"):
+        for host in ("api.geckoterminal.com", "example.com"):
             http._last[host] = time.monotonic()
             await http._reserve_host_request_start(host)
         assert 2.0 < waits[0] <= 2.1

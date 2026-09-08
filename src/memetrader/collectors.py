@@ -13,6 +13,7 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_DOWN
 from email.utils import parsedate_to_datetime
@@ -29,6 +30,7 @@ from .models import (
 
 
 RSS_CACHE_KEY_PREFIX = "rss_http_cache:v1:"
+DEX_REQUEST_HIGH_PRIORITY: ContextVar[bool] = ContextVar("dex_request_high_priority", default=False)
 RSS_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 RSS_XML_MEDIA_TYPES = {
     "application/atom+xml",
@@ -1139,6 +1141,8 @@ class HttpClient:
         self._host_backoff_until: dict[str, float] = {}
         self.on_dex_rate_limit: Callable[[float], None] | None = None
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        self._dex_start_condition = asyncio.Condition()
+        self._dex_start_waiters: dict[bool, deque[object]] = {False: deque(), True: deque()}
         self._cache: dict[str, tuple[float, Any, datetime]] = {}
 
     def _prune_cache(self, now: float) -> None:
@@ -1165,10 +1169,44 @@ class HttpClient:
         self, host: str, *, not_before: float = 0.0,
     ) -> None:
         """Space request starts without serializing normal response time."""
+        if host == "api.dexscreener.com":
+            await self._reserve_dex_request_start(not_before=not_before)
+            return
         async with self._locks[host]:
             await self._reserve_locked_host_request_start(
                 host, not_before=not_before,
             )
+
+    async def _reserve_dex_request_start(self, *, not_before: float = 0.0) -> None:
+        """Prioritize pending held starts, never hold a turn through network I/O."""
+        host = "api.dexscreener.com"
+        high = DEX_REQUEST_HIGH_PRIORITY.get()
+        queue = self._dex_start_waiters[high]
+        ticket = object()
+        condition = self._dex_start_condition
+        async with condition:
+            queue.append(ticket)
+            condition.notify_all()
+            try:
+                while True:
+                    if queue[0] is not ticket or (not high and self._dex_start_waiters[True]):
+                        await condition.wait()
+                        continue
+                    now = time.monotonic()
+                    wait = max(self._last[host] + self.min_host_interval,
+                               not_before, self._host_backoff_until.get(host, 0.0)) - now
+                    if wait <= 0:
+                        self._last[host] = now
+                        return
+                    # Release the condition while pacing, so newly arrived held
+                    # demand can take this start. Recheck cooldown after waking.
+                    try:
+                        await asyncio.wait_for(condition.wait(), timeout=wait)
+                    except TimeoutError:
+                        pass
+            finally:
+                queue.remove(ticket)
+                condition.notify_all()
 
     async def _reserve_locked_host_request_start(
         self, host: str, *, not_before: float = 0.0,
@@ -1226,12 +1264,17 @@ class HttpClient:
         if response.status_code == 429 and retry_429:
             retry = (0.0 if host == "api.dexscreener.com" else
                      min(15.0, float(response.headers.get("Retry-After", "2") or 2)))
-            async with self._locks[host]:
-                await self._reserve_locked_host_request_start(
-                    host, not_before=time.monotonic() + retry,
-                )
+            if host == "api.dexscreener.com":
+                await self._reserve_host_request_start(host)
                 response = await self.client.get(url, params=params, headers=headers)
                 self._record_dex_rate_limit(host, response)
+            else:
+                async with self._locks[host]:
+                    await self._reserve_locked_host_request_start(
+                        host, not_before=time.monotonic() + retry,
+                    )
+                    response = await self.client.get(url, params=params, headers=headers)
+                    self._record_dex_rate_limit(host, response)
         response.raise_for_status()
         response.extensions["observed_at"] = utcnow()
         if ttl:

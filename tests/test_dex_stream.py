@@ -112,3 +112,137 @@ def test_terminal_dex_429_cools_other_endpoint_even_without_retry(retry):
         assert len(calls) == errors + 1
         await client.close()
     asyncio.run(scenario())
+
+
+def test_real_dex_starts_prioritize_held_then_resume_lows_before_held_response():
+    async def scenario():
+        starts = []
+        held_started = asyncio.Event()
+        release_held = asyncio.Event()
+
+        async def handler(request):
+            name = request.url.path.rsplit("/", 1)[-1]
+            starts.append((name, time.monotonic()))
+            if name.startswith("held"):
+                if sum(n.startswith("held") for n, _ in starts) == 2:
+                    held_started.set()
+                await release_held.wait()
+            return httpx.Response(200, json=[])
+
+        client = HttpClient(min_host_interval=0.03, transport=httpx.MockTransport(handler))
+        runtime = Runtime.__new__(Runtime)
+        runtime.dex = DexScreenerClient(client)
+        runtime._dex_quote_lock = asyncio.Semaphore(8)
+        runtime._dex_low_priority_slots = asyncio.Semaphore(5)
+        runtime._dex_quote_backoff_until = 0.0
+        runtime._dex_quote_failure_streak = 0
+        deadline = time.monotonic() + 0.15
+        client._host_backoff_until["api.dexscreener.com"] = deadline
+        tasks = []
+
+        async def wait_queued(high, count):
+            while len(client._dex_start_waiters[high]) != count:
+                await asyncio.sleep(0)
+
+        try:
+            tasks = [asyncio.create_task(runtime._dex_batch_quote(
+                "solana", [f"low{i}"], fresh=True)) for i in range(2)]
+            await asyncio.wait_for(wait_queued(False, 2), timeout=1)
+            highs = [asyncio.create_task(runtime._dex_batch_quote(
+                "solana", [f"held{i}"], fresh=True, high_priority=True)) for i in range(2)]
+            tasks.extend(highs)
+            await asyncio.wait_for(held_started.wait(), timeout=1)
+            await asyncio.wait_for(asyncio.gather(*tasks[:2]), timeout=1)
+            assert [n for n, _ in starts] == ["held0", "held1", "low0", "low1"]
+            assert all(not task.done() for task in highs)
+            assert starts[0][1] >= deadline
+            assert all(b[1] - a[1] >= 0.029 for a, b in zip(starts, starts[1:]))
+        finally:
+            release_held.set()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await client.close()
+        assert not any(client._dex_start_waiters.values())
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("cancel_high", [False, True])
+def test_dex_start_cancellation_releases_priority_and_pacing_turn(cancel_high):
+    from memetrader.collectors import DEX_REQUEST_HIGH_PRIORITY
+
+    async def scenario():
+        starts = []
+
+        async def handler(request):
+            starts.append(request.url.path)
+            return httpx.Response(200, json=[])
+
+        client = HttpClient(min_host_interval=0.01, transport=httpx.MockTransport(handler))
+        deadline = time.monotonic() + 0.1
+        client._host_backoff_until["api.dexscreener.com"] = deadline
+
+        async def request(high):
+            token = DEX_REQUEST_HIGH_PRIORITY.set(high)
+            try:
+                await client.get("https://api.dexscreener.com/" + ("held" if high else "low"))
+            finally:
+                DEX_REQUEST_HIGH_PRIORITY.reset(token)
+
+        tasks = {high: asyncio.create_task(request(high)) for high in (False, True)}
+        async def queued():
+            while not all(client._dex_start_waiters.values()):
+                await asyncio.sleep(0)
+        try:
+            await asyncio.wait_for(queued(), timeout=1)
+            tasks[cancel_high].cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await tasks[cancel_high]
+            await asyncio.wait_for(tasks[not cancel_high], timeout=1)
+            assert starts == (["/low"] if cancel_high else ["/held"])
+            assert client._last["api.dexscreener.com"] >= deadline
+            assert not any(client._dex_start_waiters.values())
+        finally:
+            for task in tasks.values():
+                task.cancel()
+            await asyncio.gather(*tasks.values(), return_exceptions=True)
+            await client.close()
+    asyncio.run(scenario())
+
+
+def test_dex_low_429_retry_yields_start_to_new_held_request():
+    from memetrader.collectors import DEX_REQUEST_HIGH_PRIORITY
+
+    async def scenario():
+        starts = []
+        rate_limited = asyncio.Event()
+        release_held = asyncio.Event()
+
+        async def handler(request):
+            name = request.url.path
+            starts.append((name, time.monotonic()))
+            if len(starts) == 1:
+                rate_limited.set()
+                return httpx.Response(429, headers={"Retry-After": "0.08"}, json=[])
+            if name == "/held":
+                await release_held.wait()
+            return httpx.Response(200, json=[])
+
+        client = HttpClient(min_host_interval=0.02, transport=httpx.MockTransport(handler))
+        low = asyncio.create_task(client.get("https://api.dexscreener.com/low"))
+        await rate_limited.wait()
+        token = DEX_REQUEST_HIGH_PRIORITY.set(True)
+        high = asyncio.create_task(client.get("https://api.dexscreener.com/held", retry_429=False))
+        DEX_REQUEST_HIGH_PRIORITY.reset(token)
+        try:
+            await asyncio.wait_for(low, timeout=1)
+            assert [name for name, _ in starts] == ["/low", "/held", "/low"]
+            assert starts[1][1] >= client._host_backoff_until["api.dexscreener.com"]
+            assert starts[2][1] - starts[1][1] >= 0.019
+            assert not high.done()
+        finally:
+            release_held.set()
+            await asyncio.gather(low, high, return_exceptions=True)
+            await client.close()
+    asyncio.run(scenario())

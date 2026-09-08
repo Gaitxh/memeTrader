@@ -41,6 +41,7 @@ from .capital_duration_risk import load_duration_risk_samples, seal_duration_ris
 from .autonomous_search import AutonomousSearchAgent, _canonical_social_url, _same_social_url
 from .collectors import (
     BlueskySearchCollector,
+    DEX_REQUEST_HIGH_PRIORITY,
     DexScreenerClient,
     EvmRouteQuoteError,
     EvmRouteQuoteProtocolError,
@@ -1613,9 +1614,11 @@ class Runtime:
                 if high_priority or not wait:
                     yield False
                     return
+            priority_token = DEX_REQUEST_HIGH_PRIORITY.set(high_priority)
             try:
                 yield True
             finally:
+                DEX_REQUEST_HIGH_PRIORITY.reset(priority_token)
                 self._dex_quote_lock.release()
 
     async def _dex_batch_quote(

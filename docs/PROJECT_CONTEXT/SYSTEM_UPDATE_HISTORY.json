@@ -2,6 +2,18 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260908-dormancy-dex-start-priority",
+      "recorded_at": "2026-09-08T07:50:05.632435+00:00",
+      "deployed_at": "2026-09-08T07:46:25Z",
+      "title": "补齐Dex请求启动优先级，持仓无需排在后台限速等待之后",
+      "problem": "移除全网络idle后，HTTP host限速锁仍可能让新到持仓排在低优先请求之后。",
+      "change": "Dex启动改用高/低FIFO及Condition仲裁；作用域传递Runtime优先级；429重试同路，取消清理，启动后释放轮次。",
+      "rationale": "持仓优先适用于启动排队，不能只预留并发容量；保持原间隔、退避和已在途后台请求。",
+      "validation": "10个定向用例通过、独立代码审查无具体阻碍。15:48短窗held取数P95 2.338到1.494秒，退出P95 61.60到52.32ms；366入队/0丢弃；280/20/1摘要一致，API与处理前沿正常。",
+      "scope": "仅启动仲裁；持币26到24，短窗不作稳定提速或长期沉寂结论；Paper/资金/策略/Live保持。",
+      "report": "docs/PROJECT_CONTEXT/DORMANCY_P0A_20260908.md"
+    },
+    {
       "id": "20260908-dormancy-p0a-network-idle-gate",
       "recorded_at": "2026-09-08T07:36:30.529948+00:00",
       "deployed_at": "2026-09-08T07:33:02Z",
