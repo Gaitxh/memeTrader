@@ -2,6 +2,18 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260908-pattern-watch-usable-slot-repair",
+      "recorded_at": "2026-09-08T05:39:00.380795+00:00",
+      "deployed_at": null,
+      "title": "修复不可用候选占满观察名额（待部署）",
+      "problem": "缺流动性或低于底线的非持仓候选先占满同链同阶段名额时，后续新鲜合格候选无法进入连续观察。",
+      "change": "只由时间/身份合格且满足现有底线的新报价替换不可用非持仓占位；保留有效路径、持仓、空位探索和原预算；记录实际观察与替换计数。",
+      "rationale": "修复有定向复现的观察覆盖损失，不放宽入场条件或通过重启制造成交。",
+      "validation": "7个不同定向用例最终通过、diff检查通过；自动审批拒绝Paper重启命令，本修复尚未加载，未宣称自然表现改善。",
+      "scope": "runtime候选观察调度，不改策略合同、历史、账户或Live；现有13:22 Paper仍运行。",
+      "report": "docs/PROJECT_CONTEXT/EARLY_WINNERS_20260908.md"
+    },
+    {
       "id": "20260908-growth-shared-coverage-repair",
       "recorded_at": "2026-09-08T03:47:44.776161+00:00",
       "deployed_at": "2026-09-08T03:42:08.1956771Z",

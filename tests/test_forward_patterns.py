@@ -178,10 +178,12 @@ def test_shared_pattern_quote_is_enqueued_once_and_computed_fresh(lane):
                     liquidity={"usd": 10000}, txns={"m5": {"buys": 6, "sells": 3}}, volume={"m5": 500})
         token, snapshot = DexScreenerClient._candidate(pair), DexScreenerClient._snapshot(pair)
         observed = []
+        watch_stats = {}
         runtime.store = SimpleNamespace(
             capital_cross_section=lambda *args: {},
             observe_chain_meme_pattern=lambda t, s, **kw: observed.append(s.observed_at) or 0,
             heartbeat=lambda *args, **kw: None,
+            set_kv=lambda key, value: watch_stats.update(value),
             add_observation=lambda *args: None,
             record_chain_meme_pattern_narrative=lambda *args: {token.token_id},
         )
@@ -195,6 +197,8 @@ def test_shared_pattern_quote_is_enqueued_once_and_computed_fresh(lane):
             runtime._cohort_batches.clear()
             await runtime.chain_meme_pattern_observer_once()
             assert observed == [snapshot.observed_at]
+            assert watch_stats["sampled"] == 1
+            assert watch_stats["replacements_since_start"] == 0
         else:
             async def scout_trends(**kwargs):
                 return {}, [SimpleNamespace(raw={"fact_verification_record_id": 1})]

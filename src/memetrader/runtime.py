@@ -7276,8 +7276,26 @@ class Runtime:
             bucket = "early" if age < 900 else "growth" if age < 21600 else "mature"
             capacity = 4 if bucket == "growth" else 3
             slot = (chain, bucket)
-            if age < 0 or (token_id not in held and occupied.get(slot, 0) >= capacity):
+            if age < 0:
                 continue
+            if token_id not in held and occupied.get(slot, 0) >= capacity:
+                floor = getattr(self, "_chain_paper_execution", {}).get("min_pool_liquidity_usd", 1000.0)
+                liquidity = getattr(snapshot, "liquidity_usd", None)
+                # Preserve valid paths and held work. Only a fresh usable quote
+                # may replace a non-held slot whose liquidity cannot meet the floor.
+                if (liquidity is None or not math.isfinite(liquidity) or liquidity < floor
+                        or (current - snapshot.observed_at).total_seconds() > 30
+                        or self._paper_quote_rejections(token_id, token, snapshot, current)):
+                    continue
+                replacement = next((key for key, item in watch.items()
+                    if key not in held and (item["token"].chain, item["bucket"]) == slot
+                    and ((value := getattr(item["quote"], "liquidity_usd", None)) is None
+                         or not math.isfinite(value) or value < floor)), None)
+                if replacement is None:
+                    continue
+                watch.pop(replacement)
+                occupied[slot] -= 1
+                self._pattern_watch_replacements = getattr(self, "_pattern_watch_replacements", 0) + 1
             watch[token_id] = {"token": token, "bucket": bucket, "quote": snapshot,
                 "pool_created_at_ms": float(created),
                 "pair_address": canonical_token_address(chain, address),
@@ -7474,6 +7492,11 @@ class Runtime:
                 await asyncio.sleep(0)
         self.store.heartbeat("chain-meme-pattern-observer", item=sampled > 0,
             error_detail=f"watched={len(watch)};sampled={sampled};projected={projected}")
+        self.store.set_kv("chain-meme-pattern-watch", {
+            "recorded_at": iso(utcnow()), "watched": len(self._pattern_watch),
+            "sampled": sampled, "projected": projected,
+            "replacements_since_start": getattr(self, "_pattern_watch_replacements", 0),
+        })
 
     async def chain_meme_carried_market_marks_once(self) -> None:
         """Maintain older open positions without slowing the active strategy lane."""

@@ -52,6 +52,45 @@ def test_pattern_watch_releases_aged_early_slots_and_bounds_nonheld(monkeypatch)
     assert set(runtime._pattern_watch) == {held_id}
 
 
+@pytest.mark.parametrize("blocked_liquidity", [None, 0.0, 999.0])
+def test_fresh_liquid_candidate_replaces_unusable_nonheld_watch(monkeypatch, blocked_liquidity):
+    now = utcnow()
+    monkeypatch.setattr("memetrader.runtime.utcnow", lambda: now)
+    runtime = Runtime.__new__(Runtime)
+    runtime.config = {"paper": {"max_quote_age_seconds": 45}}
+    runtime._chain_paper_execution = {"min_pool_liquidity_usd": 1000}
+    runtime._pattern_held_tokens = set()
+
+    def quote(i, liquidity, at=None):
+        token = TokenCandidate("bsc", f"0x{i:040x}", "watch fixture", first_seen_at=now)
+        snapshot = TokenSnapshot(address=token.address, chain=token.chain,
+            observed_at=at or now, provider="dexscreener",
+            price_usd=1, liquidity_usd=liquidity, ingested_at=at or now,
+            market_cap_usd=50000, volume_5m_usd=500, buys_5m=6, sells_5m=3,
+            raw={"pair": {"chainId": "bsc", "baseToken": {"address": token.address},
+                "pairAddress": f"0x{i+100:040x}",
+                "pairCreatedAt": int((now-timedelta(seconds=60)).timestamp()*1000)}})
+        return token, snapshot
+
+    held = quote(1, blocked_liquidity)
+    runtime._pattern_held_tokens.add(held[0].token_id)
+    blocked = {i: quote(i, blocked_liquidity) for i in (2, 3, 4)}
+    runtime._remember_pattern_quotes({1: held, **blocked})
+    assert len(runtime._pattern_watch) == 4
+    # A delayed liquid response must not evict a watch using stale evidence.
+    runtime._remember_pattern_quotes({5: quote(5, 5000, now-timedelta(seconds=46))})
+    assert len(runtime._pattern_watch) == 4
+    assert quote(5, 5000)[0].token_id not in runtime._pattern_watch
+    for i in (6, 7, 8):
+        runtime._remember_pattern_quotes({i: quote(i, 5000)})
+    assert set(runtime._pattern_watch) == {held[0].token_id, *(quote(i, 5000)[0].token_id for i in (6, 7, 8))}
+    # Full valid slots retain continuity; missing data cannot evict them.
+    before = dict(runtime._pattern_watch)
+    runtime._remember_pattern_quotes({9: quote(9, None), 10: quote(10, 5000)})
+    assert runtime._pattern_watch == before
+    assert runtime._pattern_watch_replacements == 3
+
+
 def test_migration_and_reserve_context_require_actual_asof_identity(tmp_path, monkeypatch):
     store = Store(tmp_path / "evidence.sqlite3", initial_cash_usd=1000)
     store.activate_chain_meme_trader_funded_period()
