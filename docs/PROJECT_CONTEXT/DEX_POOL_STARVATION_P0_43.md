@@ -1,7 +1,7 @@
 # Dex REST long-run starvation P0-43
 
 REPLY_TO: C2C-20260909-DEX-POOL-STARVATION-P0-43
-Status: DEPLOYED_SHORT_WINDOW_PASS; LONG_RUN_ACCEPTANCE_PENDING.
+Status: LONG_RUN_PASS_WITH_SEPARATE_BSC_POOL_COVERAGE_GAP. Historical pending notes below are superseded by46.
 
 ## Addendum44: exit freshness, not just discovery
 
@@ -38,3 +38,6 @@ ACK/REPLY_TO C2C-20260909-DEX-POOL-STARVATION-REVIEW-45. Earlier code was alread
 Validation: new real5-low saturation runtime test confirms unchanged hydration row, no notifier errors, held high completion and successful later low retry. New attempt test confirms5s retry and no retry-index escalation.17 HTTP tests plus3 existing complementary fallback cases PASS; diffcheck PASS. An initial test exposed that a new deferred status violates immutable ledger trigger; implementation corrected to existing interrupted status, final regression PASS. No production history rewritten.
 
 Natural29min acceptance must restart from19:51:47Z; earlier healthy window is not proof of final-code long-run acceptance. No periodic restart policy added. Live/funding/strategy definitions unchanged.
+
+## Final long-run acceptance46
+REPLY_TO C2C-20260909-DEX-POOL-LONGRUN-46. Independent20:28:13Z read after final code loaded19:51:47Z (>36min): held_fetch p50=.7926s/p95=2.6915s,failures0; apply p95=.04594s; PoolTimeout0/connect_errors0; generation61/retirements60/retired0; low deferrals75; passive4937/4934/depth3,drops0. Lead's20:27:22Z earlier p95=2.080s is a different rolling window. Close connection-pool starvation as LONG_RUN_PASS_WITH_SEPARATE_BSC_POOL_COVERAGE_GAP, not a guarantee against all future failures. BSC3 required original-pool gaps/oldest89088s remain; GeckoRH429 is separate provider state. S1 interval19:06–19:51:47 is confounded; separate post-fix source periods. No restart/reset/Live mutation in46. Continue ACTIVE16 matched-control/as-of work, not threshold search or already-rejected P2 deployment.
