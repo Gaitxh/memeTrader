@@ -2,6 +2,17 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260908-early-riser-research-causal-source-correction",
+      "recorded_at": "2026-09-08T06:29:47.504518+00:00",
+      "title": "早期上涨研究：同龄覆盖与混源端点更正",
+      "problem": "旧描述性端点只限制同池未限制来源；新档案分析初版使用整段未来质量过滤，均会影响研究真实性。",
+      "change": "保留旧工件，生成同源端点V2及仅按合格前缀/固定日期/合格端点的档案V2；补充未降采样覆盖、24币自然配对及重启后连续运行取证。",
+      "rationale": "缺失不当亏损、极端均值不当Alpha；只把具备独立证据的非冗余机制推进Paper。",
+      "validation": "索引重取8666帧与两项更正脚本实际执行成功；8个端点改为未覆盖；生产只读核验运行进度和21对终局。无新生产代码或重启。",
+      "scope": "研究代码与报告；新增策略账户0，既有资金/合同/Live保持。",
+      "report": "docs/PROJECT_CONTEXT/EARLY_RISER_DISCRIMINATION_20260908.md"
+    },
+    {
       "id": "20260908-pattern-watch-usable-slot-repair",
       "recorded_at": "2026-09-08T05:39:00.380795+00:00",
       "deployed_at": "2026-09-08T05:59:40.838509Z",
