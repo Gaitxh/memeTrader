@@ -26199,6 +26199,33 @@ class Store:
                     added += 1
         return added
 
+    def register_chain_meme_runner_capture(self) -> int:
+        """Append the focused early-runner candidate and same-fill exit control."""
+        from .runner_capture import runner_policies
+        added = 0
+        with self._lock, self.db:
+            at = utcnow()
+            for policy in runner_policies():
+                if self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?",
+                    (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, policy["arm_id"])).fetchone() is None:
+                    self.append_chain_meme_trader_policy(policy, activated_at=at)
+                    added += 1
+        return added
+
+    def register_chain_meme_quiet_renewal(self) -> int:
+        from .quiet_renewal import renewal_policies
+        added = 0
+        with self._lock, self.db:
+            at = utcnow()
+            for policy in renewal_policies():
+                if self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?",
+                    (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, policy["arm_id"])).fetchone() is None:
+                    self.append_chain_meme_trader_policy(policy, activated_at=at)
+                    added += 1
+        return added
+
     def register_chain_meme_capital_experiments(self) -> int:
         """Append independently funded experiments at their actual deployment frontier."""
         added = 0
@@ -26885,6 +26912,8 @@ class Store:
                             - int(source["buys_5m"] or 0) - int(source["sells_5m"] or 0))
                         if isinstance(source_pair.get("txns", {}).get("h1"), Mapping) else None),
                     "pool_age_seconds": (parse_time(source["observed_at"]) - datetime.fromtimestamp(float(created) / 1000, tz=timezone.utc)).total_seconds(),
+                    "token_age_seconds": ((parse_time(source["observed_at"]) - token.created_at).total_seconds()
+                        if token.created_at is not None else None),
                     "observed_at": source["observed_at"], "ingested_at": source["ingested_at"],
                     "recorded_at": source["recorded_at"]})
             if not history or history[-1]["id"] != snapshot_id:
@@ -26914,6 +26943,12 @@ class Store:
             for p in active:
                 if p["arm_id"] in limited and occupied.get(p["arm_id"], 0) >= limited[p["arm_id"]]:
                     entry_blocked[p["arm_id"]] = "strategy_open_slot_limit"
+                elif p.get("entry_filter", {}).get("single_token_lifetime_entry") and self.db.execute(
+                        "SELECT 1 FROM chain_meme_trader_positions WHERE definition_version=? "
+                        "AND arm_id=? AND token_id=? LIMIT 1",
+                        (version, p["arm_id"], token.token_id),
+                ).fetchone() is not None:
+                    entry_blocked[p["arm_id"]] = "strategy_token_lifetime_entry_consumed"
                 elif p.get("entry_filter", {}).get("required_market_surface") == "solana_pumpswap" and (
                         token.chain != "solana" or pair.get("dexId") != "pumpswap"):
                     entry_blocked[p["arm_id"]] = "strategy_market_surface_not_supported"
@@ -27148,6 +27183,7 @@ class Store:
             inventory_evidence = {}
             archive_evidence = {}
             lifecycle_evidence = {}
+            runner_evidence = {}
             for policy in active:
                 if cohort_mode:
                     passed = policy["arm_id"] in accepted_cohort_signals
@@ -27182,6 +27218,16 @@ class Store:
                     passed, reason, entry_evidence = lifecycle_signal(history, policy,
                         decision_at=iso(decision_at), activated_at=policy["forward_started_at"])
                     lifecycle_evidence[policy["arm_id"]] = entry_evidence
+                elif policy.get("entry_filter", {}).get("contract") == "quiet-base-renewal/20260908-v1":
+                    from .quiet_renewal import renewal_signal
+                    passed, reason, entry_evidence = renewal_signal(history, policy,
+                        decision_at=iso(decision_at), activated_at=policy["forward_started_at"])
+                    runner_evidence[policy["arm_id"]] = entry_evidence
+                elif policy.get("entry_filter", {}).get("contract") == "early-runner-capture/20260908-v1":
+                    from .runner_capture import runner_signal
+                    passed, reason, entry_evidence = runner_signal(history, policy,
+                        decision_at=iso(decision_at), activated_at=policy["forward_started_at"])
+                    runner_evidence[policy["arm_id"]] = entry_evidence
                 elif policy.get("entry_filter", {}).get("contract") == "archive-path-activity/20260908-v1":
                     from .archive_research import archive_signal
                     passed, reason, entry_evidence = archive_signal(history, policy,
@@ -27225,7 +27271,14 @@ class Store:
                                   previous_features.get("event_keys", {}).get(p["arm_id"]) == event_keys.get(p["arm_id"]))]
             from .inventory_research import CONTRACT as INVENTORY_CONTRACT, post_signal_compatible
             from .archive_research import CONTRACT as ARCHIVE_CONTRACT, post_signal_compatible as archive_post_compatible
+            from .runner_capture import CONTRACT as RUNNER_CONTRACT, post_signal_compatible as runner_post_compatible
             for p in active:
+                if p["arm_id"] in admitted_arms and p.get("entry_filter", {}).get("contract") in {RUNNER_CONTRACT, "quiet-base-renewal/20260908-v1"}:
+                    if not runner_post_compatible(history[-1],
+                            previous_features.get("runner_capture_evidence", {}).get(p["arm_id"], {}), p,
+                            decision_at=iso(decision_at)):
+                        admitted_arms.remove(p["arm_id"])
+                        outcomes[p["arm_id"]] = "runner_post_source_time_or_drift_boundary"
                 if p["arm_id"] in admitted_arms and p.get("entry_filter", {}).get("contract") == "holding-lifecycle/20260908-v1":
                     if not archive_post_compatible(history[-1],
                             previous_features.get("lifecycle_research_evidence", {}).get(p["arm_id"], {}),
@@ -27286,6 +27339,8 @@ class Store:
                 features["archive_research_evidence"] = archive_evidence
             if lifecycle_evidence:
                 features["lifecycle_research_evidence"] = lifecycle_evidence
+            if runner_evidence:
+                features["runner_capture_evidence"] = runner_evidence
             if cohort_mode:
                 features.update(cohort_signals=accepted_cohort_signals,
                     entry_signal_key="isolated_cohorts/v1", policy_entry_family="cohort_experiments")
@@ -31962,7 +32017,9 @@ class Store:
         from .inventory_research import EXIT_KIND as INVENTORY_EXIT_KIND, evaluate_inventory_exit
         from .archive_research import EXIT_KIND as ARCHIVE_EXIT_KIND, evaluate_plateau_exit
         from .lifecycle_research import EXIT_KINDS as LIFECYCLE_EXIT_KINDS, evaluate_lifecycle_exit
-        l0_research_kinds = EXIT_KINDS | ROUND2_EXIT_KINDS | LIFECYCLE_EXIT_KINDS | {RESOURCE_EXIT_KIND, INVENTORY_EXIT_KIND, ARCHIVE_EXIT_KIND}
+        from .runner_capture import EXIT_KIND as RUNNER_EXIT_KIND, evaluate_runner_exit
+        l0_research_kinds = (EXIT_KINDS | ROUND2_EXIT_KINDS | LIFECYCLE_EXIT_KINDS
+            | {RESOURCE_EXIT_KIND, INVENTORY_EXIT_KIND, ARCHIVE_EXIT_KIND, RUNNER_EXIT_KIND})
         if kind in {"l0_continuation_failure", "l0_profit_lock", "l0_loss_deterioration"} | l0_research_kinds:
             from .l0_experiments import evaluate_l0_continuation_failure, evaluate_l0_profit_lock
             price = position["mark_price_usd"]
@@ -32013,7 +32070,8 @@ class Store:
                     frame["entry_inventory"] = state["entry_inventory"]
                 if kind == ARCHIVE_EXIT_KIND or kind in LIFECYCLE_EXIT_KINDS:
                     frame["boundary_at"] = self._json_object(position["mark_inventory_json"]).get("boundary_at")
-                evaluator = (evaluate_lifecycle_exit if kind in LIFECYCLE_EXIT_KINDS else
+                evaluator = (evaluate_runner_exit if kind == RUNNER_EXIT_KIND else
+                             evaluate_lifecycle_exit if kind in LIFECYCLE_EXIT_KINDS else
                              evaluate_plateau_exit if kind == ARCHIVE_EXIT_KIND else
                              evaluate_inventory_exit if kind == INVENTORY_EXIT_KIND else
                              evaluate_resource_exit if kind == RESOURCE_EXIT_KIND else
