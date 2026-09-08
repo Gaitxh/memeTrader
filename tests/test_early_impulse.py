@@ -85,10 +85,13 @@ def test_startup_registers_three_arms_at_one_actual_frontier(tmp_path):
         config['bridge']['enabled'] = False
         runtime = Runtime(config, tmp_path)
         rows = runtime.store.db.execute("SELECT * FROM chain_meme_trader_policy_additions "
-                                        "WHERE arm_id LIKE 'early_impulse_%'").fetchall()
+                                        "WHERE arm_id IN (?,?,?)", [p['arm_id'] for p in impulse_policies()]).fetchall()
         assert len(rows) == 3
         assert len({(r['activated_at'], r['activation_snapshot_id'], r['activation_evaluation_id']) for r in rows}) == 1
         assert runtime.store.register_chain_meme_early_impulse() == 0
+        assert runtime.store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_policy_additions "
+                                        "WHERE arm_id LIKE 'early_impulse_profit_lock_%'").fetchone()[0] == 2
+        assert runtime.store.register_chain_meme_impulse_profit_lock() == 0
         await runtime.close()
     asyncio.run(scenario())
 

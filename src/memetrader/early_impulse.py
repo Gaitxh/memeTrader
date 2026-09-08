@@ -44,6 +44,23 @@ def impulse_policies():
     return result
 
 
+def profit_lock_policies():
+    """Same-entry pair: proactive partial realization versus the current 60m exit."""
+    parent = impulse_policies()[1]
+    result = []
+    for suffix, title in (("control", "利润锁定对照"), ("40", "40%利润分批锁定")):
+        p = deepcopy(parent)
+        arm = "early_impulse_profit_lock_" + suffix + "_v1"
+        p.update(arm_id=arm, canonical_id=arm, name="早期放量上涨·" + title,
+                 description="同入口5U/max4；比较60分钟追踪与成本后+40%触发、下一原池观察卖出一半；未证明Alpha。",
+                 paired_entry_group="early_impulse_profit_lock_same_fill_v1", paired_entry_size=2,
+                 evidence_review="docs/PROJECT_CONTEXT/EARLY_IMPULSE_PROFIT_LOCK_20260908.md")
+        if suffix == "40":
+            p["take_profit"] = [{"return": .40, "fraction_of_remaining": .50}]
+        result.append(p)
+    return result
+
+
 def impulse_signal(history, policy, *, decision_at, activated_at):
     cfg = policy["entry_filter"]
     evidence = {"contract": CONTRACT, "hypothesis_only": True, "rolling_activity_is_proxy": True}

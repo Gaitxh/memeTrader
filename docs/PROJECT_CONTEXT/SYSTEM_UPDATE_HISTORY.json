@@ -2,6 +2,18 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260908-early-impulse-profit-lock-pair",
+      "recorded_at": "2026-09-08T08:52:33.432080+00:00",
+      "deployed_at": "2026-09-08T08:47:20.036612Z",
+      "title": "新增早期放量利润分批兑现的同成交两臂实验",
+      "problem": "自然行情有高收益后跳跌、追踪退出无中间可用报价的路径；入口本身仍未证明正期望。",
+      "change": "新增5U/max4同入口同fill两臂：60m原退出对照；候选成本后+40%触发，严格更晚有效原池帧卖剩余50%，之后沿用原风险/追踪/时限。",
+      "rationale": "隔离主动部分兑现与反应式追踪差异，复用现有部分卖出和成本分摊，无额外轮询。",
+      "validation": "19个不同定向用例通过、独立复算及反方检查；16:47注册，旧280/20/1记录摘要保持，追加总数282。16:50三API/前沿推进，366批入出/0丢弃；新两臂0自然仓位。",
+      "scope": "Paper，旧策略/资金/历史/Live不变。Runner反事实与原报告各差0.22U未解释；仍有原池覆盖缺口与上游请求失败，不宣称Alpha或全部时效问题解决。",
+      "report": "docs/PROJECT_CONTEXT/EARLY_IMPULSE_PROFIT_LOCK_20260908.md"
+    },
+    {
       "id": "20260908-cohort-drain-deferred-signal-quote",
       "recorded_at": "2026-09-08T08:04:23.140345+00:00",
       "deployed_at": "2026-09-08T07:59:38Z",

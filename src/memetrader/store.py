@@ -26239,6 +26239,19 @@ class Store:
                     added += 1
         return added
 
+    def register_chain_meme_impulse_profit_lock(self) -> int:
+        from .early_impulse import profit_lock_policies
+        added = 0
+        with self._lock, self.db:
+            at = utcnow()
+            for policy in profit_lock_policies():
+                if self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?",
+                    (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, policy["arm_id"])).fetchone() is None:
+                    self.append_chain_meme_trader_policy(policy, activated_at=at)
+                    added += 1
+        return added
+
     def register_chain_meme_capital_experiments(self) -> int:
         """Append independently funded experiments at their actual deployment frontier."""
         added = 0
