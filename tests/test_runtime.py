@@ -1448,6 +1448,101 @@ def test_low_quote_starts_while_held_market_http_is_in_flight():
     asyncio.run(scenario())
 
 
+def test_cohort_batch_drains_while_held_market_http_is_in_flight():
+    async def scenario():
+        from collections import deque
+
+        runtime = Runtime.__new__(Runtime)
+        runtime.chain_meme_trader_only = True
+        runtime._chain_meme_active_idle_event = asyncio.Event()
+        runtime._chain_meme_active_idle_event.set()
+        runtime._dex_quote_lock = asyncio.Semaphore(8)
+        runtime._dex_low_priority_slots = asyncio.Semaphore(5)
+        runtime._dex_quote_backoff_until = 0.0
+        runtime._dex_quote_failure_streak = 0
+        runtime._paper_quote_rejections = lambda *args: []
+        held_http_started = asyncio.Event()
+        release_held_http = asyncio.Event()
+        projected = asyncio.Event()
+        evaluations = []
+        held = TokenCandidate("solana", "held", "Held")
+        cohort = TokenCandidate("solana", "cohort", "Cohort")
+        received = utcnow()
+        pair_created = int((received - timedelta(seconds=30)).timestamp() * 1000)
+        cohort_snapshot = TokenSnapshot(
+            "solana", cohort.address, 1.0, 1_000, 1_000, 3, 2, 1,
+            observed_at=received, ingested_at=received,
+            raw={"pair": {"pairAddress": "cohort-pair", "pairCreatedAt": pair_created}},
+        )
+        runtime._cohort_started_at = received - timedelta(seconds=1)
+        runtime._cohort_state = {}
+        runtime._cohort_batches = deque([(received, [(cohort, cohort_snapshot)])])
+
+        class FakeStore:
+            CHAIN_MEME_TRADER_ACTIVE_VERSION = "active"
+
+            @staticmethod
+            def chain_meme_trader_market_mark_targets(**kwargs):
+                assert kwargs == {"definition_versions": ["active"]}
+                return [{"token_id": held.token_id, "chain": held.chain, "address": held.address}]
+
+            @staticmethod
+            def apply_chain_meme_trader_market_mark_batch(outcomes, recorded_at):
+                return len(outcomes)
+
+            @staticmethod
+            def evaluate_chain_meme_trader_market_marks(**kwargs):
+                evaluations.append(kwargs)
+
+            @staticmethod
+            def chain_meme_cohort_receipts(episodes):
+                return {}, []
+
+            @staticmethod
+            def observe_chain_meme_pattern(token, snapshot, **kwargs):
+                assert token.token_id == cohort.token_id
+                assert snapshot is cohort_snapshot
+                assert kwargs["cohort_signals"]
+                projected.set()
+                return 1
+
+            @staticmethod
+            def set_kv(*args):
+                return None
+
+            @staticmethod
+            def heartbeat(*args, **kwargs):
+                return None
+
+        class Dex:
+            @staticmethod
+            async def batch_quote_fresh(chain, addresses):
+                assert addresses == [held.address]
+                held_http_started.set()
+                await release_held_http.wait()
+                observed_at = utcnow()
+                return {held.token_id: (
+                    held,
+                    TokenSnapshot(chain, held.address, 1.0, 1_000, 1_000, 1, 1, 1,
+                                  observed_at=observed_at, ingested_at=observed_at,
+                                  raw={"pair": {"pairAddress": "held-pair"}}),
+                )}
+
+        runtime.store = FakeStore()
+        runtime.dex = Dex()
+        held_task = asyncio.create_task(runtime.chain_meme_market_marks_once())
+        await asyncio.wait_for(held_http_started.wait(), timeout=1)
+        await runtime.chain_meme_cohort_observer_once()
+        await asyncio.wait_for(projected.wait(), timeout=1)
+        assert not runtime._cohort_batches
+        assert not held_task.done()
+        release_held_http.set()
+        await held_task
+        assert evaluations == [{"definition_version": "active", "token_ids": [held.token_id]}]
+
+    asyncio.run(scenario())
+
+
 def test_growth_followups_reserve_first_hydration_capacity_and_rotate_chains(tmp_path):
     store = Store(tmp_path / "growth-due.sqlite3")
     now = utcnow()

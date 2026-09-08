@@ -7317,16 +7317,45 @@ class Runtime:
         from .cohort_experiments import consume_passive_cohort_batch
         phase_started = asyncio.get_running_loop().time()
         batches = getattr(self, "_cohort_batches", None)
-        if not batches:
+        pending = getattr(self, "_cohort_pending", {})
+        if not batches and not pending:
             return
-        await self._chain_meme_active_idle().wait()
         state = getattr(self, "_cohort_state", {})
         closures, bought = self.store.chain_meme_cohort_receipts(state.get("clone_episodes", {}))
-        pending = getattr(self, "_cohort_pending", {})
         dispatched = set()
         compute_seconds = 0.0
         sampled = projected = 0
-        for _ in range(min(len(batches), 8)):
+
+        async def project_pending():
+            nonlocal sampled, projected, compute_seconds
+            for identity in list(pending):
+                item = pending[identity]
+                now = utcnow()
+                if item["expires"] < now:
+                    pending.pop(identity, None)
+                    continue
+                quote = item.get("quote")
+                if quote is None:
+                    continue
+                token, snapshot, received = quote
+                if not (snapshot.observed_at <= received <= now
+                        and 0 <= (now - snapshot.observed_at).total_seconds() <= 30):
+                    item.pop("quote", None)
+                    continue
+                if identity in dispatched or sampled >= 8 or compute_seconds >= .25:
+                    continue
+                if not self._chain_meme_active_idle().is_set():
+                    continue  # Drain local batches without waiting on projection admission.
+                compute_started = asyncio.get_running_loop().time()
+                projected += self.store.observe_chain_meme_pattern(
+                    token, snapshot, recorded_at=now, cohort_signals=item["signals"])
+                item.pop("quote", None)
+                compute_seconds += asyncio.get_running_loop().time() - compute_started
+                dispatched.add(identity)
+                sampled += 1
+                await asyncio.sleep(0)
+
+        for _ in range(min(len(batches or ()), 8)):
             received, values = batches.popleft()
             if hasattr(self, "runtime_timing"):
                 self.runtime_timing.observe_passive_queue(
@@ -7386,29 +7415,18 @@ class Runtime:
             for identity, arm_signals in signals.items():
                 if identity not in quotes:
                     continue
-                _, snapshot = quotes[identity]
-                pending[identity] = {"expires": now + timedelta(seconds=60), "signals": {
+                token, snapshot = quotes[identity]
+                pending[identity] = {"expires": now + timedelta(seconds=60),
+                    "quote": (token, snapshot, received), "signals": {
                     arm: {**signal, "observed_at": iso(snapshot.observed_at), "recorded_at": iso(received)}
                     for arm, signal in arm_signals.items()}}
-            for identity in list(pending):
-                item = pending[identity]
-                if item["expires"] < now:
-                    pending.pop(identity, None)
-                    continue
-                if identity not in quotes:
-                    continue
-                if identity in dispatched or sampled >= 8 or compute_seconds >= .25:
-                    continue
-                await self._chain_meme_active_idle().wait()
-                token, snapshot = quotes[identity]
-                compute_started = asyncio.get_running_loop().time()
-                projected += self.store.observe_chain_meme_pattern(
-                    token, snapshot, recorded_at=now, cohort_signals=item["signals"])
-                compute_seconds += asyncio.get_running_loop().time() - compute_started
-                dispatched.add(identity)
-                sampled += 1
-                await asyncio.sleep(0)
+            for identity, (token, snapshot) in quotes.items():
+                if identity in pending and "quote" not in pending[identity]:
+                    pending[identity]["quote"] = (token, snapshot, received)
+            await project_pending()
             await asyncio.sleep(0)
+        # A one-shot signal delayed by the budget must not depend on a new batch.
+        await project_pending()
         state["activated_at"] = iso(self._cohort_started_at)
         state["dropped_batches"] = getattr(self, "_cohort_dropped_batches", 0)
         state["dropped_quotes"] = getattr(self, "_cohort_dropped_quotes", 0)
