@@ -31,9 +31,6 @@ from .models import (
 
 RSS_CACHE_KEY_PREFIX = "rss_http_cache:v1:"
 DEX_REQUEST_HIGH_PRIORITY: ContextVar[bool] = ContextVar("dex_request_high_priority", default=False)
-GECKO_REQUEST_HIGH_PRIORITY: ContextVar[bool] = ContextVar("gecko_request_high_priority", default=False)
-GECKO_REQUEST_START_DEADLINE: ContextVar[float | None] = ContextVar(
-    "gecko_request_start_deadline", default=None)
 RSS_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 RSS_XML_MEDIA_TYPES = {
     "application/atom+xml",
@@ -1104,7 +1101,6 @@ class HttpClient:
     """Small host-aware client for free public endpoints."""
 
     MAX_CACHE_ENTRIES = 512
-    GECKO_MIN_HOST_INTERVAL = 2.1
 
     def __init__(
         self,
@@ -1147,8 +1143,6 @@ class HttpClient:
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._dex_start_condition = asyncio.Condition()
         self._dex_start_waiters: dict[bool, deque[object]] = {False: deque(), True: deque()}
-        self._gecko_start_condition = asyncio.Condition()
-        self._gecko_start_waiters: dict[bool, deque[object]] = {False: deque(), True: deque()}
         self._cache: dict[str, tuple[float, Any, datetime]] = {}
 
     def _prune_cache(self, now: float) -> None:
@@ -1177,9 +1171,6 @@ class HttpClient:
         """Space request starts without serializing normal response time."""
         if host == "api.dexscreener.com":
             await self._reserve_dex_request_start(not_before=not_before)
-            return
-        if host == "api.geckoterminal.com":
-            await self._reserve_gecko_request_start(not_before=not_before)
             return
         async with self._locks[host]:
             await self._reserve_locked_host_request_start(
@@ -1217,48 +1208,11 @@ class HttpClient:
                 queue.remove(ticket)
                 condition.notify_all()
 
-    async def _reserve_gecko_request_start(self, *, not_before: float = 0.0) -> None:
-        """Let held exact-pool recovery take the next shared Gecko start."""
-        host = "api.geckoterminal.com"
-        high = GECKO_REQUEST_HIGH_PRIORITY.get()
-        queue = self._gecko_start_waiters[high]
-        ticket = object()
-        condition = self._gecko_start_condition
-        async with condition:
-            queue.append(ticket)
-            condition.notify_all()
-            try:
-                while True:
-                    if queue[0] is not ticket or (not high and self._gecko_start_waiters[True]):
-                        await condition.wait()
-                        continue
-                    now = time.monotonic()
-                    deadline = GECKO_REQUEST_START_DEADLINE.get()
-                    start_at = max(
-                        self._last[host] + max(self.min_host_interval, self.GECKO_MIN_HOST_INTERVAL),
-                        not_before,
-                        self._host_backoff_until.get(host, 0.0),
-                    )
-                    if deadline is not None and max(now, start_at) > deadline:
-                        raise TimeoutError("gecko_request_start_deadline_elapsed")
-                    wait = start_at - now
-                    if wait <= 0:
-                        self._last[host] = now
-                        return
-                    try:
-                        await asyncio.wait_for(condition.wait(), timeout=wait)
-                    except TimeoutError:
-                        pass
-            finally:
-                queue.remove(ticket)
-                condition.notify_all()
-
     async def _reserve_locked_host_request_start(
         self, host: str, *, not_before: float = 0.0,
     ) -> None:
         now = time.monotonic()
-        interval = (max(self.min_host_interval, self.GECKO_MIN_HOST_INTERVAL)
-                    if host == "api.geckoterminal.com" else self.min_host_interval)
+        interval = max(self.min_host_interval, 2.1) if host == "api.geckoterminal.com" else self.min_host_interval
         wait = max(
             0.0,
             interval - (now - self._last[host]),
@@ -1269,7 +1223,7 @@ class HttpClient:
         self._last[host] = time.monotonic()
 
     def _record_dex_rate_limit(self, host: str, response: httpx.Response) -> None:
-        if host not in {"api.dexscreener.com", "api.geckoterminal.com"} or response.status_code != 429:
+        if host != "api.dexscreener.com" or response.status_code != 429:
             return
         value = response.headers.get("Retry-After", "2")
         try:
@@ -1284,7 +1238,7 @@ class HttpClient:
         self._host_backoff_until[host] = max(
             self._host_backoff_until.get(host, 0.0), time.monotonic() + max(0.0, delay),
         )
-        if host == "api.dexscreener.com" and self.on_dex_rate_limit is not None:
+        if self.on_dex_rate_limit is not None:
             self.on_dex_rate_limit(self._host_backoff_until[host])
 
     async def get(
@@ -1312,12 +1266,6 @@ class HttpClient:
                      min(15.0, float(response.headers.get("Retry-After", "2") or 2)))
             if host == "api.dexscreener.com":
                 await self._reserve_host_request_start(host)
-                response = await self.client.get(url, params=params, headers=headers)
-                self._record_dex_rate_limit(host, response)
-            elif host == "api.geckoterminal.com":
-                await self._reserve_host_request_start(
-                    host, not_before=time.monotonic() + retry,
-                )
                 response = await self.client.get(url, params=params, headers=headers)
                 self._record_dex_rate_limit(host, response)
             else:
