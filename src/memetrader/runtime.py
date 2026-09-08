@@ -7431,7 +7431,8 @@ class Runtime:
         self._pattern_chain_cursor = cursor + 1
         cross_section = self.store.capital_cross_section(
             [(k, item["pair_address"]) for k, item in watch.items()])
-        for chain in chains:
+
+        async def fetch_chain(chain: str):
             await self._chain_meme_active_idle().wait()
             targets = [v for v in watch.values() if v["token"].chain == chain]
             # Held tokens only consume their core lane's next response. Never
@@ -7448,6 +7449,10 @@ class Runtime:
                         self._remember_pattern_quotes(quoted)
                 except (httpx.HTTPError, TimeoutError) as exc:
                     self.store.heartbeat("chain-meme-pattern-observer", error=type(exc).__name__)
+            return chain, targets
+
+        async def observe_chain(chain: str, targets: list) -> None:
+            nonlocal projected, sampled
             for item in targets:
                 token = item["token"]
                 snapshot = item["quote"]
@@ -7491,6 +7496,13 @@ class Runtime:
                 # Independent candidate work must not monopolize the event loop
                 # while held-market responses and exits are already ready.
                 await asyncio.sleep(0)
+        # Fetch chains concurrently through the existing low-priority gate.
+        # One consumer yields between tokens so ready held work keeps priority.
+        async with asyncio.TaskGroup() as group:
+            tasks = [group.create_task(fetch_chain(chain)) for chain in chains]
+            for completed in asyncio.as_completed(tasks):
+                chain, targets = await completed
+                await observe_chain(chain, targets)
         self.store.heartbeat("chain-meme-pattern-observer", item=sampled > 0,
             error_detail=f"watched={len(watch)};sampled={sampled};projected={projected}")
         self.store.set_kv("chain-meme-pattern-watch", {

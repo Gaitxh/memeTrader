@@ -349,9 +349,19 @@ def test_pattern_observer_batches_each_due_chain_with_shared_priority_gate(monke
                 runtime._pattern_watch[token_id]["quote"] = snapshot
         runtime._remember_pattern_quotes = remember
         calls, observed = [], []
+        held_response_applied = []
+        all_started = asyncio.Event()
+        peer_applied = asyncio.Event()
         async def fresh(chain, addresses, **kwargs):
             assert kwargs == {"fresh": True, "high_priority": False}
             calls.append((chain, list(addresses)))
+            if len(calls) == 3:
+                all_started.set()
+            # Every chain must start before any response is required to finish.
+            await asyncio.wait_for(all_started.wait(), timeout=.2)
+            if chain == "bsc":
+                # The fast peer must be processed without waiting for this chain.
+                await asyncio.wait_for(peer_applied.wait(), timeout=.2)
             result = {}
             for token_id, item in runtime._pattern_watch.items():
                 if item["token"].chain == chain:
@@ -359,9 +369,18 @@ def test_pattern_observer_batches_each_due_chain_with_shared_priority_gate(monke
                         now, now-timedelta(minutes=3), price=1., liquidity=10000, volume=1000, buys=14, sells=6))
             return result
         runtime._dex_batch_quote = fresh
+        def observe(token, *args, **kwargs):
+            if observed:
+                assert held_response_applied == [True]
+            else:
+                asyncio.get_running_loop().call_soon(held_response_applied.append, True)
+            observed.append(token.token_id)
+            if token.chain != "bsc":
+                peer_applied.set()
+            return 0
         runtime.store = SimpleNamespace(capital_cross_section=lambda *args: {},
-            observe_chain_meme_pattern=lambda token, *args, **kwargs: observed.append(token.token_id) or 0,
-            heartbeat=lambda *args, **kwargs: None)
+            observe_chain_meme_pattern=observe,
+            heartbeat=lambda *args, **kwargs: None, set_kv=lambda *args: None)
         await runtime.chain_meme_pattern_observer_once()
         assert [chain for chain, _ in calls] == (["bsc", "robinhood", "solana"] if available else [])
         assert all(len(addresses) == 2 for _, addresses in calls)

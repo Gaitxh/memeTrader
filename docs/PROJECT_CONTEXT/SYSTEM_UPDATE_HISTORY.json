@@ -2,6 +2,18 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260908-backend-observer-concurrent-fetch",
+      "recorded_at": "2026-09-08T07:19:37.184733+00:00",
+      "deployed_at": "2026-09-08T07:16:37.672062Z",
+      "title": "候选观察多链并发获取，逐币计算保留持仓优先",
+      "problem": "候选观察器逐链等待网络，轮次p50约7.68秒；并发计算初版又会把已就绪持仓回调排在另一链计算之后。",
+      "change": "各链原有批次并发获取，统一按返回顺序逐币处理并让出事件循环；继续使用低优先槽位、持仓预留、3秒超时和共享退避。",
+      "rationale": "消除多链串行等待，不增加轮询频率、请求数量或放宽数据规则。",
+      "validation": "5个定向用例最终通过，复现并修正串行等待与跨链计算让位问题。15:18短窗观察轮次p50=4.69秒，held_fetch p50=1.04秒；280追加/20激活/1资金激活摘要保持，API和数据前沿正常。",
+      "scope": "runtime观察调度与相关测试；仅重启Paper，资金/策略/历史/Live锁不变；短窗负载不同，不宣称全局或全天稳定提速。",
+      "report": "docs/PROJECT_CONTEXT/BACKEND_PERFORMANCE_20260908.md"
+    },
+    {
       "id": "20260908-early-impulse-same-fill-three-exits",
       "recorded_at": "2026-09-08T07:01:07.164317+00:00",
       "deployed_at": "2026-09-08T06:57:33.703927Z",

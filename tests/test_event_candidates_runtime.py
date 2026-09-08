@@ -37,7 +37,8 @@ def test_pattern_observer_yields_between_tokens_without_resampling():
             calls.append(token.token_id)
             return 0
         runtime.store = SimpleNamespace(capital_cross_section=lambda *args: {},
-            observe_chain_meme_pattern=observe, heartbeat=lambda *args, **kwargs: None)
+            observe_chain_meme_pattern=observe, heartbeat=lambda *args, **kwargs: None,
+            set_kv=lambda *args: None)
         runtime.runtime_timing = SimpleNamespace(observe=lambda name, duration, **kwargs: timing.append(name))
         await runtime.chain_meme_pattern_observer_once()
         assert calls == [token.token_id for token in tokens]
