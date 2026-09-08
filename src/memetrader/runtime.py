@@ -7260,6 +7260,8 @@ class Runtime:
         watch, occupied, chain_used, borrowed = {}, {}, {}, []
         for key, item in getattr(self, "_pattern_watch", {}).items():
             if current >= item["expires_at"] and key not in held:
+                if item.get("borrowed_at") is not None:
+                    self._pattern_watch_borrow_expirations = getattr(self, "_pattern_watch_borrow_expirations", 0) + 1
                 continue
             created = item.get("pool_created_at_ms")
             if created is not None:
@@ -7301,6 +7303,7 @@ class Runtime:
             slot = (chain, bucket)
             if age < 0:
                 continue
+            borrowed_admission = False
             if token_id not in held and occupied.get(slot, 0) >= capacity:
                 floor = getattr(self, "_chain_paper_execution", {}).get("min_pool_liquidity_usd", 1000.0)
                 liquidity = getattr(snapshot, "liquidity_usd", None)
@@ -7315,11 +7318,13 @@ class Runtime:
                     and ((value := getattr(item["quote"], "liquidity_usd", None)) is None
                          or not math.isfinite(value) or value < floor)), None)
                 if replacement is not None:
-                    watch.pop(replacement)
+                    replaced = watch.pop(replacement)
+                    borrowed_admission = bucket == "early" and replaced.get("borrowed_at") is not None
                     occupied[slot] -= 1
                     chain_used[chain] -= 1
                     self._pattern_watch_replacements = getattr(self, "_pattern_watch_replacements", 0) + 1
                 elif bucket == "early" and chain_used.get(chain, 0) < 10:
+                    borrowed_admission = True
                     self._pattern_watch_borrows = getattr(self, "_pattern_watch_borrows", 0) + 1
                 else:
                     continue
@@ -7340,6 +7345,11 @@ class Runtime:
                 "pool_created_at_ms": float(created),
                 "pair_address": canonical_token_address(chain, address),
                 "expires_at": current + timedelta(minutes=20 if bucket == "mature" else 15)}
+            if borrowed_admission:
+                # Only new borrowed capacity has a short residency. Keep the
+                # admission class/clock fixed across quote updates and aging.
+                watch[token_id]["borrowed_at"] = current
+                watch[token_id]["expires_at"] = current + timedelta(seconds=180)
             if token_id not in held:
                 occupied[slot] = occupied.get(slot, 0) + 1
                 chain_used[chain] = chain_used.get(chain, 0) + 1
@@ -7576,6 +7586,11 @@ class Runtime:
             "replacements_since_start": getattr(self, "_pattern_watch_replacements", 0),
             "borrows_since_start": getattr(self, "_pattern_watch_borrows", 0),
             "reservation_reclaims_since_start": getattr(self, "_pattern_watch_reservation_reclaims", 0),
+            "borrow_expirations_since_start": getattr(self, "_pattern_watch_borrow_expirations", 0),
+            "borrowed_watches": [{"token_id": key, "pair_address": item["pair_address"],
+                "borrowed_at": iso(item["borrowed_at"]), "expires_at": iso(item["expires_at"]),
+                "held": key in getattr(self, "_pattern_held_tokens", set())}
+                for key, item in self._pattern_watch.items() if item.get("borrowed_at") is not None],
             "non_held_by_chain_bucket": getattr(self, "_pattern_watch_nonheld_by_chain_bucket", {}),
         })
 

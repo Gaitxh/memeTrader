@@ -2,6 +2,18 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260908-early-borrow-residency-180s",
+      "recorded_at": "2026-09-08T14:18:10.053466Z",
+      "deployed_at": "2026-09-08T14:13:58.708518Z",
+      "title": "仅新增early借用位采用180秒驻留，基础位TTL保持",
+      "problem": "借用修复后成熟活跃227币仅7个双检查点；存在较长非持仓观察，但旧数据不能归因具体借用位，最长样本实际为held。",
+      "change": "真实early借用准入固定180s期限；base early15m与growth/mature15/20m保持。held忽略过期；既有KV记录借用身份/期限/held和过期计数，无新请求。",
+      "rationale": "180s为已有60/120检查点留执行余量，隔离于基础3位，不改变策略阈值/总量10/3-4-3预留。没有证明借用位是全部缺失的根因。",
+      "validation": "11个不同定向测试通过。22:13经原Paper launcher加载，22:18三API/五类不可变摘要/原资金期/执行设置/Live=false一致；21借用/18收回/2借用过期，已过期held借用仍在；568批入/566出/2剩余/0新增丢弃。",
+      "scope": "4分钟短窗：pattern p95 7.719→7.476s、held退出53.251→48.167ms，但held主循环p95 2.542→3.421s，不能宣称全面提速。成熟active10币仅1后帧/0双检查点，覆盖改善证据不足；原池缺口仍在。",
+      "report": "docs/PROJECT_CONTEXT/EARLY_WATCH_BORROW_ROTATION_20260908.md"
+    },
+    {
       "id": "20260908-early-watch-fixed-cap-borrow",
       "recorded_at": "2026-09-08T13:44:27.884884Z",
       "deployed_at": "2026-09-08T13:42:04.142397Z",

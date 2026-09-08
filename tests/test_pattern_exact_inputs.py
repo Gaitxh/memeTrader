@@ -74,6 +74,133 @@ def test_pattern_watch_borrows_early_capacity_and_reclaims_for_base_buckets(monk
     assert set(runtime._pattern_watch) == {held_id}
 
 
+def test_pattern_watch_base_and_borrowed_early_ttls_are_fixed(monkeypatch):
+    now = utcnow()
+    monkeypatch.setattr("memetrader.runtime.utcnow", lambda: now)
+    runtime = Runtime.__new__(Runtime)
+    runtime._pattern_held_tokens = set()
+    runtime._paper_quote_rejections = lambda *args: []
+
+    def quote(index):
+        token = TokenCandidate("bsc", f"0x{index:040x}", "fixture")
+        return token, SimpleNamespace(price_usd=1, liquidity_usd=5000, observed_at=now,
+            raw={"pair": {"pairAddress": f"pool-{index}",
+                "pairCreatedAt": (now - timedelta(seconds=60)).timestamp() * 1000}})
+
+    initial = {index: quote(index) for index in range(4)}
+    runtime._remember_pattern_quotes(initial)
+    base_ids = [quote(index)[0].token_id for index in range(3)]
+    borrowed_id = quote(3)[0].token_id
+    base_expiries = {token_id: runtime._pattern_watch[token_id]["expires_at"] for token_id in base_ids}
+    borrowed_expiry = runtime._pattern_watch[borrowed_id]["expires_at"]
+    assert all(expiry == now + timedelta(minutes=15) for expiry in base_expiries.values())
+    assert runtime._pattern_watch[borrowed_id]["borrowed_at"] == now
+    assert borrowed_expiry == now + timedelta(seconds=180)
+
+    now += timedelta(seconds=179)
+    runtime._remember_pattern_quotes({index: quote(index) for index in range(4)})
+    assert {token_id: runtime._pattern_watch[token_id]["expires_at"] for token_id in base_ids} == base_expiries
+    assert runtime._pattern_watch[borrowed_id]["expires_at"] == borrowed_expiry
+
+    now += timedelta(seconds=1)
+    replacement = quote(9)
+    runtime._remember_pattern_quotes({9: replacement})
+    assert borrowed_id not in runtime._pattern_watch
+    item = runtime._pattern_watch[replacement[0].token_id]
+    assert item["borrowed_at"] == now
+    assert item["expires_at"] == now + timedelta(seconds=180)
+
+
+def test_pattern_watch_expired_borrowed_entry_survives_only_while_held(monkeypatch):
+    now = utcnow()
+    monkeypatch.setattr("memetrader.runtime.utcnow", lambda: now)
+    runtime = Runtime.__new__(Runtime)
+    runtime._pattern_held_tokens = set()
+    runtime._paper_quote_rejections = lambda *args: []
+
+    def quote(index):
+        token = TokenCandidate("bsc", f"0x{index:040x}", "fixture")
+        return token, SimpleNamespace(price_usd=1, liquidity_usd=5000, observed_at=now,
+            raw={"pair": {"pairAddress": f"pool-{index}",
+                "pairCreatedAt": (now - timedelta(seconds=60)).timestamp() * 1000}})
+
+    runtime._remember_pattern_quotes({index: quote(index) for index in range(4)})
+    borrowed_id = quote(3)[0].token_id
+    runtime._pattern_held_tokens.add(borrowed_id)
+    now += timedelta(seconds=180)
+    runtime._remember_pattern_quotes({})
+    assert borrowed_id in runtime._pattern_watch
+    runtime._pattern_held_tokens.remove(borrowed_id)
+    runtime._remember_pattern_quotes({})
+    assert borrowed_id not in runtime._pattern_watch
+
+
+@pytest.mark.parametrize("borrowed", [False, True])
+def test_pattern_watch_invalid_slot_replacement_keeps_victim_ttl_class(monkeypatch, borrowed):
+    now = utcnow()
+    monkeypatch.setattr("memetrader.runtime.utcnow", lambda: now)
+    runtime = Runtime.__new__(Runtime)
+    runtime._pattern_held_tokens = set()
+    runtime._paper_quote_rejections = lambda *args: []
+
+    def quote(index, liquidity=5000):
+        token = TokenCandidate("bsc", f"0x{index:040x}", "fixture")
+        return token, SimpleNamespace(price_usd=1, liquidity_usd=liquidity, observed_at=now,
+            raw={"pair": {"pairAddress": f"pool-{index}",
+                "pairCreatedAt": (now - timedelta(seconds=60)).timestamp() * 1000}})
+
+    seed_count = 4 if borrowed else 3
+    runtime._remember_pattern_quotes({index: quote(index) for index in range(seed_count)})
+    victim_id = quote(seed_count - 1)[0].token_id
+    runtime._pattern_watch[victim_id]["quote"] = quote(seed_count - 1, liquidity=0)[1]
+    if borrowed:
+        assert runtime._pattern_watch[victim_id]["borrowed_at"] == now
+    else:
+        assert "borrowed_at" not in runtime._pattern_watch[victim_id]
+
+    candidate = quote(9)
+    runtime._remember_pattern_quotes({9: candidate})
+    assert victim_id not in runtime._pattern_watch
+    item = runtime._pattern_watch[candidate[0].token_id]
+    if borrowed:
+        assert item["borrowed_at"] == now
+        assert item["expires_at"] == now + timedelta(seconds=180)
+    else:
+        assert "borrowed_at" not in item
+        assert item["expires_at"] == now + timedelta(minutes=15)
+
+
+def test_pattern_watch_growth_replacement_keeps_base_ttl_after_borrow_ages(monkeypatch):
+    now = utcnow()
+    monkeypatch.setattr("memetrader.runtime.utcnow", lambda: now)
+    runtime = Runtime.__new__(Runtime)
+    runtime._pattern_held_tokens = set()
+    runtime._paper_quote_rejections = lambda *args: []
+
+    def quote(index, age=60):
+        token = TokenCandidate("bsc", f"0x{index:040x}", "fixture")
+        return token, SimpleNamespace(price_usd=1, liquidity_usd=5000, observed_at=now,
+            raw={"pair": {"pairAddress": f"pool-{index}",
+                "pairCreatedAt": (now - timedelta(seconds=age)).timestamp() * 1000}})
+
+    runtime._remember_pattern_quotes({i: quote(i) for i in range(3)})
+    borrowed = quote(3, age=890)
+    runtime._remember_pattern_quotes({3: borrowed})
+    expiry = runtime._pattern_watch[borrowed[0].token_id]["expires_at"]
+    runtime._remember_pattern_quotes({i: quote(i, age=2000) for i in range(4, 7)})
+    now += timedelta(seconds=20)
+    runtime._remember_pattern_quotes({})
+    item = runtime._pattern_watch[borrowed[0].token_id]
+    assert item["bucket"] == "growth" and item["expires_at"] == expiry
+    item["quote"].liquidity_usd = 0
+    candidate = quote(9, age=2000)
+    runtime._remember_pattern_quotes({9: candidate})
+    replacement = runtime._pattern_watch[candidate[0].token_id]
+    assert borrowed[0].token_id not in runtime._pattern_watch
+    assert "borrowed_at" not in replacement
+    assert replacement["expires_at"] == now + timedelta(minutes=15)
+
+
 def test_pattern_watch_nonheld_capacity_is_ten_per_chain(monkeypatch):
     now = utcnow()
     monkeypatch.setattr("memetrader.runtime.utcnow", lambda: now)
