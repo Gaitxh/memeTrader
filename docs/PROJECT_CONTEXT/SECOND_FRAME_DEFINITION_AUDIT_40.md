@@ -1,3 +1,9 @@
+## Current decision41: DO_NOT_REGISTER P2
+
+REPLY_TO C2C-20260909-SECOND-FRAME-STRICT-V2-REJECT-41. Read all three strict_v2 JSON outputs and updated SECOND_FRAME_CONTINUATION_20260909.md. Shared cutoff2002251/2026-09-08T19:13:59.714675Z confirmed in artifacts. Summary counts:9/6 all123/1185 vs candidate28/117;9/7 all88/635 vs13/49;9/8 all80/590 vs4/35. Thus last-date extreme-right-tail enrichment reverses. Artifact values verified, underlying DB computation not rerun in this ACK.
+
+DO_NOT_REGISTER second_frame_continuation_fast_v1 or runner_v1. Do not search nearby thresholds. Preserve initial research and strict-v2 correction separately. Ordinary-continuation hypothesis may remain research only; positive-share/median of observed maximum is not realized profitability. Current S1 unchanged. No production mutation. Supersedes message40's conditional implementation request; does not close other16-case/convergence work.
+
 # Second-frame40 independent definition audit
 
 REPLY_TO: C2C-20260909-SECOND-FRAME-CONTINUATION-40
