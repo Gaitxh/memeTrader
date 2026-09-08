@@ -36,7 +36,9 @@ def test_native_event_only_queues_bounded_identity_hydration():
     runtime._native_launch_observers = [Observer()]
     runtime._native_launch_cursor = 0
     queued, recorded, heartbeats = [], [], []
-    runtime.store = SimpleNamespace(start_token_discovery_round=lambda **kw: 1,
+    runtime.store = SimpleNamespace(CHAIN_MEME_TRADER_ACTIVE_VERSION="test",
+        db=SimpleNamespace(execute=lambda *a: SimpleNamespace(fetchone=lambda: None)),
+        start_token_discovery_round=lambda **kw: 1,
         token_discovery_known=lambda key: False,
         record_chain_meme_pattern_evidence=lambda *a, **kw: recorded.append((a,kw)) or 1,
         upsert_token=lambda *a, **kw: None,
@@ -49,6 +51,9 @@ def test_native_event_only_queues_bounded_identity_hydration():
     assert all(row[1]["observed_at"].isoformat().replace("+00:00", "Z") == at for row in recorded)
     assert all(row[0][1] == "" for row in recorded)  # TokenManager is never a pool.
     assert "unprocessed=0" in heartbeats[-1]["error_detail"]
+    runtime.store.db=SimpleNamespace(execute=lambda *a: SimpleNamespace(fetchone=lambda: (1,)))
+    asyncio.run(runtime.chain_meme_native_launch_once())
+    assert len(queued)==200  # Persistent duplicates do not requeue hydration.
     runtime._critical_onchain_exit_event.set()
     asyncio.run(runtime.chain_meme_native_launch_once())
     assert len(queued) == 200  # Exit-priority skip does not poll or hydrate.

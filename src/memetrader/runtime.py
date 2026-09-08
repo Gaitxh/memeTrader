@@ -1481,8 +1481,11 @@ class Runtime:
         self._chain_meme_v21_vault_retry_after: dict[str, float] = {}
         self._chain_meme_v21_vault_last_heartbeat = 0.0
         self.evm_route = EvmUniswapV3QuoteClient(self.evm_route_http)
-        from .pons_observer import PonsV1Observer, FourMemeObserver
-        self._native_launch_observers = [FourMemeObserver(self.evm_route), PonsV1Observer(self.evm_route)]
+        from .pons_observer import PonsV1Observer, PonsV2Observer
+        from .four_meme_rest import FourMemeRestObserver
+        four_rest = FourMemeRestObserver(self.http)
+        self._native_launch_observers = [four_rest, PonsV2Observer(self.evm_route, self.http),
+                                         four_rest, PonsV1Observer(self.evm_route)]
         self._native_launch_cursor = 0
         self.evm_aggregator = (
             EvmZeroXPriceClient(self.evm_route_http, zerox_api_key)
@@ -6436,17 +6439,17 @@ class Runtime:
         self._native_launch_cursor += 1
         retry = getattr(self, "_native_launch_retry", {})
         self._native_launch_retry = retry
-        if retry.get(observer.CHAIN, utcnow()) > utcnow():
+        if retry.get(observer.ERROR_PREFIX, utcnow()) > utcnow():
             return
-        source = f"native-launch:{observer.CHAIN}"
+        source = f"native-launch:{observer.CHAIN}:{observer.ERROR_PREFIX}"
         try:
             result = await asyncio.wait_for(observer.observe(), timeout=4)
         except asyncio.TimeoutError:
-            retry[observer.CHAIN] = utcnow() + timedelta(minutes=5)
-            self.store.heartbeat(source, error="native_rpc_timeout")
+            retry[observer.ERROR_PREFIX] = utcnow() + timedelta(minutes=5)
+            self.store.heartbeat(source, error="native_source_timeout")
             return
         if result["status"] == "ERROR":
-            retry[observer.CHAIN] = utcnow() + timedelta(minutes=5)
+            retry[observer.ERROR_PREFIX] = utcnow() + timedelta(minutes=5)
             self.store.heartbeat(source, error=str(result.get("error") or "native_rpc_error"))
             return
         events = list(result.get("events") or [])[:200]
@@ -6461,11 +6464,17 @@ class Runtime:
             if not address:
                 continue
             token_id = f"{observer.CHAIN}:{address}"
-            key = f"{observer.CHAIN}:{event['transaction_hash']}:{event['log_index']}"
+            key = event.get("source_key") or f"{observer.CHAIN}:{event['transaction_hash']}:{event['log_index']}"
             await self._chain_meme_active_idle().wait()
+            kind = str(event.get("evidence_kind") or "evm_native_launch")
+            if self.store.db.execute(
+                "SELECT 1 FROM chain_meme_pattern_evidence WHERE definition_version=? AND kind=? AND source_key=?",
+                (self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION, kind, key),
+            ).fetchone():
+                continue
             known = self.store.token_discovery_known(token_id)
             evidence_id = self.store.record_chain_meme_pattern_evidence(token_id,
-                str(event.get("pool") or ""), "evm_native_launch", event,
+                str(event.get("pool") or ""), kind, event,
                 observed_at=observed, source_key=key)
             if evidence_id is None:
                 continue
@@ -6482,7 +6491,9 @@ class Runtime:
             requested_count=1, returned_count=len(events))
         self.store.heartbeat(source, item=queued > 0,
             error_detail=f"events={len(events)};queued={queued};unprocessed=0;"
-                         f"skipped_blocks={result.get('skipped_blocks',0)};finality=false")
+                         f"skipped_blocks={result.get('skipped_blocks',0)};"
+                         f"indexed_source={result.get('indexed_source','')};"
+                         f"truncated={result.get('truncated',False)};finality=false")
 
     async def chain_meme_extra_official_once(self) -> None:
         # Existing OKX cadence is unchanged; supplementary sources rotate separately.
