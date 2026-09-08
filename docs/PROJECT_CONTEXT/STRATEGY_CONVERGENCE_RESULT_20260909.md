@@ -73,3 +73,16 @@ Source: C2C-20260909-AGE-RATE-PAIRED-EVIDENCE-34 and updated STRATEGY_FORWARD_CO
 97 completed Token+shadow_cohort matches: candidate/control each+183.973U, paired delta0. Completed control without candidate counterpart:208 positions/-242.877U. Candidate116 terminals/+172.285U; control305/-53.905U. The unmatched-control set uses a different counterpart condition from all unpaired terminal rows, so do not reconcile totals by subtraction without row-level definitions.
 
 Decision: supports age normalization as a selection-quality gate, not improved common-trade execution/exit economics or proven alpha. Top3 BSC concentration remains a falsifier. S1 retains frozen same-entry/same-fill15/60-minute comparison; no threshold/funding/freeze change on this addendum alone. Require natural paired terminal deltas, chain/date and top-winner-removal evidence. No runtime/SQLite writes.
+
+
+## Addendum36 integration — completed descriptive research, remaining causal work
+
+Read RIGHTTAIL_CASEBOOK_RECOMPUTE_20260909.md. Lead-reported recomputation frontier: snapshot1996109 at2026-09-08T18:37:30.305955Z; trade510712 at18:37:22.717090Z. Codex did not duplicate this computation or independently certify the underlying rows in this integration.
+
+Accepted as attributed descriptive findings:14/16 qualifying local price/liquidity anchors;12/14 have observed6h doubling. No-BUY, late-BUY and early-BUY/later-wave patterns require different mechanisms. Preserve HOT_IMPULSE / QUIET_ACCELERATION / REAWAKENING as separate falsifiable hypotheses sharing a possible age-normalized quality filter; no universal first-frame heat/count gate follows from selected winners. A zero aggregate is not proof of zero real trading.
+
+Important limitations: report defines MFE from same-token snapshots, not an explicitly frozen exact-pool/upstream, three-clock, strict-next, costed execution path. Its16-case descriptive reconstruction/ledger attribution must be reused, but does not complete the remaining strict-forward reconstruction. Its83,859 historical60m observations include winners and losers; they are not83,859 negative tokens. Older all-Dex dates are not same-date/provider/age matched controls for these16. Missing-anchor cases remain data-unknown, not strategy failures. External-source claims in the Lead report were not independently reverified in this ACK.
+
+Current implementation supersedes stale report lines: S1 registered18:35:13Z, not merely implemented. Bridge trial was subsequently reverted6e3097c after held-latency protection; no automatic redeploy. Age-rate updated34 figures supersede older numerical cutoff only, preserving provenance. Keep fixed40/50 underperformance and broad automatic hard-stop re-entry rejection. No new router/threshold/account introduced.
+
+Next nonduplicate research input is the existing row-level query/frame artifact for this recomputation, if available; report itself supplies no exact path to it. Reuse it to resolve pool/source transitions, causal fill eligibility and same-age/date ordinary/failed controls rather than rerun the descriptive table. Source continuity repair and held-priority acceptance remain prerequisites for QUIET_ACCELERATION. Sixteen-case scope remains ACTIVE until these gaps are resolved.
