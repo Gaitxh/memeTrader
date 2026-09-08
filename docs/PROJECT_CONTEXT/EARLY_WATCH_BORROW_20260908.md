@@ -49,3 +49,33 @@ Disposition: **ACCEPTED_DEPLOYED — bounded engineering behavior verified**, wi
 This repair makes existing spare observation capacity usable for early candidates. It does not increase the total watch budget, guarantee complete new-token coverage or establish profitable signal discrimination. Natural borrow/reclaim counts are admission events, not unique tokens or trades. Aggregate watch count includes held tokens and must not be compared directly with the non-held cap of thirty across three chains.
 
 The short deployment window cannot establish long-run latency stability, first-150-second coverage for every discovered token, or Alpha. Existing stale original-pool gaps and negative strategy results remain separate issues. The prior rejection of a new <=300-second fixed40/80 arm remains effective; no strategy retuning was performed. Message19 ModeChat liveness/recovery remains deferred and was not started by this engineering acceptance boundary.
+
+## Message21 addendum: broad pre-deployment coverage denominator
+
+Response to `C2C-20260908-EARLY-WATCH-COVERAGE-ADDENDUM-21`. Lead reports active early1705/both63 (RH497/6, SOL944/27, BSC264/30), any-second502, and activity-free3309/both60. These exact counts and the individual case frame counts are **Lead-reported, not independently reproduced**. The qualitative conclusion of broad early-trajectory scarcity is independently supported below. Missing observations are not evidence that a token lacked a price trend, and coverage is not profit.
+
+The independent read-only extraction finished at13:53:54.635874Z using the fixed historical interval **(08:02:59Z, 13:25:00Z]** on2026-09-08. The latter is an explicit approximation of Lead's `~13:25Z`. It examined9425 token candidates and55452 snapshot rows through existing token/observation indexes. This cutoff precedes deployment at13:42:04Z: these are **pre-fix baseline observations, not a post-fix acceptance comparison**. SQLite was opened `mode=ro` and `query_only`; no strategy, Runtime, parameter, account, funding, history or Live writes/restart occurred for message21.
+
+The unit is one token, not one token per provider/pool. A base anchor is the first *available qualifying* snapshot ordered by `(recorded_at,id)` with positive finite price, finite liquidity≥1000U, its recorded pool age in[0,900)s, original-pool address, `observed_at<=ingested_at<=recorded_at<=cutoff`, and observed-to-recorded lag≤15s. Features come only from that snapshot. Checkpoints require the exact token/pool, strictly later observed/available times, positive price and the same clock/lag rule, at inclusive offsets45–75s and105–135s from anchor observation. The main checkpoint count does not add a liquidity floor or require the same upstream; those are separately reported stricter checks. No later winner labels or case whitelist are used.
+
+Two activity interpretations are kept separate: (1) filter the frozen base anchor using buys+sells≥3 OR volume5m≥200U, and (2) choose a later first qualifying active anchor. Re-anchoring may describe a different enrollment rule, but cannot be presented as filtering the same initial cohort. There were97 changed anchors; seven tokens newly gained both checkpoints after that shift. The Lead's63 versus60 is therefore compatible with an anchor change in principle, but its actual cause remains unverified without the exact query/token-anchor list.
+
+| Independent enrollment | Eligible tokens | Any later exact-pool frame in150s | Both checkpoints | Both / eligible | Full135s window: both / mature |
+|---|---:|---:|---:|---:|---:|
+| Base, no activity restriction | 5152 | 1945 | 54 | 1.048% | 53/5109 =1.037% |
+| Activity filter on frozen base anchor | 2845 | 992 | 47 | 1.652% | 46/2833 =1.624% |
+| First qualifying active anchor, reselected | 2942 | 1038 | 60 | 2.039% | 59/2930 =2.014% |
+
+All eligible tokens remain in the main denominator, including missing paths and right-censored windows. Full135s and full150s denominator counts happened to coincide at this cutoff; unfinished windows are explicitly separated rather than silently removed.
+
+| Chain | Frozen-base activity: both / eligible | Reselected activity: both / eligible |
+|---|---:|---:|
+| BSC | 16/269 =5.948% | 25/322 =7.764% |
+| Robinhood | 3/1477 =0.203% | 4/1502 =0.266% |
+| Solana | 28/1099 =2.548% | 31/1118 =2.773% |
+
+The fixed-base activity group has only15 same-upstream dual-checkpoint tokens (versus47 pool-only), and39 with both checkpoint liquidities≥1000U. Reselected activity has26 same-upstream and50 floor-eligible (versus60 pool-only). Thus pool-only sparse coverage is already a weak lower-quality description for mechanisms needing consistent upstream measurements. Raw primary-key checks of1267 distinct referenced frames passed identity, clocks/window and anchor floor/age validation. The frozen-anchor subset count assertion also passed; no production test suite or repeated runtime deployment was needed for this report-only addition.
+
+**Disposition:** retain message20's bounded borrowing/reservation implementation and engineering acceptance; independently confirm a broad coverage problem, while keeping **exact Lead1705/63 and3309/60 unreproduced**. Different first-frame selection, source/lag rules or the approximate cutoff could affect comparison, but no specific explanation for the denominator discrepancy is established. No request-cap expansion, new strategy, timing relaxation, retune or restart follows from this addendum. Post-fix first150s coverage and profitable coverage improvement remain unproven.
+
+Reproduction/evidence: `data/research/early_watch_borrow_20260908/addendum21_coverage.py`, `addendum21_run.txt`, and `addendum21/{summary.json,tokens.json,validation.json,lead_message21_claims.json}`. The token artifact includes each anchor and actual checkpoint snapshot IDs, allowing exact reconciliation with a future supplied Lead query without reinterpreting historical evidence.
