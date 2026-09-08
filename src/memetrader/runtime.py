@@ -16,6 +16,7 @@ import time
 import urllib.parse
 import urllib.request
 from collections import deque
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import asdict
 from datetime import timedelta
 from decimal import Decimal, ROUND_DOWN
@@ -1498,6 +1499,7 @@ class Runtime:
         self._wsol_usdc_conversion_at = 0.0
         self._wsol_usdc_reference_next_at = 0.0
         self._dex_quote_lock = asyncio.Semaphore(8)
+        self._dex_low_priority_slots = asyncio.Semaphore(5)
         self._chain_meme_active_idle_event = asyncio.Event()
         self._chain_meme_active_idle_event.set()
         self.events = EventEngine(
@@ -1553,10 +1555,12 @@ class Runtime:
 
     def _dex_quote_low_priority_available(self) -> bool:
         loop = asyncio.get_running_loop()
+        low_slots = getattr(self, "_dex_low_priority_slots", None)
         return (
             self._chain_meme_active_idle().is_set()
             and
             not self._dex_quote_lock.locked()
+            and (low_slots is None or not low_slots.locked())
             and loop.time() >= self._dex_quote_backoff_until
         )
 
@@ -1575,6 +1579,42 @@ class Runtime:
             self._chain_meme_decision_event = event
         return event
 
+    @asynccontextmanager
+    async def _dex_quote_slot(self, *, high_priority: bool = False, wait: bool = True):
+        # Reserve three of eight slots for the three held-chain batches.
+        low_slots = getattr(self, "_dex_low_priority_slots", None)
+        if low_slots is None:
+            low_slots = self._dex_low_priority_slots = asyncio.Semaphore(5)
+        loop = asyncio.get_running_loop()
+        idle = self._chain_meme_active_idle()
+        if not wait and (self._dex_quote_lock.locked()
+                or (not high_priority and (low_slots.locked() or not idle.is_set()))
+                or loop.time() < self._dex_quote_backoff_until):
+            yield False
+            return
+        async with nullcontext() if high_priority else low_slots:
+            while True:
+                if not high_priority:
+                    await idle.wait()
+                delay = self._dex_quote_backoff_until - loop.time()
+                if delay > 0:
+                    if high_priority or not wait:
+                        yield False
+                        return
+                    await asyncio.sleep(delay)
+                    continue
+                await self._dex_quote_lock.acquire()
+                if self._dex_quote_backoff_until <= loop.time() and (high_priority or idle.is_set()):
+                    break
+                self._dex_quote_lock.release()
+                if high_priority or not wait:
+                    yield False
+                    return
+            try:
+                yield True
+            finally:
+                self._dex_quote_lock.release()
+
     async def _dex_batch_quote(
         self,
         chain: str,
@@ -1584,27 +1624,10 @@ class Runtime:
         high_priority: bool = False,
     ) -> dict[str, tuple[TokenCandidate, TokenSnapshot]] | None:
         """Share Dex cooldowns; None defers held work without claiming an HTTP result."""
-        if not high_priority:
-            await self._chain_meme_active_idle().wait()
         loop = asyncio.get_running_loop()
-        wait = self._dex_quote_backoff_until - loop.time()
-        if wait > 0:
-            if high_priority:
+        async with self._dex_quote_slot(high_priority=high_priority) as acquired:
+            if not acquired:
                 return None
-            await asyncio.sleep(wait)
-        while True:
-            await self._dex_quote_lock.acquire()
-            # A failed peer may have extended the shared backoff while this
-            # caller was waiting for the serialized quote slot. Never sleep
-            # while holding a batch semaphore slot.
-            wait = self._dex_quote_backoff_until - loop.time()
-            if wait <= 0:
-                break
-            self._dex_quote_lock.release()
-            if high_priority:
-                return None
-            await asyncio.sleep(wait)
-        try:
             try:
                 if fresh and hasattr(self.dex, "batch_quote_fresh"):
                     quoted = await self.dex.batch_quote_fresh(chain, addresses)
@@ -1641,8 +1664,6 @@ class Runtime:
             if getattr(self, "chain_meme_trader_only", False):
                 self._remember_pattern_quotes(quoted)
             return quoted
-        finally:
-            self._dex_quote_lock.release()
 
     async def solana_holder_shadow_once(self) -> None:
         cfg = self.config["sources"].get("solana_holder_shadow") or {}
@@ -2403,16 +2424,20 @@ class Runtime:
                        if float(item.get("next_primary_attempt", 0.0)) <= now]
         if primary_due and self._dex_quote_low_priority_available():
             try:
-                pairs = await self.dex.exact_pools_fresh(
-                    chain, [str(item["pair_address"]) for _, item in primary_due],
-                )
-                exact_received = True
-                pool_failure_kind = "DEX_SOURCE_COVERAGE_GAP"
+                # Do not queue behind primary congestion and hold up the
+                # independently budgeted public/Demo fallback below.
+                async with self._dex_quote_slot(wait=False) as acquired:
+                    if acquired:
+                        pairs = await self.dex.exact_pools_fresh(
+                            chain, [str(item["pair_address"]) for _, item in primary_due],
+                        )
+                        exact_received = True
+                        pool_failure_kind = "DEX_SOURCE_COVERAGE_GAP"
                 # A successful empty exact response proves a provider coverage
                 # gap, not a dead pool. Avoid retrying that same gap every 10s;
                 # primary token batches and independent fallback remain unchanged.
                 for key, item in primary_due:
-                    if key[1] not in pairs:
+                    if exact_received and key[1] not in pairs:
                         item["next_primary_attempt"] = now + 60
             except Exception as exc:
                 self._notify_source_error("dexscreener:original_pool", exc)
@@ -2820,7 +2845,7 @@ class Runtime:
         by_chain: dict[str, list[Any]] = {}
         for row in due:
             by_chain.setdefault(str(row["chain"]), []).append(row)
-        for chain, rows in by_chain.items():
+        async def hydrate_chain(chain, rows):
             for offset in range(0, len(rows), 30):
                 chunk = rows[offset : offset + 30]
                 round_id = self.store.start_token_discovery_round(
@@ -3015,6 +3040,11 @@ class Runtime:
                     returned_count=len(quoted_by_token),
                     duplicate_token_count=max(0, len(chunk) - len(quoted_by_token)),
                 )
+
+        # Each chain persists its completed batch immediately; a slow chain
+        # must not postpone another chain's already available first quote.
+        # The due-token budget and shared DEX concurrency/rate limits still apply.
+        await asyncio.gather(*(hydrate_chain(chain, rows) for chain, rows in by_chain.items()))
 
         critical_kinds = {"high_impact_account_post", "fresh_high_attention_event_relation"}
         recent_source_keys = self._recent_token_context_source_keys()

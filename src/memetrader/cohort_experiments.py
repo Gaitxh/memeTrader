@@ -799,7 +799,8 @@ def consume_passive_cohort_batch(
     cutoff = decision.timestamp() - PASSIVE_EPISODE_TTL_SECONDS
 
     histories = new_state.get("token_frames")
-    histories = copy.deepcopy(histories) if isinstance(histories, Mapping) else {}
+    # new_state already owns a deep copy of every nested row/episode.
+    histories = histories if isinstance(histories, Mapping) else {}
     for key in list(histories):
         rows = histories.get(key)
         if not isinstance(rows, list):
@@ -812,9 +813,9 @@ def consume_passive_cohort_batch(
             histories.pop(key, None)
 
     clone_episodes = new_state.get("clone_episodes")
-    clone_episodes = copy.deepcopy(clone_episodes) if isinstance(clone_episodes, Mapping) else {}
+    clone_episodes = clone_episodes if isinstance(clone_episodes, Mapping) else {}
     resilience_episodes = new_state.get("resilience_episodes")
-    resilience_episodes = copy.deepcopy(resilience_episodes) if isinstance(resilience_episodes, Mapping) else {}
+    resilience_episodes = resilience_episodes if isinstance(resilience_episodes, Mapping) else {}
     for episodes in (clone_episodes, resilience_episodes):
         for episode_id in list(episodes):
             expires = _time((episodes[episode_id] or {}).get("expires_at")) if isinstance(episodes[episode_id], Mapping) else None
@@ -829,7 +830,7 @@ def consume_passive_cohort_batch(
         identity = (parsed["token_id"], parsed["pair_address"])
         key = f"{identity[0]}|{identity[1]}"
         history = histories.get(key)
-        history = copy.deepcopy(history) if isinstance(history, list) else []
+        history = history if isinstance(history, list) else []
         observed = parsed["observed_at"]
         if any(item.get("observed_at") == observed for item in history):
             continue

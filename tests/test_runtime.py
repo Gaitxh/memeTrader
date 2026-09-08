@@ -1328,6 +1328,101 @@ def test_held_quote_waiting_for_slot_defers_when_peer_starts_cooldown():
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("cancel_low", [False, True])
+def test_low_quotes_leave_slots_for_all_held_chains_and_release_on_cancel(cancel_low):
+    async def scenario():
+        runtime = Runtime.__new__(Runtime)
+        runtime._dex_quote_lock = asyncio.Semaphore(8)
+        runtime._dex_quote_backoff_until = 0.0
+        runtime._dex_quote_failure_streak = 0
+        release = asyncio.Event()
+        lows_started = asyncio.Event()
+        low_calls = []
+
+        async def batch_quote(chain, addresses):
+            if addresses[0].startswith("low"):
+                low_calls.append(addresses[0])
+                if len(low_calls) == 5:
+                    lows_started.set()
+                await release.wait()
+            return {}
+
+        runtime.dex = type("Dex", (), {"batch_quote": staticmethod(batch_quote)})()
+        lows = [asyncio.create_task(runtime._dex_batch_quote("solana", [f"low{i}"]))
+                for i in range(8)]
+        await asyncio.wait_for(lows_started.wait(), timeout=1)
+        held = [asyncio.create_task(runtime._dex_batch_quote(chain, ["held"], high_priority=True))
+                for chain in ("solana", "bsc", "robinhood")]
+        assert await asyncio.wait_for(asyncio.gather(*held), timeout=1) == [{}, {}, {}]
+        assert len(low_calls) == 5
+        assert not runtime._dex_quote_low_priority_available()
+        # Congested exact-pool work must defer, letting other providers run.
+        async with runtime._dex_quote_slot(wait=False) as acquired:
+            assert not acquired
+        if cancel_low:
+            for task in lows:
+                task.cancel()
+        else:
+            release.set()
+        await asyncio.gather(*lows, return_exceptions=cancel_low)
+        async with runtime._dex_quote_slot(wait=False) as acquired:
+            assert acquired
+        for _ in range(8):
+            await asyncio.wait_for(runtime._dex_quote_lock.acquire(), timeout=1)
+        for _ in range(8):
+            runtime._dex_quote_lock.release()
+        for _ in range(5):
+            await asyncio.wait_for(runtime._dex_low_priority_slots.acquire(), timeout=1)
+    asyncio.run(scenario())
+
+
+def test_hydration_persists_fast_chain_before_slow_chain_returns(tmp_path, monkeypatch):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        config["chain_meme_trader_only_enabled"] = True
+        runtime = Runtime(config, tmp_path)
+        slow = TokenCandidate("bsc", "0x" + "a" * 40, "Slow")
+        fast = TokenCandidate("solana", "F" * 32, "Fast")
+        for token in (slow, fast):
+            runtime.store.upsert_token(token)
+            runtime.store.enqueue_token_detail_hydration(token.chain, token.address)
+        monkeypatch.setattr(runtime.store, "due_token_detail_hydrations", lambda **kw: [
+            {"token_id":t.token_id,"chain":t.chain,"address":t.address} for t in (slow,fast)])
+        release = asyncio.Event()
+        persisted = asyncio.Event()
+        calls = []
+        original_mark = runtime.store.mark_token_detail_hydration
+        def mark(token_id, *args, **kwargs):
+            result = original_mark(token_id, *args, **kwargs)
+            if token_id == fast.token_id:
+                persisted.set()
+            return result
+        monkeypatch.setattr(runtime.store,"mark_token_detail_hydration",mark)
+        async def batch_quote(chain, addresses):
+            calls.append((chain,addresses))
+            if chain == "bsc":
+                await release.wait()
+                return {}
+            snapshot = TokenSnapshot("solana", fast.address, .01, 25000, 100000, 5000, 20, 4)
+            return {fast.token_id:(fast,snapshot)}
+        runtime.dex = type("Dex", (), {"DISCOVERY_SURFACES":{},"batch_quote":staticmethod(batch_quote)})()
+        task = asyncio.create_task(runtime.chain_meme_token_details_once())
+        try:
+            await asyncio.wait_for(persisted.wait(), timeout=2)
+            assert not task.done()
+            assert runtime.store.token_detail_hydration(fast.token_id)["status"] == "hydrated"
+            assert runtime.store.token_detail_hydration(slow.token_id)["status"] == "pending"
+            assert runtime._chain_meme_decision_wakeup().is_set()
+            assert len(calls) == 2
+        finally:
+            release.set()
+            await task
+            await runtime.close()
+    asyncio.run(scenario())
+
+
 def test_dex_quote_backoff_does_not_hold_batch_semaphore_slot():
     async def scenario():
         runtime = Runtime.__new__(Runtime)

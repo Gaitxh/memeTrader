@@ -312,6 +312,23 @@ def test_passive_adapter_freezes_same_batch_clone_and_emits_only_on_later_natura
     assert all(len(history) <= 3 for history in state["token_frames"].values())
 
 
+def test_passive_batch_keeps_prior_state_independent_of_later_observations():
+    import copy
+    activated = datetime(2026, 9, 6, 9, 0, tzinfo=UTC)
+    at = datetime(2026, 9, 6, 10, 0, tzinfo=UTC)
+    frames = _passive_batch(at, [1] * 5, [1000,1100,1200,1300,1400], same_symbol=True)
+    state, _ = consume_passive_cohort_batch(frames, now=at, activated_at=activated)
+    before = copy.deepcopy(state)
+    later = at + timedelta(seconds=6)
+    next_state, _ = consume_passive_cohort_batch(
+        _passive_batch(later, [1.1] * 5, [1000,1100,1200,1300,1400], same_symbol=True),
+        state, now=later, activated_at=activated)
+    assert state == before
+    next(iter(next_state['token_frames'].values()))[0]['price_usd'] = 99
+    next(iter(next_state['clone_episodes'].values()))['handoff_state']['handoff_used'] = True
+    assert state == before
+
+
 def test_passive_relative_pilot_uses_three_members_own_previous_frames():
     activated = datetime(2026, 9, 6, 9, 0, tzinfo=UTC)
     at0 = datetime(2026, 9, 6, 10, 0, tzinfo=UTC)

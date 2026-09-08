@@ -57,6 +57,8 @@ def test_exact_original_pool_is_applied_before_other_pool_fallback():
         runtime._market_pool_gaps = {}
         runtime._market_complement_pools = set()
         runtime._gecko_pool_backoff_until = 0.0
+        runtime._dex_quote_lock = asyncio.Semaphore(8)
+        runtime._dex_quote_backoff_until = 0.0
         runtime._dex_quote_low_priority_available = lambda: True
         runtime.store = SimpleNamespace(
             CHAIN_MEME_TRADER_ACTIVE_VERSION=version,
