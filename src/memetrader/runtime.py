@@ -7256,7 +7256,8 @@ class Runtime:
                     oldest_received_at=self._cohort_batches[0][0],
                     enqueued=True, dropped_quotes=dropped_quotes)
         held = getattr(self, "_pattern_held_tokens", set())
-        watch, occupied = {}, {}
+        base_caps = {"early": 3, "growth": 4, "mature": 3}
+        watch, occupied, chain_used, borrowed = {}, {}, {}, []
         for key, item in getattr(self, "_pattern_watch", {}).items():
             if current >= item["expires_at"] and key not in held:
                 continue
@@ -7266,10 +7267,21 @@ class Runtime:
                 item["bucket"] = "early" if age < 900 else "growth" if age < 21600 else "mature"
             slot = (item["token"].chain, item["bucket"])
             if key not in held:
-                if occupied.get(slot, 0) >= (4 if item["bucket"] == "growth" else 3):
+                if occupied.get(slot, 0) >= base_caps[item["bucket"]]:
+                    if item["bucket"] == "early":
+                        borrowed.append((key, item))
                     continue
                 occupied[slot] = occupied.get(slot, 0) + 1
+                chain_used[slot[0]] = chain_used.get(slot[0], 0) + 1
             watch[key] = item
+        # Keep base reservations first; early overflow survives only in spare
+        # chain capacity. Held watches never consume these ten candidate slots.
+        for key, item in borrowed:
+            slot = (item["token"].chain, item["bucket"])
+            if chain_used.get(slot[0], 0) < 10:
+                watch[key] = item
+                occupied[slot] = occupied.get(slot, 0) + 1
+                chain_used[slot[0]] = chain_used.get(slot[0], 0) + 1
         for token, snapshot in quoted.values():
             token_id, chain = token.token_id, token.chain
             if token_id in watch:
@@ -7285,7 +7297,7 @@ class Runtime:
                 continue
             age = current.timestamp() - float(created) / 1000
             bucket = "early" if age < 900 else "growth" if age < 21600 else "mature"
-            capacity = 4 if bucket == "growth" else 3
+            capacity = base_caps[bucket]
             slot = (chain, bucket)
             if age < 0:
                 continue
@@ -7302,18 +7314,39 @@ class Runtime:
                     if key not in held and (item["token"].chain, item["bucket"]) == slot
                     and ((value := getattr(item["quote"], "liquidity_usd", None)) is None
                          or not math.isfinite(value) or value < floor)), None)
+                if replacement is not None:
+                    watch.pop(replacement)
+                    occupied[slot] -= 1
+                    chain_used[chain] -= 1
+                    self._pattern_watch_replacements = getattr(self, "_pattern_watch_replacements", 0) + 1
+                elif bucket == "early" and chain_used.get(chain, 0) < 10:
+                    self._pattern_watch_borrows = getattr(self, "_pattern_watch_borrows", 0) + 1
+                else:
+                    continue
+            elif token_id not in held and chain_used.get(chain, 0) >= 10:
+                # An underfilled base reservation reclaims the newest borrowed
+                # watch deterministically, never a held or base-reserved slot.
+                replacement = next((key for key in reversed(watch)
+                    if key not in held and watch[key]["token"].chain == chain
+                    and occupied.get((chain, watch[key]["bucket"]), 0)
+                        > base_caps[watch[key]["bucket"]]), None)
                 if replacement is None:
                     continue
-                watch.pop(replacement)
-                occupied[slot] -= 1
-                self._pattern_watch_replacements = getattr(self, "_pattern_watch_replacements", 0) + 1
+                replaced = watch.pop(replacement)
+                occupied[(chain, replaced["bucket"])] -= 1
+                chain_used[chain] -= 1
+                self._pattern_watch_reservation_reclaims = getattr(self, "_pattern_watch_reservation_reclaims", 0) + 1
             watch[token_id] = {"token": token, "bucket": bucket, "quote": snapshot,
                 "pool_created_at_ms": float(created),
                 "pair_address": canonical_token_address(chain, address),
                 "expires_at": current + timedelta(minutes=20 if bucket == "mature" else 15)}
             if token_id not in held:
                 occupied[slot] = occupied.get(slot, 0) + 1
+                chain_used[chain] = chain_used.get(chain, 0) + 1
         self._pattern_watch = watch
+        self._pattern_watch_nonheld_by_chain_bucket = {
+            chain: {bucket: occupied.get((chain, bucket), 0) for bucket in base_caps}
+            for chain in chain_used}
 
     async def chain_meme_cohort_observer_once(self) -> None:
         from .cohort_experiments import consume_passive_cohort_batch
@@ -7541,6 +7574,9 @@ class Runtime:
             "recorded_at": iso(utcnow()), "watched": len(self._pattern_watch),
             "sampled": sampled, "projected": projected,
             "replacements_since_start": getattr(self, "_pattern_watch_replacements", 0),
+            "borrows_since_start": getattr(self, "_pattern_watch_borrows", 0),
+            "reservation_reclaims_since_start": getattr(self, "_pattern_watch_reservation_reclaims", 0),
+            "non_held_by_chain_bucket": getattr(self, "_pattern_watch_nonheld_by_chain_bucket", {}),
         })
 
     async def chain_meme_carried_market_marks_once(self) -> None:

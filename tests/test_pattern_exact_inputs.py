@@ -18,17 +18,18 @@ from memetrader.runtime import Runtime
 from memetrader.store import Store
 
 
-def test_pattern_watch_releases_aged_early_slots_and_bounds_nonheld(monkeypatch):
+def test_pattern_watch_borrows_early_capacity_and_reclaims_for_base_buckets(monkeypatch):
     now = utcnow()
     monkeypatch.setattr("memetrader.runtime.utcnow", lambda: now)
     runtime = Runtime.__new__(Runtime)
     runtime._pattern_held_tokens = set()
+    runtime._paper_quote_rejections = lambda *args: []
 
     def quotes(prefix, count, age):
         rows = {}
         for i in range(count):
             token = TokenCandidate("bsc", f"0x{prefix}{i}", "fixture")
-            snap = SimpleNamespace(price_usd=1, observed_at=now,
+            snap = SimpleNamespace(price_usd=1, liquidity_usd=5000, observed_at=now,
                 raw={"pair": {"pairAddress": f"pool-{prefix}{i}",
                               "pairCreatedAt": (now-timedelta(seconds=age)).timestamp()*1000}})
             rows[token.token_id] = (token, snap)
@@ -44,12 +45,63 @@ def test_pattern_watch_releases_aged_early_slots_and_bounds_nonheld(monkeypatch)
     runtime._remember_pattern_quotes(quotes("new", 10, 20))
     assert runtime._pattern_watch[held_id]["bucket"] == "growth"
     assert runtime._pattern_watch[held_id]["expires_at"] == expiry
-    assert sum(v["bucket"] == "early" for v in runtime._pattern_watch.values()) == 3
+    nonheld = {key: value for key, value in runtime._pattern_watch.items()
+               if key not in runtime._pattern_held_tokens}
+    assert len(nonheld) == 10
+    assert sum(v["bucket"] == "early" for v in nonheld.values()) == 8
+    borrowed_early = [key for key, value in nonheld.items() if value["bucket"] == "early"]
+    before_cleanup = dict(runtime._pattern_watch)
+    runtime._remember_pattern_quotes({})
+    assert runtime._pattern_watch == before_cleanup
     runtime._remember_pattern_quotes(quotes("grow", 10, 2000))
-    assert sum(v["bucket"] == "growth" for k,v in runtime._pattern_watch.items() if k not in runtime._pattern_held_tokens) == 4
-    now += timedelta(minutes=16)
+    nonheld = {key: value for key, value in runtime._pattern_watch.items()
+               if key not in runtime._pattern_held_tokens}
+    assert len(nonheld) == 10
+    assert sum(v["bucket"] == "growth" for v in nonheld.values()) == 4
+    assert sum(v["bucket"] == "early" for v in nonheld.values()) == 6
+    assert set(borrowed_early[-2:]).isdisjoint(nonheld)
+    growth_reserved = {key for key, value in nonheld.items() if value["bucket"] == "growth"}
+    runtime._remember_pattern_quotes(quotes("mature", 3, 22000))
+    nonheld = {key: value for key, value in runtime._pattern_watch.items()
+               if key not in runtime._pattern_held_tokens}
+    assert len(nonheld) == 10
+    assert growth_reserved <= nonheld.keys()
+    assert set(borrowed_early[:3]) <= nonheld.keys()
+    assert sum(v["bucket"] == "mature" for v in nonheld.values()) == 3
+    assert held_id in runtime._pattern_watch
+    now += timedelta(minutes=21)
     runtime._remember_pattern_quotes({})
     assert set(runtime._pattern_watch) == {held_id}
+
+
+def test_pattern_watch_nonheld_capacity_is_ten_per_chain(monkeypatch):
+    now = utcnow()
+    monkeypatch.setattr("memetrader.runtime.utcnow", lambda: now)
+    runtime = Runtime.__new__(Runtime)
+    runtime._pattern_held_tokens = set()
+    runtime._paper_quote_rejections = lambda *args: []
+
+    def quotes(chain, prefix):
+        rows = {}
+        for i in range(10):
+            token = TokenCandidate(chain, f"0x{prefix}{i}", "fixture")
+            rows[token.token_id] = (token, SimpleNamespace(price_usd=1, liquidity_usd=5000, observed_at=now,
+                raw={"pair": {"pairAddress": f"pool-{prefix}{i}",
+                    "pairCreatedAt": (now-timedelta(seconds=20)).timestamp()*1000}}))
+        return rows
+
+    runtime._remember_pattern_quotes(quotes("bsc", "b"))
+    runtime._remember_pattern_quotes(quotes("solana", "s"))
+    by_chain = {}
+    for token_id, value in runtime._pattern_watch.items():
+        if token_id not in runtime._pattern_held_tokens:
+            by_chain.setdefault(value["token"].chain, []).append(token_id)
+    assert {chain: len(ids) for chain, ids in by_chain.items()} == {"bsc": 10, "solana": 10}
+    bsc_before = {key for key, value in runtime._pattern_watch.items() if value["token"].chain == "bsc"}
+    runtime._remember_pattern_quotes(quotes("bsc", "extra"))
+    bsc_after = {key for key, value in runtime._pattern_watch.items() if value["token"].chain == "bsc"}
+    assert bsc_after == bsc_before
+    assert sum(value["token"].chain == "solana" for value in runtime._pattern_watch.values()) == 10
 
 
 @pytest.mark.parametrize("blocked_liquidity", [None, 0.0, 999.0])
@@ -61,7 +113,7 @@ def test_fresh_liquid_candidate_replaces_unusable_nonheld_watch(monkeypatch, blo
     runtime._chain_paper_execution = {"min_pool_liquidity_usd": 1000}
     runtime._pattern_held_tokens = set()
 
-    def quote(i, liquidity, at=None):
+    def quote(i, liquidity, at=None, age=60):
         token = TokenCandidate("bsc", f"0x{i:040x}", "watch fixture", first_seen_at=now)
         snapshot = TokenSnapshot(address=token.address, chain=token.chain,
             observed_at=at or now, provider="dexscreener",
@@ -69,7 +121,7 @@ def test_fresh_liquid_candidate_replaces_unusable_nonheld_watch(monkeypatch, blo
             market_cap_usd=50000, volume_5m_usd=500, buys_5m=6, sells_5m=3,
             raw={"pair": {"chainId": "bsc", "baseToken": {"address": token.address},
                 "pairAddress": f"0x{i+100:040x}",
-                "pairCreatedAt": int((now-timedelta(seconds=60)).timestamp()*1000)}})
+                "pairCreatedAt": int((now-timedelta(seconds=age)).timestamp()*1000)}})
         return token, snapshot
 
     held = quote(1, blocked_liquidity)
@@ -84,6 +136,11 @@ def test_fresh_liquid_candidate_replaces_unusable_nonheld_watch(monkeypatch, blo
     for i in (6, 7, 8):
         runtime._remember_pattern_quotes({i: quote(i, 5000)})
     assert set(runtime._pattern_watch) == {held[0].token_id, *(quote(i, 5000)[0].token_id for i in (6, 7, 8))}
+    for i in range(11, 15):
+        runtime._remember_pattern_quotes({i: quote(i, 5000, age=2000)})
+    for i in range(15, 18):
+        runtime._remember_pattern_quotes({i: quote(i, 5000, age=22000)})
+    assert sum(key not in runtime._pattern_held_tokens for key in runtime._pattern_watch) == 10
     # Full valid slots retain continuity; missing data cannot evict them.
     before = dict(runtime._pattern_watch)
     runtime._remember_pattern_quotes({9: quote(9, None), 10: quote(10, 5000)})
