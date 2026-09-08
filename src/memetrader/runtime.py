@@ -42,6 +42,7 @@ from .autonomous_search import AutonomousSearchAgent, _canonical_social_url, _sa
 from .collectors import (
     BlueskySearchCollector,
     DEX_REQUEST_HIGH_PRIORITY,
+    DexLowPriorityCapacityDeferred,
     DexScreenerClient,
     EvmRouteQuoteError,
     EvmRouteQuoteProtocolError,
@@ -2205,6 +2206,8 @@ class Runtime:
         ]
 
     def _notify_source_error(self, source: str, exc: Exception) -> None:
+        if isinstance(exc, DexLowPriorityCapacityDeferred):
+            return  # Local admission telemetry is recorded by HttpClient.
         now = utcnow()
         error = f"{type(exc).__name__}: {exc}"[:500]
         detail = str(exc)[:500]
@@ -2424,6 +2427,7 @@ class Runtime:
             item["next_attempt"] = now + 10
         pairs = {}
         exact_received = False
+        primary_deferred = False
         pool_failure_kind = "DATA_UNAVAILABLE"
         # Only the same-provider exact request yields to the held-token lane or
         # its cooldown.  The independently budgeted fallback must remain able
@@ -2447,6 +2451,8 @@ class Runtime:
                 for key, item in primary_due:
                     if exact_received and key[1] not in pairs:
                         item["next_primary_attempt"] = now + 60
+            except DexLowPriorityCapacityDeferred:
+                primary_deferred = True  # Keep gap queued; fallback retains its budget.
             except Exception as exc:
                 self._notify_source_error("dexscreener:original_pool", exc)
                 pool_failure_kind = type(exc).__name__
@@ -2544,6 +2550,8 @@ class Runtime:
                 continue
             pair = pairs.get(canonical_token_address(chain, str(item["pair_address"])))
             if pair is None:
+                if primary_deferred and pool_failure_kind == "DATA_UNAVAILABLE":
+                    continue
                 outcomes.append({
                     "kind": "pool_failure", "token_id": item["token_id"],
                     "pair_address": item["pair_address"], "chain": chain,
@@ -2835,6 +2843,9 @@ class Runtime:
             )
             try:
                 links = await self.dex.discover_surface(surface, surface_chains, limit=max_items)
+            except DexLowPriorityCapacityDeferred:
+                self.store.finish_token_discovery_round(round_id, status="interrupted")
+                continue  # Existing discovery cadence retries; no provider failure.
             except Exception as exc:
                 self.store.finish_token_discovery_round(
                     round_id,
@@ -2924,6 +2935,11 @@ class Runtime:
                             quoted = await self.dex.quote(chain, str(row["address"]))
                             if quoted:
                                 quoted_by_token[quoted[0].token_id] = quoted
+                except DexLowPriorityCapacityDeferred:
+                    self.store.finish_token_discovery_round(round_id, status="interrupted")
+                    # Selection is read-only: pending rows remain due on the next
+                    # existing token-details tick, with their causal expiry intact.
+                    continue
                 except Exception as exc:
                     self.store.finish_token_discovery_round(
                         round_id,
@@ -2951,6 +2967,9 @@ class Runtime:
                             round_id=round_id,
                             metadata={"provider": "dexscreener", "chain": str(chain)},
                         )
+                    continue
+                if quoted_by_token is None:
+                    self.store.finish_token_discovery_round(round_id, status="interrupted")
                     continue
                 self.store.heartbeat("dexscreener:hydration", item=bool(quoted_by_token))
                 for row in chunk:
@@ -3566,6 +3585,12 @@ class Runtime:
                         returned_count=len(batch),
                         completed_at=completed_at,
                     )
+                except DexLowPriorityCapacityDeferred:
+                    for attempt_id in attempt_ids.values():
+                        self.store.finish_token_discovery_quote_attempt(
+                            attempt_id, status="interrupted", reason_code="local_capacity")
+                    self.store.finish_token_discovery_round(round_id, status="interrupted")
+                    continue
                 except Exception as exc:
                     completed_at = utcnow()
                     for attempt_id in attempt_ids.values():
@@ -4105,7 +4130,10 @@ class Runtime:
             if decision.action == "CANDIDATE" and token and snap:
                 execution_requested_at = utcnow()
                 try:
-                    execution_quote = await self.dex.quote(token.chain, token.address)
+                    async with self._dex_quote_slot(high_priority=True) as acquired:
+                        if not acquired:
+                            continue
+                        execution_quote = await self.dex.quote(token.chain, token.address)
                 except Exception as exc:
                     execution_quote = None
                     execution_error = type(exc).__name__
@@ -4485,7 +4513,12 @@ class Runtime:
         executed = False
         for position in list(self.store.open_positions()):
             try:
-                quoted = await self.dex.quote(position.chain, position.address)
+                async with self._dex_quote_slot(high_priority=True) as acquired:
+                    if not acquired:
+                        continue
+                    quoted = await self.dex.quote(position.chain, position.address)
+            except DexLowPriorityCapacityDeferred:
+                continue
             except Exception as exc:
                 self.notifier.send("quote_error", position.token_id, {"error": type(exc).__name__})
                 continue
@@ -4522,7 +4555,10 @@ class Runtime:
             fraction, reason = action
             execution_requested_at = utcnow()
             try:
-                execution_quote = await self.dex.quote(position.chain, position.address)
+                async with self._dex_quote_slot(high_priority=True) as acquired:
+                    if not acquired:
+                        continue
+                    execution_quote = await self.dex.quote(position.chain, position.address)
             except Exception as exc:
                 execution_quote = None
                 execution_error = type(exc).__name__
@@ -4623,6 +4659,8 @@ class Runtime:
                     str(target["chain"]),
                     str(target["token_id"]).split(":", 1)[1],
                 )
+        except DexLowPriorityCapacityDeferred:
+            return  # Target remains due; preserve its deadline.
         except TimeoutError:
             completed_at = utcnow()
             self.store.record_liquidity_survival_attempt(
@@ -4718,6 +4756,8 @@ class Runtime:
                     status, reason = "observed_mark", "fresh_dexscreener_mark"
                 else:
                     status, reason, snapshot = "provider_empty", "pair_without_positive_price", None
+        except DexLowPriorityCapacityDeferred:
+            return  # Preserve due outcome and original deadline.
         except TimeoutError:
             status, reason = "timeout", "deadline_bounded_provider_timeout"
         except httpx.TimeoutException:
@@ -4921,6 +4961,12 @@ class Runtime:
                     chain,
                     [str(item["token_id"]).split(":", 1)[1] for item in chunk],
                 )
+            except DexLowPriorityCapacityDeferred:
+                for attempt_id in attempt_ids.values():
+                    self.store.finish_token_discovery_quote_attempt(
+                        attempt_id, status="interrupted", reason_code="local_capacity")
+                self.store.finish_token_discovery_round(round_id, status="interrupted")
+                continue
             except Exception as exc:
                 completed_at = utcnow()
                 http_status = getattr(getattr(exc, "response", None), "status_code", None)
@@ -6604,6 +6650,8 @@ class Runtime:
             mark_reason = ""
             try:
                 quoted = await self.dex.quote("solana", str(position["address"]))
+            except DexLowPriorityCapacityDeferred:
+                continue
             except Exception as exc:
                 quoted = None
                 mark_reason = f"dexscreener_{type(exc).__name__}"
@@ -6671,6 +6719,8 @@ class Runtime:
             mark_reason = ""
             try:
                 quoted = await self.dex.quote("solana", str(position["address"]))
+            except DexLowPriorityCapacityDeferred:
+                continue
             except Exception as exc:
                 quoted = None
                 mark_reason = f"dexscreener_{type(exc).__name__}"
@@ -6978,6 +7028,8 @@ class Runtime:
                     chain, [str(item["address"]) for item in chunk],
                     fresh=True, high_priority=high_priority,
                 )
+            except DexLowPriorityCapacityDeferred:
+                return 0  # No observation, absence or provider failure occurred.
             except Exception as exc:
                 if timing is not None:
                     timing.observe(fetch_metric, asyncio.get_running_loop().time()-batch_started, failures=1)
@@ -7512,6 +7564,8 @@ class Runtime:
                         chain, due, fresh=True, high_priority=False), timeout=3)
                     if not self.chain_meme_trader_only:
                         self._remember_pattern_quotes(quoted)
+                except DexLowPriorityCapacityDeferred:
+                    pass  # Keep existing causal watch; retry on the existing tick.
                 except (httpx.HTTPError, TimeoutError) as exc:
                     self.store.heartbeat("chain-meme-pattern-observer", error=type(exc).__name__)
             return chain, targets

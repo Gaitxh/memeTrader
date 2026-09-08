@@ -18580,7 +18580,7 @@ class Store:
                 retry_index = int(
                     self.db.execute(
                         "SELECT COUNT(*) FROM token_discovery_quote_attempts "
-                        "WHERE definition_version=? AND token_id=? AND role=?",
+                        "WHERE definition_version=? AND token_id=? AND role=? AND reason_code != 'local_capacity'",
                         (self.TOKEN_DISCOVERY_QUOTE_ATTEMPT_VERSION, token_id, role),
                     ).fetchone()[0]
                 )
@@ -18643,6 +18643,8 @@ class Store:
                 ))
             else:
                 retry_seconds = base
+            if status == "interrupted" and reason_code == "local_capacity":
+                retry_seconds = 5  # Local capacity is not provider exponential backoff.
             retry_after = completed + timedelta(seconds=retry_seconds)
             deadline_miss = bool(
                 row["deadline_at"] and completed > parse_time(row["deadline_at"])

@@ -6098,3 +6098,84 @@ def test_windows_startup_scripts_use_one_attached_scheduled_task():
     assert "taskkill.exe" in remover
     assert "install_scheduled_task.ps1" in legacy_installer
     assert "remove_scheduled_task.ps1" in legacy_remover
+
+
+def test_local_dex_capacity_preserves_hydration_and_discovery_pending(tmp_path, monkeypatch):
+    from memetrader.collectors import HttpClient
+    import httpx
+
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        config["chain_meme_trader_only_enabled"] = True
+        runtime = Runtime(config, tmp_path)
+        token = TokenCandidate("solana", "F" * 32, "Pending")
+        runtime.store.upsert_token(token)
+        runtime.store.enqueue_token_detail_hydration(token.chain, token.address)
+        before = dict(runtime.store.token_detail_hydration(token.token_id))
+        release, started = asyncio.Event(), asyncio.Event()
+        count = 0
+        async def handler(request):
+            nonlocal count
+            if request.url.path.startswith("/slow"):
+                count += 1
+                if count == 5:
+                    started.set()
+                await release.wait()
+            return httpx.Response(200, json=[])
+        client = HttpClient(min_host_interval=0, transport=httpx.MockTransport(handler),
+                            dex_low_priority_wait=.01)
+        async def batch(chain, addresses):
+            await client.get("https://api.dexscreener.com/hydrate")
+            return {}
+        async def discover(*args, **kwargs):
+            await client.get("https://api.dexscreener.com/discover")
+            return []
+        runtime.dex = type("Dex", (), {"DISCOVERY_SURFACES": ["token_profiles"],
+            "batch_quote": staticmethod(batch), "discover_surface": staticmethod(discover)})()
+        errors = []
+        monkeypatch.setattr(runtime, "_notify_source_error", lambda *args: errors.append(args))
+        lows = [asyncio.create_task(client.get(f"https://api.dexscreener.com/slow{i}")) for i in range(5)]
+        try:
+            await asyncio.wait_for(started.wait(), 1)
+            await runtime.poll_dexscreener_discovery_once(hydration_only=True)
+            await runtime.poll_dexscreener_discovery_once(discovery_only=True)
+            assert dict(runtime.store.token_detail_hydration(token.token_id)) == before
+            assert not errors
+            assert runtime._dex_quote_failure_streak == 0
+            await asyncio.wait_for(runtime._dex_batch_quote("solana", [token.address], high_priority=True), 1)
+            assert client.snapshot_http_capacity()["low_priority_deferred"] == 2
+            release.set()
+            await asyncio.gather(*lows)
+            await runtime.poll_dexscreener_discovery_once(hydration_only=True)
+            assert runtime.store.token_detail_hydration(token.token_id)["status"] == "no_pair"
+            assert not errors
+        finally:
+            release.set()
+            await asyncio.gather(*lows, return_exceptions=True)
+            await client.close()
+            await runtime.close()
+    asyncio.run(scenario())
+
+
+def test_capacity_deferred_quote_attempt_has_short_retry_without_failure_escalation(tmp_path):
+    config = initial_config()
+    config["database"] = "db.sqlite3"
+    config["bridge"]["enabled"] = False
+    async def scenario():
+        runtime = Runtime(config, tmp_path)
+        try:
+            now = utcnow()
+            item = {"token_id": "solana:defer-test", "chain": "solana", "role": "universe_baseline"}
+            for i in range(2):
+                rid = runtime.store.start_token_discovery_round(provider="dexscreener", surface="test", mode="batch_quote", chain_scope="solana")
+                aid = runtime.store.start_token_discovery_quote_attempts(rid, [item], requested_at=now)[(item["token_id"], item["role"])]
+                retry = runtime.store.finish_token_discovery_quote_attempt(aid, status="interrupted", reason_code="local_capacity", completed_at=now)
+                from memetrader.runtime import parse_time
+                assert (parse_time(retry) - now).total_seconds() == 5
+                row = runtime.store.db.execute("SELECT retry_index,error_type FROM token_discovery_quote_attempts WHERE id=?", (aid,)).fetchone()
+                assert row["retry_index"] == 0 and not row["error_type"]
+        finally:
+            await runtime.close()
+    asyncio.run(scenario())
