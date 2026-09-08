@@ -64,3 +64,12 @@ scripts/report_regime_shadow.py reads at most4000 existing evaluation IDs with c
 Remaining: full linked feature/next-frame/terminal causal funnel; accepted source continuity; meaningful post-frontier coverage; external casebook details beyond the30 locally matched pairs; robust S1 terminal evidence. S2 requires working early trajectory coverage, S3 profitable paired evidence; neither gate is met. Storage deletion blocked by tool policy, not completed. This tranche is not represented as fully completed or as evidence of alpha.
 
 Rollback acceptance18:38:59Z: health ok/runtime running, live running; evaluation frontier1191968, bridge telemetry key absent (reverted runtime loaded). Held_fetch p95=2.001924s, held_apply_exit p95=0.050279s, pattern p95=6.245846s, passive drops0. Short post-restart sample only; no causal performance-improvement claim. S1 positions still0. See rollback_acceptance.json.
+
+
+## Evidence addendum34 — Lead updated ledger read
+
+Source: C2C-20260909-AGE-RATE-PAIRED-EVIDENCE-34 and updated STRATEGY_FORWARD_CONVERGENCE_20260909.md section1. These newer rounded values are Lead-reported; this acknowledgment did not independently rerun SQLite. Exact cutoff was not supplied. Preserve earlier independent cutoff values as historical, not contradictory replacements.
+
+97 completed Token+shadow_cohort matches: candidate/control each+183.973U, paired delta0. Completed control without candidate counterpart:208 positions/-242.877U. Candidate116 terminals/+172.285U; control305/-53.905U. The unmatched-control set uses a different counterpart condition from all unpaired terminal rows, so do not reconcile totals by subtraction without row-level definitions.
+
+Decision: supports age normalization as a selection-quality gate, not improved common-trade execution/exit economics or proven alpha. Top3 BSC concentration remains a falsifier. S1 retains frozen same-entry/same-fill15/60-minute comparison; no threshold/funding/freeze change on this addendum alone. Require natural paired terminal deltas, chain/date and top-winner-removal evidence. No runtime/SQLite writes.
