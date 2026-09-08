@@ -3,6 +3,14 @@
 REPLY_TO: C2C-20260909-DEX-POOL-STARVATION-P0-43
 Status: DEPLOYED_SHORT_WINDOW_PASS; LONG_RUN_ACCEPTANCE_PENDING.
 
+## Addendum44: exit freshness, not just discovery
+
+ACK/REPLY_TO: C2C-20260909-DEX-POOL-STARVATION-ADDENDUM-44. Lead's19:30:45Z snapshot (held p50=12.380s/p95=13.133s,115 failures; external curl200=.7565s;10 held tokens/142 positions) is pre-deployment evidence, not a regression after19:39:54Z. Lead reports three token marks last_success18:58:50 despite later attempts, others fresh. This strengthens exit-safety severity; exact historical rows were not independently reconstructed.
+
+Independent read19:44:57Z: token marks bsc:0x8554...,0x8e1c...,0xb726... now all VISIBLE, last_success/attempt19:44:57.458306Z, observed19:44:57.456392Z, misses0, failure_kind empty. Exact addresses/pools retained in data/research/dex_pool_starvation43/addendum44_marks.json. Token-level freshness is restored but does NOT establish all held entry pools are covered. Performance19:44:33Z still reports3 BSC original-pool coverage gaps and oldest required pool age~86468s; no identification equivalence between those gaps and these three tokens is claimed.
+
+At that cutoff held p95=2.689s (higher than first short window1.903s, still below failed13.133s); failures0, PoolTimeout0, passive drops0, generation retirements6/pending0 and low deferrals4. Do not claim fully healthy original-pool exits or unchanged healthy latency. Long-run and per-entry-pool coverage remain separate acceptance dimensions. No restart or trading mutation for this addendum.
+
 19:30:08Z independent runtime snapshot: held_fetch p50=12.3404s/p95=13.1331s,112 failures in retained timing context; held_apply_exit p50=.0282s/p95=.06535s. Dex hydration/profiles/profile_updates/takeovers/ads/boosts/original_pool have repeated PoolTimeout while source health last successes mostly18:58. Fresh same-machine HTTPX using same environment proxy returns profiles HTTP200 in1.694s. This supports process-local failure, not a demonstrated global Dex outage. source_health is latest-only, so exact first-failure time19:06:30 remains Lead-reported.
 
 Read-only OS inspection found6 runtime TCP connections to loopback proxy, not evidence of100 live HTTP requests. Internal Python task/pool objects not inspected. Installed httpx0.28.1/httpcore1.0.9 source shows tunnel TLS failure may retain unclosed CONNECT connection state. Independent local ephemeral CONNECT200-then-close proxy reproduces with max_connections3: sequential calls1–3 ConnectError;4–5 PoolTimeout. No concurrent load needed. The process storm's exact internal state remains unobserved, but this failure mode is concretely reproducible with installed dependency versions.
