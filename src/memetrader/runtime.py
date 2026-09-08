@@ -8497,7 +8497,11 @@ class Runtime:
             )
             previous_start = started
             if started - self._last_timing_write >= 10.0:
-                self.store.record_runtime_timing(self.runtime_timing.snapshot())
+                timing_snapshot = self.runtime_timing.snapshot()
+                market_http = getattr(self, "market_http", None)
+                if market_http is not None:
+                    timing_snapshot["dex_http_capacity"] = market_http.snapshot_http_capacity()
+                self.store.record_runtime_timing(timing_snapshot)
                 self._last_timing_write = started
             wait_seconds = max(0.2, interval_seconds - elapsed)
             if wakeup is not None:

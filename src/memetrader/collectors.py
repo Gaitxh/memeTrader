@@ -31,6 +31,12 @@ from .models import (
 
 RSS_CACHE_KEY_PREFIX = "rss_http_cache:v1:"
 DEX_REQUEST_HIGH_PRIORITY: ContextVar[bool] = ContextVar("dex_request_high_priority", default=False)
+
+
+class DexLowPriorityCapacityDeferred(httpx.RequestError):
+    """A Dex background request was deferred before it entered the transport."""
+
+
 RSS_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 RSS_XML_MEDIA_TYPES = {
     "application/atom+xml",
@@ -1101,6 +1107,8 @@ class HttpClient:
     """Small host-aware client for free public endpoints."""
 
     MAX_CACHE_ENTRIES = 512
+    DEX_MAX_INFLIGHT = 8
+    DEX_MAX_LOW_PRIORITY_INFLIGHT = 5
 
     def __init__(
         self,
@@ -1113,13 +1121,29 @@ class HttpClient:
         feed_proxy_url: str = "",
         conditional_store: Any | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
+        client_limits: httpx.Limits | None = None,
+        client_factory: Callable[[], httpx.AsyncClient] | None = None,
+        dex_low_priority_wait: float = 0.25,
     ):
-        self.client = httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout),
-            follow_redirects=True,
-            headers={"User-Agent": user_agent, "Accept": "application/json,text/xml,application/xml,text/html,*/*"},
-            transport=transport,
-        )
+        self._client_factory = client_factory
+        self._client_options: dict[str, Any] = {
+            "timeout": httpx.Timeout(timeout),
+            "follow_redirects": True,
+            "headers": {"User-Agent": user_agent, "Accept": "application/json,text/xml,application/xml,text/html,*/*"},
+            "transport": transport,
+        }
+        if client_limits is not None:
+            self._client_options["limits"] = client_limits
+        self._client_recovery_enabled = transport is None or client_factory is not None
+        self.client = self._new_client()
+        self._client_lock = asyncio.Lock()
+        self._client_active: dict[httpx.AsyncClient, int] = {self.client: 0}
+        self._retired_clients: set[httpx.AsyncClient] = set()
+        self._closing_clients: set[asyncio.Task[None]] = set()
+        self._client_generation = 1
+        self._client_generation_retirements = 0
+        self._client_connect_errors = 0
+        self._client_pool_timeouts = 0
         self.feed_proxy_url = normalize_loopback_socks5_proxy_url(feed_proxy_url)
         proxy_host = urllib.parse.urlsplit(self.feed_proxy_url).hostname if self.feed_proxy_url else None
         self.feed_proxy_ip = _canonical_ip(proxy_host) if proxy_host else None
@@ -1143,7 +1167,41 @@ class HttpClient:
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._dex_start_condition = asyncio.Condition()
         self._dex_start_waiters: dict[bool, deque[object]] = {False: deque(), True: deque()}
+        self._dex_inflight = asyncio.Semaphore(self.DEX_MAX_INFLIGHT)
+        self._dex_low_priority_inflight = asyncio.Semaphore(
+            self.DEX_MAX_LOW_PRIORITY_INFLIGHT
+        )
+        self.dex_low_priority_wait = max(0.0, float(dex_low_priority_wait))
+        self._dex_inflight_active = 0
+        self._dex_inflight_active_by_priority: dict[bool, int] = {False: 0, True: 0}
+        self._dex_inflight_waiters: dict[bool, int] = {False: 0, True: 0}
+        self._dex_low_priority_deferred = 0
         self._cache: dict[str, tuple[float, Any, datetime]] = {}
+
+    def _new_client(self) -> httpx.AsyncClient:
+        if self._client_factory is not None:
+            return self._client_factory()
+        return httpx.AsyncClient(**self._client_options)
+
+    def snapshot_http_capacity(self) -> dict[str, int | bool | float]:
+        """Return bounded client arbitration and failed-connection recovery state."""
+        return {
+            "max_inflight": self.DEX_MAX_INFLIGHT,
+            "max_low_priority_inflight": self.DEX_MAX_LOW_PRIORITY_INFLIGHT,
+            "active": self._dex_inflight_active,
+            "active_high_priority": self._dex_inflight_active_by_priority[True],
+            "active_low_priority": self._dex_inflight_active_by_priority[False],
+            "waiting_high_priority": self._dex_inflight_waiters[True],
+            "waiting_low_priority": self._dex_inflight_waiters[False],
+            "low_priority_deferred": self._dex_low_priority_deferred,
+            "low_priority_wait_seconds": self.dex_low_priority_wait,
+            "client_generation": self._client_generation,
+            "retired_client_generations": len(self._retired_clients),
+            "client_generation_retirements": self._client_generation_retirements,
+            "connect_errors": self._client_connect_errors,
+            "pool_timeouts": self._client_pool_timeouts,
+            "client_recovery_enabled": self._client_recovery_enabled,
+        }
 
     def _prune_cache(self, now: float) -> None:
         if len(self._cache) < self.MAX_CACHE_ENTRIES:
@@ -1162,8 +1220,57 @@ class HttpClient:
                 self._cache.pop(key, None)
 
     async def close(self) -> None:
-        await self.client.aclose()
+        clients = list(self._client_active)
+        await asyncio.gather(
+            *(client.aclose() for client in clients), *self._closing_clients,
+            return_exceptions=True,
+        )
         await self.feed_client.aclose()
+
+    @asynccontextmanager
+    async def _request_client(self) -> AsyncIterator[httpx.AsyncClient]:
+        async with self._client_lock:
+            client = self.client
+            self._client_active[client] = self._client_active.get(client, 0) + 1
+        try:
+            yield client
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
+            if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+                self._client_connect_errors += 1
+            elif isinstance(exc, httpx.PoolTimeout):
+                self._client_pool_timeouts += 1
+            await self._retire_failed_client(client)
+            raise
+        except asyncio.CancelledError:
+            await self._retire_failed_client(client)
+            raise
+        finally:
+            await self._release_request_client(client)
+
+    async def _retire_failed_client(self, client: httpx.AsyncClient) -> None:
+        if not self._client_recovery_enabled:
+            return
+        async with self._client_lock:
+            if client is self.client:
+                self.client = self._new_client()
+                self._client_active[self.client] = 0
+                self._client_generation += 1
+                self._client_generation_retirements += 1
+            self._retired_clients.add(client)
+
+    async def _release_request_client(self, client: httpx.AsyncClient) -> None:
+        close_client = False
+        async with self._client_lock:
+            self._client_active[client] -= 1
+            if client in self._retired_clients and self._client_active[client] == 0:
+                self._retired_clients.remove(client)
+                self._client_active.pop(client, None)
+                close_client = True
+        if close_client:
+            task = asyncio.create_task(client.aclose())
+            self._closing_clients.add(task)
+            task.add_done_callback(self._closing_clients.discard)
+            await asyncio.shield(task)
 
     async def _reserve_host_request_start(
         self, host: str, *, not_before: float = 0.0,
@@ -1207,6 +1314,63 @@ class HttpClient:
             finally:
                 queue.remove(ticket)
                 condition.notify_all()
+
+    @asynccontextmanager
+    async def _dex_inflight_slot(self) -> AsyncIterator[None]:
+        """Keep three Dex REST in-flight slots available for held work."""
+        high = DEX_REQUEST_HIGH_PRIORITY.get()
+        low_slot = False
+        request_slot = False
+        low_deadline = 0.0
+        try:
+            if not high:
+                low_deadline = asyncio.get_running_loop().time() + self.dex_low_priority_wait
+                self._dex_inflight_waiters[False] += 1
+                try:
+                    await asyncio.wait_for(
+                        self._dex_low_priority_inflight.acquire(),
+                        timeout=self.dex_low_priority_wait,
+                    )
+                except TimeoutError as exc:
+                    self._dex_low_priority_deferred += 1
+                    raise DexLowPriorityCapacityDeferred(
+                        "Dex low-priority in-flight capacity exhausted"
+                    ) from exc
+                finally:
+                    self._dex_inflight_waiters[False] -= 1
+                low_slot = True
+            self._dex_inflight_waiters[high] += 1
+            try:
+                if high:
+                    await self._dex_inflight.acquire()
+                else:
+                    remaining = low_deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0 and self._dex_inflight.locked():
+                        raise TimeoutError()
+                    if remaining > 0:
+                        await asyncio.wait_for(
+                            self._dex_inflight.acquire(), timeout=remaining,
+                        )
+                    else:
+                        await self._dex_inflight.acquire()
+            except TimeoutError as exc:
+                self._dex_low_priority_deferred += 1
+                raise DexLowPriorityCapacityDeferred(
+                    "Dex low-priority in-flight capacity exhausted"
+                ) from exc
+            finally:
+                self._dex_inflight_waiters[high] -= 1
+            request_slot = True
+            self._dex_inflight_active += 1
+            self._dex_inflight_active_by_priority[high] += 1
+            yield
+        finally:
+            if request_slot:
+                self._dex_inflight_active -= 1
+                self._dex_inflight_active_by_priority[high] -= 1
+                self._dex_inflight.release()
+            if low_slot:
+                self._dex_low_priority_inflight.release()
 
     async def _reserve_locked_host_request_start(
         self, host: str, *, not_before: float = 0.0,
@@ -1258,22 +1422,32 @@ class HttpClient:
             response.extensions["observed_at"] = cached[2]
             return response
         host = urllib.parse.urlparse(url).netloc.lower()
-        await self._reserve_host_request_start(host)
-        response = await self.client.get(url, params=params, headers=headers)
+        if host == "api.dexscreener.com":
+            async with self._dex_inflight_slot():
+                await self._reserve_host_request_start(host)
+                async with self._request_client() as request_client:
+                    response = await request_client.get(url, params=params, headers=headers)
+        else:
+            await self._reserve_host_request_start(host)
+            async with self._request_client() as request_client:
+                response = await request_client.get(url, params=params, headers=headers)
         self._record_dex_rate_limit(host, response)
         if response.status_code == 429 and retry_429:
             retry = (0.0 if host == "api.dexscreener.com" else
                      min(15.0, float(response.headers.get("Retry-After", "2") or 2)))
             if host == "api.dexscreener.com":
-                await self._reserve_host_request_start(host)
-                response = await self.client.get(url, params=params, headers=headers)
+                async with self._dex_inflight_slot():
+                    await self._reserve_host_request_start(host)
+                    async with self._request_client() as request_client:
+                        response = await request_client.get(url, params=params, headers=headers)
                 self._record_dex_rate_limit(host, response)
             else:
                 async with self._locks[host]:
                     await self._reserve_locked_host_request_start(
                         host, not_before=time.monotonic() + retry,
                     )
-                    response = await self.client.get(url, params=params, headers=headers)
+                    async with self._request_client() as request_client:
+                        response = await request_client.get(url, params=params, headers=headers)
                     self._record_dex_rate_limit(host, response)
         response.raise_for_status()
         response.extensions["observed_at"] = utcnow()

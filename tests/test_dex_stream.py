@@ -6,7 +6,10 @@ from datetime import timedelta
 import httpx
 import pytest
 
-from memetrader.collectors import DexScreenerClient, HttpClient
+from memetrader.collectors import (
+    DEX_REQUEST_HIGH_PRIORITY, DexLowPriorityCapacityDeferred,
+    DexScreenerClient, HttpClient,
+)
 from memetrader.models import iso, utcnow
 from memetrader.runtime import Runtime, initial_config
 
@@ -244,5 +247,213 @@ def test_dex_low_429_retry_yields_start_to_new_held_request():
         finally:
             release_held.set()
             await asyncio.gather(low, high, return_exceptions=True)
+            await client.close()
+    asyncio.run(scenario())
+
+
+def test_direct_dex_low_inflight_requests_leave_reserved_capacity_for_held_work():
+    async def scenario():
+        starts = []
+        lows_started = asyncio.Event()
+        highs_started = asyncio.Event()
+        release_lows = asyncio.Event()
+
+        async def handler(request):
+            name = request.url.path.rsplit("/", 1)[-1]
+            starts.append(name)
+            if name.startswith("low"):
+                if sum(item.startswith("low") for item in starts) == 5:
+                    lows_started.set()
+                await release_lows.wait()
+            elif sum(item.startswith("held") for item in starts) == 3:
+                highs_started.set()
+            return httpx.Response(200, json=[])
+
+        client = HttpClient(min_host_interval=0, transport=httpx.MockTransport(handler))
+        lows = [asyncio.create_task(client.get(f"https://api.dexscreener.com/low{i}"))
+                for i in range(5)]
+        try:
+            await asyncio.wait_for(lows_started.wait(), timeout=1)
+            with pytest.raises(DexLowPriorityCapacityDeferred, match="low-priority"):
+                await client.get("https://api.dexscreener.com/deferred-low")
+            priority_token = DEX_REQUEST_HIGH_PRIORITY.set(True)
+            try:
+                highs = [asyncio.create_task(client.get(
+                    f"https://api.dexscreener.com/held{i}"
+                )) for i in range(3)]
+            finally:
+                DEX_REQUEST_HIGH_PRIORITY.reset(priority_token)
+            await asyncio.wait_for(highs_started.wait(), timeout=1)
+            assert all(not task.done() for task in lows)
+            await asyncio.gather(*highs)
+        finally:
+            release_lows.set()
+            await asyncio.gather(*lows, return_exceptions=True)
+            await client.close()
+    asyncio.run(scenario())
+
+
+def test_dex_connection_failure_retires_only_its_client_generation():
+    async def scenario():
+        slow_started = asyncio.Event()
+        release_slow = asyncio.Event()
+
+        async def first_handler(request):
+            if request.url.path == "/slow":
+                slow_started.set()
+                await release_slow.wait()
+                return httpx.Response(200, json=[])
+            raise httpx.ConnectError("TLS failed after proxy CONNECT", request=request)
+
+        first = httpx.AsyncClient(transport=httpx.MockTransport(first_handler))
+        replacement = httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json=[])
+        ))
+        clients = iter((first, replacement))
+        client = HttpClient(min_host_interval=0, client_factory=lambda: next(clients))
+        slow = asyncio.create_task(client.get("https://api.dexscreener.com/slow"))
+        try:
+            await asyncio.wait_for(slow_started.wait(), timeout=1)
+            with pytest.raises(httpx.ConnectError):
+                await client.get("https://api.dexscreener.com/failure")
+            assert not first.is_closed
+            release_slow.set()
+            await slow
+            assert first.is_closed
+            assert (await client.get("https://api.dexscreener.com/after")).status_code == 200
+            status = client.snapshot_http_capacity()
+            assert status["connect_errors"] == 1
+            assert status["client_generation_retirements"] == 1
+            assert status["retired_client_generations"] == 0
+        finally:
+            release_slow.set()
+            await asyncio.gather(slow, return_exceptions=True)
+            await client.close()
+    asyncio.run(scenario())
+
+
+def test_dex_proxy_connect_tls_failures_do_not_exhaust_a_small_connection_pool(monkeypatch):
+    async def scenario():
+        connections = 0
+
+        async def proxy(reader, writer):
+            nonlocal connections
+            connections += 1
+            while await reader.readline() != b"\r\n":
+                pass
+            writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            await writer.drain()
+            writer.close()
+
+        server = await asyncio.start_server(proxy, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        monkeypatch.setenv("HTTPS_PROXY", f"http://127.0.0.1:{port}")
+        monkeypatch.setenv("https_proxy", f"http://127.0.0.1:{port}")
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        monkeypatch.delenv("no_proxy", raising=False)
+        client = HttpClient(
+            timeout=0.5,
+            min_host_interval=0,
+            client_limits=httpx.Limits(max_connections=3, max_keepalive_connections=3),
+        )
+        try:
+            for index in range(5):
+                with pytest.raises(httpx.ConnectError):
+                    await client.get(f"https://dex-recovery.test/{index}", retry_429=False)
+            status = client.snapshot_http_capacity()
+            assert connections == 5
+            assert status["connect_errors"] == 5
+            assert status["pool_timeouts"] == 0
+            assert status["client_generation_retirements"] == 5
+        finally:
+            await client.close()
+            server.close()
+            await server.wait_closed()
+    asyncio.run(scenario())
+
+
+def test_cancelled_direct_dex_low_request_releases_its_inflight_slot():
+    async def scenario():
+        low_starts = 0
+        first_five_started = asyncio.Event()
+        replacement_started = asyncio.Event()
+        release_lows = asyncio.Event()
+
+        async def handler(request):
+            nonlocal low_starts
+            low_starts += 1
+            if low_starts == 5:
+                first_five_started.set()
+            if low_starts == 6:
+                replacement_started.set()
+            await release_lows.wait()
+            return httpx.Response(200, json=[])
+
+        client = HttpClient(min_host_interval=0, transport=httpx.MockTransport(handler))
+        lows = [asyncio.create_task(client.get(f"https://api.dexscreener.com/low{i}"))
+                for i in range(5)]
+        try:
+            await asyncio.wait_for(first_five_started.wait(), timeout=1)
+            lows[0].cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await lows[0]
+            replacement = asyncio.create_task(client.get("https://api.dexscreener.com/replacement"))
+            await asyncio.wait_for(replacement_started.wait(), timeout=1)
+            release_lows.set()
+            await asyncio.gather(*lows[1:], replacement)
+        finally:
+            release_lows.set()
+            await asyncio.gather(*lows, return_exceptions=True)
+            await client.close()
+    asyncio.run(scenario())
+
+
+def test_dex_inflight_waiters_are_paced_when_capacity_reopens():
+    async def scenario():
+        starts = []
+        lows_started = asyncio.Event()
+        initial_highs_started = asyncio.Event()
+        all_highs_started = asyncio.Event()
+        release_lows = asyncio.Event()
+        release_highs = asyncio.Event()
+
+        async def handler(request):
+            name = request.url.path.rsplit("/", 1)[-1]
+            starts.append((name, time.monotonic()))
+            if name.startswith("low"):
+                if sum(item.startswith("low") for item, _ in starts) == 5:
+                    lows_started.set()
+                await release_lows.wait()
+            else:
+                count = sum(item.startswith("held") for item, _ in starts)
+                if count == 3:
+                    initial_highs_started.set()
+                if count == 6:
+                    all_highs_started.set()
+                await release_highs.wait()
+            return httpx.Response(200, json=[])
+
+        client = HttpClient(min_host_interval=0.02, transport=httpx.MockTransport(handler))
+        lows = [asyncio.create_task(client.get(f"https://api.dexscreener.com/low{i}"))
+                for i in range(5)]
+        highs = []
+        try:
+            await asyncio.wait_for(lows_started.wait(), timeout=1)
+            priority_token = DEX_REQUEST_HIGH_PRIORITY.set(True)
+            try:
+                highs = [asyncio.create_task(client.get(f"https://api.dexscreener.com/held{i}"))
+                         for i in range(6)]
+            finally:
+                DEX_REQUEST_HIGH_PRIORITY.reset(priority_token)
+            await asyncio.wait_for(initial_highs_started.wait(), timeout=1)
+            await asyncio.sleep(0.08)
+            release_lows.set()
+            await asyncio.wait_for(all_highs_started.wait(), timeout=1)
+            held_starts = [started for name, started in starts if name.startswith("held")]
+            assert all(b - a >= 0.018 for a, b in zip(held_starts, held_starts[1:]))
+        finally:
+            release_lows.set()
+            release_highs.set()
+            await asyncio.gather(*lows, *highs, return_exceptions=True)
             await client.close()
     asyncio.run(scenario())
