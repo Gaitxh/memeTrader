@@ -627,9 +627,9 @@ function renderFunnel(strategies){
   $('#funnel').innerHTML=strategies.map(s=>{
     const d=s.entry_decisions||{},n=d.admitted||0;
     const reasons=(d.signal_reasons||[]).map(r=>`${reasonText(r.reason)} × ${r.count}`).join('；');
-    const detail=d.signal_observations==null?'本窗口没有逐策略信号前记录，不能据此判定没有行情输入':`近期评估 ${d.signal_observations} 帧 · 信号就绪 ${d.signal_ready} 帧（非 BUY） · 最近 ${time(d.signal_last_at)}`;
+    const detail=d.signal_observations==null?'本窗口没有逐策略信号前记录，不能据此判定没有行情输入':`近期评估 ${d.signal_observations} 帧 / ${d.candidate_unique_tokens??'未知'} 币 · 信号 ${d.signal_ready} 帧 / ${d.signal_unique_tokens??'未知'} 币（非 BUY） · 最近 ${time(d.signal_last_at)}`;
     const rejected=(d.rejection_reasons||[]).map(r=>`${reasonText(r.reason)} × ${r.count}`).join('；');
-    const post=d.decision_last_at?`近期入场判定：放行 ${d.recent_admitted} / 拒绝 ${d.recent_rejected} · ${rejected||'无已记录拒绝'}（不等于成交）`:'近期有界样本未记录信号后的入场判定';
+    const post=(d.decision_last_at?`近期入场判定：放行 ${d.recent_admitted} / 拒绝 ${d.recent_rejected} · ${rejected||'无已记录拒绝'}（不等于成交）`:'近期有界样本未记录信号后的入场判定')+`；成交窗口 BUY ${d.buy_rows??'未知'} 笔 / ${d.buy_unique_tokens??'未知'} 币 / ${d.buy_unique_cohorts??'未知'} cohort。各窗口独立截断，不能由缺失推断失败阶段。`;
     return `<div class="funnel-row"><span class="funnel-label">${esc(strategyLabelForArm(s.arm_id))}</span><span class="bar"><i style="width:${Math.max(n?3:0,n/max*100)}%"></i></span><span class="funnel-count">${n} / ${n+(d.rejected||0)}</span><small class="funnel-detail">${esc(detail)}${reasons?`<br>${esc(reasons)}`:''}<br>${esc(post)}</small></div>`;
   }).join('');
 }

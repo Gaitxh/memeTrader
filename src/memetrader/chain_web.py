@@ -693,16 +693,22 @@ class ChainWebData:
                         item = chains[scope].setdefault(arm_id, {
                             "signal_observations": 0, "signal_ready": 0,
                             "signal_last_at": row["evaluated_at"], "signal_reasons": Counter(),
+                            "candidate_tokens": set(), "ready_tokens": set(),
                         })
                         item["signal_observations"] += 1
                         item["signal_ready"] += int(arm_id in ready)
                         item["signal_reasons"][str(reason)] += 1
+                        item["candidate_tokens"].add(row["token_id"])
+                        if arm_id in ready:
+                            item["ready_tokens"].add(row["token_id"])
             for arms in chains.values():
                 for item in arms.values():
+                    item["candidate_unique_tokens"] = len(item.pop("candidate_tokens"))
+                    item["signal_unique_tokens"] = len(item.pop("ready_tokens"))
                     item["signal_reasons"] = [{"reason": reason, "count": count}
                         for reason, count in item["signal_reasons"].most_common(3)]
             decision_rows = connection.execute(
-                "SELECT * FROM (SELECT arm_id,token_id,decided_at,status,reason,definition_version "
+                "SELECT * FROM (SELECT arm_id,token_id,shadow_cohort_id,decided_at,status,reason,definition_version "
                 "FROM chain_meme_trader_entry_decisions ORDER BY id DESC LIMIT ?) "
                 "WHERE definition_version=? AND decided_at>=? AND decided_at<=? ORDER BY decided_at DESC",
                 (self.SIGNAL_FUNNEL_ROW_LIMIT, version, cutoff, iso(now)),
@@ -717,15 +723,48 @@ class ChainWebData:
                     item = decisions[scope].setdefault(arm_id, {
                         "recent_admitted": 0, "recent_rejected": 0,
                         "decision_last_at": row["decided_at"], "rejection_reasons": Counter(),
+                        "decision_tokens": set(), "decision_cohorts": set(),
                     })
                     item["recent_" + row["status"]] += 1
+                    item["decision_tokens"].add(row["token_id"])
+                    item["decision_cohorts"].add((row["token_id"], row["shadow_cohort_id"]))
                     if row["status"] == "rejected":
                         item["rejection_reasons"][row["reason"]] += 1
             for arms in decisions.values():
                 for item in arms.values():
+                    item["decision_unique_tokens"] = len(item.pop("decision_tokens"))
+                    item["decision_unique_cohorts"] = len(item.pop("decision_cohorts"))
                     item["rejection_reasons"] = [{"reason": reason, "count": count}
                         for reason, count in item["rejection_reasons"].most_common(3)]
-            payload = {"arms": list(policies), "chains": chains, "decision_chains": decisions, "meta": {
+            trade_rows = connection.execute(
+                "SELECT * FROM (SELECT definition_version,arm_id,token_id,shadow_cohort_id,side,recorded_at "
+                "FROM chain_meme_trader_trades ORDER BY id DESC LIMIT ?) "
+                "WHERE definition_version=? AND recorded_at>=? AND recorded_at<=?",
+                (self.SIGNAL_FUNNEL_ROW_LIMIT, version, cutoff, iso(now)),
+            ).fetchall()
+            trades = {scope: {} for scope in chains}
+            for row in trade_rows:
+                arm_id, chain = row["arm_id"], str(row["token_id"]).split(":", 1)[0]
+                if arm_id not in policies or chain not in chains or chain == "all":
+                    continue
+                if row["recorded_at"] < str(policies[arm_id].get("forward_started_at") or ""):
+                    continue
+                for scope in ("all", chain):
+                    item = trades[scope].setdefault(arm_id, {"buy_rows": 0, "sell_rows": 0,
+                        "buy_tokens": set(), "buy_cohorts": set()})
+                    if str(row["side"]).upper() == "BUY":
+                        item["buy_rows"] += 1
+                        item["buy_tokens"].add(row["token_id"])
+                        item["buy_cohorts"].add((row["token_id"], row["shadow_cohort_id"]))
+                    elif str(row["side"]).upper() == "SELL":
+                        item["sell_rows"] += 1
+            for arms in trades.values():
+                for item in arms.values():
+                    item["buy_unique_tokens"] = len(item.pop("buy_tokens"))
+                    item["buy_unique_cohorts"] = len(item.pop("buy_cohorts"))
+                    item["buy_rows_per_token"] = item["buy_rows"] / item["buy_unique_tokens"] if item["buy_unique_tokens"] else None
+            payload = {"arms": list(policies), "chains": chains, "decision_chains": decisions,
+                       "trade_chains": trades, "meta": {
                 "generated_at": iso(now), "window_minutes": 30,
                 "row_limit": self.SIGNAL_FUNNEL_ROW_LIMIT, "rows_considered": len(rows),
                 "earliest_evaluation_at": min((r["evaluated_at"] for r in rows), default=None),
@@ -733,6 +772,11 @@ class ChainWebData:
                 "decision_rows_considered": len(decision_rows),
                 "decision_earliest_at": min((r["decided_at"] for r in decision_rows), default=None),
                 "decision_counts_are": "bounded_recent_entry_decisions_not_buy_fills",
+                "trade_rows_considered": len(trade_rows),
+                "unique_counts_are": "distinct_within_each_bounded_ledger_tail_not_a_linked_full_funnel",
+                "unmeasured_stages": ["feature_eligible", "post_signal_next_observation", "terminal"],
+                "first_disappearing_stage": None,
+                "stage_warning": "Independent ledger windows may be censored; absence cannot establish gate failure. SELL rows include partial exits and are not terminal counts.",
             }}
             self._signal_funnel_cache = (time.monotonic(), version, payload)
             return payload
@@ -774,6 +818,9 @@ class ChainWebData:
                            }), **signals["decision_chains"][chain].get(arm_id, {
                                "recent_admitted": 0, "recent_rejected": 0,
                                "decision_last_at": None, "rejection_reasons": [],
+                           }), **signals["trade_chains"][chain].get(arm_id, {
+                               "buy_rows": 0, "sell_rows": 0, "buy_unique_tokens": 0,
+                               "buy_unique_cohorts": 0, "buy_rows_per_token": None,
                            })) for arm_id in dict.fromkeys([*signals["arms"], *decisions])]
             heartbeat = connection.execute(
                 "SELECT COALESCE(last_item_at,last_ok_at) AS updated_at "

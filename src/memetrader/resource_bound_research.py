@@ -107,6 +107,22 @@ def resource_entry_signal(history, policy, *, decision_at, activated_at):
     return passed, "resource_" + mechanism + ("_ready" if passed else "_candidate_rejected"), evidence
 
 
+def age_rate_horizon_policies():
+    """S1: frozen common entry, only 15/60-minute holding horizon differs."""
+    parent = next(p for p in resource_policies() if p["arm_id"] == "resource_age_rate_candidate_v1")
+    result = []
+    for minutes, role in ((15, "fast"), (60, "runner")):
+        p = deepcopy(parent)
+        arm = f"age_rate_horizon_{role}_v1"
+        p.update(arm_id=arm, canonical_id=arm, name=f"池龄归一化·{minutes}分钟配对",
+            description="同一池龄归一化入场/同成交/5U最多4仓；仅持仓时限不同，严格前向，未验证盈利。",
+            source_arm_ids=[parent["arm_id"]], max_hold_minutes=float(minutes),
+            paired_entry_group="age_rate_horizon_pair_v1", paired_entry_size=2,
+            evidence_review="docs/PROJECT_CONTEXT/STRATEGY_FORWARD_CONVERGENCE_20260909.md")
+        result.append(p)
+    return result
+
+
 def evaluate_resource_exit(position, frame, state=None, *, now, policy):
     """Only mask the existing progress-clock SELL while current support holds."""
     base_policy = {**policy, "kind": "finalist_progress_clock"}

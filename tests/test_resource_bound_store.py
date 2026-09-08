@@ -45,6 +45,32 @@ def test_additive_registration_preserves_period_and_existing_contracts(tmp_path,
     store.close()
 
 
+def test_age_rate_horizon_pair_shares_entry_fill_and_preserves_parent(tmp_path, monkeypatch):
+    from memetrader.resource_bound_research import age_rate_horizon_policies, resource_policies
+    store, clock = setup_store(tmp_path, monkeypatch)
+    parent = next(p for p in resource_policies() if p['arm_id'] == 'resource_age_rate_candidate_v1')
+    policies = age_rate_horizon_policies()
+    original = store._chain_meme_trader_registration(store.CHAIN_MEME_TRADER_ACTIVE_VERSION)['definition_json']
+    for p in policies:
+        assert p['entry_filter'] == parent['entry_filter']
+        assert p['hard_stop_return'] == parent['hard_stop_return']
+        assert p['trailing_drawdown'] == parent['trailing_drawdown']
+        store.append_chain_meme_trader_policy(p, activated_at=clock[0])
+    token = TokenCandidate('solana', 'HorizonFixture', 'Fixture')
+    created = int((clock[0] - timedelta(minutes=90)).timestamp() * 1000)
+    for _ in range(3):
+        clock[0] += timedelta(seconds=16)
+        store.observe_chain_meme_pattern(token, quote(token, 'pool', created, clock[0], age_rate=True), recorded_at=clock[0])
+    rows = store.db.execute("SELECT * FROM chain_meme_trader_positions WHERE arm_id LIKE 'age_rate_horizon_%'").fetchall()
+    assert len(rows) == 2
+    assert rows[0]['source_entry_fill_id'] and rows[0]['source_entry_fill_id'] == rows[1]['source_entry_fill_id']
+    assert rows[0]['entry_execution_price_usd'] == rows[1]['entry_execution_price_usd']
+    assert rows[0]['paper_quantity_tokens'] == rows[1]['paper_quantity_tokens']
+    assert store._chain_meme_trader_registration(store.CHAIN_MEME_TRADER_ACTIVE_VERSION)['definition_json'] == original
+    assert [p['max_hold_minutes'] for p in policies] == [15, 60]
+    store.close()
+
+
 def test_account_retirement_blocks_queued_buy_without_changing_old_contract(tmp_path, monkeypatch):
     store, clock = setup_store(tmp_path, monkeypatch)
     store.register_chain_meme_resource_bound_research()

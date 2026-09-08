@@ -255,6 +255,12 @@ def test_discovery_funnel_keeps_zero_signal_arms_and_counts_recorded_frames(tmp_
     assert rows["waiting"]["signal_ready"] == 0
     assert rows["waiting"]["admitted"] == rows["ready"]["admitted"] == 0
     assert rows["ready"]["signal_ready"] == 2  # Never reported as BUY.
+    assert rows["ready"]["signal_unique_tokens"] == 2
+    assert rows["waiting"]["candidate_unique_tokens"] == 2
+    assert rows["waiting"]["signal_unique_tokens"] == 0
+    assert rows["ready"]["buy_rows"] == 0
+    assert rows["ready"]["decision_unique_cohorts"] == 2
+    assert payload["funnel_meta"]["first_disappearing_stage"] is None
     assert rows["unrecorded"]["signal_observations"] is None
     assert rows["ready"]["recent_rejected"] == 2
     assert {r["reason"] for r in rows["ready"]["rejection_reasons"]} == {"insufficient_cash", "strategy_open_slot_limit"}
