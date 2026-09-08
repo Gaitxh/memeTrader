@@ -17,6 +17,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from solders.pubkey import Pubkey
 
+from .flap_successor import resolve as resolve_flap_successor, matches as matches_flap_successor
 from .forward_patterns import experiment_policies, result_driven_policies, pattern_signal, conditional_fraction
 from .capital_entry import capital_observation_signal, capital_context_from_observations
 from .capital_context import evaluate_capital_exit_context
@@ -31214,11 +31215,17 @@ class Store:
             "m.last_attempt_at,t.token_id LIMIT ?"
         )
         with self._lock:
-            return [
-                dict(row) for row in self.db.execute(
-                    query, tuple(versions + versions + versions + [max(1, int(limit))]),
-                ).fetchall()
-            ]
+            targets = [dict(row) for row in self.db.execute(
+                query, tuple(versions + versions + versions + [max(1, int(limit))]),
+            ).fetchall()]
+            for target in targets:
+                pairs = str(target.get("entry_pair_addresses") or "").split(",")
+                target["original_entry_pair_addresses"] = target.get("entry_pair_addresses")
+                target["entry_pair_addresses"] = ",".join(
+                    (resolve_flap_successor(self.db, target["token_id"], pair, iso(utcnow())) or {}).get("successor_pool", pair)
+                    for pair in pairs if pair
+                )
+            return targets
 
     def chain_meme_trader_has_open_positions(self, definition_version: str) -> bool:
         with self._lock:
@@ -33111,6 +33118,14 @@ class Store:
         ).fetchone()
         if position is None:
             return 0
+        migration_evidence = self._json_object(mark["trigger_evidence_json"])
+        migration_at = (migration_evidence.get("pair_rebased") or {}).get("recorded_at", mark["recorded_at"])
+        migration_link = resolve_flap_successor(self.db, position["token_id"], position["entry_pair_address"], migration_at)
+        if migration_link and parse_time(position["opened_at"]) > parse_time(migration_link["observed_at"]):
+            migration_link = None
+        if migration_link and self._json_object(mark["trigger_evidence_json"]).get("official_migration_successor") == migration_link:
+            position = dict(position)
+            position["entry_pair_address"] = migration_link["successor_pool"]
         if not self.chain_meme_market_pool_matches(
             position["token_id"], position["entry_pair_address"], mark["market_pair_address"],
         ):
@@ -33838,6 +33853,25 @@ class Store:
             created = 0
             capital_shared = {}
             for position in positions:
+                original_pair = position["entry_pair_address"]
+                migration_link = resolve_flap_successor(self.db, position["token_id"], original_pair, iso(current))
+                if migration_link and parse_time(position["opened_at"]) > parse_time(migration_link["observed_at"]):
+                    migration_link = None
+                if migration_link:
+                    successor_mark = self.db.execute(
+                        "SELECT * FROM chain_meme_trader_pool_marks WHERE token_id=? AND pair_address=?",
+                        (position["token_id"], migration_link["successor_pool"]),
+                    ).fetchone()
+                    if successor_mark is None or not matches_flap_successor(
+                        self.db, position["token_id"], original_pair, successor_mark["pair_address"], successor_mark["observed_at"]
+                    ):
+                        continue
+                    position = dict(position)
+                    position["entry_pair_address"] = migration_link["successor_pool"]  # local valuation surface only
+                    for key in ("price_usd", "liquidity_usd", "volume_5m_usd", "buys_5m", "sells_5m", "pair_address", "inventory_json", "status", "recorded_at", "observed_at", "provider", "last_success_at", "last_attempt_at", "failure_kind"):
+                        position["mark_"+key] = successor_mark[key]
+                    for key in ("consecutive_misses", "first_missing_at", "sample_sequence"):
+                        position[key] = successor_mark[key]
                 if not self.chain_meme_market_pool_matches(
                     position["token_id"], position["entry_pair_address"],
                     position["mark_pair_address"],
@@ -33934,9 +33968,11 @@ class Store:
                         )
                         current_pair = str(position["mark_pair_address"] or "")
                         pending_pair = str(position["pending_pair_address"] or "")
+                        pending_boundary = max(parse_time(position["pending_recorded_at"]), parse_time(
+                            (self._json_object(position["pending_trigger_evidence_json"]).get("pair_rebased") or {}).get("recorded_at", position["pending_recorded_at"])))
                         if (
                             post_mark_at > parse_time(position["pending_recorded_at"])
-                            and post_observed_at > parse_time(position["pending_recorded_at"])
+                            and post_observed_at > pending_boundary
                             and post_sequence > max(pre_sequence, prior_post_sequence)
                             and parse_time(position["opened_at"])
                             <= post_observed_at <= post_mark_at <= current
@@ -33984,6 +34020,8 @@ class Store:
                                 pending_evidence = self._json_object(
                                     position["pending_trigger_evidence_json"]
                                 )
+                                if migration_link:
+                                    pending_evidence["official_migration_successor"] = migration_link
                                 pending_evidence["pair_rebased"] = {
                                     "sample_sequence": post_sequence,
                                     "pair_address": current_pair,
@@ -34279,6 +34317,8 @@ class Store:
                         and float(position["mark_price_usd"] or 0.0) > 0.0
                     ):
                         continue
+                if migration_link:
+                    trigger_evidence["official_migration_successor"] = migration_link
                 if version == self.CHAIN_MEME_TRADER_V11_VERSION:
                     reason += ":v11_legacy_dexmark_drain_overlay"
                 self.db.execute(
@@ -34877,13 +34917,14 @@ class Store:
             indicative_unrealized = 0.0
             indicative_priced = 0
             for position in open_positions:
+                link = resolve_flap_successor(self.db, position["token_id"], position["entry_pair_address"], iso(current))
                 mark = next((
                     candidate for candidate in marks_by_token.get(
                         str(position["token_id"]), []
-                    ) if self.chain_meme_market_pool_matches(
+                    ) if (not link and self.chain_meme_market_pool_matches(
                         position["token_id"], position["entry_pair_address"],
                         candidate["pair_address"],
-                    )
+                    )) or matches_flap_successor(self.db, position["token_id"], position["entry_pair_address"], candidate["pair_address"], candidate["observed_at"])
                 ), None)
                 if mark is None or str(mark["status"] or "") != "VISIBLE":
                     continue
@@ -35431,11 +35472,12 @@ class Store:
                         ).fetchall()
                         if "chain_meme_trader_pool_marks" in tables else []
                     )
+                    link = resolve_flap_successor(connection, token_id, entry_pair, iso(summary_at))
                     market_mark = next((
                         candidate for candidate in market_marks
-                        if cls.chain_meme_market_pool_matches(
+                        if (not link and cls.chain_meme_market_pool_matches(
                             token_id, entry_pair, candidate["pair_address"],
-                        )
+                        )) or matches_flap_successor(connection, token_id, entry_pair, candidate["pair_address"], candidate["observed_at"])
                     ), None)
                     indicative_snapshot_cache[indicative_key] = market_mark
                     if market_mark is None and not market_only_valuation:
