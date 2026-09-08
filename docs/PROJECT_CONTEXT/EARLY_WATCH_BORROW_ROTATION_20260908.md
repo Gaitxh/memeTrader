@@ -1,5 +1,19 @@
 # Message23 — bounded residency for borrowed early watches
 
+## Current status — message24 supersedes the deployed residency stage
+
+**SUPERSEDED_AFTER_DEPLOYMENT_REVERTED / HOLD_AWAIT_REVISED_DESIGN.** Exact request `C2C-20260908-EARLY-WATCH-ROTATION-REVISION-24` arrived after `f422c08` had already been deployed at14:13:58Z. Therefore message23 cannot truthfully be marked NOT_IMPLEMENTED. Only its runtime/test changes were reversed; both files now exactly match `ef6dd56`. The historical deployment, observations and findings below remain preserved.
+
+One scoped restart through the existing Paper launcher restored message20 behavior at **2026-09-08T14:27:12.3372995Z** (22:27:12 Beijing), supervisor41544/wrapper43956/runtime45800. Six closest regression cases passed. Runtime source SHA256: `c7355bb815e23a433e19d9cfdaee0e2c8724a4b366535c67cfa7447aecd51222`. Base reservations3/4/3, non-held total10/chain, legacy15/15/20-minute TTLs, fixed-total borrowing/reclaim and held protection remain; borrowed-only180s residency and its telemetry are removed.
+
+At **14:27:45.222500Z**, health/live/performance were normal. All five immutable summaries, funding period and execution settings matched before; Paper/Live=false retained. Snapshot/evaluation/trade frontiers advanced1927686→1928189 /1123233→1123735 /505842→505872. Post-restart watch summary at14:27:40Z had the message20 counters, no message23 residency fields, and ten non-held watches per chain. Passive queue51 in/49 processed/2 pending, zero process-local drops; historical56704 batches/462180 quotes unchanged. This approximately33-second rollback check establishes restoration/progress, not sustained speed or coverage improvement.
+
+The before-rollback snapshot at14:26:03Z independently had zero borrowed identities and near-full base reservations (BSC2/4/3, RH3/4/3, SOL3/4/3), consistent with message24's warning that borrowed-only expiry cannot help while no borrowed capacity exists. This is not a reproduction of its exact13:53Z cohort or proof of every missing-trajectory cause. No additional coverage scan or replacement design was executed.
+
+Evidence: `data/research/early_watch_borrow_20260908/rotation24_before.json`, `rotation24_after.json`, `rotation24_deployment.json`, `rotation24_acceptance.json`, `rotation24_pytest.txt`. Await Lead's revised design; do not automatically implement message22/23 rotation, reallocate reservations, raise requests/cadence or retune strategies. Funding, historical research/trades and Live remain unchanged; ModeChat19 remains deferred.
+
+## Historical message23 implementation and acceptance (superseded by message24)
+
 Request: `C2C-20260908-EARLY-WATCH-BORROW-ROTATION-23`. This separately authorized stage supersedes message22's deferred approximately150-second proposal only for the specified **180-second borrowed early residency**. It does not shorten the legacy base reservations.
 
 ## Evidence and decision

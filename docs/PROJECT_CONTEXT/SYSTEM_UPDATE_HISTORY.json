@@ -2,6 +2,18 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260908-early-borrow-residency-reverted",
+      "recorded_at": "2026-09-08T14:27:45.222500Z",
+      "deployed_at": "2026-09-08T14:27:12.3372995Z",
+      "title": "按消息24撤回借用位180秒驻留，恢复固定总量借用",
+      "problem": "消息23已先部署；后到修订指出基础位满员时没有借用位可释放，要求保留ef6dd56行为并等待新设计。",
+      "change": "仅恢复runtime与对应测试到ef6dd56；保留23历史报告、交易和观察。状态为部署后撤回，不能写成未实施。",
+      "rationale": "遵循最新暂停/修订；不同时引入重分配、请求扩容或其他方案。",
+      "validation": "6项相关测试通过；22:27受控Paper重启后三API正常，五类摘要/资金期/执行设置一致，记录前沿推进，51批入49出2待处理0新增丢弃。",
+      "scope": "约33秒恢复验收，不是覆盖或性能收益实验；Live=false，无重置/历史改写，等待修订设计。",
+      "report": "docs/PROJECT_CONTEXT/EARLY_WATCH_BORROW_ROTATION_20260908.md"
+    },
+    {
       "id": "20260908-early-borrow-residency-180s",
       "recorded_at": "2026-09-08T14:18:10.053466Z",
       "deployed_at": "2026-09-08T14:13:58.708518Z",
