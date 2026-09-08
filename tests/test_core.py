@@ -6931,6 +6931,35 @@ def test_chain_meme_v17_starts_clean_and_rejects_delayed_entry_snapshots(
     store.close()
 
 
+def test_shared_entry_without_matching_policy_is_not_reported_as_cash_failure(tmp_path):
+    store = Store(tmp_path / "no-matching-entry.sqlite3", initial_cash_usd=1000)
+    store.register_chain_meme_trader_v18()
+    store.activate_chain_meme_trader_v18()
+    observed = utcnow()
+    address = str(Pubkey.new_unique())
+    token = TokenCandidate("solana", address, "Quiet Growth", "QUIET", source="dexscreener")
+    store.upsert_token(token, seen_at=observed)
+    store.add_snapshot(TokenSnapshot(
+        "solana", address, 1.0, 10_000, 100_000, 100, 1, 1,
+        observed_at=observed, ingested_at=observed, provider="dexscreener",
+        raw={"pair": {
+            "chainId": "solana", "dexId": "pumpswap", "pairAddress": "quiet-pool",
+            "pairCreatedAt": int((observed - timedelta(hours=2)).timestamp() * 1000),
+            "priceUsd": "1.0", "baseToken": {"address": address},
+            "quoteToken": {"address": SOLANA_WRAPPED_SOL_MINT},
+            "txns": {"m5": {"buys": 1, "sells": 1}, "h1": {"buys": 20, "sells": 20}},
+            "volume": {"m5": 100.0, "h1": 3000.0},
+        }},
+    ))
+    result = store.enroll_chain_meme_trader_v6(definition_version=Store.CHAIN_MEME_TRADER_V18_VERSION)
+    row = store.db.execute("SELECT reason,feature_json FROM chain_meme_trader_v6_entry_evaluations").fetchone()
+    assert result == {"evaluated": 1, "admitted": 0, "rejected": 1, "intents": 0}
+    assert row["reason"] == "no_active_matching_entry_policy"
+    assert json.loads(row["feature_json"])["arm_available_cash_usd"] == {}
+    assert store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_trades").fetchone()[0] == 0
+    store.close()
+
+
 def test_chain_meme_v18_preserves_historical_contracts_without_market_fallback(
     tmp_path: Path,
 ):

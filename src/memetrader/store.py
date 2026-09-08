@@ -1407,6 +1407,7 @@ class Store:
                     last_attempt_at TEXT,
                     next_attempt_at TEXT,
                     hydrated_at TEXT,
+                    followup_until TEXT,
                     last_error TEXT NOT NULL DEFAULT ''
                 );
                 CREATE INDEX IF NOT EXISTS token_detail_hydration_due_idx
@@ -6507,6 +6508,9 @@ class Store:
                 BEGIN SELECT RAISE(ABORT,'invalid token context deferred admission result'); END;
                 """
             )
+            hydration_columns = {row["name"] for row in self.db.execute("PRAGMA table_info(token_detail_hydration)")}
+            if "followup_until" not in hydration_columns:
+                self.db.execute("ALTER TABLE token_detail_hydration ADD COLUMN followup_until TEXT")
             columns = {row["name"] for row in self.db.execute("PRAGMA table_info(observations)")}
             if "source_item_id" not in columns:
                 self.db.execute("ALTER TABLE observations ADD COLUMN source_item_id TEXT NOT NULL DEFAULT ''")
@@ -9312,7 +9316,7 @@ class Store:
             self.db.execute(
                 """
                 UPDATE token_detail_hydration
-                SET status='pending',enqueued_at=?,next_attempt_at=?,last_error=''
+                SET status='pending',enqueued_at=?,next_attempt_at=?,last_error='',followup_until=NULL
                 WHERE token_id=?
                 """,
                 (iso(queued), iso(queued), str(token_id)),
@@ -9356,6 +9360,7 @@ class Store:
         chains: Iterable[str] = (),
         prefer_fresh: bool = False,
         priority_token_ids: Iterable[str] = (),
+        followup_limit: int = 0,
     ) -> list[sqlite3.Row]:
         due_at = iso(parse_time(now or utcnow()))
         selected_chains = tuple(dict.fromkeys(
@@ -9368,6 +9373,23 @@ class Store:
                 f" AND LOWER(chain) IN ({','.join('?' for _ in selected_chains)})"
             )
             chain_params = selected_chains
+        followups = []
+        followup_limit = min(300, max(0, int(followup_limit)), max(0, int(limit)))
+        if followup_limit:
+            # Existing due index; per-chain oldest-first rotation keeps an
+            # active chain from consuming every growth-stage observation.
+            with self._lock:
+                groups = [list(self.db.execute(
+                    "SELECT * FROM token_detail_hydration WHERE status IN ('hydrated','no_pair','error') "
+                    "AND followup_until>? AND next_attempt_at IS NOT NULL AND next_attempt_at<=? "
+                    + ("AND chain=? " if chain else "")
+                    + "ORDER BY next_attempt_at,enqueued_at LIMIT ?",
+                    (due_at, due_at, chain, followup_limit) if chain else (due_at, due_at, followup_limit),
+                )) for chain in (selected_chains or (None,))]
+            for offset in range(followup_limit):
+                for group in groups:
+                    if offset < len(group) and len(followups) < followup_limit:
+                        followups.append(group[offset])
         priority_patterns = tuple(
             dict.fromkeys(
                 f"{str(url).strip().rstrip('/').lower()}/%"
@@ -9415,6 +9437,7 @@ class Store:
                     f"""
                     SELECT * FROM token_detail_hydration
                     WHERE status IN ('pending','no_pair','error')
+                      AND followup_until IS NULL
                       AND (next_attempt_at IS NULL OR next_attempt_at<=?)
                       {chain_filter}
                     ORDER BY
@@ -9435,9 +9458,10 @@ class Store:
                           if prefer_fresh else "enqueued_at ASC"
                       },attempts,token_id LIMIT ?
                     """,
-                    (due_at, *chain_params, *priority_params, max(0, min(300, int(limit)))),
+                    (due_at, *chain_params, *priority_params,
+                     max(0, min(300, int(limit)) - len(followups))),
                 )
-            )
+            ) + followups
 
     def mark_token_detail_hydration(
         self,
@@ -9446,33 +9470,42 @@ class Store:
         *,
         error: str = "",
         now=None,
+        refresh_at=None,
+        followup_until=None,
     ) -> None:
         if status not in {"hydrated", "no_pair", "error"}:
             raise ValueError("invalid token detail hydration status")
         attempted_at = parse_time(now or utcnow())
         with self._lock, self.db:
             row = self.db.execute(
-                "SELECT attempts FROM token_detail_hydration WHERE token_id=?", (str(token_id),)
+                "SELECT attempts,followup_until FROM token_detail_hydration WHERE token_id=?", (str(token_id),)
             ).fetchone()
             if row is None:
                 return
             attempts = int(row["attempts"] or 0) + 1
             if status == "hydrated":
-                next_attempt_at = None
+                next_attempt_at = iso(parse_time(refresh_at)) if refresh_at is not None else None
             elif status == "error":
                 next_attempt_at = iso(attempted_at + timedelta(minutes=5))
             else:
                 retry_minutes = (5, 30, 120, 360)[min(attempts - 1, 3)]
                 next_attempt_at = iso(attempted_at + timedelta(minutes=retry_minutes))
+            deadline = followup_until if status == "hydrated" else row["followup_until"]
+            if deadline is not None:
+                deadline = iso(parse_time(deadline))
+                if status != "hydrated":
+                    next_attempt_at = iso(attempted_at + timedelta(minutes=5))
+                if next_attempt_at is not None and next_attempt_at >= deadline:
+                    next_attempt_at = None
             self.db.execute(
                 """
                 UPDATE token_detail_hydration
-                SET status=?,attempts=?,last_attempt_at=?,next_attempt_at=?,
+                SET status=?,attempts=?,last_attempt_at=?,next_attempt_at=?,followup_until=?,
                     hydrated_at=CASE WHEN ?='hydrated' THEN ? ELSE hydrated_at END,last_error=?
                 WHERE token_id=?
                 """,
                 (
-                    status, attempts, iso(attempted_at), next_attempt_at,
+                    status, attempts, iso(attempted_at), next_attempt_at, deadline,
                     status, iso(attempted_at), str(error or "")[:500], str(token_id),
                 ),
             )
@@ -28580,7 +28613,8 @@ class Store:
                             and not participating_arm_ids
                         ):
                             family = None
-                            reason = "all_entry_accounts_cash_below_20usdc"
+                            reason = ("all_entry_accounts_cash_below_20usdc" if family_arms
+                                      else "no_active_matching_entry_policy")
                     features.update({
                         "decision_at": iso(decision_at),
                         "entry_decision_reason": reason,

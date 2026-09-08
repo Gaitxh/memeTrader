@@ -1376,6 +1376,100 @@ def test_low_quotes_leave_slots_for_all_held_chains_and_release_on_cancel(cancel
     asyncio.run(scenario())
 
 
+def test_growth_followups_reserve_first_hydration_capacity_and_rotate_chains(tmp_path):
+    store = Store(tmp_path / "growth-due.sqlite3")
+    now = utcnow()
+    for chain in ("bsc", "solana", "robinhood"):
+        for i in range(3):
+            address = f"growth-{chain}-{i}"
+            store.enqueue_token_detail_hydration(chain, address, enqueued_at=now-timedelta(minutes=30))
+            store.mark_token_detail_hydration(f"{chain}:{address}", "hydrated", now=now-timedelta(minutes=2),
+                refresh_at=now-timedelta(seconds=60-i), followup_until=now+timedelta(hours=1))
+    for i in range(10):
+        store.enqueue_token_detail_hydration("solana", f"new-{i}", enqueued_at=now)
+    first = store.due_token_detail_hydrations(limit=10, now=now,
+        chains=("bsc", "solana", "robinhood"), followup_limit=2)
+    rotated = store.due_token_detail_hydrations(limit=10, now=now,
+        chains=("robinhood", "bsc", "solana"), followup_limit=2)
+    assert len(first) == len(rotated) == 10
+    assert sum(r["status"] == "pending" for r in first) == 8
+    assert [r["token_id"] for r in first if r["status"] == "hydrated"] == [
+        "bsc:growth-bsc-0", "solana:growth-solana-0"]
+    assert [r["chain"] for r in rotated if r["status"] == "hydrated"] == ["robinhood", "bsc"]
+    assert all(r["status"] == "pending" for r in store.due_token_detail_hydrations(limit=10, now=now))
+    store.mark_token_detail_hydration("bsc:growth-bsc-0", "no_pair", now=now)
+    retry_at = now + timedelta(minutes=6)
+    assert all(r["status"] == "pending" for r in store.due_token_detail_hydrations(limit=20, now=retry_at))
+    retry = store.due_token_detail_hydrations(limit=20, now=retry_at, chains=("bsc",), followup_limit=3)
+    assert any(r["token_id"] == "bsc:growth-bsc-0" and r["status"] == "no_pair" for r in retry)
+    assert all(r["status"] == "pending" for r in store.due_token_detail_hydrations(
+        limit=20, now=now+timedelta(hours=2), followup_limit=3))
+    store.close()
+
+
+def test_growth_followup_persists_fresh_shared_snapshot_without_resetting_discovery(tmp_path, monkeypatch):
+    async def scenario():
+        config = initial_config()
+        config["database"] = "db.sqlite3"
+        config["bridge"]["enabled"] = False
+        config["chain_meme_trader_only_enabled"] = True
+        config["sources"]["multichain_meme_data"]["chains"] = ["bsc"]
+        runtime = Runtime(config, tmp_path)
+        clock = [utcnow()]
+        monkeypatch.setattr("memetrader.runtime.utcnow", lambda: clock[0])
+        monkeypatch.setattr("memetrader.store.utcnow", lambda: clock[0])
+        monkeypatch.setattr("memetrader.models.utcnow", lambda: clock[0])
+        token = TokenCandidate("bsc", "0x" + "a" * 40, "Growing", "GROW")
+        await runtime.ingest_token(token)
+        born = clock[0] - timedelta(minutes=20)
+        snapshots, fresh_calls = [], []
+        async def quote(chain, addresses, *, fresh=False, **kwargs):
+            fresh_calls.append(fresh)
+            snap = TokenSnapshot("bsc", token.address, .01, 25000, 100000, 5000, 20, 4,
+                observed_at=clock[0], ingested_at=clock[0], provider="dexscreener",
+                raw={"pair":{"chainId":"bsc", "dexId":"pancakeswap", "pairAddress":"0x"+"b"*40,
+                    "baseToken":{"address":token.address}, "priceUsd":".01",
+                    "pairCreatedAt":int(born.timestamp()*1000), "liquidity":{"usd":25000}}})
+            snapshots.append(snap)
+            return {token.token_id:(token,snap)}
+        monkeypatch.setattr(runtime, "_dex_batch_quote", quote)
+        runtime.dex = type("Dex", (), {"DISCOVERY_SURFACES":{}, "batch_quote":True})()
+        await runtime.chain_meme_token_details_once()
+        first = dict(runtime.store.token_detail_hydration(token.token_id))
+        assert first["status"] == "hydrated" and first["next_attempt_at"] == iso(clock[0]+timedelta(seconds=60))
+        clock[0] += timedelta(seconds=61)
+        await runtime.chain_meme_token_details_once()
+        second = dict(runtime.store.token_detail_hydration(token.token_id))
+        assert second["enqueued_at"] == first["enqueued_at"]
+        assert second["attempts"] == 2 and second["status"] == "hydrated"
+        assert fresh_calls == [False, True]
+        rows = runtime.store.db.execute("SELECT provider,observed_at FROM token_snapshots WHERE token_id=? ORDER BY id",(token.token_id,)).fetchall()
+        assert len(rows) == 2 and [r["provider"] for r in rows] == ["dexscreener"]*2
+        assert rows[1]["observed_at"] == iso(clock[0])
+        assert runtime._chain_meme_decision_wakeup().is_set()
+        exposure = runtime.store.db.execute("SELECT first_local_discovery,snapshot_count FROM token_discovery_exposures WHERE role='market_followup'").fetchone()
+        assert tuple(exposure) == (0, 1)
+        # Stale receipts and pools beyond the collection horizon stop follow-up.
+        clock[0] += timedelta(seconds=46)
+        assert runtime._shared_market_followup_schedule(token, snapshots[-1]) == {}
+        snapshots[-1].observed_at = snapshots[-1].ingested_at = clock[0]
+        snapshots[-1].raw["pair"]["pairCreatedAt"] = int((clock[0]-timedelta(hours=6)).timestamp()*1000)
+        assert runtime._shared_market_followup_schedule(token, snapshots[-1]) == {}
+        snapshots[-1].raw["pair"]["pairCreatedAt"] = int((clock[0]-timedelta(minutes=1)).timestamp()*1000)
+        assert abs((runtime._shared_market_followup_schedule(token, snapshots[-1])["refresh_at"]-clock[0]).total_seconds()-841) < .001
+        runtime.store.mark_token_detail_hydration(token.token_id, "hydrated", now=clock[0],
+            refresh_at=clock[0], followup_until=clock[0]+timedelta(seconds=30))
+        async def late_quote(*args, **kwargs):
+            clock[0] += timedelta(seconds=31)
+            return await quote(*args, **kwargs)
+        monkeypatch.setattr(runtime, "_dex_batch_quote", late_quote)
+        await runtime.chain_meme_token_details_once()
+        assert runtime.store.db.execute("SELECT COUNT(*) FROM token_snapshots WHERE token_id=?",(token.token_id,)).fetchone()[0] == 2
+        assert runtime.store.token_detail_hydration(token.token_id)["next_attempt_at"] is None
+        await runtime.close()
+    asyncio.run(scenario())
+
+
 def test_hydration_persists_fast_chain_before_slow_chain_returns(tmp_path, monkeypatch):
     async def scenario():
         config = initial_config()
@@ -1389,7 +1483,7 @@ def test_hydration_persists_fast_chain_before_slow_chain_returns(tmp_path, monke
             runtime.store.upsert_token(token)
             runtime.store.enqueue_token_detail_hydration(token.chain, token.address)
         monkeypatch.setattr(runtime.store, "due_token_detail_hydrations", lambda **kw: [
-            {"token_id":t.token_id,"chain":t.chain,"address":t.address} for t in (slow,fast)])
+            {"token_id":t.token_id,"chain":t.chain,"address":t.address,"status":"pending","followup_until":None} for t in (slow,fast)])
         release = asyncio.Event()
         persisted = asyncio.Event()
         calls = []

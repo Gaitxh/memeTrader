@@ -18,7 +18,7 @@ import urllib.request
 from collections import deque
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import asdict
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
@@ -2639,7 +2639,8 @@ class Runtime:
                     if snapshot is not None and snapshot.token_id == token.token_id:
                         snapshot_id = self.store.add_snapshot(snapshot)
                         snapshot_count = 1
-                        self.store.mark_token_detail_hydration(token.token_id, "hydrated")
+                        self.store.mark_token_detail_hydration(token.token_id, "hydrated",
+                            **self._shared_market_followup_schedule(token, snapshot))
                         self.store.record_token_universe_funnel_transition(
                             token.token_id, stage="metadata_hydration_result", status="hydrated",
                             reason_code="new_pool_response_contains_market_data",
@@ -2763,6 +2764,28 @@ class Runtime:
                 seen_once.append(candidate)
         return [*unseen, *seen_once, *same_cycle_duplicates]
 
+    def _shared_market_followup_schedule(self, token: TokenCandidate, snapshot: TokenSnapshot):
+        """Follow ordinary, usable discovery quotes into their growth phase."""
+        if not self.chain_meme_trader_only:
+            return {}
+        now = utcnow()
+        if self._held_pool_quote_rejections(token.token_id, token, snapshot, now):
+            return {}
+        pair = (snapshot.raw or {}).get("pair", snapshot.raw or {})
+        created = pair.get("pairCreatedAt")
+        if not created or not pair.get("pairAddress"):
+            return {}
+        try:
+            born = datetime.fromtimestamp(float(created) / 1000, tz=timezone.utc)
+        except (TypeError, ValueError, OverflowError, OSError):
+            return {}
+        floor = getattr(self, "_chain_paper_execution", {}).get("min_pool_liquidity_usd", 1000.0)
+        if born > snapshot.observed_at or snapshot.liquidity_usd < floor:
+            return {}
+        next_at = max(now + timedelta(seconds=60), born + timedelta(seconds=901))
+        until = born + timedelta(hours=6)
+        return {"refresh_at": next_at, "followup_until": until} if next_at < until else {}
+
     async def poll_dexscreener_discovery_once(
         self, *, discovery_only: bool = False, hydration_only: bool = False,
     ) -> None:
@@ -2827,9 +2850,16 @@ class Runtime:
 
         if discovery_only or max_hydrations <= 0:
             return
+        hydration_chains = sorted(surface_chains)
+        if self.chain_meme_trader_only and hydration_chains:
+            cursor = getattr(self, "_hydration_followup_chain_cursor", 0)
+            offset = cursor % len(hydration_chains)
+            hydration_chains = hydration_chains[offset:] + hydration_chains[:offset]
+            self._hydration_followup_chain_cursor = cursor + 1
         due = self.store.due_token_detail_hydrations(
             limit=max_hydrations,
-            chains=tuple(sorted(surface_chains)) if self.chain_meme_trader_only else (),
+            chains=tuple(hydration_chains) if self.chain_meme_trader_only else (),
+            followup_limit=min(2, max_hydrations // 5) if self.chain_meme_trader_only else 0,
             prefer_fresh=self.chain_meme_trader_only,
             priority_token_ids=tuple(x["token_id"] for x in self._pregrad_watch.ranked(now=utcnow()))
                 if getattr(self, "_pregrad_watch", None) else (),
@@ -2847,7 +2877,10 @@ class Runtime:
             by_chain.setdefault(str(row["chain"]), []).append(row)
         async def hydrate_chain(chain, rows):
             for offset in range(0, len(rows), 30):
-                chunk = rows[offset : offset + 30]
+                chunk = [row for row in rows[offset : offset + 30]
+                         if not row["followup_until"] or parse_time(row["followup_until"]) > utcnow()]
+                if not chunk:
+                    continue
                 round_id = self.store.start_token_discovery_round(
                     provider="dexscreener",
                     surface="hydration",
@@ -2861,7 +2894,8 @@ class Runtime:
                         token_id,
                         stage="metadata_hydration_attempt",
                         status="attempted",
-                        reason_code="due_detail_hydration",
+                        reason_code=("due_lifecycle_followup" if row["followup_until"]
+                                     else "due_detail_hydration"),
                         evaluation_key=f"round:{round_id}:attempt",
                         observed_at=hydration_started_at,
                         ingested_at=hydration_started_at,
@@ -2873,7 +2907,8 @@ class Runtime:
                 try:
                     if hasattr(self.dex, "batch_quote"):
                         quoted_by_token = await self._dex_batch_quote(
-                            chain, [str(row["address"]) for row in chunk]
+                            chain, [str(row["address"]) for row in chunk],
+                            fresh=any(row["followup_until"] for row in chunk),
                         )
                     else:
                         quoted_by_token = {}
@@ -2912,6 +2947,10 @@ class Runtime:
                 self.store.heartbeat("dexscreener:hydration", item=bool(quoted_by_token))
                 for row in chunk:
                     token_id = str(row["token_id"])
+                    if row["followup_until"] and parse_time(row["followup_until"]) <= utcnow():
+                        self.store.mark_token_detail_hydration(token_id, "error",
+                            error="growth_followup_expired_before_receipt")
+                        continue
                     quoted = quoted_by_token.get(token_id)
                     if not quoted:
                         self.store.mark_token_detail_hydration(token_id, "no_pair")
@@ -2919,7 +2958,7 @@ class Runtime:
                             round_id,
                             token_id=token_id,
                             chain=chain,
-                            role="hydration",
+                            role="market_followup" if row["followup_until"] else "hydration",
                             no_pair=True,
                         )
                         completed_at = utcnow()
@@ -2944,7 +2983,7 @@ class Runtime:
                             round_id,
                             token_id=token_id,
                             chain=chain,
-                            role="hydration",
+                            role="market_followup" if row["followup_until"] else "hydration",
                             no_pair=True,
                         )
                         completed_at = utcnow()
@@ -2984,13 +3023,14 @@ class Runtime:
                         snapshot = await self.safety.enrich_evm_execution_fields(snapshot)
                     created = self.store.upsert_token(token, seen_at=snapshot.observed_at)
                     snapshot_id = self.store.add_snapshot(snapshot)
-                    self.store.mark_token_detail_hydration(token_id, "hydrated")
+                    self.store.mark_token_detail_hydration(token_id, "hydrated",
+                        **self._shared_market_followup_schedule(token, snapshot))
                     self._chain_meme_decision_wakeup().set()
                     self.store.add_token_discovery_exposure(
                         round_id,
                         token_id=token_id,
                         chain=chain,
-                        role="hydration",
+                        role="market_followup" if row["followup_until"] else "hydration",
                         new_token=created,
                         snapshot_count=1,
                         observed_at=snapshot.observed_at,
@@ -3000,7 +3040,8 @@ class Runtime:
                         token_id,
                         stage="metadata_hydration_result",
                         status="hydrated",
-                        reason_code="snapshot_persisted",
+                        reason_code=("lifecycle_followup_snapshot_persisted" if row["followup_until"]
+                                     else "snapshot_persisted"),
                         evaluation_key=f"round:{round_id}:result",
                         observed_at=snapshot.observed_at,
                         ingested_at=completed_at,
