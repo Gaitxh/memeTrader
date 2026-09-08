@@ -1,0 +1,12 @@
+# Piggyback39 read-only feasibility
+
+REPLY_TO: C2C-20260909-GECKO-PIGGYBACK-BRIDGE-39
+Decision: REJECT_NO_COVERAGE_EVIDENCE; NOT_IMPLEMENTED. This is insufficient evidence, not proof of zero natural opportunities.
+
+Current runtime code2390–2525: complementary loop runs every10s, chooses one due chain, up to30 held gaps, checks continued holdings, tries existing Dex then forms uncovered public_due. Gecko errors/backoff make actual starts irregular. Source-health read: original_pool last useful response18:57:05.152464Z; latest error18:58:39.198640Z ConnectError. A last-item timestamp proves activity, not request rate, spare address capacity or checkpoint coincidence. The message's earlier429 is historical, not replaced with a claim that limits disappeared.
+
+Crucial zero-start constraint: market_api.py GeckoTerminalPoolClient.get_pools206ff first removes per-pool cache hits. All-cache requests return without HTTP. Adding an uncached early address at the runtime public_due call site would then CREATE an HTTP start. Thus simply append<=2 after held addresses does not prove delta starts0. A safe future implementation must select piggyback only AFTER nonempty held cache misses are known, never change held cache decisions, retain all held misses first, and count actual transport starts rather than get_pools calls. Single-to-multi response size/latency may still change even with equal start count.
+
+Read-only inspection found no persisted per-attempt held public_due address count, cache-miss count, chain/window matching, or actual Gecko-start counter in this path. Current watch KV stores bucket totals, not immutable admission clocks/identities; source_health overwrites latest timestamps. Source poll/error tables cannot reconstruct successful request occupancy in this client. Therefore natural request frequency, spare capacity and due-window overlap are UNVERIFIED. No extra HTTP probes, process-memory inspection, instrumentation deployment or production mutations performed to manufacture the prerequisite.
+
+Next evidence needed before implementation review: bounded passive per-existing-call records of chain/time, held requested/missing count, whether a transport start actually occurs, spare capacity and eligible Gecko-origin watch checkpoint identities. Instrumentation itself would be a separately scoped observable change; no bridge code added now. Keep watch10/3-4-3+borrow, held/SELL preference, existing pacing/backoff/cadence. cd579c8 remains reverted. No strategy/reset/history/Live change.
