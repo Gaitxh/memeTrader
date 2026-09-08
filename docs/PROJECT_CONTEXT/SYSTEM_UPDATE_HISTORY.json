@@ -2,6 +2,18 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260908-runner-pool-age-proactive-exit",
+      "recorded_at": "2026-09-08T09:24:31.224595+00:00",
+      "deployed_at": "2026-09-08T09:21:57.168894Z",
+      "title": "新增原池三分钟内达到质量的Runner同成交两臂",
+      "problem": "自然Runner早期质量信号有较高报价右尾，却受回吐与核销影响；原始MFE还混入低流动性异常价。",
+      "change": "独立复核真实分母/原池龄/后帧与退出诊断；新增5U/max4对照与两级兑现候选，180s仅信号池龄，原15m退出，+40半仓/+80总经济收益卖余下。",
+      "rationale": "池龄邻近段和失败分母支持小额假设实验，不能称阈值最优或跨链Alpha；不修改旧Runner/early_impulse或增加采集。",
+      "validation": "17个不同定向测试通过及独立实现审查。17:21实际追加，共284；旧282/20/1完整摘要不变，原资金期/Live锁保持。17:23前沿推进，195入队/0丢弃，新两臂0自然仓位。",
+      "scope": "单日且优势主要BSC；V2退出诊断不完整重放原追踪。低流动性报价剔除后早期MFE>=100为5/11。历史BSC原池缺口仍约13.66h。",
+      "report": "docs/PROJECT_CONTEXT/RUNNER_SPEED_ENTRY_20260908.md"
+    },
+    {
       "id": "20260908-early-impulse-profit-lock-pair",
       "recorded_at": "2026-09-08T08:52:33.432080+00:00",
       "deployed_at": "2026-09-08T08:47:20.036612Z",

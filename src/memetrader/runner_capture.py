@@ -147,6 +147,25 @@ def runner_policies() -> list[dict[str, Any]]:
     return result
 
 
+def ultra_early_policies() -> list[dict[str, Any]]:
+    """Freeze one pool-age hypothesis and isolate its proactive exit effect."""
+    parent = runner_policies()[1]
+    result = []
+    for suffix, title in (("control", "三分钟原池·退出对照"), ("lock", "三分钟原池·两级兑现")):
+        p = deepcopy(parent)
+        arm = "runner_ultra_early_" + suffix + "_v1"
+        p.update(arm_id=arm, canonical_id=arm, name="早期质量Runner·" + title,
+                 description="原池三分钟内达到既有Runner质量；5U/max4同成交比较主动兑现，单日假设未证明Alpha。",
+                 paired_entry_group="runner_ultra_early_same_fill_v1", paired_entry_size=2,
+                 evidence_review="docs/PROJECT_CONTEXT/RUNNER_SPEED_ENTRY_20260908.md")
+        p["entry_filter"]["maximum_pair_age_seconds"] = 180
+        if suffix == "lock":
+            p["take_profit"] = [{"return": .40, "fraction_of_remaining": .50},
+                                {"return": .80, "fraction_of_remaining": 1.0}]
+        result.append(p)
+    return result
+
+
 def _buy_share(frame: Mapping[str, Any]) -> float | None:
     buys, sells = _number(frame.get("buys")), _number(frame.get("sells"))
     if buys is None or sells is None or min(buys, sells) < 0 or buys + sells <= 0:

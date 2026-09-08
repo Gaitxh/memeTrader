@@ -235,6 +235,9 @@ def test_runtime_startup_registers_runner_pair_at_own_frontier(tmp_path):
         assert len({r["activated_at"] for r in rows}) == 1
         assert all(r["activation_snapshot_id"] >= 0 for r in rows)
         assert all(r["activation_evaluation_id"] >= 0 for r in rows)
+        assert runtime.store.db.execute("SELECT COUNT(*) FROM chain_meme_trader_policy_additions "
+            "WHERE arm_id LIKE 'runner_ultra_early_%'").fetchone()[0] == 2
+        assert runtime.store.register_chain_meme_ultra_early_runner() == 0
         await runtime.close()
     asyncio.run(scenario())
 

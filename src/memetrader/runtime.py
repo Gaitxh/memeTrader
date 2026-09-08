@@ -1356,6 +1356,7 @@ class Runtime:
                     self.store.register_chain_meme_archive_research()
                     self.store.register_chain_meme_lifecycle_research()
                     self.store.register_chain_meme_runner_capture()
+                    self.store.register_chain_meme_ultra_early_runner()
                     self.store.register_chain_meme_quiet_renewal()
                     self.store.register_chain_meme_early_impulse()
                     self.store.register_chain_meme_impulse_profit_lock()

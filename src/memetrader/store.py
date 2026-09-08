@@ -26213,6 +26213,19 @@ class Store:
                     added += 1
         return added
 
+    def register_chain_meme_ultra_early_runner(self) -> int:
+        from .runner_capture import ultra_early_policies
+        added = 0
+        with self._lock, self.db:
+            at = utcnow()
+            for policy in ultra_early_policies():
+                if self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?",
+                    (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, policy["arm_id"])).fetchone() is None:
+                    self.append_chain_meme_trader_policy(policy, activated_at=at)
+                    added += 1
+        return added
+
     def register_chain_meme_quiet_renewal(self) -> int:
         from .quiet_renewal import renewal_policies
         added = 0
