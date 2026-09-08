@@ -2,6 +2,19 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260908-early-surge-trial-reverted",
+      "recorded_at": "2026-09-08T14:44:22.104631Z",
+      "deployed_at": "2026-09-08T14:41:09.2543485Z",
+      "reverted_at": "2026-09-08T14:43:03.1713818Z",
+      "title": "额外早期观察位试运行触发延迟保护，已撤回",
+      "problem": "基础10位满员时无法提供早期新轨迹；消息25授权最多20位和独立180秒surge，但要求保护持仓实时性。",
+      "change": "曾实现并加载legacy10+early surge10，固定180秒、仅搭载原批量请求、排除新增非held RPC。触发预设性能线后仅撤回本阶段，恢复ef6dd56行为。",
+      "rationale": "保持原预留/TTL及请求批次数；运行验收不达标即撤回，不事后放宽保护线。",
+      "validation": "13个不同定向测试通过。运行早期pattern p95 12.623s超过12s线；held fetch p95 2.724→4.321s。短窗不能证明因果，但按约回退。22:44恢复后三API/五类摘要/资金期/执行设置/Live=false一致；175批全部处理0新增丢弃。",
+      "scope": "试验113.85秒即终止，17次surge准入/0自然过期；未完成180秒轮换及150秒覆盖验收，无Alpha或收益结论。完整补丁及历史证据保留。",
+      "report": "docs/PROJECT_CONTEXT/EARLY_SURGE_WATCH_20260908.md"
+    },
+    {
       "id": "20260908-early-borrow-residency-reverted",
       "recorded_at": "2026-09-08T14:27:45.222500Z",
       "deployed_at": "2026-09-08T14:27:12.3372995Z",
