@@ -7,7 +7,12 @@ import json
 import pytest
 import time
 
-from memetrader.collectors import DexScreenerClient, HttpClient
+from memetrader.collectors import (
+    GECKO_REQUEST_HIGH_PRIORITY,
+    GECKO_REQUEST_START_DEADLINE,
+    DexScreenerClient,
+    HttpClient,
+)
 from memetrader.models import TokenCandidate, TokenSnapshot, iso, utcnow
 from memetrader.runtime import Runtime, initial_config
 from memetrader.runtime_timing import RuntimeTiming
@@ -141,6 +146,270 @@ def target_for(token: TokenCandidate, pool: str):
         "address": token.address,
         "entry_pair_addresses": pool,
     }
+
+
+def bridge_watch(token: TokenCandidate, pool: str, *, elapsed: float = 60.0):
+    origin_at = utcnow() - timedelta(seconds=elapsed)
+    pair = pair_payload(token, pool, provider="geckoterminal", observed=origin_at)
+    pair["raw"] = {"http_cache": {"local_cache_hit": False, "generation_reused": False}}
+    snapshot = Runtime._complement_snapshot(pair)
+    return {
+        "token": token,
+        "bucket": "early",
+        "quote": snapshot,
+        "pool_created_at_ms": (origin_at - timedelta(minutes=2)).timestamp() * 1000,
+        "pair_address": pool,
+        "origin_provider": "geckoterminal",
+        "origin_observed_at": origin_at,
+        "origin_ingested_at": origin_at,
+        "origin_recorded_at": origin_at,
+        "gecko_bridge_checkpoints": {},
+        "expires_at": utcnow() + timedelta(minutes=15),
+    }
+
+
+def dex_snapshot(token: TokenCandidate, pool: str) -> TokenSnapshot:
+    pair = pair_payload(token, pool, provider="dexscreener")
+    now = utcnow()
+    return TokenSnapshot(
+        token.chain, token.address, 1.25, 25_000.0, 500.0, 500.0, 8, 3,
+        observed_at=now, ingested_at=now, provider="dexscreener",
+        raw={"pair": pair, "pairs": [pair]},
+    )
+
+
+def test_gecko_first_early_bridge_uses_exact_pool_only_after_dex_miss(tmp_path):
+    async def scenario():
+        runtime = make_runtime(tmp_path)
+        token = TokenCandidate("solana", "B" * 32, "Bridge", "BRG")
+        pool = "bridge-pool"
+        item = bridge_watch(token, pool)
+        runtime._pattern_watch = {token.token_id: item}
+        runtime._pattern_held_tokens = set()
+        runtime._paper_quote_rejections = lambda *args: []
+        projected = []
+        runtime.store.observe_chain_meme_pattern = lambda token, snapshot, **kwargs: (
+            projected.append((token, snapshot, kwargs)) or 0)
+
+        async def dex_miss(chain, addresses):
+            assert (chain, addresses) == ("solana", [token.address])
+            return {token.token_id: (token, dex_snapshot(token, "other-pool"))}
+
+        bridge_pair = pair_payload(token, pool, provider="geckoterminal")
+        bridge_pair["raw"] = {"http_cache": {"local_cache_hit": False, "generation_reused": False}}
+        calls = []
+        async def gecko_exact(chain, addresses):
+            calls.append((chain, list(addresses)))
+            return {pool: bridge_pair}
+
+        runtime.dex.batch_quote_fresh = dex_miss
+        runtime.gecko_pools.get_pools = gecko_exact
+        await runtime.chain_meme_pattern_observer_once()
+
+        assert calls == [("solana", [pool])]
+        assert item["gecko_bridge_checkpoints"] == {"60s": "observed"}
+        assert projected and projected[0][1].provider == "geckoterminal"
+        assert runtime._pattern_gecko_bridge_telemetry["observed"] == 1
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_gecko_first_early_bridge_skips_when_dex_returns_the_exact_pool(tmp_path):
+    async def scenario():
+        runtime = make_runtime(tmp_path)
+        token = TokenCandidate("solana", "C" * 32, "Dex exact", "DEX")
+        pool = "dex-exact-pool"
+        item = bridge_watch(token, pool)
+        runtime._pattern_watch = {token.token_id: item}
+        runtime._pattern_held_tokens = set()
+        runtime._paper_quote_rejections = lambda *args: []
+        runtime.store.observe_chain_meme_pattern = lambda *args, **kwargs: 0
+
+        async def exact(chain, addresses):
+            return {token.token_id: (token, dex_snapshot(token, pool))}
+        async def unexpected(*args):
+            raise AssertionError("Dex exact-pool success must suppress Gecko bridge")
+
+        runtime.dex.batch_quote_fresh = exact
+        runtime.gecko_pools.get_pools = unexpected
+        await runtime.chain_meme_pattern_observer_once()
+
+        assert item["gecko_bridge_checkpoints"] == {"60s": "dex_exact"}
+        assert runtime._pattern_gecko_bridge_telemetry["dex_exact_skips"] == 1
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_gecko_first_early_bridge_does_not_skip_an_unusable_dex_exact_pool(tmp_path):
+    async def scenario():
+        runtime = make_runtime(tmp_path)
+        token = TokenCandidate("solana", "F" * 32, "Dex thin", "THIN")
+        pool = "thin-exact-pool"
+        item = bridge_watch(token, pool)
+        runtime._pattern_watch = {token.token_id: item}
+        runtime._pattern_held_tokens = set()
+        runtime._paper_quote_rejections = lambda *args: []
+        runtime.store.observe_chain_meme_pattern = lambda *args, **kwargs: 0
+        thin = dex_snapshot(token, pool)
+        thin.raw["pair"]["liquidity"]["usd"] = 999.0
+        thin.raw["pairs"][0]["liquidity"]["usd"] = 999.0
+        calls = []
+
+        async def dex_exact(chain, addresses):
+            return {token.token_id: (token, thin)}
+        async def gecko_exact(chain, addresses):
+            calls.append((chain, list(addresses)))
+            pair = pair_payload(token, pool, provider="geckoterminal")
+            pair["raw"] = {"http_cache": {"local_cache_hit": False, "generation_reused": False}}
+            return {pool: pair}
+
+        runtime.dex.batch_quote_fresh = dex_exact
+        runtime.gecko_pools.get_pools = gecko_exact
+        await runtime.chain_meme_pattern_observer_once()
+
+        assert calls == [("solana", [pool])]
+        assert item["gecko_bridge_checkpoints"] == {"60s": "observed"}
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_gecko_first_early_bridge_rejects_wrong_pool_and_reused_generation(tmp_path):
+    async def scenario():
+        runtime = make_runtime(tmp_path)
+        token = TokenCandidate("solana", "E" * 32, "Identity", "ID")
+        item = bridge_watch(token, "expected-pool")
+        cached = bridge_watch(token, "cached-pool")
+        wrong = pair_payload(token, "wrong-pool", provider="geckoterminal")
+        reused = pair_payload(token, "cached-pool", provider="geckoterminal")
+        reused["raw"] = {"http_cache": {"local_cache_hit": False, "generation_reused": True}}
+
+        async def exact(chain, addresses):
+            return {"expected-pool": wrong, "cached-pool": reused}
+        runtime.gecko_pools.get_pools = exact
+        await runtime._refresh_gecko_pattern_bridge(
+            "solana", [(item, "60s"), (cached, "60s")])
+
+        assert item["quote"].observed_at == item["origin_observed_at"]
+        assert cached["quote"].observed_at == cached["origin_observed_at"]
+        assert runtime._pattern_gecko_bridge_telemetry["exact_identity_rejects"] == 1
+        assert runtime._pattern_gecko_bridge_telemetry["cache_generation_skips"] == 1
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_gecko_first_early_bridge_rejects_future_observed_frame(tmp_path):
+    async def scenario():
+        runtime = make_runtime(tmp_path)
+        token = TokenCandidate("solana", "G" * 32, "Future", "FTR")
+        pool = "future-pool"
+        item = bridge_watch(token, pool)
+        future = pair_payload(token, pool, provider="geckoterminal", observed=utcnow() + timedelta(seconds=1))
+        future["raw"] = {"http_cache": {"local_cache_hit": False, "generation_reused": False}}
+        runtime.gecko_pools.get_pools = lambda chain, addresses: asyncio.sleep(0, result={pool: future})
+
+        await runtime._refresh_gecko_pattern_bridge("solana", [(item, "60s")])
+
+        assert item["quote"].observed_at == item["origin_observed_at"]
+        assert runtime._pattern_gecko_bridge_telemetry["unusable"] == 1
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_gecko_first_early_bridge_limits_checkpoints_and_obeys_429_cooldown(tmp_path):
+    async def scenario():
+        runtime = make_runtime(tmp_path)
+        token = TokenCandidate("solana", "D" * 32, "Bounded", "BND")
+        pool = "bounded-pool"
+        item = bridge_watch(token, pool)
+        runtime._pattern_watch = {token.token_id: item}
+        runtime._pattern_held_tokens = set()
+        runtime._paper_quote_rejections = lambda *args: []
+        runtime.store.observe_chain_meme_pattern = lambda *args, **kwargs: 0
+        runtime.dex.batch_quote_fresh = lambda chain, addresses: asyncio.sleep(0, result={})
+        calls = 0
+        async def rate_limited(chain, addresses):
+            nonlocal calls
+            calls += 1
+            request = httpx.Request("GET", "https://api.geckoterminal.com/api/v2/networks/solana/pools/bounded-pool")
+            response = httpx.Response(429, headers={"Retry-After": "120"}, request=request)
+            raise httpx.HTTPStatusError("too many", request=request, response=response)
+        runtime.gecko_pools.get_pools = rate_limited
+
+        await runtime.chain_meme_pattern_observer_once()
+        await runtime.chain_meme_pattern_observer_once()
+        assert calls == 1
+        assert runtime._pattern_gecko_bridge_telemetry["rate_limited"] == 1
+        assert runtime._gecko_pool_backoff_until > asyncio.get_running_loop().time() + 119
+
+        runtime._gecko_pool_backoff_until = 0
+        runtime.http._host_backoff_until["api.geckoterminal.com"] = (
+            asyncio.get_running_loop().time() + 120)
+        another = bridge_watch(token, "other-bounded-pool")
+        await runtime._refresh_gecko_pattern_bridge("solana", [(another, "60s")])
+        assert calls == 1
+        assert runtime._pattern_gecko_bridge_telemetry["cooldown_skips"] == 1
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_gecko_held_request_start_preempts_queued_low_bridge_work():
+    async def scenario():
+        starts = []
+        async def handler(request):
+            starts.append(request.url.path)
+            return httpx.Response(200, request=request, json={})
+        client = HttpClient(transport=httpx.MockTransport(handler), min_host_interval=0.001)
+        client.GECKO_MIN_HOST_INTERVAL = 0.05
+        client._last["api.geckoterminal.com"] = time.monotonic()
+
+        low = asyncio.create_task(client.get("https://api.geckoterminal.com/low", retry_429=False))
+        await asyncio.sleep(0.01)
+        priority_token = GECKO_REQUEST_HIGH_PRIORITY.set(True)
+        try:
+            high = asyncio.create_task(client.get("https://api.geckoterminal.com/held", retry_429=False))
+        finally:
+            GECKO_REQUEST_HIGH_PRIORITY.reset(priority_token)
+        await asyncio.gather(low, high)
+
+        assert starts == ["/held", "/low"]
+        client._last["api.geckoterminal.com"] = 0
+        expired_token = GECKO_REQUEST_START_DEADLINE.set(time.monotonic() - 1)
+        try:
+            with pytest.raises(TimeoutError, match="start_deadline"):
+                await client.get("https://api.geckoterminal.com/already-expired", retry_429=False)
+        finally:
+            GECKO_REQUEST_START_DEADLINE.reset(expired_token)
+        client._last["api.geckoterminal.com"] = time.monotonic()
+        deadline_token = GECKO_REQUEST_START_DEADLINE.set(
+            asyncio.get_running_loop().time() + 0.01)
+        try:
+            with pytest.raises(TimeoutError, match="start_deadline"):
+                await client.get("https://api.geckoterminal.com/expired", retry_429=False)
+        finally:
+            GECKO_REQUEST_START_DEADLINE.reset(deadline_token)
+        assert starts == ["/held", "/low"]
+        await client.close()
+
+    asyncio.run(scenario())
+
+
+def test_gecko_429_sets_the_shared_http_backoff():
+    async def scenario():
+        async def handler(request):
+            return httpx.Response(429, request=request, headers={"Retry-After": "60"})
+        client = HttpClient(transport=httpx.MockTransport(handler), min_host_interval=0.001)
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.get("https://api.geckoterminal.com/rate-limited", retry_429=False)
+        assert client._host_backoff_until["api.geckoterminal.com"] > time.monotonic() + 59
+        await client.close()
+
+    asyncio.run(scenario())
 
 
 def test_held_cooldown_releases_priority_without_fake_market_result(tmp_path):

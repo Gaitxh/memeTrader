@@ -42,6 +42,8 @@ from .autonomous_search import AutonomousSearchAgent, _canonical_social_url, _sa
 from .collectors import (
     BlueskySearchCollector,
     DEX_REQUEST_HIGH_PRIORITY,
+    GECKO_REQUEST_HIGH_PRIORITY,
+    GECKO_REQUEST_START_DEADLINE,
     DexScreenerClient,
     EvmRouteQuoteError,
     EvmRouteQuoteProtocolError,
@@ -1455,6 +1457,7 @@ class Runtime:
         self.coingecko = CoinGeckoDemoPoolClient(self.coingecko_http, coingecko_api_key, store=self.store)
         self.gecko_pools = GeckoTerminalPoolClient(self.http)
         self._gecko_pool_backoff_until = 0.0
+        self._pattern_gecko_bridge_telemetry: dict[str, int] = {}
         self._market_pool_gaps: dict[tuple[str, str], dict[str, Any]] = {}
         self._market_complement_pools: set[tuple[str, str]] = set()
         self.store.set_kv("market_api:configured", {
@@ -2502,9 +2505,13 @@ class Runtime:
                       if float(item.get("next_public_attempt", 0.0)) <= now]
         if public_due and now >= self._gecko_pool_backoff_until:
             try:
-                public_pairs = await self.gecko_pools.get_pools(
-                    chain, [str(item["pair_address"]) for _, item in public_due],
-                )
+                priority_token = GECKO_REQUEST_HIGH_PRIORITY.set(True)
+                try:
+                    public_pairs = await self.gecko_pools.get_pools(
+                        chain, [str(item["pair_address"]) for _, item in public_due],
+                    )
+                finally:
+                    GECKO_REQUEST_HIGH_PRIORITY.reset(priority_token)
                 pairs.update(public_pairs)
                 observed_responses = [pair for pair in public_pairs.values()
                     if not (pair.get("raw", {}).get("http_cache", {}).get("local_cache_hit"))]
@@ -7339,6 +7346,13 @@ class Runtime:
             watch[token_id] = {"token": token, "bucket": bucket, "quote": snapshot,
                 "pool_created_at_ms": float(created),
                 "pair_address": canonical_token_address(chain, address),
+                # Keep the launch-source clocks even after a later Dex quote
+                # replaces this passive watch's current frame.
+                "origin_provider": str(snapshot.provider or pair.get("provider") or "").lower(),
+                "origin_observed_at": snapshot.observed_at,
+                "origin_ingested_at": snapshot.ingested_at,
+                "origin_recorded_at": current,
+                "gecko_bridge_checkpoints": {},
                 "expires_at": current + timedelta(minutes=20 if bucket == "mature" else 15)}
             if token_id not in held:
                 occupied[slot] = occupied.get(slot, 0) + 1
@@ -7482,6 +7496,121 @@ class Runtime:
             self.runtime_timing.observe("cohort_passive_compute",
                 asyncio.get_running_loop().time() - phase_started, items=sampled)
 
+    @staticmethod
+    def _pattern_bridge_checkpoint(item: Mapping[str, Any], now: datetime) -> str | None:
+        """Return one bounded Gecko checkpoint for a Gecko-first early watch."""
+        origin = item.get("origin_observed_at")
+        if not isinstance(origin, datetime):
+            return None
+        elapsed = (now - origin).total_seconds()
+        checkpoints = item.get("gecko_bridge_checkpoints") or {}
+        for name, low, high in (("60s", 45, 75), ("120s", 105, 135)):
+            if low <= elapsed <= high and name not in checkpoints:
+                return name
+        return None
+
+    @staticmethod
+    def _pattern_exact_pair(snapshot: TokenSnapshot, chain: str, pair_address: str) -> dict[str, Any] | None:
+        raw = snapshot.raw or {}
+        pair = raw.get("pair", raw)
+        pairs = raw.get("pairs") or [pair]
+        return next((candidate for candidate in pairs
+                     if canonical_token_address(chain, str(candidate.get("pairAddress") or ""))
+                     == pair_address), None)
+
+    def _pattern_gecko_bridge_note(self, key: str, count: int = 1) -> None:
+        telemetry = self._pattern_gecko_bridge_telemetry
+        telemetry[key] = telemetry.get(key, 0) + count
+
+    async def _refresh_gecko_pattern_bridge(
+        self, chain: str, candidates: list[tuple[dict[str, Any], str]],
+    ) -> None:
+        """Use one low-priority exact-pool batch after Dex missed an early Gecko pool."""
+        if not candidates:
+            return
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        host_backoff = getattr(self.http, "_host_backoff_until", {}).get(
+            "api.geckoterminal.com", 0.0)
+        if now < max(self._gecko_pool_backoff_until, host_backoff):
+            self._pattern_gecko_bridge_note("cooldown_skips", len(candidates))
+            return
+        windows = {"60s": 75, "120s": 135}
+        current = utcnow()
+        active, deadlines = [], []
+        for item, checkpoint in candidates:
+            origin = item.get("origin_observed_at")
+            deadline = (origin + timedelta(seconds=windows[checkpoint])
+                        if isinstance(origin, datetime) and checkpoint in windows else None)
+            if deadline is None or current >= deadline:
+                self._pattern_gecko_bridge_note("checkpoint_window_skips")
+                continue
+            active.append((item, checkpoint))
+            deadlines.append(deadline)
+        candidates = active
+        if not candidates:
+            return
+        # get_pools itself is capped at thirty identities. Pattern watch keeps
+        # this lower in normal operation; retain the client bound at this seam.
+        candidates = candidates[:30]
+        for item, checkpoint in candidates:
+            item.setdefault("gecko_bridge_checkpoints", {})[checkpoint] = "requested"
+        self._pattern_gecko_bridge_note("batches")
+        self._pattern_gecko_bridge_note("requested", len(candidates))
+        deadline_seconds = max(0.0, min(
+            (deadline - current).total_seconds() for deadline in deadlines))
+        deadline_token = GECKO_REQUEST_START_DEADLINE.set(now + deadline_seconds)
+        try:
+            pairs = await asyncio.wait_for(
+                self.gecko_pools.get_pools(
+                    chain, [item["pair_address"] for item, _ in candidates],
+                ), timeout=min(3.0, deadline_seconds),
+            )
+        except TimeoutError:
+            self._pattern_gecko_bridge_note("checkpoint_window_skips", len(candidates))
+            return
+        except Exception as exc:
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
+                self._pattern_gecko_bridge_note("rate_limited", len(candidates))
+            self._notify_source_error("geckoterminal:pattern_bridge", exc)
+            return
+        finally:
+            GECKO_REQUEST_START_DEADLINE.reset(deadline_token)
+        received = utcnow()
+        floor = getattr(self, "_chain_paper_execution", {}).get("min_pool_liquidity_usd", 1000.0)
+        for item, checkpoint in candidates:
+            pair = pairs.get(item["pair_address"])
+            cache = (pair or {}).get("raw", {}).get("http_cache", {})
+            if pair is None:
+                self._pattern_gecko_bridge_note("exact_missing")
+                continue
+            if (cache.get("local_cache_hit") or cache.get("generation_reused")):
+                # Cached generations retain their original receipt clock. They
+                # are evidence of no new observation, never a fresh frame.
+                item["gecko_bridge_checkpoints"][checkpoint] = "cache_generation_reused"
+                self._pattern_gecko_bridge_note("cache_generation_skips")
+                continue
+            if canonical_token_address(chain, str(pair.get("pairAddress") or "")) != item["pair_address"]:
+                self._pattern_gecko_bridge_note("exact_identity_rejects")
+                continue
+            base = (pair.get("baseToken") or {}).get("address")
+            token = item["token"]
+            if canonical_token_address(chain, str(base or "")) != canonical_token_address(chain, token.address):
+                self._pattern_gecko_bridge_note("token_identity_rejects")
+                continue
+            snapshot = self._complement_snapshot(pair)
+            snapshot_age = ((received - snapshot.observed_at).total_seconds()
+                            if snapshot is not None else None)
+            if (snapshot is None or snapshot.price_usd is None or snapshot.price_usd <= 0
+                    or snapshot.liquidity_usd is None or snapshot.liquidity_usd < floor
+                    or snapshot_age is None or not 0 <= snapshot_age <= 30
+                    or self._paper_quote_rejections(token.token_id, token, snapshot, received)):
+                self._pattern_gecko_bridge_note("unusable")
+                continue
+            item["quote"] = snapshot
+            item["gecko_bridge_checkpoints"][checkpoint] = "observed"
+            self._pattern_gecko_bridge_note("observed")
+
     async def chain_meme_pattern_observer_once(self) -> None:
         """At most 30 non-held candidates; held quotes reuse the core lane."""
         self._remember_pattern_quotes({})
@@ -7506,14 +7635,56 @@ class Runtime:
                    if v["token"].token_id not in getattr(self, "_pattern_held_tokens", set())
                    and ((utcnow() - v["quote"].observed_at).total_seconds() > 15
                         or v.get("sampled_at") == v["quote"].observed_at)]
+            bridge_due = []
+            now = utcnow()
+            for item in targets:
+                if (item["token"].token_id not in getattr(self, "_pattern_held_tokens", set())
+                        and item.get("bucket") == "early"
+                        and item.get("origin_provider") == "geckoterminal"):
+                    checkpoint = self._pattern_bridge_checkpoint(item, now)
+                    if checkpoint is not None and item["token"].address in due:
+                        bridge_due.append((item, checkpoint))
             if due and self._dex_quote_low_priority_available():
                 try:
                     quoted = await asyncio.wait_for(self._dex_batch_quote(
                         chain, due, fresh=True, high_priority=False), timeout=3)
-                    if not self.chain_meme_trader_only:
+                    if quoted and not self.chain_meme_trader_only:
                         self._remember_pattern_quotes(quoted)
+                    if quoted is None:
+                        self._pattern_gecko_bridge_note("dex_deferred", len(bridge_due))
+                    else:
+                        bridge_candidates = []
+                        floor = getattr(self, "_chain_paper_execution", {}).get(
+                            "min_pool_liquidity_usd", 1000.0)
+                        received = utcnow()
+                        for item, checkpoint in bridge_due:
+                            refreshed = quoted.get(item["token"].token_id)
+                            exact = (self._pattern_exact_pair(refreshed[1], chain, item["pair_address"])
+                                     if refreshed else None)
+                            usable = DexScreenerClient._snapshot(exact) if exact else None
+                            if usable and refreshed:
+                                usable.observed_at = refreshed[1].observed_at
+                                usable.ingested_at = refreshed[1].ingested_at
+                                usable.provider = refreshed[1].provider
+                            token = item["token"]
+                            base = (exact or {}).get("baseToken", {}).get("address")
+                            if (usable and usable.price_usd is not None and usable.price_usd > 0
+                                    and usable.liquidity_usd is not None and usable.liquidity_usd >= floor
+                                    and canonical_token_address(chain, str(base or ""))
+                                        == canonical_token_address(chain, token.address)
+                                    and 0 <= (received - usable.observed_at).total_seconds() <= 30
+                                    and not self._paper_quote_rejections(
+                                        token.token_id, token, usable, received)):
+                                item.setdefault("gecko_bridge_checkpoints", {})[checkpoint] = "dex_exact"
+                                self._pattern_gecko_bridge_note("dex_exact_skips")
+                            else:
+                                bridge_candidates.append((item, checkpoint))
+                        await self._refresh_gecko_pattern_bridge(chain, bridge_candidates)
                 except (httpx.HTTPError, TimeoutError) as exc:
                     self.store.heartbeat("chain-meme-pattern-observer", error=type(exc).__name__)
+                    self._pattern_gecko_bridge_note("dex_errors", len(bridge_due))
+            elif bridge_due:
+                self._pattern_gecko_bridge_note("dex_not_due", len(bridge_due))
             return chain, targets
 
         async def observe_chain(chain: str, targets: list) -> None:
@@ -7577,6 +7748,7 @@ class Runtime:
             "borrows_since_start": getattr(self, "_pattern_watch_borrows", 0),
             "reservation_reclaims_since_start": getattr(self, "_pattern_watch_reservation_reclaims", 0),
             "non_held_by_chain_bucket": getattr(self, "_pattern_watch_nonheld_by_chain_bucket", {}),
+            "gecko_first_exact_pool_bridge": dict(self._pattern_gecko_bridge_telemetry),
         })
 
     async def chain_meme_carried_market_marks_once(self) -> None:
