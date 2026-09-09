@@ -13,7 +13,9 @@ def fixture(tmp_path,monkeypatch):
     policies=[parent,*age_rate_revision_policies(parent)]
     original=store._chain_meme_trader_registration(store.CHAIN_MEME_TRADER_ACTIVE_VERSION)['definition_json']
     store.append_chain_meme_trader_policy(parent,activated_at=clock[0])
-    assert store.register_age_rate_revisions90()==2
+    assert store.register_age_rate_revisions90()==1
+    # Reconstruct the already-registered withdrawn experiment, not a new runtime arm.
+    store.append_chain_meme_trader_policy(policies[1],activated_at=clock[0])
     assert store.register_age_rate_revisions90()==0
     assert store._chain_meme_trader_registration(store.CHAIN_MEME_TRADER_ACTIVE_VERSION)['definition_json']==original
     token=TokenCandidate('solana','RevisionFixture','Fixture')
@@ -31,16 +33,16 @@ def fixture(tmp_path,monkeypatch):
     return store,position,mark,policies
 
 
-def test_checkpoint_exits_uncovered_next_frame_while_parent_continues(tmp_path,monkeypatch):
+def test_withdrawn_checkpoint_preserves_parent_exits(tmp_path,monkeypatch):
     store,pos,mark,policies=fixture(tmp_path,monkeypatch)
     mark(1,899)
     assert pos(policies[1]['arm_id'])['pending_mark_id'] is None
     mark(1,1)
     child=pos(policies[1]['arm_id'])
-    assert child['pending_mark_id'] is not None and child['status']=='open'
+    assert child['pending_mark_id'] is None and child['status']=='open'
     assert pos(policies[0]['arm_id'])['pending_mark_id'] is None
     mark(1,1)
-    assert pos(policies[1]['arm_id'])['status']=='closed'
+    assert pos(policies[1]['arm_id'])['status']=='open'
     assert pos(policies[0]['arm_id'])['status']=='open'
     store.close()
 

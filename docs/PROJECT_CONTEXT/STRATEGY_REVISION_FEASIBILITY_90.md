@@ -1,3 +1,6 @@
+> SUPERSEDED P1-A: 90-ADDENDUM-A withdrew checkpoint sales and new enrollment.
+> See CHECKPOINT_WITHDRAWAL_90A.md. Earlier deployment details below are historical.
+
 # Message90 strategy mechanisms and boundaries
 
 The user authorizes two additive5U/max4 Paper exit challengers, directly against

@@ -26207,6 +26207,8 @@ class Store:
                 return 0
             at=utcnow();added=0
             for policy in age_rate_revision_policies(self._json_object(row[0])):
+                if policy['arm_id']=='age_rate_checkpoint_runner_v2':
+                    continue  # 90-A withdrew this hypothesis; retain existing history only.
                 if self.db.execute('SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?',(self.CHAIN_MEME_TRADER_ACTIVE_VERSION,policy['arm_id'])).fetchone() is None:
                     self.append_chain_meme_trader_policy(policy,activated_at=at)
                     added+=1

@@ -68,12 +68,9 @@ def evaluate_age_rate_checkpoint(
     now: Any,
     policy: Mapping[str, Any] = AGE_RATE_CHECKPOINT_POLICY,
 ):
-    """Evaluate exactly the first valid age-rate checkpoint at or after 15m.
+    """Retain diagnostic checkpoint values for the withdrawn 90-A experiment.
 
-    The economic condition is total current economic value (actual realized
-    proceeds plus net value of the unsold remainder) below the original debit.
-    Deterioration is true only when the immediately preceding accepted market
-    point and the current point both show price and liquidity declining.
+    Never initiate a checkpoint sale; existing positions retain parent exits.
     """
     policy = _policy_snapshot(policy)
     new_state, evidence, error = _begin(
@@ -124,16 +121,12 @@ def evaluate_age_rate_checkpoint(
         "deterioration": deterioration if deterioration is not None else "UNKNOWN",
         "prior_market_frame_id": prior_point.get("frame_id") if isinstance(prior_point, Mapping) else None,
     })
-    if uncovered is True or deterioration is True:
-        new_state["checkpoint_status"] = "EXIT_TRIGGERED"
-        evidence["sell_fraction"] = 1.0
-        return _result(SELL, "checkpoint_economic_uncovered_or_deteriorating", new_state, evidence)
-    if uncovered is None or deterioration is None:
-        if current_point is not None:
-            new_state['prior_market_point'] = current_point
-        return _result(WAIT, 'checkpoint_structure_unknown', new_state, evidence)
-    new_state["checkpoint_status"] = "PASSED_TO_PARENT"
-    return _result(HOLD, "checkpoint_continue_parent", new_state, evidence)
+    # 90-A: uncovered is not decay. Neither this rule nor a replacement
+    # structural classifier is authorized for execution. Existing positions
+    # retain parent exits; these values are diagnostic only.
+    evidence['decision_eligible'] = False
+    new_state["checkpoint_status"] = "WITHDRAWN_90_A"
+    return _result(HOLD, "checkpoint_withdrawn_continue_parent", new_state, evidence)
 
 
 def minimum_principal_recovery_sell_amount_raw(

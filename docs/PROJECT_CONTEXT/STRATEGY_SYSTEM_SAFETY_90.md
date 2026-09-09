@@ -1,3 +1,6 @@
+> SUPERSEDED P1-A: 90-ADDENDUM-A withdrew checkpoint sales and new enrollment.
+> See CHECKPOINT_WITHDRAWAL_90A.md. Earlier deployment details below are historical.
+
 # Message90 staged implementation — IN PROGRESS
 
 Reply-to: C2C-20260909-STRATEGY-SYSTEM-SAFETY-90.

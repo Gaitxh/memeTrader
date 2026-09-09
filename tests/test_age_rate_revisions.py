@@ -48,32 +48,32 @@ def test_checkpoint_economic_coverage_uses_unsold_net_value_not_realized_only():
     action, reason, state, evidence = evaluate_age_rate_checkpoint(
         POSITION, checkpoint, state, now=now_for(checkpoint)
     )
-    assert (action, reason) == (HOLD, "checkpoint_continue_parent")
+    assert (action, reason) == (HOLD, "checkpoint_withdrawn_continue_parent")
     assert evidence["economic_coverage"] == "COVERED"
     assert POSITION["realized_proceeds_usd"] == 0.0
-    assert state["checkpoint_status"] == "PASSED_TO_PARENT"
+    assert state["checkpoint_status"] == "WITHDRAWN_90_A"
 
 
-def test_checkpoint_exits_when_uncovered_or_when_both_price_and_liquidity_decline():
+def test_withdrawn_checkpoint_never_exits_uncovered_or_deteriorating():
     before = frame("before-uncovered", 899, remaining_sell_net=100, price=10, liquidity=1_000)
     _, _, state, _ = evaluate_age_rate_checkpoint(POSITION, before, now=now_for(before))
     uncovered = frame("uncovered", 900, remaining_sell_net=99, price=11, liquidity=1_100)
     result = evaluate_age_rate_checkpoint(POSITION, uncovered, state, now=now_for(uncovered))
-    assert result[0:2] == (SELL, "checkpoint_economic_uncovered_or_deteriorating")
+    assert result[0:2] == (HOLD, "checkpoint_withdrawn_continue_parent")
     assert result[3]["economic_coverage"] == "UNCOVERED"
 
     before = frame("before-deterioration", 899, remaining_sell_net=100, price=10, liquidity=1_000)
     _, _, state, _ = evaluate_age_rate_checkpoint(POSITION, before, now=now_for(before))
     deteriorating = frame("deteriorating", 900, remaining_sell_net=100, price=9, liquidity=900)
     result = evaluate_age_rate_checkpoint(POSITION, deteriorating, state, now=now_for(deteriorating))
-    assert result[0:2] == (SELL, "checkpoint_economic_uncovered_or_deteriorating")
+    assert result[0:2] == (HOLD, "checkpoint_withdrawn_continue_parent")
     assert result[3]["deterioration"] is True
 
 
 def test_checkpoint_keeps_unknown_deterioration_unknown_without_a_causal_prior():
     checkpoint = frame("first-checkpoint", 900, remaining_sell_net=100)
     result = evaluate_age_rate_checkpoint(POSITION, checkpoint, now=now_for(checkpoint))
-    assert result[0:2] == (WAIT, "checkpoint_structure_unknown")
+    assert result[0:2] == (HOLD, "checkpoint_withdrawn_continue_parent")
     assert result[3]["deterioration"] == "UNKNOWN"
 
 
