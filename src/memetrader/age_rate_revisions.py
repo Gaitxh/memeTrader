@@ -23,7 +23,8 @@ def age_rate_revision_policies(parent):
     from copy import deepcopy
     result=[]
     for arm,name in (('age_rate_checkpoint_runner_v2','池龄归一化·成本覆盖检查'),
-                     ('dynamic_principal_recovery_runner_v2','池龄归一化·动态本金回收')):
+                     ('dynamic_principal_recovery_runner_v2','池龄归一化·动态本金回收'),
+                     ('age_rate_half_runner_recovery_v3','池龄归一化·留半仓本金回收')):
         p=deepcopy(parent)
         p.update(arm_id=arm,canonical_id=arm,name=name,
                  source_arm_ids=[parent['arm_id']],notional_usd=5.0,
@@ -34,6 +35,10 @@ def age_rate_revision_policies(parent):
             p.update(revision_exit_kind=arm,revision_exit_policy=dict(AGE_RATE_CHECKPOINT_POLICY))
         else:
             p['dynamic_principal_recovery']='minimum_net_debit_next_frame/v2'
+        if arm=='age_rate_half_runner_recovery_v3':
+            p.pop('stage',None)
+            p['dynamic_principal_recovery']='minimum_net_debit_keep_half_next_frame/v3'
+            p['entry_filter']={**p.get('entry_filter',{}),'max_concurrent_positions':4}
         result.append(p)
     return result
 
@@ -172,7 +177,8 @@ def minimum_principal_recovery_sell_amount_raw(
 
 
 def next_frame_minimum_principal_recovery_raw(
-    position: Mapping[str, Any], frame: Mapping[str, Any], definition: Mapping[str, Any]
+    position: Mapping[str, Any], frame: Mapping[str, Any], definition: Mapping[str, Any],
+    *, policy: Mapping[str, Any] | None = None,
 ) -> int | None:
     """Recompute the earliest minimally coverable sale from the current frame.
 
@@ -183,13 +189,18 @@ def next_frame_minimum_principal_recovery_raw(
     realized = _number(position.get("realized_proceeds_usd"))
     if debit is None or debit <= 0.0 or realized is None or realized < 0.0:
         return None
-    return minimum_principal_recovery_sell_amount_raw(
+    amount = minimum_principal_recovery_sell_amount_raw(
         remaining_amount_raw=position.get("amount_raw"),
         remaining_quantity_tokens=position.get("remaining_quantity_tokens"),
         market_price_usd=frame.get("market_price_usd"),
         definition=definition,
         debit_gap_usd=debit - realized,
     )
+    if (amount is not None and policy is not None
+            and policy.get('dynamic_principal_recovery')=='minimum_net_debit_keep_half_next_frame/v3'
+            and amount*2 > int(position['amount_raw'])):
+        return None
+    return amount
 
 
 __all__ = [

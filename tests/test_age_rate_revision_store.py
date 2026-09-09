@@ -13,7 +13,7 @@ def fixture(tmp_path,monkeypatch):
     policies=[parent,*age_rate_revision_policies(parent)]
     original=store._chain_meme_trader_registration(store.CHAIN_MEME_TRADER_ACTIVE_VERSION)['definition_json']
     store.append_chain_meme_trader_policy(parent,activated_at=clock[0])
-    assert store.register_age_rate_revisions90()==1
+    assert store.register_age_rate_revisions90()==2
     # Reconstruct the already-registered withdrawn experiment, not a new runtime arm.
     store.append_chain_meme_trader_policy(policies[1],activated_at=clock[0])
     assert store.register_age_rate_revisions90()==0
@@ -24,7 +24,7 @@ def fixture(tmp_path,monkeypatch):
         clock[0]+=timedelta(seconds=16)
         store.observe_chain_meme_pattern(token,quote(token,'pool',created,clock[0],age_rate=True),recorded_at=clock[0])
     rows=store.db.execute('SELECT * FROM chain_meme_trader_positions').fetchall()
-    assert len(rows)==3 and len({r['source_entry_fill_id'] for r in rows})==1
+    assert len(rows)==4 and len({r['source_entry_fill_id'] for r in rows})==1
     def position(arm):return store.db.execute('SELECT * FROM chain_meme_trader_positions WHERE arm_id=?',(arm,)).fetchone()
     def mark(price,seconds):
         clock[0]+=timedelta(seconds=seconds)
@@ -65,4 +65,40 @@ def test_dynamic_recovery_reprices_next_frame_and_rebases_only_on_fill(tmp_path,
     assert after['highest_signal_price_usd']==2
     quantity_sold=before['remaining_quantity_tokens']*int(filled['sell_amount_raw'])/int(before['amount_raw'])
     assert after['realized_proceeds_usd']==pytest.approx(quantity_sold*2*.96)
+    store.close()
+
+@pytest.mark.parametrize('raw,gap,expected',[(100,49,49),(100,50,50),(100,51,None),(101,50.5,None)])
+def test_half_runner_integer_boundary(raw,gap,expected):
+    from memetrader.age_rate_revisions import next_frame_minimum_principal_recovery_raw
+    p={'stake_usd':gap,'realized_proceeds_usd':0,'amount_raw':str(raw),'remaining_quantity_tokens':raw}
+    d={'sell_slippage_bps':0,'additional_fee_usd_each_fill':0}
+    policy={'dynamic_principal_recovery':'minimum_net_debit_keep_half_next_frame/v3'}
+    assert next_frame_minimum_principal_recovery_raw(p,{'market_price_usd':1},d,policy=policy)==expected
+
+
+def test_half_runner_waits_then_settles_and_rebases(tmp_path,monkeypatch):
+    store,pos,mark,policies=fixture(tmp_path,monkeypatch)
+    arm=policies[3]['arm_id']
+    assert policies[3]['entry_filter']==policies[0]['entry_filter']
+    mark(1.5,10)
+    assert pos(arm)['pending_mark_id'] is None
+    assert pos(policies[0]['arm_id'])['pending_mark_id'] is None
+    mark(2.5,1)
+    before=pos(arm);assert before['pending_mark_id'] is not None and before['principal_recovered']==0
+    mark(2.6,1)
+    after=pos(arm)
+    assert after['principal_recovered']==1 and after['realized_proceeds_usd']>=after['stake_usd']
+    assert 2*int(after['amount_raw'])>=int(before['amount_raw'])
+    assert after['highest_signal_price_usd']==2.6 and after['status']=='open'
+    store.close()
+
+
+def test_half_runner_rechecks_boundary_at_actual_next_frame(tmp_path,monkeypatch):
+    store,pos,mark,policies=fixture(tmp_path,monkeypatch)
+    arm=policies[3]['arm_id'];mark(2.3,10)
+    before=pos(arm);assert before['pending_mark_id'] is not None
+    mark(2.1,1)
+    after=pos(arm)
+    assert after['principal_recovered']==0 and after['realized_proceeds_usd']==0
+    assert after['amount_raw']==before['amount_raw']
     store.close()

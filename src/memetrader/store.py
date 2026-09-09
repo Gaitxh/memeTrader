@@ -33347,9 +33347,9 @@ class Store:
         sold_amount = min(current_amount, max(0, int(mark["sell_amount_raw"] or 0)))
         if policy.get('dynamic_principal_recovery') and mark['action']=='PRINCIPAL_RECOVERY':
             from .age_rate_revisions import next_frame_minimum_principal_recovery_raw
-            resized=next_frame_minimum_principal_recovery_raw(dict(position),{'market_price_usd':post_price},definition)
+            resized=next_frame_minimum_principal_recovery_raw(dict(position),{'market_price_usd':post_price},definition,policy=policy)
             if resized is None:
-                self.db.execute("UPDATE chain_meme_trader_marks SET status='failed',reason=reason||':no_longer_partially_coverable' WHERE id=?",(mark_id,))
+                self.db.execute("UPDATE chain_meme_trader_marks SET status='exhausted',reason=reason||':no_longer_partially_coverable' WHERE id=?",(mark_id,))
                 self.db.execute("UPDATE chain_meme_trader_positions SET pending_mark_id=NULL WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",(version,position['arm_id'],position['shadow_cohort_id']))
                 return 0
             sold_amount=resized
@@ -34454,7 +34454,7 @@ class Store:
                         and (current-parse_time(position['mark_observed_at'])).total_seconds()<=15):
                     from .age_rate_revisions import next_frame_minimum_principal_recovery_raw
                     recovery=next_frame_minimum_principal_recovery_raw(dict(position),
-                        {'market_price_usd':position['mark_price_usd']},definition)
+                        {'market_price_usd':position['mark_price_usd']},definition,policy=policy)
                     if recovery is not None:
                         action,reason='PRINCIPAL_RECOVERY','minimum_net_debit_recovery_next_frame'
                         sell_amount=recovery
