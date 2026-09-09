@@ -159,7 +159,7 @@ def test_shadow_unknown_and_hard_expire_without_backfill():
         args=dict(evidence_id=i,evidence={'state':state},token_id=TOKEN,pool=POOL,
                   anchor=anchor,now=now,costs={})
         s.capture(**args);s.capture(**args)
-    assert s.counts=={'UNKNOWN':1,'HARD_UNSELLABLE':1}
+    assert s.counts=={'UNKNOWN':1,'HARD_UNSELLABLE':1,'phase:UNKNOWN':2}
     result=s.snapshot(now+timedelta(minutes=246))
     assert not result['outcomes']['pending']
     assert len(result['outcomes']['recent'])==2
@@ -199,3 +199,25 @@ def test_worker_rare_queue_dedup_no_network_in_enqueue_and_passive_expiry():
         await w.work()
         assert h.calls==1 and w.counts['HARD_UNSELLABLE']==1
     asyncio.run(run())
+
+
+def test_building_is_not_net_sell_and_does_not_expand_entry():
+    frames=[dict(token_id=TOKEN,pool=POOL,observed_at=T+timedelta(seconds=i),
+                 recorded_at=T+timedelta(seconds=60),price_usd=1+i/30,liquidity_usd=10000)
+            for i in (0,10,20,30)]
+    rows=[row(i,'0xa','buy' if i<3 else 'sell',100) for i in range(4)]
+    got=assess(rows,price_frames=frames)
+    assert got['metrics']['net_usd']==200
+    assert got['phase']=='SYNTHETIC_LPI_BUILDING'
+    assert got['state']=='UNKNOWN'  # frozen funded selector not broadened
+    assert got['metrics']['price_displacement_per_external_signed_usd'] is None
+    assert got['decision_eligible'] is False
+    assert assess(synthetic(),price_frames=frames)['phase']=='SYNTHETIC_DISTRIBUTING_CYCLE'
+    assert assess(organic(),price_frames=frames)['phase']=='UNKNOWN'  # shape alone is not manipulation
+    assert assess(rows)['phase']=='UNKNOWN'
+    wrong=[dict(f) for f in frames];wrong[-1]['recorded_at']=T+timedelta(seconds=61)
+    assert assess(rows,price_frames=wrong)['phase']=='UNKNOWN'
+    wrong=[dict(f) for f in frames];wrong[-1]['pool']='other'
+    assert assess(rows,price_frames=wrong)['metrics']['price_feature_status']=='UNKNOWN'
+    assert assess(rows,price_frames=frames[1:])['phase']=='UNKNOWN'
+    assert assess(rows,price_frames=frames,complete=False)['state']=='UNKNOWN'

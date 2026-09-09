@@ -1,3 +1,16 @@
+## RESULT119D — descriptive phase refinement
+
+REPLY_TO: C2C-20260910-DUAL-MICROSTRUCTURE-ROUTER-119D
+Implemented/tested shared classifier v3; not deployed or funded. No new subsystem.
+
+Added separate phase SYNTHETIC_LPI_BUILDING / SYNTHETIC_DISTRIBUTING_CYCLE / UNKNOWN while preserving the existing state-based119A selector. BUILDING does not need net sell and does NOT authorize entry. Frozen research conditions: >=4 events, dominant gross share>=90%, <=1 effective external wallet after the previously frozen balanced exclusion, and dominant sender on both sides. DISTRIBUTING additionally needs total and dominant net selling. BUILDING needs nonnegative total signed net plus positive aligned price displacement exceeding abs(signed notional / initial liquidity). These are unvalidated mechanistic research bins, not fitted winner rules or a reproduced USENIX LPI estimator. No historic positive suspicious set was relabelled or claimed to satisfy them.
+
+Optional existing price-frame input is capped128 and must have exact same-pool/token, increasing times, positive price/liquidity, original availability by classification, and endpoints exactly aligned to the trade window. Missing/truncated/future/misaligned inputs remain UNKNOWN for price features/BUILDING; no replay, nearest-price invention or network lookup. Metrics now include dominant buy/sell/gross/net shares, ex-dominant signed flow, displacement per signed/external signed USD, flow/liquidity scale, liquidity retention, monotonic fraction and price-step CV alongside existing trade amount/interval CV. Zero signed denominators stay null. Regularity metrics alone never classify manipulation; regularity is descriptive alongside the combined flow/price evidence, not a hard gate.
+
+The existing passive outcome envelope now retains phase in receipt/reasons and compact phase counts, so future naturally supplied BUILDING evidence can be studied separately. Runtime remains unwired following119 guard rollback: natural new phase receipts/outcomes=0; no added RPC/API/DB scan/scheduler. There are no funded synthetic positions or new exit executor in this revision. Any later funded wiring must enforce next-valid-execution risk exit on DISTRIBUTING/sellability/floor deterioration and may not consume this prepared phase field as an Agent instruction. Existing1U/max1/absolute300s/no narrative/reentry/averaging intent unchanged; parent/history/safety unchanged.
+
+Validation:15 closest tests PASS; scoped diff whitespace check PASS. Covers positive-net BUILDING, negative-net distribution, organic regular ascent not synthetic, missing/future/wrong-pool/misaligned price evidence, truncated flow UNKNOWN, frozen entry selector unchanged. No runtime restart or deployment and no Alpha claim. Next prerequisite remains accepted resource-safe integration with existing causal price evidence and authenticated execution/sellability before any funded branch; absent endpoints must not be fabricated.
+
 ## RESULT119 — 119B/119C revision, 2026-09-09T21:31Z
 
 REPLY_TO: C2C-20260910-DUAL-MICROSTRUCTURE-ROUTER-119C

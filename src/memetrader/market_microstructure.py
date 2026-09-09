@@ -11,7 +11,7 @@ from urllib.parse import quote
 
 from .models import canonical_token_address, iso, parse_time, utcnow
 
-VERSION = 'market_microstructure_classifier_v2'
+VERSION = 'market_microstructure_classifier_v3'
 # Fixed research definitions, not tuned against case outcomes.
 BALANCED_NET_GROSS = .10
 EARLY_NET_LIQUIDITY = .01
@@ -41,7 +41,7 @@ def _cv(values):
 
 def classify(trades, *, token_id, pool, window_start, window_end,
              received_at, recorded_at, decision_at, coverage_start, coverage_end,
-             complete=False, hard_unsellable=False):
+             complete=False, hard_unsellable=False, price_frames=None):
     """Normalized rows must carry exact pool/token, wallet, USD, kind, clocks.
 
     coverage_* is evidence from the adapter, not min/max selected row shortcuts.
@@ -106,8 +106,11 @@ def classify(trades, *, token_id, pool, window_start, window_end,
         top1_notional_share=ranked[0]/total, top3_notional_share=sum(ranked[:3])/total,
         both_side_wallets=len(buys.keys() & sells.keys()),
         dominant_wallet_gross_share=gross[dominant]/total,
+        dominant_wallet_buy_share=buys[dominant]/buy if buy else None,
         dominant_wallet_sell_share=sells[dominant]/sell if sell else None,
         dominant_wallet_net_usd=buys[dominant]-sells[dominant],
+        dominant_wallet_net_gross_share=(buys[dominant]-sells[dominant])/total,
+        dominant_wallet_both_sides=buys[dominant]>0 and sells[dominant]>0,
         balanced_both_side_wallets=len(balanced), effective_wallets=len(effective),
         effective_net_buy_usd=effective_net,
         ex_top1_effective_wallets=len(external),
@@ -115,6 +118,21 @@ def classify(trades, *, token_id, pool, window_start, window_end,
         balanced_net_gross_limit=BALANCED_NET_GROSS,
         size_cv=_cv([t[3] for t in selected]),
         interval_cv=_cv([(b[0]-a[0]).total_seconds() for a,b in zip(selected,selected[1:])]))
+    metrics.update(_price_displacement(price_frames, token_id, pool, start, end, recorded,
+        buy-sell, sum(buys[w]-sells[w] for w in external)))
+    # Descriptive phase only; separate from the frozen v1 entry selector below.
+    # No fitted case threshold: >=90% gross, <=1 external effective sender,
+    # both sides and >=4 events. Price growth must exceed signed-flow/liquidity
+    # scale, with exact aligned causal endpoints. This is NOT calibrated LPI.
+    concentrated_cycle = (len(selected)>=4 and gross[dominant]/total>=.9
+                          and len(external)<=1 and buys[dominant]>0 and sells[dominant]>0)
+    phase = 'UNKNOWN'
+    if concentrated_cycle and sell>buy and sells[dominant]>buys[dominant]:
+        phase = 'SYNTHETIC_DISTRIBUTING_CYCLE'
+    elif (concentrated_cycle and buy>=sell and metrics['price_displacement'] is not None
+          and metrics['price_displacement']>0
+          and metrics['price_displacement']>abs(metrics['signed_notional_liquidity_ratio'])):
+        phase = 'SYNTHETIC_LPI_BUILDING'
     state = 'UNKNOWN'
     # Conservative initial research buckets: one observed sender with BOTH sides
     # and net selling, versus positive net flow with distributed notional.
@@ -126,9 +144,49 @@ def classify(trades, *, token_id, pool, window_start, window_end,
         state = 'ORGANIC_BOOTSTRAP_SPREADING'
     elif sell > buy:
         state = 'NET_SELL_DISTRIBUTION'
-    return dict(version=VERSION, state=state, reason='MECHANISTIC_BUCKET_NOT_ALPHA',
+    return dict(version=VERSION, state=state, phase=phase, reason='MECHANISTIC_BUCKET_NOT_ALPHA',
                 decision_eligible=False, affects='none', metrics=metrics,
                 signer_is_not_human_identity=True, **base)
+
+
+def _price_displacement(frames, token_id, pool, start, end, recorded, net, external_net):
+    """Optional bounded price evidence, not a price lookup or reconstructed path.
+
+    Exact endpoints align the price change with the signed-flow window. Missing
+    liquidity, mismatched endpoints or future receipts invalidate this feature
+    group only. Zero net yields an undefined ratio, never infinite support.
+    """
+    fields = dict(price_displacement=None, price_displacement_per_signed_usd=None,
+                  price_displacement_per_external_signed_usd=None,
+                  signed_notional_liquidity_ratio=None, liquidity_retention=None,
+                  price_monotonic_up_fraction=None, price_step_cv=None,
+                  price_feature_status='UNKNOWN')
+    if not frames or not 2<=len(frames)<=128:
+        return fields
+    try:
+        stamps=[];prices=[];liquidities=[]
+        chain=token_id.split(':')[0]
+        for f in frames:
+            observed, available = parse_time(f['observed_at']), parse_time(f['recorded_at'])
+            p,l=float(f['price_usd']),float(f['liquidity_usd'])
+            if (f['token_id']!=token_id or canonical_token_address(chain,f['pool'])!=pool
+                    or not start<=observed<=available<=recorded or observed>end
+                    or not isfinite(p) or not isfinite(l) or p<=0 or l<=0):return fields
+            stamps.append(observed);prices.append(p);liquidities.append(l)
+        if stamps[0]!=start or stamps[-1]!=end or any(a>=b for a,b in zip(stamps,stamps[1:])):
+            return fields
+        gain=prices[-1]/prices[0]-1
+        steps=[b/a-1 for a,b in zip(prices,prices[1:])]
+        return dict(price_displacement=gain,
+            price_displacement_per_signed_usd=gain/net if net else None,
+            price_displacement_per_external_signed_usd=gain/external_net if external_net else None,
+            signed_notional_liquidity_ratio=net/liquidities[0],
+            liquidity_retention=liquidities[-1]/liquidities[0],
+            price_monotonic_up_fraction=sum(x>0 for x in steps)/len(steps) if len(steps)>=3 else None,
+            price_step_cv=_cv(steps) if len(steps)>=3 else None,
+            price_feature_status='ALIGNED_CAUSAL_ENDPOINTS')
+    except (KeyError, TypeError, ValueError):
+        return fields
 
 
 def normalize_gecko(payload, *, token_id, pool, received_at):
@@ -192,7 +250,7 @@ def classify_amountful(payload, *, token_id, pool, decision_at):
         return unknown('INVALID_AMOUNTFUL_EVIDENCE')
 
 
-def classify_page(page, *, token_id, pool, window_start, window_end, decision_at):
+def classify_page(page, *, token_id, pool, window_start, window_end, decision_at, price_frames=None):
     """Conservative two-boundary coverage; later trades prove recency only.
 
     Post-cutoff trades never contribute to metrics. Empty quiet tails are not
@@ -212,7 +270,8 @@ def classify_page(page, *, token_id, pool, window_start, window_end, decision_at
         return unknown('UNVERIFIED_ORDER')
     return classify(rows, token_id=token_id, pool=pool, window_start=window_start,
         window_end=window_end, received_at=received, recorded_at=received,
-        decision_at=decision_at, coverage_start=min(stamps), coverage_end=max(stamps), complete=True)
+        decision_at=decision_at, coverage_start=min(stamps), coverage_end=max(stamps), complete=True,
+        price_frames=price_frames)
 
 
 class TradePageClient:
@@ -339,9 +398,11 @@ class MicrostructureShadow:
             return
         self.receipts = (self.receipts+[dict(evidence_id=evidence_id, **evidence)])[-128:]
         self.counts[evidence['state']] += 1
+        phase=evidence.get('phase','UNKNOWN')
+        self.counts['phase:'+phase] += 1
         for row in self.outcomes.state['pending'].values():
             if row.get('evidence_id') == 'micro119:'+str(evidence_id):
-                row.update(category='MICROSTRUCTURE_SHADOW', reasons=[evidence['state']],
+                row.update(category='MICROSTRUCTURE_SHADOW', reasons=[evidence['state'],'phase:'+phase],
                            hard_veto=['HARD_UNSELLABLE'] if evidence['state']=='HARD_UNSELLABLE' else [],
                            arms=[], classifier_receipt=evidence)
 

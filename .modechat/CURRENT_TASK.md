@@ -1,3 +1,6 @@
+## 119D checkpoint
+Shared classifier v3 adds separate BUILDING/DISTRIBUTING phase with causal optional aligned price inputs and balanced/external signed-flow metrics. Positive-net BUILDING permitted descriptively; regularity alone never sufficient.15 tests PASS. No funded widening/no runtime deploy/natural phase rows0.119A1U/max1/5m remains frozen;121 provenance blocked. Details: docs/PROJECT_CONTEXT/DUAL_MICROSTRUCTURE_119.md.
+
 ## Pons121 boundary — provenance BLOCKED
 Latest36 economics independently confirmed36 UNKNOWN/403. Current pinned GitHub curve lacks recipient snipe function present in cached verified source/docs; cannot assert compiled current-stack match. Factory/deployer full-verification reads and independent public RPC read returned403. No verification weakened/no runtime deploy/no funded Pons. See docs/PROJECT_CONTEXT/PONS_NATIVE_EXEC_121.md for exact proof gap and prerequisites.119 guarded/unwired;120 already complete. Pairing unchanged.
 
