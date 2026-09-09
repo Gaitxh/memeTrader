@@ -10,6 +10,33 @@ import time
 from .models import canonical_token_address, iso, parse_time, utcnow
 
 VERSION = 'preentry_obvious_scam_v1'
+
+def stock_registry_evidence(connection, token_id, decision_at):
+    chain, address = token_id.split(':', 1)
+    if chain != 'robinhood':
+        return None
+    at = iso(parse_time(decision_at))
+    run = connection.execute('SELECT id,completed_at,recorded_at,deployment_count FROM '
+        'robinhood_stock_token_registry_runs WHERE source_url=? AND requested_at<=completed_at '
+        'AND completed_at<=recorded_at AND completed_at<=? AND recorded_at<=? '
+        'ORDER BY completed_at DESC,id DESC LIMIT 1',
+        ('https://api.robinhood.com/rhj/assets',at,at)).fetchone()
+    evidence = {'status':'UNKNOWN','classification_only':True,'source_at':None,
+                'reason':'official_registry_unavailable_or_empty'}
+    if run is None:
+        return evidence
+    evidence.update(run_id=run['id'],source_at=run['completed_at'],recorded_at=run['recorded_at'])
+    if run['deployment_count'] <= 0 or not connection.execute(
+            'SELECT 1 FROM robinhood_stock_token_registry_entries WHERE run_id=? AND recorded_at<=? LIMIT 1',
+            (run['id'],at)).fetchone():
+        return evidence
+    hit = connection.execute('SELECT 1 FROM robinhood_stock_token_registry_entries '
+        'WHERE contract_address=? AND run_id=? AND chain_id=4663 AND recorded_at<=? LIMIT 1',
+        (canonical_token_address(chain,address),run['id'],at)).fetchone()
+    evidence.update(status='EXCLUDED_STOCK_TOKEN' if hit else 'NOT_LISTED',
+        reason='official_robinhood_stock_token_not_meme' if hit else 'not_in_latest_available_registry')
+    return evidence
+
 EVM_FLAGS = ('is_honeypot','cannot_sell','hidden_owner','can_take_back_ownership',
     'owner_change_balance','is_blacklisted','blacklist','transfer_pausable',
     'slippage_modifiable','personal_slippage_modifiable','honeypot_with_same_creator')
@@ -175,6 +202,14 @@ class PreentrySafety:
         item['signal_price_usd']=kwargs.get('signal_price_usd')
         item['shadow_costs']={key:definition.get(key,default) for key,default in (
             ('buy_slippage_bps',400),('sell_slippage_bps',400),('additional_fee_usd_each_fill',0.0),('min_pool_liquidity_usd',1000))}
+        registry = stock_registry_evidence(self.store.db,token_id,filled_at)
+        if registry is not None:
+            item['stock_registry'] = registry
+            if registry['status']=='EXCLUDED_STOCK_TOKEN':
+                self.record(item,'REJECT_SCOPE',dict(status='REJECT',allow=False,
+                    reasons=[registry['reason']],source_at=registry['source_at'],
+                    classification_only=True,not_a_scam_claim=True))
+                return False
         behavior=self.behavior(item,parse_time(filled_at))
         if behavior['hard_veto'] or behavior['soft_hazard']:
             hard=bool(behavior['hard_veto'])
