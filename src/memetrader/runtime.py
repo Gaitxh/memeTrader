@@ -43,7 +43,7 @@ from .capital_duration_risk import load_duration_risk_samples, seal_duration_ris
 from .autonomous_search import AutonomousSearchAgent, _canonical_social_url, _same_social_url
 from .collectors import (
     BlueskySearchCollector,
-    DEX_REQUEST_HIGH_PRIORITY,
+    DEX_REQUEST_HIGH_PRIORITY, dex_low_budget,
     DexLowPriorityCapacityDeferred,
     DexScreenerClient,
     EvmRouteQuoteError,
@@ -6135,7 +6135,8 @@ class Runtime:
                 continue
             chain, address = token_id.split(":", 1)
             try:
-                quoted = await asyncio.wait_for(self._dex_batch_quote(chain, [address], fresh=True), timeout=3)
+                async with dex_low_budget(3):
+                    quoted = await self._dex_batch_quote(chain, [address], fresh=True)
                 if not self.chain_meme_trader_only:
                     self._remember_pattern_quotes(quoted)
             except (httpx.HTTPError, TimeoutError) as exc:
@@ -6612,7 +6613,8 @@ class Runtime:
         query = next(iter(symbols))
         await self._chain_meme_active_idle().wait()
         try:
-            quoted = await asyncio.wait_for(self.dex.search(query, limit=25), timeout=3)
+            async with dex_low_budget(3):
+                quoted = await self.dex.search(query, limit=25)
         except Exception as exc:
             self.store.heartbeat("no-ca-event", error=type(exc).__name__)
             return  # No retrieval succeeded; never substitute later winners for a frozen set.
@@ -7771,8 +7773,8 @@ class Runtime:
                         or v.get("sampled_at") == v["quote"].observed_at)]
             if due and self._dex_quote_low_priority_available():
                 try:
-                    quoted = await asyncio.wait_for(self._dex_batch_quote(
-                        chain, due, fresh=True, high_priority=False), timeout=3)
+                    async with dex_low_budget(3):
+                        quoted = await self._dex_batch_quote(chain, due, fresh=True, high_priority=False)
                     if not self.chain_meme_trader_only:
                         self._remember_pattern_quotes(quoted)
                 except DexLowPriorityCapacityDeferred:

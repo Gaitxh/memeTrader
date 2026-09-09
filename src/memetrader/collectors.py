@@ -31,6 +31,18 @@ from .models import (
 
 RSS_CACHE_KEY_PREFIX = "rss_http_cache:v1:"
 DEX_REQUEST_HIGH_PRIORITY: ContextVar[bool] = ContextVar("dex_request_high_priority", default=False)
+DEX_LOW_BUDGET: ContextVar[asyncio.Timeout | None] = ContextVar("dex_low_budget", default=None)
+
+
+@asynccontextmanager
+async def dex_low_budget(seconds: float):
+    """Explicit observer deadline; external/shutdown cancellation is not expiry."""
+    async with asyncio.timeout(seconds) as deadline:
+        token = DEX_LOW_BUDGET.set(deadline)
+        try:
+            yield
+        finally:
+            DEX_LOW_BUDGET.reset(token)
 
 
 class DexLowPriorityCapacityDeferred(httpx.RequestError):
@@ -1144,6 +1156,9 @@ class HttpClient:
         self._client_generation_retirements = 0
         self._client_connect_errors = 0
         self._client_pool_timeouts = 0
+        self._client_retire_reasons = {"connect": 0, "pool": 0, "cancel": 0}
+        self._client_cancellations = 0
+        self._client_budget_cancellations = 0
         self.feed_proxy_url = normalize_loopback_socks5_proxy_url(feed_proxy_url)
         proxy_host = urllib.parse.urlsplit(self.feed_proxy_url).hostname if self.feed_proxy_url else None
         self.feed_proxy_ip = _canonical_ip(proxy_host) if proxy_host else None
@@ -1201,6 +1216,12 @@ class HttpClient:
             "connect_errors": self._client_connect_errors,
             "pool_timeouts": self._client_pool_timeouts,
             "client_recovery_enabled": self._client_recovery_enabled,
+            **{"retire_reason_"+k: v for k,v in self._client_retire_reasons.items()},
+            "request_cancellations": self._client_cancellations,
+            "low_budget_cancellations_no_rotation": self._client_budget_cancellations,
+            "client_generations_active": len(self._client_active),
+            "client_requests_active": sum(self._client_active.values()),
+            "client_generations_closing": len(self._closing_clients),
         }
 
     def _prune_cache(self, now: float) -> None:
@@ -1228,7 +1249,7 @@ class HttpClient:
         await self.feed_client.aclose()
 
     @asynccontextmanager
-    async def _request_client(self) -> AsyncIterator[httpx.AsyncClient]:
+    async def _request_client(self, host: str = "") -> AsyncIterator[httpx.AsyncClient]:
         async with self._client_lock:
             client = self.client
             self._client_active[client] = self._client_active.get(client, 0) + 1
@@ -1239,15 +1260,20 @@ class HttpClient:
                 self._client_connect_errors += 1
             elif isinstance(exc, httpx.PoolTimeout):
                 self._client_pool_timeouts += 1
-            await self._retire_failed_client(client)
+            await self._retire_failed_client(client, "pool" if isinstance(exc, httpx.PoolTimeout) else "connect")
             raise
         except asyncio.CancelledError:
-            await self._retire_failed_client(client)
+            self._client_cancellations += 1
+            budget = DEX_LOW_BUDGET.get()
+            if host == "api.dexscreener.com" and not DEX_REQUEST_HIGH_PRIORITY.get() and budget is not None and budget.expired():
+                self._client_budget_cancellations += 1
+            else:
+                await self._retire_failed_client(client, "cancel")
             raise
         finally:
             await self._release_request_client(client)
 
-    async def _retire_failed_client(self, client: httpx.AsyncClient) -> None:
+    async def _retire_failed_client(self, client: httpx.AsyncClient, reason: str) -> None:
         if not self._client_recovery_enabled:
             return
         async with self._client_lock:
@@ -1256,6 +1282,7 @@ class HttpClient:
                 self._client_active[self.client] = 0
                 self._client_generation += 1
                 self._client_generation_retirements += 1
+                self._client_retire_reasons[reason] += 1
             self._retired_clients.add(client)
 
     async def _release_request_client(self, client: httpx.AsyncClient) -> None:
@@ -1425,11 +1452,11 @@ class HttpClient:
         if host == "api.dexscreener.com":
             async with self._dex_inflight_slot():
                 await self._reserve_host_request_start(host)
-                async with self._request_client() as request_client:
+                async with self._request_client(host) as request_client:
                     response = await request_client.get(url, params=params, headers=headers)
         else:
             await self._reserve_host_request_start(host)
-            async with self._request_client() as request_client:
+            async with self._request_client(host) as request_client:
                 response = await request_client.get(url, params=params, headers=headers)
         self._record_dex_rate_limit(host, response)
         if response.status_code == 429 and retry_429:
@@ -1438,7 +1465,7 @@ class HttpClient:
             if host == "api.dexscreener.com":
                 async with self._dex_inflight_slot():
                     await self._reserve_host_request_start(host)
-                    async with self._request_client() as request_client:
+                    async with self._request_client(host) as request_client:
                         response = await request_client.get(url, params=params, headers=headers)
                 self._record_dex_rate_limit(host, response)
             else:
@@ -1446,7 +1473,7 @@ class HttpClient:
                     await self._reserve_locked_host_request_start(
                         host, not_before=time.monotonic() + retry,
                     )
-                    async with self._request_client() as request_client:
+                    async with self._request_client(host) as request_client:
                         response = await request_client.get(url, params=params, headers=headers)
                     self._record_dex_rate_limit(host, response)
         response.raise_for_status()

@@ -7,11 +7,86 @@ import httpx
 import pytest
 
 from memetrader.collectors import (
-    DEX_REQUEST_HIGH_PRIORITY, DexLowPriorityCapacityDeferred,
+    DEX_REQUEST_HIGH_PRIORITY, DexLowPriorityCapacityDeferred, dex_low_budget,
     DexScreenerClient, HttpClient,
 )
 from memetrader.models import iso, utcnow
 from memetrader.runtime import Runtime, initial_config
+
+
+@pytest.mark.parametrize('high,external', [(False,False),(True,False),(False,True)])
+def test_known_low_budget_only_preserves_generation(high,external):
+    async def scenario():
+        started=asyncio.Event();held_started=asyncio.Event();release=asyncio.Event()
+        async def handler(request):
+            if request.url.path=='/slow':
+                started.set();await asyncio.Event().wait()
+            if request.url.path=='/held':
+                held_started.set();await release.wait()
+            return httpx.Response(200,json=[])
+        client=HttpClient(min_host_interval=0,client_factory=lambda:httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+        async def request_slow():
+            token=DEX_REQUEST_HIGH_PRIORITY.set(high)
+            try:
+                async with dex_low_budget(10 if external else .05):
+                    await client.get('https://api.dexscreener.com/slow')
+            finally:DEX_REQUEST_HIGH_PRIORITY.reset(token)
+        async def held():
+            token=DEX_REQUEST_HIGH_PRIORITY.set(True)
+            try:return await client.get('https://api.dexscreener.com/held')
+            finally:DEX_REQUEST_HIGH_PRIORITY.reset(token)
+        h=asyncio.create_task(held());await held_started.wait()
+        original=client.client;t=asyncio.create_task(request_slow());await started.wait()
+        try:
+            if external:t.cancel()
+            with pytest.raises(asyncio.CancelledError if external else TimeoutError):await t
+            assert not original.is_closed  # in-flight held response is not killed
+            status=client.snapshot_http_capacity()
+            assert status['client_generation_retirements']==int(high or external)
+            assert status['retire_reason_cancel']==int(high or external)
+            assert status['low_budget_cancellations_no_rotation']==int(not high and not external)
+            release.set();assert (await h).status_code==200
+            assert (await client.get('https://api.dexscreener.com/after')).status_code==200
+            assert client.snapshot_http_capacity()['active']==0
+            assert client.snapshot_http_capacity()['client_requests_active']==0
+            assert client.snapshot_http_capacity()['retired_client_generations']==0
+        finally:
+            release.set();await asyncio.gather(h,t,return_exceptions=True);await client.close()
+    asyncio.run(scenario())
+
+
+def test_real_httpcore_budget_cleanup_reuses_bounded_pool():
+    async def scenario():
+        handlers=set()
+        async def serve(reader,writer):
+            task=asyncio.current_task();handlers.add(task)
+            try:
+                head=await reader.readuntil(b'\r\n\r\n')
+                if b'/slow ' in head:await reader.read()
+                else:
+                    writer.write(b'HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}')
+                    await writer.drain()
+            finally:
+                writer.close();await writer.wait_closed();handlers.discard(task)
+        server=await asyncio.start_server(serve,'127.0.0.1',0)
+        url='http://127.0.0.1:'+str(server.sockets[0].getsockname()[1])
+        client=HttpClient(client_factory=lambda:httpx.AsyncClient(trust_env=False,limits=httpx.Limits(max_connections=1),timeout=.5))
+        try:
+            for _ in range(4):
+                with pytest.raises(TimeoutError):
+                    async with dex_low_budget(.03):
+                        async with client._request_client('api.dexscreener.com') as transport:
+                            await transport.get(url+'/slow')
+                async with client._request_client('api.dexscreener.com') as transport:
+                    assert (await transport.get(url+'/fast')).status_code==200
+            status=client.snapshot_http_capacity()
+            assert status['client_generation']==1 and status['pool_timeouts']==0
+            assert status['low_budget_cancellations_no_rotation']==4
+            assert status['client_requests_active']==0 and status['client_generations_active']==1
+        finally:
+            await client.close();server.close();await server.wait_closed()
+            if handlers:await asyncio.gather(*list(handlers),return_exceptions=True)
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("surface,role", [("token_profiles", "identity"), ("profile_updates", "identity"),

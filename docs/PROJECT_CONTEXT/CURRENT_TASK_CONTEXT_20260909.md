@@ -1,3 +1,6 @@
+# HTTP cancellation111 trial ready, not loaded
+Marked low-Dex3s deadline expiry preserves shared generation; high/external cancellation and connection/pool failure protections unchanged.21targetedPASS incl real one-connection cleanup. New reason/client counters; no request/cadence change. See HTTP_CANCEL_CHURN_111.md. Process-control policy block unresolved; no natural trial PASS.110/final109 also pending load; do not infer deployment from commit.
+
 # Narrative admission110 implemented, not loaded
 Recovery-driven research replaces150s clock; true settled principal+fresh exact pool+safety required, wait remains reconsiderable. Optional early credible-event branch disabled because metadata is untrusted.17distinct targeted tests covered; no forced call/natural savings claim. Existing restart surface policy-blocked; see NARRATIVE_VALUE_ADMISSION_110.md. Do not change pairing or claim110 running.
 
