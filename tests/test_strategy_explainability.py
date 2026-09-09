@@ -22,3 +22,20 @@ def test_dynamic_and_narrative_exits_and_frozen_parameters_are_not_mutated():
  assert any('一半' in r for r in x['exit_rules']) and any('不覆盖硬止损' in r for r in x['exit_rules'])
  assert any('unmapped_gate' in r for r in x['entry_rules'])
  assert x['lifecycle_explanation']['assessment']=='ACTIVE'
+
+
+def test_reactivated_assessment_does_not_pause_or_change_policy(tmp_path,monkeypatch):
+ from test_resource_bound_store import setup_store
+ store,_=setup_store(tmp_path,monkeypatch)
+ version=store.CHAIN_MEME_TRADER_ACTIVE_VERSION
+ raw=store._chain_meme_trader_registration(version)['definition_json']
+ before=store.chain_meme_trader_effective_definition_from_connection(store.db,version,raw)
+ arm=before['policies'][0]['arm_id']
+ store.set_kv('chain-meme-account-convergence/v1:'+version,dict(activated_at='2026-09-10T00:00:00Z',arms={},active_assessments={arm:dict(assessment_status='ACTIVE',assessment_note='MIXED_HIGH_RECALL; retained positive experiment, no organic alpha proof',assessment_evidence='report126')}))
+ after=store.chain_meme_trader_effective_definition_from_connection(store.db,version,raw)
+ p=next(p for p in after['policies'] if p['arm_id']==arm)
+ assert not p.get('entry_paused') and not p.get('account_lifecycle')
+ assert strategy_logic(p,{},current=True)['lifecycle_explanation']['assessment']=='ACTIVE'
+ assert 'MIXED_HIGH_RECALL' in strategy_logic(p,{},current=True)['lifecycle_explanation']['note']
+ assert store._chain_meme_trader_registration(version)['definition_json']==raw
+ store.close()

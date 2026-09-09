@@ -7386,6 +7386,12 @@ class Store:
             control = json.loads(row[0])
             definition["account_control_activation"] = control["activated_at"]
             for policy in definition["policies"]:
+                # Display assessments survive an explicit reactivation without
+                # becoming pause controls or modifying the immutable policy.
+                assessment = control.get("active_assessments", {}).get(policy["arm_id"], {})
+                for field in ("assessment_status", "assessment_note", "assessment_evidence"):
+                    if field in assessment:
+                        policy[field] = assessment[field]
                 state = control["arms"].get(policy["arm_id"])
                 if state:
                     policy.update(account_lifecycle=state["state"], entry_paused=True,
