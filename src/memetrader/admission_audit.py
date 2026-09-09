@@ -23,7 +23,7 @@ class AdmissionAudit:
     FLUSH_BATCH = 64
     MAX_BYTES = 256 * 1024 * 1024
 
-    def __init__(self, directory):
+    def __init__(self, directory, previous=None):
         from .admission_shadow import AdmissionShadow
         self.shadow = AdmissionShadow()
         self.path = Path(directory) / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + ".jsonl.gz")
@@ -35,10 +35,32 @@ class AdmissionAudit:
         self.last_flush = 0.0
         self.discontinuous = False
         self.flush_task = None
+        self.terminal = False
+        self.terminal_reported = False
+        previous = previous or {}
+        if (previous.get('terminal') or previous.get('bytes', 0) >= self.MAX_BYTES
+                or 'byte budget exhausted' in previous.get('last_error', '')):
+            self.path = Path(previous['path'])
+            for attr, key in [('receipts','receipts'),('written','written'),('bytes','bytes'),
+                              ('dropped','dropped_audit'),('errors','errors')]:
+                setattr(self, attr, int(previous.get(key, 0)))
+            self.last_error = previous.get('last_error', '')
+            self.dropped += int(previous.get('pending', 0))
+            self._disable_cap()
+
+    def _disable_cap(self):
+        self.terminal = True
+        self.discontinuous = True
+        self.dropped += len(self.pending)
+        self.pending.clear()
 
     def capture(self, now, token, snapshot, watch, held, floor):
+        if self.bytes >= self.MAX_BYTES:
+            self._disable_cap()
+        if self.terminal:
+            return None
         self.receipts += 1
-        if (self.bytes >= self.MAX_BYTES or len(self.pending) >= self.MAX_PENDING
+        if (len(self.pending) >= self.MAX_PENDING
                 or len(watch) > self.MAX_PRE or len(held) > self.MAX_PRE):
             self.dropped += 1
             self.discontinuous = True
@@ -106,6 +128,10 @@ class AdmissionAudit:
         return len(events)
 
     async def flush(self):
+        if self.bytes >= self.MAX_BYTES:
+            self._disable_cap()
+        if self.terminal:
+            return
         if self.flush_task is not None and not self.flush_task.done():
             return
         if time.monotonic() - self.last_flush < 2:
@@ -123,16 +149,21 @@ class AdmissionAudit:
         try:
             self.written += await asyncio.to_thread(self._write, events, drops)
             self.reported_drops += drops
+            if self.bytes >= self.MAX_BYTES:
+                self._disable_cap()
         except Exception as exc:
             # A failed research sink cannot block cohort projection or held exits.
             self.dropped += len(events)
             self.errors += 1
             self.discontinuous = True
             self.last_error = type(exc).__name__ + ": " + str(exc)[:160]
+            if self.bytes >= self.MAX_BYTES or (isinstance(exc, OSError) and 'byte budget exhausted' in str(exc)):
+                self._disable_cap()
 
     def status(self):
         return dict(decision_eligible=0, affects="none", receipts=self.receipts,
             written=self.written, pending=len(self.pending), dropped_audit=self.dropped,
-            status="DROPPED_AUDIT" if self.dropped else "OBSERVING",
+            status="TERMINAL_CAP" if self.terminal else "DROPPED_AUDIT" if self.dropped else "OBSERVING",
+            terminal=self.terminal, terminal_reason="BYTE_BUDGET_EXHAUSTED" if self.terminal else None,
             audit_discontinuous=self.discontinuous, errors=self.errors,
             last_error=self.last_error, bytes=self.bytes, path=str(self.path))

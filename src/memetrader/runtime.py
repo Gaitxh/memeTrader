@@ -1367,7 +1367,8 @@ class Runtime:
                     self.store.register_chain_meme_early_impulse()
                     self.store.register_chain_meme_impulse_profit_lock()
                     from .admission_audit import AdmissionAudit
-                    self._admission_audit = AdmissionAudit(self.root / "data" / "research" / "admission84")
+                    self._admission_audit = AdmissionAudit(self.root / "data" / "research" / "admission84",
+                        self.store.get_kv("pattern-admission-shadow", None))
                     self._cohort_started_at = utcnow()
                     self._cohort_state = self.store.get_kv(
                         f"passive-cohort:{self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION}", {})
@@ -7593,9 +7594,11 @@ class Runtime:
             self.store.set_kv('rediscovery-funnel94', funnel.snapshot())
             funnel.last_flush = now_mono
         audit = getattr(self, "_admission_audit", None)
-        if audit is not None and self._chain_meme_active_idle().is_set():
+        if audit is not None and not audit.terminal_reported and self._chain_meme_active_idle().is_set():
             await audit.flush()
             self.store.set_kv("pattern-admission-shadow", audit.status())
+            if audit.terminal and (audit.flush_task is None or audit.flush_task.done()):
+                audit.terminal_reported = True
         phase_started = asyncio.get_running_loop().time()
         batches = getattr(self, "_cohort_batches", None)
         pending = getattr(self, "_cohort_pending", {})

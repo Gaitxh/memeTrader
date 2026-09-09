@@ -54,6 +54,9 @@ def test_audit_preserves_actual_watch_and_has_no_receipt_io(tmp_path, monkeypatc
     assert len(rows) == 15
     assert all(row["decision_eligible"] == 0 and row["affects"] == "none" for row in rows)
     assert audit.status()["written"] == 15
+    audit.bytes=audit.MAX_BYTES
+    send(13, age=40000)
+    assert audit.terminal and audit.receipts==15
 
 
 def test_audit_overflow_and_sink_failure_do_not_affect_receipts(tmp_path):
@@ -107,3 +110,36 @@ def test_slow_audit_sink_does_not_block_cohort_or_spawn_more_workers(tmp_path):
         released.set()
         await worker
     asyncio.run(run())
+
+
+def test_cap_is_terminal_no_repeated_write_or_error_and_restart_preserves_file(tmp_path):
+    audit=AdmissionAudit(tmp_path)
+    audit.dropped=1
+    flush(audit)
+    original=audit.path.read_bytes()
+    audit.MAX_BYTES=audit.bytes+1
+    audit.dropped+=1;audit.last_flush=0
+    flush(audit)
+    assert audit.terminal and audit.errors==1 and audit.path.read_bytes()==original
+    final=audit.status()
+    audit._write=lambda *args: (_ for _ in ()).throw(AssertionError('must not write'))
+    for _ in range(4):
+        audit.last_flush=0
+        assert audit.capture(None,None,None,None,None,None) is None
+        flush(audit)
+    assert audit.status()==final
+    restored=AdmissionAudit(tmp_path/'must-not-exist',previous=final)
+    assert restored.terminal and restored.path==audit.path
+    flush(restored)
+    assert restored.path.read_bytes()==original and not (tmp_path/'must-not-exist').exists()
+
+
+def test_legacy_exhaustion_status_restores_terminal_without_rotation(tmp_path):
+    path=tmp_path/'old.gz';path.write_bytes(b'unchanged')
+    old=dict(path=str(path),bytes=268435456,receipts=371269,written=91181,
+             dropped_audit=280088,errors=5194,last_error='OSError: audit file byte budget exhausted',pending=0)
+    audit=AdmissionAudit(tmp_path,old)
+    assert audit.status()['status']=='TERMINAL_CAP'
+    assert audit.capture(None,None,None,None,None,None) is None
+    flush(audit)
+    assert audit.errors==5194 and audit.receipts==371269 and path.read_bytes()==b'unchanged'

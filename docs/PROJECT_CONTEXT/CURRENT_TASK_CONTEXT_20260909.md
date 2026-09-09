@@ -1,3 +1,6 @@
+# Admission audit107 terminal cap fix
+Code6targetedPASS, not loaded: current19:55generation8.5MB uncapped; no restart/new audit file under107. Next coherent load restores terminal/legacy budget-exhaustion KV and stops capture/flush/finalKV repetition. Read ADMISSION_AUDIT_TERMINAL_107.md. No historical denominator repair or runtime change claimed.
+
 # Path-shape101 new aggregate evidence
 C2C-20260909-PATH-SHAPE-101-EVIDENCE acknowledged. Lead-reported dense pre-entry age-rate diagnostic (166 terminals; coverage-matched tail N=2) prioritizes broader frozen-universe falsification, not deployment. New exploratory linear/staircase cutoffs are not adopted. Row pointers/cutoff/label overlap and locally-available-before-entry clocks remain independently unverified. See PATH_SHAPE_HAZARD_101.md new evidence section. Existing price-shape Shadow remains unarmed; no hard veto/funded strategy/history or runtime changes.
 
