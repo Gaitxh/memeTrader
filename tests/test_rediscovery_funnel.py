@@ -29,6 +29,9 @@ def test_funnel_preserves_watch_and_accounts_actual_reasons(monkeypatch):
     assert f.counts['admit_borrow']==7
     for reason in ('skip_bucket_full','refresh_exact_pool','replace_unusable','reclaim_reservation','skip_other_pool'):
         assert f.counts[reason]==1
+    assert f.counts['bucket_full_chain_full']==1
+    replaced=next(e for e in f.examples if e.get('reason')=='replace_unusable')
+    assert replaced['occupancy']['chain_total']==10  # before victim removal
 
 
 def test_membership_expiry_cap_and_deduplication():
@@ -47,3 +50,31 @@ def test_preepisode_or_missing_clock_quote_not_basic_valid():
     s=TokenSnapshot('bsc','x',1,5000,None,1,1,1,observed_at=now-timedelta(seconds=1),ingested_at=now,raw={'pairAddress':'p'})
     f.quote(t,s,'admit_base',now,1000)
     assert f.counts['admission_attempt']==1 and not f.counts['basic_valid']
+
+
+def test_mature_full_spare_then_chain_full_and_held_exempt(monkeypatch):
+    now=utcnow();monkeypatch.setattr('memetrader.runtime.utcnow',lambda:now)
+    f=RediscoveryFunnel();r=Runtime.__new__(Runtime)
+    r.store=SimpleNamespace(_rediscovery_funnel=f);r.config={'paper':{'max_quote_age_seconds':45}}
+    r._pattern_held_tokens={'bsc:held'}
+    plain=Runtime.__new__(Runtime);plain.config=r.config;plain._pattern_held_tokens=r._pattern_held_tokens
+    def send(address,age):
+        t=TokenCandidate('bsc',address,'fixture')
+        if t.token_id not in f.members:f.episode(t.token_id,now)
+        s=TokenSnapshot('bsc',address,1,5000,None,200,6,4,observed_at=now,ingested_at=now,
+            raw={'pair':{'pairAddress':'pool'+address,'pairCreatedAt':(now-timedelta(seconds=age)).timestamp()*1000}})
+        for runtime in (plain,r):runtime._remember_pattern_quotes({t.token_id:(t,s)})
+        assert r._pattern_watch==plain._pattern_watch
+    send('held',30000)
+    for i in range(3):send(str(i),30000)
+    send('spare',30000)
+    e=next(e for e in f.examples if e.get('reason')=='skip_bucket_full')
+    assert e['occupancy']==dict(chain='bsc',target_bucket='mature',occupied=dict(early=0,growth=0,mature=3),
+        chain_total=3,base_caps=dict(early=3,growth=4,mature=3),held_count=1)
+    for i in range(3):send('early'+str(i),60)
+    for i in range(4):send('growth'+str(i),2000)
+    send('full',30000)
+    assert f.counts['bucket_full_chain_spare']==1 and f.counts['bucket_full_chain_full']==1
+    for _ in range(40):send('full',30000)
+    assert len(f.examples)==32 and f.counts['bucket_full_chain_full']==1
+    assert f.examples[-1]['occupancy']['chain_total']==10

@@ -7401,6 +7401,14 @@ class Runtime:
                 chain_used[slot[0]] = chain_used.get(slot[0], 0) + 1
         audit = getattr(self, "_admission_audit", None)
         for token, snapshot in quoted.values():
+            funnel = getattr(getattr(self, 'store', None), '_rediscovery_funnel', None)
+            occupancy = None
+            bucket = watch[token.token_id]['bucket'] if token.token_id in watch else None
+            if funnel is not None and token.token_id in funnel.members:
+                occupancy = {'chain':token.chain,'target_bucket':bucket,
+                    'occupied':{b:occupied.get((token.chain,b),0) for b in base_caps},
+                    'chain_total':chain_used.get(token.chain,0),'base_caps':dict(base_caps),
+                    'held_count':sum(key in held and item['token'].chain==token.chain for key,item in watch.items())}
             ticket = audit.capture(current, token, snapshot, watch, held,
                 getattr(self, "_chain_paper_execution", {}).get("min_pool_liquidity_usd", 1000.0)) if audit else None
             reason, victim, admitted = "skip_invalid_input", None, False
@@ -7487,10 +7495,10 @@ class Runtime:
                     occupied[slot] = occupied.get(slot, 0) + 1
                     chain_used[chain] = chain_used.get(chain, 0) + 1
             finally:
-                funnel = getattr(getattr(self, 'store', None), '_rediscovery_funnel', None)
                 if funnel is not None:
+                    if occupancy is not None:occupancy['target_bucket']=bucket
                     funnel.quote(token, snapshot, reason, current,
-                        getattr(self, '_chain_paper_execution', {}).get('min_pool_liquidity_usd', 1000.0))
+                        getattr(self, '_chain_paper_execution', {}).get('min_pool_liquidity_usd', 1000.0),occupancy)
                 if ticket is not None:
                     ticket["actual"] = {"reason": reason, "victim": victim, "admitted": admitted}
         self._pattern_watch = watch

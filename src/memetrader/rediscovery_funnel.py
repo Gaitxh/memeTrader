@@ -29,7 +29,7 @@ class RediscoveryFunnel:
             self.members[token_id] = {'at':at, 'expires':at+timedelta(hours=1), 'seen':set()}
             self.hit(token_id, 'episode', at)
 
-    def hit(self, token_id, stage, at):
+    def hit(self, token_id, stage, at, *, recent=True):
         with self.lock:
             self._expire(at)
             member = self.members.get(token_id)
@@ -38,16 +38,23 @@ class RediscoveryFunnel:
             if stage not in member['seen']:
                 member['seen'].add(stage)
                 self.counts[stage] += 1
-                self.examples.append({'token_id':token_id, 'episode_at':iso(member['at']),
-                                      'stage':stage, 'at':iso(at)})
+                if recent:
+                    self.examples.append({'token_id':token_id, 'episode_at':iso(member['at']),
+                                          'stage':stage, 'at':iso(at)})
 
-    def quote(self, token, snapshot, reason, now, floor):
+    def quote(self, token, snapshot, reason, now, floor, occupancy=None):
         with self.lock:
             self._expire(now)
             if token.token_id not in self.members:
                 return
-            self.hit(token.token_id, 'admission_attempt', now)
-            self.hit(token.token_id, reason, now)
+            self.hit(token.token_id, 'admission_attempt', now, recent=False)
+            self.hit(token.token_id, reason, now, recent=False)
+            if reason=='skip_bucket_full' and occupancy is not None:
+                self.hit(token.token_id, 'bucket_full_chain_spare' if occupancy['chain_total']<10
+                         else 'bucket_full_chain_full', now, recent=False)
+            self.examples.append({'token_id':token.token_id,'episode_at':iso(self.members[token.token_id]['at']),
+                                  'stage':'admission_attempt','at':iso(now),'reason':reason,
+                                  'occupancy':occupancy})
             self.basic(token.token_id, snapshot, now, snapshot.ingested_at, floor)
 
     def basic(self, token_id, snapshot, now, ingestion, floor):
