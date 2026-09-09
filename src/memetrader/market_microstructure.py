@@ -318,6 +318,9 @@ class TradePageClient:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
+                    if type(exc).__name__ == 'GeckoLowPriorityDeferred':
+                        self.counts['local_defer'] += 1
+                        return unknown('GeckoLowPriorityDeferred')
                     code = getattr(getattr(exc, 'response', None), 'status_code', None)
                     self.counts['rate_limit' if code == 429 else 'error'] += 1
                     if code == 429:
@@ -340,6 +343,8 @@ def branch_decision(evidence, *, token_id, pool, frame_observed, frame_recorded,
     """Pure Shadow eligibility. Never registers, fills, clears a hazard or extends hold."""
     if hard_veto or evidence['state']=='HARD_UNSELLABLE':
         return 'REJECT'
+    if evidence.get('phase')=='SYNTHETIC_DISTRIBUTING_CYCLE':
+        return 'HAZARD_DISTRIBUTING'
     chain = token_id.split(':')[0]
     if (not safety_allow or evidence.get('token_id')!=token_id
             or canonical_token_address(chain,pool)!=evidence.get('pool')
@@ -400,9 +405,11 @@ class MicrostructureShadow:
         self.counts[evidence['state']] += 1
         phase=evidence.get('phase','UNKNOWN')
         self.counts['phase:'+phase] += 1
+        branch=evidence.get('branch','UNKNOWN_OR_INELIGIBLE')
+        if 'branch' in evidence:self.counts['branch:'+branch] += 1
         for row in self.outcomes.state['pending'].values():
             if row.get('evidence_id') == 'micro119:'+str(evidence_id):
-                row.update(category='MICROSTRUCTURE_SHADOW', reasons=[evidence['state'],'phase:'+phase],
+                row.update(category='MICROSTRUCTURE_SHADOW', reasons=[evidence['state'],'phase:'+phase,'branch:'+branch],
                            hard_veto=['HARD_UNSELLABLE'] if evidence['state']=='HARD_UNSELLABLE' else [],
                            arms=[], classifier_receipt=evidence)
 

@@ -121,3 +121,5 @@ Explicit supersession/card queue stale-state handling is added to P1 ModeChat118
 
 
 121A checkpoint: bounded all-new-Pons enrollment/rotation implemented,13 targeted tests PASS; scoped Paper reload blocked by tool policy, NOT_LOADED. Natural121A denominator pending. Provenance121 unchanged UNKNOWN; no backfill/no funded native. See docs/PROJECT_CONTEXT/PONS_NATIVE_COVERAGE_121A.md.
+
+119/126: merged runtime Shadow router source complete (early-watch + actual reawakening, shared held-first Gecko, persistent enrollment, passive15/60/240).49 related cases + final17 closest PASS. NOT_LOADED: prior scoped restart policy rejection remains; no bypass. Funded0: authenticated surface/synthetic sell adapter unresolved, explicit DATA_BLOCKED. Synthetic300s/1U/max1; BUILDING Shadow, DISTRIBUTING hazard;114 withdrawn. See current header DUAL_MICROSTRUCTURE_119.md.

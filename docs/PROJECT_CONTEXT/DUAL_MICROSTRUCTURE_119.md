@@ -1,3 +1,44 @@
+# RESULT119 — merged source integration126 (current authority)
+
+MESSAGE_ID: C2C-20260910-CODEX-DUAL-MICROSTRUCTURE-RESULT-119
+REPLY_TO: C2C-20260910-MICROSTRUCTURE-119-INTEGRATE-126
+Incorporates119/119A/119B/119C/119D; CapitalPulse114 remains withdrawn.
+
+| Boundary | Actual result |
+|---|---|
+| Source integration | DONE for bounded passive classifier/router, not merely core functions |
+| Tests | 49 parametrized microstructure + market API cases PASS; final17 closest cases PASS after receipt/budget refinements; affected modules compile; scoped whitespace check |
+| Loaded | BLOCKED; scoped Paper process-control operation was rejected by tool policy in preceding121A stage; not bypassed/repeated through another mechanism |
+| Registered/funded | NONE; no new accounts/contracts/startup registrars; ordinary strategy rules unchanged |
+| Natural126 receipts/outcomes | NOT_AVAILABLE until load; old119 KV is not this generation's acceptance |
+| Native/Pons | Shadow DATA_BLOCKED, no fabricated buy/sell/migration lifecycle |
+
+## One actual integrated path
+Runtime now owns one MicrostructureWorker and cancels it on close. Existing idle trader tick admits at most one new early-watch candidate per15s, then kicks/flushes existing worker; no new periodic scheduler. Source Paper signals use existing preentry-safety admission callbacks, independent of paused age-rate. Reawakening route requires admitted event_reawakening arm plus immutable reawakening cohort and reactivation_ready; common cohort event_keys identify the actual source opportunity. Early supply uses already-admitted early watches, age<=900s/fresh<=30s/price>0/liquidity>=1000/reported trades>=3 as a cheap research prefilter, not a trading signal. No watch/cadence/cap change.
+
+Enrollment receipts append to existing indexed pattern evidence; explicit uniqueness lookup matters because Store returns the old ID on duplicate insert. Queue<=8, seen512, anchors32, outcomes use existing bounded15/60/240 observer. Persistent evidence prevents re-enrollment after seen eviction/restart. Queue-cap refusal is explicit; original120s signal expiry bounds waiting. Request counters and next eligible request time persist; receipt clocks never refreshed by cache. Snapshot callbacks consume only naturally recorded strict-later exact-pool/floor-valid frames; no added market request/backfill. Horizons are sampled costed research proxies (existing5U reference), not simulated fills or synthetic holding limits. Phase/branch/UNKNOWN/hazard reasons remain separately counted.
+
+Gecko uses shared existing HttpClient. One supplemental exact-pool page/min maximum,60s original-receipt cache, no pagination/retry expansion. Actual host-start arbitration lets waiting held original-pool starts preempt lows, with cancellation ticket cleanup. Low guard rechecks idle and existing minute starts<8 at actual start; local refusal is not provider failure. Shared429 backoff applies. Existing2.1s host spacing is unchanged. Budget checks do not claim the entire existing Gecko workload is under10/min; this lane stops when existing starts exhaust its conservative headroom.
+
+Solana uses existing complete raw amountful evidence and original USD conversion, no network. Missing per-wallet data/coverage/identity stays UNKNOWN. EVM optional price feature input is a per-candidate indexed latest128 token-snapshot read, filtered exact pool and valid recorded/ingested/observed clocks available by signal; only fresh endpoints within the last10m are used. Their exact observed endpoints freeze the corresponding trade window. Fewer/old endpoints leave price dimensions UNKNOWN; no interpolated future price. Production EXPLAIN confirms token_snapshots_lookup_idx with token and observed-time bound, no broad scan.
+
+## Final classifier and capital gates
+Balanced both-side exclusion, dominant gross/buy/sell/net shares, ex-top1 effective wallet/net, positive effective breadth, signed/external notional, price/liquidity displacement and combined regularity are retained. BUILDING does not require net sell. SYNTHETIC_LPI_BUILDING is separate unfunded observation; SYNTHETIC_DISTRIBUTING_CYCLE returns HAZARD_DISTRIBUTING rather than entry permission. Path regularity alone is never manipulation. Current state bins remain preregistered diagnostics, not learned Alpha or proof wallets are independent humans.
+
+Synthetic contract remains BSC-only1U/max1/absolute300s, no Agent/reentry/averaging. This stage does not install a funded synthetic exit executor because no current standardized exact-original-pool fresh sell simulation adapter is available, and no prospective BUILDING admission proof exists. The typed positive-simulation test is not an actual source. No funded cycle entry is silently permitted when phase is DISTRIBUTING.
+
+Organic reawakening/early branches are now called and routed in the actual worker/outcome path. However no current producer supplies the independently authenticated COMMON_PAPER_EXACT_POOL buy/sell lifecycle receipt required by119C. A fresh provider price alone is not substituted for that receipt. Routes therefore retain WAIT/DATA_BLOCKED with explicit funding_gate=DATA_BLOCKED_AUTHENTICATED_EXECUTION_ADAPTER. Early snapshots without a real common safety assessment remain unassessed, not safe. No new funded arm is appended from placeholders. This is the requested executable Shadow fallback, not completion of funded lifecycle work. Existing common Paper contracts are not strengthened or weakened globally.
+
+## Validation/resource and deployment boundary
+Tests cover classification/coverage/strict clocks; balanced/organic/synthetic phases; early supplied independently of parent; persistent duplicate receipt after memory eviction; passive expiry; hard safety zero-query path; cache/backoff; high-priority Gecko passing queued low; late idle refusal; cancellation cleanup and unchanged generic host pacing. One independent read-only symbol review confirmed the missing authenticated execution receipt producer; no production scan or new writer.
+
+Fresh old-runtime baseline2026-09-09T22:07:33Z: health running/funding-v002; held_fetch p95=2.246954s, held_apply=.074354s, pattern=5.939919s, each failures0. Saved data/research/microstructure119/revision126_*.json. This is NOT post-integration acceptance. Earlier121A restart was automatically rejected with blocked by policy; this stage leaves current runtime intact instead of circumventing that decision. At an authorized executable load boundary compare natural load against held25%/250ms, passive drops/wait,429 and request-start guards; withdraw only119 hooks if those fail. No positive performance claim now.
+
+Future funded gate: authentic current surface+common safety+strict next frame and synthetic exact sell proof, plus accepted resource trial. Do not revive unsigned114 or interpret contaminated age-rate headline as normal-meme Alpha. Full/cluster-excluded normal economics and synthetic phase economics remain separate research denominators; no name-based trading filter.
+
+---
+## Historical checkpoints below — audit only, not current load/scope instructions
+
 ## RESULT125 — normal-alpha contamination correction
 
 REPLY_TO: C2C-20260910-AGE-RATE-NORMAL-ALPHA-CORRECTION-125

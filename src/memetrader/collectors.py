@@ -31,6 +31,12 @@ from .models import (
 
 RSS_CACHE_KEY_PREFIX = "rss_http_cache:v1:"
 DEX_REQUEST_HIGH_PRIORITY: ContextVar[bool] = ContextVar("dex_request_high_priority", default=False)
+GECKO_REQUEST_HIGH_PRIORITY: ContextVar[bool] = ContextVar("gecko_request_high_priority", default=False)
+GECKO_LOW_START_ALLOWED = ContextVar("gecko_low_start_allowed", default=None)
+
+
+class GeckoLowPriorityDeferred(Exception):
+    """Local admission refusal, never a provider error."""
 DEX_LOW_BUDGET: ContextVar[asyncio.Timeout | None] = ContextVar("dex_low_budget", default=None)
 
 
@@ -1181,6 +1187,9 @@ class HttpClient:
         self.on_dex_rate_limit: Callable[[float], None] | None = None
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._dex_start_condition = asyncio.Condition()
+        self._gecko_start_condition = asyncio.Condition()
+        self._gecko_start_waiters = {False: deque(), True: deque()}
+        self._gecko_starts = deque(maxlen=128)
         self._dex_start_waiters: dict[bool, deque[object]] = {False: deque(), True: deque()}
         self._dex_inflight = asyncio.Semaphore(self.DEX_MAX_INFLIGHT)
         self._dex_low_priority_inflight = asyncio.Semaphore(
@@ -1306,10 +1315,45 @@ class HttpClient:
         if host == "api.dexscreener.com":
             await self._reserve_dex_request_start(not_before=not_before)
             return
+        if host == "api.geckoterminal.com":
+            await self._reserve_gecko_request_start(not_before=not_before)
+            return
         async with self._locks[host]:
             await self._reserve_locked_host_request_start(
                 host, not_before=not_before,
             )
+
+    async def _reserve_gecko_request_start(self, *, not_before: float = 0.0) -> None:
+        host = "api.geckoterminal.com"
+        high = GECKO_REQUEST_HIGH_PRIORITY.get()
+        queue = self._gecko_start_waiters[high]
+        ticket = object()
+        condition = self._gecko_start_condition
+        async with condition:
+            queue.append(ticket)
+            condition.notify_all()
+            try:
+                while True:
+                    if queue[0] is not ticket or (not high and self._gecko_start_waiters[True]):
+                        await condition.wait()
+                        continue
+                    now = time.monotonic()
+                    wait = max(self._last[host] + max(2.1, self.min_host_interval),
+                               not_before, self._host_backoff_until.get(host, 0.0)) - now
+                    if wait <= 0:
+                        allowed = GECKO_LOW_START_ALLOWED.get()
+                        if not high and allowed is not None and not allowed():
+                            raise GeckoLowPriorityDeferred()
+                        self._last[host] = now
+                        self._gecko_starts.append(now)
+                        return
+                    try:
+                        await asyncio.wait_for(condition.wait(), timeout=wait)
+                    except TimeoutError:
+                        pass
+            finally:
+                queue.remove(ticket)
+                condition.notify_all()
 
     async def _reserve_dex_request_start(self, *, not_before: float = 0.0) -> None:
         """Prioritize pending held starts, never hold a turn through network I/O."""
@@ -1414,7 +1458,7 @@ class HttpClient:
         self._last[host] = time.monotonic()
 
     def _record_dex_rate_limit(self, host: str, response: httpx.Response) -> None:
-        if host != "api.dexscreener.com" or response.status_code != 429:
+        if host not in {"api.dexscreener.com", "api.geckoterminal.com"} or response.status_code != 429:
             return
         value = response.headers.get("Retry-After", "2")
         try:
@@ -1429,7 +1473,7 @@ class HttpClient:
         self._host_backoff_until[host] = max(
             self._host_backoff_until.get(host, 0.0), time.monotonic() + max(0.0, delay),
         )
-        if self.on_dex_rate_limit is not None:
+        if host == "api.dexscreener.com" and self.on_dex_rate_limit is not None:
             self.on_dex_rate_limit(self._host_backoff_until[host])
 
     async def get(
@@ -1467,6 +1511,11 @@ class HttpClient:
                     await self._reserve_host_request_start(host)
                     async with self._request_client(host) as request_client:
                         response = await request_client.get(url, params=params, headers=headers)
+                self._record_dex_rate_limit(host, response)
+            elif host == "api.geckoterminal.com":
+                await self._reserve_host_request_start(host, not_before=time.monotonic() + retry)
+                async with self._request_client(host) as request_client:
+                    response = await request_client.get(url, params=params, headers=headers)
                 self._record_dex_rate_limit(host, response)
             else:
                 async with self._locks[host]:

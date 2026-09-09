@@ -76,3 +76,5 @@ Exact Project: https://chatgpt.com/g/g-p-6a6ae7ab5ba88191a99ff26a42f446e8-gxh-co
 Observed unverified Chat: 6aa044fe-6364-83e8-801c-ac9f69058f10. Keep Lead unbound until actual Project/model/memory/workspace/L0 readback passes. Existing old routing is historical and must not determine the new binding.
 
 Watch policy: sample current response about every 20–30 seconds. Generating/progress waits; stopped stream without current DONE/BLOCKED is incomplete. Use bounded same-chat recovery and preserve CLAIMED until reconciliation. Verified replacement changes only ChatGPT Lead, never Codex session. No trading/runtime changes during takeover.
+
+119/126: merged runtime Shadow router source complete (early-watch + actual reawakening, shared held-first Gecko, persistent enrollment, passive15/60/240).49 related cases + final17 closest PASS. NOT_LOADED: prior scoped restart policy rejection remains; no bypass. Funded0: authenticated surface/synthetic sell adapter unresolved, explicit DATA_BLOCKED. Synthetic300s/1U/max1; BUILDING Shadow, DISTRIBUTING hazard;114 withdrawn. See current header DUAL_MICROSTRUCTURE_119.md.

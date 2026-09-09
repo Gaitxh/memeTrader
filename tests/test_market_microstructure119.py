@@ -64,6 +64,8 @@ def test_branch_strict_next_and_exact_sell_simulation():
     assert branch_decision(assess(organic()),**{**kwargs,'frame_observed':T+timedelta(seconds=60)})=='WAIT'
     assert branch_decision(assess(organic()),**{**kwargs,'hard_veto':True})=='REJECT'
     s=assess(synthetic())
+    assert branch_decision(s,**kwargs)=='HAZARD_DISTRIBUTING'
+    s={**s,'phase':'UNKNOWN'}
     assert branch_decision(s,**kwargs)=='WAIT'
     sim=dict(success=True,token_id=TOKEN,pool=POOL,observed_at=T+timedelta(seconds=59),recorded_at=T+timedelta(seconds=60))
     assert branch_decision(s,**kwargs,sell_simulation=sim)=='SYNTHETIC_SHADOW_ELIGIBLE'
@@ -172,13 +174,17 @@ def test_worker_rare_queue_dedup_no_network_in_enqueue_and_passive_expiry():
     from threading import RLock
     from types import SimpleNamespace
     class DB:
+        def __enter__(self):return self
+        def __exit__(self,*a):pass
         def execute(self,sql,args):
             if sql.startswith('SELECT arm_id'):return [('event_reawakening_v1',)]
+            if sql.startswith(('SELECT feature_json','SELECT 1')):return SimpleNamespace(fetchone=lambda:None)
+            if sql.startswith('SELECT observed_at'):return SimpleNamespace(fetchall=lambda:[])
             return []
     class Store:
         db=DB();_lock=RLock()
         def get_kv(self,*a):return {}
-        def record_chain_meme_pattern_evidence(self,*a,**kw):pass
+        def record_chain_meme_pattern_evidence(self,*a,**kw):return 1
     async def run():
         idle=asyncio.Event();idle.set();h=Http();w=MicrostructureWorker(Store(),h,lambda:idle)
         h._reserve_gecko_request_start=object()  # Fake transport with explicit test capability.
@@ -221,3 +227,64 @@ def test_building_is_not_net_sell_and_does_not_expand_entry():
     assert assess(rows,price_frames=wrong)['metrics']['price_feature_status']=='UNKNOWN'
     assert assess(rows,price_frames=frames[1:])['phase']=='UNKNOWN'
     assert assess(rows,price_frames=frames,complete=False)['state']=='UNKNOWN'
+
+
+def test_gecko_start_priority_and_late_idle_refusal():
+    from memetrader.collectors import HttpClient, GECKO_REQUEST_HIGH_PRIORITY, GECKO_LOW_START_ALLOWED, GeckoLowPriorityDeferred
+    import time
+    async def run():
+        h=HttpClient();host='api.geckoterminal.com';started=[]
+        h._last[host]=time.monotonic()-2.04
+        async def reserve(high):
+            t=GECKO_REQUEST_HIGH_PRIORITY.set(high)
+            try:
+                await h._reserve_gecko_request_start();started.append(high)
+            finally:GECKO_REQUEST_HIGH_PRIORITY.reset(t)
+        low=asyncio.create_task(reserve(False));await asyncio.sleep(.005)
+        high=asyncio.create_task(reserve(True));await asyncio.wait_for(high,.5)
+        assert started==[True]
+        low.cancel();await asyncio.gather(low,return_exceptions=True)
+        assert not any(h._gecko_start_waiters.values())
+        h._last[host]=time.monotonic()-2.08
+        c=GECKO_LOW_START_ALLOWED.set(lambda:False)
+        try:
+            with pytest.raises(GeckoLowPriorityDeferred):await h._reserve_gecko_request_start()
+        finally:GECKO_LOW_START_ALLOWED.reset(c)
+        assert len(h._gecko_starts)==1 and not any(h._gecko_start_waiters.values())
+        await h.close()
+    asyncio.run(run())
+
+
+def test_persistent_episode_receipt_survives_eviction_and_early_watch_supply():
+    import sqlite3,json
+    from threading import RLock
+    from types import SimpleNamespace
+    from memetrader.microstructure_shadow_worker import MicrostructureWorker,KEY
+    from memetrader.models import utcnow,iso
+    class Store:
+        CHAIN_MEME_TRADER_ACTIVE_VERSION='v'
+        def __init__(self):
+            self._lock=RLock();self.db=sqlite3.connect(':memory:');self.db.row_factory=sqlite3.Row
+            self.db.executescript('CREATE TABLE kv(key TEXT PRIMARY KEY,value_json TEXT,updated_at TEXT);'
+                'CREATE TABLE chain_meme_pattern_evidence(definition_version TEXT,kind TEXT,source_key TEXT,payload TEXT,UNIQUE(definition_version,kind,source_key));')
+        def get_kv(self,key,default):
+            r=self.db.execute('SELECT value_json FROM kv WHERE key=?',(key,)).fetchone()
+            return json.loads(r[0]) if r else default
+        def record_chain_meme_pattern_evidence(self,token,pool,kind,payload,**kw):
+            self.db.execute('INSERT OR IGNORE INTO chain_meme_pattern_evidence VALUES(?,?,?,?)',('v',kind,kw['source_key'],json.dumps(payload)))
+            return 1  # production returns existing ID too: explicit dedup query matters
+    async def run():
+        idle=asyncio.Event();idle.set();store=Store();h=Http();w=MicrostructureWorker(store,h,lambda:idle)
+        now=utcnow();item=dict(version='v',token_id=TOKEN,pool=POOL,requested_at=iso(now),expires_at=iso(now+timedelta(seconds=120)),arms=[],shadow_costs={})
+        w._enqueue('episode1',item);w._enqueue('episode1',item)
+        assert len(w.pending)==1
+        w.pending={};w.seen=[];w.save()
+        w=MicrostructureWorker(store,h,lambda:idle);w._enqueue('episode1',item)
+        assert not w.pending
+        snap=SimpleNamespace(price_usd=1.,liquidity_usd=2000.,observed_at=now,buys_5m=3,sells_5m=1)
+        watch={TOKEN:dict(bucket='early',pair_address=POOL,pool_created_at_ms=(now.timestamp()-60)*1000,quote=snap)}
+        w.admit_watch(watch,{})
+        assert len(w.pending)==1 and next(iter(w.pending.values()))['early'] is True and h.calls==0
+        assert store.db.execute('SELECT count(*) FROM chain_meme_pattern_evidence').fetchone()[0]==2
+        store.db.close()
+    asyncio.run(run())

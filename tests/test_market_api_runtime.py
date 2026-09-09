@@ -552,17 +552,16 @@ def test_primary_recovery_during_public_fetch_discards_late_fallback(tmp_path):
 def test_public_gecko_host_pacing_leaves_other_sources_unchanged(monkeypatch):
     async def scenario():
         http = HttpClient(min_host_interval=0.25)
-        waits = []
-
-        async def record_wait(seconds):
-            waits.append(seconds)
-
-        monkeypatch.setattr("memetrader.collectors.asyncio.sleep", record_wait)
-        for host in ("api.geckoterminal.com", "example.com"):
-            http._last[host] = time.monotonic()
-            await http._reserve_host_request_start(host)
-        assert 2.0 < waits[0] <= 2.1
-        assert 0.2 < waits[1] <= 0.25
+        host='api.geckoterminal.com'
+        http._last[host] = time.monotonic()-2.05
+        before=time.monotonic()
+        await http._reserve_host_request_start(host)
+        assert time.monotonic()-before >= .045
+        assert len(http._gecko_starts)==1
+        before=time.monotonic()
+        http._last['example.com']=before
+        await http._reserve_host_request_start('example.com')
+        assert time.monotonic()-before >= .24
         await http.close()
 
     asyncio.run(scenario())
