@@ -122,7 +122,10 @@ class NarrativeHold:
         if rows:self.save()
 
     async def once(self):
-        if not self.r._chain_meme_active_idle().is_set():return
+        idle=self.r._chain_meme_active_idle()
+        if not idle.is_set():
+            try:await asyncio.wait_for(idle.wait(),timeout=1.5)
+            except TimeoutError:return
         self.collect();now=utcnow();day=now.date().isoformat()
         if self.state['day']!=day:self.state.update(day=day,calls=0,reserved_tokens=0,actual_tokens=0)
         for key,case in list(self.state['cases'].items()):
