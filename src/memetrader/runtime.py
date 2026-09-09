@@ -1489,6 +1489,8 @@ class Runtime:
                                          four_rest, PonsV1Observer(self.evm_route),
                                          LaunchLabObserver(self.http)]
         self._native_launch_cursor = 0
+        from .pons_economics import PonsEconomicsObserver
+        self._pons_economics = PonsEconomicsObserver(self.evm_route, self.http)
         self.evm_aggregator = (
             EvmZeroXPriceClient(self.evm_route_http, zerox_api_key)
             if zerox_api_key else None
@@ -6496,6 +6498,24 @@ class Runtime:
                          f"skipped_blocks={result.get('skipped_blocks',0)};"
                          f"indexed_source={result.get('indexed_source','')};"
                          f"truncated={result.get('truncated',False)};finality=false")
+        # One bounded diagnostic after identities are durable; never delay their hydration.
+        # No new timer, no strategy/market-mark authority, no historical enrolment.
+        fresh = next((e for e in reversed(events) if e.get('event') == 'TokenLaunched'
+                      and e.get('version') == 'v2' and e.get('curve')), None)
+        if fresh is not None and hasattr(self, '_pons_economics'):
+            busy = lambda: self._critical_onchain_exit_event.is_set() or self._evm_route_quote_lock.locked()
+            if not busy():
+                try:
+                    economics = await asyncio.wait_for(self._pons_economics.observe(fresh, busy), timeout=4)
+                except asyncio.TimeoutError:
+                    self.store.heartbeat('native-economics:pons', error='shadow_budget_timeout')
+                else:
+                    at = parse_time(economics['recorded_at'])
+                    self.store.record_chain_meme_pattern_evidence(
+                        fresh['token_id'], '', 'native_curve_economics', economics,
+                        observed_at=at, source_key=f"pons-economics:{fresh['curve']}:{economics.get('block', economics['recorded_at'])}")
+                    self.store.heartbeat('native-economics:pons', item=True,
+                        error_detail=f"shadow_only;status={economics['status']};reason={economics.get('reason','')}")
 
     async def chain_meme_extra_official_once(self) -> None:
         # Existing OKX cadence is unchanged; supplementary sources rotate separately.
