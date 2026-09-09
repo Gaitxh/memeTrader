@@ -28439,6 +28439,9 @@ class Store:
                 ),
             )
             net_flow_by_arm[arm_id] = net_flow - required_cash
+            if arm_id == 'resource_age_rate_candidate_v1':
+                from .age_rate_fresh_impulse import capture
+                capture(self, version, int(cohort_id), token_id, decision['decided_at'], int(entry_fill['id']))
             projected += 1
             self.rediscovery_funnel_hit(token_id, 'BUY', filled_at)
         return projected

@@ -7584,6 +7584,11 @@ class Runtime:
                 consensus_outcomes.last_flush=now_mono
         shadow = getattr(self.store, '_safety_veto_shadow', None)
         lp_shadow=getattr(self.store,'_lp_custody_shadow',None)
+        if now_mono-getattr(self,'_fresh_impulse112_flush',0)>=15 and self._chain_meme_active_idle().is_set():
+            from .age_rate_fresh_impulse import resolve
+            with self.store._lock:
+                resolve(self.store)
+            self._fresh_impulse112_flush=now_mono
         if lp_shadow is not None and now_mono-lp_shadow.last_flush>=15 and self._chain_meme_active_idle().is_set():
             with self.store._lock:
                 lp_shadow.expire(utcnow())

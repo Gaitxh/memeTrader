@@ -1,0 +1,18 @@
+# Age-rate fresh impulse112 — observer implemented, not loaded
+REPLY_TO: C2C-20260909-AGE-RATE-FRESH-IMPULSE-112
+
+## Scope and causal definition
+age_rate_fresh_impulse_v2 is an unfunded observer attached to future successful parent resource_age_rate_candidate_v1 market Paper fills. It is NOT a registered policy, funded account or BUY veto. Denominator is actual parent fills, not all eligible/rejected signals; do not infer signal precision from it.
+Classification uses the persisted parent's entry decision decided_at, not later fill/terminal knowledge. Prior consumed opportunity means an actual BUY in either prebreakout_net_accumulation_v1 or resource_cooling_hold_candidate_v1, same token and canonical original pool, in registered periods. Prior opened_at and actual BUY created/recorded clocks must be available by decision. An unfilled prior signal does not count.
+CLEAN_FIRST_IMPULSE: no such known receipt. CONFLICT_PRIOR_OPEN: any prior not proven terminal at decision. CONFLICT_PRIOR_CLOSED: all matching prior episodes have a terminal SELL/WRITEOFF receipt available then, consistent with closed_at. Current eventual closed status alone cannot turn a previously open episode into closed.
+RESET_CONFIRMED takes precedence only with a persisted token-level rediscovery_episode/REAWAKENING whose observed time is strictly after latest prior BUY receipt and recorded time strictly before signal. Output explicitly states persisted_token_rediscovery_not_market_confirmation: this does NOT claim market reactivation_ready or profitability. Arbitrary features/future events never reset. Solana pool case preserved; EVM canonicalized.
+Bounds:65 prior rows or trades detects overflow (>64 => UNKNOWN). Rediscovery search retains latest32 indexed episode rows; no reset is asserted without a positive qualifying pointer. Prior arrays and outcome queue bounded; the absence of observed reset is not proof of no external event.
+
+## Cost, storage, comparator
+One rare parent-fill hook; existing positions token-history index verified by production read-only EXPLAIN, then cohort PK and receipt indexes. No new schema/index/network task/request.
+Append existing research evidence entry with exact parent source_entry_fill_id/cohort/decision time/prior receipt pointers. Unique source key prevents duplicate enrollment. Pending128, recent64; capacity overflow explicitly counted dropped and must not be included as complete outcomes. Existing idle observer pass resolves8 pending positions/15s in rotating order, reading exact parent position PK. Only actual terminal realized PnL/stake/close reason/closed_at copied; no theoretical horizon fill, price peak or counterfactual account. Open remains censored. Summary counts and outcomes per frozen class; detailed evidence retains row identity for later chain/date/top-winner-removal analysis.
+No replay/backfill of supplied22 cases. Lead diagnostic22/-16.039U vs151/+635.458U is hypothesis-generating, not independently reproduced here and not forward validation.
+
+## Validation/current disposition
+17 narrative/classification tests PASS plus new actual-fill/dedup/terminal comparator test PASS (18 distinct). Test covers future close receipt, mismatched pool, missing prior available BUY, future/earlier rediscovery, once-only source fill and exact terminal PnL. git diff --check PASS.
+NOT_LOADED. Prior scoped process-control request was policy-rejected; no workaround attempted. No new natural denominator/Alpha claim. Supported future load must preserve funding/Live/history and measure held/passive/runtime cost;109 final label/110/111 also pending. No automatic promotion or additional funded revision from this task.

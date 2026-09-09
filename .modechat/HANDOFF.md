@@ -1,3 +1,6 @@
+# Fresh impulse112 observer ready, not loaded
+Future parent actual fills only, causal prior same-pool BUY/terminal receipts and persisted rediscovery classification; no funded policy/veto/network. Exact parent terminal comparator;18distinct testsPASS. See AGE_RATE_FRESH_IMPULSE_112.md. Process-control block persists;109final/110/111/112 not loaded, no natural result claim. Pairing unchanged.
+
 # HTTP cancellation111 trial ready, not loaded
 Marked low-Dex3s deadline expiry preserves shared generation; high/external cancellation and connection/pool failure protections unchanged.21targetedPASS incl real one-connection cleanup. New reason/client counters; no request/cadence change. See HTTP_CANCEL_CHURN_111.md. Process-control policy block unresolved; no natural trial PASS.110/final109 also pending load; do not infer deployment from commit.
 
