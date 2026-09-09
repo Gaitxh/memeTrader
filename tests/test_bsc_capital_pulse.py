@@ -24,7 +24,10 @@ def test_additive_next_frame_one_opportunity_and_29m_exit(tmp_path,monkeypatch):
     parent=next(p for p in resource_policies() if p['arm_id']==PARENT)
     store.append_chain_meme_trader_policy(parent,activated_at=clock[0])
     before=store._chain_meme_trader_registration(store.CHAIN_MEME_TRADER_ACTIVE_VERSION)['definition_json']
-    assert store.register_bsc_capital_pulse114()==1 and store.register_bsc_capital_pulse114()==0
+    assert store.register_bsc_capital_pulse114()==0
+    assert store.db.execute('SELECT COUNT(*) FROM chain_meme_trader_policy_additions WHERE arm_id=?',(ARM,)).fetchone()[0]==0
+    # Historical contract fixture only; withdrawn production registrar above is inert.
+    store.append_chain_meme_trader_policy(policy(parent),activated_at=clock[0])
     child=policy(parent)
     assert max_hold(None,{},child,clock[0])==29 and parent['max_hold_minutes']==30
     assert child['notional_usd']==5 and child['entry_filter']['max_concurrent_positions']==4
@@ -56,7 +59,8 @@ def test_pulse_security_pending_is_one_reserved_opportunity(tmp_path,monkeypatch
     from memetrader.preentry_safety import PreentrySafety
     store,clock=setup_store(tmp_path,monkeypatch)
     parent=next(p for p in resource_policies() if p['arm_id']==PARENT)
-    store.append_chain_meme_trader_policy(parent,activated_at=clock[0]);store.register_bsc_capital_pulse114()
+    store.append_chain_meme_trader_policy(parent,activated_at=clock[0])
+    store.append_chain_meme_trader_policy(policy(parent),activated_at=clock[0])
     token=TokenCandidate('bsc','0x'+'34'*20,'4Stock');created=int((clock[0]-timedelta(minutes=90)).timestamp()*1000)
     store.upsert_token(token)
     gate=PreentrySafety(store,SimpleNamespace(config={}));store._preentry_safety=gate

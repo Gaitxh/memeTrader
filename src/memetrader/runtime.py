@@ -1358,7 +1358,6 @@ class Runtime:
                     self.store.register_age_rate_revisions90()
                     self.store.register_prebreakout_loss_memory92()
                     self.store.register_failed_impulse_cooling103()
-                    self.store.register_bsc_capital_pulse114()
                     self.store.register_chain_meme_inventory_research()
                     self.store.register_chain_meme_archive_research()
                     self.store.register_chain_meme_lifecycle_research()

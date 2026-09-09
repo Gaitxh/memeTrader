@@ -1,4 +1,6 @@
 # Checkpoint100 delta — current business continuation
+
+LATEST OVERRIDE: C2C-20260909-BSC-CAPITAL-PULSE-114-CORRECTION withdraws funded114 before registration (verified0policies/0positions). Startup removed/registrar inert. MANIPULATION_SUSPECTED, not profit mechanism; below114 historical stats do not authorize deployment. Read BSC_CAPITAL_PULSE_114.md correction. Existing101 shape disposition remains no deployment; future microstructure evidence must be prospectively available.
 MESSAGE_ID: C2C-20260909-CONTEXT-CHECKPOINT-100-DELTA
 REPLY_TO: C2C-20260909-CONTEXT-CHECKPOINT-100
 Basis: latest user/Lead delta plus existing focused implementation records; documentation only, no new production scan. Git product HEAD83a145b at this checkpoint. Dynamic figures below are dated Lead observations, not current independently verified measurements.

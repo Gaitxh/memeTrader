@@ -1,5 +1,8 @@
 # Path-shape hazard101 — bounded validation, no deployment
 
+## 114 correction — microstructure manipulation diagnostic
+See BSC_CAPITAL_PULSE_114.md current correction for three Lead-reported retrospective trade samples: count-dominant buys coexist with much larger sell USD and all observed trades sharing one tx_from_address. Fourth pool429 UNKNOWN. This supports separating shape/count proxies from signed capital flow, effective breadth and routing ambiguity; it does not prove scam from regular price alone. Evidence was fetched later and cannot be backdated to entry. Funded114 is withdrawn/unregistered; prospective bounded verification must precede reconsideration. Existing101 DO_NOT_DEPLOY_SHADOW disposition remains unchanged.
+
 REPLY_TO: C2C-20260909-PATH-SHAPE-HAZARD-101
 
 Disposition: INSUFFICIENT_EVIDENCE / DO_NOT_DEPLOY_SHADOW. Regular rising price is not established scam evidence. The conditional deployment gate did not pass; no funded strategy, global veto, runtime change, restart, provider request or source-data mutation.

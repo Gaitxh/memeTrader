@@ -26275,17 +26275,9 @@ class Store:
             return 1
 
     def register_bsc_capital_pulse114(self) -> int:
-        from .bsc_capital_pulse import ARM, PARENT, policy
-        version=self.CHAIN_MEME_TRADER_ACTIVE_VERSION
-        with self._lock:
-            if self.db.execute('SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?',(version,ARM)).fetchone():return 0
-            reg=self._chain_meme_trader_registration(version)
-            if not reg:return 0
-            effective=self._chain_meme_trader_effective_definition(version,reg['definition_json'])
-            parent=next((p for p in effective['policies'] if p['arm_id']==PARENT),None)
-            if parent is None:return 0
-            self.append_chain_meme_trader_policy(policy(parent),activated_at=utcnow())
-            return 1
+        # 114-CORRECTION: aggregate pulse selects suspected manipulation.
+        # Keep old callers harmless; reconsider only after prospective microstructure evidence.
+        return 0
 
     def register_failed_impulse_cooling103(self) -> int:
         from .failed_impulse_cooling import ARM, PARENT, policy

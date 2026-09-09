@@ -1,3 +1,6 @@
+# CURRENT 114-CORRECTION — funded pulse withdrawn
+Production registration0/positions0 independently checked. Startup call removed and registrar inert;12targetedPASS. Aggregate pulse reclassified MANIPULATION_SUSPECTED; signed sellUSD dominates despite buy-count dominance/all observed same-address in3Lead samples,fourth429UNKNOWN. See BSC_CAPITAL_PULSE_114.md correction and PATH_SHAPE_HAZARD_101.md. Do NOT register/deploy114 on next restart. Historical profitability/queued-funded instructions below are superseded. Prospective microstructure verification only before any reconsideration; no extra requests in this correction. Pairing/history/funding unchanged.
+
 # CURRENT checkpoint100 delta — read this before older entries
 Read docs/PROJECT_CONTEXT/CONTEXT_CHECKPOINT_100_DELTA.md for consolidated8business facts, rejected hypotheses and corrected queued/implemented/loaded statuses.114 funded code83a145b tested but not registered/loaded;113/112/111/110/final109 also pending supported process control.102idempotency,conservative104slot,Agent-doc trim,107cap and108snapshot fixes were already loaded at prior recorded boundaries; do not repeat them. Shape101 remains DO_NOT_DEPLOY_SHADOW pending sufficient evidence. Lead numeric snapshots are attributed, not newly verified. Preserve current session/pairing/history/Live lock; no runtime action in this checkpoint.
 
