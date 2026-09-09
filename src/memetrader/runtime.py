@@ -1497,8 +1497,9 @@ class Runtime:
                                          four_rest, PonsV1Observer(self.evm_route),
                                          LaunchLabObserver(self.http)]
         self._native_launch_cursor = 0
-        from .pons_economics import PonsEconomicsObserver
+        from .pons_economics import PonsEconomicsObserver, PonsEconomicsEnrollment
         self._pons_economics = PonsEconomicsObserver(self.evm_route, self.http)
+        self._pons_economics_enrollment = PonsEconomicsEnrollment(self.store.get_kv(PonsEconomicsEnrollment.KEY, {}))
         self.evm_aggregator = (
             EvmZeroXPriceClient(self.evm_route_http, zerox_api_key)
             if zerox_api_key else None
@@ -6451,6 +6452,27 @@ class Runtime:
                     self._wsol_usdc_conversion = None
 
     async def chain_meme_native_launch_once(self) -> None:
+        from .pons_observer import PonsV2Observer
+        # Drain only on the existing Pons V2 turn: no increase in start cadence.
+        observers = self._native_launch_observers
+        observer = observers[getattr(self, '_native_launch_cursor', 0) % len(observers)]
+        await self._chain_meme_native_launch_observe_once()
+        queue = getattr(self, '_pons_economics_enrollment', None)
+        if queue is not None and isinstance(observer, PonsV2Observer):
+            busy = lambda: (self._critical_onchain_exit_event.is_set()
+                or self._evm_route_quote_lock.locked() or not self._chain_meme_active_idle().is_set())
+            results = await queue.step(self._pons_economics, busy, utcnow())
+            for row in results:
+                from .pons_economics import evidence_observed_at
+                value = row.get('result') or dict(status='UNKNOWN', reason=row['status'], recorded_at=iso(utcnow()))
+                self.store.record_chain_meme_pattern_evidence(row['event']['token_id'], '',
+                    'native_curve_economics', {**value, 'enrollment_key':row['key'],
+                        'enrolled_at':row['enrolled_at'], 'decision_eligible':False, 'affects':'none'},
+                    observed_at=parse_time(evidence_observed_at(value)),
+                    source_key='pons-economics121a:'+row['key'])
+            self.store.set_kv(queue.KEY, queue.snapshot())
+
+    async def _chain_meme_native_launch_observe_once(self) -> None:
         """One bounded low-priority native discovery window; never a BUY signal."""
         if self._critical_onchain_exit_event.is_set() or self._evm_route_quote_lock.locked():
             return
@@ -6499,6 +6521,16 @@ class Runtime:
                 observed_at=observed, source_key=key)
             if evidence_id is None:
                 continue
+            enrollment = getattr(self, '_pons_economics_enrollment', None)
+            if enrollment is not None and event.get('event') == 'TokenLaunched' and event.get('version') == 'v2' and event.get('curve'):
+                enrollment_key = 'pons-enrollment121a:'+event['curve'].lower()+':'+event['token'].lower()
+                exists = self.store.db.execute('SELECT 1 FROM chain_meme_pattern_evidence WHERE definition_version=? AND kind=? AND source_key=?',
+                    (self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION, 'native_economics_enrollment', enrollment_key)).fetchone()
+                entry = None if exists else enrollment.enroll({**event, 'token_id':token_id}, utcnow())
+                if entry is not None:
+                    self.store.set_kv(enrollment.KEY, enrollment.snapshot())
+                    self.store.record_chain_meme_pattern_evidence(token_id, '', 'native_economics_enrollment',
+                        entry, observed_at=parse_time(entry['enrolled_at']), source_key='pons-enrollment121a:'+entry['key'])
             if not known:
                 self.store.upsert_token(TokenCandidate(observer.CHAIN, address,
                     str(event.get("name") or address), str(event.get("symbol") or ""),
@@ -6515,27 +6547,6 @@ class Runtime:
                          f"skipped_blocks={result.get('skipped_blocks',0)};"
                          f"indexed_source={result.get('indexed_source','')};"
                          f"truncated={result.get('truncated',False)};finality=false")
-        # One bounded diagnostic after identities are durable; never delay their hydration.
-        # No new timer, no strategy/market-mark authority, no historical enrolment.
-        fresh = next((e for e in reversed(events) if e.get('event') == 'TokenLaunched'
-                      and e.get('version') == 'v2' and e.get('curve')), None)
-        if fresh is not None and hasattr(self, '_pons_economics'):
-            busy = lambda: self._critical_onchain_exit_event.is_set() or self._evm_route_quote_lock.locked()
-            if not busy():
-                try:
-                    economics = await asyncio.wait_for(self._pons_economics.observe(fresh, busy), timeout=4)
-                except asyncio.TimeoutError:
-                    self.store.heartbeat('native-economics:pons', error='shadow_budget_timeout')
-                else:
-                    from .pons_economics import evidence_observed_at
-                    # Store writes its own current recorded_at; block time never backdates availability.
-                    at = parse_time(evidence_observed_at(economics))
-                    self.store.record_chain_meme_pattern_evidence(
-                        fresh['token_id'], '', 'native_curve_economics', economics,
-                        observed_at=at, source_key=f"pons-economics:{fresh['curve']}:{economics.get('block', economics['recorded_at'])}")
-                    self.store.heartbeat('native-economics:pons', item=True,
-                        error_detail=f"shadow_only;status={economics['status']};reason={economics.get('reason','')}")
-
     async def chain_meme_extra_official_once(self) -> None:
         # Existing OKX cadence is unchanged; supplementary sources rotate separately.
         cursor = getattr(self, "_extra_official_cursor", 0)

@@ -118,3 +118,6 @@ Next: verify through codex-with-chatgpt/iab, then bootstrap using actual evidenc
 
 ## Deferred118 addendum118A
 Explicit supersession/card queue stale-state handling is added to P1 ModeChat118, after trading P0s. ACK only, no implementation. Exact acceptance: docs/PROJECT_CONTEXT/MODECHAT_118A_SUPERSESSION_BACKLOG.md. Preserve original cards/results; materially started work requires reconciliation, not fictional non-execution.
+
+
+121A checkpoint: bounded all-new-Pons enrollment/rotation implemented,13 targeted tests PASS; scoped Paper reload blocked by tool policy, NOT_LOADED. Natural121A denominator pending. Provenance121 unchanged UNKNOWN; no backfill/no funded native. See docs/PROJECT_CONTEXT/PONS_NATIVE_COVERAGE_121A.md.

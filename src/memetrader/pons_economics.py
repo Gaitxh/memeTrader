@@ -7,6 +7,8 @@ import time
 from datetime import datetime, timezone
 from decimal import Decimal, localcontext
 from typing import Any
+from datetime import timedelta
+from collections import Counter
 
 from .pons_observer import PonsV2Observer
 
@@ -18,6 +20,61 @@ SELECTORS = {'token': 'fc0c546a', 'pair': '3de35b79', 'factory': 'c45a0155',
              'snipe': 'd7e1ef39' + RECIPIENT[2:].zfill(64),
              'ready': 'c68360a5', 'graduated': 'e7c2b772',
              'real': '4f1f58fd', 'reserves': '0902f1ac'}
+
+
+class PonsEconomicsEnrollment:
+    """One attempt per existing Pons rotation, durable bounded FIFO, no retry loop."""
+    KEY = 'pons-economics-enrollment121a'
+
+    def __init__(self, saved=None):
+        saved = saved or {}
+        self.pending = saved.get('pending', [])
+        self.counts = Counter(saved.get('counts', {}))
+        self.recent = saved.get('recent', [])[-32:]
+
+    def enroll(self, event, now):
+        key = event['curve'].lower()+':'+event['token'].lower()
+        if any(x['key']==key for x in self.pending+self.recent):
+            return None
+        self.counts['launch'] += 1
+        row = dict(key=key,event=dict(event),enrolled_at=now.isoformat(),
+                   expires_at=(now+timedelta(minutes=15)).isoformat(),status='ENROLLED')
+        if len(self.pending)>=32:
+            row['status']='DEFERRED_CAPACITY'
+            self.counts['DEFERRED_CAPACITY']+=1
+            self.recent=(self.recent+[row])[-32:]
+        else:
+            self.pending.append(row);self.counts['enrolled']+=1
+        return row
+
+    async def step(self, observer, busy, now):
+        results=[]
+        while self.pending and datetime.fromisoformat(self.pending[0]['expires_at'])<=now:
+            row=self.pending.pop(0);row['status']='EXPIRED_UNATTEMPTED'
+            self.counts[row['status']]+=1;results.append(row)
+        if self.pending:
+            row=self.pending[0]
+            if busy():
+                row['status']='DEFERRED_BUSY'
+                self.counts['busy_rotations']+=1
+            else:
+                self.counts['attempted']+=1
+                try:
+                    value=await asyncio.wait_for(observer.observe(row['event'],busy),timeout=4)
+                except asyncio.TimeoutError:
+                    value=dict(status='UNKNOWN',reason='shadow_budget_timeout',recorded_at=stamp())
+                if value.get('reason')=='held_priority_deferred':
+                    row['status']='DEFERRED_BUSY';self.counts['busy_rotations']+=1
+                else:
+                    self.pending.pop(0);row.update(status=value['status'],result=value,
+                        attempt_delay_seconds=(now-datetime.fromisoformat(row['enrolled_at'])).total_seconds())
+                    self.counts[value['status']]+=1;results.append(row)
+        self.recent=(self.recent+results)[-32:]
+        return results
+
+    def snapshot(self):
+        return dict(pending=self.pending,counts=dict(self.counts),recent=self.recent,
+                    decision_eligible=False,affects='none',scope='prospective121a')
 
 
 def stamp():
@@ -107,6 +164,9 @@ class PonsEconomicsObserver:
             if busy():
                 raise ValueError('held_priority_deferred')
             curve, pair = event['curve'].lower(), event['pair_token'].lower()
+            result['quote_class'] = 'NATIVE_ETH_UNPROVEN' if int(pair,16)==0 else 'ERC20_UNVERIFIED'
+            if int(pair,16)==0:
+                raise ValueError('UNSUPPORTED_QUOTE_NATIVE_ETH_USD_NOT_PROVEN')
             verified = self.verified_cache.get(curve)
             if verified is None:
                 response = await self.http.get(f'https://robinhoodchain.blockscout.com/api/v2/smart-contracts/{curve}', ttl=0)
@@ -121,8 +181,9 @@ class PonsEconomicsObserver:
                 d.get('chainId') == 4663 and str(d.get('contractAddress', '')).lower() == pair
                 for d in a.get('deployments', []))]
             if len(candidates) != 1:
-                raise ValueError('stock_deployment_missing_or_ambiguous')
+                raise ValueError('UNSUPPORTED_QUOTE_ERC20_CONVERSION_NOT_PROVEN')
             asset = candidates[0]
+            result['quote_class'] = 'EXACT_OFFICIAL_STOCK_DEPLOYMENT'
             symbol = asset['tokenSymbol']
             if not symbol.isalnum():
                 raise ValueError('stock_symbol_invalid')

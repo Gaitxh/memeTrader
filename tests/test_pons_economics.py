@@ -65,3 +65,80 @@ def test_factory_event_does_not_substitute_for_instance_semantics():
         pair_token='0x3',factory=PonsV2Observer.FACTORY,event='TokenLaunched')))
     assert r['status']=='UNKNOWN' and r['reason']=='unverified_curve_source_version'
     assert 'quotes' not in r
+
+
+def test_native_quote_unknown_without_stock_lookup():
+    from memetrader.pons_observer import PonsV2Observer
+    r=asyncio.run(PonsEconomicsObserver(None,None).observe(dict(token='0x1',curve='0x2',
+        pair_token='0x'+'0'*40,factory=PonsV2Observer.FACTORY,event='TokenLaunched')))
+    assert r['reason']=='UNSUPPORTED_QUOTE_NATIVE_ETH_USD_NOT_PROVEN'
+    assert r['status']=='UNKNOWN'
+
+
+def test_every_launch_enrolled_busy_rotation_restart_and_expiry():
+    from memetrader.pons_economics import PonsEconomicsEnrollment
+    now=datetime.now(timezone.utc)
+    q=PonsEconomicsEnrollment()
+    for i in range(6):
+        e=dict(curve=hex(i+1),token=hex(i+10))
+        assert q.enroll(e,now)['status']=='ENROLLED'
+        assert q.enroll(e,now) is None
+    class Observer:
+        calls=0
+        async def observe(self,e,busy):
+            self.calls+=1
+            return dict(status='UNKNOWN',reason='proof_missing',recorded_at=now.isoformat())
+    o=Observer()
+    assert asyncio.run(q.step(o,lambda:True,now))==[]
+    assert len(q.pending)==6 and o.calls==0 and q.pending[0]['status']=='DEFERRED_BUSY'
+    q=PonsEconomicsEnrollment(q.snapshot())
+    assert len(asyncio.run(q.step(o,lambda:False,now+timedelta(seconds=150))))==1
+    assert o.calls==1 and len(q.pending)==5
+    assert len(asyncio.run(q.step(o,lambda:False,now+timedelta(minutes=16))))==5
+    assert o.calls==1 and not q.pending and q.counts['EXPIRED_UNATTEMPTED']==5
+    assert q.counts['launch']==6 and q.counts['attempted']==1
+
+
+def test_enrollment_bound_is_explicit_not_silent():
+    from memetrader.pons_economics import PonsEconomicsEnrollment
+    q=PonsEconomicsEnrollment();now=datetime.now(timezone.utc)
+    for i in range(33):r=q.enroll(dict(curve=hex(i),token=hex(i)),now)
+    assert r['status']=='DEFERRED_CAPACITY' and len(q.pending)==32
+    assert q.counts['launch']==33 and q.counts['enrolled']==32
+
+
+def test_runtime_drains_only_existing_pons_rotation_and_propagates_cancel():
+    from types import SimpleNamespace
+    from memetrader.runtime import Runtime
+    from memetrader.pons_observer import PonsV2Observer
+    from memetrader.pons_economics import PonsEconomicsEnrollment
+    r=Runtime.__new__(Runtime)
+    r._native_launch_observers=[object(), PonsV2Observer.__new__(PonsV2Observer)]
+    r._native_launch_cursor=0
+    r._pons_economics_enrollment=PonsEconomicsEnrollment()
+    q=r._pons_economics_enrollment
+    q.enroll(dict(curve='0x1',token='0x2',token_id='robinhood:0x2'),datetime.now(timezone.utc))
+    class Observer:
+        calls=0
+        async def observe(self,event,busy):
+            self.calls+=1
+            return dict(status='UNKNOWN',reason='proof_missing',recorded_at=datetime.now(timezone.utc).isoformat())
+    r._pons_economics=Observer()
+    records=[]
+    r.store=SimpleNamespace(set_kv=lambda *a:None,record_chain_meme_pattern_evidence=lambda *a,**k:records.append(a))
+    r._critical_onchain_exit_event=asyncio.Event()
+    r._evm_route_quote_lock=asyncio.Lock()
+    idle=asyncio.Event();idle.set()
+    r._chain_meme_active_idle=lambda:idle
+    async def tick():pass
+    r._chain_meme_native_launch_observe_once=tick
+    asyncio.run(r.chain_meme_native_launch_once())
+    assert r._pons_economics.calls==0
+    r._native_launch_cursor=1
+    async def cancelled():raise asyncio.CancelledError()
+    r._chain_meme_native_launch_observe_once=cancelled
+    with pytest.raises(asyncio.CancelledError):asyncio.run(r.chain_meme_native_launch_once())
+    assert r._pons_economics.calls==0
+    r._chain_meme_native_launch_observe_once=tick
+    asyncio.run(r.chain_meme_native_launch_once())
+    assert r._pons_economics.calls==1 and len(records)==1 and not q.pending
