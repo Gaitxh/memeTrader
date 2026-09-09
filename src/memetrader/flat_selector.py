@@ -165,12 +165,10 @@ class FlatSelector:
             db.row_factory = sqlite3.Row
             db.execute("BEGIN")
             evaluation_highwater = int(db.execute(
-                "SELECT COALESCE(MAX(id),0) FROM chain_meme_trader_v6_entry_evaluations "
-                "WHERE definition_version=?", (self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,),
+                "SELECT COALESCE(MAX(id),0) FROM chain_meme_trader_v6_entry_evaluations",
             ).fetchone()[0])
             observation_highwater = int(db.execute(
-                "SELECT COALESCE(MAX(id),0) FROM chain_meme_trader_flat_breakout_shadow "
-                "WHERE observer_version=?", (self.store.FLAT_BREAKOUT_SHADOW_VERSION,),
+                "SELECT COALESCE(MAX(id),0) FROM chain_meme_trader_flat_breakout_shadow",
             ).fetchone()[0])
             registered = db.execute(
                 "SELECT 1 FROM chain_meme_trader_flat_breakout_shadow_registrations "

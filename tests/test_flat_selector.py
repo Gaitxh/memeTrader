@@ -12,25 +12,25 @@ from memetrader.store import Store
 BASE = datetime(2026, 9, 9, tzinfo=UTC)
 
 
-def _add_evaluation(store: Store, token: TokenCandidate, source_id: int, pair: str, created: object):
+def _add_evaluation(store: Store, token: TokenCandidate, source_id: int, pair: str, created: object, version=None):
     with store.db:
         store.db.execute(
             "INSERT INTO chain_meme_trader_v6_entry_evaluations("
             "definition_version,source_snapshot_id,token_id,evaluated_at,status,entry_family,reason,feature_json) "
             "VALUES(?,?,?,?,?,?,?,?)",
-            (store.CHAIN_MEME_TRADER_ACTIVE_VERSION, source_id, token.token_id,
+            (version or store.CHAIN_MEME_TRADER_ACTIVE_VERSION, source_id, token.token_id,
              iso(BASE), "rejected", None, "fixture",
              json.dumps({"pair_address": pair, "pair_created_at": created})),
         )
 
 
-def _add_observation(store: Store, token: TokenCandidate, pair: str, status: str, at: datetime):
+def _add_observation(store: Store, token: TokenCandidate, pair: str, status: str, at: datetime, version=None):
     with store.db:
         store.db.execute(
             "INSERT INTO chain_meme_trader_flat_breakout_shadow("
             "observer_version,token_id,pair_address,observed_at,ingested_at,status,feature_json,recorded_at) "
             "VALUES(?,?,?,?,?,?,?,?)",
-            (store.FLAT_BREAKOUT_SHADOW_VERSION, token.token_id, pair, iso(at), iso(at),
+            (version or store.FLAT_BREAKOUT_SHADOW_VERSION, token.token_id, pair, iso(at), iso(at),
              status, "{}", iso(at)),
         )
 
@@ -113,4 +113,30 @@ def test_flat_selector_matches_store_for_incremental_mixed_state_changes(tmp_pat
             (fresh.token_id,),
         )
     _assert_matches(store, selector, BASE + timedelta(seconds=63))
+    store.close()
+
+
+def test_global_highwater_skips_interleaved_versions_without_losing_later_rows(tmp_path):
+    store = Store(tmp_path / 'interleaved.sqlite3', initial_cash_usd=1000)
+    store._flat_dirty_marks = set()
+    token = TokenCandidate('solana', 'Z' * 32, 'fixture', 'fixture')
+    store.upsert_token(token, seen_at=BASE)
+    store.register_flat_compression_breakout_shadow()
+    selector = FlatSelector(store)
+    for i in range(8):
+        at = BASE + timedelta(seconds=i * 15)
+        # The highest id can belong to an unrelated version, including batches
+        # with no matching rows. Later matching rows must remain discoverable.
+        if i % 3 != 0:
+            _add_evaluation(store, token, i*2+1, 'current', iso(BASE-timedelta(hours=7)))
+            _add_observation(store, token, 'current', 'near_trigger' if i%2 else 'flat_watch', at)
+        _add_evaluation(store, token, i*2+2, 'wrong', iso(BASE-timedelta(hours=8)), 'other')
+        _add_observation(store, token, 'wrong', 'near_trigger', at, 'other')
+        _assert_matches(store, selector, at)
+        db, evaluations, observations, _, _ = selector._snapshot()
+        try:
+            assert evaluations == db.execute('SELECT MAX(id) FROM chain_meme_trader_v6_entry_evaluations').fetchone()[0]
+            assert observations == db.execute('SELECT MAX(id) FROM chain_meme_trader_flat_breakout_shadow').fetchone()[0]
+        finally:
+            db.close()
     store.close()
