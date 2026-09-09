@@ -1,3 +1,6 @@
+# CURRENT119A synthetic exit correction
+synthetic_fast_harvest_v1 first hypothesis absolute5m max hold,1U/max1; earlier hard/trailing/liquidity exits dominate. No3/10/15m variants, narrative/Agent extension, averaging or reentry. Organic unchanged. No funded policy registered;119 runtime remains withdrawn. Passive15/60/240 outcome horizons unchanged. Read DUAL_MICROSTRUCTURE_119.md119A heading; supersedes older15m hypothesis text below.
+
 # CURRENT120 cleanup completed — trading priority unchanged
 Deleted299 allowlisted stale test-temp directories, logical23,701,663,547bytes; measured E:free delta23,695,806,464bytes (~22.07GiB), postfree42.64GiB. Web200/health running/same funding/Live locked/open0->0. No research/backups/liveDB deletion, no restart/reset. Exact list/audit data/research/cleanup120; report TEST_TEMP_CLEANUP_120.md.119 runtime remains withdrawn/research only; ModeChat118 still deferred behind tradingP0.
 

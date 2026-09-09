@@ -1,5 +1,9 @@
 # 119 shared microstructure — prepared Shadow stage, NOT deployed
 
+## Authoritative119A correction — synthetic exit5m only
+
+REPLY_TO: C2C-20260910-DUAL-MICROSTRUCTURE-ROUTER-119A. First synthetic_fast_harvest_v1 hypothesis: absolute max_hold=5 minutes,1U/max1. Hard safety and current exact-pool sellability remain required; hard stop/trailing/liquidity exits may close earlier. No narrative/Agent extension, reentry, averaging or3/10/15m variants. Organic branch unchanged. Lead reports selected historical10/10 positive at3/5m,5m aggregate+74.54U on5U historical notionals; attributed hypothesis evidence only, not independently reproduced prospective1U results or adversarial execution proof. No funded policy currently exists to alter; runtime119 remains withdrawn. Passive15/60/240 research outcome horizons are not holding limits and remain unchanged.
+
 REPLY_TO: C2C-20260910-DUAL-MICROSTRUCTURE-ROUTER-119
 Status: SHADOW_TRIAL_REJECTED_RUNTIME_GUARD / ROLLED_BACK. This is not completion of both requested Paper branches.
 
@@ -27,7 +31,7 @@ Classifier receipts append to existing pattern evidence; later exact-pool snapsh
 
 Still pending: natural request/held acceptance; exact original-pool positive sellability receipt adapter; Solana complete trade-level adapter; funded policy registration/fill tests. The two funded branches remain unregistered. Source scopes/budgets above are Shadow supply, not proof that either new strategy can enroll.
 
-119 supersedes the old prohibition on deliberately studying manipulated-but-sellable opportunities: the authorized synthetic experiment is separate1U/max1/15m, not normal-meme Alpha. It does not revive funded Capital Pulse114 or authorize hard-unsellable buys.115 parent/derivative pauses remain unchanged.
+119 supersedes the old prohibition on deliberately studying manipulated-but-sellable opportunities: the authorized synthetic experiment is separate1U/max1/5m (119A correction), not normal-meme Alpha. It does not revive funded Capital Pulse114 or authorize hard-unsellable buys.115 parent/derivative pauses remain unchanged.
 
 ## Implemented, without production writes
 
@@ -52,7 +56,7 @@ Independent read-only review found:
 - Solana capital_context already validates complete amountful raw flow/conversion/provenance. Its aggregate output does not supply all per-wallet both-side/concentration/regularity rows needed here. Reuse a verified complete upstream amountful adapter; do not fabricate trade rows or launch extra Solana queries. That adapter remains pending.
 - Rare-signal admission, idle worker, persistent newly inserted receipt ID and snapshot/flush callback wiring remain pending. MicrostructureShadow is a prepared component, not an installed observer. No runtime latency trial has occurred.
 
-Next stage must install shared start arbitration, attach bounded rare candidate receipts/worker and existing passive callbacks, then test natural request/held guards. Append organic5U/max2 and synthetic1U/max1 policies only at real deployment frontier when their respective causal gates are usable. Organic mechanical exits can precede optional principal/narrative overlays; synthetic15m/no averaging/no reentry/no Agent remains isolated. Do not call unregistered policy specifications funded implementation. No Pump100/dedup102 work repeated.
+Next stage must install shared start arbitration, attach bounded rare candidate receipts/worker and existing passive callbacks, then test natural request/held guards. Append organic5U/max2 and synthetic1U/max1 policies only at real deployment frontier when their respective causal gates are usable. Organic mechanical exits can precede optional principal/narrative overlays; synthetic5m/no averaging/no reentry/no Agent remains isolated (119A). Do not call unregistered policy specifications funded implementation. No Pump100/dedup102 work repeated.
 
 ## Validation and evidence
 
