@@ -27,6 +27,7 @@ globalThis.revisionUi = {
   },
   ingest(data) { return ingestStrategyHistory(data); },
   lifecycle(family) { return fidelityLabel(family); },
+  explanation(family) { return strategyExplanationMarkup(family); },
 };`, context);
 
 const family = {
@@ -56,6 +57,19 @@ for(const [status,label] of Object.entries({FAILED:'负收益实验已停止',EX
 }
 assert.match(context.revisionUi.lifecycle({account_lifecycle:'PAUSED_NEW_ENTRY',assessment_status:'EXPERIMENT_COMPLETE_POSITIVE'}),/盈利实验已完成 · 暂停新入场/);
 assert.match(app, /f\.default_visible!==false\|\|\$\('#universe-show-retired'\)\?\.checked/);
+const explanation=context.revisionUi.explanation({strategy_logic:{purpose:'<img>',entry_rules:['仅使用 & 当时数据'],entry_sequence:['先观察'],exit_rules:['退出'],data_requirements:['原始池'],risk_controls:['止损'],lineage:{source_arm_ids:['<source>'],revision:'r1',paired_entry_group:'g',paired_entry_size:'20'},lifecycle_explanation:{assessment:'证据不足',operation:'暂停新入场',note:'样本不是 alpha',evidence:['e'],pause_basis:['p'],lesson:['l'],benchmark:['b']}}});
+assert.match(explanation,/&lt;img&gt;/);
+assert.match(explanation,/&amp; 当时数据/);
+assert.match(explanation,/暂停新入场表示该账户不再开新仓/);
+assert.doesNotMatch(explanation,/<img>/);
+assert.match(app,/\['FAILED','负收益停止'\]/);
+assert.match(app,/activeResults\.positive/);
+assert.match(app,/heldValue\('held_fetch'\)/);
+assert.match(app,/heldValue\('held_apply_exit'\)/);
+assert.match(app,/\['安全判定',safety/);
+assert.match(app,/\['信号 → 安全 → BUY','UNKNOWN'/);
+assert.match(app,/strategy\.max_hold_minutes==null\?'UNKNOWN'/);
+assert.match(app,/\['现有漏斗'/);
 
 context.clearTimeout = () => {};
 context.document = {visibilityState: 'hidden'};

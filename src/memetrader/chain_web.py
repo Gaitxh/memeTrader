@@ -28,6 +28,7 @@ from .paper_execution import (
 )
 from .runtime import load_config
 from .store import Store
+from .strategy_explainability import strategy_logic, ASSESSMENTS
 
 
 class ChainWebData:
@@ -3105,6 +3106,11 @@ class ChainWebData:
                 )
                 if definition_row is not None else {}
             )
+            lifecycle_controls = {}
+            for row in connection.execute("SELECT value_json FROM kv WHERE key IN (?,?) ORDER BY updated_at",
+                    (f"chain-meme-account-convergence/v1:{active_version}",
+                     f"chain-meme-account-loss-retirement/v1:{active_version}")):
+                lifecycle_controls.update(json.loads(row[0]).get("arms", {}))
         active_results = {
             str(item.get("arm_id") or ""): item
             for item in self.state(compact=True).get("strategies", [])
@@ -3275,6 +3281,11 @@ class ChainWebData:
                 family.update(account_lifecycle=lifecycle, realtime_state=lifecycle,
                               forward_enabled=False,
                               retirement_representative=policy.get("retirement_representative"))
+            frozen = next((m.get("frozen_policy") for m in family.get("members", [])
+                           if isinstance(m.get("frozen_policy"), dict)), {})
+            family["strategy_logic"] = strategy_logic(policy or frozen, family,
+                lifecycle_controls.get(policy.get("arm_id"), {}), current=bool(policy))
+            family["assessment_status"] = family["strategy_logic"]["lifecycle_explanation"]["assessment"]
         payload = {
             "status": "ok",
             "generated_at": iso(utcnow()),
@@ -3282,6 +3293,15 @@ class ChainWebData:
             "active_version": active_version,
             "summary": {
                 **report.get("summary", {}),
+                "assessment_counts": {status: sum(f["assessment_status"] == status for f in families)
+                                      for status in ASSESSMENTS},
+                "active_results": {
+                    "positive": sum(f["realtime_state"] == "ACTIVE_FORWARD" and f.get("realtime_total_pnl_usd") is not None and f["realtime_total_pnl_usd"] > 0 for f in families),
+                    "negative": sum(f["realtime_state"] == "ACTIVE_FORWARD" and f.get("realtime_total_pnl_usd") is not None and f["realtime_total_pnl_usd"] < 0 for f in families),
+                    "zero": sum(f["realtime_state"] == "ACTIVE_FORWARD" and f.get("realtime_total_pnl_usd") == 0 for f in families),
+                    "unknown": sum(f["realtime_state"] == "ACTIVE_FORWARD" and f.get("realtime_total_pnl_usd") is None for f in families),
+                    "scope": "current_active_family_total_pnl_not_independent_alpha",
+                },
                 "historical_behavior_contract_families": len(
                     report.get("behavior_families", [])
                 ),

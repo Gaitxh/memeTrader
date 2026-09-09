@@ -141,6 +141,8 @@ const localSurfaceText = (position={}) => {
 };
 let state = null;
 let universe = null;
+let performance = null;
+let performanceLoading = null;
 let selectedCanonical = null;
 let liveTimer = null;
 let fullTimer = null;
@@ -197,6 +199,7 @@ function route(){
   if(page==='errors')refreshErrors();
   if(page==='updates')refreshUpdates();
   if(page==='system'){refreshPerformance();refreshPaperSettings();}
+  if(page==='strategies'&&!performance&&!performanceLoading)refreshPerformance();
   if(page==='discovery')refreshDiscovery(true);
   closeDrawer(false);
   if(state)renderVisible(state);
@@ -244,9 +247,14 @@ const performanceTasks={
 
 async function refreshPerformance(){
   const target=$('#performance-content'),seconds=(x,empty='暂无数据')=>x==null?empty:`${Number(x).toFixed(2)} 秒`;
+  if(performanceLoading)return performanceLoading;
+  performanceLoading=(async()=>{
   try{
     const response=await fetch('/api/performance',{cache:'no-store'}),data=await response.json();
     if(!response.ok)throw new Error(data.error||'读取失败');
+    performance=data;
+    if(lastPage==='strategies')renderUniverse();
+    if(!target)return;
     const rows=Object.entries(data.timing?.components||{}).map(([name,v])=>({name,v,info:performanceTasks[name]||['其他计时','未分类任务',`任务标识：${name}`,'用途待核对']}));
     const table=items=>`<div class="table-wrap"><table><thead><tr><th>功能与用途</th><th>交易关系</th><th>调度方式</th><th>实际周期中位数 / 较慢5%</th><th>处理耗时中位数 / 较慢5%</th><th>计时次数</th></tr></thead><tbody>${items.map(({name,v,info})=>{
       const step=info[0]==='内部步骤',count=Number(v.sample_count||0);
@@ -261,7 +269,10 @@ async function refreshPerformance(){
       return items.length?`<h3>${group} · ${items.length} 项</h3>${table(items)}`:'';
     }).join('');
     target.innerHTML=`<p class="delta">统计更新 ${time(data.timing_recorded_at,true)} · 当前 ${rows.length-steps.length} 项任务计时、${steps.length} 项内部步骤计时，不是同等数量的独立进程或 Agent。</p><p class="delta">计时次数是函数运行次数，不是新行情或交易数；任务可能因无候选、冷却或预算限制直接返回。内部步骤没有自己的周期，因此显示“随主任务执行”；独立任务尚未形成两轮间隔时显示“尚不足两轮”。每项保留最近最多120次计时，步骤耗时可能包含在主任务中，不能相加当总耗时。</p>${groups||'<p class="empty">等待后台首次上报计时；仅凭这里暂无记录不能判断服务已停止。</p>'}${steps.length?`<details data-performance-steps ${expanded?'open':''}><summary>内部步骤计时 · ${steps.length} 项（属于上方任务，点击展开）</summary>${table(steps)}</details>`:''}<h3>所有账期仍持有的币</h3><div class="table-wrap"><table><thead><tr><th>链</th><th>去重币数</th><th>无成功价格</th><th>源覆盖缺口 / 请求错误</th><th>数据年龄中位数 / 较旧5% / 最旧</th></tr></thead><tbody>${Object.entries(data.held_by_chain||{}).map(([chain,v])=>`<tr><td>${esc(chain)}</td><td>${v.tokens}</td><td>${v.missing}</td><td>${v.coverage_gaps||0} / ${v.failures}</td><td>${v.age_max_seconds==null?'无可用观察时间':`${seconds(v.age_p50_seconds)} / ${seconds(v.age_p95_seconds)} / ${seconds(v.age_max_seconds)}`}</td></tr>`).join('')}</tbody></table></div><p class="delta">数据年龄按有效原池报价的观察时点计算，不是请求间隔；补源缓存重复接收不会刷新年龄。源覆盖缺口不等于池子消失或所有补源失败；缺价和失败的币均未排除。</p>`;
-  }catch(error){target.textContent=`速度诊断暂不可用：${error.message}`;}
+  }catch(error){if(target)target.textContent=`速度诊断暂不可用：${error.message}`;}
+  finally{performanceLoading=null;}
+  })();
+  return performanceLoading;
 }
 
 let paperSettingsDirty=false;
@@ -374,6 +385,23 @@ function fidelityLabel(family){
   return ({REPLICA_ELIGIBLE:'原历史规则',REPLICA_WITH_ENGINEERING_CORRECTION:'历史规则·统一成交口径',DEXSCREENER_SUCCESSOR:'DexScreener 新前向策略',ADDITIVE_FORWARD:'新增前向策略',COVERAGE_UNAVAILABLE:'缺少原始证据，未交易',ACTIVE_FORWARD:'前向运行',FROZEN_HISTORY:'仅历史记录'})[value]||'待核验';
 }
 
+function explanationList(items,empty='UNKNOWN'){
+  const values=Array.isArray(items)?items.filter(value=>value!==null&&value!==undefined&&String(value)!==''):[];
+  return values.length?`<ul class="strategy-explanation-list">${values.map(value=>`<li>${esc(value)}</li>`).join('')}</ul>`:`<p class="empty">${esc(empty)}</p>`;
+}
+
+function strategyExplanationMarkup(family){
+  const logic=family?.strategy_logic||{},lifecycle=logic.lifecycle_explanation||{},lineage=logic.lineage||{};
+  const field=(label,value)=>`<dt>${esc(label)}</dt><dd>${esc(value||'UNKNOWN')}</dd>`;
+  return `<details class="strategy-explanation"><summary>详细规则与证据（点击展开）</summary><div class="strategy-explanation-body">
+    <section><h4>策略目的</h4><p>${esc(logic.purpose||'UNKNOWN')}</p></section>
+    <section><h4>入场规则</h4>${explanationList(logic.entry_rules)}<h4>入场顺序</h4>${explanationList(logic.entry_sequence)}</section>
+    <section><h4>退出规则</h4>${explanationList(logic.exit_rules)}<h4>数据要求</h4>${explanationList(logic.data_requirements)}<h4>风险控制</h4>${explanationList(logic.risk_controls)}</section>
+    <section><h4>来源与版本</h4><dl class="strategy-explanation-meta">${field('来源策略',Array.isArray(lineage.source_arm_ids)?lineage.source_arm_ids.join('、'):lineage.source_arm_ids)}${field('修订版本',lineage.revision)}${field('配对入场组',lineage.paired_entry_group)}${field('配对入场规模',lineage.paired_entry_size)}</dl></section>
+    <section><h4>生命周期说明</h4><dl class="strategy-explanation-meta">${field('评估',lifecycle.assessment)}${field('运行',lifecycle.operation)}${field('备注',lifecycle.note)}${field('证据',Array.isArray(lifecycle.evidence)?lifecycle.evidence.join('；'):lifecycle.evidence)}${field('暂停依据',Array.isArray(lifecycle.pause_basis)?lifecycle.pause_basis.join('；'):lifecycle.pause_basis)}${field('经验',Array.isArray(lifecycle.lesson)?lifecycle.lesson.join('；'):lifecycle.lesson)}${field('基准',Array.isArray(lifecycle.benchmark)?lifecycle.benchmark.join('；'):lifecycle.benchmark)}</dl><p class="strategy-explanation-note">暂停新入场表示该账户不再开新仓，已有持仓仍按退出规则管理；它不等于策略已经失败。样本与描述性 PNL 也不等于已证明存在 alpha。</p></section>
+  </div></details>`;
+}
+
 function accountCells(live){
   return `<td>${money(live.equity)}<small>余额 ${money(live.cash)} · 持仓 ${money(live.positionValue)}</small>${live.capitalCredit?`<small>工程异常补款 +${money(live.capitalCredit)}（不计收益）</small>`:''}</td><td>${money(live.maxDrawdown)}<small>${live.maxDrawdownFraction==null?'—':(live.maxDrawdownFraction*100).toFixed(1)+'%'}</small></td>`;
 }
@@ -456,6 +484,7 @@ function renderUniverseDetail(family){
   const target=$('#strategy-detail'); if(!target||!family)return;
   selectedCanonical=family.canonical_id||family.behavior_contract_hash;
   const live=liveMetricForFamily(family), members=family.members||[], strategy=live.strategy||{};
+  const hasLogic=Boolean(family.strategy_logic);
   const trades=(strategy.trades||[]).slice(0,30);
   const positions=(strategy.positions||[]).slice(0,30);
   const canRun=live.status==='ACTIVE_FORWARD',notional=state?.definition?.policy_notional_usd;
@@ -467,12 +496,13 @@ function renderUniverseDetail(family){
     return `<article class="position-record"><div class="position-record-head"><div><span class="status-pill ${esc(item.status)}">${item.status==='open'?'持有中':item.status==='closed'?'已卖出':'已核销'}</span>${tokenLink(item.token_id)}</div><small>${time(item.opened_at,true)} 开仓</small></div><div class="position-pnl-grid"><span>持仓时长<strong>${esc(durationText(item.opened_at,item.closed_at))}</strong></span><span>未实现 PNL<strong class="${pnlClass(pnl.unrealized)}">${pnl.unrealized==null?'—':money(pnl.unrealized)}</strong></span><span>已实现 PNL<strong class="${pnlClass(pnl.realized)}">${pnl.realized==null?'—':money(pnl.realized)}</strong></span><span>总 PNL<strong class="${pnlClass(pnl.total)}">${pnl.total==null?(item.market_fill_correction?.replacement_outcome==='UNRESOLVED'?'历史成交待核查':esc(positionPendingText(item))):money(pnl.total)}</strong></span></div><small class="position-note">${contaminated?'已排除，不计统计':item.status==='open'?(item.indicative_value_usd==null?`${positionPendingText(item)}，不按 0 计`:`当前价值 ${money(item.indicative_value_usd)}`):esc(reasonText(item.close_reason))}</small><div class="position-transactions">${records.length?records.map(record=>`<p><time>${time(record.created_at)}</time><strong>${esc(sideText(record.side))}</strong><span>${record.side==='BUY'?`投入 ${money(Math.abs(Number(record.net_cash_flow_usd??record.gross_usd)))}`:`回收 ${money(record.gross_usd)} · PNL ${money(record.realized_pnl_usd)}`}</span></p>`).join(''):'<p class="empty">当前返回范围内没有该仓位的交易记录</p>'}</div></article>`;
   }).join('');
   target.innerHTML=`<div class="detail-title"><div><p class="eyebrow">独立策略账户</p><h2>${esc(strategyLabel(family,strategy))}</h2><small class="strategy-identity">唯一编号 #${String(strategyIndex(family)).padStart(3,'0')}</small></div><span class="contract-state ${canRun?'active_forward':'retry'}">${esc(fidelityLabel(family))}</span></div>
-    <p>${esc(readable(family.entry_family,entryLabels))}入场，${esc(readable(family.exit_family,exitLabels))}。</p>
+    ${hasLogic?'':`<p>${esc(readable(family.entry_family,entryLabels))}入场，${esc(readable(family.exit_family,exitLabels))}。</p>`}
     <div class="detail-live-grid"><div><span>账户总价值</span><strong>${money(live.equity)}</strong><small>余额 ${money(live.cash)} + 持仓 ${money(live.positionValue)}</small></div><div><span>最大回撤</span><strong>${money(live.maxDrawdown)}</strong><small>${live.maxDrawdownFraction==null?'等待有效估值':(live.maxDrawdownFraction*100).toFixed(1)+'% · 完整有效估值历史'}</small></div><div><span>累计总 PNL</span><strong class="${pnlClass(live.pnl)}">${live.pnl==null?esc(live.pendingText):money(live.pnl)}</strong></div><div><span>已实现 PNL</span><strong class="${pnlClass(live.realizedPnl)}">${live.realizedPnl==null?'—':money(live.realizedPnl)}</strong></div><div><span>未实现 PNL</span><strong class="${pnlClass(live.unrealizedPnl)}">${live.unrealizedPnl==null?esc(live.pendingText):money(live.unrealizedPnl)}</strong></div><div><span>终结样本分组</span><strong>${esc(maturityText(live.maturity))}</strong><small>运行 ${esc(elapsedText(live.forwardAgeSeconds))}</small></div></div>
     <section class="contract-section"><h3>累计 PNL 实时曲线</h3><p id="strategy-equity-note">等待首个策略盈亏快照</p><svg id="strategy-equity-chart" class="strategy-equity-chart" viewBox="0 0 720 180" role="img" aria-label="当前策略累计盈亏实时曲线"></svg></section>
-    <section class="contract-section"><h3>入场规则</h3><p>${esc(readable(strategy.entry_family||family.entry_family,entryLabels))} · ${esc(strategy.name||'')}</p><small>只使用当时已经采集到的 Token、交易量、价格与池信息，不使用之后才出现的数据。旧入场方向见版本历史，不作为当前规则。</small></section>
+    ${hasLogic?'':`<section class="contract-section"><h3>入场规则</h3><p>${esc(readable(strategy.entry_family||family.entry_family,entryLabels))} · ${esc(strategy.name||'')}</p><small>只使用当时已经采集到的 Token、交易量、价格与池信息，不使用之后才出现的数据。旧入场方向见版本历史，不作为当前规则。</small></section>`}
+    <section class="contract-section"><h3>规则解释</h3>${strategyExplanationMarkup(family)}</section>
     <section class="contract-section"><h3>复刻状态</h3><p>${esc(fidelityLabel(family))}</p><small>${esc(family.fidelity_note||'等待历史合同核验')}</small></section>
-    <section class="contract-section"><h3>退出规则</h3><p>${esc(readable(family.exit_family,exitLabels))}</p><small>最长持有 ${Number(strategy.max_hold_minutes||240)} 分钟；${strategy.hard_stop_return==null?'无额外固定止损':`回撤到 ${percent(strategy.hard_stop_return)} 触发止损`}。新鲜原池流动性低于 ${paperEffectiveSettings.min_pool_liquidity_usd==null?'—':money(paperEffectiveSettings.min_pool_liquidity_usd)} 时按剩余全损；缺失或陈旧时等待，不等于无池。核销会发出卖出指令，但不代表成交。</small></section>
+    ${hasLogic?'':`<section class="contract-section"><h3>退出规则</h3><p>${esc(readable(family.exit_family,exitLabels))}</p><small>最长持有 ${strategy.max_hold_minutes==null?'UNKNOWN':`${Number(strategy.max_hold_minutes)} 分钟`}；${strategy.hard_stop_return==null?'固定止损 UNKNOWN':`回撤到 ${percent(strategy.hard_stop_return)} 触发止损`}。新鲜原池流动性低于 ${paperEffectiveSettings.min_pool_liquidity_usd==null?'—':money(paperEffectiveSettings.min_pool_liquidity_usd)} 时按剩余全损；缺失或陈旧时等待，不等于无池。核销会发出卖出指令，但不代表成交。</small></section>`}
     <section class="contract-section"><h3>版本迭代历史</h3>${revisionHistoryMarkup(family,strategy)}</section>
     <section class="contract-section"><h3>当前结果</h3>${live.capitalCredit?`<p>工程异常补款 ${money(live.capitalCredit)}；已计入现金，不计入 PNL 或收益回撤。</p>`:''}${live.pendingText==='历史成交待核查'?'<p>历史卖出缺少原入场池的有效成交证据；刷新当前价格不能补齐过去成交，总估值暂不可确定。</p>':''}<p>已观察 ${live.opportunityCount} 个符合策略条件的机会，已完成 ${live.terminal} 笔，其中盈利 ${live.wins} 笔，胜率 ${live.winRate==null?'等待样本':percent(live.winRate)}；当前持仓 ${live.open} 笔。</p><p>账户现金 ${strategy.account?.cash_usd==null?'待更新':money(strategy.account.cash_usd)}。${strategy.account?.capital_model==='unconstrained_research_notional'?'研究资金不受余额限制。':'初始资金 1000 USDC；现金不足暂停新买入，已有持仓继续退出。'}</p><small>普通单笔 ${notional==null?'—':`${money(notional)} USDC`}；当前买入滑点 ${paperEffectiveSettings.buy_slippage_pct??'—'}%，卖出滑点 ${paperEffectiveSettings.sell_slippage_pct??'—'}%，每次成交额外费用 ${money(paperEffectiveSettings.additional_fee_usd_each_fill)}。小额实验沿用各自下单规模。</small></section>
     <section class="contract-section"><h3>操作记录</h3><button class="table-action" data-strategy-history="${esc(strategy.arm_id||'')}">查看全部交易历史</button><p>下方为最近 ${trades.length} 条预览；完整历史可翻页查看，不限制总条数。</p><div class="strategy-log">${trades.length?trades.map(item=>`<button data-token="${esc(item.token_id)}"><time>${time(item.created_at,true)}</time><strong>${esc(sideText(item.side))}</strong><span>${esc(shortToken(item.token_id))}</span><em class="${pnlClass(item.realized_pnl_usd)}">${item.side==='BUY'?money(item.gross_usd):money(item.realized_pnl_usd)}</em><small>${esc(reasonText(item.reason))}</small></button>`).join(''):'<p class="empty">当前预览暂无操作，请查看完整历史</p>'}</div></section>
@@ -491,11 +521,31 @@ function renderUniverse(){
   const successors=families.filter(f=>f.fidelity_status==='DEXSCREENER_SUCCESSOR').length;
   const inactive=Math.max(0,families.length-active);
   const unconstrained=state?.system?.capital_model==='unconstrained_research_notional'||state?.capital_model==='unconstrained_research_notional';
+  const assessmentCounts=universe.summary?.assessment_counts||{};
+  const assessmentCards=[['FAILED','负收益停止'],['EXPERIMENT_COMPLETE_POSITIVE','盈利实验完成'],['DUPLICATE_SUPERSEDED','重复或替代'],['DATA_BLOCKED','数据受阻'],['INSUFFICIENT','证据不足'],['ACTIVE','前向运行']];
+  const activeResults=universe.summary?.active_results||{};
+  const heldValue=name=>performance?.timing?.components?.[name]?.duration_seconds?.p95;
+  const heldLatency=heldValue('held_fetch');
+  const applyLatency=heldValue('held_apply_exit');
+  const passiveDrops=performance?.timing?.passive_queue?.dropped_quotes;
+  const funnelRows=Array.isArray(discoveryView?.funnel)?discoveryView.funnel:[];
+  const funnel=funnelRows.length?funnelRows.reduce((total,row)=>({admitted:total.admitted+Number(row.admitted||0),rejected:total.rejected+Number(row.rejected||0)}),{admitted:0,rejected:0}):null;
+  const safetyCounts=state?.trading?.safety_counts||state?.safety_counts||discoveryView?.safety_counts;
+  const safety=safetyCounts&&typeof safetyCounts==='object'?['REJECT','WAIT','UNKNOWN'].map(key=>`${key} ${safetyCounts[key]??safetyCounts[key.toLowerCase()]??'UNKNOWN'}`).join(' / '):'UNKNOWN';
   $('#universe-summary').innerHTML=[
     ['策略',families.length,'每个策略独立决策、持仓和结果'],
     ['前向运行',active,inactive?`${inactive} 个当前未运行`:`${replicas} 个历史规则 · ${successors} 个 DexScreener 继承策略`],
+    ...assessmentCards.map(([key,label])=>[`评估 · ${label}`,Number(assessmentCounts[key]||0),'账户评估，不是 PNL 或 alpha 证明']),
+    ['活动账户 PNL',`${Number(activeResults.positive||0)} / ${Number(activeResults.negative||0)} / ${Number(activeResults.zero||0)} / ${Number(activeResults.unknown||0)}`,'正 / 负 / 零 / 未知；当前活动账户总 PNL，不是独立 alpha'],
     ['策略资金',unconstrained?'机会不受余额阻断':'初始 1000 USDC',unconstrained?'单笔规模和风险规则保持不变':'按累计收支计算余额；余额不足暂停新买入，持仓继续退出'],
     ['行情采集','共享一次',`同一个 Token 不会按 ${families.length} 个策略重复访问`],
+    ['持仓抓取 p95',heldLatency==null?'UNKNOWN':`${Number(heldLatency).toFixed(2)} 秒`,performance?`性能快照 ${time(performance.timing?.generated_at)}`:'尚未读取性能快照'],
+    ['应用与退出 p95',applyLatency==null?'UNKNOWN':`${Number(applyLatency).toFixed(3)} 秒`,'held_apply_exit；不同于网络抓取延迟'],
+    ['被动队列丢弃',passiveDrops==null?'UNKNOWN':passiveDrops,performance?'仅已记录的被动队列丢弃':'尚未读取性能快照'],
+    ['安全判定',safety,safety==='UNKNOWN'?'没有已加载的安全 REJECT/WAIT 计数':'已有聚合计数；不从逐策略结果相加'],
+    ['信号 → 安全 → BUY','UNKNOWN','没有可证明的去重串联计数；不从逐策略扇出相加'],
+    ['现有漏斗',funnel?`${funnel.admitted} / ${funnel.rejected}`:'UNKNOWN',funnel?'账户级放行 / 拒绝；非独立Token、非成交' :'仅使用当前已加载漏斗数据'],
+    ['策略宇宙快照',time(universe.generated_at,true),'该汇总可能早于当前实时状态；性能与发现数据各自按其加载时间更新'],
   ].map(([k,v,n])=>`<article class="summary-card"><span>${esc(k)}</span><strong>${esc(v)}</strong><small>${esc(n)}</small></article>`).join('');
   const q=($('#universe-search')?.value||'').trim().toLowerCase(), sort=$('#universe-sort')?.value||'maturity';
   const rows=families.filter(f=>{
