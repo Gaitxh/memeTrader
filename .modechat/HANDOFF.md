@@ -1,3 +1,7 @@
+# CURRENT handoff — REACTIVATION-SLOT-104
+
+Latest runtime b186971 loaded19:35:22Z, short guard pass19:38:51Z; see REACTIVATION_SLOT_104.md. No natural temporary-slot sample yet, so don't claim coverage or repeat deployment. Old mature-probe104 was reverted; this new trial is more conservative and protects futureearly3. Agent103 expansion still awaits post-trim natural quality; storage102 still held-blocked. Pairing/Lead unchanged.
+
 # CURRENT research handoff — PATH-SHAPE-HAZARD-101
 
 Bounded research complete, INSUFFICIENT_EVIDENCE_DO_NOT_DEPLOY_SHADOW; report PATH_SHAPE_HAZARD_101.md and exact CODEX-PATH-SHAPE-RESULT-101. No fresh production deployment. Preserve UNKNOWN/censoring, no regularity hard veto; next work remains non-conflicting product/evidence tasks below. Do not confuse this101 with completed autonomous-Agent trim or rediscovery occupancy.

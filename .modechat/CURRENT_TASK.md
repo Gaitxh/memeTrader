@@ -1,3 +1,7 @@
+# CURRENT delta — REACTIVATION-SLOT-104 short trial deployed
+
+Code b186971, report docs/PROJECT_CONTEXT/REACTIVATION_SLOT_104.md; fixed10/chain one120s lease, futureearly3+held/pending protected, no extra request path. Short guard passes;0 natural lease admissions so coverage UNTESTED. Continue from primary current context, preserve pending Agent103 quality gate and storage102 held gate. No pairing/routing changes.
+
 # CURRENT delta — path-shape101 research complete, no deployment
 
 Read docs/PROJECT_CONTEXT/PATH_SHAPE_HAZARD_101.md. Exact PATH-SHAPE-HAZARD-101 validation failed the conditional Shadow gate: dense coverage443/46,521; regularity can remove right tails as well as losses. No runtime/safety/strategy change; continuation remains the product work below, not a new shape-veto implementation. Pairing and Lead unchanged/unverified.

@@ -1,3 +1,7 @@
+## CURRENT routing delta — REACTIVATION-SLOT-104 deployed
+
+b186971 loaded19:35:22Z; report REACTIVATION_SLOT_104.md. One120s observation lease/chain within10, spare or sampled early overflow only, futureearly3 reservation+held/pending protection; no mature/growth incumbent eviction or new requests/strategy gates.13 scoped tests plus8 existingwatchPASS. Short19:38:51 guard passes (heldfetch2.751vs2.569s,apply.0786vs.0766,passivedrops0,immutable unchanged). Natural5episodes/1legacy observation/0probe admissions: COVERAGE_UNTESTED, no Alpha/long-run claim. This supersedes the earlier no-new-trial status of MATURE-PROBE-104, but its rollback evidence remains history. Do not automatically compress storage (current5open/2held) or expand Agent budget; queued103quality gate still applies.
+
 ## CURRENT narrative delta — MULTIAGENT-NARRATIVE-103 gated
 
 Design ready, no expanded Agent implementation: MULTIAGENT_NARRATIVE_103.md. No post18:43:03Z trim natural result; prior2 Scout calls87787/124737 tokens both0sources/UNKNOWN. Daily actual212524 plus60000 checkpoint reserve exceeds240000 cap. Preserve budget; wait for eligible natural evidence, no forced calls/reset. A news/B social/C conditional Terra design reuses2 slots, dedup/new origins, strict availability and principal/health/safety extension conditions. This103 differs from cooling103; do not treat design as deployed or trim as quality-verified.
