@@ -7378,7 +7378,14 @@ class Runtime:
         watch, occupied, chain_used, borrowed = {}, {}, {}, []
         for key, item in getattr(self, "_pattern_watch", {}).items():
             if current >= item["expires_at"] and key not in held:
-                continue
+                if item.get('rediscovery_probe'):
+                    from .rediscovery_probe import protected
+                    if protected(self, key):
+                        item['expires_at'] = current + timedelta(seconds=15)
+                    else:
+                        continue
+                else:
+                    continue
             created = item.get("pool_created_at_ms")
             if created is not None:
                 age = current.timestamp() - created / 1000
@@ -7445,6 +7452,20 @@ class Runtime:
                 if age < 0:
                     reason = "skip_future_creation"
                     continue
+                rediscovery_probe = False
+                if bucket == 'mature' and token_id not in held and funnel is not None:
+                    funnel.basic(token_id, snapshot, current, snapshot.ingested_at,
+                        getattr(self, '_chain_paper_execution', {}).get('min_pool_liquidity_usd', 1000.0))
+                    member = funnel.members.get(token_id)
+                    rediscovery_probe = bool(member and 'basic_valid' in member['seen']
+                        and snapshot.ingested_at is not None
+                        and member['at'] <= snapshot.observed_at <= snapshot.ingested_at <= current
+                        and (current - snapshot.observed_at).total_seconds() <= 30
+                        and snapshot.liquidity_usd is not None and math.isfinite(snapshot.liquidity_usd)
+                        and snapshot.liquidity_usd >= getattr(self, '_chain_paper_execution', {}).get('min_pool_liquidity_usd', 1000.0))
+                    if rediscovery_probe and 'admit_mature_probe' in member['seen']:
+                        reason = 'skip_probe_episode_consumed'
+                        continue
                 if token_id not in held and occupied.get(slot, 0) >= capacity:
                     floor = getattr(self, "_chain_paper_execution", {}).get("min_pool_liquidity_usd", 1000.0)
                     liquidity = getattr(snapshot, "liquidity_usd", None)
@@ -7458,6 +7479,12 @@ class Runtime:
                         if key not in held and (item["token"].chain, item["bucket"]) == slot
                         and ((value := getattr(item["quote"], "liquidity_usd", None)) is None
                              or not math.isfinite(value) or value < floor)), None)
+                    if rediscovery_probe:
+                        replacement = None  # Probe rotation must honor residency and pending protection even for a weak incumbent.
+                    elif replacement is not None and watch[replacement].get('rediscovery_probe'):
+                        from .rediscovery_probe import protected
+                        if protected(self, replacement):
+                            replacement = None
                     if replacement is not None:
                         reason, victim = "replace_unusable", replacement
                         watch.pop(replacement)
@@ -7468,8 +7495,15 @@ class Runtime:
                         reason = "admit_borrow"
                         self._pattern_watch_borrows = getattr(self, "_pattern_watch_borrows", 0) + 1
                     else:
-                        reason = "skip_bucket_full"
-                        continue
+                        from .rediscovery_probe import victim as probe_victim
+                        replacement = probe_victim(self, watch, chain, current) if rediscovery_probe else None
+                        if replacement is None:
+                            reason = "skip_bucket_full"
+                            continue
+                        reason, victim = 'admit_mature_probe', replacement
+                        watch.pop(replacement)
+                        occupied[slot] -= 1
+                        chain_used[chain] -= 1
                 elif token_id not in held and chain_used.get(chain, 0) >= 10:
                     # An underfilled base reservation reclaims the newest borrowed
                     # watch deterministically, never a held or base-reserved slot.
@@ -7489,9 +7523,17 @@ class Runtime:
                     reason = "admit_held" if token_id in held else "admit_base"
                 admitted = True
                 watch[token_id] = {"token": token, "bucket": bucket, "quote": snapshot,
+                    "admitted_at": current,
                     "pool_created_at_ms": float(created),
                     "pair_address": canonical_token_address(chain, address),
                     "expires_at": current + timedelta(minutes=20 if bucket == "mature" else 15)}
+                if rediscovery_probe and (reason == 'admit_mature_probe' or occupied.get(slot, 0) == 2
+                        and not any(v.get('rediscovery_probe') and k not in held and v['token'].chain == chain
+                                    for k, v in watch.items())):
+                    from .rediscovery_probe import LEASE_SECONDS
+                    reason = 'admit_mature_probe'
+                    watch[token_id]['rediscovery_probe'] = True
+                    watch[token_id]['expires_at'] = current + timedelta(seconds=LEASE_SECONDS)
                 if token_id not in held:
                     occupied[slot] = occupied.get(slot, 0) + 1
                     chain_used[chain] = chain_used.get(chain, 0) + 1

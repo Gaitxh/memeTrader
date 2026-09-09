@@ -64,7 +64,12 @@ def test_mature_full_spare_then_chain_full_and_held_exempt(monkeypatch):
         s=TokenSnapshot('bsc',address,1,5000,None,200,6,4,observed_at=now,ingested_at=now,
             raw={'pair':{'pairAddress':'pool'+address,'pairCreatedAt':(now-timedelta(seconds=age)).timestamp()*1000}})
         for runtime in (plain,r):runtime._remember_pattern_quotes({t.token_id:(t,s)})
-        assert r._pattern_watch==plain._pattern_watch
+        assert r._pattern_watch.keys()==plain._pattern_watch.keys()
+        for key,item in r._pattern_watch.items():
+            if item.get('rediscovery_probe'):
+                assert item['expires_at']==now+timedelta(seconds=120)
+            else:
+                assert item==plain._pattern_watch[key]
     send('held',30000)
     for i in range(3):send(str(i),30000)
     send('spare',30000)
