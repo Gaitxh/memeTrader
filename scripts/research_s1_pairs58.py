@@ -4,12 +4,15 @@ import json
 import math
 import sqlite3
 import statistics
+import argparse
 from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / 'data/research/s1_pairs58'
-OUT.mkdir(exist_ok=True)
+parser=argparse.ArgumentParser()
+parser.add_argument('--output-dir', default='data/research/s1_pairs58')
+OUT = ROOT / parser.parse_args().output_dir
+OUT.mkdir(parents=True,exist_ok=True)
 ARMS = ('age_rate_horizon_fast_v1', 'age_rate_horizon_runner_v1')
 VERSION = 'chain-meme-trader/funding-20260906-v002-final-1000'
 def date(s): return datetime.fromisoformat(s.replace('Z', '+00:00'))
