@@ -1361,6 +1361,8 @@ class Runtime:
                     self.store.register_chain_meme_quiet_renewal()
                     self.store.register_chain_meme_early_impulse()
                     self.store.register_chain_meme_impulse_profit_lock()
+                    from .admission_audit import AdmissionAudit
+                    self._admission_audit = AdmissionAudit(self.root / "data" / "research" / "admission84")
                     self._cohort_started_at = utcnow()
                     self._cohort_state = self.store.get_kv(
                         f"passive-cohort:{self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION}", {})
@@ -7369,76 +7371,96 @@ class Runtime:
                 watch[key] = item
                 occupied[slot] = occupied.get(slot, 0) + 1
                 chain_used[slot[0]] = chain_used.get(slot[0], 0) + 1
+        audit = getattr(self, "_admission_audit", None)
         for token, snapshot in quoted.values():
-            token_id, chain = token.token_id, token.chain
-            if token_id in watch:
+            ticket = audit.capture(current, token, snapshot, watch, held,
+                getattr(self, "_chain_paper_execution", {}).get("min_pool_liquidity_usd", 1000.0)) if audit else None
+            reason, victim, admitted = "skip_invalid_input", None, False
+            try:
+                token_id, chain = token.token_id, token.chain
+                if token_id in watch:
+                    raw = snapshot.raw or {}
+                    pairs = raw.get("pairs") or [raw.get("pair", raw)]
+                    if any(canonical_token_address(chain, str(p.get("pairAddress") or ""))
+                           == watch[token_id]["pair_address"] for p in pairs):
+                        reason = "refresh_exact_pool"
+                        watch[token_id]["quote"] = snapshot
+                    else:
+                        reason = "skip_other_pool"
+                        # Do not let another pool erase an unconsumed original-pool
+                        # frame or postpone its refresh with an unusable timestamp.
+                        self._pattern_watch_other_pool_skips = getattr(
+                            self, "_pattern_watch_other_pool_skips", 0) + 1
+                    continue
+                if chain not in {"solana", "bsc", "robinhood"}:
+                    reason = "skip_chain"
+                    continue
                 raw = snapshot.raw or {}
-                pairs = raw.get("pairs") or [raw.get("pair", raw)]
-                if any(canonical_token_address(chain, str(p.get("pairAddress") or ""))
-                       == watch[token_id]["pair_address"] for p in pairs):
-                    watch[token_id]["quote"] = snapshot
-                else:
-                    # Do not let another pool erase an unconsumed original-pool
-                    # frame or postpone its refresh with an unusable timestamp.
-                    self._pattern_watch_other_pool_skips = getattr(
-                        self, "_pattern_watch_other_pool_skips", 0) + 1
-                continue
-            if chain not in {"solana", "bsc", "robinhood"}:
-                continue
-            raw = snapshot.raw or {}
-            pair = raw.get("pair", raw)
-            address = str(pair.get("pairAddress") or "")
-            created = pair.get("pairCreatedAt")
-            if not address or not created or snapshot.price_usd is None or snapshot.price_usd <= 0:
-                continue
-            age = current.timestamp() - float(created) / 1000
-            bucket = "early" if age < 900 else "growth" if age < 21600 else "mature"
-            capacity = base_caps[bucket]
-            slot = (chain, bucket)
-            if age < 0:
-                continue
-            if token_id not in held and occupied.get(slot, 0) >= capacity:
-                floor = getattr(self, "_chain_paper_execution", {}).get("min_pool_liquidity_usd", 1000.0)
-                liquidity = getattr(snapshot, "liquidity_usd", None)
-                # Preserve valid paths and held work. Only a fresh usable quote
-                # may replace a non-held slot whose liquidity cannot meet the floor.
-                if (liquidity is None or not math.isfinite(liquidity) or liquidity < floor
-                        or (current - snapshot.observed_at).total_seconds() > 30
-                        or self._paper_quote_rejections(token_id, token, snapshot, current)):
+                pair = raw.get("pair", raw)
+                address = str(pair.get("pairAddress") or "")
+                created = pair.get("pairCreatedAt")
+                if not address or not created or snapshot.price_usd is None or snapshot.price_usd <= 0:
                     continue
-                replacement = next((key for key, item in watch.items()
-                    if key not in held and (item["token"].chain, item["bucket"]) == slot
-                    and ((value := getattr(item["quote"], "liquidity_usd", None)) is None
-                         or not math.isfinite(value) or value < floor)), None)
-                if replacement is not None:
-                    watch.pop(replacement)
-                    occupied[slot] -= 1
+                age = current.timestamp() - float(created) / 1000
+                bucket = "early" if age < 900 else "growth" if age < 21600 else "mature"
+                capacity = base_caps[bucket]
+                slot = (chain, bucket)
+                if age < 0:
+                    reason = "skip_future_creation"
+                    continue
+                if token_id not in held and occupied.get(slot, 0) >= capacity:
+                    floor = getattr(self, "_chain_paper_execution", {}).get("min_pool_liquidity_usd", 1000.0)
+                    liquidity = getattr(snapshot, "liquidity_usd", None)
+                    # Preserve valid paths and held work. Only a fresh usable quote
+                    # may replace a non-held slot whose liquidity cannot meet the floor.
+                    if (liquidity is None or not math.isfinite(liquidity) or liquidity < floor
+                            or (current - snapshot.observed_at).total_seconds() > 30
+                            or self._paper_quote_rejections(token_id, token, snapshot, current)):
+                        continue
+                    replacement = next((key for key, item in watch.items()
+                        if key not in held and (item["token"].chain, item["bucket"]) == slot
+                        and ((value := getattr(item["quote"], "liquidity_usd", None)) is None
+                             or not math.isfinite(value) or value < floor)), None)
+                    if replacement is not None:
+                        reason, victim = "replace_unusable", replacement
+                        watch.pop(replacement)
+                        occupied[slot] -= 1
+                        chain_used[chain] -= 1
+                        self._pattern_watch_replacements = getattr(self, "_pattern_watch_replacements", 0) + 1
+                    elif bucket == "early" and chain_used.get(chain, 0) < 10:
+                        reason = "admit_borrow"
+                        self._pattern_watch_borrows = getattr(self, "_pattern_watch_borrows", 0) + 1
+                    else:
+                        reason = "skip_bucket_full"
+                        continue
+                elif token_id not in held and chain_used.get(chain, 0) >= 10:
+                    # An underfilled base reservation reclaims the newest borrowed
+                    # watch deterministically, never a held or base-reserved slot.
+                    replacement = next((key for key in reversed(watch)
+                        if key not in held and watch[key]["token"].chain == chain
+                        and occupied.get((chain, watch[key]["bucket"]), 0)
+                            > base_caps[watch[key]["bucket"]]), None)
+                    if replacement is None:
+                        reason = "skip_chain_full"
+                        continue
+                    reason, victim = "reclaim_reservation", replacement
+                    replaced = watch.pop(replacement)
+                    occupied[(chain, replaced["bucket"])] -= 1
                     chain_used[chain] -= 1
-                    self._pattern_watch_replacements = getattr(self, "_pattern_watch_replacements", 0) + 1
-                elif bucket == "early" and chain_used.get(chain, 0) < 10:
-                    self._pattern_watch_borrows = getattr(self, "_pattern_watch_borrows", 0) + 1
-                else:
-                    continue
-            elif token_id not in held and chain_used.get(chain, 0) >= 10:
-                # An underfilled base reservation reclaims the newest borrowed
-                # watch deterministically, never a held or base-reserved slot.
-                replacement = next((key for key in reversed(watch)
-                    if key not in held and watch[key]["token"].chain == chain
-                    and occupied.get((chain, watch[key]["bucket"]), 0)
-                        > base_caps[watch[key]["bucket"]]), None)
-                if replacement is None:
-                    continue
-                replaced = watch.pop(replacement)
-                occupied[(chain, replaced["bucket"])] -= 1
-                chain_used[chain] -= 1
-                self._pattern_watch_reservation_reclaims = getattr(self, "_pattern_watch_reservation_reclaims", 0) + 1
-            watch[token_id] = {"token": token, "bucket": bucket, "quote": snapshot,
-                "pool_created_at_ms": float(created),
-                "pair_address": canonical_token_address(chain, address),
-                "expires_at": current + timedelta(minutes=20 if bucket == "mature" else 15)}
-            if token_id not in held:
-                occupied[slot] = occupied.get(slot, 0) + 1
-                chain_used[chain] = chain_used.get(chain, 0) + 1
+                    self._pattern_watch_reservation_reclaims = getattr(self, "_pattern_watch_reservation_reclaims", 0) + 1
+                if reason == "skip_invalid_input":
+                    reason = "admit_held" if token_id in held else "admit_base"
+                admitted = True
+                watch[token_id] = {"token": token, "bucket": bucket, "quote": snapshot,
+                    "pool_created_at_ms": float(created),
+                    "pair_address": canonical_token_address(chain, address),
+                    "expires_at": current + timedelta(minutes=20 if bucket == "mature" else 15)}
+                if token_id not in held:
+                    occupied[slot] = occupied.get(slot, 0) + 1
+                    chain_used[chain] = chain_used.get(chain, 0) + 1
+            finally:
+                if ticket is not None:
+                    ticket["actual"] = {"reason": reason, "victim": victim, "admitted": admitted}
         self._pattern_watch = watch
         self._pattern_watch_nonheld_by_chain_bucket = {
             chain: {bucket: occupied.get((chain, bucket), 0) for bucket in base_caps}
@@ -7446,6 +7468,10 @@ class Runtime:
 
     async def chain_meme_cohort_observer_once(self) -> None:
         from .cohort_experiments import consume_passive_cohort_batch
+        audit = getattr(self, "_admission_audit", None)
+        if audit is not None and self._chain_meme_active_idle().is_set():
+            await audit.flush()
+            self.store.set_kv("pattern-admission-shadow", audit.status())
         phase_started = asyncio.get_running_loop().time()
         batches = getattr(self, "_cohort_batches", None)
         pending = getattr(self, "_cohort_pending", {})
