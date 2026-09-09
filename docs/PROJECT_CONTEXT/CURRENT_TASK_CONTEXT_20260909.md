@@ -1,3 +1,7 @@
+## CURRENT storage delta — STORAGE-PILOT-102 deferred
+
+Fresh19:19:31Z check:1 current-version open/1 held, so zero-held compression prerequisite fails. No compact/hash/heavy scan or backup mutation; bytes freed0. Exact backup remains8,347,525,120 bytes. See STORAGE_PILOT_102.md and exact CODEX-STORAGE-PILOT-RESULT-102. This is distinct from cohort-idempotency102; do not repeat compression without a fresh natural eligible window and full original gates.
+
 ## CURRENT delta — path-shape101 bounded validation complete
 
 Exact message C2C-20260909-PATH-SHAPE-HAZARD-101 (distinct from Agent trim101 and occupancy101): INSUFFICIENT_EVIDENCE_DO_NOT_DEPLOY_SHADOW. See PATH_SHAPE_HAZARD_101.md and data/research/path_shape101. Frozen71:46,521 anchors ->443 dense feature episodes; Sep8 staircase5 paths/2 severe losses/0 tails, but Sep7 staircase9 paths/3 tails/2 losses. High-monotonicity diagnostic veto would remove34/35 holdout severe-loss paths AND13/14 doubles. No supported safe regularity gate; no new runtime Shadow/strategy/restart/provider request.6 tests PASS. Missing floor/writeoff and vault overlap remain UNKNOWN. This closes this bounded research request, does not pause other product work, and does not change pairing/Lead/model/memory. Continue non-conflicting next evidence below; do not redo this study or deploy a shape filter without new supporting evidence.
