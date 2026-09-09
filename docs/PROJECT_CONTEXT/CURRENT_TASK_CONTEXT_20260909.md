@@ -1,3 +1,7 @@
+## CURRENT delta — path-shape101 bounded validation complete
+
+Exact message C2C-20260909-PATH-SHAPE-HAZARD-101 (distinct from Agent trim101 and occupancy101): INSUFFICIENT_EVIDENCE_DO_NOT_DEPLOY_SHADOW. See PATH_SHAPE_HAZARD_101.md and data/research/path_shape101. Frozen71:46,521 anchors ->443 dense feature episodes; Sep8 staircase5 paths/2 severe losses/0 tails, but Sep7 staircase9 paths/3 tails/2 losses. High-monotonicity diagnostic veto would remove34/35 holdout severe-loss paths AND13/14 doubles. No supported safe regularity gate; no new runtime Shadow/strategy/restart/provider request.6 tests PASS. Missing floor/writeoff and vault overlap remain UNKNOWN. This closes this bounded research request, does not pause other product work, and does not change pairing/Lead/model/memory. Continue non-conflicting next evidence below; do not redo this study or deploy a shape filter without new supporting evidence.
+
 ## CURRENT — continuation checkpoint100 after safety105 (2026-09-09 UTC)
 
 This block supersedes conflicting status/next-action prose below; retain earlier sections as dated history. User saying only “continue/继续” means resume this product work from these evidence pointers, not replay all historical messages. Latest completed code355fa76, documentation4e984ac. Runtime last verified running/Paper/Live locked19:02:57Z; this is a cutoff, not perpetual health. Existing exact Codex session remains01a07b17-8f78-7cb1-bb4f-5d5d15607097. This checkpoint does not verify or alter Project memory/model/reasoning/pairing/Lead.

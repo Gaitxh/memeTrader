@@ -1,5 +1,7 @@
 # Failure lessons and mandatory future strategy checklist73
 
+Path-shape101 adds a specific guard: do not conflate price linearity with trade-flow regularity or confirmed manipulation. Frozen dense-path holdout high-monotonicity bin contains34/35 observed severe-loss paths but13/14 observed doubles; staircase exploration includes3 doubles despite later holdout hazard. Require separate shape/flow provenance, source/coverage controls, first-hit and tail-sacrifice accounting before any soft hazard promotion. No below-floor frame or missing path may be inferred as rug/writeoff. The443/46,521 coverage and absent eligible vault overlap fail the conditional Shadow gate; see PATH_SHAPE_HAZARD_101.md.
+
 This is an evidence taxonomy, not a reason to resurrect failed thresholds. Every paused arm retains its exact KV reason and historical results; index data/research/failure73/paused_arms.json maps current arms to recorded dispositions, not invented individual conclusions.
 
 |Failure family|Observed examples|Lesson/required falsifier|

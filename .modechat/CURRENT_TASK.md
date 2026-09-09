@@ -1,3 +1,7 @@
+# CURRENT delta — path-shape101 research complete, no deployment
+
+Read docs/PROJECT_CONTEXT/PATH_SHAPE_HAZARD_101.md. Exact PATH-SHAPE-HAZARD-101 validation failed the conditional Shadow gate: dense coverage443/46,521; regularity can remove right tails as well as losses. No runtime/safety/strategy change; continuation remains the product work below, not a new shape-veto implementation. Pairing and Lead unchanged/unverified.
+
 # CURRENT product checkpoint — completed through BSC safety105
 
 “continue/继续” resumes the existing memeTrader product task in this exact Codex session. Read the CURRENT header in E:/memeTrader/docs/PROJECT_CONTEXT/CURRENT_TASK_CONTEXT_20260909.md; it supersedes the historical takeover/74 text below. This is a business-context update only; no pairing, Lead, memory or model/reasoning verification is asserted.
