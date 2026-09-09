@@ -5,11 +5,36 @@ from dataclasses import replace
 from datetime import timedelta
 import json
 import math
+import re
 import time
 
 from .models import canonical_token_address, iso, parse_time, utcnow
 
 VERSION = 'preentry_obvious_scam_v1'
+
+
+def rwa_metadata_scope(row, token_id, decision_at):
+    """Only frozen provider base-token grammar; never mutable token names/symbols."""
+    out=dict(status='UNKNOWN',classification_only=True,not_a_scam_claim=True,
+        reason='missing_ambiguous_or_nonstandard_metadata',source_at=None)
+    if row is None:return out
+    try:
+        r=dict(row);chain,address=token_id.split(':',1)
+        pair=json.loads(r['raw_json']).get('pair') or {};base=pair.get('baseToken') or {}
+        if not (r['token_id']==token_id and pair.get('chainId')==chain
+            and canonical_token_address(chain,base.get('address',''))==canonical_token_address(chain,address)
+            and parse_time(r['observed_at'])<=parse_time(r['ingested_at'])<=parse_time(r['recorded_at'])<=parse_time(decision_at)):
+            return out
+        name=base.get('name')
+        if not isinstance(name,str):return out
+        name=' '.join(name.split())
+        issuer=r"[A-Za-z][A-Za-z0-9 .,&'’-]{1,150}"
+        grammar=(r"(?:Class [AB] )?Common Stock \(Derivatives\)",r"Tokenized Stock \(Reality\)")
+        out.update(source_at=r['observed_at'],recorded_at=r['recorded_at'],provider=r['provider'],provider_name=name[:220])
+        if any(re.fullmatch(issuer+' '+suffix,name,flags=re.IGNORECASE) for suffix in grammar):
+            out.update(status='EXCLUDED_NON_MEME_RWA',reason='non_meme_rwa_standardized_security_name')
+    except (KeyError,TypeError,ValueError):pass
+    return out
 
 def stock_registry_evidence(connection, token_id, decision_at):
     chain, address = token_id.split(':', 1)
@@ -221,7 +246,7 @@ class PreentrySafety:
                 (status,item['version'],item['cohort_id']))
 
     def guard(self,*,version,cohort_id,token_id,snapshot_id,filled_at,definition,reason,**kwargs):
-        row=self.store.db.execute('SELECT raw_json,observed_at FROM token_snapshots WHERE id=?',(snapshot_id,)).fetchone()
+        row=self.store.db.execute('SELECT * FROM token_snapshots WHERE id=?',(snapshot_id,)).fetchone()
         pair=(json.loads(row['raw_json']).get('pair') or {}) if row else {}
         pool=canonical_token_address(token_id.split(':')[0],str(pair.get('pairAddress') or ''))
         item=dict(version=version,cohort_id=cohort_id,token_id=token_id,pool=pool,snapshot_id=snapshot_id,
@@ -231,6 +256,13 @@ class PreentrySafety:
         item['signal_price_usd']=kwargs.get('signal_price_usd')
         item['shadow_costs']={key:definition.get(key,default) for key,default in (
             ('buy_slippage_bps',400),('sell_slippage_bps',400),('additional_fee_usd_each_fill',0.0),('min_pool_liquidity_usd',1000))}
+        scope=rwa_metadata_scope(row,token_id,filled_at)
+        item['rwa_metadata_scope']=scope
+        if scope['status']=='EXCLUDED_NON_MEME_RWA':
+            self.record(item,'REJECT_SCOPE',dict(status='REJECT',allow=False,
+                reasons=[scope['reason']],source_at=scope['source_at'],scope_evidence=scope,
+                classification_only=True,not_a_scam_claim=True))
+            return False
         registry = stock_registry_evidence(self.store.db,token_id,filled_at)
         if registry is not None:
             item['stock_registry'] = registry

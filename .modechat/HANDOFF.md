@@ -1,3 +1,6 @@
+# Cross-chain RWA scope113 ready, not loaded
+Frozen exact-token provider name full standardized securities grammar only, REJECT_SCOPE not scam; stock/ETF memes and UNKNOWN unaffected by this classifier.77targetedPASS. See CROSSCHAIN_RWA_SCOPE_113.md. Prior process-control policy block unresolved; final109 and110-113 await supported load. No natural blocking claim or historical PnL change.
+
 # Fresh impulse112 observer ready, not loaded
 Future parent actual fills only, causal prior same-pool BUY/terminal receipts and persisted rediscovery classification; no funded policy/veto/network. Exact parent terminal comparator;18distinct testsPASS. See AGE_RATE_FRESH_IMPULSE_112.md. Process-control block persists;109final/110/111/112 not loaded, no natural result claim. Pairing unchanged.
 
