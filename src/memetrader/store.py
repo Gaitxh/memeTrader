@@ -34974,12 +34974,27 @@ class Store:
                 (version,),
             ).fetchall()
         }
-        trade_totals = self.db.execute(
-            "SELECT arm_id,COALESCE(SUM(net_cash_flow_usd),0.0) AS net_flow_usd,"
-            "COALESCE(SUM(realized_pnl_usd),0.0) AS realized_usd "
-            "FROM chain_meme_trader_trades WHERE definition_version=? GROUP BY arm_id",
-            (version,),
-        ).fetchall()
+        # Trade receipts are append-only. Corrections/credits/contaminations below
+        # remain live inputs, not cached adjusted balances. A global PK frontier
+        # is cheap and conservatively invalidates on another period's receipt.
+        trade_frontier=int(self.db.execute("SELECT COALESCE(MAX(id),0) FROM chain_meme_trader_trades").fetchone()[0])
+        external_revision=int(self.db.execute("PRAGMA data_version").fetchone()[0])
+        committed_inputs=not self.db.in_transaction
+        cache=getattr(self,'_account_trade_totals_cache',{})
+        cached=cache.get(version)
+        if committed_inputs and cached is not None and cached[:2]==(trade_frontier,external_revision):
+            trade_totals=cached[2]
+        else:
+            trade_totals = self.db.execute(
+                "SELECT arm_id,COALESCE(SUM(net_cash_flow_usd),0.0) AS net_flow_usd,"
+                "COALESCE(SUM(realized_pnl_usd),0.0) AS realized_usd "
+                "FROM chain_meme_trader_trades WHERE definition_version=? GROUP BY arm_id",
+                (version,),
+            ).fetchall()
+            if committed_inputs:
+                if version not in cache and len(cache)>=8:cache.clear()
+                cache[version]=(trade_frontier,external_revision,trade_totals)
+                self._account_trade_totals_cache=cache
         net_flow_by_arm = {
             str(row["arm_id"]): float(row["net_flow_usd"] or 0.0)
             for row in trade_totals
@@ -35156,7 +35171,6 @@ class Store:
             ).fetchall()
         }
         inserted = 0
-        paused_arms = {p["arm_id"] for p in definition["policies"] if p.get("entry_paused")}
         for arm_id in policy_ids:
             arm_corrections = corrections_by_arm.get(arm_id, {})
             contaminated_cohorts = contaminations_by_arm.get(arm_id, set())
@@ -35280,9 +35294,9 @@ class Store:
                     "valuation_status", "ledger_trade_frontier_id",
                 ))
                 age = (current - parse_time(latest["recorded_at"])).total_seconds()
-                # A drained, unchanged retired account needs no periodic snapshots.
+                # Any drained, unchanged account needs no periodic snapshots.
                 # A final exit or cash/correction change still produces a new snapshot.
-                if arm_id in paused_arms and no_open_positions and previous[:-1] == payload[3:-1]:
+                if no_open_positions and previous[:-1] == payload[3:-1]:
                     continue
                 if age < 10.0 or (previous == payload[3:] and age < 60.0):
                     continue
