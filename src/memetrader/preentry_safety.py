@@ -192,6 +192,12 @@ class PreentrySafety:
             self.store.db.execute('INSERT INTO kv(key,value_json,updated_at) VALUES(?,?,?) '
                 'ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at',
                 ('safety-veto-shadow95',json.dumps(self.store._safety_veto_shadow.snapshot()),now))
+        # Capacity refusal has no worker item: record an explicit consumed skip,
+        # rather than leaving an apparently resumable claim without a queue slot.
+        if status.startswith('REJECT') or status in {'EXPIRED_SECURITY_OR_NEXT_FRAME','WAIT_QUEUE_CAPACITY'}:
+            self.store.db.execute('UPDATE chain_meme_cohort_enrollment_claims SET terminal_reason=? '
+                'WHERE definition_version=? AND cohort_id=? AND terminal_reason IS NULL',
+                (status,item['version'],item['cohort_id']))
 
     def guard(self,*,version,cohort_id,token_id,snapshot_id,filled_at,definition,reason,**kwargs):
         row=self.store.db.execute('SELECT raw_json,observed_at FROM token_snapshots WHERE id=?',(snapshot_id,)).fetchone()

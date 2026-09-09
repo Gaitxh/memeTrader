@@ -164,7 +164,7 @@ class NarrativeHold:
             {'decision_eligible':False,'affects':'observer_only','case':case['id'],**payload},observed_at=at,source_key=case['id']+':'+kind+':'+payload.get('checkpoint','case'))
 
     def collect(self):
-        rows=self.store.db.execute('SELECT id,definition_version,shadow_cohort_id,token_id,side,created_at FROM chain_meme_trader_trades WHERE id>? ORDER BY id LIMIT 256',(self.state['cursor'],)).fetchall()
+        rows=self.store.db.execute('SELECT id,definition_version,shadow_cohort_id,token_id,arm_id,side,created_at FROM chain_meme_trader_trades WHERE id>? ORDER BY id LIMIT 256',(self.state['cursor'],)).fetchall()
         for row in rows:
             self.state['cursor']=row['id']
             if row['side']!='BUY' or row['definition_version']!=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION:continue
@@ -174,7 +174,13 @@ class NarrativeHold:
                 (row['definition_version'],'narrative_hold_case_v2',key+':case:case')).fetchone():continue
             p=self.store.db.execute('SELECT * FROM chain_meme_trader_positions WHERE definition_version=? AND token_id=? AND shadow_cohort_id=? LIMIT 1',(row['definition_version'],row['token_id'],row['shadow_cohort_id'])).fetchone()
             if not p:continue
-            cohort=self.store.db.execute('SELECT pair_address FROM chain_meme_trader_v6_cohorts WHERE id=?',(row['shadow_cohort_id'],)).fetchone()
+            cohort=self.store.db.execute('SELECT pair_address,feature_json FROM chain_meme_trader_v6_cohorts WHERE id=?',(row['shadow_cohort_id'],)).fetchone()
+            if cohort:
+                from .cohort_enrollment import owner
+                features=json.loads(cohort['feature_json']);decision=features.get('event_keys',{}).get(row['arm_id'])
+                if decision and row['arm_id'] in features.get('cohort_signals',{}):
+                    original=owner(self.store.db,row['definition_version'],row['arm_id'],str(decision),row['token_id'])
+                    if original is not None and original!=row['shadow_cohort_id']:continue
             case={'id':key,'token_id':row['token_id'],'cohort_id':row['shadow_cohort_id'],'pool':cohort[0] if cohort else '',
                 'opened_at':p['opened_at'],'points':{},'leads':[],'first_buy_id':row['id']}
             self.record(case,'case',{'opened_at':p['opened_at'],'first_buy_id':row['id']},utcnow())

@@ -1261,6 +1261,8 @@ class ChainWebData:
             unavailable_reason_by_position: dict[tuple[str, int], str] = {}
             unresolved_by_arm: dict[str, int] = defaultdict(int)
             entry_anomalies_by_arm: dict[str, int] = defaultdict(int)
+            from .cohort_enrollment import annotations, annotation_id
+            duplicate_opportunities=annotations(connection,active_version)
             effective_open_token_ids: set[str] = set()
             for row in self._rows(
                 connection,
@@ -1286,7 +1288,8 @@ class ChainWebData:
                 (active_version,),
             ):
                 arm = str(row["arm_id"])
-                if row["entry_liquidity_usd"] is not None and float(row["entry_liquidity_usd"]) < 1.0:
+                if (row["entry_liquidity_usd"] is not None and float(row["entry_liquidity_usd"]) < 1.0
+                        or annotation_id(arm,row['shadow_cohort_id']) in duplicate_opportunities):
                     entry_anomalies_by_arm[arm] += 1
                 key = (arm, int(row["shadow_cohort_id"]))
                 if key in contaminated_positions:
@@ -2357,6 +2360,9 @@ class ChainWebData:
                 }
             )
             terminal_pnls: dict[tuple[str, str], list[float]] = defaultdict(list)
+            from .cohort_enrollment import annotations, annotation_id
+            duplicate_by_version={v:annotations(connection,v) for v in contamination_by_version}
+            duplicate_counts=Counter()
             terminal_blocks: dict[tuple[str, str], set[str]] = defaultdict(set)
             for row in connection.execute(
                 "SELECT definition_version,arm_id,shadow_cohort_id,status,"
@@ -2392,6 +2398,9 @@ class ChainWebData:
                 if effective_status in {"closed", "written_off"}:
                     stats["realized_pnl_usd"] += effective_pnl
                     stats["win_count"] += int(effective_pnl > 0.0)
+                    if annotation_id(arm,row['shadow_cohort_id']) in duplicate_by_version.get(definition_version,{}):
+                        duplicate_counts[key]+=1
+                        continue  # Retain ledger PnL, exclude duplicate independent outcomes.
                     terminal_pnls[key].append(effective_pnl)
                     if effective_closed_at:
                         terminal_blocks[key].add(str(effective_closed_at)[:10])
@@ -2493,7 +2502,7 @@ class ChainWebData:
                         max(pnl_values) / positive_total
                         if positive_total > 0.0 and pnl_values else None
                     )
-                    rank_eligible = terminal_count > 0
+                    rank_eligible = terminal_count > 0 and not duplicate_counts[key]
                     stop_reason = stop_reasons.get(definition_version, "")
                     stop_lower = stop_reason.lower()
                     fidelity_status = str(
@@ -2565,7 +2574,12 @@ class ChainWebData:
                         },
                         "stop_reason": stop_reason or None,
                         "rank_eligible": rank_eligible,
+                        "duplicate_opportunity_count": duplicate_counts[key],
+                        "independent_terminal_sample_count": len(pnl_values),
+                        "duplicate_exclusion_scope": "research_only_raw_ledger_unchanged" if duplicate_counts[key] else None,
+                        "research_metrics_eligible": not duplicate_counts[key],
                         "evidence_status": (
+                            "DUPLICATE_OPPORTUNITY_CONTAMINATION" if duplicate_counts[key] else
                             "MATURE" if terminal_count >= 30
                             else "PROVISIONAL" if terminal_count > 0 else "NO_TERMINAL_SAMPLE"
                         ),
@@ -2577,7 +2591,7 @@ class ChainWebData:
                         "win_count": int(positions.get("win_count") or 0),
                         "realized_pnl_usd": realized_pnl,
                         "realized_pnl_per_terminal_usd": (
-                            realized_pnl / terminal_count if terminal_count else None
+                            realized_pnl / terminal_count if terminal_count and not duplicate_counts[key] else None
                         ),
                         "median_terminal_pnl_usd": median_pnl,
                         "trimmed_mean_terminal_pnl_usd": trimmed_mean,

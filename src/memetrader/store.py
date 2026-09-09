@@ -2875,6 +2875,17 @@ class Store:
                     ON chain_meme_trader_entry_decisions(
                         definition_version,shadow_cohort_id,status,arm_id
                     );
+                CREATE TABLE IF NOT EXISTS chain_meme_cohort_enrollment_claims (
+                    definition_version TEXT NOT NULL,
+                    arm_id TEXT NOT NULL,
+                    decision_key TEXT NOT NULL,
+                    cohort_id INTEGER NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    terminal_reason TEXT,
+                    PRIMARY KEY(definition_version,arm_id,decision_key)
+                );
+                CREATE INDEX IF NOT EXISTS chain_meme_cohort_enrollment_claims_cohort_idx
+                    ON chain_meme_cohort_enrollment_claims(definition_version,cohort_id);
                 CREATE TABLE IF NOT EXISTS chain_meme_trader_marks (
                     id INTEGER PRIMARY KEY,
                     definition_version TEXT NOT NULL,
@@ -27251,11 +27262,8 @@ class Store:
                         continue
                     event_keys[arm] = str(signal["decision_key"])
                     accepted_cohort_signals[arm] = signal
-                    used = self.db.execute(
-                        "SELECT 1 FROM chain_meme_trader_positions p JOIN chain_meme_trader_v6_cohorts c "
-                        "ON c.id=p.shadow_cohort_id WHERE p.definition_version=? AND p.arm_id=? AND p.token_id=? "
-                        "AND json_extract(c.feature_json,?)=? LIMIT 1",
-                        (version, arm, token.token_id, '$.event_keys."'+arm+'"', event_keys[arm])).fetchone()
+                    from .cohort_enrollment import owner
+                    used = owner(self.db,version,arm,event_keys[arm],token.token_id)
                     if used or arm in still_open:
                         entry_blocked[arm] = "cohort_event_consumed_or_position_open"
                     else:
@@ -28244,6 +28252,9 @@ class Store:
         signal_price_usd: float | None = None,
     ) -> int:
         """Project one visible DEX price into eligible Paper accounts."""
+        from .cohort_enrollment import claim_decisions
+        decisions = claim_decisions(self.db,version,cohort_id,token_id,filled_at)
+        if not decisions:return 0
         safety = getattr(self, "_preentry_safety", None)
         self.rediscovery_funnel_hit(token_id, 'safety_stage', filled_at)
         if safety is not None and not safety.guard(version=version,cohort_id=cohort_id,
@@ -28281,11 +28292,6 @@ class Store:
         if entry_fill is None:
             return 0
         projected = 0
-        decisions = self.db.execute(
-            "SELECT * FROM chain_meme_trader_entry_decisions WHERE "
-            "definition_version=? AND shadow_cohort_id=? AND status='admitted' "
-            "ORDER BY arm_id", (version, int(cohort_id)),
-        ).fetchall()
         # Already admitted/queued observations must not reopen a paused account.
         paused = {p["arm_id"] for p in definition["policies"] if p.get("entry_paused")}
         decisions = [d for d in decisions if str(d["arm_id"]) not in paused]
@@ -35382,6 +35388,8 @@ class Store:
             (str(row["arm_id"]), int(row["shadow_cohort_id"])): row
             for row in contamination_rows
         }
+        from .cohort_enrollment import annotations, annotation_id
+        duplicate_opportunities = annotations(connection,version)
         contaminated_net_by_arm: dict[str, float] = {}
         contaminated_realized_by_arm: dict[str, float] = {}
         if contaminations_by_position:
@@ -35530,6 +35538,10 @@ class Store:
                     if row["entry_liquidity_usd"] is not None
                     and float(row["entry_liquidity_usd"]) < 1.0 else None
                 )
+                duplicate = duplicate_opportunities.get(annotation_id(arm_id,row['shadow_cohort_id']))
+                if duplicate:
+                    position['engineering_anomaly']='duplicate-opportunity-contamination'
+                    position['opportunity_contamination']=duplicate
                 position["research_metrics_eligible"] = not position["engineering_anomaly"]
                 correction = arm_corrections.get(int(row["shadow_cohort_id"]))
                 if correction is not None:
