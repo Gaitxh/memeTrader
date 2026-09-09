@@ -87,7 +87,7 @@ def test_provider_presence_without_usable_fact_cannot_authorize(payload):
     assert result['status']=='UNKNOWN' and not result['allow']
     assert result['usable_facts']==[] and result['hard_veto']==[]
 
-@pytest.mark.parametrize('payload',[{'is_honeypot':'0'},{'cannot_sell':'0'},{'sell_tax':'0.04'}])
+@pytest.mark.parametrize('payload',[{'is_honeypot':'0'},{'cannot_sell':'0'},{'cannot_sell_all':'0'}])
 def test_one_known_safety_fact_is_sufficient_without_all_fields(payload):
     token=TokenCandidate('bSC'.lower(),'0x'+'12'*20,'Risk','RISK',source='fixture')
     snap=_snapshot(token,'0x'+'34'*20,utcnow());snap.raw['goplus_evm']=payload
@@ -118,6 +118,64 @@ def test_empty_report_retries_only_after_existing_cache_ttl(tmp_path,monkeypatch
     clock[0]+=timedelta(seconds=44);asyncio.run(gate.work());assert len(calls)==1
     clock[0]+=timedelta(seconds=2);asyncio.run(gate.work());assert len(calls)==2
     assert gate.cache[(token.token_id,pool)]['allow'] and '1' in gate.pending
+    store.close()
+
+
+@pytest.mark.parametrize('payload',[{'sell_tax':'0.04'},{'buy_tax':'0','sell_tax':'0'}, {'honeypot_with_same_creator':'0'}])
+def test_bsc_weak_facts_do_not_authorize(payload):
+    token=TokenCandidate('bsc','0x'+'12'*20,'Risk')
+    snap=_snapshot(token,'0x'+'34'*20,utcnow());snap.raw['goplus_evm']=payload
+    r=assess(snap,None,source_at=iso())
+    assert r['status']=='WEAK' and not r['allow'] and not r['hard_veto']
+    snap.raw['goplus_evm']['hidden_owner']='1'
+    assert assess(snap,None,source_at=iso())['status']=='REJECT'
+
+
+@pytest.mark.parametrize('second,allowed', [({'cannot_sell_all':'0'},True),({'sell_tax':'0'},False),({},False),({'is_honeypot':'1'},False)])
+def test_weak_retry_once_persisted_and_shadow(tmp_path,monkeypatch,second,allowed):
+    clock=[utcnow()]
+    for module in ('store','models','preentry_safety'):
+        monkeypatch.setattr('memetrader.'+module+'.utcnow',lambda:clock[0])
+    store=Store(tmp_path/'weak.sqlite3',initial_cash_usd=1000)
+    token=TokenCandidate('bsc','0x'+'12'*20,'Weak');pool='0x'+'34'*20
+    store.upsert_token(token,seen_at=clock[0]);sid=store.add_snapshot(_snapshot(token,pool,clock[0]))
+    old=store.db.execute('SELECT raw_json FROM token_snapshots WHERE id=?',(sid,)).fetchone()[0]
+    calls=[]
+    async def enrich(snap):
+        calls.append(1);snap.raw['goplus_evm']={'sell_tax':'0'} if len(calls)==1 else second
+        snap.raw['honeypot_is_error']='HTTPStatusError'
+    checker=SimpleNamespace(config={},enrich_evm_execution_fields=enrich)
+    gate=PreentrySafety(store,checker)
+    gate.pending['1']=dict(version=store.CHAIN_MEME_TRADER_ACTIVE_VERSION,cohort_id=1,token_id=token.token_id,
+        pool=pool,snapshot_id=sid,requested_at=iso(clock[0]),notional=5,expires_at=iso(clock[0]+timedelta(seconds=120)))
+    asyncio.run(gate.work())
+    assert len(calls)==1 and gate.cache[(token.token_id,pool)]['status']=='WEAK'
+    assert next(iter(store._safety_veto_shadow.state['pending'].values()))['category']=='WAIT_WEAK'
+    clock[0]+=timedelta(seconds=4);asyncio.run(gate.work());assert len(calls)==1
+    gate=PreentrySafety(store,checker)  # Due/attempt state survives process loss.
+    clock[0]+=timedelta(seconds=1);asyncio.run(gate.work())
+    result=gate.cache[(token.token_id,pool)]
+    assert len(calls)==2 and result['allow']==allowed
+    assert result['provider_availability']['honeypot_is']['error_type']=='HTTPStatusError'
+    clock[0]+=timedelta(seconds=50);asyncio.run(gate.work());assert len(calls)==2
+    gate=PreentrySafety(store,checker);asyncio.run(gate.work());assert len(calls)==2
+    assert store.db.execute('SELECT raw_json FROM token_snapshots WHERE id=?',(sid,)).fetchone()[0]==old
+    store.close()
+
+
+@pytest.mark.parametrize('report',[{'is_honeypot':'0'},{'is_honeypot':'1'}])
+def test_strong_first_check_has_no_weak_retry(tmp_path,monkeypatch,report):
+    clock=[utcnow()]
+    for module in ('store','models','preentry_safety'):
+        monkeypatch.setattr('memetrader.'+module+'.utcnow',lambda:clock[0])
+    store=Store(tmp_path/'strong.sqlite3');token=TokenCandidate('bsc','0x'+'12'*20,'Strong');pool='0x'+'34'*20
+    store.upsert_token(token);sid=store.add_snapshot(_snapshot(token,pool,clock[0]));calls=[]
+    async def enrich(snap):calls.append(1);snap.raw['goplus_evm']=report
+    gate=PreentrySafety(store,SimpleNamespace(config={},enrich_evm_execution_fields=enrich))
+    gate.pending['1']=dict(version=store.CHAIN_MEME_TRADER_ACTIVE_VERSION,cohort_id=1,token_id=token.token_id,
+        pool=pool,snapshot_id=sid,expires_at=iso(clock[0]+timedelta(seconds=120)))
+    asyncio.run(gate.work());clock[0]+=timedelta(seconds=10);asyncio.run(gate.work())
+    assert len(calls)==1 and 'weak_retry_due_at' not in gate.pending['1']
     store.close()
 
 @pytest.mark.parametrize('report,allowed,hard', [

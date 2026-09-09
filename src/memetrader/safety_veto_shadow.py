@@ -13,9 +13,9 @@ class SafetyVetoShadow:
         self.dirty=False;self.last_flush=0.0
 
     def capture(self, item, status, assessment, anchor, arms, now):
-        if not (status.startswith('REJECT') or status=='WAIT_HAZARD'):return
+        if not (status.startswith('REJECT') or status in {'WAIT_HAZARD','WAIT_WEAK'}):return
         if parse_time(item['requested_at']) < parse_time(self.state['started_at']):return
-        category='REJECT' if status.startswith('REJECT') else 'WAIT_HAZARD'
+        category='REJECT' if status.startswith('REJECT') else status
         key=f"{item['version']}:{item['cohort_id']}:{category}"
         if key in self.state['seen']:return
         self.state['seen']=(self.state['seen']+[key])[-512:]
@@ -23,7 +23,7 @@ class SafetyVetoShadow:
         if len(self.state['pending'])>=128:
             self.state['capacity_skipped']+=1;return
         assessment=assessment or {}
-        reasons=sorted(set(assessment.get('reasons',[])+assessment.get('hard_veto',[])+assessment.get('soft_hazard',[]))) or ['UNKNOWN_REASON']
+        reasons=sorted(set(assessment.get('reasons',[])+assessment.get('hard_veto',[])+assessment.get('soft_hazard',[]))) or (['bsc_only_weak_safety_facts'] if status=='WAIT_WEAK' else ['UNKNOWN_REASON'])
         self.state['pending'][key]={'token_id':item['token_id'],'pool':item['pool'],
             'cohort_id':item['cohort_id'],'category':category,'status':status,'reasons':reasons,
             'hard_veto':assessment.get('hard_veto',assessment.get('reasons',[])),

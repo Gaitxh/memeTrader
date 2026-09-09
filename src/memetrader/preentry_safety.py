@@ -37,7 +37,7 @@ def stock_registry_evidence(connection, token_id, decision_at):
         reason='official_robinhood_stock_token_not_meme' if hit else 'not_in_latest_available_registry')
     return evidence
 
-EVM_FLAGS = ('is_honeypot','cannot_sell','hidden_owner','can_take_back_ownership',
+EVM_FLAGS = ('is_honeypot','cannot_sell','cannot_sell_all','hidden_owner','can_take_back_ownership',
     'owner_change_balance','is_blacklisted','blacklist','transfer_pausable',
     'slippage_modifiable','personal_slippage_modifiable','honeypot_with_same_creator')
 SOFT_VAULT_STATES = {'SYNTHETIC_SUPPORT_PATTERN',
@@ -85,6 +85,7 @@ def assess(snapshot, checker, *, source_at, max_tax=12):
         if isinstance(g,dict):
             sources.append('goplus_evm')
             for field in EVM_FLAGS:
+                if chain!='bsc' and field=='cannot_sell_all':continue  #105 changes BSC only.
                 value=flag(g.get(field))
                 if value is True:reasons.append(field)
                 elif value is None:unknown.append(field)
@@ -140,10 +141,18 @@ def assess(snapshot, checker, *, source_at, max_tax=12):
             unknown.append('closed_source_unverified')
     elif chain not in {'bsc','solana'}:unknown.append('chain_unsupported')
     if not usable:unknown.append('no_usable_safety_fact')
-    status='REJECT' if reasons else 'UNKNOWN' if unknown or not sources else 'PASS'
+    strong = [x for x in usable if x == 'honeypot_is:isHoneypot=false' or
+              x.startswith('goplus_evm:') and x.endswith('=false') and 'honeypot_with_same_creator' not in x]
+    weak = chain == 'bsc' and bool(usable) and not strong
+    if weak:unknown.append('bsc_only_weak_safety_facts')
+    status='REJECT' if reasons else 'WEAK' if weak else 'UNKNOWN' if unknown or not sources else 'PASS'
     allow=not reasons and bool(usable) and 'protocol_surface_unsupported' not in unknown
+    if weak:allow=False
     return dict(version=VERSION,status=status,allow=allow,reasons=sorted(set(reasons)),
         hard_veto=sorted(set(reasons)),soft_hazard=sorted(set(soft)),usable_facts=sorted(set(usable)),
+        strong_facts=strong,provider_availability={name:dict(
+            available=isinstance(raw.get(name),dict),error_type=raw.get(name+'_error'))
+            for name in ('goplus_evm','honeypot_is') if chain in {'bsc','robinhood'}},
         unknowns=sorted(set(unknown)),sources=sources,source_at=source_at,
         source_clock='local_security_acquisition_complete_not_chain_time',
         token_id=snapshot.token_id,pool=canonical_token_address(chain,pool))
@@ -175,7 +184,7 @@ class PreentrySafety:
             'definition_version,token_id,pair_address,kind,source_key,observed_at,recorded_at,payload_json) '
             'VALUES(?,?,?,?,?,?,?,?)',(item['version'],item['token_id'],item['pool'],VERSION,
             str(item['cohort_id'])+':'+status,now,now,json.dumps(payload)))
-        if (status.startswith('REJECT') or status=='WAIT_HAZARD') and self.store.db.execute('SELECT changes()').fetchone()[0]:
+        if (status.startswith('REJECT') or status in {'WAIT_HAZARD','WAIT_WEAK'}) and self.store.db.execute('SELECT changes()').fetchone()[0]:
             row=self.store.db.execute('SELECT price_usd,liquidity_usd,observed_at,ingested_at,recorded_at FROM token_snapshots WHERE id=?',
                                       (item['snapshot_id'],)).fetchone()
             anchor=dict(row) if row else None
@@ -260,9 +269,22 @@ class PreentrySafety:
             self.save()
             item=None
             for candidate in self.pending.values():
-                if (candidate['token_id'],candidate['pool']) in self.cache:continue
+                cached=self.cache.get((candidate['token_id'],candidate['pool']))
+                if candidate.get('weak_retry_exhausted'):continue
+                if cached and cached['status']=='WEAK':
+                    if 'weak_retry_due_at' not in candidate:
+                        candidate['weak_retry_due_at']=iso(now+timedelta(seconds=5))
+                        self.record(candidate,'WAIT_WEAK',cached);self.save()
+                    if candidate.get('weak_retry_used') or now<parse_time(candidate['weak_retry_due_at']):continue
+                elif cached:continue
                 local=self.behavior(candidate,now)
                 if not local['hard_veto'] and not local['soft_hazard']:
+                    if candidate.get('weak_retry_due_at'):
+                        if candidate.get('weak_retry_used') or now<parse_time(candidate['weak_retry_due_at']):continue
+                        candidate['weak_retry_used']=True
+                        # Persist the attempt before I/O; restart never repeats it.
+                        candidate['weak_retry_exhausted']=True
+                        self.save()
                     item=candidate;break
         if not item:return
         snapshot=self.store.token_snapshot_by_id(item['snapshot_id'])
@@ -272,6 +294,7 @@ class PreentrySafety:
         # A failed refresh must not re-date security payloads from an old frame.
         for name in ('goplus_evm','honeypot_is','goplus_solana','rugcheck'):
             snapshot.raw.pop(name,None)
+            snapshot.raw.pop(name+'_error',None)
         try:
             if snapshot.chain in {'bsc','robinhood'}:await self.checker.enrich_evm_execution_fields(snapshot)
             elif snapshot.chain=='solana':await self.checker.enrich_solana(snapshot)
@@ -282,6 +305,10 @@ class PreentrySafety:
         while len(self.cache)>256:self.cache.popitem(last=False)
         with self.store._lock,self.store.db:
             self.record(item,'CHECKED_'+result['status'],result)
+            if result['status']=='WEAK':
+                item.setdefault('weak_retry_due_at',iso(utcnow()+timedelta(seconds=5)))
+                self.record(item,'WAIT_WEAK',result)
+            self.save()
         if self.timing:self.timing.observe('preentry_safety_fetch',time.monotonic()-start,items=1)
 
     def resume(self,token,snapshot,recorded_at):
