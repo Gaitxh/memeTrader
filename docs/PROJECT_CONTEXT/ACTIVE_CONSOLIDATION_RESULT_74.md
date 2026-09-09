@@ -30,3 +30,7 @@ Reasons: the parent age-rate has151 terminals/+560.568U,top3 removed+262.098U; e
 Only the convergence control changed. Immutable registration/funding/activation plus selected ledger digest before/after inside transaction:
 `c29678e7688dc38c3ae989a4512a50f9096fe15a97b49e9e83a862c682b6f2a4`.
 Post-cutoff1536 evaluations through1409355 contained0 outcomes for all6 selected arms;0 new positions. Artifacts `data/research/convergence74/{applied,acceptance}.json`, fresh paired evidence `data/research/consolidation74/s1/result.json`. No reset/backfill/funding/contract alteration/Live.
+
+
+## Champion correction77 (supersedes any fast-promotion inference)
+Message77 reports31 clean parent-fast common-fill terminals: parent+325.718877U, fast+104.149792U, fast-parent-221.569085U;15/4/12 wins/ties/losses. Removing top3 positive fast-parent deltas leaves about-230.435U. These are Lead-reported results, not a new Codex ledger recomputation. Fast beating60m does not beat the deployed parent. Keep S1 paused/completed; no standalone fast replacement or parent exit modification. Future challengers must compare directly to the deployed parent on equal-entry/common-fill evidence. See AGE_RATE_CHAMPION_CORRECTION_77.md for provenance and comparison boundaries.
