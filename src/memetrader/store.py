@@ -26274,6 +26274,19 @@ class Store:
             self.append_chain_meme_trader_policy(policy(parent),activated_at=utcnow())
             return 1
 
+    def register_bsc_capital_pulse114(self) -> int:
+        from .bsc_capital_pulse import ARM, PARENT, policy
+        version=self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        with self._lock:
+            if self.db.execute('SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?',(version,ARM)).fetchone():return 0
+            reg=self._chain_meme_trader_registration(version)
+            if not reg:return 0
+            effective=self._chain_meme_trader_effective_definition(version,reg['definition_json'])
+            parent=next((p for p in effective['policies'] if p['arm_id']==PARENT),None)
+            if parent is None:return 0
+            self.append_chain_meme_trader_policy(policy(parent),activated_at=utcnow())
+            return 1
+
     def register_failed_impulse_cooling103(self) -> int:
         from .failed_impulse_cooling import ARM, PARENT, policy
         version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
@@ -27470,11 +27483,22 @@ class Store:
                 elif policy.get("entry_filter", {}).get("contract") == "resource-bound/20260907-v1":
                     from .resource_bound_research import resource_entry_signal
                     opportunity_key = policy["entry_filter"]["direction"] + ":" + pair_address
+                    if policy['entry_filter'].get('bsc_capital_pulse114'):
+                        opportunity_key='pulse114:'+opportunity_key
+                        pulse_key=f"pulse114:{version}:{token.token_id}:{pair_address}:{policy['forward_started_at']}"
+                        event_keys[policy['arm_id']]=pulse_key
+                        accepted_cohort_signals[policy['arm_id']]=dict(decision_key=pulse_key,
+                            observed_at=iso(snapshot.observed_at),recorded_at=iso(decision_at))
                     if opportunity_key in prior_resource_opportunities:
                         passed, reason = False, "resource_first_common_opportunity_consumed"
                     else:
                         passed, reason, entry_evidence = resource_entry_signal(history, policy,
                             decision_at=iso(decision_at), activated_at=policy["forward_started_at"])
+                        if policy['entry_filter'].get('bsc_capital_pulse114'):
+                            from .bsc_capital_pulse import qualifies
+                            pulse=qualifies(token.chain,snapshot.buys_5m,snapshot.sells_5m,snapshot.volume_5m_usd)
+                            entry_evidence.update(capital_pulse_passed=pulse,proxy_semantics='reported_m5_volume_div_reported_trade_count_not_actual_trade_notional')
+                            if not pulse:passed,reason=False,'bsc_capital_pulse_conditions_not_met'
                         if entry_evidence["common_ready"]:
                             resource_opportunities[opportunity_key] = {**entry_evidence,
                                 "signal_snapshot_id": snapshot_id, "decision_at": iso(decision_at)}
@@ -27509,6 +27533,11 @@ class Store:
             from .archive_research import CONTRACT as ARCHIVE_CONTRACT, post_signal_compatible as archive_post_compatible
             from .runner_capture import CONTRACT as RUNNER_CONTRACT, post_signal_compatible as runner_post_compatible
             for p in active:
+                if p['arm_id'] in admitted_arms and p.get('entry_filter',{}).get('bsc_capital_pulse114'):
+                    from .bsc_capital_pulse import qualifies
+                    if not qualifies(token.chain,snapshot.buys_5m,snapshot.sells_5m,snapshot.volume_5m_usd):
+                        admitted_arms.remove(p['arm_id'])
+                        outcomes[p['arm_id']]='capital_pulse_next_frame_not_qualified'
                 if p["arm_id"] in admitted_arms and p.get("entry_filter", {}).get("contract") in {RUNNER_CONTRACT, "quiet-base-renewal/20260908-v1", "early-impulse-opportunity/20260908-v1"}:
                     if not runner_post_compatible(history[-1],
                             previous_features.get("runner_capture_evidence", {}).get(p["arm_id"], {}), p,

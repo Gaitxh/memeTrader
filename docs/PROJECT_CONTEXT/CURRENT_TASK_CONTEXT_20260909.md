@@ -1,3 +1,6 @@
+# BSC capital pulse114 funded implementation ready
+bsc_capital_pulse_29m_v1 5U/max4, same age-rate supply + frozen BSC rolling proxy/count/buy-share,29m exit,no narrative.28targetedPASS; persistent pending claim/common113safety. See BSC_CAPITAL_PULSE_114.md. Policy registration occurs only at supported startup frontier, currently blocked/not loaded; do not assert deployment or Alpha. Final109/110-113 also pending. No reset/pairing/history change.
+
 # Cross-chain RWA scope113 ready, not loaded
 Frozen exact-token provider name full standardized securities grammar only, REJECT_SCOPE not scam; stock/ETF memes and UNKNOWN unaffected by this classifier.77targetedPASS. See CROSSCHAIN_RWA_SCOPE_113.md. Prior process-control policy block unresolved; final109 and110-113 await supported load. No natural blocking claim or historical PnL change.
 
