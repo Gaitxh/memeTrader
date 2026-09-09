@@ -28,6 +28,8 @@ Add display-only assessment_status/note/evidence to existing version-scoped cont
 
 Validation: targeted web lifecycle/cache test PASS; JS six labels plus legacy labels/positive-paused label PASS. Runtime-control mutation transaction asserts display-only differences and immutable registration/funding. Statistical script uses no fitted thresholds;30-terminal partition is a conservative evidence-label boundary, never a trading gate. Classification is as-of, not automatically recalculated to reactivate accounts.
 
+Deployment acceptance: Web-only launcher reloaded; first cold API sequence timed out and was not reported as PASS. Subsequent bounded health/live/universe requests succeeded. Live API independently exposes160/250 as DUPLICATE_SUPERSEDED and254 as EXPERIMENT_COMPLETE_POSITIVE; universe confirms display_index254, assessment EXPERIMENT_COMPLETE_POSITIVE, account_lifecycle PAUSED_NEW_ENTRY, forward_enabled=false. Static label behavior is covered by the Node test; no browser screenshot/visual inspection is claimed. Evidence accept_health.json,accept_api_live.json,accept_universe.json. Trading runtime was not restarted.
+
 ## Complete current policy disposition
 
 Counts: {"FAILED": 163, "DUPLICATE_SUPERSEDED": 61, "ACTIVE": 14, "INSUFFICIENT": 12, "DATA_BLOCKED": 4, "EXPERIMENT_COMPLETE_POSITIVE": 1}
