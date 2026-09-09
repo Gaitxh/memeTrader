@@ -12187,6 +12187,9 @@ class Store:
                 ),
             )
         snapshot_id = int(cursor.lastrowid)
+        safety_shadow = getattr(self, '_safety_veto_shadow', None)
+        if safety_shadow is not None:
+            safety_shadow.observe(token_id, snap, ingested_at, recorded_at)
         self.rediscovery_funnel_hit(token_id, 'snapshot', recorded_at)
         funnel = getattr(self, '_rediscovery_funnel', None)
         if funnel is not None:

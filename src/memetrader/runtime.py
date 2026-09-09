@@ -7485,6 +7485,15 @@ class Runtime:
         from .cohort_experiments import consume_passive_cohort_batch
         funnel = getattr(self.store, '_rediscovery_funnel', None)
         now_mono = asyncio.get_running_loop().time()
+        shadow = getattr(self.store, '_safety_veto_shadow', None)
+        if (shadow is not None and now_mono-shadow.last_flush >= 15
+                and self._chain_meme_active_idle().is_set()):
+            with self.store._lock:
+                shadow.expire(utcnow())
+                if shadow.dirty:
+                    self.store.set_kv('safety-veto-shadow95', shadow.snapshot())
+                    shadow.dirty = False
+                shadow.last_flush = now_mono
         if (funnel is not None and now_mono-funnel.last_flush >= 15
                 and self._chain_meme_active_idle().is_set()):
             self.store.set_kv('rediscovery-funnel94', funnel.snapshot())

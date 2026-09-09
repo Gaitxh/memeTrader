@@ -127,6 +127,8 @@ class PreentrySafety:
         self.key=VERSION+':pending:'+store.CHAIN_MEME_TRADER_ACTIVE_VERSION
         self.pending=store.get_kv(self.key,{}) or {}
         self.cache=OrderedDict()
+        from .safety_veto_shadow import SafetyVetoShadow, KEY
+        store._safety_veto_shadow = SafetyVetoShadow(store.get_kv(KEY, None))
 
     def save(self):
         self.store.db.execute('INSERT INTO kv(key,value_json,updated_at) VALUES(?,?,?) '
@@ -144,6 +146,23 @@ class PreentrySafety:
             'definition_version,token_id,pair_address,kind,source_key,observed_at,recorded_at,payload_json) '
             'VALUES(?,?,?,?,?,?,?,?)',(item['version'],item['token_id'],item['pool'],VERSION,
             str(item['cohort_id'])+':'+status,now,now,json.dumps(payload)))
+        if (status.startswith('REJECT') or status=='WAIT_HAZARD') and self.store.db.execute('SELECT changes()').fetchone()[0]:
+            row=self.store.db.execute('SELECT price_usd,liquidity_usd,observed_at,ingested_at,recorded_at FROM token_snapshots WHERE id=?',
+                                      (item['snapshot_id'],)).fetchone()
+            anchor=dict(row) if row else None
+            if anchor is not None:
+                price=anchor['price_usd'];liq=anchor['liquidity_usd']
+                anchor['eligible']=bool(price is not None and math.isfinite(price) and price>0
+                    and liq is not None and math.isfinite(liq) and liq>=item.get('shadow_costs',{}).get('min_pool_liquidity_usd',1000)
+                    and anchor['ingested_at'] and parse_time(anchor['observed_at'])<=parse_time(anchor['ingested_at'])<=parse_time(anchor['recorded_at'])<=parse_time(now))
+            arms=[r[0] for r in self.store.db.execute('SELECT arm_id FROM chain_meme_trader_entry_decisions WHERE definition_version=? AND shadow_cohort_id=? AND status=\'admitted\' ORDER BY arm_id LIMIT 256',
+                    (item['version'],item['cohort_id']))]
+            self.store._safety_veto_shadow.capture(item,status,assessment,anchor,arms,parse_time(now))
+            # Commit the trigger with its existing safety audit, not on a later
+            # polling tick; a restart must not silently lose the denominator.
+            self.store.db.execute('INSERT INTO kv(key,value_json,updated_at) VALUES(?,?,?) '
+                'ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at',
+                ('safety-veto-shadow95',json.dumps(self.store._safety_veto_shadow.snapshot()),now))
 
     def guard(self,*,version,cohort_id,token_id,snapshot_id,filled_at,definition,reason,**kwargs):
         row=self.store.db.execute('SELECT raw_json,observed_at FROM token_snapshots WHERE id=?',(snapshot_id,)).fetchone()
@@ -154,6 +173,8 @@ class PreentrySafety:
             expires_at=iso(parse_time(filled_at)+timedelta(seconds=float(definition.get('max_signal_to_execution_start_seconds',120)))))
         item['funding_mode']=kwargs.get('funding_mode','legacy_cash_limited')
         item['signal_price_usd']=kwargs.get('signal_price_usd')
+        item['shadow_costs']={key:definition.get(key,default) for key,default in (
+            ('buy_slippage_bps',400),('sell_slippage_bps',400),('additional_fee_usd_each_fill',0.0),('min_pool_liquidity_usd',1000))}
         behavior=self.behavior(item,parse_time(filled_at))
         if behavior['hard_veto'] or behavior['soft_hazard']:
             hard=bool(behavior['hard_veto'])
