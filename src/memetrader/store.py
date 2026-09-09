@@ -9327,6 +9327,11 @@ class Store:
             )
             return True
 
+    def rediscovery_funnel_hit(self, token_id, stage, at=None):
+        funnel = getattr(self, '_rediscovery_funnel', None)
+        if funnel is not None:
+            funnel.hit(token_id, stage, parse_time(at or utcnow()))
+
     def requeue_dormant_source_episode(self, token_id, *, received_at, source_key):
         """Bounded data rediscovery; promotion/advertising never authorizes BUY."""
         now = parse_time(received_at)
@@ -9356,6 +9361,10 @@ class Store:
                 'decision_eligible': False, 'affects': 'existing_hydration_queue_only',
                 'requires_fresh_market_and_existing_strategy_confirmation': True,
             }, observed_at=now, source_key=f'rediscovery:{token_id}:{iso(now)}')
+            if not hasattr(self, '_rediscovery_funnel'):
+                from .rediscovery_funnel import RediscoveryFunnel
+                self._rediscovery_funnel = RediscoveryFunnel()
+            self._rediscovery_funnel.episode(token_id, now)
             return True
 
     def recent_token_social_post_links(
@@ -9518,6 +9527,7 @@ class Store:
             if row is None:
                 return
             attempts = int(row["attempts"] or 0) + 1
+            self.rediscovery_funnel_hit(token_id, 'hydration_' + status, attempted_at)
             if status == "hydrated":
                 next_attempt_at = iso(parse_time(refresh_at)) if refresh_at is not None else None
             elif status == "error":
@@ -12177,6 +12187,7 @@ class Store:
                 ),
             )
         snapshot_id = int(cursor.lastrowid)
+        self.rediscovery_funnel_hit(token_id, 'snapshot', recorded_at)
         self._observe_liquidity_survival_snapshot_locked(
             snapshot_id,
             snap,
@@ -27592,6 +27603,9 @@ class Store:
                     features["wallet_entry_states"][arm] = consumed
                 self.db.execute("INSERT INTO chain_meme_trader_v6_entry_evaluations(definition_version,source_snapshot_id,token_id,evaluated_at,status,entry_family,reason,feature_json) VALUES(?,?,?,?,?,NULL,?,?)",
                     (version, snapshot_id, token.token_id, iso(decision_at), "admitted" if projected else "rejected", observation_reason, self._json(features)))
+                self.rediscovery_funnel_hit(token.token_id, observation_reason, decision_at)
+                if any(arm in ready for arm in ('event_reawakening_v1', 'quiet_renewal_v1', 'quiet_renewal_legacy_exit_control_v1')):
+                    self.rediscovery_funnel_hit(token.token_id, 'reactivation_ready', decision_at)
             return projected
 
     def register_chain_meme_v21_vault_shadow(
@@ -28213,10 +28227,12 @@ class Store:
     ) -> int:
         """Project one visible DEX price into eligible Paper accounts."""
         safety = getattr(self, "_preentry_safety", None)
+        self.rediscovery_funnel_hit(token_id, 'safety_stage', filled_at)
         if safety is not None and not safety.guard(version=version,cohort_id=cohort_id,
                 token_id=token_id,snapshot_id=snapshot_id,filled_at=filled_at,
                 definition=definition,reason=reason,funding_mode=funding_mode,
                 signal_price_usd=signal_price_usd):
+            self.rediscovery_funnel_hit(token_id, 'safety_guard_wait', filled_at)
             return 0
         notional = float(definition["policy_notional_usd"])
         try:
@@ -28324,6 +28340,7 @@ class Store:
             )
             net_flow_by_arm[arm_id] = net_flow - required_cash
             projected += 1
+            self.rediscovery_funnel_hit(token_id, 'BUY', filled_at)
         return projected
 
     def _settle_pending_market_entry_observation(self, token, snapshot, recorded_at):

@@ -7470,6 +7470,10 @@ class Runtime:
                     occupied[slot] = occupied.get(slot, 0) + 1
                     chain_used[chain] = chain_used.get(chain, 0) + 1
             finally:
+                funnel = getattr(getattr(self, 'store', None), '_rediscovery_funnel', None)
+                if funnel is not None:
+                    funnel.quote(token, snapshot, reason, current,
+                        getattr(self, '_chain_paper_execution', {}).get('min_pool_liquidity_usd', 1000.0))
                 if ticket is not None:
                     ticket["actual"] = {"reason": reason, "victim": victim, "admitted": admitted}
         self._pattern_watch = watch
@@ -7479,6 +7483,12 @@ class Runtime:
 
     async def chain_meme_cohort_observer_once(self) -> None:
         from .cohort_experiments import consume_passive_cohort_batch
+        funnel = getattr(self.store, '_rediscovery_funnel', None)
+        now_mono = asyncio.get_running_loop().time()
+        if (funnel is not None and now_mono-funnel.last_flush >= 15
+                and self._chain_meme_active_idle().is_set()):
+            self.store.set_kv('rediscovery-funnel94', funnel.snapshot())
+            funnel.last_flush = now_mono
         audit = getattr(self, "_admission_audit", None)
         if audit is not None and self._chain_meme_active_idle().is_set():
             await audit.flush()
