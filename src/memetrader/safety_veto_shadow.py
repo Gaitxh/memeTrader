@@ -26,7 +26,7 @@ class SafetyVetoShadow:
         reasons=sorted(set(assessment.get('reasons',[])+assessment.get('hard_veto',[])+assessment.get('soft_hazard',[]))) or (['bsc_only_weak_safety_facts'] if status=='WAIT_WEAK' else ['UNKNOWN_REASON'])
         self.state['pending'][key]={'token_id':item['token_id'],'pool':item['pool'],
             'cohort_id':item['cohort_id'],'category':category,'status':status,'reasons':reasons,
-            'hard_veto':assessment.get('hard_veto',assessment.get('reasons',[])),
+            'hard_veto':[] if category=='LP_SHADOW' else assessment.get('hard_veto',assessment.get('reasons',[])),
             'soft_hazard':assessment.get('soft_hazard',[]),'arms':arms,
             'signal_requested_at':item['requested_at'],'safety_source_at':assessment.get('source_at'),
             'safety_recorded_at':iso(now),'anchor':anchor,'notional':item['notional'],

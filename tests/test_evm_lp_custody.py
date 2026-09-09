@@ -65,6 +65,7 @@ def test_lp_outcome_freezes_separate_category_and_later_original_pool_only():
     shadow.observe(s.token_id,s,later,later)
     row=next(iter(shadow.state['pending'].values()))
     assert row['category']=='LP_SHADOW' and row['lp_custody']==lp
+    assert row['hard_veto']==[]
     assert row['results']['15']['status']=='OBSERVED_SHADOW'
     shadow.expire(now+timedelta(minutes=246))
     assert shadow.state['recent'][0]['results']['240']['status']=='UNKNOWN'
