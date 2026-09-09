@@ -27,7 +27,7 @@ globalThis.revisionUi = {
   },
   ingest(data) { return ingestStrategyHistory(data); },
   lifecycle(family) { return fidelityLabel(family); },
-  explanation(family) { return strategyExplanationMarkup(family); },
+  explanation(family,opened) { return strategyExplanationMarkup(family,opened); },
 };`, context);
 
 const family = {
@@ -78,3 +78,5 @@ context.setTimeout = () => { throw new Error('hidden page must not keep polling'
 vm.runInContext('refreshLive()', context).then(() => {
   console.log('chain web strategy revision and hidden polling: ok');
 });
+
+assert.match(context.revisionUi.explanation({},true),/class="strategy-explanation" open/);

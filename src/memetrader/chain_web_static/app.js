@@ -390,10 +390,10 @@ function explanationList(items,empty='UNKNOWN'){
   return values.length?`<ul class="strategy-explanation-list">${values.map(value=>`<li>${esc(value)}</li>`).join('')}</ul>`:`<p class="empty">${esc(empty)}</p>`;
 }
 
-function strategyExplanationMarkup(family){
+function strategyExplanationMarkup(family,opened=false){
   const logic=family?.strategy_logic||{},lifecycle=logic.lifecycle_explanation||{},lineage=logic.lineage||{};
   const field=(label,value)=>`<dt>${esc(label)}</dt><dd>${esc(value||'UNKNOWN')}</dd>`;
-  return `<details class="strategy-explanation"><summary>详细规则与证据（点击展开）</summary><div class="strategy-explanation-body">
+  return `<details class="strategy-explanation" ${opened?'open':''}><summary>详细规则与证据（点击展开）</summary><div class="strategy-explanation-body">
     <section><h4>策略目的</h4><p>${esc(logic.purpose||'UNKNOWN')}</p></section>
     <section><h4>入场规则</h4>${explanationList(logic.entry_rules)}<h4>入场顺序</h4>${explanationList(logic.entry_sequence)}</section>
     <section><h4>退出规则</h4>${explanationList(logic.exit_rules)}<h4>数据要求</h4>${explanationList(logic.data_requirements)}<h4>风险控制</h4>${explanationList(logic.risk_controls)}</section>
@@ -482,6 +482,7 @@ function classificationLabel(value){
 
 function renderUniverseDetail(family){
   const target=$('#strategy-detail'); if(!target||!family)return;
+  const keepExplanationOpen=selectedCanonical===(family.canonical_id||family.behavior_contract_hash)&&Boolean($('.strategy-explanation')?.open);
   selectedCanonical=family.canonical_id||family.behavior_contract_hash;
   const live=liveMetricForFamily(family), members=family.members||[], strategy=live.strategy||{};
   const hasLogic=Boolean(family.strategy_logic);
@@ -500,7 +501,7 @@ function renderUniverseDetail(family){
     <div class="detail-live-grid"><div><span>账户总价值</span><strong>${money(live.equity)}</strong><small>余额 ${money(live.cash)} + 持仓 ${money(live.positionValue)}</small></div><div><span>最大回撤</span><strong>${money(live.maxDrawdown)}</strong><small>${live.maxDrawdownFraction==null?'等待有效估值':(live.maxDrawdownFraction*100).toFixed(1)+'% · 完整有效估值历史'}</small></div><div><span>累计总 PNL</span><strong class="${pnlClass(live.pnl)}">${live.pnl==null?esc(live.pendingText):money(live.pnl)}</strong></div><div><span>已实现 PNL</span><strong class="${pnlClass(live.realizedPnl)}">${live.realizedPnl==null?'—':money(live.realizedPnl)}</strong></div><div><span>未实现 PNL</span><strong class="${pnlClass(live.unrealizedPnl)}">${live.unrealizedPnl==null?esc(live.pendingText):money(live.unrealizedPnl)}</strong></div><div><span>终结样本分组</span><strong>${esc(maturityText(live.maturity))}</strong><small>运行 ${esc(elapsedText(live.forwardAgeSeconds))}</small></div></div>
     <section class="contract-section"><h3>累计 PNL 实时曲线</h3><p id="strategy-equity-note">等待首个策略盈亏快照</p><svg id="strategy-equity-chart" class="strategy-equity-chart" viewBox="0 0 720 180" role="img" aria-label="当前策略累计盈亏实时曲线"></svg></section>
     ${hasLogic?'':`<section class="contract-section"><h3>入场规则</h3><p>${esc(readable(strategy.entry_family||family.entry_family,entryLabels))} · ${esc(strategy.name||'')}</p><small>只使用当时已经采集到的 Token、交易量、价格与池信息，不使用之后才出现的数据。旧入场方向见版本历史，不作为当前规则。</small></section>`}
-    <section class="contract-section"><h3>规则解释</h3>${strategyExplanationMarkup(family)}</section>
+    <section class="contract-section"><h3>规则解释</h3>${strategyExplanationMarkup(family,keepExplanationOpen)}</section>
     <section class="contract-section"><h3>复刻状态</h3><p>${esc(fidelityLabel(family))}</p><small>${esc(family.fidelity_note||'等待历史合同核验')}</small></section>
     ${hasLogic?'':`<section class="contract-section"><h3>退出规则</h3><p>${esc(readable(family.exit_family,exitLabels))}</p><small>最长持有 ${strategy.max_hold_minutes==null?'UNKNOWN':`${Number(strategy.max_hold_minutes)} 分钟`}；${strategy.hard_stop_return==null?'固定止损 UNKNOWN':`回撤到 ${percent(strategy.hard_stop_return)} 触发止损`}。新鲜原池流动性低于 ${paperEffectiveSettings.min_pool_liquidity_usd==null?'—':money(paperEffectiveSettings.min_pool_liquidity_usd)} 时按剩余全损；缺失或陈旧时等待，不等于无池。核销会发出卖出指令，但不代表成交。</small></section>`}
     <section class="contract-section"><h3>版本迭代历史</h3>${revisionHistoryMarkup(family,strategy)}</section>
@@ -533,7 +534,7 @@ function renderUniverse(){
   const safetyCounts=state?.trading?.safety_counts||state?.safety_counts||discoveryView?.safety_counts;
   const safety=safetyCounts&&typeof safetyCounts==='object'?['REJECT','WAIT','UNKNOWN'].map(key=>`${key} ${safetyCounts[key]??safetyCounts[key.toLowerCase()]??'UNKNOWN'}`).join(' / '):'UNKNOWN';
   $('#universe-summary').innerHTML=[
-    ['策略',families.length,'每个策略独立决策、持仓和结果'],
+    ['策略族总数',allFamilies.length,`列表当前显示 ${families.length} 个；评估计数覆盖全部策略族`],
     ['前向运行',active,inactive?`${inactive} 个当前未运行`:`${replicas} 个历史规则 · ${successors} 个 DexScreener 继承策略`],
     ...assessmentCards.map(([key,label])=>[`评估 · ${label}`,Number(assessmentCounts[key]||0),'账户评估，不是 PNL 或 alpha 证明']),
     ['活动账户 PNL',`${Number(activeResults.positive||0)} / ${Number(activeResults.negative||0)} / ${Number(activeResults.zero||0)} / ${Number(activeResults.unknown||0)}`,'正 / 负 / 零 / 未知；当前活动账户总 PNL，不是独立 alpha'],
