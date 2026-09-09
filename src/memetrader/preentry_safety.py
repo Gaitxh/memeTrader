@@ -1,0 +1,195 @@
+"""Signal-only, asynchronous obvious-risk veto for the common Paper BUY path."""
+import asyncio
+from collections import OrderedDict
+from dataclasses import replace
+from datetime import timedelta
+import json
+import math
+import time
+
+from .models import canonical_token_address, iso, parse_time, utcnow
+
+VERSION = 'preentry_obvious_scam_v1'
+EVM_FLAGS = ('is_honeypot','cannot_sell','hidden_owner','can_take_back_ownership',
+    'owner_change_balance','is_blacklisted','blacklist','transfer_pausable',
+    'slippage_modifiable','personal_slippage_modifiable','honeypot_with_same_creator')
+
+
+def flag(value):
+    if isinstance(value, dict): value=value.get('status')
+    if value in (True, 1, '1', 'true'): return True
+    if value in (False, 0, '0', 'false'): return False
+    return None
+
+
+def assess(snapshot, checker, *, source_at, max_tax=12):
+    raw=snapshot.raw;pair=raw.get('pair') or {};reasons=[];unknown=[];sources=[]
+    chain=snapshot.chain;pool=str(pair.get('pairAddress') or '')
+    identity=bool(pool and pair.get('chainId')==chain and
+        canonical_token_address(chain,(pair.get('baseToken') or {}).get('address',''))==snapshot.address)
+    if not identity: reasons.append('canonical_surface_identity_mismatch')
+    if chain=='bsc':
+        g=raw.get('goplus_evm'); h=raw.get('honeypot_is')
+        if isinstance(g,dict):
+            sources.append('goplus_evm')
+            for field in EVM_FLAGS:
+                value=flag(g.get(field))
+                if value is True:reasons.append(field)
+                elif value is None:unknown.append(field)
+            for field in ('buy_tax','sell_tax'):
+                try:
+                    value=float(g[field])*100
+                    if math.isfinite(value) and value>max_tax:reasons.append(field+'_above_existing_tax_limit')
+                except (KeyError,ValueError,TypeError):unknown.append(field)
+        else:unknown.append('goplus_unavailable')
+        if isinstance(h,dict):
+            sources.append('honeypot_is')
+            if flag((h.get('honeypotResult') or {}).get('isHoneypot')) is True:reasons.append('honeypot')
+            # A generic simulation failure is UNKNOWN, not proof of sell failure.
+            if h.get('simulationSuccess') is False:unknown.append('simulation_failed_unknown_cause')
+            for field in ('buyTax','sellTax'):
+                value=(h.get('simulationResult') or {}).get(field)
+                if isinstance(value,(int,float)) and value>max_tax:reasons.append(field+'_above_existing_tax_limit')
+    elif chain=='solana':
+        old=checker.solana_pretrade_rug_assessment(snapshot)
+        hard=set(old['hard_rejections'])
+        # Only explicit dangerous token controls/verified mismatches. No LP-lock,
+        # whale concentration, or global exact-route/depth requirement.
+        reasons += [r for r in hard if r.startswith('dangerous_') or r in
+            {'non_transferable','malicious_creator','pool_identity_mismatch','pool_custody_mismatch'}]
+        for name in ('goplus_solana','rugcheck'):
+            if isinstance(raw.get(name),dict):sources.append(name)
+        if (raw.get('rugcheck') or {}).get('rugged') is True:reasons.append('rugged')
+        rpc=raw.get('solana_pool_rpc') or {}
+        if rpc.get('status')=='rejected':reasons.append('verified_pool_rejected:'+str(rpc.get('reason')))
+        unknown += [x for x in old['unknowns'] if not x.startswith('exact_size_')]
+    elif chain=='robinhood':
+        # Existing canonical provider surface is the available boundary; it is
+        # not a security audit or a claim of verified deployed contract code.
+        if str(pair.get('dexId') or '').lower() not in {'uniswap','uniswap-v3','uniswap-v4','pons'}:
+            unknown.append('protocol_surface_unsupported')
+        else:sources.append('canonical_provider_surface')
+        unknown.append('external_security_provider_unsupported')
+    else:unknown.append('chain_unsupported')
+    status='REJECT' if reasons else 'UNKNOWN' if unknown or not sources else 'PASS'
+    allow=not reasons and bool(sources) and 'protocol_surface_unsupported' not in unknown
+    return dict(version=VERSION,status=status,allow=allow,reasons=sorted(set(reasons)),
+        unknowns=sorted(set(unknown)),sources=sources,source_at=source_at,
+        source_clock='local_security_acquisition_complete_not_chain_time',
+        token_id=snapshot.token_id,pool=canonical_token_address(chain,pool))
+
+
+class PreentrySafety:
+    """One bounded security worker; pending entry uses only a later causal frame."""
+    def __init__(self,store,checker,timing=None):
+        self.store=store;self.checker=checker;self.timing=timing;self.task=None
+        self.key=VERSION+':pending:'+store.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        self.pending=store.get_kv(self.key,{}) or {}
+        self.cache=OrderedDict()
+
+    def save(self):
+        self.store.db.execute('INSERT INTO kv(key,value_json,updated_at) VALUES(?,?,?) '
+            'ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at',
+            (self.key,json.dumps(self.pending),iso()))
+
+    def record(self,item,status,assessment=None):
+        now=iso();payload={**item,'safety_status':status,'assessment':assessment,
+            'not_a_safety_guarantee':True,'decision_eligible':False}
+        self.store.db.execute('INSERT OR IGNORE INTO chain_meme_pattern_evidence('
+            'definition_version,token_id,pair_address,kind,source_key,observed_at,recorded_at,payload_json) '
+            'VALUES(?,?,?,?,?,?,?,?)',(item['version'],item['token_id'],item['pool'],VERSION,
+            str(item['cohort_id'])+':'+status,now,now,json.dumps(payload)))
+
+    def guard(self,*,version,cohort_id,token_id,snapshot_id,filled_at,definition,reason,**kwargs):
+        row=self.store.db.execute('SELECT raw_json,observed_at FROM token_snapshots WHERE id=?',(snapshot_id,)).fetchone()
+        pair=(json.loads(row['raw_json']).get('pair') or {}) if row else {}
+        pool=canonical_token_address(token_id.split(':')[0],str(pair.get('pairAddress') or ''))
+        item=dict(version=version,cohort_id=cohort_id,token_id=token_id,pool=pool,snapshot_id=snapshot_id,
+            requested_at=filled_at,reason=reason,notional=definition['policy_notional_usd'],
+            expires_at=iso(parse_time(filled_at)+timedelta(seconds=float(definition.get('max_signal_to_execution_start_seconds',120)))))
+        item['funding_mode']=kwargs.get('funding_mode','legacy_cash_limited')
+        item['signal_price_usd']=kwargs.get('signal_price_usd')
+        # Explicit evidence already available on the signal is never erased by
+        # a later provider outage. Its source clock remains the old frame's.
+        original=self.store.token_snapshot_by_id(snapshot_id)
+        if original is not None:
+            known=assess(original,self.checker,source_at=iso(original.observed_at))
+            if known['status']=='REJECT':
+                self.record(item,'REJECT_EXISTING_EVIDENCE',known)
+                return False
+        cached=self.cache.get((token_id,pool))
+        if cached and parse_time(cached['source_at'])<=parse_time(filled_at)<parse_time(cached['source_at'])+timedelta(seconds=45):
+            if cached['status']=='REJECT':self.record(item,'REJECT',cached);return False
+            if cached['allow'] and row and parse_time(cached['source_at'])<parse_time(row['observed_at']):
+                self.record(item,'BUY_AUTHORIZED_'+cached['status'],cached);return True
+        if str(cohort_id) not in self.pending:
+            if len(self.pending)>=128:self.record(item,'WAIT_QUEUE_CAPACITY');return False
+            self.pending[str(cohort_id)]=item;self.save();self.record(item,'WAIT_SECURITY')
+        return False
+
+    def kick(self):
+        if self.pending and (self.task is None or self.task.done()):
+            self.task=asyncio.create_task(self.work())
+
+    async def work(self):
+        now=utcnow()
+        for key,value in list(self.cache.items()):
+            if parse_time(value['source_at'])+timedelta(seconds=45)<=now:self.cache.pop(key)
+        with self.store._lock,self.store.db:
+            for key,item in list(self.pending.items()):
+                if parse_time(item['expires_at'])<now:
+                    self.record(item,'EXPIRED_SECURITY_OR_NEXT_FRAME');self.pending.pop(key)
+            self.save()
+            item=next((x for x in self.pending.values() if (x['token_id'],x['pool']) not in self.cache),None)
+        if not item:return
+        snapshot=self.store.token_snapshot_by_id(item['snapshot_id'])
+        if snapshot is None:return
+        # Never mutate the original snapshot or attach fresh reports to old data.
+        snapshot=replace(snapshot,raw=dict(snapshot.raw));start=time.monotonic()
+        # A failed refresh must not re-date security payloads from an old frame.
+        for name in ('goplus_evm','honeypot_is','goplus_solana','rugcheck'):
+            snapshot.raw.pop(name,None)
+        try:
+            if snapshot.chain=='bsc':await self.checker.enrich_evm_execution_fields(snapshot)
+            elif snapshot.chain=='solana':await self.checker.enrich_solana(snapshot)
+            result=assess(snapshot,self.checker,source_at=iso(),max_tax=float(self.checker.config.get('max_tax_pct',12)))
+        except Exception as exc:
+            result=dict(version=VERSION,status='UNKNOWN',allow=False,reasons=[],unknowns=[type(exc).__name__],source_at=iso())
+        self.cache[(item['token_id'],item['pool'])]=result
+        while len(self.cache)>256:self.cache.popitem(last=False)
+        with self.store._lock,self.store.db:
+            self.record(item,'CHECKED_'+result['status'],result)
+        if self.timing:self.timing.observe('preentry_safety_fetch',time.monotonic()-start,items=1)
+
+    def resume(self,token,snapshot,recorded_at):
+        matches=[(k,x) for k,x in self.pending.items() if x['token_id']==token.token_id]
+        if not matches:return
+        pair=snapshot.raw.get('pair') or {};pool=canonical_token_address(token.chain,str(pair.get('pairAddress') or ''))
+        for key,item in matches:
+            result=self.cache.get((token.token_id,item['pool']))
+            if not result:continue
+            if result['status']=='REJECT':
+                self.record(item,'REJECT',result);self.pending.pop(key);self.save();continue
+            if not result['allow'] or not (parse_time(result['source_at'])<snapshot.observed_at<=recorded_at<=parse_time(item['expires_at'])):continue
+            if recorded_at>=parse_time(result['source_at'])+timedelta(seconds=45):continue
+            if pool!=item['pool'] or pair.get('chainId')!=token.chain or canonical_token_address(token.chain,(pair.get('baseToken') or {}).get('address',''))!=token.address:continue
+            ing=snapshot.ingested_at or recorded_at
+            if not snapshot.observed_at<=ing<=recorded_at or (recorded_at-snapshot.observed_at).total_seconds()>15:continue
+            reg=self.store._chain_meme_trader_registration(item['version'])
+            definition=self.store._chain_meme_trader_effective_definition(item['version'],reg['definition_json'])
+            if not (snapshot.price_usd and math.isfinite(snapshot.price_usd) and snapshot.price_usd>0 and
+                    snapshot.liquidity_usd is not None and math.isfinite(snapshot.liquidity_usd) and
+                    snapshot.liquidity_usd>=float(definition.get('min_pool_liquidity_usd',1000))):continue
+            # Legacy intent receipts are frozen by their existing settlement
+            # path below, after the common guard can authorize this new frame.
+            if self.store.db.execute("SELECT 1 FROM chain_meme_trader_order_intents WHERE shadow_cohort_id=? AND side='BUY' AND status IN ('ready','retry')",(item['cohort_id'],)).fetchone():
+                continue
+            sid=self.store._add_snapshot_locked(replace(snapshot,ingested_at=ing))
+            filled_at=max(recorded_at,utcnow())
+            if filled_at>parse_time(item['expires_at']):continue
+            projected=self.store._project_chain_meme_trader_market_entry(version=item['version'],cohort_id=item['cohort_id'],
+                token_id=token.token_id,snapshot_id=sid,market_price=snapshot.price_usd,filled_at=iso(filled_at),
+                reason=item['reason']+':'+VERSION,definition={**definition,'policy_notional_usd':item['notional']},
+                funding_mode=item['funding_mode'],signal_price_usd=item['signal_price_usd'])
+            self.record(item,'PROJECTED' if projected else 'NO_ACCOUNT_PROJECTED',result)
+            self.pending.pop(key);self.save()

@@ -1523,6 +1523,8 @@ class Runtime:
             similarity_threshold=float((config.get("events") or {}).get("similarity", 0.28)),
         )
         self.safety = SafetyChecker(self.http, config["safety"])
+        from .preentry_safety import PreentrySafety
+        self.store._preentry_safety = PreentrySafety(self.store, self.safety, getattr(self, "runtime_timing", None))
         self.agent = AgentRouter(self.store, config["agent"])
         known_source_urls = {
             str(item.get("url") or "").rstrip("/")
@@ -6721,6 +6723,10 @@ class Runtime:
 
     async def chain_meme_trader_once(self) -> None:
         """Advance every active strictly-forward, zero-extra-fee strategy account."""
+        safety = getattr(self.store, "_preentry_safety", None)
+        if safety is not None and self._chain_meme_active_idle().is_set():
+            safety.timing = getattr(self, "runtime_timing", None)
+            safety.kick()
         if not self.chain_meme_trader_only:
             self.store.enroll_chain_meme_trader()
         enrollment_batches = 8 if self.chain_meme_trader_only else 1

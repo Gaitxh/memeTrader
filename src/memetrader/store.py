@@ -28124,6 +28124,12 @@ class Store:
         signal_price_usd: float | None = None,
     ) -> int:
         """Project one visible DEX price into eligible Paper accounts."""
+        safety = getattr(self, "_preentry_safety", None)
+        if safety is not None and not safety.guard(version=version,cohort_id=cohort_id,
+                token_id=token_id,snapshot_id=snapshot_id,filled_at=filled_at,
+                definition=definition,reason=reason,funding_mode=funding_mode,
+                signal_price_usd=signal_price_usd):
+            return 0
         notional = float(definition["policy_notional_usd"])
         try:
             terms = buy_terms(notional, market_price, definition)
@@ -28234,6 +28240,9 @@ class Store:
 
     def _settle_pending_market_entry_observation(self, token, snapshot, recorded_at):
         """Consume the first eligible receipt, not a later historical best quote."""
+        safety = getattr(self, "_preentry_safety", None)
+        if safety is not None:
+            safety.resume(token,snapshot,recorded_at)
         version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
         if token.token_id not in getattr(self, "_market_entry_pending_tokens", set()):
             return
@@ -28273,6 +28282,12 @@ class Store:
             receipt_id = self._add_snapshot_locked(replace(snapshot,
                 provider="market-entry-confirmation:" + snapshot.provider))
             filled_at = max(recorded_at, utcnow())
+            if safety is not None and not safety.guard(version=version,cohort_id=cohort_id,
+                    token_id=token.token_id,snapshot_id=receipt_id,filled_at=iso(filled_at),
+                    definition=definition,reason=features.get("entry_decision_reason","entry")):
+                # Security is pending, not a failed/no-cash first receipt. The
+                # eventual fill still requires a later original-pool frame.
+                continue
             confirmation = {"signal_snapshot_id": int(intent["source_snapshot_id"]),
                 "receipt_snapshot_id": receipt_id,
                 "decision_at": intent["created_at"], "observed_at": iso(snapshot.observed_at),
@@ -28294,6 +28309,9 @@ class Store:
             self.db.execute("UPDATE chain_meme_trader_order_intents SET status=?,completed_at=?,"
                 "reason=CASE WHEN ?=0 THEN reason||':no_account_projected_at_first_receipt' ELSE reason END WHERE id=?",
                 ("filled" if projected else "failed", iso(filled_at), projected, intent["intent_id"]))
+            if safety is not None:
+                safety.pending.pop(str(cohort_id),None)
+                safety.save()
 
     def enroll_chain_meme_trader_v6(
         self, *, limit: int = 240, definition_version: str | None = None,
