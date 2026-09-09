@@ -1353,6 +1353,7 @@ class Runtime:
                     self.store.register_chain_meme_research_finalists()
                     self.store.register_chain_meme_research_round2()
                     self.store.register_chain_meme_resource_bound_research()
+                    self.store.register_age_rate_revisions90()
                     self.store.register_chain_meme_inventory_research()
                     self.store.register_chain_meme_archive_research()
                     self.store.register_chain_meme_lifecycle_research()
@@ -3240,6 +3241,9 @@ class Runtime:
                 self.store.requeue_token_detail_hydration(
                     token_id, enqueued_at=observed_at, no_pair_only=True,
                 )
+            if known_before:
+                self.store.requeue_dormant_source_episode(token_id,
+                    received_at=observed_at or utcnow(), source_key=','.join(fingerprints))
             first_local = not known_before and new_links > 0
             first_discoveries += int(first_local)
             exposure_id = self.store.add_token_discovery_exposure(
@@ -7307,15 +7311,15 @@ class Runtime:
     async def flat_compression_breakout_shadow_once(self) -> None:
         """Refresh one non-held mature-token batch after the held-token lane."""
         def read_targets():
-            # The measured 1.23s grouping query must not stop the event loop
-            # from receiving held quotes or running an already-triggered exit.
-            db = sqlite3.connect(self.store.path.resolve().as_uri() + "?mode=ro", uri=True)
-            db.row_factory = sqlite3.Row
-            try:
-                return self.store.due_flat_compression_breakout_shadow_targets(limit=30, connection=db)
-            finally:
-                db.close()
-        targets = await asyncio.to_thread(read_targets)
+            from .flat_selector import FlatSelector
+            started=time.perf_counter()
+            if not hasattr(self,'_flat_selector'):
+                self._flat_selector=FlatSelector(self.store)
+            targets=self._flat_selector.due_targets(limit=30,now=utcnow())
+            return targets,time.perf_counter()-started
+        targets,selection_seconds = await asyncio.to_thread(read_targets)
+        if hasattr(self,'runtime_timing'):
+            self.runtime_timing.observe('flat_target_selection',selection_seconds,items=len(targets))
         if not targets:
             self.store.heartbeat("flat-compression-breakout-shadow", item=False)
             return

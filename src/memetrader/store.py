@@ -9327,6 +9327,37 @@ class Store:
             )
             return True
 
+    def requeue_dormant_source_episode(self, token_id, *, received_at, source_key):
+        """Bounded data rediscovery; promotion/advertising never authorizes BUY."""
+        now = parse_time(received_at)
+        if not 0 <= (utcnow()-now).total_seconds() <= 30:
+            return False
+        with self._lock, self.db:
+            prior = self.db.execute("SELECT last_seen_at FROM tokens WHERE token_id=?", (token_id,)).fetchone()
+            if prior is None or parse_time(prior[0]) > now-timedelta(hours=1):
+                return False
+            if self.db.execute("SELECT 1 FROM chain_meme_trader_positions WHERE token_id=? AND status='open' LIMIT 1", (token_id,)).fetchone():
+                return False
+            frame = self.db.execute("SELECT recorded_at FROM token_snapshots WHERE token_id=? ORDER BY id DESC LIMIT 1", (token_id,)).fetchone()
+            hydration = self.db.execute("SELECT status,last_attempt_at FROM token_detail_hydration WHERE token_id=?", (token_id,)).fetchone()
+            if (frame and parse_time(frame[0]) > now-timedelta(hours=1) or hydration and (
+                    hydration[0] in {'pending','inflight'} or hydration[1] and parse_time(hydration[1]) > now-timedelta(hours=1))):
+                return False
+            budget = self.get_kv('dormant-source-episode/budget', {}) or {}
+            recent = [at for at in budget.get('admissions', []) if now-timedelta(seconds=60) < parse_time(at) <= now]
+            if len(recent) >= 2:
+                return False
+            if not self.requeue_token_detail_hydration(token_id, enqueued_at=now):
+                return False
+            self.set_kv('dormant-source-episode/budget', {'admissions': [*recent, iso(now)]})
+            self.record_chain_meme_pattern_evidence(token_id, '', 'rediscovery_episode', {
+                'episode': 'REAWAKENING', 'source_key': source_key,
+                'prior_last_seen': prior[0], 'received_at': iso(now),
+                'decision_eligible': False, 'affects': 'existing_hydration_queue_only',
+                'requires_fresh_market_and_existing_strategy_confirmation': True,
+            }, observed_at=now, source_key=f'rediscovery:{token_id}:{iso(now)}')
+            return True
+
     def recent_token_social_post_links(
         self, *, minutes: int = 180, limit: int = 5000,
         chains: Iterable[str] = ("solana", "bsc"),
@@ -23831,6 +23862,8 @@ class Store:
         if policy.get("revision_exit_kind"):
             behavior["revision_exit_kind"] = str(policy["revision_exit_kind"])
             behavior["revision_exit_policy"] = dict(policy.get("revision_exit_policy") or {})
+        if policy.get("dynamic_principal_recovery"):
+            behavior["dynamic_principal_recovery"] = policy["dynamic_principal_recovery"]
         for name in ("entry_match_mode", "entry_revision_kind", "capital_revision_kind", "research_overlay"):
             if policy.get(name) is not None:
                 behavior[name] = str(policy[name])
@@ -26165,6 +26198,19 @@ class Store:
                     self.append_chain_meme_trader_policy(policy, activated_at=at)
                     added += 1
         return added
+
+    def register_age_rate_revisions90(self) -> int:
+        from .age_rate_revisions import age_rate_revision_policies
+        with self._lock,self.db:
+            row=self.db.execute("SELECT policy_json FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id='resource_age_rate_candidate_v1'",(self.CHAIN_MEME_TRADER_ACTIVE_VERSION,)).fetchone()
+            if row is None:
+                return 0
+            at=utcnow();added=0
+            for policy in age_rate_revision_policies(self._json_object(row[0])):
+                if self.db.execute('SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?',(self.CHAIN_MEME_TRADER_ACTIVE_VERSION,policy['arm_id'])).fetchone() is None:
+                    self.append_chain_meme_trader_policy(policy,activated_at=at)
+                    added+=1
+            return added
 
     def register_chain_meme_inventory_research(self) -> int:
         from .inventory_research import inventory_policies
@@ -31308,6 +31354,8 @@ class Store:
             )
             if int(self.db.execute("SELECT changes()").fetchone()[0]) == 0:
                 return
+            if hasattr(self,'_flat_dirty_marks'):
+                self._flat_dirty_marks.add(mark_token_id)
             latest_history = self.db.execute(
                 "SELECT status,recorded_at FROM chain_meme_trader_market_mark_history "
                 "WHERE token_id=? ORDER BY id DESC LIMIT 1", (mark_token_id,),
@@ -31372,6 +31420,8 @@ class Store:
                     attempted_at, attempted_at,
                 ),
             )
+            if hasattr(self,'_flat_dirty_marks'):
+                self._flat_dirty_marks.add(token_id)
             latest_history = self.db.execute(
                 "SELECT status,recorded_at FROM chain_meme_trader_market_mark_history "
                 "WHERE token_id=? ORDER BY id DESC LIMIT 1", (token_id,),
@@ -31528,6 +31578,8 @@ class Store:
                 "WHERE token_id=?",
                 (attempted_at, str(failure_kind or "DATA_UNAVAILABLE")[:80], token_id),
             )
+            if hasattr(self,'_flat_dirty_marks'):
+                self._flat_dirty_marks.add(token_id)
 
     def apply_chain_meme_trader_market_mark_batch(
         self, outcomes: Iterable[Mapping[str, Any]], *, recorded_at: Any = None,
@@ -32093,8 +32145,9 @@ class Store:
         from .lifecycle_research import EXIT_KINDS as LIFECYCLE_EXIT_KINDS, evaluate_lifecycle_exit
         from .runner_capture import EXIT_KIND as RUNNER_EXIT_KIND, evaluate_runner_exit
         from .early_impulse import EXIT_KIND as IMPULSE_EXIT_KIND, evaluate_impulse_probation
+        from .age_rate_revisions import evaluate_age_rate_checkpoint
         l0_research_kinds = (EXIT_KINDS | ROUND2_EXIT_KINDS | LIFECYCLE_EXIT_KINDS
-            | {RESOURCE_EXIT_KIND, INVENTORY_EXIT_KIND, ARCHIVE_EXIT_KIND, RUNNER_EXIT_KIND, IMPULSE_EXIT_KIND})
+            | {RESOURCE_EXIT_KIND, INVENTORY_EXIT_KIND, ARCHIVE_EXIT_KIND, RUNNER_EXIT_KIND, IMPULSE_EXIT_KIND, 'age_rate_checkpoint_runner_v2'})
         if kind in {"l0_continuation_failure", "l0_profit_lock", "l0_loss_deterioration"} | l0_research_kinds:
             from .l0_experiments import evaluate_l0_continuation_failure, evaluate_l0_profit_lock
             price = position["mark_price_usd"]
@@ -32152,6 +32205,10 @@ class Store:
                              evaluate_inventory_exit if kind == INVENTORY_EXIT_KIND else
                              evaluate_resource_exit if kind == RESOURCE_EXIT_KIND else
                              evaluate_round2_exit if kind in ROUND2_EXIT_KINDS else evaluate_finalist_exit)
+                if kind == 'age_rate_checkpoint_runner_v2':
+                    frame.update(net_market_position_value_usd=net,
+                                 market_price_usd=price,market_liquidity_usd=position['mark_liquidity_usd'])
+                    evaluator=evaluate_age_rate_checkpoint
             result = evaluator(adapted, frame, state, now=current, policy=policy["capital_exit_policy"])
         elif kind == "watched_wallet_distribution":
             from .wallet_observer_experiments import evaluate_wallet_distribution_exit
@@ -33222,6 +33279,15 @@ class Store:
             return 0
         current_amount = max(0, int(position["amount_raw"] or 0))
         sold_amount = min(current_amount, max(0, int(mark["sell_amount_raw"] or 0)))
+        if policy.get('dynamic_principal_recovery') and mark['action']=='PRINCIPAL_RECOVERY':
+            from .age_rate_revisions import next_frame_minimum_principal_recovery_raw
+            resized=next_frame_minimum_principal_recovery_raw(dict(position),{'market_price_usd':post_price},definition)
+            if resized is None:
+                self.db.execute("UPDATE chain_meme_trader_marks SET status='failed',reason=reason||':no_longer_partially_coverable' WHERE id=?",(mark_id,))
+                self.db.execute("UPDATE chain_meme_trader_positions SET pending_mark_id=NULL WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",(version,position['arm_id'],position['shadow_cohort_id']))
+                return 0
+            sold_amount=resized
+            self.db.execute('UPDATE chain_meme_trader_marks SET sell_amount_raw=? WHERE id=?',(str(resized),mark_id))
         initial_amount = max(
             1, int(position["initial_amount_raw"] or current_amount or 1),
         )
@@ -33390,8 +33456,9 @@ class Store:
                                        if closes else position["highest_economic_value_usd"])
         principal_target_fill = bool(
             not closes and amountful_quote is None
-            and str(policy.get("exit_family") or "") == "principal_lock_runner"
-            and str(mark["action"]).startswith("TAKE_PROFIT_")
+            and (str(policy.get("exit_family") or "") == "principal_lock_runner"
+                 and str(mark["action"]).startswith("TAKE_PROFIT_")
+                 or policy.get('dynamic_principal_recovery') and mark['action']=='PRINCIPAL_RECOVERY')
         )
         next_tp = current_tp + int(
             str(mark["action"]).startswith("TAKE_PROFIT_")
@@ -34312,6 +34379,21 @@ class Store:
                         action, reason = "CAPITAL_EXIT", revised[1]
                         trigger_evidence.update(revised[2])
                         sell_amount = int(position["amount_raw"])
+                if (action is None and policy.get('dynamic_principal_recovery')
+                        and not int(position['principal_recovered'] or 0)
+                        and mark_status=='VISIBLE' and position['mark_observed_at']
+                        and position['mark_recorded_at']
+                        and parse_time(position['opened_at']) < parse_time(position['mark_observed_at'])
+                        <= parse_time(position['mark_recorded_at']) <= current
+                        and (current-parse_time(position['mark_observed_at'])).total_seconds()<=15):
+                    from .age_rate_revisions import next_frame_minimum_principal_recovery_raw
+                    recovery=next_frame_minimum_principal_recovery_raw(dict(position),
+                        {'market_price_usd':position['mark_price_usd']},definition)
+                    if recovery is not None:
+                        action,reason='PRINCIPAL_RECOVERY','minimum_net_debit_recovery_next_frame'
+                        sell_amount=recovery
+                        trigger_evidence['dynamic_principal_recovery']={'debit':position['stake_usd'],
+                            'realized_proceeds':position['realized_proceeds_usd'],'sizing':'recomputed_at_actual_fill'}
                 if action is None or sell_amount <= 0:
                     continue
                 if (market_only_exit and action != "RUG_EXIT"
