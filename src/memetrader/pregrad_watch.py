@@ -133,7 +133,8 @@ class PregradWatch:
         if previous and (slot <= previous["slot"] or observed <= _time(previous["observed_at"])):
             return None
         current = {k: frame.get(k) for k in ("slot", "observed_at", "recorded_at", "data_hash",
-                   "real_quote_reserves_raw", "real_token_reserves_raw", "quote_mint", "curve_complete")}
+                   "real_quote_reserves_raw", "real_token_reserves_raw", "quote_mint", "curve_complete",
+                   "virtual_token_reserves_raw", "virtual_quote_reserves_raw", "token_total_supply_raw", "native_economics")}
         item["reserve_frames"] = ([previous] if previous else []) + [current]
         item["net_reserve_growth_quote_per_second"] = None
         item["priority_basis"] = "curve_reserve_seed"

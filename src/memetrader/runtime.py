@@ -6425,6 +6425,7 @@ class Runtime:
                 self._wsol_usdc_conversion = {
                     "input_amount_raw": 1_000_000_000,
                     "minimum_output_amount_raw": minimum,
+                    "output_amount_raw": int(conversion.get("out_amount") or conversion.get("output_amount_raw") or 0),
                     "completed_at": str(conversion.get("completed_at") or iso()),
                 }
                 self._wsol_usdc_conversion_at = asyncio.get_running_loop().time()
@@ -6669,10 +6670,20 @@ class Runtime:
             return
         try:
             frames = await asyncio.wait_for(self.held_accounts.bonding_curve_observations(targets), timeout=3)
+            pending = getattr(self, '_pump_native_pending', {})
+            target_ids = {t['token_id'] for t in targets}
+            self._pump_native_pending = pending = {k:v for k,v in pending.items() if k in target_ids}
             for frame in frames:
                 now = utcnow()
+                from .pump_native import native_economic_frame, absorption_probe, advance_absorption
+                frame['native_economics'] = native_economic_frame(frame,getattr(self,'_wsol_usdc_conversion',None),now=now)
                 result = watch.apply_observation(frame, now=now)
                 if result is not None:
+                    probe = absorption_probe(result['reserve_frames'])
+                    pending[frame['token_id']] = advance_absorption(pending.get(frame['token_id']),frame,probe)
+                    self.store.record_chain_meme_pattern_evidence(frame['token_id'],frame['curve_address'],'pump_native_economics_v1',
+                        {**frame['native_economics'],'absorption':probe,'sequence':pending[frame['token_id']],'source':'existing_pregrad_RPC_bundle'},
+                        observed_at=frame['observed_at'],source_key=f"pump-native100:{frame['token_id']}:{frame['slot']}")
                     self.store.record_chain_meme_pattern_evidence(frame["token_id"], "", "pregrad_watch", result,
                         observed_at=frame["observed_at"], source_key=f"pregrad-curve:{frame['token_id']}:{frame['slot']}")
             self.store.heartbeat("pregrad-watch", item=bool(frames), error_detail=f"targets={len(targets)};watch_only")

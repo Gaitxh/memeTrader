@@ -3763,7 +3763,7 @@ class SolanaHeldAccountCollector:
         return updates
 
     async def bonding_curve_observations(self, tokens: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
-        """Read at most three mint-bound curves, without constructing sell quotes."""
+        """Same watch/RPC cadence; two fee accounts piggyback one coherent read."""
         from .pregrad_watch import bonding_curve_identity
 
         targets, outcomes, seen = [], [], set()
@@ -3781,7 +3781,15 @@ class SolanaHeldAccountCollector:
             seen.add(identity["token_id"])
             targets.append({**identity, "pubkey": identity["curve_address"],
                             "account_kind": "bonding_curve", "expected_program_owner": PUMP_PROGRAM_ID})
-        for update in await self._initial_updates(targets):
+        bundle_targets = targets
+        if targets and len(targets)+2 <= self.max_multiple_accounts:
+            bundle_targets = [{**t, 'pool_target_id': -100} for t in targets] + [
+                {'pubkey':PUMP_GLOBAL_PDA,'account_kind':'pump_global','expected_program_owner':PUMP_PROGRAM_ID,'pool_target_id':-100},
+                {'pubkey':PUMP_FEE_CONFIG_PDA,'account_kind':'fee_config','expected_program_owner':PUMP_FEE_PROGRAM_ID,'pool_target_id':-100}]
+        updates = await self._initial_updates(bundle_targets)
+        configs = {u['account_kind']:u for u in updates if u['account_kind']!='bonding_curve'}
+        for update in updates:
+            if update['account_kind']!='bonding_curve':continue
             decoded = update["decoded"]
             verified = decoded.get("status") == "verified" and int(update["slot"]) > 0
             outcomes.append({k: update[k] for k in ("token_id", "base_mint", "curve_address",
@@ -3793,7 +3801,15 @@ class SolanaHeldAccountCollector:
                                 real_quote_reserves_raw=decoded.get("real_quote_reserves_raw"),
                                 real_token_reserves_raw=decoded.get("real_token_reserves_raw"),
                                 quote_mint=decoded.get("quote_mint"),
-                                creator=decoded.get("creator"), decoder_version=decoded.get("decoder_version"))
+                                creator=decoded.get("creator"), decoder_version=decoded.get("decoder_version"),
+                                virtual_token_reserves_raw=decoded.get("virtual_token_reserves_raw"),
+                                virtual_quote_reserves_raw=decoded.get("virtual_quote_reserves_raw"),
+                                token_total_supply_raw=decoded.get("token_total_supply_raw"),
+                                curve_state=decoded,
+                                global_config=configs.get('pump_global',{}).get('decoded',{'status':'unknown'}),
+                                fee_config=configs.get('fee_config',{}).get('decoded',{'status':'unknown'}),
+                                bundle_slot=update['slot'] if len(configs)==2 and all(v['slot']==update['slot'] for v in configs.values()) else None,
+                                bundle_hashes={u['pubkey']:u['data_hash'] for u in [update,*configs.values()]})
         return outcomes
 
     async def bonding_curve_quotes(
