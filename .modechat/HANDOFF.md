@@ -1,3 +1,6 @@
+# Account snapshot108 deployed
+59d2023 loaded20:04:22Z. All unchanged no-open accounts quiescent; raw append-only trade sums cached with frontier/external revision, live corrections/credits/marks unchanged.11targetedPASS. At20:07:11 short guardPASS: accountp95.435vs.437s,held2.528vs2.638s,passive/Dex errors0;5newrows/~172s vs97/prior5m,flat0vs90. Whole DB still grows; no disk shrink/WAL-write claim. See ACCOUNT_SNAPSHOT_WRITEAMPLIFICATION_108.md.107terminal-cap fix now loaded at this coherent boundary;106outcomes remain unarmed.
+
 # CURRENT handoff — REACTIVATION-SLOT-104
 
 Latest runtime b186971 loaded19:35:22Z, short guard pass19:38:51Z; see REACTIVATION_SLOT_104.md. No natural temporary-slot sample yet, so don't claim coverage or repeat deployment. Old mature-probe104 was reverted; this new trial is more conservative and protects futureearly3. Agent103 expansion still awaits post-trim natural quality; storage102 still held-blocked. Pairing/Lead unchanged.

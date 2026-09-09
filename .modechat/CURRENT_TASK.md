@@ -1,3 +1,6 @@
+# Account snapshot108 deployed
+59d2023 loaded20:04:22Z. All unchanged no-open accounts quiescent; raw append-only trade sums cached with frontier/external revision, live corrections/credits/marks unchanged.11targetedPASS. At20:07:11 short guardPASS: accountp95.435vs.437s,held2.528vs2.638s,passive/Dex errors0;5newrows/~172s vs97/prior5m,flat0vs90. Whole DB still grows; no disk shrink/WAL-write claim. See ACCOUNT_SNAPSHOT_WRITEAMPLIFICATION_108.md.107terminal-cap fix now loaded at this coherent boundary;106outcomes remain unarmed.
+
 # Admission audit107 terminal cap fix
 Code6targetedPASS, not loaded: current19:55generation8.5MB uncapped; no restart/new audit file under107. Next coherent load restores terminal/legacy budget-exhaustion KV and stops capture/flush/finalKV repetition. Read ADMISSION_AUDIT_TERMINAL_107.md. No historical denominator repair or runtime change claimed.
 

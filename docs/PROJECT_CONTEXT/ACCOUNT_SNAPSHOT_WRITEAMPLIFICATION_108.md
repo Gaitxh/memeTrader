@@ -1,0 +1,23 @@
+# Account snapshot write amplification108
+REPLY_TO: C2C-20260909-ACCOUNT-SNAPSHOT-WRITEAMPLIFICATION-108
+
+Implementation59d2023 pushed; controlled Paper load20:04:22Z. Current actual branch was already shared SQL market-account aggregation, not the legacy per-arm full SELECT* branch. Changes are limited to the market branch.
+
+- All no-open accounts now skip identical economic payloads indefinitely, ignoring the global trade frontier changing for another arm. Old behavior only exempted paused accounts and otherwise forced60s duplicates. New position/trade/count/cash/credit/correction changes still produce material snapshots. Open accounts retain10s evaluation, mark freshness and existing periodic behavior.
+- Raw append-only trade sums cache per version on cheap global trade PK max plus SQLite external data_version; any new receipt invalidates it. No cache of adjusted economics: corrections, contamination exclusions, capital credits and open positions/current marks are applied each evaluation. Position counts remain a shared indexed/grouped narrow query, not per-arm history hydration. At most8 version cache entries. Uncommitted inputs bypass cache to avoid rollback/frontier-reuse issues. No persistent schema/index added.
+- No edits/deletes/downsampling of old rows, trade/account/funding calculations or drawdown logic. Stale mark transitions still recompute; same value repeated points cannot alter extrema/state-change curve. Runtime heartbeat and account-calculation timing already exist separately from latest_account_snapshot_at, which retains its truthful last-written meaning. No fake liveness snapshots or new heartbeat writes.
+
+Validation11 targeted testsPASS (new empty-active quiescence/new closed-loss receipt invalidation/open price-state curve fixtures plus existing effective accounting/correction/contamination/credit regression suite). No full suite claim. SQLite bounded read-only query benchmark: existing covering-index aggregate252arms37-60ms versus global PK max0.011-0.156ms (3 samples). This is cached-query cost, not total task speedup or disk-growth reduction.
+
+Preload20:03:22 snapshot task47samples p50.3436/p95.4368s, heldfetchp952.638s, heldapply.0751s, pattern6.863s, passive drops0. DB32,645,320,704B/WAL771,482,392B; other ingestion continues, so whole DB growth cannot be causally attributed to this change. Separate immediately-preload20:04:19 bounded indexed last3000 rows covers prior5min:97 current-period account rows,90 no-open, frontier3167160.
+
+This coherent account code load also includes107 cap-terminal fix. Current uncapped admission audit followed its preexisting new-generation startup lifecycle; old exhausted files were not rewritten/deleted. Any future capped generation now persists terminal across restart instead of generating endlessly capped successors. This was not a standalone107 restart. Consensus106 remains unarmed; Pump105 UNKNOWN unchanged. No new funded strategies or Live activation.
+
+Artifacts: data/research/account108/{query_benchmark,before_rows,early_rows}.json; data/research/admission88/{pre_account108,start_account108}.json. Final forward readback appended below.
+
+## Final short forward acceptance
+Cutoff20:07:11Z (~169s after load),15 snapshot timing samples: p50.3221s/p95.4349s versus.3436/.4368 before. Median improves~6.3%; p95 essentially unchanged, not a large whole-task speedup claim. Heldfetchp952.528 vs2.638; apply.0694 vs.0751; pattern5.785 vs6.863; passive drops0,DexPoolTimeout/connect0. Same1open/1held. Funding/registration digest remains0a9ed6e938ef2f7201af23b7fa201ab9104982553d68b5baaf8ddc21ff1fd24a; Paper/Live lock unchanged. DISPOSITION: DEPLOYED_SHORT_GUARD_PASS; not a long-run guarantee.
+
+From pre-load frontier3167160 through3167165:5 new rows in~172s (~1.75/min),all on the one open quiet_renewal account,zero flat/no-open rows. Preceding5m97rows (~19.4/min),90flat (~18/min). Observed total row-rate reduction~91%; no-open flat reduction100% in this short no-new-trade window. This is a natural selected interval, not projected permanent percentage under future trading. Open valuation updates and periodic open coverage remain. Paused and active drained accounts share the same no-material-change test.
+
+Whole-DB physical size from start20:05:01 tofinal20:07:11 increased8,773,632B, while WAL physical size remained771,482,392B. Thus no immediate disk shrink and no proven all-system DB growth reduction: ongoing token/funnel/research writes confound the total; unchanged WAL length does not mean zero WAL writes/recycling. Row reduction is directly observed; lifetime storage savings need longer accounting-specific monitoring, not VACUUM/deletion. Files final_account108.json and account108/final.json contain exact observations.
