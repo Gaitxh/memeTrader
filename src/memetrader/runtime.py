@@ -7315,6 +7315,7 @@ class Runtime:
             definition_versions=target_versions,
         )
         self._pattern_held_tokens = {str(t["token_id"]) for t in targets}
+        self._pattern_protection_ready = True
         refreshed = await self._refresh_chain_meme_market_marks(
             targets, heartbeat_name="chain-meme-market-marks",
             high_priority=True,
@@ -7374,11 +7375,25 @@ class Runtime:
                     oldest_received_at=self._cohort_batches[0][0],
                     enqueued=True, dropped_quotes=dropped_quotes)
         held = getattr(self, "_pattern_held_tokens", set())
+        from .reactivation_watch import eligible as probe_eligible, victim as probe_victim, LEASE_SECONDS
+        store = getattr(self, 'store', None)
+        funnel = getattr(store, '_rediscovery_funnel', None)
+        protected = set(held) | set(getattr(store, '_market_entry_pending_tokens', set()))
+        protected.update(item['token_id'] for item in getattr(getattr(store, '_preentry_safety', None), 'pending', {}).values())
+        protected.update(key[0] for key in getattr(self, '_cohort_pending', {}))
+        protected.update(key for key, until in getattr(store, '_pattern_ready_until', {}).items() if until > current)
+        protection_ready = (getattr(self, '_pattern_protection_ready', False)
+            and getattr(store, '_pattern_ready_overflow_until', current) <= current)
         base_caps = {"early": 3, "growth": 4, "mature": 3}
         watch, occupied, chain_used, borrowed = {}, {}, {}, []
         for key, item in getattr(self, "_pattern_watch", {}).items():
             if current >= item["expires_at"] and key not in held:
-                continue
+                if item.get('reactivation_probe') and key in protected:
+                    item['expires_at'] = current + timedelta(seconds=15)
+                else:
+                    if item.get('reactivation_probe') and funnel:
+                        funnel.hit(key, 'temporary_slot_released', current)
+                    continue
             created = item.get("pool_created_at_ms")
             if created is not None:
                 age = current.timestamp() - created / 1000
@@ -7386,7 +7401,7 @@ class Runtime:
             slot = (item["token"].chain, item["bucket"])
             if key not in held:
                 if occupied.get(slot, 0) >= base_caps[item["bucket"]]:
-                    if item["bucket"] == "early":
+                    if item["bucket"] == "early" or item.get('reactivation_probe'):
                         borrowed.append((key, item))
                     continue
                 occupied[slot] = occupied.get(slot, 0) + 1
@@ -7394,12 +7409,14 @@ class Runtime:
             watch[key] = item
         # Keep base reservations first; early overflow survives only in spare
         # chain capacity. Held watches never consume these ten candidate slots.
-        for key, item in borrowed:
+        for key, item in sorted(borrowed, key=lambda v: not v[1].get('reactivation_probe')):
             slot = (item["token"].chain, item["bucket"])
             if chain_used.get(slot[0], 0) < 10:
                 watch[key] = item
                 occupied[slot] = occupied.get(slot, 0) + 1
                 chain_used[slot[0]] = chain_used.get(slot[0], 0) + 1
+            elif item.get('reactivation_probe') and funnel:
+                funnel.hit(key, 'temporary_slot_released', current)
         audit = getattr(self, "_admission_audit", None)
         for token, snapshot in quoted.values():
             funnel = getattr(getattr(self, 'store', None), '_rediscovery_funnel', None)
@@ -7413,6 +7430,7 @@ class Runtime:
             ticket = audit.capture(current, token, snapshot, watch, held,
                 getattr(self, "_chain_paper_execution", {}).get("min_pool_liquidity_usd", 1000.0)) if audit else None
             reason, victim, admitted = "skip_invalid_input", None, False
+            probe = False
             try:
                 token_id, chain = token.token_id, token.chain
                 if token_id in watch:
@@ -7440,11 +7458,36 @@ class Runtime:
                     continue
                 age = current.timestamp() - float(created) / 1000
                 bucket = "early" if age < 900 else "growth" if age < 21600 else "mature"
+                member = funnel.members.get(token_id) if funnel else None
+                if member and 'temporary_slot_released' in member['seen'] and token_id not in protected:
+                    reason = 'skip_completed_temporary_slot'
+                    continue
                 capacity = base_caps[bucket]
                 slot = (chain, bucket)
                 if age < 0:
                     reason = "skip_future_creation"
                     continue
+                # One selective observation lease; never replace a base reservation.
+                if (bucket != 'early' and token_id not in protected and protection_ready
+                        and not any(v['token'].chain == chain and v.get('reactivation_probe') for v in watch.values())
+                        and probe_eligible(member, token, snapshot, current,
+                            getattr(self, '_chain_paper_execution', {}).get('min_pool_liquidity_usd', 1000.0))
+                        and not self._paper_quote_rejections(token_id, token, snapshot, current)):
+                    if chain_used.get(chain, 0) < 10-max(0,3-occupied.get((chain,'early'),0)):
+                        probe = True
+                    else:
+                        replacement = probe_victim(watch, chain, occupied, protected, current)
+                        if replacement is not None:
+                            old = watch.pop(replacement)
+                            occupied[(chain, old['bucket'])] -= 1
+                            chain_used[chain] -= 1
+                            victim = replacement
+                            probe = True
+                    if probe:
+                        reason = 'admit_temporary_slot'
+                    else:
+                        reason = 'skip_temporary_slot_protected_or_base_full'
+                        continue
                 if token_id not in held and occupied.get(slot, 0) >= capacity:
                     floor = getattr(self, "_chain_paper_execution", {}).get("min_pool_liquidity_usd", 1000.0)
                     liquidity = getattr(snapshot, "liquidity_usd", None)
@@ -7456,11 +7499,16 @@ class Runtime:
                         continue
                     replacement = next((key for key, item in watch.items()
                         if key not in held and (item["token"].chain, item["bucket"]) == slot
+                        and not (item.get('reactivation_probe') and key in protected)
                         and ((value := getattr(item["quote"], "liquidity_usd", None)) is None
                              or not math.isfinite(value) or value < floor)), None)
-                    if replacement is not None:
+                    if probe:
+                        pass
+                    elif replacement is not None:
                         reason, victim = "replace_unusable", replacement
-                        watch.pop(replacement)
+                        replaced = watch.pop(replacement)
+                        if replaced.get('reactivation_probe') and funnel:
+                            funnel.hit(replacement, 'temporary_slot_released', current)
                         occupied[slot] -= 1
                         chain_used[chain] -= 1
                         self._pattern_watch_replacements = getattr(self, "_pattern_watch_replacements", 0) + 1
@@ -7470,11 +7518,16 @@ class Runtime:
                     else:
                         reason = "skip_bucket_full"
                         continue
-                elif token_id not in held and chain_used.get(chain, 0) >= 10:
+                elif token_id not in held and (chain_used.get(chain, 0) >= 10
+                        or bucket != 'early'
+                        and any(v['token'].chain == chain and v.get('reactivation_probe') for v in watch.values())
+                        and chain_used.get(chain, 0) >= 10-max(0,3-occupied.get((chain,'early'),0))):
                     # An underfilled base reservation reclaims the newest borrowed
                     # watch deterministically, never a held or base-reserved slot.
                     replacement = next((key for key in reversed(watch)
                         if key not in held and watch[key]["token"].chain == chain
+                        and (watch[key]['bucket'] == 'early' or watch[key].get('reactivation_probe'))
+                        and not (watch[key].get('reactivation_probe') and key in protected)
                         and occupied.get((chain, watch[key]["bucket"]), 0)
                             > base_caps[watch[key]["bucket"]]), None)
                     if replacement is None:
@@ -7482,6 +7535,8 @@ class Runtime:
                         continue
                     reason, victim = "reclaim_reservation", replacement
                     replaced = watch.pop(replacement)
+                    if replaced.get('reactivation_probe') and funnel:
+                        funnel.hit(replacement, 'temporary_slot_released', current)
                     occupied[(chain, replaced["bucket"])] -= 1
                     chain_used[chain] -= 1
                     self._pattern_watch_reservation_reclaims = getattr(self, "_pattern_watch_reservation_reclaims", 0) + 1
@@ -7491,7 +7546,12 @@ class Runtime:
                 watch[token_id] = {"token": token, "bucket": bucket, "quote": snapshot,
                     "pool_created_at_ms": float(created),
                     "pair_address": canonical_token_address(chain, address),
-                    "expires_at": current + timedelta(minutes=20 if bucket == "mature" else 15)}
+                    "expires_at": current + timedelta(minutes=20 if bucket == "mature" else 15),
+                    "admitted_at": current}
+                if probe:
+                    watch[token_id].update(reactivation_probe=True, probe_frames=0,
+                        expires_at=current+timedelta(seconds=LEASE_SECONDS))
+                    funnel.hit(token_id, 'temporary_slot', current)
                 if token_id not in held:
                     occupied[slot] = occupied.get(slot, 0) + 1
                     chain_used[chain] = chain_used.get(chain, 0) + 1
@@ -7743,6 +7803,11 @@ class Runtime:
                     self.runtime_timing.observe("pattern_token_compute",
                         asyncio.get_running_loop().time() - phase_started, items=1)
                 item["sampled_at"] = snapshot.observed_at
+                if item.get('reactivation_probe'):
+                    item['probe_frames'] = item.get('probe_frames', 0)+1
+                    self.store.rediscovery_funnel_hit(token.token_id, 'temporary_slot_frame', received)
+                    if item['probe_frames'] in (2, 3):
+                        self.store.rediscovery_funnel_hit(token.token_id, 'temporary_slot_frames_'+str(item['probe_frames']), received)
                 sampled += 1
                 # Independent candidate work must not monopolize the event loop
                 # while held-market responses and exits are already ready.

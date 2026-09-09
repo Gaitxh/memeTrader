@@ -9357,7 +9357,7 @@ class Store:
                 return False
             if self.db.execute("SELECT 1 FROM chain_meme_trader_positions WHERE token_id=? AND status='open' LIMIT 1", (token_id,)).fetchone():
                 return False
-            frame = self.db.execute("SELECT recorded_at FROM token_snapshots WHERE token_id=? ORDER BY id DESC LIMIT 1", (token_id,)).fetchone()
+            frame = self.db.execute("SELECT recorded_at,observed_at,ingested_at,price_usd,liquidity_usd,volume_5m_usd,buys_5m,sells_5m,raw_json FROM token_snapshots WHERE token_id=? ORDER BY id DESC LIMIT 1", (token_id,)).fetchone()
             hydration = self.db.execute("SELECT status,last_attempt_at FROM token_detail_hydration WHERE token_id=?", (token_id,)).fetchone()
             if (frame and parse_time(frame[0]) > now-timedelta(hours=1) or hydration and (
                     hydration[0] in {'pending','inflight'} or hydration[1] and parse_time(hydration[1]) > now-timedelta(hours=1))):
@@ -9378,7 +9378,16 @@ class Store:
             if not hasattr(self, '_rediscovery_funnel'):
                 from .rediscovery_funnel import RediscoveryFunnel
                 self._rediscovery_funnel = RediscoveryFunnel()
-            self._rediscovery_funnel.episode(token_id, now)
+            baseline = None
+            if frame and frame['ingested_at'] and parse_time(frame['observed_at']) <= parse_time(frame['ingested_at']) <= parse_time(frame['recorded_at']) <= now:
+                raw = json.loads(frame['raw_json'] or '{}')
+                pair = raw.get('pair', raw)
+                baseline = {'pool':canonical_token_address(token_id.split(':',1)[0], str(pair.get('pairAddress') or '')),
+                    'price':frame['price_usd'], 'liquidity':frame['liquidity_usd'],
+                    'volume':frame['volume_5m_usd'],
+                    'trades':frame['buys_5m']+frame['sells_5m'] if frame['buys_5m'] is not None and frame['sells_5m'] is not None else None,
+                    'recorded_at':frame['recorded_at']}
+            self._rediscovery_funnel.episode(token_id, now, baseline=baseline)
             return True
 
     def recent_token_social_post_links(
@@ -27664,6 +27673,15 @@ class Store:
                     try:event_shadow.frame(token,snapshot,decision_at,features)
                     except (KeyError,TypeError,ValueError):event_shadow.count('FRAME_REJECTED')
                 self.rediscovery_funnel_hit(token.token_id, observation_reason, decision_at)
+                # Bounded in-memory protection closes the interval before the next
+                # held-target poll sees a new ready/next-frame opportunity.
+                if ready:
+                    protected = {k:v for k,v in getattr(self, '_pattern_ready_until', {}).items() if v > decision_at}
+                    if len(protected) >= 512:
+                        self._pattern_ready_overflow_until = decision_at+timedelta(seconds=180)
+                    else:
+                        protected[token.token_id] = decision_at+timedelta(seconds=180)
+                    self._pattern_ready_until = protected
                 if any(arm in ready for arm in ('event_reawakening_v1', 'quiet_renewal_v1', 'quiet_renewal_legacy_exit_control_v1')):
                     self.rediscovery_funnel_hit(token.token_id, 'reactivation_ready', decision_at)
             return projected

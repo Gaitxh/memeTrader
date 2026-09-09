@@ -19,14 +19,14 @@ class RediscoveryFunnel:
             self.members.popitem(last=False)
             self.counts['membership_expired'] += 1
 
-    def episode(self, token_id, at):
+    def episode(self, token_id, at, baseline=None):
         with self.lock:
             self._expire(at)
             self.members.pop(token_id, None)
             if len(self.members) >= 256:
                 self.members.popitem(last=False)
                 self.counts['membership_evicted'] += 1
-            self.members[token_id] = {'at':at, 'expires':at+timedelta(hours=1), 'seen':set()}
+            self.members[token_id] = {'at':at, 'expires':at+timedelta(hours=1), 'seen':set(), 'baseline':baseline}
             self.hit(token_id, 'episode', at)
 
     def hit(self, token_id, stage, at, *, recent=True):
@@ -41,6 +41,11 @@ class RediscoveryFunnel:
                 if recent:
                     self.examples.append({'token_id':token_id, 'episode_at':iso(member['at']),
                                           'stage':stage, 'at':iso(at)})
+            if ('temporary_slot' in member['seen'] and stage in (
+                    'pattern_observation','reactivation_ready','safety_stage','BUY')):
+                linked='temporary_slot_'+stage
+                if linked not in member['seen']:
+                    member['seen'].add(linked);self.counts[linked]+=1
 
     def quote(self, token, snapshot, reason, now, floor, occupancy=None):
         with self.lock:
