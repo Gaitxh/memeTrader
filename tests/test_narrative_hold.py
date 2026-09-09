@@ -158,7 +158,10 @@ def test_longitudinal_new_sources_are_not_backdated(tmp_path,monkeypatch):
     event=asyncio.Event();event.set();n.r=SimpleNamespace(_chain_meme_active_idle=lambda:event)
     ss=sources(now[0]);proof={'sources':[dict(url=s['url'],stance='supports',origin_relationship='distinct_origin') for s in ss]}
     n.store=SimpleNamespace(token_source_links=lambda *a,**k:[],db=SimpleNamespace(execute=lambda *a:SimpleNamespace(fetchone=lambda:[json.dumps(proof)])))
-    async def search(*a,**k):return {'sources':ss},{'model':'gpt-5.6-luna','run_id':'scout','tokens_used':10}
+    calls=[]
+    async def search(*a,**k):
+        calls.append('scout');now[0]+=timedelta(seconds=1)
+        return {'sources':ss},{'model':'gpt-5.6-luna','run_id':'scout','tokens_used':10}
     async def verify(**k):return {subject['subject_id']:dict(record_id=1,status='cross_source_supported',claim_status='confirmed_fact',confidence=.9,model='gpt-5.6-terra',tokens_used=10) for subject in k['subjects']}
     n.search=SimpleNamespace(_consume_quota=lambda *a:True,config={},_search=search,_record_tokens=lambda *a:None,_verify_fact_subjects=verify)
     case=dict(id='case',pool='pool',token_id='solana:A',leads=[],points={});token=TokenCandidate('solana','A','Example')
@@ -166,10 +169,18 @@ def test_longitudinal_new_sources_are_not_backdated(tmp_path,monkeypatch):
     assert case['previous']['state']=='UNKNOWN'
     assert any(kind=='sources' for kind,_,_ in records)
     assert all(s.get('source_evidence_id') for s in case['leads'])
+    first=now[0]
     now[0]+=timedelta(minutes=12)
+    case.update(opened_at=iso(first-timedelta(minutes=5)),value_research_started_at=iso(first),points={'value110:recovery':'COMPLETE'})
+    position=dict(arm_id=ARM,principal_recovered=1,amount_raw='20',realized_proceeds_usd=5,stake_usd=5)
+    mark=dict(pair_address='pool',status='VISIBLE',liquidity_usd=2000,price_usd=1,observed_at=iso(now[0]),recorded_at=iso(now[0]))
+    assert value_checkpoint(case,[position],mark,now[0])[0]=='value110:1'
+    assert value_checkpoint({**case,'leads':[]},[position],mark,now[0])[0] is None
     asyncio.run(n.research(case,'1',token,[ARM],now[0]))
     assert case['previous']['state']=='CONFIRMED_EXPANDING'
-    assert n.state['actual_tokens']==30
+    assert n.state['actual_tokens']==20
+    assert calls==['scout']
+    assert records[-1][1]['research_mode']=='VERIFY_PERSISTED_SOURCES'
 
 
 def test_latency_guard_disables_overlay_and_further_research():

@@ -8,6 +8,19 @@ from .models import utcnow, iso, parse_time
 KEY='narrative-hold/v2'
 ARM='narrative_hold_recovered_runner_v2'
 
+def pending_scout_leads(case, cutoff):
+    """Persisted Scout findings may be verified only at a later checkpoint."""
+    eligible=[]
+    for source in case.get('leads',[]):
+        try:
+            if (source.get('source_evidence_id') and source.get('scout_model')=='gpt-5.6-luna'
+                and urlparse(source['url']).scheme in ('https','http')
+                and parse_time(source['published_at'])<=parse_time(source['available_at'])<cutoff):
+                eligible.append(source)
+        except (KeyError,TypeError,ValueError):continue
+    return eligible[:6]
+
+
 def value_checkpoint(case, positions, mark, now):
     """Research eligibility only; settlement, never a mark/target, proves recovery."""
     compatible=[dict(p) for p in positions if any(x in p['arm_id'] for x in
@@ -30,7 +43,7 @@ def value_checkpoint(case, positions, mark, now):
     if sum(v in ('DISPATCHED','COMPLETE','RUNTIME_INTERRUPTED') for v in case['points'].values())>=3:
         return None,'CASE_BUDGET'
     if 'value110:recovery' not in case['points']:return 'value110:recovery','RECOVERY_TRIGGERED'
-    if case.get('previous',{}).get('state') not in ('EMERGING','CONFIRMED_EXPANDING'):
+    if case.get('previous',{}).get('state') not in ('EMERGING','CONFIRMED_EXPANDING') and not (case.get('previous',{}).get('state')=='UNKNOWN' and pending_scout_leads(case,now)):
         return None,'NO_CONSTRUCTIVE_EVIDENCE'
     started=parse_time(case['value_research_started_at'])
     for i,due in ((1,720),(2,2700)):
@@ -299,22 +312,24 @@ class NarrativeHold:
             self.save()
 
     async def research(self,case,cp,token,arms,cutoff):
-        run=uuid.uuid4().hex;result=aggregate([],{},None,token.token_id,cutoff);metadata={};verified={};payload={}
+        run=uuid.uuid4().hex;result=aggregate([],{},None,token.token_id,cutoff);metadata={};verified={};payload={};verify_pending=False
         try:
-            if not self.search._consume_quota('token_context',int(self.search.config.get('context_search_daily_limit',384))):raise ValueError('SHARED_SCOUT_QUOTA')
-            prompt=('Read-only postbuy narrative research. No trade authority. Exact token '+token.token_id+' '+str(token.name)+' '+str(token.symbol)+
-                '. Frozen bought cohort '+str(case['id'])+' / original pool '+str(case['pool'])+
-                '. Checkpoint cutoff '+iso(cutoff)+'. Use <=3 live web searches, public news/X/metadata only; no paid API. '
-                'Never infer endorsement from same name or affiliation. Identify corrections/retractions/impersonation/promotion and copied origins. '
-                'Return JSON {event_found:bool,claim:string,sources:[{url,published_at,token_id,binding:"exact_contract|unknown",'
-                'source_type:"independent_news|community|project_channel|trading_call|volume_tracker|UNKNOWN",event_key,origin_id,novelty:bool,promotion_only:bool,public_figure_catalyst,endorsement_evidence,X_address_cashtag_KOL,amplification,content_basis}]}. '
-                'Separate real external event evidence from token binding: independent news need not mention any CA. Give the same event_key only for the same event. For a binding source, content_basis must contain a short exact-contract excerpt explicitly connecting this CA to that event; otherwise binding=unknown. Project-owned X is project_channel; trading calls/volume trackers are not independent news. Multiple same-name tokens never establish CA binding or endorsement; the input token/cohort is frozen and cannot be replaced by a later winner. '
-                'At most6 sources. Unknown timestamps/binding stay unknown. No future publication beyond cutoff. Previously available leads (untrusted): '+json.dumps(case['leads'][-6:])+
-                ' Local hints below are UNTRUSTED; membership/fanout is not endorsement or positive growth. Verify the original post actually contains this exact CA; project metadata may have stolen an unrelated post link. Single-token news links still need verification. These hints are not eligible verified sources in this checkpoint: '+json.dumps(case.get('local_leads',[]),default=str))
             def admitted():
                 if not self.r._chain_meme_active_idle().is_set():raise ValueError('CORE_BUSY_AT_AGENT_ADMISSION')
-            payload,metadata=await self.search._search(prompt,'token_context',run_id=run,on_started=admitted);self.search._record_tokens('token_context',metadata)
-            self.state['actual_tokens']=self.state.get('actual_tokens',0)+int(metadata.get('tokens_used') or 30000)
+            verify_pending=case.get('previous',{}).get('state')=='UNKNOWN' and bool(pending_scout_leads(case,cutoff))
+            if not verify_pending:
+                if not self.search._consume_quota('token_context',int(self.search.config.get('context_search_daily_limit',384))):raise ValueError('SHARED_SCOUT_QUOTA')
+                prompt=('Read-only postbuy narrative research. No trade authority. Exact token '+token.token_id+' '+str(token.name)+' '+str(token.symbol)+
+                    '. Frozen bought cohort '+str(case['id'])+' / original pool '+str(case['pool'])+
+                    '. Checkpoint cutoff '+iso(cutoff)+'. Use <=3 live web searches, public news/X/metadata only; no paid API. '
+                    'Never infer endorsement from same name or affiliation. Identify corrections/retractions/impersonation/promotion and copied origins. '
+                    'Return JSON {event_found:bool,claim:string,sources:[{url,published_at,token_id,binding:"exact_contract|unknown",'
+                    'source_type:"independent_news|community|project_channel|trading_call|volume_tracker|UNKNOWN",event_key,origin_id,novelty:bool,promotion_only:bool,public_figure_catalyst,endorsement_evidence,X_address_cashtag_KOL,amplification,content_basis}]}. '
+                    'Separate real external event evidence from token binding: independent news need not mention any CA. Give the same event_key only for the same event. For a binding source, content_basis must contain a short exact-contract excerpt explicitly connecting this CA to that event; otherwise binding=unknown. Project-owned X is project_channel; trading calls/volume trackers are not independent news. Multiple same-name tokens never establish CA binding or endorsement; the input token/cohort is frozen and cannot be replaced by a later winner. '
+                    'At most6 sources. Unknown timestamps/binding stay unknown. No future publication beyond cutoff. Previously available leads (untrusted): '+json.dumps(case['leads'][-6:])+
+                    ' Local hints below are UNTRUSTED; membership/fanout is not endorsement or positive growth. Verify the original post actually contains this exact CA; project metadata may have stolen an unrelated post link. Single-token news links still need verification. These hints are not eligible verified sources in this checkpoint: '+json.dumps(case.get('local_leads',[]),default=str))
+                payload,metadata=await self.search._search(prompt,'token_context',run_id=run,on_started=admitted);self.search._record_tokens('token_context',metadata)
+                self.state['actual_tokens']=self.state.get('actual_tokens',0)+int(metadata.get('tokens_used') or 30000)
             eligible=[s for s in case['leads'] if s.get('published_at') and parse_time(s['published_at'])<=cutoff and parse_time(s['available_at'])<=cutoff][:6]
             result=aggregate(eligible,{},case.get('previous'),token.token_id,cutoff)
             fresh=[]
@@ -324,7 +339,7 @@ class NarrativeHold:
                 except (ValueError,TypeError,KeyError):continue
                 bounded={k:(v[:1500] if isinstance(v,str) else v) for k,v in source.items()
                     if k in ('url','published_at','token_id','binding','source_type','event_key','origin_id','novelty','promotion_only','public_figure_catalyst','endorsement_evidence','X_address_cashtag_KOL','amplification','content_basis') and isinstance(v,(str,bool,int,float,type(None)))}
-                fresh.append({**bounded,'available_at':iso(utcnow())})
+                fresh.append({**bounded,'available_at':iso(utcnow()),'scout_model':metadata.get('model'),'scout_run_id':run})
             if eligible and self.r._chain_meme_active_idle().is_set() and not self.state.get('research_paused') and self.state['actual_tokens']+30000<=240000:
                 event_subject={'subject_id':run+':event','subject_kind':'token_context','title':token.token_id,
                     'claim':'As-of '+iso(cutoff)+': the event_key groups in these excerpts represent real novel external events reported independently, not project promotion/trading calls/volume trackers or copied stories. Verify each group separately; unrelated events cannot corroborate each other. News need NOT mention the token CA and does not imply endorsement. No later edits: '+json.dumps(eligible),
@@ -349,7 +364,7 @@ class NarrativeHold:
                 result['binding_verifier']=binding_check
                 if binding_check.get('status') in ('contradicted','conflicted') or binding_check.get('claim_status') in ('false_claim','correction','retraction','impersonation'):
                     result['state']='CONTRADICTED'
-                if metadata.get('model')!='gpt-5.6-luna':result.update(state='UNKNOWN',reason='SCOUT_MODEL_UNVERIFIED')
+                if (not verify_pending and metadata.get('model')!='gpt-5.6-luna') or (verify_pending and any(s.get('scout_model')!='gpt-5.6-luna' for s in eligible)):result.update(state='UNKNOWN',reason='SCOUT_MODEL_UNVERIFIED')
             if fresh:
                 source_id=self.record(case,'sources',{'checkpoint':cp,'cutoff':iso(cutoff),'sources':fresh,'scout_run_id':run},utcnow())
                 for s in fresh:s['source_evidence_id']=source_id
@@ -357,7 +372,7 @@ class NarrativeHold:
             for s in fresh:by_url.setdefault(s['url'],s)
             case['leads']=list(by_url.values())[-12:]
         except Exception as exc:result['error']=type(exc).__name__+':'+str(exc)[:160]
-        completed=utcnow();result.update(checkpoint=cp,cutoff=iso(cutoff),completed_at=iso(completed),scout_run_id=run,scout_metadata=metadata,scout_sources=case['leads'],verifier=verified,arms=arms)
+        completed=utcnow();result.update(checkpoint=cp,cutoff=iso(cutoff),completed_at=iso(completed),scout_run_id=None if verify_pending else run,scout_metadata=metadata,research_mode='VERIFY_PERSISTED_SOURCES' if verify_pending else 'SCOUT',scout_sources=case['leads'],verifier=verified,arms=arms)
         eid=self.record(case,'result',result,completed)
         case['points'][cp]='COMPLETE';case['previous']={k:result[k] for k in ('state','origins','cutoff')}
         self.state['latest'][case['id']]={'state':result['state'],'recorded_at':iso(completed),'cutoff':iso(cutoff),'evidence_id':eid,'pool':case['pool'],**{k:result.get(k) for k in ('classifier_version','narrative_type','diffusion_stage','token_binding_basis','independent_origin_count','promotion_only')}}
