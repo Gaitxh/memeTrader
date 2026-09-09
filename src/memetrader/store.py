@@ -26369,12 +26369,33 @@ class Store:
         with self._lock, self.db:
             at = utcnow()
             for policy in cohort_experiment_policies():
+                if policy['arm_id']=='clone_consensus_leader_v2':
+                    key='clone-consensus-shadow/v2:'+self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+                    if not self.get_kv(key,None):
+                        self.set_kv(key,{'policy':policy,'activated_at':iso(at)})
+                    continue  # No funded policy/account until episode supply is demonstrated.
                 if self.db.execute(
                     "SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?",
                     (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, policy["arm_id"])).fetchone() is None:
                     self.append_chain_meme_trader_policy(policy, activated_at=at)
                     added += 1
         return added
+
+    def record_clone_consensus_shadow(self, signal, snapshot, recorded_at):
+        from .preentry_safety import assess, assess_behavior
+        from .strategy import SafetyChecker
+        registration=self.get_kv('clone-consensus-shadow/v2:'+self.CHAIN_MEME_TRADER_ACTIVE_VERSION,None)
+        evidence=signal.get('decision_evidence') or {}
+        if not registration or not evidence.get('frozen_at') or parse_time(evidence['frozen_at'])<parse_time(registration['activated_at']):
+            return None
+        pool=canonical_token_address(snapshot.chain,(snapshot.raw.get('pair') or {}).get('pairAddress',''))
+        assessment=assess(snapshot,SafetyChecker,source_at=iso(snapshot.observed_at))
+        rows=self._capital_evidence(snapshot.token_id,pool,recorded_at,('vault_frame',))
+        local=assess_behavior(rows['vault_frame'],token_id=snapshot.token_id,pool=pool,now=recorded_at)
+        return self.record_chain_meme_pattern_evidence(snapshot.token_id,pool,
+            'clone_consensus_leader_v2_shadow',dict(signal,decision_eligible=False,affects='none',
+            safety=assessment,behavior=local,execution_authorized=False),
+            observed_at=snapshot.observed_at,source_key=signal['decision_key'])
 
     def register_chain_meme_mature_acceptance(self) -> int:
         """Append the single forward-only S07 mature-token experiment."""

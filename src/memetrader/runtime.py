@@ -7583,6 +7583,11 @@ class Runtime:
                 if identity not in quotes:
                     continue
                 token, snapshot = quotes[identity]
+                consensus=arm_signals.pop('clone_consensus_leader_v2',None)
+                if consensus is not None:
+                    self.store.record_clone_consensus_shadow(consensus,snapshot,received)
+                if not arm_signals:
+                    continue
                 pending[identity] = {"expires": now + timedelta(seconds=60),
                     "quote": (token, snapshot, received), "signals": {
                     arm: {**signal, "observed_at": iso(snapshot.observed_at), "recorded_at": iso(received)}

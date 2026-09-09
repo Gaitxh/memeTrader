@@ -4,6 +4,7 @@ from memetrader.cohort_experiments import (
     consume_passive_cohort_batch,
     evaluate_clone_handoff_entry,
     evaluate_clone_handoff_round,
+    evaluate_clone_consensus_leader_entry,
     evaluate_clone_leader_entry,
     evaluate_relative_resilience_entry,
     evaluate_relative_resilience_round,
@@ -77,12 +78,14 @@ def test_clone_entry_shared_floor_can_be_lowered_or_raised():
 
 def test_policy_shapes_use_opportunity_pairing_not_same_buy_pairing():
     policies = cohort_experiment_policies()
-    assert len(policies) == 5
+    assert len(policies) == 6
     assert all(policy["notional_usd"] == 5.0 for policy in policies)
     assert all("paired_entry_group" not in policy for policy in policies)
     assert all(policy.get("paired_opportunity_group") for policy in policies)
     handoff = next(policy for policy in policies if policy["arm_id"] == "clone_liquidity_handoff_v1")
     assert handoff["opportunity_control_arm_id"] == "clone_liquidity_leader_v1"
+    consensus = next(policy for policy in policies if policy["arm_id"] == "clone_consensus_leader_v2")
+    assert consensus["entry_filter"] == {"direction": "clone_consensus_leader", "max_concurrent_positions": 4}
 
 
 def test_clone_episode_freezes_unique_liquidity_and_volume_leaders_and_never_merges():
@@ -127,6 +130,37 @@ def test_clone_episode_rejects_mixed_chain_or_lifecycle():
         activated_at=now - timedelta(hours=1),
     )
     assert (action, reason) == ("WAIT", "clone_episode_mixed_scope")
+
+
+def test_clone_consensus_leader_requires_shared_unique_leader_and_later_same_pool_frame():
+    now = datetime(2026, 9, 6, 10, 0, tzinfo=UTC)
+    candidates = [_candidate(now, index) for index in range(5)]
+    for index, candidate in enumerate(candidates):
+        candidate["volume_5m_usd"] = 1_000.0 + index * 100
+    action, reason, frozen, evidence = freeze_clone_episode(
+        candidates, episode_id="consensus", decision_at=now,
+        activated_at=now - timedelta(hours=1),
+    )
+    assert (action, reason) == ("FROZEN", "clone_episode_frozen")
+    target = evidence["liquidity_leader"]
+    action, reason, _, _ = evaluate_clone_consensus_leader_entry(
+        frozen, _entry_frame(target, now), decision_at=now,
+        activated_at=now - timedelta(hours=1),
+    )
+    assert (action, reason) == ("WAIT", "awaiting_clone_consensus_leader_next_original_pool_frame")
+    action, reason, _, selected = evaluate_clone_consensus_leader_entry(
+        frozen, _entry_frame(target, now + timedelta(seconds=1)),
+        decision_at=now + timedelta(seconds=2), activated_at=now - timedelta(hours=1),
+    )
+    assert (action, reason) == ("SELECT", "clone_consensus_leader_next_frame_confirmed")
+    assert selected["selected"]["token_id"] == target["token_id"]
+
+    _, distinct_frozen, _ = _clone_episode(now)
+    action, reason, _, _ = evaluate_clone_consensus_leader_entry(
+        distinct_frozen, _entry_frame(target, now + timedelta(seconds=1)),
+        decision_at=now + timedelta(seconds=2), activated_at=now - timedelta(hours=1),
+    )
+    assert (action, reason) == ("WAIT", "clone_consensus_leader_not_unique_or_not_shared")
 
 
 def _resilience_round(now, returns, *, prices=None, liquidities=None):
@@ -310,6 +344,22 @@ def test_passive_adapter_freezes_same_batch_clone_and_emits_only_on_later_natura
     )
     assert "clone_liquidity_leader_v1" not in signals.get(("solana:TOKEN4", "POOL4"), {})
     assert all(len(history) <= 3 for history in state["token_frames"].values())
+
+
+def test_passive_adapter_emits_consensus_only_for_shared_unique_frozen_leader():
+    activated = datetime(2026, 9, 6, 9, 0, tzinfo=UTC)
+    first_at = datetime(2026, 9, 6, 10, 0, tzinfo=UTC)
+    first = _passive_batch(first_at, [1] * 5, [1_000, 1_100, 1_200, 1_300, 1_400], same_symbol=True)
+    for index, row in enumerate(first):
+        row["volume_5m_usd"] = 1_000 + index * 100
+    state, signals = consume_passive_cohort_batch(first, now=first_at, activated_at=activated)
+    assert signals == {}
+    second_at = first_at + timedelta(seconds=6)
+    second = _passive_batch(second_at, [1] * 5, [1_000, 1_100, 1_200, 1_300, 1_400], same_symbol=True)
+    for index, row in enumerate(second):
+        row["volume_5m_usd"] = 1_000 + index * 100
+    _, signals = consume_passive_cohort_batch(second, state, now=second_at, activated_at=activated)
+    assert "clone_consensus_leader_v2" in signals[("solana:TOKEN4", "POOL4")]
 
 
 def test_passive_batch_keeps_prior_state_independent_of_later_observations():

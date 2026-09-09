@@ -71,7 +71,7 @@ PASSIVE_EPISODE_TTL_SECONDS = 600.0
 
 
 def cohort_experiment_policies() -> list[dict[str, Any]]:
-    """Return five independent 5U policies without registering them."""
+    """Return independent policies; consensus starts as an unfunded Shadow."""
     parent = next(
         policy for policy in capital_policies()
         if policy["arm_id"] == "effective_breadth_v1"
@@ -89,6 +89,13 @@ def cohort_experiment_policies() -> list[dict[str, Any]]:
             "clone_m5volume_leader",
             "clone_initial_leader",
             "same_frozen_episode_not_same_buy",
+            [],
+        ),
+        (
+            "clone_consensus_leader_v2",
+            "clone_consensus_leader",
+            "clone_consensus_leader",
+            "same_frozen_episode_unique_liquidity_and_m5volume_leader_not_same_buy",
             [],
         ),
         (
@@ -141,6 +148,10 @@ def cohort_experiment_policies() -> list[dict[str, Any]]:
         })
         policy.pop("paired_entry_group", None)
         policy["entry_filter"] = {"direction": direction}
+        if arm_id == "clone_consensus_leader_v2":
+            policy["entry_filter"]["max_concurrent_positions"] = 4
+            policy.update(observer_only=True,decision_eligible=False,affects='none',
+                          evidence_status='INSUFFICIENT_NATURAL_EPISODES')
         if direction == "clone_liquidity_handoff":
             policy["opportunity_control_arm_id"] = "clone_liquidity_leader_v1"
         policies.append(policy)
@@ -398,6 +409,49 @@ def evaluate_clone_leader_entry(
         "episode_id": payload["episode_id"], "leader_kind": leader_kind,
         "selected": target, "entry_frame": parsed,
         "differential_pair_eligible": payload["differential_pair_eligible"],
+    })
+
+
+def evaluate_clone_consensus_leader_entry(
+    frozen_episode: Mapping[str, Any], frame: Mapping[str, Any], *,
+    decision_at: Any, activated_at: Any,
+    policy: Mapping[str, Any] = CLONE_EPISODE_POLICY,
+) -> CohortResult:
+    """Select only a frozen unique leader shared by liquidity and m5 volume."""
+    payload = _validated_clone_episode(frozen_episode)
+    decision, activated = _time(decision_at), _time(activated_at)
+    frozen_at = _time(payload.get("frozen_at")) if payload else None
+    if not payload or not decision or not activated or not frozen_at or frozen_at < activated:
+        return _result(WAIT, "clone_consensus_leader_not_available", {}, {})
+    candidates = payload.get("candidates")
+    if not isinstance(candidates, list):
+        return _result(WAIT, "clone_consensus_leader_not_available", {}, {})
+    liquidity_leader = _unique_top(candidates, "liquidity_usd")
+    volume_leader = _unique_top(candidates, "volume_5m_usd")
+    if (
+        liquidity_leader is None
+        or volume_leader is None
+        or (liquidity_leader["token_id"], liquidity_leader["pair_address"])
+        != (volume_leader["token_id"], volume_leader["pair_address"])
+    ):
+        return _result(WAIT, "clone_consensus_leader_not_unique_or_not_shared", {}, {
+            "episode_id": payload["episode_id"],
+        })
+    parsed = _entry_frame(
+        frame, liquidity_leader, after=frozen_at, decision=decision, activated=activated,
+        maximum_age=float(policy["maximum_snapshot_age_seconds"]),
+        minimum_liquidity=float(policy.get("min_pool_liquidity_usd", CHAIN_MEME_MIN_POOL_LIQUIDITY_USD)),
+    )
+    if parsed is None:
+        return _result(WAIT, "awaiting_clone_consensus_leader_next_original_pool_frame", {}, {
+            "target": liquidity_leader,
+        })
+    return _result(SELECT, "clone_consensus_leader_next_frame_confirmed", {}, {
+        "episode_id": payload["episode_id"],
+        "frozen_at": payload["frozen_at"],
+        "selected": liquidity_leader,
+        "entry_frame": parsed,
+        "unique_liquidity_and_m5volume_leader": True,
     })
 
 
@@ -880,6 +934,21 @@ def consume_passive_cohort_batch(
                     _emit_signal(signals, episode_id=episode_id, arm_id=arm_id,
                                  evidence=evidence, already_bought=bought)
 
+        consensus_target = payload.get("liquidity_leader")
+        consensus_frame = (
+            by_identity.get((consensus_target.get("token_id"), consensus_target.get("pair_address")))
+            if isinstance(consensus_target, Mapping) else None
+        )
+        if consensus_frame:
+            action, _, _, evidence = evaluate_clone_consensus_leader_entry(
+                frozen, consensus_frame, decision_at=decision, activated_at=activated,
+                policy={**CLONE_EPISODE_POLICY, "min_pool_liquidity_usd": min_pool_liquidity_usd},
+            )
+            if action == SELECT:
+                _emit_signal(signals, episode_id=episode_id,
+                             arm_id="clone_consensus_leader_v2",
+                             evidence=evidence, already_bought=bought)
+
         handoff_state = episode.get("handoff_state") if isinstance(episode.get("handoff_state"), Mapping) else {}
         if handoff_state.get("handoff_armed_at"):
             target = handoff_state.get("handoff_target")
@@ -1028,7 +1097,8 @@ __all__ = [
     "PASSIVE_RELATIVE_RESILIENCE_POLICY", "PASSIVE_MAX_TOKENS",
     "PASSIVE_HISTORY_PER_TOKEN", "PASSIVE_MAX_EPISODES",
     "cohort_experiment_policies", "freeze_clone_episode",
-    "evaluate_clone_leader_entry", "evaluate_relative_resilience_round",
+    "evaluate_clone_leader_entry", "evaluate_clone_consensus_leader_entry",
+    "evaluate_relative_resilience_round",
     "evaluate_relative_resilience_entry", "evaluate_clone_handoff_round",
     "evaluate_clone_handoff_entry", "consume_passive_cohort_batch",
 ]

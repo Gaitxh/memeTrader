@@ -13,6 +13,31 @@ VERSION = 'preentry_obvious_scam_v1'
 EVM_FLAGS = ('is_honeypot','cannot_sell','hidden_owner','can_take_back_ownership',
     'owner_change_balance','is_blacklisted','blacklist','transfer_pausable',
     'slippage_modifiable','personal_slippage_modifiable','honeypot_with_same_creator')
+SOFT_VAULT_STATES = {'SYNTHETIC_SUPPORT_PATTERN',
+    'UNWIND_HAZARD_PRECURSOR_RECOVERY_UNKNOWN'}
+
+
+def assess_behavior(rows, *, token_id, pool, now):
+    """Consume existing confirmed exact-pool evidence, never infer from raw counts."""
+    from .capital_context import _valid_vault_row
+    valid=[r for r in rows if _valid_vault_row(r,token_id,pool,now)]
+    result=dict(hard_veto=[],soft_hazard=[],behavior_sources=[])
+    if not valid:return result
+    row=max(valid,key=lambda r:(parse_time(r['observed_at']),int(r['id'])))
+    payload=row.get('payload') or json.loads(row.get('payload_json') or '{}')
+    features=payload.get('features') or {}
+    reserve=payload.get('effective_quote_reserve_raw')
+    # Real quote reserve alone may legally be zero on a native curve. Only
+    # the protocol observer's known effective reserve is economic evidence.
+    if features.get('effective_quote_reserve_known') is True and reserve is not None:
+        try:
+            if int(reserve)<=0:result['hard_veto'].append('effective_quote_reserve_nonpositive')
+        except (TypeError,ValueError):pass
+    state=payload.get('observer_state')
+    if state in SOFT_VAULT_STATES:result['soft_hazard'].append(state)
+    result['behavior_sources']=[dict(evidence_id=row['id'],observed_at=row['observed_at'],
+        recorded_at=row['recorded_at'],observer_state=state)]
+    return result
 
 
 def flag(value):
@@ -74,6 +99,7 @@ def assess(snapshot, checker, *, source_at, max_tax=12):
     status='REJECT' if reasons else 'UNKNOWN' if unknown or not sources else 'PASS'
     allow=not reasons and bool(sources) and 'protocol_surface_unsupported' not in unknown
     return dict(version=VERSION,status=status,allow=allow,reasons=sorted(set(reasons)),
+        hard_veto=sorted(set(reasons)),soft_hazard=[],
         unknowns=sorted(set(unknown)),sources=sources,source_at=source_at,
         source_clock='local_security_acquisition_complete_not_chain_time',
         token_id=snapshot.token_id,pool=canonical_token_address(chain,pool))
@@ -92,6 +118,10 @@ class PreentrySafety:
             'ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at',
             (self.key,json.dumps(self.pending),iso()))
 
+    def behavior(self,item,now):
+        rows=self.store._capital_evidence(item['token_id'],item['pool'],now,('vault_frame',))
+        return assess_behavior(rows['vault_frame'],token_id=item['token_id'],pool=item['pool'],now=now)
+
     def record(self,item,status,assessment=None):
         now=iso();payload={**item,'safety_status':status,'assessment':assessment,
             'not_a_safety_guarantee':True,'decision_eligible':False}
@@ -109,6 +139,15 @@ class PreentrySafety:
             expires_at=iso(parse_time(filled_at)+timedelta(seconds=float(definition.get('max_signal_to_execution_start_seconds',120)))))
         item['funding_mode']=kwargs.get('funding_mode','legacy_cash_limited')
         item['signal_price_usd']=kwargs.get('signal_price_usd')
+        behavior=self.behavior(item,parse_time(filled_at))
+        if behavior['hard_veto'] or behavior['soft_hazard']:
+            hard=bool(behavior['hard_veto'])
+            assessment=dict(version=VERSION,status='REJECT' if hard else 'HAZARD',allow=False,
+                reasons=behavior['hard_veto'],source_at=behavior['behavior_sources'][0]['observed_at'],**behavior)
+            self.record(item,'REJECT_BEHAVIOR' if hard else 'WAIT_HAZARD',assessment)
+            if not hard and str(cohort_id) not in self.pending and len(self.pending)<128:
+                self.pending[str(cohort_id)]=item;self.save()
+            return False
         # Explicit evidence already available on the signal is never erased by
         # a later provider outage. Its source clock remains the old frame's.
         original=self.store.token_snapshot_by_id(snapshot_id)
@@ -140,7 +179,12 @@ class PreentrySafety:
                 if parse_time(item['expires_at'])<now:
                     self.record(item,'EXPIRED_SECURITY_OR_NEXT_FRAME');self.pending.pop(key)
             self.save()
-            item=next((x for x in self.pending.values() if (x['token_id'],x['pool']) not in self.cache),None)
+            item=None
+            for candidate in self.pending.values():
+                if (candidate['token_id'],candidate['pool']) in self.cache:continue
+                local=self.behavior(candidate,now)
+                if not local['hard_veto'] and not local['soft_hazard']:
+                    item=candidate;break
         if not item:return
         snapshot=self.store.token_snapshot_by_id(item['snapshot_id'])
         if snapshot is None:return
@@ -192,4 +236,4 @@ class PreentrySafety:
                 reason=item['reason']+':'+VERSION,definition={**definition,'policy_notional_usd':item['notional']},
                 funding_mode=item['funding_mode'],signal_price_usd=item['signal_price_usd'])
             self.record(item,'PROJECTED' if projected else 'NO_ACCOUNT_PROJECTED',result)
-            self.pending.pop(key);self.save()
+            if projected:self.pending.pop(key);self.save()
