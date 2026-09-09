@@ -1,0 +1,7 @@
+# Offline backup compression assessment73
+
+E: verified NTFS, free28513742848 bytes at assessment. Built-in compact supports /C and /U on explicit files; transparent NTFS compression changes physical allocation, not logical bytes. Assessment only:no compression/deletion performed, no bytes-freed claim. This is distinct from57 policy-blocked deletion; no workaround attempted.
+
+Safer proposed execution for a truly OFFLINE retained backup:resolve exact path under backup directory and reject reparse/live DB/WAL;confirm no runtime references/active writer;open exclusively before hashing;record logical SHA256,size,mtime,backup frontier and physical allocation;release read handle then compact /C exact file (no recursive directory marking, no /EXE);reopen and compare full logical SHA256,size and SQLite read-only integrity/frontier;record physical allocated bytes. If mismatch STOP and preserve all files/recovery points; /U may reverse compression but is not a corruption repair. Do not discard any source backup. OS/drive failure remains possible; checksums do not replace independent recovery copies.
+
+Compressing/hash-reading tens of GB competes for disk and CPU. This run is actively extracting research and runtime is live; absence of impact cannot be demonstrated, so no compression during this task. Prefer a separately bounded offline file acceptance when resource headroom is measured. All unique backup points remain KEEP. No runtime checkpoint/VACUUM/restart/config changes.
