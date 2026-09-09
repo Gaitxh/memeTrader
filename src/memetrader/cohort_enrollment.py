@@ -19,7 +19,7 @@ def owner(db, version, arm, decision_key, token_id):
     if row:return int(row[0])
     # Older admitted intents (including security waits/rejects) predate claims.
     # Token/cohort and decision/cohort indexes bound this compatibility lookup.
-    row=db.execute('SELECT c.id FROM chain_meme_trader_v6_cohorts c JOIN chain_meme_trader_entry_decisions d '
+    row=db.execute('SELECT c.id FROM chain_meme_trader_v6_cohorts c CROSS JOIN chain_meme_trader_entry_decisions d '
         'ON d.definition_version=c.definition_version AND d.shadow_cohort_id=c.id '
         'WHERE c.definition_version=? AND c.token_id=? AND d.arm_id=? AND d.status=\'admitted\' '
         'AND json_extract(c.feature_json,?)=? AND json_extract(c.feature_json,?) IS NOT NULL ORDER BY c.id LIMIT 1',
