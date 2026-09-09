@@ -48,7 +48,7 @@ def flag(value):
 
 
 def assess(snapshot, checker, *, source_at, max_tax=12):
-    raw=snapshot.raw;pair=raw.get('pair') or {};reasons=[];unknown=[];sources=[]
+    raw=snapshot.raw;pair=raw.get('pair') or {};reasons=[];unknown=[];sources=[];usable=[]
     chain=snapshot.chain;pool=str(pair.get('pairAddress') or '')
     identity=bool(pool and pair.get('chainId')==chain and
         canonical_token_address(chain,(pair.get('baseToken') or {}).get('address',''))==snapshot.address)
@@ -61,22 +61,34 @@ def assess(snapshot, checker, *, source_at, max_tax=12):
                 value=flag(g.get(field))
                 if value is True:reasons.append(field)
                 elif value is None:unknown.append(field)
+                else:usable.append('goplus_evm:'+field+'=false')
             for field in ('buy_tax','sell_tax'):
                 try:
+                    if isinstance(g[field],bool):raise ValueError('invalid tax')
                     value=float(g[field])*100
-                    if math.isfinite(value) and value>max_tax:reasons.append(field+'_above_existing_tax_limit')
+                    if not math.isfinite(value) or value<0:raise ValueError('invalid tax')
+                    if value>max_tax:reasons.append(field+'_above_existing_tax_limit')
+                    else:usable.append('goplus_evm:'+field+'='+str(value)+'pct')
                 except (KeyError,ValueError,TypeError):unknown.append(field)
         else:unknown.append('goplus_unavailable')
         if isinstance(h,dict):
             sources.append('honeypot_is')
-            if flag((h.get('honeypotResult') or {}).get('isHoneypot')) is True:reasons.append('honeypot')
+            honeypot=flag((h.get('honeypotResult') or {}).get('isHoneypot'))
+            if honeypot is True:reasons.append('honeypot')
+            elif honeypot is False:usable.append('honeypot_is:isHoneypot=false')
             # A generic simulation failure is UNKNOWN, not proof of sell failure.
             if h.get('simulationSuccess') is False:unknown.append('simulation_failed_unknown_cause')
             for field in ('buyTax','sellTax'):
                 value=(h.get('simulationResult') or {}).get(field)
-                if isinstance(value,(int,float)) and value>max_tax:reasons.append(field+'_above_existing_tax_limit')
+                if isinstance(value,(int,float)) and not isinstance(value,bool) and math.isfinite(value) and value>=0:
+                    if value>max_tax:reasons.append(field+'_above_existing_tax_limit')
+                    else:usable.append('honeypot_is:'+field+'='+str(value)+'pct')
     elif chain=='solana':
         old=checker.solana_pretrade_rug_assessment(snapshot)
+        for field,value in (old.get('facts',{}).get('token_controls') or {}).items():
+            if value is False:usable.append('solana_control:'+field+'=false')
+        if flag((raw.get('rugcheck') or {}).get('rugged')) is False:
+            usable.append('rugcheck:rugged=false')
         hard=set(old['hard_rejections'])
         # Only explicit dangerous token controls/verified mismatches. No LP-lock,
         # whale concentration, or global exact-route/depth requirement.
@@ -93,13 +105,16 @@ def assess(snapshot, checker, *, source_at, max_tax=12):
         # not a security audit or a claim of verified deployed contract code.
         if str(pair.get('dexId') or '').lower() not in {'uniswap','uniswap-v3','uniswap-v4','pons'}:
             unknown.append('protocol_surface_unsupported')
-        else:sources.append('canonical_provider_surface')
+        else:
+            sources.append('canonical_provider_surface')
+            if identity:usable.append('provider_exact_pool_identity_and_supported_protocol_only')
         unknown.append('external_security_provider_unsupported')
     else:unknown.append('chain_unsupported')
+    if not usable:unknown.append('no_usable_safety_fact')
     status='REJECT' if reasons else 'UNKNOWN' if unknown or not sources else 'PASS'
-    allow=not reasons and bool(sources) and 'protocol_surface_unsupported' not in unknown
+    allow=not reasons and bool(usable) and 'protocol_surface_unsupported' not in unknown
     return dict(version=VERSION,status=status,allow=allow,reasons=sorted(set(reasons)),
-        hard_veto=sorted(set(reasons)),soft_hazard=[],
+        hard_veto=sorted(set(reasons)),soft_hazard=[],usable_facts=sorted(set(usable)),
         unknowns=sorted(set(unknown)),sources=sources,source_at=source_at,
         source_clock='local_security_acquisition_complete_not_chain_time',
         token_id=snapshot.token_id,pool=canonical_token_address(chain,pool))
