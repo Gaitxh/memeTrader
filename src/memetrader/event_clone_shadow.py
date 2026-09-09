@@ -24,7 +24,8 @@ def freeze(event, candidates, *, now, activated_at, existing=None):
             and event.get('promotion_only') is False and event.get('independent_origins',0)>=2
             and event.get('evidence_id') and event.get('event_key')
             and parse_time(activated_at)<=parse_time(event['recorded_at'])<=now
-            and parse_time(event['published_at'])<=parse_time(event['observed_at'])<=parse_time(event['recorded_at']))
+            and parse_time(event['published_at'])<=parse_time(event['observed_at'])<=parse_time(event['recorded_at'])
+            and 0<=(now-parse_time(event['published_at'])).total_seconds()<=1800)
     except (KeyError,ValueError,TypeError):valid=False
     if not valid:return out
     rows=list(candidates)
@@ -95,9 +96,10 @@ class EventCloneShadow:
     """32 live episodes, existing callbacks only; bounded KV/checkpoint flush."""
     def __init__(self,store):
         self.store=store
-        self.state=store.get_kv(KEY,None) or {'activated_at':iso(),'cases':{},'rediscoveries':{},'counts':{},'recent':[],
+        saved=store.get_kv(KEY,None)
+        self.state=saved or {'activated_at':iso(),'cases':{},'rediscoveries':{},'counts':{},'recent':[],
             'decision_eligible':False,'affects':'none','status':'SHADOW_DATA_BLOCKED'}
-        self.dirty=False
+        self.dirty=saved is None
     def count(self,reason):
         c=self.state['counts'];c[reason]=c.get(reason,0)+1;self.dirty=True
     def receive(self,kind,payload,token_id,pool,eid,at):
@@ -115,7 +117,8 @@ class EventCloneShadow:
             and p.get('independent_origin_count',0)>=2 and p.get('event_key')
             and v.get('model')=='gpt-5.6-terra' and v.get('status')=='cross_source_supported'
             and v.get('claim_status') in {'confirmed_fact','probable_report'}
-            and p.get('state') not in {'CONTRADICTED','UNKNOWN','STALE_OR_PROMOTION'})
+            and p.get('state')=='CONFIRMED_EXPANDING'
+            and p.get('scout_metadata',{}).get('model')=='gpt-5.6-luna' and float(v.get('confidence') or 0)>=.8)
         if not confirmed:self.count('WAIT_VERIFIED_EVENT_BINDING');return
         if p.get('token_binding_basis')!='verified_exact_contract_frozen_cohort':
             self.count('WAIT_FROZEN_EVENT_LINK');return
