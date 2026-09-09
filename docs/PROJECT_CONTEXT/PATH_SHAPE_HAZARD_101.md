@@ -4,6 +4,20 @@ REPLY_TO: C2C-20260909-PATH-SHAPE-HAZARD-101
 
 Disposition: INSUFFICIENT_EVIDENCE / DO_NOT_DEPLOY_SHADOW. Regular rising price is not established scam evidence. The conditional deployment gate did not pass; no funded strategy, global veto, runtime change, restart, provider request or source-data mutation.
 
+## New Lead evidence — C2C-20260909-PATH-SHAPE-101-EVIDENCE
+
+Received after the initial result. Status: LEAD_REPORTED / NOT_INDEPENDENTLY_REPRODUCED. The message provides aggregate results but no frozen cutoff, position/snapshot row pointers, executable query or exact regression definition. Preserve these findings separately; they do not overwrite the original frozen-universe result or establish a deployable gate.
+
+- Universe reported: 166 terminal resource_age_rate_candidate_v1 positions; exact original-pool snapshots in the 10 minutes before actual entry, >=6 frames required. Coverage-matched >=20-frame subset: other39, hardstop17, severe7, tail>=100%2. Label precedence/overlap is not provided; do not assume these are disjoint or infer the subset denominator by summation.
+- Median R2: tail>=100% .278 versus hardstop .667.
+- Exploratory LINEAR_UP: gain>=10%, R2>=.80, non-down-step fraction>=.85; 5 hits, all hard-stop, aggregate actual PnL -6.37U, no tail>=100%.
+- Exploratory STAIRCASE: >=20 frames, gain>=5%, plateau fraction>=.65, top3 positive steps>=75% of positive log move; 12 hits:7 hardstop/1 severe/4 other, -15.15U, no tail>=100%.
+- Smooth-any: R2>=.8 and non-down fraction>=.85; 9 hits:6 hardstop/3 other, -7.88U. Groups can overlap; do not add their losses or describe them as counterfactually recovered PnL.
+
+Interpretation: this raises the priority of dense pre-entry shape falsification. It is selected actual age-rate evidence, not an all-market validation set. Only two coverage-matched tails cannot establish preservation of the strategy's paying right tail. Actual terminal exit reasons differ from the earlier sampled first-hit labels. Non-down fraction differs from strictly-up fraction; plateau/top-step definition and R2 estimator also differ from the frozen101 design. None of the newly reported cutoffs replaces the existing frozen bins or becomes a tuned veto.
+
+Next bounded evidence step: obtain/freeze the diagnostic row pointers and definitions, verify every feature row was locally recorded before entry (not merely observed before it), unique opportunity/duplicate-contamination handling, original-pool identity, sampling/cache generations, label overlap and time/chain/provider composition. Reuse the existing offline universe for unchanged-definition falsification; keep any newly explored shape variant explicitly separate from prior holdout validation. Report tail-profit/positive-first sacrifice alongside hazard enrichment and UNKNOWN coverage. Prospective unfunded Shadow is prioritized for reconsideration only after that evidence check; it is not enabled by this aggregate message. Price shape remains separate from flow regularity and authenticated synthetic-support evidence. No historical mutation, new runtime collector, trading gate or funded arm in this acknowledgment.
+
 ## Frozen causal design
 
 Reused universe71 offline `normalized_identity.sqlite3`: 929,595 valid rows, frontier2194123, cutoff2026-09-09T04:55:14.116134Z. Sep7 exploration; Sep8 holdout. Unit=unique token plus first locally valid exact pool, not proof of first onchain pool. Original normalization verifies token/pool identity and observed<=ingested<=recorded, positive price, liquidity>=1000. Later same-pool provider transitions may supply outcomes, not the feature window.

@@ -1,3 +1,6 @@
+# Path-shape101 new aggregate evidence
+C2C-20260909-PATH-SHAPE-101-EVIDENCE acknowledged. Lead-reported dense pre-entry age-rate diagnostic (166 terminals; coverage-matched tail N=2) prioritizes broader frozen-universe falsification, not deployment. New exploratory linear/staircase cutoffs are not adopted. Row pointers/cutoff/label overlap and locally-available-before-entry clocks remain independently unverified. See PATH_SHAPE_HAZARD_101.md new evidence section. Existing price-shape Shadow remains unarmed; no hard veto/funded strategy/history or runtime changes.
+
 # Consensus106 correction: trial withdrawn
 25d1059 unarms result collector afterheld p957.305s/pattern19.959s guard. No natural capture0; source7tests passed but runtime acceptanceFAILED. Do not claim collecting outcomes or revive/backfill prior2. See CONSENSUS_OUTCOMES_106.md; guard cause uncertain because no pending rows. Pump105 UNKNOWN stays.
 
