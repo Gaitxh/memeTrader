@@ -8,6 +8,38 @@ from .models import utcnow, iso, parse_time
 KEY='narrative-hold/v2'
 ARM='narrative_hold_recovered_runner_v2'
 
+def local_social_leads(db,token_id,since,now):
+    """Bounded local hints, never verified sources or same-checkpoint evidence."""
+    hints={}
+    def add(key,available,**fields):
+        try:
+            if not since<parse_time(available)<=now:return
+        except (ValueError,TypeError):return
+        hints[key]={'local_available_at':available,'available_at':available,
+                    'trust':'UNTRUSTED_LEAD','verified_origin':False,'verified_binding':False,**fields}
+    for r in db.execute('SELECT * FROM token_source_links WHERE token_id=? ORDER BY last_observed_at DESC LIMIT 32',(token_id,)):
+        if r['link_kind']!='social_post':continue
+        url=r['normalized_url'];parts=urlparse(url).path.strip('/').split('/')
+        status=parts[parts.index('status')+1] if 'status' in parts and parts.index('status')+1<len(parts) else None
+        add('link:'+str(r['id']),r['first_observed_at'],url=url,status_id=status,
+            claimed_handle=parts[0] if status else None,post_published_at=None,
+            role=r['role'],verification_status=r['verification_status'],provider=r['provider'],
+            member_count=None,ambiguity='UNVERIFIED_METADATA_REFERENCE')
+    for r in db.execute('SELECT * FROM provider_post_ambiguity_memberships WHERE token_id=? ORDER BY candidate_recorded_at DESC,id DESC LIMIT 16',(token_id,)):
+        e=db.execute('SELECT * FROM provider_post_ambiguity_episodes WHERE id=?',(r['episode_id'],)).fetchone()
+        if not e:continue
+        try:
+            available=max((r['candidate_recorded_at'],r['recorded_at'],e['recorded_at']),key=parse_time)
+            if not since<parse_time(available)<=now:continue
+            if e['post_published_at'] and parse_time(e['post_published_at'])>now:continue
+        except (ValueError,TypeError):continue
+        count=db.execute('SELECT COUNT(*) FROM provider_post_ambiguity_memberships WHERE episode_id=? AND julianday(candidate_recorded_at)<=julianday(?) AND julianday(recorded_at)<=julianday(?)',(e['id'],iso(now),iso(now))).fetchone()[0]
+        add('episode:'+str(e['id']),available,url='https://x.com/'+str(e['claimed_handle'])+'/status/'+e['status_id'],
+            status_id=e['status_id'],claimed_handle=e['claimed_handle'],post_published_at=e['post_published_at'],
+            role=r['role'],verification_status=r['verification_status'],provider=r['provider'],
+            member_count=count,ambiguity='MULTI_TOKEN_FANOUT' if count>1 else 'UNVERIFIED_POST_REFERENCE')
+    return sorted(hints.values(),key=lambda h:parse_time(h['available_at']))[-16:]
+
 def exact_binding(source, token_id):
     address=token_id.split(':',1)[-1]
     text=str(source.get('content_basis') or '')
@@ -168,7 +200,12 @@ class NarrativeHold:
                 if cp in case['points'] or elapsed<due:continue
                 arms=[p['arm_id'] for p in positions]
                 previous=case.get('previous')
+                since=parse_time(previous['cutoff'] if previous else case['opened_at'])
+                case['local_leads']=local_social_leads(self.store.db,case['token_id'],since,now)
                 new_local=any(parse_time(s['available_at'])>parse_time(previous['cutoff']) for s in case['leads']) if previous else bool(case['leads'])
+                new_local=new_local or bool(case['local_leads'])
+                if case['local_leads']:
+                    self.record(case,'local_leads',{'checkpoint':cp,'cutoff':iso(now),'leads':case['local_leads']},now)
                 reason=None
                 if elapsed>due+grace:reason='START_WINDOW_MISSED'
                 elif not any(('age_rate' in a or 'reawakening' in a or 'clone' in a or a==ARM or 'principal_recovery' in a) for a in arms):reason='FAMILY_PRIORITY_SKIP'
@@ -225,7 +262,7 @@ class NarrativeHold:
                 'source_type:"independent_news|community|project_channel|trading_call|volume_tracker|UNKNOWN",event_key,origin_id,novelty:bool,promotion_only:bool,public_figure_catalyst,endorsement_evidence,X_address_cashtag_KOL,amplification,content_basis}]}. '
                 'Separate real external event evidence from token binding: independent news need not mention any CA. Give the same event_key only for the same event. For a binding source, content_basis must contain a short exact-contract excerpt explicitly connecting this CA to that event; otherwise binding=unknown. Project-owned X is project_channel; trading calls/volume trackers are not independent news. Multiple same-name tokens never establish CA binding or endorsement; the input token/cohort is frozen and cannot be replaced by a later winner. '
                 'At most6 sources. Unknown timestamps/binding stay unknown. No future publication beyond cutoff. Previously available leads (untrusted): '+json.dumps(case['leads'][-6:])+
-                ' Local metadata links are only unverified hints: '+json.dumps([dict(r) for r in self.store.token_source_links(token.token_id,limit=6)],default=str))
+                ' Local hints below are UNTRUSTED; membership/fanout is not endorsement or positive growth. Verify the original post actually contains this exact CA; project metadata may have stolen an unrelated post link. Single-token news links still need verification. These hints are not eligible verified sources in this checkpoint: '+json.dumps(case.get('local_leads',[]),default=str))
             def admitted():
                 if not self.r._chain_meme_active_idle().is_set():raise ValueError('CORE_BUSY_AT_AGENT_ADMISSION')
             payload,metadata=await self.search._search(prompt,'token_context',run_id=run,on_started=admitted);self.search._record_tokens('token_context',metadata)

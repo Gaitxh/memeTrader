@@ -3949,6 +3949,8 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS provider_post_ambiguity_memberships_episode_idx
                     ON provider_post_ambiguity_memberships(episode_id,candidate_recorded_at,id);
+                CREATE INDEX IF NOT EXISTS provider_post_ambiguity_memberships_token_idx
+                    ON provider_post_ambiguity_memberships(token_id,candidate_recorded_at DESC,id DESC);
                 CREATE TABLE IF NOT EXISTS provider_post_ambiguity_checkpoints (
                     id INTEGER PRIMARY KEY,
                     checkpoint_key TEXT NOT NULL UNIQUE,
