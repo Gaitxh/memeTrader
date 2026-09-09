@@ -11,7 +11,7 @@ from urllib.parse import quote
 
 from .models import canonical_token_address, iso, parse_time, utcnow
 
-VERSION = 'market_microstructure_classifier_v3'
+VERSION = 'market_microstructure_classifier_v4'
 # Fixed research definitions, not tuned against case outcomes.
 BALANCED_NET_GROSS = .10
 EARLY_NET_LIQUIDITY = .01
@@ -41,7 +41,7 @@ def _cv(values):
 
 def classify(trades, *, token_id, pool, window_start, window_end,
              received_at, recorded_at, decision_at, coverage_start, coverage_end,
-             complete=False, hard_unsellable=False, price_frames=None):
+             complete=False, hard_unsellable=False, price_frames=None, sell_simulation=None):
     """Normalized rows must carry exact pool/token, wallet, USD, kind, clocks.
 
     coverage_* is evidence from the adapter, not min/max selected row shortcuts.
@@ -119,17 +119,19 @@ def classify(trades, *, token_id, pool, window_start, window_end,
         size_cv=_cv([t[3] for t in selected]),
         interval_cv=_cv([(b[0]-a[0]).total_seconds() for a,b in zip(selected,selected[1:])]))
     metrics.update(_price_displacement(price_frames, token_id, pool, start, end, recorded,
-        buy-sell, sum(buys[w]-sells[w] for w in external)))
+        buy-sell, sum(buys[w]-sells[w] for w in external), total))
+    sellable = exact_sellability(sell_simulation, token_id, pool, decision)
+    metrics['exact_sellability_status'] = 'OBSERVED' if sellable else 'UNKNOWN'
     # Descriptive phase only; separate from the frozen v1 entry selector below.
     # No fitted case threshold: >=90% gross, <=1 external effective sender,
-    # both sides and >=4 events. Price growth must exceed signed-flow/liquidity
+    # >=4 events. Price growth must exceed signed-flow/liquidity
     # scale, with exact aligned causal endpoints. This is NOT calibrated LPI.
-    concentrated_cycle = (len(selected)>=4 and gross[dominant]/total>=.9
-                          and len(external)<=1 and buys[dominant]>0 and sells[dominant]>0)
+    concentrated_cycle = (len(selected)>=4 and gross[dominant]/total>=.9 and len(external)<=1)
     phase = 'UNKNOWN'
-    if concentrated_cycle and sell>buy and sells[dominant]>buys[dominant]:
+    if concentrated_cycle and sells[dominant]>buys[dominant]:
         phase = 'SYNTHETIC_DISTRIBUTING_CYCLE'
-    elif (concentrated_cycle and buy>=sell and metrics['price_displacement'] is not None
+    elif (concentrated_cycle and sellable and buy>=sell and buys[dominant]>=sells[dominant]
+          and metrics['price_displacement'] is not None
           and metrics['price_displacement']>0
           and metrics['price_displacement']>abs(metrics['signed_notional_liquidity_ratio'])):
         phase = 'SYNTHETIC_LPI_BUILDING'
@@ -149,7 +151,18 @@ def classify(trades, *, token_id, pool, window_start, window_end,
                 signer_is_not_human_identity=True, **base)
 
 
-def _price_displacement(frames, token_id, pool, start, end, recorded, net, external_net):
+def exact_sellability(receipt, token_id, pool, decision):
+    """Positive exact-pool receipt only; provider presence/tax is insufficient."""
+    try:
+        r=receipt or {};chain=token_id.split(':')[0]
+        observed,recorded=map(parse_time,(r['observed_at'],r['recorded_at']))
+        return (r.get('success') is True and r.get('token_id')==token_id
+            and canonical_token_address(chain,r.get('pool',''))==pool
+            and observed<=recorded<=decision and 0<=(decision-observed).total_seconds()<=60)
+    except (KeyError,TypeError,ValueError):return False
+
+
+def _price_displacement(frames, token_id, pool, start, end, recorded, net, external_net, gross):
     """Optional bounded price evidence, not a price lookup or reconstructed path.
 
     Exact endpoints align the price change with the signed-flow window. Missing
@@ -157,6 +170,7 @@ def _price_displacement(frames, token_id, pool, start, end, recorded, net, exter
     group only. Zero net yields an undefined ratio, never infinite support.
     """
     fields = dict(price_displacement=None, price_displacement_per_signed_usd=None,
+                  price_displacement_per_gross_usd=None, gross_notional_liquidity_ratio=None,
                   price_displacement_per_external_signed_usd=None,
                   signed_notional_liquidity_ratio=None, liquidity_retention=None,
                   price_monotonic_up_fraction=None, price_step_cv=None,
@@ -178,6 +192,8 @@ def _price_displacement(frames, token_id, pool, start, end, recorded, net, exter
         gain=prices[-1]/prices[0]-1
         steps=[b/a-1 for a,b in zip(prices,prices[1:])]
         return dict(price_displacement=gain,
+            price_displacement_per_gross_usd=gain/gross if gross else None,
+            gross_notional_liquidity_ratio=gross/liquidities[0],
             price_displacement_per_signed_usd=gain/net if net else None,
             price_displacement_per_external_signed_usd=gain/external_net if external_net else None,
             signed_notional_liquidity_ratio=net/liquidities[0],
@@ -250,7 +266,7 @@ def classify_amountful(payload, *, token_id, pool, decision_at):
         return unknown('INVALID_AMOUNTFUL_EVIDENCE')
 
 
-def classify_page(page, *, token_id, pool, window_start, window_end, decision_at, price_frames=None):
+def classify_page(page, *, token_id, pool, window_start, window_end, decision_at, price_frames=None, sell_simulation=None):
     """Conservative two-boundary coverage; later trades prove recency only.
 
     Post-cutoff trades never contribute to metrics. Empty quiet tails are not
@@ -271,7 +287,7 @@ def classify_page(page, *, token_id, pool, window_start, window_end, decision_at
     return classify(rows, token_id=token_id, pool=pool, window_start=window_start,
         window_end=window_end, received_at=received, recorded_at=received,
         decision_at=decision_at, coverage_start=min(stamps), coverage_end=max(stamps), complete=True,
-        price_frames=price_frames)
+        price_frames=price_frames, sell_simulation=sell_simulation)
 
 
 class TradePageClient:

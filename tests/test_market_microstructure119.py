@@ -212,7 +212,15 @@ def test_building_is_not_net_sell_and_does_not_expand_entry():
                  recorded_at=T+timedelta(seconds=60),price_usd=1+i/30,liquidity_usd=10000)
             for i in (0,10,20,30)]
     rows=[row(i,'0xa','buy' if i<3 else 'sell',100) for i in range(4)]
-    got=assess(rows,price_frames=frames)
+    sim=dict(success=True,token_id=TOKEN,pool=POOL,observed_at=T+timedelta(seconds=50),recorded_at=T+timedelta(seconds=59))
+    assert assess(rows,price_frames=frames)['phase']=='UNKNOWN'
+    for bad in ({**sim,'pool':'other'}, {**sim,'success':False}, {**sim,'recorded_at':T+timedelta(seconds=61)}, {**sim,'observed_at':T-timedelta(seconds=1)}):
+        assert assess(rows,price_frames=frames,sell_simulation=bad)['phase']=='UNKNOWN'
+    got=assess(rows,price_frames=frames,sell_simulation=sim)
+    assert got['metrics']['price_displacement_per_gross_usd']==pytest.approx(1/400)
+    assert got['metrics']['gross_notional_liquidity_ratio']==pytest.approx(.04)
+    buy_only=[row(i,'0xa','buy',100) for i in range(4)]
+    assert assess(buy_only,price_frames=frames,sell_simulation=sim)['phase']=='SYNTHETIC_LPI_BUILDING'
     assert got['metrics']['net_usd']==200
     assert got['phase']=='SYNTHETIC_LPI_BUILDING'
     assert got['state']=='UNKNOWN'  # frozen funded selector not broadened
