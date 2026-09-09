@@ -1,0 +1,25 @@
+# Pump native current-state economics100
+REPLY_TO: C2C-20260909-PUMP-NATIVE-ABSORPTION-100
+
+Disposition: COMPLETE_SHADOW_ONLY. Code d5c3c9b pushed and Paper runtime loaded ~2026-09-09T18:06:19Z. No strategy/account registration, no native BUY/SELL, no ordinary Paper contract mutation.
+
+## Implemented
+- Pure pump_bonding_curve_buy_quote_v1: current decoded virtual/real reserves, mandatory actual token_total_supply, verified global/fee config, dynamic fee tier, SDK1.36.0 budget-minus-one integer sizing and real-token cap. No null-supply/fresh-curve fallback. Separate ceiling fee rounding and affordability guard; exact current cost and slippage max-cost annotation returned. max-cost annotation is not authorization to spend more than5U.
+- Existing3-token/5m watch and RPC cadence unchanged. Global/fee config piggyback same getMultipleAccounts context slot (at most5 addresses). If batch capacity cannot fit, legacy curve read remains and economics UNKNOWN; no second request. Virtual reserves/supply/fee identity and hashes retained prospectively.
+- 5U equivalent derives from existing WSOL-USDC reference original outAmount, not its already-haircut minimum. Reference must predate curve receipt and be<=30s. It is USD valuation, not an executable USDC->SOL conversion. Both sides derive from one coherent curve/config bundle; post-hypothetical-buy reserves feed existing exact sell helper.
+- Pump fees once each leg; Shadow buy amount divided by1.04, sell net multiplied by.96 once. No additional deduction of the reference minimum. Network/rent costs remain UNKNOWN/excluded, so this is not full executable profit. Hypothetical completion returns SELL_UNAVAILABLE/migration required, never a fake old-curve fill. SDK non-mayhem nonstandard supply sell fee ambiguity remains UNKNOWN instead of changing legacy held sell math.
+- Frozen absorption hypothesis: two increasing-slot frames, prior recorded before current observed, active same SOL curve; real quote up/real token down; exact rational spot displacement exceeds current frozen roundtrip friction ratio. No grid/winner fitting. Trigger then strictly later independent verified curve re-quote. All stages decision_eligible=false/affects=none. Watch eviction/restart may censor pending Shadow triggers, never backfill/recreate historical entry.
+
+## Natural acceptance
+Frozen bounded first12 economic rows through18:08:24.759484Z:6 independent tokens,12 OBSERVED_SHADOW; sequence10 OBSERVING/1 TRIGGER_FROZEN/1 REQUOTED_SHADOW. Thus a natural two-frame trigger and third-frame requote occurred; no BUY. Initial six quotes had125bps protocol+creator fees/leg and approximately4.50154–4.50170U modeled immediate recovery from5U after fees/adverse slips. These are friction observations, not profitable trades. Updated precise unique counts supersede early informal per-batch3-token commentary.
+
+pre10018:04:37 -> final10018:07:45 health running, Paper=true/Live locked, immutable funding/registration digest unchanged5abffced88f8b8e3228071a123dd8bb79f9d0effca00b1e9a85a5d17194c71a3. Held fetch p953.526->2.000s; held apply.0295->.0660s; pattern6.627->4.806s. Passive drops0. Startup/different held workload is not sustained comparable performance proof or claimed speedup. One current held position continued ordinary exits. No historical writes/reset.
+
+## Validation and remaining gates
+18 integer/economic/state fixtures plus existing pregrad watch/runtime tests pass; fixed SDK-formula example89,887,639,539 tokens for100,000,000 quote units, cost98,765,431+938,272+296,297. Test2-lamport budget correctly returns no affordable token. Real decode fixture proves one RPC with3 curves+2 config accounts and preserves old curve outcomes. Missing/future reference, incoherent slot, supply missing, invalid fee, nonSOL, completion and next-independent-frame tests. Narrow independent review found no remaining blocker; diff check PASS.
+
+Paper is NOT registered: current native mint/control safety and native position settlement/canonical PumpSwap graduation handoff are not wired for new entry; rent/network costs unknown. Do not bypass ordinary DEX floor globally. Promote only after those contracts and prospective denominators are usable; observed friction crossing alone is not Alpha. Shared held/SELL path and ordinary strategies unchanged.
+
+## Sources/artifacts
+Official [buy instruction](https://github.com/pump-fun/pump-public-docs/blob/main/docs/instructions/BUY.md), [fee program](https://github.com/pump-fun/pump-public-docs/blob/main/docs/FEE_PROGRAM_README.md), [SDK issue38](https://github.com/pump-fun/pump-public-docs/issues/38). Official npm @pump-fun/pump-sdk latest retrieved1.36.0; dist source SHA256712640468e1b7962bcf6bf9743805ccd9c313a4b7b5d61179129d71587272db2. Downloaded reference is research-only, no dependency installed or vendored.
+Local data/research/pump_native100/{sdk-metadata.json,sdk-index.js,natural.json,summary.json}; data/research/admission88/{pre100,post100,final100}.json. Observer implementation src/memetrader/pump_native.py; tests/test_pump_native.py.
