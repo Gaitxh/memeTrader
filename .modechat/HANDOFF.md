@@ -1,3 +1,6 @@
+# CURRENT checkpoint100 delta — read this before older entries
+Read docs/PROJECT_CONTEXT/CONTEXT_CHECKPOINT_100_DELTA.md for consolidated8business facts, rejected hypotheses and corrected queued/implemented/loaded statuses.114 funded code83a145b tested but not registered/loaded;113/112/111/110/final109 also pending supported process control.102idempotency,conservative104slot,Agent-doc trim,107cap and108snapshot fixes were already loaded at prior recorded boundaries; do not repeat them. Shape101 remains DO_NOT_DEPLOY_SHADOW pending sufficient evidence. Lead numeric snapshots are attributed, not newly verified. Preserve current session/pairing/history/Live lock; no runtime action in this checkpoint.
+
 # BSC capital pulse114 funded implementation ready
 bsc_capital_pulse_29m_v1 5U/max4, same age-rate supply + frozen BSC rolling proxy/count/buy-share,29m exit,no narrative.28targetedPASS; persistent pending claim/common113safety. See BSC_CAPITAL_PULSE_114.md. Policy registration occurs only at supported startup frontier, currently blocked/not loaded; do not assert deployment or Alpha. Final109/110-113 also pending. No reset/pairing/history change.
 
