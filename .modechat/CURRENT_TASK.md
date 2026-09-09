@@ -115,3 +115,6 @@ L0 entry: E:/memeTrader/docs/PROJECT_CONTEXT/CHATGPT_CONTEXT_INHERITANCE_MANIFES
 Local setup and context hook are installed. Current browser Chat observed: 6aa044fe-6364-83e8-801c-ac9f69058f10 in the exact GXH Project. Its page shows 极高 and workspace tool reads. Latest model selection, Project memory and fresh L0 readback remain unverified; the observed URL is not authoritative yet.
 
 Next: verify through codex-with-chatgpt/iab, then bootstrap using actual evidence. Arm before substantive delegated work. No transcript replay; claim once, reconcile pending UI effects. A new Chat may only be created inside the same Project after genuine failure. No second Codex writer.
+
+## Deferred118 addendum118A
+Explicit supersession/card queue stale-state handling is added to P1 ModeChat118, after trading P0s. ACK only, no implementation. Exact acceptance: docs/PROJECT_CONTEXT/MODECHAT_118A_SUPERSESSION_BACKLOG.md. Preserve original cards/results; materially started work requires reconciliation, not fictional non-execution.
