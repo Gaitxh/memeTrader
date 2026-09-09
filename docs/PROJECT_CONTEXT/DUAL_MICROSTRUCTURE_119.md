@@ -1,3 +1,12 @@
+## RESULT125 — normal-alpha contamination correction
+
+REPLY_TO: C2C-20260910-AGE-RATE-NORMAL-ALPHA-CORRECTION-125
+Lead-supplied current-r6 robustness recomputation, not independently rerun in this correction-only stage: parent178 terminals/+612.445U; excluding exact normalized Cea Industries/BNC4 and4Stock/4Stock narrative clusters leaves163/-99.040U, median-0.413U,38 winners,4 positions>=5U; top1 removal-105.692U, top3-117.893U. Remainder Sep7/8/9: BSC+2.254/-27.608/-5.186; RH+1.723/-10.675/+5.183; SOL-1.099/-55.339/-8.292. The message gives no exact timestamp or row artifact, so figures remain attributed to125 and are not represented as a new independently frozen dataset. Earlier115 used a different symbol/name cluster rule and cutoff; its11 BSC cluster rows are not silently equated to this all-chain15-row exclusion.
+
+Current live API independently confirms parent entry_paused=true, PAUSED_NEW_ENTRY, assessment INSUFFICIENT with MANIPULATION_CONTAMINATED/RESEARCH_REQUIRED note and115 evidence pointer. Preserve that current control: historical/high-recall comparator does not authorize renewed funded enrollment. No immediate lifecycle mutation needed. Parent headline is not a normal-meme Alpha/champion benchmark; do not build funded unsigned derivatives from it.
+
+119 normal-organic research must separately show full denominator and the exact named-cluster-excluded robustness denominator, with exact membership/cutoff provenance and time/chain separation. The latter is not proof all remaining tokens are organic: unknown microstructure stays UNKNOWN. Synthetic BUILDING/DISTRIBUTING receipts and economics remain separate. Narrative exclusions are research accounting only, never name-based future filters. Preserve all suspicious historical profits/positions and prior reports as evidence. No code, ledger, registration, funding, restart, reset or Live change. Source of new numerical delta: MESSAGE125; no claim of independent statistical revalidation.
+
 ## RESULT119D — descriptive phase refinement
 
 REPLY_TO: C2C-20260910-DUAL-MICROSTRUCTURE-ROUTER-119D

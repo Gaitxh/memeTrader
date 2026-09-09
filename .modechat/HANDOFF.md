@@ -1,3 +1,6 @@
+##125 correction
+Parent headline178/+612.445U is manipulation/narrative-cluster-sensitive, not normal-meme champion. Lead125 exact-cluster remainder163/-99.040U (attributed, not independently rerun); use separate full/excluded denominators in119, never token-name trading filters. Live parent remains entry_paused/INSUFFICIENT with contamination note; no reactivation. See AGE_RATE_MANIPULATION_115.md for exact figures/provenance caveat.
+
 ## Pump123 proof checkpoint
 Official Rust0.1.13/docs pinned. Bounded7 mainnet transactions yielded4 actual exact-input V2 buys,20/20 transfer allocation checks; buyback split within protocol observed. All4 custom-quote, no independent pre-Curve/Global/FeeConfig fixture; SDK sizing differs2/4. No exact promotion/no deploy. Natural32 UNKNOWN (30 semantics/2 reference). See docs/PROJECT_CONTEXT/PUMP_EXACT_INPUT_PROOF_123.md. Native Paper still DATA_BLOCKED; no historical replay.
 
