@@ -38,3 +38,14 @@ Only this report/business pointer/result card are committed; deleted temp data a
 ## Repeated MESSAGE_ID120 readback — 2026-09-09T21:33Z
 
 Already completed; deletion script NOT rerun. Fresh allowlisted root enumeration returned zero test directories. This repeat reclaimed 0 bytes; previous measured reclaim remains 23,695,806,464 bytes. E: free now 45,701,611,520 bytes (42.563GiB), so the repeated 22GB-free statement is stale. Web HTTP200, Paper=true, Live locked, funding unchanged. First health sample briefly reported stale; one follow-up at21:33:52Z reported running/ok with advancing heartbeat and open positions0. No restart or filesystem deletion. Original exact paths and safety checks remain in the immutable cleanup120 audit artifacts.
+
+
+## RESULT120 — RECONCILE checkpoint
+
+REPLY_TO: C2C-20260910-TEST-TEMP-CLEANUP-120-RECONCILE
+
+Checked 2026-09-09T22:14:39.641385+00:00. Provenance is this existing Codex writer's completed120 action (original commit7ef5311; repeat readbackd9cd8f4), corroborated by original inventory/actions/result. Exact299 deleted paths and per-path logical bytes remain in data/research/cleanup120/result.json; original result SHA256 a6dce22c11844ac3c2b53959b48f8df96615f16b72a9e88b0a6b3cc3b04d4614. All299 original paths remain absent. Original totals:23,701,663,547 logical bytes; measured volume delta23,695,806,464 bytes, including concurrent filesystem activity.
+
+This checkpoint deleted0 files/directories and reclaimed0 additional bytes. Current free bytes=45325033472 (42.212GiB). Current name-rule enumeration now finds 1 new test directories produced by subsequent121A/126/119D tests; these are not skipped original120 targets and were left untouched. Exact current names/mtime and original-path absence are in data/research/cleanup120/reconcile120.json. Thus Lead's earlier zero-directory snapshot was accurate only at its cutoff; it is not silently repeated as current.
+
+Fresh health={'ok': True, 'runtime_status': 'running', 'version': 'chain-meme-trader/funding-20260906-v002-final-1000'}; Paper=True, Live locked=True, current funding version=chain-meme-trader/funding-20260906-v002-final-1000; original accounting contract matches=True. Open positions=0, unique held=0. No cleanup script/restart/reset/checkpoint/compression; protected datasets untouched.
