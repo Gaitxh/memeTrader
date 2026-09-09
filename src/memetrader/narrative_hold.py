@@ -18,6 +18,11 @@ def extension_allowed(position, evidence, now):
     p=dict(position)
     try:
         return bool(evidence and evidence.get('state')=='CONFIRMED_EXPANDING'
+            and evidence.get('classifier_version')=='narrative-types/96B'
+            and evidence.get('narrative_type')=='real_event_novelty' and evidence.get('promotion_only') is False
+            and evidence.get('token_binding_basis')=='verified_exact_contract_frozen_cohort'
+            and evidence.get('independent_origin_count',0)>=2
+            and evidence.get('diffusion_stage') in ('independent_community_amplification','independent_amplification')
             and evidence.get('evidence_id') and evidence.get('pool')==p['mark_pair_address']
             and parse_time(evidence['cutoff'])<=parse_time(evidence['recorded_at'])<=now
             and (now-parse_time(evidence['recorded_at'])).total_seconds()<=2400
@@ -53,29 +58,53 @@ def policy(parent):
     return p
 
 def aggregate(sources, verification, previous, token_id, cutoff):
-    """Only prior-locally-available, exact-bound independently checked novelty."""
-    status=verification.get('status');claim=verification.get('claim_status')
-    if status in ('contradicted','conflicted') or claim in ('false_claim','correction','retraction','impersonation'):
-        return {'state':'CONTRADICTED','origins':[]}
-    if claim in ('promotion','satire'):
-        return {'state':'STALE_OR_PROMOTION','origins':[]}
-    good=[]
-    for s in sources:
-        try:valid=(exact_binding(s,token_id)
-            and parse_time(s['published_at'])<=cutoff and parse_time(s['available_at'])<=cutoff
-            and s.get('novelty') is True and not s.get('promotion_only')
-            and s.get('origin_id') and s.get('verified_origin') is True)
-        except (KeyError,TypeError,ValueError):valid=False
-        if valid:good.append(s)
-    origins=sorted({s['origin_id'] for s in good});platforms=sorted({urlparse(s['url']).netloc for s in good})
-    prior=set((previous or {}).get('origins',[]));new=set(origins)-prior
-    confirmed=(previous is not None and status=='cross_source_supported'
-        and claim in ('confirmed_fact','probable_report') and float(verification.get('confidence') or 0)>=.8
-        and len(origins)>=2 and len(platforms)>=2 and len(new)>=1
-        and str(verification.get('model','')).startswith('gpt-5.6-terra'))
-    state='CONFIRMED_EXPANDING' if confirmed else 'EMERGING' if origins else 'UNKNOWN'
-    if previous and not new and previous.get('origins'):state='STALE_OR_PROMOTION'
-    return {'state':state,'origins':origins,'new_origins':len(new),'platform_count':len(platforms)}
+    """Event corroboration and exact frozen-token binding are separate claims."""
+    result=dict(state='UNKNOWN',origins=[],narrative_type='UNKNOWN',diffusion_stage='UNKNOWN',
+        token_binding_basis='UNKNOWN',independent_origin_count=0,promotion_only=None,
+        classifier_version='narrative-types/96B')
+    valid=[]
+    for source in sources:
+        try:
+            if parse_time(source['published_at'])<=parse_time(source['available_at'])<=cutoff:
+                valid.append(source)
+        except (KeyError,TypeError,ValueError):pass
+    roles={s.get('source_type','UNKNOWN') for s in valid}
+    if roles and roles<={'project_channel'}:
+        result.update(narrative_type='project_channels_only',diffusion_stage='self_published',promotion_only=True,
+            token_binding_basis='project_asserted_only' if any(exact_binding(s,token_id) for s in valid) else 'UNKNOWN')
+    elif roles and roles<={'project_channel','trading_call','volume_tracker'}:
+        result.update(narrative_type='promotion_trading_call_amplification',diffusion_stage='trading_call_amplification',promotion_only=True)
+    bound=[s for s in valid if exact_binding(s,token_id) and s.get('verified_binding') is True
+        and s.get('source_type') in ('community','independent_news') and s.get('event_key')
+        and s.get('promotion_only') is False]
+    news=[s for s in valid if s.get('source_type')=='independent_news' and s.get('verified_origin') is True
+        and s.get('novelty') is True and s.get('promotion_only') is False and s.get('origin_id') and s.get('event_key')]
+    # Never combine two unrelated headlines into one corroborated event.
+    keys={s['event_key'] for s in bound}&{s['event_key'] for s in news}
+    if keys:
+        event_key=sorted(keys,key=lambda k:(-len({s['origin_id'] for s in news if s['event_key']==k}),k))[0]
+        good=[s for s in news if s['event_key']==event_key]
+        origins=sorted({s['origin_id'] for s in good});platforms={urlparse(s['url']).netloc for s in good}
+        prior=set((previous or {}).get('origins',[]));new=set(origins)-prior
+        result.update(narrative_type='real_event_novelty',origins=origins,event_key=event_key,
+            independent_origin_count=len(origins),new_origins=len(new),platform_count=len(platforms),promotion_only=False,
+            token_binding_basis='verified_exact_contract_frozen_cohort',
+            diffusion_stage='independent_community_amplification' if any(s.get('source_type')=='community' and s['event_key']==event_key for s in bound) else 'independent_amplification')
+        confirmed=(previous is not None and verification.get('status')=='cross_source_supported'
+            and verification.get('claim_status') in ('confirmed_fact','probable_report')
+            and float(verification.get('confidence') or 0)>=.8 and len(origins)>=2 and len(platforms)>=2
+            and bool(new) and verification.get('model')=='gpt-5.6-terra')
+        result['state']='CONFIRMED_EXPANDING' if confirmed else 'EMERGING'
+        if previous and not new and prior:result['state']='STALE_OR_PROMOTION'
+    elif news:
+        result.update(narrative_type='real_event_token_binding_unknown',diffusion_stage='independent_event_only',
+            independent_origin_count=len({s['origin_id'] for s in news}),promotion_only=False)
+    elif result['promotion_only'] is True:result['state']='STALE_OR_PROMOTION'
+    if verification.get('status') in ('contradicted','conflicted') or verification.get('claim_status') in ('false_claim','correction','retraction','impersonation'):
+        result['state']='CONTRADICTED'
+    elif verification.get('claim_status') in ('promotion','satire'):
+        result.update(state='STALE_OR_PROMOTION',promotion_only=True)
+    return result
 
 class NarrativeHold:
     def __init__(self,runtime):
@@ -185,15 +214,16 @@ class NarrativeHold:
             self.save()
 
     async def research(self,case,cp,token,arms,cutoff):
-        run=uuid.uuid4().hex;result={'state':'UNKNOWN','origins':[]};metadata={};verified={};payload={}
+        run=uuid.uuid4().hex;result=aggregate([],{},None,token.token_id,cutoff);metadata={};verified={};payload={}
         try:
             if not self.search._consume_quota('token_context',int(self.search.config.get('context_search_daily_limit',384))):raise ValueError('SHARED_SCOUT_QUOTA')
             prompt=('Read-only postbuy narrative research. No trade authority. Exact token '+token.token_id+' '+str(token.name)+' '+str(token.symbol)+
+                '. Frozen bought cohort '+str(case['id'])+' / original pool '+str(case['pool'])+
                 '. Checkpoint cutoff '+iso(cutoff)+'. Use <=3 live web searches, public news/X/metadata only; no paid API. '
                 'Never infer endorsement from same name or affiliation. Identify corrections/retractions/impersonation/promotion and copied origins. '
                 'Return JSON {event_found:bool,claim:string,sources:[{url,published_at,token_id,binding:"exact_contract|unknown",'
-                'origin_id,novelty:bool,promotion_only:bool,public_figure_catalyst,endorsement_evidence,X_address_cashtag_KOL,amplification,content_basis}]}. '
-                'content_basis must contain a short verbatim exact-contract binding excerpt from the public source; omit exact_contract if the source does not explicitly bind this address. '
+                'source_type:"independent_news|community|project_channel|trading_call|volume_tracker|UNKNOWN",event_key,origin_id,novelty:bool,promotion_only:bool,public_figure_catalyst,endorsement_evidence,X_address_cashtag_KOL,amplification,content_basis}]}. '
+                'Separate real external event evidence from token binding: independent news need not mention any CA. Give the same event_key only for the same event. For a binding source, content_basis must contain a short exact-contract excerpt explicitly connecting this CA to that event; otherwise binding=unknown. Project-owned X is project_channel; trading calls/volume trackers are not independent news. Multiple same-name tokens never establish CA binding or endorsement; the input token/cohort is frozen and cannot be replaced by a later winner. '
                 'At most6 sources. Unknown timestamps/binding stay unknown. No future publication beyond cutoff. Previously available leads (untrusted): '+json.dumps(case['leads'][-6:])+
                 ' Local metadata links are only unverified hints: '+json.dumps([dict(r) for r in self.store.token_source_links(token.token_id,limit=6)],default=str))
             def admitted():
@@ -201,27 +231,40 @@ class NarrativeHold:
             payload,metadata=await self.search._search(prompt,'token_context',run_id=run,on_started=admitted);self.search._record_tokens('token_context',metadata)
             self.state['actual_tokens']=self.state.get('actual_tokens',0)+int(metadata.get('tokens_used') or 30000)
             eligible=[s for s in case['leads'] if s.get('published_at') and parse_time(s['published_at'])<=cutoff and parse_time(s['available_at'])<=cutoff][:6]
+            result=aggregate(eligible,{},case.get('previous'),token.token_id,cutoff)
             fresh=[]
             for source in (payload.get('sources') or [])[:6]:
                 try:
                     if urlparse(source.get('url','')).scheme not in ('https','http') or parse_time(source['published_at'])>cutoff:continue
                 except (ValueError,TypeError,KeyError):continue
                 bounded={k:(v[:1500] if isinstance(v,str) else v) for k,v in source.items()
-                    if k in ('url','published_at','token_id','binding','origin_id','novelty','promotion_only','public_figure_catalyst','endorsement_evidence','X_address_cashtag_KOL','amplification','content_basis') and isinstance(v,(str,bool,int,float,type(None)))}
+                    if k in ('url','published_at','token_id','binding','source_type','event_key','origin_id','novelty','promotion_only','public_figure_catalyst','endorsement_evidence','X_address_cashtag_KOL','amplification','content_basis') and isinstance(v,(str,bool,int,float,type(None)))}
                 fresh.append({**bounded,'available_at':iso(utcnow())})
             if eligible and self.r._chain_meme_active_idle().is_set() and not self.state.get('research_paused') and self.state['actual_tokens']+30000<=240000:
-                subject={'subject_id':run,'subject_kind':'token_context','title':token.token_id,
-                    'claim':'As-of '+iso(cutoff)+': exact contract '+token.token_id+' has genuinely novel independently-originated propagation. Independently verify the exact address appears and is bound in each source, not just the scout excerpt. No name/affiliation endorsement inference. Check the stored source excerpts only up to cutoff, never later edits. '+json.dumps(eligible),
+                event_subject={'subject_id':run+':event','subject_kind':'token_context','title':token.token_id,
+                    'claim':'As-of '+iso(cutoff)+': the event_key groups in these excerpts represent real novel external events reported independently, not project promotion/trading calls/volume trackers or copied stories. Verify each group separately; unrelated events cannot corroborate each other. News need NOT mention the token CA and does not imply endorsement. No later edits: '+json.dumps(eligible),
                     'sources':eligible}
-                v=await self.search._verify_fact_subjects(parent_task='token_context',parent_run_id=run,subjects=[subject],requested_at=cutoff,on_started=admitted)
-                verified=v.get(run,{})
-                self.state['actual_tokens']+=int(verified.get('tokens_used') or 30000)
-                record=self.store.db.execute('SELECT evidence_json FROM agent_fact_verifications WHERE id=?',(verified.get('record_id'),)).fetchone()
-                proof=json.loads(record[0]) if record else {}
-                supported={s['url'] for s in proof.get('sources',[]) if s.get('stance')=='supports' and s.get('origin_relationship')=='distinct_origin'}
-                eligible=[{**s,'verified_origin':s['url'] in supported} for s in eligible]
+                binding_subject={'subject_id':run+':binding','subject_kind':'token_context','title':token.token_id,
+                    'claim':'As-of '+iso(cutoff)+': community/independent sources explicitly connect exact frozen contract '+token.token_id+' to the stated event_key. Verify CA and association in actual source, not just scout excerpts; no same-name or project-owned/trading-call-only inference. This is association, never endorsement or future clone selection. No later edits: '+json.dumps(eligible),
+                    'sources':eligible}
+                checks=await self.search._verify_fact_subjects(parent_task='token_context',parent_run_id=run,
+                    subjects=[event_subject,binding_subject],requested_at=cutoff,on_started=admitted)
+                verified=checks.get(run+':event',{})
+                binding_check=checks.get(run+':binding',{})
+                # Both subjects share one verifier invocation; usage is not doubled.
+                self.state['actual_tokens']+=max(int(verified.get('tokens_used') or 30000),int(binding_check.get('tokens_used') or 30000))
+                def supports(check,independent=False):
+                    record=self.store.db.execute('SELECT evidence_json FROM agent_fact_verifications WHERE id=?',(check.get('record_id'),)).fetchone()
+                    proof=json.loads(record[0]) if record else {}
+                    return {s['url'] for s in proof.get('sources',[]) if s.get('stance')=='supports'
+                        and (not independent or s.get('origin_relationship')=='distinct_origin')}
+                event_urls=supports(verified,True);binding_urls=supports(binding_check)
+                eligible=[{**s,'verified_origin':s['url'] in event_urls,'verified_binding':s['url'] in binding_urls and binding_check.get('model')=='gpt-5.6-terra'} for s in eligible]
                 result=aggregate(eligible,verified,case.get('previous'),token.token_id,cutoff)
-                if metadata.get('model')!='gpt-5.6-luna':result={'state':'UNKNOWN','origins':[],'reason':'SCOUT_MODEL_UNVERIFIED'}
+                result['binding_verifier']=binding_check
+                if binding_check.get('status') in ('contradicted','conflicted') or binding_check.get('claim_status') in ('false_claim','correction','retraction','impersonation'):
+                    result['state']='CONTRADICTED'
+                if metadata.get('model')!='gpt-5.6-luna':result.update(state='UNKNOWN',reason='SCOUT_MODEL_UNVERIFIED')
             if fresh:
                 source_id=self.record(case,'sources',{'checkpoint':cp,'cutoff':iso(cutoff),'sources':fresh,'scout_run_id':run},utcnow())
                 for s in fresh:s['source_evidence_id']=source_id
@@ -232,5 +275,5 @@ class NarrativeHold:
         completed=utcnow();result.update(checkpoint=cp,cutoff=iso(cutoff),completed_at=iso(completed),scout_run_id=run,scout_metadata=metadata,scout_sources=case['leads'],verifier=verified,arms=arms)
         eid=self.record(case,'result',result,completed)
         case['points'][cp]='COMPLETE';case['previous']={k:result[k] for k in ('state','origins','cutoff')}
-        self.state['latest'][case['id']]={'state':result['state'],'recorded_at':iso(completed),'cutoff':iso(cutoff),'evidence_id':eid,'pool':case['pool']}
+        self.state['latest'][case['id']]={'state':result['state'],'recorded_at':iso(completed),'cutoff':iso(cutoff),'evidence_id':eid,'pool':case['pool'],**{k:result.get(k) for k in ('classifier_version','narrative_type','diffusion_stage','token_binding_basis','independent_origin_count','promotion_only')}}
         self.save()
