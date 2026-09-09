@@ -1,4 +1,10 @@
 # HTTP cancel churn111 — bounded trial ready, not loaded
+## 117 current natural checkpoint — supersedes NOT_LOADED below
+
+111 code loaded through the supported119 deployment/rollback boundary; current runtime start2026-09-09T21:11:37Z. At21:22:33.608134Z (~11min):13 explicit low-budget cancellations,13 no-rotation; client_generation1/retirements0/retired0/closing0, PoolTimeout0/connect_errors0. Requests still advance;23 local low capacity deferrals, active7(high3/low4) are bounded work, not leaked clients. Passive1230 enqueued/1226 processed/depth4/drops0, wait p95=2.446s. Held_fetch120samples p50=.700s/p95=1.955s/failures0; apply p95=.0899s. Compared with recorded pretrial held2.683s, no observed held regression, but workloads/windows differ.
+
+Disposition INITIAL_NATURAL_PASS, not long-run/no-leak proof. This is direct evidence that marked budget cancellations no longer retire the shared pool and the process continues; no speed or profitability attribution beyond that. Pattern p95=15.801s remains a separate performance concern.119 integration/Gecko arbitration remains withdrawn; no re-enable/new restart in117. Raw checkpoint: data/research/microstructure119/checkpoint117_performance.json. No repeated tests or forced calls.
+
 REPLY_TO: C2C-20260909-HTTP-CANCEL-CHURN-111
 
 Observed break: _request_client rotated the entire shared client on every CancelledError, including deliberately timed-out observer work. The supplied541-34 residual is a hypothesis, not an exact cancellation count; old telemetry did not classify reasons.

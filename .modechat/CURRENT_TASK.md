@@ -1,3 +1,6 @@
+# CURRENT117 reconciled checkpoint — current business priority
+Read exact117/STATE next_action.120 cleanup DONE;119 runtime trial withdrawn,119A synthetic5m only, no funded arms.114 not revived;115 pauses preserved.111 initial natural ~11min:13budget cancels/no rotations,generation1,PoolTimeout/connect/drops0,held p951.955s; longer acceptance remains open. Pattern p9515.801s separate unresolved issue. Next resource-safe119 feed/exact-pool simulation/Solana adapter and remaining tradingP0; no repeated Pump100/dedup102/rediscovery diagnostics or cleanup. ModeChat118 deferred. Pairing/session/model/memory fields unchanged/unverified. See HTTP_CANCEL_CHURN_111.md latest checkpoint and117 RESULT card.
+
 # CURRENT119A synthetic exit correction
 synthetic_fast_harvest_v1 first hypothesis absolute5m max hold,1U/max1; earlier hard/trailing/liquidity exits dominate. No3/10/15m variants, narrative/Agent extension, averaging or reentry. Organic unchanged. No funded policy registered;119 runtime remains withdrawn. Passive15/60/240 outcome horizons unchanged. Read DUAL_MICROSTRUCTURE_119.md119A heading; supersedes older15m hypothesis text below.
 
