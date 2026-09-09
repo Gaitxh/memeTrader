@@ -5,10 +5,52 @@ import pytest
 from memetrader.models import utcnow,iso,TokenCandidate
 from memetrader.narrative_hold import aggregate,extension_allowed,policy,NarrativeHold,ARM,KEY,max_hold
 from memetrader.resource_bound_research import resource_policies
+from memetrader.narrative_hold import value_checkpoint
 from test_resource_bound_store import setup_store,quote
 
 
 TYPES=dict(classifier_version='narrative-types/96B',narrative_type='real_event_novelty',diffusion_stage='independent_amplification',token_binding_basis='verified_exact_contract_frozen_cohort',independent_origin_count=2,promotion_only=False)
+
+def test_value_admission_settlement_not_elapsed_or_metadata():
+    now=utcnow();case=dict(token_id='bsc:token',pool='pool',opened_at=iso(now-timedelta(hours=2)),points={},local_leads=[{'url':'https://x.com/project','verified_origin':False}])
+    p=dict(arm_id=ARM,principal_recovered=0,amount_raw='20',realized_proceeds_usd=0,stake_usd=5)
+    m=dict(pair_address='pool',status='VISIBLE',liquidity_usd=2000,price_usd=1,observed_at=iso(now),recorded_at=iso(now))
+    assert value_checkpoint(case,[p],m,now)==(None,'VALUE_NOT_YET_RECOVERED')
+    assert value_checkpoint(case,[{**p,'principal_recovered':1,'realized_proceeds_usd':4.99}],m,now)[0] is None
+    p.update(principal_recovered=1,realized_proceeds_usd=5)
+    assert value_checkpoint(case,[p],m,now)==('value110:recovery','RECOVERY_TRIGGERED')
+    for update in ({'pair_address':'other'},{'liquidity_usd':999},{'observed_at':iso(now-timedelta(seconds=31))},{'recorded_at':iso(now+timedelta(seconds=1))}):
+        assert value_checkpoint(case,[p],{**m,**update},now)[0] is None
+    assert value_checkpoint(case,[{**p,'amount_raw':'0'}],m,now)[0] is None
+    case.update(points={'value110:recovery':'COMPLETE'},value_research_started_at=iso(now-timedelta(seconds=721)),previous={'state':'UNKNOWN'})
+    assert value_checkpoint(case,[p],m,now)==(None,'NO_CONSTRUCTIVE_EVIDENCE')
+    case['previous']['state']='EMERGING'
+    assert value_checkpoint(case,[p],m,now)[0]=='value110:1'
+    case['points'].update({'value110:1':'COMPLETE','value110:2':'RUNTIME_INTERRUPTED'})
+    assert value_checkpoint(case,[p],m,now)==(None,'CASE_BUDGET')
+
+def test_value_wait_reconsiders_recovery_without_spending_or_burning_checkpoint(monkeypatch):
+    now=utcnow();monkeypatch.setattr('memetrader.narrative_hold.utcnow',lambda:now)
+    case=dict(id='case',token_id='bsc:token',pool='pool',cohort_id=1,opened_at=iso(now-timedelta(minutes=4)),points={},leads=[])
+    p=dict(arm_id=ARM,principal_recovered=0,amount_raw='10',realized_proceeds_usd=0,stake_usd=5)
+    m=dict(pair_address='pool',status='VISIBLE',liquidity_usd=2000,price_usd=1,observed_at=iso(now),recorded_at=iso(now))
+    n=NarrativeHold.__new__(NarrativeHold);n.state=dict(cases={'case':case},latest={},day=now.date().isoformat(),calls=0,reserved_tokens=0)
+    n.collect=lambda:None;n.save=lambda:None;n.record=lambda *a:1
+    db=SimpleNamespace(execute=lambda sql,*a:SimpleNamespace(fetchall=lambda:[p],fetchone=lambda:m))
+    n.store=SimpleNamespace(db=db,CHAIN_MEME_TRADER_ACTIVE_VERSION='v',token=lambda _:object(),_preentry_safety=SimpleNamespace(behavior=lambda *a:{}))
+    event=asyncio.Event();event.set();n.r=SimpleNamespace(_chain_meme_active_idle=lambda:event)
+    n.search=SimpleNamespace(enabled=True,_profile=lambda role:{'model':'gpt-5.6-luna' if role=='token_context' else 'gpt-5.6-terra'})
+    calls=[]
+    async def research(case,cp,*args):calls.append(cp);case['points'][cp]='COMPLETE'
+    n.research=research
+    monkeypatch.setattr('memetrader.narrative_hold.local_social_leads',lambda *a:[])
+    asyncio.run(n.once());asyncio.run(n.once())
+    assert calls==[] and case['points']=={} and n.state['calls']==0
+    assert n.state['admission_counts']['VALUE_NOT_YET_RECOVERED']==1
+    p.update(principal_recovered=1,realized_proceeds_usd=5)
+    asyncio.run(n.once());asyncio.run(n.once())
+    assert calls==['value110:recovery'] and n.state['calls']==1
+    assert n.state['reserved_tokens']==60000
 
 def sources(now):
     return [dict(token_id='solana:A',binding='exact_contract',published_at=iso(now-timedelta(minutes=1)),available_at=iso(now-timedelta(seconds=1)),source_type='independent_news',event_key='event',verified_binding=True,novelty=True,promotion_only=False,content_basis='Exact contract A',origin_id=x,verified_origin=True,url='https://'+x+'/news') for x in ['one.org','two.org']]

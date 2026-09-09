@@ -1,3 +1,6 @@
+# Narrative admission110 implemented, not loaded
+Recovery-driven research replaces150s clock; true settled principal+fresh exact pool+safety required, wait remains reconsiderable. Optional early credible-event branch disabled because metadata is untrusted.17distinct targeted tests covered; no forced call/natural savings claim. Existing restart surface policy-blocked; see NARRATIVE_VALUE_ADMISSION_110.md. Do not change pairing or claim110 running.
+
 # EVM LP custody109 current boundary
 Code c865f16 loaded; audit-label fix5c5424a pushed but restart POLICY_BLOCKED. 20:18:39Z health running; LP natural denominator not demonstrated; held p954.265vs2.504s exceeds short guard, attribution unproven. Acceptance INCOMPLETE; do not claim final fix loaded or LP veto active. See docs/PROJECT_CONTEXT/EVM_LP_CUSTODY_109.md. No bypass/repeated stop attempt.107/108 remain;106unarmed; pairing unchanged.
 

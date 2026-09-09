@@ -8,6 +8,37 @@ from .models import utcnow, iso, parse_time
 KEY='narrative-hold/v2'
 ARM='narrative_hold_recovered_runner_v2'
 
+def value_checkpoint(case, positions, mark, now):
+    """Research eligibility only; settlement, never a mark/target, proves recovery."""
+    compatible=[dict(p) for p in positions if any(x in p['arm_id'] for x in
+        ('age_rate','reawakening','clone','principal_recovery')) or p['arm_id']==ARM]
+    if not compatible:return None,'FAMILY_PRIORITY_SKIP'
+    recovered=any(p.get('principal_recovered')==1 and int(p.get('amount_raw') or 0)>0
+        and p.get('realized_proceeds_usd',0)>=p.get('stake_usd',0)>0 for p in compatible)
+    # Local metadata/X references have no verified event authority. Until a causal
+    # credible-event producer is available, do not enable the optional early path.
+    if not recovered:return None,'VALUE_NOT_YET_RECOVERED'
+    try:
+        m=dict(mark or {});pool=str(m['pair_address']);expected=str(case['pool'])
+        if not case['token_id'].startswith('solana:'):pool,expected=pool.lower(),expected.lower()
+        healthy=(bool(expected) and pool==expected and m['status']=='VISIBLE'
+            and m['liquidity_usd']>=1000 and math.isfinite(m['price_usd']) and m['price_usd']>0
+            and parse_time(case['opened_at'])<=parse_time(m['observed_at'])<=parse_time(m['recorded_at'])<=now
+            and 0<=(now-parse_time(m['observed_at'])).total_seconds()<=30)
+    except (KeyError,TypeError,ValueError):healthy=False
+    if not healthy:return None,'LOCAL_MARK_NOT_HEALTHY'
+    if sum(v in ('DISPATCHED','COMPLETE','RUNTIME_INTERRUPTED') for v in case['points'].values())>=3:
+        return None,'CASE_BUDGET'
+    if 'value110:recovery' not in case['points']:return 'value110:recovery','RECOVERY_TRIGGERED'
+    if case.get('previous',{}).get('state') not in ('EMERGING','CONFIRMED_EXPANDING'):
+        return None,'NO_CONSTRUCTIVE_EVIDENCE'
+    started=parse_time(case['value_research_started_at'])
+    for i,due in ((1,720),(2,2700)):
+        cp='value110:'+str(i)
+        if cp not in case['points'] and (now-started).total_seconds()>=due:
+            return cp,'CONSTRUCTIVE_CHECKPOINT'
+    return None,'CHECKPOINT_NOT_DUE'
+
 def local_social_leads(db,token_id,since,now):
     """Bounded local hints, never verified sources or same-checkpoint evidence."""
     hints={}
@@ -200,35 +231,46 @@ class NarrativeHold:
             if not positions:
                 self.record(case,'skip',{'checkpoint':'closed','reason':'NO_OPEN_POSITION'},now)
                 self.state['cases'].pop(key);self.state['latest'].pop(key,None);self.save();continue
-            elapsed=(now-parse_time(case['opened_at'])).total_seconds()
-            for i,(due,grace) in enumerate(((150,90),(720,180),(2700,900))):
-                cp=str(i)
-                if cp in case['points'] or elapsed<due:continue
+            mark=self.store.db.execute('SELECT * FROM chain_meme_trader_market_marks WHERE token_id=?',(case['token_id'],)).fetchone()
+            cp,admission=value_checkpoint(case,positions,mark,now)
+            if cp is None:
+                if case.get('last_admission')!=admission:
+                    case['last_admission']=admission
+                    counts=self.state.setdefault('admission_counts',{})
+                    counts[admission]=counts.get(admission,0)+1
+                    reasons=[admission]
+                    if admission=='VALUE_NOT_YET_RECOVERED':
+                        reasons.append('NO_CREDIBLE_LOCAL_EVENT')
+                        counts['NO_CREDIBLE_LOCAL_EVENT']=counts.get('NO_CREDIBLE_LOCAL_EVENT',0)+1
+                    self.record(case,'skip',{'checkpoint':'value110:'+admission,'reason':admission,'reasons':reasons,'cutoff':iso(now)},now);self.save()
+                continue
+            for cp in (cp,):
                 arms=[p['arm_id'] for p in positions]
-                previous=case.get('previous')
-                since=parse_time(previous['cutoff'] if previous else case['opened_at'])
-                case['local_leads']=local_social_leads(self.store.db,case['token_id'],since,now)
-                new_local=any(parse_time(s['available_at'])>parse_time(previous['cutoff']) for s in case['leads']) if previous else bool(case['leads'])
-                new_local=new_local or bool(case['local_leads'])
-                if case['local_leads']:
-                    self.record(case,'local_leads',{'checkpoint':cp,'cutoff':iso(now),'leads':case['local_leads']},now)
                 reason=None
-                if elapsed>due+grace:reason='START_WINDOW_MISSED'
-                elif not any(('age_rate' in a or 'reawakening' in a or 'clone' in a or a==ARM or 'principal_recovery' in a) for a in arms):reason='FAMILY_PRIORITY_SKIP'
-                elif i and not (previous and previous.get('state') in ('EMERGING','CONFIRMED_EXPANDING') or new_local):reason='NO_NEW_LOCAL_EVIDENCE'
-                elif not self.search.enabled:reason='AGENTS_DISABLED'
+                if not self.search.enabled:reason='AGENTS_DISABLED'
                 elif self.state.get('research_paused'):reason='LATENCY_GUARD_PAUSED'
                 elif self.state['calls']>=4 or max(self.state['reserved_tokens'],self.state.get('actual_tokens',0))+60000>240000:reason='DAILY_BUDGET'
                 token=self.store.token(case['token_id'])
-                mark=self.store.db.execute('SELECT * FROM chain_meme_trader_market_marks WHERE token_id=?',(case['token_id'],)).fetchone()
-                # Existing market marks are only a cheap local research selection filter.
                 if not token:reason='TOKEN_UNAVAILABLE'
-                if not mark or mark['status']!='VISIBLE' or not mark['liquidity_usd'] or mark['liquidity_usd']<1000 or (now-parse_time(mark['observed_at'])).total_seconds()>30:
-                    reason='LOCAL_MARK_NOT_HEALTHY'
                 if self.search._profile('token_context')['model']!='gpt-5.6-luna' or self.search._profile('fact_verifier')['model']!='gpt-5.6-terra':reason='MODEL_POLICY_UNVERIFIED'
+                safety=getattr(self.store,'_preentry_safety',None)
+                risk=safety.behavior({'token_id':case['token_id'],'pool':case['pool']},now) if safety else None
+                if risk is None or risk.get('hard_veto') or risk.get('soft_hazard'):reason='SAFETY_NOT_CLEAR'
                 if reason:
-                    case['points'][cp]=reason;self.record(case,'skip',{'checkpoint':cp,'reason':reason,'cutoff':iso(now)},now);self.save();continue
+                    if case.get('last_admission')!=reason:
+                        case['last_admission']=reason
+                        counts=self.state.setdefault('admission_counts',{});counts[reason]=counts.get(reason,0)+1
+                        self.record(case,'skip',{'checkpoint':cp+':'+reason,'reason':reason,'cutoff':iso(now)},now);self.save()
+                    continue
+                previous=case.get('previous')
+                since=parse_time(previous['cutoff'] if previous else case['opened_at'])
+                case['local_leads']=local_social_leads(self.store.db,case['token_id'],since,now)
+                if case['local_leads']:
+                    self.record(case,'local_leads',{'checkpoint':cp,'cutoff':iso(now),'leads':case['local_leads']},now)
                 if not self.r._chain_meme_active_idle().is_set():return
+                case['value_research_started_at']=case.get('value_research_started_at') or iso(now)
+                case['last_admission']=admission
+                counts=self.state.setdefault('admission_counts',{});counts[admission]=counts.get(admission,0)+1
                 case['points'][cp]='DISPATCHED';self.state['calls']+=1;self.state['reserved_tokens']+=60000
                 self.record(case,'checkpoint',{'checkpoint':cp,'cutoff':iso(now),'arms':arms,'models':{'scout':self.search._profile('token_context'),'verifier':self.search._profile('fact_verifier')}},now);self.save()
                 baseline=self.r.runtime_timing.snapshot() if hasattr(self.r,'runtime_timing') else {}
