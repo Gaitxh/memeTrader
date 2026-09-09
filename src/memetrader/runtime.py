@@ -1483,9 +1483,11 @@ class Runtime:
         self.evm_route = EvmUniswapV3QuoteClient(self.evm_route_http)
         from .pons_observer import PonsV1Observer, PonsV2Observer
         from .four_meme_rest import FourMemeRestObserver
+        from .launchlab_observer import LaunchLabObserver
         four_rest = FourMemeRestObserver(self.http)
         self._native_launch_observers = [four_rest, PonsV2Observer(self.evm_route, self.http),
-                                         four_rest, PonsV1Observer(self.evm_route)]
+                                         four_rest, PonsV1Observer(self.evm_route),
+                                         LaunchLabObserver(self.http)]
         self._native_launch_cursor = 0
         self.evm_aggregator = (
             EvmZeroXPriceClient(self.evm_route_http, zerox_api_key)
