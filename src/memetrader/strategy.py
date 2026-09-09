@@ -1017,7 +1017,7 @@ class SafetyChecker:
         return snap
 
     async def _enrich_goplus_evm(self, snap: TokenSnapshot) -> TokenSnapshot:
-        chain_ids = {"ethereum": 1, "eth": 1, "bsc": 56, "base": 8453}
+        chain_ids = {"ethereum": 1, "eth": 1, "bsc": 56, "base": 8453, "robinhood": 4663}
         chain_id = chain_ids.get(snap.chain.lower())
         if chain_id is None or not self.config.get("goplus_evm", True):
             return snap
@@ -1064,7 +1064,7 @@ class SafetyChecker:
         return snap
 
     async def enrich_evm(self, snap: TokenSnapshot) -> TokenSnapshot:
-        if snap.chain.lower() not in {"ethereum", "eth", "bsc", "base"}:
+        if snap.chain.lower() not in {"ethereum", "eth", "bsc", "base", "robinhood"}:
             return snap
         snap = await self._enrich_goplus_evm(snap)
         if self.config.get("require_evm_simulation", False) or "goplus_evm" not in snap.raw:
@@ -1073,7 +1073,7 @@ class SafetyChecker:
 
     async def enrich_evm_execution_fields(self, snap: TokenSnapshot) -> TokenSnapshot:
         """Collect forward EVM tax/sellability evidence for execution research."""
-        if snap.chain.lower() not in {"ethereum", "eth", "bsc", "base"}:
+        if snap.chain.lower() not in {"ethereum", "eth", "bsc", "base", "robinhood"}:
             return snap
         snap = await self._enrich_goplus_evm(snap)
         if snap.chain.lower() == "bsc":

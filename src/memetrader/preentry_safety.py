@@ -75,12 +75,12 @@ def flag(value):
 
 
 def assess(snapshot, checker, *, source_at, max_tax=12):
-    raw=snapshot.raw;pair=raw.get('pair') or {};reasons=[];unknown=[];sources=[];usable=[]
+    raw=snapshot.raw;pair=raw.get('pair') or {};reasons=[];unknown=[];sources=[];usable=[];soft=[]
     chain=snapshot.chain;pool=str(pair.get('pairAddress') or '')
     identity=bool(pool and pair.get('chainId')==chain and
         canonical_token_address(chain,(pair.get('baseToken') or {}).get('address',''))==snapshot.address)
     if not identity: reasons.append('canonical_surface_identity_mismatch')
-    if chain=='bsc':
+    if chain in {'bsc','robinhood'}:
         g=raw.get('goplus_evm'); h=raw.get('honeypot_is')
         if isinstance(g,dict):
             sources.append('goplus_evm')
@@ -127,21 +127,23 @@ def assess(snapshot, checker, *, source_at, max_tax=12):
         rpc=raw.get('solana_pool_rpc') or {}
         if rpc.get('status')=='rejected':reasons.append('verified_pool_rejected:'+str(rpc.get('reason')))
         unknown += [x for x in old['unknowns'] if not x.startswith('exact_size_')]
-    elif chain=='robinhood':
+    if chain=='robinhood':
         # Existing canonical provider surface is the available boundary; it is
         # not a security audit or a claim of verified deployed contract code.
         if str(pair.get('dexId') or '').lower() not in {'uniswap','uniswap-v3','uniswap-v4','pons'}:
             unknown.append('protocol_surface_unsupported')
         else:
             sources.append('canonical_provider_surface')
-            if identity:usable.append('provider_exact_pool_identity_and_supported_protocol_only')
-        unknown.append('external_security_provider_unsupported')
-    else:unknown.append('chain_unsupported')
+            # Surface identity is necessary, but is not a usable security fact.
+        if flag((raw.get('goplus_evm') or {}).get('is_open_source')) is False:
+            soft.append('closed_source_unverified')
+            unknown.append('closed_source_unverified')
+    elif chain not in {'bsc','solana'}:unknown.append('chain_unsupported')
     if not usable:unknown.append('no_usable_safety_fact')
     status='REJECT' if reasons else 'UNKNOWN' if unknown or not sources else 'PASS'
     allow=not reasons and bool(usable) and 'protocol_surface_unsupported' not in unknown
     return dict(version=VERSION,status=status,allow=allow,reasons=sorted(set(reasons)),
-        hard_veto=sorted(set(reasons)),soft_hazard=[],usable_facts=sorted(set(usable)),
+        hard_veto=sorted(set(reasons)),soft_hazard=sorted(set(soft)),usable_facts=sorted(set(usable)),
         unknowns=sorted(set(unknown)),sources=sources,source_at=source_at,
         source_clock='local_security_acquisition_complete_not_chain_time',
         token_id=snapshot.token_id,pool=canonical_token_address(chain,pool))
@@ -265,7 +267,7 @@ class PreentrySafety:
         for name in ('goplus_evm','honeypot_is','goplus_solana','rugcheck'):
             snapshot.raw.pop(name,None)
         try:
-            if snapshot.chain=='bsc':await self.checker.enrich_evm_execution_fields(snapshot)
+            if snapshot.chain in {'bsc','robinhood'}:await self.checker.enrich_evm_execution_fields(snapshot)
             elif snapshot.chain=='solana':await self.checker.enrich_solana(snapshot)
             result=assess(snapshot,self.checker,source_at=iso(),max_tax=float(self.checker.config.get('max_tax_pct',12)))
         except Exception as exc:

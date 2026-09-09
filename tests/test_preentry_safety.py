@@ -119,3 +119,41 @@ def test_empty_report_retries_only_after_existing_cache_ttl(tmp_path,monkeypatch
     clock[0]+=timedelta(seconds=2);asyncio.run(gate.work());assert len(calls)==2
     assert gate.cache[(token.token_id,pool)]['allow'] and '1' in gate.pending
     store.close()
+
+@pytest.mark.parametrize('report,allowed,hard', [
+    ({'cannot_sell':'0'}, True, False),
+    ({'hidden_owner':'1'}, False, True),
+    ({}, False, False),
+    ({'cannot_buy':'0','is_open_source':'0','sell_tax':''}, False, False),
+    ({'cannot_sell':'0','is_open_source':'0'}, True, False),
+    ({'sell_tax':'0.13'}, False, True),
+])
+def test_robinhood_goplus_partial_report(report,allowed,hard):
+    token=TokenCandidate('robinhood','0x'+'12'*20,'Risk','RISK',source='fixture')
+    snap=_snapshot(token,'0x'+'34'*20,utcnow())
+    snap.raw['pair']['dexId']='uniswap'
+    snap.raw['goplus_evm']=report
+    result=assess(snap,None,source_at=iso())
+    assert result['allow'] is allowed
+    assert bool(result['hard_veto']) is hard
+    assert 'external_security_provider_unsupported' not in result['unknowns']
+    if report.get('is_open_source')=='0':
+        assert result['soft_hazard']==['closed_source_unverified']
+        assert result['status']=='UNKNOWN'
+    snap.raw['pair']['baseToken']['address']='0x'+'56'*20
+    assert not assess(snap,None,source_at=iso())['allow']
+
+
+def test_robinhood_enrichment_uses_existing_goplus_endpoint():
+    token=TokenCandidate('robinhood','0x'+'12'*20,'Risk','RISK',source='fixture')
+    snap=_snapshot(token,'0x'+'34'*20,utcnow())
+    calls=[]
+    async def get(url,**kwargs):
+        calls.append((url,kwargs))
+        return SimpleNamespace(json=lambda:{'code':1,'result':{snap.address:{'cannot_sell':'0'}}})
+    checker=SafetyChecker.__new__(SafetyChecker)
+    checker.config={};checker.http=SimpleNamespace(get=get)
+    asyncio.run(checker.enrich_evm_execution_fields(snap))
+    assert len(calls)==1 and calls[0][0].endswith('/token_security/4663')
+    assert calls[0][1]=={'params':{'contract_addresses':snap.address},'ttl':60}
+    assert snap.raw['goplus_evm']=={'cannot_sell':'0'}
