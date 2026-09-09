@@ -107,3 +107,47 @@ def test_slow_audit_sink_does_not_block_cohort_or_spawn_more_workers(tmp_path):
         released.set()
         await worker
     asyncio.run(run())
+
+
+def test_same_chain_context_keeps_global_held_for_shadow(tmp_path):
+    now = utcnow()
+    audit = AdmissionAudit(tmp_path)
+    watch = {}
+    for chain in ('bsc', 'solana', 'robinhood'):
+        token = TokenCandidate(chain, 'token', 'fixture')
+        snap = TokenSnapshot(chain, 'token', 1, 5000, None, 1, 1, 1,
+            observed_at=now, ingested_at=now,
+            raw={'pairAddress': 'pool', 'pairCreatedAt': now.timestamp()*1000})
+        watch[token.token_id] = dict(token=token, quote=snap, pair_address='pool',
+            bucket='early', expires_at=now+timedelta(minutes=15))
+    token, snap = watch['bsc:token']['token'], watch['bsc:token']['quote']
+    held = set(watch)
+    event = audit.capture(now, token, snap, watch, held, 1000)
+    assert [x['token_id'] for x in event['actual_pre']] == ['bsc:token']
+    assert set(event['held']) == held
+    assert event['audit_generation'] == 'admission-audit-v2'
+    assert audit.path.name.startswith('admission-audit-v2-')
+
+
+def test_pressure_flush_bypasses_timer_and_burst_drains_bounded(tmp_path):
+    audit = AdmissionAudit(tmp_path)
+    batches = []
+    audit._write = lambda events, drops: (batches.append(len(events)), len(events))[1]
+
+    async def run():
+        import time
+        audit.pending.extend({} for _ in range(800))
+        audit.last_flush = time.monotonic()
+        for _ in range(3):
+            await audit.flush()
+            await audit.flush_task
+        assert batches == [256, 256, 256]
+        assert len(audit.pending) == 32 and audit.written == 768
+        worker = audit.flush_task
+        await audit.flush()
+        assert audit.flush_task is worker  # below pressure: timer still respected
+        audit.last_flush -= 1
+        await audit.flush()
+        await audit.flush_task
+        assert audit.written == 800 and not audit.pending and audit.dropped == 0
+    asyncio.run(run())
