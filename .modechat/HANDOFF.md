@@ -1,3 +1,6 @@
+# EVM LP custody109 current boundary
+Code c865f16 loaded; audit-label fix5c5424a pushed but restart POLICY_BLOCKED. 20:18:39Z health running; LP natural denominator not demonstrated; held p954.265vs2.504s exceeds short guard, attribution unproven. Acceptance INCOMPLETE; do not claim final fix loaded or LP veto active. See docs/PROJECT_CONTEXT/EVM_LP_CUSTODY_109.md. No bypass/repeated stop attempt.107/108 remain;106unarmed; pairing unchanged.
+
 # Account snapshot108 deployed
 59d2023 loaded20:04:22Z. All unchanged no-open accounts quiescent; raw append-only trade sums cached with frontier/external revision, live corrections/credits/marks unchanged.11targetedPASS. At20:07:11 short guardPASS: accountp95.435vs.437s,held2.528vs2.638s,passive/Dex errors0;5newrows/~172s vs97/prior5m,flat0vs90. Whole DB still grows; no disk shrink/WAL-write claim. See ACCOUNT_SNAPSHOT_WRITEAMPLIFICATION_108.md.107terminal-cap fix now loaded at this coherent boundary;106outcomes remain unarmed.
 
