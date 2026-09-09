@@ -41,7 +41,7 @@ These short unequal workloads do not establish causal performance improvement.
 Old admission84 audit drops remain separate and unresolved. Artifacts:
 data/research/system90/safety_natural.json; admission88/safety90_{before,start,natural}.json.
 
-## Flat selector and old-token discovery stage (tested, pending runtime trial)
+## Flat selector and old-token discovery stage (deployed db442c3)
 
 Flat projection bootstraps once from a consistent read-only snapshot, then consumes
 evaluation/observer PK frontiers plus dirty market identities and current open
@@ -60,7 +60,7 @@ reset. Episode evidence is not official event/BUY authority. No trending endpoin
 new requests/task/capacity, liquidity or strategy threshold change. Existing
 reactivation strategies still require their own causal market/event confirmation.
 
-## New age-rate exit revisions (tested, not yet registered)
+## New age-rate exit revisions (registered prospectively)
 
 Two5U/max4 hypotheses copy the deployed age-rate entry and parent exit contract,
 using the same cohort/fill when jointly eligible; no new funded control. Checkpoint
@@ -79,13 +79,41 @@ Primary field semantics: https://docs.gopluslabs.io/reference/response-details a
 https://docs.honeypot.is/ishoneypot . Missing values are not measured false;
 generic simulation errors are not affirmative cannot-sell evidence.
 
-## Remaining stages
+## Runtime acceptance at 2026-09-09T09:16:59Z
 
-P0-B exact flat selector integration and production equivalence remain pending;
-standalone frontier fixture is not a deployed performance improvement. P1-A must
-exit at15m when uncovered OR deteriorating, not AND. P1-B must recover debit from
-actual partial-fill proceeds, never target-price arithmetic. P1-C reactivation,
-P0-C local-only timing work remain pending. P1-D currently Shadow DATA_BLOCKED:
-Pump held sell math exists but complete new-buy/immediate-sell USD cost contract
-is not yet available; see STRATEGY_REVISION_FEASIBILITY_90.md. Pons issues are not
-evidence about Pump. No new strategy is registered at this checkpoint.
+Safety commit c2e93f5 and integration db442c3 pushed. Integration loaded09:12:06Z.
+Health/live/performance readable; Paper only/live locked. Forty-seven flat samples:
+duration p50 2.398s/p95 5.225s; actual interval p50 5.032s/p95 5.622s.
+Selection48 samples p50 .479s/p95 .739s. Initial bootstrap was expensive and remains
+part of the reported distribution; this is a short natural acceptance, not long-run proof.
+Held fetch p95 2.485s versus immediate pre-trial2.495s; apply79.7ms;
+pattern5.534s; passive wait2.054s, dropped batches/quotes0. Dex pool timeouts0,
+connect errors0. No extra source/cadence was introduced. Existing source errors and
+429 history are not erased; this small window cannot establish provider-rate effects.
+Observer fetch-with-wait p95 3.464s and passive compute .891s are mixed/network
+measurements, not claimed local speedups. Eight copies of the221033-byte cohort
+state took .0248s: no speculative in-place state mutation was justified.
+
+Both new arms activate09:12:03.681726Z, snapshot2285820/evaluation1481249.
+Checkpoint hash c8a6eb2cf8f15292; dynamic hash2faf7128cacc61af.
+Each has1 admitted opportunity/1 open position/0 terminals at cutoff. Dynamic has
+actual partial realized PnL .041264U and cash restored to1000U with a small remainder;
+this is execution evidence only, not strategy profitability. Parent contract stays
+unchanged; no extra funded control. Seven immutable tables' prior rows all preserved;
+only policy additions grow286->288. Four natural rediscovery episodes by09:14:09Z.
+
+Artifacts: data/research/system90/{flat_equivalence,registration_acceptance,
+copy_profile,safety_natural}.json; data/research/admission88/system90_final.json.
+Targeted suites:32 integrated tests PASS; flat/dormant/pure revision fixtures also
+PASS. No redundant full-suite rerun. git diff --check completed for staged changes.
+
+## Explicit unresolved boundaries
+
+Pump native absorption remains DATA_BLOCKED/Shadow only: held sell math does not
+prove a full causal new-buy/instant-sell USD cost contract. No Paper arm fabricated.
+Safety has only sparse natural samples; UNKNOWN stays visible and supported RH
+surface checks do not prove onchain code safety. No absolute scam-free claim.
+Old admission84 audit still drops (1855 at cutoff), distinct from the zero-drop
+trading passive queue. Its discontinuous generation is not a complete denominator.
+Fresh/feature/gate/safety/next-frame/BUY evidence is cohort-keyed; full natural
+missed-opportunity and terminal funnel remains immature. No Alpha claim.
