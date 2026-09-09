@@ -13,7 +13,7 @@ class SafetyVetoShadow:
         self.dirty=False;self.last_flush=0.0
 
     def capture(self, item, status, assessment, anchor, arms, now):
-        if not (status.startswith('REJECT') or status in {'WAIT_HAZARD','WAIT_WEAK'}):return
+        if not (status.startswith('REJECT') or status in {'WAIT_HAZARD','WAIT_WEAK','LP_SHADOW'}):return
         if parse_time(item['requested_at']) < parse_time(self.state['started_at']):return
         category='REJECT' if status.startswith('REJECT') else status
         key=f"{item['version']}:{item['cohort_id']}:{category}"
@@ -31,6 +31,7 @@ class SafetyVetoShadow:
             'signal_requested_at':item['requested_at'],'safety_source_at':assessment.get('source_at'),
             'safety_recorded_at':iso(now),'anchor':anchor,'notional':item['notional'],
             'costs':item.get('shadow_costs',{}),'results':{}}
+        if category=='LP_SHADOW':self.state['pending'][key]['lp_custody']=assessment.get('lp_custody')
 
     def observe(self, token_id, snap, ingested, recorded):
         if not self.state['pending']:return

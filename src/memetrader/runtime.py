@@ -7581,6 +7581,14 @@ class Runtime:
                     consensus_outcomes.dirty=False
                 consensus_outcomes.last_flush=now_mono
         shadow = getattr(self.store, '_safety_veto_shadow', None)
+        lp_shadow=getattr(self.store,'_lp_custody_shadow',None)
+        if lp_shadow is not None and now_mono-lp_shadow.last_flush>=15 and self._chain_meme_active_idle().is_set():
+            with self.store._lock:
+                lp_shadow.expire(utcnow())
+                if lp_shadow.dirty:
+                    self.store.set_kv('lp-custody-shadow109',lp_shadow.snapshot())
+                    lp_shadow.dirty=False
+                lp_shadow.last_flush=now_mono
         if (shadow is not None and now_mono-shadow.last_flush >= 15
                 and self._chain_meme_active_idle().is_set()):
             with self.store._lock:

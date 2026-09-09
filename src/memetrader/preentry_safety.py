@@ -75,6 +75,7 @@ def flag(value):
 
 
 def assess(snapshot, checker, *, source_at, max_tax=12):
+    from .evm_lp_custody import assess_lp
     raw=snapshot.raw;pair=raw.get('pair') or {};reasons=[];unknown=[];sources=[];usable=[];soft=[]
     chain=snapshot.chain;pool=str(pair.get('pairAddress') or '')
     identity=bool(pool and pair.get('chainId')==chain and
@@ -149,6 +150,7 @@ def assess(snapshot, checker, *, source_at, max_tax=12):
     allow=not reasons and bool(usable) and 'protocol_surface_unsupported' not in unknown
     if weak:allow=False
     return dict(version=VERSION,status=status,allow=allow,reasons=sorted(set(reasons)),
+        lp_custody_shadow=assess_lp(snapshot,source_at),
         hard_veto=sorted(set(reasons)),soft_hazard=sorted(set(soft)),usable_facts=sorted(set(usable)),
         strong_facts=strong,provider_availability={name:dict(
             available=isinstance(raw.get(name),dict),error_type=raw.get(name+'_error'))
@@ -167,6 +169,7 @@ class PreentrySafety:
         self.cache=OrderedDict()
         from .safety_veto_shadow import SafetyVetoShadow, KEY
         store._safety_veto_shadow = SafetyVetoShadow(store.get_kv(KEY, None))
+        store._lp_custody_shadow = SafetyVetoShadow(store.get_kv('lp-custody-shadow109', None))
 
     def save(self):
         self.store.db.execute('INSERT INTO kv(key,value_json,updated_at) VALUES(?,?,?) '
@@ -184,7 +187,10 @@ class PreentrySafety:
             'definition_version,token_id,pair_address,kind,source_key,observed_at,recorded_at,payload_json) '
             'VALUES(?,?,?,?,?,?,?,?)',(item['version'],item['token_id'],item['pool'],VERSION,
             str(item['cohort_id'])+':'+status,now,now,json.dumps(payload)))
-        if (status.startswith('REJECT') or status in {'WAIT_HAZARD','WAIT_WEAK'}) and self.store.db.execute('SELECT changes()').fetchone()[0]:
+        inserted=self.store.db.execute('SELECT changes()').fetchone()[0]
+        lp=(assessment or {}).get('lp_custody_shadow')
+        lp_trigger=isinstance(lp,dict) and item.get('requested_at') and item.get('notional') and item['token_id'].split(':')[0] in {'bsc','robinhood'} and (status.startswith('CHECKED_') or status.startswith('BUY_AUTHORIZED_') or status=='REJECT_EXISTING_EVIDENCE')
+        if (status.startswith('REJECT') or status in {'WAIT_HAZARD','WAIT_WEAK'} or lp_trigger) and inserted:
             row=self.store.db.execute('SELECT price_usd,liquidity_usd,observed_at,ingested_at,recorded_at FROM token_snapshots WHERE id=?',
                                       (item['snapshot_id'],)).fetchone()
             anchor=dict(row) if row else None
@@ -196,6 +202,12 @@ class PreentrySafety:
             arms=[r[0] for r in self.store.db.execute('SELECT arm_id FROM chain_meme_trader_entry_decisions WHERE definition_version=? AND shadow_cohort_id=? AND status=\'admitted\' ORDER BY arm_id LIMIT 256',
                     (item['version'],item['cohort_id']))]
             self.store._safety_veto_shadow.capture(item,status,assessment,anchor,arms,parse_time(now))
+            if lp_trigger:
+                self.store._lp_custody_shadow.capture(item,'LP_SHADOW',
+                    {'reasons':[lp['state']+':'+lp.get('reason','')],'source_at':lp.get('source_at'),'lp_custody':lp},anchor,arms,parse_time(now))
+                self.store.db.execute('INSERT INTO kv(key,value_json,updated_at) VALUES(?,?,?) '
+                    'ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at',
+                    ('lp-custody-shadow109',json.dumps(self.store._lp_custody_shadow.snapshot()),now))
             # Commit the trigger with its existing safety audit, not on a later
             # polling tick; a restart must not silently lose the denominator.
             self.store.db.execute('INSERT INTO kv(key,value_json,updated_at) VALUES(?,?,?) '

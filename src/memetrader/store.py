@@ -12213,6 +12213,8 @@ class Store:
         safety_shadow = getattr(self, '_safety_veto_shadow', None)
         if safety_shadow is not None:
             safety_shadow.observe(token_id, snap, ingested_at, recorded_at)
+        lp_shadow=getattr(self,'_lp_custody_shadow',None)
+        if lp_shadow is not None:lp_shadow.observe(token_id,snap,ingested_at,recorded_at)
         consensus_outcomes=getattr(self,'_clone_consensus_outcomes',None)
         if consensus_outcomes is not None:
             consensus_outcomes.observe(token_id,snap,ingested_at,recorded_at)
