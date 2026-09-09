@@ -1,4 +1,9 @@
+# CURRENT119 — prepared shared classifier, integration NOT complete
+Read docs/PROJECT_CONTEXT/DUAL_MICROSTRUCTURE_119.md.11testsPASS; shared signed-flow/wallet classifier, guarded cached one-page adapter, pure branch gates and passive outcome component exist but are NOT wired/deployed. Next: shared Gecko held-start arbitration, rare-signal idle worker/receipt+snapshot wiring, exact-pool sell simulation, Solana amountful adapter; then prospective organic5U/max2 and syntheticBSC1U/max1/15m gated deployment. No funded registration or natural sample yet.119 authorizes separate sellable-synthetic research, not normal Alpha or revival of114.115 pauses remain unchanged. ModeChat118 stays behind tradingP0.
+
 # CURRENT115-ORGANIC — comparator and coverage caveat
+Deferred P1: C2C-20260910-MODECHAT-V036-IMPROVE-118, exact card .modechat/messages/CHATGPT_TO_CODEX/C2C-20260910-MODECHAT-V036-IMPROVE-118.md. Execute in E:/ModeChat only after current trading profit/runtime P0s; inspect Git/tests and skip completed behavior. ACK recorded; implementation not started. Preserve sole existing Codex writer, pairing and unrelated true/.
+
 Read AGE_RATE_MANIPULATION_115.md addendum: Lead-reported CRUMBS61 trades/55 addresses/net+13608.56U is a single positive comparator, not independently reproduced or a threshold. Its entry-10m to entry+2m window includes future data relative to entry; freeze predecision availability separately. Latest300 truncation=>UNKNOWN_COVERAGE, not zero flow; fewer-than-cap alone does not prove completeness. Four115 pauses/114 withdrawal unchanged; no new requests/runtime changes.
 
 # CURRENT115 — manipulation concentration; four NEW-entry pauses applied
