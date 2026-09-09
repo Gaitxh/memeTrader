@@ -26214,6 +26214,20 @@ class Store:
                     added+=1
             return added
 
+    def register_prebreakout_loss_memory92(self) -> int:
+        from .prebreakout_loss_memory import ARM, PARENT, policy
+        version=self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        with self._lock:
+            if self.db.execute('SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?',(version,ARM)).fetchone():
+                return 0
+            reg=self._chain_meme_trader_registration(version)
+            if not reg:return 0
+            effective=self._chain_meme_trader_effective_definition(version,reg['definition_json'])
+            parent=next((p for p in effective['policies'] if p['arm_id']==PARENT),None)
+            if parent is None:return 0
+            self.append_chain_meme_trader_policy(policy(parent),activated_at=utcnow())
+            return 1
+
     def register_chain_meme_inventory_research(self) -> int:
         from .inventory_research import inventory_policies
         added = 0
@@ -27377,6 +27391,11 @@ class Store:
                     passed, reason = False, entry_blocked[policy["arm_id"]]
                 if policy.get("entry_chase_role") and pair_address in chase_consumed:
                     passed, reason = False, "round2_chase_original_opportunity_consumed"
+                if passed and policy.get('entry_filter',{}).get('prior_core_loss_same_pool'):
+                    from .prebreakout_loss_memory import prior_loss
+                    loss=prior_loss(self.db,token.token_id,pair_address,decision_at)
+                    if loss is not None:
+                        passed,reason=False,'prior_closed_core_loss_same_pool'
                 outcomes[policy["arm_id"]] = reason
                 if passed:
                     ready.append(policy["arm_id"])
