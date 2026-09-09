@@ -23,3 +23,5 @@ Mandatory before any new Paper proposal:
 9. New IDs only after evidence gate;no old-account reset/history rewrite/Live. Activation frontier frozen, rollback and natural acceptance stated.
 
 Current native_curve_absorption_fast/regime_gated_age_rate_fast/successor_reawakening_fast remain HYPOTHESES_ONLY pending native truth/universe/forward-state evidence. Do not bypass this checklist to achieve a strategy count.
+
+Message75 mandatory addition: report first-hit order of costed -20/+30/+100, not just overlapping MFE/loss labels. Stop-first-then-moon is not entry success under that stop. Preserve gaps/floor-evidence absence as UNKNOWN; features completed at frame3 require a later entry, never retroactively classify frame2. Replay must use causal exit signals and later settlement, not sampled peaks. Check EXECUTABLE_FIRST_HIT_RESULT_75.md: low-floor rows absent from71 and one discontinuous price dominates a replay mean; neither can support executable Alpha.
