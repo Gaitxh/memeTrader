@@ -1,3 +1,6 @@
+## Pons121 boundary — provenance BLOCKED
+Latest36 economics independently confirmed36 UNKNOWN/403. Current pinned GitHub curve lacks recipient snipe function present in cached verified source/docs; cannot assert compiled current-stack match. Factory/deployer full-verification reads and independent public RPC read returned403. No verification weakened/no runtime deploy/no funded Pons. See docs/PROJECT_CONTEXT/PONS_NATIVE_EXEC_121.md for exact proof gap and prerequisites.119 guarded/unwired;120 already complete. Pairing unchanged.
+
 ## 119C checkpoint — 2026-09-09T21:31Z
 Shared classifier v2/119B balanced-wallet and effective signed flow plus Solana raw amountful adapter tested. 119C common surface gate rejects unsupported native/future proof. Synthetic frozen 1U/max1/5m, never Capital Pulse. Runtime remains unwired after prior guard rollback; no new funded arms or natural classifier counts. Fresh held p95 2.421s vs prior1.763 remains outside guard; no restart. See docs/PROJECT_CONTEXT/DUAL_MICROSTRUCTURE_119.md for exact RESULT119, limitations and next prerequisites. No pairing/model/memory verification claim.
 
