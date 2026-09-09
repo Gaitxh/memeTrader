@@ -57,7 +57,9 @@ def test_truncated300_not_zero_and_base_orientation():
 
 def test_branch_strict_next_and_exact_sell_simulation():
     kwargs=dict(token_id=TOKEN,pool=POOL,frame_observed=T+timedelta(seconds=61),
-        frame_recorded=T+timedelta(seconds=62),price=1.,liquidity=2000.,safety_allow=True,reawakening=True)
+        frame_recorded=T+timedelta(seconds=62),price=1.,liquidity=2000.,safety_allow=True,reawakening=True,
+        surface=dict(kind='COMMON_PAPER_EXACT_POOL',authenticated=True,buy_sell_lifecycle=True,
+                     token_id=TOKEN,pool=POOL,observed_at=T+timedelta(seconds=59),recorded_at=T+timedelta(seconds=60)))
     assert branch_decision(assess(organic()),**kwargs)=='ORGANIC_SHADOW_ELIGIBLE'
     assert branch_decision(assess(organic()),**{**kwargs,'frame_observed':T+timedelta(seconds=60)})=='WAIT'
     assert branch_decision(assess(organic()),**{**kwargs,'hard_veto':True})=='REJECT'
@@ -66,6 +68,55 @@ def test_branch_strict_next_and_exact_sell_simulation():
     sim=dict(success=True,token_id=TOKEN,pool=POOL,observed_at=T+timedelta(seconds=59),recorded_at=T+timedelta(seconds=60))
     assert branch_decision(s,**kwargs,sell_simulation=sim)=='SYNTHETIC_SHADOW_ELIGIBLE'
     assert branch_decision(s,**kwargs,sell_simulation={**sim,'pool':'other'})=='WAIT'
+    assert branch_decision(assess(organic()),**{**kwargs,'surface':None})=='DATA_BLOCKED_SURFACE'
+    assert branch_decision(assess(organic()),**{**kwargs,'surface':{**kwargs['surface'],'kind':'PONS_NATIVE'}})=='DATA_BLOCKED_SURFACE'
+    assert branch_decision(assess(organic()),**{**kwargs,'surface':{**kwargs['surface'],'recorded_at':T+timedelta(seconds=63)}})=='DATA_BLOCKED_SURFACE'
+    assert branch_decision(assess(organic()),**{**kwargs,'reawakening':False},early=True,pool_age_seconds=900)=='ORGANIC_EARLY_SHADOW_ELIGIBLE'
+    assert branch_decision(assess(organic()),**{**kwargs,'reawakening':False},early=True,pool_age_seconds=901)=='WAIT'
+
+
+def test_balanced_exclusion_and_top_wallet_not_synthetic():
+    from memetrader.market_microstructure import BRANCH_LIMITS
+    assert BRANCH_LIMITS['synthetic_fast_harvest_v1']==dict(chain='bsc',stake_usd=1,max_open=1,
+        absolute_max_hold_seconds=300,narrative=False,reentry=False,averaging=False)
+    rows=organic()[:4]+[row(10,'0xx','buy',10000),row(11,'0xx','sell',9900),
+                       row(12,'0xy','buy',10000),row(13,'0xy','sell',10000)]
+    got=assess(rows)
+    assert got['state']=='ORGANIC_BOOTSTRAP_SPREADING'
+    assert got['metrics']['balanced_both_side_wallets']==2
+    assert got['metrics']['effective_wallets']==4
+    assert got['metrics']['effective_net_buy_usd']==400
+    assert got['metrics']['ex_top1_effective_wallets']==4
+    assert assess([row(i,str(i),'sell',100) for i in range(4)])['state']=='NET_SELL_DISTRIBUTION'
+
+
+def test_amountful_raw_revalidation_no_network_or_implicit_usd():
+    from copy import deepcopy
+    from memetrader.market_microstructure import classify_amountful
+    from memetrader.market_flow import aggregate_market_frames
+    from test_market_flow import resolver, trade, window
+    conversion=dict(quote_mint='quote',usd_per_quote=150,observed_at=23,recorded_at=24,max_age_seconds=5)
+    windows=[window(trades=[trade(who=str(i),sig=str(i),quote=1_000_000_000) for i in range(4)]),
+             window(10,20,[trade(who='4',sig='4',block=15,quote=1_000_000_000)])]
+    flow=aggregate_market_frames(windows,resolver=resolver(),quote_conversion=conversion,decision_at=25)
+    payload={**flow['windows'][-1],**flow,'token_id':'solana:base','pool_address':'pool','recorded_at':25}
+    def run(p,token='solana:base',pool='pool'):
+        return classify_amountful(p,token_id=token,pool=pool,decision_at=datetime.fromtimestamp(26,timezone.utc))
+    result=run(payload)
+    assert result['state']=='ORGANIC_BREADTH_NET_BUY'
+    assert result['metrics']['buy_usd']==750
+    assert run(payload,pool='Pool')['state']=='UNKNOWN'
+    assert run(payload,token='solana:Base')['state']=='UNKNOWN'
+    bad=deepcopy(payload);bad['quote_conversion']=None
+    assert run(bad)['state']=='UNKNOWN'
+    bad=deepcopy(payload);bad['windows'][0]['scan']['truncated']=True
+    assert run(bad)['state']=='UNKNOWN'
+    bad=deepcopy(payload);bad['windows'][0]['trades'][0]['recorded_at']=27
+    assert run(bad)['state']=='UNKNOWN'
+    bad=deepcopy(payload);bad['recorded_at']=27
+    assert run(bad)['state']=='UNKNOWN'
+    assert classify_amountful(payload,token_id='solana:base',pool='pool',
+        decision_at=datetime.fromtimestamp(146,timezone.utc))['reason']=='STALE_AMOUNTFUL'
 
 @asynccontextmanager
 async def permit():yield True

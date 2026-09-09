@@ -11,7 +11,18 @@ from urllib.parse import quote
 
 from .models import canonical_token_address, iso, parse_time, utcnow
 
-VERSION = 'market_microstructure_classifier_v1'
+VERSION = 'market_microstructure_classifier_v2'
+# Fixed research definitions, not tuned against case outcomes.
+BALANCED_NET_GROSS = .10
+EARLY_NET_LIQUIDITY = .01
+# Routing intent only, not registration or permission to place a Paper order.
+BRANCH_LIMITS = {
+    'synthetic_fast_harvest_v1': dict(chain='bsc', stake_usd=1, max_open=1,
+                                    absolute_max_hold_seconds=300, narrative=False,
+                                    reentry=False, averaging=False),
+    'organic_reawakening_flow_v1': dict(stake_usd=5, max_open=2),
+    'organic_early_flow_v1': dict(stake_usd=2, max_open=2),
+}
 HOST = 'api.geckoterminal.com'
 NETWORKS = {'bsc': 'bsc', 'robinhood': 'robinhood'}
 
@@ -83,6 +94,11 @@ def classify(trades, *, token_id, pool, window_start, window_end,
     ranked = sorted(gross.values(), reverse=True)
     dominant = max(gross, key=gross.get)
     breadth = total**2/sum(v*v for v in gross.values())
+    balanced = {w for w in buys.keys() & sells.keys()
+                if abs(buys[w]-sells[w])/gross[w] <= BALANCED_NET_GROSS}
+    effective = set(gross)-balanced
+    effective_net = sum(buys[w]-sells[w] for w in effective)
+    external = effective-{dominant}
     metrics = dict(trades=len(selected), buys=sum(t[2]=='buy' for t in selected),
         sells=sum(t[2]=='sell' for t in selected), buy_usd=buy, sell_usd=sell,
         net_usd=buy-sell, gross_usd=total, net_gross_ratio=(buy-sell)/total,
@@ -91,6 +107,12 @@ def classify(trades, *, token_id, pool, window_start, window_end,
         both_side_wallets=len(buys.keys() & sells.keys()),
         dominant_wallet_gross_share=gross[dominant]/total,
         dominant_wallet_sell_share=sells[dominant]/sell if sell else None,
+        dominant_wallet_net_usd=buys[dominant]-sells[dominant],
+        balanced_both_side_wallets=len(balanced), effective_wallets=len(effective),
+        effective_net_buy_usd=effective_net,
+        ex_top1_effective_wallets=len(external),
+        ex_top1_net_usd=sum(buys[w]-sells[w] for w in external),
+        balanced_net_gross_limit=BALANCED_NET_GROSS,
         size_cv=_cv([t[3] for t in selected]),
         interval_cv=_cv([(b[0]-a[0]).total_seconds() for a,b in zip(selected,selected[1:])]))
     state = 'UNKNOWN'
@@ -98,8 +120,12 @@ def classify(trades, *, token_id, pool, window_start, window_end,
     # and net selling, versus positive net flow with distributed notional.
     if len(selected) >= 4 and len(gross) == 1 and buy > 0 and sell > buy:
         state = 'SYNTHETIC_SINGLE_WALLET_CYCLE'
-    elif len(gross) >= 5 and breadth >= 4 and ranked[0]/total <= .5 and buy > sell:
+    elif len(effective) >= 5 and breadth >= 4 and ranked[0]/total <= .5 and effective_net > 0 and buy > sell:
         state = 'ORGANIC_BREADTH_NET_BUY'
+    elif len(effective) >= 4 and effective_net > 0 and buy > sell:
+        state = 'ORGANIC_BOOTSTRAP_SPREADING'
+    elif sell > buy:
+        state = 'NET_SELL_DISTRIBUTION'
     return dict(version=VERSION, state=state, reason='MECHANISTIC_BUCKET_NOT_ALPHA',
                 decision_eligible=False, affects='none', metrics=metrics,
                 signer_is_not_human_identity=True, **base)
@@ -127,6 +153,43 @@ def normalize_gecko(payload, *, token_id, pool, received_at):
     except (KeyError, TypeError, ValueError):
         return None
     return normalized
+
+
+def classify_amountful(payload, *, token_id, pool, decision_at):
+    """Revalidate existing two-window SPL evidence; no RPC or USD parity assumption.
+
+    Conversion is checked at its original local receipt, not refreshed to now.
+    The resulting classification remains available only after that receipt.
+    """
+    from .market_flow import aggregate_market_frames, _time, _stamp
+    try:
+        received = _time(payload['recorded_at'])
+        decision = _time(decision_at)
+        resolver = payload['resolver']
+        if (not token_id.startswith('solana:') or payload['token_id'] != token_id
+                or resolver['base_mint'] != token_id.split(':', 1)[1]
+                or resolver['pool_address'] != pool or payload['pool_address'] != pool
+                or received is None or decision is None or received > decision):
+            return unknown('AMOUNTFUL_IDENTITY_OR_CLOCKS')
+        if decision-received > 120:
+            return unknown('STALE_AMOUNTFUL')
+        flow = aggregate_market_frames(payload['windows'], resolver=resolver,
+            quote_conversion=payload.get('quote_conversion'), decision_at=received)
+        if not flow['complete'] or not all(w['usd_conversion_complete'] for w in flow['windows']):
+            return unknown('AMOUNTFUL_INCOMPLETE_OR_CONVERSION')
+        rate = float(payload['quote_conversion']['usd_per_quote'])/10**resolver['quote_decimals']
+        rows = [dict(id=f"{t['signature']}:{t['instruction_path']}", token_id=token_id,
+                     pool=pool, wallet=t['signer_address'], kind=t['side'].lower(),
+                     usd=int(t['quote_amount_raw'])*rate,
+                     observed_at=_stamp(_time(t['block_time'])),
+                     recorded_at=_stamp(_time(t.get('recorded_at',t.get('ingested_at')))))
+                for t in flow['trades']]
+        start, end = flow['windows'][0]['window_start'], flow['windows'][-1]['window_end']
+        return classify(rows, token_id=token_id, pool=pool, window_start=start, window_end=end,
+            received_at=_stamp(received), recorded_at=_stamp(received), decision_at=decision_at,
+            coverage_start=start, coverage_end=end, complete=True)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return unknown('INVALID_AMOUNTFUL_EVIDENCE')
 
 
 def classify_page(page, *, token_id, pool, window_start, window_end, decision_at):
@@ -213,7 +276,8 @@ class TradePageClient:
 
 def branch_decision(evidence, *, token_id, pool, frame_observed, frame_recorded,
                     price, liquidity, safety_allow, hard_veto=False,
-                    reawakening=False, sell_simulation=None):
+                    reawakening=False, sell_simulation=None, surface=None,
+                    early=False, pool_age_seconds=None):
     """Pure Shadow eligibility. Never registers, fills, clears a hazard or extends hold."""
     if hard_veto or evidence['state']=='HARD_UNSELLABLE':
         return 'REJECT'
@@ -225,8 +289,23 @@ def branch_decision(evidence, *, token_id, pool, frame_observed, frame_recorded,
             or not parse_time(evidence['recorded_at'])<parse_time(frame_observed)<=parse_time(frame_recorded)
             or (parse_time(frame_recorded)-parse_time(evidence['recorded_at'])).total_seconds()>120):
         return 'WAIT'
+    # A market price is not proof of a native buy/exit/migration lifecycle.
+    srf = surface or {}
+    if not (srf.get('kind') == 'COMMON_PAPER_EXACT_POOL'
+            and srf.get('authenticated') is True and srf.get('buy_sell_lifecycle') is True
+            and srf.get('token_id') == token_id
+            and canonical_token_address(chain,srf.get('pool','')) == evidence['pool']
+            and srf.get('observed_at') and srf.get('recorded_at')
+            and parse_time(srf['observed_at']) <= parse_time(srf['recorded_at']) <= parse_time(frame_observed)
+            and (parse_time(frame_observed)-parse_time(srf['observed_at'])).total_seconds() <= 120):
+        return 'DATA_BLOCKED_SURFACE'
     if evidence['state']=='ORGANIC_BREADTH_NET_BUY' and reawakening:
         return 'ORGANIC_SHADOW_ELIGIBLE'
+    if (early and evidence['state'] in {'ORGANIC_BREADTH_NET_BUY','ORGANIC_BOOTSTRAP_SPREADING'}
+            and pool_age_seconds is not None and 0 <= pool_age_seconds <= 900
+            and evidence['metrics']['effective_wallets'] >= 4
+            and evidence['metrics']['effective_net_buy_usd']/liquidity >= EARLY_NET_LIQUIDITY):
+        return 'ORGANIC_EARLY_SHADOW_ELIGIBLE'
     if evidence['state']=='SYNTHETIC_SINGLE_WALLET_CYCLE' and chain=='bsc':
         s=sell_simulation or {}
         if (s.get('success') is True and s.get('token_id')==token_id

@@ -5,7 +5,7 @@ from datetime import timedelta
 import json
 import time
 
-from .market_microstructure import TradePageClient, MicrostructureShadow, classify_page, unknown
+from .market_microstructure import TradePageClient, MicrostructureShadow, classify_page, classify_amountful, unknown, VERSION
 from .models import utcnow, iso, parse_time, canonical_token_address
 
 KEY='market-microstructure-shadow119'
@@ -84,8 +84,9 @@ class MicrostructureWorker:
             # Existing amountful evidence is consulted; no Solana network call.
             with self.store._lock:
                 rows=self.store._capital_evidence(item['token_id'],item['pool'],now,('amountful_flow',))['amountful_flow']
-            result=unknown('AMOUNTFUL_WALLET_ADAPTER_REQUIRED' if rows else 'NO_COMPLETE_AMOUNTFUL',
-                           evidence_ids=[r['id'] for r in rows])
+            result=(classify_amountful(rows[0]['payload'],token_id=item['token_id'],pool=item['pool'],decision_at=now)
+                    if rows else unknown('NO_COMPLETE_AMOUNTFUL'))
+            result['evidence_ids']=[r['id'] for r in rows[:1]]
         else:
             try:
                 async with asyncio.timeout(3):
@@ -102,7 +103,7 @@ class MicrostructureWorker:
                 'signal_at':item['requested_at'],'source_arms':item['arms']}
         with self.store._lock:
             self.store.record_chain_meme_pattern_evidence(item['token_id'],item['pool'],
-                'market_microstructure_classifier_v1',result,observed_at=now,source_key=key)
+                VERSION,result,observed_at=now,source_key=key)
             self.pending.pop(key,None);self.count(result['state'])
             if len(self.anchors)<32:
                 self.anchors[key]=dict(item=item,result=result,classified_at=iso(now))

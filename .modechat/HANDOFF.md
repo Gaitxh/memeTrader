@@ -1,3 +1,6 @@
+## 119C checkpoint — 2026-09-09T21:31Z
+Shared classifier v2/119B balanced-wallet and effective signed flow plus Solana raw amountful adapter tested. 119C common surface gate rejects unsupported native/future proof. Synthetic frozen 1U/max1/5m, never Capital Pulse. Runtime remains unwired after prior guard rollback; no new funded arms or natural classifier counts. Fresh held p95 2.421s vs prior1.763 remains outside guard; no restart. See docs/PROJECT_CONTEXT/DUAL_MICROSTRUCTURE_119.md for exact RESULT119, limitations and next prerequisites. No pairing/model/memory verification claim.
+
 # CURRENT117 reconciled checkpoint — current business priority
 Read exact117/STATE next_action.120 cleanup DONE;119 runtime trial withdrawn,119A synthetic5m only, no funded arms.114 not revived;115 pauses preserved.111 initial natural ~11min:13budget cancels/no rotations,generation1,PoolTimeout/connect/drops0,held p951.955s; longer acceptance remains open. Pattern p9515.801s separate unresolved issue. Next resource-safe119 feed/exact-pool simulation/Solana adapter and remaining tradingP0; no repeated Pump100/dedup102/rediscovery diagnostics or cleanup. ModeChat118 deferred. Pairing/session/model/memory fields unchanged/unverified. See HTTP_CANCEL_CHURN_111.md latest checkpoint and117 RESULT card.
 
