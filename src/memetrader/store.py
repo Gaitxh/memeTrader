@@ -26260,6 +26260,22 @@ class Store:
             self.append_chain_meme_trader_policy(policy(parent),activated_at=utcnow())
             return 1
 
+    def register_failed_impulse_cooling103(self) -> int:
+        from .failed_impulse_cooling import ARM, PARENT, policy
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        with self._lock:
+            if self.db.execute('SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?', (version, ARM)).fetchone():
+                return 0
+            reg = self._chain_meme_trader_registration(version)
+            if not reg:
+                return 0
+            effective = self._chain_meme_trader_effective_definition(version, reg['definition_json'])
+            parent = next((p for p in effective['policies'] if p['arm_id'] == PARENT), None)
+            if parent is None:
+                return 0
+            self.append_chain_meme_trader_policy(policy(parent), activated_at=utcnow())
+            return 1
+
     def register_chain_meme_inventory_research(self) -> int:
         from .inventory_research import inventory_policies
         added = 0
@@ -27355,6 +27371,20 @@ class Store:
                 elif (mature_result is not None
                         and policy.get("entry_family") == "mature_new_acceptance"):
                     passed, reason = mature_result[:2]
+                elif policy.get('entry_filter', {}).get('failed_impulse_cooling'):
+                    from .failed_impulse_cooling import signal
+                    from .cohort_enrollment import owner
+                    arm = policy['arm_id']
+                    frozen = previous_features.get('cohort_signals', {}).get(arm) if arm in pending else None
+                    passed, reason, receipt_signal = signal(self.db, history, policy, token.token_id,
+                        pair_address, decision_at, frozen)
+                    if receipt_signal:
+                        event_keys[arm] = receipt_signal['decision_key']
+                        accepted_cohort_signals[arm] = receipt_signal
+                        if owner(self.db, version, arm, event_keys[arm], token.token_id) or arm in still_open:
+                            entry_blocked[arm] = 'core_loss_episode_consumed_or_position_open'
+                        else:
+                            already_bought.discard(arm)
                 elif policy.get("entry_revision_kind"):
                     from .strategy_revisions import revision_entry_signal
                     passed, reason = revision_entry_signal(history, policy,
@@ -27437,6 +27467,8 @@ class Store:
                              and previous is not None
                              and snapshot.observed_at > parse_time(previous["evaluated_at"])
                              and p["arm_id"] not in already_bought and p["arm_id"] not in entry_blocked
+                             and (not p.get('entry_filter', {}).get('failed_impulse_cooling') or
+                                  previous_features.get('event_keys', {}).get(p['arm_id']) == event_keys.get(p['arm_id']) and p['arm_id'] in accepted_cohort_signals)
                              and (not cohort_mode or previous_features.get("event_keys", {}).get(p["arm_id"]) == event_keys.get(p["arm_id"]) and p["arm_id"] in accepted_cohort_signals)
                              and (p.get("entry_family") not in {"event_reawakening", "surface_lifecycle_pipeline", "fast_stop_reclaim", "no_ca_event_flow_leader", "direct_lp_amount_specific_confirmed", "official_event_actual_flow", "mature_new_acceptance", "wallet_confirmed_broad_opportunity"} or
                                   previous_features.get("event_keys", {}).get(p["arm_id"]) == event_keys.get(p["arm_id"]))]
@@ -27512,6 +27544,8 @@ class Store:
                 features["lifecycle_research_evidence"] = lifecycle_evidence
             if runner_evidence:
                 features["runner_capture_evidence"] = runner_evidence
+            if accepted_cohort_signals:
+                features['cohort_signals'] = accepted_cohort_signals
             if cohort_mode:
                 features.update(cohort_signals=accepted_cohort_signals,
                     entry_signal_key="isolated_cohorts/v1", policy_entry_family="cohort_experiments")
