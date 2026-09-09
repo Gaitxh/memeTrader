@@ -1,3 +1,6 @@
+# Pump exact-input105 correction
+V2 exact semantics not yet established; native Shadow classification now UNKNOWN in source, 19 tests pass. No restart; running b186971 unchanged. Read docs/PROJECT_CONTEXT/PUMP_EXACT_INPUT_CORRECTION_105.md. Do not claim legacy diagnostics as exact V2 or register native Paper.
+
 # CURRENT delta — REACTIVATION-SLOT-104 short trial deployed
 
 Code b186971, report docs/PROJECT_CONTEXT/REACTIVATION_SLOT_104.md; fixed10/chain one120s lease, futureearly3+held/pending protected, no extra request path. Short guard passes;0 natural lease admissions so coverage UNTESTED. Continue from primary current context, preserve pending Agent103 quality gate and storage102 held gate. No pairing/routing changes.

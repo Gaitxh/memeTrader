@@ -52,7 +52,8 @@ def sample():
 def test_postbuy_state_roundtrip_slippage_once_and_complete_handoff():
     now,frame,ref=sample()
     e=native_economic_frame(frame,ref,now=now)
-    assert e['status']=='OBSERVED_SHADOW' and e['buy']['quote_budget_raw']==50_000_000
+    assert e['status']=='UNKNOWN' and e['diagnostic_status']=='LEGACY_ROUNDTRIP_COMPUTED'
+    assert e['buy']['quote_budget_raw']==50_000_000
     assert 0<e['roundtrip_recovery_usd']<5 and e['decision_eligible'] is False
     no_slip=native_economic_frame(frame,ref,now=now,buy_slippage_bps=0,sell_slippage_bps=0)
     assert e['roundtrip_recovery_usd']<no_slip['roundtrip_recovery_usd']<5
@@ -73,6 +74,8 @@ def test_unknown_is_not_quote(change):
 
 def test_two_frame_absorption_friction_and_strict_clocks():
     now,b,ref=sample();b['native_economics']=native_economic_frame(b,ref,now=now)
+    # Synthetic verified economics fixture for the independent state-machine test.
+    b['native_economics']['status']='OBSERVED_SHADOW'
     a=deepcopy(b);a.update(slot=9,observed_at=iso(now-timedelta(seconds=5)),recorded_at=iso(now-timedelta(seconds=4)))
     a['virtual_quote_reserves_raw']//=2;a['real_quote_reserves_raw']-=1;a['real_token_reserves_raw']+=1
     assert absorption_probe([a,b])['status']=='FRICTION_EXCEEDED'
@@ -82,6 +85,7 @@ def test_two_frame_absorption_friction_and_strict_clocks():
 def test_absorption_needs_third_independent_requote_not_second_frame_fill():
     from memetrader.pump_native import advance_absorption
     now,frame,ref=sample();frame['native_economics']=native_economic_frame(frame,ref,now=now)
+    frame['native_economics']['status']='OBSERVED_SHADOW'  # Synthetic state-machine fixture.
     trigger=advance_absorption(None,frame,{'status':'FRICTION_EXCEEDED'})
     assert trigger['status']=='TRIGGER_FROZEN'
     assert advance_absorption(trigger,frame,{'status':'FRICTION_EXCEEDED'})==trigger
@@ -90,3 +94,14 @@ def test_absorption_needs_third_independent_requote_not_second_frame_fill():
     assert result['status']=='REQUOTED_SHADOW' and result['decision_eligible'] is False
     frame['curve_complete']=True
     assert advance_absorption(trigger,frame,{})['status']=='MIGRATION_REQUIRED'
+
+
+def test_unverified_v2_diagnostic_cannot_trigger_or_requote():
+    from memetrader.pump_native import advance_absorption
+    now,b,ref=sample();b['native_economics']=native_economic_frame(b,ref,now=now)
+    assert b['native_economics']['quote_semantics']=='UNVERIFIED_V2_LEGACY_SDK_DIAGNOSTIC_ONLY'
+    a=deepcopy(b);a.update(slot=9,observed_at=iso(now-timedelta(seconds=5)),recorded_at=iso(now-timedelta(seconds=4)))
+    a['virtual_quote_reserves_raw']//=2;a['real_quote_reserves_raw']-=1;a['real_token_reserves_raw']+=1
+    assert absorption_probe([a,b])['status']=='UNKNOWN'
+    pending={'status':'TRIGGER_FROZEN','slot':9,'recorded_at':a['recorded_at']}
+    assert advance_absorption(pending,b,{'status':'UNKNOWN'})==pending

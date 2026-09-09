@@ -4,7 +4,7 @@ from .models import parse_time
 
 ZERO='11111111111111111111111111111111'
 SOL='So11111111111111111111111111111111111111112'
-VERSION='pump-native-economic/100-v1'
+VERSION='pump-native-economic/105-v2-unverified'
 
 def pump_bonding_curve_buy_quote_v1(*,quote_budget_raw,slippage_bps,bonding_curve,global_config,fee_config):
     c=bonding_curve;budget=int(quote_budget_raw);slip=int(slippage_bps)
@@ -58,6 +58,8 @@ def native_economic_frame(frame,reference,*,now,buy_slippage_bps=400,sell_slippa
     from .collectors import pump_bonding_curve_sell_quote_v1
     out={'version':VERSION,'decision_eligible':False,'affects':'none','status':'UNKNOWN',
         'safety_status':'UNKNOWN_TOKEN_CONTROLS_NOT_ACQUIRED','notional_usd':5,
+        'requested_instruction':'buy_exact_quote_in_v2',
+        'quote_semantics':'UNVERIFIED_V2_LEGACY_SDK_DIAGNOSTIC_ONLY',
         'transaction_fees':'UNKNOWN_NETWORK_RENT_NOT_INCLUDED','observed_at':frame.get('observed_at'),
         'recorded_at':frame.get('recorded_at'),'slot':frame.get('slot')}
     try:
@@ -91,9 +93,11 @@ def native_economic_frame(frame,reference,*,now,buy_slippage_bps=400,sell_slippa
         sell=pump_bonding_curve_sell_quote_v1(token_amount_raw=buy['paper_token_amount_raw'],slippage_bps=sell_slippage_bps,
             bonding_curve=post,global_config=global_config,fee_config=fee_config)
         recovered=buy['unspent_quote_raw']+sell['min_quote_raw']
-        return {**out,'status':'OBSERVED_SHADOW','sell':sell,'recovery_quote_raw':recovered,
+        # The current decoder/SDK port does not establish V2 exact-input fees
+        # or reserve settlement. Never promote the legacy diagnostic to a frame.
+        return {**out,'status':'UNKNOWN','diagnostic_status':'LEGACY_ROUNDTRIP_COMPUTED','sell':sell,'recovery_quote_raw':recovered,
             'roundtrip_recovery_ratio':recovered/budget,'roundtrip_recovery_usd':recovered*usd/inp/1_000_000,
-            'friction_quote_raw':budget-recovered,'reason':'current_state_hypothetical_buy_then_sell_not_fill',
+            'friction_quote_raw':budget-recovered,'reason':'v2_exact_input_fee_and_state_semantics_not_verified',
             'cost_semantics':'Pump fees included once per leg; Paper buy quantity /1.04 and sell net *0.96 once; reference outAmount not minOutput; gas/rent excluded'}
     except (KeyError,TypeError,ValueError,ZeroDivisionError) as exc:
         return {**out,'reason':str(exc)}
