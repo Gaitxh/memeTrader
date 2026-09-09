@@ -39,3 +39,20 @@ clock relaxation. No new scheduler,requests or watch capacity.
 
 Natural runtime acceptance pending below; no Alpha or empirical false-positive
 rate claim. Old admission84 audit remains discontinuous and outside this patch.
+
+## Deployment readback
+
+Commit de71ce3 pushed and loaded09:32:00Z. KV Shadow activation09:32:00.953012Z;
+funded clone policy count0. At09:32:43 health/runtime running, Live locked/Paper;
+immutable seven-table hash unchanged1c6958d6610bdc4de378d75e72d47461b7c0868d262deec6378145a6c15e5dc9.
+Held fetch p95 1.477s versus pre2.149s; apply49.4ms; pattern2.255s; passive drops0;
+Dex pool timeouts0. Short unequal windows, not causal speedup/long-run acceptance.
+At09:34:27 bounded new-generation evidence scan: hard-veto cohorts0,soft-hazard
+cohorts0,authorized cohorts0; no natural clone confirmation yet. No false-positive
+or precision estimate. Artifacts system90/behavior90b_natural.json and
+admission88/system90b_before.json/system90b_after.json.
+
+Generic concentration numbers have no new invented veto threshold. Current hard
+and soft behavior wiring uses the existing confirmed observer states above; other
+unclassified suspicions remain an explicit coverage limitation, not a scam-free
+claim. Existing contract report UNKNOWN boundaries remain unchanged.
