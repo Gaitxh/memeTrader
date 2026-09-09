@@ -7376,6 +7376,9 @@ class Store:
                 if state:
                     policy.update(account_lifecycle=state["state"], entry_paused=True,
                                   retirement_representative=state.get("representative"))
+                    for field in ("assessment_status", "assessment_note", "assessment_evidence"):
+                        if field in state:
+                            policy[field] = state[field]
         return definition
 
     def _chain_meme_trader_effective_definition(

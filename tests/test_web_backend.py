@@ -656,7 +656,10 @@ def test_strategy_universe_refreshes_for_additive_strategy_versions(tmp_path: Pa
         f"chain-meme-account-convergence/v1:{Store.CHAIN_MEME_TRADER_V22_VERSION}",
         json.dumps({"activated_at":"2026-09-07T15:00:00Z","arms":{
             "web_additive_forward_v1":{"state":"RETIRED_DUPLICATE"},
-            "broad_mature_continuity_control_v1":{"state":"PAUSED_NEW_ENTRY"}}}),
+            "broad_mature_continuity_control_v1":{"state":"PAUSED_NEW_ENTRY",
+                "assessment_status":"EXPERIMENT_COMPLETE_POSITIVE",
+                "assessment_note":"Profitable completed comparison; preserve entries",
+                "assessment_evidence":"fixture89"}}}),
         "2026-09-07T15:00:00Z"))
     store.db.commit()
     store.close()
@@ -667,6 +670,8 @@ def test_strategy_universe_refreshes_for_additive_strategy_versions(tmp_path: Pa
     assert retired_universe["families"][-1]["default_visible"] is False
     paused=next(f for f in retired_universe["families"] if "broad_mature_continuity_control_v1" in f["active_arm_ids"])
     assert paused["default_visible"] is False and paused["realtime_state"] == "PAUSED_NEW_ENTRY"
+    assert paused["assessment_status"] == "EXPERIMENT_COMPLETE_POSITIVE"
+    assert paused["assessment_evidence"] == "fixture89"
     assert len(ChainWebData(config_path).state(compact=True)["strategies"]) == 128
     store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
     store.db.execute('INSERT INTO kv(key,value_json,updated_at) VALUES(?,?,?)',(

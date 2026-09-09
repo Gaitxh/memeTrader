@@ -1407,6 +1407,7 @@ class ChainWebData:
                 "forward_activation_snapshot_id", "runtime_addition_id",
                 "strategy_revision", "revision_history",
                 "account_lifecycle", "entry_paused", "retirement_representative",
+                "assessment_status", "assessment_note", "assessment_evidence",
             }
             for policy in policies:
                 policy_arm_id = str(policy.get("arm_id") or "")
@@ -3266,6 +3267,9 @@ class ChainWebData:
             policy = next((lifecycle_by_arm[a] for a in family.get("active_arm_ids", [])
                            if a in lifecycle_by_arm), {})
             lifecycle = policy.get("account_lifecycle")
+            for field in ("assessment_status", "assessment_note", "assessment_evidence"):
+                if field in policy:
+                    family[field] = policy[field]
             family["default_visible"] = lifecycle not in {"RETIRED_DUPLICATE", "PAUSED_NEW_ENTRY", "RETIRED_DEPLETED"}
             if lifecycle:
                 family.update(account_lifecycle=lifecycle, realtime_state=lifecycle,

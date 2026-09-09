@@ -365,6 +365,8 @@ function strategyMetrics(live){
 }
 
 function fidelityLabel(family){
+  const assessment={FAILED:'负收益实验已停止',EXPERIMENT_COMPLETE_POSITIVE:'盈利实验已完成',DUPLICATE_SUPERSEDED:'重复或已被替代',DATA_BLOCKED:'数据输入受阻',INSUFFICIENT:'证据不足',ACTIVE:'前向运行'}[family?.assessment_status];
+  if(assessment)return assessment+(family?.account_lifecycle?' · 暂停新入场，保留退出':'');
   if(family?.account_lifecycle==='RETIRED_DEPLETED')return '资金接近耗尽 · 已退役';
   if(family?.account_lifecycle==='RETIRED_DUPLICATE')return '重复账户已退役 · 持仓继续退出';
   if(family?.account_lifecycle==='PAUSED_NEW_ENTRY')return '暂停新入场 · 持仓继续退出';

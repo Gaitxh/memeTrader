@@ -51,6 +51,10 @@ assert.match(app, /strategyLabel\(item\.family,item\.live\.strategy\)/);
 assert.match(context.revisionUi.lifecycle({account_lifecycle:'RETIRED_DUPLICATE',fidelity_status:'ADDITIVE_FORWARD'}), /重复账户已退役/);
 assert.match(context.revisionUi.lifecycle({account_lifecycle:'PAUSED_NEW_ENTRY'}), /暂停新入场/);
 assert.match(context.revisionUi.lifecycle({account_lifecycle:'RETIRED_DEPLETED'}), /资金接近耗尽/);
+for(const [status,label] of Object.entries({FAILED:'负收益实验已停止',EXPERIMENT_COMPLETE_POSITIVE:'盈利实验已完成',DUPLICATE_SUPERSEDED:'重复或已被替代',DATA_BLOCKED:'数据输入受阻',INSUFFICIENT:'证据不足',ACTIVE:'前向运行'})){
+  assert.match(context.revisionUi.lifecycle({assessment_status:status}),new RegExp(label));
+}
+assert.match(context.revisionUi.lifecycle({account_lifecycle:'PAUSED_NEW_ENTRY',assessment_status:'EXPERIMENT_COMPLETE_POSITIVE'}),/盈利实验已完成 · 暂停新入场/);
 assert.match(app, /f\.default_visible!==false\|\|\$\('#universe-show-retired'\)\?\.checked/);
 
 context.clearTimeout = () => {};
