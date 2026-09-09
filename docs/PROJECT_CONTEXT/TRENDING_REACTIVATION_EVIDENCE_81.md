@@ -4,6 +4,12 @@ REPLY_TO: C2C-20260909-TRENDING-REACTIVATION-EVIDENCE-81
 
 Disposition: API_ACCESS_CONFIRMED; REACTIVATION_CANDIDATE_SOURCE_SUPPORTED; NOT_DEPLOYED.
 
+## Rate correction82 — authoritative design boundary
+
+C2C-20260909-GECKO-RATE-CORRECTION-82 supersedes only81's numeric rate assertion. Do not treat30/min as a guaranteed keyless allowance. FAQ states30/min; Lead reports approximately10/min on Swagger and dynamic IP throttling in newer Keyless docs. This turn independently reread FAQ; the Swagger page rendered no extractable text, so the latter two descriptions remain attributed to Lead rather than falsely independently verified. Design against a conservative <=10 starts/min aggregate shared Gecko envelope, not10/min per collector or guaranteed provider capacity. Existing traffic must be counted first; defer trending if no spare budget.429/backoff may require an even lower rate. Preserve held/SELL priority. This is a design correction, not a claim that the running limiter has been changed or measured compliant.
+
+Trending remains a doorbell at the much lower proposed0.2/min aggregate, not continuous market polling. Endpoint/duration/cache facts, feasibility samples and NOT_DEPLOYED disposition remain unchanged.
+
 On 2026-09-09 at07:19:32Z the existing unmodified HttpClient, default headers and no credentials, returned HTTP200 for Robinhood trending_pools duration1h/page1/include base_token,quote_token in2.725s. Three further bounded requests (Robinhood6h, Solana1h, BSC1h), separated by3s, also returned200 with20 pools each. No retries, proxy changes, permission bypass or production ingestion. This supersedes80's current-access blocker, but does not explain why its earlier urllib requests returned403.
 
 Raw responses and local indexed identity joins: data/research/reactivation81/{existing_client_probe,bounded_probes,local_overlap,summary}.json. A local GBK decoding error interrupted the first join only; rerunning the disk-only join with explicit UTF8 succeeded without repeating requests.
@@ -28,7 +34,7 @@ Smallest prospective design remains one chain/duration rotation request per5min 
 Before deployment measure actual shared Gecko starts/backoff and held latency, then prospective unique rediscoveries -> requeued -> new valid frame -> evaluated. Report skipped budget/cooldown/identity separately. Current evidence proves reachability and candidate coverage only; it does not prove downstream reactivation works or gains Alpha.
 
 Official documentation checked2026-09-09:
-- https://apiguide.geckoterminal.com/faq — public30 calls/min, shared provider ceiling.
+- https://apiguide.geckoterminal.com/faq — states30 calls/min; not a guaranteed shared provider ceiling (superseded by correction82 above).
 - https://api.geckoterminal.com/docs/index.html — public network trending endpoint.
 - https://docs.coingecko.com/reference/trending-pools-network — duration5m/1h/6h/24h and20 pools/page; CoinGecko hosted route is distinct from keyless Gecko route.
 - https://www.geckoterminal.com/robinhood/pools/0x60e7d9e82a208f501f020f84d2ec47401837ad5993ac7faae893021434170347
