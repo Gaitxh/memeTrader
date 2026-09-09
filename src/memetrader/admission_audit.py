@@ -18,17 +18,15 @@ def _epoch(value):
 
 
 class AdmissionAudit:
-    MAX_PENDING = 1024
+    MAX_PENDING = 256
     MAX_PRE = 128
-    FLUSH_BATCH = 256
-    PRESSURE_FLUSH = 128
-    GENERATION = "admission-audit-v2"
+    FLUSH_BATCH = 64
     MAX_BYTES = 256 * 1024 * 1024
 
     def __init__(self, directory):
         from .admission_shadow import AdmissionShadow
         self.shadow = AdmissionShadow()
-        self.path = Path(directory) / (self.GENERATION + "-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + ".jsonl.gz")
+        self.path = Path(directory) / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + ".jsonl.gz")
         self.pending = deque()
         self.receipts = self.dropped = self.written = self.bytes = 0
         self.errors = 0
@@ -41,8 +39,7 @@ class AdmissionAudit:
     def capture(self, now, token, snapshot, watch, held, floor):
         self.receipts += 1
         if (self.bytes >= self.MAX_BYTES or len(self.pending) >= self.MAX_PENDING
-                or sum(item["token"].chain == token.chain for item in watch.values()) > self.MAX_PRE
-                or len(held) > self.MAX_PRE):
+                or len(watch) > self.MAX_PRE or len(held) > self.MAX_PRE):
             self.dropped += 1
             self.discontinuous = True
             return None
@@ -78,11 +75,9 @@ class AdmissionAudit:
             pre = [dict(token_id=key, chain=item["token"].chain, pool=item["pair_address"],
                 bucket=item["bucket"], expires_at=item["expires_at"].timestamp(),
                 held=key in held, observed_at=_epoch(item["quote"].observed_at),
-                liquidity=getattr(item["quote"], "liquidity_usd", None)) for key, item in watch.items()
-                if item["token"].chain == token.chain]
+                liquidity=getattr(item["quote"], "liquidity_usd", None)) for key, item in watch.items()]
             event = dict(sequence=self.receipts, received_at=received, candidate=candidate,
                 held=sorted(held), actual_pre=pre, decision_eligible=0, affects="none",
-                audit_generation=self.GENERATION, actual_pre_scope="same_chain",
                 audit_discontinuous=self.discontinuous)
             self.pending.append(event)
             return event
@@ -113,7 +108,7 @@ class AdmissionAudit:
     async def flush(self):
         if self.flush_task is not None and not self.flush_task.done():
             return
-        if time.monotonic() - self.last_flush < 1 and len(self.pending) < self.PRESSURE_FLUSH:
+        if time.monotonic() - self.last_flush < 2:
             return
         self.last_flush = time.monotonic()
         events = [self.pending.popleft() for _ in range(min(len(self.pending), self.FLUSH_BATCH))]
@@ -136,7 +131,7 @@ class AdmissionAudit:
             self.last_error = type(exc).__name__ + ": " + str(exc)[:160]
 
     def status(self):
-        return dict(decision_eligible=0, affects="none", generation=self.GENERATION, receipts=self.receipts,
+        return dict(decision_eligible=0, affects="none", receipts=self.receipts,
             written=self.written, pending=len(self.pending), dropped_audit=self.dropped,
             status="DROPPED_AUDIT" if self.dropped else "OBSERVING",
             audit_discontinuous=self.discontinuous, errors=self.errors,
