@@ -6,6 +6,8 @@ from test_paper_execution import _snapshot
 
 def test_shadow_registration_has_no_funded_arm_and_preserves_frontier(tmp_path):
     store=Store(tmp_path/'clone.sqlite3',initial_cash_usd=1000)
+    from memetrader.clone_consensus_outcomes import CloneConsensusOutcomes
+    store._clone_consensus_outcomes=CloneConsensusOutcomes()
     store.activate_chain_meme_trader_funded_period()
     store.register_chain_meme_cohort_experiments()
     key='clone-consensus-shadow/v2:'+store.CHAIN_MEME_TRADER_ACTIVE_VERSION

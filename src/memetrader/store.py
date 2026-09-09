@@ -26439,9 +26439,8 @@ class Store:
 
     def register_chain_meme_cohort_experiments(self) -> int:
         from .cohort_experiments import cohort_experiment_policies
-        from .clone_consensus_outcomes import CloneConsensusOutcomes, KEY
-        if not hasattr(self, '_clone_consensus_outcomes'):
-            self._clone_consensus_outcomes=CloneConsensusOutcomes(self.get_kv(KEY,None))
+        # Consensus106 outcome collector remains unarmed after its latency trial.
+        # Keep deterministic capture/callback code for isolated research validation.
         added = 0
         with self._lock, self.db:
             at = utcnow()
