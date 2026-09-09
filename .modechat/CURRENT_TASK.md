@@ -1,3 +1,6 @@
+## Pump123 proof checkpoint
+Official Rust0.1.13/docs pinned. Bounded7 mainnet transactions yielded4 actual exact-input V2 buys,20/20 transfer allocation checks; buyback split within protocol observed. All4 custom-quote, no independent pre-Curve/Global/FeeConfig fixture; SDK sizing differs2/4. No exact promotion/no deploy. Natural32 UNKNOWN (30 semantics/2 reference). See docs/PROJECT_CONTEXT/PUMP_EXACT_INPUT_PROOF_123.md. Native Paper still DATA_BLOCKED; no historical replay.
+
 ## 119D checkpoint
 Shared classifier v3 adds separate BUILDING/DISTRIBUTING phase with causal optional aligned price inputs and balanced/external signed-flow metrics. Positive-net BUILDING permitted descriptively; regularity alone never sufficient.15 tests PASS. No funded widening/no runtime deploy/natural phase rows0.119A1U/max1/5m remains frozen;121 provenance blocked. Details: docs/PROJECT_CONTEXT/DUAL_MICROSTRUCTURE_119.md.
 
