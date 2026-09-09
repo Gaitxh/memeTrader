@@ -2125,6 +2125,7 @@ class AutonomousSearchAgent:
         parent_run_id: str,
         subjects: list[dict[str, Any]],
         requested_at,
+        on_started: Callable[[], None] | None = None,
     ) -> dict[str, dict[str, Any]]:
         if not subjects:
             return {}
@@ -2186,7 +2187,8 @@ class AutonomousSearchAgent:
             + json.dumps(prompt_subjects, ensure_ascii=False)
         )
         try:
-            payload, metadata = await self._search(prompt, "fact_verifier")
+            kwargs = {"on_started": on_started} if on_started is not None else {}
+            payload, metadata = await self._search(prompt, "fact_verifier", **kwargs)
             self._record_tokens("fact_verifier", metadata)
         except Exception as exc:
             self._refund_quota("fact_verifier")

@@ -18,6 +18,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from solders.pubkey import Pubkey
 
 from .flap_successor import resolve as resolve_flap_successor, matches as matches_flap_successor
+from .narrative_hold import max_hold as narrative_max_hold
 from .forward_patterns import experiment_policies, result_driven_policies, pattern_signal, conditional_fraction
 from .capital_entry import capital_observation_signal, capital_context_from_observations
 from .capital_context import evaluate_capital_exit_context
@@ -34203,7 +34204,7 @@ class Store:
                             "recorded_at": iso(dust_mark_at),
                         }
                     }
-                elif elapsed >= float(policy.get("max_hold_minutes") or 240.0):
+                elif elapsed >= float(policy.get("max_hold_minutes") or 240.0) and elapsed >= narrative_max_hold(self, position, policy, current):
                     action, reason = "TIME_EXIT", "market_mark_max_hold"
                 elif mark_status == "VISIBLE" and position["mark_recorded_at"] is not None:
                     mark_at = parse_time(position["mark_recorded_at"])

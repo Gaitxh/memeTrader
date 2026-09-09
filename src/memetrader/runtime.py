@@ -27,6 +27,7 @@ import httpx
 from solders.pubkey import Pubkey
 
 from .runtime_timing import RuntimeTiming
+from .narrative_hold import NarrativeHold
 from .market_api import CoinGeckoDemoPoolClient, GeckoTerminalPoolClient
 from .market_flow import aggregate_market_frames
 from .pool_surface import collect_pumpswap_pool_surface
@@ -1540,6 +1541,7 @@ class Runtime:
             known_source_urls=known_source_urls,
             console_settings_path=root / "data" / "web_console" / "console_settings.json",
         )
+        self.narrative_hold = NarrativeHold(self) if self.chain_meme_trader_only else None
         if config["autonomous_search"].get("context_deferred_retry_enabled", False):
             if not self.store.get_kv(self.DEFERRED_CONTEXT_RETRY_ACTIVATED_AT_KEY):
                 self.store.set_kv(self.DEFERRED_CONTEXT_RETRY_ACTIVATED_AT_KEY, iso())
@@ -8704,6 +8706,7 @@ class Runtime:
 
         if self.chain_meme_trader_only:
             tasks = [
+                asyncio.create_task(self._periodic('narrative_hold_v2', 15, self.narrative_hold.once), name='narrative_hold_v2'),
                 asyncio.create_task(self.pump_loop(), name="pumpportal"),
                 *(asyncio.create_task(self.dex_discovery_stream_loop(surface),
                                      name=f"dexscreener_{surface}_stream")
