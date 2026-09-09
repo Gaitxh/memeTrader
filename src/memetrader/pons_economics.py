@@ -24,6 +24,17 @@ def stamp():
     return datetime.now(timezone.utc).isoformat()
 
 
+def evidence_observed_at(result):
+    """State time is not availability; UNKNOWN describes the local attempt only."""
+    if result['status'] != 'OBSERVED':
+        return result['recorded_at']
+    observed, ingested, recorded = (datetime.fromisoformat(result[k])
+                                   for k in ('observed_at', 'ingested_at', 'recorded_at'))
+    if not observed <= ingested <= recorded:
+        raise ValueError('economic_evidence_clock_order')
+    return result['observed_at']
+
+
 def usd_conversion(asset, quote, address, now):
     def identity(row):
         return any(d.get('chainId') == 4663 and str(d.get('contractAddress', '')).lower() == address
@@ -88,7 +99,8 @@ class PonsEconomicsObserver:
         result = {'status': 'UNKNOWN', 'decision_eligible': False, 'affects': 'none',
                   'recipient': RECIPIENT, 'recipient_semantics': 'hypothetical_only',
                   'requested_at': stamp(), 'token': event['token'], 'curve': event['curve'],
-                  'quote_asset': event['pair_token'], 'source_sha256': SOURCE_SHA256}
+                  'quote_asset': event['pair_token'], 'source_sha256': SOURCE_SHA256,
+                  'source_hash_semantics': 'expected_verified_curve_model_source_not_factory_proof'}
         try:
             if event.get('factory') != PonsV2Observer.FACTORY or event.get('event') != 'TokenLaunched':
                 raise ValueError('launch_identity_invalid')

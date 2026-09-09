@@ -6510,7 +6510,9 @@ class Runtime:
                 except asyncio.TimeoutError:
                     self.store.heartbeat('native-economics:pons', error='shadow_budget_timeout')
                 else:
-                    at = parse_time(economics['recorded_at'])
+                    from .pons_economics import evidence_observed_at
+                    # Store writes its own current recorded_at; block time never backdates availability.
+                    at = parse_time(evidence_observed_at(economics))
                     self.store.record_chain_meme_pattern_evidence(
                         fresh['token_id'], '', 'native_curve_economics', economics,
                         observed_at=at, source_key=f"pons-economics:{fresh['curve']}:{economics.get('block', economics['recorded_at'])}")

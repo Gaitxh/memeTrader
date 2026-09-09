@@ -43,3 +43,25 @@ def test_held_defer_without_any_request():
     r=asyncio.run(o.observe(dict(token='x',curve='y',pair_token='z',factory=PonsV2Observer.FACTORY,event='TokenLaunched'),lambda:True))
     assert r['reason']=='held_priority_deferred'
     assert r['decision_eligible'] is False and r['affects']=='none'
+
+
+def test_evidence_state_time_separate_from_local_availability():
+    from memetrader.pons_economics import evidence_observed_at
+    r=dict(status='OBSERVED',observed_at='2026-09-09T05:00:00+00:00',
+           ingested_at='2026-09-09T05:00:02+00:00',recorded_at='2026-09-09T05:00:03+00:00')
+    assert evidence_observed_at(r)==r['observed_at']
+    assert evidence_observed_at({**r,'status':'UNKNOWN'})==r['recorded_at']
+    with pytest.raises(ValueError):
+        evidence_observed_at({**r,'ingested_at':'2026-09-09T04:59:59+00:00'})
+
+
+def test_factory_event_does_not_substitute_for_instance_semantics():
+    from memetrader.pons_observer import PonsV2Observer
+    class Response:
+        def json(self): return {}
+    class Http:
+        async def get(self,*args,**kwargs): return Response()
+    r=asyncio.run(PonsEconomicsObserver(None,Http()).observe(dict(token='0x1',curve='0x2',
+        pair_token='0x3',factory=PonsV2Observer.FACTORY,event='TokenLaunched')))
+    assert r['status']=='UNKNOWN' and r['reason']=='unverified_curve_source_version'
+    assert 'quotes' not in r
