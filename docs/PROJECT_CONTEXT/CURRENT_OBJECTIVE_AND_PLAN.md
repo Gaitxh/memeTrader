@@ -1,4 +1,243 @@
+## Current continuation pointer — checkpoint100 after safety105
+
+For current completed status and next actions, read the CURRENT header of CURRENT_TASK_CONTEXT_20260909.md and .modechat/CURRENT_TASK.md. Later103/105 deployments and104 rollback supersede old numbered next-action text below. Product objective remains strictly-forward early/right-tail discovery, safe Paper execution and efficient reliable data; context maintenance is not a product pause. Exact pairing/Lead/model/memory verification unchanged/unasserted. Preserve older evidence below as history, not instructions to repeat completed stages.
+
+## Latest correction35 — additive ACTIVE16-case scope
+
+The exact16 cases in USER_RIGHTTAIL_CASES_20260908.md remain unfinished and mandatory alongside convergence33. Read both that file and STRATEGY_FORWARD_CONVERGENCE_20260909.md. Archival is not completion; older15-case/30-pair work is not a substitute. Reuse compatible existing evidence, fill per-token causal path/actual-entry-exit attribution/matched controls before proposing new Paper. Preserve P0 order and bridge rollback, no reset/backfill/Live.
+
+## Latest convergence33 checkpoint — 2026-09-09
+
+33 resumed implementation.9 losing arms NEW entries paused; token funnel deployed; S1 fast15/runner60 pair registered18:35:13Z, old contracts preserved. Gecko bridge trial cd579c8 reverted6e3097c under held-latency guard (2.25/2.52s vs1.72s baseline); do not auto-reapply. S2/S3 gated; S4 read-only component report. No alpha. Full details: STRATEGY_CONVERGENCE_RESULT_20260909.md. Result card C2C-20260909-CODEX-STRATEGY-CONVERGENCE-RESULT-33. Prior ModeChat/read-only notes below are historical for this tranche. No routing/session change.
+
+# 当前执行：2026-09-09 策略收敛消息33
+
+用户明确恢复任务 STRATEGY_FORWARD_CONVERGENCE_20260909.md。状态 IN_PROGRESS：先复核亏损/重复/无触发策略，冻结新入场但保留退出历史；补去重漏斗和固定预算Gecko原池连续性；安全清理测试临时数据和备份保留矩阵；S1优先，其余按自然证据门控。禁止重置/回填/Live。当前旧只读暂停仅作为历史。
+
 # 当前目标与执行计划
+
+## 当前：消息26只读核验完成，基础优化优先补连续行情
+
+2026-09-09 00:25北京时间快照：Paper/Live=false、原资金期、ef6dd56固定总量10/链及3/4/3仍保留，13261批进入/13257处理/4待处理/0丢弃。持仓请求p95=4.442秒、落地及退出p95=58.234毫秒；观察轮p95=8.467秒，单币计算p95=120.693毫秒；BSC有3个原池缺口，最长本地观察年龄约20.7小时。
+
+已独立复现26冻结分母：Dex77枚15个双检查点，Gecko2768枚32个且均由后续Dex提供；Gecko重复回帧约90秒，普通Dex后续补采最早池龄901秒。不能将本地未观察到Dex解释为上游未收录，210枚此前已有Dex。优先研究在现有额度内前移已有后续任务及计算热路径；本轮只读，不扩大来源/请求/容量或变更策略。25曾部署后按保护撤回，不能改写为未实施；23/25均不自动重试。
+
+完整证据及未核验边界：[EARLY_WATCH_SOURCE_TRANSITION_20260908.md](E:/memeTrader/docs/PROJECT_CONTEXT/EARLY_WATCH_SOURCE_TRANSITION_20260908.md)。用户最新询问基础还能否优化，已完成当前实现与运行核验。此前新建Lead Chat请求仍受支持浏览器kernel路径错误阻断，未创建/切换或改变绑定。保留<=300 fixed40/80否决、ModeChat19延后。以下旧状态为历史。
+
+## 消息25完成：新增surge通过测试，但触发运行保护，已撤回
+
+Exact `C2C-20260908-EARLY-SURGE-WATCH-25` 已执行审查、实现、测试、试运行及条件回退。状态 **REJECTED_RUNTIME_GUARD_ROLLED_BACK**。报告/历史提交 **2cc22d7 已推送**；生产源文件和测试恢复d6757b4，即ef6dd56原有固定总量借用行为。消息24的hold曾被25具体授权取代；25现已按保护条件结束，不能误读为仍运行20位或重新执行23。
+
+实现曾保留legacy10/3-4-3及15/15/20分钟TTL，并增加每链10个early-only surge、固定180s、held豁免。仅搭载已有legacy-due的Dex请求，surge-only不发请求，非held surge不进入Solana额外RPC。13个不同定向测试通过，含真实HTTP客户端模拟调用数、held/yield、预留回收及TTL验证。14:41:09Z加载后自然17次surge准入、0过期、0观测429、0新增丢弃；但pattern p95 12.623s（3样本）超过预先冻结12s线，held fetch p95 2.724→4.321s超过25%/250ms线。小样本/启动/网络不能证明持续因果回归，仍按约立即撤回，不等待更好结果。
+
+14:43:03Z经原Paper launcher恢复原容量，supervisor47868/runtime36068。14:44:22Z三API正常，五类不可变摘要284/20/25/1/0、原资金期/执行设置/Paper/Live=false一致，行情/判断/交易前沿推进；175批全部处理、0待处理/0新增丢弃，历史56704/462180不变。已本地语音告知。完整试验补丁与观察、交易、验收留在E:；无重置、历史改写或策略改动。
+
+前置300秒成熟active14（13RH/1SOL）仅1后帧/0双检查点；不是Lead多小时63/1705的同分母复现。试验113.85秒即终止，79个firstseen仅1条snapshot/无合格首锚点，无成熟150秒分母，未完成自然180秒轮换或覆盖改善验证。不能把工程测试当覆盖/Alpha证据。详见 [EARLY_SURGE_WATCH_20260908.md](E:/memeTrader/docs/PROJECT_CONTEXT/EARLY_SURGE_WATCH_20260908.md)，工件surge25_*在data/research/early_watch_borrow_20260908/。
+
+当前保留20基线，不自动重试或新增容量/TTL/策略；后续设计必须处理实际延迟验收约束。保留<=300 fixed40/80否决与ModeChat19延后。Exact RESULT已写协作卡/邮箱；未宣称直接Lead回读。以下为历史记录。
+
+## 消息24已执行：撤回已部署23，恢复20行为，等待修订设计
+
+Exact `C2C-20260908-EARLY-WATCH-ROTATION-REVISION-24` 到达时，消息23的f422c08已于14:13:58Z部署。因此如实标记 **SUPERSEDED_AFTER_DEPLOYMENT_REVERTED**，不能记为未实施。仅撤回23的runtime和相应测试，文件内容恢复ef6dd56；历史报告、观察和交易完整保留。恢复提交 **d6757b4 已推送**。
+
+14:27:12Z（北京时间22:27）经既有Paper launcher受控重启，supervisor41544/runtime45800。6个最近相关测试通过，14:27:45Z三API正常，五类不可变摘要284/20/25/1/0、原资金期/执行设置/Paper/Live=false一致。行情/判断/交易前沿继续推进；51批入/49处理/2待处理/0新增丢弃，历史56704/462180不变。新watch摘要无180s字段，仍为总量10/链、3/4/3预留及固定总量借用/收回、原15/15/20分钟TTL。约33秒恢复验收不能证明持续性能或覆盖收益。
+
+当前 **HOLD_AWAIT_REVISED_DESIGN**：等待Lead比较固定总量重分配与现有Dex批量容量后的修订，不启动22/23轮换、不自行扩容/调参/研究/重启。回退前14:26:03Z实测borrow身份为空、RH/SOL基础3/4/3满员，与修订担忧一致；未重新计算Lead13:53Z分母。保留既有<=300 fixed40/80否决，ModeChat19仍延后。详见 [恢复与历史报告](E:/memeTrader/docs/PROJECT_CONTEXT/EARLY_WATCH_BORROW_ROTATION_20260908.md)；rotation24_*工件在data/research/early_watch_borrow_20260908/。以下旧完成记录均为历史，不覆盖本节状态。Exact RESULT已写协作卡/邮箱，未宣称直接Lead回读。
+
+## 消息23完成：仅early借用位180秒驻留（2026-09-08 22:18验收）
+
+Exact `C2C-20260908-EARLY-WATCH-BORROW-ROTATION-23` 已实施、测试、部署并提交推送 **f422c08**。消息22延后方案仅被本次“借用位180秒”具体授权取代，原early基础3位仍15分钟，growth/mature15/20分钟不变。借用准入时固定borrowed_at/expiry，报价更新不续租，held过期仍保留；总量10/链、3/4/3预留与回收、门控/请求频率/上限、策略/账户/资金/Live不变。11个不同定向测试通过。详见 [EARLY_WATCH_BORROW_ROTATION_20260908.md](E:/memeTrader/docs/PROJECT_CONTEXT/EARLY_WATCH_BORROW_ROTATION_20260908.md)。
+
+独立前置复算截至14:04:48Z：624 early帧/78币、成熟活跃227币75有后帧/7双检查点；真实开平仓区间核对192帧为非held、4组非held观察跨度>180秒，但不能识别旧borrow/base归属或证明连续驻留。Lead引用的最长SOL和41帧BSC例实际为held，不能当借用位独占证据。接受有限工程实验，未宣称已证全部根因；V1错误研究工件只留痕，V2及root实际held分类有效。
+
+14:13:58Z通过原Paper launcher加载，supervisor45168/runtime43736。14:18:10.053466Z三API正常，五类不可变摘要284/20/25/1/0、原funding-20260906-v002-final-1000、执行设置与Live=false一致；自然21借用/18预留回收/11无效替换/**2借用过期**，一个过期borrow仍held并保留。非held总量BSC9/RH9/SOL10；568批入/566出/2剩余/0新增丢弃，旧累计56704/462180不变。暂未见到过期后新borrow准入，不能把到期当公平轮换已改善。
+
+pattern耗时p95 7.719→7.476s，held退出53.251→48.167ms；但held主循环p95 2.542→3.421s（p50 1.255→1.212），短窗/链构成变化不作统一提速或长期无回归结论。成熟150秒新cohort21基础/10活跃币，仅1后帧/0双检查点；已知4borrow身份中3非held无后续有效帧，held有37帧及双检查点。**工程验收完成，覆盖改善与Alpha仍证据不足**；BSC原池约18.6h缺口仍在。工件rotation23_*位于data/research/early_watch_borrow_20260908/。不自动追加改动/调参/重启；消息19仍延后，既有300 fixed40/80否决保持。exact RESULT已入协作卡/邮箱，未宣称直接Lead回读。
+
+## 消息22已登记：容量限制与独立第二阶段（未启动）
+
+保留消息20为唯一已实施的固定总量借用改动。消息22容量估算：若每个非持仓early均占位900秒，10个全early槽的稳态周转为40次/小时/链；Lead约175/92/49次每小时的到达量仍属未精确复现分母。40/h是有条件模型，不是实测硬上限，初始空位、池龄迁桶、替换及转持仓都会影响周转。
+
+单独登记stage2：约150秒或证据收集完成后释放/轮换非持仓early，状态 **CONDITIONAL_BACKLOG / NOT_STARTED**。仅在消息20部署之后的自然数据仍显示持续early饱和、60–120秒覆盖差时评估；消息21部署前基线不能触发它。不得与借用补丁混合实施，不新增请求/上限/频率或自动监控计算。现有growth补采最早池龄901秒，held仅照顾已持仓币，因此150秒释放不保证立即接续；后续独立评估必须考虑这个连续性缺口并保护held/SELL。详见EARLY_WATCH_BORROW_20260908.md末尾。此次仅文档/可审计ACK，不改生产或重启；消息19仍延后。
+
+## 消息21完成：部署前早期轨迹覆盖独立复算
+
+Exact `C2C-20260908-EARLY-WATCH-COVERAGE-ADDENDUM-21` 已按只读范围复算并补入 [EARLY_WATCH_BORROW_20260908.md](E:/memeTrader/docs/PROJECT_CONTEXT/EARLY_WATCH_BORROW_20260908.md)；报告提交 **3d41d7d** 已推送，生产代码仍为ef6dd56。本次没有重启、策略/账户/资金/参数/频率/历史/Live变更。
+
+固定历史(08:02:59Z,13:25:00Z]，9425候选/55452帧；13:53:54Z完成重建。首个可用合格基础锚点5152币/54双检查点；在原锚点过滤activity为2845/47=1.652%（成熟2833/46），重新选择首活跃锚点为2942/60=2.039%。固定锚点分链BSC269/16、RH1477/3、SOL1099/28。97个锚点变化，7币重选后新增双检查点；固定锚点同upstream仅15币。1267个原始帧引用身份/时钟/窗口及锚点floor/age核对通过。
+
+**广泛早期轨迹缺失独立确认；Lead1705/63、3309/60及案例帧数尚未精确复现。** Lead仅给约13:25Z且无精确SQL/锚点名单，差异原因未确认；不把重锚变化解释成同一批首帧的覆盖提升。这是13:42部署之前的基线，不能推翻或证明修复后的成效。消息20保持固定总量借用/预留设计及工程验收，首150秒完整覆盖/盈利改善仍证据不足。工件位于data/research/early_watch_borrow_20260908/addendum21/，含逐币锚点和checkpoint ID。保留既有300 fixed40/80否决与消息19延后状态，不自动提高上限、调参、研究或重启；直接Lead回读未核验。
+
+## 当前完成：消息20固定容量 early 借用（2026-09-08 21:44验收）
+
+Exact `C2C-20260908-EARLY-WATCH-BORROW-20` 已独立核验、实现、部署并提交推送 **ef6dd56**。early可借同链空位，非持仓每链仍最多10，early3/growth4/mature3基础预留、held优先、TTL及无效同槽替换保留；下游基础桶不足时确定性收回借用位，无新API/调度器/频率/策略/资金变更。13个针对性测试通过，初始失败fixture日志保留，不当PASS。详见 [EARLY_WATCH_BORROW_20260908.md](E:/memeTrader/docs/PROJECT_CONTEXT/EARLY_WATCH_BORROW_20260908.md)。
+
+13:42:04Z经原Paper launcher加载，supervisor40556/runtime40916。13:44:27.884884Z三API正常，284追加/20激活/25注册/1资金激活/0固定恢复完整摘要及执行设置一致，原funding-20260906-v002-final-1000与Live=false保持。自然17借用/14基础位收回，RH5/2/3、BSC/SOL3/4/3，每链非持仓10；321批入队/320出队/1剩余/0新增丢弃，旧累计56704/462180不变。
+
+短窗pattern耗时p95 6.752→7.387s（120→9样本），held退出p50 24.507→24.806ms、p95 40.171→51.797ms，持币28→33；等120秒窗口取数按币加权均降低，但负载/上游变化，不宣称稳定提速。自然25条非持仓early同池同源路径仅3条重复，各3帧跨度58.989s/maxgap46.310s；**首150秒完整连续覆盖与每个借用币的收益仍证据不足**。保留BSC约18h/RH71.9s原池缺口，不扩范围修复或声称Alpha。
+
+本次工程请求完成，停止重复部署/测试；Lead固定15m/60m/6h研究仍待新结果，-16/-17否决新增300 fixed40/80与禁止新阈值搜索保持。消息19 ModeChat liveness继续USER_DEFERRED_NOT_STARTED；本次工程边界不自动启动watchdog。exact RESULT已写协作卡和邮箱，未宣称直接Lead回读。下方旧记录保留各自截止，不能当当前待执行命令。
+
+## 当前完成：Runner信号原池龄与两级兑现（2026-09-08 17:23 验收）
+
+响应exact C2C-20260908-RUNNER-SPEED-ENTRY-09。固定09:07Z截止，41899观察/1156币、74首次信号、67严格后帧锚点；流动性底线更正后<=180s为5/11达到+100%、中位MFE+75.11%，非Lead声称7/11，优势主要BSC且只有一天。旧对照<=180s实际10终局/-13.540565U精确复现；独立退出V2仅同采集通道、未完整重放追踪，不能称实际盈利。接受小额假设，拒绝180s最优/通用Alpha解释。
+
+已新增runner_ultra_early_control_v1/lock_v1，5U/max4同fill新组、180s仅信号原池龄、原Runner15m退出；候选+40%半仓、部分成交后整仓经济收益+80%卖余下。17个不同定向测试通过及独立实现核对。17:21:57实际追加，supervisor34404/runtime31436；总追加284，旧282/20/1完整摘要及原资金期/Live锁保持。17:23自然195入队/191出队/4剩余/0丢弃，新组0自然仓位；主要持仓原池亚秒级，历史BSC一池仍约13.66h覆盖缺口。4b24fec已推送。详见RUNNER_SPEED_ENTRY_20260908.md及data/research/runner_speed_20260908/；各失效研究版本仅留痕，不参与当前裁决。
+
+本轮研究/实现/部署完成，等新自然配对终局或具体故障证据，不自动调参、安排研究或重复重启。保留P0-A/A0，无新丢失证据不复活P0-B/C。直接Chat不可用，已存exact RESULT/REPLY_TO，Lead回读未核验；动态事实以后仍须现场复核。
+
+## 当前完成：利润分批兑现两臂 Paper（2026-09-08 16:50 验收）
+
+响应 exact C2C-20260908-EARLY-RISER-PROFIT-LOCK-08。新增 control/40 两臂 early_impulse_profit_lock，5U/max4、独立同fill组；对照保留60m退出，候选仅增加成本后+40%触发、下一有效原池观察卖剩余50%。19个定向用例通过，独立Agent复算/反方检查无实现阻碍；早期8终局诊断改善2.694752U，Runner复算各差0.22U未解释，EHT精确成交报价关联未核验，不声称Alpha。16:47:20实际追加，supervisor28952/runtime28536；总追加282，旧280/20/1摘要与资金期/Live锁保持。16:50队列366入出/0丢弃，新两臂0自然仓位；上游HTTP失败后行情继续更新，仍有BSC约13.1h/Robinhood约386s原池缺口。提交51519b7已推送。详见EARLY_IMPULSE_PROFIT_LOCK_20260908.md及data/research/profit_lock_20260908/。本轮实现与部署完成；等待新的自然配对终局或具体故障证据，不自动调参/研究/重启。P0-A/A0保留，不因历史旧指令恢复P0-B/C；下方旧状态仅历史。直接Chat不可用，本次为独立Agent和durable RESULT，Lead回读未核验。
+
+## 当前完成：P0-A0本地队列处理与一次性信号补投（2026-09-08 16:02）
+
+响应exact C2C-20260908-DORMANCY-P0A0-COHORT-DRAIN-06。该消息旧门控建议已被前两轮实际部署覆盖；保留HTTP启动优先级。另独立确认pending缺原报价、空队列提前返回会丢预算延后的一次性信号。本次本地批次消费不等投递门控，暂缓实际投递；保存原Token/报价/接收时间，无新批次按8币/.25s预算补投；保留30s报价、60s信号时效与Store下一次观察规则。14个定向用例通过，15:59:38部署supervisor29620/runtime29016。16:02自然451入队/445出队/6剩余/0丢弃；原资金期累计56704/462180增量0；280/20/1摘要不变、前沿推进。持仓取数P95 1.268→1.279s，退出48.67→53.69ms，持币15→18，短窗不作固定速度/盈利结论。一次/api/live因心跳晚于快照7.743ms标stale，复读running；展示时序异常已记录而未扩范围修复。详见DORMANCY_P0A_20260908.md最新段及cohort_drain_*工件。本次补投请求完成；early_impulse原样自然运行，P0-B/C仍按新证据接续。
+
+## 当前完成：P0-A补充HTTP启动优先级（2026-09-08 15:48）
+
+响应exact C2C-20260908-DORMANCY-P0A-PRIORITY-START-ADDENDUM-05，确认host限速FIFO还会造成held启动排在后台后。Dex启动改为Condition与高/低FIFO，Runtime作用域传递优先级；等待时释放锁并重查间隔/退避，429重试同路、取消清理，启动后即允许下一轮，不等响应。10个定向用例通过、独立审查无具体阻碍。15:46:25部署supervisor23376/runtime14128；15:48短窗持仓取数P95 2.338→1.494s、退出P95 61.60→52.32ms；366入队/362出队/4剩余/0丢弃。持币26→24，不能称稳定提速比例或全部长期沉寂解决。280追加/20规则激活/1资金激活摘要一致，原期/Paper/Live保持；三个API和前沿正常。详见DORMANCY_P0A_20260908.md补充段与start_priority_before/after.json。本次请求完成；不调整early_impulse，不提前实施P0-B/C或定时重启。
+
+## 当前完成：P0-A持仓网络全局阻塞修复（2026-09-08 15:34）
+
+接续exact C2C-20260908-DORMANCY-SCHEDULER-BACKPRESSURE-P0-04，独立确认held网络全程idle门控使后台无法使用5个低优先槽。已移除该网络独占，保留8/5信号量、3个held预留、退避和每批同步退出；增加既有RuntimeTiming下有界FIFO等待/深度/丢弃摘要。10个定向测试通过，15:33:02部署，supervisor28268/runtime26532。15:34短窗214入队/212出队/2剩余/0丢弃，等待P95=2.011秒，被动观察P95 4.931→0.485秒；26→27持币负载，held退出P95 60.74→55.83ms。280追加/20规则激活/1资金激活完整摘要保持，API和前沿正常，无重置或Live。详见DORMANCY_P0A_20260908.md与data/research/dormancy_p0a_20260908/。P0-A请求完成；P0-B身份背压/P0-C有效观察公平只在持续损失的新证据下接续，不能把80秒零丢批当长期沉寂全部消失。early_impulse保持自然运行，不重新调参。
+
+## 当前完成：后台候选多链并发提速（2026-09-08 15:18）
+
+最新用户要求优化后台速度和性能。本轮只修复已证串行等待：各链原批次并发取数、单个消费协程逐币计算并让位。定向测试还发现并修正初版跨链计算挤在持仓回调之前的问题。5个不同用例最终通过；15:16:37最终部署，runtime31248/supervisor29792。15:18候选轮次p50从7.68到4.69秒，held_fetch p50从1.48到1.04秒；最终只有6轮、负载有变化，不当作全天加速倍率。280旧策略追加、20规则激活、1资金激活摘要完全保持，原资金期与Live锁不变，API与快照/评估前沿正常。未改策略参数、资金、历史、采集频率；未加定义缓存或新后台Agent。完整记录BACKEND_PERFORMANCE_20260908.md和data/research/backend_performance_20260908/。本轮明确请求已实现并完成定向验收，停止重复检查；之前三组early_impulse继续自然Paper。
+
+## 当前完成：机会标签修正与三组同价入场Paper（2026-09-08 15:00）
+
+接续C2C-20260908-EARLY-RISER-OPPORTUNITY-REFRAME-03，独立复现档案条件机会率12.127%→20.335%，不再把六小时后崩跌自动当入场负例。固定80,000实时帧含1,433信号/30币；共同前沿482帧/16币不通过Runner，但全部属于Lifecycle宽入口子集，未声称对全系统全新覆盖。更正的V2及身份/时序边界核验保留在early_impulse_20260908。
+
+已新增early_impulse_control_15m_v1、early_impulse_trailing_60m_v1、early_impulse_probation_60m_v1。5U/max4，同信号同fill，15m对照/60m追踪/一次10m续持检查。33个不同定向用例最终通过；14:57:33实际注册，14:59首个自然Token三臂各1仓同fill68804，尚无自然终局结论。旧277追加/20规则激活/1资金激活摘要保持，Live锁定。重启仅加载本次新策略，不重复部署旧watch修复、不重置资金。完整研究、合同和验收见EARLY_IMPULSE_PAPER_20260908.md。本轮明确请求已实现并验收，停止重复研究/测试；后续等新增自然证据或用户指令，不启动定时研究。
+
+## 最新追加研究：同龄覆盖、混源更正、自然配对与持续运行核验（2026-09-08）
+
+接续exact C2C-20260908-EARLY-RISER-PRIMARY-AND-DORMANCY-NEXT-01完成两个独立Agent及Root的追加研究。固定575币重取8,666原始帧，在精确池龄5/10/30秒没有合格当时可得快照；不能用15秒降采样或档案相对起点冒充创建期特征。旧研究outcome遗漏同源条件已生成独立更正版，8个币×horizon端点改缺失；原文件保留。档案分析初版整条路径gap/price质量筛选有未来依赖，最终V2已改用合格前缀、旧日期划分、下一档案观察及合格端点；10,338个较晚日期币中动量签名富集右尾也富集失败，极端单日主导均值，未支持新增机制。
+
+14:16 Runner两臂各24币，双方已终局的21对候选比对照少19.25U；Quiet仍0仓，不宣称Alpha。提出的首个有效报价确认与既有Lifecycle/probe重叠且对照不足，本次新增账户0，保留此前四臂自然运行。14:00起四个完整5分钟窗口BUY99/54/75/83；14:21观察替换88次，尾部快照/评估前沿一致；累计丢批在14:21/14:23未变。未证明长期沉寂全部解决，没有修改频率、缓存或再次重启。完整报告EARLY_RISER_DISCRIMINATION_20260908.md，工件data/research/early_riser_followup_20260908/。该轮研究与局部核验已交付，后续依新证据接续，不重复无变化研究/测试；原优先级和冻结约束保留。
+
+## 最新部署状态：用户明确授权重启，观察占位修复已部署验收（2026-09-08 14:01）
+
+最新用户明确授权自行停止/重启。13:59:40按既有scripts/run_paper.ps1仅重启Paper进程树，新运行PID23824、supervisor25828；31a83a6已加载，Web8790保持运行。14:01三个API正常，watch指标时间持续前进、累计2次不可用占位替换，最近一轮采样19/观察46；不把此计数解释为盈利或被替换Token均已成交。
+
+13:59:12部署前采样到14:01:00验收窗口内，快照前沿1796068→1796415、评估991791→992135。277策略追加、20规则激活、1资金激活的完整记录摘要不变，当前funding-20260906-v002-final-1000、Paper、Live锁保持。此前7个不同定向测试已通过，未重复测试；本轮追加真实部署与进度验收。原始证据watch_fix_deployment_before_authorized.json、watch_fix_deployment_after_authorized.json位于data/research/early_winners_20260908/。
+
+本次待部署修复已完成验收，下方13:39/13:53部署阻碍记录保留为历史，当前已解除；不要重复部署或初始化账户。既有原池覆盖缺口（BSC一池约10.3小时）和自然策略亏损仍存在；没有宣称长期沉寂全部消失、整体提速或正Alpha。短窗入场计算p50约10.26ms、持仓主循环p50约1.32秒，负载12→13币、窗口不同，不能作同负载速度结论。研究与新增策略交付见EARLY_WINNERS_20260908.md，下方任务主线记录保留。
+
+## 当前最高优先级：早期暴涨 Meme 识别/退出机制 + 后续运行沉寂根因（2026-09-08 最新用户指令）
+
+用户明确把当前核心问题重新聚焦为：每天都有 Meme Token 在创建后持续明显上涨，或先快速上涨后进入较稳定下跌；项目已经积累大量链上/行情/策略/生命周期数据，却仍没有一个策略能稳定在早期识别足够多的这类右尾机会并在局部高点附近/危险衰减前退出。目标不是继续堆策略数量，而是从数据证明“赢家早期与普通/失败币到底哪里不同”，把当时可得的差异机制转成严格前向、扣成本、可审计的新独立 Paper 策略。用户给出的15个地址只作研究案例，不是白名单/标签来源；13张图位于 `E:/memeTrader/Figure`。完整当前任务、案例、研究问题、协作Chat和后续系统专项已固化到 `docs/PROJECT_CONTEXT/CURRENT_TASK_CONTEXT_20260908.md`。
+
+当前研究必须同时使用大样本普通/失败 Token 负对照，按同 age/horizon 比较 5s/10s/30s/1m/3m/5m/15m 的 price/flow/liquidity/breadth/notional/volatility/path-efficiency/drawdown/creator/migration/data-quality 等点时特征与轨迹特征，严禁后来ATH/最终赢家/未来元数据倒灌。必须解释既有策略为何错失右尾：是发现晚、采样频率/队列/缓存/补全延迟、特征缺失/错误、策略门过严、成本/账户容量、还是退出状态机把右尾过早截断。只有被当前数据支持、且与现有策略行为非冗余的机制才增量注册新 Paper；不覆盖旧策略、不重置资金、不回填、不启用 Live。
+
+用户授权 Codex 在 GXH coin ChatGPT Project 内使用现有/新建多个高强度 Chat 协作，分工做 entry signature、exit/peak transition、negative controls、microstructure、data quality、lifecycle/regime、adversarial review 等；新 Chat 使用最新可用高能力模型和 `xhigh`（极高）或更高推理，无法核验时标 `UNVERIFIED` 且不得作为正式 Lead/唯一 reviewer。所有需要跨 compaction/rollover 的任务上下文、结论、证据指针、未解决项和 next action 必须落在 E: 项目目录，不依赖聊天记忆。
+
+完成当前早期暴涨币研究并形成一个 coherent 新策略实现边界后，立即执行第二个系统级 P0：用户观察到系统长期运行时大量策略逐渐沉寂，但重启后许多策略突然重新判断/分析/买卖。把它按工程缺陷优先调查，逐层审计 discovery→hydration→watch/admission→cache/TTL→scheduler/backpressure→cohort queues→feature projection→strategy admission→cash/capacity→execution/exit，并对比重启前与重启后不可变状态；重点检查 stale cache、共享槽位被无效目标占满、starvation、丢 wakeup、cooldown/TTL、队列公平、错误 terminal、异常任务、长期 semaphore/lock 与 restart-cleared state。不得用定时重启掩盖根因。
+
+## 当前接续：研究已实施，观察占位修复通过但部署被工具策略拒绝（2026-09-08 13:39）
+
+13:53阻塞审计：原拒绝轮及随后两次目标续跑均遇到同一部署条件。最新只读检查仍是13:22启动的PID23240（父25568），health正常、watch修复指标不存在。研究、实现和窄测试已完成可执行部分，剩余自然部署验收需要允许的部署操作或外部实际加载修复；没有其他能替代该验收的分析/测试。目标标记BLOCKED而非完成，保留31a83a6代码和所有证据，既有Paper继续运行。恢复后只接续部署与实际进度验收，不重做研究、不重置账户、不绕过此前工具拒绝。
+
+接续只读复核（2026-09-08T05:50:48.446598+00:00）：运行仍为13:22的PID25568/23240，watch指标KV不存在，31a83a6确未加载；277追加合同完整摘要与13:39保持。Runner两臂现各19币；13:22工程修复后各新增4币、各3已终局，子集已实现分别−7.029539/−6.546436U，另各1开放仓；不能用含未完成持仓的实现值作完整期望。Quiet仍0仓。15唯一案例、案例图、固定对照、档案结果、两份独立Agent意见及更正后的成交关联均已核对存在且案例证据表明确时间/缺失边界。原始新增结果natural_followup_0549.json。此前协作ACK属于已完成的独立工具任务；原目标剩余验收仍受同一个部署拒绝阻挡，没有再次尝试被拒绝操作或换通道绕过。
+
+用户已明确允许独立Agent替代无法连接的Chat。两个独立研究分支及案例交付完成，Runner/Quiet两个机制四个Paper账户已运行；13:22部署Runner中间帧连续性与97%回收清警报修复，17个定向测试通过，277旧追加合同摘要保持。自然Runner两臂各15独立币已实现−37.217/−24.316U，Quiet0仓；没有Alpha结论。报告EARLY_WINNERS_20260908.md，交互案例data/research/early_winners_20260908/casebook.html。
+
+已执行随后授权的重启沉寂专项：12:22前后10分钟旧账户BUY27→218，全部230 BUY中130仅为5币×26账户；不存在由重启清空现金/已消费记录的证据。确认同链阶段观察名额被不可用流动性报价占满会挡住新合格候选。源码改为有界替换不可用非持仓占位，保留有效路径/持仓/原预算及空位探索；7个不同定向用例最终通过。增加既有KV下观察数量/替换计数用于真实部署验收。
+
+**本次watch修复尚未部署。** 13:38执行Paper停止/重启命令遭自动审批“blocked by policy”拒绝，命令没有执行；不得换工具绕过拒绝。13:39health/live/performance仍正常，原资金期、277增量记录、Live=false，仍运行13:22版本。已按最新用户偏好语音提示故障和此阻碍。下一步是获得可用且允许的部署路径后加载此次修复，核验实际观察替换/新处理进度；不可标记全任务完成，也不要重复已过测试或以新增重启掩盖原因。原始证据watch_fix_deployment_blocked.json等位于研究目录。不要重置资金。
+
+## 当前进行：每日早期上涨机制研究（2026-09-08 12:58）
+
+最新用户明确15币仅为案例，研究跨币/跨日期可观察机制并实现独立Paper；随后处理“运行沉寂、重启恢复”专项。已完成15币/560固定对照、既有8万档案前缀分析，证据不支持普适首帧赢家特征；动量同时富集右尾与崩跌。研究提取关联/快照截止错误已更正，不能解释为生产账本错误。
+
+接续验证已暂存且12:22已激活的两个Runner，不改原合同；新增quiet_renewal候选/旧退出对照，12:55:58.280871部署addition276/277，14测试通过、原275追加记录摘要保持、原资金期与Live锁保持。三个服务API和新处理进度确认。报告EARLY_WINNERS_20260908.md，原始证据data/research/early_winners_20260908/。9个唯一指定Chat咨询仍因当前无线程读写工具/网页登录未完成；没有伪造回复。目标尚未完成；后续先补咨询/研究交付，再执行用户指定重启恢复专项。不得重置账户或把工程PASS称Alpha。
+
+## 当前完成：交易量下降根因与成长阶段共享跟进（2026-09-08 11:45）
+
+最新用户要求深入解释交易量下降并修复、优化全链路。已证主因：BSC Gecko新池page1在UTC23:30之后全部小于15分钟龄，成功补全又是终态，26个现金564–676U的flow账户失去成长阶段输入；发现仍持续，并非共享游标积压。另4个broad账户实际现金8–10U不足20U；无匹配策略被误标现金不足已修正今后原因。
+
+已实施已有10目标/5s预算中最多2个成长跟进、其余首次/普通重试，链轮转最早到期、fresh报价、共享落库唤醒。池龄901s以后、每次至少60s；只由部署后普通有效行情种入，6h截止字段及失败5min重试继续受2槽约束，排队/返回超期拒绝。保留独立观察实验隔离。11:33首次部署，11:42:08.195677最终修正部署；只为本轮新安排137个队列行用已有普通行情补齐截止，不动历史观察/账户。
+
+9个不同定向用例+JS/diff检查通过。25注册/20激活/273策略增量摘要不变，原funding-20260906-v002-final-1000、Live锁定。11:45有81跟进/69帧，BSC两个新flow机会产生52 BUY(2独立币)，后续重复观察仍被episode/cooldown拒绝。已平第一组26账户合计亏损40U，不能宣称Alpha。短窗负载9→14币、持仓间隔p50 1.552→1.324s，入场12.09ms，退出23.19ms；P95部分波动，不称所有指标变快。
+
+完整报告TRADE_FLOW_GROWTH_COVERAGE_20260908.md，证据data/research/trade_flow_diagnosis_20260908/。当前已修复本轮核心数据断档及重试边界，停止重复审计和测试。仍有源端缺流动性/原池覆盖、真实亏损与现金约束；每币定义重建约10ms需精确控制失效后方可复用，本轮未引入缓存。不要恢复定时研究或重置资金。
+
+## 当前完成：本轮进一步获取与计算提速（2026-09-08 10:49）
+
+最新请求仅继续优化发现/获取/计算/分析/判断速度，不恢复新策略研究。已修复跨链补全串行等待、低优先占满共享8槽、cohort四处重复深复制。三链补全独立返回即落库并唤醒判断；低优先最多5槽，持仓保留3槽；原池exact无容量不拖住独立补源，既有请求额度/退避不变。
+
+23个不同定向用例通过；真实200币同状态复放各20次6.545→3.263ms，输出一致。10:45:52既有脚本后台部署，health/live/performance正常；10:49已有74条完成补全，自然三链同时开始并分别写入，25注册/20激活/273增量数量和摘要一致，原资金期与Live锁保持。短窗负载10→16币，补全p50 2.861→1.356s、持仓间隔1.443→1.289s；不是同负载固定加速证据。入场11.55ms、退出23.26ms。
+
+BSC一个原池缺口约7.1h、Solana最长45s且一次请求失败，来源覆盖未伪造修复；未证明独立发现数量增加。完整报告PIPELINE_SPEED_20260908.md，证据data/research/pipeline_speed_20260908/。本轮实现和部署验收完成，停止重复审计/测试，不重置账户、不自动部署策略或启动定时研究。
+
+## 当前完成：全量生命周期与持仓资金研究（2026-09-08 04:14）
+
+最新用户补充明确探索识币、买卖、持仓时长、减/加仓与规模；本轮已完成85382份完整价格时间扫描及固定5/15/60m landmark、多日期分组，65,205份资金路径对照（最终修正版 strict next action / 4% / 0或0.1U费用，旧初稿无效保留）。单币多为12h、最长18.23h，无24h结果；先涨后急跌不等于确认Rug；异常价格令均值不可信。完整报告 LIFECYCLE_RESEARCH_20260908.md，原始研究与四例图在 data/research/lifecycle_20260908/。
+
+已实现并在04:07:34.247649激活六臂 lifecycle_baseline/renewal/failed_rebound/giveback_area/risk_trim/probe_v1，5U/最多4仓、同fill基线比较；probe新增5U仅Shadow账。addition268—273，snapshot1634041/eval829925。15新增+4共享定向用例通过，修复面积跨缺失/换源继承旧高点和快帧积分回溯；旧Shadow格式成本读取兼容，不改历史。25注册/20资金激活/267旧增量摘要不变；当前资金期 funding-20260906-v002-final-1000 保持，Live=false，不重置、不恢复定时研究。
+
+自然取证已36 BUY/6独立Token、19 SELL、5 WRITEOFF；有同币面积臂提前退出、其他臂后来核销的单例差异，但不能称Alpha。04:12短窗入场11.24ms、退出23.26ms、持仓间隔1.415s；BSC一个旧原池停更约28.8min（另池仍更新、Demo240/240日预算用尽），SOL最长约25s。已定位无证实本地漏调度，不用替池/改时钟/未知核销伪造解决。停止重复已过检查；后续需新的Token与日期证据，不自动加参数变体或运行研究。
+
+## 当前完成：进一步提速与8万币档案研究（2026-09-08 03:29）
+
+本轮明确授权的速度实现、档案研究、独立Paper新增及实现后端到端验收已完成。速度阶段提交/推送3f80e06：仅新来源唤醒no_pair，各链每轮批量刷新，12个定向测试通过。原型已复核实际限流和源端缺池，不突破额度/改旧行情时间。
+
+D:/P5_completeSystem/datasave_coin_info全量轻清单85403文件/102.3GiB；datasave_adress全部6文件完整非执行解析。固定1200币跨日期筛查，最终840合格，留出188的假设滑点后30m均值−21.82%、中位−23.88%；不证明Alpha/可成交。旧首轮和中间稿定义有误已作废保留；唯一最终工件为data/research/archive_exploration_20260908/run_empirical_final.py、samples_final.jsonl、empirical_final.json，人工2币原始行核对通过。已看过留出，只是较晚日期诊断，不能宣传未触碰最终检验。
+
+新增 archive_drift_v1 / archive_plateau_v1 / archive_release_v1，5U/最多4仓，前两者同fill配对；新addition265—267、activation2026-09-07T19:26:01.959171Z，snapshot frontier1621370。旧注册/资金激活/264策略增量摘要保持，当前资金期不变，Live锁定。17个新增定向+5个共享回归通过，03:28 API三个新账户和51条尾窗自然评估可见，尚无新臂BUY。不初始化旧账户或做最终1000U全账户重置；不安排定时研究。
+
+完成后端到端检查：入场批中位10.7ms、退出计算20.8ms、持仓刷新1.549秒（113仓/17币，短窗非同负载因果对照）。仍存在两处SOL原池缺字段/报价最长77秒、Gecko429及4待退出报价，不能伪造消除。无需重复无变化测试/再审计；新增实验等待自然数据，后续用户触发研究按新的Token/日期证据继续。完整报告 ARCHIVE_RESEARCH_20260908.md、SPEED_COVERAGE_20260908.md；研究/部署数据在E盘data/research对应目录。
+
+## 当前完成：策略探索、增量实现与端到端优化（2026-09-08 02:50）
+
+最新用户恢复本次用户触发研究/独立Paper新增，并追加实现后全链路审查优化；取代旧暂停扩张范围，不恢复定时研究、无人授权自动部署、资金重置或Live。已复用全历史诊断、读取最新5000成交和16个去重Token/955行情帧、调研一手外部案例。成本后证据仍负，未训练或证明Alpha。
+
+已部署 inventory_baseline_v1 / inventory_contraction_v1 / inventory_cost_space_v1，5U/最多4仓；前两者同fill比较双边数量收缩退出，第三者实现已知锚点成本后空间的下一轮方向。activation=2026-09-07T18:44:56.378434Z，snapshot frontier1609454，addition262–264。旧注册/激活/ID≤261策略摘要不变，原资金期不变，Live=false。26个不同定向用例覆盖通过；实际API显示三新账户且已有自然评估，02:50尚无新策略BUY。
+
+实现后已修复新退出中断边界与入场报价身份、并行启动Dex/Gecko发现，未增API额度。短窗主持仓间隔p50约1.32s，入场batch p95约12.9ms，未证明长期加速比例。Solana仍有原池过期/源失败，不能伪造消除。完整事实、策略合同、独立检验边界和部署证据见 STRATEGY_EXPLORATION_20260908.md 及 data/research/strategy_exploration_20260908/。不自动安排研究轮次；新增实验等待自然前向数据，不强制制造成交。
+
+本轮末尾两条SOL缺口已定位为热路径liq字段缺失，并于UTC18:52:18.509284由既有GT原池补源恢复；完整报价间隔约82秒，故仍是数据时效限制。未证具体本地排队/并发回归，不凭猜测修改退避或放宽新鲜度。
+
+
+## 当前追加：发现覆盖与迁移补全（2026-09-08 02:07已部署）
+
+最新用户要求核查55仓/9币与发现数量差异，并增加有效发现覆盖、加速获取/计算/判断。已完成链过滤后截取、两条新官方资料推送、原生200事件不漏尾、cohort2秒/16批FIFO、新migration单次优先补全及总览口径修正。15个不同定向Python用例/JS和最终服务验收通过；原期/注册/激活摘要不变，Live锁定。73仓/12币是最终截面；9币不是累计交易量，真实尾窗10分钟32 BUY/8币。源端完整原池覆盖仍非保证，新流尚无新增机会或alpha证明。详见REALTIME_ACCURACY_20260908.md第三轮。无需恢复研究/扩张/初始化。
+
+
+## 第二轮等待与重复计算提速（2026-09-08）
+
+用户继续要求新币/持仓信息获取、计算和判别尽可能快。已部署5秒最多10目标补全（总目标预算不增），新行情落库唤醒判断（上限5Hz、闲时1Hz），修复observer/narrative重复入cohort队列。9个定向Python及JS语法通过；补全实测间隔5.01秒，判断中位0.307秒。持仓Token11→15，刷新中位1.19→1.31秒，非等负载；SOL缺数据/过期仍存在。未改账户、资金、历史或策略合同，Live锁定。详见 `REALTIME_ACCURACY_20260908.md` 第二轮及 `data/research/speed_cycle2_after_20260908.json`。本轮不称所有源端问题已解决，也不恢复策略扩张。
+
+## DexScreener新增接口与其他问题继续推进（2026-09-08）
+
+用户要求继续调研Dex开放API并逐项推进其他问题。本轮已部署资料更新/Boost官方WebSocket、recent-updates REST回退、共享终态429冷却与上游Age新鲜度修正；复用来源/补全队列，不加Agent、策略、资金或Live。15个定向Python用例及JS语法通过，两路自然推送入库，8790可见，原注册/激活/资金摘要不变。短窗策略p50约1.01秒、持仓1.15秒。仍未解决的源端缺liq/缺原池不伪造覆盖；Metas与orders完成只读实测，未建设无当前消费者的轮询。完整接口清单、逐项状态、证据及边界见 `DEXSCREENER_OPEN_API_20260908.md`。
+
+## 后台优先的稳定性、准确性与实时性优化（2026-09-08）
+
+用户要求在允许额度内尽快，并补充特征、判别、指标、原池过期及后台资源优先。已部署：行情补全忙碌等待而非丢轮；待买资金预留按cohort索引查询；形态候选partial索引；原池每来源成功立即落库/检查退出；网页隐藏暂停轮询、初始实时状态与合同表顺序加载。16个定向Python用例与JS验证通过，资金/旧策略合同不变。形态目标查询生产只读单次10.53→1.14秒，形态loop短窗约5.06秒。单账户指标独立对账一致；特征原池隔离未发现新增已证错误。仍有源端缺原池/缺流动性导致19—30秒过期，不能称全部解决；不延长阈值/伪造观测/补款/新策略/Live。见 `REALTIME_ACCURACY_20260908.md`。
+
+## 接近亏光账户已退役（2026-09-07）
+
+最新用户要求移除接近耗尽账户、减少计算。本次按完整总权益<50U/1000U核验并退役45个；默认可见120，隐藏110，历史230账户保留。停止入场评估，闲置且收支不变的退役账户停止重复快照写入；现有持仓正常退出。10个Python定向用例和JS通过，原资金/合同摘要不变，部署后44空仓目标无新快照。见 `DEPLETED_ACCOUNT_RETIREMENT_20260907.md`。不新增自动淘汰任务，不恢复研究/新策略/Live。
+
+## 暂停账户也从默认列表移除（2026-09-07）
+
+按最新用户要求，6个暂停新入场账户也隐藏；默认显示165账户，59重复+6暂停共65账户保留在历史查看入口。仅改Web显示，不改买卖规则、资金或历史；只重启8790 Web，Paper后台保持运行。
+
+## 账户收敛第一项已完成（2026-09-07）
+
+最新用户仅授权第一项：59重复账户退役并从默认策略/概览列表移除，6账户暂停新入场；165仍可入场、171默认可见。原账户/持仓/历史/资金期不删不重置；既有仓位正常退出。仅新增运行状态控制与UI标识，未执行第二至第四项研究。9个定向Python用例、JS测试与语法通过；原服务局部重启并验收，原注册/追加合同/资金activation摘要一致。详情 `ACCOUNT_CONVERGENCE_20260907.md`。本条取代下方历史“尚未执行退役”的状态，不恢复策略扩张/自动研究/Live。
+
+
+## Alpha诊断与策略收敛（2026-09-07，已完成只读研究；生产扩张仍暂停）
+
+最新用户明确授权执行Alpha诊断任务书：停止策略扩张，完成只读核验、独立Opportunity统计、行为指纹、亏损归因、按Token隔离的时间外预测诊断、Gate/Exit边际价值、外部数据缺口及Chat多轮独立评审。实际收到的附件为 `E:/ChatGPT下载/GXH_CODEX_ALPHA_DIAGNOSIS_AND_STRATEGY_CONVERGENCE_20260907.md`；未发现另名EXECUTE文件，按本条明确授权与已附任务书执行，不等待重复确认。
+
+禁止新增策略/账户、改生产入场退出、部署/重启/重置、Live或历史改写。Court中的FREEZE/RETIRE只是本轮裁决建议，未授权实际执行。统一冻结13:38:59.399800Z：snapshot1551740、trade481693、cohort63036；Runtime230账户、原资金期保持。研究工件在 `docs/PROJECT_CONTEXT/ALPHA_DIAGNOSIS_20260907/`，原始数据/私有Chat在 `data/research/alpha_diagnosis_20260907/`。此前“继续新增机制”和同步指针ROUND3扩张建议已被本次任务暂停，不能自动恢复。
+
+最终E：现有L0有局部排序迹象，但同日6041严格机会仅82 Token、最高分组成本后结果未稳定转正，覆盖选择尚未排除。完成230账户/152经济指纹组、Gate拒绝分母、同Entry退出、亏损、77固定诊断拟合+2覆盖负控、外部一手研究及Chat R1九角色/R2三回复/R3两回复。Court建议59重复退役、6暂停新入场、2未证实观察候选，均未执行。14:29结束核验注册/103追加/资金activation摘要不变，Paper仍运行且Live锁定。总报告 `ALPHA_DIAGNOSIS_20260907/ALPHA_DIAGNOSIS.md`，最终裁决 `ALPHA_DIAGNOSIS_20260907/CONVERGENCE_DECISION.md`。不自动等待新日期、不恢复定时研究或扩张；下一步仅按新用户指令执行。
 
 ## 资源约束下的增量实证研究与策略设计（2026-09-07，研究、实现与部署完成）
 
