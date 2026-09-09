@@ -18,6 +18,32 @@ from memetrader.runtime import Runtime
 from memetrader.store import Store
 
 
+@pytest.mark.parametrize("chain,held", [("bsc", False), ("solana", True)])
+def test_watch_other_pool_cannot_erase_original_quote(monkeypatch, chain, held):
+    now = utcnow()
+    monkeypatch.setattr("memetrader.runtime.utcnow", lambda: now)
+    runtime = Runtime.__new__(Runtime)
+    token = TokenCandidate(chain, "token", "fixture")
+    runtime._pattern_held_tokens = {token.token_id} if held else set()
+    def quote(pool):
+        return SimpleNamespace(observed_at=now, price_usd=1, liquidity_usd=5000,
+            raw={"pair": {"pairAddress": pool,
+                "pairCreatedAt": (now-timedelta(seconds=60)).timestamp()*1000}})
+    original = quote("PoolA")
+    runtime._remember_pattern_quotes({"a": (token, original)})
+    expiry = runtime._pattern_watch[token.token_id]["expires_at"]
+    other = quote("poola" if chain == "solana" else "PoolB")
+    runtime._remember_pattern_quotes({"b": (token, other)})
+    assert runtime._pattern_watch[token.token_id]["quote"] is original
+    assert runtime._pattern_watch[token.token_id]["expires_at"] == expiry
+    assert runtime._pattern_watch_other_pool_skips == 1
+    # A token-batch response containing the exact original pool remains usable.
+    other.raw["pairs"] = [other.raw["pair"], original.raw["pair"]]
+    runtime._remember_pattern_quotes({"c": (token, other)})
+    assert runtime._pattern_watch[token.token_id]["quote"] is other
+    assert len(runtime._pattern_watch) == 1
+
+
 def test_pattern_watch_borrows_early_capacity_and_reclaims_for_base_buckets(monkeypatch):
     now = utcnow()
     monkeypatch.setattr("memetrader.runtime.utcnow", lambda: now)

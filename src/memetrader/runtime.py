@@ -7372,7 +7372,16 @@ class Runtime:
         for token, snapshot in quoted.values():
             token_id, chain = token.token_id, token.chain
             if token_id in watch:
-                watch[token_id]["quote"] = snapshot
+                raw = snapshot.raw or {}
+                pairs = raw.get("pairs") or [raw.get("pair", raw)]
+                if any(canonical_token_address(chain, str(p.get("pairAddress") or ""))
+                       == watch[token_id]["pair_address"] for p in pairs):
+                    watch[token_id]["quote"] = snapshot
+                else:
+                    # Do not let another pool erase an unconsumed original-pool
+                    # frame or postpone its refresh with an unusable timestamp.
+                    self._pattern_watch_other_pool_skips = getattr(
+                        self, "_pattern_watch_other_pool_skips", 0) + 1
                 continue
             if chain not in {"solana", "bsc", "robinhood"}:
                 continue
@@ -7665,6 +7674,7 @@ class Runtime:
             "replacements_since_start": getattr(self, "_pattern_watch_replacements", 0),
             "borrows_since_start": getattr(self, "_pattern_watch_borrows", 0),
             "reservation_reclaims_since_start": getattr(self, "_pattern_watch_reservation_reclaims", 0),
+            "other_pool_quote_skips_since_start": getattr(self, "_pattern_watch_other_pool_skips", 0),
             "non_held_by_chain_bucket": getattr(self, "_pattern_watch_nonheld_by_chain_bucket", {}),
         })
 
