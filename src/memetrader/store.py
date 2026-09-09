@@ -12213,6 +12213,9 @@ class Store:
         safety_shadow = getattr(self, '_safety_veto_shadow', None)
         if safety_shadow is not None:
             safety_shadow.observe(token_id, snap, ingested_at, recorded_at)
+        consensus_outcomes=getattr(self,'_clone_consensus_outcomes',None)
+        if consensus_outcomes is not None:
+            consensus_outcomes.observe(token_id,snap,ingested_at,recorded_at)
         self.rediscovery_funnel_hit(token_id, 'snapshot', recorded_at)
         funnel = getattr(self, '_rediscovery_funnel', None)
         if funnel is not None:
@@ -26436,6 +26439,9 @@ class Store:
 
     def register_chain_meme_cohort_experiments(self) -> int:
         from .cohort_experiments import cohort_experiment_policies
+        from .clone_consensus_outcomes import CloneConsensusOutcomes, KEY
+        if not hasattr(self, '_clone_consensus_outcomes'):
+            self._clone_consensus_outcomes=CloneConsensusOutcomes(self.get_kv(KEY,None))
         added = 0
         with self._lock, self.db:
             at = utcnow()
@@ -26465,7 +26471,15 @@ class Store:
         local=assess_behavior(rows['vault_frame'],token_id=snapshot.token_id,pool=pool,now=recorded_at)
         return self.record_chain_meme_pattern_evidence(snapshot.token_id,pool,
             'clone_consensus_leader_v2_shadow',dict(signal,decision_eligible=False,affects='none',
-            safety=assessment,behavior=local,execution_authorized=False),
+            safety=assessment,behavior=local,execution_authorized=False,
+            outcome_anchor={'eligible':bool(pool and snapshot.price_usd and snapshot.price_usd>0
+                and snapshot.liquidity_usd is not None and snapshot.liquidity_usd>=1000
+                and snapshot.ingested_at is not None
+                and snapshot.observed_at<=snapshot.ingested_at<=recorded_at
+                and (recorded_at-snapshot.observed_at).total_seconds()<=30),
+                'price_usd':snapshot.price_usd,'liquidity_usd':snapshot.liquidity_usd,
+                'observed_at':iso(snapshot.observed_at),'ingested_at':iso(snapshot.ingested_at) if snapshot.ingested_at else None,
+                'recorded_at':iso(recorded_at),'provider':snapshot.provider}),
             observed_at=snapshot.observed_at,source_key=signal['decision_key'])
 
     def register_chain_meme_mature_acceptance(self) -> int:
@@ -26874,6 +26888,15 @@ class Store:
                 pair_address, kind, source_key, iso(parse_time(observed_at)), iso(recorded), self._json(dict(payload)))).rowcount
             row = self.db.execute("SELECT id FROM chain_meme_pattern_evidence WHERE definition_version=? AND kind=? AND source_key=?",
                 (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, kind, source_key)).fetchone()
+            outcomes=getattr(self,'_clone_consensus_outcomes',None)
+            if inserted and row and outcomes and kind=='clone_consensus_leader_v2_shadow':
+                from .clone_consensus_outcomes import KEY
+                anchor=dict(payload['outcome_anchor'])
+                anchor['recorded_at']=iso(recorded)
+                outcomes.capture_signal(int(row[0]),token_id,pair_address,anchor,
+                    {k:getattr(self,'_chain_paper_execution',{}).get(k,v) for k,v in
+                     [('buy_slippage_bps',400),('sell_slippage_bps',400),('additional_fee_usd_each_fill',0.),('min_pool_liquidity_usd',1000)]},recorded)
+                self.set_kv(KEY,outcomes.snapshot())
             shadow = getattr(self, '_event_clone_shadow', None)
             if inserted and row and shadow:
                 try:shadow.receive(kind,payload,token_id,pair_address,int(row[0]),recorded)

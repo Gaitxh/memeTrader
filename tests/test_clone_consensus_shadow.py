@@ -22,6 +22,9 @@ def test_shadow_registration_has_no_funded_arm_and_preserves_frontier(tmp_path):
     assert store.record_clone_consensus_shadow(signal,snap,now) is not None
     assert store.db.execute("select count(*) from chain_meme_pattern_evidence where kind='clone_consensus_leader_v2_shadow'").fetchone()[0]==1
     store.record_clone_consensus_shadow(signal,snap,now)
+    assert store._clone_consensus_outcomes.state['triggers']==1
+    from memetrader.clone_consensus_outcomes import KEY
+    assert store.get_kv(KEY)['triggers']==1
     assert store.db.execute("select count(*) from chain_meme_pattern_evidence where kind='clone_consensus_leader_v2_shadow'").fetchone()[0]==1
     assert store.db.execute("select count(*) from chain_meme_trader_positions where arm_id='clone_consensus_leader_v2'").fetchone()[0]==0
     store.close()

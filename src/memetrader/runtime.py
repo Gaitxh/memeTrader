@@ -7571,6 +7571,14 @@ class Runtime:
         from .cohort_experiments import consume_passive_cohort_batch
         funnel = getattr(self.store, '_rediscovery_funnel', None)
         now_mono = asyncio.get_running_loop().time()
+        consensus_outcomes=getattr(self.store,'_clone_consensus_outcomes',None)
+        if consensus_outcomes is not None and now_mono-consensus_outcomes.last_flush>=15 and self._chain_meme_active_idle().is_set():
+            with self.store._lock:
+                consensus_outcomes.expire(utcnow())
+                if consensus_outcomes.dirty:
+                    self.store.set_kv('clone-consensus-outcomes106',consensus_outcomes.snapshot())
+                    consensus_outcomes.dirty=False
+                consensus_outcomes.last_flush=now_mono
         shadow = getattr(self.store, '_safety_veto_shadow', None)
         if (shadow is not None and now_mono-shadow.last_flush >= 15
                 and self._chain_meme_active_idle().is_set()):
