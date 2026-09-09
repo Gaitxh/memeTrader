@@ -1,0 +1,13 @@
+# Rediscovery admission occupancy — 101
+
+REPLY_TO: C2C-20260909-REDISCOVERY-OCCUPANCY-101
+
+Code 7053130 adds diagnostics only to the existing RediscoveryFunnel. Each tracked admission recent example carries chain, target bucket (null when invalid/unknown), pre-mutation non-held early/growth/mature occupancy, non-held chain_total, base_caps 3/4/3, watched held_count, and actual reason. Occupancy is copied before replacement/reclaim/insertion, so successful admissions cannot incorrectly report their post-admission count. Held count means held identities already in this chain's current watch, not all account positions.
+
+skip_bucket_full additionally records bucket_full_chain_spare when chain_total<10, otherwise bucket_full_chain_full. Counters retain the existing unique-episode-per-stage/reason meaning; the same episode can encounter both over time, so they are not an exclusive token partition. Recent examples capture attempts, including repeats, within the unchanged deque(maxlen=32). Membership limit256/TTL1h and existing KV flush cadence are unchanged. No new table, DB lookup, network request, admission rule, capacity, TTL or strategy change. Only already available occupied/chain_used/watch/held memory is used.
+
+Four targeted rediscovery tests pass, including deterministic instrumented/uninstrumented ordered-watch equality, mature3 with chain_total3 versus total10, held exemption, replacement pre-state and bounded repeated examples. git diff --check passed. Original pre101 snapshot records held-fetch p95 4.646s, apply68ms, pattern11.660s; these pre-existing elevated timings are not attributed to this diagnostic. Deployment uses existing Paper launcher, no reset.
+
+Natural post-deployment evidence is recorded below. Do not reconstruct old skip occupancy from today's empty watch; old generation remains historical. No capacity/borrowing/rotation recommendation until a useful prospective denominator exists.
+
+Natural generation starts 2026-09-09T18:21:00.118283Z. Bounded readback recorded 5 episodes and zero admission attempts: INSUFFICIENT_NATURAL_OCCUPANCY_EVIDENCE, neither spare nor full dominance established. data/research/rediscovery101/natural.json preserves the exact readback. data/research/admission88/post101.json shows health running, Paper=true/Live locked, 1 held token, passive drops0, and unchanged seven-table immutable digest 5abffced88f8b8e3228071a123dd8bb79f9d0effca00b1e9a85a5d17194c71a3. Initial startup held-fetch p95 10.706s, apply28ms, pattern10.696s: overall held latency is elevated, not an accepted performance improvement; this diagnostic adds no provider calls and has not yet processed a natural admission. It does not explain or fix that separate latency issue.
