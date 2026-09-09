@@ -66,3 +66,15 @@ Reconsider enrollment only after prospective rare-candidate verification has exa
 - data/research/manipulation115/applied.json: cutoff, selected arms, previous convergence control, invariant digest
 - data/research/manipulation115/post.json: API readback and no-new-position check
 - scripts/apply_convergence115.py: applied bounded governance transaction (do not rerun for monitoring)
+
+## 115-ORGANIC evidence addendum — Lead-reported, not independently reproduced
+
+REPLY_TO: C2C-20260909-AGE-RATE-MANIPULATION-115-ORGANIC
+
+Lead reports CRUMBS, Robinhood token0x7d9b.../pool0x1553..., event_reawakening entry2026-09-08T22:49:48Z. In entry-10m through entry+2m, reported61 trades (57 buys/4 sells), buy33933.38U, sell20324.81U, net+13608.56U,55 distinct tx_from; four large sells came from different addresses. This is a useful contrasting hypothesis against the three reported BSC giant-sell/single-address lists. Exact addresses/raw payload and retrieval clock were not supplied in this addendum; figures remain attributed, not independently verified organic-market proof.
+
+The window includes two minutes AFTER entry. Its full statistics cannot be preentry features, even if the historical endpoint later returns them. A future verifier must separately freeze trades available before decision; any postentry analysis is outcome-side diagnostic. Address breadth also requires router/custody interpretation, and different chains/venues limit direct comparability. Do not derive thresholds or restore paused strategies from this single positive winner.
+
+Coverage contract: a capped latest300 response with zero rows in the target historical window is UNKNOWN_COVERAGE, not zero activity. Require verified ordering, exact identity, usable timestamps, deduplication and a returned boundary reaching the lookback start. Fewer than cap is evidence of completeness only if endpoint retention/pagination semantics establish exhaustion; it is not sufficient alone. Also check newest coverage/cache freshness through the intended cutoff: reaching the old boundary does not prove the recent end is covered. Preserve local receipt/recording separately from trade time.
+
+Candidate research states (not implemented thresholds): ORGANIC_BREADTH_NET_BUY, SYNTHETIC_SINGLE_WALLET_ROTATION, NET_SELL_DISTRIBUTION, CONCENTRATED_OR_REGULAR, UNKNOWN_COVERAGE. Names denote evidence categories, not proven safety/scam or authority to BUY. Missing/429/stale/incomplete evidence => WAIT for any future dependent verifier. Use broad mechanical descriptors with prospective outcomes; no fitted cutoffs from CRUMBS. Existing complete amountful evidence first; any rare supplemental query must preserve conservative shared rate/backoff/held priority. No query, runtime change, strategy re-enable or request-budget expansion in this evidence update.
