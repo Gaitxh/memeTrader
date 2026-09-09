@@ -5,6 +5,7 @@ import asyncio
 from collections import deque
 from datetime import datetime, timezone
 import json
+import gzip
 import math
 from pathlib import Path
 import time
@@ -25,7 +26,7 @@ class AdmissionAudit:
     def __init__(self, directory):
         from .admission_shadow import AdmissionShadow
         self.shadow = AdmissionShadow()
-        self.path = Path(directory) / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + ".jsonl")
+        self.path = Path(directory) / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + ".jsonl.gz")
         self.pending = deque()
         self.receipts = self.dropped = self.written = self.bytes = 0
         self.errors = 0
@@ -49,13 +50,18 @@ class AdmissionAudit:
             created = float(created) / 1000 if created else None
             received = now.timestamp()
             observed = _epoch(snapshot.observed_at)
-            ingested = _epoch(getattr(snapshot, "ingested_at", None))
+            source_ingested = _epoch(getattr(snapshot, "ingested_at", None))
+            # Receipt is a real conservative availability bound, never an
+            # invented earlier provider timestamp when its field is absent.
+            ingested = source_ingested if source_ingested is not None else received
             price, liquidity = snapshot.price_usd, getattr(snapshot, "liquidity_usd", None)
             pool = canonical_token_address(token.chain, str(pair.get("pairAddress") or ""))
             age = received - created if created is not None else -1
             candidate = dict(token_id=token.token_id, chain=token.chain, pool=pool,
                 bucket="early" if age < 900 else "growth" if age < 21600 else "mature",
                 created_at=created, observed_at=observed, ingested_at=ingested,
+                source_ingested_at=source_ingested,
+                ingestion_clock="snapshot" if source_ingested is not None else "local_receipt",
                 recorded_at=received, price=price, liquidity=liquidity,
                 buys=getattr(snapshot, "buys_5m", None), sells=getattr(snapshot, "sells_5m", None),
                 provider=getattr(snapshot, "provider", None),
@@ -88,12 +94,13 @@ class AdmissionAudit:
             event["challenger"] = self.shadow.process(event)
             rows.append(event)
         payload = "".join(json.dumps(row, ensure_ascii=True, allow_nan=False, default=str) + "\n" for row in rows)
-        size = len(payload.encode("utf-8"))
+        payload = gzip.compress(payload.encode("utf-8"), compresslevel=1, mtime=0)
+        size = len(payload)
         if self.bytes + size > self.MAX_BYTES:
             self.bytes = self.MAX_BYTES
             raise OSError("audit file byte budget exhausted")
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as handle:
+        with self.path.open("ab") as handle:
             handle.write(payload)
         self.bytes += size
         return len(events)

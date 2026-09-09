@@ -1,5 +1,6 @@
 import asyncio
 import json
+import gzip
 import threading
 from datetime import timedelta
 
@@ -49,7 +50,7 @@ def test_audit_preserves_actual_watch_and_has_no_receipt_io(tmp_path, monkeypatc
             "reclaim_reservation", "skip_other_pool"} <= set(reasons)
     assert len(audit.pending[-1]["actual_pre"]) == 10
     flush(audit)
-    rows = [json.loads(line) for line in audit.path.read_text().splitlines()]
+    rows = [json.loads(line) for line in gzip.decompress(audit.path.read_bytes()).decode().splitlines()]
     assert len(rows) == 15
     assert all(row["decision_eligible"] == 0 and row["affects"] == "none" for row in rows)
     assert audit.status()["written"] == 15
@@ -67,7 +68,7 @@ def test_audit_overflow_and_sink_failure_do_not_affect_receipts(tmp_path):
     assert audit.capture(now, token, snap, {}, set(), 1000) is None
     assert audit.status()["dropped_audit"] == 1
     flush(audit)
-    rows = [json.loads(line) for line in audit.path.read_text().splitlines()]
+    rows = [json.loads(line) for line in gzip.decompress(audit.path.read_bytes()).decode().splitlines()]
     assert rows[0]["kind"] == "DROPPED_AUDIT"
     audit.last_flush = 0
     event = audit.capture(now, token, snap, {}, set(), 1000)
@@ -76,6 +77,18 @@ def test_audit_overflow_and_sink_failure_do_not_affect_receipts(tmp_path):
     flush(audit)
     assert audit.status()["errors"] == 1
     assert audit.status()["dropped_audit"] == 2
+
+
+def test_missing_ingestion_is_conservative_actual_receipt_not_backdated(tmp_path):
+    audit = AdmissionAudit(tmp_path)
+    now = utcnow()
+    token = TokenCandidate("bsc", "token", "fixture")
+    snap = TokenSnapshot("bsc", "token", 1, 5000, None, 1, 1, 1,
+        observed_at=now-timedelta(seconds=1), raw={"pairAddress": "pool", "pairCreatedAt": (now-timedelta(seconds=20)).timestamp()*1000})
+    row = audit.capture(now, token, snap, {}, set(), 1000)["candidate"]
+    assert row["eligible"] and row["source_ingested_at"] is None
+    assert row["ingestion_clock"] == "local_receipt"
+    assert row["ingested_at"] == row["recorded_at"] == now.timestamp()
 
 
 def test_slow_audit_sink_does_not_block_cohort_or_spawn_more_workers(tmp_path):
