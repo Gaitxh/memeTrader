@@ -34,3 +34,7 @@ At 2026-09-09T21:19:36.4852658Z: Web HTTP200; health.ok=true/runtime running; fu
 - data/research/cleanup120/execute.ps1 — exact one-shot operation; do not rerun as a background task.
 
 Only this report/business pointer/result card are committed; deleted temp data and audit runtime artifacts are not staged.
+
+## Repeated MESSAGE_ID120 readback — 2026-09-09T21:33Z
+
+Already completed; deletion script NOT rerun. Fresh allowlisted root enumeration returned zero test directories. This repeat reclaimed 0 bytes; previous measured reclaim remains 23,695,806,464 bytes. E: free now 45,701,611,520 bytes (42.563GiB), so the repeated 22GB-free statement is stale. Web HTTP200, Paper=true, Live locked, funding unchanged. First health sample briefly reported stale; one follow-up at21:33:52Z reported running/ok with advancing heartbeat and open positions0. No restart or filesystem deletion. Original exact paths and safety checks remain in the immutable cleanup120 audit artifacts.
