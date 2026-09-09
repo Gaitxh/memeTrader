@@ -5851,7 +5851,11 @@ def test_chain_meme_market_lanes_keep_active_fast_and_carry_slow():
         async def noop():
             return None
 
-        async def periodic(name, interval, action):
+        async def periodic(name, interval, action, *, initial_delay_seconds=0):
+            assert initial_delay_seconds == {
+                "chain_meme_pattern_pools": 5,
+                "chain_meme_pattern_participation": 10,
+            }.get(name, 0)
             intervals.append((name, interval))
             if len(intervals) == 5:
                 runtime._stop.set()

@@ -8603,6 +8603,7 @@ class Runtime:
         name: str,
         interval_seconds: float,
         action: Callable[[], Awaitable[None]],
+        *, initial_delay_seconds: float = 0.0,
     ) -> None:
         interval_seconds = max(1.0, float(interval_seconds))
         if not hasattr(self, "runtime_timing"):
@@ -8611,6 +8612,11 @@ class Runtime:
         previous_start = None
         wakeup = (self._chain_meme_decision_wakeup()
                   if name == "chain_meme_trader" and self.chain_meme_trader_only else None)
+        if initial_delay_seconds > 0:
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=initial_delay_seconds)
+            except TimeoutError:
+                pass
         while not self._stop.is_set():
             if wakeup is not None:
                 wakeup.clear()
@@ -8740,12 +8746,14 @@ class Runtime:
                     name="chain_meme_cohort_observer",
                 ),
                 asyncio.create_task(
-                    self._periodic("chain_meme_pattern_pools", 15, self.chain_meme_pattern_pools_once),
+                    self._periodic("chain_meme_pattern_pools", 15, self.chain_meme_pattern_pools_once,
+                                   initial_delay_seconds=5),
                     name="chain_meme_pattern_pools",
                 ),
                 asyncio.create_task(self._periodic("pregrad_watch", 30, self.pregrad_watch_once), name="pregrad_watch"),
                 asyncio.create_task(
-                    self._periodic("chain_meme_pattern_participation", 15, self.chain_meme_pattern_participation_once),
+                    self._periodic("chain_meme_pattern_participation", 15, self.chain_meme_pattern_participation_once,
+                                   initial_delay_seconds=10),
                     name="chain_meme_pattern_participation",
                 ),
                 asyncio.create_task(
