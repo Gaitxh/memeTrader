@@ -48,17 +48,23 @@ class RediscoveryFunnel:
                 return
             self.hit(token.token_id, 'admission_attempt', now)
             self.hit(token.token_id, reason, now)
+            self.basic(token.token_id, snapshot, now, snapshot.ingested_at, floor)
+
+    def basic(self, token_id, snapshot, now, ingestion, floor):
+        with self.lock:
+            self._expire(now)
+            if token_id not in self.members:
+                return
             raw = snapshot.raw or {}
             pair = raw.get('pair', raw)
             price, liquidity = snapshot.price_usd, snapshot.liquidity_usd
-            ingestion = snapshot.ingested_at
             # Diagnostics only: don't substitute receipt clocks or missing values.
             if (price is not None and math.isfinite(price) and price > 0
                     and liquidity is not None and math.isfinite(liquidity) and liquidity >= floor
                     and pair.get('pairAddress') and ingestion is not None
-                    and self.members[token.token_id]['at'] <= snapshot.observed_at <= ingestion <= now
+                    and self.members[token_id]['at'] <= snapshot.observed_at <= ingestion <= now
                     and (now-snapshot.observed_at).total_seconds() <= 30):
-                self.hit(token.token_id, 'basic_valid', now)
+                self.hit(token_id, 'basic_valid', now)
 
     def snapshot(self):
         with self.lock:

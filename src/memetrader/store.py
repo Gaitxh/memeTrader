@@ -12188,6 +12188,10 @@ class Store:
             )
         snapshot_id = int(cursor.lastrowid)
         self.rediscovery_funnel_hit(token_id, 'snapshot', recorded_at)
+        funnel = getattr(self, '_rediscovery_funnel', None)
+        if funnel is not None:
+            funnel.basic(token_id, snap, recorded_at, ingested_at,
+                         getattr(self, '_chain_paper_execution', {}).get('min_pool_liquidity_usd', 1000.0))
         self._observe_liquidity_survival_snapshot_locked(
             snapshot_id,
             snap,
