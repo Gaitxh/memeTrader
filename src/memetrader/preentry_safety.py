@@ -206,8 +206,6 @@ class PreentrySafety:
         return assess_behavior(rows['vault_frame'],token_id=item['token_id'],pool=item['pool'],now=now)
 
     def record(self,item,status,assessment=None):
-        micro=getattr(self.store,'_microstructure119',None)
-        if micro is not None:micro.note_safety(item,status,assessment)
         now=iso();payload={**item,'safety_status':status,'assessment':assessment,
             'not_a_safety_guarantee':True,'decision_eligible':False}
         self.store.db.execute('INSERT OR IGNORE INTO chain_meme_pattern_evidence('
@@ -258,8 +256,6 @@ class PreentrySafety:
         item['signal_price_usd']=kwargs.get('signal_price_usd')
         item['shadow_costs']={key:definition.get(key,default) for key,default in (
             ('buy_slippage_bps',400),('sell_slippage_bps',400),('additional_fee_usd_each_fill',0.0),('min_pool_liquidity_usd',1000))}
-        micro=getattr(self.store,'_microstructure119',None)
-        if micro is not None:micro.enqueue(item)
         scope=rwa_metadata_scope(row,token_id,filled_at)
         item['rwa_metadata_scope']=scope
         if scope['status']=='EXCLUDED_NON_MEME_RWA':

@@ -1,7 +1,21 @@
 # 119 shared microstructure — prepared Shadow stage, NOT deployed
 
 REPLY_TO: C2C-20260910-DUAL-MICROSTRUCTURE-ROUTER-119
-Status: SHADOW_WIRED_TESTED / DEPLOYMENT_PENDING. This is not completion of both requested Paper branches.
+Status: SHADOW_TRIAL_REJECTED_RUNTIME_GUARD / ROLLED_BACK. This is not completion of both requested Paper branches.
+
+## FINAL runtime disposition — overrides implementation checkpoints below
+
+Shadow integration93aa15e loaded via existing launcher at2026-09-09T21:08:45Z (supervisor31028), no reset. At21:10:41Z startup window: pattern p95=45.981s (3 samples) versus pre12.116s (120); passive wait p95=47.727s (9) versus pre2.664s (120); held_fetch p95=69.889s (6,2failures) versus pre1.763s (120); drops0/PoolTimeout0/connect_errors4. This fails the conservative runtime guard. Startup and previously pending code loading are confounders: this is NOT a controlled proof119 caused the slowdown, especially because classifier candidate/request counters stayed0.
+
+At21:11:37Z withdrew ONLY119 runtime/preentry/store hooks and Gecko arbitration/backoff changes, restored those files to pre93aa15e, and loaded via existing launcher (supervisor9636). Standalone classifier, cached adapter, bounded worker/outcome research code and fixtures remain; no runtime initialization or callback uses them. The retained worker refuses transport without the now-absent shared Gecko priority capability. The trial remains inspectable in93aa15e Git history. The modified pacing test and integration-only priority test were withdrawn with runtime implementation; remaining12microstructure tests PASS.
+
+Rollback21:12:41Z: /health+/api/live running, same funding period, Paper/Live locked; passive92/92/depth0/drops0, wait p95=2.760s; pattern p95=5.326s (3); held_apply p95=.0559s; held_fetch p95=3.405s (72). PoolTimeout/connect_errors0, retired clients0. Held is still above the old mature baseline; no claim of comparable-load full latency acceptance. Do not periodically restart to conceal it.119 remains disabled.
+
+Last119 KV21:11:30.204887Z has candidate0/request0/classifications0, no funded registrations/BUY/outcomes. Preserved KV is an inactive trial snapshot, not a live denominator. No forced candidate/query was manufactured. Immutable registration/activation/policy/funding/capital digest before trial and after rollback identical: b45a4ae22870b3051eaf0d7650dc779236b37b0aa1a64711c8c5357e52be54db. All historic positions/profits/exits remain. Data artifacts: data/research/microstructure119/*before.json, *after.json, performance_later.json, *rollback.json, immutable_before.json, rollback_state.json.
+
+The supported launcher worked for this new explicitly authorized trial, superseding the prior process-control blocker. Previously pending final109/110-113 code was also loaded at this boundary; their natural acceptance is NOT implied by119 smoke. No funded114 registration (inert registrar). Four115 pauses remain in existing KV.
+
+Remaining requested Paper work is deliberately NOT registered: organic5U/max2 needs a resource-accepted classifier feed; synthetic1U/max1 also needs an exact-pool positive sell simulation and no hard safety rejection; Solana still needs a complete existing amountful wallet adapter. This is the task's permitted Shadow fallback after a failed resource trial, not two completed strategies or evidence of Alpha. Restore shared priority safely and demonstrate comparable-load acceptance before another forward deployment; do not loosen clocks/coverage/safety to obtain samples.
 
 ## Subsequent integration checkpoint (supersedes pending wiring below)
 

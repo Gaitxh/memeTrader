@@ -12211,8 +12211,6 @@ class Store:
             )
         snapshot_id = int(cursor.lastrowid)
         safety_shadow = getattr(self, '_safety_veto_shadow', None)
-        micro=getattr(self,'_microstructure119',None)
-        if micro is not None:micro.observe(token_id,snap,ingested_at,recorded_at)
         if safety_shadow is not None:
             safety_shadow.observe(token_id, snap, ingested_at, recorded_at)
         lp_shadow=getattr(self,'_lp_custody_shadow',None)

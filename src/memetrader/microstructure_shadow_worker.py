@@ -28,7 +28,8 @@ class MicrostructureWorker:
             # Shared HttpClient arbitration rechecks pending held demand at
             # actual host start. Existing traffic count reserves headroom.
             starts=getattr(http,'_gecko_starts',())
-            yield bool(idle().is_set() and sum(t>time.monotonic()-60 for t in starts)<8)
+            yield bool(hasattr(http,'_reserve_gecko_request_start') and idle().is_set()
+                       and sum(t>time.monotonic()-60 for t in starts)<8)
         self.client=TradePageClient(http,permit=permit)
 
     def count(self, reason):self.counts[reason]=self.counts.get(reason,0)+1
