@@ -558,11 +558,15 @@ def test_public_gecko_host_pacing_leaves_other_sources_unchanged(monkeypatch):
             waits.append(seconds)
 
         monkeypatch.setattr("memetrader.collectors.asyncio.sleep", record_wait)
-        for host in ("api.geckoterminal.com", "example.com"):
-            http._last[host] = time.monotonic()
-            await http._reserve_host_request_start(host)
-        assert 2.0 < waits[0] <= 2.1
-        assert 0.2 < waits[1] <= 0.25
+        # Gecko now waits on a priority condition, so held demand can overtake
+        # low requests. Verify the actual start interval, not sleep internals.
+        started = time.monotonic()
+        http._last["api.geckoterminal.com"] = started
+        await http._reserve_host_request_start("api.geckoterminal.com")
+        assert time.monotonic() - started >= 2.0
+        http._last["example.com"] = time.monotonic()
+        await http._reserve_host_request_start("example.com")
+        assert 0.2 < waits[0] <= 0.25
         await http.close()
 
     asyncio.run(scenario())

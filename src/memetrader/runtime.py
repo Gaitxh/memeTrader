@@ -43,7 +43,7 @@ from .capital_duration_risk import load_duration_risk_samples, seal_duration_ris
 from .autonomous_search import AutonomousSearchAgent, _canonical_social_url, _same_social_url
 from .collectors import (
     BlueskySearchCollector,
-    DEX_REQUEST_HIGH_PRIORITY, dex_low_budget,
+    DEX_REQUEST_HIGH_PRIORITY, GECKO_REQUEST_HIGH_PRIORITY, dex_low_budget,
     DexLowPriorityCapacityDeferred,
     DexScreenerClient,
     EvmRouteQuoteError,
@@ -1531,6 +1531,8 @@ class Runtime:
         self.safety = SafetyChecker(self.http, config["safety"])
         from .preentry_safety import PreentrySafety
         self.store._preentry_safety = PreentrySafety(self.store, self.safety, getattr(self, "runtime_timing", None))
+        from .microstructure_shadow_worker import MicrostructureWorker
+        self.store._microstructure119 = MicrostructureWorker(self.store,self.http,self._chain_meme_active_idle)
         self.agent = AgentRouter(self.store, config["agent"])
         known_source_urls = {
             str(item.get("url") or "").rstrip("/")
@@ -1566,6 +1568,10 @@ class Runtime:
         self._record_paper_account_snapshot()
 
     async def close(self) -> None:
+        worker=getattr(self.store,'_microstructure119',None)
+        if worker is not None and worker.task is not None and not worker.task.done():
+            worker.task.cancel()
+            await asyncio.gather(worker.task,return_exceptions=True)
         if self.bridge:
             await self.bridge.close()
         await self.evm_route_http.close()
@@ -2527,9 +2533,13 @@ class Runtime:
                       if float(item.get("next_public_attempt", 0.0)) <= now]
         if public_due and now >= self._gecko_pool_backoff_until:
             try:
-                public_pairs = await self.gecko_pools.get_pools(
-                    chain, [str(item["pair_address"]) for _, item in public_due],
-                )
+                priority_token = GECKO_REQUEST_HIGH_PRIORITY.set(True)
+                try:
+                    public_pairs = await self.gecko_pools.get_pools(
+                        chain, [str(item["pair_address"]) for _, item in public_due],
+                    )
+                finally:
+                    GECKO_REQUEST_HIGH_PRIORITY.reset(priority_token)
                 pairs.update(public_pairs)
                 observed_responses = [pair for pair in public_pairs.values()
                     if not (pair.get("raw", {}).get("http_cache", {}).get("local_cache_hit"))]
@@ -6749,6 +6759,10 @@ class Runtime:
 
     async def chain_meme_trader_once(self) -> None:
         """Advance every active strictly-forward, zero-extra-fee strategy account."""
+        micro=getattr(self.store,'_microstructure119',None)
+        if micro is not None:
+            micro.kick()
+            micro.flush()
         safety = getattr(self.store, "_preentry_safety", None)
         if safety is not None and self._chain_meme_active_idle().is_set():
             safety.timing = getattr(self, "runtime_timing", None)

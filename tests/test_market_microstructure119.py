@@ -114,3 +114,60 @@ def test_shadow_unknown_and_hard_expire_without_backfill():
     assert len(result['outcomes']['recent'])==2
     assert all(v['status']=='UNKNOWN' for r in result['outcomes']['recent'] for v in r['results'].values())
     assert result['decision_eligible'] is False
+
+def test_real_shared_gecko_start_priority_and_cancel_cleanup():
+    import time
+    from memetrader.collectors import HttpClient, GECKO_REQUEST_HIGH_PRIORITY
+    async def run():
+        order=[]
+        async def handler(req):
+            order.append(req.url.path)
+            return httpx.Response(200,json={})
+        h=HttpClient(transport=httpx.MockTransport(handler),min_host_interval=.001)
+        host='api.geckoterminal.com'
+        h._last[host]=time.monotonic()-2.0
+        low=asyncio.create_task(h.get('https://'+host+'/low',retry_429=False))
+        await asyncio.sleep(.01)
+        token=GECKO_REQUEST_HIGH_PRIORITY.set(True)
+        high=asyncio.create_task(h.get('https://'+host+'/held',retry_429=False))
+        GECKO_REQUEST_HIGH_PRIORITY.reset(token)
+        await high
+        assert order==['/held']
+        low.cancel()
+        with pytest.raises(asyncio.CancelledError):await low
+        assert not h._gecko_start_waiters[False] and not h._gecko_start_waiters[True]
+        await h.close()
+    asyncio.run(run())
+
+def test_worker_rare_queue_dedup_no_network_in_enqueue_and_passive_expiry():
+    from memetrader.microstructure_shadow_worker import MicrostructureWorker
+    from memetrader.models import utcnow,iso
+    from threading import RLock
+    from types import SimpleNamespace
+    class DB:
+        def execute(self,sql,args):
+            if sql.startswith('SELECT arm_id'):return [('event_reawakening_v1',)]
+            return []
+    class Store:
+        db=DB();_lock=RLock()
+        def get_kv(self,*a):return {}
+        def record_chain_meme_pattern_evidence(self,*a,**kw):pass
+    async def run():
+        idle=asyncio.Event();idle.set();h=Http();w=MicrostructureWorker(Store(),h,lambda:idle)
+        now=utcnow()
+        item=dict(version='v',cohort_id=1,token_id=TOKEN,pool=POOL,requested_at=iso(now),
+                  expires_at=iso(now+timedelta(seconds=120)),shadow_costs={})
+        w.enqueue(item);w.enqueue(item)
+        assert len(w.pending)==1 and h.calls==0
+        await w.work()
+        assert h.calls==1 and not w.pending and w.counts['UNKNOWN']==1
+        for entry in w.anchors.values():entry['classified_at']=iso(now-timedelta(seconds=121))
+        w.flush()
+        assert not w.anchors and w.shadow.counts['UNKNOWN']==1
+        idle.clear();w.enqueue({**item,'cohort_id':2});w.kick()
+        assert w.task is None and h.calls==1
+        rejected={**item,'cohort_id':2}
+        w.note_safety(rejected,'REJECT',{'reasons':['cannot_sell_all']})
+        await w.work()
+        assert h.calls==1 and w.counts['HARD_UNSELLABLE']==1
+    asyncio.run(run())

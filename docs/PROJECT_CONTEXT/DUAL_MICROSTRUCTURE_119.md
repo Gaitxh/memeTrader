@@ -1,7 +1,17 @@
 # 119 shared microstructure — prepared Shadow stage, NOT deployed
 
 REPLY_TO: C2C-20260910-DUAL-MICROSTRUCTURE-ROUTER-119
-Status: CORE_TESTED / RUNTIME_INTEGRATION_PENDING. This is not completion of both requested Paper branches.
+Status: SHADOW_WIRED_TESTED / DEPLOYMENT_PENDING. This is not completion of both requested Paper branches.
+
+## Subsequent integration checkpoint (supersedes pending wiring below)
+
+Added shared Gecko high/low request-start arbitration; existing held original-pool calls explicitly high, low starts yield to pending high, cancellation removes waiting tickets. Existing2.1s spacing remains. Gecko429 now updates the same HttpClient backoff, including retries. No change to Dex arbitration.
+
+Added MicrostructureWorker on existing idle trader tick; no new periodic task. It accepts only admitted rare existing event_reawakening/quiet/clone/prebreakout source decisions, maximum8 pending, original signal expiry, bounded persisted seen/queue state, <=1 supplemental request/min and skips when the last minute already has8 Gecko starts. It does not revive paused age-rate or use old snapshots as new signals. Common safety REJECT is retained; explicit cannot-sell reasons produce HARD_UNSELLABLE without a trade request. Safety and trading decisions are otherwise unchanged. Solana consults indexed local amountful evidence only, returning explicit missing-adapter UNKNOWN until full per-wallet adapter exists.
+
+Classifier receipts append to existing pattern evidence; later exact-pool snapshot callback anchors the outcome strictly after classification receipt, or records missing anchor UNKNOWN. Existing idle15s flush expires/caps outcome state. Raw code capture is prospective only; no historical replay.13 dedicated tests plus shared preentry/stock tests total63PASS. Gecko/original-pool selected checks9passed initially; the remaining old sleep-mock test was updated to verify actual condition-based pacing, then passed. No repeated whole-suite testing.
+
+Still pending: natural request/held acceptance; exact original-pool positive sellability receipt adapter; Solana complete trade-level adapter; funded policy registration/fill tests. The two funded branches remain unregistered. Source scopes/budgets above are Shadow supply, not proof that either new strategy can enroll.
 
 119 supersedes the old prohibition on deliberately studying manipulated-but-sellable opportunities: the authorized synthetic experiment is separate1U/max1/15m, not normal-meme Alpha. It does not revive funded Capital Pulse114 or authorize hard-unsellable buys.115 parent/derivative pauses remain unchanged.
 
