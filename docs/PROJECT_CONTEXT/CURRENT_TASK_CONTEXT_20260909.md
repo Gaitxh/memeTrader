@@ -1,3 +1,9 @@
+# Consensus106 correction: trial withdrawn
+25d1059 unarms result collector afterheld p957.305s/pattern19.959s guard. No natural capture0; source7tests passed but runtime acceptanceFAILED. Do not claim collecting outcomes or revive/backfill prior2. See CONSENSUS_OUTCOMES_106.md; guard cause uncertain because no pending rows. Pump105 UNKNOWN stays.
+
+# Consensus passive outcome106 loaded
+41a3849 loaded19:50:53Z. New natural capture0 as of19:51:23Z; prior2 never backfilled. Bounded15/60/240 exact-pool outcomes/floor order, no requests/funded arm. Pump105 UNKNOWN classification also now loaded. Read CONSENSUS_OUTCOMES_106.md; runtime short guard only, no Alpha/coverage claim.
+
 # Pump exact-input105 correction
 V2 exact semantics not yet established; native Shadow classification now UNKNOWN in source, 19 tests pass. No restart; running b186971 unchanged. Read docs/PROJECT_CONTEXT/PUMP_EXACT_INPUT_CORRECTION_105.md. Do not claim legacy diagnostics as exact V2 or register native Paper.
 
