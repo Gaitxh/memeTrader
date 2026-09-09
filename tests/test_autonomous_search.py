@@ -395,6 +395,7 @@ def test_codex_search_command_is_ephemeral_read_only_and_web_enabled(tmp_path: P
     assert args[1:3] == ["--search", "exec"]
     assert "--ignore-user-config" in args
     assert "--ephemeral" in args
+    assert args[args.index("project_doc_max_bytes=0") - 1] == "-c"
     assert "read-only" in args
     assert "--json" in args
     assert "gpt-5.3-codex-spark" in args

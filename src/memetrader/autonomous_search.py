@@ -1755,6 +1755,9 @@ class AutonomousSearchAgent:
             "exec",
             "--ignore-user-config",
             "--ephemeral",
+            # Web-only workers use their bounded prompt, not ancestor AGENTS.md.
+            "-c",
+            "project_doc_max_bytes=0",
             "--skip-git-repo-check",
             "--sandbox",
             "read-only",
