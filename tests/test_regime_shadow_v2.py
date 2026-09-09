@@ -1,4 +1,5 @@
 import importlib.util
+import sqlite3
 from pathlib import Path
 
 spec = importlib.util.spec_from_file_location('regime62', Path(__file__).parents[1]/'scripts/report_regime_shadow_v2.py')
@@ -20,3 +21,18 @@ def test_pregrad_unique_events_not_rows():
     e=dict(token_id='solana:x',observed_at='2026-09-09T00:29:00Z',recorded_at='2026-09-09T00:29:01Z',payload_json='{"stage":"MIGRATED"}')
     r=m.summarize([],[],[e,e],m.stamp('2026-09-09T00:30:00Z'),{'evidence':None})
     assert r['current']['solana']['pregrad_events']['MIGRATED']==1
+
+
+def test_discovery_expansion_covers_baseline_without_duplicates_and_caps():
+    db=sqlite3.connect(':memory:');db.row_factory=sqlite3.Row
+    db.executescript('CREATE TABLE token_discovery_rounds(id INTEGER PRIMARY KEY,provider,surface);'
+                     'CREATE TABLE token_discovery_exposures(id INTEGER PRIMARY KEY,round_id,recorded_at);'
+                     "INSERT INTO token_discovery_rounds VALUES(1,'native-launch','test');")
+    for i in range(1,9):
+        db.execute('INSERT INTO token_discovery_exposures VALUES(?,1,?)',
+                   (i, f'2026-09-09T00:{i:02}:00Z'))
+    prior=m.stamp('2026-09-09T00:05:00Z')
+    rows,span=m.discovery_tail(db,8,prior,initial=2,cap=8)
+    assert span==4 and [r['id'] for r in rows]==[5,6,7,8]
+    rows,span=m.discovery_tail(db,8,m.stamp('2026-09-08T00:00:00Z'),initial=2,cap=4)
+    assert span==4 and min(m.stamp(r['recorded_at']) for r in rows)>m.stamp('2026-09-08T00:00:00Z')

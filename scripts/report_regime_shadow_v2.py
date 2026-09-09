@@ -84,6 +84,23 @@ def summarize(exposures, snapshots, evidence, cutoff, spans):
     return result
 
 
+def discovery_tail(db, frontier, prior_start, *, initial=10000, cap=40000):
+    """Expand only unread older PK ranges; cap is total ID span, not per query."""
+    rows, width, upper = [], min(initial, cap), frontier
+    while True:
+        lower = max(0, frontier-width)
+        batch = [dict(r) for r in db.execute(
+            'SELECT e.*,r.provider,r.surface FROM token_discovery_exposures e '
+            'JOIN token_discovery_rounds r ON r.id=e.round_id '
+            'WHERE e.id>? AND e.id<=? ORDER BY e.id', (lower, upper))]
+        rows = batch + rows
+        earliest = min((stamp(r['recorded_at']) for r in rows
+                        if stamp(r['recorded_at']) is not None), default=None)
+        if (earliest is not None and earliest <= prior_start) or lower == 0 or width == cap:
+            return rows, width
+        upper, width = lower, min(cap, width*2)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--database', required=True)
@@ -96,12 +113,13 @@ def main():
         # Each statement and the overall run are bounded; never scan historical tables.
         db.set_progress_handler(lambda: int(time.monotonic()-started > 3), 1000)
         frontiers = {t:db.execute('SELECT MAX(id) FROM '+t).fetchone()[0] or 0 for t in ('token_discovery_exposures','token_snapshots','chain_meme_pattern_evidence')}
-        exposures = [dict(r) for r in db.execute('SELECT e.*,r.provider,r.surface FROM token_discovery_exposures e JOIN token_discovery_rounds r ON r.id=e.round_id WHERE e.id>? AND e.id<=? ORDER BY e.id', (max(0,frontiers['token_discovery_exposures']-10000),frontiers['token_discovery_exposures']))]
+        exposures, discovery_span = discovery_tail(db, frontiers['token_discovery_exposures'], cutoff.timestamp()-1800)
         snapshots = [dict(r) for r in db.execute("SELECT token_id,observed_at,ingested_at,recorded_at,price_usd,liquidity_usd,buys_5m,sells_5m,volume_5m_usd,provider,json_extract(raw_json,'$.pair.pairAddress') pair,json_extract(raw_json,'$.pair.pairCreatedAt') created,json_extract(raw_json,'$.upstream_provider') upstream FROM token_snapshots WHERE id>? AND id<=? ORDER BY id", (max(0,frontiers['token_snapshots']-12000),frontiers['token_snapshots']))]
         evidence = [dict(r) for r in db.execute("SELECT token_id,kind,observed_at,recorded_at,CASE WHEN kind='pregrad_watch' THEN payload_json ELSE '{}' END payload_json FROM chain_meme_pattern_evidence WHERE id>? AND id<=? ORDER BY id", (max(0,frontiers['chain_meme_pattern_evidence']-10000),frontiers['chain_meme_pattern_evidence']))]
     spans = {k:min((stamp(r['recorded_at']) for r in rows if stamp(r['recorded_at']) is not None),default=None) for k,rows in [('discovery',exposures),('market',snapshots),('evidence',evidence)]}
     result = dict(schema='local-regime-shadow-v2', cutoff=cutoff.isoformat(), decision_eligible=False, affects='none', outcomes_read=False,
-        frontiers=frontiers, row_counts=dict(discovery=len(exposures),market=len(snapshots),evidence=len(evidence)), coverage_start=spans,
+        frontiers=frontiers, discovery_id_span=discovery_span, discovery_hard_cap=40000,
+        row_counts=dict(discovery=len(exposures),market=len(snapshots),evidence=len(evidence)), coverage_start=spans,
         windows=summarize(exposures,snapshots,evidence,cutoff.timestamp(),spans),
         limitations=['Local observed supply only; not chain-wide truth.', 'Truncated windows UNKNOWN, never COLD. Pregrad watch-selected.', 'Conversion uses first retained qualifying exact-pool frame; no inferred launch time.', 'No PnL/ATH/outcomes, no trading consumer. Freeze cutoff before future outcome research.'])
     result['elapsed_seconds'] = time.monotonic()-started
@@ -111,4 +129,12 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except sqlite3.OperationalError as exc:
+        # A budget-interrupted read must not leave a newly claimed complete state.
+        if str(exc) != 'interrupted':
+            raise
+        print(json.dumps({'status': 'UNKNOWN', 'reason': 'sqlite_3s_budget_exceeded',
+                          'report_written': False}))
+        raise SystemExit(2)
