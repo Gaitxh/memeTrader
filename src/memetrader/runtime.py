@@ -28,6 +28,7 @@ from solders.pubkey import Pubkey
 
 from .runtime_timing import RuntimeTiming
 from .narrative_hold import NarrativeHold
+from .event_clone_shadow import EventCloneShadow
 from .market_api import CoinGeckoDemoPoolClient, GeckoTerminalPoolClient
 from .market_flow import aggregate_market_frames
 from .pool_surface import collect_pumpswap_pool_surface
@@ -1542,6 +1543,7 @@ class Runtime:
             console_settings_path=root / "data" / "web_console" / "console_settings.json",
         )
         self.narrative_hold = NarrativeHold(self) if self.chain_meme_trader_only else None
+        if self.chain_meme_trader_only:self.store._event_clone_shadow = EventCloneShadow(self.store)
         if config["autonomous_search"].get("context_deferred_retry_enabled", False):
             if not self.store.get_kv(self.DEFERRED_CONTEXT_RETRY_ACTIVATED_AT_KEY):
                 self.store.set_kv(self.DEFERRED_CONTEXT_RETRY_ACTIVATED_AT_KEY, iso())
@@ -6623,6 +6625,8 @@ class Runtime:
                 "provider": snapshot.provider, "name": token.name, "symbol": token.symbol,
                 "observed_at": iso(snapshot.observed_at), "recorded_at": iso(now)})
             selected_quotes[token.token_id] = token, snapshot
+        if hasattr(self.store, "_event_clone_shadow"):
+            self.store._event_clone_shadow.freeze_market_set(event, candidates, now)
         status, reason, frozen = freeze_event_candidates(event, candidates, query=query, frozen_at=now)
         if frozen:
             self.store.record_chain_meme_pattern_evidence("", "", frozen["kind"], frozen["payload"],
@@ -7646,6 +7650,7 @@ class Runtime:
         self._remember_pattern_quotes({})
         watch = self._pattern_watch
         self._rank_no_ca_events()
+        if hasattr(self.store, "_event_clone_shadow"):self.store._event_clone_shadow.flush()
         projected = sampled = 0
         chains = sorted({v["token"].chain for v in watch.values()})
         cursor = getattr(self, "_pattern_chain_cursor", 0)

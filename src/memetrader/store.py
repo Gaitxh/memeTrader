@@ -26829,13 +26829,17 @@ class Store:
         if parse_time(observed_at) > recorded:
             return None
         with self._lock, self.db:
-            self.db.execute(
+            inserted = self.db.execute(
                 "INSERT OR IGNORE INTO chain_meme_pattern_evidence("
                 "definition_version,token_id,pair_address,kind,source_key,observed_at,recorded_at,payload_json) "
                 "VALUES(?,?,?,?,?,?,?,?)", (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, token_id,
-                pair_address, kind, source_key, iso(parse_time(observed_at)), iso(recorded), self._json(dict(payload))))
+                pair_address, kind, source_key, iso(parse_time(observed_at)), iso(recorded), self._json(dict(payload)))).rowcount
             row = self.db.execute("SELECT id FROM chain_meme_pattern_evidence WHERE definition_version=? AND kind=? AND source_key=?",
                 (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, kind, source_key)).fetchone()
+            shadow = getattr(self, '_event_clone_shadow', None)
+            if inserted and row and shadow:
+                try:shadow.receive(kind,payload,token_id,pair_address,int(row[0]),recorded)
+                except (KeyError,TypeError,ValueError):shadow.count('INPUT_REJECTED')
             return int(row[0]) if row else None
 
     def record_chain_meme_pattern_narrative(self, record_id: int, sources: list[Observation]) -> list[str]:
@@ -27611,6 +27615,10 @@ class Store:
                     features["wallet_entry_states"][arm] = consumed
                 self.db.execute("INSERT INTO chain_meme_trader_v6_entry_evaluations(definition_version,source_snapshot_id,token_id,evaluated_at,status,entry_family,reason,feature_json) VALUES(?,?,?,?,?,NULL,?,?)",
                     (version, snapshot_id, token.token_id, iso(decision_at), "admitted" if projected else "rejected", observation_reason, self._json(features)))
+                event_shadow = getattr(self, '_event_clone_shadow', None)
+                if event_shadow:
+                    try:event_shadow.frame(token,snapshot,decision_at,features)
+                    except (KeyError,TypeError,ValueError):event_shadow.count('FRAME_REJECTED')
                 self.rediscovery_funnel_hit(token.token_id, observation_reason, decision_at)
                 if any(arm in ready for arm in ('event_reawakening_v1', 'quiet_renewal_v1', 'quiet_renewal_legacy_exit_control_v1')):
                     self.rediscovery_funnel_hit(token.token_id, 'reactivation_ready', decision_at)
