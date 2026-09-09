@@ -1,0 +1,37 @@
+{
+  "reader": "ChatGPT-coordinator-MCP-135-current-chat-not-fresh-UI",
+  "revision": 1,
+  "digest": "7b952841df0be29795c8fc2970f983da87140bbecdad1618f4414290f70b432f",
+  "workspace": "E:\\memeTrader",
+  "codex_session": "01a07b17-8f78-7cb1-bb4f-5d5d15607097",
+  "objective": "Improve strict-forward costed Paper profitability, coverage and runtime; organic and sellable synthetic mechanisms are separate.",
+  "next_action": "Finish135 local adoption then connect119 supported Paper lifecycle; no replay of completed126/133/131/narrative.",
+  "rules": [
+    "Sole existing Codex writer; no new session",
+    "Paper only / Live locked; no reset or history/funding rewrite",
+    "Exact original pool, causal clocks and strictly later execution",
+    "Ordinary Paper4%/4%/1000USD floor; synthetic1U/max1/300s plus exact-pool sell simulation",
+    "Held/SELL priority; no forced trades or extra unbounded requests"
+  ],
+  "completed": [
+    {"id":"126","evidence":"8dda73b","fact":"226/254/255 restored; preserve mandatory pair","status":"COMPLETED","as_of":"2026-09-10"},
+    {"id":"133","evidence":"cb98c07","fact":"9 independent insufficient arms restored; total27 at cutoff","status":"COMPLETED","as_of":"2026-09-10"},
+    {"id":"131","evidence":"0b1e673","fact":"Flat global highwaters implemented and loaded","status":"COMPLETED","as_of":"2026-09-10"},
+    {"id":"narrative130","evidence":"cdda9eb","fact":"UNKNOWN persisted Scout leads can reach later Verifier","status":"COMPLETED","as_of":"2026-09-10"},
+    {"id":"120","evidence":"docs/PROJECT_CONTEXT/CURRENT_TASK_CONTEXT_20260909.md","fact":"Test-temp cleanup DONE; no repeat","status":"COMPLETED","as_of":"2026-09-10"},
+    {"id":"ModeChat132","evidence":"620a37b","fact":"Local backlog, exact receipts, ledger stop guard pushed","status":"COMPLETED","as_of":"2026-09-10"}
+  ],
+  "open_tasks": [
+    {"id":"119","owner":"codex","status":"OPEN","dependencies":[],"next_action":"Connect existing classifier to common Paper; reachable BUILDING needs exact-pool simulation producer; no fabricated surface proof"},
+    {"id":"Pump127","owner":"codex","status":"BLOCKED","next_action":"SOL V2 exact-input fixed-state proof missing; no native funded entry"},
+    {"id":"Pons121","owner":"codex","status":"DATA_BLOCKED","next_action":"Provenance gap; do not repeat broad work"},
+    {"id":"135","owner":"codex","status":"IN_PROGRESS","next_action":"Publish and obtain actual fresh Chat readback; unit/local checks are not browser verification"}
+  ],
+  "evidence_class": "ACTUAL_MCP_FILE_READBACK_CURRENT_CHAT_ONLY",
+  "read_paths": [".modechat/CONTEXT_MANIFEST.md",".modechat/STATE.json",".modechat/CURRENT_TASK.md",".modechat/CONTACT.md"],
+  "verification_limits": ["Not a newly created browser Chat", "No verified Project memory/model selection/Lead rebind", "A changed revision must reject this receipt; do not copy its acknowledgement into a newer revision"],
+  "coverage_findings": [
+    "FAILURE_LESSONS_AND_STRATEGY_CHECKLIST_73.md still contains historical77 keep-S1-closed and115 pause-parent text. Retain its statistical lessons, but label those operational instructions superseded by126/133 at the topic entry.",
+    "USER_RIGHTTAIL_CASES_20260908.md addenda36/38 confirm descriptive16-case and raw-pointer work done, but exact-surface/as-of discrimination and age/date-matched controls remain ACTIVE. Preserve this open business task in the new index without redoing the completed descriptive work or making it a gate before119."
+  ]
+}
