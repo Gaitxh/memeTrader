@@ -4,6 +4,7 @@ Frozen mechanistic buckets, not fitted thresholds or identification of humans.
 Public latest300 has no documented continuation: incomplete windows stay unknown.
 """
 from collections import Counter, OrderedDict
+from datetime import timedelta
 from math import isfinite, sqrt
 import asyncio
 import time
@@ -292,6 +293,25 @@ def classify_amountful(payload, *, token_id, pool, decision_at):
             coverage_start=start, coverage_end=end, complete=True)
     except (KeyError, TypeError, ValueError, OverflowError):
         return unknown('INVALID_AMOUNTFUL_EVIDENCE')
+
+
+def classify_short_page(page, *, token_id, pool, signal_at, decision_at):
+    """Independent prospective 15–60s observed window; never ten-minute proof."""
+    if 'payload' not in page:return unknown(page.get('reason','UNKNOWN_COVERAGE'))
+    rows=normalize_gecko(page['payload'],token_id=token_id,pool=pool,received_at=page['received_at'])
+    try:
+        stamps=[parse_time(r['observed_at']) for r in rows]
+        signal=parse_time(signal_at)
+        if not stamps or stamps!=sorted(stamps,reverse=True):return unknown('UNVERIFIED_ORDER')
+        start=max(signal-timedelta(seconds=60),min(stamps))
+        end=min(signal,max(stamps))
+        if (end-start).total_seconds()<15 or not 0<=(signal-end).total_seconds()<=30:
+            return unknown('SHORT_WINDOW_INSUFFICIENT_OR_STALE')
+        result=classify_page(page,token_id=token_id,pool=pool,window_start=start,
+            window_end=end,decision_at=decision_at)
+        return {**result,'window_contract':'observed_short_15_to_60_seconds_v1',
+            'signal_at':iso(signal),'observed_window_seconds':(end-start).total_seconds()}
+    except (KeyError,TypeError,ValueError):return unknown('INVALID_SHORT_WINDOW_CLOCKS')
 
 
 def classify_page(page, *, token_id, pool, window_start, window_end, decision_at, price_frames=None, sell_simulation=None):

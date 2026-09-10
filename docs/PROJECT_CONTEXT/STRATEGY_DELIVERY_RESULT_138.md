@@ -65,6 +65,30 @@ copied from the old proof. Amountful evidence records current UNKNOWN_RPC
 separately from its original identity proof. No added RPC/scan/rate or target.
 Zero-duration/no-new-signature scans remain incomplete; no timestamps refreshed.
 
+## Shared cohort router and short observed organic experiment
+
+Implemented `cohort_opportunity_router_v1` (5U/max4): current eligible source
+signals resolve in frozen reawakening > clone consensus > organic early order.
+One token has at most one pending/open router opportunity across pools; closed
+positions do not block a genuinely new episode. Mode and source key remain on
+the cohort. Early exits at5m, clone at15m; reawakening uses30m and actual
+half-principal recovery with the existing verified narrative extension. Hard
+exits dominate. Original accounts/policies remain unchanged.
+
+Implemented `organic_short_observed_flow_v1` (2U/max2/5m), using the same
+acquired Gecko page. The frozen observed15–60s interval requires end freshness
+within30s and original exact-pool signed-flow validity. The ten-minute baseline
+can remain UNKNOWN while this independent short window is complete. No extra
+request, silent baseline change, or historical enrollment.
+
+Validation:34 targeted tests passed, including actual Store claim -> common
+safety wait -> strictly later BUY -> mechanical SELL, new episode after close,
+real half recovery -> verified narrative extension -> overriding hard exit,
+and malformed/truncated/future short-window evidence. `git diff --check` passed.
+This is source/test completion, not production registration/load or natural
+profit evidence. The existing process-control denial remains unchanged; no
+bypass/restart attempted. Native ledger/held/handoff work remains outstanding.
+
 Validation: pool-surface and pattern-input files:81 passed,2 failed. Both failures
 were reproduced with unchanged HEAD runtime in memory: the authoritative-event
 fixture expects an old producer result; the empty-capital-quote mock lacks

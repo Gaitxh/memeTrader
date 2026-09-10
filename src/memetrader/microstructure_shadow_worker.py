@@ -200,6 +200,10 @@ class MicrostructureWorker:
                 result=classify_page(page,token_id=item['token_id'],pool=item['pool'],
                     window_start=start,window_end=end,decision_at=utcnow(),price_frames=frames,
                     sell_simulation=item.get('sell_simulation'))
+                if item.get('early') and not item.get('postbuy'):
+                    from .market_microstructure import classify_short_page
+                    result['short_observed']=classify_short_page(page,token_id=item['token_id'],
+                        pool=item['pool'],signal_at=item['requested_at'],decision_at=utcnow())
             except TimeoutError:
                 result=unknown('REQUEST_TIMEOUT')
         now=utcnow()
@@ -263,19 +267,37 @@ class MicrostructureWorker:
               'SYNTHETIC_PENDING_PROOF':'synthetic_fast_harvest_v1'}
         arm=arms.get(route)
         entry['result']['funding_gate']='COMMON_SAFETY_AND_STRICT_NEXT_PENDING' if arm else 'NO_FUNDED_SIGNAL'
+        self._ready_signal(key,item,entry['result'],anchor,now,arm)
+        short=entry['result'].get('short_observed')
+        if short:
+            short={**short,'token_id':item['token_id'],'pool':item['pool'],
+                'recorded_at':entry['result']['recorded_at']}
+            short_route=branch_decision(short,token_id=item['token_id'],pool=item['pool'],
+                frame_observed=anchor['observed_at'],frame_recorded=anchor['recorded_at'],
+                price=anchor.get('price_usd'),liquidity=anchor.get('liquidity_usd'),
+                safety_allow=False,hard_veto=bool(item.get('safety_reject')),
+                surface=anchor.get('surface'),require_safety=False,early=True,
+                pool_age_seconds=(now.timestamp()-item['pool_created_at_ms']/1000) if item.get('pool_created_at_ms') else None)
+            short_arm='organic_short_observed_flow_v1' if short_route=='ORGANIC_EARLY_SHADOW_ELIGIBLE' else None
+            self._ready_signal(key+':short',item,short,anchor,now,short_arm)
+            self.count('short_route:'+short_route)
+            self.shadow.capture(evidence_id=key+':short',evidence=short,token_id=item['token_id'],
+                pool=item['pool'],anchor=anchor,now=now,costs=item['shadow_costs'])
+        entry['result']['branch_limits']=BRANCH_LIMITS
+        self.count('route:'+route)
+        self.shadow.capture(evidence_id=key,evidence=entry['result'],token_id=item['token_id'],
+            pool=item['pool'],anchor=anchor,now=now,costs=item['shadow_costs'])
+        self.anchors.pop(key,None)
+
+    def _ready_signal(self,key,item,evidence,anchor,now,arm):
         if arm and len(self.ready)<32:
             self.ready[key]=dict(token_id=item['token_id'],pool=item['pool'],arm=arm,
                 expires_at=iso(now+timedelta(seconds=60)),signal=dict(
                     episode_id='micro119:'+key,decision_key='micro119:'+key+'|'+arm,
                     selected={'token_id':item['token_id'],'pair_address':item['pool']},
                     observed_at=anchor['observed_at'],recorded_at=anchor['recorded_at'],
-                    decision_evidence=entry['result']))
+                    decision_evidence=evidence))
             self.count('signal:'+arm)
-        entry['result']['branch_limits']=BRANCH_LIMITS
-        self.count('route:'+route)
-        self.shadow.capture(evidence_id=key,evidence=entry['result'],token_id=item['token_id'],
-            pool=item['pool'],anchor=anchor,now=now,costs=item['shadow_costs'])
-        self.anchors.pop(key,None)
 
     def signals_for(self,token_id,pool,now):
         """Repeat the same frozen key while pending; common durable claim dedupes."""

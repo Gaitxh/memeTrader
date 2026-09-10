@@ -27170,6 +27170,16 @@ class Store:
                         (version, p["arm_id"], token.token_id),
                 ).fetchone() is not None:
                     entry_blocked[p["arm_id"]] = "strategy_token_lifetime_entry_consumed"
+                elif p.get("entry_filter", {}).get("single_token_open_or_reserved") and self.db.execute(
+                        "SELECT 1 FROM chain_meme_cohort_enrollment_claims claim "
+                        "JOIN chain_meme_trader_v6_cohorts cohort ON cohort.id=claim.cohort_id "
+                        "LEFT JOIN chain_meme_trader_positions position ON position.definition_version=claim.definition_version "
+                        "AND position.arm_id=claim.arm_id AND position.shadow_cohort_id=claim.cohort_id "
+                        "WHERE claim.definition_version=? AND claim.arm_id=? AND cohort.token_id=? "
+                        "AND claim.terminal_reason IS NULL AND (position.shadow_cohort_id IS NULL OR position.status='open') LIMIT 1",
+                        (version, p["arm_id"], token.token_id),
+                ).fetchone() is not None:
+                    entry_blocked[p["arm_id"]] = "strategy_token_open_or_reserved"
                 elif p.get("entry_filter", {}).get("required_market_surface") == "solana_pumpswap" and (
                         token.chain != "solana" or pair.get("dexId") != "pumpswap"):
                     entry_blocked[p["arm_id"]] = "strategy_market_surface_not_supported"
@@ -27303,7 +27313,41 @@ class Store:
             accepted_cohort_signals = {}
             if cohort_mode:
                 # The separate namespace cannot consume or overwrite old pattern intents.
+                from .cohort_experiments import ROUTER_ARM, routed_cohort_signals
                 candidates = {**previous_features.get("cohort_signals", {}), **dict(cohort_signals)}
+                by_arm = {policy['arm_id']: policy for policy in active}
+
+                def current_source_signal(policy, signal):
+                    selected = signal.get('selected') if isinstance(signal, Mapping) else None
+                    signal_at = signal.get('observed_at') if isinstance(signal, Mapping) else None
+                    captured_at = signal.get('recorded_at') if isinstance(signal, Mapping) else None
+                    evidence = signal.get('decision_evidence') if isinstance(signal, Mapping) else None
+                    origin = evidence.get(policy.get('signal_origin_clock')) if isinstance(evidence, Mapping) and policy.get('signal_origin_clock') else None
+                    return bool(isinstance(selected, Mapping) and signal.get('decision_key') and signal_at and captured_at
+                        and selected.get('token_id') == token.token_id
+                        and canonical_token_address(token.chain, str(selected.get('pair_address') or '')) == pair_address
+                        and parse_time(policy['forward_started_at']) <= parse_time(signal_at) <= parse_time(captured_at) <= decision_at
+                        and 0 <= (decision_at - parse_time(signal_at)).total_seconds() <= 60
+                        and (not policy.get('signal_origin_clock') or origin and parse_time(policy['forward_started_at']) <= parse_time(origin) <= decision_at))
+
+                current_sources = {
+                    arm: signal for arm, signal in dict(cohort_signals).items()
+                    if arm in by_arm and current_source_signal(by_arm[arm], signal)
+                }
+                prior_router = previous_features.get('cohort_signals', {}).get(ROUTER_ARM)
+                router_claimed = bool(prior_router and prior_router.get('decision_key') and self.db.execute(
+                    "SELECT 1 FROM chain_meme_cohort_enrollment_claims c WHERE definition_version=? AND arm_id=? "
+                    "AND decision_key=? AND terminal_reason IS NULL AND NOT EXISTS (SELECT 1 FROM chain_meme_trader_positions p "
+                    "WHERE p.definition_version=c.definition_version AND p.arm_id=c.arm_id AND p.shadow_cohort_id=c.cohort_id) LIMIT 1",
+                    (version, ROUTER_ARM, str(prior_router['decision_key'])),
+                ).fetchone())
+                candidates.pop(ROUTER_ARM, None)
+                if router_claimed:
+                    candidates[ROUTER_ARM] = prior_router
+                else:
+                    routed = routed_cohort_signals(current_sources)
+                    if ROUTER_ARM in routed:
+                        candidates[ROUTER_ARM] = routed[ROUTER_ARM]
                 for policy in active:
                     arm = policy["arm_id"]
                     signal = candidates.get(arm) or {}
@@ -28363,6 +28407,12 @@ class Store:
         decisions = claim_decisions(self.db,version,cohort_id,token_id,filled_at)
         decisions = [d for d in decisions if not synthetic_entry_block(
             self.db,version,str(d['arm_id']),token_id,cohort_id)]
+        single_token = {p['arm_id'] for p in definition['policies']
+                        if p.get('entry_filter', {}).get('single_token_open_or_reserved')}
+        decisions = [d for d in decisions if str(d['arm_id']) not in single_token or not self.db.execute(
+            "SELECT 1 FROM chain_meme_trader_positions WHERE definition_version=? AND arm_id=? "
+            "AND token_id=? AND status='open' AND shadow_cohort_id<>? LIMIT 1",
+            (version, str(d['arm_id']), token_id, cohort_id)).fetchone()]
         if not decisions:return 0
         safety = getattr(self, "_preentry_safety", None)
         self.rediscovery_funnel_hit(token_id, 'safety_stage', filled_at)
@@ -33388,6 +33438,26 @@ class Store:
                 amountful_quote={"evidence_id": evidence_id, "task": dict(task),
                                  "minimum_output_raw": minimum, "net_recovery_usd": recovery})
 
+    def _cohort_router_exit_policy(self, policy: Mapping[str, Any], position: Mapping[str, Any]) -> dict[str, Any]:
+        """Apply the frozen router mode recorded on this position's cohort."""
+        result = dict(policy)
+        profiles = result.get('router_exit_profiles')
+        if not isinstance(profiles, Mapping):
+            return result
+        cohort = self.db.execute(
+            "SELECT feature_json FROM chain_meme_trader_v6_cohorts WHERE id=?",
+            (int(position['shadow_cohort_id']),),
+        ).fetchone()
+        signal = self._json_object(cohort['feature_json']).get('cohort_signals', {}).get(position['arm_id'], {}) if cohort else {}
+        mode = (signal.get('decision_evidence') or {}).get('router_mode') if isinstance(signal, Mapping) else None
+        profile = profiles.get(mode)
+        if not isinstance(profile, Mapping):
+            return result
+        return {**result, **profile, 'entry_filter': {
+            **dict(result.get('entry_filter') or {}),
+            **dict(profile.get('entry_filter') or {}),
+        }}
+
     def _settle_chain_meme_trader_market_exit(
         self, *, version: str, mark_id: int, completed_at: str,
         definition: Mapping[str, Any],
@@ -33429,6 +33499,7 @@ class Store:
             ),
             {},
         )
+        policy = self._cohort_router_exit_policy(policy, position)
         if str(mark["action"]) == "RUG_EXIT":
             evidence = self._json_object(mark["trigger_evidence_json"])
             if not evidence.get("terminal_dust_pool"):
@@ -34183,6 +34254,7 @@ class Store:
                     continue
                 arm_id = str(position["arm_id"])
                 policy = policies.get(arm_id) or {}
+                policy = self._cohort_router_exit_policy(policy, position)
                 if position["pending_mark_id"] is None:
                     self._advance_chain_meme_staged_probe(position, policy, current)
                 elapsed = max(

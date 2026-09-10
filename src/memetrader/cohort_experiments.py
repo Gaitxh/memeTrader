@@ -69,6 +69,13 @@ PASSIVE_HISTORY_PER_TOKEN = 3
 PASSIVE_MAX_EPISODES = 5
 PASSIVE_EPISODE_TTL_SECONDS = 600.0
 
+ROUTER_ARM = "cohort_opportunity_router_v1"
+ROUTER_SOURCES = (
+    ("organic_reawakening_flow_v1", "reawakening", "signal_at"),
+    ("clone_consensus_leader_v2", "clone", "frozen_at"),
+    ("organic_early_flow_v1", "early", "signal_at"),
+)
+
 
 def cohort_experiment_policies() -> list[dict[str, Any]]:
     """Independent forward Paper policies; all use common safety and settlement."""
@@ -158,18 +165,39 @@ def cohort_experiment_policies() -> list[dict[str, Any]]:
         policies.append(policy)
     #136: reuse this exact cohort/next-frame pipeline, not a parallel trader.
     from .market_microstructure import BRANCH_LIMITS
-    for arm in ('organic_early_flow_v1','organic_reawakening_flow_v1',
+    for arm in ('organic_early_flow_v1','organic_short_observed_flow_v1','organic_reawakening_flow_v1',
                 'event_clone_narrative_reawakening_v1'):
         policy=copy.deepcopy(policies[2])
-        limit=BRANCH_LIMITS.get(arm,dict(stake_usd=5,max_open=4))
+        limit=BRANCH_LIMITS.get(arm,dict(stake_usd=2,max_open=2) if arm=='organic_short_observed_flow_v1' else dict(stake_usd=5,max_open=4))
         policy.update(arm_id=arm,canonical_id=arm,name=arm,entry_family=arm,
             notional_usd=limit['stake_usd'],paired_opportunity_group=arm,
             paired_opportunity_semantics='independent_frozen_episode_no_funded_duplicate_control',
             description='严格前向独立Paper假设；已有原池市场帧、共同安全门和后帧成交，不代表已证明盈利。',
-            max_hold_minutes=15.0 if arm=='organic_early_flow_v1' else 30.0)
+            max_hold_minutes=5.0 if arm=='organic_short_observed_flow_v1' else 15.0 if arm=='organic_early_flow_v1' else 30.0)
         policy['entry_filter']={'direction':arm,'max_concurrent_positions':limit['max_open']}
+        if arm == 'organic_short_observed_flow_v1':
+            policy.update(description='同一Gecko原池页面内15–60秒完整短观察窗口的有机净流；不能冒充10分钟覆盖；2U/最多2仓/5分钟机械退出。')
+            policy['entry_filter'].update(window_min_seconds=15, window_max_seconds=60,
+                                          window_end_max_age_seconds=30)
         policy['signal_origin_clock']='event_recorded_at' if arm=='event_clone_narrative_reawakening_v1' else 'signal_at'
         policies.append(policy)
+    router=copy.deepcopy(policies[2])
+    router.update(arm_id=ROUTER_ARM,canonical_id=ROUTER_ARM,name=ROUTER_ARM,
+        entry_family=ROUTER_ARM,notional_usd=5.0,paired_opportunity_group=ROUTER_ARM,
+        paired_opportunity_semantics='one_router_position_per_token_from_prioritized_frozen_regime_signal',
+        source_arm_ids=[source for source,_,_ in ROUTER_SOURCES],signal_origin_clock='router_source_origin_at',
+        max_hold_minutes=5.0,
+        description='共享多场景机会路由；同一策略同一Token仅一仓，复苏优先于clone再优先于早期，严格后帧Paper成交。',
+        router_exit_profiles={
+            'early': {'max_hold_minutes':5.0},
+            'clone': {'max_hold_minutes':15.0},
+            'reawakening': {'max_hold_minutes':30.0,
+                'dynamic_principal_recovery':'minimum_net_debit_keep_half_next_frame/v3',
+                'entry_filter':{'narrative_hold_v2':True}},
+        })
+    router['entry_filter']={'direction':ROUTER_ARM,'max_concurrent_positions':4,
+                            'single_token_open_or_reserved':True}
+    policies.append(router)
     for source,arm in (('event_clone_narrative_reawakening_v1','event_recovered_narrative_runner_v1'),
                        ('organic_reawakening_flow_v1','organic_reawakening_recovered_runner_v1')):
         policy=copy.deepcopy(next(p for p in policies if p['arm_id']==source))
@@ -207,6 +235,28 @@ def recovered_signal_aliases(signals):
             signal=copy.deepcopy(signals[source])
             signal['decision_key']=signal['decision_key']+'|'+arm
             result[arm]=signal
+    return result
+
+
+def routed_cohort_signals(signals: Mapping[str, Any]) -> dict[str, Any]:
+    """Alias one frozen source signal to the shared router by fixed priority."""
+    result = dict(signals)
+    for source, mode, origin_clock in ROUTER_SOURCES:
+        raw = signals.get(source)
+        if not isinstance(raw, Mapping):
+            continue
+        signal = copy.deepcopy(dict(raw))
+        decision_key = signal.get('decision_key')
+        if not decision_key:
+            continue
+        evidence = dict(signal.get('decision_evidence') or {})
+        evidence.update(router_source_arm=source, router_mode=mode,
+                        router_source_origin_at=evidence.get(origin_clock),
+                        router_source_origin_clock=origin_clock)
+        signal.update(decision_key=str(decision_key)+'|'+ROUTER_ARM,
+                      decision_evidence=evidence)
+        result[ROUTER_ARM] = signal
+        break
     return result
 
 
@@ -1148,7 +1198,7 @@ __all__ = [
     "RELATIVE_RESILIENCE_POLICY", "CLONE_HANDOFF_POLICY",
     "PASSIVE_RELATIVE_RESILIENCE_POLICY", "PASSIVE_MAX_TOKENS",
     "PASSIVE_HISTORY_PER_TOKEN", "PASSIVE_MAX_EPISODES",
-    "cohort_experiment_policies", "freeze_clone_episode",
+    "cohort_experiment_policies", "routed_cohort_signals", "freeze_clone_episode",
     "evaluate_clone_leader_entry", "evaluate_clone_consensus_leader_entry",
     "evaluate_relative_resilience_round",
     "evaluate_relative_resilience_entry", "evaluate_clone_handoff_round",

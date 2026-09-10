@@ -11,6 +11,7 @@ RECOVERED_NARRATIVE_ARMS=(
     ARM,
     'event_recovered_narrative_runner_v1',
     'organic_reawakening_recovered_runner_v1',
+    'cohort_opportunity_router_v1',
 )
 
 def pending_scout_leads(case, cutoff):
