@@ -48,3 +48,26 @@ The prior process-control tool request was denied before execution. This stage
 does not retry or bypass that denial. New source load and natural acceptance
 remain unverified; source work is not blocked by that separate boundary.
 No production ledger, funding, history, Live setting, or watch request changed.
+
+## SOL arithmetic identity versus current safety
+
+Root bounded readback confirms prior exact-pool proof282572: RESOLVED,
+base/quote decimals6/9, slot445768159 at02:18:57.948241Z. Later282835
+at02:22:45.207298Z is RPC timeout with null decimals. This verifies that a
+transport failure, rather than contradictory identity, erased arithmetic inputs.
+
+The surface collector now hashes its acquired pool/base-mint/quote-mint
+bundle. Runtime retains only identity/decimals, original receipt clocks/hash and
+evidence ID for at most600 seconds and only while the pool remains selected.
+Only UNKNOWN_RPC can reuse that proof; identity failure, changed target, expiry
+or missing prior proof fails closed. Current reserves/custody/safety are never
+copied from the old proof. Amountful evidence records current UNKNOWN_RPC
+separately from its original identity proof. No added RPC/scan/rate or target.
+Zero-duration/no-new-signature scans remain incomplete; no timestamps refreshed.
+
+Validation: pool-surface and pattern-input files:81 passed,2 failed. Both failures
+were reproduced with unchanged HEAD runtime in memory: the authoritative-event
+fixture expects an old producer result; the empty-capital-quote mock lacks
+due_direct_lp_entry_preflight_quote. Neither is on the changed flow path; no
+unrelated fix included. New timeout/identity/expiry/contradiction and actual
+adjacent-flow tests passed. Source only; runtime/natural acceptance pending.

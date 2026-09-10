@@ -6017,6 +6017,8 @@ class Runtime:
         cache = {k: v for k, v in getattr(self, "_pattern_surface_cache", {}).items() if k in active}
         retry = {k: v for k, v in getattr(self, "_pattern_surface_retry", {}).items() if k in active}
         self._pattern_surface_cache, self._pattern_surface_retry = cache, retry
+        identities={k:v for k,v in getattr(self,'_pattern_flow_identities',{}).items() if k in active}
+        self._pattern_flow_identities=identities
         now = asyncio.get_running_loop().time()
         if now < getattr(self, "_pattern_surface_next_at", 0):
             return
@@ -6040,6 +6042,10 @@ class Runtime:
             "pool_surface", surface, observed_at=surface["observed_at"],
             source_key=f"{address}:{surface['recorded_at']}")
         cache[address] = {**surface, "evidence_id": evidence_id, "recorded_at": iso(utcnow())}
+        from .pool_surface import flow_identity
+        identity=flow_identity(cache[address],pool,utcnow(),identities.get(address))
+        if identity:identities[address]=identity
+        else:identities.pop(address,None)
         if surface.get("complete") is True:
             await self._chain_meme_active_idle().wait()
             await self._chain_meme_pattern_origin_once(pool)
@@ -6208,6 +6214,11 @@ class Runtime:
                 "pool_address": address, "base_mint": pool["base_mint"], "quote_mint": pool["quote_mint"],
                 "base_decimals": surface.get("base_decimals"), "quote_decimals": surface.get("quote_decimals"),
                 "observed_at": surface.get("observed_at"), "recorded_at": surface.get("recorded_at")}
+            if surface.get('status')=='UNKNOWN_RPC':
+                from .pool_surface import flow_identity
+                identity=flow_identity(surface,pool,parse_time(received),
+                    getattr(self,'_pattern_flow_identities',{}).get(address))
+                if identity:resolver=identity
             conversion, conversion_basis = None, None
             if pool["quote_mint"] == SOLANA_USDC_MINT:
                 conversion = {"quote_mint": SOLANA_USDC_MINT, "usd_per_quote": 1.0,
@@ -6232,6 +6243,9 @@ class Runtime:
                 "observed_at": scan.get("observed_at", scan["completed_at"]), "recorded_at": received,
                 "source_evidence_ids": [w["evidence_id"] for w in windows[address]],
                 "surface_evidence_id": surface.get("evidence_id"), "conversion_basis": conversion_basis,
+                "identity_evidence_id": resolver.get('evidence_id'),
+                "identity_bundle_sha256": resolver.get('identity_bundle_sha256'),
+                "current_surface_status": surface.get('status'),
                 "conversion_is_execution_evidence": False,
                 "creator_identity_kind": "token_creator" if creator else None,
                 "creator_identity_verified": bool(creator),

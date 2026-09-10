@@ -8,6 +8,8 @@ never equates missing holder accounts, PDA custody, or zero supply with a lock.
 from __future__ import annotations
 
 import base64
+import hashlib
+import json
 from collections import defaultdict
 from typing import Any, Mapping
 
@@ -20,6 +22,34 @@ from .models import iso, parse_time, utcnow
 
 ASSOCIATED_TOKEN_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
 TOKEN_PROGRAMS = {SPL_TOKEN_PROGRAM_ID, SPL_TOKEN_2022_PROGRAM_ID}
+
+
+def flow_identity(surface, candidate, now, previous=None):
+    """Arithmetic identity only; never reuse mutable reserves or custody.
+
+    A transport failure may retain a verified identity for ten minutes while
+    the pool remains selected. A contradictory/undecodable response clears it.
+    Original proof clocks and bundle hash are never refreshed on failure.
+    """
+    fields=("pool_address", "base_mint", "quote_mint")
+    if surface.get("status")=="UNKNOWN_RPC":
+        proof=previous or {}
+        if proof.get('status')!='verified':return {}
+    elif surface.get("complete") is True:
+        proof={k:surface.get(k) for k in (*fields,"base_decimals","quote_decimals",
+            "observed_at","recorded_at","slot","identity_bundle_sha256","evidence_id")}
+    else:
+        return {}
+    try:
+        if (any(not candidate.get(k) or proof.get(k)!=candidate[k] for k in fields)
+            or any(type(proof.get(k)) is not int or not 0<=proof[k]<=18 for k in ("base_decimals","quote_decimals"))
+            or not proof.get("identity_bundle_sha256")
+            or not parse_time(proof['observed_at'])<=parse_time(proof['recorded_at'])<=now
+            or (now-parse_time(proof['observed_at'])).total_seconds()>600):
+            return {}
+    except (KeyError,TypeError,ValueError):
+        return {}
+    return {**proof,"status":"verified","identity_only":True,"max_age_seconds":600}
 
 
 def _pda(seeds, program=PUMP_AMM_PROGRAM_ID):
@@ -242,6 +272,10 @@ async def collect_pumpswap_pool_surface(collector, candidate: Mapping[str, Any])
             observed_at=received, recorded_at=received, decision_at=received, slot=slot,
             lp_holder_addresses=addresses, holder_scan_complete=holder_complete, holder_scan_slot=holder_slot)
         out.update(rpc_count=rpc_count, rpc_provenance=provenance, holder_rpc_error=holder_error)
+        if out.get('complete') is True:
+            identity_accounts={k:v for k,v in zip(keys,bundle['value'])
+                if k in (candidate['pool_address'],pool['base_mint'],pool['quote_mint'])}
+            out['identity_bundle_sha256']=hashlib.sha256(json.dumps(identity_accounts,sort_keys=True).encode()).hexdigest()
         return out
     except Exception as exc:
         received = iso(utcnow())

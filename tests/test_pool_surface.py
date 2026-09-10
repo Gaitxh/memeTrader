@@ -16,6 +16,27 @@ from memetrader.pool_surface import (ASSOCIATED_TOKEN_PROGRAM, classify_pumpswap
 NOW = "2026-09-05T12:00:00Z"
 
 
+def test_flow_identity_timeout_keeps_only_bounded_original_proof():
+    from datetime import timedelta
+    from memetrader.models import parse_time
+    from memetrader.pool_surface import flow_identity
+    at=parse_time(NOW)
+    pool=dict(pool_address='pool',base_mint='base',quote_mint='quote')
+    surface=dict(**pool,complete=True,status='RESOLVED',base_decimals=6,quote_decimals=9,
+        slot=1,observed_at=NOW,recorded_at=NOW,identity_bundle_sha256='a'*64,
+        evidence_id=12,base_vault_raw=123,lp_custody_status='OBSERVED_COMPLETE')
+    proof=flow_identity(surface,pool,at)
+    timeout=dict(status='UNKNOWN_RPC',complete=False)
+    assert flow_identity(timeout,pool,at+timedelta(seconds=240),proof)==proof
+    assert 'base_vault_raw' not in proof and 'lp_custody_status' not in proof
+    assert not flow_identity(timeout,pool,at+timedelta(seconds=601),proof)
+    assert not flow_identity(timeout,pool,at,None)
+    assert not flow_identity(dict(status='UNKNOWN_IDENTITY'),pool,at,proof)
+    assert not flow_identity(timeout,{**pool,'base_mint':'other'},at,proof)
+    assert not flow_identity({**surface,'base_mint':'other'},pool,at,proof)
+    assert not flow_identity({**surface,'recorded_at':(at+timedelta(seconds=1)).isoformat()},pool,at)
+
+
 def key():
     return str(Pubkey.new_unique())
 

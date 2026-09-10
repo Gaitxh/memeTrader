@@ -617,7 +617,8 @@ def test_scan_preserves_block_frontier_and_actual_local_receipts():
     asyncio.run(scenario())
 
 
-def test_runtime_amountful_flow_requires_real_adjacent_scans_and_reference_time(tmp_path, monkeypatch):
+@pytest.mark.parametrize('identity_timeout',[False,True])
+def test_runtime_amountful_flow_requires_real_adjacent_scans_and_reference_time(tmp_path, monkeypatch,identity_timeout):
     from memetrader.collectors import SOLANA_WRAPPED_SOL_MINT
     runtime = Runtime.__new__(Runtime)
     runtime.store = Store(tmp_path / "flow-inputs.sqlite3", initial_cash_usd=1000)
@@ -632,6 +633,12 @@ def test_runtime_amountful_flow_requires_real_adjacent_scans_and_reference_time(
                    observed_at=iso(now - timedelta(seconds=5)), recorded_at=iso(now - timedelta(seconds=4)),
                    evidence_id=123, pool_creator="not_token_creator")
     runtime._pattern_surface_cache = {"pool": surface}
+    if identity_timeout:
+        from memetrader.pool_surface import flow_identity
+        candidate=runtime._pattern_pool_targets['pool']
+        proof=flow_identity({**surface,**candidate,'slot':10,'identity_bundle_sha256':'a'*64},candidate,now)
+        runtime._pattern_flow_identities={'pool':proof}
+        runtime._pattern_surface_cache={'pool':dict(status='UNKNOWN_RPC',complete=False,evidence_id=124)}
     runtime._pattern_origin_cache = {"pool": dict(
         status="verified", creator_address="token-creator",
         creator_identity_kind="token_creator", creator_identity_verified=True,
@@ -672,6 +679,10 @@ def test_runtime_amountful_flow_requires_real_adjacent_scans_and_reference_time(
             now += timedelta(seconds=1)
         assert [row["complete"] for row in outcomes] == [False, True, False, False]
         second = outcomes[1]
+        if identity_timeout:
+            assert second['current_surface_status']=='UNKNOWN_RPC'
+            assert second['surface_evidence_id']==124 and second['identity_evidence_id']==123
+            assert second['resolver']['recorded_at']==surface['recorded_at']
         assert second["buy_quote_notional"] == 2 and second["buy_quote_notional_usd"] == 300
         assert second["repeat_buyer_notional_share"] == 1
         assert second["creator_sell_quote_notional_raw"] == 1_000_000_000
