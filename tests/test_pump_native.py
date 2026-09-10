@@ -13,6 +13,64 @@ def curve():
 
 def global_config():return dict(status='verified',fee_basis_points=95,creator_fee_basis_points=30)
 
+
+def fixed137():
+    # Independent deployed-program simulation, slot445751903 (real Rent sysvar).
+    return dict(status='verified',virtual_token_reserves_raw=810333883706620,
+        virtual_quote_reserves_raw=39724366306,real_token_reserves_raw=530433883706620,
+        real_quote_reserves_raw=9724366306,token_total_supply_raw=10**15,complete=False,
+        is_mayhem_mode=False,is_cashback_coin=False,quote_mint='11111111111111111111111111111111',
+        creator=SOL)
+
+
+def fee137():
+    return dict(status='verified',fee_tiers=[dict(market_cap_lamports_threshold=0,
+        fees=dict(protocol_fee_bps=95,creator_fee_bps=30))])
+
+
+@pytest.mark.parametrize('budget,net,tokens,recovery',[
+    (10000000,9876542,201420619915,9753083),
+    (30000000,29629629,603961714185,29259257),
+    (100000000,98765431,2009710712819,97530861),
+    (76222005257,75280992845,530433883702790,74339980432),
+    (76222005258,75280992846,530433883705224,74339980433)])
+def test_independent_deployed_v2_fixedstate(budget,net,tokens,recovery):
+    from memetrader.pump_native import pump_sol_exact_input_quote_v2
+    from memetrader.collectors import pump_bonding_curve_sell_quote_v1
+    c=fixed137();original=deepcopy(c)
+    q=pump_sol_exact_input_quote_v2(quote_budget_raw=budget,slippage_bps=0,
+        bonding_curve=c,global_config=global_config(),fee_config=fee137())
+    assert (q['curve_quote_in_raw'],q['token_amount_raw'])==(net,tokens)
+    assert q['actual_quote_cost_raw']<=budget and c==original
+    for key,delta in [('virtual_token_reserves_raw',-tokens),('real_token_reserves_raw',-tokens),
+                      ('virtual_quote_reserves_raw',net),('real_quote_reserves_raw',net)]:c[key]+=delta
+    sell=pump_bonding_curve_sell_quote_v1(token_amount_raw=tokens,slippage_bps=0,
+        bonding_curve=c,global_config=global_config(),fee_config=fee137())
+    assert sell['min_quote_raw']==recovery
+
+
+@pytest.mark.parametrize('mode',['cap','cashback','mayhem','quote','fee'])
+def test_exact_subset_rejects_unproved_state(mode):
+    from memetrader.pump_native import pump_sol_exact_input_quote_v2
+    c=fixed137();f=fee137();budget=10000000
+    if mode=='cap':budget=76222005259  # Actual deployed error6021, not a refund.
+    if mode=='cashback':c['is_cashback_coin']=True
+    if mode=='mayhem':c['is_mayhem_mode']=True
+    if mode=='quote':c['quote_mint']='USDC'
+    if mode=='fee':f['fee_tiers'][0]['fees']['protocol_fee_bps']=96
+    with pytest.raises(ValueError):
+        pump_sol_exact_input_quote_v2(quote_budget_raw=budget,slippage_bps=400,
+            bonding_curve=c,global_config=global_config(),fee_config=f)
+
+
+def test_supported_subset_reaches_existing_unfunded_frame():
+    now,frame,ref=sample();frame.update(curve_state=fixed137(),fee_config=fee137())
+    e=native_economic_frame(frame,ref,now=now)
+    assert e['status']=='OBSERVED_SHADOW' and e['decision_eligible'] is False
+    assert 0<e['roundtrip_recovery_usd']<5
+    assert e['transaction_fees']=='UNKNOWN_NETWORK_RENT_NOT_INCLUDED'
+    assert e['safety_status']=='UNKNOWN_TOKEN_CONTROLS_NOT_ACQUIRED'
+
 def test_frozen_sdk136_integer_example():
     q=buy(quote_budget_raw=100_000_000,slippage_bps=400,bonding_curve=curve(),global_config=global_config(),fee_config=None)
     assert q['token_amount_raw']==89_887_639_539
