@@ -169,11 +169,15 @@ def buy(store, plan, *, now=None):
             sell_fee_reserve_raw=budget['sell_network_fee_reserved_raw'],entry_rate=rate,entry_slot=f['slot'],last_slot=f['slot'],last_recorded_at=iso(now),
             high_value_usd=stake,mark=None,exit_intent=None,safety_status='NATIVE_CONTROLS_AND_SELLBACK_VERIFIED')
         store.db.execute('INSERT INTO chain_meme_native_positions VALUES(?,?,?,?,?,?)',(version,cohort,f['token_id'],f['curve_address'],key,dumps(state)))
+        flow=getattr(store,'_cohort_flow',None)
+        if flow is not None:
+            flow.admit(version,cohort,f['token_id'],f['curve_address'],[ARM],now)
         if gate is not None:
             gate.record(dict(version=version,token_id=f['token_id'],pool=f['curve_address'],cohort_id=cohort,
                 snapshot_id=0,notional=5,requested_at=trigger['recorded_at']), 'BUY_AUTHORIZED_NATIVE_PROTOCOL',
                 dict(status='PASS_NATIVE_PROTOCOL',allow=True,source_at=f['recorded_at'],reasons=[],
                     native_receipt_id=receipt_id,execution_model=MODEL,not_a_safety_guarantee=True))
+        if flow is not None:flow.hit(version,cohort,'BUY',now,ARM)
         return 'BOUGHT'
 
 
@@ -261,6 +265,8 @@ def apply_curve_quote(store, target, quote, fee, reference, *, now=None):
                     sell_fee_reserve_raw=s['sell_fee_reserve_raw'] if partial else 0,mark=None,
                     rent_locked_usd_at_cost=s['rent_locked_usd_at_cost']+new_rent,
                     rent_locked_raw=s['rent_locked_raw']+int(fee.get('setup_rent_raw',0)));result='PARTIAL_SOLD' if partial else 'SOLD'
+                flow=getattr(store,'_cohort_flow',None)
+                if flow is not None:flow.hit(version,cohort,'PARTIAL_SELL' if partial else 'TERMINAL_SELL',now,ARM)
             else:
                 reason=('hard_stop' if net<=float(row['stake_usd'])*.8 else
                     'trailing' if s['high_value_usd']>=float(row['stake_usd'])*1.3 and net<=s['high_value_usd']*.85 else

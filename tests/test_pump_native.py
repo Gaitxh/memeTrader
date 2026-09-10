@@ -80,7 +80,10 @@ def test_capacity_producer_uses_same_bundle_and_legacy_amount_is_unchanged(monke
             assert actual['remaining_amount_raw']==target['remaining_amount_raw']
             assert actual['quoted_amount_raw']<int(target['remaining_amount_raw']) and actual['protocol_fee_bps']==139
             assert actual['context_slot']==100 and actual['native_curve_state']==curve_state
-    asyncio.run(run());assert len(calls)==2
+            exhausted=(await c.bonding_curve_quotes([dict(target,native_capacity_exit=True,
+                native_sold_quote_raw=actual['real_reserve_coverage_raw'],native_sold_token_raw=actual['quoted_amount_raw'])]))[0]
+            assert exhausted['status']=='LOCAL_NO_DIRECT_CAPACITY' and exhausted['reason']=='native_capacity_budget_exhausted'
+    asyncio.run(run());assert len(calls)==3
 
 
 def test_native_cash_budget_reserves_both_actual_fees_and_never_refunds_rent():

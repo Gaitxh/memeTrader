@@ -4129,7 +4129,7 @@ class SolanaHeldAccountCollector:
                     reason = str(exc)
                     status = (
                         "LOCAL_NO_DIRECT_CAPACITY"
-                        if reason in {"insufficient_real_quote_reserves", "bonding_curve_complete_migrated"}
+                        if reason in {"insufficient_real_quote_reserves", "bonding_curve_complete_migrated", "native_capacity_budget_exhausted"}
                         else "LOCAL_UNKNOWN_MATH"
                     )
                     results.append({

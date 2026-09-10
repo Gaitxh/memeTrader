@@ -130,7 +130,7 @@ class CohortFlow:
 
     def snapshot(self):
         with self.lock:
-            return dict(started_at=iso(self.started),scope='common market Paper cohorts admitted in this process',
+            return dict(started_at=iso(self.started),scope='common market and native Paper cohorts admitted in this process',
                 unit='unique cohort per stage; per-arm figures must not be summed',counts=dict(self.counts),
                 by_arm={a:dict(v) for a,v in self.by_arm.items()},
                 admission_windows={k:dict(v) for k,v in self.windows.items()},
@@ -138,4 +138,4 @@ class CohortFlow:
                 retained_cohorts=len(self.members),limit=2048,ttl_seconds=21600,evicted=self.evicted,
                 unlinked_receipts=dict(self.unlinked),recent=list(self.recent),
                 unknown=['pre-admission signals without later frame','discovery-to-signal association',
-                    'native/legacy non-market entry and exit paths','old/expired cohorts'],decision_eligible=False,affects='none')
+                    'legacy non-market entry and exit paths','old/expired cohorts'],decision_eligible=False,affects='none')

@@ -25,7 +25,10 @@ def setup(tmp_path,monkeypatch):
     store=Store(tmp_path/'native138.sqlite3',initial_cash_usd=1000)
     store.activate_chain_meme_trader_funded_period();register(store)
     from memetrader.preentry_safety import PreentrySafety
+    from memetrader.rediscovery_funnel import CohortFlow
+    monkeypatch.setattr('memetrader.rediscovery_funnel.utcnow',lambda:clock[0])
     store._preentry_safety=PreentrySafety(store,SimpleNamespace(config={}))
+    store._cohort_flow=CohortFlow()
     token=TokenCandidate('solana',SOL,'native fixture','N');store.upsert_token(token)
     clock[0]+=timedelta(seconds=1);trigger_at=clock[0]
     clock[0]+=timedelta(seconds=1);now=clock[0]
@@ -68,6 +71,8 @@ def test_real_plan_common_cash_runtime_held_sell_idempotence(tmp_path,monkeypatc
     before=store.db.execute('SELECT count(*) FROM chain_meme_trader_trades').fetchone()[0]
     assert buy(store,p,now=clock[0])=='BOUGHT'
     assert buy(store,p,now=clock[0])=='ALREADY_CONSUMED'
+    assert store._cohort_flow.snapshot()['by_arm'][ARM]['BUY']==1
+    assert store._cohort_flow.snapshot()['by_arm'][ARM]['SAFETY_AUTHORIZED']==1
     assert store.db.execute("SELECT count(*) FROM chain_meme_pattern_evidence WHERE source_key LIKE '%:BUY_AUTHORIZED_NATIVE_PROTOCOL'").fetchone()[0]==1
     pos=dict(store.db.execute('SELECT * FROM chain_meme_trader_positions WHERE arm_id=?',(ARM,)).fetchone())
     assets=account_assets(store.db,store.CHAIN_MEME_TRADER_ACTIVE_VERSION,clock[0])
@@ -103,6 +108,7 @@ def test_real_plan_common_cash_runtime_held_sell_idempotence(tmp_path,monkeypatc
     clock[0]+=timedelta(seconds=2);slot[0]+=1
     target=targets(store)[0];asyncio.run(runtime._native_held_once(target))
     assert targets(store)==[]
+    assert store._cohort_flow.snapshot()['by_arm'][ARM]['TERMINAL_SELL']==1
     closed=store.db.execute('SELECT * FROM chain_meme_trader_positions WHERE arm_id=?',(ARM,)).fetchone()
     assert closed['status']=='closed' and closed['amount_raw']=='0'
     flows=store.db.execute('SELECT SUM(net_cash_flow_usd),SUM(realized_pnl_usd),count(*) FROM chain_meme_trader_trades WHERE arm_id=?',(ARM,)).fetchone()
@@ -187,6 +193,7 @@ def test_capacity_partial_runtime_cash_restart_and_later_close(tmp_path,monkeypa
     assert 0<remaining<initial_raw and fee_amounts[-1]==initial_raw-remaining
     assert partial['state']['mark'] is None and partial['state']['exit_intent']
     assert partial['state']['curve_gross_sold_raw']==8_000_000
+    assert store._cohort_flow.snapshot()['by_arm'][ARM]['PARTIAL_SELL']==1
     row=store.db.execute('SELECT * FROM chain_meme_trader_positions WHERE arm_id=?',(ARM,)).fetchone()
     assert row['allocated_cost_usd']==pytest.approx(row['stake_usd']*(initial_raw-remaining)/initial_raw)
     assert row['realized_pnl_usd']==pytest.approx(row['realized_proceeds_usd']-row['allocated_cost_usd'])
