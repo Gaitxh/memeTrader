@@ -1659,6 +1659,7 @@ class Runtime:
         *,
         fresh: bool = False,
         high_priority: bool = False,
+        feature_only148: dict[str, str] | None = None,
     ) -> dict[str, tuple[TokenCandidate, TokenSnapshot]] | None:
         """Share Dex cooldowns; None defers held work without claiming an HTTP result."""
         loop = asyncio.get_running_loop()
@@ -1698,8 +1699,15 @@ class Runtime:
             if self._dex_quote_backoff_until <= loop.time():
                 self._dex_quote_failure_streak = 0
                 self._dex_quote_backoff_until = 0.0
+            if feature_only148:
+                manager = getattr(self, '_shared_batch148', None)
+                if manager is not None:
+                    quoted = manager.response(quoted, feature_only148, utcnow(), DexScreenerClient._snapshot)
             if getattr(self, "chain_meme_trader_only", False):
-                self._remember_pattern_quotes(quoted)
+                if feature_only148:
+                    self._remember_pattern_quotes(quoted, feature_only148=feature_only148)
+                else:
+                    self._remember_pattern_quotes(quoted)
             return quoted
 
     async def solana_holder_shadow_once(self) -> None:
@@ -7527,9 +7535,13 @@ class Runtime:
             error_detail=f"targets={len(targets)};refreshed={refreshed}",
         )
 
-    def _remember_pattern_quotes(self, quoted: dict) -> None:
+    def _remember_pattern_quotes(self, quoted: dict, *, feature_only148: dict | None = None) -> None:
         """Bounded passive watch: reuse discovery/held/flat quotes, no I/O here."""
         current = utcnow()
+        from .shared_batch148 import SharedBatchCoverage
+        if not hasattr(self, '_shared_batch148'):
+            self._shared_batch148 = SharedBatchCoverage()
+        feature_only148 = dict(feature_only148 or {})
         from .observation_leases145 import admit as lease_admit,replaceable_early,account_windows
         if quoted and hasattr(self, "_cohort_started_at"):
             if not hasattr(self, "_cohort_batches"):
@@ -7542,12 +7554,15 @@ class Runtime:
                 self._cohort_dropped_quotes = (
                     getattr(self, "_cohort_dropped_quotes", 0) + dropped_quotes
                 )
-            self._cohort_batches.append((current, list(quoted.values())[:200]))
+            values = list(quoted.values())[:200]
+            self._cohort_batches.append((current, values, feature_only148) if feature_only148 else (current, values))
             if hasattr(self, "runtime_timing"):
                 self.runtime_timing.observe_passive_queue(
                     depth=len(self._cohort_batches),
                     oldest_received_at=self._cohort_batches[0][0],
                     enqueued=True, dropped_quotes=dropped_quotes)
+        # Transport-owned tags, never provider raw_json, delimit feature-only work.
+        quoted = {k: value for k, value in quoted.items() if k not in feature_only148}
         held = getattr(self, "_pattern_held_tokens", set())
         from .reactivation_watch import eligible as probe_eligible, victim as probe_victim, LEASE_SECONDS
         store = getattr(self, 'store', None)
@@ -7753,6 +7768,10 @@ class Runtime:
                     occupied[slot] = occupied.get(slot, 0) + 1
                     chain_used[chain] = chain_used.get(chain, 0) + 1
             finally:
+                if reason in ('skip_bucket_full', 'skip_chain_full'):
+                    self._shared_batch148.offer(token, snapshot, current,
+                        floor=getattr(self, '_chain_paper_execution', {}).get('min_pool_liquidity_usd', 1000.),
+                        excluded=set(watch) | strong_protected)
                 if funnel is not None:
                     if occupancy is not None:occupancy['target_bucket']=bucket
                     funnel.quote(token, snapshot, reason, current,
@@ -7904,8 +7923,13 @@ class Runtime:
                 sampled += 1
                 await asyncio.sleep(0)
 
+        extra148_seconds = 0.0
+        extra148_items = 0
+        deferred148 = []
         for _ in range(min(len(batches or ()), 8)):
-            received, values = batches.popleft()
+            batch = batches.popleft()
+            received, values = batch[:2]
+            extra148 = batch[2] if len(batch) > 2 else {}
             if hasattr(self, "runtime_timing"):
                 self.runtime_timing.observe_passive_queue(
                     depth=len(batches), oldest_received_at=batches[0][0] if batches else None,
@@ -7915,6 +7939,8 @@ class Runtime:
                 raw = snapshot.raw or {}
                 pair = raw.get("pair", raw)
                 address = canonical_token_address(token.chain, str(pair.get("pairAddress") or ""))
+                if token.token_id in extra148 and address != extra148[token.token_id]:
+                    continue
                 created = pair.get("pairCreatedAt")
                 quote_rejections = self._paper_quote_rejections(token.token_id, token, snapshot, received)
                 # Existing episodes consume every identity/clock-valid acquired
@@ -7953,19 +7979,36 @@ class Runtime:
                     "is_held": token.token_id in getattr(self, "_pattern_held_tokens", set())})
                 quotes[identity] = (token, snapshot)
             now = utcnow()
-            fresh_trajectory = set(); fresh144=set()
+            fresh_trajectory = set(); fresh144=set(); extra148_signals={}; delayed148=[]
             for frame in frames:
+                identity = (frame['token_id'], frame['pair_address'])
+                feature_only = frame['token_id'] in extra148
+                if feature_only and (extra148_items >= 6 or extra148_seconds >= .005):
+                    delayed148.append(quotes.pop(identity))
+                    continue
                 started145=asyncio.get_running_loop().time()
-                if trajectory144.accept(frame,now) is not None:
-                    fresh144.add((frame['token_id'],frame['pair_address']))
+                accepted144 = trajectory144.accept(frame,now)
+                if accepted144 is not None:
+                    fresh144.add(identity)
                 if hasattr(self,'runtime_timing'):self.runtime_timing.observe('trajectory144_features',asyncio.get_running_loop().time()-started145,items=1)
-                if trajectory.accept(frame,now) is not None:
-                    fresh_trajectory.add((frame['token_id'],frame['pair_address']))
-            state, signals = consume_passive_cohort_batch(frames, state, now=now,
+                if feature_only:
+                    if accepted144 is not None:
+                        source_signals=learning144.signals(accepted144,trajectory144.signals_for(*identity,now),now)
+                        source_signals.update(self.store._recipe145.signals(accepted144,source_signals,now))
+                        extra148_signals[identity]=source_signals
+                    duration=asyncio.get_running_loop().time()-started145
+                    extra148_seconds+=duration;extra148_items+=1
+                    if hasattr(self,'runtime_timing'):self.runtime_timing.observe('feature_only148_compute',duration,items=1)
+                elif trajectory.accept(frame,now) is not None:
+                    fresh_trajectory.add(identity)
+            if delayed148:
+                deferred148.append((received, delayed148, {t.token_id:extra148[t.token_id] for t,s in delayed148}))
+            legacy_frames=[f for f in frames if f['token_id'] not in extra148]
+            state, signals = consume_passive_cohort_batch(legacy_frames, state, now=now,
                 activated_at=self._cohort_started_at, closed_leaders=closures, already_bought=bought,
                 min_pool_liquidity_usd=getattr(self, "_chain_paper_execution", {}).get(
                     "min_pool_liquidity_usd", 1000.0))
-            for frame in frames:
+            for frame in legacy_frames:
                 activity = ((float(frame["buys_5m"] or 0) + float(frame["sells_5m"] or 0) >= 3)
                             or float(frame["volume_5m_usd"] or 0) >= 200)
                 if not (0 <= frame["pool_age_seconds"] <= 900 and activity
@@ -7989,6 +8032,9 @@ class Runtime:
             # Existing passive batches deliver classifier/event signals to the
             # same durable cohort claim, safety wait and next-frame executor.
             for identity in quotes:
+                if identity[0] in extra148:
+                    signals.setdefault(identity,{}).update(extra148_signals.get(identity,{}))
+                    continue  # Feature-only: no legacy probe, Event or extra RPC producer.
                 if identity in fresh_trajectory:
                     signals.setdefault(identity,{}).update(trajectory.signals_for(*identity,now))
                 if identity in fresh144:
@@ -8022,6 +8068,12 @@ class Runtime:
                     pending[identity]["quote"] = (token, snapshot, received)
             await project_pending()
             await asyncio.sleep(0)
+        for deferred in reversed(deferred148):
+            manager=getattr(self,'_shared_batch148',None)
+            if len(batches)<batches.maxlen:
+                batches.appendleft(deferred)
+                if manager:manager.counts['COMPUTE_DEFERRED']+=len(deferred[1])
+            elif manager:manager.counts['DEFERRED_QUEUE_FULL']+=len(deferred[1])
         # A one-shot signal delayed by the budget must not depend on a new batch.
         await project_pending()
         state["activated_at"] = iso(self._cohort_started_at)
@@ -8072,8 +8124,15 @@ class Runtime:
                        or (utcnow()-v['quote'].observed_at).total_seconds()>15 or v.get('sampled_at')==v['quote'].observed_at)]
             if due and self._dex_quote_low_priority_available():
                 try:
+                    extra = {}
+                    manager=getattr(self,'_shared_batch148',None)
+                    if manager and getattr(self,'chain_meme_trader_only',False):
+                        due,extra=manager.extend_batch(chain,due,utcnow(),excluded=set(watch)|set(priority)|set(getattr(self,'_lease145_protected',())))
                     async with dex_low_budget(3):
-                        quoted = await self._dex_batch_quote(chain, due, fresh=True, high_priority=False)
+                        if extra:
+                            quoted = await self._dex_batch_quote(chain, due, fresh=True, high_priority=False, feature_only148=extra)
+                        else:
+                            quoted = await self._dex_batch_quote(chain, due, fresh=True, high_priority=False)
                     if not self.chain_meme_trader_only:
                         self._remember_pattern_quotes(quoted)
                 except DexLowPriorityCapacityDeferred:
@@ -8165,6 +8224,10 @@ class Runtime:
             spare_batch_expansion='DISABLED_PENDING_NATURAL_BUDGET',target_cadence_seconds=15,extra_request_budget=0,
             priority_targets=getattr(self,'_market_target_counts',{}),
             protection_basis='held=OPEN_POSITION only; protected also includes valid pending BUY/SELL, safety and next-frame signals; research uses existing low-priority receipts')
+        manager=getattr(self,'_shared_batch148',None)
+        if manager:
+            manager.prune(utcnow(),set(watch)|set(getattr(self,'_market_priority_tokens',())))
+            coverage['shared_batch148']=manager.snapshot(utcnow())
         self.store.set_kv('coverage145:status',coverage)
         if getattr(self,'_leases145_dirty',False):
             checkpoint=dump_state(watch,utcnow());checkpoint['mature_window_counts']=counts
@@ -9127,7 +9190,7 @@ class Runtime:
             source=Path(__file__).parent
             names=('runtime.py','store.py','native_execution.py','cohort_experiments.py','dex_trajectory.py',
                    'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','mode_learning144.py',
-                   'mode_learning145.py','recipe145.py','observation_leases145.py')
+                   'mode_learning145.py','recipe145.py','observation_leases145.py','shared_batch148.py')
             self.store.set_kv('runtime-loaded-manifest',dict(started_at=iso(),pid=os.getpid(),definition_version=version,
                 policy_arm_ids=[p['arm_id'] for p in definition['policies']],
                 source_sha256={name:hashlib.sha256((source/name).read_bytes()).hexdigest() for name in names},

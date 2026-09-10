@@ -487,6 +487,14 @@ function deliveryPanels(diagnostic, families=[]){
   const learningReason=learning.status==='UNKNOWN'?'尚未加载学习摘要；不能推断模型、候选或经济结果。':(releases===0?`固定基线，尚无学习模型发布；当前版本 ${modelVersion}。`:`当前版本 ${modelVersion}；发布 ${releases} 次，仍需独立前向终局验证。`);
   const futureText=future.map(([key,item])=>`${key.replace(':status','')} ${item.status}${item.updatedAt?` · ${time(item.updatedAt)}`:''}`).join(' / ');
   const priority=diagnostic['coverage145:status']?.priority_targets||{};
+  const shared=diagnostic['coverage145:status']?.shared_batch148;
+  const sharedRows=shared?[
+    ['共享批量覆盖148',`${shared.enabled?'运行':'已停用'} · 额外观察 ${shared.active??'UNKNOWN'}/${shared.max_active??6} · 等待 ${shared.waiting??'UNKNOWN'}`,
+      `只使用既有非空批次的空余地址位，不增加HTTP批次；原池新回执 ${shared.counts?.EXACT_FRESH_RESPONSES??0}；预算延后 ${shared.counts?.COMPUTE_DEFERRED??0}；${shared.disabled_reason||'持仓/待成交接管后自动释放额外席位。'}`],
+    ...((shared.opportunities||[]).slice(0,6).map(row=>[row.token_id,
+      `真实帧 ${row.frames} · 二帧 ${row.frame2_delay_seconds??'UNKNOWN'}秒 · 三帧 ${row.frame3_delay_seconds??'UNKNOWN'}秒`,
+      `原池 ${row.pair_address}；30/120秒窗口 ${JSON.stringify(row.windows||{})}；行情年龄 ${Number(row.quote_age_seconds||0).toFixed(1)}秒；期限 ${row.expires_at?time(row.expires_at):'UNKNOWN'}。`]))
+  ]:[['共享批量覆盖148','尚未加载','缺少运行回执，不能当作已启用或零机会。']];
   const armRows=Object.entries(learning.value.arms||{}).map(([arm,row])=>[
     arm,`信号 ${row.signal_decisions??'UNKNOWN'} · ready回调 ${row.ready_callbacks??'UNKNOWN'} · BUY ${row.independent_buy_receipts??'UNKNOWN'} · 终局 ${row.terminal_receipts??'UNKNOWN'}`,
     `最后信号 ${row.last_signal_at?time(row.last_signal_at):'UNKNOWN'} / 成交 ${row.last_buy_at?time(row.last_buy_at):'UNKNOWN'}；阶段 ${JSON.stringify(row.stage_counts||{})}；${row.first_block||'UNKNOWN'}；新代回执，不冒充全历史。`]);
@@ -515,7 +523,7 @@ function deliveryPanels(diagnostic, families=[]){
     ['145 固定优先级对照',research.economic_comparison?.status||'NO_MATCHED_BASELINE','只比较冻结基线的真实等成本、等数量、同fill终局；所选来源不是独立基线。'],
     ['146 学习执行',`${research.model?.version==='fixed_priority/v1'?'BASELINE':research.model?.version?'LEARNED':'UNKNOWN'} · ${research.schema||'UNKNOWN'} · 发布 ${research.model?.releases??'UNKNOWN'}`,
       `作用策略 ${research.affects||'UNKNOWN'}；无成熟证据保留基线，已知模型floor计全损但不是真实成交。`],
-    ...armRows,...executionRows,...horizonRows,...researchRows,...candidateRows,...dispositionRows,
+    ...sharedRows,...armRows,...executionRows,...horizonRows,...researchRows,...candidateRows,...dispositionRows,
   ];
 }
 

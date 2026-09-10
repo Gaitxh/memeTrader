@@ -119,6 +119,10 @@ assert.match(learnedPanels.find(row=>row[0]==='trajectory146_learned_mode_select
 assert.match(learnedPanels.find(row=>row[0]==='146 5 分钟标签')[1],/OBSERVED 1 · UNKNOWN 2 · 模型floor 1/);
 assert.match(learnedPanels.find(row=>row[0]==='trajectory145_sparse_trend_runner_v1')[1],/INSUFFICIENT/);
 assert.match(learnedPanels.find(row=>row[0]==='trajectory145_sparse_trend_runner_v1')[2],/20_same_fill_terminals/);
+const sharedPanels=context.revisionUi.deliveryPanels({'coverage145:status':{shared_batch148:{enabled:true,active:2,max_active:6,waiting:3,counts:{EXACT_FRESH_RESPONSES:7},opportunities:[]}}});
+assert.match(sharedPanels.find(row=>row[0]==='共享批量覆盖148')[1],/额外观察 2\/6 · 等待 3/);
+assert.match(sharedPanels.find(row=>row[0]==='共享批量覆盖148')[2],/不增加HTTP批次/);
+assert.match(panels.find(row=>row[0]==='共享批量覆盖148')[1],/尚未加载/);
 assert.match(app,/strategy\.max_hold_minutes==null\?'UNKNOWN'/);
 assert.match(app,/\['现有漏斗'/);
 
