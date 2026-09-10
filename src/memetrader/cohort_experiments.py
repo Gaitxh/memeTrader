@@ -75,6 +75,45 @@ ROUTER_SOURCES = (
     ("clone_consensus_leader_v2", "clone", "frozen_at"),
     ("organic_early_flow_v1", "early", "signal_at"),
 )
+REGIME_ARM = 'dex_regime_recovered_runner_v1'
+# Priority is frozen ex ante. Aggregate Dex modes are never called organic
+# signed flow; synthetic execution remains in its separate 1U contract.
+REGIME_SOURCES = (
+    ('organic_reawakening_flow_v1', 'REAWAKENING', 'signal_at'),
+    ('event_clone_narrative_reawakening_v1', 'EVENT_BINDING', 'event_recorded_at'),
+    ('clone_consensus_leader_v2', 'CLONE_CONSENSUS', 'frozen_at'),
+    ('dex_first_dip_resilience_v1', 'FIRST_DIP', 'activation_at'),
+    ('dex_hot_impulse_v1', 'NEW_HOT', 'activation_at'),
+    ('dex_compression_breakout_v1', 'BREAKOUT', 'activation_at'),
+    ('dex_quiet_acceleration_v1', 'NEW_QUIET', 'activation_at'),
+    ('dex_volume_leads_price_v1', 'ACTIVITY_LEADS', 'activation_at'),
+    ('organic_early_flow_v1', 'ORGANIC_FLOW', 'signal_at'),
+    ('organic_short_observed_flow_v1', 'ORGANIC_SHORT_OBSERVED', 'signal_at'),
+)
+
+
+def regime_route(signals, market_state=None):
+    """One supported normal-market branch; unavailable modes stay explicit."""
+    evidence = market_state or {}
+    phase, state = evidence.get('phase', ''), evidence.get('state', '')
+    if state == 'HARD_UNSELLABLE' or phase == 'SYNTHETIC_DISTRIBUTING_CYCLE':
+        return None, dict(state='DISTRIBUTING_OR_UNSELLABLE', action='NO_BUY')
+    if str(phase).startswith('SYNTHETIC_LPI_BUILDING') or 'synthetic_fast_harvest_v1' in signals:
+        return None, dict(state='SYNTHETIC_BUILDING', action='SEPARATE_1U_EXECUTOR_EXACT_PROOF_REQUIRED')
+    available=[(source,mode,clock) for source,mode,clock in REGIME_SOURCES
+               if isinstance(signals.get(source), Mapping) and signals[source].get('decision_key')]
+    reasons={mode:('AVAILABLE_LOWER_PRIORITY' if any(x[0]==source for x in available) else 'NO_VALID_SOURCE_SIGNAL')
+             for source,mode,_ in REGIME_SOURCES}
+    reasons.update(LATE_MOMENTUM='NO_INDEPENDENT_FROZEN_ENTRY_RULE', DEAD='NO_BUY')
+    if not available:return None, dict(state='UNKNOWN',action='WAIT',branches=reasons)
+    source,mode,clock=available[0]; reasons[mode]='SELECTED'
+    signal=copy.deepcopy(signals[source]);e=dict(signal.get('decision_evidence') or {})
+    disposition=dict(state=mode,action='COMMON_SAFETY_AND_NEXT_FRAME',branches=reasons)
+    e.update(router_source_arm=source,router_mode=mode,router_source_origin_at=e.get(clock),
+             router_source_origin_clock=clock,router_requires_distinct_trajectory=source.startswith('dex_'),
+             router_disposition=disposition)
+    signal.update(decision_key=str(signal['decision_key'])+'|'+REGIME_ARM,decision_evidence=e)
+    return signal,disposition
 
 
 def cohort_experiment_policies() -> list[dict[str, Any]]:
@@ -211,6 +250,20 @@ def cohort_experiment_policies() -> list[dict[str, Any]]:
     policies.append(synthetic_harvest_policy(policies[2]))
     from .dex_trajectory import policies as trajectory_policies
     policies.extend(trajectory_policies(policies[2]))
+    recovered=copy.deepcopy(policies[2])
+    recovered.update(arm_id=REGIME_ARM,canonical_id=REGIME_ARM,name='多场景路由·真实回本保半仓Runner',
+        entry_family=REGIME_ARM,notional_usd=5.,source_arm_ids=[s for s,_,_ in REGIME_SOURCES],
+        signal_origin_clock='router_source_origin_at',paired_opportunity_group=REGIME_ARM,
+        paired_opportunity_semantics='one_selected_frozen_branch_no_extra_funded_control',
+        max_hold_minutes=15.,runner_max_hold_minutes_after_recovery=60.,
+        dynamic_principal_recovery='minimum_net_debit_keep_half_next_frame/v3',
+        conditional_trajectory_frame=True,synthetic_distribution_exit=True,
+        hard_stop_return=-.20,trailing_activate_return=.30,trailing_drawdown=.15,take_profit=[],
+        description='已有复苏/事件/clone/回撤/冲量/突破/静默/有机信号按冻结优先级只选一支；5U最多2仓。'
+                    '15分钟普通退出；实际收回本金且保留至少半仓后最多60分钟，机械风险始终优先；无Agent扩展，非已证Alpha。',
+        router_priority=[mode for _,mode,_ in REGIME_SOURCES],assessment_status='INSUFFICIENT',
+        entry_filter=dict(direction=REGIME_ARM,max_concurrent_positions=2,single_token_open_or_reserved=True,include_pending_in_limit=True))
+    policies.append(recovered)
     return policies
 
 
@@ -240,7 +293,7 @@ def recovered_signal_aliases(signals):
     return result
 
 
-def routed_cohort_signals(signals: Mapping[str, Any]) -> dict[str, Any]:
+def routed_cohort_signals(signals: Mapping[str, Any], market_state=None) -> dict[str, Any]:
     """Alias one frozen source signal to the shared router by fixed priority."""
     result = dict(signals)
     for source, mode, origin_clock in ROUTER_SOURCES:
@@ -259,6 +312,8 @@ def routed_cohort_signals(signals: Mapping[str, Any]) -> dict[str, Any]:
                       decision_evidence=evidence)
         result[ROUTER_ARM] = signal
         break
+    signal,_=regime_route(signals,market_state)
+    if signal is not None:result[REGIME_ARM]=signal
     return result
 
 

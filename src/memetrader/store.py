@@ -27164,6 +27164,10 @@ class Store:
                 (version, *limited))} if limited else {}
             entry_blocked = {}
             for p in active:
+                if p.get('entry_filter',{}).get('include_pending_in_limit'):
+                    from .cohort_enrollment import open_or_reserved_full
+                    if open_or_reserved_full(self.db,version,p['arm_id'],limited[p['arm_id']]):
+                        entry_blocked[p['arm_id']]='strategy_open_or_reserved_limit'
                 if p.get('requires_distinct_trajectory_frame'):
                     trajectory=getattr(self,'_dex_trajectory',None)
                     observed=trajectory.pools.get((token.token_id,pair_address),{}).get('features',{}) if trajectory else {}
@@ -27320,7 +27324,7 @@ class Store:
             accepted_cohort_signals = {}
             if cohort_mode:
                 # The separate namespace cannot consume or overwrite old pattern intents.
-                from .cohort_experiments import ROUTER_ARM, routed_cohort_signals
+                from .cohort_experiments import ROUTER_ARM, REGIME_ARM, routed_cohort_signals
                 candidates = {**previous_features.get("cohort_signals", {}), **dict(cohort_signals)}
                 by_arm = {policy['arm_id']: policy for policy in active}
 
@@ -27341,20 +27345,18 @@ class Store:
                     arm: signal for arm, signal in dict(cohort_signals).items()
                     if arm in by_arm and current_source_signal(by_arm[arm], signal)
                 }
-                prior_router = previous_features.get('cohort_signals', {}).get(ROUTER_ARM)
-                router_claimed = bool(prior_router and prior_router.get('decision_key') and self.db.execute(
-                    "SELECT 1 FROM chain_meme_cohort_enrollment_claims c WHERE definition_version=? AND arm_id=? "
-                    "AND decision_key=? AND terminal_reason IS NULL AND NOT EXISTS (SELECT 1 FROM chain_meme_trader_positions p "
-                    "WHERE p.definition_version=c.definition_version AND p.arm_id=c.arm_id AND p.shadow_cohort_id=c.cohort_id) LIMIT 1",
-                    (version, ROUTER_ARM, str(prior_router['decision_key'])),
-                ).fetchone())
-                candidates.pop(ROUTER_ARM, None)
-                if router_claimed:
-                    candidates[ROUTER_ARM] = prior_router
-                else:
-                    routed = routed_cohort_signals(current_sources)
-                    if ROUTER_ARM in routed:
-                        candidates[ROUTER_ARM] = routed[ROUTER_ARM]
+                routed = routed_cohort_signals(current_sources,self._current_microstructure_state(token.token_id,pair_address,decision_at))
+                for router_arm in (ROUTER_ARM,REGIME_ARM):
+                    prior_router = previous_features.get('cohort_signals', {}).get(router_arm)
+                    router_claimed = bool(prior_router and prior_router.get('decision_key') and self.db.execute(
+                        "SELECT 1 FROM chain_meme_cohort_enrollment_claims c WHERE definition_version=? AND arm_id=? "
+                        "AND decision_key=? AND terminal_reason IS NULL AND NOT EXISTS (SELECT 1 FROM chain_meme_trader_positions p "
+                        "WHERE p.definition_version=c.definition_version AND p.arm_id=c.arm_id AND p.shadow_cohort_id=c.cohort_id) LIMIT 1",
+                        (version, router_arm, str(prior_router['decision_key'])),
+                    ).fetchone())
+                    candidates.pop(router_arm, None)
+                    if router_claimed:candidates[router_arm] = prior_router
+                    elif router_arm in routed:candidates[router_arm] = routed[router_arm]
                 for policy in active:
                     arm = policy["arm_id"]
                     signal = candidates.get(arm) or {}
@@ -27383,6 +27385,10 @@ class Store:
                         entry_blocked[arm] = "cohort_event_consumed_or_position_open"
                     else:
                         already_bought.discard(arm)
+                    flow=getattr(self,'_cohort_flow',None)
+                    if flow is not None:
+                        flow.opportunity(version,arm,event_keys[arm],'signal_received',decision_at)
+                        flow.opportunity(version,arm,event_keys[arm],entry_blocked.get(arm,'await_next_frame_or_admission'),decision_at)
             if mature_result is not None:
                 mature_arm = mature_policy["arm_id"]
                 mature_episode = mature_result[2].get("episode") or {}
@@ -28426,6 +28432,15 @@ class Store:
             "AND token_id=? AND status='open' AND shadow_cohort_id<>? LIMIT 1",
             (version, str(d['arm_id']), token_id, cohort_id)).fetchone()]
         if not decisions:return 0
+        from .cohort_experiments import REGIME_ARM, regime_route
+        if any(d['arm_id']==REGIME_ARM for d in decisions):
+            from .cohort_enrollment import open_or_reserved_full
+            market_state=self._current_microstructure_state(token_id,None,parse_time(filled_at),cohort_id=cohort_id)
+            _,disposition=regime_route({},market_state)
+            if (disposition['state'] in {'DISTRIBUTING_OR_UNSELLABLE','SYNTHETIC_BUILDING'}
+                    or open_or_reserved_full(self.db,version,REGIME_ARM,2,cohort_id)):
+                decisions=[d for d in decisions if d['arm_id']!=REGIME_ARM]
+                if not decisions:return 0
         safety = getattr(self, "_preentry_safety", None)
         self.rediscovery_funnel_hit(token_id, 'safety_stage', filled_at)
         if safety is not None and not safety.guard(version=version,cohort_id=cohort_id,
@@ -28434,7 +28449,7 @@ class Store:
                 signal_price_usd=signal_price_usd):
             self.rediscovery_funnel_hit(token_id, 'safety_guard_wait', filled_at)
             return 0
-        trajectory_arms={p['arm_id'] for p in definition['policies'] if p.get('requires_distinct_trajectory_frame')}
+        trajectory_arms={p['arm_id'] for p in definition['policies'] if p.get('requires_distinct_trajectory_frame') or p.get('conditional_trajectory_frame')}
         if trajectory_arms.intersection(str(d['arm_id']) for d in decisions):
             cohort=self.db.execute('SELECT feature_json FROM chain_meme_trader_v6_cohorts WHERE id=?',(cohort_id,)).fetchone()
             signals=self._json_object(cohort['feature_json']).get('cohort_signals',{}) if cohort else {}
@@ -28443,7 +28458,9 @@ class Store:
             def distinct_trajectory(d):
                 arm=str(d['arm_id'])
                 if arm not in trajectory_arms:return True
-                frozen=signals.get(arm,{}).get('decision_evidence',{}).get('feature_vector',{})
+                evidence=signals.get(arm,{}).get('decision_evidence',{})
+                if arm==REGIME_ARM and not evidence.get('router_requires_distinct_trajectory'):return True
+                frozen=evidence.get('feature_vector',{})
                 latest=engine.pools.get((token_id,frozen.get('pair_address')),{}).get('features',{}) if engine else {}
                 return bool(frozen and frame and frame['ingested_at'] and latest.get('windows',{}).get('30')
                     and parse_time(latest['continuity_started_at'])<=parse_time(frozen['observed_at'])
@@ -33469,9 +33486,23 @@ class Store:
                 amountful_quote={"evidence_id": evidence_id, "task": dict(task),
                                  "minimum_output_raw": minimum, "net_recovery_usd": recovery})
 
+    def _current_microstructure_state(self, token_id, pool, now, *, cohort_id=None):
+        micro=getattr(self,'_microstructure119',None)
+        if micro is None:return {}
+        if pool is None:
+            row=self.db.execute('SELECT pair_address FROM chain_meme_trader_v6_cohorts WHERE id=?',(cohort_id,)).fetchone()
+            pool=row['pair_address'] if row else None
+        evidence=micro.recent.get(token_id+'|'+str(pool),{})
+        at=evidence.get('recorded_at')
+        return evidence if at and 0<=(now-parse_time(at)).total_seconds()<=120 else {}
+
     def _cohort_router_exit_policy(self, policy: Mapping[str, Any], position: Mapping[str, Any]) -> dict[str, Any]:
         """Apply the frozen router mode recorded on this position's cohort."""
         result = dict(policy)
+        extended=result.get('runner_max_hold_minutes_after_recovery')
+        if (extended and position['principal_recovered']==1 and int(position['amount_raw'])>0
+                and float(position['realized_proceeds_usd'])>=float(position['stake_usd'])>0):
+            result['max_hold_minutes']=float(extended)
         profiles = result.get('router_exit_profiles')
         if not isinstance(profiles, Mapping):
             return result

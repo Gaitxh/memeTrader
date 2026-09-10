@@ -4,6 +4,16 @@ import json
 ANNOTATION_KEY='duplicate-opportunity-contamination/v1:'
 
 
+def open_or_reserved_full(db, version, arm, limit, cohort_id=-1):
+    rows=db.execute("SELECT shadow_cohort_id FROM chain_meme_trader_positions WHERE definition_version=? AND arm_id=? "
+        "AND status='open' AND shadow_cohort_id<>? UNION SELECT c.cohort_id FROM chain_meme_cohort_enrollment_claims c "
+        "WHERE c.definition_version=? AND c.arm_id=? AND c.cohort_id<>? AND c.terminal_reason IS NULL "
+        "AND NOT EXISTS (SELECT 1 FROM chain_meme_trader_positions p WHERE p.definition_version=c.definition_version "
+        "AND p.arm_id=c.arm_id AND p.shadow_cohort_id=c.cohort_id) LIMIT ?",
+        (version,arm,cohort_id,version,arm,cohort_id,int(limit))).fetchall()
+    return len(rows)>=int(limit)
+
+
 def synthetic_entry_block(db, version, arm, token_id, cohort_id=None):
     """Synthetic lifetime token exclusion and one open-or-reserved slot."""
     if arm != 'synthetic_fast_harvest_v1':return None

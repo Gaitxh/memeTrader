@@ -108,10 +108,10 @@ def test_actual_hot_producer_common_safety_later_fill_exit_and_dedup(tmp_path,mo
     snap=current(10)
     with s._lock,s.db:gate.resume(token,snap,clock[0])
     positions=[dict(r) for r in s.db.execute("SELECT * FROM chain_meme_trader_positions WHERE arm_id LIKE 'dex_%'")]
-    assert len(positions)==4 and len({p['source_entry_fill_id'] for p in positions})==1
+    assert len(positions)==5 and len({p['source_entry_fill_id'] for p in positions})==1
     for p in positions:assert p['stake_usd']==5
     snap=current(11);s.observe_chain_meme_pattern(token,snap,recorded_at=clock[0],cohort_signals=signals)
-    assert s.db.execute("SELECT count(*) FROM chain_meme_trader_positions WHERE arm_id LIKE 'dex_%'").fetchone()[0]==4
+    assert s.db.execute("SELECT count(*) FROM chain_meme_trader_positions WHERE arm_id LIKE 'dex_%'").fetchone()[0]==5
     # Existing hard-stop trigger and genuinely later same-pool settlement.
     for _ in range(2):
         clock[0]+=timedelta(seconds=2)
@@ -120,7 +120,7 @@ def test_actual_hot_producer_common_safety_later_fill_exit_and_dedup(tmp_path,mo
     assert all(r[0]=='closed' for r in s.db.execute("SELECT status FROM chain_meme_trader_positions WHERE arm_id LIKE 'dex_%'"))
     counts=s._cohort_flow.snapshot()['counts']
     assert counts['BUY']==1 and counts['SAFETY_AUTHORIZED']==1 and counts['TERMINAL_SELL']==1
-    assert len(s._cohort_flow.snapshot()['by_arm'])==4
+    assert len(s._cohort_flow.snapshot()['by_arm'])==5
     s.close()
 
 

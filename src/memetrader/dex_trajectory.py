@@ -186,11 +186,18 @@ class Engine:
             state={'rows':deque(maxlen=MAX_FRAMES),'signals':{},'first_at':row['recorded_at']};self.pools[identity]=state
         rows=state['rows']
         if rows and row['t']-rows[-1]['t']>30:
+            gap=row['t']-rows[-1]['t']
+            self.counts['gap:30_60s' if gap<=60 else 'gap:60_120s' if gap<=120 else 'gap:over120s']+=1
             rows.clear();state['signals'].clear();self.counts['gap_reset']+=1
         rows.append(row)
         while rows and row['t']-rows[0]['t']>310:rows.popleft()
         f=derive(list(rows));state.update(features=f,fingerprint=fingerprint,last_recorded=row['recorded_at'])
         self.pools.move_to_end(identity);self.counts['distinct_frames']+=1
+        for seconds, feature in f['windows'].items():
+            if feature:self.counts['window_ready:'+seconds]+=1
+        for label,ok in (('base',f['base'] is not None),('buy_share',f['buy_count_share'] is not None),
+                         ('age_rate',f['volume_acceleration_age_normalized'] is not None and f['tx_acceleration_age_normalized'] is not None)):
+            self.counts['input_ready:'+label if ok else 'input_unknown:'+label]+=1
         return f
 
     def signals_for(self,token,pool,now):
@@ -199,6 +206,9 @@ class Engine:
         f=state['features']
         if not 0<=(now-parse_time(f['observed_at'])).total_seconds()<=30:return {}
         flags=mechanisms(f)
+        self.counts['mechanism_evaluations']+=1
+        for kind,flag in flags.items():
+            if flag:self.counts['mechanism_ready:'+kind]+=1
         if flags['hot']:
             age=f['pool_age_seconds'];band=0 if age<180 else 1 if age<900 else 2
             peers=[v['features'] for v in self.pools.values() if v['features']['chain']==f['chain'] and
@@ -208,6 +218,7 @@ class Engine:
             rank=sum(score(v)<=score(f) for v in peers)/len(peers) if peers else None
             f={**f,'local_age_peer_count':len(peers),'momentum_percentile':rank}
             flags['hot']=bool(len(peers)>=3 and rank>=.75)
+            self.counts['hot_peer_pass' if flags['hot'] else 'hot_peer_insufficient' if len(peers)<3 else 'hot_peer_rank_below']+=1
         output={}
         for arm,(kind,_,_) in SPECS.items():
             if flags[kind] and arm not in state['signals']:

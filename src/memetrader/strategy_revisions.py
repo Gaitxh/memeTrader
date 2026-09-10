@@ -605,10 +605,16 @@ def _quiet_reawakening_confirmation(
     minimum = int(cfg["minimum_quiet_frames"])
     if len(quiet) < minimum:
         return False, "quiet_revision_awaiting_baseline"
-    quiet = quiet[-minimum:]
-    span = (_time(quiet[-1]["observed_at"]) - _time(quiet[0]["observed_at"])).total_seconds()
-    if span < float(cfg["minimum_quiet_span_seconds"]):
+    # Minimum frames is not a maximum. At the normal 15s cadence the latest
+    # three span only 30s, contradicting the declared 120s baseline. Retain the
+    # shortest latest suffix satisfying BOTH constraints, including interior
+    # observations so a noisy interval cannot be cherry-picked as quiet.
+    end = _time(quiet[-1]['observed_at'])
+    starts = [i for i, frame in enumerate(quiet[:len(quiet)-minimum+1])
+              if (end-_time(frame['observed_at'])).total_seconds() >= float(cfg['minimum_quiet_span_seconds'])]
+    if not starts:
         return False, "quiet_revision_baseline_span_not_met"
+    quiet = quiet[starts[-1]:]
     quiet_market = [_market_values(frame) for frame in quiet]
     assert all(value is not None for value in quiet_market)
     quiet_prices = [value[0] for value in quiet_market if value is not None]

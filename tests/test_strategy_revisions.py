@@ -347,6 +347,22 @@ def test_quiet_revision_uses_three_observed_quiet_frames_then_reawakening():
     assert (ready, reason) == (True, "quiet_reawakening_confirmation_ready")
 
 
+def test_quiet_baseline_preserves_span_at_normal_cadence_and_checks_interior():
+    start = datetime(2026, 9, 6, 10, 0, tzinfo=UTC)
+    policy=revision_spec({'arm_id':'experiment_quiet_reawakening_candidate_v1',
+        'canonical_id':'experiment_quiet_reawakening_candidate_v1','stage':129,
+        'entry_filter':{'direction':'quiet_reawakening','control':False}})
+    history=[_entry_frame(start,10+i*15,str(i),price=1,liquidity=2000,volume=100,buys=1,sells=0)
+             for i in range(9)]
+    history.append(_entry_frame(start,250,'wake',price=1.14,liquidity=2000,volume=1100,
+                                buys=7,sells=3,pool_age_seconds=22000))
+    kwargs=dict(decision_at=start+timedelta(seconds=253),activated_at=start)
+    assert revision_entry_signal(history,policy,**kwargs)==(True,'quiet_reawakening_confirmation_ready')
+    assert revision_entry_signal(history[-4:],policy,**kwargs)==(False,'quiet_revision_baseline_span_not_met')
+    history[4]['buys']=30
+    assert revision_entry_signal(history,policy,**kwargs)==(False,'quiet_revision_baseline_not_quiet')
+
+
 def test_risk_revisions_keep_catastrophe_veto_and_use_l0_confirmation():
     start = datetime(2026, 9, 6, 10, 0, tzinfo=UTC)
     history = [

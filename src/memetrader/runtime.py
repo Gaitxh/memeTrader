@@ -7795,7 +7795,13 @@ class Runtime:
             for identity in list(pending):
                 item = pending[identity]
                 now = utcnow()
-                if item["expires"] < now:
+                # A newer batch must neither erase another arm's frozen signal
+                # nor renew its original 60-second admission window.
+                retained = {arm: signal for arm, signal in item['signals'].items()
+                    if 0 <= (now-parse_time(signal['recorded_at'])).total_seconds() <= 60}
+                trajectory.counts['pending_signal_expired'] += len(item['signals'])-len(retained)
+                item['signals'] = retained
+                if not retained:
                     pending.pop(identity, None)
                     continue
                 quote = item.get("quote")
@@ -7903,10 +7909,15 @@ class Runtime:
                 token, snapshot = quotes[identity]
                 if not arm_signals:
                     continue
-                pending[identity] = {"expires": now + timedelta(seconds=60),
-                    "quote": (token, snapshot, received), "signals": {
+                previous = pending.get(identity, {}).get('signals', {})
+                incoming = {
                     arm: {"observed_at": iso(snapshot.observed_at), "recorded_at": iso(received), **signal}
-                    for arm, signal in arm_signals.items()}}
+                    for arm, signal in arm_signals.items()}
+                preserved = {arm: signal for arm, signal in previous.items()
+                    if arm not in incoming and 0 <= (now-parse_time(signal['recorded_at'])).total_seconds() <= 60}
+                trajectory.counts['pending_signal_preserved'] += len(preserved)
+                pending[identity] = {"quote": (token, snapshot, received),
+                    "signals": {**preserved, **incoming}}
             for identity, (token, snapshot) in quotes.items():
                 if identity in pending and "quote" not in pending[identity]:
                     pending[identity]["quote"] = (token, snapshot, received)

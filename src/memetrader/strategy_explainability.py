@@ -30,6 +30,9 @@ def strategy_logic(policy, family, control=None, *, current=False):
     if p.get('feature_contract')=='dex-trajectory/v1':
         rules=p.get('trajectory_rules') or {}
         entry.extend([rules.get('common','UNKNOWN'),rules.get(p.get('feature_hypothesis'),'UNKNOWN')])
+    if p.get('router_priority'):
+        entry.append('冻结优先级（一次只选一支）：'+' → '.join(p['router_priority']))
+        entry.append('完整复用所选来源的信号、激活时点和原池后帧；未选择/缺失分支原因随决定保存。造势分支由独立1U执行器处理；分发/不可卖只作风险，不买入。')
     entry += [f'{PARAMS.get(k,"冻结条件 "+k)}：{value(v)}' for k,v in f.items()]
     for k,label in [('entry_gate','候选准入通道'),('entry_match_mode','信号匹配方式'),('source_entry_family','复用的入场机制')]:
         if k in p:entry.append(f'{label}：{value(p[k])}')
@@ -64,6 +67,8 @@ def strategy_logic(policy, family, control=None, *, current=False):
         exits.append('动态本金回收：按实际净卖出模型求可回收原始支出的最小卖出量，后帧重新计算；只有实际结算回款才算回本。')
         if 'keep_half' in str(dynamic):exits.append('仅当所需卖出量不超过剩余数量的一半时回收；否则继续父策略普通退出。')
         exits.append('动态回收合同：'+str(dynamic))
+    if p.get('runner_max_hold_minutes_after_recovery'):
+        exits.append('只有真实部分卖出后账本确认累计净回款覆盖原始支出且仍有余仓，最长持仓才变为'+str(p['runner_max_hold_minutes_after_recovery'])+'分钟；未成交的回本申请不生效，不由Agent延长。')
     if f.get('narrative_hold_v2'):exits.append('叙事 overlay：只允许实际回本后的健康剩余仓，经持久化独立扩张证据延长软持仓；不覆盖硬止损/核销。未核验则普通退出。')
     for k,v in p.items():
         if k not in {'exit_family','exit_mode','hard_stop_return','trailing_activate_return','trailing_drawdown','max_hold_minutes','take_profit','dynamic_principal_recovery'} and any(x in k for x in ('exit','hold','partial','stop','overlay')):

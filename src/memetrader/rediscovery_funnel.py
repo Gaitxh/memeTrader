@@ -101,6 +101,23 @@ class CohortFlow:
         self.by_arm={};self.windows={'startup_30m':Counter(),'steady':Counter()}
         self.recent=deque(maxlen=32);self.evicted=0;self.unlinked=Counter()
         self.lock=RLock()
+        self.opportunities=OrderedDict();self.opportunity_counts=Counter();self.opportunity_evicted=0
+
+    def opportunity(self,version,arm,key,stage,at):
+        """Bounded prospective signal/key denominator, including old claims.
+
+        This is separate from cohorts: a repeated signal is not a fresh BUY.
+        """
+        with self.lock:
+            if parse_time(at)<self.started:return
+            identity=(version,arm,key)
+            if identity not in self.opportunities:
+                if len(self.opportunities)>=1024:
+                    self.opportunities.popitem(last=False);self.opportunity_evicted+=1
+                self.opportunities[identity]=set()
+            seen=self.opportunities[identity]
+            if stage not in seen:
+                seen.add(stage);self.opportunity_counts[stage]+=1
 
     def admit(self,version,cohort,token,pool,arms,at):
         at=parse_time(at)
@@ -137,5 +154,7 @@ class CohortFlow:
                 current_unique_tokens=len({m['token'] for m in self.members.values()}),
                 retained_cohorts=len(self.members),limit=2048,ttl_seconds=21600,evicted=self.evicted,
                 unlinked_receipts=dict(self.unlinked),recent=list(self.recent),
-                unknown=['pre-admission signals without later frame','discovery-to-signal association',
+                signal_opportunities=dict(unit='unique arm+decision key per stage in bounded process generation; not independent tokens',
+                    retained=len(self.opportunities),limit=1024,evicted=self.opportunity_evicted,counts=dict(self.opportunity_counts)),
+                unknown=['signals never reaching Store','discovery-to-signal association',
                     'legacy non-market entry and exit paths','old/expired cohorts'],decision_eligible=False,affects='none')
