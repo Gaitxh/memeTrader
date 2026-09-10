@@ -27164,6 +27164,11 @@ class Store:
                 (version, *limited))} if limited else {}
             entry_blocked = {}
             for p in active:
+                if p.get('requires_distinct_trajectory_frame'):
+                    trajectory=getattr(self,'_dex_trajectory',None)
+                    observed=trajectory.pools.get((token.token_id,pair_address),{}).get('features',{}) if trajectory else {}
+                    if observed.get('observed_at')!=iso(snapshot.observed_at) or not observed.get('windows',{}).get('30'):
+                        entry_blocked[p['arm_id']]='await_distinct_dex_trajectory_frame'
                 if p["arm_id"] in limited and occupied.get(p["arm_id"], 0) >= limited[p["arm_id"]]:
                     entry_blocked[p["arm_id"]] = "strategy_open_slot_limit"
                 elif p.get("entry_filter", {}).get("single_token_lifetime_entry") and self.db.execute(
@@ -27722,6 +27727,8 @@ class Store:
                         "INSERT INTO chain_meme_trader_v6_cohorts(definition_version,token_id,entry_family,source_snapshot_id,pair_address,decided_at,episode_no,feature_json) VALUES(?,?,'broad_launch',?,?,?,?,?)",
                         (version, token.token_id, allocation_snapshot_id, pair_address, iso(allocation_at), episode, self._json(features)))
                     cohort = int(cursor.lastrowid)
+                    flow=getattr(self,'_cohort_flow',None)
+                    admitted_for_flow=[]
                     for arm in cohort_arms:
                         cash = float(definition["starting_cash_usd_each_arm"]) + net_flows.get(arm, 0)
                         enough = cash + 1e-9 >= (
@@ -27730,10 +27737,13 @@ class Store:
                         slots = self.db.execute("SELECT COUNT(*) FROM chain_meme_trader_positions "
                             "WHERE definition_version=? AND arm_id=? AND status='open'", (version, arm)).fetchone()[0] if arm == "finite_capital_ranker_v1" else 0
                         enough = enough and slots < 3
+                        if enough:admitted_for_flow.append(arm)
                         self.db.execute("INSERT INTO chain_meme_trader_entry_decisions(definition_version,arm_id,shadow_cohort_id,token_id,baseline_quote_result_id,decided_at,status,reason) VALUES(?,?,?,?,?,?,?,?)",
                             (version, arm, cohort, token.token_id, allocation_snapshot_id, iso(allocation_at),
                              "admitted" if enough else "rejected", "pattern_next_observation" if enough else
                              "ranker_concurrent_slot_limit" if slots >= 3 else "entry_cash_below_order_size"))
+                    if flow is not None and admitted_for_flow:
+                        flow.admit(version,cohort,token.token_id,pair_address,admitted_for_flow,allocation_at)
                     group_projected = self._project_chain_meme_trader_market_entry(version=version, cohort_id=cohort,
                         token_id=token.token_id, snapshot_id=allocation_snapshot_id, market_price=float(snapshot.price_usd),
                         filled_at=iso(allocation_at), reason="pattern_next_observation",
@@ -28424,6 +28434,23 @@ class Store:
                 signal_price_usd=signal_price_usd):
             self.rediscovery_funnel_hit(token_id, 'safety_guard_wait', filled_at)
             return 0
+        trajectory_arms={p['arm_id'] for p in definition['policies'] if p.get('requires_distinct_trajectory_frame')}
+        if trajectory_arms.intersection(str(d['arm_id']) for d in decisions):
+            cohort=self.db.execute('SELECT feature_json FROM chain_meme_trader_v6_cohorts WHERE id=?',(cohort_id,)).fetchone()
+            signals=self._json_object(cohort['feature_json']).get('cohort_signals',{}) if cohort else {}
+            frame=self.db.execute('SELECT observed_at,ingested_at,recorded_at FROM token_snapshots WHERE id=?',(snapshot_id,)).fetchone()
+            engine=getattr(self,'_dex_trajectory',None)
+            def distinct_trajectory(d):
+                arm=str(d['arm_id'])
+                if arm not in trajectory_arms:return True
+                frozen=signals.get(arm,{}).get('decision_evidence',{}).get('feature_vector',{})
+                latest=engine.pools.get((token_id,frozen.get('pair_address')),{}).get('features',{}) if engine else {}
+                return bool(frozen and frame and frame['ingested_at'] and latest.get('windows',{}).get('30')
+                    and parse_time(latest['continuity_started_at'])<=parse_time(frozen['observed_at'])
+                    <parse_time(frame['observed_at'])<=parse_time(frame['ingested_at'])<=parse_time(frame['recorded_at'])
+                    and 0<=(parse_time(frame['observed_at'])-parse_time(latest['observed_at'])).total_seconds()<=30)
+            decisions=[d for d in decisions if distinct_trajectory(d)]
+            if not decisions:return 0
         # Conditional synthetic Paper never treats ordinary safety approval as
         # same-pool simulation proof; keep other admitted arms independent.
         special={p['arm_id'] for p in definition['policies'] if p.get('requires_exact_pool_sell_simulation')}
@@ -28548,6 +28575,8 @@ class Store:
                 capture(self, version, int(cohort_id), token_id, decision['decided_at'], int(entry_fill['id']))
             projected += 1
             self.rediscovery_funnel_hit(token_id, 'BUY', filled_at)
+            flow=getattr(self,'_cohort_flow',None)
+            if flow is not None:flow.hit(version,cohort_id,'BUY',filled_at,arm_id)
         return projected
 
     def _settle_pending_market_entry_observation(self, token, snapshot, recorded_at):
@@ -33552,6 +33581,8 @@ class Store:
                     iso(),
                 ),
             )
+            flow=getattr(self,'_cohort_flow',None)
+            if flow is not None:flow.hit(version,position['shadow_cohort_id'],'TERMINAL_WRITEOFF',completed_at,position['arm_id'])
             return 1
         trigger_evidence = self._json_object(mark["trigger_evidence_json"])
         if trigger_evidence.get("required_fill") == POST_TRIGGER_AMOUNT_QUOTE and amountful_quote is None:
@@ -33830,6 +33861,8 @@ class Store:
                 reason, completed_at, fill_id, iso(),
             ),
         )
+        flow=getattr(self,'_cohort_flow',None)
+        if flow is not None:flow.hit(version,position['shadow_cohort_id'],'TERMINAL_SELL' if closes else 'PARTIAL_SELL',completed_at,position['arm_id'])
         return 1
 
     def record_chain_meme_trader_market_capacity_corrections(
@@ -34690,6 +34723,16 @@ class Store:
                     if hazard:
                         action,reason='CAPITAL_EXIT',hazard
                         sell_amount=int(position['amount_raw'])
+                if action is None and policy.get('trajectory_exit'):
+                    from .dex_trajectory import exit_reason
+                    engine=getattr(self,'_dex_trajectory',None)
+                    state=engine.pools.get((position['token_id'],position['mark_pair_address'])) if engine else None
+                    vector=state['features'] if state else None
+                    decay=exit_reason(policy['trajectory_exit'],vector,position['opened_at'],current)
+                    if decay:
+                        action,reason='CAPITAL_EXIT',decay
+                        sell_amount=int(position['amount_raw'])
+                        trigger_evidence['dex_trajectory_exit']=vector
                 if action is None or sell_amount <= 0:
                     continue
                 if (market_only_exit and action != "RUG_EXIT"

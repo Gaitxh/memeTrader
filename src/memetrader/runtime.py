@@ -6821,14 +6821,19 @@ class Runtime:
                 wsol_usdc_conversion=self._wsol_usdc_conversion)
         for quote in quotes:
             fee=None
+            fee_error=None
             if quote.get('status')=='LOCAL_SURFACE_CURRENT':
                 try:
                     fee=await (successor_exit_fee(self.held_accounts,plan,quote) if state['surface']=='PUMPSWAP'
                         else exit_fee(self.held_accounts,plan,quote))
-                except (ValueError,KeyError):
-                    pass  # Missing current fee is not a SELL or a zero valuation.
+                except (ValueError,KeyError) as exc:
+                    fee_error=type(exc).__name__+':'+str(exc)[:160]
             result=apply_curve_quote(self.store,target,quote,fee,self._wsol_usdc_conversion)
-            self.store.set_kv('native-paper:last-held',dict(status=result,recorded_at=iso()))
+            self.store.set_kv('native-paper:last-held',dict(status=result,recorded_at=iso(),
+                token_id=target['token_id'],cohort_id=target['cohort_id'],surface=state['surface'],
+                quote_status=quote.get('status'),quote_reason=quote.get('reason'),fee_error=fee_error,
+                observed_at=quote.get('requested_at'),quote_recorded_at=quote.get('completed_at'),
+                context_slot=quote.get('context_slot'),remaining_amount_raw=target['amount_raw']))
 
     async def critical_onchain_exit_loop(self) -> None:
         """Drain exact-account risk exits before ordinary background quote work."""
@@ -7713,8 +7718,19 @@ class Runtime:
 
     async def chain_meme_cohort_observer_once(self) -> None:
         from .cohort_experiments import consume_passive_cohort_batch
+        from .dex_trajectory import Engine
+        if not hasattr(self.store, '_dex_trajectory'):
+            self.store._dex_trajectory = Engine(utcnow())
+        trajectory = self.store._dex_trajectory
+        if not hasattr(self.store,'_cohort_flow'):
+            from .rediscovery_funnel import CohortFlow
+            self.store._cohort_flow=CohortFlow()
         funnel = getattr(self.store, '_rediscovery_funnel', None)
         now_mono = asyncio.get_running_loop().time()
+        if now_mono-getattr(self,'_trajectory_saved_at',0)>=15 and self._chain_meme_active_idle().is_set():
+            self.store.set_kv('dex-trajectory:v1',trajectory.snapshot())
+            self.store.set_kv('cohort-flow:v1',self.store._cohort_flow.snapshot())
+            self._trajectory_saved_at=now_mono
         consensus_outcomes=getattr(self.store,'_clone_consensus_outcomes',None)
         if consensus_outcomes is not None and now_mono-consensus_outcomes.last_flush>=15 and self._chain_meme_active_idle().is_set():
             with self.store._lock:
@@ -7823,10 +7839,19 @@ class Runtime:
                     "discovered_at": first_seen, "original_pool": True,
                     "price_usd": snapshot.price_usd, "liquidity_usd": snapshot.liquidity_usd,
                     "volume_5m_usd": snapshot.volume_5m_usd,
+                    "volume_1h_usd": (pair.get('volume') or {}).get('h1'),
+                    "buys_1h": ((pair.get('txns') or {}).get('h1') or {}).get('buys'),
+                    "sells_1h": ((pair.get('txns') or {}).get('h1') or {}).get('sells'),
+                    "fdv_usd": pair.get('fdv'), "provider": snapshot.provider,
+                    "ingested_at": iso(snapshot.ingested_at) if snapshot.ingested_at is not None else None,
                     "pool_age_seconds": age, "buys_5m": snapshot.buys_5m, "sells_5m": snapshot.sells_5m,
                     "is_held": token.token_id in getattr(self, "_pattern_held_tokens", set())})
                 quotes[identity] = (token, snapshot)
             now = utcnow()
+            fresh_trajectory = set()
+            for frame in frames:
+                if trajectory.accept(frame,now) is not None:
+                    fresh_trajectory.add((frame['token_id'],frame['pair_address']))
             state, signals = consume_passive_cohort_batch(frames, state, now=now,
                 activated_at=self._cohort_started_at, closed_leaders=closures, already_bought=bought,
                 min_pool_liquidity_usd=getattr(self, "_chain_paper_execution", {}).get(
@@ -7855,6 +7880,8 @@ class Runtime:
             # Existing passive batches deliver classifier/event signals to the
             # same durable cohort claim, safety wait and next-frame executor.
             for identity in quotes:
+                if identity in fresh_trajectory:
+                    signals.setdefault(identity,{}).update(trajectory.signals_for(*identity,now))
                 for producer in (getattr(self.store,'_microstructure119',None),
                                  getattr(self.store,'_event_clone_shadow',None)):
                     if producer is not None:
@@ -8952,6 +8979,17 @@ class Runtime:
                 pass
 
     async def run_forever(self) -> None:
+        if self.chain_meme_trader_only:
+            version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION
+            registration=self.store._chain_meme_trader_registration(version)
+            definition=self.store._chain_meme_trader_effective_definition(version,registration['definition_json'])
+            source=Path(__file__).parent
+            names=('runtime.py','store.py','native_execution.py','cohort_experiments.py','dex_trajectory.py',
+                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py')
+            self.store.set_kv('runtime-loaded-manifest',dict(started_at=iso(),pid=os.getpid(),definition_version=version,
+                policy_arm_ids=[p['arm_id'] for p in definition['policies']],
+                source_sha256={name:hashlib.sha256((source/name).read_bytes()).hexdigest() for name in names},
+                meaning='process startup receipt; current entry controls and natural fills remain separate'))
         bridge_cfg = self.config["bridge"]
         if bridge_cfg.get("enabled", True) and not self.chain_meme_trader_only:
             self.bridge = BrowserBridge(

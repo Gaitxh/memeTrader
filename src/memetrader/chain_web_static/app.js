@@ -393,7 +393,11 @@ function explanationList(items,empty='UNKNOWN'){
 function strategyExplanationMarkup(family,opened=false){
   const logic=family?.strategy_logic||{},lifecycle=logic.lifecycle_explanation||{},lineage=logic.lineage||{};
   const field=(label,value)=>`<dt>${esc(label)}</dt><dd>${esc(value||'UNKNOWN')}</dd>`;
+  const manifest=performance?.execution_diagnostics?.['runtime-loaded-manifest'];
+  const arms=family?.active_arm_ids||[], loaded=manifest&&arms.length?arms.every(a=>manifest.policy_arm_ids?.includes(a)):null;
+  const account=family?.realtime_account||{};
   return `<details class="strategy-explanation" ${opened?'open':''}><summary>详细规则与证据（点击展开）</summary><div class="strategy-explanation-body">
+    <section><h4>实际交付状态</h4><dl class="strategy-explanation-meta">${field('注册',arms.length?'当前资金周期已注册':'历史 / UNKNOWN')}${field('本次进程加载',loaded===null?'UNKNOWN':loaded?'已加载 '+time(manifest.started_at,true):'本次启动清单未包含')}${field('自然成交',`开放 ${account.open_position_count??'UNKNOWN'} / 终局 ${account.terminal_position_count??'UNKNOWN'}`)}</dl><p>已加载不表示已经形成信号或成交；新实验的盈利能力仍待前向样本验证。</p></section>
     <section><h4>策略目的</h4><p>${esc(logic.purpose||'UNKNOWN')}</p></section>
     <section><h4>入场规则</h4>${explanationList(logic.entry_rules)}<h4>入场顺序</h4>${explanationList(logic.entry_sequence)}</section>
     <section><h4>退出规则</h4>${explanationList(logic.exit_rules)}<h4>数据要求</h4>${explanationList(logic.data_requirements)}<h4>风险控制</h4>${explanationList(logic.risk_controls)}</section>
@@ -533,6 +537,9 @@ function renderUniverse(){
   const funnel=funnelRows.length?funnelRows.reduce((total,row)=>({admitted:total.admitted+Number(row.admitted||0),rejected:total.rejected+Number(row.rejected||0)}),{admitted:0,rejected:0}):null;
   const safetyCounts=state?.trading?.safety_counts||state?.safety_counts||discoveryView?.safety_counts;
   const safety=safetyCounts&&typeof safetyCounts==='object'?['REJECT','WAIT','UNKNOWN'].map(key=>`${key} ${safetyCounts[key]??safetyCounts[key.toLowerCase()]??'UNKNOWN'}`).join(' / '):'UNKNOWN';
+  const diagnostic=performance?.execution_diagnostics||{}, trajectory=diagnostic['dex-trajectory:v1'], flow=diagnostic['cohort-flow:v1'];
+  const flowCounts=flow?.counts||{}, native=diagnostic['native-paper:last-held'];
+  const authorized=flowCounts.SAFETY_AUTHORIZED||0;
   $('#universe-summary').innerHTML=[
     ['策略族总数',allFamilies.length,`列表当前显示 ${families.length} 个；评估计数覆盖全部策略族`],
     ['前向运行',active,inactive?`${inactive} 个当前未运行`:`${replicas} 个历史规则 · ${successors} 个 DexScreener 继承策略`],
@@ -544,7 +551,9 @@ function renderUniverse(){
     ['应用与退出 p95',applyLatency==null?'UNKNOWN':`${Number(applyLatency).toFixed(3)} 秒`,'held_apply_exit；不同于网络抓取延迟'],
     ['被动队列丢弃',passiveDrops==null?'UNKNOWN':passiveDrops,performance?'仅已记录的被动队列丢弃':'尚未读取性能快照'],
     ['安全判定',safety,safety==='UNKNOWN'?'没有已加载的安全 REJECT/WAIT 计数':'已有聚合计数；不从逐策略结果相加'],
-    ['信号 → 安全 → BUY','UNKNOWN','没有可证明的去重串联计数；不从逐策略扇出相加'],
+    ['后帧准入 → 安全授权 → BUY',flow?`${flowCounts.admitted_after_next_frame||0} / ${authorized} / ${flowCounts.BUY||0}`:'UNKNOWN',flow?`本进程实际共同入场 cohort 去重；起点 ${time(flow.started_at)}，缺失/过期关联 ${flow.evicted}；不含原生路径`:'尚无本进程串联收据'],
+    ['Dex 连续特征',trajectory?`${trajectory.pools} 原池 / ${trajectory.counts?.distinct_frames||0} 帧`:'UNKNOWN',trajectory?'共享特征，无额外行情请求；不足时长和不连续窗口保持未知':'等待进程加载或自然观察'],
+    ['原生持仓退出',native?.status||'UNKNOWN',native?`${native.quote_reason||native.quote_status||'UNKNOWN'} · ${time(native.recorded_at)}；退出意图不等于已成交`:'原生退出独立报告；不得用普通 held=0推断无原生持仓'],
     ['现有漏斗',funnel?`${funnel.admitted} / ${funnel.rejected}`:'UNKNOWN',funnel?'账户级放行 / 拒绝；非独立Token、非成交' :'仅使用当前已加载漏斗数据'],
     ['策略宇宙快照',time(universe.generated_at,true),'该汇总可能早于当前实时状态；性能与发现数据各自按其加载时间更新'],
   ].map(([k,v,n])=>`<article class="summary-card"><span>${esc(k)}</span><strong>${esc(v)}</strong><small>${esc(n)}</small></article>`).join('');

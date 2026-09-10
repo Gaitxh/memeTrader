@@ -34,9 +34,8 @@ def value_checkpoint(case, positions, mark, now):
     if not compatible:return None,'FAMILY_PRIORITY_SKIP'
     recovered=any(p.get('principal_recovered')==1 and int(p.get('amount_raw') or 0)>0
         and p.get('realized_proceeds_usd',0)>=p.get('stake_usd',0)>0 for p in compatible)
-    # Local metadata/X references have no verified event authority. Until a causal
-    # credible-event producer is available, do not enable the optional early path.
-    if not recovered:return None,'VALUE_NOT_YET_RECOVERED'
+    event=case.get('authoritative_lead')
+    if not recovered and not event:return None,'VALUE_NOT_YET_RECOVERED'
     try:
         m=dict(mark or {});pool=str(m['pair_address']);expected=str(case['pool'])
         if not case['token_id'].startswith('solana:'):pool,expected=pool.lower(),expected.lower()
@@ -48,6 +47,14 @@ def value_checkpoint(case, positions, mark, now):
     if not healthy:return None,'LOCAL_MARK_NOT_HEALTHY'
     if sum(v in ('DISPATCHED','COMPLETE','RUNTIME_INTERRUPTED') for v in case['points'].values())>=3:
         return None,'CASE_BUDGET'
+    if not recovered:
+        if not (parse_time(case['opened_at'])<=parse_time(event['published_at'])<=parse_time(event['available_at'])<now
+                and (now-parse_time(event['available_at'])).total_seconds()<=900):
+            return None,'NO_FRESH_AUTHORITATIVE_EVENT'
+        if 'event139:first' not in case['points']:return 'event139:first','AUTHORITATIVE_EVENT_TRIGGERED'
+        if 'event139:verify' not in case['points'] and pending_scout_leads(case,now):
+            return 'event139:verify','AUTHORITATIVE_EVENT_LATER_VERIFICATION'
+        return None,'VALUE_NOT_YET_RECOVERED'
     if 'value110:recovery' not in case['points']:return 'value110:recovery','RECOVERY_TRIGGERED'
     if case.get('previous',{}).get('state') not in ('EMERGING','CONFIRMED_EXPANDING') and not (case.get('previous',{}).get('state')=='UNKNOWN' and pending_scout_leads(case,now)):
         return None,'NO_CONSTRUCTIVE_EVIDENCE'
@@ -57,6 +64,26 @@ def value_checkpoint(case, positions, mark, now):
         if cp not in case['points'] and (now-started).total_seconds()>=due:
             return cp,'CONSTRUCTIVE_CHECKPOINT'
     return None,'CHECKPOINT_NOT_DUE'
+
+
+def authoritative_local_lead(db,version,case,now):
+    """Existing first-party exact-CA receipt; a research lead, never hold proof."""
+    for row in db.execute("SELECT id,observed_at,recorded_at,payload_json FROM chain_meme_pattern_evidence "
+        "WHERE definition_version=? AND token_id=? AND pair_address='' AND kind='authoritative_event' ORDER BY id DESC LIMIT 8",
+        (version,case['token_id'])):
+        try:
+            e=json.loads(row['payload_json']);chain,address=case['token_id'].split(':',1)
+            actual=str(e.get('contract_address',''))
+            if chain!='solana':actual,address=actual.lower(),address.lower()
+            host=urlparse(e['url']).hostname
+            if (e.get('source_kind')=='first_party' and e.get('event_type')=='official_listing'
+                and e.get('chain')==chain and actual==address and host in ('www.okx.com','www.kucoin.com','okx.com','kucoin.com')
+                and parse_time(case['opened_at'])<=parse_time(e['published_at'])<=parse_time(row['observed_at'])<=parse_time(row['recorded_at'])<now
+                and (now-parse_time(row['recorded_at'])).total_seconds()<=900):
+                return dict(evidence_id=row['id'],url=e['url'],published_at=e['published_at'],available_at=row['recorded_at'],
+                    token_id=case['token_id'],trust='FIRST_PARTY_EXACT_CA_RESEARCH_LEAD_NOT_NARRATIVE_CONFIRMATION')
+        except (KeyError,TypeError,ValueError):continue
+    return None
 
 def local_social_leads(db,token_id,since,now):
     """Bounded local hints, never verified sources or same-checkpoint evidence."""
@@ -251,6 +278,9 @@ class NarrativeHold:
                 self.record(case,'skip',{'checkpoint':'closed','reason':'NO_OPEN_POSITION'},now)
                 self.state['cases'].pop(key);self.state['latest'].pop(key,None);self.save();continue
             mark=self.store.db.execute('SELECT * FROM chain_meme_trader_market_marks WHERE token_id=?',(case['token_id'],)).fetchone()
+            if (now-parse_time(case.get('event_checked_at') or case['opened_at'])).total_seconds()>=60:
+                case['authoritative_lead']=authoritative_local_lead(self.store.db,self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,case,now)
+                case['event_checked_at']=iso(now)
             cp,admission=value_checkpoint(case,positions,mark,now)
             if cp is None:
                 if case.get('last_admission')!=admission:
@@ -284,6 +314,7 @@ class NarrativeHold:
                 previous=case.get('previous')
                 since=parse_time(previous['cutoff'] if previous else case['opened_at'])
                 case['local_leads']=local_social_leads(self.store.db,case['token_id'],since,now)
+                if case.get('authoritative_lead'):case['local_leads'].append(case['authoritative_lead'])
                 if case['local_leads']:
                     self.record(case,'local_leads',{'checkpoint':cp,'cutoff':iso(now),'leads':case['local_leads']},now)
                 if not self.r._chain_meme_active_idle().is_set():return

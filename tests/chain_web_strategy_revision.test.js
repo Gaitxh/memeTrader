@@ -67,7 +67,10 @@ assert.match(app,/activeResults\.positive/);
 assert.match(app,/heldValue\('held_fetch'\)/);
 assert.match(app,/heldValue\('held_apply_exit'\)/);
 assert.match(app,/\['安全判定',safety/);
-assert.match(app,/\['信号 → 安全 → BUY','UNKNOWN'/);
+assert.match(app,/\['后帧准入 → 安全授权 → BUY'/);
+assert.match(explanation,/实际交付状态/);
+assert.match(explanation,/UNKNOWN/);
+assert.match(app,/runtime-loaded-manifest/);
 assert.match(app,/strategy\.max_hold_minutes==null\?'UNKNOWN'/);
 assert.match(app,/\['现有漏斗'/);
 

@@ -1,8 +1,9 @@
 """Deterministic display projection of effective/frozen contracts; no database access."""
 import json
 
-ASSESSMENTS = ('ACTIVE','FAILED','EXPERIMENT_COMPLETE_POSITIVE','DUPLICATE_SUPERSEDED','DATA_BLOCKED','INSUFFICIENT')
+ASSESSMENTS = ('ACTIVE','FAILED','EXPERIMENT_COMPLETE_POSITIVE','DUPLICATE_SUPERSEDED','DATA_BLOCKED','INSUFFICIENT','ENGINEERING_CONTAMINATED')
 LABELS = {'ACTIVE':'正在前向验证；运行状态不代表已证实盈利。','FAILED':'已有评估记录将该实验归为失败；范围以证据记录为准。','EXPERIMENT_COMPLETE_POSITIVE':'正收益实验已完成，不是失败；暂停新增资本与历史盈利并不矛盾。','DUPLICATE_SUPERSEDED':'重复行为或已被代表策略替代；保留历史和对照价值。','DATA_BLOCKED':'当前数据输入不足以支持原规则，不通过放宽规则制造样本。','INSUFFICIENT':'尚无足够评估证据；不能据暂停状态推断失败。'}
+LABELS['ENGINEERING_CONTAMINATED']='已标记工程污染；保留账本并单独解释受影响样本，不将其直接判为策略失败。'
 PARAMS = {'min_age_seconds':'池龄至少（秒）','max_age_seconds':'池龄最多（秒）','min_liquidity_usd':'流动性至少（美元）','max_liquidity_usd':'流动性最多（美元）','min_rate_acceleration':'活动速率加速度至少','cooling_retrace_fraction':'冷却回撤比例','max_gap_seconds':'有效观察最大间隔（秒）','min_volume_5m_usd':'5分钟成交额至少（美元）','min_buys_5m':'5分钟买入笔数至少','min_buy_share':'买入笔数占比至少','max_concurrent_positions':'同时持仓上限','minimum_candidates':'候选数量下限','direction':'条件分支','control':'是否对照分支','opportunity':'机会/入场次数约束','occupied_signal_policy':'已有仓位时的信号处理','contract':'冻结规则版本'}
 VALUES = {'age_rate':'按池龄归一化活动速率','reject_without_queue_or_replay':'拒绝当前信号，不排队或历史重放','first_common_eligible_frame_per_pool':'每池首次共同满足条件的观察','next_observation':'下一有效观察'}
 
@@ -26,6 +27,9 @@ def strategy_logic(policy, family, control=None, *, current=False):
     pause=c.get('reason') or p.get('entry_pause_reason') or p.get('stop_reason') or family.get('stop_reason') or 'UNKNOWN：未提供原始暂停依据。'
     evidence=p.get('assessment_evidence') or c.get('assessment_evidence') or family.get('assessment_evidence') or 'UNKNOWN：未提供评估工件。'
     entry=[f"入场机制：{value(p.get('entry_family') or family.get('entry_family'))}"]
+    if p.get('feature_contract')=='dex-trajectory/v1':
+        rules=p.get('trajectory_rules') or {}
+        entry.extend([rules.get('common','UNKNOWN'),rules.get(p.get('feature_hypothesis'),'UNKNOWN')])
     entry += [f'{PARAMS.get(k,"冻结条件 "+k)}：{value(v)}' for k,v in f.items()]
     for k,label in [('entry_gate','候选准入通道'),('entry_match_mode','信号匹配方式'),('source_entry_family','复用的入场机制')]:
         if k in p:entry.append(f'{label}：{value(p[k])}')
@@ -35,6 +39,11 @@ def strategy_logic(policy, family, control=None, *, current=False):
     sequence.append('最终 BUY 共用安全门：拒绝或等待不能当作通过；这是当前执行约束，不补写历史' if current else '历史安全/成交约束只以该版本冻结合同为准，不能套用今日规则')
     sequence.append('Paper 按成交时有效成本模型和可用资金结算；展示信号不代表已 BUY')
     exits=[]
+    if p.get('trajectory_exit'):
+        exits.append({'velocity':'买后30秒价格速度与加速度转负、滚动活动与流动性同时下降时申请退出。',
+            'liquidity_divergence':'买后30秒价格仍上涨、流动性下降超过双边摩擦尺度时申请退出。',
+            'blowoff':'买后30秒价格大幅上涨但减速、成交额和笔数仍扩大时申请退出。'}.get(p['trajectory_exit'],'UNKNOWN'))
+        exits.append('只使用新鲜买后原池观察；机械止损/追踪/最大持有仍保留；后续有效行情才结算。')
     for k,label in [('hard_stop_return','硬止损收益阈值（计价口径见退出合同）'),('trailing_activate_return','追踪退出激活收益阈值'),('trailing_drawdown','激活后追踪回撤阈值')]:
         if k in p:exits.append(f'{label}：{pct(p[k])}')
     if 'max_hold_minutes' in p:exits.append(f"普通最长持仓：{value(p['max_hold_minutes'])} 分钟（特殊 overlay 另列）")

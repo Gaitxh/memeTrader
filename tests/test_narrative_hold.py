@@ -54,6 +54,7 @@ def test_value_wait_reconsiders_recovery_without_spending_or_burning_checkpoint(
     async def research(case,cp,*args):calls.append(cp);case['points'][cp]='COMPLETE'
     n.research=research
     monkeypatch.setattr('memetrader.narrative_hold.local_social_leads',lambda *a:[])
+    monkeypatch.setattr('memetrader.narrative_hold.authoritative_local_lead',lambda *a:None)
     asyncio.run(n.once());asyncio.run(n.once())
     assert calls==[] and case['points']=={} and n.state['calls']==0
     assert n.state['admission_counts']['VALUE_NOT_YET_RECOVERED']==1
@@ -250,3 +251,27 @@ def test_legacy_untyped_confirmation_is_not_extension_authority():
     # Even a former CONFIRMED_EXPANDING needs the new typed evidence contract.
     now=utcnow()
     assert not extension_allowed({},dict(state='CONFIRMED_EXPANDING',evidence_id=1),now)
+
+
+def test_existing_authoritative_event_can_trigger_research_but_not_hold(tmp_path):
+    from memetrader.store import Store
+    from memetrader.narrative_hold import authoritative_local_lead
+    import json
+    s=Store(tmp_path/'event.sqlite3',initial_cash_usd=1000);now=utcnow()
+    case=dict(token_id='bsc:0x123',pool='pool',opened_at=iso(now-timedelta(minutes=3)),points={},leads=[])
+    event=dict(chain='bsc',contract_address='0x123',source_kind='first_party',event_type='official_listing',
+        published_at=iso(now-timedelta(minutes=1)),url='https://www.okx.com/help/listing')
+    sql="INSERT INTO chain_meme_pattern_evidence(definition_version,token_id,pair_address,kind,source_key,observed_at,recorded_at,payload_json) VALUES(?,?,?,?,?,?,?,?)"
+    s.db.execute(sql,('v',case['token_id'],'','authoritative_event','fixture',iso(now-timedelta(seconds=2)),iso(now-timedelta(seconds=1)),json.dumps(event)))
+    lead=authoritative_local_lead(s.db,'v',case,now);assert lead['evidence_id']
+    plan=s.db.execute("EXPLAIN QUERY PLAN SELECT id FROM chain_meme_pattern_evidence WHERE definition_version=? AND token_id=? AND pair_address='' AND kind='authoritative_event' ORDER BY id DESC LIMIT 8",('v',case['token_id'])).fetchall()
+    assert any('chain_meme_pattern_evidence_lookup' in r[3] for r in plan)
+    p=dict(arm_id=ARM,principal_recovered=0,amount_raw='10',realized_proceeds_usd=0,stake_usd=5)
+    mark=dict(pair_address='pool',status='VISIBLE',liquidity_usd=2000,price_usd=1,observed_at=iso(now),recorded_at=iso(now))
+    case['authoritative_lead']=lead
+    assert value_checkpoint(case,[p],mark,now)==('event139:first','AUTHORITATIVE_EVENT_TRIGGERED')
+    assert not extension_allowed(p,lead,now)
+    assert authoritative_local_lead(s.db,'v',case,now-timedelta(seconds=1)) is None
+    event['contract_address']='0x999';s.db.execute('UPDATE chain_meme_pattern_evidence SET payload_json=?',(json.dumps(event),))
+    assert authoritative_local_lead(s.db,'v',case,now) is None
+    s.close()

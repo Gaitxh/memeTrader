@@ -209,6 +209,8 @@ def cohort_experiment_policies() -> list[dict[str, Any]]:
             'max_concurrent_positions':4,'narrative_hold_v2':True}
         policies.append(policy)
     policies.append(synthetic_harvest_policy(policies[2]))
+    from .dex_trajectory import policies as trajectory_policies
+    policies.extend(trajectory_policies(policies[2]))
     return policies
 
 

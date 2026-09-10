@@ -850,6 +850,9 @@ class ChainWebData:
             Store.CHAIN_MEME_TRADER_V22_VERSION, Store.CHAIN_MEME_TRADER_V21_VERSION,
             Store.CHAIN_MEME_TRADER_V20_VERSION)))
         with self._connect() as connection:
+            diagnostic_keys=('runtime-loaded-manifest','dex-trajectory:v1','native-paper:last-held','rediscovery-funnel94','cohort-flow:v1')
+            diagnostics={r['key']:json.loads(r['value_json']) for r in connection.execute(
+                "SELECT key,value_json FROM kv WHERE key IN (?,?,?,?,?)",diagnostic_keys)}
             exists = connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_timing_latest'"
             ).fetchone()
@@ -901,6 +904,7 @@ class ChainWebData:
                           "age_max_seconds": ages[-1] if ages else None,
                           "receipt_age_max_seconds": max(receipt_ages) if receipt_ages else None})
         return {"status": "ok", "generated_at": iso(now),
+                "execution_diagnostics":diagnostics,
                 "timing": json.loads(row["payload_json"]) if row else None,
                 "timing_recorded_at": row["recorded_at"] if row else None,
                 "held_by_chain": by_chain, "held_age_basis": "oldest_required_entry_pool_observed_at_per_token", "sources": sources,

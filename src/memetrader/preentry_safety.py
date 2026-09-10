@@ -209,6 +209,10 @@ class PreentrySafety:
         return assess_behavior(rows['vault_frame'],token_id=item['token_id'],pool=item['pool'],now=now)
 
     def record(self,item,status,assessment=None):
+        flow=getattr(self.store,'_cohort_flow',None)
+        if flow is not None:
+            flow.hit(item['version'],item['cohort_id'],status,utcnow())
+            if status.startswith('BUY_AUTHORIZED_'):flow.hit(item['version'],item['cohort_id'],'SAFETY_AUTHORIZED',utcnow())
         micro=getattr(self.store,'_microstructure119',None)
         if micro is not None:micro.note_safety(item,status,assessment)
         now=iso();payload={**item,'safety_status':status,'assessment':assessment,
