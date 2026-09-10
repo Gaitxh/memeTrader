@@ -1,4 +1,12 @@
-# Current145 — contract review corrected and loaded
+# Current146 — causal learner fixes loaded; first natural BUY/SELL
+
+ACK/RESULT C2C-20260911-146-EXACT-DELIVERY-FIXES. c079df4 core loaded19:04:54.659988Z/PID34616,13/13SHA; Web40ad14e served exactly. A-D fixed with actual source/Store regressions. New independent320 `trajectory146_learned_mode_selector_v1` is2U/max2, registered snapshot2823167; v5 includes known floor=-1 model utility, excludes NO_SIGNAL publishing, requires full fresh target sample after rollback. Old317v3 and all319 prior policy/funding digests unchanged; v4 KV preserved, not relabeled. Recipe economic status is implemented, not hardcoded0. Full A-G: STRATEGY_DELIVERY_RESULT_146.md.
+
+19:08:46Z v5 baseline/releases0,8episodes/7strict anchors/3signals,1actualBUY+terminal:cohort95063/fill94507,2U hard-stop-0.429993536U, same fixed-baseline delta0/N1.318 shares this actual source fill;319 prior-.222084U/delta0. No learned promotion, AUTO_GENERATED recipe, positive economic promotion or natural extended-hold treatment yet. These remain evidence conditions, not missing delivery.37+10 Python cases and Node PASS; no fixture entered production.
+
+Current4open/3held,heldp952.641s/apply65.1ms/queue2.885s,drops0/pool0/connect0; cold-start variance retained in report, no causal speedup/longrun claim. Paper/Live locked/original funding intact. C3 extra batch disabled pending natural resource evidence. Agent/ModeChat expansion/case rescans deferred. Existing START_MEMETRADER.cmd remains one-stop startup. Exact UI source/API search/filter/BASELINE readback passed; latest browser typed-search not asserted. Do not redo145/native143 or resurrect withdrawn rules. Read ONE current versioned resume.
+
+## Historical145 cutoff — superseded only by explicit146 corrections above
 
 ACK/RESULT C2C-20260911-145-CONTRACT-REVIEW:008c1be loaded18:39:50Z/PID15392,13/13hash+servedJS match.317 restored to its original v3 selection/training/release contract; unchanged exact policy row/hash522e63a8eb83ecbd. Separatev4 remains research-only, NO_MATCHED_BASELINE unless real frozen fixed-priority equal-entry terminals exist. Rollback blocks same-flush/restart re-release until new post-rollback same-group evidence; UI exact signal/horizon/provenance fixes passed.29 targeted Python cases+Node PASS;319policies/25registrations/funding hashes unchanged, Live locked.
 

@@ -2,6 +2,21 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260911-delivery146",
+      "recorded_at": "2026-09-10T19:08:46.542448Z",
+      "title": "146 因果学习修复与独立可交易模式选择",
+      "problem": "无信号可占发布位、已知池底未计模型损失、回退可重用旧证据、缺USD回执被结果回调屏蔽。",
+      "change": "v5独立经济语义及状态、可交易mode白名单、完整新目标样本恢复资格、真实缺USD学习回调；新增320独立2U/max2策略，保留317v3和145seeds。recipe经济状态与独立UI分母可见。",
+      "rationale": "严格分离模型代理、真实成交、已知损失、UNKNOWN删失和旧冻结合同。",
+      "validation": "37源/学习/Store回归+10recipe测试与Node通过；13/13运行hash/servedJS一致。自然cohort95063 BUY->hard-stop SELL -0.429994U，同基线delta0/N1；不是盈利证明。",
+      "scope": "LOADED; Paper-only/Live locked;原319policy/25registration/funding摘要不变。模型仍BASELINE，recipe INSUFFICIENT；C3/Agent延期。",
+      "commit": "c079df4",
+      "web_commit": "40ad14e",
+      "loaded_at": "2026-09-10T19:04:54.659988Z",
+      "visible_entry": "http://127.0.0.1:8790/#/strategies — #320 / 本轮146 / BASELINE及独立漏斗",
+      "report": "docs/PROJECT_CONTEXT/STRATEGY_DELIVERY_RESULT_146.md"
+    },
+    {
       "id": "20260911-delivery145",
       "recorded_at": "2026-09-10T18:08:49.077290+00:00",
       "title": "145 strategy delivery and frozen learner contract correction",

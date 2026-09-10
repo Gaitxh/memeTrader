@@ -1,5 +1,7 @@
 # Executable delivery145
 
+**Current146 reconciliation:** [STRATEGY_DELIVERY_RESULT_146.md](STRATEGY_DELIVERY_RESULT_146.md) is the latest A–G status. c079df4 loaded19:04:54Z/13hash and Web40ad14e served; new independent320v5 trades without changing317v3. Missing-USD outcome routing, floor-inclusive model economics, nontradable controls and fresh post-rollback sample fixed. Both145seeds now have one actual same-fill terminal; recipe economic status implemented but both INSUFFICIENT. No natural trend extension/model release/automatic recipe/economic promotion; C3 remains conditional. All dated145 tables below are historical cutoffs, not instructions to reimplement or a current claim that only research learning exists.
+
 ACK `C2C-20260911-145-EXECUTABLE-COMPLETION`. Root Codex is the sole production writer. Scope is all A–G of `DELIVERY_COMPLETION_145_EXECUTION.md`; Agent trading/research remains deferred. No reset, replay, Live enablement, funding-period replacement, native143 redo or39-case scan.
 
 ## Current engineering boundary
