@@ -187,7 +187,10 @@ class MicrostructureWorker:
                         and start<=observed<=parse_time(r['ingested_at'] or r['observed_at'])<=recorded<=end):
                         frames.append(dict(token_id=item['token_id'],pool=item['pool'],observed_at=iso(observed),
                             recorded_at=iso(recorded),price_usd=r['price_usd'],liquidity_usd=r['liquidity_usd']))
-                if len(frames)>=2 and (end-parse_time(frames[-1]['observed_at'])).total_seconds()<=30:
+                # Provider/observer copies are one observation, not a trajectory.
+                # Optional price endpoints must never collapse the signed-flow window.
+                frames=list({f['observed_at']:f for f in frames}.values())
+                if len(frames)>=2 and parse_time(frames[0]['observed_at'])<parse_time(frames[-1]['observed_at']) and (end-parse_time(frames[-1]['observed_at'])).total_seconds()<=30:
                     start=parse_time(frames[0]['observed_at']);end=parse_time(frames[-1]['observed_at'])
                 else:frames=[]
                 async with asyncio.timeout(3):

@@ -210,6 +210,54 @@ def test_worker_rare_queue_dedup_no_network_in_enqueue_and_passive_expiry():
     asyncio.run(run())
 
 
+@pytest.mark.parametrize('distinct',[False,True])
+def test_worker_copied_observations_do_not_destroy_flow_window(monkeypatch,distinct):
+    import json
+    from threading import RLock
+    from types import SimpleNamespace
+    from memetrader import microstructure_shadow_worker as module
+    from memetrader.models import iso
+    end=T+timedelta(seconds=30)
+    observed=end-timedelta(seconds=1)
+    rows=[dict(observed_at=iso(observed),ingested_at=iso(observed),recorded_at=iso(observed),
+               price_usd=1,liquidity_usd=2000,raw_json=json.dumps({'pairAddress':POOL})) for _ in range(2)]
+    if distinct:rows[-1]['observed_at']=iso(T)
+    class DB:
+        def __enter__(self):return self
+        def __exit__(self,*a):pass
+        def execute(self,sql,args):return SimpleNamespace(fetchall=lambda:rows)
+    class Store:
+        db=DB();_lock=RLock()
+        def get_kv(self,*a):return {}
+        def record_chain_meme_pattern_evidence(self,*a,**kw):return 1
+    monkeypatch.setattr(module,'utcnow',lambda:T+timedelta(seconds=60))
+    seen={}
+    original=module.classify_page
+    def classify(page,**kwargs):
+        seen.update(kwargs)
+        return original(page,**kwargs)
+    monkeypatch.setattr(module,'classify_page',classify)
+    async def run():
+        idle=asyncio.Event();idle.set();worker=module.MicrostructureWorker(Store(),Http(),lambda:idle)
+        data=[dict(id=str(i),attributes=dict(from_token_address='0xquote',to_token_address='0xabc',
+            tx_from_address=str(i),volume_in_usd='100',kind='buy',
+            block_timestamp=iso(T+timedelta(seconds=i)))) for i in [40,5,4,3,2,1,0,-600]]
+        async def fetch(*args):return dict(payload={'data':data},received_at=iso(T+timedelta(seconds=60)))
+        worker.client.fetch=fetch
+        worker.pending['one']=dict(version='v',token_id=TOKEN,pool=POOL,requested_at=iso(end),
+            expires_at=iso(T+timedelta(seconds=120)),arms=['organic_early_flow_v1'],early=True)
+        await worker.work()
+        result=worker.recent[TOKEN+'|'+POOL]
+        assert result['state']=='ORGANIC_BREADTH_NET_BUY',result
+        assert seen['window_start']<seen['window_end']
+        if distinct:
+            assert len(seen['price_frames'])==2 and seen['window_start']==T
+        else:
+            assert seen['price_frames']==[]
+            assert seen['window_start']==end-timedelta(minutes=10) and seen['window_end']==end
+    asyncio.run(run())
+
+
 def test_building_is_not_net_sell_and_does_not_expand_entry():
     frames=[dict(token_id=TOKEN,pool=POOL,observed_at=T+timedelta(seconds=i),
                  recorded_at=T+timedelta(seconds=60),price_usd=1+i/30,liquidity_usd=10000)
