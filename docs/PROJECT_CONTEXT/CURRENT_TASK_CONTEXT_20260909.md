@@ -1,3 +1,9 @@
+# Current143 — native waiting position CLOSED after accounting fix
+
+[NATIVE_EXIT_RESOLVED_143.md](NATIVE_EXIT_RESOLVED_143.md): f916668 loaded PID31596. Native94747 closed13:26:18Z, remaining0; final SELL3.38836U, total PnL-0.51853U. Exit math omitted recorded BUY reserve deltas while subtracting SELLs; V2 now consistently uses current public+BUY-SELL. Historical receipts/funding/policies unchanged; no manual/fake fill.142 display fix alone was insufficient, its external-only blocker diagnosis is superseded. Broader141 delivery preserved.
+
+---
+
 # Current narrow update142 — held valuation display fixed
 
 See [HELD_VALUATION_RESULT_142.md](HELD_VALUATION_RESULT_142.md). Web-only repair preserves ordinary mark metadata and uses actual native exit receipts everywhere; native94747 residual capacity remains UNKNOWN, now explicitly explained. Heartbeat read race fixed. Paper40216/funding/Live lock unchanged. The existing revision15 packet remains the broader141 strategy checkpoint; this display fix does not reopen completed work.
