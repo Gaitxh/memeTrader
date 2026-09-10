@@ -61,3 +61,40 @@ def test_same_recorded_frame_cannot_overwrite_last_frame_or_entry():
  stale=frame(1,price=200);stale['recorded_at']=at(3)
  assert observe(s,episode_key='a',frame=stale,now=at(3))['status']=='ignored_noncausal_or_identity'
  assert s['episodes']['a']['entry']['price_usd']==2
+
+def test_dense_delayed_labels_freeze_entry_and_train_each_horizon_once():
+ s=initialize();cap(s)
+ # Historical receipt times remain distinct from this delayed computation time.
+ for second in range(1,391):
+  observe(s,episode_key='a',frame=frame(second,price=1 if second==1 else 2),now=at(390))
+ e=s['episodes']['a'];label=e['results']['5']
+ assert e['entry']['observed_at']==at(1) and e['entry']['price_usd']==1
+ assert label['target']['recorded_at']==at(301)
+ assert datetime.fromisoformat(label['available_at'])==T+timedelta(seconds=390)
+ assert label['raw_return']==1
+ assert label['costed_return']==pytest.approx(2*.96/1.04-1)
+ assert train(s,cutoff_at=at(389))['consumed']==0
+ assert train(s,cutoff_at=at(390))['consumed']==1
+ s=json.loads(json.dumps(s))
+ assert train(s,cutoff_at=at(390))['consumed']==0
+ for second in range(391,3602,30):
+  observe(s,episode_key='a',frame=frame(second),now=at(second))
+ assert train(s,cutoff_at=at(3602))['consumed']==2
+ assert not s['episodes'] and s['recent'][0]['results']['5']['entry']['price_usd']==1
+ assert set(s['groups'])=={'bsc|0_300|fast|'+str(h) for h in (5,15,60)}
+ for group in s['groups'].values():
+  assert len(group['returns'])==1
+  assert group['returns'][0]['return']==pytest.approx(2*.96/1.04-1)
+ # Retained recent labels are audit history, never training input after restart.
+ assert train(json.loads(json.dumps(s)),cutoff_at=at(3603))['consumed']==0
+
+@pytest.mark.parametrize('price',[0,-1,float('nan'),float('inf')])
+def test_nonfinite_or_nonpositive_entry_and_target_remain_unknown(price):
+ s=initialize();cap(s)
+ assert observe(s,episode_key='a',frame=frame(1,price=price),now=at(1))['status']=='ENTRY_UNKNOWN'
+ assert s['episodes']['a']['entry'] is None
+ observe(s,episode_key='a',frame=frame(2),now=at(2))
+ for second in range(32,302,30):
+  observe(s,episode_key='a',frame=frame(second),now=at(second))
+ observe(s,episode_key='a',frame=frame(302,price=price),now=at(302))
+ assert s['episodes']['a']['results']['5']['status']=='UNKNOWN'

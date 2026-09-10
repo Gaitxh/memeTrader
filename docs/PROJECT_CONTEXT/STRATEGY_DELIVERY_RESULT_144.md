@@ -65,3 +65,29 @@ ACK: C2C-20260910-144-NONAGENT-STRATEGIES-LEARNING。唯一生产实施者仍为
 39地址已按要求读取，仅作为Chat并行只读研究案例，未放进规则或模型验证。原16case已完成的47匹配/139回执不重扫；6h覆盖仍UNKNOWN。Agent、浏览器和ModeChat扩建延期。
 
 当前分层状态：**代码/定向链路/注册/加载/有界运行保护已完成；自然交易经济性、15/60分钟覆盖与新模型晋级仍是持续前向观察，不关闭为“已证明盈利”**。工件：`data/research/strategy_delivery144/{before.json,invariants_before.json,historical_training.json,acceptance.json}`。无强制交易、无重置、无历史回填。
+
+## Review144收敛：入口/标签/时钟与一次性训练
+
+ACK `C2C-20260910-144-LEARNING-LABEL-REVIEW`，并合并先前 `C2C-20260910-144-REACHABILITY-REVIEW`，未增加reviewer。
+
+已读取 `STRATEGY144_LEAD_REVIEW.md` 的完整增量。其末段明确记录学习V3接口适配后六项状态迁移回归全部通过；最初80帧滑动entry、回填available_at、raw训练、pending提前删除等属于已被 `0e82bc4` 替换的工作初稿。后续两个真实pool64/future-trend问题由 `b3e9324` 修正。本次当前源码无对应未修复差异，不恢复旧接口或重复重写学习核心。
+
+当前合同逐项对应：
+
+- `capture` 冻结决策、特征与当时成本；`observe` 把首个严格后帧保存在独立 `entry`，不依赖滚动buffer。
+- `finish` 分开保存目标三时钟与真实调用生成时间 `available_at`，`train` 拒绝cutoff晚于可用性要求的反向使用；具体为仅消费 `available_at <= cutoff`。
+- `buy_terms/sell_terms` 计算成本后收益；raw仅供诊断。每个chain/age/mode/horizon独立分组，记录独立token数量。
+- 每个episode的 `learned` horizon和结果一起持久化，只有5/15/60全部处理才移至只读recent历史。训练不遍历recent，不会因其他有界seen集合截断重新消费旧标签。
+- token+原池、observed严格晚于decision/上帧recorded、正有限价格和entry/target floor均在observe校验；缺口/缺价/已观测池底保持UNKNOWN。
+
+本次新增并通过5个定向回归（未重复此前已通过整套检查）：
+
+1. 390个每秒输入、首帧price1以后price2；延迟到t+390计算仍固定entry t+1/price1，5m target t+301/price2，label available t+390。raw=100%，当前4%双边成本回报=84.6153846%。t+389训练消费0，t+390消费1；JSON恢复不重训。
+2. 继续自然时钟fixture至15/60m，每horizon恰好一个净成本样本；全部完成后仍保留审计label，再次JSON恢复训练消费0。
+3. 参数化零/负/NaN/Infinity四项：不能成为入口；不能产生目标OBSERVED标签。
+
+第一项首次断言仅因等价UTC文本 `Z` 与 `+00:00` 比较失败，改为时间值比较后通过；未为通过测试修改生产算法。无实际生产训练、历史重算或模型晋级。
+
+39案例只读初查已完成，作为覆盖诊断保留：37/39本地found、34基础行情合格、16token对应285账户仓位（绝非285独立样本）；8个首个有效池无后帧、18个首后帧间隔>60秒，存在6000快照/2000评估上限与截断。未将名单用于规则、训练或验证总体。
+
+**当前运行边界更新：** 上文15:06Z加载/自然指标是历史验收。用户随后要求重启，实际8790无监听，现有启动器启动操作被工具策略拒绝；本次只读health仍不可用。详见 `SYSTEM_STARTUP_RESULT_20260910.md`。本次只有测试和说明变更，不需要新代码加载；未宣称系统已恢复或已有新的自然学习验收。

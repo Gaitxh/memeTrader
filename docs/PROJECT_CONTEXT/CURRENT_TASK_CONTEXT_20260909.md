@@ -1,3 +1,9 @@
+# Latest runtime/review delta — 144 source accepted, service unavailable
+
+The subsequent user-requested restart was blocked before process creation (`blocked by policy`); current8790 health remains unavailable. `SYSTEM_STARTUP_RESULT_20260910.md` records the tested one-click desktop/project entry and truthful runtime blocker. The prior144 loaded/progress numbers below are historical, not current liveness.
+
+Review144 learning/reachability reconciled against current V3 and the Lead document's own later PASS corrections. Five additional dense/delayed-label and invalid-price regressions pass; no production algorithm/threshold/model change or new promotion. See final section of `STRATEGY_DELIVERY_RESULT_144.md`. Initial drafts must not be restored or reimplemented. Natural144 coverage/economics remains open after service restoration; no new reviewer or repeated proof scan.
+
 # Current144 — nonagent strategies and bounded learning loaded
 
 Latest144 supersedes current Agent/browser/ModeChat expansion priority. [STRATEGY_DELIVERY_RESULT_144.md](STRATEGY_DELIVERY_RESULT_144.md): 0e82bc4+b3e9324 implemented/tested/pushed/loaded. Six independent2U/max2 arms312–317 activated14:58:47Z: early activity, sparse peers, absorption, pure trend, ordered second wave, adaptive available-mode selector. No oldpolicy changes. Actual causal learn loop: at15:06Z 2OBSERVED+3UNKNOWN labels learned once; fixed baseline retained, no model promotion/newBUY yet. Runtime42880 manifest source hashes match; old311policy/25registration/1funding activation hashes unchanged, Paper-only/Live locked. Heldp953.038s/apply36.3ms/passive2.427s,drops0,PoolTimeout0; short-window acceptance not alpha/longrun guarantee.
