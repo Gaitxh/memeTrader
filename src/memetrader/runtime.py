@@ -7236,14 +7236,8 @@ class Runtime:
         evaluate_versions: list[str] | None = None,
     ) -> int:
         """Refresh a de-duplicated target set with fresh 30-token DEX batches."""
-        if not high_priority:
-            priority = getattr(self, "_market_priority_tokens", set())
-            if observe_flat_breakout:
-                # Preserve flat's callback using the next real priority response.
-                self._flat_priority_observe_tokens = (
-                    getattr(self, "_flat_priority_observe_tokens", set()) | {
-                        item["token_id"] for item in targets if item["token_id"] in priority}) & priority
-            targets = [item for item in targets if item["token_id"] not in priority]
+        # A carried position may require a different original pool for the
+        # same token. Token-only priority membership cannot suppress this lane.
         targets_by_chain: dict[str, list[dict[str, Any]]] = {}
         for item in targets:
             targets_by_chain.setdefault(str(item["chain"]).lower(), []).append(item)
@@ -7464,12 +7458,6 @@ class Runtime:
                 self.store.observe_flat_compression_breakout_market_batch(
                     outcomes, recorded_at=received_at,
                 )
-            elif high_priority:
-                waiting = getattr(self, "_flat_priority_observe_tokens", set())
-                shared = [o for o in outcomes if (o.get("target_token_id") or o.get("token_id")) in waiting]
-                if shared:
-                    self.store.observe_flat_compression_breakout_market_batch(shared, recorded_at=received_at)
-                    waiting.difference_update(o.get("target_token_id") or o.get("token_id") for o in shared)
             return refreshed_count
 
         return sum(await asyncio.gather(*(
@@ -7496,7 +7484,6 @@ class Runtime:
         self._pattern_held_tokens = {str(t["token_id"]) for t in targets
             if "OPEN_POSITION" in str(t.get("watch_reason") or "").split(",")}
         self._market_priority_tokens = {str(t["token_id"]) for t in targets}
-        self._flat_priority_observe_tokens = getattr(self, "_flat_priority_observe_tokens", set()) & self._market_priority_tokens
         self._pattern_pending_tokens = self._market_priority_tokens - self._pattern_held_tokens
         self._market_target_counts = target_counts
         if hasattr(self, "runtime_timing"):

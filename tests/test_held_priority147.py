@@ -71,7 +71,7 @@ def test_real_store_expiry_terminal_pool_pending_and_restart(tmp_path):
     reopened.close(); store.close()
 
 
-def test_runtime_separates_open_pending_and_dedupes_low_lane():
+def test_runtime_separates_open_pending_and_preserves_flat_callback():
     async def scenario():
         targets = [{'token_id': 'bsc:held', 'watch_reason': 'OPEN_POSITION,RECENT_DECISION'},
                    {'token_id': 'bsc:fresh', 'watch_reason': 'RECENT_DECISION'},
@@ -92,10 +92,8 @@ def test_runtime_separates_open_pending_and_dedupes_low_lane():
         assert r._pattern_pending_tokens == {'bsc:fresh', 'bsc:sell'}
         assert len(seen) == 3
         assert r.runtime_timing.snapshot()['held_retrieval']['target_supply']['actual_open'] == 1
-        # Filter happens before networking/idle/snapshot calls; pending is not fetched twice.
-        assert await Runtime._refresh_chain_meme_market_marks(r, targets,
-            heartbeat_name='low-test', high_priority=False, observe_flat_breakout=True) == 0
-        assert r._flat_priority_observe_tokens == r._market_priority_tokens
+        idle = asyncio.Event(); idle.set()
+        r._chain_meme_active_idle = lambda: idle
         from memetrader.models import TokenSnapshot, utcnow
         async def quoted(chain, addresses, **kwargs):
             now = utcnow()
@@ -107,9 +105,32 @@ def test_runtime_separates_open_pending_and_dedupes_low_lane():
         r.store.apply_chain_meme_trader_market_mark_batch = lambda outcomes, **kw: len(outcomes)
         r.store.observe_flat_compression_breakout_market_batch = lambda outcomes, **kw: callbacks.extend(outcomes)
         assert await Runtime._refresh_chain_meme_market_marks(r,targets,
-            heartbeat_name='primary-test',high_priority=True) == 3
+            heartbeat_name='low-test',high_priority=False,observe_flat_breakout=True) == 3
         assert {o.get('target_token_id') or o.get('token_id') for o in callbacks} == r._market_priority_tokens
-        assert not r._flat_priority_observe_tokens
+    asyncio.run(scenario())
+
+
+def test_low_priority_different_original_pool_is_not_dropped():
+    # Same actual Runtime boundary as the Lead's carried-period regression.
+    async def scenario():
+        r = Runtime.__new__(Runtime)
+        r._market_priority_tokens = {'bsc:same'}
+        idle = asyncio.Event(); idle.set()
+        r._chain_meme_active_idle = lambda: idle
+        calls = []
+        async def fetch(chain, addresses, **kwargs):
+            calls.append((chain, addresses))
+            raise RuntimeError('test-no-network')
+        r._dex_batch_quote = fetch
+        r._queue_market_pool_gap = lambda *a, **kw: None
+        r.store = SimpleNamespace(heartbeat=lambda *a, **kw: None,
+            apply_chain_meme_trader_market_mark_batch=lambda *a, **kw: None)
+        await r._refresh_chain_meme_market_marks(
+            [{'token_id': 'bsc:same', 'chain': 'bsc', 'address': 'same',
+              'entry_pair_addresses': 'pool-carried'}],
+            heartbeat_name='carried-test', high_priority=False,
+            evaluate_versions=['old-period'])
+        assert calls == [('bsc', ['same'])]
     asyncio.run(scenario())
 
 
