@@ -658,28 +658,35 @@ def pump_bonding_curve_sell_quote_v1(
 
 
 def pump_curve_capacity_sell_quote(*, token_amount_raw, sold_quote_raw=0, sold_token_raw=0,
+                                   entry_quote_raw=0, entry_token_raw=0,
                                    bonding_curve, global_config, fee_config, slippage_bps=400):
-    """Largest integer SELL within observed reserves less prior Paper debits.
+    """Largest integer SELL in the observed curve plus recorded Paper deltas.
 
     Paper sales never alter public reserves. Persisted gross debits prevent
     repeatedly selling against the same observed capacity on later slots.
-    No credit is given for the hypothetical entry's reserve contribution.
+    V2 also carries the settled BUY's net reserve deposit/token withdrawal.
+    Fees and rent are never credited to reserves. Zero entry deltas retain V1.
     """
     amount, spent, prior_tokens = int(token_amount_raw), int(sold_quote_raw), int(sold_token_raw)
+    deposited, bought = int(entry_quote_raw), int(entry_token_raw)
     if amount <= 0 or spent < 0 or prior_tokens < 0 or (spent > 0 and prior_tokens == 0):
         raise ValueError('invalid_native_capacity_input')
+    if deposited < 0 or bought < 0 or bool(deposited) != bool(bought):
+        raise ValueError('invalid_native_entry_delta')
     if bonding_curve.get('complete'):
         raise ValueError('bonding_curve_complete_migrated')
     # Model earlier Paper sales on top of the new public state, including
     # their price impact. The unmodified public bundle remains the provenance.
     adjusted = dict(bonding_curve)
-    adjusted['virtual_token_reserves_raw'] = int(bonding_curve['virtual_token_reserves_raw']) + prior_tokens
-    adjusted['real_token_reserves_raw'] = int(bonding_curve['real_token_reserves_raw']) + prior_tokens
-    adjusted['virtual_quote_reserves_raw'] = int(bonding_curve['virtual_quote_reserves_raw']) - spent
+    adjusted['virtual_token_reserves_raw'] = int(bonding_curve['virtual_token_reserves_raw']) - bought + prior_tokens
+    adjusted['real_token_reserves_raw'] = int(bonding_curve['real_token_reserves_raw']) - bought + prior_tokens
+    adjusted['virtual_quote_reserves_raw'] = int(bonding_curve['virtual_quote_reserves_raw']) + deposited - spent
     token = adjusted['virtual_token_reserves_raw']
     quote = adjusted['virtual_quote_reserves_raw']
-    available = max(0, int(bonding_curve['real_quote_reserves_raw']) - spent)
+    available = max(0, int(bonding_curve['real_quote_reserves_raw']) + deposited - spent)
     adjusted['real_quote_reserves_raw'] = available
+    if bought and adjusted['real_token_reserves_raw'] <= 0:
+        raise ValueError('native_counterfactual_surface_divergence')
     if token <= 0 or quote <= 0:
         raise ValueError('invalid_pump_virtual_reserves')
     if available <= 0:
@@ -693,7 +700,9 @@ def pump_curve_capacity_sell_quote(*, token_amount_raw, sold_quote_raw=0, sold_t
         bonding_curve=adjusted, global_config=global_config, fee_config=fee_config)
     return dict(result, quoted_amount_raw=cap, capacity_requested_raw=amount,
         capacity_prior_gross_raw=spent, capacity_prior_token_raw=prior_tokens, capacity_available_raw=available,
-        capacity_partial=cap < amount, capacity_model='observed_curve_less_paper_sales_v1',
+        capacity_entry_quote_raw=deposited, capacity_entry_token_raw=bought,
+        capacity_partial=cap < amount, capacity_model=('observed_curve_plus_paper_net_flows_v2' if deposited
+                                                    else 'observed_curve_less_paper_sales_v1'),
         paper_pricing_curve=adjusted)
 
 
@@ -4081,6 +4090,8 @@ class SolanaHeldAccountCollector:
                         quote_fn = pump_curve_capacity_sell_quote
                         capacity_args['sold_quote_raw'] = int(surface.get('native_sold_quote_raw', 0))
                         capacity_args['sold_token_raw'] = int(surface.get('native_sold_token_raw', 0))
+                        capacity_args['entry_quote_raw'] = int(surface.get('native_entry_quote_raw', 0))
+                        capacity_args['entry_token_raw'] = int(surface.get('native_entry_token_raw', 0))
                     quote = quote_fn(
                         token_amount_raw=int(surface["remaining_amount_raw"]),
                         slippage_bps=int(slippage_bps), bonding_curve=curve,

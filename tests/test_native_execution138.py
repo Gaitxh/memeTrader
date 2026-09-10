@@ -12,7 +12,7 @@ from solders.rent import Rent
 from memetrader.models import utcnow, iso, TokenCandidate
 from memetrader.store import Store
 from memetrader.runtime import Runtime
-from memetrader.collectors import SolanaHeldAccountCollector, pump_bonding_curve_sell_quote_v1
+from memetrader.collectors import SolanaHeldAccountCollector, pump_bonding_curve_sell_quote_v1, pump_curve_capacity_sell_quote
 from memetrader.pump_native_cash import assemble, addresses, PUMP, ZERO
 from memetrader.native_execution import ARM, register, buy, targets, account_assets, apply_curve_quote, dumps
 from test_pump_native import fixed137, fee137, global_config, SOL
@@ -89,10 +89,11 @@ def test_real_plan_common_cash_runtime_held_sell_idempotence(tmp_path,monkeypatc
     current_quote=[None];slot=[20]
     async def quotes(surfaces,**kw):
         c=deepcopy(fixed137());c['virtual_quote_reserves_raw']*=2;c['real_quote_reserves_raw']*=2
-        q=pump_bonding_curve_sell_quote_v1(token_amount_raw=int(surfaces[0]['remaining_amount_raw']),slippage_bps=400,
+        q=pump_curve_capacity_sell_quote(token_amount_raw=int(surfaces[0]['remaining_amount_raw']),slippage_bps=400,
+            entry_quote_raw=surfaces[0]['native_entry_quote_raw'],entry_token_raw=surfaces[0]['native_entry_token_raw'],
             bonding_curve=c,global_config=global_config(),fee_config=fee137())
         current_quote[0]=dict(surfaces[0],pool_address=surfaces[0]['curve_address'],context_slot=slot[0],
-            requested_at=iso(clock[0]),completed_at=iso(clock[0]),status='LOCAL_SURFACE_CURRENT',reason='',**q)
+            requested_at=iso(clock[0]),completed_at=iso(clock[0]),status='LOCAL_SURFACE_CURRENT',reason='',native_curve_state=c,**q)
         return [current_quote[0]]
     async def fee(c,plan,q):return dict(context_slot=q['context_slot'],recorded_at=iso(clock[0]),fee_lamports=7000,
         token_amount_raw=int(q['remaining_amount_raw']),curve=q['pool_address'],account_id=plan['account_id'],message_sha256='a'*64)
@@ -211,13 +212,19 @@ def test_bad_plan_and_completion_never_fabricate_exit(tmp_path,monkeypatch):
     store.close()
 
 
-def test_capacity_partial_runtime_cash_restart_and_later_close(tmp_path,monkeypatch):
+@pytest.mark.parametrize('legacy_upgrade',[False,True])
+def test_capacity_partial_runtime_cash_restart_and_later_close(tmp_path,monkeypatch,legacy_upgrade):
     from memetrader.collectors import pump_curve_capacity_sell_quote
-    from memetrader.native_execution import ensure_time_exit
+    from memetrader.native_execution import ensure_time_exit, ensure_curve_accounting
     store,clock,p=setup(tmp_path,monkeypatch);assert buy(store,p,now=clock[0])=='BOUGHT'
+    if legacy_upgrade:
+        s=targets(store)[0]['state'];s.pop('curve_accounting')
+        with store.db:store.db.execute('UPDATE chain_meme_native_positions SET state_json=?',(dumps(s),))
+        monkeypatch.setattr('memetrader.native_execution.ensure_curve_accounting',lambda store,target:target)
     initial=targets(store)[0];initial_raw=int(initial['amount_raw'])
     clock[0]+=timedelta(seconds=301);ensure_time_exit(store,initial,now=clock[0])
     clock[0]+=timedelta(seconds=1);slot=[20];c=fixed137();c['real_quote_reserves_raw']=8_000_000
+    if not legacy_upgrade:c['virtual_quote_reserves_raw']*=2  # Appreciated position can still exceed real capacity.
     r=Runtime.__new__(Runtime);r.store=store;r._wsol_usdc_conversion=p['reference']
     monkeypatch.setattr('memetrader.native_execution.utcnow',lambda:clock[0])
     async def ref(**kw):r._wsol_usdc_conversion=dict(p['reference'],completed_at=iso(clock[0]))
@@ -230,6 +237,7 @@ def test_capacity_partial_runtime_cash_restart_and_later_close(tmp_path,monkeypa
         try:
             q=pump_curve_capacity_sell_quote(token_amount_raw=int(s['remaining_amount_raw']),
                 sold_quote_raw=s['native_sold_quote_raw'],sold_token_raw=s['native_sold_token_raw'],
+                entry_quote_raw=s['native_entry_quote_raw'],entry_token_raw=s['native_entry_token_raw'],
                 bonding_curve=c,global_config=global_config(),fee_config=fee137())
             return [dict(common,status='LOCAL_SURFACE_CURRENT',reason='',**q)]
         except ValueError as exc:return [dict(common,status='LOCAL_NO_DIRECT_CAPACITY',reason=str(exc))]
@@ -247,22 +255,32 @@ def test_capacity_partial_runtime_cash_restart_and_later_close(tmp_path,monkeypa
     partial=targets(store)[0];remaining=int(partial['amount_raw'])
     assert 0<remaining<initial_raw and fee_amounts[-1]==initial_raw-remaining
     assert partial['state']['mark'] is None and partial['state']['exit_intent']
-    assert partial['state']['curve_gross_sold_raw']==8_000_000
+    assert partial['state']['curve_gross_sold_raw']==8_000_000+(0 if legacy_upgrade else p['buy_quote']['curve_quote_in_raw'])
     assert store._cohort_flow.snapshot()['by_arm'][ARM]['PARTIAL_SELL']==1
     row=store.db.execute('SELECT * FROM chain_meme_trader_positions WHERE arm_id=?',(ARM,)).fetchone()
     assert row['allocated_cost_usd']==pytest.approx(row['stake_usd']*(initial_raw-remaining)/initial_raw)
     assert row['realized_pnl_usd']==pytest.approx(row['realized_proceeds_usd']-row['allocated_cost_usd'])
     assert len(account_assets(store.db,store.CHAIN_MEME_TRADER_ACTIVE_VERSION,clock[0])['values'])==1
     assert store.db.execute("SELECT count(*) FROM chain_meme_native_receipts WHERE kind LIKE 'PARTIAL_SELL:%'").fetchone()[0]==1
+    immutable_before=[tuple(row) for row in store.db.execute('SELECT * FROM chain_meme_native_receipts ORDER BY id')]
     store.close();store=Store(tmp_path/'native138.sqlite3',initial_cash_usd=1000);r.store=store
+    if legacy_upgrade:
+        monkeypatch.setattr('memetrader.native_execution.ensure_curve_accounting',ensure_curve_accounting)
     # Independent newer slots do not replenish the same public reserve.
     for _ in range(2):
         clock[0]+=timedelta(seconds=2);slot[0]+=1
         asyncio.run(r._native_held_once(targets(store)[0]))
-    assert int(targets(store)[0]['amount_raw'])==remaining and len(fee_amounts)==2
-    # A real increase in later public reserves permits completion on that frame.
-    c['real_quote_reserves_raw']=500_000_000;clock[0]+=timedelta(seconds=2);slot[0]+=1
-    asyncio.run(r._native_held_once(targets(store)[0]))
+    if legacy_upgrade:
+        # Upgrade cannot fill its own frame; next frame can use the omitted BUY deposit once.
+        assert not targets(store)
+        assert store.db.execute("SELECT COUNT(*) FROM chain_meme_native_receipts WHERE kind='CURVE_ACCOUNTING_V2'").fetchone()[0]==1
+        all_receipts=[tuple(row) for row in store.db.execute('SELECT * FROM chain_meme_native_receipts ORDER BY id')]
+        assert all_receipts[:len(immutable_before)]==immutable_before
+    else:
+        assert int(targets(store)[0]['amount_raw'])==remaining and len(fee_amounts)==2
+        # A real increase in later public reserves permits completion on that frame.
+        c['real_quote_reserves_raw']=500_000_000;clock[0]+=timedelta(seconds=2);slot[0]+=1
+        asyncio.run(r._native_held_once(targets(store)[0]))
     assert not targets(store)
     flows=store.db.execute('SELECT SUM(net_cash_flow_usd),SUM(realized_pnl_usd),COUNT(*) FROM chain_meme_trader_trades WHERE arm_id=?',(ARM,)).fetchone()
     assets=account_assets(store.db,store.CHAIN_MEME_TRADER_ACTIVE_VERSION,clock[0])

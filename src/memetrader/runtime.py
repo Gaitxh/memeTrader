@@ -6799,8 +6799,9 @@ class Runtime:
 
     async def _native_held_once(self,target):
         """Max-one held native surface in the existing local-surface task."""
-        from .native_execution import apply_curve_quote, canonical_pool, confirm_successor
+        from .native_execution import apply_curve_quote, canonical_pool, confirm_successor, ensure_curve_accounting
         from .pump_native_cash import exit_fee, successor_exit_fee
+        target=ensure_curve_accounting(self.store,target)
         await self.chain_meme_wsol_reference_once(observed_pool=True)
         state=target['state'];plan=state['plan']
         if state['surface']=='MIGRATION_PENDING':
@@ -6819,9 +6820,12 @@ class Runtime:
         else:
             # Existing exit intent only; use this position's persistent capacity
             # debits so an unchanged public curve cannot fund repeated partials.
-            surface.update(native_capacity_exit=bool(state.get('exit_intent')),
+            accounting=state.get('curve_accounting') or {}
+            surface.update(native_capacity_exit=bool(state.get('exit_intent') or accounting),
                 native_sold_quote_raw=int(state.get('curve_gross_sold_raw',0)),
-                native_sold_token_raw=int(state.get('curve_tokens_sold_raw',0)))
+                native_sold_token_raw=int(state.get('curve_tokens_sold_raw',0)),
+                native_entry_quote_raw=int(accounting.get('entry_quote_raw',0)),
+                native_entry_token_raw=int(accounting.get('entry_token_raw',0)))
             quotes=await self.held_accounts.bonding_curve_quotes([surface],slippage_bps=400,
                 wsol_usdc_conversion=self._wsol_usdc_conversion)
         for quote in quotes:

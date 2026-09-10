@@ -54,6 +54,32 @@ def test_capacity_sell_integer_boundary_and_no_reused_public_reserve():
         pump_curve_capacity_sell_quote(token_amount_raw=1,**args)
 
 
+def test_capacity_v2_preserves_post_buy_state_and_rejects_divergence():
+    from memetrader.collectors import pump_curve_capacity_sell_quote, pump_bonding_curve_sell_quote_v1
+    from memetrader.pump_native import pump_sol_exact_input_quote_v2
+    c=fixed137();c['real_quote_reserves_raw']=7_643_704
+    args=dict(global_config=global_config(),fee_config=fee137(),slippage_bps=400)
+    q=pump_sol_exact_input_quote_v2(quote_budget_raw=45_972_700,bonding_curve=c,**args)
+    post=deepcopy(c)
+    for k,d in [('virtual_quote_reserves_raw',q['curve_quote_in_raw']),('real_quote_reserves_raw',q['curve_quote_in_raw']),
+                ('virtual_token_reserves_raw',-q['token_amount_raw']),('real_token_reserves_raw',-q['token_amount_raw'])]:post[k]+=d
+    expected=pump_bonding_curve_sell_quote_v1(token_amount_raw=q['paper_token_amount_raw'],bonding_curve=post,**args)
+    actual=pump_curve_capacity_sell_quote(token_amount_raw=q['paper_token_amount_raw'],bonding_curve=c,
+        entry_quote_raw=q['curve_quote_in_raw'],entry_token_raw=q['token_amount_raw'],**args)
+    assert actual['min_quote_raw']==expected['min_quote_raw']
+    assert actual['paper_pricing_curve']==post and not actual['capacity_partial']
+    assert q['curve_quote_in_raw']<q['actual_quote_cost_raw']  # Fees never become exit liquidity.
+    assert c['real_quote_reserves_raw']==7_643_704  # Public evidence is not mutated.
+    c['real_token_reserves_raw']=q['token_amount_raw']
+    with pytest.raises(ValueError,match='counterfactual_surface_divergence'):
+        pump_curve_capacity_sell_quote(token_amount_raw=1,bonding_curve=c,
+            entry_quote_raw=q['curve_quote_in_raw'],entry_token_raw=q['token_amount_raw'],**args)
+    c['complete']=True
+    with pytest.raises(ValueError,match='complete_migrated'):
+        pump_curve_capacity_sell_quote(token_amount_raw=1,bonding_curve=c,
+            entry_quote_raw=q['curve_quote_in_raw'],entry_token_raw=q['token_amount_raw'],**args)
+
+
 def test_capacity_producer_uses_same_bundle_and_legacy_amount_is_unchanged(monkeypatch):
     import asyncio,json,httpx
     from solders.pubkey import Pubkey

@@ -12,6 +12,7 @@ from .collectors import pump_bonding_curve_sell_quote_v1
 
 ARM = 'pump_native_absorption_fast_v1'
 MODEL = 'later_observed_protocol_model_paper'
+CURVE_ACCOUNTING = 'observed_curve_plus_paper_net_flows_v2'
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS chain_meme_native_receipts (
@@ -73,6 +74,39 @@ def targets(store):
             "ON p.definition_version=n.definition_version AND p.shadow_cohort_id=n.cohort_id AND p.arm_id=? "
             "WHERE p.status='open' ORDER BY n.cohort_id LIMIT 1", (ARM,)).fetchall()
         return [dict(row, state=json.loads(row['state_json'])) for row in rows]
+
+
+def ensure_curve_accounting(store, target, *, now=None):
+    """Upgrade only future quotes, binding BUY credit to its immutable receipt."""
+    if target['state'].get('curve_accounting') or target['state']['surface'] != 'CURVE':
+        return target
+    now = parse_time(now or utcnow())
+    with store._lock, store.db:
+        row = store.db.execute('SELECT state_json FROM chain_meme_native_positions WHERE definition_version=? AND cohort_id=?',
+            (target['definition_version'],target['cohort_id'])).fetchone()
+        state = json.loads(row['state_json'])
+        if not state.get('curve_accounting'):
+            receipt = store.db.execute("SELECT id,recorded_at,payload_json FROM chain_meme_native_receipts "
+                "WHERE definition_version=? AND opportunity_key=? AND kind='BUY'",
+                (target['definition_version'],target['opportunity_key'])).fetchone()
+            if receipt is None or parse_time(receipt['recorded_at']) >= now:
+                raise ValueError('native_entry_receipt_unavailable')
+            original = json.loads(receipt['payload_json'])
+            plan = state['plan']
+            if (original['buy_quote'] != plan['buy_quote'] or original['execution_frame_sha256'] != plan['execution_frame_sha256']
+                or original['token_id'] != target['token_id'] or original['curve'] != target['curve']):
+                raise ValueError('native_entry_receipt_binding')
+            q = original['buy_quote']
+            accounting = dict(model=CURVE_ACCOUNTING, entry_quote_raw=q['curve_quote_in_raw'],
+                entry_token_raw=q['token_amount_raw'], buy_receipt_id=receipt['id'], activated_at=iso(now))
+            _receipt(store.db,target['definition_version'],target['opportunity_key'],'CURVE_ACCOUNTING_V2',
+                dict(accounting,prior_model='observed_curve_less_paper_sales_v1',
+                    prior_gross_sold_raw=state.get('curve_gross_sold_raw',0),
+                    prior_tokens_sold_raw=state.get('curve_tokens_sold_raw',0)),now)
+            state.update(curve_accounting=accounting,mark=None,last_recorded_at=iso(now))
+            store.db.execute('UPDATE chain_meme_native_positions SET state_json=? WHERE definition_version=? AND cohort_id=?',
+                (dumps(state),target['definition_version'],target['cohort_id']))
+        return dict(target,state=state)
 
 
 def ensure_time_exit(store, target, *, now=None):
@@ -168,6 +202,8 @@ def buy(store, plan, *, now=None):
         state = dict(plan=plan,execution_model=MODEL,surface='CURVE',rent_locked_raw=budget['rent_locked_raw'],rent_locked_usd_at_cost=rent,
             sell_fee_reserve_raw=budget['sell_network_fee_reserved_raw'],entry_rate=rate,entry_slot=f['slot'],last_slot=f['slot'],last_recorded_at=iso(now),
             high_value_usd=stake,mark=None,exit_intent=None,safety_status='NATIVE_CONTROLS_AND_SELLBACK_VERIFIED')
+        state['curve_accounting'] = dict(model=CURVE_ACCOUNTING,entry_quote_raw=q['curve_quote_in_raw'],
+            entry_token_raw=q['token_amount_raw'],buy_receipt_id=receipt_id,activated_at=iso(now))
         store.db.execute('INSERT INTO chain_meme_native_positions VALUES(?,?,?,?,?,?)',(version,cohort,f['token_id'],f['curve_address'],key,dumps(state)))
         flow=getattr(store,'_cohort_flow',None)
         if flow is not None:
@@ -212,10 +248,16 @@ def apply_curve_quote(store, target, quote, fee, reference, *, now=None):
             partial=sold<amount
             if not 0<sold<=amount:
                 raise ValueError('native_exit_quoted_amount')
+            accounting=s.get('curve_accounting') if s['surface']=='CURVE' else None
+            if accounting and (quote.get('capacity_model')!=CURVE_ACCOUNTING
+                or int(quote.get('capacity_entry_quote_raw',0))!=accounting['entry_quote_raw']
+                or int(quote.get('capacity_entry_token_raw',0))!=accounting['entry_token_raw']):
+                raise ValueError('native_exit_entry_delta_binding')
             if quote.get('capacity_model'):
                 prior=int(s.get('curve_gross_sold_raw',0))
-                available=max(0,int(quote['native_curve_state']['real_quote_reserves_raw'])-prior)
-                if (s['surface']!='CURVE' or not s['exit_intent']
+                available=max(0,int(quote['native_curve_state']['real_quote_reserves_raw'])
+                    +(accounting['entry_quote_raw'] if accounting else 0)-prior)
+                if (s['surface']!='CURVE' or (not accounting and not s['exit_intent'])
                     or int(quote['capacity_prior_gross_raw'])!=prior
                     or int(quote['capacity_prior_token_raw'])!=int(s.get('curve_tokens_sold_raw',0))
                     or int(quote['capacity_available_raw'])!=available
