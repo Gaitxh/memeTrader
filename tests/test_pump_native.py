@@ -31,10 +31,12 @@ def fee137():
 def test_native_cash_budget_reserves_both_actual_fees_and_never_refunds_rent():
     from memetrader.pump_native import native_cash_budget
     now=utcnow()
-    r=dict(token_id='t',curve='c',account_id='paper',recorded_at=iso(now),account_context_slot=10,
+    r=dict(token_id='t',curve='c',account_id='paper',recorded_at=iso(now),
+        account_recorded_at=iso(now-timedelta(seconds=3)),account_context_slot=10,
         setup=[dict(account_kind='associated_base_user',present=False,rent_lock_lamports=1887234),
                dict(account_kind='user_volume_accumulator',present=False,rent_lock_lamports=1678245)],
-        fees={side:dict(fee_lamports=fee,context_slot=11,message_sha256='a'*64,recorded_at=iso(now))
+        fees={side:dict(fee_lamports=fee,context_slot=11,message_sha256='a'*64,
+              recorded_at=iso(now-timedelta(seconds=2 if side=='BUY' else 1)))
               for side,fee in [('BUY',7000),('SELL',9000)]})
     def budget():return native_cash_budget(total_quote_raw=20_000_000,receipt=r,now=now,
         token_id='t',curve='c',account_id='paper')
@@ -42,6 +44,12 @@ def test_native_cash_budget_reserves_both_actual_fees_and_never_refunds_rent():
     assert q['spendable_quote_raw']==20_000_000-3565479-16000
     assert q['maximum_buy_debit_raw']+q['sell_network_fee_reserved_raw']==20_000_000
     assert q['rent_refund_raw']==0
+    r['recorded_at']=iso(now-timedelta(seconds=3))
+    with pytest.raises(ValueError,match='fee_invalid'):budget()  # Cannot backdate availability.
+    r['recorded_at']=iso(now)
+    r['account_recorded_at']=iso(now-timedelta(seconds=31))
+    with pytest.raises(ValueError,match='stale'):budget()
+    r['account_recorded_at']=iso(now-timedelta(seconds=3))
     r['account_id']='different'
     with pytest.raises(ValueError,match='identity'):budget()
     r['account_id']='paper';r['fees']['SELL']['fee_lamports']=None

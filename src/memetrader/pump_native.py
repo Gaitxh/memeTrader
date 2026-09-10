@@ -16,7 +16,9 @@ def native_cash_budget(*,total_quote_raw,receipt,now,token_id,curve,account_id):
     if (receipt.get('token_id'),receipt.get('curve'),receipt.get('account_id'))!=(token_id,curve,account_id):
         raise ValueError('cash_receipt_identity_mismatch')
     at=parse_time(receipt['recorded_at'])
-    if not 0<=(now-at).total_seconds()<=30:raise ValueError('cash_receipt_stale_or_future')
+    account_at=parse_time(receipt['account_recorded_at'])
+    if not account_at<=at<=now or not 0<=(now-account_at).total_seconds()<=30:
+        raise ValueError('cash_receipt_stale_or_future')
     slot=receipt['account_context_slot'];fees=receipt['fees'];setup=receipt['setup']
     if slot<=0 or set(fees)!={'BUY','SELL'} or len(setup)!=2:
         raise ValueError('cash_receipt_incomplete')
@@ -28,7 +30,7 @@ def native_cash_budget(*,total_quote_raw,receipt,now,token_id,curve,account_id):
     for f in fees.values():
         if (type(f.get('fee_lamports')) is not int or f['fee_lamports']<0
             or f.get('context_slot',0)<slot or len(f.get('message_sha256',''))!=64
-            or not at<=parse_time(f['recorded_at'])<=now):
+            or not account_at<=parse_time(f['recorded_at'])<=at):
             raise ValueError('cash_message_fee_invalid')
     rent=sum(s['rent_lock_lamports'] for s in setup)
     buy_fee=fees['BUY']['fee_lamports'];sell_fee=fees['SELL']['fee_lamports']
