@@ -2,8 +2,8 @@
 
 {
   "cycle_id": "complete-runnable-strategies-138",
-  "objective": "Complete attachment139 runnable strict-forward Paper strategies, measured runtime delivery and durable continuation; real outcomes without history rewrite.",
-  "next_action": "Trading ca358bc and web916aec5 implemented/tested/loaded; natural new Dex BUYs observed. Continue existing Paper/held exits. Native94747 has max-hold intent but insufficient_real_quote_reserves, no fabricated SELL. Fresh Project page read timed out twice; model/memory remain unverified, nonblocking. Follow FULL_DELIVERY_139; old source-only/denied-load statements are historical.",
+  "objective": "Complete runnable strict-forward Paper delivery and measured reliability/accuracy; preserve funding/history and truthful external/load boundaries.",
+  "next_action": "Core140 capacity exit48d338a loaded10:05:15Z: natural partial94747 recovered0.7328U, residual OPEN/UNKNOWN.763ccce diagnostic/native-funnel source tested/pushed but final Paper/Web reload rejected by process review; do not bypass. Running PID41164 healthy10:12, held2.106s/apply.0268s/drop0. Continue existing Paper; no repeat139/120/proofs. See RELIABILITY_AND_CAPACITY_EXIT_140.md.",
   "rules": [
     "Sole existing Codex writer/session; no ownership transfer",
     "Paper only / Live locked; no reset/backfill or immutable history/funding rewrite",
@@ -170,6 +170,12 @@
       "status": "COMPLETED",
       "evidence": "scripts/report_righttail_receipts139.py",
       "fact": "Saved47 only,7468PKreads/5.3s.16cases+51control-anchorrows/50canonicalcontrols.8decision/4ready-no-decision/2no-eval/2no-anchor.Qualified5/15/30/60/360m endpoints21/13/15/8/0; no6h precision/backfill."
+    },
+    {
+      "id": "140-native-capacity",
+      "status": "COMPLETED",
+      "evidence": "48d338a; docs/PROJECT_CONTEXT/RELIABILITY_AND_CAPACITY_EXIT_140.md",
+      "fact": "Native partial exits use same-bundle exact math/current raw fee and persistent real/virtual Paper SELL depletion. Atomic remaining units/cost/PNL; first natural partial0.7328U/-0.0811U; residual remains unknown. Registration/funding hashes unchanged."
     }
   ],
   "open_tasks": [
@@ -177,13 +183,13 @@
       "id": "137",
       "owner": "codex",
       "status": "FORWARD_OBSERVATION",
-      "next_action": "Implementation and permitted load complete; natural common/native receipts and latency guards remain. No repeated proofs/registration;94747 currently lacks full remaining-raw sell capacity."
+      "next_action": "137/139/140 core implemented/tested/loaded. Natural partial94747 now observed.763ccce diagnostic/funnel source remains unloadable after automatic process-review denial; no bypass. Preserve running core and immutable history."
     },
     {
       "id": "Pump127",
       "owner": "codex",
       "status": "FORWARD_OBSERVATION",
-      "next_action": "SOL proof/cash/ledger/held/canonical handoff source and load complete. Natural94747 BUY/exit intent observed; current UNKNOWN_EXIT reserve capacity. Other quote classes stay UNKNOWN."
+      "next_action": "SOL proof/cash/ledger/held/canonical handoff and capacity partial loaded.94747 sold273320210121 raw once;1284729855258 raw remains OPEN with exhausted conservative reserve budget. Do not fabricate future liquidity/full exit; other quote classes UNKNOWN."
     },
     {
       "id": "Pons121",
@@ -212,9 +218,9 @@
   ],
   "blockers": [
     {
-      "id": "native-exit-capacity",
+      "id": "native-residual-capacity",
       "status": "UNKNOWN_EXIT",
-      "evidence": "native-paper:last-held94747 insufficient_real_quote_reserves; intent08:10:43Z persists"
+      "evidence": "One natural partial receipt2; cumulative gross7643704/raw273320210121 persists. Residual1284729855258 has no remaining observed capacity."
     },
     {
       "id": "Pons-provenance",
@@ -232,7 +238,12 @@
       "evidence": "Historical access gap; no full inheritance claim"
     },
     "Synthetic exact-pool simulation/sellability/source failure remains WAIT; no natural profit proof.",
-    "Missing saved6h coverage is a data limit, not permission to backfill or weaken clocks."
+    "Missing saved6h coverage is a data limit, not permission to backfill or weaken clocks.",
+    {
+      "id": "140-followup-load",
+      "status": "BLOCKED_PROCESS_CONTROL",
+      "evidence": "763ccce source/tests/push complete; exact-PID reload command rejected before execution: blocked by policy.48d338a remains running. No bypass."
+    }
   ],
   "lessons": [
     "docs/PROJECT_CONTEXT/FAILURE_LESSONS_AND_STRATEGY_CHECKLIST_73.md",
@@ -240,13 +251,16 @@
     "73 operational keep-S1-closed/parent-paused instructions are historical, superseded by126/133; retain statistical lessons only.",
     "Preserve organic_early_flow94707 written_off -2U; flow breadth did not guarantee liquidity retention.297/298/299 registered frontier2574566 unchanged.",
     "133 independent insufficient executable treatments continue; small N/mixed attribution is not failure.",
-    "Runtime load succeeded after renewed direct startup authorization; old process-control denial is historical.",
-    "Missing ingested_at uses actual existing passive receipt; never invent prior availability."
+    "Missing ingested_at uses actual existing passive receipt; never invent prior availability.",
+    "Loaded vs source is per stage:48d338a accepted;763ccce denied final reload. Do not generalize an old denial or an old success to current permission.",
+    "Paper partial exits must deplete both real capacity and virtual pricing; unchanged public reserves cannot fund repeated sales."
   ],
   "deferred": [
     "Old-chat122 readback after trading priority"
   ],
   "evidence": [
+    "docs/PROJECT_CONTEXT/RELIABILITY_AND_CAPACITY_EXIT_140.md",
+    "data/research/reliability140/final_running.json",
     "docs/PROJECT_CONTEXT/FULL_DELIVERY_139.md",
     "data/research/full_delivery139/after.json",
     "data/research/full_delivery139/final_performance.json",
@@ -258,8 +272,8 @@
   ],
   "cycle_status": "IN_PROGRESS",
   "status": "LOCAL_CONTEXT_READY",
-  "revision": 13,
-  "digest": "64c94f39db2bea6c28aa6c1c86c49aa563e9d8dd37ddc48e1c9fc41d7a620ebf",
+  "revision": 14,
+  "digest": "70ae146786a420a3d2a306ab5952c23905022b2aef6a0b7c232b0747a8bb506a",
   "workspace": "E:\\memeTrader",
   "codex_session": "01a07b17-8f78-7cb1-bb4f-5d5d15607097",
   "pairing_status": "REVALIDATION_REQUIRED",

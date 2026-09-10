@@ -1,3 +1,13 @@
+# Authoritative continuation140 — native partial exit loaded; final diagnostics reload blocked
+
+Read ONE current ModeChat resume packet: revision14 / digest70ae146786a420a3d2a306ab5952c23905022b2aef6a0b7c232b0747a8bb506a. Same sole writer/session, Paper only/Live locked. Details: [RELIABILITY_AND_CAPACITY_EXIT_140.md](RELIABILITY_AND_CAPACITY_EXIT_140.md).
+
+48d338a loaded10:05:15Z and naturally sold part of94747:0.7328U recovery, -0.0811U allocated realized PnL; residual remains OPEN/UNKNOWN with persistent consumed reserves.763ccce diagnostics/native-funnel source tested/pushed, but automatic process review rejected final Paper/Web reload before execution. Keep healthy41164 running; no bypass or false load claim.10:12 held p952.106s/apply.0268s/passive drops0. Old paused/source-only native instructions below are historical.
+
+139 eight Dex arms remain active;10 terminals/-5.908U at10:07, not Alpha. Pons source provenance, missing6h outcomes and fresh Chat/model/memory readback remain explicit external/data limits. Do not repeat completed delivery, cleanup, or accepted native proofs.
+
+---
+
 # Authoritative continuation139 — loaded, natural Paper active
 
 Read ONE current packet via ModeChat resume: revision13 / digest64c94f39db2bea6c28aa6c1c86c49aa563e9d8dd37ddc48e1c9fc41d7a620ebf. STATE and TASKS are consistent; same Codex session/owner. Detailed outcome: [FULL_DELIVERY_139.md](FULL_DELIVERY_139.md).
