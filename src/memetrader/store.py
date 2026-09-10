@@ -12218,6 +12218,8 @@ class Store:
                 ),
             )
         snapshot_id = int(cursor.lastrowid)
+        learning=getattr(self,'_mode_learning144',None)
+        if learning is not None:learning.observe(token_id,snap,ingested_at,recorded_at)
         safety_shadow = getattr(self, '_safety_veto_shadow', None)
         micro=getattr(self,'_microstructure119',None)
         if micro is not None:micro.observe(token_id,snap,ingested_at,recorded_at)
@@ -27169,7 +27171,7 @@ class Store:
                     if open_or_reserved_full(self.db,version,p['arm_id'],limited[p['arm_id']]):
                         entry_blocked[p['arm_id']]='strategy_open_or_reserved_limit'
                 if p.get('requires_distinct_trajectory_frame'):
-                    trajectory=getattr(self,'_dex_trajectory',None)
+                    trajectory=getattr(self,'_trajectory144' if p.get('trajectory_engine')=='v144' else '_dex_trajectory',None)
                     observed=trajectory.pools.get((token.token_id,pair_address),{}).get('features',{}) if trajectory else {}
                     if observed.get('observed_at')!=iso(snapshot.observed_at) or not observed.get('windows',{}).get('30'):
                         entry_blocked[p['arm_id']]='await_distinct_dex_trajectory_frame'
@@ -28431,6 +28433,11 @@ class Store:
             "SELECT 1 FROM chain_meme_trader_positions WHERE definition_version=? AND arm_id=? "
             "AND token_id=? AND status='open' AND shadow_cohort_id<>? LIMIT 1",
             (version, str(d['arm_id']), token_id, cohort_id)).fetchone()]
+        from .cohort_enrollment import open_or_reserved_full
+        pending_limits={p['arm_id']:int(p['entry_filter']['max_concurrent_positions'])
+            for p in definition['policies'] if p.get('trajectory_engine')=='v144'}
+        decisions=[d for d in decisions if d['arm_id'] not in pending_limits or not open_or_reserved_full(
+            self.db,version,d['arm_id'],pending_limits[d['arm_id']],cohort_id)]
         if not decisions:return 0
         from .cohort_experiments import REGIME_ARM, regime_route
         if any(d['arm_id']==REGIME_ARM for d in decisions):
@@ -28454,15 +28461,17 @@ class Store:
             cohort=self.db.execute('SELECT feature_json FROM chain_meme_trader_v6_cohorts WHERE id=?',(cohort_id,)).fetchone()
             signals=self._json_object(cohort['feature_json']).get('cohort_signals',{}) if cohort else {}
             frame=self.db.execute('SELECT observed_at,ingested_at,recorded_at FROM token_snapshots WHERE id=?',(snapshot_id,)).fetchone()
-            engine=getattr(self,'_dex_trajectory',None)
+            by_policy={p['arm_id']:p for p in definition['policies']}
             def distinct_trajectory(d):
                 arm=str(d['arm_id'])
                 if arm not in trajectory_arms:return True
                 evidence=signals.get(arm,{}).get('decision_evidence',{})
                 if arm==REGIME_ARM and not evidence.get('router_requires_distinct_trajectory'):return True
                 frozen=evidence.get('feature_vector',{})
+                engine=getattr(self,'_trajectory144' if by_policy[arm].get('trajectory_engine')=='v144' else '_dex_trajectory',None)
                 latest=engine.pools.get((token_id,frozen.get('pair_address')),{}).get('features',{}) if engine else {}
                 return bool(frozen and frame and frame['ingested_at'] and latest.get('windows',{}).get('30')
+                    and (by_policy[arm].get('trajectory_engine')!='v144' or parse_time(signals[arm]['recorded_at'])<parse_time(frame['observed_at']))
                     and parse_time(latest['continuity_started_at'])<=parse_time(frozen['observed_at'])
                     <parse_time(frame['observed_at'])<=parse_time(frame['ingested_at'])<=parse_time(frame['recorded_at'])
                     and 0<=(parse_time(frame['observed_at'])-parse_time(latest['observed_at'])).total_seconds()<=30)
@@ -28590,6 +28599,9 @@ class Store:
             if arm_id == 'resource_age_rate_candidate_v1':
                 from .age_rate_fresh_impulse import capture
                 capture(self, version, int(cohort_id), token_id, decision['decided_at'], int(entry_fill['id']))
+            learning=getattr(self,'_mode_learning144',None)
+            if learning is not None and arm_id.startswith('trajectory144_'):
+                learning.record_buy(version,arm_id,int(cohort_id),token_id,int(entry_fill['id']),filled_at)
             projected += 1
             self.rediscovery_funnel_hit(token_id, 'BUY', filled_at)
             flow=getattr(self,'_cohort_flow',None)
@@ -33499,6 +33511,13 @@ class Store:
     def _cohort_router_exit_policy(self, policy: Mapping[str, Any], position: Mapping[str, Any]) -> dict[str, Any]:
         """Apply the frozen router mode recorded on this position's cohort."""
         result = dict(policy)
+        if result.get('trajectory_trend_runner'):
+            from .trajectory144 import trend_extension
+            engine=getattr(self,'_trajectory144',None)
+            pool=position['mark_pair_address'] if 'mark_pair_address' in position.keys() else None
+            vector=engine.pools.get((position['token_id'],pool),{}).get('features') if engine else None
+            if trend_extension(vector,position['opened_at'],utcnow()):
+                result['max_hold_minutes']=120.
         extended=result.get('runner_max_hold_minutes_after_recovery')
         if (extended and position['principal_recovered']==1 and int(position['amount_raw'])>0
                 and float(position['realized_proceeds_usd'])>=float(position['stake_usd'])>0):
@@ -34754,6 +34773,14 @@ class Store:
                     if hazard:
                         action,reason='CAPITAL_EXIT',hazard
                         sell_amount=int(position['amount_raw'])
+                if action is None and policy.get('trajectory144_exit'):
+                    from .trajectory144 import short_fast_failure_exit
+                    engine=getattr(self,'_trajectory144',None)
+                    vector=engine.pools.get((position['token_id'],position['mark_pair_address']),{}).get('features') if engine else None
+                    if short_fast_failure_exit(vector,position['opened_at'],current):
+                        action,reason='CAPITAL_EXIT','trajectory144_price_activity_liquidity_decay'
+                        sell_amount=int(position['amount_raw'])
+                        trigger_evidence['trajectory144_exit']=vector
                 if action is None and policy.get('trajectory_exit'):
                     from .dex_trajectory import exit_reason
                     engine=getattr(self,'_dex_trajectory',None)

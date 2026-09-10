@@ -250,6 +250,8 @@ def cohort_experiment_policies() -> list[dict[str, Any]]:
     policies.append(synthetic_harvest_policy(policies[2]))
     from .dex_trajectory import policies as trajectory_policies
     policies.extend(trajectory_policies(policies[2]))
+    from .trajectory144 import policies as policies144
+    policies.extend(policies144(policies[2]))
     recovered=copy.deepcopy(policies[2])
     recovered.update(arm_id=REGIME_ARM,canonical_id=REGIME_ARM,name='多场景路由·真实回本保半仓Runner',
         entry_family=REGIME_ARM,notional_usd=5.,source_arm_ids=[s for s,_,_ in REGIME_SOURCES],

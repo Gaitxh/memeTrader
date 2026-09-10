@@ -7734,6 +7734,16 @@ class Runtime:
         if not hasattr(self.store, '_dex_trajectory'):
             self.store._dex_trajectory = Engine(utcnow())
         trajectory = self.store._dex_trajectory
+        from .trajectory144 import Engine as Engine144
+        if not hasattr(self.store,'_trajectory144'):
+            saved=self.store.get_kv('trajectory144:state:'+self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,None)
+            self.store._trajectory144=Engine144(saved['started_at'] if saved else utcnow())
+            if saved:self.store._trajectory144.load_state(saved)
+        trajectory144=self.store._trajectory144
+        from .mode_learning144 import Coordinator
+        if not hasattr(self.store,"_mode_learning144"):
+            self.store._mode_learning144=Coordinator(self.store)
+        learning144=self.store._mode_learning144
         if not hasattr(self.store,'_cohort_flow'):
             from .rediscovery_funnel import CohortFlow
             self.store._cohort_flow=CohortFlow()
@@ -7741,8 +7751,13 @@ class Runtime:
         now_mono = asyncio.get_running_loop().time()
         if now_mono-getattr(self,'_trajectory_saved_at',0)>=15 and self._chain_meme_active_idle().is_set():
             self.store.set_kv('dex-trajectory:v1',trajectory.snapshot())
+            self.store.set_kv('trajectory144:status',trajectory144.snapshot())
+            self.store.set_kv('mode-learning144:status',learning144.flush(utcnow()))
             self.store.set_kv('cohort-flow:v1',self.store._cohort_flow.snapshot())
             self._trajectory_saved_at=now_mono
+        if now_mono-getattr(self,'_trajectory144_saved_at',0)>=60 and self._chain_meme_active_idle().is_set():
+            self.store.set_kv('trajectory144:state:'+self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,trajectory144.state_payload())
+            self._trajectory144_saved_at=now_mono
         consensus_outcomes=getattr(self.store,'_clone_consensus_outcomes',None)
         if consensus_outcomes is not None and now_mono-consensus_outcomes.last_flush>=15 and self._chain_meme_active_idle().is_set():
             with self.store._lock:
@@ -7869,8 +7884,10 @@ class Runtime:
                     "is_held": token.token_id in getattr(self, "_pattern_held_tokens", set())})
                 quotes[identity] = (token, snapshot)
             now = utcnow()
-            fresh_trajectory = set()
+            fresh_trajectory = set(); fresh144=set()
             for frame in frames:
+                if trajectory144.accept(frame,now) is not None:
+                    fresh144.add((frame['token_id'],frame['pair_address']))
                 if trajectory.accept(frame,now) is not None:
                     fresh_trajectory.add((frame['token_id'],frame['pair_address']))
             state, signals = consume_passive_cohort_batch(frames, state, now=now,
@@ -7903,6 +7920,8 @@ class Runtime:
             for identity in quotes:
                 if identity in fresh_trajectory:
                     signals.setdefault(identity,{}).update(trajectory.signals_for(*identity,now))
+                if identity in fresh144:
+                    signals.setdefault(identity,{}).update(learning144.signals(trajectory144.pools[identity]["features"],trajectory144.signals_for(*identity,now),now))
                 for producer in (getattr(self.store,'_microstructure119',None),
                                  getattr(self.store,'_event_clone_shadow',None)):
                     if producer is not None:
@@ -9011,7 +9030,7 @@ class Runtime:
             definition=self.store._chain_meme_trader_effective_definition(version,registration['definition_json'])
             source=Path(__file__).parent
             names=('runtime.py','store.py','native_execution.py','cohort_experiments.py','dex_trajectory.py',
-                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py')
+                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','mode_learning144.py')
             self.store.set_kv('runtime-loaded-manifest',dict(started_at=iso(),pid=os.getpid(),definition_version=version,
                 policy_arm_ids=[p['arm_id'] for p in definition['policies']],
                 source_sha256={name:hashlib.sha256((source/name).read_bytes()).hexdigest() for name in names},
