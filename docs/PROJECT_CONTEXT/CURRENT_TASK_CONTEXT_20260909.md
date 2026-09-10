@@ -1,4 +1,8 @@
-##125 correction
+## CURRENT137 — 2026-09-10 / canonical checkpoint revision4
+
+Read `.modechat/CURRENT_TASK.md` ONE canonical packet (revision4, digest50ed80191574c959876a6158a5c40a4bd47477d32b8b0a6b694bfc64f30e7958). 137 A/B/E implemented/tested/loaded42fcf7c: new297 event recovered narrative,298 organic reawakening recovered narrative,299 conditional synthetic1U/max1/300s. Activation01:00:48.437500Z/snapshot2574566, no old funding/history reset. Exact results: `STRATEGY_DELIVERY_RESULT_137.md`. Natural outcomes remain separate from implementation; native Pump127/Pons121 proof inputs are blocked, regime passive only, ACTIVE16 matched/as-of research still unfinished/nonblocking.126/133 profitable/insufficient-arm restoration is completed and supersedes all historical pause/no-reactivation instructions below.135 local R2 readback was accepted historically; current revision and fresh browser/model/memory are not claimed verified.120 cleanup DONE; no repeat. Sole current Codex writer unchanged.
+
+##125 correction — historical, pause instruction superseded by126/133
 Parent headline178/+612.445U is manipulation/narrative-cluster-sensitive, not normal-meme champion. Lead125 exact-cluster remainder163/-99.040U (attributed, not independently rerun); use separate full/excluded denominators in119, never token-name trading filters. Live parent remains entry_paused/INSUFFICIENT with contamination note; no reactivation. See AGE_RATE_MANIPULATION_115.md for exact figures/provenance caveat.
 
 ## Pump123 proof checkpoint
