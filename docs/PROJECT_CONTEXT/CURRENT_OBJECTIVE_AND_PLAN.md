@@ -1,4 +1,8 @@
-## Current continuation pointer — checkpoint100 after safety105
+## Current continuation — direct Chat implementation148 / checkpoint27
+
+Latest explicit user authorization transfers implementation ownership to ChatGPT through the laptop MCP; retain one writer and the same Codex session. Current source405e15e (after9106e83/885955f/3f86c5c) implements bounded shared-batch feature-only coverage, in-flight receipt preservation, real quote-owner distinction and valid irregular three-point windows. Loaded21:07:22Z PID48656;14 manifest hashes matched. Read `.modechat/CURRENT_TASK.md` revision27 and `CHAT_DIRECT_IMPLEMENTATION148.md` before acting. 144–147 implementations already exist; do not repeat them. Preserve Paper/history, Agent and ModeChat expansion remain deferred. Natural coverage/continuation/model-recipe economic validation is still separate from code completion. All older operational directions below are historical unless explicitly carried by the latest checkpoint.
+
+## Historical continuation pointer — checkpoint100 after safety105
 
 For current completed status and next actions, read the CURRENT header of CURRENT_TASK_CONTEXT_20260909.md and .modechat/CURRENT_TASK.md. Later103/105 deployments and104 rollback supersede old numbered next-action text below. Product objective remains strictly-forward early/right-tail discovery, safe Paper execution and efficient reliable data; context maintenance is not a product pause. Exact pairing/Lead/model/memory verification unchanged/unasserted. Preserve older evidence below as history, not instructions to repeat completed stages.
 
