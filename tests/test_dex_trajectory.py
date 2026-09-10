@@ -146,3 +146,29 @@ def test_gap_cancels_frozen_signal_and_exit_variants_share_control_hold():
     assert not e.pools[identity]['features']['windows']['30']
     p={p['arm_id']:p for p in cohort_experiment_policies()}
     assert p['dex_profit_velocity_exit_v1']['max_hold_minutes']==p['dex_hot_impulse_v1']['max_hold_minutes']
+
+
+def test_actual_runtime_uses_real_passive_receipt_for_legacy_dex_objects(tmp_path,monkeypatch):
+    import asyncio
+    from collections import deque
+    from memetrader.runtime import Runtime
+    clock=[utcnow()]
+    for module in ('runtime','store','models'):monkeypatch.setattr('memetrader.'+module+'.utcnow',lambda:clock[0])
+    s=Store(tmp_path/'clock.sqlite3',initial_cash_usd=1000);s.activate_chain_meme_trader_funded_period()
+    r=Runtime.__new__(Runtime);r.store=s;r._cohort_started_at=clock[0];r._cohort_state={}
+    r._paper_quote_rejections=lambda *a:[]
+    idle=asyncio.Event();idle.set();r._chain_meme_active_idle=lambda:idle
+    s._dex_trajectory=Engine(clock[0])
+    token=TokenCandidate('bsc','0x'+'1'*40,'Clock','CLK');pool='0x'+'2'*40
+    s.upsert_token(token)
+    for i in range(9):
+        clock[0]+=timedelta(seconds=5)
+        snapshot=_snapshot(token,pool,clock[0],price=1+.001*i);snapshot.ingested_at=None
+        received=clock[0]+timedelta(milliseconds=10);clock[0]=received
+        r._cohort_batches=deque([(received,[(token,snapshot)])])
+        asyncio.run(r.chain_meme_cohort_observer_once())
+    feature=s._dex_trajectory.pools[(token.token_id,pool)]['features']
+    assert feature['windows']['30'] and feature['frames']==9
+    assert s._dex_trajectory.pools[(token.token_id,pool)]['rows'][-1]['ingestion_basis']=='passive_queue_receipt'
+    assert s._dex_trajectory.pools[(token.token_id,pool)]['rows'][-1]['ingested_at']==iso(received)
+    s.close()

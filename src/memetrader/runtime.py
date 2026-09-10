@@ -7843,7 +7843,10 @@ class Runtime:
                     "buys_1h": ((pair.get('txns') or {}).get('h1') or {}).get('buys'),
                     "sells_1h": ((pair.get('txns') or {}).get('h1') or {}).get('sells'),
                     "fdv_usd": pair.get('fdv'), "provider": snapshot.provider,
-                    "ingested_at": iso(snapshot.ingested_at) if snapshot.ingested_at is not None else None,
+                    # Queue admission is an actual local receipt clock. Legacy
+                    # Dex objects omit ingested_at until their Store insertion.
+                    "ingested_at": iso(snapshot.ingested_at or received),
+                    "ingestion_basis": "snapshot" if snapshot.ingested_at is not None else "passive_queue_receipt",
                     "pool_age_seconds": age, "buys_5m": snapshot.buys_5m, "sells_5m": snapshot.sells_5m,
                     "is_held": token.token_id in getattr(self, "_pattern_held_tokens", set())})
                 quotes[identity] = (token, snapshot)
