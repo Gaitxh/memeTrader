@@ -11,7 +11,9 @@ from test_l0_store import _snapshot
     ('clone_consensus_leader_v2','frozen_at',5),
     ('organic_early_flow_v1','signal_at',2),
     ('organic_reawakening_flow_v1','signal_at',5),
-    ('event_clone_narrative_reawakening_v1','event_recorded_at',5)])
+    ('event_clone_narrative_reawakening_v1','event_recorded_at',5),
+    ('event_recovered_narrative_runner_v1','event_recorded_at',5),
+    ('organic_reawakening_recovered_runner_v1','signal_at',5)])
 def test_funded_cohort_frontier_safety_next_frame_and_once(tmp_path,monkeypatch,arm,origin,stake):
     clock=[utcnow()]
     for module in ('store','models','preentry_safety'):
@@ -31,7 +33,7 @@ def test_funded_cohort_frontier_safety_next_frame_and_once(tmp_path,monkeypatch,
     assert not gate.pending  # Pre-frontier event cannot enter a newly funded arm.
     clock[0]+=timedelta(seconds=1)
     signal[arm].update(observed_at=iso(clock[0]),recorded_at=iso(clock[0]),decision_evidence={origin:iso(clock[0])})
-    if arm=='event_clone_narrative_reawakening_v1':
+    if arm in ('event_clone_narrative_reawakening_v1','event_recovered_narrative_runner_v1'):
         from memetrader.event_clone_shadow import EventCloneShadow
         shadow=EventCloneShadow(store);at=clock[0]
         source=dict(url='https://example.org/event',event_key='fresh-event',

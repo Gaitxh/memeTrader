@@ -28381,7 +28381,7 @@ class Store:
                 arm=str(d['arm_id'])
                 if arm not in special:return True
                 e=features.get('cohort_signals',{}).get(arm,{}).get('decision_evidence',{})
-                return (token_id.startswith('bsc:') and e.get('phase')=='SYNTHETIC_LPI_BUILDING'
+                return (token_id.startswith('bsc:') and e.get('phase') in ('SYNTHETIC_LPI_BUILDING','SYNTHETIC_LPI_BUILDING_CANDIDATE')
                     and exact_sellability(proof,token_id,pool,parse_time(filled_at))
                     and entry_frame and parse_time(proof['recorded_at'])<parse_time(entry_frame['observed_at']))
             decisions=[d for d in decisions if allowed(d)]

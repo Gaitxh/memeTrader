@@ -70,10 +70,11 @@ class MicrostructureWorker:
         if self.store.db.execute('SELECT 1 FROM chain_meme_pattern_evidence WHERE definition_version=? AND kind=? AND source_key=?',
                 (item['version'],'microstructure_enrollment119',key)).fetchone():return
         # Unique append receipt survives bounded in-memory eviction and restart.
+        capacity=8 if item.get('postbuy') else 7  # Reserve one existing slot for held risk work.
         if self.store.record_chain_meme_pattern_evidence(item['token_id'],item['pool'],
-                'microstructure_enrollment119',{**item,'enrollment_status':'QUEUE_CAPACITY' if len(self.pending)>=8 else 'ENROLLED'},
+                'microstructure_enrollment119',{**item,'enrollment_status':'QUEUE_CAPACITY' if len(self.pending)>=capacity else 'ENROLLED'},
                 observed_at=parse_time(item['requested_at']),source_key=key) is None:return
-        if len(self.pending)>=8:
+        if len(self.pending)>=capacity:
             self.count('QUEUE_CAPACITY');self.save();return
         self.pending[key]=item
         self.count('candidate')
@@ -86,6 +87,19 @@ class MicrostructureWorker:
         if time.monotonic()-self.last_watch<15 or not self.idle().is_set():return
         self.last_watch=time.monotonic()
         if len(self.pending)>=8:return
+        with self.store._lock:
+            held=self.store.db.execute("SELECT p.token_id,p.shadow_cohort_id,p.opened_at,c.pair_address "
+                "FROM chain_meme_trader_positions p JOIN chain_meme_trader_v6_cohorts c ON c.id=p.shadow_cohort_id "
+                "WHERE p.definition_version=? AND p.arm_id='synthetic_fast_harvest_v1' AND p.status='open' LIMIT 1",
+                (self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,)).fetchone()
+            if held:
+                key=f"held137:{held['shadow_cohort_id']}:{int(now.timestamp())//60}"
+                if key not in self.seen:
+                    self._enqueue(key,dict(version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
+                        token_id=held['token_id'],pool=held['pair_address'],requested_at=iso(now),
+                        expires_at=iso(now+timedelta(seconds=60)),opened_at=held['opened_at'],
+                        arms=['synthetic_fast_harvest_v1'],postbuy=True,shadow_costs=costs))
+                    return
         for token_id,w in watch.items():
             s=w['quote'];created=w.get('pool_created_at_ms');pool=w.get('pair_address')
             age=now.timestamp()-float(created or 0)/1000
@@ -108,7 +122,7 @@ class MicrostructureWorker:
             requests=dict(self.client.counts),shadow=self.shadow.snapshot(now),
             next_request_at=iso(now+timedelta(seconds=max(0,self.client.next_start-time.monotonic()))),
             decision_eligible=True,affects='common_paper_signals',
-            synthetic_funding='CONDITIONAL_CODE_NOT_REGISTERED_AWAIT_NATURAL_PROOF')
+            synthetic_funding='CONDITIONAL_COMMON_PREFLIGHT_REQUIRED')
         self.store.db.execute('INSERT INTO kv(key,value_json,updated_at) VALUES(?,?,?) '
             'ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at',
             (KEY,json.dumps(state),iso(now)))
@@ -139,7 +153,7 @@ class MicrostructureWorker:
         now=utcnow()
         # Let the existing safety request provide its exact-pool receipt first.
         # Other ready episodes still advance; no extra request or head-of-line wait.
-        selected=next(((key,item) for key,item in self.pending.items()
+        selected=next(((key,item) for key,item in sorted(self.pending.items(),key=lambda x:not x[1].get('postbuy'))
             if not item.get('cohort_id') or item.get('safety_checked')
             or parse_time(item['expires_at'])<now),None)
         if selected is None:return
@@ -164,6 +178,7 @@ class MicrostructureWorker:
                         'WHERE token_id=? AND observed_at<=? ORDER BY observed_at DESC LIMIT 128',
                         (item['token_id'],item['requested_at'])).fetchall()
                 frames=[];end=parse_time(item['requested_at']);start=end-timedelta(minutes=10)
+                if item.get('postbuy'):start=max(start,parse_time(item['opened_at']))
                 for r in reversed(rows):
                     p=json.loads(r['raw_json']);pair=p.get('pair') or p
                     if not r['recorded_at'] or not r['ingested_at']:continue
@@ -200,7 +215,9 @@ class MicrostructureWorker:
             self.store.record_chain_meme_pattern_evidence(item['token_id'],item['pool'],
                 VERSION,result,observed_at=now,source_key=key)
             self.pending.pop(key,None);self.count(result['state'])
-            if len(self.anchors)<32:
+            if item.get('postbuy'):
+                self.count('POSTBUY_CLASSIFIED')
+            elif len(self.anchors)<32:
                 self.anchors[key]=dict(item=item,result=result,classified_at=iso(now))
             else:self.count('ANCHOR_CAPACITY')
             self.save()
@@ -239,7 +256,8 @@ class MicrostructureWorker:
         entry['result']['route']=route
         arms={'ORGANIC_SHADOW_ELIGIBLE':'organic_reawakening_flow_v1',
               'ORGANIC_EARLY_SHADOW_ELIGIBLE':'organic_early_flow_v1',
-              'SYNTHETIC_SHADOW_ELIGIBLE':'synthetic_fast_harvest_v1'}
+              'SYNTHETIC_SHADOW_ELIGIBLE':'synthetic_fast_harvest_v1',
+              'SYNTHETIC_PENDING_PROOF':'synthetic_fast_harvest_v1'}
         arm=arms.get(route)
         entry['result']['funding_gate']='COMMON_SAFETY_AND_STRICT_NEXT_PENDING' if arm else 'NO_FUNDED_SIGNAL'
         if arm and len(self.ready)<32:
@@ -259,8 +277,10 @@ class MicrostructureWorker:
     def signals_for(self,token_id,pool,now):
         """Repeat the same frozen key while pending; common durable claim dedupes."""
         self.ready={k:v for k,v in self.ready.items() if parse_time(v['expires_at'])>=now}
-        return {v['arm']:v['signal'] for v in self.ready.values()
+        result={v['arm']:v['signal'] for v in self.ready.values()
                 if v['token_id']==token_id and v['pool']==pool}
+        from .cohort_experiments import recovered_signal_aliases
+        return recovered_signal_aliases(result)
 
     def hazard_for(self,token_id,pool,opened,now):
         evidence=self.recent.get(token_id+'|'+pool,{})

@@ -7,6 +7,11 @@ from .models import utcnow, iso, parse_time
 
 KEY='narrative-hold/v2'
 ARM='narrative_hold_recovered_runner_v2'
+RECOVERED_NARRATIVE_ARMS=(
+    ARM,
+    'event_recovered_narrative_runner_v1',
+    'organic_reawakening_recovered_runner_v1',
+)
 
 def pending_scout_leads(case, cutoff):
     """Persisted Scout findings may be verified only at a later checkpoint."""
@@ -24,7 +29,7 @@ def pending_scout_leads(case, cutoff):
 def value_checkpoint(case, positions, mark, now):
     """Research eligibility only; settlement, never a mark/target, proves recovery."""
     compatible=[dict(p) for p in positions if any(x in p['arm_id'] for x in
-        ('age_rate','reawakening','clone','principal_recovery')) or p['arm_id']==ARM]
+        ('age_rate','reawakening','clone','principal_recovery')) or p['arm_id'] in RECOVERED_NARRATIVE_ARMS]
     if not compatible:return None,'FAMILY_PRIORITY_SKIP'
     recovered=any(p.get('principal_recovered')==1 and int(p.get('amount_raw') or 0)>0
         and p.get('realized_proceeds_usd',0)>=p.get('stake_usd',0)>0 for p in compatible)

@@ -130,11 +130,11 @@ def classify(trades, *, token_id, pool, window_start, window_end,
     phase = 'UNKNOWN'
     if concentrated_cycle and sells[dominant]>buys[dominant]:
         phase = 'SYNTHETIC_DISTRIBUTING_CYCLE'
-    elif (concentrated_cycle and sellable and buy>=sell and buys[dominant]>=sells[dominant]
+    elif (concentrated_cycle and buy>=sell and buys[dominant]>=sells[dominant]
           and metrics['price_displacement'] is not None
           and metrics['price_displacement']>0
           and metrics['price_displacement']>abs(metrics['signed_notional_liquidity_ratio'])):
-        phase = 'SYNTHETIC_LPI_BUILDING'
+        phase = 'SYNTHETIC_LPI_BUILDING' if sellable else 'SYNTHETIC_LPI_BUILDING_CANDIDATE'
     state = 'UNKNOWN'
     # Conservative initial research buckets: one observed sender with BOTH sides
     # and net selling, versus positive net flow with distributed notional.
@@ -414,7 +414,9 @@ def branch_decision(evidence, *, token_id, pool, frame_observed, frame_recorded,
             and evidence['metrics']['effective_wallets'] >= 4
             and evidence['metrics']['effective_net_buy_usd']/liquidity >= EARLY_NET_LIQUIDITY):
         return 'ORGANIC_EARLY_SHADOW_ELIGIBLE'
-    if evidence.get('phase')=='SYNTHETIC_LPI_BUILDING' and chain=='bsc':
+    if evidence.get('phase') in ('SYNTHETIC_LPI_BUILDING','SYNTHETIC_LPI_BUILDING_CANDIDATE') and chain=='bsc':
+        if not require_safety:
+            return 'SYNTHETIC_PENDING_PROOF'  # Common preflight precedes actual BUY, never bypasses it.
         s=sell_simulation or {}
         if (s.get('success') is True and s.get('token_id')==token_id
                 and canonical_token_address(chain,s.get('pool',''))==evidence['pool']

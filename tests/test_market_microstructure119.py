@@ -216,9 +216,9 @@ def test_building_is_not_net_sell_and_does_not_expand_entry():
             for i in (0,10,20,30)]
     rows=[row(i,'0xa','buy' if i<3 else 'sell',100) for i in range(4)]
     sim=dict(success=True,token_id=TOKEN,pool=POOL,observed_at=T+timedelta(seconds=50),recorded_at=T+timedelta(seconds=59))
-    assert assess(rows,price_frames=frames)['phase']=='UNKNOWN'
+    assert assess(rows,price_frames=frames)['phase']=='SYNTHETIC_LPI_BUILDING_CANDIDATE'
     for bad in ({**sim,'pool':'other'}, {**sim,'success':False}, {**sim,'recorded_at':T+timedelta(seconds=61)}, {**sim,'observed_at':T-timedelta(seconds=1)}):
-        assert assess(rows,price_frames=frames,sell_simulation=bad)['phase']=='UNKNOWN'
+        assert assess(rows,price_frames=frames,sell_simulation=bad)['phase']=='SYNTHETIC_LPI_BUILDING_CANDIDATE'
     got=assess(rows,price_frames=frames,sell_simulation=sim)
     assert got['metrics']['price_displacement_per_gross_usd']==pytest.approx(1/400)
     assert got['metrics']['gross_notional_liquidity_ratio']==pytest.approx(.04)
@@ -283,6 +283,8 @@ def test_persistent_episode_receipt_survives_eviction_and_early_watch_supply():
         def __init__(self):
             self._lock=RLock();self.db=sqlite3.connect(':memory:');self.db.row_factory=sqlite3.Row
             self.db.executescript('CREATE TABLE kv(key TEXT PRIMARY KEY,value_json TEXT,updated_at TEXT);'
+                'CREATE TABLE chain_meme_trader_positions(definition_version TEXT,arm_id TEXT,status TEXT,token_id TEXT,shadow_cohort_id INTEGER,opened_at TEXT);'
+                'CREATE TABLE chain_meme_trader_v6_cohorts(id INTEGER,pair_address TEXT);'
                 'CREATE TABLE chain_meme_pattern_evidence(definition_version TEXT,kind TEXT,source_key TEXT,payload TEXT,UNIQUE(definition_version,kind,source_key));')
         def get_kv(self,key,default):
             r=self.db.execute('SELECT value_json FROM kv WHERE key=?',(key,)).fetchone()

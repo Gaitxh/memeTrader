@@ -259,6 +259,10 @@ class PreentrySafety:
             expires_at=iso(parse_time(filled_at)+timedelta(seconds=float(definition.get('max_signal_to_execution_start_seconds',120)))))
         item['funding_mode']=kwargs.get('funding_mode','legacy_cash_limited')
         item['signal_price_usd']=kwargs.get('signal_price_usd')
+        if any(p.get('requires_exact_pool_sell_simulation') for p in definition['policies']):
+            admitted=[r[0] for r in self.store.db.execute('SELECT arm_id FROM chain_meme_trader_entry_decisions '
+                "WHERE definition_version=? AND shadow_cohort_id=? AND status='admitted'",(version,cohort_id))]
+            item['requires_exact_pool_sell_simulation']=bool(admitted) and set(admitted)=={'synthetic_fast_harvest_v1'}
         item['shadow_costs']={key:definition.get(key,default) for key,default in (
             ('buy_slippage_bps',400),('sell_slippage_bps',400),('additional_fee_usd_each_fill',0.0),('min_pool_liquidity_usd',1000))}
         micro=getattr(self.store,'_microstructure119',None)
@@ -299,7 +303,12 @@ class PreentrySafety:
         if cached and parse_time(cached['source_at'])<=parse_time(filled_at)<parse_time(cached['source_at'])+timedelta(seconds=45):
             if cached['status']=='REJECT':self.record(item,'REJECT',cached);return False
             if cached['allow'] and row and parse_time(cached['source_at'])<parse_time(row['observed_at']):
-                self.record(item,'BUY_AUTHORIZED_'+cached['status'],cached);return True
+                from .market_microstructure import exact_sellability
+                proof=cached.get('exact_pool_sell_simulation')
+                if (not item.get('requires_exact_pool_sell_simulation') or
+                    exact_sellability(proof,token_id,pool,parse_time(filled_at))
+                    and parse_time(proof['recorded_at'])<parse_time(row['observed_at'])):
+                    self.record(item,'BUY_AUTHORIZED_'+cached['status'],cached);return True
         if str(cohort_id) not in self.pending:
             if len(self.pending)>=128:self.record(item,'WAIT_QUEUE_CAPACITY');return False
             self.pending[str(cohort_id)]=item;self.save();self.record(item,'WAIT_SECURITY')
@@ -369,6 +378,11 @@ class PreentrySafety:
         for key,item in matches:
             result=self.cache.get((token.token_id,item['pool']))
             if not result:continue
+            if item.get('requires_exact_pool_sell_simulation') and result['status']!='REJECT':
+                from .market_microstructure import exact_sellability
+                proof=result.get('exact_pool_sell_simulation')
+                if not exact_sellability(proof,token.token_id,item['pool'],recorded_at):continue
+                if parse_time(proof['recorded_at'])>=snapshot.observed_at:continue
             if result['status']=='REJECT':
                 self.record(item,'REJECT',result);self.pending.pop(key);self.save();continue
             if not result['allow'] or not (parse_time(result['source_at'])<snapshot.observed_at<=recorded_at<=parse_time(item['expires_at'])):continue

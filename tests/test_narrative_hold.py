@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import asyncio
 import pytest
 from memetrader.models import utcnow,iso,TokenCandidate
-from memetrader.narrative_hold import aggregate,extension_allowed,policy,NarrativeHold,ARM,KEY,max_hold
+from memetrader.narrative_hold import aggregate,extension_allowed,policy,NarrativeHold,ARM,KEY,max_hold,pending_scout_leads
 from memetrader.resource_bound_research import resource_policies
 from memetrader.narrative_hold import value_checkpoint
 from test_resource_bound_store import setup_store,quote
@@ -28,6 +28,16 @@ def test_value_admission_settlement_not_elapsed_or_metadata():
     assert value_checkpoint(case,[p],m,now)[0]=='value110:1'
     case['points'].update({'value110:1':'COMPLETE','value110:2':'RUNTIME_INTERRUPTED'})
     assert value_checkpoint(case,[p],m,now)==(None,'CASE_BUDGET')
+
+
+@pytest.mark.parametrize('arm_id',['event_recovered_narrative_runner_v1','organic_reawakening_recovered_runner_v1'])
+def test_recovered_narrative_runners_require_settled_principal(arm_id):
+    now=utcnow();case=dict(token_id='bsc:token',pool='pool',opened_at=iso(now-timedelta(minutes=2)),points={},leads=[])
+    mark=dict(pair_address='pool',status='VISIBLE',liquidity_usd=2000,price_usd=1,observed_at=iso(now),recorded_at=iso(now))
+    position=dict(arm_id=arm_id,principal_recovered=0,amount_raw='10',realized_proceeds_usd=0,stake_usd=5)
+    assert value_checkpoint(case,[position],mark,now)==(None,'VALUE_NOT_YET_RECOVERED')
+    position.update(principal_recovered=1,realized_proceeds_usd=5)
+    assert value_checkpoint(case,[position],mark,now)==('value110:recovery','RECOVERY_TRIGGERED')
 
 def test_value_wait_reconsiders_recovery_without_spending_or_burning_checkpoint(monkeypatch):
     now=utcnow();monkeypatch.setattr('memetrader.narrative_hold.utcnow',lambda:now)
@@ -75,6 +85,28 @@ def test_extension_requires_actual_settlement_and_fresh_healthy_exact_pool():
     for update in [dict(principal_recovered=0),dict(realized_proceeds_usd=4.99),dict(mark_liquidity_usd=999),dict(mark_pair_address='other'),dict(mark_observed_at=iso(now-timedelta(seconds=16)))]:
         assert not extension_allowed({**p,**update},e,now)
     assert not extension_allowed(p,{**e,'state':'UNKNOWN'},now)
+
+
+def test_recovered_runner_extension_requires_verified_evidence_and_clear_safety():
+    now=utcnow();position=dict(definition_version='v',token_id='bsc:token',shadow_cohort_id=1,principal_recovered=1,amount_raw='20',realized_proceeds_usd=5,stake_usd=5,mark_status='VISIBLE',mark_pair_address='pool',mark_liquidity_usd=2000,mark_price_usd=1,opened_at=iso(now-timedelta(minutes=30)),mark_observed_at=iso(now),mark_recorded_at=iso(now))
+    evidence=dict(**TYPES,state='CONFIRMED_EXPANDING',pool='pool',evidence_id=1,cutoff=iso(now-timedelta(minutes=1)),recorded_at=iso(now))
+    key='v:bsc:token:1';state={'overlay_enabled':True,'latest':{key:evidence}}
+    safe=SimpleNamespace(behavior=lambda *a:{})
+    store=SimpleNamespace(get_kv=lambda *a:state,_preentry_safety=safe)
+    policy=dict(max_hold_minutes=30,entry_filter={'narrative_hold_v2':True})
+    assert max_hold(store,position,policy,now)==60
+    state['latest'][key]={**evidence,'state':'UNKNOWN'}
+    assert max_hold(store,position,policy,now)==30
+    state['latest'][key]=evidence;store._preentry_safety=SimpleNamespace(behavior=lambda *a:{'hard_veto':['risk']})
+    assert max_hold(store,position,policy,now)==30
+
+
+def test_persisted_sources_are_admitted_only_as_of_cutoff():
+    now=utcnow();cutoff=now+timedelta(seconds=1)
+    source=dict(source_evidence_id=1,scout_model='gpt-5.6-luna',url='https://example.test/news',published_at=iso(now-timedelta(seconds=1)),available_at=iso(now))
+    assert pending_scout_leads({'leads':[source]},cutoff)==[source]
+    assert pending_scout_leads({'leads':[{**source,'available_at':iso(cutoff)}]},cutoff)==[]
+    assert pending_scout_leads({'leads':[{**source,'published_at':iso(now+timedelta(seconds=2))}]},cutoff)==[]
 
 
 def test_registration_same_fill_unique_case_and_no_backfill(tmp_path,monkeypatch):

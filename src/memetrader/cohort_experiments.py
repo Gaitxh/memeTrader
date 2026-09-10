@@ -170,12 +170,23 @@ def cohort_experiment_policies() -> list[dict[str, Any]]:
         policy['entry_filter']={'direction':arm,'max_concurrent_positions':limit['max_open']}
         policy['signal_origin_clock']='event_recorded_at' if arm=='event_clone_narrative_reawakening_v1' else 'signal_at'
         policies.append(policy)
+    for source,arm in (('event_clone_narrative_reawakening_v1','event_recovered_narrative_runner_v1'),
+                       ('organic_reawakening_flow_v1','organic_reawakening_recovered_runner_v1')):
+        policy=copy.deepcopy(next(p for p in policies if p['arm_id']==source))
+        policy.update(arm_id=arm,canonical_id=arm,name=arm,entry_family=arm,
+            source_arm_ids=[source],paired_opportunity_group=source,
+            dynamic_principal_recovery='minimum_net_debit_keep_half_next_frame/v3',
+            description='同一冻结事件/复苏信号；真实净回本且保留至少半仓后，仅独立验证叙事可延长；5U/最多4仓。')
+        policy['entry_filter']={**policy['entry_filter'],'direction':arm,
+            'max_concurrent_positions':4,'narrative_hold_v2':True}
+        policies.append(policy)
+    policies.append(synthetic_harvest_policy(policies[2]))
     return policies
 
 
-def synthetic_harvest_policy():
-    """Conditional contract; not startup-registered while natural proof is absent."""
-    p=copy.deepcopy(cohort_experiment_policies()[2])
+def synthetic_harvest_policy(base=None):
+    """Conditional registered contract: real preflight proof remains mandatory."""
+    p=copy.deepcopy(base if base is not None else cohort_experiment_policies()[2])
     arm='synthetic_fast_harvest_v1'
     p.update(arm_id=arm,canonical_id=arm,name=arm,entry_family=arm,
         notional_usd=1.0,max_hold_minutes=5.0,paired_opportunity_group=arm,
@@ -185,6 +196,18 @@ def synthetic_harvest_policy():
         description='BSC集中BUILDING条件式1U/单仓/5分钟Paper；需真实同池可卖模拟，非精确金额模拟。')
     p['entry_filter']={'direction':arm,'max_concurrent_positions':1,'chains':['bsc']}
     return p
+
+
+def recovered_signal_aliases(signals):
+    """Same frozen opportunity and clocks; independent arm receipt, no new winner."""
+    result=dict(signals)
+    for source,arm in (('event_clone_narrative_reawakening_v1','event_recovered_narrative_runner_v1'),
+                       ('organic_reawakening_flow_v1','organic_reawakening_recovered_runner_v1')):
+        if source in signals:
+            signal=copy.deepcopy(signals[source])
+            signal['decision_key']=signal['decision_key']+'|'+arm
+            result[arm]=signal
+    return result
 
 
 def _time(value: Any) -> datetime | None:

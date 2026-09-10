@@ -162,13 +162,14 @@ class EventCloneShadow:
                     continue
             except (KeyError,TypeError,ValueError):
                 continue
-            return {ARM:{'episode_id':event['event_key'],'decision_key':event['event_key']+'|'+token_id+'|'+pool,
+            from .cohort_experiments import recovered_signal_aliases
+            return recovered_signal_aliases({ARM:{'episode_id':event['event_key'],'decision_key':event['event_key']+'|'+token_id+'|'+pool,
                 'selected':{'token_id':token_id,'pair_address':pool},'observed_at':case['signal_observed_at'],
                 'recorded_at':case['signal_recorded_at'],'decision_evidence':{
                     'event_key':event['event_key'],'event_evidence_id':event['evidence_id'],
                     'event_recorded_at':event['recorded_at'],'signal_observed_at':case['signal_observed_at'],
                     'signal_recorded_at':case['signal_recorded_at']},
-                'state':'SIGNAL','decision_eligible':False,'affects':'none','reason':case.get('reason')}}
+                'state':'SIGNAL','decision_eligible':False,'affects':'none','reason':case.get('reason')}})
         return {}
     def frame(self,token,snapshot,recorded_at,features):
         if not self.state['cases']:return
