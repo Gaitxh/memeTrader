@@ -101,3 +101,62 @@ ACK `C2C-20260910-144-LEARNING-STATE-REPRO`。按本条明确要求，直接使�
 ### 指定池身份/趋势时钟最终检查
 
 ACK `C2C-20260910-144-FINAL-IDENTITY-CLOCK`。直接运行指定 `data/research/strategy_delivery144/review144_checks.py`，当前源码 **10/10 PASS，0.085秒，exit0**，包括 `test_supported_64hex_pool_id_is_not_rejected` 和 `test_future_recorded_trend_cannot_extend`。这两处已由 `b3e9324` 修正；本次未修改检查脚本、交易源码或旧合同，未重复运行学习六项。高频300秒路径保持通过，不列为阻碍。此为当前源代码检查，服务恢复/重新运行验收仍是独立边界。
+
+## 自然运行与晋级边界更新 — 2026-09-10T16:04:25Z（北京时间9月11日00:04）
+
+ACK `C2C-20260910-144-REGRESSION-ACCEPTANCE`。此前16项阻断在当前源码已解决，不再等待重复许可或运行相同测试。本轮为只读运行验收及当前检查点更新；没有调用训练/晋级函数、改变策略、发起额外市场请求或重启服务。
+
+### 当前确已运行，旧启动阻断不再代表当前状态
+
+实际Paper PID30748，manifest启动15:53:23.850126Z；当前Web和三个API均正常。`trajectory144.py / mode_learning144.py / runtime.py / store.py` 加载SHA256与磁盘完全一致。当前资金期仍为 `funding-20260906-v002-final-1000`，Paper-only/Live-locked，六arm均 `forward_enabled=true`。原25注册、311旧policy、1资金激活、0资金恢复的摘要与144前基准一致。
+
+启动器的15:53启动日志和当前进程/API形成恢复证据；本轮未执行启动，不能声称绕过此前策略拒绝。恢复操作者未独立确认。没有新增/变更资金期。
+
+### 实际Paper账户结果，不能当独立样本或Alpha
+
+|策略|实际BUY仓位|终局|终局PnL U|仍开仓|
+|---|---:|---:|---:|---:|
+|312 early_activity_fast|0|0|0|0|
+|313 sparse_peer_hot_fast|1|1|-0.422030|0|
+|314 absorption_reclaim|4|3|-0.728185|1|
+|315 trend_runner|0|0|0|0|
+|316 second_wave|2|2|+1.630856|0|
+|317 adaptive_selector|7|6|+0.480641|1|
+
+14仓来自4个token、7个共同source fill；12个终局只有3个token、6个共同source fill。账户终局合计+0.961282U包含基础arm/selector同机会重复资本，不能视作14次独立检验。两笔第二波终局也来自同一个token。终局原因8次路径/活动/流动性衰减、2次trailing、2次hard stop。早龄与纯趋势还没有自然BUY；实际长持延期尚无自然验收。
+
+### 学习真实推进，但没有晋级
+
+61个冻结研究episode（19信号、42抽样无信号），32个严格后帧研究入口；143个已生成标签全部一次性训练，29 OBSERVED/114 UNKNOWN，30个episode仍等后续horizon。实际14 BUY/12终局另行追踪，没有与价格代理混合。
+
+|固定horizon|OBSERVED|UNKNOWN|
+|---|---:|---:|
+|5m|21|37|
+|15m|8|46|
+|60m|0|31|
+
+全部143标签仍在当前有界pending/recent证据内，没有尾部截断：87个UNKNOWN标签来自29个未在120秒取得研究入口的episode（每episode三个horizon），19个没有自然合格终点、3个路径缺口、5个池底/缺失。87不是87枚币。5/15/60不合并成独立样本量。
+
+分组最多3个有效样本、最多1个UTC日期；与固定晋级要求的20样本/10token/2日期、UNKNOWN≤25%、去前三正收益、回撤及实际终局证据仍有明显距离。模型保持 `fixed_priority/v1`，releases=0；不扩大候选、放宽门槛或为负结果造晋级。当前数据不能证明经济性，尤其60m尚无OBSERVED。
+
+### 连续约192秒运行观察：进展通过，抓取延迟保留告警
+
+16:01:13→16:04:25同一进程：accepted帧21382→22993；无信号抽样41→42，严格研究入口31→32；期间未新增BUY或成熟标签（143→143），不能把仍等待horizon视作训练停机。原交易与其他策略继续自然成交/退出。
+
+|指标|窗口前|窗口后|
+|---|---:|---:|
+|held_fetch p95|2.4898s|3.1701s|
+|held_apply_exit p95|44.07ms|41.23ms|
+|cohort_passive_compute p95|1.1895s|1.1823s|
+|passive queue wait p95|2.0528s|2.4998s|
+|flat target selection p95|0.9543s|0.9055s|
+|flat overall p95|7.2464s|6.5814s|
+|passive drops / PoolTimeout|0 / 0|0 / 0|
+
+held-fetch相对该短窗上升0.6803s/27.3%，超保守25%或250ms线，**不能判定全部性能保护PASS**。仍为1次累计ConnectError/1次held-fetch失败，未增加；退出计算无回归，当前3个held token没有行情缺失/原池缺口，最旧观察约2.248秒。前后held token4→3，滚动窗口及上游负载不同，本轮无源码/部署变化，不能归因144或据此伪造因果提速/回退结论。保留LATENCY_WATCH，后续使用同负载请求/处理耗时证据定位；不自动暂停策略或修改请求预算。
+
+原39案例14:32冻结汇总继续引用，不重扫、不作为训练验证赢家名单。Agent延期、唯一writer不变。当前结论：**运行/前向进展/账户链路可用；经济证据不足、无晋级；短窗抓取延迟未完全验收，继续观察**。
+
+完整紧凑工件：`data/research/strategy_delivery144/forward_acceptance_before.json`、`forward_acceptance_after.json`。SQLite仅精确KV及小型不可变表；新策略仓位使用现有definition+arm索引，无全库/39案例重扫。
+
+当前检查点已更新revision19，digest `183dca72391df32b1fc71a254d78d1da01661fcf8bddca02733cf46d826922ef`；ONE resume实际读回CONSISTENT，writer仍codex/epoch0、无stop fence。此为本地持久上下文验收，不代表Project memory或新Chat验证；后两项仍UNVERIFIED/REVALIDATION_REQUIRED。没有因ACK再递增语义revision。

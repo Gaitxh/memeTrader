@@ -1,8 +1,12 @@
-# Latest runtime/review delta — 144 source accepted, service unavailable
+# Latest144 forward acceptance — running, no promotion, latency watch
 
-The subsequent user-requested restart was blocked before process creation (`blocked by policy`); current8790 health remains unavailable. `SYSTEM_STARTUP_RESULT_20260910.md` records the tested one-click desktop/project entry and truthful runtime blocker. The prior144 loaded/progress numbers below are historical, not current liveness.
+At2026-09-10T16:04:25Z currentPaper30748 started15:53:23Z;8790health/live/performance running. Exact source hashes match, funding period unchanged, Paper-only/Live locked. Earlier process-control rejection was a historical event, NOT a current outage. This turn did not start/restart the recovered service.
 
-Review144 learning/reachability reconciled against current V3 and the Lead document's own later PASS corrections. Five additional dense/delayed-label and invalid-price regressions pass; no production algorithm/threshold/model change or new promotion. See final section of `STRATEGY_DELIVERY_RESULT_144.md`. Initial drafts must not be restored or reimplemented. Natural144 coverage/economics remains open after service restoration; no new reviewer or repeated proof scan.
+ACK144-REGRESSION-ACCEPTANCE:16 reviewed regressions resolved; no repeat tests/reviewer. Six312–317 remain forward-enabled. Natural14 account positions=7commonfills/4tokens;12terminals=6commonfills/3tokens, accountPnL+0.961282U includes duplicate capital. Early/trend0BUY; secondwave2terminals same token+1.630856U; absorption/sparse negative. No Alpha claim.
+
+Learning61episodes/32strict researchentries;143labels learned once(29OBSERVED/114UNKNOWN),30pending. Horizons5m21/37,15m8/46,60m0/31 observed/unknown. Largest group3samples/1date; fixed_priority/v1/release0, no promotion. Current192s observation advanced frames21382→22993 but no new maturelabel/BUY in that short interval. Heldp952.490→3.170s exceeds short-window guard; apply41ms/currentheldmarks2.248s/drops0/PoolTimeout0. LATENCY_WATCH remains, no causal attribution or automatic rollback on unchanged source. Keep independent forward learning, do not relax gates.
+
+Evidence: final section of `STRATEGY_DELIVERY_RESULT_144.md`, `data/research/strategy_delivery144/forward_acceptance_{before,after}.json`. Preserve39 frozen summary37identity/34basicmarket/16tokens285accountrows,8no-next/18next>60s; no rescan/allowlist. Agent/browser/ModeChat expansion remain deferred; checkpoint maintenance only.
 
 # Current144 — nonagent strategies and bounded learning loaded
 
