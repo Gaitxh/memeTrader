@@ -146,6 +146,7 @@ let state = null;
 let universe = null;
 let performance = null;
 let performanceLoading = null;
+let performanceRequestedAt = 0;
 let selectedCanonical = null;
 let liveTimer = null;
 let fullTimer = null;
@@ -202,7 +203,7 @@ function route(){
   if(page==='errors')refreshErrors();
   if(page==='updates')refreshUpdates();
   if(page==='system'){refreshPerformance();refreshPaperSettings();}
-  if(page==='strategies'&&!performance&&!performanceLoading)refreshPerformance();
+  if(page==='strategies'&&!performanceLoading&&Date.now()-performanceRequestedAt>=30000)refreshPerformance();
   if(page==='discovery')refreshDiscovery(true);
   closeDrawer(false);
   if(state)renderVisible(state);
@@ -251,6 +252,7 @@ const performanceTasks={
 async function refreshPerformance(){
   const target=$('#performance-content'),seconds=(x,empty='暂无数据')=>x==null?empty:`${Number(x).toFixed(2)} 秒`;
   if(performanceLoading)return performanceLoading;
+  performanceRequestedAt=Date.now();
   performanceLoading=(async()=>{
   try{
     const response=await fetch('/api/performance',{cache:'no-store'}),data=await response.json();
@@ -1120,6 +1122,7 @@ async function refreshDiscovery(force=false){
 async function refreshLive(){
   clearTimeout(liveTimer);
   if(document.visibilityState!=='visible')return;
+  if(['strategies','system'].includes(lastPage)&&!performanceLoading&&Date.now()-performanceRequestedAt>=30000)refreshPerformance();
   if(lastPage==='discovery'&&!activeTokenId){await refreshDiscovery();liveTimer=setTimeout(refreshLive,document.visibilityState==='visible'?5000:30000);return;}
   try{const focusedArm=selectedStrategyArm(),query=focusedArm?`?arm_id=${encodeURIComponent(focusedArm)}`:'';const response=await fetch(`/api/live${query}`,{cache:'no-store'});if(!response.ok)throw new Error(`HTTP ${response.status}`);renderLive(await response.json(),focusedArm);}
   catch(error){const el=$('#runtime');el.className='runtime stale';el.innerHTML=`<span class="pulse"></span><strong>实时读取失败</strong><small>${esc(error.message)}</small>`;}

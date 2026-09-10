@@ -84,6 +84,21 @@ context.fetch = () => { throw new Error('hidden page must not fetch live state')
 context.setTimeout = () => { throw new Error('hidden page must not keep polling'); };
 vm.runInContext('refreshLive()', context).then(() => {
   console.log('chain web strategy revision and hidden polling: ok');
+  context.document = {visibilityState:'visible'};
+  context.setTimeout = () => 0;
+  context.fetch = async () => ({ok:true,json:async()=>({})});
+  return vm.runInContext(`(async()=>{
+    let clock=60000,calls=0;Date.now=()=>clock;
+    lastPage='strategies';performanceRequestedAt=0;
+    selectedStrategyArm=()=>'';renderLive=()=>{};
+    refreshPerformance=async()=>{calls++;performanceRequestedAt=Date.now();};
+    await refreshLive();await refreshLive();
+    if(calls!==1)throw Error('summary must refresh once, not every live poll');
+    clock+=30000;await refreshLive();
+    if(calls!==2)throw Error('visible summary must advance after30s');
+    document.visibilityState='hidden';clock+=30000;await refreshLive();
+    if(calls!==2)throw Error('hidden summary must not poll');
+  })()`,context);
 });
 
 assert.match(context.revisionUi.explanation({},true),/class="strategy-explanation" open/);

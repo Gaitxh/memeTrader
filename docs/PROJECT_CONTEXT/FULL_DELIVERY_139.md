@@ -41,3 +41,46 @@ Use saved16+23 cases/matched controls for remaining causal decision receipts and
 4c7ca9f loaded08:35:54Z; eight arms activated08:35:45Z. API returns startup source hashes and279 effective policies. The first natural read exposed2672 discarded trajectory frames: legacy Dex objects leave ingested_at empty until Store insertion. Fixed the actual producer to use its already-recorded passive queue admission receipt (never current-time reconstruction), explicitly labelled `passive_queue_receipt`. Actual Runtime→Engine fixture passes for that legacy object shape. No provider/clock freshness relaxation.
 
 `scripts/report_righttail_receipts139.py` completed saved47 attribution with read-only indexed per-token evaluation/cohort reads and7468 PK-only saved-snapshot lookups, in5.3s. The frozen cutoff remains2019801/2026-09-08T20:34:35Z; no rematch, snapshot-range scan or new historical trading signal. Output `data/research/full_delivery139/righttail_receipts.json`:16cases+51control-anchor rows (50case-normalized distinct controls). Case dispositions:8 actual decisions,4 ready without decision,2 no exact-pool evaluation in frozen current-funded-period scope,2 no valid anchor. Qualified sampled5/15/30/60/360-minute endpoints across retained rows:21/13/15/8/0. These are price observations with4%/4% proxy, not fills or proof that no earlier stop/floor occurred. No6h precision/profitability claim is possible. Today23 existing summary preserved separately:21found/2missing; no new winner-fit or refreshed matching.
+
+## Final source, load and natural boundary
+
+Trading source `ca358bccbf3fe11c40d5e312ed040818b001b296` is loaded from08:41:26Z. Runtime-start manifest source hashes matched the local runtime/store/native/cohort/Dex/safety/microstructure files. All eight additions are forward-enabled;279 effective policies and45 forward-enabled families. Web-only `916aec5` adds native protocol explanations, Chinese trajectory names and actual per-status safety receipt counts; only the web process was reloaded. It does not reload or pause Paper.
+
+At08:51:22Z, the trajectory engine had5995 independent frames/184 exact pools,133 honest gap resets and3298 rejected/unknown inputs. Natural frozen signals: compression2, volume-leads2, quiet1. New arms had four actual BUYs across three unique tokens: compression2, volume-leads1, quiet1. The second volume signal expired without the required security/next-frame completion. Hot/first-dip/three hot-exit variants had no natural BUY yet; do not loosen their gates. This is engineering/natural supply acceptance, not profitability evidence.
+
+The common-market funnel recorded6 unique admitted cohorts,6 WAIT_SECURITY,6 CHECKED_UNKNOWN,5 authorized and5 BUY cohorts,1 expiry. The six restored age-rate parent/control/derivative accounts sharing one opportunity do not count as six independent signals. Counts for different safety states overlap over time and must not be added. Native and unlinked pre-admission paths remain explicitly outside this common-cohort denominator.
+
+| Measurement | Before139 | At08:51:22Z |
+|---|---:|---:|
+| held_fetch p95 |2.073s|1.944s|
+| held_apply_exit p95 |.0439s|.0343s|
+| cohort_passive_compute p95 |1.009s|.925s|
+| flat task duration p95 |5.407s|5.204s|
+| passive queue wait p95 |2.294s|2.485s|
+| passive dropped quotes |0|0|
+
+Current held-fetch failure count1 versus2 in the pre-load snapshot; not zero. Current exact original-pool source gaps/native reserve failure remain distinct from latency. Dex PoolTimeout0/connect errors0, generation1/retirements0, high-priority waiters0. Flat actual start p95=5.463s and pattern observer p95=15.741s; configured5s/15s unchanged. Early cold-start p95 peaks settled, so the latest window passes the existing latency guard. Loads/held populations differ; these are observed bounded windows, not a causal speedup estimate or a new29-minute long-run claim. No wider concurrency or API budget was introduced.
+
+`after.json` verifies exact equality of prior policy-addition rows, current registration and funding records. Eight additions are the only new policy rows. Funding remains `chain-meme-trader/funding-20260906-v002-final-1000`; Paper-only/Live locked. Naturally arriving positions/trades are retained, not expected to stay flat during a live comparison.
+
+## Full attachment disposition
+
+| Scope | Actual implementation / acceptance |
+|---|---|
+| Shared Dex vector and distinct real entry/exit hypotheses | Implemented/tested/registered/loaded; natural signals and four BUYs above. Existing liquidity-leading mechanism reused. Missing horizons and signed wallet flow not invented. |
+| Native supported SOL lifecycle | Real cash assembler/common ledger/BUY/held remaining-raw SELL/migration/valuation code loaded. One natural BUY94747. Current reserve-capacity failure blocks its SELL; max-hold intent persists and value remains UNKNOWN. Pons provenance/unsupported quote classes remain DATA_BLOCKED. |
+| Organic/synthetic/clone/event/router mechanisms136–138 | Existing source/producers/safety/strict-next/exit and no-reentry fixes loaded, not reimplemented. Synthetic conditional exact-sell proof still required; ordinary flow does not guarantee safety or profit. |
+| Shared funnel / startup-vs-steady diagnosis | Actual in-process cohort stage counters, per-arm attribution, startup/steady windows, explicit missing association; no account-fanout denominator. The current process has not yet reached the30-minute steady bucket. |
+| Agent research / hold overlay | Existing two-slot Scout/Verifier, context slimming, persisted-lead progression and recovered-value gate retained. New bounded authoritative-listing early research trigger tested/loaded. No forced Agent call or claim of a new natural verified narrative. |
+| Historical16/23 / controls | Prior matching/descriptions reused; saved strict receipt and qualified horizon readback completed. No6h observed denominator in this frozen set, hence no precision/Alpha claim or fabricated discrimination result. |
+| Governance / safety / UI | Restored126/133 controls preserved; shared scam/scope safety inherited. Chinese exact rules, registered/loaded/natural distinction, per-status safety and native-exit limitation rendered. |
+| Measured efficiency | Shared once-per-receipt features, bounded no-I/O hot path, existing flat/cancellation/fanout repairs retained; bounded current measurements above. No extra requests/forced trades/full historical scans. |
+| Continuity / ModeChat | Existing source/tests/install retained. Revision13 packet and TASKS consistent, exact session/lease unchanged. Fresh Project browser opened but initial/readAX both timed out30s; no page evidence, new Chat/model/memory/Lead remain UNVERIFIED. No repeated pairing setup, hook changes, cleanup or topology mutation. |
+
+Revision13 digest: `64c94f39db2bea6c28aa6c1c86c49aa563e9d8dd37ddc48e1c9fc41d7a620ebf`; local resume confirms `CONSISTENT`, owner Codex epoch0 and no stop/terminal fences. This is local readback, not external Lead/Project-memory acceptance. Old source-only/native-ledger-missing/process-denied claims in prior reports are historical and superseded by this actual loaded evidence. No further semantic revision is required merely to acknowledge this packet.
+
+### Closing readback08:59:26Z
+
+`final_natural.json` records six natural new-arm positions: quiet1open, volume-leads2open, compression1open/1closed, first-dip1closed. The two realized outcomes are−0.325998U and−1.298419U (sum−1.624417U); no profitability claim. Hot and its three exit treatments still have no natural entry. Actual common BUY→later SELL now has production evidence as well as fixtures. Native94747 remains UNKNOWN_EXIT for the independently reported reserve reason.
+
+Final browser verification sees Chinese entry labels, cohort8→authorization7→BUY7 (includes old same-fill families), and separate native reserve limitation. It also exposed an existing UI-only stale-summary defect: the live strategy table updated but performance/safety summary fetched only on first entry. The visible strategy/system view now refreshes the existing lightweight performance API at most once per30seconds with in-flight dedup; hidden pages make no polling requests. Closest JS test covers once/30s/hidden behavior and passes. No extra market provider request or Paper restart. Web API independently confirms native protocol-specific explanations loaded.
