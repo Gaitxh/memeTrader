@@ -58,7 +58,7 @@ def test_truncated300_not_zero_and_base_orientation():
 def test_branch_strict_next_and_exact_sell_simulation():
     kwargs=dict(token_id=TOKEN,pool=POOL,frame_observed=T+timedelta(seconds=61),
         frame_recorded=T+timedelta(seconds=62),price=1.,liquidity=2000.,safety_allow=True,reawakening=True,
-        surface=dict(kind='COMMON_PAPER_EXACT_POOL',authenticated=True,buy_sell_lifecycle=True,
+        surface=dict(kind='OBSERVED_DEX_PAPER_ORIGINAL_POOL',
                      token_id=TOKEN,pool=POOL,observed_at=T+timedelta(seconds=59),recorded_at=T+timedelta(seconds=60)))
     assert branch_decision(assess(organic()),**kwargs)=='ORGANIC_SHADOW_ELIGIBLE'
     assert branch_decision(assess(organic()),**{**kwargs,'frame_observed':T+timedelta(seconds=60)})=='WAIT'
@@ -68,7 +68,7 @@ def test_branch_strict_next_and_exact_sell_simulation():
     s={**s,'phase':'UNKNOWN'}
     assert branch_decision(s,**kwargs)=='WAIT'
     sim=dict(success=True,token_id=TOKEN,pool=POOL,observed_at=T+timedelta(seconds=59),recorded_at=T+timedelta(seconds=60))
-    assert branch_decision(s,**kwargs,sell_simulation=sim)=='SYNTHETIC_SHADOW_ELIGIBLE'
+    assert branch_decision(s,**kwargs,sell_simulation=sim)=='WAIT'  # Old cycle state cannot enter BUILDING.
     assert branch_decision(s,**kwargs,sell_simulation={**sim,'pool':'other'})=='WAIT'
     assert branch_decision(assess(organic()),**{**kwargs,'surface':None})=='DATA_BLOCKED_SURFACE'
     assert branch_decision(assess(organic()),**{**kwargs,'surface':{**kwargs['surface'],'kind':'PONS_NATIVE'}})=='DATA_BLOCKED_SURFACE'
@@ -223,6 +223,12 @@ def test_building_is_not_net_sell_and_does_not_expand_entry():
     assert assess(buy_only,price_frames=frames,sell_simulation=sim)['phase']=='SYNTHETIC_LPI_BUILDING'
     assert got['metrics']['net_usd']==200
     assert got['phase']=='SYNTHETIC_LPI_BUILDING'
+    route=dict(token_id=TOKEN,pool=POOL,frame_observed=T+timedelta(seconds=61),
+        frame_recorded=T+timedelta(seconds=62),price=2.,liquidity=10000.,safety_allow=True,
+        surface=dict(kind='OBSERVED_DEX_PAPER_ORIGINAL_POOL',token_id=TOKEN,pool=POOL,
+            observed_at=T+timedelta(seconds=61),recorded_at=T+timedelta(seconds=62)))
+    assert branch_decision(got,**route,sell_simulation=sim)=='SYNTHETIC_SHADOW_ELIGIBLE'
+    assert branch_decision(got,**route)=='WAIT'
     assert got['state']=='UNKNOWN'  # frozen funded selector not broadened
     assert got['metrics']['price_displacement_per_external_signed_usd'] is None
     assert got['decision_eligible'] is False
@@ -296,3 +302,28 @@ def test_persistent_episode_receipt_survives_eviction_and_early_watch_supply():
         assert store.db.execute('SELECT count(*) FROM chain_meme_pattern_evidence').fetchone()[0]==2
         store.db.close()
     asyncio.run(run())
+
+
+def test_real_classifier_to_original_pool_signal_before_common_safety():
+    from types import SimpleNamespace
+    from memetrader.microstructure_shadow_worker import MicrostructureWorker
+    from memetrader.models import iso
+    class Store:
+        def get_kv(self,*a):return {}
+    idle=asyncio.Event();idle.set()
+    worker=MicrostructureWorker(Store(),Http(),lambda:idle)
+    evidence=assess(organic())
+    evidence.update(token_id=TOKEN,pool=POOL,recorded_at=iso(T+timedelta(seconds=60)))
+    worker.anchors['episode']={'result':evidence,'classified_at':evidence['recorded_at'],
+        'item':dict(token_id=TOKEN,pool=POOL,early=True,pool_created_at_ms=T.timestamp()*1000,
+            shadow_costs={},requested_at=iso(T),safety_allow=False)}
+    snap=SimpleNamespace(token_id=TOKEN,chain='bsc',provider='dexscreener',
+        observed_at=T+timedelta(seconds=61),price_usd=1.,liquidity_usd=2000.,
+        raw={'pair':{'chainId':'bsc','pairAddress':POOL,'baseToken':{'address':'0xabc'}}})
+    now=T+timedelta(seconds=62)
+    worker.observe(TOKEN,snap,now,now)
+    signals=worker.signals_for(TOKEN,POOL,now)
+    assert signals['organic_early_flow_v1']['decision_key']=='micro119:episode|organic_early_flow_v1'
+    assert signals['organic_early_flow_v1']['recorded_at']==iso(now)
+    assert worker.signals_for(TOKEN,'other',now)=={}
+    assert worker.signals_for(TOKEN,POOL,now+timedelta(seconds=61))=={}

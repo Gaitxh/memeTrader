@@ -26460,11 +26460,6 @@ class Store:
         with self._lock, self.db:
             at = utcnow()
             for policy in cohort_experiment_policies():
-                if policy['arm_id']=='clone_consensus_leader_v2':
-                    key='clone-consensus-shadow/v2:'+self.CHAIN_MEME_TRADER_ACTIVE_VERSION
-                    if not self.get_kv(key,None):
-                        self.set_kv(key,{'policy':policy,'activated_at':iso(at)})
-                    continue  # No funded policy/account until episode supply is demonstrated.
                 if self.db.execute(
                     "SELECT 1 FROM chain_meme_trader_policy_additions WHERE definition_version=? AND arm_id=?",
                     (self.CHAIN_MEME_TRADER_ACTIVE_VERSION, policy["arm_id"])).fetchone() is None:
@@ -27315,6 +27310,10 @@ class Store:
                     selected = signal.get("selected") or {}
                     signal_at = signal.get("observed_at")
                     captured_at = signal.get("recorded_at")
+                    origin_clock=policy.get('signal_origin_clock')
+                    origin=(signal.get('decision_evidence') or {}).get(origin_clock) if origin_clock else None
+                    if origin_clock and (not origin or not parse_time(policy['forward_started_at'])<=parse_time(origin)<=decision_at):
+                        continue  # Newly funded arms never replay pre-activation frozen episodes.
                     if (not signal_at or not captured_at or not signal.get("decision_key")
                             or selected.get("token_id") != token.token_id
                             or canonical_token_address(token.chain, str(selected.get("pair_address") or "")) != pair_address

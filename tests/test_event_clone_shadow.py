@@ -1,6 +1,6 @@
 from datetime import timedelta
 from copy import deepcopy
-from memetrader.models import utcnow,iso
+from memetrader.models import utcnow,iso,TokenCandidate
 from memetrader.event_clone_shadow import freeze,advance,EventCloneShadow
 from test_cohort_experiments import _candidate
 
@@ -74,6 +74,37 @@ def test_observer_bounded_callbacks_and_no_authority():
     assert len(shadow.state['rediscoveries'])==128 and not shadow.state['cases']
     shadow.flush();assert len(store.saved)==2
     shadow.flush();assert len(store.saved)==2
+
+def test_receive_accepts_persisted_scout_provenance_and_exposes_only_fresh_signal():
+    class Store:
+        def get_kv(self,*args):return None
+    shadow=EventCloneShadow(Store());now=utcnow()
+    candidate=_candidate(now,0);token_id=candidate['token_id'];pool=candidate['pair_address']
+    address=token_id.split(':',1)[1]
+    source=dict(url='https://example.org/event',event_key='news-1',published_at=iso(now-timedelta(seconds=8)),
+        available_at=iso(now-timedelta(seconds=4)),source_evidence_id=41,scout_model='gpt-5.6-luna')
+    # VERIFY_PERSISTED_SOURCES intentionally has no fresh Scout metadata: the
+    # source record itself carries the original Scout model, evidence id, and clocks.
+    result=dict(state='CONFIRMED_EXPANDING',narrative_type='real_event_novelty',promotion_only=False,
+        independent_origin_count=2,event_key='news-1',token_binding_basis='verified_exact_contract_frozen_cohort',
+        cutoff=iso(now-timedelta(seconds=1)),research_mode='VERIFY_PERSISTED_SOURCES',scout_metadata={},
+        scout_sources=[source],verifier=dict(model='gpt-5.6-terra',status='cross_source_supported',
+        claim_status='confirmed_fact',confidence=.9))
+    shadow.receive('narrative_hold_result_v2',result,token_id,pool,99,now)
+    assert len(shadow.state['cases'])==1
+    class Snapshot:
+        def __init__(self,at):
+            self.observed_at=at;self.ingested_at=at;self.price_usd=1;self.liquidity_usd=2000
+            self.raw={'pair':{'pairAddress':pool,'chainId':'solana','baseToken':{'address':address}}}
+    token=TokenCandidate('solana',address,'Example')
+    shadow.frame(token,Snapshot(now+timedelta(seconds=1)),now+timedelta(seconds=2),{})
+    assert next(iter(shadow.state['cases'].values()))['state']=='FROZEN'
+    shadow.frame(token,Snapshot(now+timedelta(seconds=3)),now+timedelta(seconds=4),{})
+    signals=shadow.signals_for(token_id,pool,now+timedelta(seconds=4))
+    signal=signals['event_clone_narrative_reawakening_v1']
+    assert signal['episode_id']=='news-1' and signal['decision_evidence']['event_evidence_id']==99
+    assert signal['decision_evidence']['event_recorded_at']==iso(now)
+    assert shadow.signals_for(token_id,pool,now+timedelta(seconds=34))=={}
 
 def test_live_store_callback_once_on_insert_and_same_admission_contract(tmp_path):
     from memetrader.store import Store

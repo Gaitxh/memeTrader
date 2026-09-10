@@ -78,8 +78,8 @@ def test_clone_entry_shared_floor_can_be_lowered_or_raised():
 
 def test_policy_shapes_use_opportunity_pairing_not_same_buy_pairing():
     policies = cohort_experiment_policies()
-    assert len(policies) == 6
-    assert all(policy["notional_usd"] == 5.0 for policy in policies)
+    assert len(policies) == 9
+    assert all(policy["notional_usd"] == (2.0 if policy["arm_id"] == "organic_early_flow_v1" else 5.0) for policy in policies)
     assert all("paired_entry_group" not in policy for policy in policies)
     assert all(policy.get("paired_opportunity_group") for policy in policies)
     handoff = next(policy for policy in policies if policy["arm_id"] == "clone_liquidity_handoff_v1")

@@ -79,7 +79,8 @@ def advance(case, frame, *, now, activated_at, rediscovery=None, reawakening_rea
             result.update(mode='C',rediscovery_evidence_id=rediscovery['id'])
         elif frame.get('lifecycle')=='mature':
             return {**result,'reason':'wait_dormant_episode_for_old_token'}
-        return {**result,'state':'SIGNAL','reason':'shadow_signal_requires_safety_and_later_frame','signal_recorded_at':iso(now)}
+        return {**result,'state':'SIGNAL','reason':'shadow_signal_requires_safety_and_later_frame',
+            'signal_observed_at':frame['observed_at'],'signal_recorded_at':frame['recorded_at']}
     # Shadow never asks the security worker to spend requests or simulates a fill.
     if not safety:return {**result,'reason':'WAIT_SECURITY_NO_EXISTING_ASOF_ASSESSMENT'}
     if safety.get('pool')!=target['pair_address'] or safety.get('token_id')!=target['token_id']:
@@ -113,16 +114,21 @@ class EventCloneShadow:
         if kind!='narrative_hold_result_v2':
             self.count('WAIT_INDEPENDENT_EVENT_NOVELTY');return
         p=payload;v=p.get('verifier') or {}
+        sources=p.get('scout_sources',[])
+        persisted_scout=(p.get('research_mode')=='VERIFY_PERSISTED_SOURCES'
+            and bool(sources) and all(s.get('source_evidence_id') and s.get('scout_model')=='gpt-5.6-luna'
+                for s in sources))
         confirmed=(p.get('narrative_type')=='real_event_novelty' and p.get('promotion_only') is False
             and p.get('independent_origin_count',0)>=2 and p.get('event_key')
             and v.get('model')=='gpt-5.6-terra' and v.get('status')=='cross_source_supported'
             and v.get('claim_status') in {'confirmed_fact','probable_report'}
             and p.get('state')=='CONFIRMED_EXPANDING'
-            and p.get('scout_metadata',{}).get('model')=='gpt-5.6-luna' and float(v.get('confidence') or 0)>=.8)
+            and (p.get('scout_metadata',{}).get('model')=='gpt-5.6-luna' or persisted_scout)
+            and float(v.get('confidence') or 0)>=.8)
         if not confirmed:self.count('WAIT_VERIFIED_EVENT_BINDING');return
         if p.get('token_binding_basis')!='verified_exact_contract_frozen_cohort':
             self.count('WAIT_FROZEN_EVENT_LINK');return
-        sources=[s for s in p.get('scout_sources',[]) if s.get('event_key')==p['event_key'] and s.get('published_at') and s.get('available_at')
+        sources=[s for s in sources if s.get('event_key')==p['event_key'] and s.get('published_at') and s.get('available_at')
             and parse_time(s['published_at'])<=parse_time(s['available_at'])<=parse_time(p['cutoff'])]
         if not sources:self.count('WAIT_SOURCE_CLOCKS');return
         key=p['event_key']+'|'+token_id+'|'+pool
@@ -135,6 +141,31 @@ class EventCloneShadow:
             'verified_binding':p.get('token_binding_basis')=='verified_exact_contract_frozen_cohort','exact_token_id':token_id},
             'token_id':token_id,'pool':pool,'received_at':iso(at)}
         self.count('verified_event_received')
+    def signals_for(self,token_id,pool,now):
+        """Return current, identity-bound cohort signals; never a safety approval."""
+        current=parse_time(now)
+        for case in self.state['cases'].values():
+            if case.get('state')!='SIGNAL' or case.get('token_id')!=token_id or case.get('pool')!=pool:
+                continue
+            event=case.get('event',{})
+            try:
+                observed=parse_time(case['signal_observed_at'])
+                signaled=parse_time(case['signal_recorded_at'])
+                event_recorded=parse_time(event['recorded_at'])
+                if (not event.get('event_key') or not event.get('evidence_id')
+                    or not event_recorded<=observed<=signaled<=current
+                    or (current-observed).total_seconds()>30):
+                    continue
+            except (KeyError,TypeError,ValueError):
+                continue
+            return {ARM:{'episode_id':event['event_key'],'decision_key':event['event_key']+'|'+token_id+'|'+pool,
+                'selected':{'token_id':token_id,'pair_address':pool},'observed_at':case['signal_observed_at'],
+                'recorded_at':case['signal_recorded_at'],'decision_evidence':{
+                    'event_key':event['event_key'],'event_evidence_id':event['evidence_id'],
+                    'event_recorded_at':event['recorded_at'],'signal_observed_at':case['signal_observed_at'],
+                    'signal_recorded_at':case['signal_recorded_at']},
+                'state':'SIGNAL','decision_eligible':False,'affects':'none','reason':case.get('reason')}}
+        return {}
     def frame(self,token,snapshot,recorded_at,features):
         if not self.state['cases']:return
         now=parse_time(recorded_at);pair=(snapshot.raw or {}).get('pair') or {}

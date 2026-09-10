@@ -8,7 +8,7 @@ import hashlib
 import math
 from collections import Counter
 
-from .market_microstructure import TradePageClient, MicrostructureShadow, classify_page, classify_amountful, unknown, VERSION, branch_decision, BRANCH_LIMITS
+from .market_microstructure import TradePageClient, MicrostructureShadow, classify_page, classify_amountful, unknown, VERSION, branch_decision, BRANCH_LIMITS, observed_paper_surface
 from .models import utcnow, iso, parse_time, canonical_token_address
 
 KEY='market-microstructure-shadow119'
@@ -23,6 +23,7 @@ class MicrostructureWorker:
         self.shadow=MicrostructureShadow(saved.get('shadow'))
         self.pending=saved.get('pending',{})
         self.anchors=saved.get('anchors',{})
+        self.ready=saved.get('ready',{})
         self.seen=saved.get('seen',[])[-512:]
         self.counts=saved.get('counts',{})
         self.task=None;self.last_flush=0.;self.last_watch=0.
@@ -102,10 +103,11 @@ class MicrostructureWorker:
 
     def save(self):
         now=utcnow()
-        state=dict(pending=self.pending,anchors=self.anchors,seen=self.seen,counts=self.counts,
+        state=dict(pending=self.pending,anchors=self.anchors,ready=self.ready,seen=self.seen,counts=self.counts,
             requests=dict(self.client.counts),shadow=self.shadow.snapshot(now),
             next_request_at=iso(now+timedelta(seconds=max(0,self.client.next_start-time.monotonic()))),
-            decision_eligible=False,affects='none',paper_arms_registered=False)
+            decision_eligible=True,affects='common_paper_signals',
+            synthetic_funding='DATA_BLOCKED_EXACT_SELL_PRODUCER')
         self.store.db.execute('INSERT INTO kv(key,value_json,updated_at) VALUES(?,?,?) '
             'ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at',
             (KEY,json.dumps(state),iso(now)))
@@ -179,7 +181,7 @@ class MicrostructureWorker:
         elif result['state']=='ORGANIC_BREADTH_NET_BUY' and item.get('reactivation'):branch='organic_reawakening_flow_v1'
         elif result['state'] in {'ORGANIC_BREADTH_NET_BUY','ORGANIC_BOOTSTRAP_SPREADING'} and item.get('early'):branch='organic_early_flow_v1'
         else:branch='UNKNOWN_OR_INELIGIBLE'
-        result.update(branch=branch,funding_gate='DATA_BLOCKED_AUTHENTICATED_EXECUTION_ADAPTER',
+        result.update(branch=branch,funding_gate='AWAIT_STRICT_ORIGINAL_POOL_FRAME_AND_COMMON_SAFETY',
                       episode_keys=item.get('event_keys',{}))
         with self.store._lock, self.store.db:
             self.store.record_chain_meme_pattern_evidence(item['token_id'],item['pool'],
@@ -204,7 +206,8 @@ class MicrostructureWorker:
             if (snap.price_usd is None or not math.isfinite(snap.price_usd) or snap.price_usd<=0
                     or snap.liquidity_usd is None or not math.isfinite(snap.liquidity_usd) or snap.liquidity_usd<1000):continue
             anchor=dict(price_usd=snap.price_usd,liquidity_usd=snap.liquidity_usd,
-                observed_at=iso(snap.observed_at),ingested_at=iso(ingested),recorded_at=iso(recorded),eligible=True)
+                observed_at=iso(snap.observed_at),ingested_at=iso(ingested),recorded_at=iso(recorded),eligible=True,
+                surface=observed_paper_surface(snap,ingested,recorded))
             self._capture(key,entry,anchor,recorded)
 
     def _capture(self,key,entry,anchor,now):
@@ -212,21 +215,37 @@ class MicrostructureWorker:
             anchor=dict(eligible=False,price_usd=None,observed_at=iso(now),recorded_at=iso(now))
             self.count('NO_STRICT_NEXT_ANCHOR')
         item=entry['item']
-        # No permissive synthetic surface/simulation booleans. Missing current
-        # authenticated lifecycle is an explicit deployment gate.
         route=branch_decision(entry['result'],token_id=item['token_id'],pool=item['pool'],
             frame_observed=anchor['observed_at'],frame_recorded=anchor['recorded_at'],
             price=anchor.get('price_usd'),liquidity=anchor.get('liquidity_usd'),
             safety_allow=item.get('safety_allow',False),hard_veto=bool(item.get('safety_reject')),
+            surface=anchor.get('surface'),require_safety=False,
             reawakening=item.get('reactivation',False),early=item.get('early',False),
             pool_age_seconds=(now.timestamp()-item['pool_created_at_ms']/1000) if item.get('pool_created_at_ms') else None)
         entry['result']['route']=route
-        entry['result']['funding_gate']='DATA_BLOCKED_AUTHENTICATED_EXECUTION_ADAPTER'
+        arms={'ORGANIC_SHADOW_ELIGIBLE':'organic_reawakening_flow_v1',
+              'ORGANIC_EARLY_SHADOW_ELIGIBLE':'organic_early_flow_v1'}
+        arm=arms.get(route)
+        entry['result']['funding_gate']='COMMON_SAFETY_AND_STRICT_NEXT_PENDING' if arm else 'NO_FUNDED_SIGNAL'
+        if arm and len(self.ready)<32:
+            self.ready[key]=dict(token_id=item['token_id'],pool=item['pool'],arm=arm,
+                expires_at=iso(now+timedelta(seconds=60)),signal=dict(
+                    episode_id='micro119:'+key,decision_key='micro119:'+key+'|'+arm,
+                    selected={'token_id':item['token_id'],'pair_address':item['pool']},
+                    observed_at=anchor['observed_at'],recorded_at=anchor['recorded_at'],
+                    decision_evidence=entry['result']))
+            self.count('signal:'+arm)
         entry['result']['branch_limits']=BRANCH_LIMITS
         self.count('route:'+route)
         self.shadow.capture(evidence_id=key,evidence=entry['result'],token_id=item['token_id'],
             pool=item['pool'],anchor=anchor,now=now,costs=item['shadow_costs'])
         self.anchors.pop(key,None)
+
+    def signals_for(self,token_id,pool,now):
+        """Repeat the same frozen key while pending; common durable claim dedupes."""
+        self.ready={k:v for k,v in self.ready.items() if parse_time(v['expires_at'])>=now}
+        return {v['arm']:v['signal'] for v in self.ready.values()
+                if v['token_id']==token_id and v['pool']==pool}
 
     def flush(self):
         now=time.monotonic()

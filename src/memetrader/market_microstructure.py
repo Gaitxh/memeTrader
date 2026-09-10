@@ -355,28 +355,28 @@ class TradePageClient:
 def branch_decision(evidence, *, token_id, pool, frame_observed, frame_recorded,
                     price, liquidity, safety_allow, hard_veto=False,
                     reawakening=False, sell_simulation=None, surface=None,
-                    early=False, pool_age_seconds=None):
-    """Pure Shadow eligibility. Never registers, fills, clears a hazard or extends hold."""
+                    early=False, pool_age_seconds=None, require_safety=True):
+    """Signal eligibility; common entry still owns safety and later settlement."""
     if hard_veto or evidence['state']=='HARD_UNSELLABLE':
         return 'REJECT'
     if evidence.get('phase')=='SYNTHETIC_DISTRIBUTING_CYCLE':
         return 'HAZARD_DISTRIBUTING'
     chain = token_id.split(':')[0]
-    if (not safety_allow or evidence.get('token_id')!=token_id
+    if ((require_safety and not safety_allow) or evidence.get('token_id')!=token_id
             or canonical_token_address(chain,pool)!=evidence.get('pool')
             or not price or not isfinite(price) or price<=0
             or liquidity is None or not isfinite(liquidity) or liquidity<1000
             or not parse_time(evidence['recorded_at'])<parse_time(frame_observed)<=parse_time(frame_recorded)
             or (parse_time(frame_recorded)-parse_time(evidence['recorded_at'])).total_seconds()>120):
         return 'WAIT'
-    # A market price is not proof of a native buy/exit/migration lifecycle.
+    # Ordinary Paper uses observed original-pool prices, not on-chain execution
+    # authentication. Native curves and synthetic sell simulations stay separate.
     srf = surface or {}
-    if not (srf.get('kind') == 'COMMON_PAPER_EXACT_POOL'
-            and srf.get('authenticated') is True and srf.get('buy_sell_lifecycle') is True
+    if not (srf.get('kind') == 'OBSERVED_DEX_PAPER_ORIGINAL_POOL'
             and srf.get('token_id') == token_id
             and canonical_token_address(chain,srf.get('pool','')) == evidence['pool']
             and srf.get('observed_at') and srf.get('recorded_at')
-            and parse_time(srf['observed_at']) <= parse_time(srf['recorded_at']) <= parse_time(frame_observed)
+            and parse_time(srf['observed_at']) <= parse_time(srf['recorded_at']) <= parse_time(frame_recorded)
             and (parse_time(frame_observed)-parse_time(srf['observed_at'])).total_seconds() <= 120):
         return 'DATA_BLOCKED_SURFACE'
     if evidence['state']=='ORGANIC_BREADTH_NET_BUY' and reawakening:
@@ -386,7 +386,7 @@ def branch_decision(evidence, *, token_id, pool, frame_observed, frame_recorded,
             and evidence['metrics']['effective_wallets'] >= 4
             and evidence['metrics']['effective_net_buy_usd']/liquidity >= EARLY_NET_LIQUIDITY):
         return 'ORGANIC_EARLY_SHADOW_ELIGIBLE'
-    if evidence['state']=='SYNTHETIC_SINGLE_WALLET_CYCLE' and chain=='bsc':
+    if evidence.get('phase')=='SYNTHETIC_LPI_BUILDING' and chain=='bsc':
         s=sell_simulation or {}
         if (s.get('success') is True and s.get('token_id')==token_id
                 and canonical_token_address(chain,s.get('pool',''))==evidence['pool']
@@ -395,6 +395,21 @@ def branch_decision(evidence, *, token_id, pool, frame_observed, frame_recorded,
                 and (parse_time(frame_observed)-parse_time(s['observed_at'])).total_seconds()<=60):
             return 'SYNTHETIC_SHADOW_ELIGIBLE'
     return 'WAIT'
+
+
+def observed_paper_surface(snapshot, ingested, recorded):
+    """Describe only the exact market surface already accepted by common Paper."""
+    pair=(snapshot.raw or {}).get('pair') or snapshot.raw or {}
+    chain=snapshot.chain
+    pool=canonical_token_address(chain,str(pair.get('pairAddress') or ''))
+    base=canonical_token_address(chain,str((pair.get('baseToken') or {}).get('address') or ''))
+    if (not pool or pair.get('chainId')!=chain or snapshot.token_id!=chain+':'+base
+            or not snapshot.observed_at<=ingested<=recorded
+            or not 0<=(recorded-snapshot.observed_at).total_seconds()<=30):
+        return None
+    return dict(kind='OBSERVED_DEX_PAPER_ORIGINAL_POOL',token_id=snapshot.token_id,pool=pool,
+        observed_at=iso(snapshot.observed_at),ingested_at=iso(ingested),recorded_at=iso(recorded),
+        provider=snapshot.provider,execution_profile='dexscreener-market-paper/v2-before-after')
 
 
 class MicrostructureShadow:

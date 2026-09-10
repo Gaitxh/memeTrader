@@ -71,7 +71,7 @@ PASSIVE_EPISODE_TTL_SECONDS = 600.0
 
 
 def cohort_experiment_policies() -> list[dict[str, Any]]:
-    """Return independent policies; consensus starts as an unfunded Shadow."""
+    """Independent forward Paper policies; all use common safety and settlement."""
     parent = next(
         policy for policy in capital_policies()
         if policy["arm_id"] == "effective_breadth_v1"
@@ -149,11 +149,26 @@ def cohort_experiment_policies() -> list[dict[str, Any]]:
         policy.pop("paired_entry_group", None)
         policy["entry_filter"] = {"direction": direction}
         if arm_id == "clone_consensus_leader_v2":
+            policy['signal_origin_clock']='frozen_at'
             policy["entry_filter"]["max_concurrent_positions"] = 4
-            policy.update(observer_only=True,decision_eligible=False,affects='none',
-                          evidence_status='INSUFFICIENT_NATURAL_EPISODES')
+            policy.update(observer_only=False,decision_eligible=True,affects='paper_only',
+                          evidence_status='FORWARD_HYPOTHESIS_NOT_ALPHA')
         if direction == "clone_liquidity_handoff":
             policy["opportunity_control_arm_id"] = "clone_liquidity_leader_v1"
+        policies.append(policy)
+    #136: reuse this exact cohort/next-frame pipeline, not a parallel trader.
+    from .market_microstructure import BRANCH_LIMITS
+    for arm in ('organic_early_flow_v1','organic_reawakening_flow_v1',
+                'event_clone_narrative_reawakening_v1'):
+        policy=copy.deepcopy(policies[2])
+        limit=BRANCH_LIMITS.get(arm,dict(stake_usd=5,max_open=4))
+        policy.update(arm_id=arm,canonical_id=arm,name=arm,entry_family=arm,
+            notional_usd=limit['stake_usd'],paired_opportunity_group=arm,
+            paired_opportunity_semantics='independent_frozen_episode_no_funded_duplicate_control',
+            description='严格前向独立Paper假设；已有原池市场帧、共同安全门和后帧成交，不代表已证明盈利。',
+            max_hold_minutes=15.0 if arm=='organic_early_flow_v1' else 30.0)
+        policy['entry_filter']={'direction':arm,'max_concurrent_positions':limit['max_open']}
+        policy['signal_origin_clock']='event_recorded_at' if arm=='event_clone_narrative_reawakening_v1' else 'signal_at'
         policies.append(policy)
     return policies
 

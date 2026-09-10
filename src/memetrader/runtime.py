@@ -7737,18 +7737,22 @@ class Runtime:
                         "decision_key": f"{episode}|{arm}", "selected": {
                             "token_id": identity[0], "pair_address": identity[1]},
                         "decision_evidence": dict(frame), "scope": "same_passive_broad_initial_opportunity"}
+            # Existing passive batches deliver classifier/event signals to the
+            # same durable cohort claim, safety wait and next-frame executor.
+            for identity in quotes:
+                for producer in (getattr(self.store,'_microstructure119',None),
+                                 getattr(self.store,'_event_clone_shadow',None)):
+                    if producer is not None:
+                        signals.setdefault(identity,{}).update(producer.signals_for(*identity,now))
             for identity, arm_signals in signals.items():
                 if identity not in quotes:
                     continue
                 token, snapshot = quotes[identity]
-                consensus=arm_signals.pop('clone_consensus_leader_v2',None)
-                if consensus is not None:
-                    self.store.record_clone_consensus_shadow(consensus,snapshot,received)
                 if not arm_signals:
                     continue
                 pending[identity] = {"expires": now + timedelta(seconds=60),
                     "quote": (token, snapshot, received), "signals": {
-                    arm: {**signal, "observed_at": iso(snapshot.observed_at), "recorded_at": iso(received)}
+                    arm: {"observed_at": iso(snapshot.observed_at), "recorded_at": iso(received), **signal}
                     for arm, signal in arm_signals.items()}}
             for identity, (token, snapshot) in quotes.items():
                 if identity in pending and "quote" not in pending[identity]:
