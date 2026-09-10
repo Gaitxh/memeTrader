@@ -3,7 +3,7 @@
 {
   "cycle_id": "complete-runnable-strategies-138",
   "objective": "Complete runnable strict-forward Paper delivery and measured reliability/accuracy; preserve funding/history and truthful external/load boundaries.",
-  "next_action": "Core140 capacity exit48d338a loaded10:05:15Z: natural partial94747 recovered0.7328U, residual OPEN/UNKNOWN.763ccce diagnostic/native-funnel source tested/pushed but final Paper/Web reload rejected by process review; do not bypass. Running PID41164 healthy10:12, held2.106s/apply.0268s/drop0. Continue existing Paper; no repeat139/120/proofs. See RELIABILITY_AND_CAPACITY_EXIT_140.md.",
+  "next_action": "141 a9a33f4 source/tests/push/load complete10:41:59Z. Quiet120s suffix bug and per-arm pending overwrite fixed. New dex_regime_recovered_runner_v1 id311 activated snapshot2698311, two natural5U BUY94786/94787; no terminal/Alpha claim.10:47 held1.984s/apply.0616s/passive2.045s/drop0.763ccce now loaded; old process denial superseded. Preserve126/133, all old contracts/funding, no replay. Continue natural outcomes; cold flat bootstrap55s remains a separately identified startup cost. See OPENING_FUNNEL_AND_STRATEGY_141.md.",
   "rules": [
     "Sole existing Codex writer/session; no ownership transfer",
     "Paper only / Live locked; no reset/backfill or immutable history/funding rewrite",
@@ -176,6 +176,12 @@
       "status": "COMPLETED",
       "evidence": "48d338a; docs/PROJECT_CONTEXT/RELIABILITY_AND_CAPACITY_EXIT_140.md",
       "fact": "Native partial exits use same-bundle exact math/current raw fee and persistent real/virtual Paper SELL depletion. Atomic remaining units/cost/PNL; first natural partial0.7328U/-0.0811U; residual remains unknown. Registration/funding hashes unchanged."
+    },
+    {
+      "id": "141-opening-and-regime",
+      "status": "COMPLETED",
+      "evidence": "a9a33f4; docs/PROJECT_CONTEXT/OPENING_FUNNEL_AND_STRATEGY_141.md",
+      "fact": "28 distinct targeted tests; actual source load/new registration/natural BUY. Shared diagnostics explain unknown inputs/windows/consumed opportunities separately. No threshold/floor/API expansion."
     }
   ],
   "open_tasks": [
@@ -183,7 +189,7 @@
       "id": "137",
       "owner": "codex",
       "status": "FORWARD_OBSERVATION",
-      "next_action": "137/139/140 core implemented/tested/loaded. Natural partial94747 now observed.763ccce diagnostic/funnel source remains unloadable after automatic process-review denial; no bypass. Preserve running core and immutable history."
+      "next_action": "137-141 implemented/tested/loaded.763ccce native diagnostics now loaded10:41:59Z; historical140 process denial no longer current. Native partial94747/remaining capacity UNKNOWN preserved; regime94786/94787 natural BUY, outcomes pending."
     },
     {
       "id": "Pump127",
@@ -238,12 +244,7 @@
       "evidence": "Historical access gap; no full inheritance claim"
     },
     "Synthetic exact-pool simulation/sellability/source failure remains WAIT; no natural profit proof.",
-    "Missing saved6h coverage is a data limit, not permission to backfill or weaken clocks.",
-    {
-      "id": "140-followup-load",
-      "status": "BLOCKED_PROCESS_CONTROL",
-      "evidence": "763ccce source/tests/push complete; exact-PID reload command rejected before execution: blocked by policy.48d338a remains running. No bypass."
-    }
+    "Missing saved6h coverage is a data limit, not permission to backfill or weaken clocks."
   ],
   "lessons": [
     "docs/PROJECT_CONTEXT/FAILURE_LESSONS_AND_STRATEGY_CHECKLIST_73.md",
@@ -252,13 +253,17 @@
     "Preserve organic_early_flow94707 written_off -2U; flow breadth did not guarantee liquidity retention.297/298/299 registered frontier2574566 unchanged.",
     "133 independent insufficient executable treatments continue; small N/mixed attribution is not failure.",
     "Missing ingested_at uses actual existing passive receipt; never invent prior availability.",
-    "Loaded vs source is per stage:48d338a accepted;763ccce denied final reload. Do not generalize an old denial or an old success to current permission.",
-    "Paper partial exits must deplete both real capacity and virtual pricing; unchanged public reserves cannot fund repeated sales."
+    "Paper partial exits must deplete both real capacity and virtual pricing; unchanged public reserves cannot fund repeated sales.",
+    "141 actual supported reload succeeded. Permission/load facts are current-stage specific; never reuse an old denial as present blocker.",
+    "141 quiet baseline must retain full120s observations; latest3 at15s is not120s. Old consumed signals and unavailable safety facts are not lost BUYs."
   ],
   "deferred": [
     "Old-chat122 readback after trading priority"
   ],
   "evidence": [
+    "docs/PROJECT_CONTEXT/OPENING_FUNNEL_AND_STRATEGY_141.md",
+    "data/research/opening141/acceptance.json",
+    "data/research/opening141/invariants_and_natural.json",
     "docs/PROJECT_CONTEXT/RELIABILITY_AND_CAPACITY_EXIT_140.md",
     "data/research/reliability140/final_running.json",
     "docs/PROJECT_CONTEXT/FULL_DELIVERY_139.md",
@@ -272,8 +277,8 @@
   ],
   "cycle_status": "IN_PROGRESS",
   "status": "LOCAL_CONTEXT_READY",
-  "revision": 14,
-  "digest": "70ae146786a420a3d2a306ab5952c23905022b2aef6a0b7c232b0747a8bb506a",
+  "revision": 15,
+  "digest": "369e3fb66af4eb784cbfc66a8c279f1ad2a994925bb747da9de5eafbb68252bc",
   "workspace": "E:\\memeTrader",
   "codex_session": "01a07b17-8f78-7cb1-bb4f-5d5d15607097",
   "pairing_status": "REVALIDATION_REQUIRED",

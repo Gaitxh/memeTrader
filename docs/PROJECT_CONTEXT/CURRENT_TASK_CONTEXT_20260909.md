@@ -1,4 +1,16 @@
-# Authoritative continuation140 — native partial exit loaded; final diagnostics reload blocked
+# Authoritative continuation141 — opening defects fixed; regime strategy loaded and trading
+
+Read ONE current ModeChat resume packet: revision15 / digest369e3fb66af4eb784cbfc66a8c279f1ad2a994925bb747da9de5eafbb68252bc. Local task consistency CONSISTENT, same Codex owner/epoch0, no stop fences. Details: [OPENING_FUNNEL_AND_STRATEGY_141.md](OPENING_FUNNEL_AND_STRATEGY_141.md).
+
+a9a33f4 pushed and loaded10:41:59Z/PID40216; Web independently reloaded. Quiet baseline now retains the original full120s interval rather than latest3 at15s; pending signals merge per arm without refreshing original expiry. No relaxed safety/window/floor/API budgets. One new5U/max2 dex_regime_recovered_runner_v1, registration311/frontier2698311: ten existing causal entry sources, real recovered-principal-only60m extension, otherwise15m and existing hard/trailing exits. Two natural BUY94786/94787 at10:44:26/29Z, no terminal/Alpha claim at10:47 cutoff.
+
+10:47 held_fetch p951.984s/apply61.6ms/passive2.045s/drops0/PoolTimeout0/ConnectError0. All310 previous additions and25 registrations exact; only new311. Current funding/Live lock unchanged;226/254/255 forward enabled.763ccce native diagnostic/funnel is now loaded: the140 final process-control denial below is historical and superseded by successful141 supported reload, not a present blocker.
+
+Low opening has distinct causes: quiet selector contradiction and pending overwrite fixed; old consumed decision keys, genuinely absent safety facts, watch capacity and sparse valid source signals are separate. New unique opportunity/input/window counters expose those boundaries. Flat has a55s cold projection rebuild but warmed selector p950.674s; no stale membership cache was introduced. Pons provenance, native94747 residual capacity, saved6h coverage and fresh browser Chat/model/memory remain explicit external/data limits. Do not redo137–140, native proof, cleanup120 or ModeChat implementation.
+
+---
+
+# Historical continuation140 — native partial exit loaded; final diagnostics reload blocked at that cutoff
 
 Read ONE current ModeChat resume packet: revision14 / digest70ae146786a420a3d2a306ab5952c23905022b2aef6a0b7c232b0747a8bb506a. Same sole writer/session, Paper only/Live locked. Details: [RELIABILITY_AND_CAPACITY_EXIT_140.md](RELIABILITY_AND_CAPACITY_EXIT_140.md).
 
