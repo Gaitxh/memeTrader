@@ -3838,6 +3838,31 @@ class SolanaHeldAccountCollector:
                 })
         return updates
 
+    async def native_message_fee_receipts(self, messages, *, account_context_slot):
+        """Two read-only fee quotes for caller's final unsigned BUY/SELL messages.
+
+        No signing/sending, retries or scheduler. Rare native caller must own the
+        existing idle/request budget and independently verified setup accounts.
+        """
+        from solders.message import Message
+        if set(messages)!={'BUY','SELL'} or account_context_slot<=0:
+            raise ValueError('native_fee_messages_incomplete')
+        parsed={side:Message.from_bytes(raw) for side,raw in messages.items()}
+        if any(m.header.num_required_signatures!=1 for m in parsed.values()):
+            raise ValueError('unsupported_native_message_signature_shape')
+        receipts={}
+        for side,raw in messages.items():
+            response=await self.http.post(self.rpc_url,json={'jsonrpc':'2.0','id':side,
+                'method':'getFeeForMessage','params':[base64.b64encode(raw).decode(),
+                {'commitment':'confirmed','minContextSlot':account_context_slot}]})
+            response.raise_for_status();result=response.json().get('result') or {}
+            fee=result.get('value');slot=(result.get('context') or {}).get('slot',0)
+            if type(fee) is not int or fee<0 or slot<account_context_slot:
+                raise ValueError('current_native_message_fee_unavailable')
+            receipts[side]={'fee_lamports':fee,'context_slot':slot,'recorded_at':iso(utcnow()),
+                'message_sha256':hashlib.sha256(raw).hexdigest(),'required_signatures':1}
+        return receipts
+
     async def bonding_curve_observations(self, tokens: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
         """Same watch/RPC cadence; two fee accounts piggyback one coherent read."""
         from .pregrad_watch import bonding_curve_identity

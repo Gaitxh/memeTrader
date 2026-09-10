@@ -7,6 +7,39 @@ SOL='So11111111111111111111111111111111111111112'
 VERSION='pump-native-economic/137-sol-fixedstate'
 
 
+def native_cash_budget(*,total_quote_raw,receipt,now,token_id,curve,account_id):
+    """Reserve rent and both quoted message fees BEFORE exact-input sizing.
+
+    A cold Paper account has no assumed rent refunds. Receipt production owns
+    setup identity/existence and final transaction shape; examples are not defaults.
+    """
+    if (receipt.get('token_id'),receipt.get('curve'),receipt.get('account_id'))!=(token_id,curve,account_id):
+        raise ValueError('cash_receipt_identity_mismatch')
+    at=parse_time(receipt['recorded_at'])
+    if not 0<=(now-at).total_seconds()<=30:raise ValueError('cash_receipt_stale_or_future')
+    slot=receipt['account_context_slot'];fees=receipt['fees'];setup=receipt['setup']
+    if slot<=0 or set(fees)!={'BUY','SELL'} or len(setup)!=2:
+        raise ValueError('cash_receipt_incomplete')
+    if {s['account_kind'] for s in setup}!={'associated_base_user','user_volume_accumulator'}:
+        raise ValueError('cash_setup_incomplete')
+    for s in setup:
+        if s.get('present') is not False or s.get('rent_lock_lamports',-1)<0:
+            raise ValueError('only_verified_cold_setup_supported')
+    for f in fees.values():
+        if (type(f.get('fee_lamports')) is not int or f['fee_lamports']<0
+            or f.get('context_slot',0)<slot or len(f.get('message_sha256',''))!=64
+            or not at<=parse_time(f['recorded_at'])<=now):
+            raise ValueError('cash_message_fee_invalid')
+    rent=sum(s['rent_lock_lamports'] for s in setup)
+    buy_fee=fees['BUY']['fee_lamports'];sell_fee=fees['SELL']['fee_lamports']
+    spend=int(total_quote_raw)-rent-buy_fee-sell_fee
+    if spend<=1:raise ValueError('cash_budget_below_setup_and_exit_reserve')
+    return dict(total_cash_budget_raw=int(total_quote_raw),spendable_quote_raw=spend,
+        rent_locked_raw=rent,buy_network_fee_raw=buy_fee,sell_network_fee_reserved_raw=sell_fee,
+        maximum_buy_debit_raw=spend+rent+buy_fee,rent_refund_raw=0,
+        protocol_fees_in_trade_quote=True,decision_eligible=False)
+
+
 def metadata_only_mint_layout(raw, owner, mint):
     """Complete narrow Token2022 TLV parse; metadata is not endorsement."""
     from solders.pubkey import Pubkey

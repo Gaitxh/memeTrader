@@ -28,6 +28,50 @@ def fee137():
         fees=dict(protocol_fee_bps=95,creator_fee_bps=30))])
 
 
+def test_native_cash_budget_reserves_both_actual_fees_and_never_refunds_rent():
+    from memetrader.pump_native import native_cash_budget
+    now=utcnow()
+    r=dict(token_id='t',curve='c',account_id='paper',recorded_at=iso(now),account_context_slot=10,
+        setup=[dict(account_kind='associated_base_user',present=False,rent_lock_lamports=1887234),
+               dict(account_kind='user_volume_accumulator',present=False,rent_lock_lamports=1678245)],
+        fees={side:dict(fee_lamports=fee,context_slot=11,message_sha256='a'*64,recorded_at=iso(now))
+              for side,fee in [('BUY',7000),('SELL',9000)]})
+    def budget():return native_cash_budget(total_quote_raw=20_000_000,receipt=r,now=now,
+        token_id='t',curve='c',account_id='paper')
+    q=budget()
+    assert q['spendable_quote_raw']==20_000_000-3565479-16000
+    assert q['maximum_buy_debit_raw']+q['sell_network_fee_reserved_raw']==20_000_000
+    assert q['rent_refund_raw']==0
+    r['account_id']='different'
+    with pytest.raises(ValueError,match='identity'):budget()
+    r['account_id']='paper';r['fees']['SELL']['fee_lamports']=None
+    with pytest.raises(ValueError,match='fee_invalid'):budget()
+
+
+def test_native_fee_producer_uses_final_serialized_messages_without_send():
+    import asyncio,json,httpx
+    from solders.message import Message
+    from solders.pubkey import Pubkey
+    from solders.system_program import transfer,TransferParams
+    from memetrader.collectors import SolanaHeldAccountCollector
+    payer=Pubkey.new_unique();other=Pubkey.new_unique()
+    messages={side:bytes(Message([transfer(TransferParams(from_pubkey=payer,to_pubkey=other,lamports=n))],payer))
+              for side,n in [('BUY',1),('SELL',2)]}
+    calls=[]
+    async def run():
+        def reply(req):
+            body=json.loads(req.content);calls.append(body)
+            assert body['method']=='getFeeForMessage'
+            assert body['params'][1]['minContextSlot']==10
+            return httpx.Response(200,json={'result':{'context':{'slot':11},'value':7000+len(calls)}})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as http:
+            c=SolanaHeldAccountCollector.__new__(SolanaHeldAccountCollector);c.http=http;c.rpc_url='https://rpc.test'
+            result=await c.native_message_fee_receipts(messages,account_context_slot=10)
+            assert result['BUY']['fee_lamports']==7001 and result['SELL']['fee_lamports']==7002
+            assert result['BUY']['message_sha256']!=result['SELL']['message_sha256']
+    asyncio.run(run());assert len(calls)==2
+
+
 @pytest.mark.parametrize('budget,net,tokens,recovery',[
     (10000000,9876542,201420619915,9753083),
     (30000000,29629629,603961714185,29259257),
