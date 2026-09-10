@@ -7,14 +7,14 @@ ACK `C2C-20260911-145-EXECUTABLE-COMPLETION`. Root Codex is the sole production 
 | Item | Implemented/tested behavior | Current boundary |
 |---|---|---|
 | A | Existing launcher restored ae53fac; health/live/performance and hashes verified. Cold first account read now retries once within the existing readiness deadline without another process. | Recovery DONE; original disappearance cause remains UNKNOWN. |
-| B | Exact bounded summary keys/updated_at; index, Chinese and arm search; newest/144/145 filters; actual v144 policy explanations; three delivery/runtime/economic axes; per-arm callbacks/signals/receipts, horizon labels, recipe states and missing promotion criteria. | SOURCE_TESTED; API/browser after load pending. |
+| B | Exact bounded summary keys/updated_at; index, Chinese and arm search; newest/144/145 filters; actual v144 policy explanations; three delivery/runtime/economic axes; per-arm callbacks/signals/receipts, horizon labels, recipe states and missing promotion criteria. | LOADED / actual API and browser PASS at18:20Z; UI commit7365b07. |
 | C1 | ae53fac passive callback runs before new signal capture; no duplicate acquisition or third callback. | LOADED/natural callback already verified. |
-| C2 | Existing10/chain/3-4-3 reservations; valid early120s same-tier lease, younger quiet replacement thereafter, genuine phase+300s extension once; held/safety/pending protection; stable15s due order; exact-pool identity checkpoint without old quotes. Matured30/120/300 windows counted once, sampled2/3-frame delay, explicit no-source/update reason. Invalid below-floor candidates remain replaceable; borrowed slots still yield to base reservations. | SOURCE_TESTED; natural lease coverage/budget guard pending. |
+| C2 | Existing10/chain/3-4-3 reservations; valid early120s same-tier lease, younger quiet replacement thereafter, genuine phase+300s extension once; held/safety/pending protection; stable15s due order; exact-pool identity checkpoint without old quotes. Matured30/120/300 windows counted once, sampled2/3-frame delay, explicit no-source/update reason. Invalid below-floor candidates remain replaceable; borrowed slots still yield to base reservations. | LOADED; natural30/120/300 window receipts advance. Coverage improvement and latency causality remain UNPROVEN; no spare expansion. |
 | C3 | Spare-batch expansion remains explicitly disabled until C2 natural resource evidence. | WAIT_PREREQUISITE by supplied contract; no capacity/request expansion. |
-| D | Two USER_AUTHORIZED_SEED recipes, sparse313→trend and reclaim314→trend,2U/max2, common safety/strict next frame/same source fill. Base30/absolute120; fresh300s trend with hard stop/structure decay precedence; append-only transition evidence. Existing315/316 unchanged; second-wave ordered phase clocks persisted. | SOURCE_TESTED; registration/load/natural pending. |
-| E | New v4 key keeps v3 pending/history; immutable5/15/30/60 strict entry and cost labels; known sampled floor separate from missing/real terminal; rolling256 mature denominator;64 dirty-label budget/128 shared pending/index; sealed model scores and contract/frontier; previous-valid/baseline rollback affects new orders only; >=10terminal/3token worse same-fill rule. | SOURCE_TESTED; natural model release is not assumed. |
-| F | Whitelist recipe compiler; behavioral dedup against old aliases; bounded5-new-source-fill/3-token generator; new real future source outcomes only; atomic append+registration receipt/restart recovery; max2 active slots incl seeds; own-candidate dispositions release slots, parents untouched. | SOURCE_TESTED; AUTO_GENERATED requires natural fresh terminal supply; REGISTERED is not economic PROMOTED. |
-| G | Pending(token,pool) index, bounded dirty-group training, four existing timing sections, exact USD availability/provenance with no symbol-derived safety, no cross-pool fill; WAIT/BUY/partial/learning restart fixtures. | SOURCE_TESTED; coherent load/guard/readback pending. |
+| D | Two USER_AUTHORIZED_SEED recipes, sparse313→trend and reclaim314→trend,2U/max2, common safety/strict next frame/same source fill. Base30/absolute120; fresh300s trend with hard stop/structure decay precedence; append-only transition evidence. Existing315/316 unchanged; second-wave ordered phase clocks persisted. | REGISTERED+LOADED318/319; WAIT_FRESH_SIGNAL, natural BUY/paired terminal0 at18:19Z. |
+| E | New v4 key keeps v3 pending/history; immutable5/15/30/60 strict entry and cost labels; known sampled floor separate from missing/real terminal; rolling256 mature denominator;64 dirty-label budget/128 shared pending/index; sealed model scores and contract/frontier; previous-valid/baseline rollback affects new orders only; >=10terminal/3token worse same-fill rule. | LOADED; v4 natural18episodes/1OBSERVED5m+18UNKNOWN horizon labels; fixed baseline/release0. WAIT_NATURAL_SAMPLE. |
+| F | Whitelist recipe compiler; behavioral dedup against old aliases; bounded5-new-source-fill/3-token generator; new real future source outcomes only; atomic append+registration receipt/restart recovery; max2 active slots incl seeds; own-candidate dispositions release slots, parents untouched. | LOADED live generation/append loop;2 seed slots active. AUTO_GENERATED0, economic PROMOTED0; WAIT_NATURAL_SOURCE_TERMINALS/CAPACITY. |
+| G | Pending(token,pool) index, bounded dirty-group training, four existing timing sections, exact USD availability/provenance with no symbol-derived safety, no cross-pool fill; WAIT/BUY/partial/learning restart fixtures. | LOADED; causal/restart/account/API checks PASS. PERFORMANCE_WATCH: held p95 fluctuates; no causal speedup claim. |
 
 The two seed recipes are user-authorized engineering experiments, not automatic discoveries or proven alpha. Generator may propose a new exit from future actual source outcomes while its two funded slots are occupied; it reports WAIT_CAPACITY and does not open duplicate baseline accounts. Supported existing principal recovery math is reused. Model rollback and candidate retirement never force liquidation or rewrite prior fills.
 
@@ -24,4 +24,50 @@ Reused saved case evidence:39 identities37found/34basic-market/16tokens285 accou
 
 ## Deployment and natural acceptance
 
-Pending coherent source commit/load. Preload evidence `data/research/strategy_delivery145/before.json` at18:04:43Z: Paper11open/5held, Live locked, same funded version, held fetch p95=2.109s/apply41.5ms, passive p95=1.300s/wait2.929s/drops0, Dex PoolTimeout/connect errors0. This is a workload baseline, not a promised speedup.
+Core commit **cecb7d4** loaded at **2026-09-10T18:10:05.106466Z**, Paper PID **22496**. Manifest13/13 current source hashes match. The Web-only follow-up **7365b07** is loaded separately without restarting Paper: API carries the real runtime addition ID, search supports that ID as well as the pre-existing family number, and distinct-frame policies no longer display a contradictory UNKNOWN sequence. Actual browser #312 returns the early strategy (family281); Chinese search 量价趋势长持 returns the old trend plus the two new strategies. Registration IDs are not the same as family display numbers; no old IDs were rewritten.
+
+| New arm | Registration/activation UTC | Snapshot/evaluation frontier | Natural status at18:19Z |
+|---|---|---|---|
+| trajectory145_sparse_trend_runner_v1 | id318 /18:10:06.287701Z |2811571 /2006962 | LOADED,0BUY/0terminal,WAIT_FRESH_SIGNAL |
+| trajectory145_reclaim_trend_runner_v1 | id319 /18:10:21.771260Z |2811674 /2007065 | LOADED,0BUY/0terminal,WAIT_FRESH_SIGNAL |
+
+Both use2U/max2, common safety and independent future original-pool frames; old313/314/315/316 contracts remain. The two registrations are USER_AUTHORIZED_SEED, not AUTO_GENERATED and not economic promotion. Actual automatic recipe generation, candidate replacement and30→120m treatment remain unexercised naturally until their causal supply arrives; the real Store/restart tests verify the implemented path, not profit.
+
+**Readback18:19:44Z**: /health,/api/live,/api/performance,/api/strategy-universe all available. Paper=true,Live locked,original funding `chain-meme-trader/funding-20260906-v002-final-1000`;10open/3held,pending exit quotes0. Held exact-pool marks have0missing/0coverage gaps; oldest required RH1.168s/SOL0.418s. Existing strategies naturally BUY/SELL after load; no forced trade was used for acceptance. The original earlier service disappearance remains UNKNOWN. The later18:10 reload and Web reload were intentional deployments by root.
+
+The existing [START_MEMETRADER.cmd](../../START_MEMETRADER.cmd) remains the one-stop entry: starts/reuses Paper+Web, verifies heartbeat/Paper/Live lock, opens overview; no second launcher or daemon. This release exercised both cold read retry and reuse of the existing Paper process. During Web-only reload PID22496 remained unchanged.
+
+**Natural performance, bounded windows (not a controlled speedup experiment):**
+
+| Metric | Before18:04Z | After18:19Z |
+|---|---:|---:|
+| Held tokens |5 |3 (intermediate6) |
+| held_fetch n120 p50/p95 seconds |.777/2.109 |.881/3.114 |
+| held_apply_exit n120 p95 seconds |.0415 |.0413 |
+| cohort_passive_compute n120 p95 seconds |1.300 |1.768 |
+| passive wait n120 p95 seconds |2.929 |2.467 |
+| passive drops |0 |0 |
+| flat duration p95 seconds |7.673(n120) |8.751(n88) |
+| Dex PoolTimeout/connect errors |0/0 |0/0 |
+
+After-load held_fetch failures0, client generation1/retirements0, low waiters0; passive1181enqueued/1178processed/depth3/max10. An intermediate18:16:55 reading had held p95=2.245s and passive-compute1.334s, while other windows reached3.231s. Therefore **do not claim global performance acceptance or acceleration**. No reproducible causal local regression was isolated: new features p95=.358ms, observe=.116ms, entry=.215ms (n120 each), learning flush26.7ms(n13). C3 remains disabled; do not expand work while this watch is unresolved. Runtime stdout/stderr for this deployment contain no Traceback/SQLite lock error; this is a bounded log read, not a guarantee of all-time error absence.
+
+DB36,071,129,088→36,112,961,536 bytes (+41,832,448); WAL771,482,392 unchanged; free37,476,077,568→37,418,926,080. Whole-system growth includes all natural activity and cannot be attributed to145 alone. No VACUUM/checkpoint/delete/rewrite.
+
+**Coverage and learning** at18:19Z: admitted-opportunity windows30s19OBSERVED/60unknown;120s27/31;300s17/21, unknown split SOURCE_NO_UPDATE vs UNKNOWN_PATH_GAP retained in `coverage145:status`. Fixed cap/borrow reservations unchanged. v4 has18uniqueepisodes,9strict research entries,4957passive frame callbacks,2005snapshot callbacks,1OBSERVED5m label and18UNKNOWN horizon outcomes;14pending,model fixed_priority/v1/releases0. Callback totals are not independent tokens, and UNKNOWN includes expired unavailable episodes, not losses. Existing v3 history/pending is retained separately. This demonstrates the passive→label handoff naturally; it does not prove coverage enrichment, profitable models or automatic strategy promotion.
+
+**No-reset verification:** `data/research/strategy_delivery145/immutable_readback.json` matches the saved baseline hashes for25definition registrations,311pre144 policies (all per-row hashes also match),1funding activation and0funding restorations. Runtime activation histories were not replaced. The immediately-preload diagnostic failed on an absent `id` column in the registration table; it did not mutate anything. The valid readback uses the existing immutable saved baseline rather than pretending that failed capture succeeded. Old144 additions312–317 remain under the existing immutable policy triggers; only318/319 were appended in this stage.
+
+Additional final Web regression: two targeted Python cases + Node revision/search suite PASS after the actual browser mapping issue. Prior targeted tests are recorded above and were not rerun without changes. Evidence files: `before.json`, `after.json`, `accepted_readback.json`, `immutable_readback.json` under `data/research/strategy_delivery145/`. Large API evidence stays outside git.
+
+## Explicit remaining boundaries
+
+- C3 spare-batch expansion: WAIT_PREREQUISITE (natural C2 budget/benefit), intentionally not enabled under this contract.
+- Natural trend continuation/terminal pairs, v4 model release/rollback, AUTO_GENERATED recipe and lifecycle-slot turnover: WAIT_NATURAL_SAMPLE. Runnable implementations and fixture coverage exist; no natural promotion is claimed.
+- Held/flat/passive-compute p95 variance: PERFORMANCE_WATCH; no global speedup acceptance. Exact held freshness, zero queue drops and no pool storm are separately verified.
+- Synthetic exact simulation and unsupported native/provenance classes: existing EXTERNAL_BLOCKED/UNKNOWN; no weakening. Existing saved case coverage/6h limits unchanged.
+- Agent restoration, browser Lead validation and ModeChat expansion: DEFERRED_BY_USER; this strategy UI verification did not enable them.
+
+This stage delivers code, tests, actual registration/load and visible diagnostics. It is **not** a claim that all natural/economic/performance acceptance has completed.
+
+Durable checkpoint revision22 / digest9573004f158c3fa76290664523dae896d648ee20336cecfe35010ce21cddf89c; resume CONSISTENT, sole codex lease epoch0, no execution fences. Pairing/memory remain unverified; local UI/readback does not claim Lead rollover validation.

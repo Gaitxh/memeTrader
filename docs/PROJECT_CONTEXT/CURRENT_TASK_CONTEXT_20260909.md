@@ -1,8 +1,10 @@
-# Latest SERVICE-DOWN145 resolved — ae53fac loaded,144 gaps remain open
+# Current145 — core loaded; natural and performance boundaries explicit
 
-ACK C2C-20260911-145-SERVICE-DOWN. Root was not deploying; fresh process/port read confirmed down. Existing authorized start_system/run_paper launch now allowed; no bypass/second writer/reset. Paper30808 started17:28:05Z, Web20112/8790. health/live/performance PASS; all manifest hashes incl runtime+learner ae53fac match.17:32Z same funding/Paper/Live lock; old25registration/311policy/funding SHA unchanged.3open/2held marks fresh, fetchp952.444s/apply60.7ms/queue2.312s,drops0/PoolTimeout0; cumulative heldfail2. Stop cause UNKNOWN, old crash log not evidence. Initial launcher live-read timeout15s occurred while cold service initialized; independent readiness subsequently passed. See SERVICE_RECOVERY_145.md.
+ACK C2C-20260911-145-EXECUTABLE-COMPLETION. Root sole writer. cecb7d4 loaded18:10:05Z/PID22496,13/13SHA; Web7365b07 actual #312/Chinese search verified without Paper restart. Two2U/max2 trend seeds318/319 registered at snapshot2811571/2811674. New v4 causal learning + bounded restricted recipe generation/atomic append/rollback run on existing tasks; this is no longer an unimplemented generator. Full A–G status: STRATEGY_DELIVERY_RESULT_145.md.
 
-Natural new passive learning callback3111frames/8labels/2strict entries; coverage improvement/profit not proven. Previous NOT_LOADED boundary below is superseded. Continue current nonAgent144 acceptance/known implementation gaps and incoming145 implementation contract; no repeat143/native/39scan/ModeChat expansion. Sole root writer unchanged.
+At18:19Z Paper/Live lock/original funding preserved,10open/3held/current exact marks <=1.168s,queue drops0/PoolTimeout0. Natural18learningepisodes/1OBSERVED5m+18UNKNOWN,release0; seeds0BUY/0terminal/AUTO_GENERATED0. C3 spare work disabled pending budget. Held p95 varied2.245–3.231s vsbaseline2.109; PERFORMANCE_WATCH/no speedup claim. Source/tests/load complete; trend/economic/model/generator natural acceptance remains WAIT_NATURAL_SAMPLE. Do not redo143/native/39scan or force trades; Agent/ModeChat expansion deferred.
+
+Existing START_MEMETRADER.cmd is the one-stop start/reuse+Web+readiness entry. Service145 earlier disappearance cause UNKNOWN. Current reload was intentional; no stale process-denial claim. Saved25registration/311policy/funding hashes match; old accounts not reset. Read ONE versioned ModeChat resume for remaining tasks. Historical sections below are evidence, not current execution instructions.
 
 ## Previous144 THREE-GAPS-AUDIT-1600 cutoff — source-only then
 
