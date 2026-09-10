@@ -108,6 +108,17 @@ assert.match(observedPanels[1][1],/实际信号 5（signal:<arm> 合计）/);
 assert.match(observedPanels.find(row=>row[0]==='5 分钟标签')[1],/OBSERVED 3 · UNKNOWN 1 · 模型floor 2/);
 assert.match(observedPanels.find(row=>row[0]==='145 研究 30 分钟标签')[1],/OBSERVED 4 · UNKNOWN 2 · 模型floor 1/);
 assert.equal(observedPanels.find(row=>row[0]==='145 固定优先级对照')[1],'NO_MATCHED_BASELINE');
+const learnedPanels=context.revisionUi.deliveryPanels({
+  'mode-learning145:status':{schema:'mode-learning146/v5',affects:'trajectory146_learned_mode_selector_v1',unique_episodes:5,
+    counts:{strict_entry:4},model:{version:'fixed_priority/v1',releases:0},horizons:{5:{OBSERVED:1,UNKNOWN:2,MODEL_FLOOR_EVENT:1}},
+    arms:{trajectory146_learned_mode_selector_v1:{signal_decisions:2,independent_buy_receipts:1,terminal_receipts:0}}},
+  'recipe145:status':{candidates:[{arm_id:'trajectory145_sparse_trend_runner_v1',status:'LOADED',origin:'USER_AUTHORIZED_SEED',comparison:{economic_status:'INSUFFICIENT',missing:['20_same_fill_terminals']}}]},
+});
+assert.equal(learnedPanels.find(row=>row[0]==='146 独立学习episode')[1],'5');
+assert.match(learnedPanels.find(row=>row[0]==='trajectory146_learned_mode_selector_v1')[1],/信号 2 · BUY 1 · 终局 0/);
+assert.match(learnedPanels.find(row=>row[0]==='146 5 分钟标签')[1],/OBSERVED 1 · UNKNOWN 2 · 模型floor 1/);
+assert.match(learnedPanels.find(row=>row[0]==='trajectory145_sparse_trend_runner_v1')[1],/INSUFFICIENT/);
+assert.match(learnedPanels.find(row=>row[0]==='trajectory145_sparse_trend_runner_v1')[2],/20_same_fill_terminals/);
 assert.match(app,/strategy\.max_hold_minutes==null\?'UNKNOWN'/);
 assert.match(app,/\['现有漏斗'/);
 

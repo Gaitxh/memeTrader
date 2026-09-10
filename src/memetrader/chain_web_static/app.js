@@ -492,11 +492,15 @@ function deliveryPanels(diagnostic, families=[]){
   const horizonRows=Object.entries(learning.value.horizons||{}).map(([h,row])=>[`${h} 分钟标签`,
     `OBSERVED ${row.observed??row.OBSERVED??'UNKNOWN'} · UNKNOWN ${row.unknown??row.UNKNOWN??'UNKNOWN'} · 模型floor ${row.model_floor_event??row.MODEL_FLOOR_EVENT??'UNKNOWN'}`,'滚动成熟episode；模型floor不是实际卖出；未成熟仍等待。']);
   const research=future.find(([key])=>key==='mode-learning145:status')?.[1].value||{};
-  const researchRows=Object.entries(research.horizons||{}).map(([h,row])=>[`145 研究 ${h} 分钟标签`,
+  const researchCycle=research.schema==='mode-learning146/v5'?'146':'145 研究';
+  const researchRows=Object.entries(research.horizons||{}).map(([h,row])=>[`${researchCycle} ${h} 分钟标签`,
     `OBSERVED ${row.observed??row.OBSERVED??'UNKNOWN'} · UNKNOWN ${row.unknown??row.UNKNOWN??'UNKNOWN'} · 模型floor ${row.model_floor_event??row.MODEL_FLOOR_EVENT??'UNKNOWN'}`,`${research.schema||'UNKNOWN'}独立模型分母；不替换317的v3成交合同。`]);
   const candidates=future.find(([key])=>key==='recipe145:status')?.[1].value.candidates||[];
-  const candidateRows=candidates.map(row=>[row.arm_id,`${row.origin} / ${row.status}`,
-    `${row.reason||'UNKNOWN'}；注册编号 ${row.registration_index??'UNKNOWN'}；加载 ${row.loaded_at?time(row.loaded_at):'UNKNOWN'}；同fill终局 ${row.comparison?.same_fill_terminals??0}，尚不代表盈利晋级。`]);
+  const candidateRows=candidates.map(row=>[row.arm_id,`${row.origin} / ${row.status} / ${row.comparison?.economic_status||'UNKNOWN'}`,
+    `${row.reason||'UNKNOWN'}；注册编号 ${row.registration_index??'UNKNOWN'}；加载 ${row.loaded_at?time(row.loaded_at):'UNKNOWN'}；同fill终局 ${row.comparison?.same_fill_terminals??0}；缺少 ${(row.comparison?.missing||[]).join(' / ')||'无已记录缺项'}；不是未来盈利保证。`]);
+  const executionRows=research.affects&&research.arms?.[research.affects]?[research.arms[research.affects]].map(row=>[
+    research.affects,`信号 ${row.signal_decisions??'UNKNOWN'} · BUY ${row.independent_buy_receipts??'UNKNOWN'} · 终局 ${row.terminal_receipts??'UNKNOWN'}`,
+    `最后信号 ${row.last_signal_at?time(row.last_signal_at):'UNKNOWN'} / 成交 ${row.last_buy_at?time(row.last_buy_at):'UNKNOWN'}；阶段 ${JSON.stringify(row.stage_counts||{})}；${row.first_block||'UNKNOWN'}；${research.schema}回执分母。`]):[];
   const dispositionRows=Object.entries(research.dispositions||{}).slice(0,16).map(([key,row])=>[key,row.status,`缺少 ${(row.missing||[]).join(' / ')||'无；等待前向经济验收'}；前沿 ${row.frontier??'UNKNOWN'}`]);
   return [
     ['144 工程交付',`源码 ${trajectory.status} · 测试 UNKNOWN（运行 API 不读取测试结果）· 注册 ${deliveryArms.length} · 加载 ${loaded===null?'UNKNOWN':`${loaded}/${deliveryArms.length}`}`,'工程状态不等于自然信号、成交或经济证据。'],
@@ -504,10 +508,11 @@ function deliveryPanels(diagnostic, families=[]){
     ['144 学习',learningReason,'OBSERVED 与 UNKNOWN 按 horizon 和唯一 episode 解释；无成熟样本不能晋级。'],
     ['145 有界摘要',futureText,'145 状态键未写入时显示 UNKNOWN；此 API 不会触发训练、注册或扫描。'],
     ['独立学习episode',String(learning.value.unique_episodes??'UNKNOWN'),'相同来源多个账户不增加标签；滚动计数与全历史不同。'],
+    [`${researchCycle} 独立学习episode`,String(research.unique_episodes??'UNKNOWN'),`严格后帧锚 ${research.counts?.strict_entry??'UNKNOWN'}；${research.schema||'UNKNOWN'}；不与317旧代分母合并。`],
     ['145 固定优先级对照',research.economic_comparison?.status||'NO_MATCHED_BASELINE','只比较冻结基线的真实等成本、等数量、同fill终局；所选来源不是独立基线。'],
     ['146 学习执行',`${research.model?.version==='fixed_priority/v1'?'BASELINE':research.model?.version?'LEARNED':'UNKNOWN'} · ${research.schema||'UNKNOWN'} · 发布 ${research.model?.releases??'UNKNOWN'}`,
       `作用策略 ${research.affects||'UNKNOWN'}；无成熟证据保留基线，已知模型floor计全损但不是真实成交。`],
-    ...armRows,...horizonRows,...researchRows,...candidateRows,...dispositionRows,
+    ...armRows,...executionRows,...horizonRows,...researchRows,...candidateRows,...dispositionRows,
   ];
 }
 
