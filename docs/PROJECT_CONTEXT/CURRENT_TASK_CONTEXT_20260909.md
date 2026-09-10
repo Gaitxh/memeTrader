@@ -1,4 +1,10 @@
-# Current145 — core loaded; natural and performance boundaries explicit
+# Current145 — contract review corrected and loaded
+
+ACK/RESULT C2C-20260911-145-CONTRACT-REVIEW:008c1be loaded18:39:50Z/PID15392,13/13hash+servedJS match.317 restored to its original v3 selection/training/release contract; unchanged exact policy row/hash522e63a8eb83ecbd. Separatev4 remains research-only, NO_MATCHED_BASELINE unless real frozen fixed-priority equal-entry terminals exist. Rollback blocks same-flush/restart re-release until new post-rollback same-group evidence; UI exact signal/horizon/provenance fixes passed.29 targeted Python cases+Node PASS;319policies/25registrations/funding hashes unchanged, Live locked.
+
+18:41:59Z5open/3held;heldp952.102s/apply27.3ms,passivewait2.551s,drops0/pool0/connect0; short guard only. v3 releases0; v4 17OBSERVED/103UNKNOWN/6sampled-floor labels,23pending,releases0,decision_eligible=false.319 first matched terminal-.222084U/delta0/no extension predates correction;318 no terminal. No new funded adaptive arm, no natural promotion/rollback/Alpha claim. Continue145 natural acceptance; C3/Agent/ModeChat expansion remain deferred. Full dispositions: STRATEGY_DELIVERY_RESULT_145.md latest section.
+
+## Previous145 implementation/readback cutoff — corrected above where superseded
 
 ACK C2C-20260911-145-EXECUTABLE-COMPLETION. Root sole writer. cecb7d4 loaded18:10:05Z/PID22496,13/13SHA; Web7365b07 actual #312/Chinese search verified without Paper restart. Two2U/max2 trend seeds318/319 registered at snapshot2811571/2811674. New v4 causal learning + bounded restricted recipe generation/atomic append/rollback run on existing tasks; this is no longer an unimplemented generator. Full A–G status: STRATEGY_DELIVERY_RESULT_145.md.
 

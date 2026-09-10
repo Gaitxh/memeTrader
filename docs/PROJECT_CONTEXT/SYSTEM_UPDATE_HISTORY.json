@@ -4,15 +4,15 @@
     {
       "id": "20260911-delivery145",
       "recorded_at": "2026-09-10T18:08:49.077290+00:00",
-      "title": "145可交易趋势配方、有限学习生成与页面可见性",
-      "problem": "144诊断在页面缺失、观察窗口供给不连续，模式排序尚无新配方追加能力。",
-      "change": "有界UI摘要和中文编号搜索；原10席位lease调度；两独立2U趋势配方；v4因果标签/回退/受限生成/原子追加与重启幂等。",
-      "rationale": "先工程验证再自然小额实验，注册/加载/经济晋级分开；不新增请求预算。",
-      "validation": "定向Python/JS/真实Store和重启测试通过；13/13运行SHA一致；实际浏览器编号312/中文搜索通过。318/319已登记加载，尚无自然BUY；v4自然标签1OBSERVED/18UNKNOWN，release0。",
-      "scope": "LOADED；Paper/资金不变/Live锁定；自然趋势、自动生成晋级待样本；held p95波动2.245–3.231s，PERFORMANCE_WATCH，不宣称全面提速。",
+      "title": "145 strategy delivery and frozen learner contract correction",
+      "problem": "V4 selector could change317 frozen behavior; baseline and rollback evidence were insufficiently separated.",
+      "change": "Keep317 on v3; v4 research-only; exact equal-entry baseline, fresh-evidence re-release guard, exact UI signal/horizon/cycle provenance.",
+      "rationale": "Preserve immutable policy and distinguish natural research from execution and economic evidence.",
+      "validation": "29 targeted Python cases and Node tests PASS;13/13 runtime hashes and servedJS match;319 policy and funding digests unchanged.",
+      "scope": "LOADED;Paper-only/Live locked. Short held guard PASS; natural promotion/trend/automatic recipe outcomes still pending.",
       "visible_entry": "http://127.0.0.1:8790/#/strategies → 最近新增 / 本轮144或145 / 编号与中文搜索",
-      "commit": "cecb7d4 / Web7365b07",
-      "loaded_at": "2026-09-10T18:10:05.106466Z",
+      "commit": "008c1be",
+      "loaded_at": "2026-09-10T18:39:50.412378Z",
       "report": "docs/PROJECT_CONTEXT/STRATEGY_DELIVERY_RESULT_145.md"
     },
     {

@@ -3,7 +3,7 @@
 {
   "cycle_id": "complete-runnable-strategies-138",
   "objective": "145 A-G: runnable nonAgent strategies, causal learning/recipe append, observation coverage and visible diagnostics; preserve Paper funding/held exits.",
-  "next_action": "145 corececb7d4/PID22496 and Web7365b07 loaded. Continue only natural coverage/performance guard, seed318/319 same-fill outcomes and future terminal-driven recipe/model evidence; no duplicate code/scans/forced trades.",
+  "next_action": "145 correction008c1be loaded18:39:50Z/PID15392.317 keeps frozen v3;v4 research-only/NO_MATCHED_BASELINE. Continue natural seed/coverage/recipe outcomes, not duplicate delivery. C3/Agent deferred.",
   "rules": [
     "Sole existing Codex writer/session; no ownership transfer",
     "Paper only / Live locked; no reset/backfill or immutable history/funding rewrite",
@@ -11,7 +11,8 @@
     "Ordinary Paper4%/4%/1000USD floor; native protocol/rent/fees separate; synthetic1U/max1/300s/exact-pool simulation/no reentry",
     "Held/SELL priority; unchanged bounded source/watch/request budgets; no forced trades",
     "126/133 profitable/independent insufficient arms continue; no unsigned114 or15m-breakeven90A revival",
-    "145 authorizes bounded non-LLM incremental models/rollback and restricted existing-component recipe generation+Paper append. Max2 simultaneous new recipe slots including seeds; not lifetime2. No arbitrary code generation, Live or reset."
+    "145 authorizes bounded non-LLM incremental models/rollback and restricted existing-component recipe generation+Paper append. Max2 simultaneous new recipe slots including seeds; not lifetime2. No arbitrary code generation, Live or reset.",
+    "317 keeps immutable mode-learning144/v3;145v4 research-only. No historical baseline fabrication or same-frontier rollback/re-release."
   ],
   "completed": [
     {
@@ -187,8 +188,8 @@
     {
       "id": "145-engineering",
       "status": "COMPLETED",
-      "evidence": "cecb7d4/7365b07; docs/PROJECT_CONTEXT/STRATEGY_DELIVERY_RESULT_145.md",
-      "fact": "A-G implemented/tested/loaded except conditional C3. Seeds318/319 at2811571/2811674,0naturalBUY.13/13hash; actual browser search PASS; old saved registration/policy/funding hashes match.18:19Z v4 18episodes/1OBSERVED5m+18UNKNOWN/release0; no auto proposal or promotion. Not a natural/performance completion claim."
+      "evidence": "cecb7d4/008c1be; STRATEGY_DELIVERY_RESULT_145.md",
+      "fact": "A-G engineering loaded except conditional C3.318/319 preserved;317 v3 contract restored, separatev4 research.29 Python+Node checks,13/13hash;319policy/funding digests unchanged. Signal/horizon/cycle UI corrected. No natural promotion or broad performance claim."
     }
   ],
   "open_tasks": [
@@ -232,7 +233,7 @@
       "id": "145",
       "owner": "codex",
       "status": "FORWARD_OBSERVATION",
-      "next_action": "144 missing code superseded by145 delivery. Natural30/120/300 coverage/2 seeds/trend pairs/model rollback/auto recipe generation remain to observe; C3 disabled pending resource evidence. Heldp95 fluctuates2.245-3.231 vs2.109 baseline;PERFORMANCE_WATCH, no causal speedup or global pass. Existing callbacks/finite compiler/append run; do not replay engineering or force samples."
+      "next_action": "Observe seeds/trend pairs, causal coverage, restricted recipe generation/outcomes.317 frozenv3;v4 research only. No matched baseline => UNKNOWN; rollback re-release requires new same-group evidence.319first terminal-.222084U/delta0/no extension;318none. C3 waits budget evidence; no forced trades/repeated scans."
     }
   ],
   "blockers": [
@@ -256,7 +257,7 @@
     {
       "id": "145-natural-performance",
       "status": "PERFORMANCE_WATCH",
-      "evidence": "STRATEGY_DELIVERY_RESULT_145.md;18:19 held3.114s/apply.0413s/drops0/pool0/3held marks<=1.168s. Higherp95 variance not causally attributed."
+      "evidence": "18:41:59Z held2.102s/apply27.3ms/queue2.551s/drops0/pool0/connect0. Short guard passes; long-run comparable coverage/performance still unproven."
     }
   ],
   "lessons": [
@@ -286,8 +287,8 @@
   ],
   "cycle_status": "IN_PROGRESS",
   "status": "LOCAL_CONTEXT_READY",
-  "revision": 22,
-  "digest": "9573004f158c3fa76290664523dae896d648ee20336cecfe35010ce21cddf89c",
+  "revision": 23,
+  "digest": "13cb9bf2205d375319764ca08bd81f4d1e02dd14aa8f359ced1b218f2d644bb9",
   "workspace": "E:\\memeTrader",
   "codex_session": "01a07b17-8f78-7cb1-bb4f-5d5d15607097",
   "pairing_status": "REVALIDATION_REQUIRED",
