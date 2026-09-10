@@ -71,3 +71,7 @@ Additional final Web regression: two targeted Python cases + Node revision/searc
 This stage delivers code, tests, actual registration/load and visible diagnostics. It is **not** a claim that all natural/economic/performance acceptance has completed.
 
 Durable checkpoint revision22 / digest9573004f158c3fa76290664523dae896d648ee20336cecfe35010ce21cddf89c; resume CONSISTENT, sole codex lease epoch0, no execution fences. Pairing/memory remain unverified; local UI/readback does not claim Lead rollover validation.
+
+## UI projection addendum reconciliation
+
+ACK `C2C-20260911-145-UI-PROJECTION-ADDENDUM` at 2026-09-10T18:26:52.460544+00:00. Its17:35-17:38 source/API observation predates completed cecb7d4/7365b07. Current readback: runtime PID22496/start18:10:05Z;6v144 API families contain entry_rules144 and data_contract projection,315 exposes300s trend,317 exposes model_contract/fixed baseline. Real registration IDs312-317 are present. Existing targeted tests and actual browser search were already passed; no unchanged test or recovery was repeated. This read health=.127s/universe=4.619s/performance=.023s measures API requests only, not market latency.318/319 remain LOADED; v4 fixed_priority/v1/release0. Source implementation gaps from this addendum are resolved; natural economic/performance boundaries above remain open. This is a readback receipt, not a new semantic checkpoint or task queue.
