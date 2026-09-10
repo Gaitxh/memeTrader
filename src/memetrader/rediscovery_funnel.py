@@ -98,7 +98,7 @@ class CohortFlow:
     """
     def __init__(self):
         self.started=utcnow();self.members=OrderedDict();self.counts=Counter()
-        self.by_arm={};self.windows={'startup_30m':Counter(),'steady':Counter()}
+        self.by_arm={};self.latest_by_arm={};self.windows={'startup_30m':Counter(),'steady':Counter()}
         self.recent=deque(maxlen=32);self.evicted=0;self.unlinked=Counter()
         self.lock=RLock()
         self.opportunities=OrderedDict();self.opportunity_counts=Counter();self.opportunity_evicted=0
@@ -130,7 +130,7 @@ class CohortFlow:
             self.members[key]=dict(token=token,pool=pool,arms=set(arms),seen=set(),arm_seen=set(),at=at,phase=phase)
             self.hit(version,cohort,'admitted_after_next_frame',at)
 
-    def hit(self,version,cohort,stage,at,arm=None):
+    def hit(self,version,cohort,stage,at,arm=None,reason=None):
         with self.lock:
             key=(version,int(cohort));member=self.members.get(key)
             if member is None:
@@ -142,6 +142,9 @@ class CohortFlow:
                 self.recent.append(dict(cohort_id=cohort,token_id=member['token'],pair_address=member['pool'],
                     stage=stage,at=iso(at) if hasattr(at,'timestamp') else at))
             for a in ({arm} if arm else member['arms']):
+                if a in member['arms']:
+                    self.latest_by_arm[a]={'cohort_id':cohort,'stage':stage,'at':iso(at) if hasattr(at,'timestamp') else at,
+                        'block_reason':reason if stage.startswith(('WAIT','REJECT')) else None}
                 if a not in member['arms'] or (a,stage) in member['arm_seen']:continue
                 member['arm_seen'].add((a,stage));self.by_arm.setdefault(a,Counter())[stage]+=1
 
@@ -150,6 +153,7 @@ class CohortFlow:
             return dict(started_at=iso(self.started),scope='common market and native Paper cohorts admitted in this process',
                 unit='unique cohort per stage; per-arm figures must not be summed',counts=dict(self.counts),
                 by_arm={a:dict(v) for a,v in self.by_arm.items()},
+                latest_by_arm=self.latest_by_arm,
                 admission_windows={k:dict(v) for k,v in self.windows.items()},
                 current_unique_tokens=len({m['token'] for m in self.members.values()}),
                 retained_cohorts=len(self.members),limit=2048,ttl_seconds=21600,evicted=self.evicted,

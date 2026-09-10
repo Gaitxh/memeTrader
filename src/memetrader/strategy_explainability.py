@@ -30,6 +30,12 @@ def strategy_logic(policy, family, control=None, *, current=False):
     if p.get('feature_contract')=='dex-trajectory/v1':
         rules=p.get('trajectory_rules') or {}
         entry.extend([rules.get('common','UNKNOWN'),rules.get(p.get('feature_hypothesis'),'UNKNOWN')])
+    if p.get('trajectory_engine')=='v144':
+        rules=p.get('entry_rules144') or {}
+        rule=rules.get(p.get('arm_id')) if isinstance(rules,dict) else rules
+        entry.append('v144 冻结入场规则：'+(str(rule) if rule else 'UNKNOWN'))
+        if p.get('entry_alias_of'):
+            entry.append('来源同一冻结信号：'+str(p['entry_alias_of'])+'；新账户只从自身激活后的同源信号前向开始。')
     if p.get('router_priority'):
         entry.append('冻结优先级（一次只选一支）：'+' → '.join(p['router_priority']))
         entry.append('完整复用所选来源的信号、激活时点和原池后帧；未选择/缺失分支原因随决定保存。造势分支由独立1U执行器处理；分发/不可卖只作风险，不买入。')
@@ -39,6 +45,8 @@ def strategy_logic(policy, family, control=None, *, current=False):
     if not p:entry.append('UNKNOWN：本历史版本未提供 frozen_policy，不能从当前策略反推旧规则。')
     sequence=['候选进入该策略的数据/准入通道','只按该版本配置判断信号']
     sequence.append('信号后严格较晚的有效观察，才可继续执行；信号价不是成交价' if p.get('require_post_decision_observation') else '后帧要求：UNKNOWN（本配置未明确 require_post_decision_observation）')
+    if p.get('requires_distinct_trajectory_frame'):
+        sequence.append('v144 还要求独立轨迹后帧及实际窗口；缓存时间不能伪装成新行情。')
     sequence.append('最终 BUY 共用安全门：拒绝或等待不能当作通过；这是当前执行约束，不补写历史' if current else '历史安全/成交约束只以该版本冻结合同为准，不能套用今日规则')
     sequence.append('Paper 按成交时有效成本模型和可用资金结算；展示信号不代表已 BUY')
     if p.get('native_execution'):
@@ -52,6 +60,8 @@ def strategy_logic(policy, family, control=None, *, current=False):
             'liquidity_divergence':'买后30秒价格仍上涨、流动性下降超过双边摩擦尺度时申请退出。',
             'blowoff':'买后30秒价格大幅上涨但减速、成交额和笔数仍扩大时申请退出。'}.get(p['trajectory_exit'],'UNKNOWN'))
         exits.append('只使用新鲜买后原池观察；机械止损/追踪/最大持有仍保留；后续有效行情才结算。')
+    if p.get('trajectory_trend_runner') or p.get('trajectory145_trend_evidence'):
+        exits.append('趋势续持：先按 30 分钟基础期限管理；仅新的 300 秒实际趋势、活动和流动性健康证据可续至绝对 120 分钟。硬止损、死面和结构失效优先。')
     for k,label in [('hard_stop_return','硬止损收益阈值（计价口径见退出合同）'),('trailing_activate_return','追踪退出激活收益阈值'),('trailing_drawdown','激活后追踪回撤阈值')]:
         if k in p:exits.append(f'{label}：{pct(p[k])}')
     if 'max_hold_minutes' in p:exits.append(f"普通最长持仓：{value(p['max_hold_minutes'])} 分钟（特殊 overlay 另列）")
@@ -80,6 +90,11 @@ def strategy_logic(policy, family, control=None, *, current=False):
             '曲线毕业后只接经过验证的规范 PumpSwap 后继池；等待身份/报价期间不在旧曲线上成交。'])
     else:exits.append('退出机制/模式：'+value(p.get('exit_family') or family.get('exit_family'))+' / '+value(p.get('exit_mode')))
     requirements=['必须有策略配置要求的身份绑定、时间有效性和特征；缺失值不是零，也不是条件已满足。']
+    if p.get('trajectory_engine')=='v144':
+        for key,item in (p.get('data_contract') or {}).items():
+            requirements.append('v144 数据合同 '+str(key)+'：'+value(item))
+        if p.get('model_contract'):
+            requirements.append('模式选择合同：'+str(p['model_contract'])+'；冷启动为固定基线，未发布模型不改变新订单。')
     if current:requirements.append('原生曲线按协议储备、Token 控制、费用与卖回容量验证；不套用毕业前 DEX 流动性底线。' if p.get('native_execution') else '当前 Paper 原池价格/流动性及严格时序有效；明确低于执行流动性底线按现有退出规则处理。')
     execution=p.get('_execution') or {}
     requirements += [f'成交配置 {k}：{value(v)}' for k,v in execution.items()]

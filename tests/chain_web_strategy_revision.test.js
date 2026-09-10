@@ -31,6 +31,7 @@ globalThis.revisionUi = {
   safety: cohortSafetyText,
   entry: value => readable(value,entryLabels),
   positionMarkText, positionPendingText, accountPendingText, sellabilityText,
+  search: universeSearchHay, delivery: deliveryCycleForFamily, deliveryPanels,
 };`, context);
 
 const family = {
@@ -82,6 +83,13 @@ assert.match(explanation,/UNKNOWN/);
 assert.match(app,/runtime-loaded-manifest/);
 assert.equal(context.revisionUi.entry('dex_compression_breakout_v1'),'压缩后突破');
 assert.equal(context.revisionUi.safety({counts:{WAIT_SECURITY:2,BUY_AUTHORIZED_UNKNOWN:1,BUY:1}}),'WAIT_SECURITY 2 / BUY_AUTHORIZED_UNKNOWN 1');
+const deliveryFamily={display_index:312,canonical_id:'trajectory144_sparse_peer_hot_fast_v1',active_arm_ids:['trajectory144_sparse_peer_hot_fast_v1'],name:'稀疏同龄HOT·自身轨迹',entry_family:'trajectory144_sparse_peer_hot_fast_v1'};
+assert.match(context.revisionUi.search(deliveryFamily),/#312/);
+assert.match(context.revisionUi.search(deliveryFamily),/稀疏同龄hot/);
+assert.equal(context.revisionUi.delivery(deliveryFamily),'144');
+const panels=context.revisionUi.deliveryPanels({'mode-learning144:status':{version:'mode-learning144/v3',releases:0,updated_at:'2026-09-11T00:00:00Z'}});
+assert.match(panels[2][1],/固定基线，尚无学习模型发布/);
+assert.match(panels[3][1],/mode-learning145 UNKNOWN/);
 assert.match(app,/strategy\.max_hold_minutes==null\?'UNKNOWN'/);
 assert.match(app,/\['现有漏斗'/);
 

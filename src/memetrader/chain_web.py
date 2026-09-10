@@ -850,9 +850,35 @@ class ChainWebData:
             Store.CHAIN_MEME_TRADER_V22_VERSION, Store.CHAIN_MEME_TRADER_V21_VERSION,
             Store.CHAIN_MEME_TRADER_V20_VERSION)))
         with self._connect() as connection:
-            diagnostic_keys=('runtime-loaded-manifest','dex-trajectory:v1','native-paper:last-held','rediscovery-funnel94','cohort-flow:v1')
-            diagnostics={r['key']:json.loads(r['value_json']) for r in connection.execute(
-                "SELECT key,value_json FROM kv WHERE key IN (?,?,?,?,?)",diagnostic_keys)}
+            # This is deliberately a bounded status read. The console polls it
+            # frequently, so it must never make a runtime, training, ledger, or
+            # market-data call just to explain a delivery's current frontier.
+            diagnostic_keys = (
+                'runtime-loaded-manifest', 'dex-trajectory:v1',
+                'trajectory144:status', 'mode-learning144:status',
+                'mode-learning145:status', 'recipe145:status', 'coverage145:status',
+                'native-paper:last-held', 'rediscovery-funnel94', 'cohort-flow:v1',
+            )
+            placeholders = ','.join('?' for _ in diagnostic_keys)
+            diagnostic_rows = {
+                str(row['key']): row for row in connection.execute(
+                    f"SELECT key,value_json,updated_at FROM kv WHERE key IN ({placeholders})",
+                    diagnostic_keys,
+                )
+            }
+            diagnostics: dict[str, Any] = {}
+            for key in diagnostic_keys:
+                row = diagnostic_rows.get(key)
+                if row is None:
+                    if key in {'trajectory144:status', 'mode-learning144:status',
+                               'mode-learning145:status', 'recipe145:status',
+                               'coverage145:status'}:
+                        diagnostics[key] = {'status': 'UNKNOWN', 'updated_at': None}
+                    continue
+                value = json.loads(row['value_json'])
+                if isinstance(value, dict):
+                    value = {**value, 'updated_at': row['updated_at']}
+                diagnostics[key] = value
             exists = connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_timing_latest'"
             ).fetchone()

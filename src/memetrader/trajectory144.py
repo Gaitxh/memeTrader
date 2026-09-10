@@ -136,7 +136,8 @@ class Engine:
         elif phase == "impulse" and drawdown <= -FRICTION: state.update(phase="cool", cool_at=current["observed_at"]); cool = True
         elif phase == "cool" and win and abs(win["return_fraction"]) <= FRICTION/2: state.update(phase="base", base_at=current["observed_at"]); base = True
         elif phase == "base" and win and abs(win["return_fraction"]) <= FRICTION/2: base = True
-        elif phase == "base" and win and current["t"]-parse_time(state["base_at"]).timestamp() >= 60 and win["return_fraction"] > FRICTION and (win["activity_change"] or 0) > 1: new_start = True
+        elif phase == "base" and win and current["t"]-parse_time(state["base_at"]).timestamp() >= 60 and win["return_fraction"] > FRICTION and (win["activity_change"] or 0) > 1:
+            new_start = True;state['new_start_at']=current['observed_at']
         return {"version": VERSION, "token_id": identity[0], "pair_address": identity[1], "observed_at": current["observed_at"],
                 "recorded_at": current["recorded_at"], "pool_age_seconds": age, "frames": len(rows), "window_30": win,
                 "windows": {"30": win,"300":_window(rows,300)}, "ingested_at":current["ingested_at"],
@@ -144,6 +145,7 @@ class Engine:
                 "chain": current.get("chain"), "early_m5_h1_degenerate": degenerate, "early_actual_log_slope": early_slope,
                 "drawdown": drawdown, "absorption_recovery": recovered, "observed_impulse": phase in {"impulse", "cool", "base"},
                 "cooldown": cool, "base": base, "new_start": new_start, "second_wave_phase": state.get("phase"),
+                "phase_clocks":{k:state.get(k) for k in ('impulse_at','cool_at','base_at','new_start_at')},
                 "buy_count_share": _ratio(current.get("buys_5m"), _activity(current))}
 
     def signals_for(self, token, pool, now):
@@ -194,7 +196,7 @@ class Engine:
         for (token, pool), state in self.pools.items():
             pools.append({"token_id": token, "pair_address": pool, "rows": list(state["rows"]), "features": state.get("features"), "signals": state.get("signals", {}),
                           "emitted": sorted(state.get("emitted", set())), "episodes": state.get("episodes", 0), "phase": state.get("phase", "idle"),
-                          "impulse_at": state.get("impulse_at"), "cool_at": state.get("cool_at"), "base_at": state.get("base_at"), "last_at": state["last_at"]})
+                          "impulse_at": state.get("impulse_at"), "cool_at": state.get("cool_at"), "base_at": state.get("base_at"), "new_start_at":state.get('new_start_at'), "last_at": state["last_at"]})
         return {"version": VERSION, "started_at": iso(self.started), "pools": pools, "counts": dict(self.counts)}
 
     def load_state(self, payload):
@@ -206,7 +208,7 @@ class Engine:
             identity = (str(item["token_id"]), str(item["pair_address"]))
             state = {"rows": rows, "signals": item.get("signals") or {}, "emitted": set(item.get("emitted") or []), "episodes": min(int(item.get("episodes") or 0), 2),
                      "phase": item.get("phase") or "idle", "last_at": item["last_at"]}
-            for key in ("impulse_at", "cool_at", "base_at"):
+            for key in ("impulse_at", "cool_at", "base_at", "new_start_at"):
                 if item.get(key): state[key] = item[key]
             state["features"] = item.get("features") or self._features(identity, state); rebuilt[identity] = state
         self.pools = rebuilt; self.counts = Counter(payload.get("counts") or {}); return True

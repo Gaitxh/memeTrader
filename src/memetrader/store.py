@@ -25863,7 +25863,7 @@ class Store:
 
     def append_chain_meme_trader_policy(
         self, policy: Mapping[str, Any], *, definition_version: str | None = None,
-        activated_at: Any = None,
+        activated_at: Any = None, recipe_receipt: Mapping[str, Any] | None = None,
     ) -> sqlite3.Row:
         """Append one independently-aged policy to the current epoch, without backfill."""
         version = definition_version or self.CHAIN_MEME_TRADER_ACTIVE_VERSION
@@ -25880,6 +25880,9 @@ class Store:
             ):
                 raise ValueError("policies can only be appended to the current forward epoch")
             candidate = dict(policy)
+            if recipe_receipt is not None and (recipe_receipt.get('recipe_hash')!=candidate.get('recipe145_hash')
+                    or not candidate.get('recipe145_hash') or len(self._json(recipe_receipt))>16000):
+                raise ValueError('invalid restricted recipe registration receipt')
             arm_id = str(candidate.get("arm_id") or "").strip()
             canonical_id = str(candidate.get("canonical_id") or "").strip()
             if not arm_id or not canonical_id:
@@ -25924,6 +25927,10 @@ class Store:
                     evaluation_frontier, behavior_hash, self._json(candidate),
                 ),
             )
+            if recipe_receipt is not None:
+                self.db.execute('INSERT INTO chain_meme_pattern_evidence(definition_version,token_id,pair_address,kind,source_key,observed_at,recorded_at,payload_json) VALUES(?,?,?,?,?,?,?,?)',
+                    (version,'','','recipe145_registration',candidate['recipe145_hash'],current,current,
+                     self._json({**recipe_receipt,'arm_id':arm_id,'activation_snapshot_id':snapshot_frontier,'registered_at':current})))
             return self.db.execute(
                 "SELECT * FROM chain_meme_trader_policy_additions "
                 "WHERE definition_version=? AND arm_id=?", (version, arm_id),
@@ -28600,7 +28607,7 @@ class Store:
                 from .age_rate_fresh_impulse import capture
                 capture(self, version, int(cohort_id), token_id, decision['decided_at'], int(entry_fill['id']))
             learning=getattr(self,'_mode_learning144',None)
-            if learning is not None and arm_id.startswith('trajectory144_'):
+            if learning is not None and (arm_id.startswith(('trajectory144_','trajectory145_','recipe145_'))):
                 learning.record_buy(version,arm_id,int(cohort_id),token_id,int(entry_fill['id']),filled_at)
             projected += 1
             self.rediscovery_funnel_hit(token_id, 'BUY', filled_at)
@@ -33514,10 +33521,34 @@ class Store:
         if result.get('trajectory_trend_runner'):
             from .trajectory144 import trend_extension
             engine=getattr(self,'_trajectory144',None)
-            pool=position['mark_pair_address'] if 'mark_pair_address' in position.keys() else None
+            pool=position['mark_pair_address'] if 'mark_pair_address' in position.keys() else position['entry_pair_address'] if 'entry_pair_address' in position.keys() else None
             vector=engine.pools.get((position['token_id'],pool),{}).get('features') if engine else None
-            if trend_extension(vector,position['opened_at'],utcnow()):
+            current=utcnow();accepted=trend_extension(vector,position['opened_at'],current)
+            if accepted:
                 result['max_hold_minutes']=120.
+            if result.get('trajectory145_trend_evidence'):
+                base=parse_time(position['opened_at'])+timedelta(minutes=30)
+                absolute=parse_time(position['opened_at'])+timedelta(minutes=120)
+                reason='BASE_HORIZON_PENDING' if current<base else 'TREND_EXTENDED' if accepted and current<absolute else 'ABSOLUTE_DEADLINE' if current>=absolute else 'TREND_NOT_CONFIRMED'
+                w=(vector or {}).get('windows',{}).get('300') or {}
+                conditions={'fresh_causal':bool(vector and parse_time(vector['observed_at'])<=parse_time(vector['recorded_at'])<=current and 0<=(current-parse_time(vector['observed_at'])).total_seconds()<=30),
+                    'complete_300s':bool(w),'positive_price_slope':(w.get('log_slope') or 0)>0,
+                    'activity_maintained':(w.get('activity_change') or 0)>=1,
+                    'liquidity_maintained':(w.get('liquidity_change') or 0)>=1-(1.04/.96-1),
+                    'drawdown_healthy':(vector or {}).get('drawdown',-1)>-(1.04/.96-1)}
+                state={'reason':reason,'conditions':conditions if current>=base else {}}
+                key='trend145:'+position['definition_version']+':'+position['arm_id']+':'+str(position['shadow_cohort_id'])
+                if self.get_kv(key,None)!=state:
+                    evidence=dict(position_key=key,source_fill_id=position['source_entry_fill_id'],
+                        token_id=position['token_id'],pair_address=pool,observed_at=(vector or {}).get('observed_at'),
+                        source_recorded_at=(vector or {}).get('recorded_at'),recorded_at=iso(current),window_start=w.get('start_at'),window_end=w.get('end_at'),
+                        conditions=conditions,accepted=accepted,reason=reason,base_deadline=iso(base),
+                        current_deadline=iso(absolute if accepted else base),absolute_deadline=iso(absolute),
+                        highest_economic_value_usd=position['highest_economic_value_usd'])
+                    self.db.execute('INSERT OR IGNORE INTO chain_meme_pattern_evidence(definition_version,token_id,pair_address,kind,source_key,observed_at,recorded_at,payload_json) VALUES(?,?,?,?,?,?,?,?)',
+                        (position['definition_version'],position['token_id'],pool or '', 'trajectory145_trend_decision',key+':'+iso(current)+':'+reason,
+                         iso(current),iso(current),json.dumps(evidence)))
+                    self.set_kv(key,state)
         extended=result.get('runner_max_hold_minutes_after_recovery')
         if (extended and position['principal_recovered']==1 and int(position['amount_raw'])>0
                 and float(position['realized_proceeds_usd'])>=float(position['stake_usd'])>0):
@@ -34592,6 +34623,9 @@ class Store:
                             and high_economic_value is not None
                             and high_economic_value > 0.0 else 0.0
                         )
+                        learner=getattr(self,'_mode_learning144',None)
+                        if learner is not None and hasattr(learner,'record_valuation'):
+                            learner.record_valuation(arm_id,int(position['shadow_cohort_id']),high_economic_return,drawdown)
                         trigger_evidence = {
                             "pre_trigger": {
                                 "sample_sequence": int(position["sample_sequence"] or 0),

@@ -2357,11 +2357,35 @@ class DexScreenerClient:
         tx = (pair.get("txns") or {}).get("m5") or {}
         volume = (pair.get("volume") or {}).get("m5")
         liquidity = (pair.get("liquidity") or {}).get("usd")
+        price_usd = _float(pair.get("priceUsd"))
+        liquidity_usd = _float(liquidity)
+        quote = pair.get("quoteToken") or {}
+        quote_symbol = str(quote.get("symbol") or "").strip().upper()
+        quote_address = canonical_token_address(candidate.chain, str(quote.get("address") or ""))
+        quote_class = (
+            "verified_usdc" if candidate.chain == "solana" and quote_address == SOLANA_USDC_MINT
+            else "provider_claimed_symbol" if quote_symbol else "UNKNOWN"
+        )
+        missing = []
+        if price_usd is None or price_usd <= 0:
+            missing.append("priceUsd")
+        if liquidity_usd is None or liquidity_usd < 0:
+            missing.append("liquidityUsd")
+        quote_usd_audit = {
+            "status": "QUOTE_USD_UNKNOWN" if missing else "QUOTE_USD_AVAILABLE",
+            "reason": "missing_or_nonfinite:" + ",".join(missing) if missing else None,
+            "chain": candidate.chain,
+            "base_address": candidate.address,
+            "pool_address": canonical_token_address(candidate.chain, str(pair.get("pairAddress") or "")),
+            "quote_address": quote_address,
+            "quote_class": quote_class,
+        }
         return TokenSnapshot(
-            chain=candidate.chain, address=candidate.address, price_usd=_float(pair.get("priceUsd")),
-            liquidity_usd=_float(liquidity), market_cap_usd=_float(pair.get("marketCap") or pair.get("fdv")),
+            chain=candidate.chain, address=candidate.address, price_usd=price_usd,
+            liquidity_usd=liquidity_usd, market_cap_usd=_float(pair.get("marketCap") or pair.get("fdv")),
             volume_5m_usd=_float(volume), buys_5m=_int(tx.get("buys")), sells_5m=_int(tx.get("sells")),
-            observed_at=observed_at or utcnow(), provider="dexscreener", raw={"pair": pair},
+            observed_at=observed_at or utcnow(), provider="dexscreener",
+            raw={"pair": pair, "quote_usd_audit": quote_usd_audit},
         )
 
     async def search(self, query: str, limit: int = 30) -> list[tuple[TokenCandidate, TokenSnapshot]]:

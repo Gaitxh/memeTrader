@@ -204,6 +204,25 @@ def test_chain_diagnostics_read_bounded_timing_and_update_history(tmp_path: Path
     assert "bridge-secret" not in json.dumps(perf)
 
 
+def test_chain_diagnostics_include_bounded_delivery_status_with_updated_at(tmp_path: Path):
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    updated_at = "2026-09-11T01:02:03Z"
+    store.db.execute(
+        "INSERT INTO kv(key,value_json,updated_at) VALUES(?,?,?)",
+        ("trajectory144:status", json.dumps({"version": "trajectory144/v1", "pools": 2}), updated_at),
+    )
+    store.db.commit()
+    store.close()
+
+    diagnostics = ChainWebData(config_path).performance_state()["execution_diagnostics"]
+    assert diagnostics["trajectory144:status"] == {
+        "version": "trajectory144/v1", "pools": 2, "updated_at": updated_at,
+    }
+    for key in ("mode-learning144:status", "mode-learning145:status", "recipe145:status", "coverage145:status"):
+        assert diagnostics[key] == {"status": "UNKNOWN", "updated_at": None}
+
+
 def test_performance_separates_coverage_gap_from_request_failure(tmp_path):
     config_path, _ = _config(tmp_path)
     store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)

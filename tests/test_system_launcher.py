@@ -35,21 +35,24 @@ function Get-CimInstance { param($ClassName,$Filter)
 }
 function Invoke-RestMethod { param($Uri,$TimeoutSec)
   if ($Uri -like '*/api/live') {
+    $global:liveCalls++; if ($global:liveCalls -eq 1) { throw 'cold account timeout' }
     return @{version='existing-period';system=@{runtime_status='running';paper_only=$true;live_locked=$global:locked;heartbeat_age_seconds=1;open_position_count=0}}
   }
   if ($Uri -like '*/api/performance') { return @{generated_at='2026-09-10T00:00:00Z'} }
   return @{ok=$true;runtime_status='running';version='existing-period'}
 }
+$global:liveCalls = 0
 $global:started = RUNNING
 $global:locked = LOCKED
 $failed = $false
 try { & (Join-Path $PSScriptRoot 'scripts\start_system.ps1') -NoOpen } catch { $failed = $true }
-[pscustomobject]@{launches=@($global:launches);failed=$failed} | ConvertTo-Json -Compress
+[pscustomobject]@{launches=@($global:launches);failed=$failed;liveCalls=$global:liveCalls} | ConvertTo-Json -Compress
 '''.replace("RUNNING", "$true" if already_running else "$false")
        .replace("LOCKED", "$true" if locked else "$false"), encoding="utf-8-sig")
     result = subprocess.run([powershell, "-NoProfile", "-File", str(driver)],
                             capture_output=True, text=True, timeout=20, check=True)
     state = json.loads(result.stdout.strip().splitlines()[-1])
+    assert state["liveCalls"] == 2
     assert state["failed"] is not locked
     assert len(state["launches"]) == (0 if already_running else 1)
     if state["launches"]:

@@ -58,10 +58,10 @@ Object.assign(entryLabels,{dex_hot_impulse_v1:'早期冲量',dex_quiet_accelerat
 const nativeExitReason = value => ({insufficient_real_quote_reserves:'当前曲线真实报价储备不足',native_capacity_budget_exhausted:'当前曲线剩余可卖储备不足',max_hold:'已到最长持仓时间，等待有效卖出状态'})[value]||value||'UNKNOWN';
 const cohortSafetyText = flow => Object.entries(flow?.counts||{}).filter(([key])=>/^(WAIT_|REJECT|CHECKED_|BUY_AUTHORIZED_)/.test(key)).map(([key,count])=>`${key} ${count}`).join(' / ')||'尚无安全阶段收据';
 const strategyIndex = (family) => {
-  const found=(universe?.families||[]).indexOf(family);
-  if(found>=0)return found+1;
   const explicit=Number(family?.display_index||0);
-  return explicit>0?explicit:0;
+  if(explicit>0)return explicit;
+  const found=(universe?.families||[]).indexOf(family);
+  return found>=0?found+1:0;
 };
 const strategyFamilyForArmVersion = (arm,version='') => (universe?.families||[]).find(f=>
   (f.active_arm_ids||[]).includes(arm) || (f.members||[]).some(m=>m.arm_id===arm&&(!version||m.version===version))
@@ -421,11 +421,81 @@ function accountCells(live){
 function compareStrategyFamilies(a,b,sort){
   const la=liveMetricForFamily(a),lb=liveMetricForFamily(b),tie=()=>strategyIndex(a)-strategyIndex(b);
   if(sort==='strategy')return tie();
+  if(sort==='recent')return String(lb.strategy?.forward_started_at||lb.strategy?.registered_at||b.forward_started_at||b.registered_at||'').localeCompare(String(la.strategy?.forward_started_at||la.strategy?.registered_at||a.forward_started_at||a.registered_at||''))||tie();
   if(sort==='maturity')return maturityRank(lb.maturity)-maturityRank(la.maturity)||compareStrategyFamilies(a,b,'expectancy');
   const field={equity:'equity',cash:'cash',live_pnl:'pnl',realized_pnl:'realizedPnl',unrealized_pnl:'unrealizedPnl',expectancy:'expectancy',profit_factor:'profitFactor',drawdown:'maxDrawdown',terminal:'terminal',win_rate:'winRate',open:'open',forward_age:'forwardAgeSeconds',tail:'tailReturn'}[sort]||'pnl';
   const av=la[field],bv=lb[field];
   if(av==null||bv==null)return av==null?(bv==null?tie():1):-1;
   return (sort==='drawdown'?Number(av)-Number(bv):Number(bv)-Number(av))||tie();
+}
+
+function universeSearchHay(family){
+  const live=liveMetricForFamily(family), strategy=live.strategy||{};
+  return [
+    strategyIndex(family), `#${strategyIndex(family)}`, family.canonical_id,
+    ...(family.active_arm_ids||[]), family.name, strategy.name,
+    family.entry_family, family.exit_family, strategy.entry_family, strategy.exit_family,
+    readable(family.entry_family,entryLabels), readable(family.exit_family,exitLabels),
+  ].filter(value=>value!==null&&value!==undefined).join(' ').toLowerCase();
+}
+
+function deliveryCycleForFamily(family){
+  const hay=universeSearchHay(family);
+  return /(?:trajectory|mode-learning|recipe|coverage)144|(?:^|[^0-9])144(?:[^0-9]|$)/.test(hay)?'144':
+    /(?:trajectory|mode-learning|recipe|coverage)145|(?:^|[^0-9])145(?:[^0-9]|$)/.test(hay)?'145':'';
+}
+
+function ensureUniverseDeliveryControls(){
+  const filters=$('.universe-filters');
+  if(!filters||$('#universe-delivery'))return;
+  const delivery=document.createElement('select');
+  delivery.id='universe-delivery'; delivery.setAttribute('aria-label','交付轮次筛选');
+  delivery.innerHTML='<option value="all">全部交付轮次</option><option value="144">本轮 144</option><option value="145">本轮 145</option>';
+  delivery.addEventListener('change',renderUniverse);
+  filters.append(delivery);
+  const sort=$('#universe-sort');
+  if(sort&&!sort.querySelector('option[value="recent"]')){
+    const option=document.createElement('option'); option.value='recent'; option.textContent='最近新增（前向开始时间）';
+    sort.prepend(option); sort.value='recent';
+  }
+}
+
+function deliveryStatus(value){
+  const item=value&&typeof value==='object'?value:{status:'UNKNOWN',updated_at:null};
+  return {status:item.status|| (value&&typeof value==='object'?'AVAILABLE':'UNKNOWN'),updatedAt:item.updated_at||null, value:item};
+}
+
+function deliveryPanels(diagnostic, families=[]){
+  const trajectory=deliveryStatus(diagnostic['trajectory144:status']);
+  const learning=deliveryStatus(diagnostic['mode-learning144:status']);
+  const future=['mode-learning145:status','recipe145:status','coverage145:status'].map(key=>[key,deliveryStatus(diagnostic[key])]);
+  const deliveryArms=families.filter(f=>deliveryCycleForFamily(f)==='144').flatMap(f=>f.active_arm_ids||[]);
+  const loadedArms=diagnostic['runtime-loaded-manifest']?.policy_arm_ids;
+  const loaded=Array.isArray(loadedArms)?deliveryArms.filter(arm=>loadedArms.includes(arm)).length:null;
+  const trajectoryCounts=trajectory.value.counts||{};
+  const model=learning.value.model||learning.value;
+  const modelVersion=model.model_version||model.version||'fixed_priority';
+  const releases=model.releases??0;
+  const trajectoryReason=trajectory.status==='UNKNOWN'?'尚未加载 trajectory144 状态；不能把未返回的信号当作零。':`原池 ${trajectory.value.pools??'UNKNOWN'}；实际信号 ${trajectoryCounts.signals??trajectoryCounts.signal??'UNKNOWN'}；独立 BUY/terminal 由策略账户账本分别显示。`;
+  const learningReason=learning.status==='UNKNOWN'?'尚未加载学习摘要；不能推断模型、候选或经济结果。':(releases===0?`固定基线，尚无学习模型发布；当前版本 ${modelVersion}。`:`当前版本 ${modelVersion}；发布 ${releases} 次，仍需独立前向终局验证。`);
+  const futureText=future.map(([key,item])=>`${key.replace(':status','')} ${item.status}${item.updatedAt?` · ${time(item.updatedAt)}`:''}`).join(' / ');
+  const armRows=Object.entries(learning.value.arms||{}).map(([arm,row])=>[
+    arm,`信号 ${row.signal_decisions??'UNKNOWN'} · ready回调 ${row.ready_callbacks??'UNKNOWN'} · BUY ${row.independent_buy_receipts??'UNKNOWN'} · 终局 ${row.terminal_receipts??'UNKNOWN'}`,
+    `最后信号 ${row.last_signal_at?time(row.last_signal_at):'UNKNOWN'} / 成交 ${row.last_buy_at?time(row.last_buy_at):'UNKNOWN'}；阶段 ${JSON.stringify(row.stage_counts||{})}；${row.first_block||'UNKNOWN'}；新代回执，不冒充全历史。`]);
+  const horizonRows=Object.entries(learning.value.horizons||{}).map(([h,row])=>[`${h} 分钟标签`,
+    `OBSERVED ${row.OBSERVED??0} · UNKNOWN ${row.UNKNOWN??0} · 模型floor ${row.MODEL_FLOOR_EVENT??0}`,'滚动成熟episode；模型floor不是实际卖出；未成熟仍等待。']);
+  const candidates=future.find(([key])=>key==='recipe145:status')?.[1].value.candidates||[];
+  const candidateRows=candidates.map(row=>[row.arm_id,`${row.origin} / ${row.status}`,
+    `${row.reason||'UNKNOWN'}；注册编号 ${row.registration_index??'UNKNOWN'}；加载 ${row.loaded_at?time(row.loaded_at):'UNKNOWN'}；同fill终局 ${row.comparison?.same_fill_terminals??0}，尚不代表盈利晋级。`]);
+  const dispositionRows=Object.entries(learning.value.dispositions||{}).slice(0,16).map(([key,row])=>[key,row.status,`缺少 ${(row.missing||[]).join(' / ')||'无；等待前向经济验收'}；前沿 ${row.frontier??'UNKNOWN'}`]);
+  return [
+    ['144 工程交付',`源码 ${trajectory.status} · 测试 UNKNOWN（运行 API 不读取测试结果）· 注册 ${deliveryArms.length} · 加载 ${loaded===null?'UNKNOWN':`${loaded}/${deliveryArms.length}`}`,'工程状态不等于自然信号、成交或经济证据。'],
+    ['144 运行与来源',trajectoryReason,'来源回调数、独立 Token、独立 BUY 与 terminal 是不同分母，页面不合并计数。'],
+    ['144 学习',learningReason,'OBSERVED 与 UNKNOWN 按 horizon 和唯一 episode 解释；无成熟样本不能晋级。'],
+    ['145 有界摘要',futureText,'145 状态键未写入时显示 UNKNOWN；此 API 不会触发训练、注册或扫描。'],
+    ['独立学习episode',String(learning.value.unique_episodes??'UNKNOWN'),'相同来源多个账户不增加标签；滚动计数与全历史不同。'],
+    ...armRows,...horizonRows,...candidateRows,...dispositionRows,
+  ];
 }
 
 function ingestStrategyHistory(data){
@@ -527,6 +597,7 @@ function renderUniverseDetail(family){
 
 function renderUniverse(){
   if(!universe||universe.status!=='ok')return;
+  ensureUniverseDeliveryControls();
   const allFamilies=universe.families||[];
   const families=allFamilies.filter(f=>f.default_visible!==false||$('#universe-show-retired')?.checked);
   const active=families.filter(f=>liveMetricForFamily(f).status==='ACTIVE_FORWARD').length;
@@ -564,11 +635,12 @@ function renderUniverse(){
     ['原生持仓退出',native?.status||'UNKNOWN',native?`${nativeExitReason(native.quote_reason||native.quote_status)} · ${time(native.recorded_at)}；退出意图不等于已成交`:'原生退出独立报告；不得用普通 held=0推断无原生持仓'],
     ['现有漏斗',funnel?`${funnel.admitted} / ${funnel.rejected}`:'UNKNOWN',funnel?'账户级放行 / 拒绝；非独立Token、非成交' :'仅使用当前已加载漏斗数据'],
     ['策略宇宙快照',time(universe.generated_at,true),'该汇总可能早于当前实时状态；性能与发现数据各自按其加载时间更新'],
+    ...deliveryPanels(diagnostic,allFamilies),
   ].map(([k,v,n])=>`<article class="summary-card"><span>${esc(k)}</span><strong>${esc(v)}</strong><small>${esc(n)}</small></article>`).join('');
-  const q=($('#universe-search')?.value||'').trim().toLowerCase(), sort=$('#universe-sort')?.value||'maturity';
+  const q=($('#universe-search')?.value||'').trim().toLowerCase(), sort=$('#universe-sort')?.value||'recent', delivery=$('#universe-delivery')?.value||'all';
   const rows=families.filter(f=>{
-    const hay=[readable(f.entry_family,entryLabels),readable(f.exit_family,exitLabels)].join(' ').toLowerCase();
-    return !q||hay.includes(q);
+    const hay=universeSearchHay(f);
+    return (!q||hay.includes(q)) && (delivery==='all'||deliveryCycleForFamily(f)===delivery);
   }).sort((a,b)=>{
     return compareStrategyFamilies(a,b,sort);
   });

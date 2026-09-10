@@ -1891,6 +1891,8 @@ class Runtime:
             reasons.append("quote_token_mismatch")
         if snapshot.price_usd is None or float(snapshot.price_usd) <= 0:
             reasons.append("quote_price_unavailable")
+        if ((snapshot.raw or {}).get('quote_usd_audit') or {}).get('status')=='QUOTE_USD_UNKNOWN':
+            reasons.append('QUOTE_USD_UNKNOWN')
         age_seconds = (parse_time(received_at) - parse_time(snapshot.observed_at)).total_seconds()
         if age_seconds > float(self.config["paper"].get("max_quote_age_seconds", 45)):
             reasons.append("quote_stale_at_execution")
@@ -5939,6 +5941,7 @@ class Runtime:
         held = getattr(self, "_pattern_held_tokens", set())
         pool_map = {v["pair_address"]: v for v in watch.values()
                     if v["token"].chain == "solana"
+                    and v.get('quote') is not None
                     and (v["expires_at"] > utcnow() or v["token"].token_id in held)}
         self._pattern_pool_targets = {k: v for k, v in self._pattern_pool_targets.items()
                                       if k in pool_map or v["token_id"] in held}
@@ -7518,6 +7521,7 @@ class Runtime:
     def _remember_pattern_quotes(self, quoted: dict) -> None:
         """Bounded passive watch: reuse discovery/held/flat quotes, no I/O here."""
         current = utcnow()
+        from .observation_leases145 import admit as lease_admit,replaceable_early,account_windows
         if quoted and hasattr(self, "_cohort_started_at"):
             if not hasattr(self, "_cohort_batches"):
                 self._cohort_batches = deque(maxlen=16)
@@ -7543,20 +7547,36 @@ class Runtime:
         protected.update(item['token_id'] for item in getattr(getattr(store, '_preentry_safety', None), 'pending', {}).values())
         protected.update(key[0] for key in getattr(self, '_cohort_pending', {}))
         protected.update(key for key, until in getattr(store, '_pattern_ready_until', {}).items() if until > current)
+        self._lease145_protected=set(protected)
+        strong_protected=set(protected)
+        if not hasattr(self,'_leases145_restored'):
+            from .observation_leases145 import restore_state
+            saved=store.get_kv('chain-meme-pattern-watch:leases145',{}) if store else {}
+            self._coverage145_counts=dict(saved.get('mature_window_counts',{}))
+            restored=restore_state(saved,current);self._leases145_restored=True
+            restored_watch=getattr(self,'_pattern_watch',{})
+            for (token_id,chain,pool),lease in restored.items():
+                if sum(v['token'].chain==chain for v in restored_watch.values())>=10:continue
+                if token_id not in restored_watch:
+                    restored_watch[token_id]={**lease,'token':TokenCandidate(chain,token_id.split(':',1)[1],'restored lease'),
+                        'quote':None,'expires_at':lease.get('expires_at') or lease['min_observe_until']}
+            self._pattern_watch=restored_watch
         protection_ready = (getattr(self, '_pattern_protection_ready', False)
             and getattr(store, '_pattern_ready_overflow_until', current) <= current)
         base_caps = {"early": 3, "growth": 4, "mature": 3}
+        old_watch=getattr(self,'_pattern_watch',{})
         watch, occupied, chain_used, borrowed = {}, {}, {}, []
         for key, item in getattr(self, "_pattern_watch", {}).items():
+            if item.get('min_observe_until',current)>current:protected.add(key)
             if current >= item["expires_at"] and key not in held:
-                if item.get('reactivation_probe') and key in protected:
+                if key in protected:
                     item['expires_at'] = current + timedelta(seconds=15)
                 else:
                     if item.get('reactivation_probe') and funnel:
                         funnel.hit(key, 'temporary_slot_released', current)
                     continue
             created = item.get("pool_created_at_ms")
-            if created is not None:
+            if created is not None and key not in protected:
                 age = current.timestamp() - created / 1000
                 item["bucket"] = "early" if age < 900 else "growth" if age < 21600 else "mature"
             slot = (item["token"].chain, item["bucket"])
@@ -7659,14 +7679,17 @@ class Runtime:
                             or self._paper_quote_rejections(token_id, token, snapshot, current)):
                         continue
                     replacement = next((key for key, item in watch.items()
-                        if key not in held and (item["token"].chain, item["bucket"]) == slot
-                        and not (item.get('reactivation_probe') and key in protected)
+                        if key not in strong_protected and (item["token"].chain, item["bucket"]) == slot
                         and ((value := getattr(item["quote"], "liquidity_usd", None)) is None
                              or not math.isfinite(value) or value < floor)), None)
+                    lease_replacement=None
+                    if bucket=='early' and replacement is None and protection_ready:
+                        lease_replacement=replaceable_early(watch,token_id,{'token':token,'bucket':bucket,'pool_created_at_ms':created},current,held=held,protected=protected)
+                        replacement=lease_replacement
                     if probe:
                         pass
                     elif replacement is not None:
-                        reason, victim = "replace_unusable", replacement
+                        reason, victim = ("replace_expired_early_lease" if lease_replacement else "replace_unusable"), replacement
                         replaced = watch.pop(replacement)
                         if replaced.get('reactivation_probe') and funnel:
                             funnel.hit(replacement, 'temporary_slot_released', current)
@@ -7686,7 +7709,7 @@ class Runtime:
                     # An underfilled base reservation reclaims the newest borrowed
                     # watch deterministically, never a held or base-reserved slot.
                     replacement = next((key for key in reversed(watch)
-                        if key not in held and watch[key]["token"].chain == chain
+                        if key not in strong_protected and watch[key]["token"].chain == chain
                         and (watch[key]['bucket'] == 'early' or watch[key].get('reactivation_probe'))
                         and not (watch[key].get('reactivation_probe') and key in protected)
                         and occupied.get((chain, watch[key]["bucket"]), 0)
@@ -7709,6 +7732,9 @@ class Runtime:
                     "pair_address": canonical_token_address(chain, address),
                     "expires_at": current + timedelta(minutes=20 if bucket == "mature" else 15),
                     "admitted_at": current}
+                if snapshot.liquidity_usd is not None and snapshot.liquidity_usd>=getattr(self,'_chain_paper_execution',{}).get('min_pool_liquidity_usd',1000):
+                    lease_admit(watch[token_id],current)
+                    self._leases145_dirty=True
                 if probe:
                     watch[token_id].update(reactivation_probe=True, probe_frames=0,
                         expires_at=current+timedelta(seconds=LEASE_SECONDS))
@@ -7723,6 +7749,9 @@ class Runtime:
                         getattr(self, '_chain_paper_execution', {}).get('min_pool_liquidity_usd', 1000.0),occupancy)
                 if ticket is not None:
                     ticket["actual"] = {"reason": reason, "victim": victim, "admitted": admitted}
+        for key,item in old_watch.items():
+            if key not in watch or watch[key].get('admitted_at')!=item.get('admitted_at'):
+                account_windows(item,self._coverage145_counts,current);self._leases145_dirty=True
         self._pattern_watch = watch
         self._pattern_watch_nonheld_by_chain_bucket = {
             chain: {bucket: occupied.get((chain, bucket), 0) for bucket in base_caps}
@@ -7740,10 +7769,13 @@ class Runtime:
             self.store._trajectory144=Engine144(saved['started_at'] if saved else utcnow())
             if saved:self.store._trajectory144.load_state(saved)
         trajectory144=self.store._trajectory144
-        from .mode_learning144 import Coordinator
+        from .mode_learning145 import Coordinator
         if not hasattr(self.store,"_mode_learning144"):
             self.store._mode_learning144=Coordinator(self.store)
         learning144=self.store._mode_learning144
+        if not hasattr(self.store,'_recipe145'):
+            from .recipe145 import Manager
+            self.store._recipe145=Manager(self.store)
         if not hasattr(self.store,'_cohort_flow'):
             from .rediscovery_funnel import CohortFlow
             self.store._cohort_flow=CohortFlow()
@@ -7752,7 +7784,21 @@ class Runtime:
         if now_mono-getattr(self,'_trajectory_saved_at',0)>=15 and self._chain_meme_active_idle().is_set():
             self.store.set_kv('dex-trajectory:v1',trajectory.snapshot())
             self.store.set_kv('trajectory144:status',trajectory144.snapshot())
-            self.store.set_kv('mode-learning144:status',learning144.flush(utcnow()))
+            started145=asyncio.get_running_loop().time()
+            learning_status=learning144.flush(utcnow())
+            from .trajectory144 import ARMS as learning_arms
+            learning_status['arms']={arm:{'signal_decisions':trajectory144.counts.get('signal:'+arm,0),
+                'ready_callbacks':trajectory144.counts.get('ready:'+arm,0),
+                'independent_buy_receipts':learning144.state['counts'].get('actual_BUY:'+arm,0),
+                'terminal_receipts':learning144.state['counts'].get('actual_terminal:'+arm,0),
+                'last_buy_at':learning144.state.get('last_buy',{}).get(arm),
+                'last_signal_at':max((v.get('signals',{}).get(arm,{}).get('recorded_at','') for v in trajectory144.pools.values()),default='') or None,
+                'stage_counts':dict(self.store._cohort_flow.by_arm.get(arm,{})),
+                'first_block':self.store._cohort_flow.latest_by_arm.get(arm,{}).get('block_reason') or self.store._cohort_flow.latest_by_arm.get(arm,{}).get('stage') or 'UNKNOWN_IF_NO_LINKED_COHORT',
+                'scope':'signal=engine generation; BUY/terminal=v4 receipt generation; account full history shown separately'} for arm in learning_arms}
+            self.store.set_kv('mode-learning144:status',learning_status)
+            self.store.set_kv('mode-learning145:status',learning_status)
+            if hasattr(self,'runtime_timing'):self.runtime_timing.observe('learning145_flush',asyncio.get_running_loop().time()-started145,items=learning_status['learned'])
             self.store.set_kv('cohort-flow:v1',self.store._cohort_flow.snapshot())
             self._trajectory_saved_at=now_mono
         if now_mono-getattr(self,'_trajectory144_saved_at',0)>=60 and self._chain_meme_active_idle().is_set():
@@ -7861,8 +7907,10 @@ class Runtime:
                 # receipt before this batch can capture new signal episodes.
                 # A missing price is outcome evidence, not an entry permission.
                 if address and not (set(quote_rejections) - {"quote_price_unavailable"}):
+                    started145=asyncio.get_running_loop().time()
                     learning144.observe(token.token_id, snapshot, snapshot.ingested_at or received,
                         received, processed_at=utcnow(), source="passive")
+                    if hasattr(self,'runtime_timing'):self.runtime_timing.observe('learning145_observe',asyncio.get_running_loop().time()-started145,items=1)
                 if not created or not address or quote_rejections:
                     continue
                 age = snapshot.observed_at.timestamp() - float(created) / 1000
@@ -7893,8 +7941,10 @@ class Runtime:
             now = utcnow()
             fresh_trajectory = set(); fresh144=set()
             for frame in frames:
+                started145=asyncio.get_running_loop().time()
                 if trajectory144.accept(frame,now) is not None:
                     fresh144.add((frame['token_id'],frame['pair_address']))
+                if hasattr(self,'runtime_timing'):self.runtime_timing.observe('trajectory144_features',asyncio.get_running_loop().time()-started145,items=1)
                 if trajectory.accept(frame,now) is not None:
                     fresh_trajectory.add((frame['token_id'],frame['pair_address']))
             state, signals = consume_passive_cohort_batch(frames, state, now=now,
@@ -7928,7 +7978,12 @@ class Runtime:
                 if identity in fresh_trajectory:
                     signals.setdefault(identity,{}).update(trajectory.signals_for(*identity,now))
                 if identity in fresh144:
-                    signals.setdefault(identity,{}).update(learning144.signals(trajectory144.pools[identity]["features"],trajectory144.signals_for(*identity,now),now))
+                    started145=asyncio.get_running_loop().time()
+                    features=trajectory144.pools[identity]['features']
+                    source_signals=learning144.signals(features,trajectory144.signals_for(*identity,now),now)
+                    signals.setdefault(identity,{}).update(source_signals)
+                    signals[identity].update(self.store._recipe145.signals(features,source_signals,now))
+                    if hasattr(self,'runtime_timing'):self.runtime_timing.observe('trajectory145_entry_decision',asyncio.get_running_loop().time()-started145,items=1)
                 for producer in (getattr(self.store,'_microstructure119',None),
                                  getattr(self.store,'_event_clone_shadow',None)):
                     if producer is not None:
@@ -7979,6 +8034,7 @@ class Runtime:
         """At most 30 non-held candidates; held quotes reuse the core lane."""
         self._remember_pattern_quotes({})
         watch = self._pattern_watch
+        from .observation_leases145 import select_due,record_frame,expire_windows,bounded_summary,dump_state,account_windows
         self._rank_no_ca_events()
         if hasattr(self.store, "_event_clone_shadow"):self.store._event_clone_shadow.flush()
         projected = sampled = 0
@@ -7996,10 +8052,9 @@ class Runtime:
             targets = [v for v in watch.values() if v["token"].chain == chain]
             # Held tokens only consume their core lane's next response. Never
             # make a second request when a held response is late or unavailable.
-            due = [v["token"].address for v in targets
-                   if v["token"].token_id not in getattr(self, "_pattern_held_tokens", set())
-                   and ((utcnow() - v["quote"].observed_at).total_seconds() > 15
-                        or v.get("sampled_at") == v["quote"].observed_at)]
+            due = [v['token'].address for _,v in select_due(watch,utcnow(),held=getattr(self,'_pattern_held_tokens',set()))
+                   if v['token'].chain==chain and (v.get('quote') is None
+                       or (utcnow()-v['quote'].observed_at).total_seconds()>15 or v.get('sampled_at')==v['quote'].observed_at)]
             if due and self._dex_quote_low_priority_available():
                 try:
                     async with dex_low_budget(3):
@@ -8017,7 +8072,7 @@ class Runtime:
             for item in targets:
                 token = item["token"]
                 snapshot = item["quote"]
-                if (item.get("sampled_at") == snapshot.observed_at
+                if (snapshot is None or item.get("sampled_at") == snapshot.observed_at
                         or (utcnow() - snapshot.observed_at).total_seconds() > 30):
                     continue
                 raw = snapshot.raw or {}
@@ -8049,6 +8104,12 @@ class Runtime:
                         decision_at=iso(received))
                 projected += self.store.observe_chain_meme_pattern(token, observation, recorded_at=received,
                     cross_section=context)
+                engine=getattr(self.store,'_trajectory144',None)
+                stage=engine.pools.get((token.token_id,item['pair_address']),{}) if engine else {}
+                phase=stage.get('phase');phase_at=stage.get({'impulse':'impulse_at','cool':'cool_at','base':'base_at'}.get(phase,''))
+                record_frame(item,observation.observed_at,received,phase=phase,phase_started_at=parse_time(phase_at) if phase_at else None)
+                expire_windows(item,received)
+                self._leases145_dirty=True
                 if hasattr(self, "runtime_timing"):
                     self.runtime_timing.observe("pattern_token_compute",
                         asyncio.get_running_loop().time() - phase_started, items=1)
@@ -8080,6 +8141,17 @@ class Runtime:
             "other_pool_quote_skips_since_start": getattr(self, "_pattern_watch_other_pool_skips", 0),
             "non_held_by_chain_bucket": getattr(self, "_pattern_watch_nonheld_by_chain_bucket", {}),
         })
+        counts=getattr(self,'_coverage145_counts',{});self._coverage145_counts=counts
+        for item in watch.values():
+            before=dict(item.get('window_results',{}));account_windows(item,counts,utcnow())
+            if before!=item.get('window_results',{}):self._leases145_dirty=True
+        coverage=bounded_summary(watch,utcnow(),held=getattr(self,'_pattern_held_tokens',set()),protected=getattr(self,'_lease145_protected',set()))
+        coverage.update(mature_window_counts=counts,denominator='admitted_exact_pool_opportunity; each matured window counted once',
+            spare_batch_expansion='DISABLED_PENDING_NATURAL_BUDGET',target_cadence_seconds=15,extra_request_budget=0)
+        self.store.set_kv('coverage145:status',coverage)
+        if getattr(self,'_leases145_dirty',False):
+            checkpoint=dump_state(watch,utcnow());checkpoint['mature_window_counts']=counts
+            self.store.set_kv('chain-meme-pattern-watch:leases145',checkpoint);self._leases145_dirty=False
 
     async def chain_meme_carried_market_marks_once(self) -> None:
         """Maintain older open positions without slowing the active strategy lane."""
@@ -9037,7 +9109,8 @@ class Runtime:
             definition=self.store._chain_meme_trader_effective_definition(version,registration['definition_json'])
             source=Path(__file__).parent
             names=('runtime.py','store.py','native_execution.py','cohort_experiments.py','dex_trajectory.py',
-                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','mode_learning144.py')
+                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','mode_learning144.py',
+                   'mode_learning145.py','recipe145.py','observation_leases145.py')
             self.store.set_kv('runtime-loaded-manifest',dict(started_at=iso(),pid=os.getpid(),definition_version=version,
                 policy_arm_ids=[p['arm_id'] for p in definition['policies']],
                 source_sha256={name:hashlib.sha256((source/name).read_bytes()).hexdigest() for name in names},

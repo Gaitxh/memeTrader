@@ -32,6 +32,20 @@ def test_dynamic_and_narrative_exits_and_frozen_parameters_are_not_mutated():
  assert x['lifecycle_explanation']['assessment']=='ACTIVE'
 
 
+def test_v144_explanation_shows_frozen_entry_data_frame_and_trend_contracts():
+ from memetrader.trajectory144 import ARMS, policies
+ base={'entry_filter':{},'forward_enabled':True}
+ p312,p315,p317=(policies(base)[index] for index in (0,3,5))
+ x312=strategy_logic(p312,{},current=True)
+ x315=strategy_logic(p315,{},current=True)
+ x317=strategy_logic(p317,{},current=True)
+ assert any('v144 冻结入场规则' in item and '池龄小于300秒' in item for item in x312['entry_rules'])
+ assert any('独立轨迹后帧' in item for item in x312['entry_sequence'])
+ assert any('v144 数据合同 provider' in item and 'Dexscreener exact original pool' in item for item in x312['data_requirements'])
+ assert any('300 秒实际趋势' in item and '120 分钟' in item for item in x315['exit_rules'])
+ assert any('模式选择合同' in item and '固定基线' in item for item in x317['data_requirements'])
+
+
 def test_reactivated_assessment_does_not_pause_or_change_policy(tmp_path,monkeypatch):
  from test_resource_bound_store import setup_store
  store,_=setup_store(tmp_path,monkeypatch)

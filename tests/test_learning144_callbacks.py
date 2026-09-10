@@ -22,7 +22,7 @@ def test_passive_only_frames_advance_old_episode_without_snapshot_writes(tmp_pat
     store=Store(tmp_path/'callbacks.sqlite3',initial_cash_usd=1000)
     learning=Coordinator(store);store._mode_learning144=learning
     token=TokenCandidate('bsc','0x'+'1'*40,'Callback','CB');pool='0x'+'2'*40
-    capture(learning.state,episode_key='e',token_id=token.token_id,pair_address=pool,
+    learning.capture_episode(episode_key='e',token_id=token.token_id,pair_address=pool,
         chain='bsc',age_bucket='0_300',mode='fast',features={},decision_at=iso(start),
         observed_at=iso(start),ingested_at=iso(start),recorded_at=iso(start))
     runtime=Runtime.__new__(Runtime);runtime.store=store
@@ -36,7 +36,7 @@ def test_passive_only_frames_advance_old_episode_without_snapshot_writes(tmp_pat
     monkeypatch.setattr(store,'observe_chain_meme_pattern',lambda *a,**k:pytest.fail('Unexpected projection'))
     original_signals=learning.signals
     def capture_from_this_batch(features,signals,now):
-        capture(learning.state,episode_key='same-batch',token_id=token.token_id,pair_address=pool,
+        learning.capture_episode(episode_key='same-batch',token_id=token.token_id,pair_address=pool,
             chain='bsc',age_bucket='0_300',mode='fast',features=features,decision_at=iso(now),
             observed_at=features['observed_at'],ingested_at=features['ingested_at'],
             recorded_at=features['recorded_at'])
@@ -86,7 +86,7 @@ def test_learning_callback_rejects_identity_mismatch_without_advancing(tmp_path,
     store=Store(tmp_path/'identity.sqlite3',initial_cash_usd=1000)
     learning=Coordinator(store);now=utcnow()
     token=TokenCandidate('bsc','0x'+'1'*40,'Identity','ID');pool='0x'+'2'*40
-    capture(learning.state,episode_key='e',token_id=token.token_id,pair_address=pool,
+    learning.capture_episode(episode_key='e',token_id=token.token_id,pair_address=pool,
         chain='bsc',age_bucket='0_300',mode='fast',features={},decision_at=iso(now),
         observed_at=iso(now),ingested_at=iso(now),recorded_at=iso(now))
     later=now+timedelta(seconds=1);snap=_snapshot(token,pool,later)

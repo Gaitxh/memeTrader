@@ -8,7 +8,7 @@ from memetrader.runtime import Runtime
 def test_funnel_preserves_watch_and_accounts_actual_reasons(monkeypatch):
     now=utcnow();monkeypatch.setattr('memetrader.runtime.utcnow',lambda:now)
     plain, tracked=Runtime.__new__(Runtime),Runtime.__new__(Runtime)
-    f=RediscoveryFunnel();tracked.store=SimpleNamespace(_rediscovery_funnel=f)
+    f=RediscoveryFunnel();tracked.store=SimpleNamespace(_rediscovery_funnel=f,get_kv=lambda *args:{})
     for r in (plain,tracked):
         r.config={'paper':{'max_quote_age_seconds':45}};r._pattern_held_tokens=set()
     def send(i,age=60,liq=5000,pool=None):
@@ -55,7 +55,7 @@ def test_preepisode_or_missing_clock_quote_not_basic_valid():
 def test_mature_full_spare_then_chain_full_and_held_exempt(monkeypatch):
     now=utcnow();monkeypatch.setattr('memetrader.runtime.utcnow',lambda:now)
     f=RediscoveryFunnel();r=Runtime.__new__(Runtime)
-    r.store=SimpleNamespace(_rediscovery_funnel=f);r.config={'paper':{'max_quote_age_seconds':45}}
+    r.store=SimpleNamespace(_rediscovery_funnel=f,get_kv=lambda *args:{});r.config={'paper':{'max_quote_age_seconds':45}}
     r._pattern_held_tokens={'bsc:held'}
     plain=Runtime.__new__(Runtime);plain.config=r.config;plain._pattern_held_tokens=r._pattern_held_tokens
     def send(address,age):

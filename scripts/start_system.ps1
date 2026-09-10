@@ -54,8 +54,18 @@ try {
   } while ((Get-Date) -lt $deadline)
   if (-not $ready) { throw "Web may be available but Paper heartbeat is not ready. Logs: $logDir" }
 
-  $live = Invoke-RestMethod "$baseUrl/api/live" -TimeoutSec 15
-  $performance = Invoke-RestMethod "$baseUrl/api/performance" -TimeoutSec 15
+  # The heartbeat can precede the first account projection. Retry its cold read
+  # once within the same readiness budget; never launch another process tree.
+  for ($apiAttempt = 0; $apiAttempt -lt 2; $apiAttempt++) {
+    try {
+      $live = Invoke-RestMethod "$baseUrl/api/live" -TimeoutSec 15
+      $performance = Invoke-RestMethod "$baseUrl/api/performance" -TimeoutSec 15
+      break
+    } catch {
+      if ($apiAttempt -ge 1 -or (Get-Date) -ge $deadline) { throw }
+      Write-Host 'Paper heartbeat is ready; waiting for the first account projection...'
+    }
+  }
   if ($live.system.runtime_status -ne 'running' -or -not $live.system.paper_only -or -not $live.system.live_locked) {
     throw 'Runtime/Paper safety status is not ready. No settings have been changed.'
   }

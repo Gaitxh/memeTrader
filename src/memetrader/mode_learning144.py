@@ -20,7 +20,7 @@ CANDIDATE='coverage_cost_aware/v1'
 
 
 def initialize(state=None):
-    if state and state.get('schema')==KEY:return state
+    if state and state.get('schema') in (KEY,'mode-learning145/v4'):return state
     return dict(schema=KEY,episodes={},seen=[],groups={},events=[],counts={},recent=[],
         model=dict(version=BASELINE,cutoff_at=None,releases=0,selected_groups=[]),
         training_cursor=0,actual_pending={},actual_groups={},selections={})
@@ -73,7 +73,8 @@ def predict(state,*,chain,age_bucket,mode,features,decision_at,observed_at,inges
     if not clocks(f,decision_at) or model['cutoff_at'] and parse_time(model['cutoff_at'])>parse_time(decision_at):
         return dict(status='NONCAUSAL',model_version=model['version'])
     key='|'.join((chain,age_bucket,mode,'5'))
-    g=s['groups'].get(key);data=summary(g) if g else None
+    g=s['groups'].get(key)
+    data=deepcopy(model.get('estimates',{}).get(key)) if s['schema']=='mode-learning145/v4' else summary(g) if g else None
     return dict(status='LEARNED_MODE' if key in model['selected_groups'] else 'FIXED_BASELINE',
         model_version=model['version'],model_cutoff_at=model['cutoff_at'],group=key,estimate=data)
 
@@ -120,10 +121,10 @@ def expire(state,*,now,grace_seconds=90):
     for e in s['episodes'].values():
         if e['entry'] is None:
             if (now-parse_time(e['decision_at'])).total_seconds()>120:
-                labels.extend(filter(None,(finish(s,e,h,'UNKNOWN',now,'NO_STRICT_ENTRY_WITHIN_120S') for h in HORIZONS)))
+                labels.extend(filter(None,(finish(s,e,h,'UNKNOWN',now,'NO_STRICT_ENTRY_WITHIN_120S') for h in s.get('horizons',HORIZONS))))
             continue
         start=parse_time(e['entry']['observed_at'])
-        for h in HORIZONS:
+        for h in s.get('horizons',HORIZONS):
             if now>start+timedelta(minutes=h,seconds=grace_seconds):
                 r=finish(s,e,h,'UNKNOWN',now,'NO_NATURAL_ELIGIBLE_HORIZON');
                 if r:labels.append(r)
@@ -156,7 +157,7 @@ def observe(state,*,episode_key,frame,now,liquidity_floor=1000.,max_gap_seconds=
         ret=sell_terms(terms['quantity_tokens'],price,e['costs'])['net_usd']/terms['total_cost_usd']-1
         for key,hit in (('minus20',ret<=-.2),('plus30',ret>=.3),('plus100',ret>=1)):
             if hit and key not in e['first_hits']:e['first_hits'][key]=dict(observed_at=iso(c[0]),recorded_at=iso(c[2]),return_fraction=ret)
-    for h in HORIZONS:
+    for h in s.get('horizons',HORIZONS):
         elapsed=(c[0]-parse_time(e['entry']['observed_at'])).total_seconds()-h*60
         if str(h) in e['results'] or elapsed<0:continue
         reason='LATE_ENDPOINT' if elapsed>grace_seconds else 'PATH_GAP' if e['gap'] else 'FLOOR_OR_MISSING' if e['first_floor'] or not valid else ''
@@ -238,6 +239,18 @@ class Coordinator:
     def __init__(self,store):
         self.store=store;self.key=KEY+':'+store.CHAIN_MEME_TRADER_ACTIVE_VERSION
         self.state=initialize(store.get_kv(self.key,None));self.last_flush=0.
+        self.reindex()
+
+    def reindex(self):
+        self.pending_index={}
+        for key,e in self.state['episodes'].items():
+            self.pending_index.setdefault((e['token_id'],e['pair_address']),set()).add(key)
+
+    def capture_episode(self,**kwargs):
+        result=capture(self.state,**kwargs)
+        if result['status']=='captured':
+            e=result['episode'];self.pending_index.setdefault((e['token_id'],e['pair_address']),set()).add(e['key'])
+        return result
 
     def signals(self,features,signals,now):
         from .trajectory144 import ARMS
@@ -254,7 +267,7 @@ class Coordinator:
                 sources={'NO_SIGNAL':dict(decision_key=key,observed_at=f['observed_at'],recorded_at=f['recorded_at'])}
         for arm,sig in sources.items():
             key=sig['decision_key']
-            captured=capture(self.state,episode_key=key,token_id=f['token_id'],pair_address=f['pair_address'],chain=chain,
+            captured=self.capture_episode(episode_key=key,token_id=f['token_id'],pair_address=f['pair_address'],chain=chain,
                 age_bucket=band,mode=arm,features=f,decision_at=now,observed_at=sig['observed_at'],
                 ingested_at=sig.get('decision_evidence',{}).get('feature_vector',{}).get('ingested_at',f['ingested_at']),
                 recorded_at=sig['recorded_at'],sample_probability=1/16 if arm=='NO_SIGNAL' else 1.,signal=arm!='NO_SIGNAL',paper_terms=terms)
@@ -282,8 +295,9 @@ class Coordinator:
             ingested_at=iso(ingested),recorded_at=iso(recorded),price_usd=snapshot.price_usd,
             liquidity_usd=snapshot.liquidity_usd,receipt_source=source,processed_at=iso(parse_time(processed_at)))
         count(self.state,'callback_'+source+'_frames')
-        for key,e in list(self.state['episodes'].items()):
-            if (e['token_id'],e['pair_address'])==(token_id,pool):
+        for key in tuple(self.pending_index.get((token_id,pool),())):
+            e=self.state['episodes'].get(key)
+            if e is not None:
                 had_entry=e['entry'] is not None
                 result=observe(self.state,episode_key=key,frame=frame,now=processed_at,liquidity_floor=e['costs']['min_pool_liquidity_usd'])
                 count(self.state,'callback_'+source+'_'+result.get('status','expired'))
@@ -296,20 +310,28 @@ class Coordinator:
             self.state['actual_pending'][key]=dict(version=version,arm=arm,cohort=cohort,token_id=token,source_fill_id=fill,opened_at=at)
         else:count(self.state,'actual_capacity_censored')
         count(self.state,'actual_BUY')
+        count(self.state,'actual_BUY:'+arm)
+        self.state.setdefault('last_buy',{})[arm]=at
 
     def resolve_actual(self,now):
         for key,row in list(self.state['actual_pending'].items())[:8]:
             p=self.store.db.execute('SELECT status,closed_at,close_reason,stake_usd,realized_pnl_usd FROM chain_meme_trader_positions WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?', (row['version'],row['arm'],row['cohort'])).fetchone()
             if not p or p['status'] not in ('closed','written_off') or parse_time(p['closed_at'])>parse_time(now):
                 self.state['actual_pending'][key]=self.state['actual_pending'].pop(key);continue
-            evidence={**row,**dict(p), 'available_at':iso(parse_time(now)), 'source':'actual_Paper_terminal_ledger'}
+            receipt=self.store.db.execute("SELECT id,recorded_at FROM chain_meme_trader_trades WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=? AND side IN ('SELL','WRITEOFF') ORDER BY id DESC LIMIT 1",(row['version'],row['arm'],row['cohort'])).fetchone()
+            if not receipt or not receipt['recorded_at'] or parse_time(receipt['recorded_at'])>parse_time(now):continue
+            evidence={**row,**dict(p), 'available_at':iso(parse_time(now)), 'terminal_receipt_id':receipt['id'],
+                'terminal_recorded_at':receipt['recorded_at'],'source':'actual_Paper_terminal_ledger'}
+            if p['status']=='written_off':evidence['observed_max_drawdown']=-1.
             self.state['actual_groups'].setdefault(row['arm'],[])
             self.state['actual_groups'][row['arm']]=(self.state['actual_groups'][row['arm']]+[evidence])[-256:]
             event(self.state,'actual_terminal',evidence);count(self.state,'actual_terminal')
+            count(self.state,'actual_terminal:'+row['arm'])
             del self.state['actual_pending'][key]
 
     def flush(self,now):
         s=self.state;self.resolve_actual(now);expire(s,now=now);learn=train(s,cutoff_at=now)
+        self.reindex()
         # The persisted model is released only at this real transaction frontier.
         with self.store._lock,self.store.db:
             if learn['promoted']:
