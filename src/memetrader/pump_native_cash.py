@@ -93,8 +93,9 @@ async def assemble(collector,frame,account_id,total_quote_raw):
         raise ValueError('cold_setup_changed_or_incomplete')
     raw=lambda v:base64.b64decode(v['data'][0],validate=True)
     rent=Rent.from_bytes(raw(values[0]))
-    for v in values[3:]:
-        if v is None or v['owner']!=PUMP or v['lamports']<rent.minimum_balance(len(raw(v))):
+    for v,expected_owner,empty in [(values[3],ZERO,True),(values[4],PUMP,False)]:
+        if (v is None or v['owner']!=expected_owner or (empty and len(raw(v))!=0)
+            or v['lamports']<rent.minimum_balance(len(raw(v)))):
             raise ValueError('native_existing_account_topup_unproven')
     # Require the curve used to plan economics to remain byte-identical.
     curve_hash=hashlib.sha256(values[4]['data'][0].encode()).hexdigest()
