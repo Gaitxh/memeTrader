@@ -28,6 +28,61 @@ def fee137():
         fees=dict(protocol_fee_bps=95,creator_fee_bps=30))])
 
 
+def test_capacity_sell_integer_boundary_and_no_reused_public_reserve():
+    from memetrader.collectors import pump_curve_capacity_sell_quote, pump_bonding_curve_sell_quote_v1
+    c=fixed137();c['real_quote_reserves_raw']=8_000_000
+    f=fee137();f['fee_tiers'][0]['fees']['protocol_fee_bps']=139
+    args=dict(bonding_curve=c,global_config=global_config(),fee_config=f,slippage_bps=400)
+    q=pump_curve_capacity_sell_quote(token_amount_raw=2_000_000_000_000,**args)
+    assert q['capacity_partial'] and q['protocol_fee_bps']==139
+    assert q['real_reserve_coverage_raw']==8_000_000
+    with pytest.raises(ValueError,match='insufficient_real_quote'):
+        pump_bonding_curve_sell_quote_v1(token_amount_raw=q['quoted_amount_raw']+1,**args)
+    with pytest.raises(ValueError,match='budget_exhausted'):
+        pump_curve_capacity_sell_quote(token_amount_raw=2_000_000_000_000,
+            sold_quote_raw=q['real_reserve_coverage_raw'],sold_token_raw=q['quoted_amount_raw'],**args)
+    c['real_quote_reserves_raw']=500_000_000
+    residual=2_000_000_000_000-q['quoted_amount_raw']
+    later=pump_curve_capacity_sell_quote(token_amount_raw=residual,
+        sold_quote_raw=q['real_reserve_coverage_raw'],sold_token_raw=q['quoted_amount_raw'],**args)
+    no_impact=pump_bonding_curve_sell_quote_v1(token_amount_raw=residual,**args)
+    assert later['min_quote_raw']<no_impact['min_quote_raw']
+    assert later['paper_pricing_curve']['virtual_token_reserves_raw']==c['virtual_token_reserves_raw']+q['quoted_amount_raw']
+    assert later['paper_pricing_curve']['virtual_quote_reserves_raw']==c['virtual_quote_reserves_raw']-q['real_reserve_coverage_raw']
+    c['complete']=True
+    with pytest.raises(ValueError,match='migrated'):
+        pump_curve_capacity_sell_quote(token_amount_raw=1,**args)
+
+
+def test_capacity_producer_uses_same_bundle_and_legacy_amount_is_unchanged(monkeypatch):
+    import asyncio,json,httpx
+    from solders.pubkey import Pubkey
+    from memetrader.collectors import SolanaHeldAccountCollector,PUMP_PROGRAM_ID
+    curve_state=fixed137();curve_state['real_quote_reserves_raw']=8_000_000
+    fee=fee137();fee['fee_tiers'][0]['fees']['protocol_fee_bps']=139
+    pair=str(Pubkey.find_program_address([b'bonding-curve',bytes(Pubkey.from_string(SOL))],Pubkey.from_string(PUMP_PROGRAM_ID))[0])
+    target=dict(token_id='solana:'+SOL,base_mint=SOL,curve_address=pair,remaining_amount_raw='2000000000000')
+    calls=[]
+    async def run():
+        def reply(req):
+            body=json.loads(req.content);calls.append(body)
+            assert body['method']=='getMultipleAccounts' and len(body['params'][0])==3
+            return httpx.Response(200,json={'result':{'context':{'slot':100},'value':[
+                dict(decoded=x,data=['AA==','base64']) for x in (global_config(),fee,curve_state)]}})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as http:
+            c=SolanaHeldAccountCollector.__new__(SolanaHeldAccountCollector)
+            c.http=http;c.rpc_url='https://rpc.test';c.max_multiple_accounts=30
+            c.decode_account=lambda target,value:dict(value['decoded'])
+            legacy=(await c.bonding_curve_quotes([target]))[0]
+            actual=(await c.bonding_curve_quotes([dict(target,native_capacity_exit=True,native_sold_quote_raw=0)]))[0]
+            assert legacy['status']=='LOCAL_NO_DIRECT_CAPACITY'
+            assert actual['status']=='LOCAL_SURFACE_CURRENT' and actual['capacity_partial']
+            assert actual['remaining_amount_raw']==target['remaining_amount_raw']
+            assert actual['quoted_amount_raw']<int(target['remaining_amount_raw']) and actual['protocol_fee_bps']==139
+            assert actual['context_slot']==100 and actual['native_curve_state']==curve_state
+    asyncio.run(run());assert len(calls)==2
+
+
 def test_native_cash_budget_reserves_both_actual_fees_and_never_refunds_rent():
     from memetrader.pump_native import native_cash_budget
     now=utcnow()

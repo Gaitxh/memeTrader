@@ -150,6 +150,66 @@ def test_bad_plan_and_completion_never_fabricate_exit(tmp_path,monkeypatch):
     store.close()
 
 
+def test_capacity_partial_runtime_cash_restart_and_later_close(tmp_path,monkeypatch):
+    from memetrader.collectors import pump_curve_capacity_sell_quote
+    from memetrader.native_execution import ensure_time_exit
+    store,clock,p=setup(tmp_path,monkeypatch);assert buy(store,p,now=clock[0])=='BOUGHT'
+    initial=targets(store)[0];initial_raw=int(initial['amount_raw'])
+    clock[0]+=timedelta(seconds=301);ensure_time_exit(store,initial,now=clock[0])
+    clock[0]+=timedelta(seconds=1);slot=[20];c=fixed137();c['real_quote_reserves_raw']=8_000_000
+    r=Runtime.__new__(Runtime);r.store=store;r._wsol_usdc_conversion=p['reference']
+    monkeypatch.setattr('memetrader.native_execution.utcnow',lambda:clock[0])
+    async def ref(**kw):r._wsol_usdc_conversion=dict(p['reference'],completed_at=iso(clock[0]))
+    r.chain_meme_wsol_reference_once=ref
+    fee_amounts=[];fees_available=[False]
+    async def quotes(surfaces,**kw):
+        s=surfaces[0];assert s['native_capacity_exit']
+        common=dict(s,pool_address=s['curve_address'],context_slot=slot[0],requested_at=iso(clock[0]),
+            completed_at=iso(clock[0]),native_curve_state=deepcopy(c))
+        try:
+            q=pump_curve_capacity_sell_quote(token_amount_raw=int(s['remaining_amount_raw']),
+                sold_quote_raw=s['native_sold_quote_raw'],sold_token_raw=s['native_sold_token_raw'],
+                bonding_curve=c,global_config=global_config(),fee_config=fee137())
+            return [dict(common,status='LOCAL_SURFACE_CURRENT',reason='',**q)]
+        except ValueError as exc:return [dict(common,status='LOCAL_NO_DIRECT_CAPACITY',reason=str(exc))]
+    async def fee(collector,plan,q):
+        fee_amounts.append(q['quoted_amount_raw'])
+        if not fees_available[0]:raise ValueError('current_fee_unavailable')
+        return dict(context_slot=q['context_slot'],recorded_at=iso(clock[0]),fee_lamports=7000,
+            token_amount_raw=q['quoted_amount_raw'],curve=q['pool_address'],account_id=plan['account_id'],message_sha256='b'*64)
+    monkeypatch.setattr('memetrader.pump_native_cash.exit_fee',fee)
+    r.held_accounts=SimpleNamespace(bonding_curve_quotes=quotes)
+    asyncio.run(r._native_held_once(targets(store)[0]))
+    assert int(targets(store)[0]['amount_raw'])==initial_raw  # No fee, no fill.
+    fees_available[0]=True;clock[0]+=timedelta(seconds=2);slot[0]+=1
+    asyncio.run(r._native_held_once(targets(store)[0]))
+    partial=targets(store)[0];remaining=int(partial['amount_raw'])
+    assert 0<remaining<initial_raw and fee_amounts[-1]==initial_raw-remaining
+    assert partial['state']['mark'] is None and partial['state']['exit_intent']
+    assert partial['state']['curve_gross_sold_raw']==8_000_000
+    row=store.db.execute('SELECT * FROM chain_meme_trader_positions WHERE arm_id=?',(ARM,)).fetchone()
+    assert row['allocated_cost_usd']==pytest.approx(row['stake_usd']*(initial_raw-remaining)/initial_raw)
+    assert row['realized_pnl_usd']==pytest.approx(row['realized_proceeds_usd']-row['allocated_cost_usd'])
+    assert len(account_assets(store.db,store.CHAIN_MEME_TRADER_ACTIVE_VERSION,clock[0])['values'])==1
+    assert store.db.execute("SELECT count(*) FROM chain_meme_native_receipts WHERE kind LIKE 'PARTIAL_SELL:%'").fetchone()[0]==1
+    store.close();store=Store(tmp_path/'native138.sqlite3',initial_cash_usd=1000);r.store=store
+    # Independent newer slots do not replenish the same public reserve.
+    for _ in range(2):
+        clock[0]+=timedelta(seconds=2);slot[0]+=1
+        asyncio.run(r._native_held_once(targets(store)[0]))
+    assert int(targets(store)[0]['amount_raw'])==remaining and len(fee_amounts)==2
+    # A real increase in later public reserves permits completion on that frame.
+    c['real_quote_reserves_raw']=500_000_000;clock[0]+=timedelta(seconds=2);slot[0]+=1
+    asyncio.run(r._native_held_once(targets(store)[0]))
+    assert not targets(store)
+    flows=store.db.execute('SELECT SUM(net_cash_flow_usd),SUM(realized_pnl_usd),COUNT(*) FROM chain_meme_trader_trades WHERE arm_id=?',(ARM,)).fetchone()
+    assets=account_assets(store.db,store.CHAIN_MEME_TRADER_ACTIVE_VERSION,clock[0])
+    assert flows[2]==3 and flows[0]+assets['rent']==pytest.approx(flows[1])
+    row=store.db.execute('SELECT * FROM chain_meme_trader_positions WHERE arm_id=?',(ARM,)).fetchone()
+    assert row['realized_pnl_usd']==pytest.approx(flows[1]) and row['allocated_cost_usd']==pytest.approx(row['stake_usd'])
+    store.close()
+
+
 def test_native_task_failure_does_not_abort_existing_surface_lane(tmp_path,monkeypatch):
     store,clock,p=setup(tmp_path,monkeypatch);buy(store,p,now=clock[0])
     r=Runtime.__new__(Runtime);r.store=store
@@ -231,8 +291,8 @@ def test_migration_identity_then_strict_later_successor_exit(tmp_path,monkeypatc
     store.close()
 
 
-@pytest.mark.parametrize('successor',[False,True])
-def test_current_unsigned_remaining_raw_fee_producers(tmp_path,monkeypatch,successor):
+@pytest.mark.parametrize('successor,partial',[(False,False),(True,False),(False,True)])
+def test_current_unsigned_remaining_raw_fee_producers(tmp_path,monkeypatch,successor,partial):
     from solders.pubkey import Pubkey
     from solders.message import Message
     from memetrader.native_execution import canonical_pool
@@ -246,6 +306,8 @@ def test_current_unsigned_remaining_raw_fee_producers(tmp_path,monkeypatch,succe
         base_token_program=p['execution_frame']['mint_state']['owner'],
         native_swap_pool=dict(is_mayhem_mode=False,is_cashback_coin=False,coin_creator=SOL),
         native_swap_config=dict(protocol_fee_recipients=[SOL]))
+    expected_amount=456789 if partial else 123456789
+    if partial:q['quoted_amount_raw']=expected_amount
     def reply(req):
         b=json.loads(req.content);calls.append(b['method'])
         if b['method']=='getMultipleAccounts':
@@ -259,7 +321,7 @@ def test_current_unsigned_remaining_raw_fee_producers(tmp_path,monkeypatch,succe
         else:
             assert b['method']=='getFeeForMessage'
             m=Message.from_bytes(base64.b64decode(b['params'][0]));instruction=m.instructions[-1]
-            assert int.from_bytes(bytes(instruction.data)[8:16],'little')==123456789
+            assert int.from_bytes(bytes(instruction.data)[8:16],'little')==expected_amount
             assert str(m.account_keys[instruction.program_id_index])==(PUMP_AMM_PROGRAM_ID if successor else PUMP)
             result={'context':{'slot':22},'value':6789}
         return httpx.Response(200,json={'result':result})
@@ -268,7 +330,7 @@ def test_current_unsigned_remaining_raw_fee_producers(tmp_path,monkeypatch,succe
             c=SolanaHeldAccountCollector.__new__(SolanaHeldAccountCollector);c.http=http;c.rpc_url='https://rpc.test'
             return await (successor_exit_fee(c,p,q) if successor else exit_fee(c,p,q))
     fee=asyncio.run(run())
-    assert fee['fee_lamports']==6789 and fee['token_amount_raw']==123456789
+    assert fee['fee_lamports']==6789 and fee['token_amount_raw']==expected_amount
     assert fee['curve']==q['pool_address'] and fee['account_id']==p['account_id']
     assert calls==(['getMultipleAccounts'] if successor else [])+['getLatestBlockhash','getFeeForMessage']
     if successor:assert fee['setup_rent_raw']==Rent(6333,1.,50).minimum_balance(165) and fee['rent_refund_raw']==0

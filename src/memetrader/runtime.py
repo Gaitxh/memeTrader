@@ -6817,6 +6817,11 @@ class Runtime:
             surface.update(state['successor'],remaining_amount_raw=target['amount_raw'])
             quotes=await self.held_accounts.local_surface_quotes([surface],slippage_bps=400)
         else:
+            # Existing exit intent only; use this position's persistent capacity
+            # debits so an unchanged public curve cannot fund repeated partials.
+            surface.update(native_capacity_exit=bool(state.get('exit_intent')),
+                native_sold_quote_raw=int(state.get('curve_gross_sold_raw',0)),
+                native_sold_token_raw=int(state.get('curve_tokens_sold_raw',0)))
             quotes=await self.held_accounts.bonding_curve_quotes([surface],slippage_bps=400,
                 wsol_usdc_conversion=self._wsol_usdc_conversion)
         for quote in quotes:
@@ -6833,7 +6838,10 @@ class Runtime:
                 token_id=target['token_id'],cohort_id=target['cohort_id'],surface=state['surface'],
                 quote_status=quote.get('status'),quote_reason=quote.get('reason'),fee_error=fee_error,
                 observed_at=quote.get('requested_at'),quote_recorded_at=quote.get('completed_at'),
-                context_slot=quote.get('context_slot'),remaining_amount_raw=target['amount_raw']))
+                context_slot=quote.get('context_slot'),remaining_amount_raw=target['amount_raw'],
+                quoted_amount_raw=quote.get('quoted_amount_raw'),capacity_partial=quote.get('capacity_partial',False),
+                capacity_available_raw=quote.get('capacity_available_raw'),
+                capacity_prior_gross_raw=quote.get('capacity_prior_gross_raw')))
 
     async def critical_onchain_exit_loop(self) -> None:
         """Drain exact-account risk exits before ordinary background quote work."""

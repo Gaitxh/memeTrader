@@ -71,6 +71,7 @@ def strategy_logic(policy, family, control=None, *, current=False):
     if p.get('native_execution'):
         exits.extend(['原生剩余数量使用当前曲线卖回报价；净价值低于原始支出80%触发硬止损，达到130%后回撤15%触发追踪退出。',
             '300秒到期先保存退出意图，下一独立有效状态才可成交；储备不足或报价缺失保留 UNKNOWN，不伪造卖出。',
+            '已触发退出时，可按当前真实容量部分卖回；逐笔扣除已消耗的 Paper 储备额度并按实际数量核算费用，剩余仓继续等待，不能重复使用同一份流动性。',
             '曲线毕业后只接经过验证的规范 PumpSwap 后继池；等待身份/报价期间不在旧曲线上成交。'])
     else:exits.append('退出机制/模式：'+value(p.get('exit_family') or family.get('exit_family'))+' / '+value(p.get('exit_mode')))
     requirements=['必须有策略配置要求的身份绑定、时间有效性和特征；缺失值不是零，也不是条件已满足。']

@@ -203,19 +203,41 @@ def apply_curve_quote(store, target, quote, fee, reference, *, now=None):
                 s['exit_intent']=s['exit_intent'] or dict(slot=slot,recorded_at=iso(now),reason='sell_capacity_lost')
             result='UNKNOWN_EXIT'
         else:
+            amount=int(row['amount_raw'])
+            sold=int(quote.get('quoted_amount_raw',amount))
+            partial=sold<amount
+            if not 0<sold<=amount:
+                raise ValueError('native_exit_quoted_amount')
+            if quote.get('capacity_model'):
+                prior=int(s.get('curve_gross_sold_raw',0))
+                available=max(0,int(quote['native_curve_state']['real_quote_reserves_raw'])-prior)
+                if (s['surface']!='CURVE' or not s['exit_intent']
+                    or int(quote['capacity_prior_gross_raw'])!=prior
+                    or int(quote['capacity_prior_token_raw'])!=int(s.get('curve_tokens_sold_raw',0))
+                    or int(quote['capacity_available_raw'])!=available
+                    or not 0<int(quote['real_reserve_coverage_raw'])<=available):
+                    raise ValueError('native_exit_capacity_binding')
+            elif partial:
+                raise ValueError('native_partial_without_capacity')
             if (int(fee['context_slot'])<slot or not recorded<=parse_time(fee['recorded_at'])<=now
-                or fee.get('token_amount_raw')!=int(row['amount_raw']) or fee.get('curve')!=expected_pool
+                or fee.get('token_amount_raw')!=sold or fee.get('curve')!=expected_pool
                 or fee.get('account_id')!=s['plan']['account_id'] or len(fee.get('message_sha256',''))!=64):
                 raise ValueError('native_exit_fee_binding')
             rate=usd_per_raw(reference,now,observed)
             net=(int(quote['min_quote_raw'])-int(fee['fee_lamports']))*rate
-            if net<=0:return 'UNKNOWN_NET_RECOVERY'
+            if net<=0:
+                store.db.execute('UPDATE chain_meme_native_positions SET state_json=? WHERE definition_version=? AND cohort_id=?',(dumps(s),version,cohort))
+                return 'UNKNOWN_NET_RECOVERY'
             s['sell_fee_reserve_raw']=max(s['sell_fee_reserve_raw'],int(fee['fee_lamports']))
-            s['mark']=dict(value_usd=net,observed_at=iso(observed),recorded_at=iso(now),slot=slot,execution_model=MODEL)
-            s['high_value_usd']=max(s['high_value_usd'],net)
+            if not partial:
+                s['mark']=dict(value_usd=net,observed_at=iso(observed),recorded_at=iso(now),slot=slot,execution_model=MODEL)
+                s['high_value_usd']=max(s['high_value_usd'],net)
             intent=s['exit_intent']
             if intent and slot>intent['slot'] and observed>parse_time(intent['recorded_at']):
-                pnl=net-float(row['stake_usd'])
+                remaining=amount-sold
+                remaining_cost=float(row['stake_usd'])-float(row['allocated_cost_usd'])
+                cost=remaining_cost*sold/amount if partial else remaining_cost
+                pnl=net-cost
                 new_rent=int(fee.get('setup_rent_raw',0))*rate
                 if new_rent<0:raise ValueError('invalid_exit_setup_rent')
                 reg=store._chain_meme_trader_registration(version)
@@ -223,14 +245,22 @@ def apply_curve_quote(store, target, quote, fee, reference, *, now=None):
                 cash=float(definition['starting_cash_usd_each_arm'])+store.db.execute(
                     'SELECT COALESCE(SUM(net_cash_flow_usd),0) FROM chain_meme_trader_trades WHERE definition_version=? AND arm_id=?',(version,ARM)).fetchone()[0]
                 if cash+net<new_rent:return 'WAIT_EXIT_SETUP_CASH'
-                _receipt(store.db,version,target['opportunity_key'],'SELL',dict(quote=quote,fee=fee,reference=reference,exit_intent=intent,execution_model=MODEL),now)
+                kind=f'PARTIAL_SELL:{slot}' if partial else 'SELL'
+                _receipt(store.db,version,target['opportunity_key'],kind,dict(quote=quote,fee=fee,reference=reference,
+                    exit_intent=intent,execution_model=MODEL,sold_amount_raw=sold,remaining_amount_raw=remaining,
+                    allocated_cost_usd=cost,net_recovery_usd=net),now)
                 store.db.execute('INSERT INTO chain_meme_trader_trades(definition_version,arm_id,shadow_cohort_id,token_id,side,gross_usd,net_cash_flow_usd,realized_pnl_usd,reason,created_at,recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
                     (version,ARM,cohort,row['token_id'],'SELL',net,net-new_rent,pnl,intent['reason']+':'+MODEL,iso(now),iso(now)))
-                store.db.execute("UPDATE chain_meme_trader_positions SET status='closed',amount_raw='0',remaining_quantity_tokens=0,realized_proceeds_usd=?,allocated_cost_usd=stake_usd,realized_pnl_usd=?,closed_at=?,close_reason=? WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
-                    (net,pnl,iso(now),intent['reason'],version,ARM,cohort))
-                s.update(surface='CLOSED',sell_fee_reserve_raw=0,
+                store.db.execute("UPDATE chain_meme_trader_positions SET status=?,amount_raw=?,remaining_quantity_tokens=?,realized_proceeds_usd=realized_proceeds_usd+?,allocated_cost_usd=allocated_cost_usd+?,realized_pnl_usd=realized_pnl_usd+?,closed_at=?,close_reason=? WHERE definition_version=? AND arm_id=? AND shadow_cohort_id=?",
+                    ('open' if partial else 'closed',str(remaining),float(row['paper_quantity_tokens'])*remaining/int(row['initial_amount_raw']),
+                    net,cost,pnl,None if partial else iso(now),row['close_reason'] if partial else intent['reason'],version,ARM,cohort))
+                if s['surface']=='CURVE':
+                    s['curve_gross_sold_raw']=int(s.get('curve_gross_sold_raw',0))+int(quote.get('real_reserve_coverage_raw',0))
+                    s['curve_tokens_sold_raw']=int(s.get('curve_tokens_sold_raw',0))+sold
+                s.update(surface=s['surface'] if partial else 'CLOSED',
+                    sell_fee_reserve_raw=s['sell_fee_reserve_raw'] if partial else 0,mark=None,
                     rent_locked_usd_at_cost=s['rent_locked_usd_at_cost']+new_rent,
-                    rent_locked_raw=s['rent_locked_raw']+int(fee.get('setup_rent_raw',0)));result='SOLD'
+                    rent_locked_raw=s['rent_locked_raw']+int(fee.get('setup_rent_raw',0)));result='PARTIAL_SOLD' if partial else 'SOLD'
             else:
                 reason=('hard_stop' if net<=float(row['stake_usd'])*.8 else
                     'trailing' if s['high_value_usd']>=float(row['stake_usd'])*1.3 and net<=s['high_value_usd']*.85 else

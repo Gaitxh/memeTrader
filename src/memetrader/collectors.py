@@ -657,6 +657,46 @@ def pump_bonding_curve_sell_quote_v1(
     }
 
 
+def pump_curve_capacity_sell_quote(*, token_amount_raw, sold_quote_raw=0, sold_token_raw=0,
+                                   bonding_curve, global_config, fee_config, slippage_bps=400):
+    """Largest integer SELL within observed reserves less prior Paper debits.
+
+    Paper sales never alter public reserves. Persisted gross debits prevent
+    repeatedly selling against the same observed capacity on later slots.
+    No credit is given for the hypothetical entry's reserve contribution.
+    """
+    amount, spent, prior_tokens = int(token_amount_raw), int(sold_quote_raw), int(sold_token_raw)
+    if amount <= 0 or spent < 0 or prior_tokens < 0 or (spent > 0 and prior_tokens == 0):
+        raise ValueError('invalid_native_capacity_input')
+    if bonding_curve.get('complete'):
+        raise ValueError('bonding_curve_complete_migrated')
+    # Model earlier Paper sales on top of the new public state, including
+    # their price impact. The unmodified public bundle remains the provenance.
+    adjusted = dict(bonding_curve)
+    adjusted['virtual_token_reserves_raw'] = int(bonding_curve['virtual_token_reserves_raw']) + prior_tokens
+    adjusted['real_token_reserves_raw'] = int(bonding_curve['real_token_reserves_raw']) + prior_tokens
+    adjusted['virtual_quote_reserves_raw'] = int(bonding_curve['virtual_quote_reserves_raw']) - spent
+    token = adjusted['virtual_token_reserves_raw']
+    quote = adjusted['virtual_quote_reserves_raw']
+    available = max(0, int(bonding_curve['real_quote_reserves_raw']) - spent)
+    adjusted['real_quote_reserves_raw'] = available
+    if token <= 0 or quote <= 0:
+        raise ValueError('invalid_pump_virtual_reserves')
+    if available <= 0:
+        raise ValueError('native_capacity_budget_exhausted')
+    # floor(a*Q/(T+a)) <= available, including the exact integer boundary.
+    divisor = quote - available - 1
+    cap = min(amount, ((available + 1) * token - 1) // divisor) if divisor > 0 else amount
+    if cap <= 0:
+        raise ValueError('native_capacity_budget_exhausted')
+    result = pump_bonding_curve_sell_quote_v1(token_amount_raw=cap, slippage_bps=slippage_bps,
+        bonding_curve=adjusted, global_config=global_config, fee_config=fee_config)
+    return dict(result, quoted_amount_raw=cap, capacity_requested_raw=amount,
+        capacity_prior_gross_raw=spent, capacity_prior_token_raw=prior_tokens, capacity_available_raw=available,
+        capacity_partial=cap < amount, capacity_model='observed_curve_less_paper_sales_v1',
+        paper_pricing_curve=adjusted)
+
+
 def decode_pumpswap_pool_account(
     raw: bytes, *, include_current_fields: bool = True
 ) -> dict[str, Any]:
@@ -4035,11 +4075,18 @@ class SolanaHeldAccountCollector:
                     quote_mint = str(curve.get("quote_mint") or SOLANA_SYSTEM_PROGRAM_ID)
                     if quote_mint in {SOLANA_SYSTEM_PROGRAM_ID, SOLANA_WRAPPED_SOL_MINT}:
                         quote_mint = SOLANA_WRAPPED_SOL_MINT
-                    quote = pump_bonding_curve_sell_quote_v1(
+                    quote_fn = pump_bonding_curve_sell_quote_v1
+                    capacity_args = {}
+                    if surface.get('native_capacity_exit'):
+                        quote_fn = pump_curve_capacity_sell_quote
+                        capacity_args['sold_quote_raw'] = int(surface.get('native_sold_quote_raw', 0))
+                        capacity_args['sold_token_raw'] = int(surface.get('native_sold_token_raw', 0))
+                    quote = quote_fn(
                         token_amount_raw=int(surface["remaining_amount_raw"]),
                         slippage_bps=int(slippage_bps), bonding_curve=curve,
                         global_config=global_config,
                         fee_config=fee_config if fee_config.get("status") == "verified" else None,
+                        **capacity_args,
                     )
                     estimate = None
                     conversion_source = ""

@@ -133,9 +133,10 @@ async def exit_fee(collector,plan,quote):
     r=await collector.http.post(collector.rpc_url,json={'jsonrpc':'2.0','id':138,
         'method':'getLatestBlockhash','params':[{'commitment':'confirmed','minContextSlot':quote['context_slot']}]})
     r.raise_for_status();result=r.json().get('result') or {}
-    message=messages(a,result['value']['blockhash'],1,int(quote['remaining_amount_raw']))['SELL']
+    amount=int(quote.get('quoted_amount_raw',quote['remaining_amount_raw']))
+    message=messages(a,result['value']['blockhash'],1,amount)['SELL']
     fee=(await collector.native_message_fee_receipts({'SELL':message},account_context_slot=quote['context_slot']))['SELL']
-    return dict(fee,token_amount_raw=int(quote['remaining_amount_raw']),curve=quote['pool_address'],account_id=plan['account_id'])
+    return dict(fee,token_amount_raw=amount,curve=quote['pool_address'],account_id=plan['account_id'])
 
 
 async def successor_exit_fee(collector,plan,quote):
