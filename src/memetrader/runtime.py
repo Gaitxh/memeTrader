@@ -7856,7 +7856,14 @@ class Runtime:
                 pair = raw.get("pair", raw)
                 address = canonical_token_address(token.chain, str(pair.get("pairAddress") or ""))
                 created = pair.get("pairCreatedAt")
-                if not created or not address or self._paper_quote_rejections(token.token_id, token, snapshot, received):
+                quote_rejections = self._paper_quote_rejections(token.token_id, token, snapshot, received)
+                # Existing episodes consume every identity/clock-valid acquired
+                # receipt before this batch can capture new signal episodes.
+                # A missing price is outcome evidence, not an entry permission.
+                if address and not (set(quote_rejections) - {"quote_price_unavailable"}):
+                    learning144.observe(token.token_id, snapshot, snapshot.ingested_at or received,
+                        received, processed_at=utcnow(), source="passive")
+                if not created or not address or quote_rejections:
                     continue
                 age = snapshot.observed_at.timestamp() - float(created) / 1000
                 if age < 0:

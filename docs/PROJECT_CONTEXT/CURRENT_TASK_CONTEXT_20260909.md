@@ -1,4 +1,12 @@
-# Latest144 forward acceptance — running, no promotion, latency watch
+# Latest144 THREE-GAPS-AUDIT-1600 — callback source fix, acceptance open
+
+Exact message processed: C2C-20260910-144-THREE-GAPS-AUDIT-1600. Actual passive Runtime callback mismatch reproduced and fixed in runtime.py/mode_learning144.py; 28 closest tests PASS. Already acquired frames now advance existing learning episodes before fresh captures, including missing/floor evidence; strict clocks/identity/dedup preserved, zero new requests/snapshot writes. SOURCE_TESTED, NOT_LOADED; natural improvement unproven. Preserve healthy PID30748 instead of stopping before a previously policy-denied launch. No historical UNKNOWN backfill/causal attribution.
+
+16:23Z: health/live/performance running, same funding/Live lock. Six arms21terminals/10commonfills/5tokens, account sum-1.276522U; secondwave5terminals/3tokens+.754722U;312/315zeroBUY. Learning206labels38observed/168unknown, fixed_priority/v1/releases0. Heldfetchp952.651s/apply57.5ms/queue2.676s,drops0/PoolTimeout0;heldfailures8/connect2 cumulative increased, current5held marks fresh. Callback source hashes differ from loaded manifest; do not claim deployed.
+
+Open144 acceptance: callback load/natural attribution and bounded continuity supply; natural trend extension; finite-selector version rollback; restricted new-rule generation/append is missing implementation, not merely insufficient sample. Lead94921/94926 transfer_pausable REJECT explains two early/trend admissions; preserve safety. Details and exact dispositions in STRATEGY_DELIVERY_RESULT_144.md latest section. Agent/ModeChat expansion/143/native repetition remain deferred; sole writer unchanged.
+
+## Prior cutoff — 16:04Z
 
 At2026-09-10T16:04:25Z currentPaper30748 started15:53:23Z;8790health/live/performance running. Exact source hashes match, funding period unchanged, Paper-only/Live locked. Earlier process-control rejection was a historical event, NOT a current outage. This turn did not start/restart the recovered service.
 

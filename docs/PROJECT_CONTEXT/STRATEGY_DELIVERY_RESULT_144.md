@@ -160,3 +160,36 @@ held-fetch相对该短窗上升0.6803s/27.3%，超保守25%或250ms线，**不�
 完整紧凑工件：`data/research/strategy_delivery144/forward_acceptance_before.json`、`forward_acceptance_after.json`。SQLite仅精确KV及小型不可变表；新策略仓位使用现有definition+arm索引，无全库/39案例重扫。
 
 当前检查点已更新revision19，digest `183dca72391df32b1fc71a254d78d1da01661fcf8bddca02733cf46d826922ef`；ONE resume实际读回CONSISTENT，writer仍codex/epoch0、无stop fence。此为本地持久上下文验收，不代表Project memory或新Chat验证；后两项仍UNVERIFIED/REVALIDATION_REQUIRED。没有因ACK再递增语义revision。
+
+## THREE-GAPS-AUDIT-1600 处置 — 2026-09-10T16:23Z
+
+ACK/处置ID：`C2C-20260910-144-THREE-GAPS-AUDIT-1600`。已读指定 `THREE_GAPS_REVIEW_144_20260910_1600.md`。以下覆盖先前“实现边界通过”的过宽表述；不关闭144整体任务，不重复143/native/39案例扫描。
+
+### 已修复源码：已有回执漏接学习观察器
+
+实际调用链为：passive batch → trajectory features/signals → learning capture；原学习 observe 只在 Store 插入 token_snapshot 时调用。新增的实际 Runtime+Store 定向fixture在旧源码稳定复现：没有snapshot写入的已取得后帧不能建立研究entry。这证明接线不一致，不证明历史所有 UNKNOWN 都由此造成；Lead当时自然缓存检查未找到直接反例，保留这一限制。
+
+现于原有batch消费处，先把同身份、合法时钟回执交给已存在的学习episode，再处理本批新信号。缺价/低流动性回执仍可记录负面路径；不通过entry过滤伪造健康样本。观察器额外核对token/raw chain/base identity，保留receipt来源、原取得/记录时间与实际处理时间。label available_at使用真实处理时间；原 strict observed > prior recorded 阻止同回执随后经Store再消费。没有新增请求、snapshot写入、watch额度、定时器或历史补录，pending仍有界。
+
+验证：`tests/test_learning144_callbacks.py`、`test_mode_learning144.py`、`test_strategy_delivery144.py` 合计28项通过。新增覆盖真实被动回调、同批信号不能同帧入场、健康净成本标签、缺价池底证据、Store重复回执、一次性训练及三类身份不匹配。首次新增fixture失败明确显示entry缺失；最终same-batch测试启动时间fixture修正未改变生产启动边界。此前已通过10+6检查未重复运行。
+
+**SOURCE_IMPLEMENTED / TARGETED_TESTS_PASS；NOT_LOADED / NATURAL_EFFECT_UNVERIFIED。** 16:23:44Z manifest仍是PID30748/15:53:23Z，runtime.py与mode_learning144.py磁盘SHA不同，其余所列源码一致。此前启动被工具策略拒绝；未重复或换通道绕过，也未先停止当前健康后台。加载、回调自然分母/归因及性能保护仍是明确待验收项，不能用本次测试当生产改善。
+
+### 三项缺口逐项状态
+
+|项|已落实|仍开放|
+|覆盖|回调差异已用真实运行函数复现并修源；无新增数据请求|允许的加载后确认passive entry/label来源与延迟、UNKNOWN原因变化；30/120/300s有界观察供给尚未交付/验收，不能仅因修回调就称覆盖完成|
+|趋势/第二波|有独立已注册执行合同；16:23Z第二波5终局/3token，+0.754722U|312/315仍0 BUY、长持延期无自然验收。Lead已逐项定位94921/94926安全transfer_pausable拒绝；不将其当当前转账已暂停的事实，也不绕过安全门。其余原始信号仍需实际漏斗归因|
+|学习与晋级|固定5/15/60成本标签、一次训练、有界已有模式选择器|自动生成受限规则组合并追加新策略的DSL/执行链尚未实现；当前max2是selector模型释放上限，不是已交付自动建策略。已释放模型的完整撤回范围也未实现，当前release0无现存错误模型需撤回|
+
+后续应先闭合A回调自然验收，再分别实现/验收有限模式选择的版本撤回与获授权受限规则组合→去重/输入可达/成本测试→新frontier Paper追加；不能靠扩大阈值或等待数据把缺失源码变成“已完成”。这些仍属当前非Agent144范围，未建立新队列或第二writer。
+
+### 最新未加载修复前的自然事实
+
+证据：`data/research/strategy_delivery144/three_gaps_callback_source_readback.json`（有界只读4.6s）与 `callback_preload_performance.json`。21账户终局=10共同source fills/5tokens，合计-1.276522U仍包含重复资本：313一笔-0.422030；314五笔-1.181965；316五笔+0.754722；317十笔-0.427249；312/315零。旧14/12/4是较早有效cutoff，不是当前数量。
+
+81个保留研究episode、29pending；206标签=38OBSERVED/168UNKNOWN：5m27/53、15m11/63、60m0/52。126 UNKNOWN标签对应未在120s建立entry（三horizon计数，不是126独立币）；其余28无自然端点、9路径gap、5floor/missing。最大组4有效样本/1日，baseline fixed_priority/v1/releases0，未自动注册或晋级。
+
+health/live/performance正常，当前资金期仍 `chain-meme-trader/funding-20260906-v002-final-1000`，Paper-only/Live锁定；本次生产操作仅只读，没有不可变policy/账簿/资金历史写入。held_fetch p95=2.651s、apply=57.5ms、passive compute=.729s、queue wait=2.676s，drops0/PoolTimeout0；当前5个held token无缺失/coverage gap，最大行情年龄1.675s。累计held_fetch failures8/connect_errors2较16:04Z的1/1增加；不称全程无错，也不归因尚未加载的补丁。加载后必须做同负载保护验收。
+
+本次唯一语义checkpoint为revision20/digest `c7f9427b73e91701a4c93e541d2044feff6ddfae48fbbf585f3d53f1359fcee6`，144恢复为IN_PROGRESS并写明缺失实现；ONE resume一致、codex/epoch0、无stop fence。未改变pairing/session/memory状态。

@@ -143,6 +143,8 @@ def observe(state,*,episode_key,frame,now,liquidity_floor=1000.,max_gap_seconds=
         if (c[0]-parse_time(e['decision_at'])).total_seconds()>120:return expire(s,now=now)
         if price is None or price<=0 or liq is None or liq<liquidity_floor:return dict(state=s,status='ENTRY_UNKNOWN',labels=[])
         e['entry']={k:frame[k] for k in ('token_id','pair_address','observed_at','ingested_at','recorded_at','price_usd','liquidity_usd')}
+        for key in ('receipt_source','processed_at'):
+            if key in frame:e['entry'][key]=frame[key]
         count(s,'strict_entry')
     elif (c[0]-prior).total_seconds()>max_gap_seconds:e['gap']=True
     e['last_recorded_at']=iso(c[2]);labels=[]
@@ -266,15 +268,27 @@ class Coordinator:
             output[ARMS[3]]['decision_evidence']['learning_episode_key']=output[ARMS[0]]['decision_key']
         return output
 
-    def observe(self,token_id,snapshot,ingested,recorded):
+    def observe(self,token_id,snapshot,ingested,recorded,*,processed_at=None,source='snapshot'):
         from .models import canonical_token_address
         pair=snapshot.raw.get('pair',snapshot.raw) if snapshot.raw else {}
+        base=(pair.get('baseToken') or {}).get('address')
+        if (snapshot.token_id!=token_id
+                or pair.get('chainId') and str(pair['chainId']).lower()!=snapshot.chain
+                or base and canonical_token_address(snapshot.chain,base)!=snapshot.address):
+            count(self.state,'callback_identity_rejected');return
         pool=canonical_token_address(snapshot.chain,str(pair.get('pairAddress') or ''))
+        processed_at=processed_at or recorded
         frame=dict(token_id=token_id,pair_address=pool,observed_at=iso(snapshot.observed_at),
-            ingested_at=iso(ingested),recorded_at=iso(recorded),price_usd=snapshot.price_usd,liquidity_usd=snapshot.liquidity_usd)
+            ingested_at=iso(ingested),recorded_at=iso(recorded),price_usd=snapshot.price_usd,
+            liquidity_usd=snapshot.liquidity_usd,receipt_source=source,processed_at=iso(parse_time(processed_at)))
+        count(self.state,'callback_'+source+'_frames')
         for key,e in list(self.state['episodes'].items()):
             if (e['token_id'],e['pair_address'])==(token_id,pool):
-                observe(self.state,episode_key=key,frame=frame,now=recorded,liquidity_floor=e['costs']['min_pool_liquidity_usd'])
+                had_entry=e['entry'] is not None
+                result=observe(self.state,episode_key=key,frame=frame,now=processed_at,liquidity_floor=e['costs']['min_pool_liquidity_usd'])
+                count(self.state,'callback_'+source+'_'+result.get('status','expired'))
+                if not had_entry and e['entry'] is not None:count(self.state,'callback_'+source+'_entry')
+                if result['labels']:count(self.state,'callback_'+source+'_labels',len(result['labels']))
 
     def record_buy(self,version,arm,cohort,token,fill,at):
         key=arm+':'+str(cohort)
