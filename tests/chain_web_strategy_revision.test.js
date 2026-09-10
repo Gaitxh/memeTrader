@@ -85,6 +85,7 @@ assert.equal(context.revisionUi.entry('dex_compression_breakout_v1'),'压缩后�
 assert.equal(context.revisionUi.safety({counts:{WAIT_SECURITY:2,BUY_AUTHORIZED_UNKNOWN:1,BUY:1}}),'WAIT_SECURITY 2 / BUY_AUTHORIZED_UNKNOWN 1');
 const deliveryFamily={display_index:312,canonical_id:'trajectory144_sparse_peer_hot_fast_v1',active_arm_ids:['trajectory144_sparse_peer_hot_fast_v1'],name:'稀疏同龄HOT·自身轨迹',entry_family:'trajectory144_sparse_peer_hot_fast_v1'};
 assert.match(context.revisionUi.search(deliveryFamily),/#312/);
+assert.match(context.revisionUi.search({...deliveryFamily,display_index:281,registration_index:312}),/#312/);
 assert.match(context.revisionUi.search(deliveryFamily),/稀疏同龄hot/);
 assert.equal(context.revisionUi.delivery(deliveryFamily),'144');
 const panels=context.revisionUi.deliveryPanels({'mode-learning144:status':{version:'mode-learning144/v3',releases:0,updated_at:'2026-09-11T00:00:00Z'}});

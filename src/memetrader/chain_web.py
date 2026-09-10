@@ -3437,6 +3437,7 @@ class ChainWebData:
         for family in families:
             policy = next((lifecycle_by_arm[a] for a in family.get("active_arm_ids", [])
                            if a in lifecycle_by_arm), {})
+            family["registration_index"] = policy.get("runtime_addition_id")
             lifecycle = policy.get("account_lifecycle")
             for field in ("assessment_status", "assessment_note", "assessment_evidence"):
                 if field in policy:

@@ -650,6 +650,7 @@ def test_strategy_universe_refreshes_for_additive_strategy_versions(tmp_path: Pa
     assert len(universe["families"]) == 125
     additive = universe["families"][-1]
     assert additive["display_index"] == 125
+    assert "registration_index" in additive
     assert additive["active_arm_ids"] == ["broad_principal_lock_runner_v1"]
     assert additive["fidelity_status"] == "ADDITIVE_FORWARD"
     assert universe["provider_requests_triggered"] == 0

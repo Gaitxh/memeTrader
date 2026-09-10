@@ -44,7 +44,7 @@ def strategy_logic(policy, family, control=None, *, current=False):
         if k in p:entry.append(f'{label}：{value(p[k])}')
     if not p:entry.append('UNKNOWN：本历史版本未提供 frozen_policy，不能从当前策略反推旧规则。')
     sequence=['候选进入该策略的数据/准入通道','只按该版本配置判断信号']
-    sequence.append('信号后严格较晚的有效观察，才可继续执行；信号价不是成交价' if p.get('require_post_decision_observation') else '后帧要求：UNKNOWN（本配置未明确 require_post_decision_observation）')
+    sequence.append('信号后严格较晚的有效观察，才可继续执行；信号价不是成交价' if p.get('require_post_decision_observation') or p.get('requires_distinct_trajectory_frame') else '后帧要求：UNKNOWN（本配置未明确后帧合同）')
     if p.get('requires_distinct_trajectory_frame'):
         sequence.append('v144 还要求独立轨迹后帧及实际窗口；缓存时间不能伪装成新行情。')
     sequence.append('最终 BUY 共用安全门：拒绝或等待不能当作通过；这是当前执行约束，不补写历史' if current else '历史安全/成交约束只以该版本冻结合同为准，不能套用今日规则')
