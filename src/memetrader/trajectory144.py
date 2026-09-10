@@ -67,9 +67,10 @@ def _ratio(a, b):
 def _canonical(row):
     chain, token, pool = str(row.get("chain") or "").lower(), str(row.get("token_id") or ""), str(row.get("pair_address") or "")
     evm = re.compile(r"^0x[0-9a-fA-F]{40}$")
+    evm_pool = re.compile(r"^0x(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
     sol = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
     if not token.startswith(chain+":"): return False
-    return bool((chain in {"bsc", "ethereum", "base", "arbitrum", "polygon", "avalanche", "optimism", "robinhood"} and evm.fullmatch(token.split(":")[-1]) and evm.fullmatch(pool)) or (chain == "solana" and sol.fullmatch(token.split(":")[-1]) and sol.fullmatch(pool)))
+    return bool((chain in {"bsc", "ethereum", "base", "arbitrum", "polygon", "avalanche", "optimism", "robinhood"} and evm.fullmatch(token.split(":")[-1]) and evm_pool.fullmatch(pool)) or (chain == "solana" and sol.fullmatch(token.split(":")[-1]) and sol.fullmatch(pool)))
 
 
 class Engine:
@@ -112,6 +113,8 @@ class Engine:
         state["rows"]=deque(retained,maxlen=MAX_ROWS)
         state["features"] = self._features(identity, state)
         self.pools.move_to_end(identity); self.counts["accepted"] += 1
+        for name,ok in (("tx",_activity(row) is not None),("volume",row.get("volume_5m_usd") is not None),("age",row.get("pool_age_seconds") is not None),("window30",state["features"]["window_30"] is not None)):
+            self.counts[("input_ready:" if ok else "input_unknown:")+name]+=1
         return deepcopy(state["features"])
 
     def _features(self, identity, state):
@@ -163,7 +166,9 @@ class Engine:
             ARMS[5]: common and (w["activity_change"] or 0) > 1,
         }
         out = {}
+        self.counts["sparse_peer" if rank is None else "peer_rank_available"]+=1
         for arm, passed in flags.items():
+            if passed:self.counts["ready:"+arm]+=1
             emitted_key = arm if arm != ARMS[4] else arm+":"+str(state["episodes"])
             if passed and emitted_key not in state["emitted"]:
                 state["emitted"].add(emitted_key)
@@ -216,7 +221,9 @@ def short_fast_failure_exit(features, opened_at, now):
 
 def trend_extension(features, opened_at, now):
     """30-to-120 minutes needs a fully observed healthy 300-second path."""
-    if not features or (parse_time(now)-parse_time(features["observed_at"])).total_seconds() > 30 or parse_time(opened_at) >= parse_time(features["observed_at"]): return False
+    if not features:return False
+    observed,recorded,current=(parse_time(v) for v in (features["observed_at"],features["recorded_at"],now))
+    if not parse_time(opened_at)<observed<=recorded<=current or not 0<=(current-observed).total_seconds()<=30:return False
     w = features.get("windows",{}).get("300")
     return bool(w and parse_time(w["start_at"])>=parse_time(opened_at) and w["log_slope"] > 0 and (w["activity_change"] or 0) >= 1 and (w["liquidity_change"] or 0) >= 1-FRICTION and features["drawdown"] > -FRICTION)
 

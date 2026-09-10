@@ -66,3 +66,16 @@ def test_absorption_needs_real_dip_not_monotonic_path():
     at=utcnow(); e=Engine(at)
     for i, price in enumerate((1,1.05,1.1,1.15,1.2)): e.accept(row(at+timedelta(seconds=i*10),i,price=price),at+timedelta(seconds=i*10))
     assert not e.pools[(row(at,0)["token_id"],row(at,0)["pair_address"])]["features"]["absorption_recovery"]
+
+
+def test_current_pool_id_and_extension_clocks():
+    at=utcnow();e=Engine(at);r=row(at,0,pool='0x'+'f'*64)
+    assert e.accept(r,at) is not None
+    f=dict(observed_at=iso(at),recorded_at=iso(at+timedelta(seconds=3)),windows={'300':dict(start_at=iso(at-timedelta(seconds=300)),log_slope=.01,activity_change=1.1,liquidity_change=1.1)},drawdown=0)
+    assert not trend_extension(f,at-timedelta(seconds=500),at+timedelta(seconds=1))
+
+def test_dense_receipts_retain_actual_runner_window():
+    at=utcnow();e=Engine(at)
+    for i in range(400):
+        now=at+timedelta(seconds=i);f=e.accept(row(now,i,price=1+i/1000),now)
+    assert f['windows']['300'] and len(next(iter(e.pools.values()))['rows'])<=192
