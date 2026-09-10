@@ -557,12 +557,18 @@ def decode_pump_global_account(raw: bytes) -> dict[str, Any]:
     """Decode the Pump Global fields used by official SDK 1.36.0 sell math."""
     if len(raw) < 162 or raw[:8] != PUMP_GLOBAL_DISCRIMINATOR:
         raise ValueError("invalid_pump_global_layout")
-    return {
+    result = {
         "decoder_version": PUMP_GLOBAL_DECODER_V1,
         "account_data_length": len(raw),
         "fee_basis_points": int.from_bytes(raw[105:113], "little"),
         "creator_fee_basis_points": int.from_bytes(raw[154:162], "little"),
     }
+    from .pump_native_cash import global_fields
+    try:
+        result.update(global_fields(raw))
+    except ValueError:
+        result['native_message_global_status']='UNKNOWN_INCOMPLETE_CURRENT_LAYOUT'
+    return result
 
 
 def pump_bonding_curve_sell_quote_v1(
