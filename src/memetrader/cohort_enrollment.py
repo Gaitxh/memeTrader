@@ -4,6 +4,23 @@ import json
 ANNOTATION_KEY='duplicate-opportunity-contamination/v1:'
 
 
+def synthetic_entry_block(db, version, arm, token_id, cohort_id=None):
+    """Synthetic lifetime token exclusion and one open-or-reserved slot."""
+    if arm != 'synthetic_fast_harvest_v1':return None
+    if db.execute('SELECT 1 FROM chain_meme_trader_positions WHERE definition_version=? AND arm_id=? AND token_id=? LIMIT 1',
+                  (version,arm,token_id)).fetchone():return 'synthetic_no_reentry'
+    if db.execute("SELECT 1 FROM chain_meme_trader_positions WHERE definition_version=? AND arm_id=? AND status='open' LIMIT 1",
+                  (version,arm)).fetchone():return 'synthetic_open_or_reserved_capacity'
+    reserved=db.execute('SELECT c.cohort_id FROM chain_meme_cohort_enrollment_claims c '
+        'WHERE c.definition_version=? AND c.arm_id=? AND c.terminal_reason IS NULL '
+        'AND NOT EXISTS (SELECT 1 FROM chain_meme_trader_positions p WHERE p.definition_version=c.definition_version '
+        'AND p.arm_id=c.arm_id AND p.shadow_cohort_id=c.cohort_id) ORDER BY c.cohort_id LIMIT 1',
+        (version,arm)).fetchone()
+    if reserved and (cohort_id is None or int(reserved[0])!=int(cohort_id)):
+        return 'synthetic_open_or_reserved_capacity'
+    return None
+
+
 def annotations(db,version):
     row=db.execute('SELECT value_json FROM kv WHERE key=?',(ANNOTATION_KEY+version,)).fetchone()
     return json.loads(row[0]).get('positions',{}) if row else {}

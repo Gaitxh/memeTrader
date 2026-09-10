@@ -27323,9 +27323,12 @@ class Store:
                         continue
                     event_keys[arm] = str(signal["decision_key"])
                     accepted_cohort_signals[arm] = signal
-                    from .cohort_enrollment import owner
+                    from .cohort_enrollment import owner, synthetic_entry_block
                     used = owner(self.db,version,arm,event_keys[arm],token.token_id)
-                    if used or arm in still_open:
+                    synthetic_block=synthetic_entry_block(self.db,version,arm,token.token_id)
+                    if synthetic_block:
+                        entry_blocked[arm]=synthetic_block
+                    elif used or arm in still_open:
                         entry_blocked[arm] = "cohort_event_consumed_or_position_open"
                     else:
                         already_bought.discard(arm)
@@ -28356,8 +28359,10 @@ class Store:
         signal_price_usd: float | None = None,
     ) -> int:
         """Project one visible DEX price into eligible Paper accounts."""
-        from .cohort_enrollment import claim_decisions
+        from .cohort_enrollment import claim_decisions, synthetic_entry_block
         decisions = claim_decisions(self.db,version,cohort_id,token_id,filled_at)
+        decisions = [d for d in decisions if not synthetic_entry_block(
+            self.db,version,str(d['arm_id']),token_id,cohort_id)]
         if not decisions:return 0
         safety = getattr(self, "_preentry_safety", None)
         self.rediscovery_funnel_hit(token_id, 'safety_stage', filled_at)

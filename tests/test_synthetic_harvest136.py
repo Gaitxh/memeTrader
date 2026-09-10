@@ -56,6 +56,14 @@ def test_conditional_real_store_safety_later_fill_exit(tmp_path,monkeypatch,exit
         store.observe_chain_meme_pattern(token,_snapshot(token,POOL,clock[0]),recorded_at=clock[0],cohort_signals=signal)
         clock[0]+=timedelta(seconds=1)
     assert len(gate.pending)==1
+    # Another episode cannot reserve a second slot while safety is pending.
+    other=TokenCandidate('bsc','0x'+'56'*20,'Other','O');store.upsert_token(other)
+    second=deepcopy(signal);second[arm].update(episode_id='second',decision_key='second|'+arm,
+        selected={'token_id':other.token_id,'pair_address':POOL})
+    for _ in range(3):
+        clock[0]+=timedelta(seconds=1)
+        store.observe_chain_meme_pattern(other,_snapshot(other,POOL,clock[0]),recorded_at=clock[0],cohort_signals=second)
+    assert len(gate.pending)==1
     proof=honeypot_pool_receipt(report(clock[0]),token_id=TOKEN,pool=POOL,decision=clock[0])
     gate.cache[(TOKEN,POOL)]=dict(status='PASS',allow=True,source_at=iso(clock[0]),reasons=[],exact_pool_sell_simulation=proof)
     with store._lock,store.db:gate.resume(token,_snapshot(token,POOL,clock[0]),clock[0])
@@ -72,6 +80,18 @@ def test_conditional_real_store_safety_later_fill_exit(tmp_path,monkeypatch,exit
         clock[0]+=timedelta(seconds=2)
     pos=store.db.execute('SELECT * FROM chain_meme_trader_positions WHERE arm_id=?',(arm,)).fetchone()
     assert pos['status']=='closed'
+    store._microstructure119=None
+    # A genuinely new event/key after terminal must not bypass no-reentry.
+    again=deepcopy(signal);again[arm].update(episode_id='new-wave',decision_key='new-wave|'+arm,
+        observed_at=iso(clock[0]),recorded_at=iso(clock[0]),
+        decision_evidence={'signal_at':iso(clock[0]),'phase':'SYNTHETIC_LPI_BUILDING'})
+    for _ in range(3):
+        store.observe_chain_meme_pattern(token,_snapshot(token,POOL,clock[0]),recorded_at=clock[0],cohort_signals=again)
+        clock[0]+=timedelta(seconds=1)
+    assert not gate.pending
+    assert store.db.execute('SELECT count(*) FROM chain_meme_trader_positions WHERE arm_id=?',(arm,)).fetchone()[0]==1
+    from memetrader.cohort_enrollment import synthetic_entry_block
+    assert synthetic_entry_block(store.db,store.CHAIN_MEME_TRADER_ACTIVE_VERSION,'event_reawakening_v1',TOKEN) is None
     store.close()
 
 
