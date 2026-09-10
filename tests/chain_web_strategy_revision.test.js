@@ -146,5 +146,8 @@ vm.runInContext('refreshLive()', context).then(() => {
 });
 
 assert.match(context.revisionUi.explanation({},true),/class="strategy-explanation" open/);
+assert.match(app,/held仅指OPEN仓/);
+assert.match(app,/priority\.actual_open/);
+assert.match(app,/priority\.obsolete_filtered/);
 
 assert.match(context.revisionUi.positionMarkText({indicative_source:'dex_price_mark_configured_execution',indicative_sell_slippage_pct:4}),/公开池价格，已扣 4%/);

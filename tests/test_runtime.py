@@ -1398,8 +1398,9 @@ def test_low_quote_starts_while_held_market_http_is_in_flight():
 
             @staticmethod
             def chain_meme_trader_market_mark_targets(**kwargs):
-                assert kwargs == {"definition_versions": ["active"]}
-                return [{"token_id": held.token_id, "chain": held.chain, "address": held.address}]
+                assert kwargs["definition_versions"] == ["active"]
+                assert "diagnostics" in kwargs
+                return [{"token_id": held.token_id, "chain": held.chain, "address": held.address, "watch_reason": "OPEN_POSITION"}]
 
             @staticmethod
             def apply_chain_meme_trader_market_mark_batch(outcomes, recorded_at):
@@ -1408,6 +1409,10 @@ def test_low_quote_starts_while_held_market_http_is_in_flight():
             @staticmethod
             def evaluate_chain_meme_trader_market_marks(**kwargs):
                 evaluations.append(kwargs)
+
+            @staticmethod
+            def get_kv(*args, **kwargs):
+                return None
 
             @staticmethod
             def heartbeat(*args, **kwargs):
@@ -1483,8 +1488,9 @@ def test_cohort_batch_drains_while_held_market_http_is_in_flight():
 
             @staticmethod
             def chain_meme_trader_market_mark_targets(**kwargs):
-                assert kwargs == {"definition_versions": ["active"]}
-                return [{"token_id": held.token_id, "chain": held.chain, "address": held.address}]
+                assert kwargs["definition_versions"] == ["active"]
+                assert "diagnostics" in kwargs
+                return [{"token_id": held.token_id, "chain": held.chain, "address": held.address, "watch_reason": "OPEN_POSITION"}]
 
             @staticmethod
             def apply_chain_meme_trader_market_mark_batch(outcomes, recorded_at):
@@ -1508,6 +1514,10 @@ def test_cohort_batch_drains_while_held_market_http_is_in_flight():
 
             @staticmethod
             def set_kv(*args):
+                return None
+
+            @staticmethod
+            def get_kv(*args, **kwargs):
                 return None
 
             @staticmethod
@@ -2681,7 +2691,7 @@ def test_market_marks_batch_addresses_by_chain_before_quoting():
                 return False
 
             @staticmethod
-            def chain_meme_trader_market_mark_targets(definition_versions=None):
+            def chain_meme_trader_market_mark_targets(definition_versions=None, diagnostics=None):
                 assert definition_versions == ["active"]
                 return [
                     {"token_id": "bsc:0x1", "chain": "bsc", "address": "0x1"},

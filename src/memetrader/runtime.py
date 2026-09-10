@@ -7236,6 +7236,14 @@ class Runtime:
         evaluate_versions: list[str] | None = None,
     ) -> int:
         """Refresh a de-duplicated target set with fresh 30-token DEX batches."""
+        if not high_priority:
+            priority = getattr(self, "_market_priority_tokens", set())
+            if observe_flat_breakout:
+                # Preserve flat's callback using the next real priority response.
+                self._flat_priority_observe_tokens = (
+                    getattr(self, "_flat_priority_observe_tokens", set()) | {
+                        item["token_id"] for item in targets if item["token_id"] in priority}) & priority
+            targets = [item for item in targets if item["token_id"] not in priority]
         targets_by_chain: dict[str, list[dict[str, Any]]] = {}
         for item in targets:
             targets_by_chain.setdefault(str(item["chain"]).lower(), []).append(item)
@@ -7456,6 +7464,12 @@ class Runtime:
                 self.store.observe_flat_compression_breakout_market_batch(
                     outcomes, recorded_at=received_at,
                 )
+            elif high_priority:
+                waiting = getattr(self, "_flat_priority_observe_tokens", set())
+                shared = [o for o in outcomes if (o.get("target_token_id") or o.get("token_id")) in waiting]
+                if shared:
+                    self.store.observe_flat_compression_breakout_market_batch(shared, recorded_at=received_at)
+                    waiting.difference_update(o.get("target_token_id") or o.get("token_id") for o in shared)
             return refreshed_count
 
         return sum(await asyncio.gather(*(
@@ -7475,10 +7489,18 @@ class Runtime:
                 self.store.CHAIN_MEME_TRADER_V13_VERSION,
                 self.store.CHAIN_MEME_TRADER_V11_VERSION,
             ])
+        target_counts = {}
         targets = self.store.chain_meme_trader_market_mark_targets(
-            definition_versions=target_versions,
+            definition_versions=target_versions, diagnostics=target_counts,
         )
-        self._pattern_held_tokens = {str(t["token_id"]) for t in targets}
+        self._pattern_held_tokens = {str(t["token_id"]) for t in targets
+            if "OPEN_POSITION" in str(t.get("watch_reason") or "").split(",")}
+        self._market_priority_tokens = {str(t["token_id"]) for t in targets}
+        self._flat_priority_observe_tokens = getattr(self, "_flat_priority_observe_tokens", set()) & self._market_priority_tokens
+        self._pattern_pending_tokens = self._market_priority_tokens - self._pattern_held_tokens
+        self._market_target_counts = target_counts
+        if hasattr(self, "runtime_timing"):
+            self.runtime_timing.observe_market_targets(target_counts)
         self._pattern_protection_ready = True
         refreshed = await self._refresh_chain_meme_market_marks(
             targets, heartbeat_name="chain-meme-market-marks",
@@ -7544,6 +7566,7 @@ class Runtime:
         store = getattr(self, 'store', None)
         funnel = getattr(store, '_rediscovery_funnel', None)
         protected = set(held) | set(getattr(store, '_market_entry_pending_tokens', set()))
+        protected.update(getattr(self, '_pattern_pending_tokens', set()))
         protected.update(item['token_id'] for item in getattr(getattr(store, '_preentry_safety', None), 'pending', {}).values())
         protected.update(key[0] for key in getattr(self, '_cohort_pending', {}))
         protected.update(key for key, until in getattr(store, '_pattern_ready_until', {}).items() if until > current)
@@ -8054,9 +8077,10 @@ class Runtime:
         async def fetch_chain(chain: str):
             await self._chain_meme_active_idle().wait()
             targets = [v for v in watch.values() if v["token"].chain == chain]
-            # Held tokens only consume their core lane's next response. Never
-            # make a second request when a held response is late or unavailable.
-            due = [v['token'].address for _,v in select_due(watch,utcnow(),held=getattr(self,'_pattern_held_tokens',set()))
+            # Open and unexpired pending targets share the priority response;
+            # pending protection does not grant a held watch-cap exemption.
+            priority = getattr(self,'_market_priority_tokens',getattr(self,'_pattern_held_tokens',set()))
+            due = [v['token'].address for _,v in select_due(watch,utcnow(),held=priority)
                    if v['token'].chain==chain and (v.get('quote') is None
                        or (utcnow()-v['quote'].observed_at).total_seconds()>15 or v.get('sampled_at')==v['quote'].observed_at)]
             if due and self._dex_quote_low_priority_available():
@@ -8151,7 +8175,9 @@ class Runtime:
             if before!=item.get('window_results',{}):self._leases145_dirty=True
         coverage=bounded_summary(watch,utcnow(),held=getattr(self,'_pattern_held_tokens',set()),protected=getattr(self,'_lease145_protected',set()))
         coverage.update(mature_window_counts=counts,denominator='admitted_exact_pool_opportunity; each matured window counted once',
-            spare_batch_expansion='DISABLED_PENDING_NATURAL_BUDGET',target_cadence_seconds=15,extra_request_budget=0)
+            spare_batch_expansion='DISABLED_PENDING_NATURAL_BUDGET',target_cadence_seconds=15,extra_request_budget=0,
+            priority_targets=getattr(self,'_market_target_counts',{}),
+            protection_basis='held=OPEN_POSITION only; protected also includes valid pending BUY/SELL, safety and next-frame signals; research uses existing low-priority receipts')
         self.store.set_kv('coverage145:status',coverage)
         if getattr(self,'_leases145_dirty',False):
             checkpoint=dump_state(watch,utcnow());checkpoint['mature_window_counts']=counts

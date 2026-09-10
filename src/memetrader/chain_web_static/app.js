@@ -486,6 +486,7 @@ function deliveryPanels(diagnostic, families=[]){
   const trajectoryReason=trajectory.status==='UNKNOWN'?'尚未加载 trajectory144 状态；不能把未返回的信号当作零。':`原池 ${trajectory.value.pools??'UNKNOWN'}；实际信号 ${trajectorySignals}（signal:<arm> 合计）；独立 BUY/terminal 由策略账户账本分别显示。`;
   const learningReason=learning.status==='UNKNOWN'?'尚未加载学习摘要；不能推断模型、候选或经济结果。':(releases===0?`固定基线，尚无学习模型发布；当前版本 ${modelVersion}。`:`当前版本 ${modelVersion}；发布 ${releases} 次，仍需独立前向终局验证。`);
   const futureText=future.map(([key,item])=>`${key.replace(':status','')} ${item.status}${item.updatedAt?` · ${time(item.updatedAt)}`:''}`).join(' / ');
+  const priority=diagnostic['coverage145:status']?.priority_targets||{};
   const armRows=Object.entries(learning.value.arms||{}).map(([arm,row])=>[
     arm,`信号 ${row.signal_decisions??'UNKNOWN'} · ready回调 ${row.ready_callbacks??'UNKNOWN'} · BUY ${row.independent_buy_receipts??'UNKNOWN'} · 终局 ${row.terminal_receipts??'UNKNOWN'}`,
     `最后信号 ${row.last_signal_at?time(row.last_signal_at):'UNKNOWN'} / 成交 ${row.last_buy_at?time(row.last_buy_at):'UNKNOWN'}；阶段 ${JSON.stringify(row.stage_counts||{})}；${row.first_block||'UNKNOWN'}；新代回执，不冒充全历史。`]);
@@ -507,6 +508,8 @@ function deliveryPanels(diagnostic, families=[]){
     ['144 运行与来源',trajectoryReason,'来源回调数、独立 Token、独立 BUY 与 terminal 是不同分母，页面不合并计数。'],
     ['144 学习',learningReason,'OBSERVED 与 UNKNOWN 按 horizon 和唯一 episode 解释；无成熟样本不能晋级。'],
     ['145 有界摘要',futureText,'145 状态键未写入时显示 UNKNOWN；此 API 不会触发训练、注册或扫描。'],
+    ['高优先行情目标',`真实持仓 ${priority.actual_open??'UNKNOWN'} · 有效待成交/意图 ${priority.pending_recent??'UNKNOWN'} · 排除旧准入 ${priority.obsolete_filtered??'UNKNOWN'} 条`,
+      'held仅指OPEN仓；有效安全等待/待成交/SELL受保护但不是持仓。旧准入排除按记录计数；学习仍消费既有低优先共享行情，缺覆盖保留UNKNOWN。'],
     ['独立学习episode',String(learning.value.unique_episodes??'UNKNOWN'),'相同来源多个账户不增加标签；滚动计数与全历史不同。'],
     [`${researchCycle} 独立学习episode`,String(research.unique_episodes??'UNKNOWN'),`严格后帧锚 ${research.counts?.strict_entry??'UNKNOWN'}；${research.schema||'UNKNOWN'}；不与317旧代分母合并。`],
     ['145 固定优先级对照',research.economic_comparison?.status||'NO_MATCHED_BASELINE','只比较冻结基线的真实等成本、等数量、同fill终局；所选来源不是独立基线。'],

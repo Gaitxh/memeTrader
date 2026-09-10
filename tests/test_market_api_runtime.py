@@ -150,6 +150,7 @@ def test_held_cooldown_releases_priority_without_fake_market_result(tmp_path):
         runtime.runtime_timing = RuntimeTiming()
         token = TokenCandidate("solana", "A" * 32, "Held cooldown", "HELD")
         target = target_for(token, "original-pool")
+        target["watch_reason"] = "OPEN_POSITION"
         runtime.store.chain_meme_trader_market_mark_targets = lambda **kwargs: [target]
         runtime._dex_quote_backoff_until = asyncio.get_running_loop().time() + 120
 

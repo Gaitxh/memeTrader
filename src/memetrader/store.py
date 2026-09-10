@@ -31575,8 +31575,10 @@ class Store:
         self, *, definition_version: str | None = None,
         definition_versions: Iterable[str] | None = None,
         limit: int = 600,
+        as_of: Any = None, diagnostics: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        """Return the least-recently attempted held-token watch targets first."""
+        """Prioritize open positions and still-executable pending opportunities."""
+        now = parse_time(as_of or utcnow())
         versions = list(dict.fromkeys(
             list(definition_versions) if definition_versions is not None
             else [definition_version] if definition_version is not None else [
@@ -31586,41 +31588,81 @@ class Store:
             ]
         ))
         placeholders = ",".join("?" for _ in versions)
-        query = (
-            "WITH watched AS ("
-            "SELECT p.token_id,'OPEN_POSITION' AS reason,"
-            "COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),c.pair_address) "
-            "AS entry_pair_address FROM chain_meme_trader_positions p "
-            "LEFT JOIN token_snapshots e ON e.id=p.entry_snapshot_id AND e.token_id=p.token_id "
-            "LEFT JOIN chain_meme_trader_v6_cohorts c ON c.id=p.shadow_cohort_id "
-            "AND c.definition_version=p.definition_version "
-            f"WHERE p.definition_version IN ({placeholders}) AND p.status='open' UNION ALL "
-            "SELECT i.token_id,'PENDING_INTENT',c.pair_address FROM chain_meme_trader_order_intents i "
-            "LEFT JOIN chain_meme_trader_v6_cohorts c ON c.id=i.shadow_cohort_id AND c.definition_version=i.definition_version "
-            f"WHERE i.definition_version IN ({placeholders}) AND i.status IN ('ready','retry','submitted') "
-            "UNION ALL SELECT token_id,'RECENT_DECISION',NULL FROM ("
-            "SELECT token_id FROM chain_meme_trader_entry_decisions "
-            f"WHERE definition_version IN ({placeholders}) AND status='admitted' "
-            "ORDER BY id DESC LIMIT 120)) "
-            "SELECT t.token_id,t.chain,t.address,"
-            "GROUP_CONCAT(DISTINCT watched.reason) AS watch_reason,"
-            "GROUP_CONCAT(DISTINCT watched.entry_pair_address) AS entry_pair_addresses "
-            "FROM watched JOIN tokens t ON t.token_id=watched.token_id "
-            "LEFT JOIN chain_meme_trader_market_marks m ON m.token_id=t.token_id "
-            "GROUP BY t.token_id,t.chain,t.address,m.last_attempt_at "
-            "ORDER BY MAX(CASE WHEN watched.reason='OPEN_POSITION' THEN 1 ELSE 0 END) DESC,"
-            "CASE WHEN m.last_attempt_at IS NULL THEN 0 ELSE 1 END,"
-            "m.last_attempt_at,t.token_id LIMIT ?"
-        )
         with self._lock:
+            # The bounded receipt tail is not a perpetual watch subscription.
+            recent = self.db.execute(
+                "SELECT d.*,c.pair_address,c.token_id AS cohort_token_id,"
+                "COALESCE(json_extract(r.definition_json,'$.max_signal_to_execution_start_seconds'),120) AS deadline_seconds,"
+                "EXISTS(SELECT 1 FROM chain_meme_trader_positions p WHERE "
+                "p.definition_version=d.definition_version AND p.arm_id=d.arm_id "
+                "AND p.shadow_cohort_id=d.shadow_cohort_id) AS has_position,"
+                "EXISTS(SELECT 1 FROM chain_meme_cohort_enrollment_claims e WHERE "
+                "e.definition_version=d.definition_version AND e.arm_id=d.arm_id "
+                "AND e.cohort_id=d.shadow_cohort_id AND e.terminal_reason IS NOT NULL) AS terminal "
+                "FROM (SELECT * FROM chain_meme_trader_entry_decisions "
+                f"WHERE definition_version IN ({placeholders}) AND status='admitted' "
+                "ORDER BY id DESC LIMIT 120) d "
+                "LEFT JOIN chain_meme_trader_v6_cohorts c ON c.id=d.shadow_cohort_id "
+                "AND c.definition_version=d.definition_version "
+                "LEFT JOIN chain_meme_trader_registrations r ON r.definition_version=d.definition_version",
+                tuple(versions),
+            ).fetchall()
+            eligible = []
+            filtered = {"terminal": 0, "position_exists": 0, "expired_or_future": 0, "identity": 0}
+            for row in recent:
+                age = (now - parse_time(row["decided_at"])).total_seconds()
+                reason = ("terminal" if row["terminal"] else "position_exists" if row["has_position"]
+                    else "expired_or_future" if not 0 <= age <= float(row["deadline_seconds"])
+                    else "identity" if not row["pair_address"] or row["cohort_token_id"] != row["token_id"] else None)
+                if reason:
+                    filtered[reason] += 1
+                else:
+                    eligible.append((row["token_id"], row["pair_address"]))
+            recent_sql = " UNION ALL ".join("SELECT ?,'RECENT_DECISION',?" for _ in eligible)
+            recent_sql = recent_sql or "SELECT NULL,'RECENT_DECISION',NULL WHERE 0"
+            query = (
+                "WITH watched AS ("
+                "SELECT p.token_id,'OPEN_POSITION' AS reason,"
+                "COALESCE(json_extract(e.raw_json,'$.pair.pairAddress'),c.pair_address) "
+                "AS entry_pair_address FROM chain_meme_trader_positions p "
+                "LEFT JOIN token_snapshots e ON e.id=p.entry_snapshot_id AND e.token_id=p.token_id "
+                "LEFT JOIN chain_meme_trader_v6_cohorts c ON c.id=p.shadow_cohort_id "
+                "AND c.definition_version=p.definition_version "
+                f"WHERE p.definition_version IN ({placeholders}) AND p.status='open' UNION ALL "
+                "SELECT i.token_id,'PENDING_INTENT',c.pair_address FROM chain_meme_trader_order_intents i "
+                "LEFT JOIN chain_meme_trader_v6_cohorts c ON c.id=i.shadow_cohort_id AND c.definition_version=i.definition_version "
+                "LEFT JOIN chain_meme_trader_registrations r ON r.definition_version=i.definition_version "
+                f"WHERE i.definition_version IN ({placeholders}) AND i.status IN ('ready','retry','submitted') "
+                "AND (i.side='SELL' OR (julianday(i.created_at)<=julianday(?) AND "
+                "julianday(?)<=COALESCE(julianday(i.expires_at),julianday(i.created_at)+"
+                "COALESCE(json_extract(r.definition_json,'$.max_signal_to_execution_start_seconds'),120)/86400.0))) "
+                f"UNION ALL {recent_sql}) "
+                "SELECT t.token_id,t.chain,t.address,"
+                "GROUP_CONCAT(DISTINCT watched.reason) AS watch_reason,"
+                "GROUP_CONCAT(DISTINCT watched.entry_pair_address) AS entry_pair_addresses "
+                "FROM watched JOIN tokens t ON t.token_id=watched.token_id "
+                "LEFT JOIN chain_meme_trader_market_marks m ON m.token_id=t.token_id "
+                "GROUP BY t.token_id,t.chain,t.address,m.last_attempt_at "
+                "ORDER BY MAX(CASE WHEN watched.reason='OPEN_POSITION' THEN 1 ELSE 0 END) DESC,"
+                "CASE WHEN m.last_attempt_at IS NULL THEN 0 ELSE 1 END,"
+                "m.last_attempt_at,t.token_id LIMIT ?"
+            )
             targets = [dict(row) for row in self.db.execute(
-                query, tuple(versions + versions + versions + [max(1, int(limit))]),
+                query, tuple(versions + versions + [iso(now), iso(now)]
+                    + [value for row in eligible for value in row] + [max(1, int(limit))]),
             ).fetchall()]
+            if diagnostics is not None:
+                actual_open = sum("OPEN_POSITION" in t["watch_reason"] for t in targets)
+                diagnostics.update(recorded_at=iso(now), actual_open=actual_open,
+                    pending_recent=len(targets)-actual_open, high_priority_total=len(targets),
+                    recent_receipts=len(recent), eligible_recent_receipts=len(eligible),
+                    obsolete_filtered=sum(filtered.values()), filtered_reasons=filtered,
+                    obsolete_filtered_unit="admitted_receipt_rows; not open positions")
             for target in targets:
                 pairs = str(target.get("entry_pair_addresses") or "").split(",")
                 target["original_entry_pair_addresses"] = target.get("entry_pair_addresses")
                 target["entry_pair_addresses"] = ",".join(
-                    (resolve_flap_successor(self.db, target["token_id"], pair, iso(utcnow())) or {}).get("successor_pool", pair)
+                    (resolve_flap_successor(self.db, target["token_id"], pair, iso(now)) or {}).get("successor_pool", pair)
                     for pair in pairs if pair
                 )
             return targets

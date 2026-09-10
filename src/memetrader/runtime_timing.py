@@ -29,6 +29,7 @@ class RuntimeTiming:
     def __init__(self) -> None:
         self._components: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._retrieval: deque[dict[str, Any]] = deque(maxlen=120)
+        self._market_targets: dict[str, Any] = {}
         self._passive_waits: deque[float] = deque(maxlen=MAX_SAMPLES)
         self._passive_queue: dict[str, Any] = {
             "scope": "since_process_start", "capacity_batches": 16,
@@ -52,6 +53,9 @@ class RuntimeTiming:
         if wait_seconds is not None:
             queue["processed_batches"] += 1
             self._passive_waits.append(wait_seconds)
+
+    def observe_market_targets(self, counts: dict[str, Any]) -> None:
+        self._market_targets = dict(counts)
 
     def observe_retrieval(self, *, chain: str, duration_seconds: float,
                           tokens: int, priced: int, failed: int,
@@ -134,7 +138,8 @@ class RuntimeTiming:
                 },
             },
             "held_retrieval": {
-                "bucket_seconds": 10, "scope": "active_held_primary_lane",
+                "bucket_seconds": 10, "scope": "open_and_valid_pending_primary_lane",
+                "target_supply": dict(self._market_targets),
                 "points": [{
                     "observed_at": datetime.fromtimestamp(p["timestamp"], timezone.utc).isoformat(),
                     "chains": {chain: dict(counts) for chain, counts in p["chains"].items()},
