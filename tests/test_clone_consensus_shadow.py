@@ -47,4 +47,12 @@ def test_funded_cohort_frontier_safety_next_frame_and_once(tmp_path,monkeypatch,
         clock[0]+=timedelta(seconds=1)
         store.observe_chain_meme_pattern(token,_snapshot(token,pool,clock[0]),recorded_at=clock[0],cohort_signals=signal)
     assert store.db.execute('SELECT count(*) FROM chain_meme_trader_positions WHERE arm_id=?',(arm,)).fetchone()[0]==1
+    # Common original-pool mechanical exit, no Agent or separate native fill path.
+    for _ in range(2):
+        clock[0]+=timedelta(seconds=2)
+        store.upsert_chain_meme_trader_market_mark(token,_snapshot(token,pool,clock[0],price=.5),recorded_at=clock[0])
+        store.evaluate_chain_meme_trader_market_marks(definition_version=store.CHAIN_MEME_TRADER_ACTIVE_VERSION,
+            now=clock[0],token_ids=[token.token_id])
+    position=store.db.execute('SELECT * FROM chain_meme_trader_positions WHERE arm_id=?',(arm,)).fetchone()
+    assert position['status']=='closed' and position['realized_pnl_usd']<0
     store.close()

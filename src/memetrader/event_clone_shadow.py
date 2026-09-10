@@ -118,6 +118,10 @@ class EventCloneShadow:
         persisted_scout=(p.get('research_mode')=='VERIFY_PERSISTED_SOURCES'
             and bool(sources) and all(s.get('source_evidence_id') and s.get('scout_model')=='gpt-5.6-luna'
                 for s in sources))
+        if persisted_scout:
+            from .narrative_hold import pending_scout_leads
+            sources=pending_scout_leads({'leads':sources},parse_time(p['cutoff']))
+            persisted_scout=bool(sources)
         confirmed=(p.get('narrative_type')=='real_event_novelty' and p.get('promotion_only') is False
             and p.get('independent_origin_count',0)>=2 and p.get('event_key')
             and v.get('model')=='gpt-5.6-terra' and v.get('status')=='cross_source_supported'
