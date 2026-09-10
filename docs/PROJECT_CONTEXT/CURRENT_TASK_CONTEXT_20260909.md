@@ -1,5 +1,7 @@
 # Current146 — causal learner fixes loaded; first natural BUY/SELL
 
+Latest guard19:15:33Z samePID34616 healthy; heldp953.702s/apply59ms/queue3.245s,drops0/pool0/connect0. Keep PERFORMANCE_WATCH/C3 disabled; earlier19:08 window below is not sustained performance acceptance. No new semantic checkpoint or training from this readback.
+
 ACK/RESULT C2C-20260911-146-EXACT-DELIVERY-FIXES. c079df4 core loaded19:04:54.659988Z/PID34616,13/13SHA; Web40ad14e served exactly. A-D fixed with actual source/Store regressions. New independent320 `trajectory146_learned_mode_selector_v1` is2U/max2, registered snapshot2823167; v5 includes known floor=-1 model utility, excludes NO_SIGNAL publishing, requires full fresh target sample after rollback. Old317v3 and all319 prior policy/funding digests unchanged; v4 KV preserved, not relabeled. Recipe economic status is implemented, not hardcoded0. Full A-G: STRATEGY_DELIVERY_RESULT_146.md.
 
 19:08:46Z v5 baseline/releases0,8episodes/7strict anchors/3signals,1actualBUY+terminal:cohort95063/fill94507,2U hard-stop-0.429993536U, same fixed-baseline delta0/N1.318 shares this actual source fill;319 prior-.222084U/delta0. No learned promotion, AUTO_GENERATED recipe, positive economic promotion or natural extended-hold treatment yet. These remain evidence conditions, not missing delivery.37+10 Python cases and Node PASS; no fixture entered production.
