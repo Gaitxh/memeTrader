@@ -127,13 +127,14 @@ def test_collector_reuses_confirmed_bounded_account_read_and_real_decode():
             payload = json.loads(request.content)
             calls.append(payload)
             return httpx.Response(200, json={"result": {"context": {"slot": 123},
-                                  "value": [value, {**value, "owner": str(Pubkey.new_unique())}, None, None, None]}})
+                                  "value": [value, {**value, "owner": str(Pubkey.new_unique())}, None, None, None, None, None, None]}})
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
             collector = SolanaHeldAccountCollector.__new__(SolanaHeldAccountCollector)
             collector.http, collector.rpc_url, collector.max_multiple_accounts = client, "https://rpc.test", 100
             observed = await collector.bonding_curve_observations(seeds)
-            assert len(calls) == 1 and len(calls[0]["params"][0]) == 5
+            assert len(calls) == 1 and len(calls[0]["params"][0]) == 8
+            assert observed[0]['mint_slot']==123 and observed[0]['mint_state']['status']=='missing'
             assert calls[0]["method"] == "getMultipleAccounts"
             assert calls[0]["params"][1]["commitment"] == "confirmed"
             assert observed[0]["real_quote_reserves_raw"] == 1234567890

@@ -71,6 +71,21 @@ def test_supported_subset_reaches_existing_unfunded_frame():
     assert e['transaction_fees']=='UNKNOWN_NETWORK_RENT_NOT_INCLUDED'
     assert e['safety_status']=='UNKNOWN_TOKEN_CONTROLS_NOT_ACQUIRED'
 
+
+@pytest.mark.parametrize('case,expected',[('plain','CONTROLS_VERIFIED'),('missing','UNKNOWN'),
+    ('slot','UNKNOWN'),('extension','UNKNOWN'),('authority','REJECT'),('supply','UNKNOWN')])
+def test_same_slot_native_mint_control_boundary(case,expected):
+    from memetrader.pump_native import native_mint_controls
+    _,f,_=sample();f.update(mint_slot=f['slot'],mint_state=dict(status='verified',
+        owner='TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',data_length=82,
+        mint_authority=None,freeze_authority=None,initialized=True,supply_raw=10**15))
+    if case=='missing':f.pop('mint_state')
+    if case=='slot':f['mint_slot']-=1
+    if case=='extension':f['mint_state']['data_length']=170
+    if case=='authority':f['mint_state']['freeze_authority']=SOL
+    if case=='supply':f['mint_state']['supply_raw']=1
+    assert native_mint_controls(f)['status']==expected
+
 def test_frozen_sdk136_integer_example():
     q=buy(quote_budget_raw=100_000_000,slippage_bps=400,bonding_curve=curve(),global_config=global_config(),fee_config=None)
     assert q['token_amount_raw']==89_887_639_539

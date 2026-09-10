@@ -3862,8 +3862,12 @@ class SolanaHeldAccountCollector:
             bundle_targets = [{**t, 'pool_target_id': -100} for t in targets] + [
                 {'pubkey':PUMP_GLOBAL_PDA,'account_kind':'pump_global','expected_program_owner':PUMP_PROGRAM_ID,'pool_target_id':-100},
                 {'pubkey':PUMP_FEE_CONFIG_PDA,'account_kind':'fee_config','expected_program_owner':PUMP_FEE_PROGRAM_ID,'pool_target_id':-100}]
+            if len(bundle_targets)+len(targets)<=self.max_multiple_accounts:
+                bundle_targets += [{'pubkey':t['base_mint'],'account_kind':'token_mint',
+                    'pool_target_id':-100} for t in targets]
         updates = await self._initial_updates(bundle_targets)
-        configs = {u['account_kind']:u for u in updates if u['account_kind']!='bonding_curve'}
+        configs = {u['account_kind']:u for u in updates if u['account_kind'] in {'pump_global','fee_config'}}
+        mints = {u['pubkey']:u for u in updates if u['account_kind']=='token_mint'}
         for update in updates:
             if update['account_kind']!='bonding_curve':continue
             decoded = update["decoded"]
@@ -3882,6 +3886,9 @@ class SolanaHeldAccountCollector:
                                 virtual_quote_reserves_raw=decoded.get("virtual_quote_reserves_raw"),
                                 token_total_supply_raw=decoded.get("token_total_supply_raw"),
                                 curve_state=decoded,
+                                mint_state=mints.get(update['base_mint'],{}).get('decoded',{'status':'unknown'}),
+                                mint_slot=mints.get(update['base_mint'],{}).get('slot'),
+                                mint_data_hash=mints.get(update['base_mint'],{}).get('data_hash'),
                                 global_config=configs.get('pump_global',{}).get('decoded',{'status':'unknown'}),
                                 fee_config=configs.get('fee_config',{}).get('decoded',{'status':'unknown'}),
                                 bundle_slot=update['slot'] if len(configs)==2 and all(v['slot']==update['slot'] for v in configs.values()) else None,

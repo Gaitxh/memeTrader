@@ -7,6 +7,24 @@ SOL='So11111111111111111111111111111111111111112'
 VERSION='pump-native-economic/137-sol-fixedstate'
 
 
+def native_mint_controls(frame):
+    """Only existing decoded, same-slot plain SPL mint controls are complete."""
+    m=frame.get('mint_state') or {}
+    out={'status':'UNKNOWN','reasons':[],'decision_eligible':False}
+    if m.get('status')!='verified' or frame.get('mint_slot')!=frame.get('slot'):
+        return {**out,'reasons':['mint_missing_or_incoherent']}
+    out.update(source_hash=frame.get('mint_data_hash'),slot=frame['mint_slot'])
+    if m.get('mint_authority') or m.get('freeze_authority'):
+        return {**out,'status':'REJECT','reasons':['mint_or_freeze_authority_present']}
+    if (m.get('owner')!='TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
+        or m.get('data_length')!=82):
+        return {**out,'reasons':['token_extensions_or_program_not_proven']}
+    if m.get('initialized') is not True or m.get('supply_raw')!=frame['curve_state'].get('token_total_supply_raw'):
+        return {**out,'reasons':['mint_supply_or_initialization_mismatch']}
+    return {**out,'status':'CONTROLS_VERIFIED','reasons':[],
+        'not_full_preentry_safety':True}
+
+
 def pump_sol_exact_input_quote_v2(*,quote_budget_raw,slippage_bps,bonding_curve,global_config,fee_config):
     """Noncompletion SOL subset verified against deployed programs at slot445751903.
 
@@ -99,6 +117,9 @@ def native_economic_frame(frame,reference,*,now,buy_slippage_bps=400,sell_slippa
         'quote_semantics':'UNVERIFIED_V2_LEGACY_SDK_DIAGNOSTIC_ONLY',
         'transaction_fees':'UNKNOWN_NETWORK_RENT_NOT_INCLUDED','observed_at':frame.get('observed_at'),
         'recorded_at':frame.get('recorded_at'),'slot':frame.get('slot')}
+    out['mint_controls']=native_mint_controls(frame)
+    if out['mint_controls']['status']!='UNKNOWN':
+        out['safety_status']=out['mint_controls']['status']+'_NATIVE_EXECUTION_NOT_AUTHORIZED'
     try:
         if not frame.get('identity_verified') or frame.get('quote_mint') not in {ZERO,SOL}:
             raise ValueError('unverified_or_non_SOL_curve')
