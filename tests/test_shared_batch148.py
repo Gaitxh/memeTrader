@@ -75,6 +75,21 @@ def test_unrouted_cohort_pending_is_not_a_price_feed_takeover(monkeypatch,has_qu
         assert extra.token_id in manager.active
 
 
+def test_irregular_three_real_frames_use_valid_contract_span():
+    from memetrader.trajectory144 import _window
+    start=utcnow()
+    def rows(times):
+        return [dict(t=(start+timedelta(seconds=s)).timestamp(),observed_at=iso(start+timedelta(seconds=s)),
+            price_usd=1+s/200,liquidity_usd=3000,volume_5m_usd=300+s*10,buys_5m=3+s,sells_5m=1) for s in times]
+    # Actual initial follow-up delays observed in the shared-batch trial.
+    w=_window(rows([0,15.804106,61.588254]))
+    assert w is not None and w['span_seconds']==pytest.approx(61.588254,abs=.001)
+    assert w['start_at']==iso(start)
+    assert _window(rows([0,15,91])) is None  # still reject the 76-second gap
+    assert _window(rows([0,50,100])) is None  # still reject >90 total span
+    assert _window(rows([0,50])) is None  # never fabricate a third observation
+
+
 def test_fixed_lease_capacity_and_normal_priority_takeover():
     now=utcnow();manager=SharedBatchCoverage()
     for chain in ('bsc','robinhood'):
@@ -114,6 +129,17 @@ def test_response_uses_exact_pool_and_original_clocks():
     wrong=_snapshot(token,'0x'+'d'*40,later+timedelta(seconds=15),price=999)
     assert not manager.response({token.token_id:(token,wrong)},selected,later+timedelta(seconds=15),DexScreenerClient._snapshot)
     assert manager.counts['SOURCE_NO_EXACT_POOL']==1
+
+
+def test_coverage_waits_for_third_point_without_false_gap_label():
+    now=utcnow();manager=SharedBatchCoverage();token,snap=asset(1,now)
+    manager.offer(token,snap,now);_,selected=manager.extend_batch('bsc',['0x'+'f'*40],now)
+    for seconds in (50,70):
+        at=now+timedelta(seconds=seconds)
+        response=_snapshot(token,snap.raw['pair']['pairAddress'],at,price=1.1)
+        manager.response({token.token_id:(token,response)},selected,at,DexScreenerClient._snapshot)
+        if seconds==50:assert '30' not in manager.active[token.token_id]['windows']
+    assert manager.active[token.token_id]['windows']['30']=='OBSERVED'
 
 
 def test_inflight_exact_response_survives_normal_watch_takeover():

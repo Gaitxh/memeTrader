@@ -36,7 +36,11 @@ def _activity(row):
 def _window(rows, seconds=MIN_WINDOW_SECONDS):
     if len(rows) < MIN_POINTS: return None
     end = rows[-1]["t"]
-    prior = [r for r in rows if r["t"] <= end - seconds]
+    # An anchor must also leave the required actual points in the window.
+    # With irregular 0/15.8/61.6s samples, choosing15.8 leaves only two rows,
+    # although the real0s anchor satisfies the unchanged30-90s/60s-gap contract.
+    last_anchor = len(rows) - MIN_POINTS
+    prior = [r for i, r in enumerate(rows) if i <= last_anchor and r["t"] <= end - seconds]
     if not prior: return None
     start = prior[-1]
     eligible = [r for r in rows if start["t"] <= r["t"] <= end]

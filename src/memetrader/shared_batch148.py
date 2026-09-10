@@ -187,7 +187,14 @@ class SharedBatchCoverage:
                 item[f"frame{item['frames']}_delay_seconds"] = elapsed
             for horizon in (30, 120):
                 if str(horizon) not in item['windows'] and elapsed >= horizon:
-                    item['windows'][str(horizon)] = ('OBSERVED' if not item['coverage_gap'] and elapsed <= horizon+30 and item['frames'] >= 3 else 'UNKNOWN_GAP')
+                    if item['coverage_gap']:
+                        item['windows'][str(horizon)] = 'UNKNOWN_PATH_GAP'
+                    elif elapsed > horizon + 60:
+                        item['windows'][str(horizon)] = 'UNKNOWN_DEADLINE'
+                    elif item['frames'] >= 3:
+                        item['windows'][str(horizon)] = 'OBSERVED'
+                    # Two points do not settle a three-point window as failed;
+                    # preserve the remaining real observation budget.
             result[token_id] = (token, observation)
             self.counts['EXACT_FRESH_RESPONSES'] += 1
             liquidity = _finite(observation.liquidity_usd)
