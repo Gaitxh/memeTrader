@@ -1161,8 +1161,6 @@ class ChainWebData:
 
     def _compact_state_uncached(self, *, arm_id: str | None = None) -> dict[str, Any]:
         """Return the compact mutable account and open-position surface."""
-        current = utcnow()
-        current_iso = iso(current)
         locked_by_config = not self.live_enabled
         with self._connect() as connection:
             connection.execute("BEGIN")
@@ -1170,6 +1168,9 @@ class ChainWebData:
                 "SELECT last_item_at,last_ok_at FROM source_health "
                 "WHERE source='chain-meme-trader'"
             ).fetchone()
+            # The first read pins the SQLite snapshot; timestamp it afterwards.
+            current = utcnow()
+            current_iso = iso(current)
             heartbeat_at = (
                 heartbeat["last_item_at"] or heartbeat["last_ok_at"]
                 if heartbeat is not None else None
@@ -2193,7 +2194,7 @@ class ChainWebData:
                 if heartbeat else None
             )
             age_seconds = (
-                (current - parse_time(heartbeat_at)).total_seconds()
+                (utcnow() - parse_time(heartbeat_at)).total_seconds()
                 if heartbeat_at else None
             )
             if age_seconds is not None and age_seconds < 0.0:
@@ -4007,7 +4008,6 @@ class ChainWebData:
 
     def health(self) -> dict[str, Any]:
         try:
-            current = utcnow()
             with self._connect() as connection:
                 heartbeat = connection.execute(
                     "SELECT last_item_at,last_ok_at FROM source_health "
@@ -4018,6 +4018,7 @@ class ChainWebData:
                     "WHERE entry_execution_enabled=1 "
                     "ORDER BY activated_at DESC,rowid DESC LIMIT 1"
                 ).fetchone()
+            current = utcnow()
         except (OSError, sqlite3.Error, ValueError) as exc:
             return {"ok": False, "error": type(exc).__name__, "detail": str(exc)}
         heartbeat_at = (

@@ -72,6 +72,36 @@ def test_compact_strategy_detail_preserves_current_hard_stop(tmp_path: Path):
     assert strategy["hard_stop_return"] == policy["hard_stop_return"]
 
 
+@pytest.mark.parametrize("endpoint", ["compact", "health"])
+@pytest.mark.parametrize("future", [False, True])
+def test_heartbeat_clock_follows_read_snapshot(tmp_path: Path, monkeypatch, endpoint, future):
+    from contextlib import contextmanager
+
+    config_path, _ = _config(tmp_path)
+    store = Store(tmp_path / "db.sqlite3", initial_cash_usd=1000)
+    clock = [utcnow()]
+    monkeypatch.setattr("memetrader.chain_web.utcnow", lambda: clock[0])
+    monkeypatch.setattr("memetrader.store.utcnow", lambda: clock[0] + timedelta(days=int(future)))
+    web = ChainWebData(config_path)
+    connect = web._connect
+
+    @contextmanager
+    def advancing_connect():
+        clock[0] += timedelta(milliseconds=4)
+        store.heartbeat("chain-meme-trader", item=True)
+        with connect() as connection:
+            yield connection
+
+    monkeypatch.setattr(web, "_connect", advancing_connect)
+    try:
+        result = web.state(compact=True)["system"] if endpoint == "compact" else web.health()
+        assert result["runtime_status"] == ("stale" if future else "running")
+        if endpoint == "compact" and not future:
+            assert result["heartbeat_age_seconds"] == 0
+    finally:
+        store.close()
+
+
 @pytest.mark.parametrize("missing_reason", [
     "liquidity_unknown", "market_mark_expired", "original_pool_evidence_missing",
     "retained_liquidity_unknown_stale", "retained_liquidity_unknown_fresh",
