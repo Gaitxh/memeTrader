@@ -28,6 +28,8 @@ globalThis.revisionUi = {
   ingest(data) { return ingestStrategyHistory(data); },
   lifecycle(family) { return fidelityLabel(family); },
   explanation(family,opened) { return strategyExplanationMarkup(family,opened); },
+  safety: cohortSafetyText,
+  entry: value => readable(value,entryLabels),
 };`, context);
 
 const family = {
@@ -71,6 +73,8 @@ assert.match(app,/\['后帧准入 → 安全授权 → BUY'/);
 assert.match(explanation,/实际交付状态/);
 assert.match(explanation,/UNKNOWN/);
 assert.match(app,/runtime-loaded-manifest/);
+assert.equal(context.revisionUi.entry('dex_compression_breakout_v1'),'压缩后突破');
+assert.equal(context.revisionUi.safety({counts:{WAIT_SECURITY:2,BUY_AUTHORIZED_UNKNOWN:1,BUY:1}}),'WAIT_SECURITY 2 / BUY_AUTHORIZED_UNKNOWN 1');
 assert.match(app,/strategy\.max_hold_minutes==null\?'UNKNOWN'/);
 assert.match(app,/\['现有漏斗'/);
 

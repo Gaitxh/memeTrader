@@ -38,6 +38,11 @@ def strategy_logic(policy, family, control=None, *, current=False):
     sequence.append('信号后严格较晚的有效观察，才可继续执行；信号价不是成交价' if p.get('require_post_decision_observation') else '后帧要求：UNKNOWN（本配置未明确 require_post_decision_observation）')
     sequence.append('最终 BUY 共用安全门：拒绝或等待不能当作通过；这是当前执行约束，不补写历史' if current else '历史安全/成交约束只以该版本冻结合同为准，不能套用今日规则')
     sequence.append('Paper 按成交时有效成本模型和可用资金结算；展示信号不代表已 BUY')
+    if p.get('native_execution'):
+        sequence=['官方 Pump 曲线身份和支持的 SOL 状态通过，至少两个独立帧形成吸收信号',
+            '下一独立曲线帧重新报价，并核验当前 Token 控制、买入后即时卖回与现金预算',
+            '同一封存收据绑定买卖消息费用和账户租金；租金、手续费、卖出费预留单列',
+            '按后帧协议模型写入 Paper 现金与仓位；没有链上广播或真实交易']
     exits=[]
     if p.get('trajectory_exit'):
         exits.append({'velocity':'买后30秒价格速度与加速度转负、滚动活动与流动性同时下降时申请退出。',
@@ -63,9 +68,13 @@ def strategy_logic(policy, family, control=None, *, current=False):
     for k,v in p.items():
         if k not in {'exit_family','exit_mode','hard_stop_return','trailing_activate_return','trailing_drawdown','max_hold_minutes','take_profit','dynamic_principal_recovery'} and any(x in k for x in ('exit','hold','partial','stop','overlay')):
             exits.append(f'特殊退出配置 {k}：{value(v)}')
-    exits.append('退出机制/模式：'+value(p.get('exit_family') or family.get('exit_family'))+' / '+value(p.get('exit_mode')))
+    if p.get('native_execution'):
+        exits.extend(['原生剩余数量使用当前曲线卖回报价；净价值低于原始支出80%触发硬止损，达到130%后回撤15%触发追踪退出。',
+            '300秒到期先保存退出意图，下一独立有效状态才可成交；储备不足或报价缺失保留 UNKNOWN，不伪造卖出。',
+            '曲线毕业后只接经过验证的规范 PumpSwap 后继池；等待身份/报价期间不在旧曲线上成交。'])
+    else:exits.append('退出机制/模式：'+value(p.get('exit_family') or family.get('exit_family'))+' / '+value(p.get('exit_mode')))
     requirements=['必须有策略配置要求的身份绑定、时间有效性和特征；缺失值不是零，也不是条件已满足。']
-    if current:requirements.append('当前 Paper 原池价格/流动性及严格时序有效；明确低于执行流动性底线按现有退出规则处理。')
+    if current:requirements.append('原生曲线按协议储备、Token 控制、费用与卖回容量验证；不套用毕业前 DEX 流动性底线。' if p.get('native_execution') else '当前 Paper 原池价格/流动性及严格时序有效；明确低于执行流动性底线按现有退出规则处理。')
     execution=p.get('_execution') or {}
     requirements += [f'成交配置 {k}：{value(v)}' for k,v in execution.items()]
     risks=[f"单笔名义金额（美元）：{value(p.get('notional_usd'))}",f"同时持仓上限：{value(f.get('max_concurrent_positions'))}",'样本、PF、期望和回撤为事实指标；正收益或绿色不等于 Alpha，同币/同成交账户不是独立样本。']

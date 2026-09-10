@@ -54,6 +54,9 @@ const elapsedText = (seconds) => {
 const entryLabels={shadow_momentum:'链上动量达到历史门槛',two_way_route:'买卖双向路线通过',economic_route:'交易经济性通过',rug_safety:'买前安全检查通过',solana_focus:'Solana 精确池条件通过',broad_launch:'新币宽口径',flow_burst:'交易突然放量',reawakening:'沉寂后重新活跃',market_visible:'有池且价格可见',dex_visible_successor:'DexScreener 池与成交可见'};
 const exitLabels={cost_coverage_scaleout:'成本覆盖分批兑现',fast_escape:'快速止损止盈',balanced:'均衡退出',balanced_harvest:'均衡分批止盈',peak_guard:'高点回撤保护',postbuy_research:'买后信息辅助',principal_lock_runner:'本金回收目标＋趋势仓',flash_tail_first_mover:'早期爆发分档兑现',mature_continuity_control:'成熟延续快速退出',dynamic:'动态退出',dynamic_backoff:'动态退出与退避',dynamic_with_15m_deadline:'动态退出，最晚 15 分钟',dynamic_with_horizon_fallback:'动态退出，超时按固定周期',fixed:'固定周期退出',fixed_15m:'15 分钟退出',fixed_horizons:'分阶段固定退出',risk:'风险优先退出',profit:'利润优先退出',liquidity:'流动性异常退出',activity:'活跃度衰减退出',runner:'强势延续退出',flow:'资金流退出',trailing:'移动止盈',composite:'综合退出'};
 const readable = (value,labels) => labels[value]||String(value||'未说明').replaceAll('_',' ');
+Object.assign(entryLabels,{dex_hot_impulse_v1:'早期冲量',dex_quiet_acceleration_v1:'安静后加速',dex_volume_leads_price_v1:'量先于价',dex_compression_breakout_v1:'压缩后突破',dex_first_dip_resilience_v1:'首跌恢复',dex_profit_velocity_exit_v1:'冲量 · 速度衰减退出对照',dex_liquidity_divergence_exit_v1:'冲量 · 价格与流动性背离对照',dex_blowoff_exit_v1:'冲量 · 放量减速退出对照',pump_native_absorption_fast_v1:'Pump 原生储备吸收'});
+const nativeExitReason = value => ({insufficient_real_quote_reserves:'当前曲线真实报价储备不足',max_hold:'已到最长持仓时间，等待有效卖出状态'})[value]||value||'UNKNOWN';
+const cohortSafetyText = flow => Object.entries(flow?.counts||{}).filter(([key])=>/^(WAIT_|REJECT|CHECKED_|BUY_AUTHORIZED_)/.test(key)).map(([key,count])=>`${key} ${count}`).join(' / ')||'尚无安全阶段收据';
 const strategyIndex = (family) => {
   const found=(universe?.families||[]).indexOf(family);
   if(found>=0)return found+1;
@@ -536,8 +539,8 @@ function renderUniverse(){
   const funnelRows=Array.isArray(discoveryView?.funnel)?discoveryView.funnel:[];
   const funnel=funnelRows.length?funnelRows.reduce((total,row)=>({admitted:total.admitted+Number(row.admitted||0),rejected:total.rejected+Number(row.rejected||0)}),{admitted:0,rejected:0}):null;
   const safetyCounts=state?.trading?.safety_counts||state?.safety_counts||discoveryView?.safety_counts;
-  const safety=safetyCounts&&typeof safetyCounts==='object'?['REJECT','WAIT','UNKNOWN'].map(key=>`${key} ${safetyCounts[key]??safetyCounts[key.toLowerCase()]??'UNKNOWN'}`).join(' / '):'UNKNOWN';
   const diagnostic=performance?.execution_diagnostics||{}, trajectory=diagnostic['dex-trajectory:v1'], flow=diagnostic['cohort-flow:v1'];
+  const safety=safetyCounts&&typeof safetyCounts==='object'?['REJECT','WAIT','UNKNOWN'].map(key=>`${key} ${safetyCounts[key]??safetyCounts[key.toLowerCase()]??'UNKNOWN'}`).join(' / '):flow?cohortSafetyText(flow):'UNKNOWN';
   const flowCounts=flow?.counts||{}, native=diagnostic['native-paper:last-held'];
   const authorized=flowCounts.SAFETY_AUTHORIZED||0;
   $('#universe-summary').innerHTML=[
@@ -550,10 +553,10 @@ function renderUniverse(){
     ['持仓抓取 p95',heldLatency==null?'UNKNOWN':`${Number(heldLatency).toFixed(2)} 秒`,performance?`性能快照 ${time(performance.timing?.generated_at)}`:'尚未读取性能快照'],
     ['应用与退出 p95',applyLatency==null?'UNKNOWN':`${Number(applyLatency).toFixed(3)} 秒`,'held_apply_exit；不同于网络抓取延迟'],
     ['被动队列丢弃',passiveDrops==null?'UNKNOWN':passiveDrops,performance?'仅已记录的被动队列丢弃':'尚未读取性能快照'],
-    ['安全判定',safety,safety==='UNKNOWN'?'没有已加载的安全 REJECT/WAIT 计数':'已有聚合计数；不从逐策略结果相加'],
+    ['安全判定',safety,safety==='UNKNOWN'?'没有已加载的安全 REJECT/WAIT 计数':flow?'共同入场 cohort 每状态去重；一笔机会可先等待后通过，状态之间不能相加':'已有聚合计数；不从逐策略结果相加'],
     ['后帧准入 → 安全授权 → BUY',flow?`${flowCounts.admitted_after_next_frame||0} / ${authorized} / ${flowCounts.BUY||0}`:'UNKNOWN',flow?`本进程实际共同入场 cohort 去重；起点 ${time(flow.started_at)}，缺失/过期关联 ${flow.evicted}；不含原生路径`:'尚无本进程串联收据'],
     ['Dex 连续特征',trajectory?`${trajectory.pools} 原池 / ${trajectory.counts?.distinct_frames||0} 帧`:'UNKNOWN',trajectory?'共享特征，无额外行情请求；不足时长和不连续窗口保持未知':'等待进程加载或自然观察'],
-    ['原生持仓退出',native?.status||'UNKNOWN',native?`${native.quote_reason||native.quote_status||'UNKNOWN'} · ${time(native.recorded_at)}；退出意图不等于已成交`:'原生退出独立报告；不得用普通 held=0推断无原生持仓'],
+    ['原生持仓退出',native?.status||'UNKNOWN',native?`${nativeExitReason(native.quote_reason||native.quote_status)} · ${time(native.recorded_at)}；退出意图不等于已成交`:'原生退出独立报告；不得用普通 held=0推断无原生持仓'],
     ['现有漏斗',funnel?`${funnel.admitted} / ${funnel.rejected}`:'UNKNOWN',funnel?'账户级放行 / 拒绝；非独立Token、非成交' :'仅使用当前已加载漏斗数据'],
     ['策略宇宙快照',time(universe.generated_at,true),'该汇总可能早于当前实时状态；性能与发现数据各自按其加载时间更新'],
   ].map(([k,v,n])=>`<article class="summary-card"><span>${esc(k)}</span><strong>${esc(v)}</strong><small>${esc(n)}</small></article>`).join('');

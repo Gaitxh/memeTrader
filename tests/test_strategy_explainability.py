@@ -1,5 +1,13 @@
 from memetrader.strategy_explainability import strategy_logic
 
+def test_native_explanation_uses_protocol_contract_without_dex_floor_or_unknown_sequence():
+ from memetrader.native_execution import policy
+ p=policy();x=strategy_logic(p,{},current=True)
+ assert any('下一独立曲线帧' in r for r in x['entry_sequence'])
+ assert any('储备不足' in r for r in x['exit_rules'])
+ assert any('不套用毕业前 DEX' in r for r in x['data_requirements'])
+ assert not any('后帧要求：UNKNOWN' in r for r in x['entry_sequence'])
+
 def test_positive_pause_not_failed_and_preserves_evidence():
  p={'arm_id':'age_rate_horizon_fast_v1','account_lifecycle':'PAUSED_NEW_ENTRY','assessment_status':'EXPERIMENT_COMPLETE_POSITIVE','assessment_note':'Positive benchmark, same fill parent stronger','assessment_evidence':'report89','max_hold_minutes':15,'require_post_decision_observation':True}
  x=strategy_logic(p,{}, {'reason':'whole paired experiment complete'},current=True)
