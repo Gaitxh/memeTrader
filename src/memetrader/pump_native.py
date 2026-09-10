@@ -7,6 +7,45 @@ SOL='So11111111111111111111111111111111111111112'
 VERSION='pump-native-economic/137-sol-fixedstate'
 
 
+def metadata_only_mint_layout(raw, owner, mint):
+    """Complete narrow Token2022 TLV parse; metadata is not endorsement."""
+    from solders.pubkey import Pubkey
+    if len(raw)<82 or raw[45]!=1 or any(int.from_bytes(raw[i:i+4],'little') not in (0,1) for i in (0,46)):
+        raise ValueError('invalid_mint_base_flags')
+    if owner=='TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' and len(raw)==82:
+        return {'native_layout_verified':True,'extension_types':[]}
+    if owner!='TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb' or len(raw)<166 or any(raw[82:165]) or raw[165]!=1:
+        raise ValueError('unsupported_mint_program_or_layout')
+    offset=166;seen=set()
+    while offset<len(raw):
+        if not any(raw[offset:]):break
+        if offset+4>len(raw):raise ValueError('truncated_mint_tlv')
+        kind=int.from_bytes(raw[offset:offset+2],'little');size=int.from_bytes(raw[offset+2:offset+4],'little')
+        offset+=4;data=raw[offset:offset+size];offset+=size
+        if len(data)!=size or kind in seen:raise ValueError('truncated_or_duplicate_mint_tlv')
+        seen.add(kind)
+        if kind==18:
+            if size!=64:raise ValueError('invalid_metadata_pointer_length')
+        elif kind==19:
+            if size<80 or str(Pubkey.from_bytes(data[32:64]))!=mint:
+                raise ValueError('metadata_mint_binding_invalid')
+            cursor=64
+            def string():
+                nonlocal cursor
+                if cursor+4>size:raise ValueError('truncated_metadata_string')
+                n=int.from_bytes(data[cursor:cursor+4],'little');cursor+=4
+                if cursor+n>size:raise ValueError('truncated_metadata_string')
+                data[cursor:cursor+n].decode('utf-8');cursor+=n
+            for _ in range(3):string()
+            if cursor+4>size:raise ValueError('truncated_metadata_pairs')
+            count=int.from_bytes(data[cursor:cursor+4],'little');cursor+=4
+            if count>(size-cursor)//8:raise ValueError('invalid_metadata_pair_count')
+            for _ in range(count):string();string()
+            if cursor!=size:raise ValueError('metadata_trailing_bytes')
+        else:raise ValueError('unsupported_native_mint_extension:'+str(kind))
+    return {'native_layout_verified':True,'extension_types':sorted(seen)}
+
+
 def native_mint_controls(frame):
     """Only existing decoded, same-slot plain SPL mint controls are complete."""
     m=frame.get('mint_state') or {}
@@ -16,10 +55,9 @@ def native_mint_controls(frame):
     out.update(source_hash=frame.get('mint_data_hash'),slot=frame['mint_slot'])
     if m.get('mint_authority') or m.get('freeze_authority'):
         return {**out,'status':'REJECT','reasons':['mint_or_freeze_authority_present']}
-    if (m.get('owner')!='TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
-        or m.get('data_length')!=82):
+    if not m.get('native_layout_verified'):
         return {**out,'reasons':['token_extensions_or_program_not_proven']}
-    if m.get('initialized') is not True or m.get('supply_raw')!=frame['curve_state'].get('token_total_supply_raw'):
+    if m.get('initialized') is not True or m.get('decimals')!=6 or m.get('supply_raw')!=frame['curve_state'].get('token_total_supply_raw'):
         return {**out,'reasons':['mint_supply_or_initialization_mismatch']}
     return {**out,'status':'CONTROLS_VERIFIED','reasons':[],
         'not_full_preentry_safety':True}

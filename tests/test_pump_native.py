@@ -78,13 +78,42 @@ def test_same_slot_native_mint_control_boundary(case,expected):
     from memetrader.pump_native import native_mint_controls
     _,f,_=sample();f.update(mint_slot=f['slot'],mint_state=dict(status='verified',
         owner='TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',data_length=82,
-        mint_authority=None,freeze_authority=None,initialized=True,supply_raw=10**15))
+        native_layout_verified=True,decimals=6,mint_authority=None,freeze_authority=None,initialized=True,supply_raw=10**15))
     if case=='missing':f.pop('mint_state')
     if case=='slot':f['mint_slot']-=1
-    if case=='extension':f['mint_state']['data_length']=170
+    if case=='extension':f['mint_state']['native_layout_verified']=False
     if case=='authority':f['mint_state']['freeze_authority']=SOL
     if case=='supply':f['mint_state']['supply_raw']=1
     assert native_mint_controls(f)['status']==expected
+
+
+@pytest.mark.parametrize('case',['metadata','duplicate','truncated','fee','hook','padding','coption','binding','length'])
+def test_metadata_only_complete_tlv_through_actual_decoder(case):
+    import base64
+    from solders.pubkey import Pubkey
+    from memetrader.collectors import SolanaHeldAccountCollector
+    from memetrader.pump_native import native_mint_controls
+    mint=Pubkey.from_string(SOL);raw=bytearray(166)
+    raw[36:44]=(10**15).to_bytes(8,'little');raw[44]=6;raw[45]=1;raw[165]=1
+    def tlv(k,v):return k.to_bytes(2,'little')+len(v).to_bytes(2,'little')+v
+    metadata=bytes(32)+bytes(mint)+(80).to_bytes(4,'little')+b'n'*80+bytes(12)
+    raw+=tlv(18,bytes(64))+tlv(19,metadata)
+    assert len(raw)==398
+    if case=='duplicate':raw+=tlv(18,bytes(64))
+    if case=='truncated':raw=raw[:-1]
+    if case=='fee':raw+=tlv(1,bytes(108))
+    if case=='hook':raw+=tlv(14,bytes(64))
+    if case=='padding':raw[82]=1
+    if case=='coption':raw[0]=2
+    if case=='binding':raw[270]=1
+    if case=='length':raw[168]=63
+    decoded=SolanaHeldAccountCollector.decode_account(
+        dict(account_kind='token_mint',pubkey=SOL,native_metadata_controls=True),
+        dict(owner='TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb',lamports=1,
+             data=[base64.b64encode(raw).decode(),'base64']))
+    _,frame,_=sample();frame.update(mint_state=decoded,mint_slot=frame['slot'])
+    assert (native_mint_controls(frame)['status']=='CONTROLS_VERIFIED')==(case=='metadata')
+    if case=='metadata':assert decoded['extension_types']==[18,19]
 
 def test_frozen_sdk136_integer_example():
     q=buy(quote_budget_raw=100_000_000,slippage_bps=400,bonding_curve=curve(),global_config=global_config(),fee_config=None)

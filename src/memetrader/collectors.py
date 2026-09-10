@@ -3864,7 +3864,7 @@ class SolanaHeldAccountCollector:
                 {'pubkey':PUMP_FEE_CONFIG_PDA,'account_kind':'fee_config','expected_program_owner':PUMP_FEE_PROGRAM_ID,'pool_target_id':-100}]
             if len(bundle_targets)+len(targets)<=self.max_multiple_accounts:
                 bundle_targets += [{'pubkey':t['base_mint'],'account_kind':'token_mint',
-                    'pool_target_id':-100} for t in targets]
+                    'native_metadata_controls':True,'pool_target_id':-100} for t in targets]
         updates = await self._initial_updates(bundle_targets)
         configs = {u['account_kind']:u for u in updates if u['account_kind'] in {'pump_global','fee_config'}}
         mints = {u['pubkey']:u for u in updates if u['account_kind']=='token_mint'}
@@ -4373,6 +4373,9 @@ class SolanaHeldAccountCollector:
                     "initialized": bool(raw[45]),
                     "freeze_authority": cls._pubkey(raw, 50) if freeze_authority_option else None,
                 })
+                if target.get('native_metadata_controls'):
+                    from .pump_native import metadata_only_mint_layout
+                    facts.update(metadata_only_mint_layout(raw,owner,str(target['pubkey'])))
             elif kind == "global_config":
                 facts.update(decode_pumpswap_global_config_account(raw))
             elif kind == "pump_global":
