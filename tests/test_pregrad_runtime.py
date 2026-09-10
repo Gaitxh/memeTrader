@@ -9,6 +9,32 @@ from memetrader.runtime import Runtime, initial_config
 from memetrader.store import Store
 
 
+def test_native_cash_dispatch_is_idle_bounded_persistent_and_unfunded(tmp_path,monkeypatch):
+    from test_pump_native import sample,fixed137,fee137
+    async def run():
+        now,frame,ref=sample();frame.update(token_id='solana:'+str(Pubkey.new_unique()),
+            curve_address=str(Pubkey.new_unique()),curve_state=fixed137(),fee_config=fee137(),
+            mint_slot=frame['slot'],mint_state=dict(status='verified',native_layout_verified=True,
+                mint_authority=None,freeze_authority=None,decimals=6,supply_raw=10**15,initialized=True))
+        r=Runtime.__new__(Runtime);r.store=Store(tmp_path/'native-dispatch.sqlite3',initial_cash_usd=1000)
+        r._wsol_usdc_conversion=ref;r.held_accounts=object()
+        idle=asyncio.Event();monkeypatch.setattr(r,'_chain_meme_active_idle',lambda:idle)
+        calls=[]
+        async def assemble(*args):calls.append(args);return dict(recorded_at=iso(utcnow()),fees={})
+        monkeypatch.setattr('memetrader.pump_native_cash.assemble',assemble)
+        trigger=dict(status='TRIGGER_FROZEN',slot=9,recorded_at=iso(now))
+        r._dispatch_native_cash137(frame,trigger);task=r._native_cash137_task
+        await asyncio.sleep(0);assert not calls
+        r._dispatch_native_cash137(frame,trigger);assert r._native_cash137_task is task
+        idle.set();await task;assert len(calls)==1
+        del r._native_cash137_task  # Restart dedup uses persisted claim, not task object.
+        r._dispatch_native_cash137(frame,trigger);assert not hasattr(r,'_native_cash137_task')
+        assert r.store.db.execute('SELECT count(*) FROM chain_meme_trader_trades').fetchone()[0]==0
+        assert r.store.db.execute("SELECT count(*) FROM chain_meme_pattern_evidence WHERE kind='native_cash_plan137'").fetchone()[0]==1
+        r.store.close()
+    asyncio.run(run())
+
+
 def test_pregrad_reorders_existing_budget_migration_requeues_once_and_new_rpc_receipt(tmp_path, monkeypatch):
     async def run():
         clock = [utcnow()]

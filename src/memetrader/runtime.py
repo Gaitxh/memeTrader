@@ -6706,6 +6706,8 @@ class Runtime:
                 if result is not None:
                     probe = absorption_probe(result['reserve_frames'])
                     pending[frame['token_id']] = advance_absorption(pending.get(frame['token_id']),frame,probe)
+                    if pending[frame['token_id']].get('status')=='TRIGGER_FROZEN':
+                        self._dispatch_native_cash137(frame,pending[frame['token_id']])
                     self.store.record_chain_meme_pattern_evidence(frame['token_id'],frame['curve_address'],'pump_native_economics_v1',
                         {**frame['native_economics'],'absorption':probe,'sequence':pending[frame['token_id']],'source':'existing_pregrad_RPC_bundle'},
                         observed_at=frame['observed_at'],source_key=f"pump-native100:{frame['token_id']}:{frame['slot']}")
@@ -6714,6 +6716,39 @@ class Runtime:
             self.store.heartbeat("pregrad-watch", item=bool(frames), error_detail=f"targets={len(targets)};watch_only")
         except Exception as exc:
             self.store.heartbeat("pregrad-watch", error=type(exc).__name__)
+
+    def _dispatch_native_cash137(self,frame,trigger):
+        """One rare existing-native candidate; no funded entry authority."""
+        from .pump_native import native_mint_controls
+        if native_mint_controls(frame)['status']!='CONTROLS_VERIFIED':return
+        task=getattr(self,'_native_cash137_task',None)
+        if task is not None and not task.done():return
+        now=utcnow();version=self.store.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        key=f"native-cash137:{version}:{frame['token_id']}:{trigger['slot']}"
+        if self.store.get_kv(key,None) is not None:return
+        last=self.store.get_kv('native-cash137:last-start',None)
+        if last and (now-parse_time(last)).total_seconds()<180:return
+        reference=getattr(self,'_wsol_usdc_conversion',None)
+        if not reference or (now-parse_time(reference['completed_at'])).total_seconds()>30:return
+        total=5_000_000*int(reference['input_amount_raw'])//int(reference['output_amount_raw'])
+        account_id=hashlib.sha256(key.encode()).hexdigest()
+        self.store.set_kv(key,{'status':'CLAIMED','recorded_at':iso(now),'account_id':account_id})
+        self.store.set_kv('native-cash137:last-start',iso(now))
+        async def run():
+            from .pump_native_cash import assemble
+            try:
+                await self._chain_meme_active_idle().wait()
+                if (utcnow()-now).total_seconds()>15:raise ValueError('native_plan_idle_wait_expired')
+                result=await asyncio.wait_for(assemble(self.held_accounts,frame,account_id,total),timeout=8)
+                result.update(status='ASSEMBLED_SHADOW',reference=reference,trigger=trigger,
+                    next_independent_curve_frame_required=True,affects='none',decision_eligible=False)
+            except Exception as exc:
+                result={'status':'UNKNOWN','reason':type(exc).__name__+':'+str(exc)[:160],
+                    'decision_eligible':False,'affects':'none'}
+            self.store.set_kv(key,result)
+            self.store.record_chain_meme_pattern_evidence(frame['token_id'],frame['curve_address'],
+                'native_cash_plan137',result,observed_at=utcnow(),source_key=key)
+        self._native_cash137_task=asyncio.create_task(run(),name='native_cash137')
 
     async def critical_onchain_exit_loop(self) -> None:
         """Drain exact-account risk exits before ordinary background quote work."""
