@@ -1,5 +1,7 @@
 # Delivery146 owner status
 
+Latest coherent boundary147: source `a00452a` loaded19:35:48Z/PID34192; root Codex retains sole ownership, no release.147 query/held/pending classification fix and short runtime guard complete; natural longer coverage/learning/economics remain distinct. See `STRATEGY_DELIVERY_RESULT_147.md`. Prior146 ownership read below remains dated evidence.
+
 ACK: `C2C-20260911-146-OWNERSHIP-STATUS`
 Recorded: 2026-09-10 19:22:38 UTC
 
@@ -13,4 +15,3 @@ Recorded: 2026-09-10 19:22:38 UTC
 - Chat remains read-only on production and may use isolated review artifacts. If execution becomes unavailable, an explicit coherent-boundary release with repo/scope/HEAD is required before takeover; no release is made by this ACK. Paper/Live lock, funding/history and current sole-writer topology remain unchanged.
 
 Evidence: [146 result](STRATEGY_DELIVERY_RESULT_146.md), `data/research/strategy_delivery146/g_closure_readback.json`. No Agent/ModeChat product expansion or semantic checkpoint revision in this turn.
-

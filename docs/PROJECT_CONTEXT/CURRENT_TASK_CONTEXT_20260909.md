@@ -1,3 +1,7 @@
+## CURRENT — 147 implemented/loaded, 2026-09-10T19:40Z
+
+Sole root Codex retains production ownership. a00452a loaded19:35:48Z/PID34192;13source hashes/API/servedUI verified. Bounded RECENT deadline/terminal/position filtering and original pools; actual OPEN held set separated from valid pending protection/request dedupe. Frozen17->3 targets keeps all3OPEN. Final same3held:fetchp95 1.856s vs2.892s;apply29.7ms,drops0/pool0/connect0. Short guard only; flat cold p95 settled. Paper/Live/funding/317–320 immutable; no new strategy or requests.146A–G remains complete;320 baseline trades, not auto-generated or promoted. Continue only outstanding natural coverage/model/recipe/trend/economic acceptance; C3 conditional, Agent/ModeChat/browser deferred. No repeats145/native143/case scans. Report STRATEGY_DELIVERY_RESULT_147.md contains status classes and exact evidence. Prior sections below are dated history.
+
 # Current146 — causal learner fixes loaded; first natural BUY/SELL
 
 Latest guard19:15:33Z samePID34616 healthy; heldp953.702s/apply59ms/queue3.245s,drops0/pool0/connect0. Keep PERFORMANCE_WATCH/C3 disabled; earlier19:08 window below is not sustained performance acceptance. No new semantic checkpoint or training from this readback.

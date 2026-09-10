@@ -2,6 +2,20 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260911-delivery147",
+      "recorded_at": "2026-09-10T19:40:07.735041Z",
+      "title": "真实持仓与有效待成交分流，移除过期准入的高优先豁免",
+      "problem": "最近120准入无限期占用高优行情并误标held；冻结17目标仅3真实OPEN。",
+      "change": "按有效deadline/同arm终局过滤有界RECENT并绑定原池；OPEN与pending保护分离，低优去重共享下一真实回执；已有timing/coverage显示分母。",
+      "rationale": "修复确定的优先级与身份错误，不增加请求/容量，不删除学习观察。",
+      "validation": "真实Store/重启/原池/期限、held-pending/去重回调及并发、池身份、timing/Node定向通过。冻结17->3保留全部3OPEN；13hash/现网JS一致。",
+      "scope": "IMPLEMENTED_LOADED; Paper/Live锁及旧资金策略摘要不变；长期覆盖经济证据仍等待。",
+      "commit": "a00452a",
+      "loaded_at": "2026-09-10T19:35:48.593302Z",
+      "visible_entry": "http://127.0.0.1:8790/#/strategies — 高优先行情目标 / coverage145",
+      "report": "docs/PROJECT_CONTEXT/STRATEGY_DELIVERY_RESULT_147.md"
+    },
+    {
       "id": "20260911-delivery146",
       "recorded_at": "2026-09-10T19:08:46.542448Z",
       "title": "146 因果学习修复与独立可交易模式选择",

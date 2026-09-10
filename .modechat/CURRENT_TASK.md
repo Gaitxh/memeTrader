@@ -1,9 +1,9 @@
 # Authoritative current checkpoint
 
 {
-  "cycle_id": "nonagent-delivery146",
+  "cycle_id": "nonagent-delivery147",
   "objective": "Complete feasible nonAgent strategy/runtime/UI delivery;146 corrections and independent causal learned selector, preserve Paper/history/parents/held priority.",
-  "next_action": "146 c079df4 + Web40ad14e LOADED,320 first natural BUY/SELL. Continue only natural mature learning/recipe/long-hold and comparable coverage/resource acceptance; no repeated145/native143/case scans. C3 and Agent remain deferred.",
+  "next_action": "147 a00452a LOADED and short held guard passed;146A-G/320 already complete. Continue natural coverage/model/recipe/trend evidence only; no duplicate implementation or source-budget expansion. C3 conditional and Agent deferred.",
   "rules": [
     "Sole existing Codex writer/session; no ownership transfer",
     "Paper only / Live locked; no reset/backfill or immutable history/funding rewrite",
@@ -77,31 +77,6 @@
       "evidence": "Missing-proof resume skips duplicate snapshot/projection work:20 waiting frames/0 new snapshots. Shared total Gecko<=1/min unchanged; no general speedup claim."
     },
     {
-      "id": "138-microstructure-window",
-      "evidence": "86f0f36;20 targeted tests",
-      "status": "COMPLETED"
-    },
-    {
-      "id": "138-flow-identity",
-      "evidence": "620cdc5; docs/PROJECT_CONTEXT/STRATEGY_DELIVERY_RESULT_138.md",
-      "status": "COMPLETED"
-    },
-    {
-      "id": "138-cohort-short",
-      "evidence": "d9c7c0e;34 targeted tests PASS",
-      "status": "COMPLETED"
-    },
-    {
-      "id": "138-modechat-consistency",
-      "evidence": "ModeChat7a0c649;52 tests/check PASS",
-      "fact": "resume task consistency compares bounded checkpoint/TASKS; no automatic lease/status mutation. Root implemented; no Chat ownership release."
-    },
-    {
-      "id": "138-reawakening-producer",
-      "evidence": "3ac22dd; actual Store fixture PASS",
-      "status": "COMPLETED"
-    },
-    {
       "id": "47-matching-verified",
       "evidence": "LEAD_RUNNABILITY_FINDINGS_138.md; Lead saved47 validator",
       "fact": "65 saved anchors verified;57 control uses/50 normalized controls;54 control outcomes UNKNOWN. Matching stage complete, no repeat scan."
@@ -159,6 +134,18 @@
       "status": "COMPLETED",
       "evidence": "STRATEGY_DELIVERY_RESULT_138.md;RELIABILITY_AND_CAPACITY_EXIT_140.md;NATIVE_EXIT_RESOLVED_143.md",
       "fact": "137-143 supported SOL fixed-state math, metadata controls, cash/fees assembler, dispatch, common position/BUY/SELL ledger, held/canonical migration/valuation and symmetric capacity accounting delivered.94747 CLOSED13:26Z; no repeated inputs/probes/native residual repair."
+    },
+    {
+      "id": "138",
+      "status": "COMPLETED",
+      "evidence": "STRATEGY_DELIVERY_RESULT_138.md;86f0f36/620cdc5/d9c7c0e/3ac22dd;ModeChat7a0c649",
+      "fact": "Microstructure clocks, immutable flow identity, true reawakening producer/short branch and local continuity delivered/tested; no repeat."
+    },
+    {
+      "id": "147",
+      "status": "COMPLETED",
+      "evidence": "a00452a;STRATEGY_DELIVERY_RESULT_147.md",
+      "fact": "Loaded19:35:48Z/PID34192. Frozen17->3/all3OPEN kept; deadline/terminal/originalpool, held/pending separation, no duplicate low fetch. Short same3held p95 1.856s,drops/pool/connect0;old policy/funding hashes equal."
     }
   ],
   "open_tasks": [
@@ -209,6 +196,12 @@
       "owner": "codex",
       "status": "FORWARD_OBSERVATION",
       "next_action": "v5baseline8episodes/7anchors/3signals at19:08Z,1actual2U hardstop-.429994U/fill94507. Natural model release/rollback/recipe append/trend continuation and longrun resource benefit remain unproven. No forced labels/trades or new API budget."
+    },
+    {
+      "id": "147-forward",
+      "owner": "codex",
+      "status": "FORWARD_OBSERVATION",
+      "next_action": "Short resource guard passed. Longrun coverage and profitability are unproven; existing low-priority learning continues, C3 stays disabled. No repeated fixed-input scan."
     }
   ],
   "blockers": [
@@ -228,12 +221,7 @@
       "evidence": "Historical access gap; no full inheritance claim"
     },
     "Synthetic exact-pool simulation/sellability/source failure remains WAIT; no natural profit proof.",
-    "Missing saved6h coverage is a data limit, not permission to backfill or weaken clocks.",
-    {
-      "id": "146-natural-performance",
-      "status": "PERFORMANCE_WATCH",
-      "evidence": "19:08:46Z4open/3held,held2.641s/apply65ms/queue2.885s,drops0/pool0/connect0. Cold start higher; short guard only, no causal speedup. C3 waits."
-    }
+    "Missing saved6h coverage is a data limit, not permission to backfill or weaken clocks."
   ],
   "lessons": [
     "docs/PROJECT_CONTEXT/FAILURE_LESSONS_AND_STRATEGY_CHECKLIST_73.md",
@@ -251,6 +239,7 @@
     "Old-chat122 readback after trading priority"
   ],
   "evidence": [
+    "docs/PROJECT_CONTEXT/STRATEGY_DELIVERY_RESULT_147.md",
     "docs/PROJECT_CONTEXT/STRATEGY_DELIVERY_RESULT_146.md",
     "data/research/strategy_delivery146/final.json",
     "data/research/strategy_delivery146/natural_first_cycle.json",
@@ -265,8 +254,8 @@
   ],
   "cycle_status": "IN_PROGRESS",
   "status": "LOCAL_CONTEXT_READY",
-  "revision": 24,
-  "digest": "fcf1b5ea56a794d1f8bc01540df0a397c6285b85c1139bdee600661b9ce413af",
+  "revision": 25,
+  "digest": "58a1167c5d8728d369a149ad1d80bbb246dc554467e679b2760e5dd15d044777",
   "workspace": "E:\\memeTrader",
   "codex_session": "01a07b17-8f78-7cb1-bb4f-5d5d15607097",
   "pairing_status": "REVALIDATION_REQUIRED",
