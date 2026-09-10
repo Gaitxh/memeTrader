@@ -20,7 +20,7 @@ CANDIDATE='coverage_cost_aware/v1'
 
 
 def initialize(state=None):
-    if state and state.get('schema') in (KEY,'mode-learning145/v4'):return state
+    if state and state.get('schema') in (KEY,'mode-learning145/v4','mode-learning146/v5'):return state
     return dict(schema=KEY,episodes={},seen=[],groups={},events=[],counts={},recent=[],
         model=dict(version=BASELINE,cutoff_at=None,releases=0,selected_groups=[]),
         training_cursor=0,actual_pending={},actual_groups={},selections={})
@@ -74,7 +74,7 @@ def predict(state,*,chain,age_bucket,mode,features,decision_at,observed_at,inges
         return dict(status='NONCAUSAL',model_version=model['version'])
     key='|'.join((chain,age_bucket,mode,'5'))
     g=s['groups'].get(key)
-    data=deepcopy(model.get('estimates',{}).get(key)) if s['schema']=='mode-learning145/v4' else summary(g) if g else None
+    data=deepcopy(model.get('estimates',{}).get(key)) if s['schema'] in ('mode-learning145/v4','mode-learning146/v5') else summary(g) if g else None
     return dict(status='LEARNED_MODE' if key in model['selected_groups'] else 'FIXED_BASELINE',
         model_version=model['version'],model_cutoff_at=model['cutoff_at'],group=key,estimate=data)
 
@@ -201,7 +201,7 @@ def train(state,*,cutoff_at,minimum_group_samples=20,max_candidates=2):
     return dict(state=s,model=deepcopy(model),consumed=consumed,promoted=promoted,candidates=chosen)
 
 
-def choose(state,signals,features,now):
+def choose(state,signals,features,now,*,router_arm=None):
     from .trajectory144 import ARMS
     available=[a for a in (ARMS[4],ARMS[2],ARMS[0],ARMS[1]) if a in signals]
     if not available:return None
@@ -210,13 +210,15 @@ def choose(state,signals,features,now):
         prefix=features['chain']+'|'+age_band(features.get('pool_age_seconds'))+'|'
         learned=[(model.get('selection_scores',{}).get(prefix+a+'|5',0),a) for a in available if prefix+a+'|5' in model['selected_groups']]
         if learned:chosen=max(learned)[1];rule=model['version']
-    key=signals[chosen]['decision_key']+'|'+ARMS[5]
+    key=signals[chosen]['decision_key']+'|'+(router_arm or ARMS[5])
     prior=state.setdefault('selections',{}).get(key)
     if prior:return deepcopy(prior) if (parse_time(now)-parse_time(prior['recorded_at'])).total_seconds()<=60 else None
     sig=deepcopy(signals[chosen]);sig['decision_key']=key;sig['recorded_at']=iso(parse_time(now))
     sig['decision_evidence'].update(learning_source_arm=chosen,learning_model=deepcopy(model),learning_selection=rule,router_mode=chosen,selection_recorded_at=sig['recorded_at'],
         fixed_priority_source_arm=available[0],fixed_priority_decision_key=signals[available[0]]['decision_key'])
     state['selections'][key]=deepcopy(sig)
+    count(state,'signal:'+(router_arm or ARMS[5]))
+    state.setdefault('last_signal',{})[router_arm or ARMS[5]]=sig['recorded_at']
     if len(state['selections'])>256:state['selections'].pop(next(iter(state['selections'])))
     return sig
 
@@ -258,7 +260,8 @@ class Coordinator:
 
     def signals(self,features,signals,now):
         from .trajectory144 import ARMS
-        output=dict(signals);output.pop(ARMS[5],None)
+        router_arm=getattr(self,'router_arm',ARMS[5])
+        output=dict(signals);output.pop(router_arm,None)
         f=features;chain=f['chain'];band=age_band(f.get('pool_age_seconds'))
         costs=getattr(self.store,'_chain_paper_execution',{})
         terms=dict(buy_slippage_rate=costs.get('buy_slippage_bps',400)/10000,
@@ -279,8 +282,8 @@ class Coordinator:
                 output[arm]=deepcopy(output[arm]);output[arm]['decision_evidence']['learning_episode_key']=key
                 e=self.state['episodes'].get(key)
                 if e:output[arm]['decision_evidence']['learning_prediction']=deepcopy(e['prediction'])
-        selected=choose(self.state,output,f,now)
-        if selected:output[ARMS[5]]=selected
+        selected=choose(self.state,output,f,now,router_arm=router_arm)
+        if selected:output[router_arm]=selected
         if ARMS[3] in output and ARMS[0] in output:
             output[ARMS[3]]['decision_evidence']['learning_episode_key']=output[ARMS[0]]['decision_key']
         return output

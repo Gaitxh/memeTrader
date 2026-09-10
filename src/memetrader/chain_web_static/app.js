@@ -444,8 +444,9 @@ function deliveryCycleForFamily(family){
   const strategy=liveMetricForFamily(family).strategy||{};
   const arms=[family?.canonical_id,...(family?.active_arm_ids||[]),strategy.arm_id,strategy.canonical_id]
     .filter(Boolean).map(String);
-  if(family?.trajectory_engine==='v144'||strategy.trajectory_engine==='v144'||arms.some(arm=>arm.startsWith('trajectory144_')))return '144';
+  if(arms.some(arm=>arm.startsWith('trajectory146_')))return '146';
   if(family?.recipe145||strategy.recipe145||arms.some(arm=>arm.startsWith('recipe145_')||arm.startsWith('trajectory145_')))return '145';
+  if(family?.trajectory_engine==='v144'||strategy.trajectory_engine==='v144'||arms.some(arm=>arm.startsWith('trajectory144_')))return '144';
   return '';
 }
 
@@ -454,7 +455,7 @@ function ensureUniverseDeliveryControls(){
   if(!filters||$('#universe-delivery'))return;
   const delivery=document.createElement('select');
   delivery.id='universe-delivery'; delivery.setAttribute('aria-label','交付轮次筛选');
-  delivery.innerHTML='<option value="all">全部交付轮次</option><option value="144">本轮 144</option><option value="145">本轮 145</option>';
+  delivery.innerHTML='<option value="all">全部交付轮次</option><option value="144">本轮 144</option><option value="145">本轮 145</option><option value="146">本轮 146</option>';
   delivery.addEventListener('change',renderUniverse);
   filters.append(delivery);
   const sort=$('#universe-sort');
@@ -492,7 +493,7 @@ function deliveryPanels(diagnostic, families=[]){
     `OBSERVED ${row.observed??row.OBSERVED??'UNKNOWN'} · UNKNOWN ${row.unknown??row.UNKNOWN??'UNKNOWN'} · 模型floor ${row.model_floor_event??row.MODEL_FLOOR_EVENT??'UNKNOWN'}`,'滚动成熟episode；模型floor不是实际卖出；未成熟仍等待。']);
   const research=future.find(([key])=>key==='mode-learning145:status')?.[1].value||{};
   const researchRows=Object.entries(research.horizons||{}).map(([h,row])=>[`145 研究 ${h} 分钟标签`,
-    `OBSERVED ${row.observed??row.OBSERVED??'UNKNOWN'} · UNKNOWN ${row.unknown??row.UNKNOWN??'UNKNOWN'} · 模型floor ${row.model_floor_event??row.MODEL_FLOOR_EVENT??'UNKNOWN'}`,'v4独立研究分母；不替换317的v3成交合同。']);
+    `OBSERVED ${row.observed??row.OBSERVED??'UNKNOWN'} · UNKNOWN ${row.unknown??row.UNKNOWN??'UNKNOWN'} · 模型floor ${row.model_floor_event??row.MODEL_FLOOR_EVENT??'UNKNOWN'}`,`${research.schema||'UNKNOWN'}独立模型分母；不替换317的v3成交合同。`]);
   const candidates=future.find(([key])=>key==='recipe145:status')?.[1].value.candidates||[];
   const candidateRows=candidates.map(row=>[row.arm_id,`${row.origin} / ${row.status}`,
     `${row.reason||'UNKNOWN'}；注册编号 ${row.registration_index??'UNKNOWN'}；加载 ${row.loaded_at?time(row.loaded_at):'UNKNOWN'}；同fill终局 ${row.comparison?.same_fill_terminals??0}，尚不代表盈利晋级。`]);
@@ -504,6 +505,8 @@ function deliveryPanels(diagnostic, families=[]){
     ['145 有界摘要',futureText,'145 状态键未写入时显示 UNKNOWN；此 API 不会触发训练、注册或扫描。'],
     ['独立学习episode',String(learning.value.unique_episodes??'UNKNOWN'),'相同来源多个账户不增加标签；滚动计数与全历史不同。'],
     ['145 固定优先级对照',research.economic_comparison?.status||'NO_MATCHED_BASELINE','只比较冻结基线的真实等成本、等数量、同fill终局；所选来源不是独立基线。'],
+    ['146 学习执行',`${research.model?.version==='fixed_priority/v1'?'BASELINE':research.model?.version?'LEARNED':'UNKNOWN'} · ${research.schema||'UNKNOWN'} · 发布 ${research.model?.releases??'UNKNOWN'}`,
+      `作用策略 ${research.affects||'UNKNOWN'}；无成熟证据保留基线，已知模型floor计全损但不是真实成交。`],
     ...armRows,...horizonRows,...researchRows,...candidateRows,...dispositionRows,
   ];
 }

@@ -28,7 +28,7 @@ def terminal(arm, fill_id, token_id, *, base=NOW, seconds=1):
     return {
         "arm": arm, "source_fill_id": fill_id, "token_id": token_id,
         "pair_address": "pool-" + token_id, "opened_at": at.isoformat(),
-        "closed_at": (at + timedelta(seconds=30)).isoformat(), "realized_pnl_usd": -0.1,
+        "closed_at": (at + timedelta(seconds=30)).isoformat(), "stake_usd": 2.0, "realized_pnl_usd": -0.1,
     }
 
 
@@ -179,4 +179,74 @@ def test_generator_does_not_consume_future_terminal_receipt(tmp_path):
     row['terminal_recorded_at']=(started+timedelta(seconds=70)).isoformat()
     manager.terminal(row,started+timedelta(seconds=60))
     assert not manager.state['source_outcomes']
+    store.close()
+
+
+def test_recipe_economic_status_is_insufficient_until_actual_same_fill_evidence_matures(tmp_path):
+    store, manager = manager_store(tmp_path)
+    manager.flush(NOW)
+    proposal = next(p for p in manager.state['proposals'].values() if p['origin'] == 'USER_AUTHORIZED_SEED')
+    source_arm = proposal['recipe']['source_arm_id']
+    at = NOW + timedelta(minutes=1)
+    candidate = terminal(proposal['arm_id'], 1, 'one', base=at)
+    source = terminal(source_arm, 1, 'one', base=at)
+    candidate['realized_pnl_usd'] = .1
+    del candidate['stake_usd']
+    source['realized_pnl_usd'] = .05
+    manager.terminal(candidate, at + timedelta(minutes=1))
+    manager.terminal(source, at + timedelta(minutes=1))
+    manager.flush(at + timedelta(minutes=1))
+    comparison = proposal['comparison']
+    assert comparison['economic_status'] == 'INSUFFICIENT'
+    assert {'20_same_fill_terminals', '10_unique_tokens', '2_utc_dates', 'stake_usd_not_recorded'} <= set(comparison['missing'])
+    assert comparison['risk_check_status'] == 'UNKNOWN_STAKE_NOT_RECORDED'
+    assert proposal['status'] == 'FORWARD_EVALUATION'
+    store.close()
+
+
+def test_recipe_paper_supported_requires_actual_costed_same_fill_terms_and_no_risk_violation(tmp_path):
+    store, manager = manager_store(tmp_path)
+    manager.flush(NOW)
+    proposal = next(p for p in manager.state['proposals'].values() if p['origin'] == 'USER_AUTHORIZED_SEED')
+    source_arm = proposal['recipe']['source_arm_id']
+    at = NOW + timedelta(minutes=1)
+    for fill_id in range(20):
+        token_id = 'token-' + str(fill_id % 10)
+        candidate = terminal(proposal['arm_id'], fill_id, token_id, base=at + timedelta(days=fill_id % 2), seconds=fill_id)
+        source = terminal(source_arm, fill_id, token_id, base=at + timedelta(days=fill_id % 2), seconds=fill_id)
+        candidate['realized_pnl_usd'] = .2
+        source['realized_pnl_usd'] = .1
+        manager.terminal(candidate, at + timedelta(days=2))
+        manager.terminal(source, at + timedelta(days=2))
+    manager.flush(at + timedelta(days=2))
+    comparison = proposal['comparison']
+    assert comparison['economic_status'] == 'PAPER_SUPPORTED'
+    assert comparison['missing'] == []
+    assert comparison['risk_check_status'] == 'KNOWN_WITHIN_NOTIONAL'
+    assert comparison['concentration']['top1_pnl'] == pytest.approx(.4)
+    assert store.get_kv('recipe145:status')['economic_promotions'] == 1
+    assert proposal['status'] == 'FORWARD_EVALUATION'
+    store.close()
+
+
+def test_recipe_known_notional_risk_violation_blocks_support_and_negative_evidence_rejects(tmp_path):
+    store, manager = manager_store(tmp_path)
+    manager.flush(NOW)
+    proposal = next(p for p in manager.state['proposals'].values() if p['origin'] == 'USER_AUTHORIZED_SEED')
+    source_arm = proposal['recipe']['source_arm_id']
+    at = NOW + timedelta(minutes=1)
+    for fill_id in range(20):
+        token_id = 'token-' + str(fill_id % 10)
+        candidate = terminal(proposal['arm_id'], fill_id, token_id, base=at + timedelta(days=fill_id % 2), seconds=fill_id)
+        source = terminal(source_arm, fill_id, token_id, base=at + timedelta(days=fill_id % 2), seconds=fill_id)
+        candidate['realized_pnl_usd'] = -.2
+        source['realized_pnl_usd'] = -.1
+        if fill_id == 0: candidate['stake_usd'] = 2.01
+        manager.terminal(candidate, at + timedelta(days=2))
+        manager.terminal(source, at + timedelta(days=2))
+    manager.flush(at + timedelta(days=2))
+    assert proposal['status'] == 'REJECT'
+    assert proposal['comparison']['economic_status'] == 'REJECT'
+    assert proposal['comparison']['risk_check_status'] == 'KNOWN_NOTIONAL_VIOLATION'
+    assert 'notional_risk_limit_violation' in proposal['comparison']['missing']
     store.close()

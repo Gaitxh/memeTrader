@@ -28607,7 +28607,7 @@ class Store:
                 from .age_rate_fresh_impulse import capture
                 capture(self, version, int(cohort_id), token_id, decision['decided_at'], int(entry_fill['id']))
             learning=getattr(self,'_mode_learning144',None)
-            if learning is not None and (arm_id.startswith(('trajectory144_','trajectory145_','recipe145_'))):
+            if learning is not None and (arm_id.startswith(('trajectory144_','trajectory145_','trajectory146_','recipe145_'))):
                 learning.record_buy(version,arm_id,int(cohort_id),token_id,int(entry_fill['id']),filled_at)
             projected += 1
             self.rediscovery_funnel_hit(token_id, 'BUY', filled_at)

@@ -93,6 +93,9 @@ assert.equal(context.revisionUi.delivery({display_index:144,registration_index:1
 assert.equal(context.revisionUi.delivery({canonical_id:'ordinary_strategy',trajectory_engine:'v144'}),'144');
 assert.equal(context.revisionUi.delivery({canonical_id:'recipe145_abc_v1'}),'145');
 assert.equal(context.revisionUi.delivery({canonical_id:'trajectory145_sparse_trend_runner_v1'}),'145');
+assert.equal(context.revisionUi.delivery({canonical_id:'trajectory145_sparse_trend_runner_v1',trajectory_engine:'v144'}),'145');
+assert.equal(context.revisionUi.delivery({canonical_id:'recipe145_x',trajectory_engine:'v144'}),'145');
+assert.equal(context.revisionUi.delivery({canonical_id:'trajectory146_learned_mode_selector_v1',trajectory_engine:'v144'}),'146');
 const panels=context.revisionUi.deliveryPanels({'mode-learning144:status':{version:'mode-learning144/v3',releases:0,updated_at:'2026-09-11T00:00:00Z'}});
 assert.match(panels[2][1],/固定基线，尚无学习模型发布/);
 assert.match(panels[3][1],/mode-learning145 UNKNOWN/);

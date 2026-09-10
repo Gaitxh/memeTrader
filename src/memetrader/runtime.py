@@ -7787,19 +7787,20 @@ class Runtime:
             started145=asyncio.get_running_loop().time()
             learning_status=learning144.flush(utcnow())
             from .trajectory144 import ARMS as learning_arms
-            summaries=[('mode-learning145:status',learning_status,learning144.state,'v4')]
+            from .mode_learning145 import ROUTER as learned146_arm
+            summaries=[('mode-learning145:status',learning_status,learning144.state,'v5')]
             legacy=getattr(learning144,'legacy',learning144)
             summaries.append(('mode-learning144:status',getattr(learning144,'legacy_status',learning_status),legacy.state,'v3'))
             for status_key,status,state,generation in summaries:
-                status['arms']={arm:{'signal_decisions':trajectory144.counts.get('signal:'+arm,0),
+                status['arms']={arm:{'signal_decisions':trajectory144.counts.get('signal:'+arm,state['counts'].get('signal:'+arm,0)),
                 'ready_callbacks':trajectory144.counts.get('ready:'+arm,0),
                 'independent_buy_receipts':state['counts'].get('actual_BUY:'+arm,0),
                 'terminal_receipts':state['counts'].get('actual_terminal:'+arm,0),
                 'last_buy_at':state.get('last_buy',{}).get(arm),
-                'last_signal_at':max((v.get('signals',{}).get(arm,{}).get('recorded_at','') for v in trajectory144.pools.values()),default='') or None,
+                'last_signal_at':state.get('last_signal',{}).get(arm) or max((v.get('signals',{}).get(arm,{}).get('recorded_at','') for v in trajectory144.pools.values()),default='') or None,
                 'stage_counts':dict(self.store._cohort_flow.by_arm.get(arm,{})),
                 'first_block':self.store._cohort_flow.latest_by_arm.get(arm,{}).get('block_reason') or self.store._cohort_flow.latest_by_arm.get(arm,{}).get('stage') or 'UNKNOWN_IF_NO_LINKED_COHORT',
-                'scope':f'signal=engine generation; BUY/terminal={generation} receipt generation; account full history shown separately'} for arm in learning_arms}
+                'scope':f'signal=engine generation; BUY/terminal={generation} receipt generation; account full history shown separately'} for arm in (*learning_arms,learned146_arm) if generation!='v3' or arm!=learned146_arm}
                 self.store.set_kv(status_key,status)
             if hasattr(self,'runtime_timing'):self.runtime_timing.observe('learning145_flush',asyncio.get_running_loop().time()-started145,items=learning_status['learned'])
             self.store.set_kv('cohort-flow:v1',self.store._cohort_flow.snapshot())
@@ -7909,7 +7910,7 @@ class Runtime:
                 # Existing episodes consume every identity/clock-valid acquired
                 # receipt before this batch can capture new signal episodes.
                 # A missing price is outcome evidence, not an entry permission.
-                if address and not (set(quote_rejections) - {"quote_price_unavailable"}):
+                if address and not (set(quote_rejections) - {"quote_price_unavailable","QUOTE_USD_UNKNOWN"}):
                     started145=asyncio.get_running_loop().time()
                     learning144.observe(token.token_id, snapshot, snapshot.ingested_at or received,
                         received, processed_at=utcnow(), source="passive")

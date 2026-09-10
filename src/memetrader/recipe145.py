@@ -14,6 +14,49 @@ SEEDS={ARMS[1]:'trajectory145_sparse_trend_runner_v1',ARMS[2]:'trajectory145_rec
 ACTIVE={'REGISTERED','LOADED','FORWARD_EVALUATION','RETAIN'}
 
 
+def _economic_comparison(pairs, frozen_risk, current_policy):
+    """Describe only actual, same-fill recipe terminals; never change entry rights."""
+    candidate_rows = [row for row, _ in pairs]
+    net = sum(float(row['realized_pnl_usd']) for row in candidate_rows)
+    delta = sum(float(row['realized_pnl_usd']) - float(base['realized_pnl_usd'])
+                for row, base in pairs)
+    by_token = {}
+    for row in candidate_rows:
+        by_token[row['token_id']] = by_token.get(row['token_id'], 0.0) + float(row['realized_pnl_usd'])
+    ordered = sorted(by_token.values(), reverse=True)
+    recipe_notional = frozen_risk.get('notional_usd')
+    policy_notional = current_policy.get('notional_usd')
+    stakes = [row.get('stake_usd') for row in candidate_rows]
+    if recipe_notional is None or policy_notional is None or any(stake is None for stake in stakes):
+        risk_status = 'UNKNOWN_STAKE_NOT_RECORDED'
+    elif any(float(stake) > min(float(recipe_notional), float(policy_notional)) for stake in stakes):
+        risk_status = 'KNOWN_NOTIONAL_VIOLATION'
+    else:
+        risk_status = 'KNOWN_WITHIN_NOTIONAL'
+    dates = {parse_time(row['closed_at']).date().isoformat() for row in candidate_rows}
+    missing = []
+    if len(pairs) < 20: missing.append('20_same_fill_terminals')
+    if len(by_token) < 10: missing.append('10_unique_tokens')
+    if len(dates) < 2: missing.append('2_utc_dates')
+    if net <= 0: missing.append('positive_costed_net_pnl')
+    if delta < 0: missing.append('nonnegative_delta_net_pnl')
+    if risk_status == 'UNKNOWN_STAKE_NOT_RECORDED': missing.append('stake_usd_not_recorded')
+    if risk_status == 'KNOWN_NOTIONAL_VIOLATION': missing.append('notional_risk_limit_violation')
+    status = 'PAPER_SUPPORTED' if not missing else 'INSUFFICIENT'
+    return {
+        'same_fill_terminals': len(pairs), 'tokens': len(by_token),
+        'utc_dates': len(dates), 'costed_net_pnl': net,
+        'candidate_net_pnl': net, 'delta_net_pnl': delta,
+        'risk_check_basis': 'actual_stake_usd_vs_frozen_recipe_and_current_policy_notional',
+        'risk_check_status': risk_status, 'economic_status': status,
+        'missing': missing,
+        # Concentration is descriptive evidence, never an economic veto.
+        'concentration': {'top1_pnl': sum(ordered[:1]), 'top3_pnl': sum(ordered[:3]),
+                          'top1_share': (sum(ordered[:1]) / net) if net else None,
+                          'top3_share': (sum(ordered[:3]) / net) if net else None},
+    }
+
+
 def recipe(source,template,now,*,evidence=(),context='ALL'):
     return dict(schema=KEY,source_arm_id=source['arm_id'],source_contract_hash=source['behavior_contract_hash'],
         entry_context=context,exit_template=template,risk_profile={'notional_usd':2.,'max_positions':2,'live':False},
@@ -182,19 +225,20 @@ class Manager:
                 p.update(status='REVISE',reason='EXISTING_NEW_ENTRY_CONTROL',disposition_at=iso(parse_time(now)));self.dirty=True;continue
             rows=self.state['source_outcomes'].get(p['arm_id'],[]);base=self.state['source_outcomes'].get(p['recipe']['source_arm_id'],[])
             pairs=[(r,b) for r in rows for b in base if (r['source_fill_id'],r['token_id'],r.get('pair_address'))==(b['source_fill_id'],b['token_id'],b.get('pair_address'))]
-            p['comparison']={'same_fill_terminals':len(pairs),'tokens':len({r['token_id'] for r,b in pairs}),
-                'delta_net_pnl':sum(r['realized_pnl_usd']-b['realized_pnl_usd'] for r,b in pairs),
+            p['comparison']={**_economic_comparison(pairs,p['recipe']['risk_profile'],self.policies.get(p['arm_id'],{})),
                 'extra_hold_seconds':sum((parse_time(r['closed_at'])-parse_time(b['closed_at'])).total_seconds() for r,b in pairs),
-                'candidate_net_pnl':sum(r['realized_pnl_usd'] for r,b in pairs),
                 'observed_costed_mfe':[r.get('observed_costed_mfe') for r,b in pairs],
                 'observed_max_drawdown':[r.get('observed_max_drawdown') for r,b in pairs],
                 'close_reasons':{reason:sum(r.get('close_reason')==reason for r,b in pairs) for reason in {r.get('close_reason') for r,b in pairs}},
                 'open_or_unmatched':'UNKNOWN_NOT_ZERO'}
             if len(pairs)>=10 and p['comparison']['tokens']>=3 and sum(r['realized_pnl_usd'] for r,b in pairs)<0 and p['comparison']['delta_net_pnl']<0:
+                p['comparison']['economic_status']='REJECT'
                 self.disposition(h,'REJECT','NEGATIVE_MATCHED_FORWARD_EVIDENCE',now)
         self.register_one(now)
         if self.dirty:self.store.set_kv(self.key,self.state);self.dirty=False
         self.store.set_kv('recipe145:status',{'schema':KEY,'updated_at':iso(parse_time(now)),'active_slots':self.slots(),'max_slots':2,
             'counts':{status:sum(p['status']==status for p in self.state['proposals'].values()) for status in ACTIVE|{'WAIT_CAPACITY','REJECT','VALIDATED','REVISE','DUPLICATE_SUPERSEDED'}},
             'candidates':[{k:p.get(k) for k in ('arm_id','origin','status','reason','registered_at','loaded_at','registration_index','comparison')} for p in self.state['proposals'].values()],
-            'automatic_registration':True,'economic_promotions':0,'extra_requests':0})
+            'automatic_registration':True,
+            'economic_promotions':sum((p.get('comparison') or {}).get('economic_status')=='PAPER_SUPPORTED'
+                                       for p in self.state['proposals'].values()),'extra_requests':0})

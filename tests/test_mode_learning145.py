@@ -55,7 +55,7 @@ def _frame(at, *, price=1.0, liquidity=2000.0):
 
 def _sealed_model(state, *, releases=2):
     model = {
-        "version": "finite/v4:test",
+        "version": "finite/v5:test",
         "cutoff_at": iso(NOW),
         "training_frontier": 0,
         "contract_hash": state["contract_hash"],
@@ -225,8 +225,10 @@ def test_existing317_routes_legacy_model_not_v4_and_keeps_separate_status(tmp_pa
     assert signals==before
     assert c.legacy.state.get('horizons',list(v3.HORIZONS))==list(v3.HORIZONS)
     status=c.flush(at)
-    assert status['schema']==v4.KEY and status['decision_eligible'] is False
-    assert status['trading_selector_contract']==v3.KEY
+    assert status['schema']==v4.KEY and status['decision_eligible'] is True
+    assert status['trading_selector_contract']==v4.KEY
+    assert output[v4.ROUTER]['decision_evidence']['learning_source_arm']==ARMS[1]
+    assert output[v4.ROUTER]['decision_key']!=output[ARMS[5]]['decision_key']
     assert c.legacy_status['schema']==v3.KEY
     assert '30' not in c.legacy_status['horizons']
     restored=v4.Coordinator(store)
@@ -239,10 +241,10 @@ def _actual_pair(state):
     terms=dict(stake_usd=2.,paper_quantity_tokens=1.,entry_execution_price_usd=2.,opened_at=iso(NOW))
     baseline=dict(version='test',arm=ARMS[4],token_id=TOKEN_ID,pair_address=PAIR,source_fill_id=19,
         entry_terms=terms,decision_key='baseline-episode',realized_pnl_usd=.3)
-    router={**deepcopy(baseline),'arm':ARMS[5],'model_version':state['model']['version'],
+    router={**deepcopy(baseline),'arm':v4.ROUTER,'model_version':state['model']['version'],
         'baseline_arm':ARMS[4],'baseline_decision_key':'baseline-episode',
         'source_arm':ARMS[1],'decision_key':'selected-episode|router','realized_pnl_usd':-.4}
-    state['actual_groups']={ARMS[5]:[router],ARMS[4]:[baseline]}
+    state['actual_groups']={v4.ROUTER:[router],ARMS[4]:[baseline]}
     return router,baseline
 
 
@@ -266,7 +268,7 @@ def test_economic_comparison_requires_frozen_actual_equal_entry_baseline(missing
 def test_equal_fill_fixed_priority_comparison_can_have_negative_delta():
     state=_state();state['model']=_sealed_model(state)
     router,baseline=_actual_pair(state)
-    state['actual_groups'][ARMS[5]].append(deepcopy(router))
+    state['actual_groups'][v4.ROUTER].append(deepcopy(router))
     pairs,status=v4.matched_baseline(state)
     assert len(pairs)==1  # Duplicate account/receipt is not another opportunity.
     assert status['router_minus_baseline_usd']==pytest.approx(-.7)
@@ -288,14 +290,19 @@ def test_rollback_cannot_republish_same_evidence_after_flush_or_restart():
         e['results']['5']=dict(status='OBSERVED',costed_return=.2,available_at=iso(at))
     mature(state,'same-flush',NOW)
     assert not v4.train(state,cutoff_at=NOW)['promoted']
-    assert state['dispositions'][key]['status']=='WAIT_NEW_EVIDENCE_AFTER_ROLLBACK'
+    assert state['dispositions'][key]['status']=='ROLLBACK_WAIT_FRESH_EVIDENCE'
     state=json.loads(json.dumps(state))
     later=NOW+timedelta(seconds=1)
     mature(state,'unrelated',later,mode='other')
     assert not v4.train(state,cutoff_at=later)['promoted']
     mature(state,'new-evidence',later)
-    assert v4.train(state,cutoff_at=later)['promoted']
-    assert state['model']['version']!='finite/v4:test'
+    assert not v4.train(state,cutoff_at=later)['promoted']
+    for i in range(20):
+        at=later+timedelta(days=i%2,seconds=i+1)
+        mature(state,'new-evidence'+str(i),at)
+        state['episodes']['new-evidence'+str(i)]['token_id']='bsc:'+str(i)
+    assert v4.train(state,cutoff_at=later+timedelta(days=2))['promoted']
+    assert state['model']['version']!='finite/v5:test'
     # A later failure cannot restore a previously rejected model.
     state['previous_models'].append(_sealed_model(state,releases=1))
     v4.rollback(state,reason='second loss',frontier=11,now=later)
