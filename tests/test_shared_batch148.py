@@ -48,6 +48,33 @@ def test_actual_client_never_adds_an_http_batch(n):
     assert all(len(str(r.url).split('/')[-1].split(','))<=30 for r in after)
 
 
+@pytest.mark.parametrize('has_quote_owner',[False,True])
+def test_unrouted_cohort_pending_is_not_a_price_feed_takeover(monkeypatch,has_quote_owner):
+    from test_observation_leases145_runtime import LeaseStore,bare_runtime
+    clock=[utcnow()];monkeypatch.setattr('memetrader.runtime.utcnow',lambda:clock[0])
+    runtime=bare_runtime(LeaseStore());runtime.chain_meme_trader_only=True
+    normal,snap=asset(10,clock[0]);extra,extra_snap=asset(11,clock[0])
+    runtime._remember_pattern_quotes({normal.token_id:(normal,snap)})
+    manager=runtime._shared_batch148
+    assert manager.offer(extra,extra_snap,clock[0],excluded=set(runtime._pattern_watch))
+    runtime._cohort_pending={(extra.token_id,extra_snap.raw['pair']['pairAddress']):{'signals':{}}}
+    runtime._market_priority_tokens={extra.token_id} if has_quote_owner else set()
+    runtime._rank_no_ca_events=lambda:None
+    runtime._dex_quote_low_priority_available=lambda:True
+    idle=asyncio.Event();idle.set();runtime._chain_meme_active_idle=lambda:idle
+    calls=[]
+    async def quote_batch(chain,addresses,**kwargs):
+        calls.append((list(addresses),kwargs));return {}
+    runtime._dex_batch_quote=quote_batch
+    clock[0]+=timedelta(seconds=16)
+    asyncio.run(runtime.chain_meme_pattern_observer_once())
+    assert calls and normal.address in calls[0][0]
+    assert (extra.address in calls[0][0]) is (not has_quote_owner)
+    if not has_quote_owner:
+        assert calls[0][1]['feature_only148'][extra.token_id]==extra_snap.raw['pair']['pairAddress']
+        assert extra.token_id in manager.active
+
+
 def test_fixed_lease_capacity_and_normal_priority_takeover():
     now=utcnow();manager=SharedBatchCoverage()
     for chain in ('bsc','robinhood'):

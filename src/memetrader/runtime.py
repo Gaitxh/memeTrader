@@ -7771,7 +7771,7 @@ class Runtime:
                 if reason in ('skip_bucket_full', 'skip_chain_full'):
                     self._shared_batch148.offer(token, snapshot, current,
                         floor=getattr(self, '_chain_paper_execution', {}).get('min_pool_liquidity_usd', 1000.),
-                        excluded=set(watch) | strong_protected)
+                        excluded=set(watch) | set(getattr(self, '_market_priority_tokens', held)))
                 if funnel is not None:
                     if occupancy is not None:occupancy['target_bucket']=bucket
                     funnel.quote(token, snapshot, reason, current,
@@ -8127,7 +8127,9 @@ class Runtime:
                     extra = {}
                     manager=getattr(self,'_shared_batch148',None)
                     if manager and getattr(self,'chain_meme_trader_only',False):
-                        due,extra=manager.extend_batch(chain,due,utcnow(),excluded=set(watch)|set(priority)|set(getattr(self,'_lease145_protected',())))
+                        # A cohort waiting for evaluation is not yet a quote owner.
+                        # Only a real ordinary/priority feed can replace this lease.
+                        due,extra=manager.extend_batch(chain,due,utcnow(),excluded=set(watch)|set(priority))
                     async with dex_low_budget(3):
                         if extra:
                             quoted = await self._dex_batch_quote(chain, due, fresh=True, high_priority=False, feature_only148=extra)
