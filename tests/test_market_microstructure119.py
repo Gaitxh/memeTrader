@@ -178,7 +178,7 @@ def test_worker_rare_queue_dedup_no_network_in_enqueue_and_passive_expiry():
         def __exit__(self,*a):pass
         def execute(self,sql,args):
             if sql.startswith('SELECT arm_id'):return [('event_reawakening_v1',)]
-            if sql.startswith(('SELECT feature_json','SELECT 1')):return SimpleNamespace(fetchone=lambda:None)
+            if sql.startswith(('SELECT * FROM chain_meme_trader_v6_cohorts','SELECT 1')):return SimpleNamespace(fetchone=lambda:None)
             if sql.startswith('SELECT observed_at'):return SimpleNamespace(fetchall=lambda:[])
             return []
     class Store:

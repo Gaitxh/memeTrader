@@ -89,6 +89,24 @@ This is source/test completion, not production registration/load or natural
 profit evidence. The existing process-control denial remains unchanged; no
 bypass/restart attempted. Native ledger/held/handoff work remains outstanding.
 
+## Reawakening producer correction
+
+ACK C2C-20260910-138-REAWAKENING-PRODUCER-BUG. Actual Store cohorts use
+`broad_launch`; revised `event_reawakening_v1` uses `evidence_extension_l0`, so
+the old family plus generic reactivation flag could never authorize this route.
+The worker now resolves the cohort's exact prior signal evaluation through the
+existing (definition_version,source_snapshot_id) index. It requires the admitted
+source arm, same token/original pool, ready membership, the explicit
+replacement_reawakening_confirmed outcome and causal snapshot/evaluation/cohort
+clocks. It freezes that source identity into enrollment and downstream signal
+evidence; no blanket broad_launch allowance or historical mutation.
+
+Two targeted tests passed: the real Store revision/quiet-to-reawakening/next-frame
+BUY/exit fixture now exercises this route and malformed source rejection; the
+rare queue test preserves deduplication and zero enqueue network requests.
+Diff check passed. Source only: not loaded or naturally accepted. Earlier
+router source/test completion did not establish natural reawakening supply.
+
 Validation: pool-surface and pattern-input files:81 passed,2 failed. Both failures
 were reproduced with unchanged HEAD runtime in memory: the authoritative-event
 fixture expects an old producer result; the empty-capital-quote mock lacks

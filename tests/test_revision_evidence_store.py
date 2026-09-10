@@ -226,6 +226,59 @@ def test_revised_evidence_arm_uses_l0_then_next_frame_buy_and_can_time_exit(
         assert decision["status"] == "admitted"
         assert decision["reason"] == "pattern_next_observation"
 
+        if arm_id == 'event_reawakening_v1':
+            from memetrader.microstructure_shadow_worker import MicrostructureWorker
+            from memetrader.models import iso
+            from memetrader.market_microstructure import branch_decision
+            worker=MicrostructureWorker(store,SimpleNamespace(),lambda:asyncio.Event())
+            cohort=store.db.execute('SELECT * FROM chain_meme_trader_v6_cohorts WHERE id=?',
+                (position['shadow_cohort_id'],)).fetchone()
+            features=json.loads(cohort['feature_json'])
+            assert cohort['entry_family']=='broad_launch' and not features['reactivation_ready']
+            item=dict(version=TARGET_VERSION,cohort_id=cohort['id'],token_id=token.token_id,
+                pool=pair,requested_at=iso(clock[0]),expires_at=iso(clock[0]+timedelta(seconds=120)))
+            worker.enqueue(item)
+            queued=next(iter(worker.pending.values()))
+            assert queued['reactivation']
+            proof=queued['reawakening_source']
+            assert proof['snapshot_id']==features['fill_signal_snapshot_id']
+            assert proof['outcome']=='replacement_reawakening_confirmed'
+            # Wrong source ready/outcome/clock/identity is not rescued by carrier flags.
+            db=store.db
+            class ChangedRead:
+                def __init__(self,field,value):self.field,self.value=field,value
+                def execute(self,sql,args):
+                    row=dict(db.execute(sql,args).fetchone())
+                    if self.field=='evaluated_at':row[self.field]=self.value
+                    else:
+                        f=json.loads(row['feature_json']);f[self.field]=self.value
+                        row['feature_json']=json.dumps(f)
+                    return SimpleNamespace(fetchone=lambda:row)
+            for field,value in [('ready_arm_ids',[]),('outcomes',{}),('pair_address','wrong'),
+                                ('evaluated_at',iso(clock[0]+timedelta(seconds=1)))]:
+                worker.store=SimpleNamespace(db=ChangedRead(field,value))
+                assert worker._reawakening_source(item,cohort,features) is None
+            worker.store=store
+            assert worker._reawakening_source({**item,'token_id':'solana:other'},cohort,features) is None
+            assert worker._reawakening_source(item,cohort,{**features,'fill_signal_snapshot_id':None}) is None
+            later=iso(clock[0]+timedelta(seconds=1))
+            assert branch_decision(dict(state='ORGANIC_BREADTH_NET_BUY',token_id=token.token_id,
+                pool=pair,recorded_at=iso(clock[0])),token_id=token.token_id,pool=pair,
+                frame_observed=later,frame_recorded=later,price=1,liquidity=10000,
+                reawakening=queued['reactivation'],safety_allow=False,require_safety=False,
+                surface=dict(kind='OBSERVED_DEX_PAPER_ORIGINAL_POOL',token_id=token.token_id,
+                    pool=pair,observed_at=later,recorded_at=later))=='ORGANIC_SHADOW_ELIGIBLE'
+            queued['shadow_costs']={}
+            worker._capture('actual-source',{'item':queued,'result':dict(
+                state='ORGANIC_BREADTH_NET_BUY',token_id=token.token_id,pool=pair,
+                recorded_at=iso(clock[0]),signal_at=item['requested_at'])},
+                dict(eligible=True,price_usd=1,liquidity_usd=10000,observed_at=later,recorded_at=later,
+                    surface=dict(kind='OBSERVED_DEX_PAPER_ORIGINAL_POOL',token_id=token.token_id,
+                        pool=pair,observed_at=later,recorded_at=later)),clock[0]+timedelta(seconds=1))
+            routed=worker.ready['actual-source']
+            assert routed['arm']=='organic_reawakening_flow_v1'
+            assert routed['signal']['decision_evidence']['reawakening_source']==proof
+
         if arm_id == "direct_lp_amount_specific_confirmed_v1":
             assert store.due_direct_lp_entry_preflight_quote(now=clock[0]) is None
             assert store.db.execute(

@@ -50,15 +50,48 @@ class MicrostructureWorker:
             "SELECT arm_id FROM chain_meme_trader_entry_decisions WHERE definition_version=? "
             "AND shadow_cohort_id=? AND status='admitted' LIMIT 256",(item['version'],item['cohort_id']))]
         if not SOURCES.intersection(arms):return
-        cohort=self.store.db.execute('SELECT feature_json,entry_family FROM chain_meme_trader_v6_cohorts WHERE id=?',
-                                     (item['cohort_id'],)).fetchone()
+        cohort=self.store.db.execute('SELECT * FROM chain_meme_trader_v6_cohorts WHERE id=? AND definition_version=?',
+                                     (item['cohort_id'],item['version'])).fetchone()
         feature=json.loads(cohort['feature_json']) if cohort else {}
+        reawakening=self._reawakening_source(item,cohort,feature) if 'event_reawakening_v1' in arms else None
         events={arm:feature.get('event_keys',{}).get(arm) for arm in sorted(SOURCES.intersection(arms))}
+        if reawakening:events['event_reawakening_v1']=reawakening['source_key']
         identity=json.dumps([item['version'],item['token_id'],item['pool'],events if any(events.values()) else item['cohort_id']],sort_keys=True)
         key=hashlib.sha256(identity.encode()).hexdigest()
         self._enqueue(key,{**item,'arms':sorted(SOURCES.intersection(arms)),
-            'event_keys':events,'reactivation':bool(cohort and cohort['entry_family']=='reawakening'
-                and feature.get('reactivation_ready') and 'event_reawakening_v1' in arms)})
+            'event_keys':events,'reactivation':bool(reawakening),'reawakening_source':reawakening})
+
+    def _reawakening_source(self,item,cohort,feature):
+        """Exact prior ready evaluation, not the fill-time carrier family/flags."""
+        sid=feature.get('fill_signal_snapshot_id')
+        if not cohort or not sid:return None
+        row=self.store.db.execute(
+            'SELECT e.id,e.token_id,e.evaluated_at,e.feature_json,s.observed_at,s.ingested_at,s.recorded_at,s.raw_json '
+            'FROM chain_meme_trader_v6_entry_evaluations e JOIN token_snapshots s ON s.id=e.source_snapshot_id '
+            'AND s.token_id=e.token_id WHERE e.definition_version=? AND e.source_snapshot_id=?',
+            (item['version'],sid)).fetchone()
+        if not row:return None
+        try:
+            source=json.loads(row['feature_json']);pair=json.loads(row['raw_json']).get('pair') or {}
+            chain,address=item['token_id'].split(':',1)
+            pool=canonical_token_address(chain,item['pool'])
+            arm='event_reawakening_v1'
+            if not (cohort['token_id']==row['token_id']==item['token_id']
+                and canonical_token_address(chain,cohort['pair_address'])==pool
+                and pair.get('chainId')==chain
+                and canonical_token_address(chain,str(pair.get('pairAddress') or ''))==pool
+                and canonical_token_address(chain,str((pair.get('baseToken') or {}).get('address') or ''))==canonical_token_address(chain,address)
+                and canonical_token_address(chain,str(source.get('pair_address') or ''))==pool
+                and source.get('source_snapshot_id')==sid and arm in source.get('ready_arm_ids',[])
+                and source.get('outcomes',{}).get(arm)=='replacement_reawakening_confirmed'
+                and parse_time(row['observed_at'])<=parse_time(row['ingested_at'])<=parse_time(row['recorded_at'])
+                    <=parse_time(row['evaluated_at'])<parse_time(cohort['decided_at'])<=parse_time(item['requested_at'])):
+                return None
+            return dict(source_key=f"reawakening:{item['version']}:{row['id']}:{sid}",
+                evaluation_id=row['id'],snapshot_id=sid,token_id=item['token_id'],pool=pool,
+                observed_at=row['observed_at'],recorded_at=row['evaluated_at'],
+                outcome=source['outcomes'][arm])
+        except (KeyError,TypeError,ValueError):return None
 
     def _enqueue(self,key,item):
         with self.store._lock, self.store.db:
@@ -252,6 +285,8 @@ class MicrostructureWorker:
             anchor=dict(eligible=False,price_usd=None,observed_at=iso(now),recorded_at=iso(now))
             self.count('NO_STRICT_NEXT_ANCHOR')
         item=entry['item']
+        if item.get('reawakening_source'):
+            entry['result']['reawakening_source']=item['reawakening_source']
         route=branch_decision(entry['result'],token_id=item['token_id'],pool=item['pool'],
             frame_observed=anchor['observed_at'],frame_recorded=anchor['recorded_at'],
             price=anchor.get('price_usd'),liquidity=anchor.get('liquidity_usd'),
