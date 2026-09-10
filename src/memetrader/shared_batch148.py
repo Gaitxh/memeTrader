@@ -138,14 +138,21 @@ class SharedBatchCoverage:
         result = {k: v for k, v in (quoted or {}).items() if k not in selected}
         for token_id, pool in selected.items():
             item = self.active.get(token_id)
-            if item is None:
-                continue
-            item['next_due_at'] = now + timedelta(seconds=15)
+            leased = item is not None
+            if leased:
+                item['next_due_at'] = now + timedelta(seconds=15)
             value = (quoted or {}).get(token_id)
             if value is None:
                 self.counts['SOURCE_NO_TOKEN'] += 1
                 continue
             token, snapshot = value
+            if token.token_id != token_id:
+                self.counts['RESPONSE_IDENTITY_MISMATCH'] += 1
+                continue
+            if not leased:
+                # Normal/priority ownership can change while HTTP is in flight.
+                # Keep its identity-bound fresh response, never recreate a lease.
+                item = {'chain': token_id.split(':', 1)[0]}
             raw = snapshot.raw or {}
             pairs = raw.get('pairs') or [raw.get('pair', raw)]
             exact = next((p for p in pairs if canonical_token_address(token.chain, str(p.get('pairAddress') or '')) == pool
@@ -163,6 +170,10 @@ class SharedBatchCoverage:
             observation.provider = snapshot.provider
             if not 0 <= (now - observation.observed_at).total_seconds() <= FRESH_SECONDS:
                 self.counts['STALE_OR_FUTURE'] += 1
+                continue
+            if not leased:
+                result[token_id] = (token, observation)
+                self.counts['RELEASED_INFLIGHT_DELIVERED'] += 1
                 continue
             if observation.observed_at <= item['last_observed_at']:
                 self.counts['DUPLICATE_OBSERVATION'] += 1

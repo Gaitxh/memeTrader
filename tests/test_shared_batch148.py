@@ -89,6 +89,20 @@ def test_response_uses_exact_pool_and_original_clocks():
     assert manager.counts['SOURCE_NO_EXACT_POOL']==1
 
 
+def test_inflight_exact_response_survives_normal_watch_takeover():
+    now=utcnow();manager=SharedBatchCoverage();token,snap=asset(1,now)
+    manager.offer(token,snap,now)
+    _,selected=manager.extend_batch('bsc',['0x'+'f'*40],now)
+    at=now+timedelta(seconds=2)
+    manager.prune(at,excluded={token.token_id})
+    assert not manager.active
+    response=_snapshot(token,snap.raw['pair']['pairAddress'],at,price=1.1)
+    result=manager.response({token.token_id:(token,response)},selected,at,DexScreenerClient._snapshot)
+    assert result[token.token_id][1].observed_at==at
+    assert not manager.active
+    assert manager.counts['RELEASED_INFLIGHT_DELIVERED']==1
+
+
 def test_known_floor_is_delivered_to_learning_then_releases_slot():
     now=utcnow();manager=SharedBatchCoverage();token,snap=asset(1,now)
     manager.offer(token,snap,now);_,selected=manager.extend_batch('bsc',['0x'+'f'*40],now)
