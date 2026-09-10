@@ -1067,6 +1067,70 @@ class ChainWebData:
     def _rows(connection: sqlite3.Connection, sql: str, values: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         return [dict(row) for row in connection.execute(sql, values).fetchall()]
 
+    def _native_position_fields(self, connection, version, current, assets):
+        """Expose the actual native exit surface, never a token-level DEX substitute."""
+        from .native_execution import ARM
+        if not assets['values']:
+            return {}
+        receipt = connection.execute("SELECT value_json FROM kv WHERE key='native-paper:last-held'").fetchone()
+        receipt = Store._json_object(receipt[0]) if receipt else {}
+        result = {}
+        for row in connection.execute(
+            'SELECT n.cohort_id,n.token_id,n.state_json,p.amount_raw,p.stake_usd,p.allocated_cost_usd '
+            'FROM chain_meme_native_positions n JOIN chain_meme_trader_positions p '
+            'ON p.definition_version=n.definition_version AND p.shadow_cohort_id=n.cohort_id '
+            "AND p.arm_id=? WHERE n.definition_version=? AND p.status='open'", (ARM, version),
+        ):
+            state = Store._json_object(row['state_json'])
+            mark = state.get('mark') or {}
+            value = assets['values'].get(row['cohort_id'])
+            checked = mark.get('recorded_at')
+            observed = mark.get('observed_at')
+            reason = None if value is not None else 'native_current_quote_unknown'
+            quote_status = 'LOCAL_SURFACE_CURRENT' if value is not None else 'UNKNOWN'
+            bound = (receipt.get('cohort_id') == row['cohort_id']
+                     and receipt.get('token_id') == row['token_id']
+                     and str(receipt.get('remaining_amount_raw')) == row['amount_raw'])
+            if bound:
+                checked = receipt.get('recorded_at')
+                observed = receipt.get('observed_at')
+            try:
+                fresh = bool(observed and checked and parse_time(observed) <= parse_time(checked) <= current
+                             and 0 <= (current-parse_time(observed)).total_seconds() <= 15)
+                if bound:
+                    fresh = fresh and parse_time(observed) <= parse_time(receipt['quote_recorded_at']) <= parse_time(checked)
+            except (ValueError, TypeError, KeyError):
+                fresh = False
+            if not fresh:
+                value = None
+                reason = 'native_quote_expired' if checked else 'native_current_quote_unknown'
+            elif bound:
+                quote_status = receipt.get('quote_status') or 'UNKNOWN'
+                if quote_status != 'LOCAL_SURFACE_CURRENT' or receipt.get('fee_error'):
+                    value = None
+                    reason = ('native_exit_capacity_unavailable' if quote_status == 'LOCAL_NO_DIRECT_CAPACITY'
+                              else 'native_exit_fee_unknown' if receipt.get('fee_error') else 'native_current_quote_unknown')
+            if state['surface'] == 'MIGRATION_PENDING':
+                value = None
+                reason = 'native_migration_pending'
+            remaining_cost = max(0., float(row['stake_usd'])-float(row['allocated_cost_usd'] or 0))
+            result[row['cohort_id']] = dict(
+                indicative_value_usd=value,
+                indicative_unrealized_pnl_usd=None if value is None else value-remaining_cost,
+                remaining_cost_usd=remaining_cost, valuation_unavailable_reason=reason,
+                indicative_source='native_protocol_model', indicative_price_usd=None,
+                indicative_liquidity_usd=None, indicative_pool_floor_usd=None,
+                indicative_sell_slippage_pct=None, indicative_mark_at=checked,
+                indicative_mark_age_seconds=(current-parse_time(checked)).total_seconds() if checked else None,
+                indicative_sellability='NATIVE_MODEL_QUOTED' if value is not None else 'NATIVE_EXIT_UNAVAILABLE',
+                indicative_market_status=quote_status, market_is_fresh=fresh,
+                price_usd=None, liquidity_usd=None, market_status=quote_status,
+                native_surface=state['surface'], native_quote_is_fresh=fresh,
+                native_exit_reason=receipt.get('quote_reason') if bound else None,
+                native_exit_checked_at=checked,
+            )
+        return result
+
     def state(self, *, compact: bool = False, arm_id: str | None = None) -> dict[str, Any]:
         ttl = self.LIVE_CACHE_SECONDS if compact else 10.0
         now = time.monotonic()
@@ -1260,6 +1324,7 @@ class ChainWebData:
             effective_value_by_arm: dict[str, float] = defaultdict(float)
             from .native_execution import ARM as native_arm, account_assets
             native_assets = account_assets(connection, active_version, current)
+            native_fields = self._native_position_fields(connection, active_version, current, native_assets)
             net_flows = Store._chain_meme_trader_effective_net_flows_from_connection(connection, active_version)
             capital_credits = Store.chain_meme_capital_credits_from_connection(connection, active_version)
             priced_open_by_arm: dict[str, int] = defaultdict(int)
@@ -1330,13 +1395,16 @@ class ChainWebData:
                     )
                 if effective_status == "open":
                     if arm == native_arm:
-                        native_value = native_assets['values'].get(row['shadow_cohort_id'])
+                        native_view = native_fields.get(row['shadow_cohort_id'], {})
+                        native_value = native_view.get('indicative_value_usd')
                         if native_value is not None:
                             effective_value_by_arm[arm] += native_value
-                            effective_unrealized_by_arm[arm] += native_value-float(row['stake_usd'])
+                            effective_unrealized_by_arm[arm] += native_view['indicative_unrealized_pnl_usd']
                             priced_open_by_arm[arm] += 1
                         else:
-                            unavailable_reasons_by_arm[arm]['native_current_quote_unknown'] += 1
+                            reason = native_view.get('valuation_unavailable_reason') or 'native_current_quote_unknown'
+                            unavailable_reasons_by_arm[arm][reason] += 1
+                            unavailable_reason_by_position[key] = reason
                         continue
                     market_at = row.get("last_success_at") or row.get("market_recorded_at")
                     market_age = (
@@ -1809,6 +1877,8 @@ class ChainWebData:
                         else "AWAITING_MARK"
                     ),
                 })
+                if row['arm_id'] == native_arm:
+                    open_positions[-1].update(native_fields.get(row['shadow_cohort_id'], {}))
             if arm_id:
                 detail = Store.chain_meme_trader_summary_from_connection(
                     connection,
@@ -1822,7 +1892,8 @@ class ChainWebData:
                         ({
                             **strategy,
                             "positions": [{**position, "valuation_unavailable_reason":
-                                unavailable_reason_by_position.get((arm_id, int(position["shadow_cohort_id"])))}
+                                unavailable_reason_by_position.get((arm_id, int(position["shadow_cohort_id"]))),
+                                **(native_fields.get(position['shadow_cohort_id'], {}) if arm_id == native_arm and position['status']=='open' else {})}
                                 for position in detail_strategy.get("positions") or []],
                             "trades": detail_strategy.get("trades") or [],
                         }
@@ -2060,6 +2131,29 @@ class ChainWebData:
             )
             self._annotate_research_results(summary)
             active_version = str(summary.get("version") or Store.CHAIN_MEME_TRADER_VERSION)
+            from .native_execution import ARM as native_arm, account_assets
+            native_assets = account_assets(connection, active_version, current)
+            native_fields = self._native_position_fields(connection, active_version, current, native_assets)
+            for strategy in summary.get('strategies', []):
+                if strategy['arm_id'] != native_arm:
+                    continue
+                for position in strategy.get('positions', []):
+                    if position['status'] == 'open':
+                        position.update(native_fields.get(position['shadow_cohort_id'], {}))
+                account = strategy['account']
+                views = list(native_fields.values())
+                complete = all(v['indicative_value_usd'] is not None for v in views)
+                value = sum(v['indicative_value_usd'] for v in views) if complete else None
+                unrealized = sum(v['indicative_unrealized_pnl_usd'] for v in views) if complete else None
+                total = account['realized_pnl_usd'] + unrealized if complete else None
+                account.update(indicative_equity_usd=account['cash_usd']+value+native_assets['rent'] if complete else None,
+                    indicative_unrealized_pnl_usd=unrealized, indicative_total_pnl_usd=total,
+                    capital_neutral_unrealized_pnl_usd=unrealized, capital_neutral_total_pnl_usd=total,
+                    indicative_is_complete=complete, total_pnl_is_complete=complete,
+                    indicative_position_count=sum(v['indicative_value_usd'] is not None for v in views),
+                    executable_equity_usd=None, executable_unrealized_pnl_usd=None, executable_total_pnl_usd=None,
+                    valuation_unavailable_reasons=dict(Counter(v['valuation_unavailable_reason'] for v in views if v['valuation_unavailable_reason'])),
+                    valuation_status='native_protocol_model_rent_at_cost' if complete else 'native_protocol_model_unknown')
             definition = self._overlay_effective_execution_settings(
                 connection, dict(summary.get("definition") or {})
             )
@@ -2927,6 +3021,10 @@ class ChainWebData:
                     "indicative_value_usd", "indicative_unrealized_pnl_usd",
                     "indicative_price_usd", "indicative_liquidity_usd",
                     "indicative_market_status", "indicative_mark_age_seconds",
+                    "indicative_source", "indicative_mark_at", "indicative_sellability",
+                    "indicative_pool_floor_usd", "indicative_sell_slippage_pct",
+                    "market_is_fresh", "valuation_unavailable_reason", "status",
+                    "native_surface", "native_quote_is_fresh", "native_exit_reason", "native_exit_checked_at",
                 )
             }
             for strategy in summary.get("strategies", [])
@@ -3719,6 +3817,13 @@ class ChainWebData:
                     position["indicative_unrealized_pnl_usd"] = (
                         float(position["indicative_value_usd"]) - remaining_cost
                     )
+            from .native_execution import ARM as native_arm, account_assets
+            if any(p['arm_id'] == native_arm and p['status'] == 'open' for p in positions):
+                native_fields = self._native_position_fields(
+                    connection, active_version, current, account_assets(connection, active_version, current))
+                for position in positions:
+                    if position['arm_id'] == native_arm and position['status'] == 'open':
+                        position.update(native_fields.get(position['shadow_cohort_id'], {}))
             trades = self._rows(
                 connection,
                 "SELECT id,arm_id,shadow_cohort_id,side,gross_usd,net_cash_flow_usd,"

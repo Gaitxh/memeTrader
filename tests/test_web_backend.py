@@ -138,6 +138,12 @@ def test_compact_valuation_reports_missing_reason_without_changing_account_value
             assert missing["valuation_unavailable_reason"] == expected_reason
             assert (missing["indicative_unrealized_pnl_usd"] is not None) == complete
         assert store._chain_meme_trader_effective_net_flows(version) == ledger_before
+        if complete:
+            full = ChainWebData(config_path).state(compact=False, arm_id=arm)
+            position = full['open_positions'][0]
+            assert position['indicative_source'] == 'dex_price_mark_configured_execution'
+            assert position['indicative_mark_at']
+            assert position['indicative_sellability'] == 'MARK_SELLABLE'
     finally:
         store.close()
 

@@ -138,6 +138,58 @@ def test_real_plan_common_cash_runtime_held_sell_idempotence(tmp_path,monkeypatc
     reopened.close()
 
 
+@pytest.mark.parametrize('quote_case', ['capacity', 'stale', 'current'])
+def test_native_web_uses_exit_surface_not_fresh_dex_mark(tmp_path, monkeypatch, quote_case):
+    from memetrader.chain_web import ChainWebData
+    from memetrader.runtime import initial_config
+    from test_funding_epoch import _snapshot
+    store, clock, plan = setup(tmp_path, monkeypatch)
+    assert buy(store, plan, now=clock[0]) == 'BOUGHT'
+    clock[0] += timedelta(seconds=1)
+    monkeypatch.setattr('memetrader.chain_web.utcnow', lambda: clock[0])
+    row = dict(store.db.execute('SELECT * FROM chain_meme_trader_positions WHERE arm_id=?', (ARM,)).fetchone())
+    token = TokenCandidate('solana', SOL, 'native fixture', 'N')
+    snapshot = _snapshot(token, plan['curve'], clock[0])
+    store.upsert_chain_meme_trader_market_mark(token, snapshot, recorded_at=clock[0])
+    state = json.loads(store.db.execute('SELECT state_json FROM chain_meme_native_positions').fetchone()[0])
+    state['mark'] = dict(value_usd=4., observed_at=iso(clock[0]), recorded_at=iso(clock[0]))
+    with store.db:
+        store.db.execute('UPDATE chain_meme_native_positions SET state_json=?', (dumps(state),))
+        store.db.execute('UPDATE chain_meme_trader_positions SET allocated_cost_usd=1 WHERE arm_id=?', (ARM,))
+    at = clock[0]-timedelta(seconds=20) if quote_case=='stale' else clock[0]
+    store.set_kv('native-paper:last-held', dict(cohort_id=row['shadow_cohort_id'], token_id=token.token_id,
+        remaining_amount_raw=row['amount_raw'], observed_at=iso(at), quote_recorded_at=iso(at), recorded_at=iso(at),
+        quote_status='LOCAL_SURFACE_CURRENT' if quote_case=='current' else 'LOCAL_NO_DIRECT_CAPACITY',
+        quote_reason='' if quote_case=='current' else 'native_capacity_budget_exhausted'))
+    cfg=initial_config(); cfg['database']=str(store.path)
+    path=tmp_path/'web.json'; path.write_text(json.dumps(cfg),encoding='utf-8')
+    api=ChainWebData(path)
+    ledger_before=[tuple(r) for r in store.db.execute('SELECT * FROM chain_meme_trader_trades')]
+    expected = {'capacity':'native_exit_capacity_unavailable','stale':'native_quote_expired','current':None}[quote_case]
+    for compact in (True, False):
+        result=api.state(compact=compact,arm_id=ARM)
+        account=next(s['account'] for s in result['strategies'] if s['arm_id']==ARM)
+        assert account['valuation_unavailable_reasons']==({expected:1} if expected else {})
+        strategy=next(s for s in result['strategies'] if s['arm_id']==ARM)
+        views=[result['open_positions'][0], strategy['positions'][0]]
+        for position in views:
+            assert position['valuation_unavailable_reason']==expected
+            assert position['indicative_source']=='native_protocol_model'
+            assert position['indicative_price_usd'] is None
+            assert position['indicative_mark_at']==iso(at)
+            if expected:
+                assert position['indicative_value_usd'] is None
+                assert position['indicative_sellability']=='NATIVE_EXIT_UNAVAILABLE'
+            else:
+                assert position['indicative_value_usd']==4.
+                assert position['indicative_unrealized_pnl_usd']==pytest.approx(4.-(row['stake_usd']-1.))
+    token_view=api.token_detail(token.token_id)['positions'][0]
+    assert token_view['valuation_unavailable_reason']==expected
+    assert token_view['indicative_source']=='native_protocol_model'
+    assert [tuple(r) for r in store.db.execute('SELECT * FROM chain_meme_trader_trades')]==ledger_before
+    store.close()
+
+
 def test_bad_plan_and_completion_never_fabricate_exit(tmp_path,monkeypatch):
     store,clock,p=setup(tmp_path,monkeypatch)
     bad=deepcopy(p);bad['execution_frame']['mint_state']['freeze_authority']=SOL

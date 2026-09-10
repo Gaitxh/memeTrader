@@ -30,6 +30,7 @@ globalThis.revisionUi = {
   explanation(family,opened) { return strategyExplanationMarkup(family,opened); },
   safety: cohortSafetyText,
   entry: value => readable(value,entryLabels),
+  positionMarkText, positionPendingText, accountPendingText, sellabilityText,
 };`, context);
 
 const family = {
@@ -37,6 +38,12 @@ const family = {
   active_arm_ids: ['strategy-122'],
   strategy_revision: 1,
 };
+assert.match(context.revisionUi.positionMarkText({indicative_source:'dex_price_mark_sell_slippage_haircut',indicative_sell_slippage_pct:4}),/公开池价格，已扣 4%/);
+const nativePending={indicative_source:'native_protocol_model',indicative_value_usd:null,valuation_unavailable_reason:'native_exit_capacity_unavailable'};
+assert.match(context.revisionUi.positionMarkText(nativePending),/可卖储备不足/);
+assert.doesNotMatch(context.revisionUi.positionPendingText(nativePending),/行情待更新/);
+assert.match(context.revisionUi.accountPendingText({valuation_unavailable_reasons:{native_exit_capacity_unavailable:1}}),/可卖储备不足/);
+assert.equal(context.revisionUi.sellabilityText('NATIVE_EXIT_UNAVAILABLE'),'原生退出受阻');
 assert.equal(
   context.revisionUi.label(family, [{arm_id: 'strategy-122', strategy_revision: 2}]),
   '策略 122-V002',
@@ -102,3 +109,5 @@ vm.runInContext('refreshLive()', context).then(() => {
 });
 
 assert.match(context.revisionUi.explanation({},true),/class="strategy-explanation" open/);
+
+assert.match(context.revisionUi.positionMarkText({indicative_source:'dex_price_mark_configured_execution',indicative_sell_slippage_pct:4}),/公开池价格，已扣 4%/);
