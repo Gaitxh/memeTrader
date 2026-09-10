@@ -3776,6 +3776,8 @@ class SolanaHeldAccountCollector:
                         "baseline_quote_raw": int(quote_vault_fact["amount_raw"]),
                         "resolved_slot": resolved_slot,
                         "resolved_at": iso(utcnow()),
+                        "identity_facts": {"pool": exact_pool, "base_vault": base_vault_fact,
+                            "quote_vault": quote_vault_fact},
                     })
                 except PermissionError as exc:
                     outcomes.append({
@@ -3851,7 +3853,7 @@ class SolanaHeldAccountCollector:
         existing idle/request budget and independently verified setup accounts.
         """
         from solders.message import Message
-        if set(messages)!={'BUY','SELL'} or account_context_slot<=0:
+        if set(messages) not in ({'BUY','SELL'},{'SELL'}) or account_context_slot<=0:
             raise ValueError('native_fee_messages_incomplete')
         parsed={side:Message.from_bytes(raw) for side,raw in messages.items()}
         if any(m.header.num_required_signatures!=1 for m in parsed.values()):
@@ -4006,6 +4008,8 @@ class SolanaHeldAccountCollector:
                     "age_ms": max(0, round((completed_at - requested_at).total_seconds() * 1000)),
                     "source_hashes": source_hashes,
                 }
+                # Current decoded globals bind the unsigned remaining-raw SELL fee.
+                common['native_global_config'] = global_config
                 try:
                     mint = Pubkey.from_string(str(surface["base_mint"]))
                     expected_curve = str(Pubkey.find_program_address(
@@ -4020,6 +4024,7 @@ class SolanaHeldAccountCollector:
                         "account_kind": "bonding_curve",
                         "expected_program_owner": PUMP_PROGRAM_ID,
                     })
+                    common['native_curve_state'] = curve
                     required = (curve, global_config)
                     if any(item.get("status") == "missing" for item in required):
                         raise LookupError("required_account_missing")
@@ -4320,6 +4325,7 @@ class SolanaHeldAccountCollector:
                     )
                     results.append({
                         **common, **quote, "status": "LOCAL_SURFACE_CURRENT", "reason": "",
+                        "native_swap_config": global_config, "native_swap_pool": pool,
                     })
                 except LookupError as exc:
                     results.append({**common, "status": "LOCAL_UNKNOWN_MISSING_ACCOUNT", "reason": str(exc)})

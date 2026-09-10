@@ -1349,6 +1349,8 @@ class Runtime:
                     self.store.register_chain_meme_cycle_volatility_experiments()
                     self.store.register_chain_meme_l0_experiments()
                     self.store.register_chain_meme_cohort_experiments()
+                    from .native_execution import register as register_native
+                    register_native(self.store)
                     self.store.register_chain_meme_staged_probe()
                     self.store.register_chain_meme_mature_acceptance()
                     self.store.register_chain_meme_wallet_observers()
@@ -6332,6 +6334,13 @@ class Runtime:
 
     async def chain_meme_local_surface_once(self) -> None:
         """Refresh route-verified PumpSwap or fallback Pump-curve capacity."""
+        from .native_execution import targets as native_targets
+        native = native_targets(self.store)
+        if native:
+            try:
+                await asyncio.wait_for(self._native_held_once(native[0]),timeout=3.0)
+            except Exception as exc:
+                self.store.heartbeat('native-paper-held',item=False,error=type(exc).__name__)
         targets = self.store.chain_meme_trader_local_surface_targets()
         if not targets:
             self.store.heartbeat("chain-meme-local-surface", item=False, error="")
@@ -6732,7 +6741,7 @@ class Runtime:
             self.store.heartbeat("pregrad-watch", error=type(exc).__name__)
 
     def _dispatch_native_cash137(self,frame,trigger):
-        """One rare existing-native candidate; no funded entry authority."""
+        """One rare existing-native candidate; common-account protocol Paper only."""
         from .pump_native import native_mint_controls
         if (trigger.get('status')!='REQUOTED_SHADOW'
             or frame.get('slot')!=trigger.get('requote_slot')
@@ -6764,6 +6773,11 @@ class Runtime:
                     execution_frame_sha256=hashlib.sha256(json.dumps(frame,sort_keys=True,separators=(',',':')).encode()).hexdigest(),
                     next_independent_curve_frame_required=False,
                     native_ledger_required=True,affects='none',decision_eligible=False)
+                from .native_execution import buy as native_buy
+                result['enrollment_status']=native_buy(self.store,result)
+                if result['enrollment_status']=='BOUGHT':
+                    result.update(status='PAPER_MODEL_BOUGHT',native_ledger_required=False,
+                        affects='native_protocol_model_paper',decision_eligible=True)
             except Exception as exc:
                 result={'status':'UNKNOWN','reason':type(exc).__name__+':'+str(exc)[:160],
                     'decision_eligible':False,'affects':'none'}
@@ -6771,6 +6785,39 @@ class Runtime:
             self.store.record_chain_meme_pattern_evidence(frame['token_id'],frame['curve_address'],
                 'native_cash_plan137',result,observed_at=utcnow(),source_key=key)
         self._native_cash137_task=asyncio.create_task(run(),name='native_cash137')
+
+    async def _native_held_once(self,target):
+        """Max-one held native surface in the existing local-surface task."""
+        from .native_execution import apply_curve_quote, canonical_pool, confirm_successor
+        from .pump_native_cash import exit_fee, successor_exit_fee
+        await self.chain_meme_wsol_reference_once(observed_pool=True)
+        state=target['state'];plan=state['plan']
+        if state['surface']=='MIGRATION_PENDING':
+            pool,_=canonical_pool(plan['execution_frame']['base_mint'])
+            results=await self.held_accounts.resolve_pumpswap_shadow_pools([dict(token_id=target['token_id'],
+                base_mint=plan['execution_frame']['base_mint'],pool_address=pool)])
+            for evidence in results:
+                result=confirm_successor(self.store,target,evidence)
+                self.store.set_kv('native-paper:last-held',dict(status=result,recorded_at=iso()))
+            return  # Never confirm and fill the same observation.
+        surface=dict(token_id=target['token_id'],base_mint=plan['execution_frame']['base_mint'],
+            curve_address=target['curve'],remaining_amount_raw=target['amount_raw'])
+        if state['surface']=='PUMPSWAP':
+            surface.update(state['successor'],remaining_amount_raw=target['amount_raw'])
+            quotes=await self.held_accounts.local_surface_quotes([surface],slippage_bps=400)
+        else:
+            quotes=await self.held_accounts.bonding_curve_quotes([surface],slippage_bps=400,
+                wsol_usdc_conversion=self._wsol_usdc_conversion)
+        for quote in quotes:
+            fee=None
+            if quote.get('status')=='LOCAL_SURFACE_CURRENT':
+                try:
+                    fee=await (successor_exit_fee(self.held_accounts,plan,quote) if state['surface']=='PUMPSWAP'
+                        else exit_fee(self.held_accounts,plan,quote))
+                except (ValueError,KeyError):
+                    pass  # Missing current fee is not a SELL or a zero valuation.
+            result=apply_curve_quote(self.store,target,quote,fee,self._wsol_usdc_conversion)
+            self.store.set_kv('native-paper:last-held',dict(status=result,recorded_at=iso()))
 
     async def critical_onchain_exit_loop(self) -> None:
         """Drain exact-account risk exits before ordinary background quote work."""

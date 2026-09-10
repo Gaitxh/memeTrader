@@ -292,6 +292,8 @@ class Store:
         self._last_supervised_error_record_at: dict[str, datetime] = {}
         self.db = sqlite3.connect(self.path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
+        from .native_execution import SCHEMA as native_schema
+        self.db.executescript(native_schema)
         self.db.create_function(
             "canonical_token_address", 2, canonical_token_address,
             deterministic=True,
@@ -28721,7 +28723,7 @@ class Store:
                         policy for policy in policies
                         if self._chain_meme_trader_policy_active_for_snapshot(policy, row)
                         and policy.get("entry_match_mode") not in {
-                            "isolated_pattern_observer", "isolated_cohort_observer"}
+                            "isolated_pattern_observer", "isolated_cohort_observer", "native_protocol_model"}
                     ]
                     raw = self._json_object(row["raw_json"])
                     pair = raw.get("pair") if isinstance(raw.get("pair"), Mapping) else raw
@@ -34226,6 +34228,8 @@ class Store:
             created = 0
             capital_shared = {}
             for position in positions:
+                if policies.get(position['arm_id'], {}).get('native_execution'):
+                    continue  # Native raw/capacity exits own this model; never DEX-floor it.
                 original_pair = position["entry_pair_address"]
                 migration_link = resolve_flap_successor(self.db, position["token_id"], original_pair, iso(current))
                 if migration_link and parse_time(position["opened_at"]) > parse_time(migration_link["observed_at"]):
@@ -35325,7 +35329,16 @@ class Store:
             indicative_value = 0.0
             indicative_unrealized = 0.0
             indicative_priced = 0
+            from .native_execution import ARM as native_arm, account_assets
+            native_assets = account_assets(self.db, version, current) if arm_id == native_arm else None
             for position in open_positions:
+                if native_assets is not None:
+                    value = native_assets['values'].get(position['shadow_cohort_id'])
+                    if value is not None:
+                        indicative_value += value
+                        indicative_unrealized += value-float(position['stake_usd'])
+                        indicative_priced += 1
+                    continue
                 link = resolve_flap_successor(self.db, position["token_id"], position["entry_pair_address"], iso(current))
                 mark = next((
                     candidate for candidate in marks_by_token.get(
@@ -35395,21 +35408,23 @@ class Store:
             open_count = len(open_positions) + unresolved
             indicative_complete = indicative_priced == open_count
             no_open_positions = open_count == 0
+            rent_asset = native_assets['rent'] if native_assets else 0.0
             payload = (
                 version, arm_id, iso(current), cash,
-                cash if no_open_positions else None,
+                cash if no_open_positions and not native_assets else None,
                 realized,
                 0.0 if no_open_positions else None,
                 realized if no_open_positions else None,
-                cash if no_open_positions else None,
+                cash if no_open_positions and not native_assets else None,
                 0.0 if no_open_positions else None,
                 realized if no_open_positions else None,
                 0, open_count, closed, written, 0,
-                cash + indicative_value if indicative_complete else None,
+                cash + rent_asset + indicative_value if indicative_complete else None,
                 indicative_unrealized if indicative_complete else None,
                 realized + indicative_unrealized if indicative_complete else None,
                 indicative_priced, int(indicative_complete),
-                "complete_market_mark"
+                "native_protocol_model_rent_at_cost" if native_assets and indicative_complete else
+                "native_protocol_model_unknown" if native_assets else "complete_market_mark"
                 if indicative_complete else "partial_market_mark_unknown",
                 ledger_trade_frontier_id,
             )

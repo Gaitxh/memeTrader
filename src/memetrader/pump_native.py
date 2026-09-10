@@ -273,5 +273,6 @@ def advance_absorption(state,frame,probe):
         return prior
     if probe['status']=='FRICTION_EXCEEDED':
         return {'status':'TRIGGER_FROZEN','slot':frame['slot'],'recorded_at':frame['recorded_at'],
+            'token_id':frame.get('token_id'),'curve_address':frame.get('curve_address'),'probe':deepcopy(probe),
             'decision_eligible':False,'affects':'none'}
     return {'status':'OBSERVING','decision_eligible':False,'affects':'none'}

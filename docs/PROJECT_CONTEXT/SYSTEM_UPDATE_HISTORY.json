@@ -2,6 +2,17 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260910-native138-common-paper-source",
+      "recorded_at": "2026-09-10T03:40:18Z",
+      "title": "原生协议模型 Paper 接入公共现金、持仓、退出和估值（源码未加载）",
+      "problem": "已证明的后帧现金计划尚未进入当前资金期公共 BUY/SELL 与账户，不能作为可运行策略。",
+      "change": "实现5U/max1原生策略追加、原子公共账本/不可变回执、租金资产与费用预留、后帧全量退出、规范PumpSwap迁移与当前费用生产器；复用现有任务。",
+      "rationale": "不再建立孤立book；只对已支持SOL协议状态模型成交，缺迁移或可卖证据保持UNKNOWN，普通DEX合同不变。",
+      "validation": "9项定向测试通过，含真实形状组装计划->公共BUY->持仓后帧SELL->公开现金/租金等式、重启幂等、迁移错身份拒绝、当前费用生产器、原生失败隔离；语法及diff检查通过。",
+      "scope": "源码完成，未加载/生产登记，自然原生成交和运行延迟验收待定。现有线上Paper健康、Live锁定；未重试或绕过此前被拒绝的进程控制。无重置/历史/资金修改。",
+      "report": "docs/PROJECT_CONTEXT/STRATEGY_DELIVERY_RESULT_138.md"
+    },
+    {
       "id": "20260908-early-surge-trial-reverted",
       "recorded_at": "2026-09-08T14:44:22.104631Z",
       "deployed_at": "2026-09-08T14:41:09.2543485Z",

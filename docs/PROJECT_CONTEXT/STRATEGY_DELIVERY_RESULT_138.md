@@ -138,3 +138,63 @@ fixture expects an old producer result; the empty-capital-quote mock lacks
 due_direct_lp_entry_preflight_quote. Neither is on the changed flow path; no
 unrelated fix included. New timeout/identity/expiry/contradiction and actual
 adjacent-flow tests passed. Source only; runtime/natural acceptance pending.
+
+## RESULT — C2C-20260910-138-NATIVE-IMPLEMENT-NOW
+
+Supersedes the preceding native "ledger unfinished" source boundary. The current
+period native integration is now implemented, with nine targeted tests passing.
+No independent book or extra timer was introduced. Startup appends exactly one
+`pump_native_absorption_fast_v1` policy through the existing append API: 5U total
+entry cash budget, max1, supported SOL/nonmayhem/noncashback/standard-supply,
+metadata-only Token2022 subset. This is later-observed protocol-model Paper,
+not signing, broadcasting, actual wallet fills or evidence of profitability.
+
+- Existing two-frame absorption freezes token/curve/probe and signal clocks;
+  a strictly later independent requote frame and its exact sealed cash plan
+  reach one atomic common cohort/position/BUY trade and immutable native receipt.
+  Persistent opportunity dedup, current effective pause controls, max1 and common
+  account cash are checked within the Store transaction. Native controls and
+  post-buy sellback are recomputed; known common safety hazards block entry, and
+  successful native authorization joins the common safety audit.
+- Common cash pays actual model curve debit, current BUY message fee and locked
+  setup rent. Reserved SELL fee remains restricted cash, not an expense charged
+  twice. Rent is separately disclosed at cost, with no assumed refund. Public
+  account valuation and account snapshots include this asset and native current
+  remaining-raw marks; they do not call locked rent executable equity. Ordinary
+  DEX price/floor/cost contracts do not process native positions.
+- The existing local-surface task services at most one native held position;
+  its native subsection has a three-second bound and failure does not abort the
+  existing surface lane. Full remaining-raw current curve quotes and current
+  unsigned SELL-message fees supply marks. Hard loss, trailing or 300s max-hold
+  creates intent; only a strictly later slot/observation can settle SELL. Missing
+  evidence/capacity is UNKNOWN, not a fabricated fill or liquidity writeoff.
+- Curve completion persists MIGRATION_PENDING. Existing canonical PumpSwap
+  resolver supplies exact PDA/index0/creator/program/token/vault facts. Identity
+  is persisted first; a later coherent canonical pool quote plus current fee
+  and setup receipt can settle. Wrong identity is rejected. The unsigned
+  PumpSwap SELL shape is pinned to official pump-public-docs commit
+  `2c22246b670812e2392e5f94b9543f500d6c9e15`, IDL SHA256
+  `6b5c7ec4e5ef9742fa99dc57b0d75b1031b379bba02a7e1b3c5a4cad68d77e56`.
+  New WSOL setup rent, if needed, is charged and retained as an asset, never
+  silently refunded. Missing fee-account/setup proof remains pending.
+
+Validation: `test_native_execution138.py` + `test_pregrad_runtime.py`, 9 passed;
+changed Python syntax and diff checks passed. Tests cover actual assembled-message
+plan to common BUY, held runtime intent/later SELL, public account/snapshot cash
+and rent equality, common safety hazard, max1, repeated/restarted receipts,
+migration UNKNOWN/wrong identity/canonical/later SELL, current unsigned curve and
+PumpSwap remaining-raw fee producers, and native failure isolation. Previously
+accepted onchain/VM probes were not repeated.
+
+Deployment facts are separate: read-only `/health` and `/api/live` at approximately
+2026-09-10T03:39–03:40Z show runtime running, current funding version
+`chain-meme-trader/funding-20260906-v002-final-1000`, Paper-only=true,
+Live-locked=true, one existing open/held token and zero pending exit quotes.
+Native registered strategy count is **0**: this source is **NOT LOADED/REGISTERED**,
+so native natural fills and post-load latency acceptance are **NOT AVAILABLE**.
+DEX pool timeouts0, retired-client count0 and waiting-high/low0 at this read are
+baseline facts, not an improvement attributed to un-loaded code. The previously
+denied process-control reload was not retried or bypassed. No production funding,
+ledger, history or account-control mutation was performed in this stage.
+
+Source: [official pinned PumpSwap IDL](https://github.com/pump-fun/pump-public-docs/blob/2c22246b670812e2392e5f94b9543f500d6c9e15/idl/pump_amm.json).

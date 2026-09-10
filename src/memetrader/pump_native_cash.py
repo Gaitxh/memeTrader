@@ -122,3 +122,79 @@ async def assemble(collector,frame,account_id,total_quote_raw):
     receipt.update(fees=actual,recorded_at=iso(),message_hashes={s:hashlib.sha256(m).hexdigest() for s,m in final.items()},
         cash_budget=budget,buy_quote=quote,decision_eligible=False)
     return receipt
+
+
+async def exit_fee(collector,plan,quote):
+    """Actual current fee for the held remaining-raw unsigned Pump SELL message."""
+    frame=dict(plan['execution_frame'],global_config=quote['native_global_config'],curve_state=quote['native_curve_state'])
+    a=addresses(frame,plan['account_id'])
+    if a['bonding_curve']!=quote['pool_address']:
+        raise ValueError('native_held_curve_mismatch')
+    r=await collector.http.post(collector.rpc_url,json={'jsonrpc':'2.0','id':138,
+        'method':'getLatestBlockhash','params':[{'commitment':'confirmed','minContextSlot':quote['context_slot']}]})
+    r.raise_for_status();result=r.json().get('result') or {}
+    message=messages(a,result['value']['blockhash'],1,int(quote['remaining_amount_raw']))['SELL']
+    fee=(await collector.native_message_fee_receipts({'SELL':message},account_context_slot=quote['context_slot']))['SELL']
+    return dict(fee,token_amount_raw=int(quote['remaining_amount_raw']),curve=quote['pool_address'],account_id=plan['account_id'])
+
+
+async def successor_exit_fee(collector,plan,quote):
+    """Pinned PumpSwap SELL; current WSOL setup rent remains a separate asset."""
+    from .collectors import PUMPSWAP_GLOBAL_CONFIG_PDA, PUMPSWAP_FEE_CONFIG_PDA
+    spec=json.loads(Path(__file__).with_name('pumpswap_sell_idl.json').read_text(encoding='utf-8'))
+    pool=quote['native_swap_pool'];g=quote['native_swap_config']
+    if quote['quote_mint']!=SOL or pool.get('is_mayhem_mode') is not False or pool.get('is_cashback_coin') is not False:
+        raise ValueError('unsupported_native_successor_state')
+    old=plan['addresses'];program=key(spec['program'])
+    a=dict(pool=quote['pool_address'],user=old['user'],global_config=PUMPSWAP_GLOBAL_CONFIG_PDA,
+        base_mint=quote['base_mint'],quote_mint=SOL,user_base_token_account=old['associated_base_user'],
+        pool_base_token_account=quote['base_vault'],pool_quote_token_account=quote['quote_vault'],
+        protocol_fee_recipient=g['protocol_fee_recipients'][0],base_token_program=quote['base_token_program'],
+        quote_token_program=TOKEN,fee_config=PUMPSWAP_FEE_CONFIG_PDA)
+    def ata(owner):return str(Pubkey.find_program_address([bytes(key(owner)),bytes(key(TOKEN)),bytes(key(SOL))],key(ATA))[0])
+    a['user_quote_token_account']=ata(a['user'])
+    def seed(s):
+        if s['kind']=='const':return bytes(s['value'])
+        return bytes(key(pool['coin_creator'] if s['path']=='pool.coin_creator' else a[s['path']]))
+    for _ in range(3):
+        for item in spec['sell']['accounts']:
+            name=item['name']
+            if name in a:continue
+            if 'address' in item:a[name]=item['address']
+            elif 'pda' in item:
+                try:
+                    p=item['pda'];pg=Pubkey.from_bytes(seed(p['program'])) if p.get('program') else program
+                    a[name]=str(Pubkey.find_program_address([seed(s) for s in p['seeds']],pg)[0])
+                except KeyError:pass
+    async def rpc(method,params):
+        r=await collector.http.post(collector.rpc_url,json={'jsonrpc':'2.0','id':138,'method':method,'params':params})
+        r.raise_for_status();b=r.json()
+        if b.get('error') or b.get('result') is None:raise ValueError('native_successor_fee_unavailable')
+        return b['result']
+    keys=[RENT,a['user_quote_token_account'],a['protocol_fee_recipient_token_account'],a['coin_creator_vault_ata']]
+    opts={'commitment':'confirmed','minContextSlot':quote['context_slot']}
+    bundle=await rpc('getMultipleAccounts',[keys,dict(opts,encoding='base64')])
+    slot=bundle['context']['slot'];values=bundle['value']
+    if slot<quote['context_slot'] or len(values)!=4:raise ValueError('successor_setup_bundle_invalid')
+    raw=lambda v:base64.b64decode(v['data'][0],validate=True)
+    rent=Rent.from_bytes(raw(values[0]));extra=0
+    create=[]
+    if values[1] is None:
+        extra=rent.minimum_balance(165)
+        create=[Instruction(key(ATA),b'\x01',[AccountMeta(key(a['user']),True,True),
+            AccountMeta(key(a['user_quote_token_account']),False,True),AccountMeta(key(a['user']),False,False),
+            AccountMeta(key(SOL),False,False),AccountMeta(key(ZERO),False,False),AccountMeta(key(TOKEN),False,False)])]
+    for v,owner in zip(values[1:],[a['user'],a['protocol_fee_recipient'],a['coin_creator_vault_authority']]):
+        if v is None:
+            if owner==a['user']:continue
+            raise ValueError('successor_fee_account_setup_unproved')
+        b=raw(v)
+        if v['owner']!=TOKEN or len(b)!=165 or str(Pubkey.from_bytes(b[:32]))!=SOL or str(Pubkey.from_bytes(b[32:64]))!=owner:
+            raise ValueError('successor_quote_account_identity')
+    latest=await rpc('getLatestBlockhash',[dict(opts,minContextSlot=slot)])
+    sell=Instruction(program,bytes(spec['sell']['discriminator'])+struct.pack('<QQ',int(quote['remaining_amount_raw']),0),
+        [AccountMeta(key(a[x['name']]),x.get('signer',False),x.get('writable',False)) for x in spec['sell']['accounts']])
+    message=bytes(Message.new_with_blockhash([set_compute_unit_limit(1_400_000),*create,sell],key(a['user']),Hash.from_string(latest['value']['blockhash'])))
+    fee=(await collector.native_message_fee_receipts({'SELL':message},account_context_slot=slot))['SELL']
+    return dict(fee,token_amount_raw=int(quote['remaining_amount_raw']),curve=quote['pool_address'],account_id=plan['account_id'],
+        setup_rent_raw=extra,rent_refund_raw=0,source_commit=spec['source_commit'],source_sha256=spec['source_sha256'])

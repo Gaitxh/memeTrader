@@ -1254,6 +1254,8 @@ class ChainWebData:
             effective_realized_by_arm: dict[str, float] = defaultdict(float)
             effective_unrealized_by_arm: dict[str, float] = defaultdict(float)
             effective_value_by_arm: dict[str, float] = defaultdict(float)
+            from .native_execution import ARM as native_arm, account_assets
+            native_assets = account_assets(connection, active_version, current)
             net_flows = Store._chain_meme_trader_effective_net_flows_from_connection(connection, active_version)
             capital_credits = Store.chain_meme_capital_credits_from_connection(connection, active_version)
             priced_open_by_arm: dict[str, int] = defaultdict(int)
@@ -1323,6 +1325,15 @@ class ChainWebData:
                         (effective_closed_at, effective_pnl)
                     )
                 if effective_status == "open":
+                    if arm == native_arm:
+                        native_value = native_assets['values'].get(row['shadow_cohort_id'])
+                        if native_value is not None:
+                            effective_value_by_arm[arm] += native_value
+                            effective_unrealized_by_arm[arm] += native_value-float(row['stake_usd'])
+                            priced_open_by_arm[arm] += 1
+                        else:
+                            unavailable_reasons_by_arm[arm]['native_current_quote_unknown'] += 1
+                        continue
                     market_at = row.get("last_success_at") or row.get("market_recorded_at")
                     market_age = (
                         (current - parse_time(market_at)).total_seconds()
@@ -1483,6 +1494,15 @@ class ChainWebData:
                     ),
                 })
                 account["capital_model"] = capital_model
+                if policy_arm_id == native_arm:
+                    account.update(execution_model='later_observed_protocol_model_paper',
+                        rent_locked_usd_at_cost=native_assets['rent'],rent_refund_assumed_usd=0,
+                        sell_fee_reserved_usd_at_entry=native_assets['reserve'],
+                        available_cash_usd=max(0,account['cash_usd']-native_assets['reserve']),
+                        valuation_status='native_protocol_model_rent_at_cost' if indicative_complete else 'native_protocol_model_unknown')
+                    if indicative_complete:
+                        account['indicative_equity_usd'] += native_assets['rent']
+                        account['current_equity_usd'] += native_assets['rent']
                 account["capital_neutral_realized_pnl_usd"] = account.get(
                     "realized_pnl_usd"
                 )
