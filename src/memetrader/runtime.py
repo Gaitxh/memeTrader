@@ -6334,18 +6334,29 @@ class Runtime:
 
     async def chain_meme_local_surface_once(self) -> None:
         """Refresh route-verified PumpSwap or fallback Pump-curve capacity."""
-        from .native_execution import targets as native_targets
-        native = native_targets(self.store)
-        if native:
-            try:
-                await asyncio.wait_for(self._native_held_once(native[0]),timeout=3.0)
-            except Exception as exc:
-                self.store.heartbeat('native-paper-held',item=False,error=type(exc).__name__)
+        await self.chain_meme_native_held_once()
         targets = self.store.chain_meme_trader_local_surface_targets()
         if not targets:
             self.store.heartbeat("chain-meme-local-surface", item=False, error="")
             return
         await self.chain_meme_wsol_reference_once(observed_pool=True)
+        await self._chain_meme_legacy_surface_targets(targets)
+
+    async def chain_meme_native_held_once(self) -> None:
+        """Current-period native held work; scheduled even without legacy V6 targets."""
+        from .native_execution import targets as native_targets
+        native = native_targets(self.store)
+        if native:
+            from .native_execution import ensure_time_exit
+            ensure_time_exit(self.store, native[0])
+            try:
+                await asyncio.wait_for(self._native_held_once(native[0]),timeout=3.0)
+                self.store.heartbeat('native-paper-held',item=True,error='')
+            except Exception as exc:
+                self.store.heartbeat('native-paper-held',item=False,error=type(exc).__name__,
+                    error_detail=str(exc)[:200])
+
+    async def _chain_meme_legacy_surface_targets(self, targets) -> None:
         curve_targets = [
             item for item in targets
             if str(item.get("surface_type") or "") == "pump_bonding_curve"
@@ -8986,6 +8997,10 @@ class Runtime:
                 asyncio.create_task(
                     self._periodic("capital_quote", 2, self.capital_quote_once),
                     name="capital_quote",
+                ),
+                asyncio.create_task(
+                    self._periodic("native_paper_held", 5, self.chain_meme_native_held_once),
+                    name="native_paper_held",
                 ),
                 asyncio.create_task(
                     self._periodic("chain_universe_outcomes", 30, self.chain_meme_universe_outcomes_once),

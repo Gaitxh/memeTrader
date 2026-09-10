@@ -161,6 +161,41 @@ def test_native_task_failure_does_not_abort_existing_surface_lane(tmp_path,monke
     store.close()
 
 
+def test_production_paper_scheduler_runs_native_without_legacy_targets(tmp_path,monkeypatch):
+    store,clock,p=setup(tmp_path,monkeypatch);buy(store,p,now=clock[0])
+    clock[0]+=timedelta(seconds=301)
+    monkeypatch.setattr('memetrader.native_execution.utcnow',lambda:clock[0])
+    r=Runtime.__new__(Runtime);r.store=store;r.chain_meme_trader_only=True
+    r.config={'bridge':{},'sources':{}};calls=[]
+    async def run():
+        r._stop=asyncio.Event()
+        async def idle(*args,**kwargs):await r._stop.wait()
+        async def quote(target):
+            calls.append(('quote',target['cohort_id']))
+            raise TimeoutError('no current quote')
+        async def periodic(name,interval,action,**kwargs):
+            if name=='native_paper_held':
+                calls.append((name,interval));await action();r._stop.set()
+            else:await r._stop.wait()
+        r._periodic=periodic;r._native_held_once=quote
+        for name in ('pump_loop','dex_discovery_stream_loop','seal_capital_research_once',
+                     'seal_duration_research_once','chain_meme_v22_vault_shadow_loop'):
+            setattr(r,name,idle)
+        r.narrative_hold=SimpleNamespace(once=idle)
+        await asyncio.wait_for(r.run_forever(),timeout=1)
+    asyncio.run(run())
+    assert ('native_paper_held',5) in calls and sum(c[0]=='quote' for c in calls)==1
+    state=targets(store)[0]['state']
+    assert state['exit_intent']['reason']=='max_hold' and state['mark'] is None
+    assert store.db.execute("SELECT count(*) FROM chain_meme_trader_trades WHERE side!='BUY'").fetchone()[0]==0
+    # Repeated unsuccessful attempts don't refresh the trigger clock.
+    trigger=state['exit_intent'];clock[0]+=timedelta(seconds=10)
+    from memetrader.native_execution import ensure_time_exit
+    ensure_time_exit(store,targets(store)[0])
+    assert targets(store)[0]['state']['exit_intent']==trigger
+    store.close()
+
+
 def test_migration_identity_then_strict_later_successor_exit(tmp_path,monkeypatch):
     from memetrader.native_execution import canonical_pool,confirm_successor
     from memetrader.collectors import PUMP_AMM_PROGRAM_ID

@@ -75,6 +75,25 @@ def targets(store):
         return [dict(row, state=json.loads(row['state_json'])) for row in rows]
 
 
+def ensure_time_exit(store, target, *, now=None):
+    """Time expiry creates an intent even during missing quotes; never a fill."""
+    now = parse_time(now or utcnow())
+    with store._lock, store.db:
+        row = store.db.execute('SELECT p.opened_at,p.status,n.state_json FROM chain_meme_native_positions n '
+            'JOIN chain_meme_trader_positions p ON p.definition_version=n.definition_version '
+            'AND p.shadow_cohort_id=n.cohort_id AND p.arm_id=? '
+            'WHERE n.definition_version=? AND n.cohort_id=?',
+            (ARM,target['definition_version'],target['cohort_id'])).fetchone()
+        if row is None or row['status']!='open' or (now-parse_time(row['opened_at'])).total_seconds()<300:
+            return
+        state=json.loads(row['state_json'])
+        if state.get('exit_intent'):
+            return
+        state['exit_intent']=dict(slot=state['last_slot'],recorded_at=iso(now),reason='max_hold')
+        store.db.execute('UPDATE chain_meme_native_positions SET state_json=? WHERE definition_version=? AND cohort_id=?',
+            (dumps(state),target['definition_version'],target['cohort_id']))
+
+
 def buy(store, plan, *, now=None):
     """Commit one later-frame fill and its public cash flow in the same transaction."""
     now = parse_time(now or utcnow()); version = store.CHAIN_MEME_TRADER_ACTIVE_VERSION
