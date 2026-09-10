@@ -3,11 +3,13 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import timedelta
 import json
+import pytest
 
 from memetrader import mode_learning144 as v3
 from memetrader import mode_learning145 as v4
 from memetrader.models import TokenSnapshot, iso, parse_time, utcnow
 from memetrader.store import Store
+from memetrader.trajectory144 import ARMS
 
 
 NOW = utcnow()
@@ -201,4 +203,114 @@ def test_known_floor_survives_expiry_without_later_market_frame(tmp_path):
     assert c.state['episodes']['floor-expire']['results']['5']['status']=='MODEL_FLOOR_EVENT'
     assert status['horizons']['5']['MODEL_FLOOR_EVENT']==1
     assert status['horizons']['5']['UNKNOWN']==0
+    store.close()
+
+
+def test_existing317_routes_legacy_model_not_v4_and_keeps_separate_status(tmp_path):
+    store=Store(tmp_path/'contracts.sqlite3',initial_cash_usd=1000)
+    c=v4.Coordinator(store)
+    c.state['model']=_sealed_model(c.state,releases=1)
+    at=parse_time(c.state['activated_at'])+timedelta(seconds=1)
+    features={**_frame(at),'chain':'bsc','pool_age_seconds':30}
+    signals={arm:dict(decision_key='original:'+arm,observed_at=iso(at),recorded_at=iso(at),decision_evidence={})
+             for arm in (ARMS[1],ARMS[4])}
+    before=deepcopy(signals)
+    output=c.signals(features,signals,at)
+    evidence=output[ARMS[5]]['decision_evidence']
+    assert evidence['learning_source_arm']==ARMS[4]
+    assert evidence['learning_model']==c.legacy.state['model']
+    assert evidence['fixed_priority_source_arm']==ARMS[4]
+    assert evidence['fixed_priority_decision_key']==signals[ARMS[4]]['decision_key']
+    assert next(iter(c.state['selections'].values()))['decision_evidence']['learning_source_arm']==ARMS[1]
+    assert signals==before
+    assert c.legacy.state.get('horizons',list(v3.HORIZONS))==list(v3.HORIZONS)
+    status=c.flush(at)
+    assert status['schema']==v4.KEY and status['decision_eligible'] is False
+    assert status['trading_selector_contract']==v3.KEY
+    assert c.legacy_status['schema']==v3.KEY
+    assert '30' not in c.legacy_status['horizons']
+    restored=v4.Coordinator(store)
+    assert restored.signals(features,signals,at)[ARMS[5]]==output[ARMS[5]]
+    assert restored.legacy.state['model']==c.legacy.state['model']
+    store.close()
+
+
+def _actual_pair(state):
+    terms=dict(stake_usd=2.,paper_quantity_tokens=1.,entry_execution_price_usd=2.,opened_at=iso(NOW))
+    baseline=dict(version='test',arm=ARMS[4],token_id=TOKEN_ID,pair_address=PAIR,source_fill_id=19,
+        entry_terms=terms,decision_key='baseline-episode',realized_pnl_usd=.3)
+    router={**deepcopy(baseline),'arm':ARMS[5],'model_version':state['model']['version'],
+        'baseline_arm':ARMS[4],'baseline_decision_key':'baseline-episode',
+        'source_arm':ARMS[1],'decision_key':'selected-episode|router','realized_pnl_usd':-.4}
+    state['actual_groups']={ARMS[5]:[router],ARMS[4]:[baseline]}
+    return router,baseline
+
+
+@pytest.mark.parametrize('missing',['baseline_arm','decision_key','pair','quantity','fill','opened'])
+def test_economic_comparison_requires_frozen_actual_equal_entry_baseline(missing):
+    state=_state();state['model']=_sealed_model(state)
+    router,baseline=_actual_pair(state)
+    if missing=='baseline_arm':router.pop('baseline_arm')
+    elif missing=='decision_key':baseline['decision_key']='different'
+    elif missing=='pair':baseline['pair_address']='other'
+    elif missing=='quantity':baseline['entry_terms']['paper_quantity_tokens']=.9
+    elif missing=='fill':baseline['source_fill_id']=20
+    else:baseline['entry_terms']['opened_at']=iso(NOW+timedelta(seconds=1))
+    # The selected source with identical PnL must never act as a fallback baseline.
+    state['actual_groups'][ARMS[1]]=[deepcopy(router)]
+    pairs,status=v4.matched_baseline(state)
+    assert pairs==[] and status['status']=='NO_MATCHED_BASELINE'
+    assert status['router_minus_baseline_usd'] is None
+
+
+def test_equal_fill_fixed_priority_comparison_can_have_negative_delta():
+    state=_state();state['model']=_sealed_model(state)
+    router,baseline=_actual_pair(state)
+    state['actual_groups'][ARMS[5]].append(deepcopy(router))
+    pairs,status=v4.matched_baseline(state)
+    assert len(pairs)==1  # Duplicate account/receipt is not another opportunity.
+    assert status['router_minus_baseline_usd']==pytest.approx(-.7)
+
+
+def test_rollback_cannot_republish_same_evidence_after_flush_or_restart():
+    state=_state();state['model']=_sealed_model(state,releases=1)
+    key=state['model']['selected_groups'][0]
+    state['groups'][key]={'events':[dict(status='OBSERVED',token=f't{i}',date=f'2026-09-0{1+i%2}',return_=.2) for i in range(20)]}
+    for e in state['groups'][key]['events']:e['return']=e.pop('return_')
+    state['group_summaries'][key]=v4.statistics(state['groups'][key])
+    state['dispositions'][key]={'missing':[],'status':'ECONOMIC_REVIEW_ELIGIBLE'}
+    state['group_label_frontiers']={key:20}
+    state['group_last_label_at']={key:iso(NOW)}
+    v4.rollback(state,reason='actual loss',frontier=10,now=NOW)
+    def mature(s,episode,at,mode=None):
+        e=_capture(s,episode,at=at)['episode']
+        if mode:e['mode']=mode
+        e['results']['5']=dict(status='OBSERVED',costed_return=.2,available_at=iso(at))
+    mature(state,'same-flush',NOW)
+    assert not v4.train(state,cutoff_at=NOW)['promoted']
+    assert state['dispositions'][key]['status']=='WAIT_NEW_EVIDENCE_AFTER_ROLLBACK'
+    state=json.loads(json.dumps(state))
+    later=NOW+timedelta(seconds=1)
+    mature(state,'unrelated',later,mode='other')
+    assert not v4.train(state,cutoff_at=later)['promoted']
+    mature(state,'new-evidence',later)
+    assert v4.train(state,cutoff_at=later)['promoted']
+    assert state['model']['version']!='finite/v4:test'
+    # A later failure cannot restore a previously rejected model.
+    state['previous_models'].append(_sealed_model(state,releases=1))
+    v4.rollback(state,reason='second loss',frontier=11,now=later)
+    assert state['model']['version']==v3.BASELINE
+
+
+def test_legacy_and_research_pending_share_existing128_budget(tmp_path):
+    store=Store(tmp_path/'shared.sqlite3',initial_cash_usd=1000)
+    c=v4.Coordinator(store);at=parse_time(c.state['activated_at'])+timedelta(seconds=1)
+    args=dict(token_id=TOKEN_ID,pair_address=PAIR,chain='bsc',age_bucket='0_300',mode='fixture',features={},
+        decision_at=iso(at),observed_at=iso(at),ingested_at=iso(at),recorded_at=iso(at))
+    for i in range(128):
+        consumer=c if i%2 else c.legacy
+        assert consumer.capture_episode(episode_key=str(i),**args)['status']=='captured'
+    assert c.capture_episode(episode_key='v4-overflow',**args)['status']=='pending_capacity'
+    assert c.legacy.capture_episode(episode_key='v3-overflow',**args)['status']=='pending_capacity'
+    assert len(c.state['episodes'])+len(c.legacy.state['episodes'])==128
     store.close()

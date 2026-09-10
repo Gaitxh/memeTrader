@@ -7787,17 +7787,20 @@ class Runtime:
             started145=asyncio.get_running_loop().time()
             learning_status=learning144.flush(utcnow())
             from .trajectory144 import ARMS as learning_arms
-            learning_status['arms']={arm:{'signal_decisions':trajectory144.counts.get('signal:'+arm,0),
+            summaries=[('mode-learning145:status',learning_status,learning144.state,'v4')]
+            legacy=getattr(learning144,'legacy',learning144)
+            summaries.append(('mode-learning144:status',getattr(learning144,'legacy_status',learning_status),legacy.state,'v3'))
+            for status_key,status,state,generation in summaries:
+                status['arms']={arm:{'signal_decisions':trajectory144.counts.get('signal:'+arm,0),
                 'ready_callbacks':trajectory144.counts.get('ready:'+arm,0),
-                'independent_buy_receipts':learning144.state['counts'].get('actual_BUY:'+arm,0),
-                'terminal_receipts':learning144.state['counts'].get('actual_terminal:'+arm,0),
-                'last_buy_at':learning144.state.get('last_buy',{}).get(arm),
+                'independent_buy_receipts':state['counts'].get('actual_BUY:'+arm,0),
+                'terminal_receipts':state['counts'].get('actual_terminal:'+arm,0),
+                'last_buy_at':state.get('last_buy',{}).get(arm),
                 'last_signal_at':max((v.get('signals',{}).get(arm,{}).get('recorded_at','') for v in trajectory144.pools.values()),default='') or None,
                 'stage_counts':dict(self.store._cohort_flow.by_arm.get(arm,{})),
                 'first_block':self.store._cohort_flow.latest_by_arm.get(arm,{}).get('block_reason') or self.store._cohort_flow.latest_by_arm.get(arm,{}).get('stage') or 'UNKNOWN_IF_NO_LINKED_COHORT',
-                'scope':'signal=engine generation; BUY/terminal=v4 receipt generation; account full history shown separately'} for arm in learning_arms}
-            self.store.set_kv('mode-learning144:status',learning_status)
-            self.store.set_kv('mode-learning145:status',learning_status)
+                'scope':f'signal=engine generation; BUY/terminal={generation} receipt generation; account full history shown separately'} for arm in learning_arms}
+                self.store.set_kv(status_key,status)
             if hasattr(self,'runtime_timing'):self.runtime_timing.observe('learning145_flush',asyncio.get_running_loop().time()-started145,items=learning_status['learned'])
             self.store.set_kv('cohort-flow:v1',self.store._cohort_flow.snapshot())
             self._trajectory_saved_at=now_mono

@@ -88,9 +88,23 @@ assert.match(context.revisionUi.search(deliveryFamily),/#312/);
 assert.match(context.revisionUi.search({...deliveryFamily,display_index:281,registration_index:312}),/#312/);
 assert.match(context.revisionUi.search(deliveryFamily),/稀疏同龄hot/);
 assert.equal(context.revisionUi.delivery(deliveryFamily),'144');
+assert.equal(context.revisionUi.delivery({display_index:144,registration_index:144,canonical_id:'old_strategy'}),'',
+  'numeric display and registration indexes are not delivery provenance');
+assert.equal(context.revisionUi.delivery({canonical_id:'ordinary_strategy',trajectory_engine:'v144'}),'144');
+assert.equal(context.revisionUi.delivery({canonical_id:'recipe145_abc_v1'}),'145');
+assert.equal(context.revisionUi.delivery({canonical_id:'trajectory145_sparse_trend_runner_v1'}),'145');
 const panels=context.revisionUi.deliveryPanels({'mode-learning144:status':{version:'mode-learning144/v3',releases:0,updated_at:'2026-09-11T00:00:00Z'}});
 assert.match(panels[2][1],/固定基线，尚无学习模型发布/);
 assert.match(panels[3][1],/mode-learning145 UNKNOWN/);
+const observedPanels=context.revisionUi.deliveryPanels({
+  'trajectory144:status':{pools:2,counts:{'signal:trajectory144_alpha':2,'signal:trajectory144_beta':3}},
+  'mode-learning144:status':{horizons:{'5':{observed:3,unknown:1,model_floor_event:2}}},
+  'mode-learning145:status':{decision_eligible:false,horizons:{'30':{OBSERVED:4,UNKNOWN:2,MODEL_FLOOR_EVENT:1}},economic_comparison:{status:'NO_MATCHED_BASELINE'}},
+});
+assert.match(observedPanels[1][1],/实际信号 5（signal:<arm> 合计）/);
+assert.match(observedPanels.find(row=>row[0]==='5 分钟标签')[1],/OBSERVED 3 · UNKNOWN 1 · 模型floor 2/);
+assert.match(observedPanels.find(row=>row[0]==='145 研究 30 分钟标签')[1],/OBSERVED 4 · UNKNOWN 2 · 模型floor 1/);
+assert.equal(observedPanels.find(row=>row[0]==='145 固定优先级对照')[1],'NO_MATCHED_BASELINE');
 assert.match(app,/strategy\.max_hold_minutes==null\?'UNKNOWN'/);
 assert.match(app,/\['现有漏斗'/);
 

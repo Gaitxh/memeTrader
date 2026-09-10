@@ -214,7 +214,8 @@ def choose(state,signals,features,now):
     prior=state.setdefault('selections',{}).get(key)
     if prior:return deepcopy(prior) if (parse_time(now)-parse_time(prior['recorded_at'])).total_seconds()<=60 else None
     sig=deepcopy(signals[chosen]);sig['decision_key']=key;sig['recorded_at']=iso(parse_time(now))
-    sig['decision_evidence'].update(learning_source_arm=chosen,learning_model=deepcopy(model),learning_selection=rule,router_mode=chosen,selection_recorded_at=sig['recorded_at'])
+    sig['decision_evidence'].update(learning_source_arm=chosen,learning_model=deepcopy(model),learning_selection=rule,router_mode=chosen,selection_recorded_at=sig['recorded_at'],
+        fixed_priority_source_arm=available[0],fixed_priority_decision_key=signals[available[0]]['decision_key'])
     state['selections'][key]=deepcopy(sig)
     if len(state['selections'])>256:state['selections'].pop(next(iter(state['selections'])))
     return sig
@@ -247,6 +248,9 @@ class Coordinator:
             self.pending_index.setdefault((e['token_id'],e['pair_address']),set()).add(key)
 
     def capture_episode(self,**kwargs):
+        other=getattr(self,'other_pending_count',None)
+        if other is not None and len(self.state['episodes'])+other()>=MAX_PENDING:
+            count(self.state,'shared_capacity_wait');return {'status':'pending_capacity'}
         result=capture(self.state,**kwargs)
         if result['status']=='captured':
             e=result['episode'];self.pending_index.setdefault((e['token_id'],e['pair_address']),set()).add(e['key'])

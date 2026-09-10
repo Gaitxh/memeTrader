@@ -2,6 +2,7 @@
 from copy import deepcopy
 import hashlib
 import json
+import math
 from . import mode_learning144 as old
 from .models import iso, parse_time
 
@@ -29,7 +30,11 @@ def statistics(group):
 
 
 def rollback(s,*,reason,frontier,now,target='previous_valid_or_baseline'):
-    previous=next((m for m in reversed(s['previous_models']) if valid_model(m,s['contract_hash'])),None)
+    rejected={r['from_version'] for r in s['rollback_history']}|{s['model']['version']}
+    previous=next((m for m in reversed(s['previous_models']) if m['version'] not in rejected and valid_model(m,s['contract_hash'])),None)
+    for group in s['model'].get('selected_groups',[]):
+        s.setdefault('release_blocks',{})[group]={'recorded_at':iso(parse_time(now)),
+            'label_frontier':s.get('group_label_frontiers',{}).get(group,0)}
     selected=deepcopy(previous) if previous and target!='baseline' else dict(version=old.BASELINE,
         cutoff_at=None,selected_groups=[],selection_scores={},releases=s['model'].get('releases',0))
     receipt=dict(from_version=s['model']['version'],to_version=selected['version'],reason=reason,
@@ -58,6 +63,8 @@ def train(s,*,cutoff_at,limit=64):
             group['events']=(group['events']+[dict(key=eid,token=e['token_id'],date=e['decision_at'][:10],
                 status=label['status'],return_=label.get('costed_return'))])[-256:]
             group['events'][-1]['return']=group['events'][-1].pop('return_')
+            s.setdefault('group_label_frontiers',{})[key]=s.get('group_label_frontiers',{}).get(key,0)+1
+            s.setdefault('group_last_label_at',{})[key]=max(s.get('group_last_label_at',{}).get(key,''),label['available_at'])
             e['learned'].append(horizon);consumed+=1;dirty.add(key)
         if len(e['learned'])==len(HORIZONS):
             s['recent']=(s['recent']+[dict(key=eid,mode=e['mode'],results=e['results'],prediction=e['prediction'])])[-64:]
@@ -71,7 +78,14 @@ def train(s,*,cutoff_at,limit=64):
             'missing':missing,'frontier':s['training_cursor'],'concentration':{'top1_removed':m['top1_removed'],'top3_removed':m['top3_removed']}}
     promoted=False
     if consumed and s.get('contract_valid',True):
-        candidates=[k for k,d in s['dispositions'].items() if not d['missing'] and k.endswith('|5')]
+        candidates=[]
+        for k,d in s['dispositions'].items():
+            if d['missing'] or not k.endswith('|5'):continue
+            block=s.get('release_blocks',{}).get(k)
+            if block and (s.get('group_label_frontiers',{}).get(k,0)<=block['label_frontier']
+                    or parse_time(s.get('group_last_label_at',{}).get(k) or block['recorded_at'])<=parse_time(block['recorded_at'])):
+                d['status']='WAIT_NEW_EVIDENCE_AFTER_ROLLBACK';continue
+            candidates.append(k)
         chosen=sorted(candidates,key=lambda k:(s['group_summaries'][k]['mean'],k),reverse=True)[:2]
         if chosen and chosen!=s['model']['selected_groups']:
             scores={k:s['group_summaries'][k]['mean'] for k in chosen}
@@ -86,18 +100,51 @@ def train(s,*,cutoff_at,limit=64):
     return {'consumed':consumed,'promoted':promoted,'dirty_groups':len(dirty)}
 
 
+def matched_baseline(s):
+    """Only actual equal-entry terminals from the frozen fixed-priority choice."""
+    from .trajectory144 import ARMS
+    routers=[r for r in s['actual_groups'].get(ARMS[5],[])
+             if r.get('model_version')==s['model']['version']]
+    pairs=[];seen=set()
+    for r in routers:
+        arm=r.get('baseline_arm');decision=r.get('baseline_decision_key')
+        terms=r.get('entry_terms') or {}
+        if (not arm or arm==ARMS[5] or not decision or not r.get('source_fill_id')
+                or not r.get('pair_address') or not terms.get('opened_at')
+                or not all(isinstance(terms.get(k),(int,float)) and math.isfinite(terms[k]) and terms[k]>0
+                           for k in ('stake_usd','paper_quantity_tokens','entry_execution_price_usd'))):continue
+        identity=(r['version'],r['token_id'],r['pair_address'],r['source_fill_id'])
+        if identity in seen:continue
+        baseline=next((b for b in s['actual_groups'].get(arm,[])
+            if b.get('decision_key')==decision and b.get('entry_terms')==terms
+            and tuple(b.get(k) for k in ('version','token_id','pair_address','source_fill_id'))==identity),None)
+        if baseline is not None:pairs.append((r,baseline));seen.add(identity)
+    return pairs,dict(status='MATCHED_FIXED_PRIORITY' if pairs else 'NO_MATCHED_BASELINE',
+        router_terminals=len(routers),pairs=len(pairs),unmatched=len(routers)-len(pairs),
+        router_minus_baseline_usd=sum(r['realized_pnl_usd']-b['realized_pnl_usd'] for r,b in pairs) if pairs else None,
+        basis='actual_fixed_priority_equal_entry_terminals_not_selected_source')
+
+
 class Coordinator(old.Coordinator):
     def __init__(self,store):
         from .models import utcnow
         from .trajectory144 import VERSION
         self.store=store;self.key=KEY+':'+store.CHAIN_MEME_TRADER_ACTIVE_VERSION
-        self.legacy=old.Coordinator(store)  # Only drain already captured v3 work; no new v3 predictions.
+        self.legacy=old.Coordinator(store)  # Original317 retains its frozen v3 selection/release contract.
         contract={'feature':VERSION,'costs':deepcopy(getattr(store,'_chain_paper_execution',{})),'horizons':list(HORIZONS)}
         self.state=initialize(store.get_kv(self.key,None),now=utcnow(),contract=contract);self.last_flush=0.
+        self.legacy.other_pending_count=lambda:len(self.state['episodes'])
         self.state['contract_valid']=self.state['contract_hash']==digest(contract)
         if not self.state['contract_valid'] or not valid_model(self.state['model'],self.state['contract_hash']):
             rollback(self.state,reason='INPUT_OR_MODEL_CONTRACT_INVALID',frontier=self.state['training_cursor'],now=utcnow(),target='baseline')
         self.reindex()
+
+    def signals(self,features,signals,now):
+        # v4 predictions are observer evidence, never an implicit replacement
+        # for the existing317 policy. A funded v4 router needs its own append.
+        routed=self.legacy.signals(features,deepcopy(signals),now)
+        super().signals(features,deepcopy(signals),now)
+        return routed
 
     def capture_episode(self,**kwargs):
         if (not self.state.get('contract_valid',True) or parse_time(kwargs['decision_at'])<parse_time(self.state['activated_at'])
@@ -126,14 +173,22 @@ class Coordinator(old.Coordinator):
                 event.update(status='MODEL_FLOOR_EVENT',source='sampled_model_floor_event_not_fill')
 
     def record_buy(self,version,arm,cohort,token,fill,at):
+        if arm.startswith('trajectory144_'):
+            self.legacy.record_buy(version,arm,cohort,token,fill,at)
         super().record_buy(version,arm,cohort,token,fill,at)
-        row=self.store.db.execute('SELECT feature_json,pair_address FROM chain_meme_trader_v6_cohorts WHERE id=?',(cohort,)).fetchone()
+        row=self.store.db.execute('SELECT c.feature_json,c.pair_address,p.stake_usd,p.paper_quantity_tokens,p.entry_execution_price_usd,p.opened_at '
+            'FROM chain_meme_trader_v6_cohorts c JOIN chain_meme_trader_positions p ON p.shadow_cohort_id=c.id '
+            'WHERE c.id=? AND p.definition_version=? AND p.arm_id=?',(cohort,version,arm)).fetchone()
         p=self.state['actual_pending'].get(arm+':'+str(cohort))
         if p and row:
             signal=json.loads(row['feature_json']).get('cohort_signals',{}).get(arm,{})
             evidence=signal.get('decision_evidence',{})
             p.update(model_version=(evidence.get('learning_model') or {}).get('version',old.BASELINE),
-                source_arm=evidence.get('learning_source_arm',arm),pair_address=row['pair_address'])
+                source_arm=evidence.get('learning_source_arm',arm),pair_address=row['pair_address'],
+                baseline_arm=evidence.get('fixed_priority_source_arm'),
+                baseline_decision_key=evidence.get('fixed_priority_decision_key'),
+                decision_key=signal.get('decision_key'),
+                entry_terms={k:row[k] for k in ('stake_usd','paper_quantity_tokens','entry_execution_price_usd','opened_at')})
 
     def record_valuation(self,arm,cohort,mfe,drawdown):
         p=self.state['actual_pending'].get(arm+':'+str(cohort))
@@ -146,13 +201,8 @@ class Coordinator(old.Coordinator):
         fresh=self.state['counts'].get('actual_terminal',0)-before
         if not fresh:return
         self.state['actual_frontier']+=fresh
-        from .trajectory144 import ARMS
-        pairs=[]
-        for r in self.state['actual_groups'].get(ARMS[5],[]):
-            if r.get('model_version')!=self.state['model']['version']:continue
-            base=next((b for b in self.state['actual_groups'].get(r.get('source_arm'),[]) if
-                (b['source_fill_id'],b['token_id'],b.get('pair_address'))==(r['source_fill_id'],r['token_id'],r.get('pair_address'))),None)
-            if base:pairs.append((r,base))
+        pairs,comparison=matched_baseline(self.state)
+        self.state['economic_comparison']=comparison
         if (self.state['model']['version']!=old.BASELINE and len(pairs)>=10 and len({r['token_id'] for r,b in pairs})>=3
                 and sum(r['realized_pnl_usd'] for r,b in pairs)<0
                 and sum(r['realized_pnl_usd']-b['realized_pnl_usd'] for r,b in pairs)<0):
@@ -160,7 +210,13 @@ class Coordinator(old.Coordinator):
 
     def flush(self,now):
         s=self.state
-        if self.legacy.state['episodes'] or self.legacy.state['actual_pending']:self.legacy.flush(now)
+        self.legacy_status=self.legacy.flush(now)
+        legacy_horizons={}
+        for key,group in self.legacy.state['groups'].items():
+            totals=legacy_horizons.setdefault(key.split('|')[-1],{'OBSERVED':0,'UNKNOWN':0})
+            totals['OBSERVED']+=len(group['returns']);totals['UNKNOWN']+=group['unknown']
+        self.legacy_status.update(schema=old.KEY,horizons=legacy_horizons,
+            unique_episodes=len(self.legacy.state['seen']),last_update=iso(parse_time(now)))
         if not valid_model(s['model'],s['contract_hash']):rollback(s,reason='MODEL_INVALID',frontier=s['training_cursor'],now=now,target='baseline')
         self.resolve_actual(now);old.expire(s,now=now);self.classify_floor_labels();learn=train(s,cutoff_at=now);self.reindex()
         events=s['events'][:64]
@@ -181,6 +237,8 @@ class Coordinator(old.Coordinator):
             h=key.split('|')[-1];tot=horizons.setdefault(h,dict(OBSERVED=0,UNKNOWN=0,MODEL_FLOOR_EVENT=0))
             tot['OBSERVED']+=m['n'];tot['UNKNOWN']+=m['unknown']-m['floor_events'];tot['MODEL_FLOOR_EVENT']+=m['floor_events']
         return dict(schema=KEY,activated_at=s['activated_at'],pending=len(s['episodes']),counts=s['counts'],horizons=horizons,
+            decision_eligible=False,affects='research_only',trading_selector_contract=old.KEY,
+            economic_comparison=s.get('economic_comparison',{'status':'NO_MATCHED_BASELINE','pairs':0}),
             model=s['model'],last_update=iso(parse_time(now)),learned=learn['consumed'],dirty_groups=learn['dirty_groups'],
             event_pending=len(s['events']),extra_requests=0,unique_episodes=len(s['seen']),
             dispositions=s['dispositions'],rollback_history=s['rollback_history'],baseline_reason='FIXED_BASELINE_NO_RELEASE' if s['model']['version']==old.BASELINE else None)
