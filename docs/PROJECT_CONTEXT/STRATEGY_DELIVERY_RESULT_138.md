@@ -107,6 +107,31 @@ rare queue test preserves deduplication and zero enqueue network requests.
 Diff check passed. Source only: not loaded or naturally accepted. Earlier
 router source/test completion did not establish natural reawakening supply.
 
+## Native boundary and saved matching reconciliation
+
+The native cash dispatcher now waits for REQUOTED_SHADOW, requiring the exact
+independent slot/receipt after the frozen absorption signal. Its sealed plan
+retains that execution frame and a deterministic hash. A frozen signal alone
+cannot dispatch a plan; the prior plan must not be applied to a different later
+frame. Three existing runtime tests passed, including the new actual dispatch
+boundary. No funded native account/position is created by this change.
+
+The remaining native requirement is a protocol-model Paper fill on later
+observed public state, not signing/broadcast or a real-wallet fill. It must
+join current public strategy cash/positions/PNL, with actual remaining raw,
+rent asset and fee reserve separated, and canonical migration pending/UNKNOWN
+when proof is missing. An isolated book or magic safety booleans is insufficient.
+The rejected draft remains absent. Input proofs remain accepted; ledger, held
+exit and public valuation integration remain unfinished source work.
+
+Saved matching47 is not an unstarted task. Lead independently verified65 saved
+anchor rows,57 matched uses/50 case-normalized unique controls;54/57 control
+outcomes remain UNKNOWN, not losses. No full scan repeated by root. Preserve
+this completed matching stage and pursue only missing causal first-hit/endpoint
+coverage, not a claimed win rate. Evidence: LEAD_RUNNABILITY_FINDINGS_138.md and
+data/research/lead138/validate_saved_matching.py. ModeChat scope remains root-owned;
+7a0c649 was implemented/pushed by root, with no release to Chat.
+
 Validation: pool-surface and pattern-input files:81 passed,2 failed. Both failures
 were reproduced with unchanged HEAD runtime in memory: the authoritative-event
 fixture expects an old producer result; the empty-capital-quote mock lacks

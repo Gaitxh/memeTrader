@@ -22,7 +22,10 @@ def test_native_cash_dispatch_is_idle_bounded_persistent_and_unfunded(tmp_path,m
         calls=[]
         async def assemble(*args):calls.append(args);return dict(recorded_at=iso(utcnow()),fees={})
         monkeypatch.setattr('memetrader.pump_native_cash.assemble',assemble)
-        trigger=dict(status='TRIGGER_FROZEN',slot=9,recorded_at=iso(now))
+        trigger=dict(status='TRIGGER_FROZEN',slot=9,recorded_at=iso(now-timedelta(seconds=2)))
+        r._dispatch_native_cash137(frame,trigger)
+        assert not hasattr(r,'_native_cash137_task') and not calls
+        trigger.update(status='REQUOTED_SHADOW',requote_slot=frame['slot'],requote_recorded_at=frame['recorded_at'])
         r._dispatch_native_cash137(frame,trigger);task=r._native_cash137_task
         await asyncio.sleep(0);assert not calls
         r._dispatch_native_cash137(frame,trigger);assert r._native_cash137_task is task
@@ -31,6 +34,10 @@ def test_native_cash_dispatch_is_idle_bounded_persistent_and_unfunded(tmp_path,m
         r._dispatch_native_cash137(frame,trigger);assert not hasattr(r,'_native_cash137_task')
         assert r.store.db.execute('SELECT count(*) FROM chain_meme_trader_trades').fetchone()[0]==0
         assert r.store.db.execute("SELECT count(*) FROM chain_meme_pattern_evidence WHERE kind='native_cash_plan137'").fetchone()[0]==1
+        import json
+        payload=json.loads(r.store.db.execute("SELECT payload_json FROM chain_meme_pattern_evidence WHERE kind='native_cash_plan137'").fetchone()[0])
+        assert payload['execution_frame']['slot']==frame['slot']
+        assert payload['native_ledger_required'] and not payload['decision_eligible']
         r.store.close()
     asyncio.run(run())
 

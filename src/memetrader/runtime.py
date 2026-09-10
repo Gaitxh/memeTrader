@@ -6720,7 +6720,7 @@ class Runtime:
                 if result is not None:
                     probe = absorption_probe(result['reserve_frames'])
                     pending[frame['token_id']] = advance_absorption(pending.get(frame['token_id']),frame,probe)
-                    if pending[frame['token_id']].get('status')=='TRIGGER_FROZEN':
+                    if pending[frame['token_id']].get('status')=='REQUOTED_SHADOW':
                         self._dispatch_native_cash137(frame,pending[frame['token_id']])
                     self.store.record_chain_meme_pattern_evidence(frame['token_id'],frame['curve_address'],'pump_native_economics_v1',
                         {**frame['native_economics'],'absorption':probe,'sequence':pending[frame['token_id']],'source':'existing_pregrad_RPC_bundle'},
@@ -6734,6 +6734,11 @@ class Runtime:
     def _dispatch_native_cash137(self,frame,trigger):
         """One rare existing-native candidate; no funded entry authority."""
         from .pump_native import native_mint_controls
+        if (trigger.get('status')!='REQUOTED_SHADOW'
+            or frame.get('slot')!=trigger.get('requote_slot')
+            or frame['recorded_at']!=trigger.get('requote_recorded_at')
+            or not trigger['slot']<frame['slot']
+            or not parse_time(trigger['recorded_at'])<parse_time(frame['observed_at'])<=parse_time(frame['recorded_at'])):return
         if native_mint_controls(frame)['status']!='CONTROLS_VERIFIED':return
         task=getattr(self,'_native_cash137_task',None)
         if task is not None and not task.done():return
@@ -6755,7 +6760,10 @@ class Runtime:
                 if (utcnow()-now).total_seconds()>15:raise ValueError('native_plan_idle_wait_expired')
                 result=await asyncio.wait_for(assemble(self.held_accounts,frame,account_id,total),timeout=8)
                 result.update(status='ASSEMBLED_SHADOW',reference=reference,trigger=trigger,
-                    next_independent_curve_frame_required=True,affects='none',decision_eligible=False)
+                    execution_frame=frame,
+                    execution_frame_sha256=hashlib.sha256(json.dumps(frame,sort_keys=True,separators=(',',':')).encode()).hexdigest(),
+                    next_independent_curve_frame_required=False,
+                    native_ledger_required=True,affects='none',decision_eligible=False)
             except Exception as exc:
                 result={'status':'UNKNOWN','reason':type(exc).__name__+':'+str(exc)[:160],
                     'decision_eligible':False,'affects':'none'}
