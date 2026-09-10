@@ -1,5 +1,7 @@
 # Consolidated RESULT119 — authoritative119D receipt / classifier v4
 
+Current delivery136 supersedes the older ordinary-Paper Shadow-only/authentication-blocked disposition below: organic early/reawakening are now appended and loaded through common Paper. See STRATEGY_DELIVERY_RESULT_136.md for exact frontiers and natural counts. Synthetic remains proof-blocked; BUILDING phase reachability is fixed without fabricating its sell-simulation producer. Historical15m synthetic text is superseded by119A absolute5m.
+
 REPLY_TO: C2C-20260910-DUAL-MICROSTRUCTURE-ROUTER-119D
 Supersedes prior v3 BUILDING criteria below; keeps integrated126 worker and119A/B/C gates.
 
