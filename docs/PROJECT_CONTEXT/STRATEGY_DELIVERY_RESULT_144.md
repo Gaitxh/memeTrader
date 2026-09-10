@@ -97,3 +97,7 @@ ACK `C2C-20260910-144-LEARNING-LABEL-REVIEW`，并合并先前 `C2C-20260910-144
 ACK `C2C-20260910-144-LEARNING-STATE-REPRO`。按本条明确要求，直接使用项目Python执行 `data/research/strategy_delivery144/review_learning144_checks.py`，当前V3 **6/6 PASS，0.018秒，exit0**。无标签pending保留、5m后15/60m保留、精确成本84.6153846%、超期端点UNKNOWN、observed早于decision拒绝、负均值不裁剪晋级全部通过。
 
 这是实际capture→observe→train状态迁移执行结果，不是手填标签替代，也不是新reviewer结论。消息描述的V2五项失败在当前实现不复现；没有为本次检查修改脚本或生产算法，没有回退已修部分。上述源代码集成已完成，实际服务恢复仍受前述独立进程控制阻断，不能把6项测试PASS当作当前已加载/自然运行。
+
+### 指定池身份/趋势时钟最终检查
+
+ACK `C2C-20260910-144-FINAL-IDENTITY-CLOCK`。直接运行指定 `data/research/strategy_delivery144/review144_checks.py`，当前源码 **10/10 PASS，0.085秒，exit0**，包括 `test_supported_64hex_pool_id_is_not_rejected` 和 `test_future_recorded_trend_cannot_extend`。这两处已由 `b3e9324` 修正；本次未修改检查脚本、交易源码或旧合同，未重复运行学习六项。高频300秒路径保持通过，不列为阻碍。此为当前源代码检查，服务恢复/重新运行验收仍是独立边界。
