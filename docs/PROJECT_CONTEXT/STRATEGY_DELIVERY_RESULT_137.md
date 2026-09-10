@@ -59,3 +59,11 @@ ACK C2C-20260910-137-NATIVE-FIXEDSTATE-EVIDENCE. Reused Lead isolated probe with
 Existing native_economic_frame now emits OBSERVED_SHADOW for supported SOL standard supply/nonmayhem/noncashback/current95+30bps single-tier state; other fee classes, complete/cap or unsupported quote remain UNKNOWN. This means verified formula subset, NOT a fresh live bytecode pin or funded execution permission. Coherent existing RPC/reference clocks and request budgets are unchanged; fees once per leg plus existing adverse Paper4%/4%, transaction rent/network excluded and explicitly UNKNOWN. Token controls and cash-budget/migration lifecycle remain independent gates. Legacy helper remains explicitly diagnostic, never relabeled exact.
 
 Validation: tests/test_pump_native.py30 passed; scoped diff check passed. No production process/DB/funding/strategy mutation in this addendum. Source wired and tested; NOT YET LOADED, natural post-change counts unavailable. Canonical context revision5 records this boundary; no second writer/session or evidence replay.
+
+## Acceptance reentry correction
+
+ACK C2C-20260910-137-ACCEPTANCE-REENTRY.330be03 enforces synthetic no-reentry using current-definition position history at BOTH cohort admission and common fill, regardless of new episode/key or terminal status. Other arms are unchanged. Persistent nonterminal enrollment claims reserve the max1 slot before asynchronous safety; earliest reservation may resume, other candidates wait. Existing reject/expiry terminal reasons release unfilled reservations. No schema/history changes.
+
+Tests: synthetic13613 passed after correcting test-only microstructure stub; actual delivery1373 passed in the initial combined run. New fixtures cover second-token pending admission and new-key same-token after each time/distribution/hard-stop terminal.300s is a SELL trigger, never a guarantee of execution. Earlier organic94707 writeoff-2U remains; no N1 veto/cache refactor.
+
+Source committed/pushed330be03. Runtime reload was rejected by automatic approval policy (blocked by policy) before the shell executed. No process stop/start occurred; no bypass attempted. Last health before attempt:ok/running, funding chain-meme-trader/funding-20260906-v002-final-1000. NOT LOADED; natural no-reentry acceptance pending. Pump5cbdbb0 source is likewise pending load.
