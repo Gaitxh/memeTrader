@@ -28367,6 +28367,25 @@ class Store:
                 signal_price_usd=signal_price_usd):
             self.rediscovery_funnel_hit(token_id, 'safety_guard_wait', filled_at)
             return 0
+        # Conditional synthetic Paper never treats ordinary safety approval as
+        # same-pool simulation proof; keep other admitted arms independent.
+        special={p['arm_id'] for p in definition['policies'] if p.get('requires_exact_pool_sell_simulation')}
+        if special.intersection(str(d['arm_id']) for d in decisions):
+            from .market_microstructure import exact_sellability
+            cohort=self.db.execute('SELECT pair_address,feature_json FROM chain_meme_trader_v6_cohorts WHERE id=?',(cohort_id,)).fetchone()
+            features=self._json_object(cohort['feature_json']);pool=cohort['pair_address']
+            cached=safety.cache.get((token_id,pool),{}) if safety else {}
+            proof=cached.get('exact_pool_sell_simulation')
+            entry_frame=self.db.execute('SELECT observed_at FROM token_snapshots WHERE id=?',(snapshot_id,)).fetchone()
+            def allowed(d):
+                arm=str(d['arm_id'])
+                if arm not in special:return True
+                e=features.get('cohort_signals',{}).get(arm,{}).get('decision_evidence',{})
+                return (token_id.startswith('bsc:') and e.get('phase')=='SYNTHETIC_LPI_BUILDING'
+                    and exact_sellability(proof,token_id,pool,parse_time(filled_at))
+                    and entry_frame and parse_time(proof['recorded_at'])<parse_time(entry_frame['observed_at']))
+            decisions=[d for d in decisions if allowed(d)]
+            if not decisions:return 0
         notional = float(definition["policy_notional_usd"])
         try:
             terms = buy_terms(notional, market_price, definition)
@@ -34584,6 +34603,12 @@ class Store:
                         sell_amount=recovery
                         trigger_evidence['dynamic_principal_recovery']={'debit':position['stake_usd'],
                             'realized_proceeds':position['realized_proceeds_usd'],'sizing':'recomputed_at_actual_fill'}
+                if action is None and policy.get('synthetic_distribution_exit'):
+                    micro=getattr(self,'_microstructure119',None)
+                    hazard=micro.hazard_for(position['token_id'],position['mark_pair_address'],position['opened_at'],current) if micro else None
+                    if hazard:
+                        action,reason='CAPITAL_EXIT',hazard
+                        sell_amount=int(position['amount_raw'])
                 if action is None or sell_amount <= 0:
                     continue
                 if (market_only_exit and action != "RUG_EXIT"

@@ -174,7 +174,10 @@ def assess(snapshot, checker, *, source_at, max_tax=12):
     status='REJECT' if reasons else 'WEAK' if weak else 'UNKNOWN' if unknown or not sources else 'PASS'
     allow=not reasons and bool(usable) and 'protocol_surface_unsupported' not in unknown
     if weak:allow=False
+    from .market_microstructure import honeypot_pool_receipt
     return dict(version=VERSION,status=status,allow=allow,reasons=sorted(set(reasons)),
+        exact_pool_sell_simulation=honeypot_pool_receipt(raw,token_id=snapshot.token_id,
+            pool=canonical_token_address(chain,pool),decision=parse_time(source_at)),
         lp_custody_shadow=assess_lp(snapshot,source_at),
         hard_veto=sorted(set(reasons)),soft_hazard=sorted(set(soft)),usable_facts=sorted(set(usable)),
         strong_facts=strong,provider_availability={name:dict(

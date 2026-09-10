@@ -194,6 +194,9 @@ def test_worker_rare_queue_dedup_no_network_in_enqueue_and_passive_expiry():
         w.enqueue(item);w.enqueue(item)
         assert len(w.pending)==1 and h.calls==0
         await w.work()
+        assert h.calls==0 and w.pending  # Existing safety completes before rare trade request.
+        w.note_safety(item,'CHECKED_UNKNOWN',{'allow':True,'reasons':[]})
+        await w.work()
         assert h.calls==1 and not w.pending and w.counts['UNKNOWN']==1
         for entry in w.anchors.values():entry['classified_at']=iso(now-timedelta(seconds=121))
         w.flush()

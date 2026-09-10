@@ -162,6 +162,34 @@ def exact_sellability(receipt, token_id, pool, decision):
     except (KeyError,TypeError,ValueError):return False
 
 
+def honeypot_pool_receipt(raw, *, token_id, pool, decision):
+    """Official provider simulation on an exact pool, NOT an exact-size quote.
+
+    Acquisition time comes from HttpClient (including its original cache time).
+    Missing provenance or simulated liquidity never becomes a positive receipt.
+    """
+    try:
+        p=raw['honeypot_is'];chain,address=token_id.split(':',1)
+        pair=p['pair'];details=pair['pair'];simulation=p['simulationResult']
+        if (chain!='bsc' or p.get('simulationSuccess') is not True
+                or p['honeypotResult'].get('isHoneypot') is not False
+                or any(p.get(k) is True for k in ('simulateLiquidity','forceSimulateLiquidity','simulationLiquidity','simulatedLiquidity'))
+                or str(p['chain']['id'])!='56' or str(pair['chainId'])!='56'
+                or canonical_token_address(chain,p['token']['address'])!=address
+                or canonical_token_address(chain,details['address'])!=pool
+                or canonical_token_address(chain,p.get('pairAddress',details['address']))!=pool
+                or details.get('type') not in ('UniswapV2','UniswapV3')
+                or not isfinite(float(pair['liquidity'])) or float(pair['liquidity'])<1000
+                or not all(isfinite(float(simulation[k])) and 0<=float(simulation[k])<=12 for k in ('buyTax','sellTax'))):
+            return None
+        r=dict(success=True,token_id=token_id,pool=pool,
+            observed_at=raw['honeypot_is_observed_at'],recorded_at=raw['honeypot_is_recorded_at'],
+            source='https://api.honeypot.is/v2/IsHoneypot',
+            provenance_class='PROVIDER_EXACT_POOL_SIMULATION_NOT_SIZE_BOUND',exact_size=False)
+        return r if exact_sellability(r,token_id,pool,decision) else None
+    except (KeyError,TypeError,ValueError):return None
+
+
 def _price_displacement(frames, token_id, pool, start, end, recorded, net, external_net, gross):
     """Optional bounded price evidence, not a price lookup or reconstructed path.
 

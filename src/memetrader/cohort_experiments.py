@@ -173,6 +173,20 @@ def cohort_experiment_policies() -> list[dict[str, Any]]:
     return policies
 
 
+def synthetic_harvest_policy():
+    """Conditional contract; not startup-registered while natural proof is absent."""
+    p=copy.deepcopy(cohort_experiment_policies()[2])
+    arm='synthetic_fast_harvest_v1'
+    p.update(arm_id=arm,canonical_id=arm,name=arm,entry_family=arm,
+        notional_usd=1.0,max_hold_minutes=5.0,paired_opportunity_group=arm,
+        signal_origin_clock='signal_at',requires_exact_pool_sell_simulation=True,
+        synthetic_distribution_exit=True,absolute_max_hold_seconds=300,
+        narrative=False,reentry=False,averaging=False,
+        description='BSC集中BUILDING条件式1U/单仓/5分钟Paper；需真实同池可卖模拟，非精确金额模拟。')
+    p['entry_filter']={'direction':arm,'max_concurrent_positions':1,'chains':['bsc']}
+    return p
+
+
 def _time(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         parsed = value

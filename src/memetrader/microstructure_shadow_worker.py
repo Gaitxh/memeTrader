@@ -24,6 +24,7 @@ class MicrostructureWorker:
         self.pending=saved.get('pending',{})
         self.anchors=saved.get('anchors',{})
         self.ready=saved.get('ready',{})
+        self.recent=saved.get('recent',{})
         self.seen=saved.get('seen',[])[-512:]
         self.counts=saved.get('counts',{})
         self.task=None;self.last_flush=0.;self.last_watch=0.
@@ -103,20 +104,23 @@ class MicrostructureWorker:
 
     def save(self):
         now=utcnow()
-        state=dict(pending=self.pending,anchors=self.anchors,ready=self.ready,seen=self.seen,counts=self.counts,
+        state=dict(pending=self.pending,anchors=self.anchors,ready=self.ready,recent=self.recent,seen=self.seen,counts=self.counts,
             requests=dict(self.client.counts),shadow=self.shadow.snapshot(now),
             next_request_at=iso(now+timedelta(seconds=max(0,self.client.next_start-time.monotonic()))),
             decision_eligible=True,affects='common_paper_signals',
-            synthetic_funding='DATA_BLOCKED_EXACT_SELL_PRODUCER')
+            synthetic_funding='CONDITIONAL_CODE_NOT_REGISTERED_AWAIT_NATURAL_PROOF')
         self.store.db.execute('INSERT INTO kv(key,value_json,updated_at) VALUES(?,?,?) '
             'ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at',
             (KEY,json.dumps(state),iso(now)))
 
     def note_safety(self,item,status,assessment):
+        receipt=(assessment or {}).get('exact_pool_sell_simulation')
         targets=list(self.pending.values())+[e['item'] for e in self.anchors.values()]
         for pending in targets:
             if pending.get('version')!=item['version'] or pending.get('cohort_id')!=item['cohort_id']:continue
+            if assessment is not None:pending['safety_checked']=True
             pending['safety_allow']=bool((assessment or {}).get('allow')) and status.startswith('BUY_AUTHORIZED_')
+            if receipt:pending['sell_simulation']=receipt
             if not status.startswith('REJECT'):continue
             reasons=(assessment or {}).get('hard_veto',[])+(assessment or {}).get('reasons',[])
             pending['safety_reject']=reasons or [status]
@@ -132,8 +136,14 @@ class MicrostructureWorker:
             self.task=asyncio.create_task(self.work())
 
     async def work(self):
-        key,item=next(iter(self.pending.items()))
         now=utcnow()
+        # Let the existing safety request provide its exact-pool receipt first.
+        # Other ready episodes still advance; no extra request or head-of-line wait.
+        selected=next(((key,item) for key,item in self.pending.items()
+            if not item.get('cohort_id') or item.get('safety_checked')
+            or parse_time(item['expires_at'])<now),None)
+        if selected is None:return
+        key,item=selected
         if item.get('safety_reject'):
             result=unknown('COMMON_SAFETY_REJECT',safety_reasons=item['safety_reject'])
             if item.get('hard_unsellable'):result['state']='HARD_UNSELLABLE'
@@ -170,7 +180,8 @@ class MicrostructureWorker:
                 if page.get('reason') in {'BUDGET_OR_BACKOFF','HELD_PRIORITY','GeckoLowPriorityDeferred'}:
                     return  # Same pending episode, bounded by original expiry.
                 result=classify_page(page,token_id=item['token_id'],pool=item['pool'],
-                    window_start=start,window_end=end,decision_at=utcnow(),price_frames=frames)
+                    window_start=start,window_end=end,decision_at=utcnow(),price_frames=frames,
+                    sell_simulation=item.get('sell_simulation'))
             except TimeoutError:
                 result=unknown('REQUEST_TIMEOUT')
         now=utcnow()
@@ -184,6 +195,8 @@ class MicrostructureWorker:
         result.update(branch=branch,funding_gate='AWAIT_STRICT_ORIGINAL_POOL_FRAME_AND_COMMON_SAFETY',
                       episode_keys=item.get('event_keys',{}))
         with self.store._lock, self.store.db:
+            self.recent[item['token_id']+'|'+item['pool']]=result
+            while len(self.recent)>64:self.recent.pop(next(iter(self.recent)))
             self.store.record_chain_meme_pattern_evidence(item['token_id'],item['pool'],
                 VERSION,result,observed_at=now,source_key=key)
             self.pending.pop(key,None);self.count(result['state'])
@@ -220,11 +233,13 @@ class MicrostructureWorker:
             price=anchor.get('price_usd'),liquidity=anchor.get('liquidity_usd'),
             safety_allow=item.get('safety_allow',False),hard_veto=bool(item.get('safety_reject')),
             surface=anchor.get('surface'),require_safety=False,
+            sell_simulation=item.get('sell_simulation'),
             reawakening=item.get('reactivation',False),early=item.get('early',False),
             pool_age_seconds=(now.timestamp()-item['pool_created_at_ms']/1000) if item.get('pool_created_at_ms') else None)
         entry['result']['route']=route
         arms={'ORGANIC_SHADOW_ELIGIBLE':'organic_reawakening_flow_v1',
-              'ORGANIC_EARLY_SHADOW_ELIGIBLE':'organic_early_flow_v1'}
+              'ORGANIC_EARLY_SHADOW_ELIGIBLE':'organic_early_flow_v1',
+              'SYNTHETIC_SHADOW_ELIGIBLE':'synthetic_fast_harvest_v1'}
         arm=arms.get(route)
         entry['result']['funding_gate']='COMMON_SAFETY_AND_STRICT_NEXT_PENDING' if arm else 'NO_FUNDED_SIGNAL'
         if arm and len(self.ready)<32:
@@ -246,6 +261,14 @@ class MicrostructureWorker:
         self.ready={k:v for k,v in self.ready.items() if parse_time(v['expires_at'])>=now}
         return {v['arm']:v['signal'] for v in self.ready.values()
                 if v['token_id']==token_id and v['pool']==pool}
+
+    def hazard_for(self,token_id,pool,opened,now):
+        evidence=self.recent.get(token_id+'|'+pool,{})
+        at=evidence.get('recorded_at')
+        if at and parse_time(opened)<parse_time(at)<=now and (now-parse_time(at)).total_seconds()<=120:
+            if evidence.get('phase')=='SYNTHETIC_DISTRIBUTING_CYCLE':return 'synthetic_distribution'
+            if evidence.get('state')=='HARD_UNSELLABLE':return 'synthetic_sellability_hazard'
+        return None
 
     def flush(self):
         now=time.monotonic()

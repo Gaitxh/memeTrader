@@ -31,6 +31,22 @@ def test_funded_cohort_frontier_safety_next_frame_and_once(tmp_path,monkeypatch,
     assert not gate.pending  # Pre-frontier event cannot enter a newly funded arm.
     clock[0]+=timedelta(seconds=1)
     signal[arm].update(observed_at=iso(clock[0]),recorded_at=iso(clock[0]),decision_evidence={origin:iso(clock[0])})
+    if arm=='event_clone_narrative_reawakening_v1':
+        from memetrader.event_clone_shadow import EventCloneShadow
+        shadow=EventCloneShadow(store);at=clock[0]
+        source=dict(url='https://example.org/event',event_key='fresh-event',
+            published_at=iso(at-timedelta(seconds=2)),available_at=iso(at-timedelta(seconds=1)),
+            source_evidence_id=41,scout_model='gpt-5.6-luna')
+        result=dict(state='CONFIRMED_EXPANDING',narrative_type='real_event_novelty',promotion_only=False,
+            independent_origin_count=2,event_key='fresh-event',token_binding_basis='verified_exact_contract_frozen_cohort',
+            cutoff=iso(at),research_mode='VERIFY_PERSISTED_SOURCES',scout_metadata={},scout_sources=[source],
+            verifier=dict(model='gpt-5.6-terra',status='cross_source_supported',claim_status='confirmed_fact',confidence=.9))
+        shadow.receive('narrative_hold_result_v2',result,token.token_id,pool,99,at)
+        for _ in range(2):
+            clock[0]+=timedelta(seconds=2)
+            shadow.frame(token,_snapshot(token,pool,clock[0]),clock[0],{})
+        signal={};signal.update(shadow.signals_for(token.token_id,pool,clock[0]))
+        assert arm in signal  # Exact runtime dict.update envelope into the real Store below.
     for _ in range(3):
         store.observe_chain_meme_pattern(token,_snapshot(token,pool,clock[0]),recorded_at=clock[0],cohort_signals=signal)
         clock[0]+=timedelta(seconds=1)

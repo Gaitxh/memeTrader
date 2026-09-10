@@ -1045,10 +1045,13 @@ class SafetyChecker:
     async def _enrich_honeypot(self, snap: TokenSnapshot) -> TokenSnapshot:
         if snap.chain.lower() != "bsc" or not self.config.get("honeypot_is", True):
             return snap
+        for key in ('honeypot_is', 'honeypot_is_observed_at', 'honeypot_is_recorded_at'):
+            snap.raw.pop(key, None)
         try:
+            pair=(snap.raw.get('pair') or {}).get('pairAddress')
             response = await self.http.get(
                 "https://api.honeypot.is/v2/IsHoneypot",
-                params={"address": snap.address, "chainID": 56},
+                params={"address": snap.address, "chainID": 56, **({'pair':pair} if pair else {})},
                 ttl=45,
             )
             payload = response.json()
@@ -1059,6 +1062,10 @@ class SafetyChecker:
             snap.buy_tax_pct = _safe_float(simulation.get("buyTax"), snap.buy_tax_pct)
             snap.sell_tax_pct = _safe_float(simulation.get("sellTax"), snap.sell_tax_pct)
             snap.raw["honeypot_is"] = payload
+            acquired=response.extensions.get('observed_at')
+            if acquired is not None:
+                snap.raw['honeypot_is_observed_at']=iso(parse_time(acquired))
+                snap.raw['honeypot_is_recorded_at']=iso(utcnow())
         except Exception as exc:
             snap.raw["honeypot_is_error"] = type(exc).__name__
         return snap
