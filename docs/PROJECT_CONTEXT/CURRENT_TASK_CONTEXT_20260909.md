@@ -1,4 +1,10 @@
-# Latest144 THREE-GAPS-AUDIT-1600 — callback source fix, acceptance open
+# Latest SERVICE-DOWN145 resolved — ae53fac loaded,144 gaps remain open
+
+ACK C2C-20260911-145-SERVICE-DOWN. Root was not deploying; fresh process/port read confirmed down. Existing authorized start_system/run_paper launch now allowed; no bypass/second writer/reset. Paper30808 started17:28:05Z, Web20112/8790. health/live/performance PASS; all manifest hashes incl runtime+learner ae53fac match.17:32Z same funding/Paper/Live lock; old25registration/311policy/funding SHA unchanged.3open/2held marks fresh, fetchp952.444s/apply60.7ms/queue2.312s,drops0/PoolTimeout0; cumulative heldfail2. Stop cause UNKNOWN, old crash log not evidence. Initial launcher live-read timeout15s occurred while cold service initialized; independent readiness subsequently passed. See SERVICE_RECOVERY_145.md.
+
+Natural new passive learning callback3111frames/8labels/2strict entries; coverage improvement/profit not proven. Previous NOT_LOADED boundary below is superseded. Continue current nonAgent144 acceptance/known implementation gaps and incoming145 implementation contract; no repeat143/native/39scan/ModeChat expansion. Sole root writer unchanged.
+
+## Previous144 THREE-GAPS-AUDIT-1600 cutoff — source-only then
 
 Exact message processed: C2C-20260910-144-THREE-GAPS-AUDIT-1600. Actual passive Runtime callback mismatch reproduced and fixed in runtime.py/mode_learning144.py; 28 closest tests PASS. Already acquired frames now advance existing learning episodes before fresh captures, including missing/floor evidence; strict clocks/identity/dedup preserved, zero new requests/snapshot writes. SOURCE_TESTED, NOT_LOADED; natural improvement unproven. Preserve healthy PID30748 instead of stopping before a previously policy-denied launch. No historical UNKNOWN backfill/causal attribution.
 

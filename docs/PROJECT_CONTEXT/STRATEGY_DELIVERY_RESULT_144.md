@@ -193,3 +193,9 @@ ACK/处置ID：`C2C-20260910-144-THREE-GAPS-AUDIT-1600`。已读指定 `THREE_GA
 health/live/performance正常，当前资金期仍 `chain-meme-trader/funding-20260906-v002-final-1000`，Paper-only/Live锁定；本次生产操作仅只读，没有不可变policy/账簿/资金历史写入。held_fetch p95=2.651s、apply=57.5ms、passive compute=.729s、queue wait=2.676s，drops0/PoolTimeout0；当前5个held token无缺失/coverage gap，最大行情年龄1.675s。累计held_fetch failures8/connect_errors2较16:04Z的1/1增加；不称全程无错，也不归因尚未加载的补丁。加载后必须做同负载保护验收。
 
 本次唯一语义checkpoint为revision20/digest `c7f9427b73e91701a4c93e541d2044feff6ddfae48fbbf585f3d53f1359fcee6`，144恢复为IN_PROGRESS并写明缺失实现；ONE resume一致、codex/epoch0、无stop fence。未改变pairing/session/memory状态。
+
+## ae53fac实际加载及自然回调 — SERVICE-DOWN145恢复
+
+后续 `C2C-20260911-145-SERVICE-DOWN` 要求优先恢复已停止的服务。本次既有启动器允许执行；17:28:05Z新Paper PID30808已加载ae53fac，runtime/learner及其余十个manifest源码SHA全部一致。上文NOT_LOADED为旧cutoff，现为LOADED并有自然回调。具体恢复、冷启动API超时、稳定窗口及停止原因UNKNOWN见 `SERVICE_RECOVERY_145.md`。
+
+17:32Z passive callback3111frames/1397matched advances/8labels/2strict entries，Store callback1113frames/3entries；证明实际接线工作，不是历史UNKNOWN归因或收益改善。未增加源请求/回填标签，旧25registration/311policy/资金激活恢复SHA均保持；三个API正常、Live锁定。覆盖/trend自然验收、selector rollback和受限规则自动追加仍开放，不以服务恢复关闭144。
