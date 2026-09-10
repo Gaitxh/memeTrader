@@ -1,3 +1,9 @@
+# Current narrow update142 — held valuation display fixed
+
+See [HELD_VALUATION_RESULT_142.md](HELD_VALUATION_RESULT_142.md). Web-only repair preserves ordinary mark metadata and uses actual native exit receipts everywhere; native94747 residual capacity remains UNKNOWN, now explicitly explained. Heartbeat read race fixed. Paper40216/funding/Live lock unchanged. The existing revision15 packet remains the broader141 strategy checkpoint; this display fix does not reopen completed work.
+
+---
+
 # Authoritative continuation141 — opening defects fixed; regime strategy loaded and trading
 
 Read ONE current ModeChat resume packet: revision15 / digest369e3fb66af4eb784cbfc66a8c279f1ad2a994925bb747da9de5eafbb68252bc. Local task consistency CONSISTENT, same Codex owner/epoch0, no stop fences. Details: [OPENING_FUNNEL_AND_STRATEGY_141.md](OPENING_FUNNEL_AND_STRATEGY_141.md).

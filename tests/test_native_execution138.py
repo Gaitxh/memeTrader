@@ -177,6 +177,9 @@ def test_native_web_uses_exit_surface_not_fresh_dex_mark(tmp_path, monkeypatch, 
             assert position['indicative_source']=='native_protocol_model'
             assert position['indicative_price_usd'] is None
             assert position['indicative_mark_at']==iso(at)
+            if compact:
+                assert position['market_age_seconds']==(clock[0]-at).total_seconds()
+                assert position['market_observed_age_seconds']==(clock[0]-at).total_seconds()
             if expected:
                 assert position['indicative_value_usd'] is None
                 assert position['indicative_sellability']=='NATIVE_EXIT_UNAVAILABLE'

@@ -1125,6 +1125,8 @@ class ChainWebData:
                 indicative_sellability='NATIVE_MODEL_QUOTED' if value is not None else 'NATIVE_EXIT_UNAVAILABLE',
                 indicative_market_status=quote_status, market_is_fresh=fresh,
                 price_usd=None, liquidity_usd=None, market_status=quote_status,
+                market_age_seconds=(current-parse_time(checked)).total_seconds() if checked else None,
+                market_observed_age_seconds=(current-parse_time(observed)).total_seconds() if observed else None,
                 native_surface=state['surface'], native_quote_is_fresh=fresh,
                 native_exit_reason=receipt.get('quote_reason') if bound else None,
                 native_exit_checked_at=checked,
