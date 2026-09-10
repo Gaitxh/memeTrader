@@ -1,3 +1,11 @@
+# Current144 — nonagent strategies and bounded learning loaded
+
+Latest144 supersedes current Agent/browser/ModeChat expansion priority. [STRATEGY_DELIVERY_RESULT_144.md](STRATEGY_DELIVERY_RESULT_144.md): 0e82bc4+b3e9324 implemented/tested/pushed/loaded. Six independent2U/max2 arms312–317 activated14:58:47Z: early activity, sparse peers, absorption, pure trend, ordered second wave, adaptive available-mode selector. No oldpolicy changes. Actual causal learn loop: at15:06Z 2OBSERVED+3UNKNOWN labels learned once; fixed baseline retained, no model promotion/newBUY yet. Runtime42880 manifest source hashes match; old311policy/25registration/1funding activation hashes unchanged, Paper-only/Live locked. Heldp953.038s/apply36.3ms/passive2.427s,drops0,PoolTimeout0; short-window acceptance not alpha/longrun guarantee.
+
+Implementation boundary passed; continue natural episodes/5-15-60 labels and economic comparisons. Do not repeat143/native proofs, old47matching, cleanup or ModeChat. No fabricated proof for synthetic/Pons. Read the ONE current versioned ModeChat packet for full open/deferred state; memory/Lead browser validation remain unasserted.
+
+---
+
 # Current143 — native waiting position CLOSED after accounting fix
 
 [NATIVE_EXIT_RESOLVED_143.md](NATIVE_EXIT_RESOLVED_143.md): f916668 loaded PID31596. Native94747 closed13:26:18Z, remaining0; final SELL3.38836U, total PnL-0.51853U. Exit math omitted recorded BUY reserve deltas while subtracting SELLs; V2 now consistently uses current public+BUY-SELL. Historical receipts/funding/policies unchanged; no manual/fake fill.142 display fix alone was insufficient, its external-only blocker diagnosis is superseded. Broader141 delivery preserved.

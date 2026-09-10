@@ -64,3 +64,28 @@ def test_real_producer_safety_later_buy_and_exit(tmp_path,monkeypatch,arm,exit_k
     assert store.get_kv(learning.key)['actual_groups'][arm][0]['realized_pnl_usd']==p['realized_pnl_usd']
     assert store.register_chain_meme_cohort_experiments()==0
     store.close()
+
+
+def test_pending_security_reservations_obey_two_position_limit(tmp_path,monkeypatch):
+    clock=[utcnow()]
+    for module in ('store','models','preentry_safety'):
+        monkeypatch.setattr('memetrader.'+module+'.utcnow',lambda:clock[0])
+    s=Store(tmp_path/'limits.sqlite3',initial_cash_usd=1000)
+    s.activate_chain_meme_trader_funded_period();s.register_chain_meme_cohort_experiments()
+    clock[0]+=timedelta(seconds=1);start=clock[0];e=Engine(start);s._trajectory144=e
+    gate=PreentrySafety(s,SimpleNamespace(config={}));s._preentry_safety=gate
+    for j in range(1,4):
+        token=TokenCandidate('bsc','0x'+str(j)*40,'Slot','SLOT');pool='0x'+str(j+5)*40;s.upsert_token(token)
+        for i in range(5):
+            clock[0]+=timedelta(seconds=10)
+            e.accept(row(clock[0],i,token=token.token_id,pool=pool,price=1+i*i*.02,buys=i*i,volume=100+i*i*20),clock[0])
+        sig=e.signals_for(token.token_id,pool,clock[0])[ARMS[0]]
+        s.observe_chain_meme_pattern(token,_snapshot(token,pool,clock[0],price=1.32),recorded_at=clock[0],cohort_signals={ARMS[0]:sig})
+        clock[0]+=timedelta(seconds=5)
+        e.accept(row(clock[0],5,token=token.token_id,pool=pool,price=1.33,buys=25,volume=650),clock[0])
+        s.observe_chain_meme_pattern(token,_snapshot(token,pool,clock[0],price=1.33),recorded_at=clock[0],cohort_signals={ARMS[0]:sig})
+    # Expiries are advanced explicitly only by the safety worker; reservations
+    # remain authoritative while provider work is pending.
+    assert len(gate.pending)==2
+    assert s.db.execute('SELECT count(*) FROM chain_meme_trader_positions WHERE arm_id=?',(ARMS[0],)).fetchone()[0]==0
+    s.close()
