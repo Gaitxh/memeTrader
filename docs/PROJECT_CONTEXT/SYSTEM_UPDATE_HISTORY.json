@@ -10,7 +10,7 @@
       "rationale": "把'被噪音洗出'的量化结论直接转为可检验的实验：入场侧捕捉洗出后的回收段，退出侧让止损随池子自身波动率缩放，并用同入场A/B把'放宽止损'与'换入场'两种效应分开。",
       "validation": "test_alpha149 18项 + test_whipsaw_guard 2项 PASS；加载后非零机制4→23、信号臂30条、wave9自适应止损臂已出信号；wave8同信号A/B首次出现方向差异（宽止损追踪+0.2617U vs 原止损-0.6353U，n=1仅机制验证）；错误#265/#266保持冻结；实时性无回归（held_fetch p50 0.76s/p95 3.14s，alpha149_features p50 0.5ms，各周期fail=0）；漏斗60分钟 发现49,337→评估46,994→开仓880笔/137币。",
       "scope": "IMPLEMENTED_LOADED; 新臂自然样本极小无盈利结论；7天臂级复盘显示221条臂中仅5条净盈利，alpha149家族自身亏损主要由写销(-80.0U/28笔)而非止损造成，指向入场存活率是下一个杠杆。",
-      "commit": "pending",
+      "commit": "50811f6",
       "loaded_at": "2026-09-11T20:31:15Z",
       "visible_entry": "http://127.0.0.1:8790/#/strategies",
       "report": "docs/PROJECT_CONTEXT/WAVE9_WASHOUT_VOLSTOP_20260912.md"
