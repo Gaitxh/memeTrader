@@ -10,7 +10,7 @@
       "rationale": "既然单帧入场买在回撤里、由噪音付费（23-25秒止损），就把确认放到买入之前而不是买入之后再容忍，与wave8/9的卖出侧容忍形成互补对照。",
       "validation": "test_alpha149 30项+test_whipsaw_guard 2项 PASS（新增：确认臂必须存活带与连续两步同时成立，仅一次上行或仅两步但不在带内均不触发）；宽限机制实盘验证——confirm臂在188秒触发止损（晚于其60秒宽限）、wide臂0次止损，家族内未发现任何在声明宽限期内触发的止损；错误#265/#266保持冻结；Live锁定与资金周期/账本未变。",
       "scope": "IMPLEMENTED_LOADED; 拒因样本取自id区间30万行不可外推全史；13.1%池深未知属监控项而非可修缺陷；存活带最好分带单笔仍负，下一步重点在退出与入场时机；wave13自然样本尚未产生。",
-      "commit": "pending",
+      "commit": "d6fae7c",
       "loaded_at": "2026-09-11T21:01:33Z",
       "visible_entry": "http://127.0.0.1:8790/#/strategies",
       "report": "docs/PROJECT_CONTEXT/WAVE13_CONFIRMED_ENTRY_20260912.md"
