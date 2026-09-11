@@ -10,7 +10,7 @@
       "rationale": "把已被实测证明有效的'不下跌'修复推广到其余被严格上涨卡死的机制；对买盘过滤则直接删除而非调参，因为它不是实测结论的一部分。",
       "validation": "移除买盘过滤后实测survivable_steady_mid ready=92(此前0)且该臂已开仓；confirmed_steady在一窗口中ready=48(严格版0)；test_alpha149 46项+test_whipsaw_guard 2项 PASS；退出矩阵分歧随样本增加收窄(时点方案+1.004/+0.721 vs 深度方案+0.845/+0.483，已无哪种合同明显更好)，如实修正上一轮'时点方案明显占优'的表述；错误#265/#266保持冻结。",
       "scope": "IMPLEMENTED_LOADED; 同批机制在不同窗口的ready计数波动大(survivable_steady 52→0)，单窗口计数不可外推；移除买盘过滤的后果(安全带中段将交易卖盘主导的池子)必须由前向数据检验；退出矩阵已证明小样本差异不可靠，后续仅在样本足够时裁决。",
-      "commit": "pending",
+      "commit": "9a5128a",
       "loaded_at": "2026-09-11T23:04:00Z",
       "visible_entry": "http://127.0.0.1:8790/#/strategies",
       "report": "docs/PROJECT_CONTEXT/WAVE22_STEADY_EXTENSION_20260912.md"
