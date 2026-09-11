@@ -10,7 +10,7 @@
       "rationale": "把'已确认/已证伪/仍未知'三类结论明确分开，供用户决定后续以新臂形式落地哪些修订；同时避免把反事实推算当作可实现收益。",
       "validation": "数字全部来自本会话可复现的只读脚本与系统表；本轮同时复核了稳定性/实时性(held_fetch p50 1.04s/p95 3.03s、held_apply_exit p50 24ms、alpha149_features p50 0.8ms、各周期fail=0、错误#265/#266冻结、live.enabled=false/paper、资金周期与账本未变)。",
       "scope": "文档级总结，未改动任何策略或运行参数；明确标注修复后队列455笔跨越约3小时且经历一次市场急转，不构成盈利结论；组合级单币敞口上限超出'仅新增臂'约束，仅作为待用户决定的议题记录；对既有臂的修订建议仅文档化、未实施。",
-      "commit": "pending",
+      "commit": "c6a7512",
       "loaded_at": null,
       "visible_entry": "docs/PROJECT_CONTEXT/STAGE_SYNTHESIS_20260912.md",
       "report": "docs/PROJECT_CONTEXT/STAGE_SYNTHESIS_20260912.md"
