@@ -46,6 +46,13 @@ REGIME_FAST_SAMPLES = 40
 REGIME_MIN_SAMPLES = 120
 REGIME_MAX_SAMPLES = 400
 
+# Wave 14. The parent mechanism `resource_age_rate` fires when the current
+# 5-minute rate is at least 3x the PRIOR 55-minute rate. The shared vector
+# publishes the comparable whole-hour ratio, and old_rate = 11*a/(12-a), so the
+# parent's 3x rule is a >= 36/14. Kept as the parent's own threshold.
+AGE_RATE_MIN = 3.0
+AGE_RATE_RATIO_EQUIVALENT = 36.0 / 14.0  # 2.5714..., only for tests/documentation
+
 # arm_id -> (mechanism kind, Chinese label, max_hold_minutes)
 SPECS = {
     'alpha149_uncrowded_first_frame_v1': ('uncrowded_first_frame', '最早帧·无同伴依赖', 15),
@@ -828,17 +835,29 @@ def mechanisms(f):
 
     # Wave 14: the highest-PnL entry mechanism of the system, rebuilt on the
     # shared vector. `resource_age_rate` (parent of resource_age_rate_candidate_v1,
-    # +634.96U over 220 positions) compares the current 5 minutes against the prior
-    # 55 minutes and scales by available age; the shared vector publishes that
-    # comparison age-normalised, so the frozen rule is a 3x acceleration on the
-    # stronger of the two rates, inside a 15-minute to 6-hour pool, with real
-    # activity. It needs no previous frame and no window, so it is evaluated here
-    # before both guards.
+    # +634.96U over 220 positions) compares the current 5 minutes against the
+    # PRIOR 55 minutes: old_rate = (m5/5) / (prior55/55) with
+    # prior55 = hour - m5, and fires at old_rate >= 3.
+    #
+    # The shared vector does not publish the prior window, but it does publish the
+    # same comparison against the whole hour (m5 x 12 / hour). Since
+    # hour = m5 + prior55, that ratio a = 12*m5/hour implies
+    # prior55 = m5*(12/a - 1), hence old_rate = 11*a/(12 - a): the parent's
+    # frozen 3x threshold is exactly a >= 36/14 = 2.5714. A ratio a >= 12 means the
+    # hour no longer contains the 5 minutes (negative prior window), which the
+    # parent rejects as "no comparable positive baseline", so it is excluded
+    # rather than treated as infinite.
+    age_rate_candidates = []
+    for ratio_5m_1h in (_num(f.get('volume_acceleration_5m_1h')),
+                        _num(f.get('tx_acceleration_5m_1h'))):
+        if ratio_5m_1h is None or ratio_5m_1h <= 0 or ratio_5m_1h >= 12.0:
+            continue
+        age_rate_candidates.append(11.0 * ratio_5m_1h / (12.0 - ratio_5m_1h))
+    old_rate = max(age_rate_candidates) if age_rate_candidates else None
     out['age_rate_acceleration'] = bool(
         pool_age is not None and 900 < pool_age < 21600
         and liquidity is not None and liquidity >= 5000
-        and vol_age_acc is not None and tx_age_acc is not None
-        and max(vol_age_acc, tx_age_acc) >= 3.0
+        and old_rate is not None and old_rate >= AGE_RATE_MIN
         and ((vol_now is not None and vol_now >= 1000)
              or (turn is not None and turn >= .1))
         and buy_share is not None and buy_share >= .5)
@@ -1304,6 +1323,7 @@ FEATURE_KEYS = (
     'window_frames_30', 'buy_count_share', 'volume_age_accel', 'tx_age_accel',
     'drawdown', 'plateau_fraction', 'monotonic_up_fraction', 'log_price_r2',
     'volume_liquidity', 'fdv_liquidity', 'price_elasticity_proxy',
+    'volume_acceleration_5m_1h', 'tx_acceleration_5m_1h',
 )
 
 
@@ -1353,6 +1373,8 @@ class Engine(_BaseEngine):
                 'volume_liquidity': feature.get('volume_liquidity'),
                 'fdv_liquidity': feature.get('fdv_liquidity'),
                 'price_elasticity_proxy': feature.get('price_elasticity_proxy'),
+                'volume_acceleration_5m_1h': feature.get('volume_acceleration_5m_1h'),
+                'tx_acceleration_5m_1h': feature.get('tx_acceleration_5m_1h'),
             }
             for key, value in values.items():
                 number = _num(value)

@@ -746,39 +746,46 @@ def test_wave13_arm_is_additive_and_keeps_the_measured_contract():
 
 
 def test_age_rate_acceleration_rebuilds_the_best_entry_mechanism():
-    """Wave 14: the highest-PnL entry of the system, on the shared vector."""
+    """Wave 14: the highest-PnL entry of the system, on the shared vector.
+
+    The parent (`resource_age_rate`) fires when the 5-minute rate is 3x the PRIOR
+    55-minute rate. The shared vector publishes the whole-hour ratio a, and
+    old_rate = 11a/(12-a), so the parent's threshold is a >= 36/14.
+    """
     def vector(**over):
         base = dict(pool_age_seconds=3600.0, liquidity_usd=9000.0, buy_count_share=0.6,
-                    volume_acceleration_age_normalized=4.0,
-                    tx_acceleration_age_normalized=1.2, volume_liquidity=0.2, windows={},
+                    volume_liquidity=0.2, windows={},
                     current=dict(price_usd=1.0, liquidity_usd=9000.0, volume_5m_usd=1500.0))
         base.update(over)
         return feature(**base)
 
-    assert alpha149.mechanisms(vector())["age_rate_acceleration"] is True
-    # Either rate may carry the 3x acceleration (the original takes the stronger).
-    assert alpha149.mechanisms(vector(volume_acceleration_age_normalized=1.5,
-                                      tx_acceleration_age_normalized=3.2)
+    # Exactly the parent's threshold: 11*a/(12-a) >= 3.
+    assert alpha149.mechanisms(vector(volume_acceleration_5m_1h=2.6)
                                )["age_rate_acceleration"] is True
-    # Below the frozen 3x threshold on both: off.
-    assert alpha149.mechanisms(vector(volume_acceleration_age_normalized=2.0,
-                                      tx_acceleration_age_normalized=2.0)
+    assert alpha149.mechanisms(vector(volume_acceleration_5m_1h=2.55)
+                               )["age_rate_acceleration"] is False
+    # Either rate may carry it, exactly as the parent takes max(volume, trades).
+    assert alpha149.mechanisms(vector(tx_acceleration_5m_1h=3.0)
+                               )["age_rate_acceleration"] is True
+    # A ratio at or above 12 means the hour no longer contains the 5 minutes: the
+    # parent calls that "no comparable positive baseline", so it must not fire.
+    assert alpha149.mechanisms(vector(volume_acceleration_5m_1h=12.0)
                                )["age_rate_acceleration"] is False
     # Outside the measured 15-minute to 6-hour pool-age window: off.
-    assert alpha149.mechanisms(vector(pool_age_seconds=600.0)
+    assert alpha149.mechanisms(vector(volume_acceleration_5m_1h=3.0, pool_age_seconds=600.0)
                                )["age_rate_acceleration"] is False
-    assert alpha149.mechanisms(vector(pool_age_seconds=25200.0)
+    assert alpha149.mechanisms(vector(volume_acceleration_5m_1h=3.0, pool_age_seconds=25200.0)
                                )["age_rate_acceleration"] is False
     # No real activity, seller-dominated flow, or unknown acceleration: off.
-    assert alpha149.mechanisms(vector(volume_liquidity=0.01,
+    assert alpha149.mechanisms(vector(volume_acceleration_5m_1h=3.0, volume_liquidity=0.01,
                                       current=dict(price_usd=1.0, liquidity_usd=9000.0,
                                                    volume_5m_usd=50.0))
                                )["age_rate_acceleration"] is False
-    assert alpha149.mechanisms(vector(buy_count_share=0.4)
+    assert alpha149.mechanisms(vector(volume_acceleration_5m_1h=3.0, buy_count_share=0.4)
                                )["age_rate_acceleration"] is False
-    assert alpha149.mechanisms(vector(volume_acceleration_age_normalized=None,
-                                      tx_acceleration_age_normalized=None)
-                               )["age_rate_acceleration"] is False
+    assert alpha149.mechanisms(vector())["age_rate_acceleration"] is False
+    assert alpha149.AGE_RATE_MIN == 3.0
+    assert abs(alpha149.AGE_RATE_RATIO_EQUIVALENT - 36.0 / 14.0) < 1e-9
 
 
 def test_wave14_arms_pair_two_horizons_on_one_frozen_entry():
