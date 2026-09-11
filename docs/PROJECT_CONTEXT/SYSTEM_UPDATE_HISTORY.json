@@ -10,7 +10,7 @@
       "rationale": "先解决'选到会死的池子'这一最大亏损来源，再用同入场三臂分离三种退出机制；不修改任何既有臂，既有策略作为早期假设的记录保留。",
       "validation": "test_alpha149 22项+test_whipsaw_guard 2项 PASS（含：存活带必须排除<30分钟池与FDV/深度<1；深池带为核心带严格子集；深度衰减早退需同时满足深度流失与活动枯竭；引擎级可达性——真实帧驱动Engine.accept/signals_for后三条survivable_core臂均出信号）；自然供给实测：近12分钟86,664个深度≥5000U的帧中3,835个满足core条件、1,877个满足deep条件，当前241个不同代币满足core；错误#265/#266保持冻结，Live锁定与资金周期/账本未变。",
       "scope": "IMPLEMENTED_LOADED; 分组统计来自已持仓样本存在选择偏差（分带内相对差异仍可用于前向实验）；深度衰减早退为未做历史反事实的假设；wave10自然样本在加载后数分钟内尚无成交，不作结论。",
-      "commit": "pending",
+      "commit": "ddc3d33",
       "loaded_at": "2026-09-11T20:40:41Z",
       "visible_entry": "http://127.0.0.1:8790/#/strategies",
       "report": "docs/PROJECT_CONTEXT/WAVE10_SURVIVABILITY_20260912.md"
