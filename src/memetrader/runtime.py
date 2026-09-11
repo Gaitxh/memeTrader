@@ -8090,6 +8090,33 @@ class Runtime:
                     signals.setdefault(identity,{}).update(trajectory.signals_for(*identity,now))
                 if identity in fresh149:
                     signals.setdefault(identity,{}).update(trajectory149.signals_for(*identity,now))
+            # ALPHA149 frame supply: a young pool the engine has barely observed is
+            # offered to the EXISTING spare-capacity lane so it accumulates the
+            # independent frames a strategy window needs. No new HTTP batch, no
+            # cadence change, no request of its own: it only rides address places
+            # that an already-due low-priority batch is not using.
+            batch_manager149 = getattr(self, '_shared_batch148', None)
+            if batch_manager149 is not None and batch_manager149.enabled:
+                floor149 = getattr(self, '_chain_paper_execution', {}).get(
+                    'min_pool_liquidity_usd', 1000.)
+                excluded149 = set(getattr(self, '_pattern_watch', {}) or {}) | set(
+                    getattr(self, '_market_priority_tokens', set()) or set())
+                offered149 = 0
+                for identity, (token, snapshot) in quotes.items():
+                    if identity[0] in extra148 or offered149 >= 6:
+                        continue
+                    state149 = trajectory149.pools.get(identity)
+                    rows149 = state149.get('rows') if state149 else None
+                    if rows149 is None or len(rows149) >= 3:
+                        continue
+                    age149 = (state149.get('features') or {}).get('pool_age_seconds')
+                    if age149 is None or age149 > 900:
+                        continue
+                    if batch_manager149.offer(token, snapshot, now, floor=floor149,
+                                              excluded=excluded149):
+                        offered149 += 1
+                if offered149 and hasattr(self, 'runtime_timing'):
+                    self.runtime_timing.observe('alpha149_coverage_offers', 0.0, items=offered149)
                 if identity in fresh144:
                     started145=asyncio.get_running_loop().time()
                     features=trajectory144.pools[identity]['features']
