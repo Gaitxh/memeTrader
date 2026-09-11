@@ -25936,6 +25936,23 @@ class Store:
                 "WHERE definition_version=? AND arm_id=?", (version, arm_id),
             ).fetchone()
 
+    def _trajectory_engine_for(self, policy: Mapping[str, Any] | None):
+        """Route a policy to its own observed-trajectory engine.
+
+        Existing values keep their previous behaviour: ``v144`` uses the
+        trajectory144 engine and anything else uses the shared dex engine.
+        ``alpha149`` is an additive, isolated engine for the ALPHA149 arms.
+        """
+        name = str((policy or {}).get("trajectory_engine") or "")
+        if name == "v144":
+            return getattr(self, "_trajectory144", None)
+        if name == "alpha149":
+            if not hasattr(self, "_alpha149"):
+                from .alpha149 import Engine as _Alpha149Engine
+                self._alpha149 = _Alpha149Engine(utcnow())
+            return self._alpha149
+        return getattr(self, "_dex_trajectory", None)
+
     def register_chain_meme_universe_outcomes(
         self, *, source_definition_version: str | None = None,
         observer_version: str | None = None, registered_at: Any = None,
@@ -27178,7 +27195,7 @@ class Store:
                     if open_or_reserved_full(self.db,version,p['arm_id'],limited[p['arm_id']]):
                         entry_blocked[p['arm_id']]='strategy_open_or_reserved_limit'
                 if p.get('requires_distinct_trajectory_frame'):
-                    trajectory=getattr(self,'_trajectory144' if p.get('trajectory_engine')=='v144' else '_dex_trajectory',None)
+                    trajectory=self._trajectory_engine_for(p)
                     observed=trajectory.pools.get((token.token_id,pair_address),{}).get('features',{}) if trajectory else {}
                     if observed.get('observed_at')!=iso(snapshot.observed_at) or not observed.get('windows',{}).get('30'):
                         entry_blocked[p['arm_id']]='await_distinct_dex_trajectory_frame'
@@ -28475,7 +28492,7 @@ class Store:
                 evidence=signals.get(arm,{}).get('decision_evidence',{})
                 if arm==REGIME_ARM and not evidence.get('router_requires_distinct_trajectory'):return True
                 frozen=evidence.get('feature_vector',{})
-                engine=getattr(self,'_trajectory144' if by_policy[arm].get('trajectory_engine')=='v144' else '_dex_trajectory',None)
+                engine=self._trajectory_engine_for(by_policy[arm])
                 latest=engine.pools.get((token_id,frozen.get('pair_address')),{}).get('features',{}) if engine else {}
                 return bool(frozen and frame and frame['ingested_at'] and latest.get('windows',{}).get('30')
                     and (by_policy[arm].get('trajectory_engine')!='v144' or parse_time(signals[arm]['recorded_at'])<parse_time(frame['observed_at']))
@@ -34858,11 +34875,16 @@ class Store:
                         sell_amount=int(position['amount_raw'])
                         trigger_evidence['trajectory144_exit']=vector
                 if action is None and policy.get('trajectory_exit'):
-                    from .dex_trajectory import exit_reason
-                    engine=getattr(self,'_dex_trajectory',None)
+                    kind=policy['trajectory_exit']
+                    if str(kind).startswith('alpha149_'):
+                        from .alpha149 import exit_reason
+                        engine=self._trajectory_engine_for(policy)
+                    else:
+                        from .dex_trajectory import exit_reason
+                        engine=getattr(self,'_dex_trajectory',None)
                     state=engine.pools.get((position['token_id'],position['mark_pair_address'])) if engine else None
                     vector=state['features'] if state else None
-                    decay=exit_reason(policy['trajectory_exit'],vector,position['opened_at'],current)
+                    decay=exit_reason(kind,vector,position['opened_at'],current)
                     if decay:
                         action,reason='CAPITAL_EXIT',decay
                         sell_amount=int(position['amount_raw'])

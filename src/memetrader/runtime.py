@@ -9191,7 +9191,7 @@ class Runtime:
             definition=self.store._chain_meme_trader_effective_definition(version,registration['definition_json'])
             source=Path(__file__).parent
             names=('runtime.py','store.py','native_execution.py','cohort_experiments.py','dex_trajectory.py',
-                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','mode_learning144.py',
+                   'preentry_safety.py','microstructure_shadow_worker.py','cohort_enrollment.py','trajectory144.py','alpha149.py','mode_learning144.py',
                    'mode_learning145.py','recipe145.py','observation_leases145.py','shared_batch148.py')
             self.store.set_kv('runtime-loaded-manifest',dict(started_at=iso(),pid=os.getpid(),definition_version=version,
                 policy_arm_ids=[p['arm_id'] for p in definition['policies']],
