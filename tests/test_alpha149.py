@@ -998,6 +998,31 @@ def test_wave19_deep_band_nostop_removes_only_the_price_stop():
     assert policies["alpha149_wide_band_v1"]["notional_usd"] == 1.0
 
 
+def test_wave20_propagates_the_winning_schedule_to_other_entries():
+    """The matrix favours stop scheduling; test whether that generalises."""
+    policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}
+    pairs = (("alpha149_time_decay_age_rate_v1", "age_rate_acceleration",
+              "alpha149_time_decay_stop", "alpha149_age_rate_accel_v1", 2.0),
+             ("alpha149_early_stop_deep_v1", "survivable_band_deep",
+              "alpha149_early_stop_only", "alpha149_deep_band_nostop_v1", 1.0))
+    for arm, kind, exit_kind, parent, notional in pairs:
+        assert arm in alpha149.ALL_ARMS and arm in policies
+        assert alpha149.SPECS[arm][0] == kind
+        assert policies[arm]["trajectory_exit"] == exit_kind
+        assert policies[arm]["hard_stop_return"] == -.90      # stop lives in the schedule
+        assert policies[arm]["trailing_activate_return"] == .30
+        assert policies[arm]["trailing_drawdown"] == .15
+        assert alpha149.SPECS[arm][2] == 60
+        assert policies[arm]["notional_usd"] == notional
+        # Parents keep their own contracts untouched.
+        assert parent in policies
+    assert policies["alpha149_age_rate_accel_v1"].get("trajectory_exit") is None
+    assert policies["alpha149_age_rate_accel_v1"]["hard_stop_return"] == -.20
+    # Both schedules are the ones already registered as exit kinds.
+    assert alpha149.EXIT_ARMS["alpha149_time_decay_stop_exit_v1"] == "alpha149_time_decay_stop"
+    assert alpha149.EXIT_ARMS["alpha149_early_stop_only_exit_v1"] == "alpha149_early_stop_only"
+
+
 def test_wave8_arms_keep_the_entry_frozen_and_only_change_the_exit_contract():
     """Same-signal A/B: the anti-whipsaw arms reuse an existing kind verbatim."""
     policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}

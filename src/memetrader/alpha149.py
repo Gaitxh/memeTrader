@@ -222,6 +222,13 @@ SPECS = {
     # wave 19: fix the safe band's supply, and test the cliff tier without a stop.
     'alpha149_wide_band_v1': ('survivable_wide', '安全带放宽深度·1U', 30),
     'alpha149_deep_band_nostop_v1': ('survivable_band_deep', '深池带·不用价格止损', 60),
+    # wave 20: propagate the winning stop SCHEDULE to other entry families. The
+    # matrix currently reads +1.528U for the two scheduling contracts (early-only,
+    # time-decay) against -0.106U for the three depth contracts, so the question is
+    # whether that is specific to the merged entry. These two arms carry the same
+    # schedules on the highest-supply new entries.
+    'alpha149_time_decay_age_rate_v1': ('age_rate_acceleration', '止损时点×池龄加速·随时间收紧', 60),
+    'alpha149_early_stop_deep_v1': ('survivable_band_deep', '止损时点×深池带·仅前5分钟', 60),
 }
 EXIT_ARMS = {
     'alpha149_profit_decay_exit_v1': 'alpha149_profit_decay',
@@ -736,6 +743,22 @@ OVERRIDES = {
                     '但去掉价格止损（-90%仅兜底），改用深度衰减早退+追踪+60分钟时限。'
                     '依据：该带所属的 FDV/深度>20 档实测止损越深中位-65点，'
                     '而"无价格止损"正是绕开跳空风险的直接检验。'),
+    # ---- wave 20: the winning stop schedule, on other entry families ----------
+    'alpha149_time_decay_age_rate_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_age_rate_accel_v1',
+        trajectory_exit='alpha149_time_decay_stop',
+        hard_stop_return=-.90, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='止损时点×池龄加速：入场与 age_rate_accel 完全相同（当前供应最高的新机制），'
+                    '退出改用矩阵中表现较好的"随时间收紧"方案（允许回撤30%起、每分钟收紧0.6点至12%），'
+                    '追踪+30%→15%、持有60分钟；用于检验该时点方案是否只对合并入场有效。'),
+    'alpha149_early_stop_deep_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_deep_band_nostop_v1',
+        trajectory_exit='alpha149_early_stop_only',
+        hard_stop_return=-.90, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='止损时点×深池带：入场与 survivable_band_deep 相同（供应是安全带族15倍），'
+                    '退出改用"仅前5分钟价格止损"，其后交给追踪/时限/流动性规则；1U。'),
 }
 
 
