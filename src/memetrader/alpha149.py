@@ -80,6 +80,11 @@ SPECS = {
     'alpha149_righttail_lottery_v1': ('righttail_lottery', '右尾彩票·小额宽追踪', 180),
     'alpha149_dense_watch_breakout_v1': ('dense_watch_breakout', '高密度观测池的突破', 60),
     'alpha149_goldendog_liquidity_band_v1': ('goldendog_liquidity_band', '金狗·深度带内慢出', 120),
+    # wave 7: revive still-viable hypotheses from paused/retired arms, expressed
+    # with the now-feasible sequence machinery (frames per pool p50 is ~44).
+    'alpha149_revival_inventory_contraction_v1': ('inv_contraction', '复活·库存收缩而价格持稳', 20),
+    'alpha149_seq_price_then_depth_v1': ('seq_price_then_depth', '序列·价格先动深度随后', 30),
+    'alpha149_seq_two_step_rise_v1': ('seq_two_step_rise', '序列·两步连续上行', 30),
 }
 EXIT_ARMS = {
     'alpha149_profit_decay_exit_v1': 'alpha149_profit_decay',
@@ -266,6 +271,19 @@ OVERRIDES = {
         trailing_activate_return=.25, trailing_drawdown=.20,
         description='金狗首帧深度带（实测 p50≈19.4k、p90≈56.8k）：深度 10k–100k、池龄≤2小时、'
                     '买笔占比≥0.55、FDV/深度≤2；持有至120分钟。'),
+    # ---- wave 7: revived hypotheses, sequence-based ---------------------------
+    'alpha149_revival_inventory_contraction_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        description='复活"库存收缩"假设（原臂从未成交）：两帧内深度收缩而价格持稳、买笔≥0.5，'
+                    '表示供给被抽走；持有至20分钟。'),
+    'alpha149_seq_price_then_depth_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        description='复活"价格先行、深度随后"假设（原 finalist_price_then_depth 从未成交）：'
+                    '三帧序列，上一步价涨且深度未增，本步深度跟进；持有至30分钟。'),
+    'alpha149_seq_two_step_rise_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        description='持续而非单点：连续两步价格上行且深度≥3000U；用于区分"真趋势"与"单帧尖峰"。'
+                    '持有至30分钟。'),
 }
 
 
@@ -379,6 +397,28 @@ def mechanisms(f):
             (_num(f.get('pair_frames')) or 0) >= 8
             and price_now and prev_price and price_now > prev_price
             and liq_now is not None and prev_liq is not None and liq_now >= prev_liq)
+        # wave 7: sequence mechanisms, possible now that pools carry ~44 frames.
+        # Inventory contraction while price holds: supply squeezing, not dumping.
+        out['inv_contraction'] = bool(
+            liquidity >= 5000 and liq_now is not None and prev_liq is not None
+            and liq_now < prev_liq and price_now and prev_price and price_now >= prev_price
+            and buy_share is not None and buy_share >= .5)
+        before = f.get('prev2') if isinstance(f.get('prev2'), dict) else None
+        if before:
+            earlier_price = _num(before.get('price_usd'))
+            earlier_liq = _num(before.get('liquidity_usd'))
+            # Price moves first, depth follows: earlier step flat or down, latest
+            # step adds depth with price still rising.
+            out['seq_price_then_depth'] = bool(
+                earlier_price and prev_price and price_now
+                and prev_price >= earlier_price and price_now > prev_price
+                and earlier_liq is not None and prev_liq is not None and liq_now is not None
+                and prev_liq <= earlier_liq * 1.02 and liq_now > prev_liq)
+            # Two consecutive rising steps: sustained rather than a single spike.
+            out['seq_two_step_rise'] = bool(
+                earlier_price and prev_price and price_now
+                and prev_price > earlier_price and price_now > prev_price
+                and liquidity >= 3000)
 
     if not w:
         return out
@@ -691,6 +731,10 @@ RULES = {
                                 'FDV/深度≤2；持有至120分钟。',
     'dense_watch_breakout': '观测密度（实测最强判别：金狗74帧 vs 对照6帧）：本池已有≥8帧，'
                             '且本帧价涨、深度不降。',
+    'inv_contraction': '两帧：深度收缩但价格持稳（供给被抽走而非抛售），深度≥5000U、买笔≥0.5；'
+                       '复活已暂停臂的库存收缩假设。',
+    'seq_price_then_depth': '三帧序列：上一步价格已涨且深度未增，本步深度跟进且价格继续上行。',
+    'seq_two_step_rise': '三帧序列：连续两步价格上行（持续而非单点尖峰），深度≥3000U。',
 }
 
 
@@ -827,6 +871,13 @@ class Engine(_BaseEngine):
                 'liquidity_usd': previous.get('liquidity_usd'),
                 'volume_5m_usd': previous.get('volume_5m_usd'),
                 'observed_at': previous.get('observed_at')}}
+            if len(rows) >= 3:
+                before = rows[-3]
+                f['prev2'] = {
+                    'price_usd': before.get('price_usd'),
+                    'liquidity_usd': before.get('liquidity_usd'),
+                    'volume_5m_usd': before.get('volume_5m_usd'),
+                    'observed_at': before.get('observed_at')}
         else:
             f = {**f, 'pair_frames': len(rows), 'prev': None}
         flags = mechanisms(f)

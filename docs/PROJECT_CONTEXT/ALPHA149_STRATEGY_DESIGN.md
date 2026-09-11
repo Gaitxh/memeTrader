@@ -368,6 +368,51 @@
 机制持续成立（`df_mature_price_up`、`df_price_up_liquidity_up` 及其 `_hold` 对照臂）；
 **入场决策 32、持仓 29**。
 
+## 14. 全策略生命周期复盘与 wave 7（2026-09-11）
+
+### 14.1 314 条臂的真实生命周期分布
+
+| 状态 | 臂数 |
+|---|---|
+| PAUSED_NEW_ENTRY | 132 |
+| INSUFFICIENT | 67 |
+| RETIRED_DUPLICATE | 59 |
+| RETIRED_DEPLETED | 45 |
+| **ACTIVE** | **36** |
+| 从未成交 | 50 |
+
+**"很多策略不交易"在治理层就有答案：314 条里只有 36 条处于 ACTIVE。**
+236 条被收敛/退休控制面显式写入暂停或退休状态。
+
+### 14.2 被暂停却有正收益的臂（复活候选）
+
+| arm | PnL | 终局 | 状态 |
+|---|---|---|---|
+| `market_regime_throttle_v1` | **+19.62U** | 9 | PAUSED_NEW_ENTRY |
+| `early_impulse_profit_lock_control_v1` | **+18.56U** | 47 | PAUSED_NEW_ENTRY |
+| `early_impulse_profit_lock_40_v1`（处理臂） | **−6.80U** | 47 | PAUSED_NEW_ENTRY |
+
+最后两行构成一组**干净的 same-fill 对照**：同一入场下"固定 +40% 锁利"比不锁利的对照
+**差约 25.4U** → **该假设已被证伪**，而"不锁利、靠机械/追踪退出"是更优机制。
+这为"慢出优于快出"提供了除矩阵之外的第二个独立证据。
+
+### 14.3 wave 7（3 条，加法；复活仍成立的经济假设）
+
+帧数已从 p50=1 提升到 **44**，因此**三帧序列机制**首次可行：
+
+| arm_id | 复活/新机制 |
+|---|---|
+| `alpha149_revival_inventory_contraction_v1` | 复活"库存收缩"假设（原 `inventory_contraction_v1` 从未成交）：两帧内深度收缩而价格持稳、买笔≥0.5 = 供给被抽走而非抛售 |
+| `alpha149_seq_price_then_depth_v1` | 复活"价格先行、深度随后"（原 `finalist_price_then_depth_v1` 从未成交）：三帧序列，上一步价涨且深度未增，本步深度跟进 |
+| `alpha149_seq_two_step_rise_v1` | 新：连续两步上行（持续趋势 vs 单帧尖峰） |
+
+实现：引擎在 `signals_for` 中额外附加 `prev2`（第三帧），仍**不改动共享 `derive()`**。
+
+### 14.4 验证
+
+测试 12/12；登记 **51 条**；受控重载后 `/health` ok、资金期不变；
+上一轮成果保持（65 入场决策 / 42 持仓）。
+
 ## 11.4 已知缺口
 
 `chain_web.py` **完全没有引用该管理器**，因此 §10.2 新增的 6 个计数（eligible_batch / no_spare /

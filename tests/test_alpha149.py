@@ -259,6 +259,21 @@ CASES = {
         prev=dict(price_usd=1.0, liquidity_usd=20000.0, volume_5m_usd=100.0),
         current=dict(price_usd=1.04, liquidity_usd=20500.0, volume_5m_usd=140.0),
         liquidity_usd=20500.0, windows={}),
+    # wave 7: revived hypotheses via sequence machinery
+    "inv_contraction": dict(
+        prev=dict(price_usd=1.0, liquidity_usd=6000.0, volume_5m_usd=100.0),
+        current=dict(price_usd=1.01, liquidity_usd=5500.0, volume_5m_usd=120.0),
+        liquidity_usd=5500.0, buy_count_share=0.6, windows={}),
+    "seq_price_then_depth": dict(
+        prev2=dict(price_usd=1.0, liquidity_usd=5000.0, volume_5m_usd=90.0),
+        prev=dict(price_usd=1.03, liquidity_usd=5000.0, volume_5m_usd=110.0),
+        current=dict(price_usd=1.06, liquidity_usd=5600.0, volume_5m_usd=150.0),
+        liquidity_usd=5600.0, windows={}),
+    "seq_two_step_rise": dict(
+        prev2=dict(price_usd=1.0, liquidity_usd=4000.0, volume_5m_usd=90.0),
+        prev=dict(price_usd=1.03, liquidity_usd=4200.0, volume_5m_usd=110.0),
+        current=dict(price_usd=1.07, liquidity_usd=4400.0, volume_5m_usd=140.0),
+        liquidity_usd=4400.0, windows={}),
 }
 
 # Contextual exits are shared by construction: these arms reuse an existing kind.
