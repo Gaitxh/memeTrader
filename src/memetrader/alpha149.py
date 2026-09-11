@@ -85,6 +85,7 @@ SPECS = {
     'alpha149_revival_inventory_contraction_v1': ('inv_contraction', '复活·库存收缩而价格持稳', 20),
     'alpha149_seq_price_then_depth_v1': ('seq_price_then_depth', '序列·价格先动深度随后', 30),
     'alpha149_seq_two_step_rise_v1': ('seq_two_step_rise', '序列·两步连续上行', 30),
+    'alpha149_mature_two_step_slow_v1': ('mature_two_step_slow', '慢进慢出·老池两步上行长持', 90),
 }
 EXIT_ARMS = {
     'alpha149_profit_decay_exit_v1': 'alpha149_profit_decay',
@@ -284,6 +285,11 @@ OVERRIDES = {
         notional_usd=2.0, max_concurrent_positions=2,
         description='持续而非单点：连续两步价格上行且深度≥3000U；用于区分"真趋势"与"单帧尖峰"。'
                     '持有至30分钟。'),
+    'alpha149_mature_two_step_slow_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        trailing_activate_return=.20, trailing_drawdown=.15,
+        description='最后一个空象限（慢进×慢出）：老池（≥30分钟）连续两步上行、深度≥5000U、'
+                    '买笔≥0.5；持有至90分钟，追踪退出优先。'),
 }
 
 
@@ -419,6 +425,12 @@ def mechanisms(f):
                 earlier_price and prev_price and price_now
                 and prev_price > earlier_price and price_now > prev_price
                 and liquidity >= 3000)
+            # wave 8: the last empty quadrant - slow entry AND slow exit.
+            out['mature_two_step_slow'] = bool(
+                pool_age is not None and pool_age >= 1800
+                and earlier_price and prev_price and price_now
+                and prev_price > earlier_price and price_now > prev_price
+                and liquidity >= 5000 and buy_share is not None and buy_share >= .5)
 
     if not w:
         return out
@@ -735,6 +747,8 @@ RULES = {
                        '复活已暂停臂的库存收缩假设。',
     'seq_price_then_depth': '三帧序列：上一步价格已涨且深度未增，本步深度跟进且价格继续上行。',
     'seq_two_step_rise': '三帧序列：连续两步价格上行（持续而非单点尖峰），深度≥3000U。',
+    'mature_two_step_slow': '慢进慢出象限：池龄≥30分钟的老池连续两步上行、深度≥5000U、买笔≥0.5；'
+                            '持有至90分钟并用追踪退出。',
 }
 
 

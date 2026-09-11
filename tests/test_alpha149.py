@@ -274,6 +274,13 @@ CASES = {
         prev=dict(price_usd=1.03, liquidity_usd=4200.0, volume_5m_usd=110.0),
         current=dict(price_usd=1.07, liquidity_usd=4400.0, volume_5m_usd=140.0),
         liquidity_usd=4400.0, windows={}),
+    # wave 8: slow-in x slow-out quadrant
+    "mature_two_step_slow": dict(pool_age_seconds=3600.0, liquidity_usd=6000.0,
+        buy_count_share=0.6,
+        prev2=dict(price_usd=1.0, liquidity_usd=5800.0, volume_5m_usd=90.0),
+        prev=dict(price_usd=1.03, liquidity_usd=5900.0, volume_5m_usd=110.0),
+        current=dict(price_usd=1.06, liquidity_usd=6000.0, volume_5m_usd=140.0),
+        windows={}),
 }
 
 # Contextual exits are shared by construction: these arms reuse an existing kind.
