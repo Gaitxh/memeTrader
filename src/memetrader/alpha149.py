@@ -76,6 +76,10 @@ SPECS = {
     # two genuinely new kinds for the uncovered quadrants
     'alpha149_df_mature_price_up_fast_v1': ('df_mature_price_up', '老池两帧上涨·快出', 5),
     'alpha149_sf_goldendog_deep_base_v1': ('sf_goldendog_deep_base', '金狗·深池低FDV慢出', 120),
+    # wave 6: designed from the measured golden-dog profile (design doc §13).
+    'alpha149_righttail_lottery_v1': ('righttail_lottery', '右尾彩票·小额宽追踪', 180),
+    'alpha149_dense_watch_breakout_v1': ('dense_watch_breakout', '高密度观测池的突破', 60),
+    'alpha149_goldendog_liquidity_band_v1': ('goldendog_liquidity_band', '金狗·深度带内慢出', 120),
 }
 EXIT_ARMS = {
     'alpha149_profit_decay_exit_v1': 'alpha149_profit_decay',
@@ -246,6 +250,22 @@ OVERRIDES = {
         trailing_activate_return=.25, trailing_drawdown=.20,
         description='金狗慢出象限：池龄≤15分钟、深度≥8000U、FDV/深度≤0.8、买笔占比≥0.55、'
                     '价格处于运行高点；持有至120分钟并用较宽追踪保留右尾。'),
+    # ---- wave 6: right-tail design from the measured golden-dog profile -------
+    'alpha149_righttail_lottery_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        trailing_activate_return=.30, trailing_drawdown=.40, absolute_max_hold_seconds=10800,
+        description='右尾彩票：实测金狗 73% 达到≥5x、对照仅 3%，但中位新币只有 1.01x，'
+                    '因此用 1U 小额 + 180 分钟 + 40% 宽追踪换取尾部暴露，接受多数小额亏损。'),
+    'alpha149_dense_watch_breakout_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        trailing_activate_return=.25, trailing_drawdown=.20,
+        description='使用实测最强判别特征（本机观测帧数：金狗 p50=74 vs 对照 p50=6）：'
+                    '该池已有≥8帧且本帧价涨、深度不降；持有至60分钟。'),
+    'alpha149_goldendog_liquidity_band_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        trailing_activate_return=.25, trailing_drawdown=.20,
+        description='金狗首帧深度带（实测 p50≈19.4k、p90≈56.8k）：深度 10k–100k、池龄≤2小时、'
+                    '买笔占比≥0.55、FDV/深度≤2；持有至120分钟。'),
 }
 
 
@@ -321,6 +341,20 @@ def mechanisms(f):
             and fdv_liq is not None and fdv_liq <= .8
             and buy_share is not None and buy_share >= .55
             and drawdown is not None and drawdown >= 0)
+        # wave 6: calibrated on the measured golden-dog profile (n=37 cases vs
+        # 132 controls: cases reach >=5x 24x more often, first-frame depth
+        # p50 ~19.4k, local frames p50 74 vs 6). High recall by design.
+        out['righttail_lottery'] = bool(
+            liquidity >= 10000 and pool_age is not None and pool_age <= 3600
+            and buy_share is not None and buy_share >= .5
+            and drawdown is not None and drawdown >= 0)
+        out['goldendog_liquidity_band'] = bool(
+            liquidity >= 10000 and liquidity <= 100000
+            and pool_age is not None and pool_age <= 7200
+            and buy_share is not None and buy_share >= .55
+            and fdv_liq is not None and fdv_liq <= 2)
+        # The strongest measured discriminator (frames per pool) is evaluated
+        # with the two-frame block below, where `previous` is available.
     previous = f.get('prev') if isinstance(f.get('prev'), dict) else None
     if previous:
         prev_price = _num(previous.get('price_usd'))
@@ -337,6 +371,12 @@ def mechanisms(f):
         # wave 5: mature-pool two-frame rise (slow-in x fast-out quadrant).
         out['df_mature_price_up'] = bool(
             pool_age is not None and pool_age >= 1800
+            and price_now and prev_price and price_now > prev_price
+            and liq_now is not None and prev_liq is not None and liq_now >= prev_liq)
+        # wave 6: the strongest measured discriminator is how densely the pool is
+        # observed locally (cases p50 = 74 frames vs controls p50 = 6).
+        out['dense_watch_breakout'] = bool(
+            (_num(f.get('pair_frames')) or 0) >= 8
             and price_now and prev_price and price_now > prev_price
             and liq_now is not None and prev_liq is not None and liq_now >= prev_liq)
 
@@ -645,6 +685,12 @@ RULES = {
     'df_mature_price_up': '仅用最近两帧：池龄≥30分钟的老池，本帧价涨且深度不降（慢进快出象限）。',
     'sf_goldendog_deep_base': '单帧即可：池龄≤15分钟、深度≥8000U、FDV/深度≤0.8、'
                               '买笔占比≥0.55、价格处于运行高点（金狗慢出象限）。',
+    'righttail_lottery': '高召回右尾：深度≥10000U（实测金狗首帧中位≈19.4k）、池龄≤1小时、'
+                         '买笔占比≥0.5、价格处于运行高点；1U小额、持有至180分钟、宽追踪。',
+    'goldendog_liquidity_band': '金狗深度带：深度10000–100000U、池龄≤2小时、买笔占比≥0.55、'
+                                'FDV/深度≤2；持有至120分钟。',
+    'dense_watch_breakout': '观测密度（实测最强判别：金狗74帧 vs 对照6帧）：本池已有≥8帧，'
+                            '且本帧价涨、深度不降。',
 }
 
 

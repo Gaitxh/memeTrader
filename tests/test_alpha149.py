@@ -250,6 +250,15 @@ CASES = {
         liquidity_usd=5100.0, windows={}),
     "sf_goldendog_deep_base": dict(pool_age_seconds=600.0, liquidity_usd=9000.0,
         fdv_liquidity=0.6, buy_count_share=0.6, drawdown=0.0, windows={}),
+    # wave 6: golden-dog calibrated designs
+    "righttail_lottery": dict(liquidity_usd=20000.0, pool_age_seconds=1200.0,
+        buy_count_share=0.6, drawdown=0.0, windows={}),
+    "goldendog_liquidity_band": dict(liquidity_usd=25000.0, pool_age_seconds=3000.0,
+        buy_count_share=0.6, fdv_liquidity=1.5, windows={}),
+    "dense_watch_breakout": dict(pair_frames=9,
+        prev=dict(price_usd=1.0, liquidity_usd=20000.0, volume_5m_usd=100.0),
+        current=dict(price_usd=1.04, liquidity_usd=20500.0, volume_5m_usd=140.0),
+        liquidity_usd=20500.0, windows={}),
 }
 
 # Contextual exits are shared by construction: these arms reuse an existing kind.
