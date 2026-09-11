@@ -26,6 +26,14 @@ VERSION = 'alpha149/v1'
 # Round-trip friction used by the family: 4% buy + 4% sell (shared constant).
 FRICTION = 1.04 / .96 - 1
 
+# Volatility-scaled stop parameters. The multiple, floor and cap are frozen
+# experimental definitions calibrated on the live distribution of the 30-second
+# realized volatility (600 samples: p50 3.7%, p90 18.9%) against the shared
+# fixed -20% stop this family has been measuring since wave 1.
+VOL_STOP_MULTIPLE = 4.0
+VOL_STOP_FLOOR = .22
+VOL_STOP_CAP = .50
+
 # arm_id -> (mechanism kind, Chinese label, max_hold_minutes)
 SPECS = {
     'alpha149_uncrowded_first_frame_v1': ('uncrowded_first_frame', '最早帧·无同伴依赖', 15),
@@ -98,6 +106,18 @@ SPECS = {
     'alpha149_merged_multi_setup_v1': ('merged_multi_setup', '合并·多形态宽止损慢出', 120),
     'alpha149_merged_multi_setup_fast_v1': ('merged_multi_setup', '合并·多形态快出对照', 15),
     'alpha149_goldendog_deep_hold_v1': ('sf_goldendog_deep_base', '金狗·深池极宽容忍长持', 240),
+    # wave 9: the two conclusions of the washout measurement. (a) 81.8% of the
+    # hard-stopped tokens traded above our exit within the next hour, so a pool
+    # that has already been washed out and is reclaiming is a *different*
+    # opportunity from a fresh breakout: `washout_reclaim` enters the reclaim,
+    # not the washout. (b) the fixed -20% stop is ~5.4x the median observed 30s
+    # realized volatility (p50 3.7%, p90 18.9% from 600 live samples) - for a
+    # high-volatility pool it is barely one sigma - so `alpha149_vol_scaled_stop`
+    # scales the stop with the pool's own measured volatility instead.
+    'alpha149_washout_reclaim_v1': ('washout_reclaim', '洗出后回收·快出对照', 15),
+    'alpha149_washout_reclaim_hold_v1': ('washout_reclaim', '洗出后回收·宽容忍慢出', 120),
+    'alpha149_vol_scaled_merged_v1': ('merged_multi_setup', '波动率自适应止损·合并入场', 120),
+    'alpha149_vol_scaled_goldendog_v1': ('sf_goldendog_deep_base', '波动率自适应止损·金狗深池', 240),
 }
 EXIT_ARMS = {
     'alpha149_profit_decay_exit_v1': 'alpha149_profit_decay',
@@ -107,6 +127,8 @@ EXIT_ARMS = {
     'alpha149_flat_dead_exit_v1': 'alpha149_flat_dead',
     'alpha149_righttail_wide_exit_v1': 'alpha149_righttail_wide',
     'alpha149_momentum_floor_exit_v1': 'alpha149_momentum_floor',
+    # wave 9: same-signal carrier for the volatility-scaled stop.
+    'alpha149_vol_scaled_exit_v1': 'alpha149_vol_scaled_stop',
 }
 EXIT_KINDS = frozenset(EXIT_ARMS.values())
 KINDS = tuple(kind for kind, _, _ in SPECS.values())
@@ -127,6 +149,17 @@ WAVE8_ENTRY_KINDS = {
     'alpha149_merged_multi_setup_fast_v1': 'merged_multi_setup',
     'alpha149_goldendog_deep_hold_v1': 'sf_goldendog_deep_base',
 }
+# Wave 9: washout re-entry and the volatility-scaled stop.
+WAVE9_ARMS = frozenset({
+    'alpha149_washout_reclaim_v1',
+    'alpha149_washout_reclaim_hold_v1',
+    'alpha149_vol_scaled_merged_v1',
+    'alpha149_vol_scaled_goldendog_v1',
+    'alpha149_vol_scaled_exit_v1',
+})
+# Arms that legitimately declare the opt-in exit guards; every other arm must
+# stay untouched by them.
+GUARD_ARMS = WAVE8_ARMS | {'alpha149_washout_reclaim_hold_v1'}
 
 # Per-arm sizing / exit overrides. Anything not listed keeps the family default
 # produced by dex_trajectory.policies (5U, max 2, hard stop -20%, trail 30/15).
@@ -367,6 +400,43 @@ OVERRIDES = {
         description='金狗最大容忍实验：入场与 sf_goldendog_deep_base 相同，退出改为前300秒不设价格止损、'
                     '连续3帧跌破-55%才离场、深池买盘占优时容忍回撤，追踪+60%激活、回撤30%离场，'
                     '持有至240分钟；1U小额换取右尾保留。'),
+    # ---- wave 9: washout re-entry + volatility-scaled stop --------------------
+    'alpha149_washout_reclaim_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_washout_reclaim_hold_v1',
+        description='洗出后回收（快出对照）：池已从本段高点回撤≥12%、当前帧重新上行、深度不流失、'
+                    '买盘占比≥50%、深度≥2000U、本池已有≥4帧时入场；保留原-20%止损、持有15分钟。'),
+    'alpha149_washout_reclaim_hold_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_washout_reclaim_v1',
+        hard_stop_return=-.45, hard_stop_grace_seconds=180, hard_stop_confirm_marks=2,
+        hard_stop_liquidity_veto_usd=3000., hard_stop_liquidity_veto_min_buy_share=.5,
+        trailing_activate_return=.45, trailing_drawdown=.25,
+        description='洗出后回收（慢出）：与快出臂完全同一入场信号，退出改为宽限180秒、连续2帧跌破-45%、'
+                    '深池买盘占优时容忍；追踪+45%激活/回撤25%，持有至120分钟。'),
+    'alpha149_vol_scaled_merged_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_merged_multi_setup_v1',
+        trajectory_exit='alpha149_vol_scaled_stop',
+        hard_stop_return=-.90, trailing_activate_return=.45, trailing_drawdown=.25,
+        description='波动率自适应止损（合并入场）：入场与 merged_multi_setup 相同，价格止损改为'
+                    '4倍本池30秒实现波动率（下限22%、上限50%），-90%仅作灾难兜底；'
+                    '追踪+45%激活/回撤25%，持有至120分钟。'),
+    'alpha149_vol_scaled_goldendog_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_goldendog_deep_hold_v1',
+        trajectory_exit='alpha149_vol_scaled_stop',
+        hard_stop_return=-.90, trailing_activate_return=.60, trailing_drawdown=.30,
+        description='波动率自适应止损（金狗深池）：入场与 sf_goldendog_deep_base 相同，'
+                    '价格止损改为4倍本池30秒实现波动率（下限22%/上限50%），追踪+60%激活、'
+                    '回撤30%离场，持有至240分钟；1U小额。'),
+    'alpha149_vol_scaled_exit_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_righttail_wide_exit_v1',
+        trajectory_exit='alpha149_vol_scaled_stop',
+        hard_stop_return=-.90, trailing_activate_return=.45, trailing_drawdown=.25,
+        description='波动率自适应止损（同信号载体臂）：与其它退出臂一样搭载本池第一条ALPHA149入场信号，'
+                    '只用自适应止损+追踪退出，用于在同一机会上比较固定止损与自适应止损。'),
 }
 
 
@@ -491,6 +561,17 @@ def mechanisms(f):
             and vol_now is not None and prev_vol is not None and prev_vol > 0
             and vol_now >= prev_vol * 1.5
             and buy_share is not None and buy_share >= .5)
+        # wave 9: reclaim after a real washout. The pool must already be off its
+        # episode high (measured drawdown p10 = -28.3%, p50 = -0.08%), must be
+        # reclaiming on the current frame, and depth must not be leaving - the
+        # measured population that recovered above our own exits (81.8%).
+        out['washout_reclaim'] = bool(
+            drawdown is not None and drawdown <= -.12
+            and price_now and prev_price and price_now > prev_price
+            and liq_now is not None and prev_liq is not None and liq_now >= prev_liq * .98
+            and liquidity is not None and liquidity >= 2000
+            and buy_share is not None and buy_share >= .5
+            and total_frames >= 4)
         # wave 5: mature-pool two-frame rise (slow-in x fast-out quadrant).
         out['df_mature_price_up'] = bool(
             pool_age is not None and pool_age >= 1800
@@ -803,6 +884,19 @@ def exit_reason(kind, f, opened_at, current):
         if (velocity is not None and velocity < 0 and acceleration is not None
                 and acceleration < 0 and turn is not None and turn < 1):
             return 'alpha149_momentum_floor'
+    elif kind == 'alpha149_vol_scaled_stop':
+        # Volatility-scaled stop: the allowed drawdown grows with the pool's own
+        # measured 30s realized volatility, bounded so it can never become an
+        # unlimited hold. Calibration (600 live samples): volatility_30 p50 =
+        # 3.7%, p90 = 18.9%, while the shared fixed stop is -20%; the floor keeps
+        # a -22% backstop and the cap refuses to hold beyond -50%.
+        drawdown = _num(f.get('drawdown'))
+        sigma = _num(w.get('realized_volatility'))
+        if sigma is None or drawdown is None:
+            return None
+        limit = max(VOL_STOP_FLOOR, min(VOL_STOP_CAP, VOL_STOP_MULTIPLE * sigma))
+        if drawdown <= -limit:
+            return 'alpha149_vol_scaled_stop'
     return None
 
 
@@ -861,6 +955,11 @@ RULES = {
     # wave 8
     'merged_multi_setup': '合并入场：两帧价涨加池 / 两帧成交额跳增 / 单帧极端买压 / 金狗早期冲量 / '
                           '高密度观测突破，任一成立即入场（成员标记逐项保留，便于归因）。',
+    # wave 9
+    'washout_reclaim': '洗出后回收：本段回撤≥12%（实测 drawdown p10=-28.3%、p50=-0.08%）、'
+                       '当前帧重新上行、深度不流失（≥前帧98%）、买盘占比≥50%、深度≥2000U、本池≥4帧。',
+    'alpha149_vol_scaled_stop': '波动率自适应止损：允许回撤=4×本池30秒实现波动率，'
+                                '下限22%、上限50%（实测波动率 p50=3.7%、p90=18.9%，固定-20%对高波动池仅约1σ）。',
 }
 
 

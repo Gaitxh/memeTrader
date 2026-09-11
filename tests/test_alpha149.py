@@ -308,6 +308,12 @@ CASES = {
         prev=dict(price_usd=1.0, liquidity_usd=5000.0, volume_5m_usd=100.0),
         current=dict(price_usd=1.05, liquidity_usd=5500.0, volume_5m_usd=120.0),
         liquidity_usd=5500.0, windows={}),
+    # wave 9: already washed out (drawdown <= -12%) and reclaiming on this frame.
+    "washout_reclaim": dict(
+        drawdown=-0.24, liquidity_usd=5200.0, buy_count_share=0.58, frames=6,
+        prev=dict(price_usd=1.0, liquidity_usd=5000.0, volume_5m_usd=100.0),
+        current=dict(price_usd=1.03, liquidity_usd=5100.0, volume_5m_usd=120.0),
+        windows={}),
     # wave 7: revived hypotheses via sequence machinery
     "inv_contraction": dict(
         prev=dict(price_usd=1.0, liquidity_usd=6000.0, volume_5m_usd=100.0),
@@ -391,6 +397,83 @@ def test_live_feature_shape_is_accepted_by_every_mechanism():
     assert alpha149.mechanisms(unknown)["merged_multi_setup"] is False
 
 
+def test_washout_reclaim_needs_both_the_washout_and_the_reclaim():
+    base = dict(
+        drawdown=-0.24, liquidity_usd=5200.0, buy_count_share=0.58, frames=6,
+        prev=dict(price_usd=1.0, liquidity_usd=5000.0, volume_5m_usd=100.0),
+        current=dict(price_usd=1.03, liquidity_usd=5100.0, volume_5m_usd=120.0),
+        windows={})
+    assert alpha149.mechanisms(feature(**base))["washout_reclaim"] is True
+    # No washout: a fresh high is not a reclaim opportunity.
+    fresh = dict(base, drawdown=0.0)
+    assert alpha149.mechanisms(feature(**fresh))["washout_reclaim"] is False
+    # Still falling: the reclaim frame is the entire hypothesis.
+    falling = dict(base, current=dict(price_usd=0.97, liquidity_usd=5100.0,
+                                      volume_5m_usd=120.0))
+    assert alpha149.mechanisms(feature(**falling))["washout_reclaim"] is False
+    # Depth leaving during the reclaim is not the measured recovery population.
+    bleeding = dict(base, current=dict(price_usd=1.03, liquidity_usd=4000.0,
+                                       volume_5m_usd=120.0))
+    assert alpha149.mechanisms(feature(**bleeding))["washout_reclaim"] is False
+    # Too few observations of this pool is not evidence.
+    thin = dict(base, frames=2)
+    assert alpha149.mechanisms(feature(**thin))["washout_reclaim"] is False
+
+
+def test_vol_scaled_stop_grows_with_measured_volatility():
+    opened = datetime(2026, 9, 11, 0, 0, tzinfo=UTC)
+    current = datetime(2026, 9, 11, 0, 0, 45, tzinfo=UTC)
+
+    def vector(sigma, drawdown):
+        return feature(drawdown=drawdown,
+                       windows={"30": _w(vola=sigma, velocity=0.01, acc=0.0)})
+
+    # Low measured volatility -> the floor (-22%) applies.
+    assert alpha149.exit_reason("alpha149_vol_scaled_stop", vector(0.03, -0.20),
+                                opened, current) is None
+    assert alpha149.exit_reason("alpha149_vol_scaled_stop", vector(0.03, -0.25),
+                                opened, current) == "alpha149_vol_scaled_stop"
+    # Higher volatility buys more room: the same -25% no longer stops out.
+    assert alpha149.exit_reason("alpha149_vol_scaled_stop", vector(0.10, -0.25),
+                                opened, current) is None
+    assert alpha149.exit_reason("alpha149_vol_scaled_stop", vector(0.10, -0.45),
+                                opened, current) == "alpha149_vol_scaled_stop"
+    # The cap refuses to convert the scaled stop into an unlimited hold.
+    assert alpha149.exit_reason("alpha149_vol_scaled_stop", vector(0.40, -0.45),
+                                opened, current) is None
+    assert alpha149.exit_reason("alpha149_vol_scaled_stop", vector(0.40, -0.60),
+                                opened, current) == "alpha149_vol_scaled_stop"
+    # Unknown volatility must never be treated as zero (which would stop instantly).
+    assert alpha149.exit_reason("alpha149_vol_scaled_stop",
+                                vector(None, -0.90), opened, current) is None
+
+
+def test_wave9_arms_are_additive_and_keep_their_contracts():
+    policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}
+    for arm in ("alpha149_washout_reclaim_v1", "alpha149_washout_reclaim_hold_v1",
+                "alpha149_vol_scaled_merged_v1", "alpha149_vol_scaled_goldendog_v1",
+                "alpha149_vol_scaled_exit_v1"):
+        assert arm in alpha149.ALL_ARMS and arm in policies
+    # The washout pair is one frozen entry with two exit contracts.
+    assert alpha149.SPECS["alpha149_washout_reclaim_v1"][0] == \
+        alpha149.SPECS["alpha149_washout_reclaim_hold_v1"][0] == "washout_reclaim"
+    assert alpha149.SPECS["alpha149_washout_reclaim_hold_v1"][2] > \
+        alpha149.SPECS["alpha149_washout_reclaim_v1"][2]
+    assert policies["alpha149_washout_reclaim_hold_v1"]["hard_stop_grace_seconds"] == 180
+    # The scaled-stop arms keep the shared stop only as a catastrophe backstop and
+    # route their price stop through the volatility-scaled kind.
+    for arm in ("alpha149_vol_scaled_merged_v1", "alpha149_vol_scaled_goldendog_v1",
+                "alpha149_vol_scaled_exit_v1"):
+        assert policies[arm]["trajectory_exit"] == "alpha149_vol_scaled_stop"
+        assert policies[arm]["hard_stop_return"] == -.90
+    assert alpha149.EXIT_ARMS["alpha149_vol_scaled_exit_v1"] == "alpha149_vol_scaled_stop"
+    assert "alpha149_vol_scaled_stop" in alpha149.EXIT_KINDS
+    assert alpha149.VOL_STOP_FLOOR < alpha149.VOL_STOP_CAP
+    # No pre-existing arm may inherit the wave-9 contracts.
+    assert not [arm for arm in alpha149.WAVE8_ARMS
+                if policies[arm].get("trajectory_exit") == "alpha149_vol_scaled_stop"]
+
+
 def test_wave8_arms_keep_the_entry_frozen_and_only_change_the_exit_contract():
     """Same-signal A/B: the anti-whipsaw arms reuse an existing kind verbatim."""
     policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}
@@ -424,7 +507,7 @@ def test_wave8_arms_keep_the_entry_frozen_and_only_change_the_exit_contract():
         alpha149.SPECS["alpha149_merged_multi_setup_v1"][2]
     # No existing arm may learn the new fields.
     for arm, policy in policies.items():
-        if arm in alpha149.WAVE8_ARMS:
+        if arm in alpha149.GUARD_ARMS:
             continue
         assert "hard_stop_grace_seconds" not in policy, arm
         assert "hard_stop_confirm_marks" not in policy, arm
