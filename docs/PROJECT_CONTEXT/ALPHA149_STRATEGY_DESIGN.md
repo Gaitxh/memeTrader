@@ -96,7 +96,63 @@
 - 不为"看起来有交易"放宽安全门、时间门或成本口径。
 - 不恢复叙事 Agent、不改采集/调度/并发、不动 UI 与存储。
 
-## 7. 交付与验收记录（2026-09-11）
+## 8. 第三波：针对"为什么交易少"的实测诊断与新增（2026-09-11）
+
+### 8.1 实测诊断（运行中系统的真实数字）
+
+| 观测 | 数值 | 说明 |
+|---|---|---|
+| 定义中的策略臂 | 314（全部 `forward_enabled=True`） | 其中 42 条要求"独立后帧" |
+| 有过任何仓位的臂 | 276 / 314 | — |
+| **从未有过仓位的臂** | **38** | 24 条为第一二波新臂（刚注册）；另 14 条为历史臂且其信号族已停产 |
+| **最近 24h 有过买入的臂** | **44 / 314（14%）** | 交易稀疏的直接证据 |
+| 近 3000 次入场评估中**从未出现**的臂 | **236** | 信号来源集中：`flow_burst` 64、`broad_launch` 45、`conditional_runner` 20、`shadow_momentum` 14、`dex_visible_successor` 14、`evidence_extension_l0` 12；臂名集中在 `canonical-*`（86）与 `dex-successor-*`（38） |
+| 阻塞原因第一名 | **`await_distinct_dex_trajectory_frame` 17,605 次** | 要求"引擎最新帧 ≠ 当前快照"，即必须存在一次独立更晚回执 |
+| 阻塞原因第二名 | **`wait_passive_cohort_opportunity` 15,087 次** | 等待被动 cohort 机会 |
+| 其余主要阻塞 | `resource_age_rate_common_wait` 2,460、`resource_no_comparable_positive_baseline` 2,435、`replacement_pool_age_not_met` 1,879、`replacement_activity_not_met` 1,501、`renewal_wait_base` 1,290、`pattern_already_enrolled_at_this_pool` 1,104、`finalist_awaiting_nine_independent_frames` 886、`wait_amountful_flow_provenance` 867 | 多为**横截基线/同伴/池龄/证据溯源**类等待 |
+| 买入延迟（cohort 决策 → BUY 成交） | **p50 3.78s / p90 7.34s / p99 18.06s / max 63s（n=1,138）** | 成交环节本身不慢 |
+| 特征计算 | `trajectory144_features` p95 **0.462ms/项** | 计算不是瓶颈 |
+| 可见行情中流动性≥1000U 的比例 | **10,262 / 43,836 ≈ 23%** | 采集到的行情多数不满足可交易深度 |
+| 分链"无交易对"比例（早前实测） | Robinhood 76%、Solana 54%、BSC 17% | 数据面缺口 |
+
+### 8.2 结论：不是算力问题，而是三类结构原因
+
+1. **信号源休眠**：236 条臂的入场族（`flow_burst`/`broad_launch`/`conditional_runner`/`shadow_momentum`/`dex_visible_successor`…）在当前采集面上**不再产生候选**，因此界面上"存在"却永不交易。
+2. **两处结构性数据门**：`await_distinct_dex_trajectory_frame` + `wait_passive_cohort_opportunity` 占阻塞的绝大部分，它们等的是**独立更晚的行情帧**与**新的被动机会**，属于数据供给速度问题。
+3. **过窄的横截条件**：年龄率共同等待、可比正基线、池龄门槛、九帧确认、金额流溯源等，对单个 Token 而言长期不成立。
+
+另已确认：`require_post_decision_observation` 全仓库**没有强制点**（只出现在策略定义与解释性文案），
+真正强制"严格后帧"的是 `requires_distinct_trajectory_frame` 那道门。因此**不擅自放宽它**，
+把"提高每池独立帧供给"列为下一阶段的正式杠杆。
+
+### 8.3 第三波新增（10 条，全部为加法）
+
+| arm_id | 针对的实测问题 |
+|---|---|
+| `alpha149_goldendog_early_impulse_v1` | **金狗专项**：池龄≤10min、30s 涨幅≥2 倍摩擦、买笔占比>55%、深度≥2000U、回撤浅；持有 120 分钟保留右尾 |
+| `alpha149_goldendog_shallow_stack_v1` | **金狗专项**：15/30/60 秒速度递增 + 回撤浅 + 流动性保持≥1.0；持有 60 分钟 |
+| `alpha149_goldendog_second_leg_v1` | **金狗专项**：第一腿≥2 倍摩擦 → 浅整理（≤1 倍摩擦）→ 15 秒重新加速；按新 episode 入场 |
+| `alpha149_young_fast_lane_v1` | 池龄≤120s、15s 窗口≥3 帧：让信号在极早期成立，**从而更早等到下一帧成交（买入加速）** |
+| `alpha149_two_frame_quick_entry_v1` | 最少 2 帧即可成立：把"等下一帧"的起点提前 |
+| `alpha149_live_flow_revival_v1` | 为**休眠的流量族**提供在线替代路径（用现有连续原池特征表达，不依赖停产采集面） |
+| `alpha149_baseline_free_absolute_v1` | 绕开"等待共同基线/可比正样本"（免横截等待，只用绝对条件） |
+| `alpha149_depth_first_mature_v1` | 绕开"池龄未达/等待成熟池"（老池只看深度与周转） |
+| `alpha149_righttail_wide_exit_v1` | 右尾更宽容忍（回撤≥35% 或流动性冲击才走） |
+| `alpha149_momentum_floor_exit_v1` | 动量地板退出（速度与加速度同负且周转<1） |
+
+**累计 34 条新臂**（27 入场 + 7 退出）。
+
+### 8.4 第三波交付与验收
+
+| 环节 | 结果 |
+|---|---|
+| 测试 | `tests/test_alpha149.py` **11/11 通过**（含 27 个机制各自的触发向量） |
+| 登记 | `policy_additions` **187 → 197（+10）**，写前写后账本摘要一致 |
+| 加载 | 受控重载：监督器记录 `exit=-1 restart_in=5`，新运行时 **20:10:17 启动**（晚于代码 mtime 20:09:21）；Web 未重启 |
+| 可见性 | `/api/live` 共 **324** 条策略，其中 **34** 条为本包新臂 |
+| 待观察 | 新臂尚无自然成交；其首要阻塞确认为共享的"独立后帧"门，需提高帧供给才能提高触发率 |
+
+## 9. 交付与验收记录（第一、二波，2026-09-11）
 
 **本轮最终交付：19 条入场臂 + 5 条退出臂 = 24 条新策略。**
 

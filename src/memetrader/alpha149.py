@@ -46,6 +46,15 @@ SPECS = {
     'alpha149_elasticity_anomaly_fast_v1': ('elasticity_anomaly_fast', '薄池弹性异常快打', 5),
     'alpha149_squeeze_release_v1': ('squeeze_release', '波动压缩后释放', 15),
     'alpha149_smooth_organic_trend_v1': ('smooth_organic_trend', '平滑自然趋势（非阶梯）', 15),
+    # wave 3: measured blockers -> add-only alternatives (see design doc §8)
+    'alpha149_goldendog_early_impulse_v1': ('goldendog_early_impulse', '金狗·早期强冲量持有', 120),
+    'alpha149_goldendog_shallow_stack_v1': ('goldendog_shallow_stack', '金狗·多尺度加速浅回撤', 60),
+    'alpha149_goldendog_second_leg_v1': ('goldendog_second_leg', '金狗·浅整理后第二腿', 60),
+    'alpha149_young_fast_lane_v1': ('young_fast_lane', '极早池快速通道', 5),
+    'alpha149_two_frame_quick_entry_v1': ('two_frame_quick_entry', '双帧最快入场', 5),
+    'alpha149_live_flow_revival_v1': ('live_flow_revival', '休眠流量族的在线替代路径', 15),
+    'alpha149_baseline_free_absolute_v1': ('baseline_free_absolute', '免横截基线绝对条件', 15),
+    'alpha149_depth_first_mature_v1': ('depth_first_mature', '老池深度优先（免池龄门）', 15),
 }
 EXIT_ARMS = {
     'alpha149_profit_decay_exit_v1': 'alpha149_profit_decay',
@@ -53,6 +62,8 @@ EXIT_ARMS = {
     'alpha149_plateau_stall_exit_v1': 'alpha149_plateau_stall',
     'alpha149_peak_giveback_exit_v1': 'alpha149_peak_giveback',
     'alpha149_flat_dead_exit_v1': 'alpha149_flat_dead',
+    'alpha149_righttail_wide_exit_v1': 'alpha149_righttail_wide',
+    'alpha149_momentum_floor_exit_v1': 'alpha149_momentum_floor',
 }
 EXIT_KINDS = frozenset(EXIT_ARMS.values())
 KINDS = tuple(kind for kind, _, _ in SPECS.values())
@@ -117,6 +128,47 @@ OVERRIDES = {
         notional_usd=5.0, description='共享冲量冻结信号；相对已观察到的运行高点回撤≥25%即退出。'),
     'alpha149_flat_dead_exit_v1': dict(
         notional_usd=5.0, description='共享冲量冻结信号；平台占比高、笔数腰斩且无上行速度时释放资金。'),
+    # ---- wave 3 overrides ----
+    'alpha149_goldendog_early_impulse_v1': dict(
+        notional_usd=5.0, max_concurrent_positions=2,
+        trailing_activate_return=.25, trailing_drawdown=.18,
+        description='金狗画像的早期强冲量：池龄≤10分钟、30秒涨幅≥2倍摩擦、买笔占比>55%、'
+                    '原池深度≥2000U且回撤浅；延长持有到120分钟以保留右尾，硬风险与追踪优先。'),
+    'alpha149_goldendog_shallow_stack_v1': dict(
+        notional_usd=5.0, max_concurrent_positions=2,
+        trailing_activate_return=.25, trailing_drawdown=.18,
+        description='金狗画像的多尺度加速：15/30/60秒速度递增且回撤浅、流动性保持≥1.0；'
+                    '持有至60分钟，用追踪而非固定止盈保留右尾。'),
+    'alpha149_goldendog_second_leg_v1': dict(
+        notional_usd=5.0, max_concurrent_positions=2,
+        trailing_activate_return=.20, trailing_drawdown=.15,
+        description='第一腿≥2倍摩擦后仅做浅整理（回撤<1倍摩擦）再加速；按新episode入场，'
+                    '持有至60分钟；不靠扛旧仓等待反弹。'),
+    'alpha149_young_fast_lane_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        description='池龄≤120秒的极早通道：只用15秒窗口与真实连续帧，深度≥1500U即可；'
+                    '2U最多2仓5分钟。目的是让信号在池子极早期成立，从而更早等到下一帧成交。'),
+    'alpha149_two_frame_quick_entry_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        description='最少帧入场：15秒窗口≥2个独立帧且涨幅>半个摩擦、深度≥2000U；'
+                    '信号尽早成立以缩短“等下一帧”的等待。'),
+    'alpha149_live_flow_revival_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        description='为已休眠的流量族提供在线替代路径：直接用现有连续原池特征表达'
+                    '“成交额与笔数加速+买笔占比过半+流动性不降”，不依赖已停产的采集面。'),
+    'alpha149_baseline_free_absolute_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        description='不依赖横截基线/共识：只用绝对条件（30秒涨幅≥1倍摩擦、周转率>1、深度≥3000U）；'
+                    '用于绕开“等待共同基线/可比正样本”这类可能长期不成立的等待。'),
+    'alpha149_depth_first_mature_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        description='老池（≥30分钟）深度优先：深度≥10000U、30秒上涨、周转率>0.5；'
+                    '不设池龄上限，用于被“池龄未达/等待成熟池”长期拒绝的机会。'),
+    'alpha149_righttail_wide_exit_v1': dict(
+        notional_usd=5.0, description='共享冻结信号；仅在相对运行高点回撤≥35%或流动性冲击时退出，'
+                                      '给右尾更宽的容忍度。'),
+    'alpha149_momentum_floor_exit_v1': dict(
+        notional_usd=5.0, description='共享冻结信号；速度与加速度同负且周转率<1即退出（动量地板）。'),
     'alpha149_profit_decay_exit_v1': dict(
         notional_usd=5.0, description='共享冲量冻结信号；速度与加速度同负且活动回落即退出。'),
     'alpha149_liquidity_shock_exit_v1': dict(
@@ -319,6 +371,62 @@ def mechanisms(f):
         and monotonic >= .6 and r2 is not None and r2 >= .6
         and residual is not None and residual <= FRICTION and ret > 0 and stable)
 
+    # ---- wave 3: alternatives for the measured blockers -------------------
+    # 20. Golden-dog early profile: young pool, strong early impulse, shallow
+    #     drawdown, real depth. Right-tail retention is the exit contract.
+    out['goldendog_early_impulse'] = bool(
+        pool_age is not None and pool_age <= 600 and ret >= 2 * FRICTION
+        and buy_share is not None and buy_share > .55 and liquidity >= 2000
+        and drawdown is not None and drawdown > -FRICTION and stable)
+
+    # 21. Golden-dog multi-scale acceleration with shallow drawdown.
+    if w15 and w60:
+        v15s = _num(w15.get('log_velocity'))
+        v60s = _num(w60.get('log_velocity'))
+        out['goldendog_shallow_stack'] = bool(
+            v15s is not None and v30 is not None and v60s is not None
+            and v15s > v30 > v60s > 0 and ret > 0
+            and drawdown is not None and drawdown > -FRICTION / 2
+            and retention is not None and retention >= 1.0)
+
+    # 22. Golden-dog second leg: first leg up, shallow consolidation, then
+    #     re-acceleration inside the same observed episode.
+    if w15 and w60 and w180:
+        r60 = _num(w60.get('return_fraction'))
+        r180 = _num(w180.get('return_fraction'))
+        v15s = _num(w15.get('log_velocity'))
+        out['goldendog_second_leg'] = bool(
+            r180 is not None and r180 >= 2 * FRICTION
+            and r60 is not None and r60 <= FRICTION
+            and v15s is not None and v15s > 0 and r15 is not None and r15 > 0)
+
+    # 23. Very young pool fast lane: earliest possible signal so the next
+    #     distinct frame arrives sooner (effective entry acceleration).
+    out['young_fast_lane'] = bool(
+        pool_age is not None and pool_age <= 120 and liquidity >= 1500
+        and w15 is not None and (_num(w15.get('frames')) or 0) >= 3
+        and r15 is not None and r15 > 0)
+
+    # 24. Minimal-frame quick entry: two independent frames are enough.
+    out['two_frame_quick_entry'] = bool(
+        liquidity >= 2000 and w15 is not None
+        and (_num(w15.get('frames')) or 0) >= 2
+        and r15 is not None and r15 > FRICTION / 2 and stable)
+
+    # 25. Live replacement path for the dormant flow families (no dependency on
+    #     retired collectors or on cross-sectional consensus).
+    out['live_flow_revival'] = bool(
+        rising and buy_share is not None and buy_share > .6 and stable and ret > 0)
+
+    # 26. Baseline-free absolute conditions (no comparable-baseline waiting).
+    out['baseline_free_absolute'] = bool(
+        ret >= FRICTION and turn is not None and turn > 1 and liquidity >= 3000)
+
+    # 27. Depth-first mature pool: no pool-age ceiling, depth decides.
+    out['depth_first_mature'] = bool(
+        pool_age is not None and pool_age >= 1800 and liquidity >= 10000
+        and ret > 0 and turn is not None and turn > .5)
+
     return out
 
 
@@ -362,6 +470,17 @@ def exit_reason(kind, f, opened_at, current):
         if (plateau is not None and plateau >= .5 and tx_ratio is not None
                 and tx_ratio < .5 and velocity is not None and velocity <= 0):
             return 'alpha149_flat_dead'
+    elif kind == 'alpha149_righttail_wide':
+        drawdown = _num(f.get('drawdown'))
+        if drawdown is not None and drawdown <= -.35:
+            return 'alpha149_righttail_wide_giveback'
+        if liq_change is not None and liq_change <= -2 * FRICTION:
+            return 'alpha149_righttail_liquidity_withdrawal'
+    elif kind == 'alpha149_momentum_floor':
+        turn = _num(f.get('volume_liquidity'))
+        if (velocity is not None and velocity < 0 and acceleration is not None
+                and acceleration < 0 and turn is not None and turn < 1):
+            return 'alpha149_momentum_floor'
     return None
 
 
@@ -386,6 +505,15 @@ RULES = {
     'elasticity_anomaly_fast': '薄池（<20k）中弹性代理≥10且买笔占比过半；1U单仓5分钟。',
     'squeeze_release': '180秒窗口波动≤一个摩擦，而15秒波动放大且价格上涨。',
     'smooth_organic_trend': '平台占比≤20%、单调上行≥60%、R²≥0.6、残差≤一个摩擦。',
+    # wave 3
+    'goldendog_early_impulse': '池龄≤10分钟；30秒涨幅≥2倍摩擦；买笔占比>55%；原池深度≥2000U；回撤浅于一个摩擦；流动性不降。',
+    'goldendog_shallow_stack': '15/30/60秒速度递增且均为正（多尺度加速）；回撤浅于半个摩擦；流动性保持≥1.0倍。',
+    'goldendog_second_leg': '180秒累计涨幅≥2倍摩擦，随后60秒整理幅度≤1倍摩擦，当前15秒重新加速为正。',
+    'young_fast_lane': '池龄≤120秒、深度≥1500U、15秒窗口≥3个独立帧且涨幅为正（让信号在极早期成立）。',
+    'two_frame_quick_entry': '15秒窗口≥2个独立帧、涨幅>半个摩擦、深度≥2000U、流动性不降（最少帧入场）。',
+    'live_flow_revival': '成交额与笔数双增、买笔占比>60%、流动性不降、涨幅为正（不依赖已休眠采集面）。',
+    'baseline_free_absolute': '只用绝对量：30秒涨幅≥1倍摩擦、周转率>1、深度≥3000U（不等横截基线）。',
+    'depth_first_mature': '池龄≥30分钟、深度≥10000U、30秒上涨、周转率>0.5（不设池龄上限）。',
 }
 
 

@@ -203,6 +203,26 @@ CASES = {
     "smooth_organic_trend": dict(plateau_fraction=0.1, monotonic_up_fraction=0.7,
         log_price_r2=0.7, residual_dispersion=0.03,
         windows={"15": _w(), "30": _w(ret=0.02, liq=0.0), "60": _w(), "180": _w()}),
+    # wave 3
+    "goldendog_early_impulse": dict(pool_age_seconds=300.0, buy_count_share=0.6,
+        windows={"15": _w(), "30": _w(ret=0.20, liq=0.0), "60": _w(), "180": _w()}),
+    "goldendog_shallow_stack": dict(
+        windows={"15": _w(velocity=0.03), "30": _w(ret=0.05, liq=0.0, velocity=0.02),
+                 "60": _w(velocity=0.01), "180": _w()}),
+    "goldendog_second_leg": dict(
+        windows={"15": _w(ret=0.02, velocity=0.01), "30": _w(),
+                 "60": _w(ret=0.02), "180": _w(ret=0.30)}),
+    "young_fast_lane": dict(pool_age_seconds=90.0, liquidity_usd=2000.0,
+        windows={"15": _w(ret=0.03, frames=3), "30": _w(), "60": _w(), "180": _w()}),
+    "two_frame_quick_entry": dict(liquidity_usd=3000.0,
+        windows={"15": _w(ret=0.06, frames=2, liq=0.0), "30": _w(liq=0.0), "60": _w(), "180": _w()}),
+    "live_flow_revival": dict(buy_count_share=0.7,
+        windows={"15": _w(), "30": _w(ret=0.02, liq=0.0, vol=2.0, tx=2.0), "60": _w(), "180": _w()}),
+    "baseline_free_absolute": dict(volume_liquidity=1.5, liquidity_usd=4000.0,
+        windows={"15": _w(), "30": _w(ret=0.10, liq=0.0), "60": _w(), "180": _w()}),
+    "depth_first_mature": dict(pool_age_seconds=3600.0, liquidity_usd=12000.0,
+        volume_liquidity=0.8,
+        windows={"15": _w(), "30": _w(ret=0.03, liq=0.0), "60": _w(), "180": _w()}),
 }
 
 
