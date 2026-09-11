@@ -956,6 +956,48 @@ def test_wave18_arm_requires_both_measured_filters_at_half_size():
     assert policies["alpha149_survivable_core_v1"]["notional_usd"] == 2.0
 
 
+def test_wide_band_keeps_the_safe_ratio_and_only_relaxes_depth():
+    """Wave 19: the safest band must be reachable without touching its core."""
+    def vector(**over):
+        base = dict(pool_age_seconds=3600.0, fdv_liquidity=8.0, liquidity_usd=3500.0,
+                    buy_count_share=0.55, frames=30,
+                    prev=dict(price_usd=1.0, liquidity_usd=3500.0, volume_5m_usd=700.0),
+                    current=dict(price_usd=1.02, liquidity_usd=3500.0, volume_5m_usd=800.0),
+                    windows={})
+        base.update(over)
+        return feature(**base)
+
+    flags = alpha149.mechanisms(vector())
+    assert flags["survivable_wide"] is True
+    assert flags["survivable_core"] is False      # unchanged strict depth floor
+    # The FDV/depth interval is the part that must not move: the cliff tier and
+    # the sub-1 tier stay excluded.
+    assert alpha149.mechanisms(vector(fdv_liquidity=30.0))["survivable_wide"] is False
+    assert alpha149.mechanisms(vector(fdv_liquidity=0.5))["survivable_wide"] is False
+    # Depth floor is still three times the shared 1000U floor.
+    assert alpha149.mechanisms(vector(liquidity_usd=2500.0,
+                                      current=dict(price_usd=1.02, liquidity_usd=2500.0,
+                                                   volume_5m_usd=800.0))
+                               )["survivable_wide"] is False
+    # Age window still applies.
+    assert alpha149.mechanisms(vector(pool_age_seconds=600.0))["survivable_wide"] is False
+
+
+def test_wave19_deep_band_nostop_removes_only_the_price_stop():
+    policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}
+    arm = "alpha149_deep_band_nostop_v1"
+    assert alpha149.SPECS[arm][0] == "survivable_band_deep"
+    assert policies[arm]["hard_stop_return"] == -.90
+    assert policies[arm]["trajectory_exit"] == "alpha149_depth_decay"
+    assert policies[arm]["notional_usd"] == 1.0
+    # The parent deep-band arm keeps its own vol-scaled stop contract.
+    parent = policies["alpha149_survivable_deep_v1"]
+    assert parent["hard_stop_return"] == -.90
+    assert alpha149.SPECS["alpha149_survivable_deep_v1"][0] == "survivable_band_deep"
+    assert policies["alpha149_wide_band_v1"]["hard_stop_return"] == -.20
+    assert policies["alpha149_wide_band_v1"]["notional_usd"] == 1.0
+
+
 def test_wave8_arms_keep_the_entry_frozen_and_only_change_the_exit_contract():
     """Same-signal A/B: the anti-whipsaw arms reuse an existing kind verbatim."""
     policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}

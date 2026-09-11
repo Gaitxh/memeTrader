@@ -219,6 +219,9 @@ SPECS = {
     # the blast radius of a single-token collapse (measured: one BSC token hit 29
     # arms at once for -97.0U in the stressed window).
     'alpha149_survivable_age_rate_v1': ('survivable_age_rate', '安全带×池龄加速·1U', 30),
+    # wave 19: fix the safe band's supply, and test the cliff tier without a stop.
+    'alpha149_wide_band_v1': ('survivable_wide', '安全带放宽深度·1U', 30),
+    'alpha149_deep_band_nostop_v1': ('survivable_band_deep', '深池带·不用价格止损', 60),
 }
 EXIT_ARMS = {
     'alpha149_profit_decay_exit_v1': 'alpha149_profit_decay',
@@ -715,6 +718,24 @@ OVERRIDES = {
                     '（5分钟活动率≥其按龄归一小时率的3倍），退出用实测最强短兑现合同；'
                     '投注额取1U（半仓），依据是压力窗口内单一BSC代币同时击中29条臂、合计-97.0U，'
                     '用于控制单币崩塌的爆炸半径。'),
+    # ---- wave 19: safe-band supply and the cliff tier without a stop -----------
+    'alpha149_wide_band_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_mid_band_control_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='安全带放宽深度（1U）：保留实测最安全的 FDV/深度 1-20（不动这一核心），'
+                    '只把深度下限从5000/10000U放宽到3000U（仍是共享1000U底线的3倍），'
+                    '以使安全带可达——实测764帧中深池带触发40次而1-20/5-20带各仅5次；'
+                    '退出用实测最强短兑现合同，1U控制爆炸半径。'),
+    'alpha149_deep_band_nostop_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_survivable_deep_v1',
+        trajectory_exit='alpha149_depth_decay',
+        hard_stop_return=-.90, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='深池带·不用价格止损（1U）：入场与 survivable_band_deep 完全相同（该带供应是安全带族8倍），'
+                    '但去掉价格止损（-90%仅兜底），改用深度衰减早退+追踪+60分钟时限。'
+                    '依据：该带所属的 FDV/深度>20 档实测止损越深中位-65点，'
+                    '而"无价格止损"正是绕开跳空风险的直接检验。'),
 }
 
 
@@ -911,6 +932,20 @@ def mechanisms(f):
             and price_now and prev_price and price_now > prev_price
             and liq_now is not None and prev_liq is not None and liq_now >= prev_liq * .98
             and buy_share is not None and buy_share >= .55)
+        # wave 19: the safe band's supply problem. Measured over 764 accepted
+        # frames, the unbounded deep band fired 40 times while the 1-20 and 5-20
+        # bands fired 5 each, so almost every qualifying pool sits ABOVE FDV/depth
+        # 20 - the very tier whose stops gap a median 65 points. This variant keeps
+        # the safe FDV/depth interval untouched and relaxes only the depth floor
+        # (still four times the shared 1000U floor), so the safe band can actually
+        # be traded at a usable rate.
+        out['survivable_wide'] = bool(
+            survivable_age
+            and fdv_liq is not None and 1.0 <= fdv_liq <= 20.0
+            and liquidity is not None and liquidity >= 3000
+            and price_now and prev_price and price_now > prev_price
+            and liq_now is not None and prev_liq is not None and liq_now >= prev_liq * .98
+            and buy_share is not None and buy_share >= .5)
         # wave 14: re-expression of the system's highest-PnL entry mechanism
         # (`resource_age_rate`, parent of resource_age_rate_candidate_v1 at
         # +634.96U over 220 positions) on the shared vector. The original compares
@@ -1402,6 +1437,9 @@ RULES = {
     'survivable_age_rate': '存活带×池龄加速：实测存活带（池龄30-180分钟、FDV/深度1-20、深度≥5000U、'
                            '价涨且深度不流失、买盘≥50%）与池龄归一化加速（5分钟活动率≥按龄归一小时率3倍）'
                            '必须同时成立；1U半仓以控制单币崩塌的爆炸半径。',
+    'survivable_wide': '安全带放宽深度：保留实测最安全的FDV/深度1-20，深度下限放宽到3000U'
+                       '（共享底线1000U的3倍），其余条件不变；用于解决安全带供应过低'
+                       '（实测764帧中1-20带仅触发5次，而深池带40次）。',
     # wave 13
     'confirmed_survivable': '存活带×连续两步确认：存活带成立且本池已连续两个观测帧上行'
                             '（成交因此推迟一帧，先确认再买入）；退出用实测最强短兑现合同。',
