@@ -1069,6 +1069,65 @@ def test_steady_band_relaxes_only_the_frame_slope():
     assert policies["alpha149_survivable_core_v1"]["notional_usd"] == 2.0
 
 
+def test_wave22_extends_the_supply_fix_to_the_starved_mechanisms():
+    """Mid band and the confirmation idea, both freed from the strict-rise trap."""
+    def vector(**over):
+        base = dict(pool_age_seconds=3600.0, fdv_liquidity=8.0, liquidity_usd=12000.0,
+                    buy_count_share=0.6,
+                    prev=dict(price_usd=1.0, liquidity_usd=12000.0, volume_5m_usd=900.0),
+                    prev2=dict(price_usd=1.0, liquidity_usd=12000.0, volume_5m_usd=800.0),
+                    current=dict(price_usd=1.0, liquidity_usd=12000.0, volume_5m_usd=1000.0),
+                    windows={})
+        base.update(over)
+        return feature(**base)
+
+    flat = alpha149.mechanisms(vector())
+    # The strict versions are starved; the steady ones fire on the same frame.
+    assert flat["survivable_band_mid"] is False
+    assert flat["confirmed_survivable"] is False
+    assert flat["survivable_steady_mid"] is True
+    assert flat["confirmed_steady"] is True
+    # Confirmation still means "the previous frame did not lose ground".
+    worse = alpha149.mechanisms(vector(
+        prev2=dict(price_usd=1.05, liquidity_usd=12000.0, volume_5m_usd=800.0)))
+    assert worse["confirmed_steady"] is False
+    # A falling current frame disqualifies both new mechanisms.
+    falling = alpha149.mechanisms(vector(
+        current=dict(price_usd=0.99, liquidity_usd=12000.0, volume_5m_usd=1000.0)))
+    assert falling["confirmed_steady"] is False and falling["survivable_steady_mid"] is False
+    # Pool conditions unchanged on the mid variant, except the buy-share filter
+    # that measurement showed to be the binding constraint (86 frames in the mid
+    # chain, none above 55% buy share) and that was never part of the measured
+    # write-off band.
+    assert alpha149.mechanisms(vector(fdv_liquidity=3.0))["survivable_steady_mid"] is False
+    assert alpha149.mechanisms(vector(fdv_liquidity=30.0))["survivable_steady_mid"] is False
+    assert alpha149.mechanisms(vector(buy_count_share=0.2)
+                               )["survivable_steady_mid"] is True
+    assert alpha149.mechanisms(vector(liquidity_usd=6000.0,
+                                      current=dict(price_usd=1.0, liquidity_usd=6000.0,
+                                                   volume_5m_usd=1000.0),
+                                      prev=dict(price_usd=1.0, liquidity_usd=6000.0,
+                                                volume_5m_usd=900.0))
+                               )["survivable_steady_mid"] is False
+    # A missing prev2 must not confirm anything.
+    no_prev2 = feature(pool_age_seconds=3600.0, fdv_liquidity=8.0, liquidity_usd=12000.0,
+                       buy_count_share=0.6,
+                       prev=dict(price_usd=1.0, liquidity_usd=12000.0, volume_5m_usd=900.0),
+                       current=dict(price_usd=1.0, liquidity_usd=12000.0, volume_5m_usd=1000.0),
+                       windows={})
+    assert alpha149.mechanisms(no_prev2)["confirmed_steady"] is False
+
+    policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}
+    for arm, kind in (("alpha149_steady_mid_v1", "survivable_steady_mid"),
+                      ("alpha149_confirmed_steady_v1", "confirmed_steady")):
+        assert alpha149.SPECS[arm][0] == kind
+        assert policies[arm]["notional_usd"] == 1.0
+        assert policies[arm]["hard_stop_return"] == -.20
+    # The starved originals keep their contracts.
+    assert alpha149.SPECS["alpha149_mid_band_control_v1"][0] == "survivable_band_mid"
+    assert alpha149.SPECS["alpha149_confirmed_survivable_v1"][0] == "confirmed_survivable"
+
+
 def test_wave8_arms_keep_the_entry_frozen_and_only_change_the_exit_contract():
     """Same-signal A/B: the anti-whipsaw arms reuse an existing kind verbatim."""
     policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}

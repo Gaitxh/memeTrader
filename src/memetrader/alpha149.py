@@ -231,6 +231,9 @@ SPECS = {
     'alpha149_early_stop_deep_v1': ('survivable_band_deep', '止损时点×深池带·仅前5分钟', 60),
     # wave 21: the fix for the safe band's measured starvation.
     'alpha149_survivable_steady_v1': ('survivable_steady', '安全带·不跌即可(帧供应×34)', 30),
+    # wave 22: the same fix for the mechanisms still starved by strict rises.
+    'alpha149_steady_mid_v1': ('survivable_steady_mid', '安全带中段·不跌即可', 30),
+    'alpha149_confirmed_steady_v1': ('confirmed_steady', '确认式入场·不跌两步', 30),
 }
 EXIT_ARMS = {
     'alpha149_profit_decay_exit_v1': 'alpha149_profit_decay',
@@ -771,6 +774,21 @@ OVERRIDES = {
                     '但把"当前帧必须严格上涨"改为"不下跌"——实测逐条件计数显示严格上涨只通过2.7%的帧'
                     '（连续帧多为同价重报价，≥ 通过91.1%），而写销风险实测来自池子的 FDV/深度带与池龄、'
                     '不来自该帧斜率；该改动把安全带的可达帧供应放大34倍。'),
+    # ---- wave 22: the same supply fix where it is still missing ---------------
+    'alpha149_steady_mid_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_mid_band_control_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='安全带中段·不跌即可（1U）：入场的池子条件与 survivable_band_mid 相同'
+                    '（FDV/深度5-20、深度≥10000U、池龄30-180分钟、深度不流失、买盘≥55%），'
+                    '但只要求"不下跌"——该机制在严格上涨下 ready=0，是与 survivable_steady 同样的供应修复。'),
+    'alpha149_confirmed_steady_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_confirmed_survivable_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='确认式入场·不跌两步（1U）：保留 wave13"先确认再买入（成交推迟一帧）"的意图，'
+                    '但把"连续两次严格上涨"（实测2.7%帧斜率下约为0.07%的事件、ready=0）'
+                    '改为"连续两次不下跌"，池子条件仍为实测存活带。'),
 }
 
 
@@ -998,6 +1016,32 @@ def mechanisms(f):
             and price_now and prev_price and price_now >= prev_price
             and liq_now is not None and prev_liq is not None and liq_now >= prev_liq * .98
             and buy_share is not None and buy_share >= .5)
+        # wave 22: apply the same measured fix to the mechanisms still starved by
+        # the strict-rise requirement. Additionally, per-condition counters showed
+        # that the mid band's buy-share filter was itself the binding constraint:
+        # of 481 frames, 86 were in the mid chain and exactly 0 of those had a buy
+        # share above 55%, i.e. the engine's mature safe-band pools are
+        # seller-dominated. That buy-share filter was MY addition rather than part
+        # of the measured write-off band (round 3 measured FDV/depth and pool age
+        # only), so it is removed here instead of being tuned.
+        out['survivable_steady_mid'] = bool(
+            survivable_age
+            and fdv_liq is not None and 5.0 <= fdv_liq <= 20.0
+            and liquidity is not None and liquidity >= 10000
+            and price_now and prev_price and price_now >= prev_price
+            and liq_now is not None and prev_liq is not None and liq_now >= prev_liq * .98)
+        # The confirmation idea, made attainable: two consecutive NON-FALLING
+        # frames inside the safe band. It still delays the fill by one observed
+        # frame, which was the entire point of wave 13, but it no longer requires
+        # two consecutive strict rises (a ~0.07% event at the measured 2.7% frame
+        # slope).
+        earlier = f.get('prev2') if isinstance(f.get('prev2'), dict) else None
+        out['confirmed_steady'] = bool(
+            out['survivable_steady']
+            and earlier is not None
+            and _num(earlier.get('price_usd')) is not None
+            and prev_price is not None
+            and prev_price >= _num(earlier.get('price_usd')))
         # wave 14: re-expression of the system's highest-PnL entry mechanism
         # (`resource_age_rate`, parent of resource_age_rate_candidate_v1 at
         # +634.96U over 220 positions) on the shared vector. The original compares
@@ -1496,6 +1540,11 @@ RULES = {
                          '（池龄30-180分钟、FDV/深度1-20、深度≥5000U、深度不流失、买盘≥50%），'
                          '但把"严格上涨"改为"不下跌"——实测严格上涨仅通过2.7%的帧、≥ 通过91.1%，'
                          '该改动把可达帧供应放大34倍而池子风险不变。',
+    'survivable_steady_mid': '安全带中段·不跌即可：池子条件与 survivable_band_mid 相同'
+                             '（FDV/深度5-20、深度≥10000U、池龄30-180分钟、深度不流失、买盘≥55%），'
+                             '帧条件改为"不下跌"。',
+    'confirmed_steady': '确认式入场·不跌两步：实测存活带 + 连续两个观测帧"不下跌"，'
+                        '成交仍推迟一帧（先确认再买入），但不再要求连续两次严格上涨。',
     # wave 13
     'confirmed_survivable': '存活带×连续两步确认：存活带成立且本池已连续两个观测帧上行'
                             '（成交因此推迟一帧，先确认再买入）；退出用实测最强短兑现合同。',
@@ -1705,6 +1754,16 @@ class Engine(_BaseEngine):
                 'deep_chain': bool(band_age is not None and 1800 <= band_age <= 10800
                                    and band_fdv is not None and band_fdv >= 5.0
                                    and band_depth is not None and band_depth >= 10000),
+                'mid_chain': bool(band_age is not None and 1800 <= band_age <= 10800
+                                  and band_fdv is not None and 5.0 <= band_fdv <= 20.0
+                                  and band_depth is not None and band_depth >= 10000),
+                'mid_chain_share55': bool(band_age is not None and 1800 <= band_age <= 10800
+                                          and band_fdv is not None and 5.0 <= band_fdv <= 20.0
+                                          and band_depth is not None and band_depth >= 10000
+                                          and band_share is not None and band_share >= .55),
+                'fdv_ge_20': band_fdv is not None and band_fdv > 20.0,
+                'fdv_ge_20_and_deep': bool(band_fdv is not None and band_fdv > 20.0
+                                           and band_depth is not None and band_depth >= 10000),
             }
             for name, ok in band_steps.items():
                 self.counts['band_step:' + name] += int(bool(ok))

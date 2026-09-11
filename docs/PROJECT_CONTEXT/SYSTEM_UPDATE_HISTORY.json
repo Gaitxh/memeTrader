@@ -2,6 +2,20 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260912-wave22-steady-extension",
+      "recorded_at": "2026-09-12T01:35:00Z",
+      "title": "wave22：把'不下跌'供应修复推广到仍被严格上涨卡死的机制，并移除一个我自己加的、未被实测支持的买盘过滤",
+      "problem": "wave21的'不下跌'修复把安全带供应放大43倍(survivable_steady 52 vs core 2)，但仍有机制ready=0：survivable_band_mid=0、survivable_age_rate=0、confirmed_survivable=0(它要求连续两次严格上涨，在实测2.7%帧斜率下约为0.07%的事件)。此外survivable_steady_mid首次加载后ready仍为0，逐条件计数(481帧)定位原因：mid_chain=86(17.9%)而mid_chain_share55=0(0.0%)，即引擎中落在5-20安全带且池龄30-180分钟的池子几乎从不满足买盘≥55%(卖盘主导)；而'买盘≥55%'是我自己添加的过滤条件，第3轮写销带实测只用FDV/深度与池龄、从未包含买盘占比。",
+      "change": "新增机制survivable_steady_mid(FDV/深度5-20、深度≥10000U、池龄30-180分钟、不下跌、深度不流失；移除未被实测支持的买盘过滤)与confirmed_steady(保留wave13'连续两步确认、成交推迟一帧'的意图，但把连续两次严格上涨改为连续两次不下跌)，各配1条1U臂；append-only注册(256→258)。",
+      "rationale": "把已被实测证明有效的'不下跌'修复推广到其余被严格上涨卡死的机制；对买盘过滤则直接删除而非调参，因为它不是实测结论的一部分。",
+      "validation": "移除买盘过滤后实测survivable_steady_mid ready=92(此前0)且该臂已开仓；confirmed_steady在一窗口中ready=48(严格版0)；test_alpha149 46项+test_whipsaw_guard 2项 PASS；退出矩阵分歧随样本增加收窄(时点方案+1.004/+0.721 vs 深度方案+0.845/+0.483，已无哪种合同明显更好)，如实修正上一轮'时点方案明显占优'的表述；错误#265/#266保持冻结。",
+      "scope": "IMPLEMENTED_LOADED; 同批机制在不同窗口的ready计数波动大(survivable_steady 52→0)，单窗口计数不可外推；移除买盘过滤的后果(安全带中段将交易卖盘主导的池子)必须由前向数据检验；退出矩阵已证明小样本差异不可靠，后续仅在样本足够时裁决。",
+      "commit": "pending",
+      "loaded_at": "2026-09-11T23:04:00Z",
+      "visible_entry": "http://127.0.0.1:8790/#/strategies",
+      "report": "docs/PROJECT_CONTEXT/WAVE22_STEADY_EXTENSION_20260912.md"
+    },
+    {
       "id": "20260912-wave21-steady-band",
       "recorded_at": "2026-09-12T01:10:00Z",
       "title": "wave21：安全带供应之谜解开（严格上涨只通过2.7%的帧）并以'不下跌'修复，供应放大43倍",
