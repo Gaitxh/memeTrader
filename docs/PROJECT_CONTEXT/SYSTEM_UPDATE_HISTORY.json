@@ -10,7 +10,7 @@
       "rationale": "把目前唯一有证据的胜出方向从单一入场族推广出去，用同入场A/B检验其普适性；同时对安全带供应问题记录两层已排除的解释，避免在没有定位前继续放宽安全带条件。",
       "validation": "test_alpha149 44项+test_whipsaw_guard 2项 PASS(两条新臂只改止损时点、追踪与持有期一致、父臂合同不变、沿用已注册退出kind)；注册后加载正常；修复后队列347笔0写销+12.59U；错误#265/#266保持冻结。",
       "scope": "IMPLEMENTED_LOADED; wave20是对小样本差异(6笔vs4笔)的推广，存在追逐噪音风险，须以同入场A/B继续检验；安全带供应之谜已排除深度下限与区间稀缺两层解释，尚未定位，下一轮用主通道帧回放逐条件计数排查；深池带无止损臂与各1U带臂均需更长窗口。",
-      "commit": "pending",
+      "commit": "6ce7d6b",
       "loaded_at": "2026-09-11T22:33:04Z",
       "visible_entry": "http://127.0.0.1:8790/#/strategies",
       "report": "docs/PROJECT_CONTEXT/WAVE20_SCHEDULE_PROPAGATION_20260912.md"
