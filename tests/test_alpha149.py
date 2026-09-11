@@ -243,7 +243,35 @@ CASES = {
         prev=dict(price_usd=1.0, liquidity_usd=5000.0, volume_5m_usd=100.0),
         current=dict(price_usd=1.02, liquidity_usd=5000.0, volume_5m_usd=200.0),
         liquidity_usd=5000.0, buy_count_share=0.6, windows={}),
+    # wave 5
+    "df_mature_price_up": dict(pool_age_seconds=3600.0,
+        prev=dict(price_usd=1.0, liquidity_usd=5000.0, volume_5m_usd=100.0),
+        current=dict(price_usd=1.03, liquidity_usd=5100.0, volume_5m_usd=120.0),
+        liquidity_usd=5100.0, windows={}),
+    "sf_goldendog_deep_base": dict(pool_age_seconds=600.0, liquidity_usd=9000.0,
+        fdv_liquidity=0.6, buy_count_share=0.6, drawdown=0.0, windows={}),
 }
+
+# Contextual exits are shared by construction: these arms reuse an existing kind.
+HOLD_VARIANTS = {
+    "alpha149_df_price_up_liquidity_up_hold_v1": "df_price_up_liquidity_up",
+    "alpha149_df_activity_jump_hold_v1": "df_activity_jump",
+    "alpha149_sf_extreme_buy_pressure_hold_v1": "sf_extreme_buy_pressure",
+}
+
+
+def test_hold_variants_reuse_an_existing_kind_with_a_longer_hold():
+    policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}
+    base_holds = {
+        "alpha149_df_price_up_liquidity_up_v1": 15,
+        "alpha149_df_activity_jump_v1": 15,
+        "alpha149_sf_extreme_buy_pressure_v1": 15,
+    }
+    for arm, kind in HOLD_VARIANTS.items():
+        assert alpha149.SPECS[arm][0] == kind, arm
+        base = arm.replace("_hold_v1", "_v1")
+        assert policies[arm]["max_hold_minutes"] > policies[base]["max_hold_minutes"], arm
+    assert set(HOLD_VARIANTS) <= set(alpha149.ALL_ARMS)
 
 
 def test_each_mechanism_fires_on_its_own_vector():

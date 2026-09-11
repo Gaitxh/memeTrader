@@ -66,6 +66,16 @@ SPECS = {
     'alpha149_sf_quiet_absorption_v1': ('sf_quiet_absorption', '单帧·静默吸筹', 20),
     'alpha149_df_price_up_liquidity_up_v1': ('df_price_up_liquidity_up', '两帧·价涨且加池', 15),
     'alpha149_df_activity_jump_v1': ('df_activity_jump', '两帧·成交额跳增', 15),
+    # wave 5: fill the entry/exit speed matrix with controlled same-fill pairs.
+    # The three *_hold_* arms reuse an ALREADY FIRING mechanism kind and only
+    # change the holding/exit contract, so fast-vs-slow exits are compared on
+    # literally the same frozen signal. No new mechanism code.
+    'alpha149_df_price_up_liquidity_up_hold_v1': ('df_price_up_liquidity_up', '两帧·价涨加池·慢出对照', 60),
+    'alpha149_df_activity_jump_hold_v1': ('df_activity_jump', '两帧·成交额跳增·慢出对照', 45),
+    'alpha149_sf_extreme_buy_pressure_hold_v1': ('sf_extreme_buy_pressure', '单帧·极端买压·慢出对照', 60),
+    # two genuinely new kinds for the uncovered quadrants
+    'alpha149_df_mature_price_up_fast_v1': ('df_mature_price_up', '老池两帧上涨·快出', 5),
+    'alpha149_sf_goldendog_deep_base_v1': ('sf_goldendog_deep_base', '金狗·深池低FDV慢出', 120),
 }
 EXIT_ARMS = {
     'alpha149_profit_decay_exit_v1': 'alpha149_profit_decay',
@@ -211,6 +221,31 @@ OVERRIDES = {
         notional_usd=2.0, max_concurrent_positions=2,
         description='两帧差分：本帧成交额≥上一帧1.5倍且价格不跌、买笔占比≥0.5；'
                     '2U最多2仓15分钟。'),
+    # ---- wave 5: controlled same-fill entry/exit speed pairs -----------------
+    'alpha149_df_price_up_liquidity_up_hold_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        trailing_activate_return=.20, trailing_drawdown=.15,
+        description='与 df_price_up_liquidity_up 完全同一冻结信号，仅把持有期从15分钟延长到60分钟；'
+                    '用于在同一入场上的快出/慢出受控对照（不是新入场条件）。'),
+    'alpha149_df_activity_jump_hold_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        trailing_activate_return=.20, trailing_drawdown=.15,
+        description='与 df_activity_jump 完全同一冻结信号，仅把持有期从15分钟延长到45分钟；'
+                    '同入场快出/慢出对照。'),
+    'alpha149_sf_extreme_buy_pressure_hold_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        trailing_activate_return=.20, trailing_drawdown=.15,
+        description='与 sf_extreme_buy_pressure 完全同一冻结信号，持有期延长到60分钟；'
+                    '同入场快出/慢出对照。'),
+    'alpha149_df_mature_price_up_fast_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        description='慢进快出象限：池龄≥30分钟的老池出现两帧价涨且加池，只做5分钟快出；'
+                    '2U最多2仓。'),
+    'alpha149_sf_goldendog_deep_base_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        trailing_activate_return=.25, trailing_drawdown=.20,
+        description='金狗慢出象限：池龄≤15分钟、深度≥8000U、FDV/深度≤0.8、买笔占比≥0.55、'
+                    '价格处于运行高点；持有至120分钟并用较宽追踪保留右尾。'),
 }
 
 
@@ -280,6 +315,12 @@ def mechanisms(f):
             drawdown is not None and drawdown >= 0
             and buy_share is not None and buy_share >= .65
             and liquidity >= 3000 and fdv_liq is not None and fdv_liq <= 1.2)
+        # wave 5: golden-dog slow-out quadrant (young, deep, low FDV/depth).
+        out['sf_goldendog_deep_base'] = bool(
+            pool_age is not None and pool_age <= 900 and liquidity >= 8000
+            and fdv_liq is not None and fdv_liq <= .8
+            and buy_share is not None and buy_share >= .55
+            and drawdown is not None and drawdown >= 0)
     previous = f.get('prev') if isinstance(f.get('prev'), dict) else None
     if previous:
         prev_price = _num(previous.get('price_usd'))
@@ -293,6 +334,11 @@ def mechanisms(f):
             and vol_now is not None and prev_vol is not None and prev_vol > 0
             and vol_now >= prev_vol * 1.5
             and buy_share is not None and buy_share >= .5)
+        # wave 5: mature-pool two-frame rise (slow-in x fast-out quadrant).
+        out['df_mature_price_up'] = bool(
+            pool_age is not None and pool_age >= 1800
+            and price_now and prev_price and price_now > prev_price
+            and liq_now is not None and prev_liq is not None and liq_now >= prev_liq)
 
     if not w:
         return out
@@ -596,6 +642,9 @@ RULES = {
     'sf_quiet_absorption': '单帧即可：价格处于运行高点、买笔占比≥0.65、深度≥3000U、FDV/深度≤1.2。',
     'df_price_up_liquidity_up': '仅用最近两帧：本帧价格高于上一帧且深度增加（不需要30秒窗口）。',
     'df_activity_jump': '仅用最近两帧：本帧成交额≥上一帧1.5倍、价格不跌、买笔占比≥0.5。',
+    'df_mature_price_up': '仅用最近两帧：池龄≥30分钟的老池，本帧价涨且深度不降（慢进快出象限）。',
+    'sf_goldendog_deep_base': '单帧即可：池龄≤15分钟、深度≥8000U、FDV/深度≤0.8、'
+                              '买笔占比≥0.55、价格处于运行高点（金狗慢出象限）。',
 }
 
 
