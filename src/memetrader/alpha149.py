@@ -165,6 +165,8 @@ SPECS = {
     'alpha149_regime_throttle_revival_v1': ('regime_risk_on', '复活·市场宽度改善节流', 30),
     'alpha149_merged_regime_v1': ('merged_regime', '合并×宽度改善', 30),
     'alpha149_survivable_regime_v1': ('survivable_regime', '存活带×宽度改善', 30),
+    # wave 13: buy after confirmation instead of tolerating afterwards.
+    'alpha149_confirmed_survivable_v1': ('confirmed_survivable', '存活带×连续两步确认入场', 30),
 }
 EXIT_ARMS = {
     'alpha149_profit_decay_exit_v1': 'alpha149_profit_decay',
@@ -567,6 +569,15 @@ OVERRIDES = {
         hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
         description='存活带×宽度改善：实测存活带 与 市场宽度改善 同时成立；短兑现合同。'
                     '用于检验"好池子"与"好时机"是否需要同时满足。'),
+    # ---- wave 13: confirmation on the entry side ----------------------------
+    'alpha149_confirmed_survivable_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_survivable_fast30_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='存活带×连续两步确认：在实测存活带之内，还要求本池已连续两个观测帧上行'
+                    '（相当于把成交推迟一帧，先确认再买入）；退出用实测最强短兑现合同。'
+                    '依据：前向数据显示对照臂在入场后23秒与25秒即触发硬止损，'
+                    '即单帧入场买在回撤里、由噪音付费。'),
 }
 
 
@@ -616,6 +627,14 @@ def mechanisms(f):
             result['merged_multi_setup'] and result['regime_risk_on'])
         result['survivable_regime'] = bool(
             result['survivable_core'] and result['regime_risk_on'])
+        # Wave 13: confirm before buying. Live forward data shows the control arms
+        # taking hard stops 23s and 25s after entry, i.e. the single-frame entry
+        # buys into a dip and pays the noise. This intersection demands that the
+        # pool has ALREADY risen for two consecutive observed frames inside the
+        # measured survivable band, which delays the fill by one frame by
+        # construction - no new threshold, no look-ahead.
+        result['confirmed_survivable'] = bool(
+            result['survivable_core'] and result['seq_two_step_rise'])
         return result
 
     if not isinstance(f, dict):
@@ -1160,6 +1179,9 @@ RULES = {
                       '复活的假设来自已暂停的 market_regime_throttle_v1（+19.62U/9笔/0写销）。',
     'merged_regime': '合并×宽度改善：五形态合并 与 市场宽度改善 必须同时成立。',
     'survivable_regime': '存活带×宽度改善：存活带 与 市场宽度改善 必须同时成立。',
+    # wave 13
+    'confirmed_survivable': '存活带×连续两步确认：存活带成立且本池已连续两个观测帧上行'
+                            '（成交因此推迟一帧，先确认再买入）；退出用实测最强短兑现合同。',
 }
 
 

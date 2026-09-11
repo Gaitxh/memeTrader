@@ -702,6 +702,49 @@ def test_wave12_arms_are_additive_and_use_the_short_hold_contract():
         "regime_risk_on"
 
 
+def test_confirmed_entry_needs_two_consecutive_rises_inside_the_band():
+    """Wave 13: the confirmation arm must delay the fill by one observed frame."""
+    def vector(**over):
+        base = dict(pool_age_seconds=3600.0, fdv_liquidity=3.0, liquidity_usd=8000.0,
+                    buy_count_share=0.6, drawdown=0.0,
+                    prev=dict(price_usd=1.02, liquidity_usd=7950.0, volume_5m_usd=110.0),
+                    prev2=dict(price_usd=1.00, liquidity_usd=7900.0, volume_5m_usd=100.0),
+                    current=dict(price_usd=1.05, liquidity_usd=8000.0, volume_5m_usd=130.0),
+                    windows={})
+        base.update(over)
+        return feature(**base)
+
+    on = alpha149.mechanisms(vector())
+    assert on["survivable_core"] is True and on["seq_two_step_rise"] is True
+    assert on["confirmed_survivable"] is True
+    # One rise only (the previous frame was flat): the band alone must not be
+    # enough, because that is exactly the single-frame entry that stops in 23s.
+    one_step = alpha149.mechanisms(vector(
+        prev2=dict(price_usd=1.02, liquidity_usd=7900.0, volume_5m_usd=100.0)))
+    assert one_step["survivable_core"] is True
+    assert one_step["confirmed_survivable"] is False
+    # Two rises but outside the measured band: also off.
+    young = alpha149.mechanisms(vector(pool_age_seconds=600.0))
+    assert young["seq_two_step_rise"] is True
+    assert young["confirmed_survivable"] is False
+
+
+def test_wave13_arm_is_additive_and_keeps_the_measured_contract():
+    policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}
+    arm = "alpha149_confirmed_survivable_v1"
+    assert arm in alpha149.ALL_ARMS and arm in policies
+    assert policies[arm]["max_hold_minutes"] == 30
+    assert policies[arm]["hard_stop_return"] == -.20
+    assert policies[arm]["trailing_activate_return"] == .30
+    assert policies[arm]["trailing_drawdown"] == .15
+    # Its entry is an intersection of two already-frozen conditions.
+    assert alpha149.SPECS[arm][0] == "confirmed_survivable"
+    # The single-frame reference arm stays untouched.
+    assert alpha149.SPECS["alpha149_df_price_up_liquidity_up_v1"][0] == \
+        "df_price_up_liquidity_up"
+    assert "hard_stop_grace_seconds" not in policies["alpha149_df_price_up_liquidity_up_v1"]
+
+
 def test_wave8_arms_keep_the_entry_frozen_and_only_change_the_exit_contract():
     """Same-signal A/B: the anti-whipsaw arms reuse an existing kind verbatim."""
     policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}
