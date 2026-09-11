@@ -189,7 +189,32 @@
 窗口仅约 2.5 分钟、被评估的 Token 构成不同、且额外帧只会在"存在等待候选 + 原批次已到期 +
 有空位"时附加，因此**这是初步信号而非已证提速**。需要更长的同负载窗口与逐链分母才能判定。
 
-### 10.5 已知缺口
+### 10.5 关键缺陷修复：独立引擎此前没有被喂帧（2026-09-11 20:24 加载）
+
+**这是"新臂零决策"的真正根因。** 运行时只把帧喂给 `_dex_trajectory`（仅 legacy 帧）与
+`_trajectory144`（全部帧）；`Runtime.chain_meme_cohort_observer_once` 从未调用
+`self.store._alpha149.accept(...)`。结果是：我的引擎池**永远是空的**，
+入场门的"引擎最新帧 ≠ 当前快照"因此永远不成立，34 条臂**结构上不可能入场**。
+
+修复（加法，两处）：
+
+1. 在创建 `_trajectory144` 之后创建 `self.store._alpha149 = alpha149.Engine(utcnow())`；
+2. 在帧循环中与 144 引擎并列喂入**每一帧**（含 148 的 feature-only 额外帧），
+   并新增 `alpha149_features` 计时。
+
+验证（20:24:43 重载后，约 3 分钟窗口）：
+
+| 项 | 结果 |
+|---|---|
+| `alpha149_features` | **601 帧**，p95 **0.562ms/帧**（与 `trajectory144_features` 的 601 帧同量） |
+| `held_fetch` p95 | 1.817s（与改动前同量级） |
+| `pool_timeouts` / `connect_errors` | **0 / 0**，`dex_http_capacity.active` = 2 |
+| 新臂入场决策 | 仍为 0；阻塞构成已从单一"独立后帧"变为 `wait_passive_cohort_opportunity` 3,128 与 `await_distinct_dex_trajectory_frame` 2,244（最后 400 次评估） |
+
+即：**引擎已能收到帧（成本 0.56ms/帧）**，剩下的等待属于共享门与数据供给，
+需要更长窗口的自然观察才能判定新臂是否真的能成交。
+
+### 10.6 已知缺口
 
 `chain_web.py` **完全没有引用该管理器**，因此 §10.2 新增的 6 个计数（eligible_batch / no_spare /
 selected_extra / inflight_skipped / failed_request / cancelled_request）目前**只存在于内存**，

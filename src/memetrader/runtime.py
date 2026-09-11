@@ -7830,6 +7830,14 @@ class Runtime:
             self.store._trajectory144=Engine144(saved['started_at'] if saved else utcnow())
             if saved:self.store._trajectory144.load_state(saved)
         trajectory144=self.store._trajectory144
+        # ALPHA149: the isolated engine for the alpha149_* arms must be fed the
+        # same observed frames as the other trajectory engines, otherwise its
+        # pools stay empty and every alpha149 entry waits forever on
+        # "await_distinct_dex_trajectory_frame".
+        if not hasattr(self.store, '_alpha149'):
+            from .alpha149 import Engine as Engine149
+            self.store._alpha149 = Engine149(utcnow())
+        trajectory149 = self.store._alpha149
         from .mode_learning145 import Coordinator
         if not hasattr(self.store,"_mode_learning144"):
             self.store._mode_learning144=Coordinator(self.store)
@@ -8022,6 +8030,11 @@ class Runtime:
                 accepted144 = trajectory144.accept(frame,now)
                 if accepted144 is not None:
                     fresh144.add(identity)
+                # ALPHA149 consumes every observed frame (including feature-only
+                # spares) so its own arms see a denser, independent frame supply.
+                started149=asyncio.get_running_loop().time()
+                trajectory149.accept(frame, now)
+                if hasattr(self,'runtime_timing'):self.runtime_timing.observe('alpha149_features',asyncio.get_running_loop().time()-started149,items=1)
                 if hasattr(self,'runtime_timing'):self.runtime_timing.observe('trajectory144_features',asyncio.get_running_loop().time()-started145,items=1)
                 if feature_only:
                     if accepted144 is not None:
