@@ -10,7 +10,7 @@
       "rationale": "把'安全带为何低产'从猜测变为实测约束，并用'无价格止损'直接检验断崖档的跳空风险是否可绕开；同时避免为了让安全带多交易而放宽其核心区间（那等于取消安全带）。",
       "validation": "test_alpha149 42项+test_whipsaw_guard 2项 PASS(宽带必须保留FDV/深度1-20并排除断崖档与<1档、深度下限仍为共享底线3倍、池龄窗口生效；深池带无止损臂只改价格止损)；加载后约5分钟wide_band_v1 1信号/1仓、deep_band_nostop_v1 4信号/3仓(供应差异立即体现)；退出矩阵首次分歧：wave16两种止损时点方案各6笔平仓+1.528U，wave15三种止损深度方案各4笔-0.106U(样本极小不构成结论)；修复后队列329笔0写销-8.05U；错误#265/#266保持冻结。",
       "scope": "IMPLEMENTED_LOADED; wave19宽带臂的假设被自己证伪(未提升供应)，其价值是给出'安全带在当前市场结构下低产'的实测结论，不应再放宽区间迎合供应；退出矩阵分歧样本仅6笔vs4笔不可判读；深池带无止损臂需更长窗口。",
-      "commit": "pending",
+      "commit": "66c08f0",
       "loaded_at": "2026-09-11T22:18:36Z",
       "visible_entry": "http://127.0.0.1:8790/#/strategies",
       "report": "docs/PROJECT_CONTEXT/WAVE19_BAND_SUPPLY_AND_MATRIX_DIVERGENCE_20260912.md"
