@@ -2,6 +2,20 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260912-wave11-consolidation",
+      "recorded_at": "2026-09-11T21:20:00Z",
+      "title": "wave11：整合实测最强退出画像 + 暂停臂复盘（4条新臂）",
+      "problem": "全库最强臂resource_age_rate_candidate_v1(+634.96U/220笔)的利润来自短持有：110笔30分钟到点兑现+767.61U，81笔止损仅-155.05U(单笔-1.91U，全库平均-4.85U)，写销仅4笔；而暂停/退役的236条臂中仅2条有正收益记录(market_regime_throttle_v1 +19.62U/9笔、early_impulse_profit_lock_control_v1 +18.56U/47笔，其+40%锁利变体-6.80U)。wave8/9的放宽止损与延长持有与该画像方向相反，需并行检验。",
+      "change": "新增4条臂：存活带核心×30分钟短兑现(-20%/追踪30-15/30分钟，与wave10长持有臂共用同一入场)、存活带深池×30分钟(1U)、新机制merged_survivable(五形态合并 且 存活带，两者必须同时成立)×30分钟、金狗早冲量以当年盈利的对照合同复活为新ID；全部append-only注册(231→235)。",
+      "rationale": "把'实测存活入场'与'实测最强退出合同'合并整合，并把暂停的正收益假设以新ID重表达；不修改任何既有臂，与wave8/9形成短兑现vs长容忍的同入场对照。",
+      "validation": "test_alpha149 26项+test_whipsaw_guard 2项 PASS（新增：merged_survivable必须两个独立条件同时成立——年轻池仅有信号、深度持平的帧仅有存活条件，均不得触发；wave11合同复用实测画像且不触碰原臂）；加载后merged_survivable ready=3且merged_survivable_v1与survivable_fast30_v1已各出1信号；alpha149家族退出结构改善(max_hold 38笔+18.04U、trailing 28笔+18.86U、hard_stop 32笔-21.76U、写销28笔-80.0U，净亏损仍全部来自写销)；错误#265/#266保持冻结。",
+      "scope": "IMPLEMENTED_LOADED; 短持有画像来自单一最强臂且其入场族运行在pattern通道，wave11检验的是退出合同迁移而非整臂复制；同入场A/B样本仍为1-4笔，不作方向性结论；market_regime_throttle_v1的复活待下一轮。",
+      "commit": "pending",
+      "loaded_at": "2026-09-11T20:48:52Z",
+      "visible_entry": "http://127.0.0.1:8790/#/strategies",
+      "report": "docs/PROJECT_CONTEXT/WAVE11_CONSOLIDATION_20260912.md"
+    },
+    {
       "id": "20260912-wave10-survivability",
       "recorded_at": "2026-09-11T21:05:00Z",
       "title": "wave10：定位写销的入场期来源并新增存活带策略（5条新臂）",

@@ -570,6 +570,56 @@ def test_wave10_arms_are_reachable_through_the_live_engine_path():
     assert "survivable_core" in snap["mechanism_ready"]
 
 
+def test_merged_survivable_requires_both_independent_conditions():
+    """Wave 11 consolidates the merged entry with the measured survivable band."""
+    def vector(**over):
+        base = dict(pool_age_seconds=3600.0, fdv_liquidity=3.0, liquidity_usd=8000.0,
+                    buy_count_share=0.6, drawdown=0.0,
+                    prev=dict(price_usd=1.0, liquidity_usd=7900.0, volume_5m_usd=100.0),
+                    current=dict(price_usd=1.03, liquidity_usd=8000.0, volume_5m_usd=130.0),
+                    windows={})
+        base.update(over)
+        return feature(**base)
+
+    both = alpha149.mechanisms(vector())
+    assert both["df_price_up_liquidity_up"] is True and both["survivable_core"] is True
+    assert both["merged_survivable"] is True
+    # Signal but not survivable (young pool): the merge must stay off.
+    young = alpha149.mechanisms(vector(pool_age_seconds=600.0))
+    assert young["df_price_up_liquidity_up"] is True and young["survivable_core"] is False
+    assert young["merged_survivable"] is False
+    # Survivability conditions hold but no merge member does: price rises while
+    # depth is exactly flat (df_price_up_liquidity_up needs depth to increase) and
+    # volume does not jump, so the intersection must stay off.
+    flat_depth = alpha149.mechanisms(vector(
+        current=dict(price_usd=1.03, liquidity_usd=7900.0, volume_5m_usd=100.0)))
+    assert flat_depth["survivable_core"] is True
+    assert flat_depth["df_price_up_liquidity_up"] is False
+    assert flat_depth["df_activity_jump"] is False
+    assert flat_depth["merged_survivable"] is False
+
+
+def test_wave11_arms_reuse_measured_contracts():
+    policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}
+    for arm in ("alpha149_survivable_fast30_v1", "alpha149_survivable_deep_fast30_v1",
+                "alpha149_merged_survivable_v1", "alpha149_goldendog_revival_control_v1"):
+        assert arm in alpha149.ALL_ARMS and arm in policies
+        # The profile that actually earned in this period: -20% stop, trail 30/15.
+        assert policies[arm]["hard_stop_return"] == -.20
+        assert policies[arm]["trailing_activate_return"] == .30
+        assert policies[arm]["trailing_drawdown"] == .15
+        assert policies[arm]["max_hold_minutes"] <= 60
+    # Fast-30 arms are same-entry controls of the wave-10 arms, not new entries.
+    assert alpha149.SPECS["alpha149_survivable_fast30_v1"][0] == \
+        alpha149.SPECS["alpha149_survivable_core_v1"][0] == "survivable_core"
+    assert alpha149.SPECS["alpha149_survivable_deep_fast30_v1"][0] == \
+        alpha149.SPECS["alpha149_survivable_deep_v1"][0] == "survivable_band_deep"
+    # The revival arm must not touch the paused original.
+    assert policies["alpha149_goldendog_revival_control_v1"]["feature_hypothesis"] == \
+        "goldendog_early_impulse"
+    assert "alpha149_goldendog_early_impulse_v1" in policies  # original untouched
+
+
 def test_wave8_arms_keep_the_entry_frozen_and_only_change_the_exit_contract():
     """Same-signal A/B: the anti-whipsaw arms reuse an existing kind verbatim."""
     policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}

@@ -131,6 +131,21 @@ SPECS = {
     'alpha149_survivable_core_scaled_v1': ('survivable_core', '存活带核心·自适应止损', 120),
     'alpha149_survivable_core_depthexit_v1': ('survivable_core', '存活带核心·深度衰减早退', 60),
     'alpha149_survivable_deep_v1': ('survivable_band_deep', '存活带深池·自适应止损', 120),
+    # wave 11: consolidation + revival, both measured. The best arm in the whole
+    # active period (resource_age_rate_candidate_v1, +634.96U over 220 positions)
+    # earns its money with a SHORT hold: 110 max-hold exits at 30 minutes made
+    # +767.61U, its 81 stops lost only -155.05U (-1.91U each, versus -4.85U
+    # system-wide) and it took just 4 write-offs. The paused-arm audit found only
+    # two paused arms with a positive record: market_regime_throttle_v1 (+19.62U,
+    # n=9) and early_impulse_profit_lock_control_v1 (+18.56U, n=47). Wave 11
+    # therefore re-expresses the measured survivable entries under that proven
+    # short-hold exit profile, and re-expresses the paused early-impulse
+    # hypothesis as a new id under its profitable control contract rather than
+    # the +40% profit-lock treatment that lost -6.80U.
+    'alpha149_survivable_fast30_v1': ('survivable_core', '存活带·30分钟快兑现', 30),
+    'alpha149_survivable_deep_fast30_v1': ('survivable_band_deep', '存活带深池·30分钟1U', 30),
+    'alpha149_merged_survivable_v1': ('merged_survivable', '合并×存活带·30分钟', 30),
+    'alpha149_goldendog_revival_control_v1': ('goldendog_early_impulse', '复活·金狗早冲量对照合同', 60),
 }
 EXIT_ARMS = {
     'alpha149_profit_decay_exit_v1': 'alpha149_profit_decay',
@@ -484,6 +499,36 @@ OVERRIDES = {
         hard_stop_return=-.90, trailing_activate_return=.45, trailing_drawdown=.25,
         description='存活带深池：池龄30-180分钟、FDV/深度≥5（实测1.9%-4.1%写销带）、深度≥10000U、'
                     '当前帧价涨、买盘≥55%；自适应止损+追踪，1U小额。'),
+    # ---- wave 11: consolidation with the measured best exit profile -----------
+    # Short-hold contract: hold 30 minutes, -20% stop, trailing 30/15. This is the
+    # profile that made the money for the strongest arm of the period, so it is
+    # reused verbatim on the measured survivable entries instead of inventing a
+    # new exit.
+    'alpha149_survivable_fast30_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_survivable_core_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='存活带×30分钟兑现：入场与 survivable_core 相同，退出改用实测最强臂的合同'
+                    '（-20%止损、+30%激活追踪、回撤15%离场、持有30分钟），'
+                    '用于检验"存活入场+短兑现"的合并是否优于长持有。'),
+    'alpha149_survivable_deep_fast30_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_survivable_deep_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='存活带深池×30分钟（1U）：入场与 survivable_band_deep 相同，退出用短兑现合同。'),
+    'alpha149_merged_survivable_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_merged_multi_setup_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='合并×存活带：入场=五形态合并 且 同时满足存活带（池龄30-180分钟、FDV/深度1-20、'
+                    '深度≥5000U、买盘≥50%），只在两个独立条件同时成立时入场；退出用短兑现合同。'),
+    'alpha149_goldendog_revival_control_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_goldendog_early_impulse_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='复活已暂停的正收益假设：入场沿用 goldendog_early_impulse，但退出采用该假设当年'
+                    '盈利的对照合同（-20%止损、追踪30/15、持有60分钟），而不是亏损的固定+40%锁利；'
+                    '全部以新ID加入，原臂保持暂停与历史不变。'),
 }
 
 
@@ -522,6 +567,11 @@ def mechanisms(f):
             result['df_price_up_liquidity_up'] or result['df_activity_jump']
             or result['sf_extreme_buy_pressure'] or result['goldendog_early_impulse']
             or result['dense_watch_breakout'])
+        # Wave 11 consolidation: the merged multi-setup entry AND the measured
+        # survivable band. Both members stay individually recorded, so the
+        # attribution of this arm is the intersection, not a new threshold.
+        result['merged_survivable'] = bool(
+            result['merged_multi_setup'] and result['survivable_core'])
         return result
 
     if not isinstance(f, dict):
@@ -1046,6 +1096,10 @@ RULES = {
                             '当前帧价涨且深度不流失、买盘占比≥55%。',
     'alpha149_depth_decay_exit': '深度衰减早退：30秒深度收缩≥15% 且换手<0.1 且深度保留≤0.8 时离场，'
                                  '目标是在跌破写销底线（平均-12.94U）之前退出。',
+    # wave 11
+    'merged_survivable': '合并×存活带：五形态合并（价涨加池/成交额跳增/极端买压/金狗早冲量/高密度突破）'
+                         '与存活带（池龄30-180分钟、FDV/深度1-20、深度≥5000U、买盘≥50%、深度不流失）'
+                         '必须同时成立。',
 }
 
 
