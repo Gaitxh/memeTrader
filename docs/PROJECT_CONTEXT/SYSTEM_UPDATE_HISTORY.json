@@ -2,6 +2,20 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260912-wave12-regime",
+      "recorded_at": "2026-09-11T21:35:00Z",
+      "title": "wave12：复活市场宽度节流假设（3条新臂）+ 修复后前向效果检验",
+      "problem": "已暂停的 market_regime_throttle_v1 是全库仅两条正收益暂停臂之一(+19.62U/9笔/0写销)，但其绝对阈值型市场状态判断在本市场不可行：实测最近20分钟21,771币/140,189帧的横截面，每分钟上涨池占比中位仅13.3%(p25 10.4%/p75 17.1%/最大37.8%)，任何≥50%的绝对门槛永不触发。",
+      "change": "在alpha149引擎内新增因果宽度度量(最近40帧上涨占比fast vs 全程≤400帧占比slow，只用已接受帧，无新请求无前视)与机制regime_risk_on(ratio≥1.2且fast≥0.15且样本≥120)、merged_regime(五形态合并∩宽度)、survivable_regime(存活带∩宽度)；3条新臂沿用实测最强短兑现合同(−20%/追踪30-15/30分钟)；append-only注册(235→238)。",
+      "rationale": "用相对改善而非绝对水平复活该假设，并检验'好池子'与'好时机'是否需要同时满足；原暂停臂保持暂停与历史不变。",
+      "validation": "test_alpha149 28项+test_whipsaw_guard 2项 PASS（含：宽度必须相对改善——fast=0.10/slow=0.05不触发；持平时不触发；无regime输入不触发；三个交叉臂必须两侧同时成立；引擎级150帧累积后ready=True且slow=1.0）；实盘宽度samples=220/fast=0.35/slow=0.436/ready=True，regime_risk_on ready=61、regime_throttle_revival信号23、merged_regime ready=2并出信号；错误#265/#266保持冻结。",
+      "scope": "IMPLEMENTED_LOADED; 宽度基于引擎已接受帧(绝对水平35-44%高于全市场13%)故仅用于相对比较；wave12自然样本刚产生无结论；修复后35分钟81笔平仓0写销+1.73U为早期观察，窗口过短且与市场状态混杂，不作为'写销已解决'的结论。",
+      "commit": "pending",
+      "loaded_at": "2026-09-11T20:54:16Z",
+      "visible_entry": "http://127.0.0.1:8790/#/strategies",
+      "report": "docs/PROJECT_CONTEXT/WAVE12_REGIME_THROTTLE_20260912.md"
+    },
+    {
       "id": "20260912-wave11-consolidation",
       "recorded_at": "2026-09-11T21:20:00Z",
       "title": "wave11：整合实测最强退出画像 + 暂停臂复盘（4条新臂）",

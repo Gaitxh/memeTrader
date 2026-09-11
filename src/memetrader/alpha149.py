@@ -34,6 +34,18 @@ VOL_STOP_MULTIPLE = 4.0
 VOL_STOP_FLOOR = .22
 VOL_STOP_CAP = .50
 
+# Wave 12 regime throttle. The measured cross-section is mostly red: over 1,228
+# minutes of live data only 13.3% of pools were rising on their latest frame at
+# the median (p75 17.1%, max 37.8%), so an absolute breadth threshold would
+# never fire. The gate is therefore RELATIVE to the engine's own recent breadth:
+# the fast window's rising share must exceed the trailing share by 20% and stay
+# above 15%, i.e. the tape has to be improving, not merely positive.
+REGIME_RATIO_MIN = 1.2
+REGIME_FAST_MIN = .15
+REGIME_FAST_SAMPLES = 40
+REGIME_MIN_SAMPLES = 120
+REGIME_MAX_SAMPLES = 400
+
 # arm_id -> (mechanism kind, Chinese label, max_hold_minutes)
 SPECS = {
     'alpha149_uncrowded_first_frame_v1': ('uncrowded_first_frame', '最早帧·无同伴依赖', 15),
@@ -146,6 +158,13 @@ SPECS = {
     'alpha149_survivable_deep_fast30_v1': ('survivable_band_deep', '存活带深池·30分钟1U', 30),
     'alpha149_merged_survivable_v1': ('merged_survivable', '合并×存活带·30分钟', 30),
     'alpha149_goldendog_revival_control_v1': ('goldendog_early_impulse', '复活·金狗早冲量对照合同', 60),
+    # wave 12: revive the paused positive hypothesis market_regime_throttle_v1
+    # (+19.62U over 9 positions, no write-offs) inside this family. The gate is a
+    # causal breadth measure computed from frames the engine already accepted -
+    # no new request, no absolute market claim, and no look-ahead.
+    'alpha149_regime_throttle_revival_v1': ('regime_risk_on', '复活·市场宽度改善节流', 30),
+    'alpha149_merged_regime_v1': ('merged_regime', '合并×宽度改善', 30),
+    'alpha149_survivable_regime_v1': ('survivable_regime', '存活带×宽度改善', 30),
 }
 EXIT_ARMS = {
     'alpha149_profit_decay_exit_v1': 'alpha149_profit_decay',
@@ -529,6 +548,25 @@ OVERRIDES = {
         description='复活已暂停的正收益假设：入场沿用 goldendog_early_impulse，但退出采用该假设当年'
                     '盈利的对照合同（-20%止损、追踪30/15、持有60分钟），而不是亏损的固定+40%锁利；'
                     '全部以新ID加入，原臂保持暂停与历史不变。'),
+    # ---- wave 12: the paused market-regime hypothesis, revived --------------
+    'alpha149_regime_throttle_revival_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_survivable_fast30_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='复活市场状态节流（原 market_regime_throttle_v1 为 +19.62U/9笔/0写销）：'
+                    '只在引擎自身观测到的市场宽度相对改善时入场（近40帧上涨占比≥全程×1.2且≥15%），'
+                    '退出用实测最强短兑现合同。宽度只用已接受的帧计算，不新增请求、无前视。'),
+    'alpha149_merged_regime_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_merged_multi_setup_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='合并×宽度改善：五形态合并 与 市场宽度改善 同时成立才入场；短兑现合同。'),
+    'alpha149_survivable_regime_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_survivable_fast30_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='存活带×宽度改善：实测存活带 与 市场宽度改善 同时成立；短兑现合同。'
+                    '用于检验"好池子"与"好时机"是否需要同时满足。'),
 }
 
 
@@ -572,6 +610,12 @@ def mechanisms(f):
         # attribution of this arm is the intersection, not a new threshold.
         result['merged_survivable'] = bool(
             result['merged_multi_setup'] and result['survivable_core'])
+        # Wave 12: breadth intersections. The regime flag is computed before every
+        # return path so the intersections are always evaluable.
+        result['merged_regime'] = bool(
+            result['merged_multi_setup'] and result['regime_risk_on'])
+        result['survivable_regime'] = bool(
+            result['survivable_core'] and result['regime_risk_on'])
         return result
 
     if not isinstance(f, dict):
@@ -731,6 +775,16 @@ def mechanisms(f):
                 and prev_price > earlier_price and price_now > prev_price
                 and liquidity is not None and liquidity >= 5000
                 and buy_share is not None and buy_share >= .5)
+
+    # Wave 12: breadth-based regime throttle. Computed before every return path
+    # (including the missing-window one) so the intersections in `_finish` are
+    # always evaluable, and False whenever the engine has not supplied a regime.
+    regime = f.get('regime') if isinstance(f.get('regime'), dict) else None
+    regime_ratio = _num(regime.get('ratio')) if regime else None
+    regime_fast = _num(regime.get('fast')) if regime else None
+    out['regime_risk_on'] = bool(
+        regime_ratio is not None and regime_ratio >= REGIME_RATIO_MIN
+        and regime_fast is not None and regime_fast >= REGIME_FAST_MIN)
 
     if not w:
         return _finish(out)
@@ -1100,6 +1154,12 @@ RULES = {
     'merged_survivable': '合并×存活带：五形态合并（价涨加池/成交额跳增/极端买压/金狗早冲量/高密度突破）'
                          '与存活带（池龄30-180分钟、FDV/深度1-20、深度≥5000U、买盘≥50%、深度不流失）'
                          '必须同时成立。',
+    # wave 12
+    'regime_risk_on': '市场宽度改善节流：近40帧上涨占比≥全程占比×1.2 且 ≥15%'
+                      '（实测横截面中位仅13.3%的池在上涨，故用相对改善而非绝对阈值）；'
+                      '复活的假设来自已暂停的 market_regime_throttle_v1（+19.62U/9笔/0写销）。',
+    'merged_regime': '合并×宽度改善：五形态合并 与 市场宽度改善 必须同时成立。',
+    'survivable_regime': '存活带×宽度改善：存活带 与 市场宽度改善 必须同时成立。',
 }
 
 
@@ -1186,11 +1246,17 @@ class Engine(_BaseEngine):
     def __init__(self, started):
         super().__init__(started)
         self._samples = {key: deque(maxlen=FEATURE_SAMPLES) for key in FEATURE_KEYS}
+        # Bounded, causal breadth record: one 0/1 per accepted frame whose 30s
+        # window exists. Nothing is fetched for it and no look-ahead is possible.
+        self._breadth = deque(maxlen=REGIME_MAX_SAMPLES)
 
     def accept(self, row, now):
         feature = super().accept(row, now)
         if feature is not None:
             window = _w30(feature) or {}
+            frame_return = _num(window.get('return_fraction'))
+            if frame_return is not None:
+                self._breadth.append(1.0 if frame_return > 0 else 0.0)
             values = {
                 'pool_age_seconds': feature.get('pool_age_seconds'),
                 'liquidity_usd': feature.get('liquidity_usd'),
@@ -1226,6 +1292,17 @@ class Engine(_BaseEngine):
         f = state['features']
         if not 0 <= (now - _parse_time(f['observed_at'])).total_seconds() <= 30:
             return {}
+        # Wave 12 regime view: the fast window's rising share against the engine's
+        # own trailing share. Both come from frames already accepted, so the
+        # measure is causal, bounded and free of extra requests.
+        breadth = self._breadth
+        if len(breadth) >= REGIME_MIN_SAMPLES:
+            fast_samples = list(breadth)[-REGIME_FAST_SAMPLES:]
+            fast = sum(fast_samples) / len(fast_samples)
+            slow = sum(breadth) / len(breadth)
+            f = {**f, 'regime': {
+                'fast': fast, 'slow': slow, 'samples': len(breadth),
+                'ratio': (fast / slow) if slow > 0 else None}}
         # Provide the two-frame view the measured supply can actually deliver:
         # the current frame plus the immediately preceding frame of this pool.
         rows = state.get('rows') or ()
@@ -1293,6 +1370,14 @@ class Engine(_BaseEngine):
         snap['mechanism_ready'] = {kind: self.counts['alpha149_ready:' + kind]
                                    for kind in KINDS}
         snap['signals'] = {arm: self.counts['signal:' + arm] for arm in ALL_ARMS}
+        breadth = list(self._breadth)
+        snap['regime'] = {
+            'samples': len(breadth),
+            'fast': (sum(breadth[-REGIME_FAST_SAMPLES:]) / len(breadth[-REGIME_FAST_SAMPLES:]))
+            if breadth else None,
+            'slow': (sum(breadth) / len(breadth)) if breadth else None,
+            'ready': len(breadth) >= REGIME_MIN_SAMPLES,
+        }
         return snap
 
 

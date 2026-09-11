@@ -620,6 +620,88 @@ def test_wave11_arms_reuse_measured_contracts():
     assert "alpha149_goldendog_early_impulse_v1" in policies  # original untouched
 
 
+def test_regime_throttle_needs_improving_breadth_not_absolute_level():
+    """Wave 12 revives the paused regime hypothesis with a relative measure."""
+    def vector(regime=None):
+        base = dict(windows={}, current=dict(price_usd=1.0, liquidity_usd=8000.0))
+        if regime is not None:
+            base["regime"] = regime
+        return feature(**base)
+
+    assert alpha149.mechanisms(vector({"fast": .20, "slow": .10, "ratio": 2.0}))[
+        "regime_risk_on"] is True
+    # The measured cross-section is mostly red (median rising share 13.3%), so an
+    # absolute level alone must never qualify.
+    assert alpha149.mechanisms(vector({"fast": .10, "slow": .05, "ratio": 2.0}))[
+        "regime_risk_on"] is False
+    # Flat breadth is not an improving tape.
+    assert alpha149.mechanisms(vector({"fast": .20, "slow": .20, "ratio": 1.0}))[
+        "regime_risk_on"] is False
+    # No regime input at all -> unknown, never inferred.
+    assert alpha149.mechanisms(vector())["regime_risk_on"] is False
+
+
+def test_regime_intersections_require_both_sides():
+    def vector(**over):
+        base = dict(pool_age_seconds=3600.0, fdv_liquidity=3.0, liquidity_usd=8000.0,
+                    buy_count_share=0.6, drawdown=0.0,
+                    prev=dict(price_usd=1.0, liquidity_usd=7900.0, volume_5m_usd=100.0),
+                    current=dict(price_usd=1.03, liquidity_usd=8000.0, volume_5m_usd=130.0),
+                    windows={}, regime={"fast": .25, "slow": .10, "ratio": 2.5})
+        base.update(over)
+        return feature(**base)
+
+    on = alpha149.mechanisms(vector())
+    assert on["regime_risk_on"] is True and on["merged_multi_setup"] is True
+    assert on["survivable_core"] is True
+    assert on["merged_regime"] is True and on["survivable_regime"] is True
+    # Same pool and signal, but a flat tape: both intersections must switch off.
+    off = alpha149.mechanisms(vector(regime={"fast": .10, "slow": .10, "ratio": 1.0}))
+    assert off["merged_multi_setup"] is True and off["survivable_core"] is True
+    assert off["regime_risk_on"] is False
+    assert off["merged_regime"] is False and off["survivable_regime"] is False
+
+
+def test_regime_breadth_is_computed_from_accepted_frames_only():
+    """The engine must expose a causal, bounded breadth measure."""
+    clock = [datetime(2026, 9, 11, tzinfo=UTC)]
+    engine = alpha149.Engine(clock[0])
+    assert engine.snapshot()["regime"] == {
+        "samples": 0, "fast": None, "slow": None, "ready": False}
+
+    def row(price, at, token):
+        return dict(token_id=token, pair_address="P" + token, chain="solana",
+                    provider="dexscreener", price_usd=price, liquidity_usd=8000.0,
+                    volume_5m_usd=120.0, buys_5m=10, sells_5m=4, pool_age_seconds=3600.0,
+                    fdv_usd=24000.0, observed_at=at, ingested_at=at, recorded_at=at)
+
+    # 150 rising frames: breadth must accumulate and become ready without any I/O.
+    for i in range(150):
+        at = f"2026-09-11T00:{i // 60:02d}:{i % 60:02d}Z"
+        clock[0] = datetime(2026, 9, 11, tzinfo=UTC) + timedelta(seconds=i + 1)
+        engine.accept(row(1.0 + i * 0.001, at, f"T{i % 5}"), clock[0])
+    regime = engine.snapshot()["regime"]
+    assert regime["samples"] > 0
+    assert regime["ready"] is True
+    assert regime["slow"] == 1.0
+    assert engine.snapshot()["regime"]["fast"] == 1.0
+
+
+def test_wave12_arms_are_additive_and_use_the_short_hold_contract():
+    policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}
+    for arm in ("alpha149_regime_throttle_revival_v1", "alpha149_merged_regime_v1",
+                "alpha149_survivable_regime_v1"):
+        assert arm in alpha149.ALL_ARMS and arm in policies
+        assert policies[arm]["hard_stop_return"] == -.20
+        assert policies[arm]["trailing_activate_return"] == .30
+        assert policies[arm]["trailing_drawdown"] == .15
+        assert policies[arm]["max_hold_minutes"] == 30
+    assert alpha149.REGIME_RATIO_MIN > 1.0 and alpha149.REGIME_FAST_MIN > 0
+    # The paused original keeps its state; the revival is a separate new id.
+    assert policies["alpha149_regime_throttle_revival_v1"]["feature_hypothesis"] == \
+        "regime_risk_on"
+
+
 def test_wave8_arms_keep_the_entry_frozen_and_only_change_the_exit_contract():
     """Same-signal A/B: the anti-whipsaw arms reuse an existing kind verbatim."""
     policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}
