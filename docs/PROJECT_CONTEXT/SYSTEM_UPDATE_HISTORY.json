@@ -10,7 +10,7 @@
       "rationale": "把'价格止损本身是否在制造亏损'与'预补偿能否把实际止损落回目标'变成可测对照，三条臂共享入场使差异只来自退出合同。",
       "validation": "test_alpha149 34项+test_whipsaw_guard 2项 PASS(三臂共享同一入场、追踪与持有期一致、仅价格止损不同、预补偿数值等于实测中位越深、且均不带wave8宽限/确认字段以保证对照干净)；加载后约3分钟三臂各出8个信号(同步触发符合设计)；wave14修正后的age_rate_acceleration已自然触发(ready=2、input_ready:age_rate=400)，关闭上一轮遗留项；错误#265/#266保持冻结。",
       "scope": "IMPLEMENTED_LOADED; 越深分布来自混合臂样本但已逐笔与自身阈值比较；去掉价格止损后尾部风险可能更大(正是对照组要测的)；预补偿−13.6%为历史中位越深导出的冻结实验定义，分布漂移需重新标定。",
-      "commit": "pending",
+      "commit": "644d860",
       "loaded_at": "2026-09-11T21:34:54Z",
       "visible_entry": "http://127.0.0.1:8790/#/strategies",
       "report": "docs/PROJECT_CONTEXT/WAVE15_EXIT_CONTRACT_20260912.md"
