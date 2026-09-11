@@ -211,6 +211,10 @@ SPECS = {
     # entry and same trailing/horizon as the wave-15 control.
     'alpha149_early_stop_only_v1': ('merged_multi_setup', '退出实验·仅前5分钟价格止损', 30),
     'alpha149_time_decay_stop_v1': ('merged_multi_setup', '退出实验·止损随时间收紧', 30),
+    # wave 17: the measured safest sub-band (FDV/depth 5-20) with the measured
+    # loss-dominant exit (the hard stop) removed, and its control.
+    'alpha149_mid_band_nodeadstop_v1': ('survivable_band_mid', '安全带中段·不用价格止损', 60),
+    'alpha149_mid_band_control_v1': ('survivable_band_mid', '安全带中段·原止损对照', 60),
 }
 EXIT_ARMS = {
     'alpha149_profit_decay_exit_v1': 'alpha149_profit_decay',
@@ -681,6 +685,22 @@ OVERRIDES = {
         description='退出实验·止损随时间收紧：同一入场与追踪合同，允许回撤从入场时的30%'
                     '按每分钟0.6个点线性收紧到下限12%（30分钟≈12%）；'
                     '用于检验"晚发生的止损应当更早触发"是否符合实测越深分布。'),
+    # ---- wave 17: safest band + no loss-dominant stop --------------------------
+    'alpha149_mid_band_nodeadstop_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_mid_band_control_v1',
+        trajectory_exit='alpha149_depth_decay',
+        hard_stop_return=-.90, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='安全带中段·不用价格止损：入场限定 FDV/深度 5-20（实测写销最低，'
+                    '且排除了越深中位-65点的>20断崖档）、池龄30-180分钟、深度≥10000U、价涨、买盘≥55%；'
+                    '退出以深度衰减早退+追踪(+30%→15%)+最长持有60分钟为主，-90%仅灾难兜底。'
+                    '依据：修复后队列中硬止损39笔占全部净亏损（-31.1U/247笔），而追踪退出31笔+1.04U/笔。'),
+    'alpha149_mid_band_control_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_mid_band_nodeadstop_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='安全带中段·原止损对照：与上一条完全同一入场，保留系统默认-20%止损，'
+                    '用于把"换池子"与"去掉价格止损"两个效应分开。'),
 }
 
 
@@ -852,6 +872,19 @@ def mechanisms(f):
         out['survivable_band_deep'] = bool(
             survivable_age
             and fdv_liq is not None and fdv_liq >= 5.0
+            and liquidity is not None and liquidity >= 10000
+            and price_now and prev_price and price_now > prev_price
+            and liq_now is not None and prev_liq is not None and liq_now >= prev_liq * .98
+            and buy_share is not None and buy_share >= .55)
+        # wave 17: the measured safest sub-band. FDV/depth 5-20 has the lowest
+        # write-off rate (1.9% overall, 2.0% in the newer half), while the far
+        # side of it is a cliff: FDV/depth > 20 shows a median stop overshoot of
+        # -65 points against -5 to -10 elsewhere, and depth > 200k the same. This
+        # mechanism therefore keeps the upper bound that `survivable_band_deep`
+        # deliberately does not have, so the cliff tier is excluded by design.
+        out['survivable_band_mid'] = bool(
+            survivable_age
+            and fdv_liq is not None and 5.0 <= fdv_liq <= 20.0
             and liquidity is not None and liquidity >= 10000
             and price_now and prev_price and price_now > prev_price
             and liq_now is not None and prev_liq is not None and liq_now >= prev_liq * .98
@@ -1330,6 +1363,8 @@ RULES = {
                        '当前帧价涨且深度≥前帧98%、买盘占比≥50%。',
     'survivable_band_deep': '存活带深池：池龄30-180分钟、FDV/深度≥5、深度≥10000U、'
                             '当前帧价涨且深度不流失、买盘占比≥55%。',
+    'survivable_band_mid': '安全带中段：与深池带同条件但FDV/深度限定在5-20，'
+                           '排除实测越深中位-65点的>20断崖档；写销率最低的实测区间。',
     'alpha149_depth_decay_exit': '深度衰减早退：30秒深度收缩≥15% 且换手<0.1 且深度保留≤0.8 时离场，'
                                  '目标是在跌破写销底线（平均-12.94U）之前退出。',
     # wave 11

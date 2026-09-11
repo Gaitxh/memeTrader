@@ -876,6 +876,50 @@ def test_wave16_arms_share_the_wave15_entry_and_horizon():
     assert policies["alpha149_nominal_stop_control_v1"].get("trajectory_exit") is None
 
 
+def test_mid_band_excludes_the_measured_cliff_tier():
+    """Wave 17: keep the upper bound that the deep band deliberately lacks."""
+    def vector(fdv_liq, **over):
+        base = dict(pool_age_seconds=3600.0, fdv_liquidity=fdv_liq, liquidity_usd=12000.0,
+                    buy_count_share=0.6,
+                    prev=dict(price_usd=1.0, liquidity_usd=12000.0, volume_5m_usd=1000.0),
+                    current=dict(price_usd=1.02, liquidity_usd=12000.0, volume_5m_usd=1500.0),
+                    windows={})
+        base.update(over)
+        return feature(**base)
+
+    flags = alpha149.mechanisms(vector(8.0))
+    assert flags["survivable_band_mid"] is True
+    assert flags["survivable_band_deep"] is True
+    # The measured cliff (median stop overshoot -65 points) is inside the deep
+    # band but must be outside the mid band.
+    cliff = alpha149.mechanisms(vector(30.0))
+    assert cliff["survivable_band_mid"] is False
+    assert cliff["survivable_band_deep"] is True
+    # Lower edge: below 5 belongs to the core band, not the mid band.
+    assert alpha149.mechanisms(vector(3.0))["survivable_band_mid"] is False
+    # Age and depth conditions still apply.
+    assert alpha149.mechanisms(vector(8.0, pool_age_seconds=600.0))["survivable_band_mid"] is False
+    assert alpha149.mechanisms(vector(8.0, liquidity_usd=6000.0))["survivable_band_mid"] is False
+
+
+def test_wave17_arms_separate_band_choice_from_stop_removal():
+    policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}
+    treatment, control = "alpha149_mid_band_nodeadstop_v1", "alpha149_mid_band_control_v1"
+    for arm in (treatment, control):
+        assert arm in alpha149.ALL_ARMS and arm in policies
+        assert alpha149.SPECS[arm][0] == "survivable_band_mid"
+        assert alpha149.SPECS[arm][2] == 60
+        assert policies[arm]["trailing_activate_return"] == .30
+        assert policies[arm]["trailing_drawdown"] == .15
+    # Same entry, same trailing, same horizon: only the price stop differs.
+    assert policies[treatment]["hard_stop_return"] == -.90
+    assert policies[treatment]["trajectory_exit"] == "alpha149_depth_decay"
+    assert policies[control]["hard_stop_return"] == -.20
+    assert policies[control].get("trajectory_exit") is None
+    # The older deep-band arm keeps its own (unbounded) band untouched.
+    assert alpha149.SPECS["alpha149_survivable_deep_v1"][0] == "survivable_band_deep"
+
+
 def test_wave8_arms_keep_the_entry_frozen_and_only_change_the_exit_contract():
     """Same-signal A/B: the anti-whipsaw arms reuse an existing kind verbatim."""
     policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}
