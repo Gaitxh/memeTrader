@@ -10,7 +10,7 @@
       "rationale": "'严格上涨'是从突破族继承的条件，而写销风险实测来自池子的FDV/深度带与池龄、不来自帧斜率；以'不下跌'替代即可在不改变池子风险的前提下恢复安全带的可交易性。",
       "validation": "加载后实测584帧：survivable_core ready=1、survivable_steady ready=43、survivable_band_deep=18，即安全带可达供应放大约43倍(事前预测34倍)，该臂加载后数分钟内已出信号；test_alpha149 45项+test_whipsaw_guard 2项 PASS(持平帧满足steady不满足core、上涨帧两者都满足、下跌帧两者都不满足、带/池龄/深度/买盘/深度流失条件在steady上仍全部生效、父臂合同与2U投注额不变)；错误#265/#266保持冻结。",
       "scope": "IMPLEMENTED_LOADED; 放宽的是帧斜率而非池子条件，'持平帧是否与上涨帧有相同事后表现'尚无前向证据，正是该臂与survivable_core的同池对照要回答的；此类仪表代码位置必须正确(首版误置产生0/0误导)；安全带族其余臂保持不变，不追溯修改。",
-      "commit": "pending",
+      "commit": "8aa545a",
       "loaded_at": "2026-09-11T22:47:00Z",
       "visible_entry": "http://127.0.0.1:8790/#/strategies",
       "report": "docs/PROJECT_CONTEXT/WAVE21_STEADY_BAND_SUPPLY_FIX_20260912.md"
