@@ -182,6 +182,17 @@ SPECS = {
     # breadth filters that already exist.
     'alpha149_age_rate_accel_v1': ('age_rate_acceleration', '池龄归一化加速·30分钟', 30),
     'alpha149_age_rate_accel_fast_v1': ('age_rate_acceleration', '池龄归一化加速·15分钟', 15),
+    # wave 15: the exit-contract experiment. Measured over 12,773 settled hard
+    # stops (7 days, each compared against its OWN arm threshold): the settlement
+    # frame is the same price as the trigger frame (gap p50 0.00%), but the
+    # realised loss still lands a median 6.4 POINTS deeper than the threshold and
+    # 87.4% of stops land deeper (26.1% more than 20 points deeper). The stop is
+    # therefore not a level, it is a level plus gap risk. Three arms share one
+    # frozen high-supply entry and differ only in that contract, so the question
+    # "may a price stop be removed or pre-compensated?" becomes measurable.
+    'alpha149_no_price_stop_v1': ('merged_multi_setup', '退出实验·不用价格止损', 30),
+    'alpha149_precomp_stop_v1': ('merged_multi_setup', '退出实验·预补偿止损', 30),
+    'alpha149_nominal_stop_control_v1': ('merged_multi_setup', '退出实验·名义止损对照', 30),
 }
 EXIT_ARMS = {
     'alpha149_profit_decay_exit_v1': 'alpha149_profit_decay',
@@ -607,6 +618,30 @@ OVERRIDES = {
         excess_return_vs_arm='alpha149_age_rate_accel_v1',
         description='池龄归一化加速（15分钟）：与30分钟臂完全同一入场信号，只把持有期改为15分钟，'
                     '复刻系统已验证的15/30分钟配对（age_rate_horizon_fast_v1 +109.91U）。'),
+    # ---- wave 15: the exit-contract experiment ---------------------------------
+    # One frozen entry (the highest-supply merge), three exit contracts. Measured
+    # basis: settled stops land a median 6.4 points deeper than their own
+    # threshold and 87.4% of them land deeper, while trailing and max-hold exits
+    # are the only positive exit families. -0.90 is only a catastrophe backstop.
+    'alpha149_no_price_stop_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_nominal_stop_control_v1',
+        hard_stop_return=-.90, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='退出实验·不用价格止损：与对照臂完全同一入场，但-90%仅作灾难兜底，'
+                    '实际退出只走追踪(+30%激活/回撤15%)、最长持有30分钟与流动性/写销规则；'
+                    '用于检验"价格止损本身是否在制造亏损"（实测止损单笔中位比阈值深6.4个点）。'),
+    'alpha149_precomp_stop_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_nominal_stop_control_v1',
+        hard_stop_return=-.136, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='退出实验·预补偿止损：入场同上，但止损线前移到-13.6%，'
+                    '使实测中位结算深度（阈值+6.4个点）落在原本想要的-20%附近。'),
+    'alpha149_nominal_stop_control_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_no_price_stop_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='退出实验·名义止损对照：入场同上，保持系统默认-20%止损与追踪30/15、持有30分钟，'
+                    '作为另两条退出合同的同入场基准。'),
 }
 
 

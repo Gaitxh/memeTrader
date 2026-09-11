@@ -803,6 +803,31 @@ def test_wave14_arms_pair_two_horizons_on_one_frozen_entry():
         assert original not in policies  # they live in the pattern lane, not here
 
 
+def test_wave15_exit_contract_experiment_shares_one_frozen_entry():
+    """Three exit contracts on one entry: does the price stop itself cost money?"""
+    policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}
+    arms = ("alpha149_no_price_stop_v1", "alpha149_precomp_stop_v1",
+            "alpha149_nominal_stop_control_v1")
+    for arm in arms:
+        assert arm in alpha149.ALL_ARMS and arm in policies
+        # Identical entry, identical trailing contract, identical horizon.
+        assert alpha149.SPECS[arm][0] == "merged_multi_setup", arm
+        assert policies[arm]["trailing_activate_return"] == .30
+        assert policies[arm]["trailing_drawdown"] == .15
+        assert alpha149.SPECS[arm][2] == 30
+    # Only the price stop differs, and the pre-compensation equals the measured
+    # median overshoot (6.4 points) below the nominal -20%.
+    assert policies["alpha149_nominal_stop_control_v1"]["hard_stop_return"] == -.20
+    assert policies["alpha149_precomp_stop_v1"]["hard_stop_return"] == -.136
+    assert policies["alpha149_no_price_stop_v1"]["hard_stop_return"] == -.90
+    for arm in arms:
+        assert "hard_stop_grace_seconds" not in policies[arm]
+        assert "hard_stop_confirm_marks" not in policies[arm]
+    # The wave-8 merge arms keep their own contracts untouched.
+    assert policies["alpha149_merged_multi_setup_fast_v1"]["hard_stop_return"] == -.20
+    assert policies["alpha149_merged_multi_setup_v1"]["hard_stop_grace_seconds"] == 180
+
+
 def test_wave8_arms_keep_the_entry_frozen_and_only_change_the_exit_contract():
     """Same-signal A/B: the anti-whipsaw arms reuse an existing kind verbatim."""
     policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}
