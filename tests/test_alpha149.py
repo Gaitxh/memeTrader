@@ -920,6 +920,42 @@ def test_wave17_arms_separate_band_choice_from_stop_removal():
     assert alpha149.SPECS["alpha149_survivable_deep_v1"][0] == "survivable_band_deep"
 
 
+def test_wave18_arm_requires_both_measured_filters_at_half_size():
+    """Safe band AND the best entry mechanism, at half notional."""
+    def vector(**over):
+        base = dict(pool_age_seconds=3600.0, fdv_liquidity=3.0, liquidity_usd=8000.0,
+                    buy_count_share=0.6, volume_acceleration_5m_1h=3.0, volume_liquidity=0.2,
+                    prev=dict(price_usd=1.0, liquidity_usd=7900.0, volume_5m_usd=100.0),
+                    current=dict(price_usd=1.03, liquidity_usd=8000.0, volume_5m_usd=130.0),
+                    windows={})
+        base.update(over)
+        return feature(**base)
+
+    both = alpha149.mechanisms(vector())
+    assert both["survivable_core"] is True and both["age_rate_acceleration"] is True
+    assert both["survivable_age_rate"] is True
+    # Activity accelerating but the pool is outside the safe band: off.
+    outside = alpha149.mechanisms(vector(fdv_liquidity=0.5))
+    assert outside["age_rate_acceleration"] is True and outside["survivable_core"] is False
+    assert outside["survivable_age_rate"] is False
+    # Safe band but no real acceleration: off.
+    flat = alpha149.mechanisms(vector(volume_acceleration_5m_1h=1.0))
+    assert flat["survivable_core"] is True and flat["age_rate_acceleration"] is False
+    assert flat["survivable_age_rate"] is False
+    # The cliff tier is outside the safe band, so it is excluded here as well.
+    cliff = alpha149.mechanisms(vector(fdv_liquidity=30.0))
+    assert cliff["survivable_core"] is False and cliff["survivable_age_rate"] is False
+
+    policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}
+    arm = "alpha149_survivable_age_rate_v1"
+    assert policies[arm]["notional_usd"] == 1.0
+    assert policies[arm]["hard_stop_return"] == -.20
+    assert alpha149.SPECS[arm][0] == "survivable_age_rate"
+    # The full-size parent arms keep their own sizing.
+    assert policies["alpha149_age_rate_accel_v1"]["notional_usd"] == 2.0
+    assert policies["alpha149_survivable_core_v1"]["notional_usd"] == 2.0
+
+
 def test_wave8_arms_keep_the_entry_frozen_and_only_change_the_exit_contract():
     """Same-signal A/B: the anti-whipsaw arms reuse an existing kind verbatim."""
     policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}

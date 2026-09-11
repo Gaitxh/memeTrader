@@ -215,6 +215,10 @@ SPECS = {
     # loss-dominant exit (the hard stop) removed, and its control.
     'alpha149_mid_band_nodeadstop_v1': ('survivable_band_mid', '安全带中段·不用价格止损', 60),
     'alpha149_mid_band_control_v1': ('survivable_band_mid', '安全带中段·原止损对照', 60),
+    # wave 18: measured-safe band AND the measured best entry, at half size to cap
+    # the blast radius of a single-token collapse (measured: one BSC token hit 29
+    # arms at once for -97.0U in the stressed window).
+    'alpha149_survivable_age_rate_v1': ('survivable_age_rate', '安全带×池龄加速·1U', 30),
 }
 EXIT_ARMS = {
     'alpha149_profit_decay_exit_v1': 'alpha149_profit_decay',
@@ -701,6 +705,16 @@ OVERRIDES = {
         hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
         description='安全带中段·原止损对照：与上一条完全同一入场，保留系统默认-20%止损，'
                     '用于把"换池子"与"去掉价格止损"两个效应分开。'),
+    # ---- wave 18: safe band x best entry, at half size -------------------------
+    'alpha149_survivable_age_rate_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_age_rate_accel_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='安全带×池龄加速（1U）：入场同时满足实测存活带（池龄30-180分钟、FDV/深度1-20、'
+                    '深度≥5000U、价涨且深度不流失、买盘≥50%）与实测最强入场判据'
+                    '（5分钟活动率≥其按龄归一小时率的3倍），退出用实测最强短兑现合同；'
+                    '投注额取1U（半仓），依据是压力窗口内单一BSC代币同时击中29条臂、合计-97.0U，'
+                    '用于控制单币崩塌的爆炸半径。'),
 }
 
 
@@ -758,6 +772,14 @@ def mechanisms(f):
         # construction - no new threshold, no look-ahead.
         result['confirmed_survivable'] = bool(
             result['survivable_core'] and result['seq_two_step_rise'])
+        # Wave 18: two independently measured filters on one entry. The survivable
+        # band suppressed write-offs under stress (0 of 17 closed in the stressed
+        # window against 10.3% for the rest of the family) and the age-rate
+        # acceleration is the system's highest-PnL entry mechanism; requiring both
+        # keeps an entry only when the pool is in the safe band AND its activity is
+        # genuinely accelerating.
+        result['survivable_age_rate'] = bool(
+            result['survivable_core'] and result['age_rate_acceleration'])
         return result
 
     if not isinstance(f, dict):
@@ -1377,6 +1399,9 @@ RULES = {
                       '复活的假设来自已暂停的 market_regime_throttle_v1（+19.62U/9笔/0写销）。',
     'merged_regime': '合并×宽度改善：五形态合并 与 市场宽度改善 必须同时成立。',
     'survivable_regime': '存活带×宽度改善：存活带 与 市场宽度改善 必须同时成立。',
+    'survivable_age_rate': '存活带×池龄加速：实测存活带（池龄30-180分钟、FDV/深度1-20、深度≥5000U、'
+                           '价涨且深度不流失、买盘≥50%）与池龄归一化加速（5分钟活动率≥按龄归一小时率3倍）'
+                           '必须同时成立；1U半仓以控制单币崩塌的爆炸半径。',
     # wave 13
     'confirmed_survivable': '存活带×连续两步确认：存活带成立且本池已连续两个观测帧上行'
                             '（成交因此推迟一帧，先确认再买入）；退出用实测最强短兑现合同。',
