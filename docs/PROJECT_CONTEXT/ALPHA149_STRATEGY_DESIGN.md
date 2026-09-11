@@ -214,7 +214,34 @@
 即：**引擎已能收到帧（成本 0.56ms/帧）**，剩下的等待属于共享门与数据供给，
 需要更长窗口的自然观察才能判定新臂是否真的能成交。
 
-### 10.6 已知缺口
+### 10.6 第二处同类缺陷修复：引擎信号此前没有被采集（2026-09-11 20:34 加载）
+
+与"没有喂帧"同类的第二个集成缺陷：`chain_meme_cohort_observer_once` 的信号采集循环只采集
+`_dex_trajectory.signals_for`、`_trajectory144.signals_for` 与两个 producer
+（`_microstructure119`、`_event_clone_shadow`），**从未调用 `_alpha149.signals_for`**。
+因此即使引擎已有帧，新臂的信号也不会进入 `accepted_cohort_signals`，入场永远停在
+`wait_passive_cohort_opportunity`。
+
+修复（加法）：
+
+1. 新增 `fresh149` 集合，记录被本引擎接受为**新帧**的身份；
+2. 在既有采集循环中为 `fresh149` 身份采集 `trajectory149.signals_for(...)`；
+3. **在 `extra148`（feature-only 额外帧）分支内同样采集**——这正是帧供给改动的目的：
+   让 148 的空余地址位帧成为新臂可用的独立观察（不触发 legacy probe / Event / 额外 RPC）。
+
+验证（20:34:35 重载后约 4 分钟）：
+
+| 项 | 结果 |
+|---|---|
+| `alpha149_features` | **606 帧**，p95 **1.26ms/帧** |
+| `held_fetch` p95 | 1.875s（无回退） |
+| 新臂在评估中的阻塞构成 | `await_distinct_dex_trajectory_frame` 2,856 / `wait_passive_cohort_opportunity` 1,564（最后 400 次评估） |
+| 新臂入场决策 | 仍为 0 |
+
+即：**两处集成缺陷已修复**，新臂现在确实被喂帧、信号确实被采集；剩余等待是共享的严格门
+（要求存在独立更晚回执）与机制在真实数据上的触发频率，需要更长窗口的自然观察才能判定。
+
+### 10.7 已知缺口
 
 `chain_web.py` **完全没有引用该管理器**，因此 §10.2 新增的 6 个计数（eligible_batch / no_spare /
 selected_extra / inflight_skipped / failed_request / cancelled_request）目前**只存在于内存**，

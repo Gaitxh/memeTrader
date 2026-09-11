@@ -8019,7 +8019,7 @@ class Runtime:
                     "is_held": token.token_id in getattr(self, "_pattern_held_tokens", set())})
                 quotes[identity] = (token, snapshot)
             now = utcnow()
-            fresh_trajectory = set(); fresh144=set(); extra148_signals={}; delayed148=[]
+            fresh_trajectory = set(); fresh144=set(); fresh149=set(); extra148_signals={}; delayed148=[]
             for frame in frames:
                 identity = (frame['token_id'], frame['pair_address'])
                 feature_only = frame['token_id'] in extra148
@@ -8033,7 +8033,8 @@ class Runtime:
                 # ALPHA149 consumes every observed frame (including feature-only
                 # spares) so its own arms see a denser, independent frame supply.
                 started149=asyncio.get_running_loop().time()
-                trajectory149.accept(frame, now)
+                if trajectory149.accept(frame, now) is not None:
+                    fresh149.add(identity)
                 if hasattr(self,'runtime_timing'):self.runtime_timing.observe('alpha149_features',asyncio.get_running_loop().time()-started149,items=1)
                 if hasattr(self,'runtime_timing'):self.runtime_timing.observe('trajectory144_features',asyncio.get_running_loop().time()-started145,items=1)
                 if feature_only:
@@ -8079,9 +8080,16 @@ class Runtime:
             for identity in quotes:
                 if identity[0] in extra148:
                     signals.setdefault(identity,{}).update(extra148_signals.get(identity,{}))
+                    # ALPHA149: spare-capacity frames exist to give the new arms
+                    # independent observations, so harvest their signals here
+                    # too (no legacy probe, no Event lookup, no extra RPC).
+                    if identity in fresh149:
+                        signals.setdefault(identity,{}).update(trajectory149.signals_for(*identity,now))
                     continue  # Feature-only: no legacy probe, Event or extra RPC producer.
                 if identity in fresh_trajectory:
                     signals.setdefault(identity,{}).update(trajectory.signals_for(*identity,now))
+                if identity in fresh149:
+                    signals.setdefault(identity,{}).update(trajectory149.signals_for(*identity,now))
                 if identity in fresh144:
                     started145=asyncio.get_running_loop().time()
                     features=trajectory144.pools[identity]['features']
