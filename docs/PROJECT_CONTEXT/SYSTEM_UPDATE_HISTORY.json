@@ -10,7 +10,7 @@
       "rationale": "把'实测存活入场'与'实测最强退出合同'合并整合，并把暂停的正收益假设以新ID重表达；不修改任何既有臂，与wave8/9形成短兑现vs长容忍的同入场对照。",
       "validation": "test_alpha149 26项+test_whipsaw_guard 2项 PASS（新增：merged_survivable必须两个独立条件同时成立——年轻池仅有信号、深度持平的帧仅有存活条件，均不得触发；wave11合同复用实测画像且不触碰原臂）；加载后merged_survivable ready=3且merged_survivable_v1与survivable_fast30_v1已各出1信号；alpha149家族退出结构改善(max_hold 38笔+18.04U、trailing 28笔+18.86U、hard_stop 32笔-21.76U、写销28笔-80.0U，净亏损仍全部来自写销)；错误#265/#266保持冻结。",
       "scope": "IMPLEMENTED_LOADED; 短持有画像来自单一最强臂且其入场族运行在pattern通道，wave11检验的是退出合同迁移而非整臂复制；同入场A/B样本仍为1-4笔，不作方向性结论；market_regime_throttle_v1的复活待下一轮。",
-      "commit": "pending",
+      "commit": "9143a5a",
       "loaded_at": "2026-09-11T20:48:52Z",
       "visible_entry": "http://127.0.0.1:8790/#/strategies",
       "report": "docs/PROJECT_CONTEXT/WAVE11_CONSOLIDATION_20260912.md"
