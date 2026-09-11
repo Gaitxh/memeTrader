@@ -47,6 +47,18 @@ def triggered(f):
     return {kind for kind, hit in alpha149.mechanisms(f).items() if hit}
 
 
+# wave 8: arm -> the entry kind it reuses. Every one of these arms is a NEW id;
+# the mechanism it selects is an existing frozen kind, so the only variable is
+# the exit contract (grace, mark confirmation, stop width, trailing).
+WAVE8_ENTRY_KINDS = {
+    "alpha149_survive_noise_wide_v1": "df_price_up_liquidity_up",
+    "alpha149_survive_noise_confirm_v1": "df_price_up_liquidity_up",
+    "alpha149_merged_multi_setup_v1": "merged_multi_setup",
+    "alpha149_merged_multi_setup_fast_v1": "merged_multi_setup",
+    "alpha149_goldendog_deep_hold_v1": "sf_goldendog_deep_base",
+}
+
+
 def _policy_base():
     from memetrader.cohort_experiments import cohort_experiment_policies
     return cohort_experiment_policies()[2]
@@ -95,6 +107,37 @@ def test_alpha149_engine_emits_only_its_own_arms():
     assert all(arm in alpha149.ALL_ARMS for arm in signals)
     snap = engine.snapshot()
     assert snap["version"] == alpha149.VERSION and snap["extra_requests"] == 0
+
+
+def test_wave8_arms_are_reachable_through_the_live_engine_path():
+    """The new arms must be emittable by the real engine, not only by the pure
+    mechanism function: this drives frames through Engine.accept/signals_for."""
+    clock = [datetime(2026, 9, 11, tzinfo=UTC)]
+    engine = alpha149.Engine(clock[0])
+
+    def row(price, liquidity, volume, at):
+        return dict(token_id="solana:T", pair_address="P", chain="solana",
+                    provider="dexscreener", price_usd=price, liquidity_usd=liquidity,
+                    volume_5m_usd=volume, buys_5m=12, sells_5m=2, pool_age_seconds=600.0,
+                    observed_at=at, ingested_at=at, recorded_at=at)
+
+    # Two consecutive rising frames with liquidity added: the frozen
+    # `df_price_up_liquidity_up` member is what both wave-8 A/B pairs reuse.
+    for step, at in enumerate(("2026-09-11T00:00:00Z", "2026-09-11T00:00:30Z")):
+        clock[0] = datetime(2026, 9, 11, tzinfo=UTC) + timedelta(seconds=1 + 30 * step)
+        engine.accept(row(1.0 + 0.05 * step, 5000.0 + 500.0 * step, 100.0 + 20.0 * step, at),
+                      clock[0])
+    clock[0] = datetime(2026, 9, 11, tzinfo=UTC) + timedelta(seconds=32)
+    signals = engine.signals_for("solana:T", "P", clock[0])
+    for arm in ("alpha149_survive_noise_wide_v1", "alpha149_survive_noise_confirm_v1",
+                "alpha149_merged_multi_setup_v1", "alpha149_merged_multi_setup_fast_v1"):
+        assert arm in signals, arm
+        assert signals[arm]["decision_evidence"]["mode"] in (
+            "df_price_up_liquidity_up", "merged_multi_setup")
+    snap = engine.snapshot()
+    assert snap["signals"]["alpha149_merged_multi_setup_v1"] >= 1
+    assert "merged_multi_setup" in snap["mechanism_ready"]
+
 
 
 # --------------------------------------------------------------------------- #
@@ -259,6 +302,12 @@ CASES = {
         prev=dict(price_usd=1.0, liquidity_usd=20000.0, volume_5m_usd=100.0),
         current=dict(price_usd=1.04, liquidity_usd=20500.0, volume_5m_usd=140.0),
         liquidity_usd=20500.0, windows={}),
+    # wave 8: the merged entry is an OR of already-frozen member mechanisms, so a
+    # vector that triggers exactly one member must also trigger the merge.
+    "merged_multi_setup": dict(
+        prev=dict(price_usd=1.0, liquidity_usd=5000.0, volume_5m_usd=100.0),
+        current=dict(price_usd=1.05, liquidity_usd=5500.0, volume_5m_usd=120.0),
+        liquidity_usd=5500.0, windows={}),
     # wave 7: revived hypotheses via sequence machinery
     "inv_contraction": dict(
         prev=dict(price_usd=1.0, liquidity_usd=6000.0, volume_5m_usd=100.0),
@@ -308,6 +357,77 @@ def test_hold_variants_reuse_an_existing_kind_with_a_longer_hold():
 def test_each_mechanism_fires_on_its_own_vector():
     for kind, over in CASES.items():
         assert kind in triggered(feature(**over)), kind
+
+
+def test_live_feature_shape_is_accepted_by_every_mechanism():
+    """The derived feature never carries a top-level liquidity_usd.
+
+    Regression for a live defect: mechanisms guarded by that key stayed False
+    forever in the runtime (and `inv_contraction` raised TypeError), so the arms
+    reading them could never trade. The current frame must supply the depth.
+    """
+    live = feature(liquidity_usd=None, fdv_liquidity=0.6, buy_count_share=0.66,
+                   drawdown=0.0, pool_age_seconds=600.0, windows={},
+                   current=dict(price_usd=1.0, liquidity_usd=12000.0,
+                                volume_5m_usd=100.0, buys_5m=10.0, sells_5m=5.0))
+    live.pop("liquidity_usd", None)          # exactly what Engine.accept returns
+    assert "liquidity_usd" not in live
+    flags = alpha149.mechanisms(live)
+    assert flags["sf_deep_low_fdv"] is True
+    assert flags["sf_quiet_absorption"] is True
+    assert flags["righttail_lottery"] is True
+    two_frame = {**live,
+                 "current": dict(price_usd=1.05, liquidity_usd=12500.0,
+                                 volume_5m_usd=120.0, buys_5m=10.0, sells_5m=5.0),
+                 "prev": dict(price_usd=1.0, liquidity_usd=5000.0,
+                              volume_5m_usd=100.0)}
+    flags = alpha149.mechanisms(two_frame)
+    assert flags["df_price_up_liquidity_up"] is True
+    assert flags["merged_multi_setup"] is True
+    # A genuinely unknown depth (no current frame) must stay False, never zero.
+    unknown = feature(liquidity_usd=None, windows={}, current={"price_usd": 1.0})
+    unknown.pop("liquidity_usd", None)
+    assert alpha149.mechanisms(unknown)["sf_deep_low_fdv"] is False
+    assert alpha149.mechanisms(unknown)["merged_multi_setup"] is False
+
+
+def test_wave8_arms_keep_the_entry_frozen_and_only_change_the_exit_contract():
+    """Same-signal A/B: the anti-whipsaw arms reuse an existing kind verbatim."""
+    policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}
+    for arm, kind in WAVE8_ENTRY_KINDS.items():
+        assert alpha149.SPECS[arm][0] == kind, arm
+        assert policies[arm]["feature_hypothesis"] == kind
+    wide = policies["alpha149_survive_noise_wide_v1"]
+    assert alpha149.SPECS["alpha149_survive_noise_wide_v1"][0] == \
+        alpha149.SPECS["alpha149_df_price_up_liquidity_up_v1"][0]
+    assert wide["hard_stop_return"] == -.45
+    assert wide["hard_stop_grace_seconds"] == 180
+    assert wide["hard_stop_confirm_marks"] == 2
+    assert wide["hard_stop_liquidity_veto_usd"] == 3000.
+    assert wide["hard_stop_liquidity_veto_min_buy_share"] == .5
+    # The confirmation-only control keeps the original stop, so the two effects
+    # (delay vs width) can be separated in forward data.
+    confirm = policies["alpha149_survive_noise_confirm_v1"]
+    assert confirm["hard_stop_grace_seconds"] == 60
+    assert confirm["hard_stop_confirm_marks"] == 2
+    assert "hard_stop_return" not in confirm or confirm["hard_stop_return"] is None or \
+        confirm["hard_stop_return"] == policies["alpha149_df_price_up_liquidity_up_v1"]["hard_stop_return"]
+    assert policies["alpha149_goldendog_deep_hold_v1"]["hard_stop_grace_seconds"] == 300
+    assert policies["alpha149_goldendog_deep_hold_v1"]["hard_stop_confirm_marks"] == 3
+    merged = policies["alpha149_merged_multi_setup_v1"]
+    assert merged["hard_stop_grace_seconds"] == 180
+    # The merge and its fast control share one entry, so the exit is the only
+    # difference between them.
+    assert alpha149.SPECS["alpha149_merged_multi_setup_v1"][0] == \
+        alpha149.SPECS["alpha149_merged_multi_setup_fast_v1"][0] == "merged_multi_setup"
+    assert alpha149.SPECS["alpha149_merged_multi_setup_fast_v1"][2] < \
+        alpha149.SPECS["alpha149_merged_multi_setup_v1"][2]
+    # No existing arm may learn the new fields.
+    for arm, policy in policies.items():
+        if arm in alpha149.WAVE8_ARMS:
+            continue
+        assert "hard_stop_grace_seconds" not in policy, arm
+        assert "hard_stop_confirm_marks" not in policy, arm
 
 
 def test_baseline_vector_triggers_nothing():

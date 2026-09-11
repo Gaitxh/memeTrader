@@ -2,6 +2,20 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260912-reachability-and-whipsaw",
+      "recorded_at": "2026-09-11T20:35:00Z",
+      "title": "修复两处使策略判断不可达的真实缺陷（家族depth取值 + 信号循环嵌套回归），并新增5条抗洗/合并策略臂",
+      "problem": "①ALPHA149机制读顶层liquidity_usd，而derive只发布current.liquidity_usd，导致每帧在depth守卫处提前返回：43条标定向量只有1条可触发，wave7的inv_contraction还对None做>=比较，自13:19Z起抛TypeError 398次并打死剩余两帧机制；②commit 4ed7101把覆盖报价块插进for identity in quotes循环与fresh144信号块之间，导致trajectory144/145与微观结构/event-clone信号每周期最多只对最后一个identity执行且仅在共享批次启用时执行，无帧周期抛UnboundLocalError 392次；③用户观察的'金狗被正常振幅洗出'经量化成立：48h内383次硬止损中位持仓1.1分钟，81.8%的代币在随后1小时高于我方卖出价（中位+20.2%），7天硬止损合计-61,540U而追踪退出+20,584U、最长持有+7,115U。",
+      "change": "alpha149：depth缺失时回落当前帧、三处判空、窗口派生变量统一绑定；runtime：覆盖报价块整块后移到quotes循环之后并改名循环变量；store：新增opt-in抗洗guard（hard_stop_grace_seconds / hard_stop_confirm_marks / hard_stop_liquidity_veto_usd+min_buy_share），流动性退出不受其影响；新增5条新ID臂（同信号宽止损、同信号仅加确认、多形态合并慢出、合并快出对照、金狗深池极宽容忍），append-only注册。",
+      "rationale": "先让既有机制在实盘路径上真正可达，再让退出合同能容忍正常振幅；所有改动对新臂opt-in，既有策略定义与行为哈希不变，资金周期不动，只追加不改写。",
+      "validation": "test_alpha149 15项 + test_whipsaw_guard 2项 PASS；shared_batch148/strategy_delivery144/145 PASS；标定向量可达性1/43→39/43；加载后mechanism_ready非零机制4→14、signals 0→20（含5条新臂）；错误#265/#266重启后停止增长；新臂自然开仓4条×2仓，merged_multi_setup_fast_v1已1次止损-0.4115U而慢出对照仍持仓；paper_only/live_locked/资金周期/激活前沿均未变。",
+      "scope": "IMPLEMENTED_LOADED; 新臂自然样本极小（4条臂×2仓）无盈利结论；测试隔离问题（shared_batch148+dex_trajectory同进程顺序运行）待后续定位；原目标的更多新策略族与退役臂复盘留待后续轮次。",
+      "commit": "pending",
+      "loaded_at": "2026-09-11T20:21:07Z",
+      "visible_entry": "http://127.0.0.1:8790/#/strategies",
+      "report": "docs/PROJECT_CONTEXT/WHIPSAW_AND_ARM_REACHABILITY_20260912.md"
+    },
+    {
       "id": "20260912-retrieval-curve-gap",
       "recorded_at": "2026-09-11T19:50:00Z",
       "title": "持仓单币检索耗时曲线空档根因：无标的时段不采样，而不是进程中断；曲线按空档断开",

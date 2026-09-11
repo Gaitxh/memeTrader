@@ -86,6 +86,18 @@ SPECS = {
     'alpha149_seq_price_then_depth_v1': ('seq_price_then_depth', '序列·价格先动深度随后', 30),
     'alpha149_seq_two_step_rise_v1': ('seq_two_step_rise', '序列·两步连续上行', 30),
     'alpha149_mature_two_step_slow_v1': ('mature_two_step_slow', '慢进慢出·老池两步上行长持', 90),
+    # wave 8: the measured whipsaw defect. Of 383 hard stops in 48 hours (median
+    # holding time at the stop: 1.1 minutes) 81.8% of the tokens traded above our
+    # exit price within the next hour and the median best price afterwards was
+    # +20.2% (p75 +86.5%), while trailing exits and max-hold exits were the only
+    # positive exit families. These arms keep the ENTRY signal frozen and change
+    # only the exit contract (grace period, mark confirmation, wider stop, later
+    # trailing), so old and new exits are compared on literally the same signals.
+    'alpha149_survive_noise_wide_v1': ('df_price_up_liquidity_up', '抗洗·同信号宽止损慢出', 120),
+    'alpha149_survive_noise_confirm_v1': ('df_price_up_liquidity_up', '抗洗·同信号仅加确认', 60),
+    'alpha149_merged_multi_setup_v1': ('merged_multi_setup', '合并·多形态宽止损慢出', 120),
+    'alpha149_merged_multi_setup_fast_v1': ('merged_multi_setup', '合并·多形态快出对照', 15),
+    'alpha149_goldendog_deep_hold_v1': ('sf_goldendog_deep_base', '金狗·深池极宽容忍长持', 240),
 }
 EXIT_ARMS = {
     'alpha149_profit_decay_exit_v1': 'alpha149_profit_decay',
@@ -99,6 +111,22 @@ EXIT_ARMS = {
 EXIT_KINDS = frozenset(EXIT_ARMS.values())
 KINDS = tuple(kind for kind, _, _ in SPECS.values())
 ALL_ARMS = tuple(SPECS) + tuple(EXIT_ARMS)
+# Wave 8: the anti-whipsaw arms. They are ordinary new arms; they are also the
+# only arms allowed to declare the opt-in exit guards in the shared evaluator.
+WAVE8_ARMS = frozenset({
+    'alpha149_survive_noise_wide_v1',
+    'alpha149_survive_noise_confirm_v1',
+    'alpha149_merged_multi_setup_v1',
+    'alpha149_merged_multi_setup_fast_v1',
+    'alpha149_goldendog_deep_hold_v1',
+})
+WAVE8_ENTRY_KINDS = {
+    'alpha149_survive_noise_wide_v1': 'df_price_up_liquidity_up',
+    'alpha149_survive_noise_confirm_v1': 'df_price_up_liquidity_up',
+    'alpha149_merged_multi_setup_v1': 'merged_multi_setup',
+    'alpha149_merged_multi_setup_fast_v1': 'merged_multi_setup',
+    'alpha149_goldendog_deep_hold_v1': 'sf_goldendog_deep_base',
+}
 
 # Per-arm sizing / exit overrides. Anything not listed keeps the family default
 # produced by dex_trajectory.policies (5U, max 2, hard stop -20%, trail 30/15).
@@ -290,6 +318,55 @@ OVERRIDES = {
         trailing_activate_return=.20, trailing_drawdown=.15,
         description='最后一个空象限（慢进×慢出）：老池（≥30分钟）连续两步上行、深度≥5000U、'
                     '买笔≥0.5；持有至90分钟，追踪退出优先。'),
+    # ---- wave 8: hold through normal amplitude --------------------------------
+    # Measured defect (48h, 383 hard stops): median holding time at the stop was
+    # 1.1 minutes, yet 81.8% of those tokens traded above our exit within the next
+    # hour (median best +20.2%). A -20% stop inside the first minutes therefore
+    # sells normal memecoin amplitude. The three new fields are opt-in and read
+    # only by arms that declare them:
+    #   hard_stop_grace_seconds            - no price stop before N seconds
+    #   hard_stop_confirm_marks            - N consecutive marks below the level
+    #   hard_stop_liquidity_veto_usd/share - a still-deep pool with buy dominance
+    #                                        is a dip, not a breakdown
+    # Liquidity/rug exits are deliberately NOT gated: those remain immediate.
+    'alpha149_survive_noise_wide_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_df_price_up_liquidity_up_v1',
+        hard_stop_return=-.45, hard_stop_grace_seconds=180, hard_stop_confirm_marks=2,
+        hard_stop_liquidity_veto_usd=3000., hard_stop_liquidity_veto_min_buy_share=.5,
+        trailing_activate_return=.45, trailing_drawdown=.25,
+        description='抗洗对照：入场信号与 df_price_up_liquidity_up 完全相同，只改退出合同——'
+                    '前180秒不用价格止损、需连续2帧跌破-45%、池深≥3000U且买盘占优时不因下跌离场；'
+                    '追踪在+45%激活、回撤25%离场，持有至120分钟。'),
+    'alpha149_survive_noise_confirm_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_df_price_up_liquidity_up_v1',
+        hard_stop_grace_seconds=60, hard_stop_confirm_marks=2,
+        description='抗洗对照（只加确认，不放宽止损）：同一入场信号，仍保留-20%止损，但前60秒不触发、'
+                    '且必须连续2帧跌破才卖出；用于把"确认延迟"与"放宽止损"两个因素分开。'),
+    'alpha149_merged_multi_setup_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_merged_multi_setup_fast_v1',
+        hard_stop_return=-.45, hard_stop_grace_seconds=180, hard_stop_confirm_marks=2,
+        hard_stop_liquidity_veto_usd=3000., hard_stop_liquidity_veto_min_buy_share=.5,
+        trailing_activate_return=.45, trailing_drawdown=.25,
+        description='合并整合：把两帧价涨加池、两帧成交额跳增、单帧极端买压、金狗早期冲量、'
+                    '高密度观测突破五个独立设定合成一个入场（任一成立即入场，成员标记仍逐项记录），'
+                    '覆盖更多市场情形；退出用抗洗合同并持有至120分钟。'),
+    'alpha149_merged_multi_setup_fast_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_merged_multi_setup_v1',
+        description='合并入场的快出对照：与 merged_multi_setup 同一入场，保持原-20%止损、无宽限期、'
+                    '持有至15分钟；与慢出臂构成同一入场上的受控比较。'),
+    'alpha149_goldendog_deep_hold_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_sf_goldendog_deep_base_v1',
+        hard_stop_return=-.55, hard_stop_grace_seconds=300, hard_stop_confirm_marks=3,
+        hard_stop_liquidity_veto_usd=5000., hard_stop_liquidity_veto_min_buy_share=.5,
+        trailing_activate_return=.60, trailing_drawdown=.30,
+        description='金狗最大容忍实验：入场与 sf_goldendog_deep_base 相同，退出改为前300秒不设价格止损、'
+                    '连续3帧跌破-55%才离场、深池买盘占优时容忍回撤，追踪+60%激活、回撤30%离场，'
+                    '持有至240分钟；1U小额换取右尾保留。'),
 }
 
 
@@ -316,10 +393,32 @@ def mechanisms(f):
     the shared 1000U depth floor yields all-False; nothing is inferred.
     """
     out = {kind: False for kind in KINDS}
+
+    def _finish(result):
+        """Wave 8 merged entry: an OR of already-frozen member mechanisms.
+
+        Applied on every return path so the two-frame members stay visible even
+        when the 30-second window is absent. No new threshold is introduced here,
+        and each member flag stays individually recorded for attribution.
+        """
+        result['merged_multi_setup'] = bool(
+            result['df_price_up_liquidity_up'] or result['df_activity_jump']
+            or result['sf_extreme_buy_pressure'] or result['goldendog_early_impulse']
+            or result['dense_watch_breakout'])
+        return result
+
     if not isinstance(f, dict):
         return out
     w = _w30(f)
+    frame = f.get('current') if isinstance(f.get('current'), dict) else {}
+    # `dex_trajectory.derive` publishes the current pool depth under `current`
+    # and never sets a top-level `liquidity_usd`. Reading only the top-level key
+    # left every depth-guarded mechanism permanently False in the live engine
+    # (and made `inv_contraction` raise), so both shapes are accepted here; the
+    # current frame is the causal value and matters is never inferred.
     liquidity = _num(f.get('liquidity_usd'))
+    if liquidity is None:
+        liquidity = _num(frame.get('liquidity_usd'))
     pool_age = _num(f.get('pool_age_seconds'))
     buy_share = _num(f.get('buy_count_share'))
     vol_age_acc = _num(f.get('volume_acceleration_age_normalized'))
@@ -406,7 +505,8 @@ def mechanisms(f):
         # wave 7: sequence mechanisms, possible now that pools carry ~44 frames.
         # Inventory contraction while price holds: supply squeezing, not dumping.
         out['inv_contraction'] = bool(
-            liquidity >= 5000 and liq_now is not None and prev_liq is not None
+            liquidity is not None and liquidity >= 5000
+            and liq_now is not None and prev_liq is not None
             and liq_now < prev_liq and price_now and prev_price and price_now >= prev_price
             and buy_share is not None and buy_share >= .5)
         before = f.get('prev2') if isinstance(f.get('prev2'), dict) else None
@@ -424,16 +524,17 @@ def mechanisms(f):
             out['seq_two_step_rise'] = bool(
                 earlier_price and prev_price and price_now
                 and prev_price > earlier_price and price_now > prev_price
-                and liquidity >= 3000)
+                and liquidity is not None and liquidity >= 3000)
             # wave 8: the last empty quadrant - slow entry AND slow exit.
             out['mature_two_step_slow'] = bool(
                 pool_age is not None and pool_age >= 1800
                 and earlier_price and prev_price and price_now
                 and prev_price > earlier_price and price_now > prev_price
-                and liquidity >= 5000 and buy_share is not None and buy_share >= .5)
+                and liquidity is not None and liquidity >= 5000
+                and buy_share is not None and buy_share >= .5)
 
     if not w:
-        return out
+        return _finish(out)
     ret = _num(w.get('return_fraction'))
     acc = _num(w.get('acceleration'))
     liq_change = _num(w.get('liquidity_change_fraction'))
@@ -442,7 +543,7 @@ def mechanisms(f):
     frames = _num(w.get('frames')) or 0
     volatility = _num(w.get('realized_volatility'))
     if liquidity is None or liquidity < 1000 or ret is None:
-        return out
+        return _finish(out)
     rising = (vol_ratio or 0) > 1 and (tx_ratio or 0) > 1
     stable = liq_change is not None and liq_change >= 0
 
@@ -520,6 +621,15 @@ def mechanisms(f):
     #     continuous, independent frames.
     windows = f.get('windows') if isinstance(f.get('windows'), dict) else {}
     w15 = windows.get('15') if isinstance(windows.get('15'), dict) else None
+    w60 = windows.get('60') if isinstance(windows.get('60'), dict) else None
+    w180 = windows.get('180') if isinstance(windows.get('180'), dict) else None
+    # Window-derived locals are bound once, to None when that window never
+    # formed: a mechanism may only fire on genuinely observed evidence, never on
+    # an unbound local and never on a substituted zero.
+    r15 = _num(w15.get('return_fraction')) if w15 else None
+    r60 = _num(w60.get('return_fraction')) if w60 else None
+    r180 = _num(w180.get('return_fraction')) if w180 else None
+    v30 = _num(w.get('log_velocity'))
     if w15:
         short_ret = _num(w15.get('return_fraction'))
         short_tx = _num(w15.get('rolling_tx_change_ratio'))
@@ -549,9 +659,6 @@ def mechanisms(f):
     #     long-horizon velocity.
     w60 = windows.get('60') if isinstance(windows.get('60'), dict) else None
     if w15 and w60:
-        r15 = _num(w15.get('return_fraction'))
-        r60 = _num(w60.get('return_fraction'))
-        v30 = _num(w.get('log_velocity'))
         v60 = _num(w60.get('log_velocity'))
         out['multi_horizon_agreement'] = bool(
             r15 is not None and r60 is not None and r15 > 0 and r60 > 0 and ret > 0
@@ -640,7 +747,9 @@ def mechanisms(f):
         pool_age is not None and pool_age >= 1800 and liquidity >= 10000
         and ret > 0 and turn is not None and turn > .5)
 
-    return out
+    # 28. Merged multi-setup entry (wave 8) is applied by `_finish` on every
+    #     return path, so the two-frame members remain visible without a window.
+    return _finish(out)
 
 
 def exit_reason(kind, f, opened_at, current):
@@ -749,6 +858,9 @@ RULES = {
     'seq_two_step_rise': '三帧序列：连续两步价格上行（持续而非单点尖峰），深度≥3000U。',
     'mature_two_step_slow': '慢进慢出象限：池龄≥30分钟的老池连续两步上行、深度≥5000U、买笔≥0.5；'
                             '持有至90分钟并用追踪退出。',
+    # wave 8
+    'merged_multi_setup': '合并入场：两帧价涨加池 / 两帧成交额跳增 / 单帧极端买压 / 金狗早期冲量 / '
+                          '高密度观测突破，任一成立即入场（成员标记逐项保留，便于归因）。',
 }
 
 
