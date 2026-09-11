@@ -934,16 +934,50 @@ function miniSeriesChart(points,key,label,lineClass,transactions=[],formatter=mo
   const last=valid.at(-1),lastX=x(new Date(last.observed_at).getTime()).toFixed(1),lastY=y(Number(last[key])).toFixed(1);
   return `<svg class="mini-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Token ${esc(label)}变化"><path class="${esc(lineClass)}" d="${path}"/><circle class="series-last ${esc(lineClass)}" cx="${lastX}" cy="${lastY}" r="4"/>${markers}</svg><div class="chart-range"><span>最低 ${formatter(min)}</span><span>${valid.length} 个后端快照点</span><span>最高 ${formatter(max)}</span></div>`;
 }
+function retrievalCurveChart(points,formatter){
+  const W=760,H=150,pad=10,bucketMs=(Number(retrievalSeries?.bucket_seconds)||10)*1000;
+  const times=points.map(p=>new Date(p.observed_at).getTime()),t0=Math.min(...times),t1=Math.max(t0+bucketMs,times[times.length-1]+bucketMs);
+  const vals=points.filter(p=>p.seconds!=null).map(p=>Number(p.seconds));
+  const min=vals.length?Math.min(...vals):0,max=vals.length?Math.max(...vals):1,span=Math.max(max-min,max*.001,1e-12);
+  const x=ts=>pad+(ts-t0)/(t1-t0)*(W-pad*2),y=value=>H-pad-(value-min)/span*(H-pad*2);
+  const runs=[],bands=[];let run=[],bandStart=null,bandKind='';
+  points.forEach((p,i)=>{
+    if(i&&times[i]-times[i-1]>bucketMs*2.5){
+      if(run.length){runs.push(run);run=[];}
+      if(bandStart==null){bandStart=times[i-1];bandKind='missing';}
+    }
+    if(p.seconds==null){
+      if(run.length){runs.push(run);run=[];}
+      if(bandStart==null){bandStart=times[i];bandKind='idle';}
+      else if(bandKind!=='idle'){bands.push([bandStart,times[i],bandKind]);bandStart=times[i];bandKind='idle';}
+    }else{
+      if(bandStart!=null){bands.push([bandStart,times[i],bandKind]);bandStart=null;bandKind='';}
+      run.push(p);
+    }
+  });
+  if(run.length)runs.push(run);
+  if(bandStart!=null)bands.push([bandStart,t1,bandKind]);
+  const paths=runs.map(items=>`<path class="price-line" d="${items.map((p,i)=>`${i?'L':'M'}${x(new Date(p.observed_at).getTime()).toFixed(1)},${y(Number(p.seconds)).toFixed(1)}`).join(' ')}"/>`).join('');
+  const gaps=bands.map(([a,b,kind])=>`<rect class="chart-gap ${kind}" x="${x(a).toFixed(1)}" y="${pad}" width="${Math.max(1,x(b)-x(a)).toFixed(1)}" height="${H-pad*2}"><title>${kind==='idle'?'该时段无持仓、也无有效待成交标的，主通道未发起检索':'该时段没有后端计时点（进程未运行或未采样）'}</title></rect>`).join('');
+  const last=points[points.length-1],dot=last.seconds!=null?`<circle class="series-last price-line" cx="${x(times[times.length-1]).toFixed(1)}" cy="${y(Number(last.seconds)).toFixed(1)}" r="4"/>`:'';
+  return `<svg class="mini-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="持仓单币检索耗时变化">${gaps}${paths}${dot}</svg><div class="chart-range"><span>最低 ${vals.length?formatter(min):'—'}</span><span>${points.length} 个 10 秒桶 · 有效采样 ${vals.length}</span><span>最高 ${vals.length?formatter(max):'—'}</span></div>`;
+}
 function renderRetrievalCurve(){
   const selected=$('#retrieval-chain').value,chains=selected==='all'?['solana','bsc','robinhood']:[selected];
   const points=(retrievalSeries?.points||[]).map(p=>{
-    const sum=chains.reduce((a,c)=>{const s=p.chains[c]||{};for(const k of Object.keys(a))a[k]+=Number(s[k]||0);return a;},{token_attempts:0,priced_tokens:0,failed_tokens:0,weighted_seconds:0});
-    return {observed_at:p.observed_at,...sum,seconds:sum.token_attempts?sum.weighted_seconds/sum.token_attempts:null};
-  }).filter(p=>p.seconds!=null);
+    const sum=chains.reduce((a,c)=>{const s=(p.chains||{})[c]||{};for(const k of Object.keys(a))a[k]+=Number(s[k]||0);return a;},{token_attempts:0,priced_tokens:0,failed_tokens:0,weighted_seconds:0});
+    return {observed_at:p.observed_at,targets:p.targets==null?null:Number(p.targets),...sum,seconds:sum.token_attempts?sum.weighted_seconds/sum.token_attempts:null};
+  });
   if(!points.length){$('#retrieval-curve').innerHTML='<p class="empty">所选链暂无持仓检索计时样本</p>';return;}
-  const latest=points.at(-1),attempts=points.reduce((n,p)=>n+p.token_attempts,0),priced=points.reduce((n,p)=>n+p.priced_tokens,0),failed=points.reduce((n,p)=>n+p.failed_tokens,0);
+  const sampled=points.filter(p=>p.seconds!=null),latest=points.at(-1),lastSample=sampled.at(-1);
+  const attempts=points.reduce((n,p)=>n+p.token_attempts,0),priced=points.reduce((n,p)=>n+p.priced_tokens,0),failed=points.reduce((n,p)=>n+p.failed_tokens,0);
   const stale=Date.now()-new Date(retrievalRecordedAt).getTime()>30000;
-  $('#retrieval-curve').innerHTML=`<p><strong>${latest.seconds.toFixed(2)} 秒</strong> · ${stale?'后台计时已过期':'最近时段平均'} · 原池有效报价 ${priced}/${attempts} 币次 · 请求失败 ${failed} 币次</p>${miniSeriesChart(points,'seconds','单币检索耗时','price-line',[],x=>`${x.toFixed(2)} 秒`)}<div class="chart-range"><span>${time(points[0].observed_at)}</span><span>后台记录 ${time(retrievalRecordedAt)}</span><span>${time(latest.observed_at)}</span></div>`;
+  const idleSeconds=lastSample?Math.max(0,Math.round((new Date(latest.observed_at)-new Date(lastSample.observed_at))/1000)):null;
+  const head=latest.seconds!=null
+    ?`<strong>${latest.seconds.toFixed(2)} 秒</strong> · ${stale?'后台计时已过期':'最近时段平均'}`
+    :(lastSample?`<strong>当前未检索</strong> · 最近一次 ${lastSample.seconds.toFixed(2)} 秒，${idleSeconds} 秒前`:'<strong>当前未检索</strong>');
+  const coverage=sampled.length===points.length?'窗口内持续检索':`有效采样 ${sampled.length}/${points.length} 桶 · 当前标的 ${latest.targets==null?'—':latest.targets}`;
+  $('#retrieval-curve').innerHTML=`<p>${head} · 原池有效报价 ${priced}/${attempts} 币次 · 请求失败 ${failed} 币次</p>${retrievalCurveChart(points,x=>`${x.toFixed(2)} 秒`)}<div class="chart-range"><span>${time(points[0].observed_at)}</span><span>${coverage} · 后台记录 ${time(retrievalRecordedAt)}</span><span>${time(latest.observed_at)}</span></div>`;
 }
 function renderDiscoveryActivity(){
   const series=discoveryActivity?.points||[],selected=$('#activity-chain').value;

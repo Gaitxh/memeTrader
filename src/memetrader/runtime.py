@@ -7527,7 +7527,7 @@ class Runtime:
         self._pattern_pending_tokens = self._market_priority_tokens - self._pattern_held_tokens
         self._market_target_counts = target_counts
         if hasattr(self, "runtime_timing"):
-            self.runtime_timing.observe_market_targets(target_counts)
+            self.runtime_timing.observe_market_targets(target_counts, observed_at=utcnow())
         self._pattern_protection_ready = True
         refreshed = await self._refresh_chain_meme_market_marks(
             targets, heartbeat_name="chain-meme-market-marks",

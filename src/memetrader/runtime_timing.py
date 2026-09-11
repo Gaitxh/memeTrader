@@ -54,17 +54,30 @@ class RuntimeTiming:
             queue["processed_batches"] += 1
             self._passive_waits.append(wait_seconds)
 
-    def observe_market_targets(self, counts: dict[str, Any]) -> None:
+    def _retrieval_bucket(self, bucket: int) -> dict[str, Any]:
+        if not self._retrieval or self._retrieval[-1]["timestamp"] != bucket:
+            self._retrieval.append({"timestamp": bucket, "chains": {}, "targets": None})
+        return self._retrieval[-1]
+
+    def observe_market_targets(self, counts: dict[str, Any],
+                               observed_at: datetime | None = None) -> None:
+        """Latest target supply, and the bucket it applies to.
+
+        Stamping every cycle keeps an empty bucket on the held-retrieval curve
+        when the lane has nothing to quote, so "idle lane" stays distinguishable
+        from "process stopped sampling".
+        """
         self._market_targets = dict(counts)
+        if observed_at is None:
+            return
+        point = self._retrieval_bucket(int(observed_at.timestamp()) // 10 * 10)
+        point["targets"] = int(counts.get("high_priority_total") or 0)
 
     def observe_retrieval(self, *, chain: str, duration_seconds: float,
                           tokens: int, priced: int, failed: int,
                           observed_at: datetime) -> None:
         """Token-weighted batch latency, not elapsed divided by batch size."""
-        bucket = int(observed_at.timestamp()) // 10 * 10
-        if not self._retrieval or self._retrieval[-1]["timestamp"] != bucket:
-            self._retrieval.append({"timestamp": bucket, "chains": {}})
-        counts = self._retrieval[-1]["chains"].setdefault(chain, {
+        counts = self._retrieval_bucket(int(observed_at.timestamp()) // 10 * 10)["chains"].setdefault(chain, {
             "token_attempts": 0, "priced_tokens": 0, "failed_tokens": 0,
             "weighted_seconds": 0.0,
         })
@@ -140,9 +153,17 @@ class RuntimeTiming:
             "held_retrieval": {
                 "bucket_seconds": 10, "scope": "open_and_valid_pending_primary_lane",
                 "target_supply": dict(self._market_targets),
+                "retained_points": len(self._retrieval),
+                "sampled_points": sum(1 for p in self._retrieval if p["chains"]),
+                "idle_points": sum(1 for p in self._retrieval if not p["chains"]),
+                "window_seconds": (
+                    max(p["timestamp"] for p in self._retrieval)
+                    - min(p["timestamp"] for p in self._retrieval)
+                ) if self._retrieval else 0,
                 "points": [{
                     "observed_at": datetime.fromtimestamp(p["timestamp"], timezone.utc).isoformat(),
                     "chains": {chain: dict(counts) for chain, counts in p["chains"].items()},
+                    "targets": p.get("targets"),
                 } for p in self._retrieval],
             },
         }

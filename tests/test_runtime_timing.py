@@ -121,3 +121,33 @@ def test_retrieval_curve_weights_tokens_without_dividing_batch_latency():
                                  priced=1, failed=0, observed_at=at+timedelta(seconds=i*10))
     assert len(timing.snapshot()["held_retrieval"]["points"]) == 120
     assert sol["token_attempts"] == 40  # Previously published points are immutable.
+
+
+def test_retrieval_curve_marks_idle_buckets_instead_of_connecting_across_them():
+    from datetime import timezone, timedelta
+    timing = RuntimeTiming()
+    at = datetime(2026, 9, 6, tzinfo=timezone.utc)
+    timing.observe_retrieval(chain="bsc", duration_seconds=2, tokens=4,
+                             priced=4, failed=0, observed_at=at)
+    timing.observe_market_targets({"high_priority_total": 0, "actual_open": 0},
+                                  observed_at=at + timedelta(seconds=10))
+    timing.observe_market_targets({"high_priority_total": 0, "actual_open": 0},
+                                  observed_at=at + timedelta(seconds=20))
+    timing.observe_market_targets({"high_priority_total": 2, "actual_open": 1},
+                                  observed_at=at + timedelta(seconds=30))
+    series = timing.snapshot()["held_retrieval"]
+    # Every cycle stamps its 10-second bucket, so an idle lane keeps a point.
+    assert [bool(p["chains"]) for p in series["points"]] == [True, False, False, False]
+    assert [p["targets"] for p in series["points"]] == [None, 0, 0, 2]
+    assert series["sampled_points"] == 1
+    assert series["idle_points"] == 3
+    assert series["retained_points"] == 4
+    assert series["window_seconds"] == 30
+    # Repeating a stamp inside the same bucket must not create a second point.
+    timing.observe_market_targets({"high_priority_total": 5}, observed_at=at + timedelta(seconds=34))
+    assert len(timing.snapshot()["held_retrieval"]["points"]) == 4
+    assert timing.snapshot()["held_retrieval"]["points"][-1]["targets"] == 5
+    # A caller that only wants the latest supply still works without a timestamp.
+    timing.observe_market_targets({"high_priority_total": 7, "actual_open": 3})
+    assert timing.snapshot()["held_retrieval"]["target_supply"]["actual_open"] == 3
+    assert timing.snapshot()["held_retrieval"]["points"][-1]["targets"] == 5

@@ -2,6 +2,20 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260912-retrieval-curve-gap",
+      "recorded_at": "2026-09-11T19:50:00Z",
+      "title": "持仓单币检索耗时曲线空档根因：无标的时段不采样，而不是进程中断；曲线按空档断开",
+      "problem": "用户看到 02:38-02:48、02:51-03:03、03:07-03:11（本地）三段直线，误判系统不稳定。根因是主通道只在有目标（OPEN 持仓 / 可执行 intent / 120 秒内未终结的 admitted 决策）时才发起检索，没有 10 秒桶可记；前端把相邻两点直接连线，跨 10-13 分钟的空档被画成一条直线。",
+      "change": "RuntimeTiming.observe_market_targets 增加 observed_at：每个周期都给当前 10 秒桶打点（即使 0 标的），held_retrieval 因此保留连续桶并暴露 retained/sampled/idle_points、window_seconds 与每桶 targets；前端新增 retrievalCurveChart，按空档断开折线（灰带=无标的未检索，黄带=完全没有计时点），头部在未检索时显示“当前未检索 + 最近一次采样时间”，页脚显示有效采样桶数与当前标的数；面板说明同步更新。",
+      "rationale": "“没有行情工作要做”和“进程停止”必须可区分，否则真实运行被读成故障；不改采集频率、不增加请求、不动持仓/策略/资金。",
+      "validation": "tests/test_runtime_timing.py 新增空档用例（1 采样 + 3 空闲桶、同桶重复打点不新增、无 observed_at 保持旧行为）PASS；tests/test_held_priority147.py PASS；app.js node --check PASS；node 隔离用例 3 段折线 + 1 灰带 + 1 黄带、无 NaN PASS；runtime 03:40:36 重启后 /api/discovery-activity 返回 retained=5 sampled=5 idle=0、每桶 targets 与 target_supply 一致。",
+      "scope": "IMPLEMENTED_LOADED;Paper-only、Live 锁定、策略/资金/历史未改；空闲桶的长期经济含义不在本轮结论内。",
+      "commit": "a8b9f4d",
+      "loaded_at": "2026-09-11T19:40:36Z",
+      "visible_entry": "http://127.0.0.1:8790/ 总览 → 持仓单币检索耗时",
+      "report": "docs/PROJECT_CONTEXT/RETRIEVAL_CURVE_GAP_20260912.md"
+    },
+    {
       "id": "20260911-delivery147",
       "recorded_at": "2026-09-10T19:40:07.735041Z",
       "title": "真实持仓与有效待成交分流，移除过期准入的高优先豁免",
