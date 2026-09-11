@@ -13,6 +13,10 @@ MAX_ACTIVE_PER_CHAIN = 2
 MAX_WAITING_PER_CHAIN = 12
 LEASE_SECONDS = 180
 FRESH_SECONDS = 30
+# ALPHA149: how long a selected extra identity stays claimed while its HTTP
+# request is in flight, so two concurrent low-priority callers cannot request
+# the same extra. Self-expiring, so a lost caller can never hold a claim.
+INFLIGHT_SECONDS = 45
 CHAINS = frozenset(('bsc', 'solana', 'robinhood'))
 
 
@@ -34,6 +38,7 @@ class SharedBatchCoverage:
         self.last_batch = {}
         self.enabled = True
         self.disabled_reason = None
+        self.inflight = {}
 
     def _finish(self, token_id, reason, now):
         item = self.active.pop(token_id, None) or self.waiting.pop(token_id, None)
@@ -133,6 +138,56 @@ class SharedBatchCoverage:
         self.counts['BATCH_EXTRA_IDENTITIES'] += len(selected)
         return extended, selected
 
+    def extend_batch_lease(self, chain, legacy_addresses, now, *, excluded=()):
+        """ALPHA149 entry point: extend an already-due batch with claimed extras.
+
+        Behaves exactly like ``extend_batch`` for the addresses it returns, but
+        additionally (a) never repeats an identity another caller already has in
+        flight, and (b) claims everything it selects for ``INFLIGHT_SECONDS`` so
+        two concurrent low-priority callers cannot fetch the same extra. The
+        ``ceil(n/30)`` batch invariant is re-checked after filtering.
+        """
+        legacy = list(dict.fromkeys(legacy_addresses))
+        self.prune(now, excluded)
+        for token_id, until in list(self.inflight.items()):
+            if now >= until:
+                del self.inflight[token_id]
+        if not self.enabled or not legacy:
+            return legacy, {}
+        if not (-len(legacy)) % 30:
+            self.counts['no_spare'] += 1
+            return legacy, {}
+        self.counts['eligible_batch'] += 1
+        extended, selected = self.extend_batch(chain, legacy, now, excluded=excluded)
+        blocked = [token_id for token_id in selected if token_id in self.inflight]
+        if blocked:
+            self.counts['inflight_skipped'] += len(blocked)
+            for token_id in blocked:
+                selected.pop(token_id, None)
+            extended = legacy + [self.active[t]['address'] for t in selected
+                                 if t in self.active]
+        if not selected:
+            self.counts['no_spare'] += 1
+            return legacy, {}
+        assert ceil(len(extended) / 30) == ceil(len(legacy) / 30), 'spare capacity changed'
+        until = now + timedelta(seconds=INFLIGHT_SECONDS)
+        for token_id in selected:
+            self.inflight[token_id] = until
+        self.counts['selected_extra'] += len(selected)
+        self.last_batch = {**self.last_batch, 'selected_extra': len(selected),
+                           'inflight_held': len(self.inflight),
+                           'legacy_addresses': len(legacy), 'extra_addresses': len(selected),
+                           'legacy_http_batches': ceil(len(legacy) / 30),
+                           'combined_http_batches': ceil(len(extended) / 30),
+                           'basis': 'planned_request_shape_not_response_count'}
+        return extended, selected
+
+    def release(self, selected, now, *, reason=None):
+        """Drop in-flight claims once the response (or failure) has been handled."""
+        for token_id in list(selected or ()):
+            if self.inflight.pop(token_id, None) is not None and reason:
+                self.counts[reason] += 1
+
     def response(self, quoted, selected, now, snapshot_factory):
         """Keep only the frozen original pool; preserve the real response clocks."""
         result = {k: v for k, v in (quoted or {}).items() if k not in selected}
@@ -221,4 +276,11 @@ class SharedBatchCoverage:
             active=len(self.active), waiting=len(self.waiting), max_active=6, max_active_per_chain=2,
             counts=dict(self.counts), last_batch=dict(self.last_batch),
             opportunities=[self._public(v, now) for v in self.active.values()], recent=list(self.recent),
-            additional_http_batches=0, request_contract='extras_only_in_existing_nonempty_batch_spare_capacity')
+            additional_http_batches=0, request_contract='extras_only_in_existing_nonempty_batch_spare_capacity',
+            inflight=len(self.inflight), inflight_seconds=INFLIGHT_SECONDS,
+            alpha149=dict(eligible_batch=self.counts['eligible_batch'],
+                          no_spare=self.counts['no_spare'],
+                          selected_extra=self.counts['selected_extra'],
+                          inflight_skipped=self.counts['inflight_skipped'],
+                          failed_request=self.counts['failed_request'],
+                          cancelled_request=self.counts['cancelled_request']))

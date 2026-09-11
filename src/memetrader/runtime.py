@@ -1660,12 +1660,26 @@ class Runtime:
         fresh: bool = False,
         high_priority: bool = False,
         feature_only148: dict[str, str] | None = None,
+        allow_shared_spares149: bool = False,
     ) -> dict[str, tuple[TokenCandidate, TokenSnapshot]] | None:
         """Share Dex cooldowns; None defers held work without claiming an HTTP result."""
         loop = asyncio.get_running_loop()
         async with self._dex_quote_slot(high_priority=high_priority) as acquired:
             if not acquired:
                 return None
+            # ALPHA149: after the original slot is held and before the request is
+            # sent, an already-due non-empty low-priority batch may carry extra
+            # feature-only identities in its unused address places. The request
+            # count is unchanged (ceil(n/30) is re-asserted) and nothing is added
+            # for high-priority, non-fresh or disabled callers.
+            selected_alpha149: dict[str, str] = {}
+            manager_alpha149 = getattr(self, "_shared_batch148", None)
+            if (allow_shared_spares149 and fresh and not high_priority and addresses
+                    and getattr(self, "chain_meme_trader_only", False)
+                    and manager_alpha149 is not None and manager_alpha149.enabled):
+                addresses, selected_alpha149 = manager_alpha149.extend_batch_lease(
+                    chain, list(addresses), utcnow(),
+                )
             try:
                 if fresh and hasattr(self.dex, "batch_quote_fresh"):
                     quoted = await self.dex.batch_quote_fresh(chain, addresses)
@@ -1679,6 +1693,8 @@ class Runtime:
                     self._dex_quote_backoff_until = max(
                         self._dex_quote_backoff_until, loop.time() + delay,
                     )
+                if selected_alpha149 and manager_alpha149 is not None:
+                    manager_alpha149.release(selected_alpha149, utcnow(), reason='failed_request')
                 raise
             except httpx.TransportError as exc:
                 self._dex_quote_failure_streak += 1
@@ -1694,11 +1710,26 @@ class Runtime:
                 self._dex_quote_backoff_until = max(
                     self._dex_quote_backoff_until, loop.time() + delay,
                 )
+                if selected_alpha149 and manager_alpha149 is not None:
+                    manager_alpha149.release(selected_alpha149, utcnow(), reason='failed_request')
                 raise
             # A peer request may have started cooling down while this one was in flight.
             if self._dex_quote_backoff_until <= loop.time():
                 self._dex_quote_failure_streak = 0
                 self._dex_quote_backoff_until = 0.0
+            if selected_alpha149 and manager_alpha149 is not None:
+                # Return-value isolation: the caller keeps only the identities it
+                # asked for; extras go to the shared feature-only channel.
+                delivered = manager_alpha149.response(
+                    quoted, selected_alpha149, utcnow(), DexScreenerClient._snapshot,
+                ) or {}
+                extras = {k: v for k, v in delivered.items() if k in selected_alpha149}
+                quoted = {k: v for k, v in delivered.items() if k not in selected_alpha149}
+                if extras:
+                    self._remember_pattern_quotes(
+                        extras, feature_only148={k: selected_alpha149[k] for k in extras},
+                    )
+                manager_alpha149.release(selected_alpha149, utcnow())
             if feature_only148:
                 manager = getattr(self, '_shared_batch148', None)
                 if manager is not None:
@@ -2970,6 +3001,7 @@ class Runtime:
                         quoted_by_token = await self._dex_batch_quote(
                             chain, [str(row["address"]) for row in chunk],
                             fresh=any(row["followup_until"] for row in chunk),
+                            allow_shared_spares149=True,
                         )
                     else:
                         quoted_by_token = {}
