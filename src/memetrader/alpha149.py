@@ -118,6 +118,19 @@ SPECS = {
     'alpha149_washout_reclaim_hold_v1': ('washout_reclaim', '洗出后回收·宽容忍慢出', 120),
     'alpha149_vol_scaled_merged_v1': ('merged_multi_setup', '波动率自适应止损·合并入场', 120),
     'alpha149_vol_scaled_goldendog_v1': ('sf_goldendog_deep_base', '波动率自适应止损·金狗深池', 240),
+    # wave 10: entry survivability. Measured on 41,182 real closed positions
+    # (7 days, active period) the write-off rate is 44.1% when the entry market
+    # cap is below the pool depth (FDV/depth < 1) but 1.9% in the 5-20 band, and
+    # the effect holds inside every chain (solana 31.9% -> 0.4%, bsc 53.1% ->
+    # 8.8%, robinhood 11.2% -> 0.3%). Pool age at entry separates just as hard:
+    # 22-23% write-off below 30 minutes versus 1.5% at 30-180 minutes, and the
+    # worst cell of all is FDV/depth < 1 with a 5-30 minute pool at 54.0%.
+    # Every previous wave selected FOR young pools and low FDV/depth, i.e. into
+    # that cell; these arms select the measured survivable cells instead.
+    'alpha149_survivable_core_v1': ('survivable_core', '存活带核心·快出对照', 60),
+    'alpha149_survivable_core_scaled_v1': ('survivable_core', '存活带核心·自适应止损', 120),
+    'alpha149_survivable_core_depthexit_v1': ('survivable_core', '存活带核心·深度衰减早退', 60),
+    'alpha149_survivable_deep_v1': ('survivable_band_deep', '存活带深池·自适应止损', 120),
 }
 EXIT_ARMS = {
     'alpha149_profit_decay_exit_v1': 'alpha149_profit_decay',
@@ -129,6 +142,8 @@ EXIT_ARMS = {
     'alpha149_momentum_floor_exit_v1': 'alpha149_momentum_floor',
     # wave 9: same-signal carrier for the volatility-scaled stop.
     'alpha149_vol_scaled_exit_v1': 'alpha149_vol_scaled_stop',
+    # wave 10: leave a dying pool before it breaches the write-off floor.
+    'alpha149_depth_decay_exit_v1': 'alpha149_depth_decay',
 }
 EXIT_KINDS = frozenset(EXIT_ARMS.values())
 KINDS = tuple(kind for kind, _, _ in SPECS.values())
@@ -437,6 +452,38 @@ OVERRIDES = {
         hard_stop_return=-.90, trailing_activate_return=.45, trailing_drawdown=.25,
         description='波动率自适应止损（同信号载体臂）：与其它退出臂一样搭载本池第一条ALPHA149入场信号，'
                     '只用自适应止损+追踪退出，用于在同一机会上比较固定止损与自适应止损。'),
+    # ---- wave 10: entry survivability ---------------------------------------
+    # The measured write-off rate is dominated by two entry-time facts, and both
+    # are available before the trade: FDV/depth below 1 (44.1% write-off versus
+    # 1.9% in the 5-20 band) and a pool younger than 30 minutes (22-23% versus
+    # 1.5% at 30-180 minutes). The previous waves selected FOR both.
+    'alpha149_survivable_core_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_survivable_core_depthexit_v1',
+        hard_stop_return=-.35, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='存活带核心（快出对照）：池龄30-180分钟、FDV/深度1-20、深度≥5000U、'
+                    '当前帧价涨且深度不流失、买盘≥50%；原止损-35%、持有60分钟。'),
+    'alpha149_survivable_core_scaled_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_survivable_core_v1',
+        trajectory_exit='alpha149_vol_scaled_stop',
+        hard_stop_return=-.90, trailing_activate_return=.45, trailing_drawdown=.25,
+        description='存活带核心（自适应止损）：与快出对照完全同一入场，价格止损改为'
+                    '4倍本池30秒实现波动率（下限22%/上限50%），追踪+45%→25%，持有120分钟。'),
+    'alpha149_survivable_core_depthexit_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_survivable_core_v1',
+        trajectory_exit='alpha149_depth_decay',
+        hard_stop_return=-.35, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='存活带核心（深度衰减早退）：与快出对照同一入场，但在“深度30秒收缩≥15% '
+                    '且换手<0.1 且深度保留≤0.8”时提前离场，用于检验能否在跌破写销底线前退出。'),
+    'alpha149_survivable_deep_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_survivable_core_scaled_v1',
+        trajectory_exit='alpha149_vol_scaled_stop',
+        hard_stop_return=-.90, trailing_activate_return=.45, trailing_drawdown=.25,
+        description='存活带深池：池龄30-180分钟、FDV/深度≥5（实测1.9%-4.1%写销带）、深度≥10000U、'
+                    '当前帧价涨、买盘≥55%；自适应止损+追踪，1U小额。'),
 }
 
 
@@ -572,6 +619,27 @@ def mechanisms(f):
             and liquidity is not None and liquidity >= 2000
             and buy_share is not None and buy_share >= .5
             and total_frames >= 4)
+        # wave 10: measured survivable cells. Write-off rate by entry FDV/depth
+        # is 44.1% (<1), 12.8% (1-2), 6.0% (2-5), 1.9% (5-20), 4.1% (>20); pool
+        # age adds: 22-23% below 30 minutes versus 1.5% at 30-180 minutes, and
+        # the FDV/depth<1 x 5-30 minute cell reaches 54.0% (avg -6.51U).
+        survivable_age = (
+            pool_age is not None and 1800 <= pool_age <= 10800)
+        survivable_depth = (
+            fdv_liq is not None and 1.0 <= fdv_liq <= 20.0)
+        out['survivable_core'] = bool(
+            survivable_age and survivable_depth
+            and liquidity is not None and liquidity >= 5000
+            and price_now and prev_price and price_now > prev_price
+            and liq_now is not None and prev_liq is not None and liq_now >= prev_liq * .98
+            and buy_share is not None and buy_share >= .5)
+        out['survivable_band_deep'] = bool(
+            survivable_age
+            and fdv_liq is not None and fdv_liq >= 5.0
+            and liquidity is not None and liquidity >= 10000
+            and price_now and prev_price and price_now > prev_price
+            and liq_now is not None and prev_liq is not None and liq_now >= prev_liq * .98
+            and buy_share is not None and buy_share >= .55)
         # wave 5: mature-pool two-frame rise (slow-in x fast-out quadrant).
         out['df_mature_price_up'] = bool(
             pool_age is not None and pool_age >= 1800
@@ -832,7 +900,6 @@ def mechanisms(f):
     #     return path, so the two-frame members remain visible without a window.
     return _finish(out)
 
-
 def exit_reason(kind, f, opened_at, current):
     """ALPHA149 trajectory exits. Same causal guards as the shared family."""
     if kind not in EXIT_KINDS or not f:
@@ -897,6 +964,17 @@ def exit_reason(kind, f, opened_at, current):
         limit = max(VOL_STOP_FLOOR, min(VOL_STOP_CAP, VOL_STOP_MULTIPLE * sigma))
         if drawdown <= -limit:
             return 'alpha149_vol_scaled_stop'
+    elif kind == 'alpha149_depth_decay':
+        # Leave a dying pool before it breaches the write-off floor. Measured:
+        # write-off positions lose -12.94U on average at the floor, so an earlier
+        # exit is worth testing against a same-entry control. Both conditions are
+        # required: depth leaving the pool AND activity already dead.
+        turn = _num(f.get('volume_liquidity'))
+        retention = _num(f.get('liquidity_retention'))
+        if (liq_change is not None and liq_change <= -.15
+                and turn is not None and turn < .1
+                and retention is not None and retention <= .8):
+            return 'alpha149_depth_decay_exit'
     return None
 
 
@@ -960,6 +1038,14 @@ RULES = {
                        '当前帧重新上行、深度不流失（≥前帧98%）、买盘占比≥50%、深度≥2000U、本池≥4帧。',
     'alpha149_vol_scaled_stop': '波动率自适应止损：允许回撤=4×本池30秒实现波动率，'
                                 '下限22%、上限50%（实测波动率 p50=3.7%、p90=18.9%，固定-20%对高波动池仅约1σ）。',
+    # wave 10
+    'survivable_core': '存活带：池龄30-180分钟（实测写销22-23% <30分钟 vs 1.5% 30-180分钟）、'
+                       'FDV/深度1-20（实测写销44.1% <1 vs 1.9% 5-20）、深度≥5000U、'
+                       '当前帧价涨且深度≥前帧98%、买盘占比≥50%。',
+    'survivable_band_deep': '存活带深池：池龄30-180分钟、FDV/深度≥5、深度≥10000U、'
+                            '当前帧价涨且深度不流失、买盘占比≥55%。',
+    'alpha149_depth_decay_exit': '深度衰减早退：30秒深度收缩≥15% 且换手<0.1 且深度保留≤0.8 时离场，'
+                                 '目标是在跌破写销底线（平均-12.94U）之前退出。',
 }
 
 

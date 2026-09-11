@@ -474,6 +474,102 @@ def test_wave9_arms_are_additive_and_keep_their_contracts():
                 if policies[arm].get("trajectory_exit") == "alpha149_vol_scaled_stop"]
 
 
+def test_survivable_cells_come_from_the_measured_writeoff_bands():
+    """Wave 10 gates on the two entry-time facts that actually predict write-offs."""
+    def vector(**over):
+        base = dict(pool_age_seconds=3600.0, fdv_liquidity=3.0, liquidity_usd=8000.0,
+                    buy_count_share=0.6,
+                    prev=dict(price_usd=1.0, liquidity_usd=8000.0, volume_5m_usd=100.0),
+                    current=dict(price_usd=1.02, liquidity_usd=8100.0, volume_5m_usd=120.0),
+                    windows={})
+        base.update(over)
+        return feature(**base)
+
+    assert alpha149.mechanisms(vector())["survivable_core"] is True
+    # A young pool is the measured death zone (22-23% write-off below 30 minutes).
+    assert alpha149.mechanisms(vector(pool_age_seconds=600.0))["survivable_core"] is False
+    # FDV below pool depth is the worst single cell (44.1% write-off).
+    assert alpha149.mechanisms(vector(fdv_liquidity=0.7))["survivable_core"] is False
+    # Too old: 180+ minutes had almost no upside (2.2% of positions above +5U).
+    assert alpha149.mechanisms(vector(pool_age_seconds=20000.0))["survivable_core"] is False
+    assert alpha149.mechanisms(vector(liquidity_usd=3000.0))["survivable_core"] is False
+    # The deep band is a strictly narrower subset of the core band.
+    assert alpha149.mechanisms(vector(fdv_liquidity=8.0, liquidity_usd=12000.0,
+                                      buy_count_share=0.6))["survivable_band_deep"] is True
+    assert alpha149.mechanisms(vector(fdv_liquidity=3.0, liquidity_usd=12000.0)
+                               )["survivable_band_deep"] is False
+    assert alpha149.mechanisms(vector(fdv_liquidity=8.0, liquidity_usd=6000.0)
+                               )["survivable_band_deep"] is False
+
+
+def test_depth_decay_exit_needs_both_depth_leaving_and_dead_activity():
+    opened = datetime(2026, 9, 11, 0, 0, tzinfo=UTC)
+    current = datetime(2026, 9, 11, 0, 0, 45, tzinfo=UTC)
+
+    def vector(liq_change, turn, retention):
+        return feature(liquidity_retention=retention, volume_liquidity=turn,
+                       windows={"30": _w(liq=liq_change)})
+
+    assert alpha149.exit_reason("alpha149_depth_decay", vector(-0.25, 0.02, 0.5),
+                                opened, current) == "alpha149_depth_decay_exit"
+    # Depth leaving but activity still real: not the death precursor.
+    assert alpha149.exit_reason("alpha149_depth_decay", vector(-0.25, 0.9, 0.5),
+                                opened, current) is None
+    # Dead activity but depth intact.
+    assert alpha149.exit_reason("alpha149_depth_decay", vector(-0.01, 0.02, 1.0),
+                                opened, current) is None
+    # Depth has already recovered relative to the episode high.
+    assert alpha149.exit_reason("alpha149_depth_decay", vector(-0.25, 0.02, 0.95),
+                                opened, current) is None
+
+
+def test_wave10_arms_are_additive_and_paired():
+    policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}
+    for arm in ("alpha149_survivable_core_v1", "alpha149_survivable_core_scaled_v1",
+                "alpha149_survivable_core_depthexit_v1", "alpha149_survivable_deep_v1",
+                "alpha149_depth_decay_exit_v1"):
+        assert arm in alpha149.ALL_ARMS and arm in policies
+    # Three arms share one frozen entry, so entry and exit effects stay separable.
+    kinds = {alpha149.SPECS[arm][0] for arm in
+             ("alpha149_survivable_core_v1", "alpha149_survivable_core_scaled_v1",
+              "alpha149_survivable_core_depthexit_v1")}
+    assert kinds == {"survivable_core"}
+    assert policies["alpha149_survivable_core_depthexit_v1"]["trajectory_exit"] == \
+        "alpha149_depth_decay"
+    assert policies["alpha149_survivable_core_scaled_v1"]["trajectory_exit"] == \
+        "alpha149_vol_scaled_stop"
+    assert policies["alpha149_survivable_deep_v1"]["notional_usd"] == 1.0
+    assert alpha149.EXIT_ARMS["alpha149_depth_decay_exit_v1"] == "alpha149_depth_decay"
+    # The measured death cell stays excluded from every wave-10 entry.
+    for arm in ("alpha149_survivable_core_v1", "alpha149_survivable_deep_v1"):
+        assert policies[arm]["feature_hypothesis"].startswith("survivable")
+
+
+def test_wave10_arms_are_reachable_through_the_live_engine_path():
+    """Wiring proof for the survivability family: frames -> Engine -> signals."""
+    clock = [datetime(2026, 9, 11, tzinfo=UTC)]
+    engine = alpha149.Engine(clock[0])
+
+    def row(price, liquidity, at, buys=12, sells=4):
+        return dict(token_id="solana:T", pair_address="P", chain="solana",
+                    provider="dexscreener", price_usd=price, liquidity_usd=liquidity,
+                    volume_5m_usd=120.0, buys_5m=buys, sells_5m=sells,
+                    pool_age_seconds=3600.0, fdv_usd=liquidity * 3.0,
+                    observed_at=at, ingested_at=at, recorded_at=at)
+
+    for step, at in enumerate(("2026-09-11T00:00:00Z", "2026-09-11T00:00:30Z")):
+        clock[0] = datetime(2026, 9, 11, tzinfo=UTC) + timedelta(seconds=1 + 30 * step)
+        engine.accept(row(1.0 + 0.03 * step, 8000.0 + 400.0 * step, at), clock[0])
+    clock[0] = datetime(2026, 9, 11, tzinfo=UTC) + timedelta(seconds=32)
+    signals = engine.signals_for("solana:T", "P", clock[0])
+    for arm in ("alpha149_survivable_core_v1", "alpha149_survivable_core_scaled_v1",
+                "alpha149_survivable_core_depthexit_v1"):
+        assert arm in signals, arm
+        assert signals[arm]["decision_evidence"]["mode"] == "survivable_core"
+    snap = engine.snapshot()
+    assert "survivable_core" in snap["mechanism_ready"]
+
+
 def test_wave8_arms_keep_the_entry_frozen_and_only_change_the_exit_contract():
     """Same-signal A/B: the anti-whipsaw arms reuse an existing kind verbatim."""
     policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}
