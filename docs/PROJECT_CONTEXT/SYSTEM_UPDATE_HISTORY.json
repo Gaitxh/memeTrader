@@ -10,7 +10,7 @@
       "rationale": "把两个各自独立实测过的过滤器叠加（存活带压力窗口0写销；池龄加速是全库收益最高入场机制），并用半仓控制单币崩塌沿臂数放大的敞口。",
       "validation": "test_alpha149 40项+test_whipsaw_guard 2项 PASS(两个过滤器必须同时成立：加速成立但不在安全带、安全带内但无加速、断崖档均不触发；父臂投注额保持2U不变)；加载后4分钟age_rate_acceleration ready=212、survivable_core ready=3，交集臂尚未自然触发(受存活带供应限制)，机制与两个父条件均已单独验证；错误#265/#266保持冻结。",
       "scope": "IMPLEMENTED_LOADED; 存活带族臂样本仅17笔不足以宣称写销已解决；wave18交集臂尚未自然触发，若下轮仍无触发将考虑放宽为并集或调整池龄窗口；单币×29臂的敞口属组合层问题，本轮仅半仓缓释，组合级限制需引擎层支持(超出仅新增臂的约束)已记录为后续议题；五条退出合同矩阵各仅1笔平仓(同一代币单币事件)无法区分合同。",
-      "commit": "pending",
+      "commit": "a976140",
       "loaded_at": "2026-09-11T22:01:32Z",
       "visible_entry": "http://127.0.0.1:8790/#/strategies",
       "report": "docs/PROJECT_CONTEXT/WAVE18_STRESS_AND_BLAST_RADIUS_20260912.md"
