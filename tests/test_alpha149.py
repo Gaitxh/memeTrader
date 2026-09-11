@@ -828,6 +828,54 @@ def test_wave15_exit_contract_experiment_shares_one_frozen_entry():
     assert policies["alpha149_merged_multi_setup_v1"]["hard_stop_grace_seconds"] == 180
 
 
+def test_wave16_stop_schedules_follow_the_measured_overshoot():
+    """A price stop late in a hold is the expensive kind, so test two schedules."""
+    current = datetime(2026, 9, 11, 0, 0, 45, tzinfo=UTC)
+
+    def vector(drawdown):
+        return feature(drawdown=drawdown,
+                       windows={"30": _w(vola=0.05, velocity=0.01, acc=0.0)})
+
+    def armed(kind, drawdown, minutes):
+        return alpha149.exit_reason(kind, vector(drawdown),
+                                    current - timedelta(minutes=minutes), current)
+
+    # Early-only stop: armed inside the first five minutes, disarmed afterwards.
+    assert armed("alpha149_early_stop_only", -0.25, 2) == "alpha149_early_stop_only"
+    assert armed("alpha149_early_stop_only", -0.25, 8) is None
+    assert armed("alpha149_early_stop_only", -0.10, 2) is None
+    # Time-decay stop: 30% allowed at entry, tightening 0.6 points per minute to a
+    # 12% floor, so the same -25% fires late but not early.
+    assert armed("alpha149_time_decay_stop", -0.25, 1) is None
+    assert armed("alpha149_time_decay_stop", -0.25, 20) == "alpha149_time_decay_stop"
+    assert armed("alpha149_time_decay_stop", -0.11, 40) is None
+    assert armed("alpha149_time_decay_stop", -0.13, 40) == "alpha149_time_decay_stop"
+    # Unknown drawdown never fires either schedule.
+    assert alpha149.exit_reason("alpha149_early_stop_only",
+                                feature(windows={"30": _w()}), current, current) is None
+    assert alpha149.EARLY_STOP_MINUTES == 5.0
+    assert alpha149.TIME_DECAY_CAP > alpha149.TIME_DECAY_FLOOR
+
+
+def test_wave16_arms_share_the_wave15_entry_and_horizon():
+    policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}
+    for arm, kind in (("alpha149_early_stop_only_v1", "alpha149_early_stop_only"),
+                      ("alpha149_time_decay_stop_v1", "alpha149_time_decay_stop")):
+        assert arm in alpha149.ALL_ARMS and arm in policies
+        assert alpha149.SPECS[arm][0] == "merged_multi_setup"
+        assert policies[arm]["trajectory_exit"] == kind
+        assert policies[arm]["hard_stop_return"] == -.90
+        assert policies[arm]["trailing_activate_return"] == .30
+        assert policies[arm]["trailing_drawdown"] == .15
+        assert alpha149.SPECS[arm][2] == 30
+    # Both schedules are registered exit kinds.
+    assert alpha149.EXIT_ARMS["alpha149_early_stop_only_exit_v1"] == "alpha149_early_stop_only"
+    assert alpha149.EXIT_ARMS["alpha149_time_decay_stop_exit_v1"] == "alpha149_time_decay_stop"
+    # The wave-15 control is untouched, so the comparison stays valid.
+    assert policies["alpha149_nominal_stop_control_v1"]["hard_stop_return"] == -.20
+    assert policies["alpha149_nominal_stop_control_v1"].get("trajectory_exit") is None
+
+
 def test_wave8_arms_keep_the_entry_frozen_and_only_change_the_exit_contract():
     """Same-signal A/B: the anti-whipsaw arms reuse an existing kind verbatim."""
     policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}

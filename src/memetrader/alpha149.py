@@ -53,6 +53,19 @@ REGIME_MAX_SAMPLES = 400
 AGE_RATE_MIN = 3.0
 AGE_RATE_RATIO_EQUIVALENT = 36.0 / 14.0  # 2.5714..., only for tests/documentation
 
+# Wave 16: stop scheduling. Measured over 12,773 settled hard stops, the realised
+# loss lands deeper than its own threshold as the holding time grows:
+#   <1m  p50 -5.05 points | 1-5m -6.25 | 5-30m -10.82 | 30-120m -11.36
+# so a price stop late in a hold is the expensive kind, while max-hold and
+# trailing exits are the only positive exit families. Two schedules are frozen
+# here for testing: a price stop that is only armed during the first minutes, and
+# one whose allowed drawdown shrinks as the hold extends.
+EARLY_STOP_MINUTES = 5.0
+EARLY_STOP_DISTANCE = .20
+TIME_DECAY_CAP = .30
+TIME_DECAY_SLOPE_PER_MINUTE = .006  # 30% at entry -> 12% after 30 minutes
+TIME_DECAY_FLOOR = .12
+
 # arm_id -> (mechanism kind, Chinese label, max_hold_minutes)
 SPECS = {
     'alpha149_uncrowded_first_frame_v1': ('uncrowded_first_frame', '最早帧·无同伴依赖', 15),
@@ -193,6 +206,11 @@ SPECS = {
     'alpha149_no_price_stop_v1': ('merged_multi_setup', '退出实验·不用价格止损', 30),
     'alpha149_precomp_stop_v1': ('merged_multi_setup', '退出实验·预补偿止损', 30),
     'alpha149_nominal_stop_control_v1': ('merged_multi_setup', '退出实验·名义止损对照', 30),
+    # wave 16: stop scheduling. Measured overshoot grows with holding time, so a
+    # price stop late in a hold is the expensive kind. Two schedules, same frozen
+    # entry and same trailing/horizon as the wave-15 control.
+    'alpha149_early_stop_only_v1': ('merged_multi_setup', '退出实验·仅前5分钟价格止损', 30),
+    'alpha149_time_decay_stop_v1': ('merged_multi_setup', '退出实验·止损随时间收紧', 30),
 }
 EXIT_ARMS = {
     'alpha149_profit_decay_exit_v1': 'alpha149_profit_decay',
@@ -206,6 +224,9 @@ EXIT_ARMS = {
     'alpha149_vol_scaled_exit_v1': 'alpha149_vol_scaled_stop',
     # wave 10: leave a dying pool before it breaches the write-off floor.
     'alpha149_depth_decay_exit_v1': 'alpha149_depth_decay',
+    # wave 16: two stop schedules on the same frozen entry.
+    'alpha149_early_stop_only_exit_v1': 'alpha149_early_stop_only',
+    'alpha149_time_decay_stop_exit_v1': 'alpha149_time_decay_stop',
 }
 EXIT_KINDS = frozenset(EXIT_ARMS.values())
 KINDS = tuple(kind for kind, _, _ in SPECS.values())
@@ -642,6 +663,24 @@ OVERRIDES = {
         hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
         description='退出实验·名义止损对照：入场同上，保持系统默认-20%止损与追踪30/15、持有30分钟，'
                     '作为另两条退出合同的同入场基准。'),
+    # ---- wave 16: stop scheduling --------------------------------------------
+    'alpha149_early_stop_only_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_nominal_stop_control_v1',
+        trajectory_exit='alpha149_early_stop_only',
+        hard_stop_return=-.90, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='退出实验·仅前5分钟价格止损：与wave15对照臂完全同一入场与追踪合同，'
+                    '但价格止损只在入场后头5分钟内以-20%触发，之后不再用价格止损，'
+                    '由追踪(+30%→15%)、最长持有30分钟与流动性规则退出。'
+                    '依据：实测止损越深幅度随持仓时间增长（<1分钟中位-5.05点 vs 5-30分钟-10.82点）。'),
+    'alpha149_time_decay_stop_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_nominal_stop_control_v1',
+        trajectory_exit='alpha149_time_decay_stop',
+        hard_stop_return=-.90, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='退出实验·止损随时间收紧：同一入场与追踪合同，允许回撤从入场时的30%'
+                    '按每分钟0.6个点线性收紧到下限12%（30分钟≈12%）；'
+                    '用于检验"晚发生的止损应当更早触发"是否符合实测越深分布。'),
 }
 
 
@@ -1201,6 +1240,27 @@ def exit_reason(kind, f, opened_at, current):
                 and turn is not None and turn < .1
                 and retention is not None and retention <= .8):
             return 'alpha149_depth_decay_exit'
+    elif kind == 'alpha149_early_stop_only':
+        # Wave 16: the measured overshoot grows with holding time (p50 -5.05
+        # points inside one minute versus -10.82 at 5-30 minutes), so a price stop
+        # is only armed during the first minutes; afterwards the position is left
+        # to trailing, the horizon and the liquidity rules.
+        drawdown = _num(f.get('drawdown'))
+        elapsed_minutes = (current - _parse_time(opened_at)).total_seconds() / 60.0
+        if (drawdown is not None and elapsed_minutes <= EARLY_STOP_MINUTES
+                and drawdown <= -EARLY_STOP_DISTANCE):
+            return 'alpha149_early_stop_only'
+    elif kind == 'alpha149_time_decay_stop':
+        # Wave 16: the allowed drawdown shrinks as the hold extends, capped and
+        # floored so it can never become an unlimited hold or an instant stop.
+        drawdown = _num(f.get('drawdown'))
+        if drawdown is not None:
+            elapsed_minutes = (current - _parse_time(opened_at)).total_seconds() / 60.0
+            limit = max(TIME_DECAY_FLOOR,
+                        min(TIME_DECAY_CAP,
+                            TIME_DECAY_CAP - TIME_DECAY_SLOPE_PER_MINUTE * elapsed_minutes))
+            if drawdown <= -limit:
+                return 'alpha149_time_decay_stop'
     return None
 
 
