@@ -745,6 +745,57 @@ def test_wave13_arm_is_additive_and_keeps_the_measured_contract():
     assert "hard_stop_grace_seconds" not in policies["alpha149_df_price_up_liquidity_up_v1"]
 
 
+def test_age_rate_acceleration_rebuilds_the_best_entry_mechanism():
+    """Wave 14: the highest-PnL entry of the system, on the shared vector."""
+    def vector(**over):
+        base = dict(pool_age_seconds=3600.0, liquidity_usd=9000.0, buy_count_share=0.6,
+                    volume_acceleration_age_normalized=4.0,
+                    tx_acceleration_age_normalized=1.2, volume_liquidity=0.2, windows={},
+                    current=dict(price_usd=1.0, liquidity_usd=9000.0, volume_5m_usd=1500.0))
+        base.update(over)
+        return feature(**base)
+
+    assert alpha149.mechanisms(vector())["age_rate_acceleration"] is True
+    # Either rate may carry the 3x acceleration (the original takes the stronger).
+    assert alpha149.mechanisms(vector(volume_acceleration_age_normalized=1.5,
+                                      tx_acceleration_age_normalized=3.2)
+                               )["age_rate_acceleration"] is True
+    # Below the frozen 3x threshold on both: off.
+    assert alpha149.mechanisms(vector(volume_acceleration_age_normalized=2.0,
+                                      tx_acceleration_age_normalized=2.0)
+                               )["age_rate_acceleration"] is False
+    # Outside the measured 15-minute to 6-hour pool-age window: off.
+    assert alpha149.mechanisms(vector(pool_age_seconds=600.0)
+                               )["age_rate_acceleration"] is False
+    assert alpha149.mechanisms(vector(pool_age_seconds=25200.0)
+                               )["age_rate_acceleration"] is False
+    # No real activity, seller-dominated flow, or unknown acceleration: off.
+    assert alpha149.mechanisms(vector(volume_liquidity=0.01,
+                                      current=dict(price_usd=1.0, liquidity_usd=9000.0,
+                                                   volume_5m_usd=50.0))
+                               )["age_rate_acceleration"] is False
+    assert alpha149.mechanisms(vector(buy_count_share=0.4)
+                               )["age_rate_acceleration"] is False
+    assert alpha149.mechanisms(vector(volume_acceleration_age_normalized=None,
+                                      tx_acceleration_age_normalized=None)
+                               )["age_rate_acceleration"] is False
+
+
+def test_wave14_arms_pair_two_horizons_on_one_frozen_entry():
+    policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}
+    slow, fast = "alpha149_age_rate_accel_v1", "alpha149_age_rate_accel_fast_v1"
+    for arm in (slow, fast):
+        assert arm in alpha149.ALL_ARMS and arm in policies
+        assert policies[arm]["hard_stop_return"] == -.20
+        assert policies[arm]["trailing_activate_return"] == .30
+        assert policies[arm]["trailing_drawdown"] == .15
+    assert alpha149.SPECS[slow][0] == alpha149.SPECS[fast][0] == "age_rate_acceleration"
+    assert alpha149.SPECS[fast][2] < alpha149.SPECS[slow][2]
+    # The original system arms are untouched: no guard fields, same ids.
+    for original in ("resource_age_rate_candidate_v1", "age_rate_horizon_fast_v1"):
+        assert original not in policies  # they live in the pattern lane, not here
+
+
 def test_wave8_arms_keep_the_entry_frozen_and_only_change_the_exit_contract():
     """Same-signal A/B: the anti-whipsaw arms reuse an existing kind verbatim."""
     policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}

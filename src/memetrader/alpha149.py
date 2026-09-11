@@ -167,6 +167,14 @@ SPECS = {
     'alpha149_survivable_regime_v1': ('survivable_regime', '存活带×宽度改善', 30),
     # wave 13: buy after confirmation instead of tolerating afterwards.
     'alpha149_confirmed_survivable_v1': ('confirmed_survivable', '存活带×连续两步确认入场', 30),
+    # wave 14: re-express the highest-PnL entry of the whole system inside this
+    # family. resource_age_rate_candidate_v1 (+634.96U / 220 positions) and its
+    # 15-minute sibling age_rate_horizon_fast_v1 (+109.91U / 75) share one frozen
+    # age-rate entry; here that entry is rebuilt on the shared feature vector so
+    # it can be paired with the measured best exit and with the survivability /
+    # breadth filters that already exist.
+    'alpha149_age_rate_accel_v1': ('age_rate_acceleration', '池龄归一化加速·30分钟', 30),
+    'alpha149_age_rate_accel_fast_v1': ('age_rate_acceleration', '池龄归一化加速·15分钟', 15),
 }
 EXIT_ARMS = {
     'alpha149_profit_decay_exit_v1': 'alpha149_profit_decay',
@@ -578,6 +586,20 @@ OVERRIDES = {
                     '（相当于把成交推迟一帧，先确认再买入）；退出用实测最强短兑现合同。'
                     '依据：前向数据显示对照臂在入场后23秒与25秒即触发硬止损，'
                     '即单帧入场买在回撤里、由噪音付费。'),
+    # ---- wave 14: the system's best entry, rebuilt on the shared vector -------
+    'alpha149_age_rate_accel_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_age_rate_accel_fast_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='池龄归一化加速（30分钟）：池龄15分钟-6小时、深度≥5000U、'
+                    '5分钟活动率≥其自身按龄归一小时率的3倍（成交额或笔数取强者）、'
+                    '有真实活动且买盘≥50%；复刻本系统收益最高入场机制（resource_age_rate，'
+                    '+634.96U/220笔）的判据，并用实测最强短兑现合同持有至30分钟。'),
+    'alpha149_age_rate_accel_fast_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_age_rate_accel_v1',
+        description='池龄归一化加速（15分钟）：与30分钟臂完全同一入场信号，只把持有期改为15分钟，'
+                    '复刻系统已验证的15/30分钟配对（age_rate_horizon_fast_v1 +109.91U）。'),
 }
 
 
@@ -753,6 +775,15 @@ def mechanisms(f):
             and price_now and prev_price and price_now > prev_price
             and liq_now is not None and prev_liq is not None and liq_now >= prev_liq * .98
             and buy_share is not None and buy_share >= .55)
+        # wave 14: re-expression of the system's highest-PnL entry mechanism
+        # (`resource_age_rate`, parent of resource_age_rate_candidate_v1 at
+        # +634.96U over 220 positions) on the shared vector. The original compares
+        # the current 5 minutes against the prior 55 minutes and scales by
+        # available age; the shared vector already publishes that comparison
+        # age-normalised, so the frozen rule is a 3x acceleration on the stronger
+        # of the two rates, inside a 15-minute to 6-hour pool, with real activity.
+        # It needs no previous frame and no window, so it is evaluated below
+        # before both guards.
         # wave 5: mature-pool two-frame rise (slow-in x fast-out quadrant).
         out['df_mature_price_up'] = bool(
             pool_age is not None and pool_age >= 1800
@@ -794,6 +825,23 @@ def mechanisms(f):
                 and prev_price > earlier_price and price_now > prev_price
                 and liquidity is not None and liquidity >= 5000
                 and buy_share is not None and buy_share >= .5)
+
+    # Wave 14: the highest-PnL entry mechanism of the system, rebuilt on the
+    # shared vector. `resource_age_rate` (parent of resource_age_rate_candidate_v1,
+    # +634.96U over 220 positions) compares the current 5 minutes against the prior
+    # 55 minutes and scales by available age; the shared vector publishes that
+    # comparison age-normalised, so the frozen rule is a 3x acceleration on the
+    # stronger of the two rates, inside a 15-minute to 6-hour pool, with real
+    # activity. It needs no previous frame and no window, so it is evaluated here
+    # before both guards.
+    out['age_rate_acceleration'] = bool(
+        pool_age is not None and 900 < pool_age < 21600
+        and liquidity is not None and liquidity >= 5000
+        and vol_age_acc is not None and tx_age_acc is not None
+        and max(vol_age_acc, tx_age_acc) >= 3.0
+        and ((vol_now is not None and vol_now >= 1000)
+             or (turn is not None and turn >= .1))
+        and buy_share is not None and buy_share >= .5)
 
     # Wave 12: breadth-based regime throttle. Computed before every return path
     # (including the missing-window one) so the intersections in `_finish` are
@@ -1023,6 +1071,7 @@ def mechanisms(f):
     #     return path, so the two-frame members remain visible without a window.
     return _finish(out)
 
+
 def exit_reason(kind, f, opened_at, current):
     """ALPHA149 trajectory exits. Same causal guards as the shared family."""
     if kind not in EXIT_KINDS or not f:
@@ -1182,6 +1231,11 @@ RULES = {
     # wave 13
     'confirmed_survivable': '存活带×连续两步确认：存活带成立且本池已连续两个观测帧上行'
                             '（成交因此推迟一帧，先确认再买入）；退出用实测最强短兑现合同。',
+    # wave 14
+    'age_rate_acceleration': '池龄归一化加速：池龄15分钟-6小时、深度≥5000U、'
+                             '5分钟活动率≥自身按龄归一小时率的3倍（成交额/笔数取强者）、'
+                             '有真实活动（5分钟成交额≥1000U或换手≥0.1）、买盘占比≥50%；'
+                             '复刻系统收益最高入场机制 resource_age_rate。',
 }
 
 
