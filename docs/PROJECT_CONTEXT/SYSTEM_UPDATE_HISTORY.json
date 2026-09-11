@@ -2,6 +2,20 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "20260912-wave21-steady-band",
+      "recorded_at": "2026-09-12T01:10:00Z",
+      "title": "wave21：安全带供应之谜解开（严格上涨只通过2.7%的帧）并以'不下跌'修复，供应放大43倍",
+      "problem": "survivable_core(FDV/深度1-20)长期低产：同一引擎内深池带(≥5无上限)触发75次而安全核心带仅5次。已排除深度下限(wave19放宽后触发不变)与区间稀缺(154,381帧联合分布显示池龄30-180分钟内1-20占51.9%、>20仅21.4%)两层解释，原因未明。",
+      "change": "在Engine.signals_for中prev附加之后加入有界逐条件计数器(仅仪表、不影响交易；首版误置于prev附加之前得到0/0假象已修正)，实测621帧定位瓶颈：严格上涨(>)仅通过2.7%而'不下跌'(≥)通过91.1%(引擎连续帧多为同价重复报价)，安全带区间另叠加3.9倍差距(core链16.1% vs deep链62.8%)；据此新增机制survivable_steady——与survivable_core同样的池子条件(池龄30-180分钟、FDV/深度1-20、深度≥5000U、深度不流失、买盘≥50%)，仅把'严格上涨'改为'不下跌'，并新增1条1U臂alpha149_survivable_steady_v1(实测最强短兑现合同)；append-only注册(255→256)。",
+      "rationale": "'严格上涨'是从突破族继承的条件，而写销风险实测来自池子的FDV/深度带与池龄、不来自帧斜率；以'不下跌'替代即可在不改变池子风险的前提下恢复安全带的可交易性。",
+      "validation": "加载后实测584帧：survivable_core ready=1、survivable_steady ready=43、survivable_band_deep=18，即安全带可达供应放大约43倍(事前预测34倍)，该臂加载后数分钟内已出信号；test_alpha149 45项+test_whipsaw_guard 2项 PASS(持平帧满足steady不满足core、上涨帧两者都满足、下跌帧两者都不满足、带/池龄/深度/买盘/深度流失条件在steady上仍全部生效、父臂合同与2U投注额不变)；错误#265/#266保持冻结。",
+      "scope": "IMPLEMENTED_LOADED; 放宽的是帧斜率而非池子条件，'持平帧是否与上涨帧有相同事后表现'尚无前向证据，正是该臂与survivable_core的同池对照要回答的；此类仪表代码位置必须正确(首版误置产生0/0误导)；安全带族其余臂保持不变，不追溯修改。",
+      "commit": "pending",
+      "loaded_at": "2026-09-11T22:47:00Z",
+      "visible_entry": "http://127.0.0.1:8790/#/strategies",
+      "report": "docs/PROJECT_CONTEXT/WAVE21_STEADY_BAND_SUPPLY_FIX_20260912.md"
+    },
+    {
       "id": "20260912-wave20-schedule-propagation",
       "recorded_at": "2026-09-12T00:45:00Z",
       "title": "wave20：把胜出的止损时点合同推广到其他入场族 + 安全带供应之谜排除第二层解释",

@@ -1023,6 +1023,52 @@ def test_wave20_propagates_the_winning_schedule_to_other_entries():
     assert alpha149.EXIT_ARMS["alpha149_early_stop_only_exit_v1"] == "alpha149_early_stop_only"
 
 
+def test_steady_band_relaxes_only_the_frame_slope():
+    """Wave 21: 'not falling' is the same pool test with a 34x larger frame supply."""
+    def vector(**over):
+        base = dict(pool_age_seconds=3600.0, fdv_liquidity=3.0, liquidity_usd=8000.0,
+                    buy_count_share=0.6,
+                    prev=dict(price_usd=1.0, liquidity_usd=7900.0, volume_5m_usd=100.0),
+                    current=dict(price_usd=1.0, liquidity_usd=8000.0, volume_5m_usd=120.0),
+                    windows={})
+        base.update(over)
+        return feature(**base)
+
+    flags = alpha149.mechanisms(vector())          # flat frame
+    assert flags["survivable_core"] is False       # the strict parent still needs a rise
+    assert flags["survivable_steady"] is True
+    # A rising frame satisfies both.
+    rising = alpha149.mechanisms(vector(
+        current=dict(price_usd=1.02, liquidity_usd=8000.0, volume_5m_usd=120.0)))
+    assert rising["survivable_core"] is True and rising["survivable_steady"] is True
+    # A falling frame satisfies neither.
+    falling = alpha149.mechanisms(vector(
+        current=dict(price_usd=0.98, liquidity_usd=8000.0, volume_5m_usd=120.0)))
+    assert falling["survivable_steady"] is False
+    # The pool conditions are unchanged: band, age, depth, buy share all still bind.
+    assert alpha149.mechanisms(vector(fdv_liquidity=30.0))["survivable_steady"] is False
+    assert alpha149.mechanisms(vector(fdv_liquidity=0.5))["survivable_steady"] is False
+    assert alpha149.mechanisms(vector(pool_age_seconds=600.0))["survivable_steady"] is False
+    assert alpha149.mechanisms(vector(liquidity_usd=4000.0,
+                                      current=dict(price_usd=1.0, liquidity_usd=4000.0,
+                                                   volume_5m_usd=120.0))
+                               )["survivable_steady"] is False
+    assert alpha149.mechanisms(vector(buy_count_share=0.4))["survivable_steady"] is False
+    # Depth leaving the pool still disqualifies it.
+    assert alpha149.mechanisms(vector(current=dict(price_usd=1.0, liquidity_usd=7000.0,
+                                                   volume_5m_usd=120.0))
+                               )["survivable_steady"] is False
+
+    policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}
+    arm = "alpha149_survivable_steady_v1"
+    assert alpha149.SPECS[arm][0] == "survivable_steady"
+    assert policies[arm]["notional_usd"] == 1.0
+    assert policies[arm]["hard_stop_return"] == -.20
+    # The strict parent is untouched.
+    assert alpha149.SPECS["alpha149_survivable_core_v1"][0] == "survivable_core"
+    assert policies["alpha149_survivable_core_v1"]["notional_usd"] == 2.0
+
+
 def test_wave8_arms_keep_the_entry_frozen_and_only_change_the_exit_contract():
     """Same-signal A/B: the anti-whipsaw arms reuse an existing kind verbatim."""
     policies = {p["arm_id"]: p for p in alpha149.policies(_policy_base())}

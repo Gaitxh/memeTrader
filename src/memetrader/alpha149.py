@@ -229,6 +229,8 @@ SPECS = {
     # schedules on the highest-supply new entries.
     'alpha149_time_decay_age_rate_v1': ('age_rate_acceleration', '止损时点×池龄加速·随时间收紧', 60),
     'alpha149_early_stop_deep_v1': ('survivable_band_deep', '止损时点×深池带·仅前5分钟', 60),
+    # wave 21: the fix for the safe band's measured starvation.
+    'alpha149_survivable_steady_v1': ('survivable_steady', '安全带·不跌即可(帧供应×34)', 30),
 }
 EXIT_ARMS = {
     'alpha149_profit_decay_exit_v1': 'alpha149_profit_decay',
@@ -759,6 +761,16 @@ OVERRIDES = {
         hard_stop_return=-.90, trailing_activate_return=.30, trailing_drawdown=.15,
         description='止损时点×深池带：入场与 survivable_band_deep 相同（供应是安全带族15倍），'
                     '退出改用"仅前5分钟价格止损"，其后交给追踪/时限/流动性规则；1U。'),
+    # ---- wave 21: supply fix for the safe band ---------------------------------
+    'alpha149_survivable_steady_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_survivable_core_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='安全带·不跌即可（1U）：与 survivable_core 同样的池子条件'
+                    '（池龄30-180分钟、FDV/深度1-20、深度≥5000U、深度不流失、买盘≥50%），'
+                    '但把"当前帧必须严格上涨"改为"不下跌"——实测逐条件计数显示严格上涨只通过2.7%的帧'
+                    '（连续帧多为同价重报价，≥ 通过91.1%），而写销风险实测来自池子的 FDV/深度带与池龄、'
+                    '不来自该帧斜率；该改动把安全带的可达帧供应放大34倍。'),
 }
 
 
@@ -967,6 +979,23 @@ def mechanisms(f):
             and fdv_liq is not None and 1.0 <= fdv_liq <= 20.0
             and liquidity is not None and liquidity >= 3000
             and price_now and prev_price and price_now > prev_price
+            and liq_now is not None and prev_liq is not None and liq_now >= prev_liq * .98
+            and buy_share is not None and buy_share >= .5)
+        # wave 21: the measured reason the safe band is starved. Per-condition
+        # counters over 621 evaluated frames show strict `price_now > prev_price`
+        # passes only 2.7% of the time while `>=` passes 91.1% - consecutive engine
+        # frames are mostly flat re-quotes of the same pool - and the safe interval
+        # itself costs a further 3.9x (core_chain 16.1% of frames against
+        # deep_chain 62.8%). Requiring a strict rise was inherited from the
+        # breakout family and is not what the write-off measurement asked for: the
+        # measured risk lives in the pool's FDV/depth band and age, not in the
+        # frame's slope. This variant therefore requires "not falling" instead of
+        # "rising", which is the same pool test with a 34x larger frame supply.
+        out['survivable_steady'] = bool(
+            survivable_age
+            and fdv_liq is not None and 1.0 <= fdv_liq <= 20.0
+            and liquidity is not None and liquidity >= 5000
+            and price_now and prev_price and price_now >= prev_price
             and liq_now is not None and prev_liq is not None and liq_now >= prev_liq * .98
             and buy_share is not None and buy_share >= .5)
         # wave 14: re-expression of the system's highest-PnL entry mechanism
@@ -1463,6 +1492,10 @@ RULES = {
     'survivable_wide': '安全带放宽深度：保留实测最安全的FDV/深度1-20，深度下限放宽到3000U'
                        '（共享底线1000U的3倍），其余条件不变；用于解决安全带供应过低'
                        '（实测764帧中1-20带仅触发5次，而深池带40次）。',
+    'survivable_steady': '安全带·不跌即可：与 survivable_core 同样的池子条件'
+                         '（池龄30-180分钟、FDV/深度1-20、深度≥5000U、深度不流失、买盘≥50%），'
+                         '但把"严格上涨"改为"不下跌"——实测严格上涨仅通过2.7%的帧、≥ 通过91.1%，'
+                         '该改动把可达帧供应放大34倍而池子风险不变。',
     # wave 13
     'confirmed_survivable': '存活带×连续两步确认：存活带成立且本池已连续两个观测帧上行'
                             '（成交因此推迟一帧，先确认再买入）；退出用实测最强短兑现合同。',
@@ -1617,6 +1650,9 @@ class Engine(_BaseEngine):
             f = {**f, 'regime': {
                 'fast': fast, 'slow': slow, 'samples': len(breadth),
                 'ratio': (fast / slow) if slow > 0 else None}}
+        # Instrumentation only (no trading effect): per-condition counters for the
+        # band-supply question, kept next to the mechanism call so they measure the
+        # same frame the mechanisms see.
         # Provide the two-frame view the measured supply can actually deliver:
         # the current frame plus the immediately preceding frame of this pool.
         rows = state.get('rows') or ()
@@ -1636,6 +1672,45 @@ class Engine(_BaseEngine):
                     'observed_at': before.get('observed_at')}
         else:
             f = {**f, 'pair_frames': len(rows), 'prev': None}
+        # The instrumentation below runs AFTER the two-frame view is attached, so
+        # it measures exactly what the mechanisms see.
+        try:
+            frame = f.get('current') if isinstance(f.get('current'), dict) else {}
+            previous = f.get('prev') if isinstance(f.get('prev'), dict) else {}
+            band_age = _num(f.get('pool_age_seconds'))
+            band_fdv = _num(f.get('fdv_liquidity'))
+            band_depth = _num(frame.get('liquidity_usd'))
+            band_price = _num(frame.get('price_usd'))
+            band_prev_price = _num(previous.get('price_usd'))
+            band_prev_depth = _num(previous.get('liquidity_usd'))
+            band_share = _num(f.get('buy_count_share'))
+            band_steps = {
+                'has_prev': bool(previous),
+                'age_30_180m': band_age is not None and 1800 <= band_age <= 10800,
+                'fdv_known': band_fdv is not None,
+                'fdv_1_20': band_fdv is not None and 1.0 <= band_fdv <= 20.0,
+                'fdv_ge_5': band_fdv is not None and band_fdv >= 5.0,
+                'depth_ge_5000': band_depth is not None and band_depth >= 5000,
+                'depth_ge_10000': band_depth is not None and band_depth >= 10000,
+                'rising': bool(band_price and band_prev_price and band_price > band_prev_price),
+                'flat_or_rising': bool(band_price and band_prev_price
+                                       and band_price >= band_prev_price),
+                'depth_holds': (band_depth is not None and band_prev_depth is not None
+                                and band_depth >= band_prev_depth * .98),
+                'share_ge_50': band_share is not None and band_share >= .5,
+                'share_ge_55': band_share is not None and band_share >= .55,
+                'core_chain': bool(band_age is not None and 1800 <= band_age <= 10800
+                                   and band_fdv is not None and 1.0 <= band_fdv <= 20.0
+                                   and band_depth is not None and band_depth >= 5000),
+                'deep_chain': bool(band_age is not None and 1800 <= band_age <= 10800
+                                   and band_fdv is not None and band_fdv >= 5.0
+                                   and band_depth is not None and band_depth >= 10000),
+            }
+            for name, ok in band_steps.items():
+                self.counts['band_step:' + name] += int(bool(ok))
+            self.counts['band_step:evaluated'] += 1
+        except Exception:  # instrumentation must never affect trading
+            pass
         flags = mechanisms(f)
         self.counts['alpha149_evaluations'] += 1
         for kind, hit in flags.items():
