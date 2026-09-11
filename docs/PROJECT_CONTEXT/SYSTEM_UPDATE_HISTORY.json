@@ -10,7 +10,7 @@
       "rationale": "用相对改善而非绝对水平复活该假设，并检验'好池子'与'好时机'是否需要同时满足；原暂停臂保持暂停与历史不变。",
       "validation": "test_alpha149 28项+test_whipsaw_guard 2项 PASS（含：宽度必须相对改善——fast=0.10/slow=0.05不触发；持平时不触发；无regime输入不触发；三个交叉臂必须两侧同时成立；引擎级150帧累积后ready=True且slow=1.0）；实盘宽度samples=220/fast=0.35/slow=0.436/ready=True，regime_risk_on ready=61、regime_throttle_revival信号23、merged_regime ready=2并出信号；错误#265/#266保持冻结。",
       "scope": "IMPLEMENTED_LOADED; 宽度基于引擎已接受帧(绝对水平35-44%高于全市场13%)故仅用于相对比较；wave12自然样本刚产生无结论；修复后35分钟81笔平仓0写销+1.73U为早期观察，窗口过短且与市场状态混杂，不作为'写销已解决'的结论。",
-      "commit": "pending",
+      "commit": "fb06aa2",
       "loaded_at": "2026-09-11T20:54:16Z",
       "visible_entry": "http://127.0.0.1:8790/#/strategies",
       "report": "docs/PROJECT_CONTEXT/WAVE12_REGIME_THROTTLE_20260912.md"
