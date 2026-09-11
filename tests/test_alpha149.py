@@ -29,7 +29,10 @@ def feature(**over):
         continuity_started_at="2026-09-11T00:00:00Z",
         liquidity_usd=5000.0, buy_count_share=0.5, drawdown=0.0,
         plateau_fraction=0.0, monotonic_up_fraction=0.0, liquidity_retention=1.0,
-        volume_liquidity=0.5, fdv_liquidity=1000.0, price_elasticity_proxy=None,
+        volume_liquidity=0.0, fdv_liquidity=1000.0, price_elasticity_proxy=None,
+        current=dict(price_usd=1.0, liquidity_usd=5000.0, volume_5m_usd=100.0,
+                     buys_5m=10.0, sells_5m=5.0,
+                     observed_at="2026-09-11T00:00:30Z"),
         log_price_r2=None, residual_dispersion=None, jump_interval_cv=None,
         jump_size_cv=None, volume_acceleration_age_normalized=1.0,
         tx_acceleration_age_normalized=1.0, first_dip=None,
@@ -223,6 +226,23 @@ CASES = {
     "depth_first_mature": dict(pool_age_seconds=3600.0, liquidity_usd=12000.0,
         volume_liquidity=0.8,
         windows={"15": _w(), "30": _w(ret=0.03, liq=0.0), "60": _w(), "180": _w()}),
+    # wave 4: single/two-frame mechanisms, tested with NO 30-second window
+    "sf_deep_low_fdv": dict(liquidity_usd=6000.0, fdv_liquidity=0.5,
+        buy_count_share=0.6, windows={}),
+    "sf_extreme_buy_pressure": dict(buy_count_share=0.95, liquidity_usd=2500.0,
+        volume_liquidity=0.2, windows={}),
+    "sf_young_turnover": dict(pool_age_seconds=600.0, liquidity_usd=2000.0,
+        volume_liquidity=0.35, windows={}),
+    "sf_quiet_absorption": dict(drawdown=0.0, buy_count_share=0.7,
+        liquidity_usd=4000.0, fdv_liquidity=1.0, windows={}),
+    "df_price_up_liquidity_up": dict(
+        prev=dict(price_usd=1.0, liquidity_usd=5000.0, volume_5m_usd=100.0),
+        current=dict(price_usd=1.05, liquidity_usd=5500.0, volume_5m_usd=120.0),
+        liquidity_usd=5500.0, windows={}),
+    "df_activity_jump": dict(
+        prev=dict(price_usd=1.0, liquidity_usd=5000.0, volume_5m_usd=100.0),
+        current=dict(price_usd=1.02, liquidity_usd=5000.0, volume_5m_usd=200.0),
+        liquidity_usd=5000.0, buy_count_share=0.6, windows={}),
 }
 
 

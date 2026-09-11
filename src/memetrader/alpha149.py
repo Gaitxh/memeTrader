@@ -16,6 +16,7 @@ Integration is a purely additive merge performed in ``dex_trajectory``:
 flags, ``exit_reason`` delegates the new kinds, and ``policies`` applies the
 per-arm sizing declared in ``OVERRIDES``.
 """
+from collections import deque
 from copy import deepcopy
 
 from .dex_trajectory import Engine as _BaseEngine
@@ -55,6 +56,16 @@ SPECS = {
     'alpha149_live_flow_revival_v1': ('live_flow_revival', '休眠流量族的在线替代路径', 15),
     'alpha149_baseline_free_absolute_v1': ('baseline_free_absolute', '免横截基线绝对条件', 15),
     'alpha149_depth_first_mature_v1': ('depth_first_mature', '老池深度优先（免池龄门）', 15),
+    # wave 4: mechanisms that do NOT need a multi-frame window. The measured
+    # supply gives p50 = 1 frame per pool and no 30-second window ever forms,
+    # so these read single-frame state or a two-frame difference. Thresholds are
+    # taken from the observed distribution (design doc §11).
+    'alpha149_sf_deep_low_fdv_v1': ('sf_deep_low_fdv', '单帧·深池低FDV', 15),
+    'alpha149_sf_extreme_buy_pressure_v1': ('sf_extreme_buy_pressure', '单帧·极端买压', 15),
+    'alpha149_sf_young_turnover_v1': ('sf_young_turnover', '单帧·年轻池换手', 10),
+    'alpha149_sf_quiet_absorption_v1': ('sf_quiet_absorption', '单帧·静默吸筹', 20),
+    'alpha149_df_price_up_liquidity_up_v1': ('df_price_up_liquidity_up', '两帧·价涨且加池', 15),
+    'alpha149_df_activity_jump_v1': ('df_activity_jump', '两帧·成交额跳增', 15),
 }
 EXIT_ARMS = {
     'alpha149_profit_decay_exit_v1': 'alpha149_profit_decay',
@@ -175,6 +186,31 @@ OVERRIDES = {
         notional_usd=5.0, description='共享冲量冻结信号；原池流动性单窗口骤降超过两倍摩擦即退出。'),
     'alpha149_plateau_stall_exit_v1': dict(
         notional_usd=5.0, description='共享冲量冻结信号；滞涨（平台占比升高且笔数回落）即兑现。'),
+    # ---- wave 4: no-window mechanisms, thresholds from the measured supply ----
+    'alpha149_sf_deep_low_fdv_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        description='单帧结构：深度≥5000U、FDV/深度≤0.7（实测p10）、买笔占比≥0.58（实测p50）；'
+                    '不需要多帧窗口。2U最多2仓15分钟。'),
+    'alpha149_sf_extreme_buy_pressure_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2, hard_stop_return=-.15,
+        description='单帧买压：买笔占比≥0.9（实测p50=0.58、p90=1.0）且深度≥2000U、换手>0.1；'
+                    '2U最多2仓15分钟。'),
+    'alpha149_sf_young_turnover_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        description='单帧年轻池：池龄≤900秒、换手≥0.3（实测p90=0.41）、深度≥1500U；'
+                    '2U最多2仓10分钟。'),
+    'alpha149_sf_quiet_absorption_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        description='单帧静默吸筹：价格处于运行高点（回撤=0，实测p50=0）、买笔占比≥0.65、'
+                    '深度≥3000U、FDV/深度≤1.2；2U最多2仓20分钟。'),
+    'alpha149_df_price_up_liquidity_up_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        description='两帧差分：本帧价格高于上一帧且深度同时增加；在实测供给下这是可用的最短真实信号'
+                    '（不需要30秒窗口）。2U最多2仓15分钟。'),
+    'alpha149_df_activity_jump_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        description='两帧差分：本帧成交额≥上一帧1.5倍且价格不跌、买笔占比≥0.5；'
+                    '2U最多2仓15分钟。'),
 }
 
 
@@ -204,14 +240,6 @@ def mechanisms(f):
     if not isinstance(f, dict):
         return out
     w = _w30(f)
-    if not w:
-        return out
-    ret = _num(w.get('return_fraction'))
-    acc = _num(w.get('acceleration'))
-    liq_change = _num(w.get('liquidity_change_fraction'))
-    vol_ratio = _num(w.get('rolling_volume_change_ratio'))
-    tx_ratio = _num(w.get('rolling_tx_change_ratio'))
-    frames = _num(w.get('frames')) or 0
     liquidity = _num(f.get('liquidity_usd'))
     pool_age = _num(f.get('pool_age_seconds'))
     buy_share = _num(f.get('buy_count_share'))
@@ -223,11 +251,58 @@ def mechanisms(f):
     jitter_interval = _num(f.get('jump_interval_cv'))
     jitter_size = _num(f.get('jump_size_cv'))
     retention = _num(f.get('liquidity_retention'))
-    volatility = _num(w.get('realized_volatility'))
     r2 = _num(f.get('log_price_r2'))
     residual = _num(f.get('residual_dispersion'))
     turn = _num(f.get('volume_liquidity'))
+    fdv_liq = _num(f.get('fdv_liquidity'))
     total_frames = _num(f.get('frames')) or 0
+
+    # ---- wave 4: single-frame / two-frame mechanisms -----------------------
+    # Deliberately evaluated BEFORE the 30-second-window guard: measured data
+    # supplies p50 = 1 frame per pool and no window ever forms, so a mechanism
+    # that needs the window can never fire. These read only the current frame
+    # (plus the immediately preceding frame of the same pool when available).
+    current = f.get('current') if isinstance(f.get('current'), dict) else {}
+    price_now = _num(current.get('price_usd'))
+    liq_now = _num(current.get('liquidity_usd'))
+    vol_now = _num(current.get('volume_5m_usd'))
+    if liquidity is not None and liquidity >= 1000 and price_now:
+        out['sf_deep_low_fdv'] = bool(
+            liquidity >= 5000 and fdv_liq is not None and fdv_liq <= .7
+            and buy_share is not None and buy_share >= .58)
+        out['sf_extreme_buy_pressure'] = bool(
+            buy_share is not None and buy_share >= .9 and liquidity >= 2000
+            and turn is not None and turn > .1)
+        out['sf_young_turnover'] = bool(
+            pool_age is not None and pool_age <= 900 and liquidity >= 1500
+            and turn is not None and turn >= .3)
+        out['sf_quiet_absorption'] = bool(
+            drawdown is not None and drawdown >= 0
+            and buy_share is not None and buy_share >= .65
+            and liquidity >= 3000 and fdv_liq is not None and fdv_liq <= 1.2)
+    previous = f.get('prev') if isinstance(f.get('prev'), dict) else None
+    if previous:
+        prev_price = _num(previous.get('price_usd'))
+        prev_liq = _num(previous.get('liquidity_usd'))
+        prev_vol = _num(previous.get('volume_5m_usd'))
+        out['df_price_up_liquidity_up'] = bool(
+            price_now and prev_price and price_now > prev_price
+            and liq_now is not None and prev_liq is not None and liq_now > prev_liq)
+        out['df_activity_jump'] = bool(
+            price_now and prev_price and price_now >= prev_price
+            and vol_now is not None and prev_vol is not None and prev_vol > 0
+            and vol_now >= prev_vol * 1.5
+            and buy_share is not None and buy_share >= .5)
+
+    if not w:
+        return out
+    ret = _num(w.get('return_fraction'))
+    acc = _num(w.get('acceleration'))
+    liq_change = _num(w.get('liquidity_change_fraction'))
+    vol_ratio = _num(w.get('rolling_volume_change_ratio'))
+    tx_ratio = _num(w.get('rolling_tx_change_ratio'))
+    frames = _num(w.get('frames')) or 0
+    volatility = _num(w.get('realized_volatility'))
     if liquidity is None or liquidity < 1000 or ret is None:
         return out
     rising = (vol_ratio or 0) > 1 and (tx_ratio or 0) > 1
@@ -514,6 +589,13 @@ RULES = {
     'live_flow_revival': '成交额与笔数双增、买笔占比>60%、流动性不降、涨幅为正（不依赖已休眠采集面）。',
     'baseline_free_absolute': '只用绝对量：30秒涨幅≥1倍摩擦、周转率>1、深度≥3000U（不等横截基线）。',
     'depth_first_mature': '池龄≥30分钟、深度≥10000U、30秒上涨、周转率>0.5（不设池龄上限）。',
+    # wave 4: single/two-frame rules, calibrated on the measured distribution
+    'sf_deep_low_fdv': '单帧即可：深度≥5000U 且 FDV/深度≤0.7、买笔占比≥0.58。',
+    'sf_extreme_buy_pressure': '单帧即可：买笔占比≥0.9、深度≥2000U、换手>0.1。',
+    'sf_young_turnover': '单帧即可：池龄≤900秒、换手≥0.3、深度≥1500U。',
+    'sf_quiet_absorption': '单帧即可：价格处于运行高点、买笔占比≥0.65、深度≥3000U、FDV/深度≤1.2。',
+    'df_price_up_liquidity_up': '仅用最近两帧：本帧价格高于上一帧且深度增加（不需要30秒窗口）。',
+    'df_activity_jump': '仅用最近两帧：本帧成交额≥上一帧1.5倍、价格不跌、买笔占比≥0.5。',
 }
 
 
@@ -575,13 +657,62 @@ def snapshot():
                 note='pure mechanisms over the existing observed-trajectory features')
 
 
+FEATURE_SAMPLES = 600
+FEATURE_KEYS = (
+    'pool_age_seconds', 'liquidity_usd', 'frames_total', 'return_30',
+    'liquidity_change_30', 'volume_ratio_30', 'tx_ratio_30', 'volatility_30',
+    'window_frames_30', 'buy_count_share', 'volume_age_accel', 'tx_age_accel',
+    'drawdown', 'plateau_fraction', 'monotonic_up_fraction', 'log_price_r2',
+    'volume_liquidity', 'fdv_liquidity', 'price_elasticity_proxy',
+)
+
+
 class Engine(_BaseEngine):
     """Isolated trajectory engine for the ALPHA149 arms.
 
     It reuses the shared causal feature derivation (`dex_trajectory.derive` via
     the base `accept`) but emits signals ONLY for ALPHA149 arms, so the shared
     dex engine's output, coverage and dedup semantics are untouched.
+
+    It also keeps a bounded, in-memory sample of the real feature distribution so
+    thresholds can be calibrated from observed data instead of assumption. This
+    is instrumentation only: no I/O, no database, no trading authority.
     """
+
+    def __init__(self, started):
+        super().__init__(started)
+        self._samples = {key: deque(maxlen=FEATURE_SAMPLES) for key in FEATURE_KEYS}
+
+    def accept(self, row, now):
+        feature = super().accept(row, now)
+        if feature is not None:
+            window = _w30(feature) or {}
+            values = {
+                'pool_age_seconds': feature.get('pool_age_seconds'),
+                'liquidity_usd': feature.get('liquidity_usd'),
+                'frames_total': feature.get('frames'),
+                'return_30': window.get('return_fraction'),
+                'liquidity_change_30': window.get('liquidity_change_fraction'),
+                'volume_ratio_30': window.get('rolling_volume_change_ratio'),
+                'tx_ratio_30': window.get('rolling_tx_change_ratio'),
+                'volatility_30': window.get('realized_volatility'),
+                'window_frames_30': window.get('frames'),
+                'buy_count_share': feature.get('buy_count_share'),
+                'volume_age_accel': feature.get('volume_acceleration_age_normalized'),
+                'tx_age_accel': feature.get('tx_acceleration_age_normalized'),
+                'drawdown': feature.get('drawdown'),
+                'plateau_fraction': feature.get('plateau_fraction'),
+                'monotonic_up_fraction': feature.get('monotonic_up_fraction'),
+                'log_price_r2': feature.get('log_price_r2'),
+                'volume_liquidity': feature.get('volume_liquidity'),
+                'fdv_liquidity': feature.get('fdv_liquidity'),
+                'price_elasticity_proxy': feature.get('price_elasticity_proxy'),
+            }
+            for key, value in values.items():
+                number = _num(value)
+                if number is not None:
+                    self._samples[key].append(number)
+        return feature
 
     def signals_for(self, token, pool, now):
         now = _parse_time(now)
@@ -591,6 +722,18 @@ class Engine(_BaseEngine):
         f = state['features']
         if not 0 <= (now - _parse_time(f['observed_at'])).total_seconds() <= 30:
             return {}
+        # Provide the two-frame view the measured supply can actually deliver:
+        # the current frame plus the immediately preceding frame of this pool.
+        rows = state.get('rows') or ()
+        if len(rows) >= 2:
+            previous = rows[-2]
+            f = {**f, 'pair_frames': len(rows), 'prev': {
+                'price_usd': previous.get('price_usd'),
+                'liquidity_usd': previous.get('liquidity_usd'),
+                'volume_5m_usd': previous.get('volume_5m_usd'),
+                'observed_at': previous.get('observed_at')}}
+        else:
+            f = {**f, 'pair_frames': len(rows), 'prev': None}
         flags = mechanisms(f)
         self.counts['alpha149_evaluations'] += 1
         for kind, hit in flags.items():
@@ -628,4 +771,27 @@ class Engine(_BaseEngine):
         snap['version'] = VERSION
         snap['alpha149_arms'] = list(ALL_ARMS)
         snap['extra_requests'] = 0
+        snap['feature_samples'] = {
+            key: {
+                'n': len(values),
+                'p10': _percentile(values, .10),
+                'p50': _percentile(values, .50),
+                'p90': _percentile(values, .90),
+            } for key, values in self._samples.items() if values
+        }
+        snap['mechanism_ready'] = {kind: self.counts['alpha149_ready:' + kind]
+                                   for kind in KINDS}
+        snap['signals'] = {arm: self.counts['signal:' + arm] for arm in ALL_ARMS}
         return snap
+
+
+def _percentile(values, quantile):
+    if not values:
+        return None
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * quantile
+    lower, upper = int(position), min(len(ordered) - 1, int(position) + 1)
+    if lower == upper:
+        return ordered[lower]
+    weight = position - lower
+    return ordered[lower] * (1 - weight) + ordered[upper] * weight

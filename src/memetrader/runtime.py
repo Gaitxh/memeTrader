@@ -9216,6 +9216,19 @@ class Runtime:
                 market_http = getattr(self, "market_http", None)
                 if market_http is not None:
                     timing_snapshot["dex_http_capacity"] = market_http.snapshot_http_capacity()
+                # ALPHA149 diagnostics: why the new arms do or do not trigger.
+                engine149 = getattr(self.store, "_alpha149", None)
+                if engine149 is not None:
+                    try:
+                        timing_snapshot["alpha149_engine"] = engine149.snapshot()
+                    except Exception:
+                        pass
+                batch_manager = getattr(self, "_shared_batch148", None)
+                if batch_manager is not None:
+                    try:
+                        timing_snapshot["shared_batch_coverage"] = batch_manager.snapshot(utcnow())
+                    except Exception:
+                        pass
                 self.store.record_runtime_timing(timing_snapshot)
                 self._last_timing_write = started
             wait_seconds = max(0.2, interval_seconds - elapsed)
