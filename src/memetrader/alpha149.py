@@ -2458,3 +2458,239 @@ def mechanisms(f):  # noqa: F811 - additive wrapper over the frozen mechanism se
         out.setdefault('deep_liq_band', False)
         out.setdefault('non_bsc_deep_band', False)
     return out
+
+
+# ---- wave 32: the reachable mid-depth tier ----
+# Wave 31's >=100k entry never fires in the live engine (readiness 0), so the review's
+# depth/write-off ordering cannot be tested there. The engine counters report ~86% of
+# accepted frames at depth >= 10,000, so 20k-100k is the band that can actually be traded.
+SPECS.update({
+    'alpha149_mid_deep_band_v1': ('mid_deep_band', '\u4e2d\u6df1\u6c60\u00b7\u6df1\u5ea620k-100k(1U)', 30),
+    'alpha149_mid_deep_band_nonbsc_v1': ('mid_deep_band_non_bsc', '\u4e2d\u6df1\u6c60\u00b7\u975eBSC(1U)', 30),
+})
+OVERRIDES.update({
+    'alpha149_mid_deep_band_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_open_band_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u4e2d\u6df1\u6c60\uff081U\uff0c30\u5206\u949f\uff09\uff1a\u6c60\u9f8430-180\u5206\u949f\u3001'
+                    '\u539f\u6c60\u6df1\u5ea6 20,000-100,000U\u3001FDV/\u6df1\u5ea6 1-20\u3001\u4ef7\u683c\u4e0d\u4e0b\u8dcc\u3001'
+                    '\u6df1\u5ea6\u4e0d\u6d41\u5931\u3001\u4e70\u76d8\u5360\u6bd4 >=50%\u3002\u4f9d\u636e\uff1a'
+                    '\u590d\u76d8\u663e\u793a>=100k \u6863\u96f6\u5199\u9500\u4e14PF>1\u300120-100k \u5199\u9500\u7387 9.6%\u3001'
+                    '5-20k \u4e3a 25.1%\uff0c\u4f46 >=100k \u5728\u5b9e\u65f6\u5f15\u64ce\u4e2d\u4e0d\u53ef\u8fbe\uff08\u5c31\u7eea0\uff09\uff0c'
+                    '\u800c 20k-100k \u662f\u5b9e\u6d4b\u53ef\u89c2\u6d4b\u7684\u533a\u95f4\u3002'),
+    'alpha149_mid_deep_band_nonbsc_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_mid_deep_band_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u4e2d\u6df1\u6c60\u00b7\u975eBSC\uff081U\uff0c30\u5206\u949f\uff09\uff1a\u4e0e\u4e0a\u4e00\u6761\u540c\u6761\u4ef6\uff0c'
+                    '\u989d\u5916\u6392\u9664 BSC\uff08\u590d\u76d8\uff1a24\u5c0f\u65f6\u5168\u90e8 216 \u7b14\u5199\u9500\u5747\u4e3a BSC\uff09\u3002'),
+})
+ALL_ARMS = tuple(SPECS) + tuple(EXIT_ARMS)
+KINDS = tuple(kind for kind, _, _ in SPECS.values())
+
+_base_mechanisms_w31 = mechanisms
+
+
+def mechanisms(f):  # noqa: F811 - wave 32 wrapper over the wave-31 wrapper
+    """Add the reachable mid-depth flags; every other rule is untouched."""
+    out = _base_mechanisms_w31(f)
+    try:
+        if not isinstance(f, dict):
+            return out
+        frame = f.get('current') if isinstance(f.get('current'), dict) else {}
+        previous = f.get('prev') if isinstance(f.get('prev'), dict) else None
+        def _n(value):
+            try:
+                return None if value is None or isinstance(value, bool) else float(value)
+            except (TypeError, ValueError):
+                return None
+        chain = str(f.get('chain') or '').lower()
+        depth = _n(frame.get('liquidity_usd'))
+        if depth is None:
+            depth = _n(f.get('liquidity_usd'))
+        prior = _n(previous.get('liquidity_usd')) if previous else None
+        age = _n(f.get('pool_age_seconds'))
+        ratio = _n(f.get('fdv_liquidity'))
+        share = _n(f.get('buy_count_share'))
+        price_now = _n(frame.get('price_usd'))
+        price_prev = _n(previous.get('price_usd')) if previous else None
+        mid = bool(
+            age is not None and 1800 <= age <= 10800
+            and depth is not None and 20000 <= depth <= 100000
+            and ratio is not None and 1.0 <= ratio <= 20.0
+            and price_now and price_prev and price_now >= price_prev
+            and prior is not None and depth >= prior * .98
+            and share is not None and share >= .5)
+        out['mid_deep_band'] = mid
+        out['mid_deep_band_non_bsc'] = bool(mid and chain != 'bsc')
+    except Exception:
+        out.setdefault('mid_deep_band', False)
+        out.setdefault('mid_deep_band_non_bsc', False)
+    return out
+
+
+# ---- wave 33: high-throughput mirrors of the two A/B contracts ----
+# The wave-28/29 pairs held 2 positions each with no closes for ~50 minutes, so the verdict
+# (>=20 closes per side) was days away. Concurrency is not part of the per-trade contract,
+# so these mirrors keep every rule identical and raise max_concurrent_positions to 8 to
+# multiply the sample rate. Same question, reachable answer.
+SPECS.update({
+    'alpha149_hold_hi_open_band_v1': ('survivable_open_band', '\u9ad8\u541e\u5410\u00b7\u957f\u6301\u6709\u5408\u540c', 90),
+    'alpha149_hold_hi_control_v1': ('survivable_open_band', '\u9ad8\u541e\u5410\u00b7\u957f\u6301\u6709\u5bf9\u7167', 30),
+    'alpha149_deadpool_hi_open_band_v1': ('survivable_open_band', '\u9ad8\u541e\u5410\u00b7\u6b7b\u6c60\u524d\u5146\u5408\u540c', 60),
+    'alpha149_deadpool_hi_control_v1': ('survivable_open_band', '\u9ad8\u541e\u5410\u00b7\u6b7b\u6c60\u5bf9\u7167', 60),
+})
+OVERRIDES.update({
+    'alpha149_hold_hi_open_band_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=8,
+        excess_return_vs_arm='alpha149_hold_hi_control_v1',
+        hard_stop_return=-.35, trailing_activate_return=.50, trailing_drawdown=.35,
+        description='\u9ad8\u541e\u5410\u00b7\u957f\u6301\u6709\uff081U\uff0c90\u5206\u949f\uff09\uff1a'
+                    '\u4e0e alpha149_long_hold_open_band_v1 \u9010\u5b57\u540c\u5408\u540c\uff08\u8ffd\u8e2a+50%/\u56de\u64a435%\u3001-35%\u515c\u5e95\u3001'
+                    '\u6d41\u52a8\u6027\u4e0e\u5199\u9500\u89c4\u5219\u4e0d\u53d8\uff09\uff0c\u4ec5\u628a\u5e76\u53d1\u4e0a\u9650\u4ece2\u63d0\u52308\uff0c'
+                    '\u4ee5\u5728\u5c0f\u65f6\u7ea7\u800c\u975e\u5929\u7ea7\u51b3\u5b9a\u201c\u653e\u5bbd\u8ffd\u8e2a\u662f\u5426\u6709\u76ca\u201d\u3002'),
+    'alpha149_hold_hi_control_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=8,
+        excess_return_vs_arm='alpha149_hold_hi_open_band_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u9ad8\u541e\u5410\u00b7\u957f\u6301\u6709\u5bf9\u7167\uff081U\uff0c30\u5206\u949f\uff09\uff1a\u540c\u5165\u573a\u3001'
+                    '\u9ed8\u8ba4-20%/+30%\u219215%\u5408\u540c\uff0c\u5e76\u53d1\u540c\u4e3a8\u3002'),
+    'alpha149_deadpool_hi_open_band_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=8,
+        excess_return_vs_arm='alpha149_deadpool_hi_control_v1',
+        trajectory_exit='alpha149_depth_decay',
+        hard_stop_return=-.90, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u9ad8\u541e\u5410\u00b7\u6b7b\u6c60\u524d\u5146\uff081U\uff0c60\u5206\u949f\uff09\uff1a'
+                    '\u4e0e alpha149_deadpool_open_band_v1 \u540c\u5408\u540c\uff08\u53bb\u4ef7\u683c\u6b62\u635f\u3001\u7528\u6df1\u5ea6\u8870\u51cf\u63d0\u524d\u9000\u51fa\uff09\uff0c'
+                    '\u5e76\u53d1\u4e0a\u9650\u6539\u4e3a8\u3002'),
+    'alpha149_deadpool_hi_control_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=8,
+        excess_return_vs_arm='alpha149_deadpool_hi_open_band_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u9ad8\u541e\u5410\u00b7\u6b7b\u6c60\u5bf9\u7167\uff081U\uff0c60\u5206\u949f\uff09\uff1a\u540c\u5165\u573a\uff0c'
+                    '\u4e0d\u58f0\u660e\u6df1\u5ea6\u8870\u51cf\u9000\u51fa\uff0c\u5e76\u53d1\u540c\u4e3a8\u3002'),
+})
+ALL_ARMS = tuple(SPECS) + tuple(EXIT_ARMS)
+KINDS = tuple(kind for kind, _, _ in SPECS.values())
+
+
+# ---- wave 34: multi-entry band carrier for the two A/B contracts ----
+# The single carrier `survivable_open_band` has unstable frame supply (readiness swings from
+# 2 to 654 between processes), which is what kept every A/B at 2 positions with no closes.
+# `any_band` is the OR of the family's existing measured band flags, so whichever band the
+# market supplies can carry the same per-trade contract.
+SPECS.update({
+    'alpha149_hold_any_band_v1': ('any_band', '\u591a\u5165\u53e3\u00b7\u957f\u6301\u6709\u5408\u540c', 90),
+    'alpha149_hold_any_band_control_v1': ('any_band', '\u591a\u5165\u53e3\u00b7\u957f\u6301\u6709\u5bf9\u7167', 30),
+    'alpha149_deadpool_any_band_v1': ('any_band', '\u591a\u5165\u53e3\u00b7\u6b7b\u6c60\u524d\u5146\u5408\u540c', 60),
+    'alpha149_deadpool_any_band_control_v1': ('any_band', '\u591a\u5165\u53e3\u00b7\u6b7b\u6c60\u5bf9\u7167', 60),
+})
+OVERRIDES.update({
+    'alpha149_hold_any_band_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=8,
+        excess_return_vs_arm='alpha149_hold_any_band_control_v1',
+        hard_stop_return=-.35, trailing_activate_return=.50, trailing_drawdown=.35,
+        description='\u591a\u5165\u53e3\u00b7\u957f\u6301\u6709\uff081U\uff0c90\u5206\u949f\uff0c\u5e76\u53d18\uff09\uff1a'
+                    '\u5165\u573a\u4e3a\u672c\u65cf\u5404\u5b9e\u6d4b\u5b89\u5168\u5e26\u673a\u5236\u7684\u5e76\u96c6\uff08\u4efb\u4e00\u6210\u7acb\u5373\u53ef\uff09\uff0c'
+                    '\u9000\u51fa\u4e0e alpha149_long_hold_open_band_v1 \u9010\u5b57\u540c\u5408\u540c\uff08\u8ffd\u8e2a+50%/\u56de\u64a435%\u3001-35%\u515c\u5e95\uff09\u3002'
+                    '\u76ee\u7684\uff1a\u628a\u5355\u4e00\u5165\u573a\u5e27\u4f9b\u7ed9\u4e0d\u7a33\u5b9a\u7684\u5f71\u54cd\u4ece\u5b9e\u9a8c\u91cc\u5254\u9664\u3002'),
+    'alpha149_hold_any_band_control_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=8,
+        excess_return_vs_arm='alpha149_hold_any_band_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u591a\u5165\u53e3\u00b7\u957f\u6301\u6709\u5bf9\u7167\uff081U\uff0c30\u5206\u949f\uff0c\u5e76\u53d18\uff09\uff1a'
+                    '\u540c\u4e00\u591a\u5165\u53e3\uff0c\u4fdd\u7559\u9ed8\u8ba4-20%/+30%\u219215%\u3002'),
+    'alpha149_deadpool_any_band_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=8,
+        excess_return_vs_arm='alpha149_deadpool_any_band_control_v1',
+        trajectory_exit='alpha149_depth_decay',
+        hard_stop_return=-.90, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u591a\u5165\u53e3\u00b7\u6b7b\u6c60\u524d\u5146\uff081U\uff0c60\u5206\u949f\uff0c\u5e76\u53d18\uff09\uff1a'
+                    '\u540c\u4e00\u591a\u5165\u53e3\uff0c\u53bb\u4ef7\u683c\u6b62\u635f\u3001\u6539\u7528\u6df1\u5ea6\u8870\u51cf\u63d0\u524d\u9000\u51fa\u3002'),
+    'alpha149_deadpool_any_band_control_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=8,
+        excess_return_vs_arm='alpha149_deadpool_any_band_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u591a\u5165\u53e3\u00b7\u6b7b\u6c60\u5bf9\u7167\uff081U\uff0c60\u5206\u949f\uff0c\u5e76\u53d18\uff09\uff1a'
+                    '\u540c\u4e00\u591a\u5165\u53e3\uff0c\u4e0d\u58f0\u660e\u6df1\u5ea6\u8870\u51cf\u9000\u51fa\u3002'),
+})
+ALL_ARMS = tuple(SPECS) + tuple(EXIT_ARMS)
+KINDS = tuple(kind for kind, _, _ in SPECS.values())
+
+_base_mechanisms_w32 = mechanisms
+
+
+def mechanisms(f):  # noqa: F811 - wave 34 wrapper over the wave-32 wrapper
+    """Add the multi-entry band flag: the OR of the family's existing band mechanisms."""
+    out = _base_mechanisms_w32(f)
+    try:
+        out['any_band'] = bool(
+            out.get('survivable_open_band') or out.get('survivable_steady')
+            or out.get('survivable_wide') or out.get('survivable_core')
+            or out.get('survivable_band_mid') or out.get('survivable_band_deep')
+            or out.get('mid_deep_band') or out.get('deep_liq_band')
+            or out.get('thin_depth_tier') or out.get('survivable_steady_mid'))
+    except Exception:
+        out.setdefault('any_band', False)
+    return out
+
+
+# ---- wave 35: non-band carriers for the two A/B contracts ----
+# In the live market the band entries are effectively a single entry (`any_band` readiness
+# equals `survivable_open_band` exactly), while the flow/momentum entries keep firing. These
+# arms carry the identical exit contracts on the higher-supply entries so the A/B can reach a
+# verdict at all.
+SPECS.update({
+    'alpha149_hold_flow_v1': ('flow_entry', '\u6d41\u91cf\u5165\u53e3\u00b7\u957f\u6301\u6709\u5408\u540c', 90),
+    'alpha149_hold_flow_control_v1': ('flow_entry', '\u6d41\u91cf\u5165\u53e3\u00b7\u957f\u6301\u6709\u5bf9\u7167', 30),
+    'alpha149_deadpool_flow_v1': ('flow_entry', '\u6d41\u91cf\u5165\u53e3\u00b7\u6b7b\u6c60\u524d\u5146\u5408\u540c', 60),
+    'alpha149_deadpool_flow_control_v1': ('flow_entry', '\u6d41\u91cf\u5165\u53e3\u00b7\u6b7b\u6c60\u5bf9\u7167', 60),
+})
+OVERRIDES.update({
+    'alpha149_hold_flow_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=8,
+        excess_return_vs_arm='alpha149_hold_flow_control_v1',
+        hard_stop_return=-.35, trailing_activate_return=.50, trailing_drawdown=.35,
+        description='\u6d41\u91cf\u5165\u53e3\u00b7\u957f\u6301\u6709\uff081U\uff0c90\u5206\u949f\uff0c\u5e76\u53d18\uff09\uff1a'
+                    '\u5165\u573a\u4e3a\u672c\u65cf\u9ad8\u4f9b\u7ed9\u7684\u6d41\u91cf/\u52a8\u91cf\u7c7b\u673a\u5236\u5e76\u96c6'
+                    '\uff08mom_persistence \u2228 open_band_scored \u2228 score_gate_band \u2228 size_informed_flow\uff09\uff0c'
+                    '\u9000\u51fa\u4e0e\u957f\u6301\u6709\u81c2\u9010\u5b57\u540c\u5408\u540c\uff08\u8ffd\u8e2a+50%/\u56de\u64a435%\u3001-35%\u515c\u5e95\uff09\u3002'
+                    '\u76ee\u7684\uff1a\u628a\u5b9e\u9a8c\u4ece\u201c\u5e26\u7c7b\u5165\u573a\u4f9b\u7ed9\u4e0d\u7a33\u5b9a\u201d\u4e2d\u89e3\u8131\u51fa\u6765\u3002'),
+    'alpha149_hold_flow_control_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=8,
+        excess_return_vs_arm='alpha149_hold_flow_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u6d41\u91cf\u5165\u53e3\u00b7\u957f\u6301\u6709\u5bf9\u7167\uff081U\uff0c30\u5206\u949f\uff0c\u5e76\u53d18\uff09\uff1a'
+                    '\u540c\u4e00\u5165\u573a\uff0c\u9ed8\u8ba4-20%/+30%\u219215%\u3002'),
+    'alpha149_deadpool_flow_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=8,
+        excess_return_vs_arm='alpha149_deadpool_flow_control_v1',
+        trajectory_exit='alpha149_depth_decay',
+        hard_stop_return=-.90, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u6d41\u91cf\u5165\u53e3\u00b7\u6b7b\u6c60\u524d\u5146\uff081U\uff0c60\u5206\u949f\uff0c\u5e76\u53d18\uff09\uff1a'
+                    '\u540c\u4e00\u5165\u573a\uff0c\u53bb\u4ef7\u683c\u6b62\u635f\u3001\u7528\u6df1\u5ea6\u8870\u51cf\u63d0\u524d\u9000\u51fa\u3002'),
+    'alpha149_deadpool_flow_control_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=8,
+        excess_return_vs_arm='alpha149_deadpool_flow_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u6d41\u91cf\u5165\u53e3\u00b7\u6b7b\u6c60\u5bf9\u7167\uff081U\uff0c60\u5206\u949f\uff0c\u5e76\u53d18\uff09\uff1a'
+                    '\u540c\u4e00\u5165\u573a\uff0c\u4e0d\u58f0\u660e\u6df1\u5ea6\u8870\u51cf\u9000\u51fa\u3002'),
+})
+ALL_ARMS = tuple(SPECS) + tuple(EXIT_ARMS)
+KINDS = tuple(kind for kind, _, _ in SPECS.values())
+
+_base_mechanisms_w34 = mechanisms
+
+
+def mechanisms(f):  # noqa: F811 - wave 35 wrapper over the wave-34 wrapper
+    """Add the high-supply flow-entry flag: the OR of the family's flow/momentum entries."""
+    out = _base_mechanisms_w34(f)
+    try:
+        out['flow_entry'] = bool(
+            out.get('mom_persistence') or out.get('open_band_scored')
+            or out.get('score_gate_band') or out.get('size_informed_flow')
+            or out.get('age_rate_acceleration'))
+    except Exception:
+        out.setdefault('flow_entry', False)
+    return out
