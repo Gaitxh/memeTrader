@@ -1411,6 +1411,12 @@ class Runtime:
                     # Same frozen entry signal as whichever entry arm fires first on the pool,
                     # so every existing arm is the matched control and only the exit differs.
                     self.store.register_chain_meme_exit150_experiments()
+                    # EXIT-LADDER150: a CLEAN single-factor take-profit level dose-response. Round
+                    # 120-57 found the deployed full15/full25 pair is confounded (both +25% arms
+                    # also shift trailing_activate_return 0.30 -> 0.35), so these four arms pin
+                    # every field except the tier level and register together at one frontier -
+                    # same-frontier pairs accumulate diverged cohorts ~an order of magnitude faster.
+                    self.store.register_chain_meme_exit_ladder_experiments()
                     # ACTIVITY-FLOOR150: entry-time pool-activity floors, as NEW ENTRY arms.
                     # Same kind and same cloned exit contract as the control
                     # `alpha149_merged_multi_setup_fast_v1`, so the entry activity floor is the

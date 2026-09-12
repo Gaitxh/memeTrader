@@ -3332,6 +3332,23 @@ ALL_ARMS = tuple(SPECS) + tuple(EXIT_ARMS)
 KINDS = tuple(kind for kind, _, _ in SPECS.values())
 EXIT150_ARMS = tuple(sorted(_exits150.EXIT_ARMS))
 
+# ---- wave 44: EXIT-LADDER150, a clean single-factor dose-response on the first take-profit level ----
+# Round 120-57 measured that the deployed full15/full25 pair is NOT a single-factor comparison:
+# both +25% arms also raise `trailing_activate_return` from 0.30 to 0.35, so the -7.124U/pos
+# within-cohort difference between them cannot be attributed to the tier level. These four arms
+# pin every field except the tier's `return`, and register together at one frontier because
+# same-frontier pairs accumulate diverged cohorts about an order of magnitude faster.
+# Exit carriers only - deliberately NOT added to SPECS, for the same reason as EXIT150 above:
+# the signal loop emits entry signals exclusively from SPECS, and the clone loop then hands each
+# EXIT_ARMS entry the carrier's frozen signal. Adding one to SPECS would give it its own entry
+# gate, which is a different strategy rather than an exit-only comparison.
+from . import exit_ladder150 as _exit_ladder150  # noqa: E402  (additive wave import)
+
+OVERRIDES.update(_exit_ladder150.OVERRIDES)
+EXIT_ARMS.update(_exit_ladder150.EXIT_ARMS)
+ALL_ARMS = tuple(SPECS) + tuple(EXIT_ARMS)
+EXIT_LADDER150_ARMS = tuple(sorted(_exit_ladder150.EXIT_ARMS))
+
 
 # ---- wave 43: ACTIVITY-FLOOR150 entry activity floors, as NEW entry arms ----
 # Unlike EXIT150 these ARE entry arms and therefore DO go into SPECS: they must emit their own
