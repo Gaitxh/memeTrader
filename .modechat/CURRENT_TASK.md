@@ -2,8 +2,7 @@
 
 ```json
 {
-  "cycle_id": "round-120-43-take-profit-is-a-pure-substitute-for-the-run-up-cap",
-
+  "cycle_id": "round-120-58-SHIPPED-and-DEPLOYED-exit_ladder150-a-clean-single-factor-TP-dose-response",
   "ROUND_43_THE_HEADLINE_NEEDS_RECLAIMING_THE_TP_ADDS_EXACTLY_NOTHING": {
     "what": "Round 40's stack projection (+17,369U), the epoch's headline, used BOTH anchors round 41 proved wrong: positions.entry_snapshot_id (a later frame) and entry_execution_price_usd (carries the 4% BUY_SLIP), and its run-up window was not pool-filtered. Re-priced with r40's method verbatim so the difference is attributable to the anchor alone.",
     "THE_STACK_SURVIVES": "r40 anchors: 614 kept, -1,445.4U, +18,413.5U. PRODUCTION anchors: 801 kept, -2,243.8U (-2.80U/pos), delta +17,615.0U. Actual book 2,522 positions -19,858.9U (-7.87U/pos). Token-clustered 90% CI [+12,469, +22,990] EXCLUDES ZERO; drop best 1/2/3/5 = +16,096/+14,822/+13,622/+11,306U; top token only 8.6%. The corrected anchor keeps 187 MORE positions because r40's 4pp slippage inflation made its run-up filter STRICTER than the real one. STILL A LOSS -2,243.8U; an 89% loss reduction, not a profit, every level in-sample. RARE: a headline that survived an anchor correction.",
@@ -14,32 +13,6 @@
     "consequences": "(1) The +17,620U belongs to the ENTRY FILTERS; attributing any of it to exit-side take-profit is a misattribution. (2) Round 36/39's 'the exit side is where the profit is' is about REALISED attribution (forced -20,332U vs elective +1,348U) and is NOT contradicted - but the COUNTERFACTUAL marginal leverage of exit work is ~zero once entry filters are in place. Future citations must say WHICH of the two they mean. (3) Round 25's ordering (token 56.9% > entry timing > exit contract 14.6%) now has direct deployed-configuration support. (4) Deploying exit150_full15_v1 REMAINS CORRECT - it is deployed ALONE sharing the control's entry contract with NO entry filters, so its standalone value is the +10,439.7U row and its forward reading is still meaningful; it is redundant only IN COMBINATION.",
     "WHERE_THE_RESIDUAL_SITS_next_target": "In the kept 801-position book: 882 positions pass BOTH entry filters and never reach +15% (-3,666.4U), against 171 that do (+798.8U). By chain: solana 633 -1,688.8U, robinhood 106 -342.3U, bsc 62 -212.8U. The surviving book holds only 18 tokens, 13 of them net negative, worst token solana:Dw4hxvotjTZ -879.8U (52 positions). CONCENTRATION IS NO LONGER THE PROBLEM - round 26's 'low market cap' temptation (BSC = 70.8% of the loss, a fat cut point) no longer exists; the residual is spread across 18 tokens with no big cut available. The residual is 'the selected tokens simply do not work', and round 26 proved no new token-level rule is validatable on 44 tokens. SO: the deployed stack has exhausted what this epoch's evidence can support; the residual needs MORE INDEPENDENT TOKENS, i.e. the dense-observation budget (round 29, user-decided). Not touched."
   },
-  "cycle_id": "round-120-44-consolidated-v3-and-the-latency-queue",
-
-  "cycle_id": "round-120-45-46-risk-stage-audited-both-my-numbers-were-right",
-
-  "cycle_id": "round-120-47-the-constraint-measured-from-production-counters",
-
-  "cycle_id": "round-120-48-the-budget-is-SATURATED-not-fragmented",
-
-  "cycle_id": "round-120-49-fixed-a-console-label-that-said-the-opposite",
-
-  "cycle_id": "round-120-50-no-budget-free-coverage-lever-exists",
-
-  "cycle_id": "round-120-52-adversarial-review-found-a-wrong-formula-in-my-own-replay",
-
-  "cycle_id": "round-120-53-corrected-kernel-STRENGTHENS-the-ceiling-result",
-
-  "cycle_id": "round-120-54-per-reason-gate-quality-NO-decision-reason-blocks-movers",
-
-  "cycle_id": "round-120-55-discovery-funnel-per-surface-and-the-narrative-feature-REJECTED",
-
-  "cycle_id": "round-120-56-saturation-crux-resolved-from-code-and-it-is-stronger",
-
-  "cycle_id": "round-120-57-same-frontier-pairing-first-near-readable-forward-result",
-
-  "cycle_id": "round-120-58-SHIPPED-and-DEPLOYED-exit_ladder150-a-clean-single-factor-TP-dose-response",
-
   "ROUND_58_NEW_MODULE_SHIPPED_AND_DEPLOYED_exit_ladder150": {
     "the_observed_failure_this_changes": "Round 120-57 measured the session's first near-readable same-frontier paired forward result - full15 vs full25, 22 shared / 14 diverged, within-cohort difference -7.124U/pos, CI [-12.942,-1.661] - and then found the pair is NOT single-factor: BOTH +25% arms also raise trailing_activate_return from the 0.30 base to 0.35 (exits150.py:158/195). So that figure cannot be attributed to the take-profit level and THE FLEET HAS NO CLEAN ESTIMATE of the level's effect. That is exactly what the user's rule 'compare parameter-only variants' requires and it did not exist.",
     "mechanism_basis_for_the_levels_not_a_replay_fit": "In all 14 of those diverged cohorts the position's own peak economic return never reached +25% - the five dominant ones peaked at -7.7%, 15.5%, 16.5%, 17.1%, 18.4%. So full25's +35% trailing activation was UNREACHABLE and cannot be their cause, while full15's +15% tier was reachable in four of the five. The tier is the operative difference, which is both the module's justification and the basis for its level choices.",
@@ -51,7 +24,6 @@
     "MY_CHECKER_WAS_THE_THING_THAT_WAS_WRONG": "r58's single-factor check reported `entry_filter` as a differing behavioural field and printed NOT single-factor. The CAUSE WAS MY CHECKER not stripping the nested identity key `direction` - r58b section A strips it and confirms the four entry_filter bodies are IDENTICAL (1 distinct). The conclusion is unchanged (only take_profit is a behavioural difference) but it is recorded because a too-coarse checker and a genuinely non-single-factor contract produce the SAME wrong alarm, and I nearly edited correct code because of it.",
     "STANDING_RULES_new": "32 - A single-factor assertion's checker must strip IDENTITY keys before comparing behavioural fields. `direction`, `name`, `canonical_id` vary per arm but are not behaviour; a checker that treats identity as behaviour reports errors on correct code - which happened this round. 33 - A registration-type change must CLONE the sibling module's existing registration function verbatim rather than reimplement it. Cloning inherited the live schema, the template arm and the append API's frontier/hash stamping, and the pinned trailing_activate_return was confirmed landed by measurement. Reimplementing a 'looks the same' registration path is where this class of change goes wrong."
   },
-
   "ROUND_57_THE_SAME_FRONTIER_PAIRS_the_readout_never_tests": {
     "the_gap_in_my_own_tooling": "scripts/experiment_readout.py pairs each arm against ITS OWN control (full15 vs bank15). But arms registered at the SAME frontier share EVERY cohort, so pairs that differ in one contract field AND joined together are the fleet's cleanest paired tests - and the tool never tests them. Measured this round: frontier 32175 full15/full25, frontier 15928 bank15/bank25, 36360 t30/v5k, 38633 r15/r15a30.",
     "THE_MAIN_RESULT_full15_vs_full25": "22 shared settled cohorts, **14 DIVERGED** (8 identical). Within-cohort difference (full25 - full15) = **-7.124U/pos**, token-clustered 90% CI **[-12.942, -1.661] EXCLUDES ZERO**. 7 cohorts favour each arm. Unpaired per-side means (context only): full15 -2.30U/pos vs full25 -6.86U/pos.",
@@ -65,7 +37,6 @@
     "documentation_defect_recorded_not_fixed": "full25's `description` (and `name`, and exits150.py's design note) say its 'only difference from full15 is the take-profit level' - the code contradicts that (trailing activation also differs). NOT FIXED: the description is registered into policy_additions.policy_json for a LIVE arm, and editing a running arm's registered text is a change to an existing strategy whose benefit (more accurate wording) is far smaller than the risk (contract identity churn). The correction lives in the record so the experiment is not misread.",
     "STANDING_RULES_new": "30 - 'Differs by only one parameter' must be verified FIELD BY FIELD, never inferred from naming or a description. My own design note, the arm names and the registered description all said one field; the contracts differed in two. 31 - When an effect is concentrated in a few units, 'drop the best few' is not a robustness check, it REMOVES the treatment effect itself. The honest move is to report the point estimate, the concentration (sign flips on dropping 5) AND the mechanism decomposition together, so the reader sees 'real but very thin' rather than being told 'robust' or 'not robust'."
   },
-
   "ROUND_56_THE_SATURATION_CRUX_RESOLVED_FROM_CODE_and_the_finding_gets_STRONGER": {
     "the_concern": "The adversarial reviewer of round 48 was asked to attack the crux: if chain_total/occupied are computed from a DIFFERENT set than the one the cap is enforced against, the saturation reading could be an accounting artifact. Two apparent contradictions in the same record also needed explaining: held_count vs chain_total looked inconsistent (solana 10/10, bsc 1/10, robinhood 3/10), and coverage145:status.membership reported bsc total 11 and early 5, both ABOVE CHAIN_CAP=10 and the early base cap of 3.",
     "ANSWER_FROM_THE_CODE_runtime.py:7865-7897": "base_caps = {early:3, growth:4, mature:3}; slot=(chain,bucket); `if key not in held:` then `if occupied.get(slot,0) >= base_caps[bucket]` -> continue else increment occupied and chain_used; and for borrowed early overflow `if chain_used.get(chain,0) < 10` -> increment the same two counters. SO `occupied` and `chain_used` ARE LITERALLY the counters the caps are tested against at lines 7883 and 7894 - the occupancy the funnel reports IS the enforced counter. NOT an accounting artifact.",
@@ -75,7 +46,6 @@
     "stopped_the_reviewer": "The subagent had been running across roughly six of my rounds - far longer than its bounded task warranted, and its task included repeatedly polling /api/live, so it was probably stuck in polling. Its crux question is answered, so it was INTERRUPTED rather than left running. Per the guidance, a subagent's question being answered is the signal to stop it, and leaving it alive would both waste context and let 'still waiting on the review' become a reason not to make progress.",
     "STANDING_RULES_new": "28 - When a doubt's answer is in the CODE, read the code rather than adding samples. The doubt here was 'is the reported counter the enforced counter?' - only runtime.py:7883/7894 could answer it; more telemetry snapshots can corroborate but cannot prove it, and collecting more would have produced a more convincing WRONG answer. 29 - Stop a subagent the moment its question is independently answered; letting it run wastes context and turns 'waiting for review' into an excuse not to progress."
   },
-
   "ROUND_55_DISCOVERY_FUNNEL_PER_SURFACE_AND_THE_NARRATIVE_FEATURE_DIRECTION_IS_REJECTED": {
     "the_gap_this_closes": "Round 47 tried to measure per-surface dropping from /api/live and had to ABANDON it - that block carries a 14-second window and hydration showed exposed > returned, so the fields mean different things per surface. The right place was always the PERSISTED tables, which I had not found: token_discovery_rounds 14,851 rows (provider, surface, returned_count, exposed_token_count, new_token_count, snapshot_count, no_pair_count, status, error_type), token_discovery_exposures 102,628 rows (token_id, role, first_local_discovery, new_token, snapshot_count, observed_at), token_discovery_exposure_source_links 189,079. Window 2026-09-12T18:26:53Z .. 23:32:43Z (~5h).",
     "funnel_measured": "returned 223,680 -> exposed 102,423 (45.8%) -> snapshots 24,206 (23.6% of exposures) -> new tokens 11,788 (11.5%). Per surface: profile_updates 4,698 rounds / 112,652 returned / 31,473 exposed / 0 snapshots; hydration 7,115 / 12,618 / 22,737 / 11,946; geckoterminal new_pools 615 / 12,260 / 11,934 / 12,260; token_profiles 425 / 19,096 / 7,239 / 0; boosts_latest 266 / 20,712 / 6,500 / 0; pumpportal create 308 / 6,190 / 6,055 / 0; boosts_top 201 / 15,402 / 4,740 / 0; community_takeovers 230 / 14,883 / 4,588 / 0; ads 204 / 3,570 / 3,570 / 0.",
@@ -85,7 +55,6 @@
     "this_is_the_sixth_free_lunch_refutation": "Rounds 42 (entry-time liquidity floor), 46 (risk gates over-strict), 48 (budget fragmented), 50 (slot allocation improvable), 54 (a decision reason blocking movers), 55 (narrative/promotion features) - six independent hypotheses that more trades or better selection were available for free, all falsified by measurement. The iteration plan's section 2.2 is updated from 'proposed' to 'tested and rejected'.",
     "STANDING_RULES_new": "26 - A merged count must be divided by the DISTINCT ENTITY count before being read as a ratio. promotion's 14,810 exposures cover 165 tokens; reporting exposed/returned = 45.8% as a drop rate would have misread DEDUPLICATION as LOSS - the same trap round 47 refused to walk into, this time hidden inside the persisted table. 27 - A direction the task explicitly names must still pass the acceptance gate it was given. Using narrative/promotion features to allocate slots was named in the brief and I proposed it with a gate; it failed (CI includes zero), so the answer is 'not deployed' rather than 'kept because it was requested'."
   },
-
   "ROUND_54_THE_DEFINITIVE_PER_REASON_GATE_QUALITY_TABLE": {
     "what_this_answers": "The objective's core question - 'which stage blocks tradeable candidates through over-strict thresholds, logic or risk rules?' - answered PER REJECTION REASON. Method: for every evaluation, look FORWARD 60 minutes on that token's already-collected frames and ask whether it reached the +15% economic level the deployed take-profit targets. No new observation requests. A reason whose refused population touches ABOVE baseline is discarding movers. Round 51 did this with the WRONG econ helper (round 52), so its levels were understated; this re-runs it with econ = 0.96R - 1.",
     "THE_LOOK_AHEAD_BOUNDARY_stated": "Round 50 caught a feature that leaked the future. Rule 21 governs FEATURES. Evaluating a GATE must use hindsight - the distinction is WHO may use the future, not WHETHER it may be used. Stated explicitly so the two are not confused.",
@@ -95,7 +64,6 @@
     "WHERE_THE_REAL_DIFFERENCE_IS_the_observation_lane_not_any_gate": "admitted n=14 touch 0.3571 (2.06x) - TOO SMALL TO CONCLUDE, stated as such; rejected overall 16,551 touch 0.1733 (1.00x); non-bookkeeping decisions 8,813 touch 0.1567 (0.90x, CI [0.1441,0.1706]); cohort_observation (the DENSE observation lane) 3,543 touch 0.3619 (2.09x, CI [0.3155,0.4093]). So the dense-observation lane touches at 2.09x base while the decision population as a whole is slightly below it. This is round 29's coverage finding reappearing as a property of the observation LANE, not of any filter: the opportunity lives in the dense lane, the gates are neutral, and getting tokens INTO the dense lane is what matters - which rounds 47/48/50 already showed is capacity-bound and near its allocation frontier.",
     "STANDING_RULE_new": "25 - 'Cannot be measured' must be reported separately from 'no problem'. entry_pool_liquidity_absent_curve_stage is 96% censored (touch rate rests on ~190 observations) while no_active_matching_entry_policy is 39.9% censored; placing them in one table without the censoring column makes them look equally reliable. THE CENSORING RATE IS PART OF THE TABLE, not a footnote."
   },
-
   "ROUND_53_ROUND_39s_CEILING_RE_RUN_WITH_THE_CORRECT_KERNEL_AND_IT_IS_STRONGER": {
     "why": "Round 39's ceiling (+15% take-profit converts 484 forced exits for +10,303.6U, token-clustered CI excludes zero, survives dropping the best five tokens) is the session's strongest positive result and the justification for the deployed exit150_full15_v1 arm. Round 52 proved the econ helper it shares with r40/r43/r51 was WRONG and ~5.1% stricter, which can only UNDER-fire a take-profit - so round 39's numbers were understatements. Re-run with r39_ceiling_test.py's method verbatim except the kernel, both reported side by side.",
     "peak_econ_by_actual_close_mechanism_CORRECT_kernel": "pool death n=870 p25 +7.4% p50 **+18.2%** p75 +28.9% PnL -17,007.3U; hard stop n=689 p25 -7.7% p50 -1.5% p75 +10.6% PnL -6,535.2U; elective n=1,193 p25 -5.1% p50 +4.4% p75 +23.4% PnL +1,398.9U. The WRONG kernel gave pool death p50 +12.5%. SO MORE THAN HALF OF ALL POOL DEATHS WERE UP 18%+ BEFORE DYING (rounds 38/39 recorded +15.2%) - 'killed by the rules, not by the market' is now sharper.",
@@ -106,7 +74,6 @@
     "MY_OWN_DENOMINATOR_ERROR_CAUGHT": "My first version of this probe printed 'touchable share 42.5%' by dividing forced-and-never-reached by FORCED only (897/1,559 = 57.5%). Round 36/39's comparable figure divides by ALL positions. Same data, two denominators, 25 percentage points apart - it would have looked like a correction while actually being a change of yardstick.",
     "STANDING_RULE_new": "24 - When reporting a share, ALWAYS state the denominator. This round produced 57.5% and 32.6% from the same 897 positions; the difference was the yardstick, not the finding."
   },
-
   "ROUND_52_CORRECTION_my_economic_return_formula_was_WRONG_in_rounds_39_40_43_51": {
     "how_this_round_arose": "The objective asks for multi-Agent parallel work with cross-validation. Round 52 put an ADVERSARIAL reviewer on the session's most consequential claim (round 43's substitution result). It returned QUALIFIED and alleged a material formula defect. I did NOT take that on trust - a subagent's claim is advice, not evidence - and went to the primary source myself. THE ALLEGATION IS CONFIRMED.",
     "THE_DEFECT": "I used econ = (1-BUY)/(1+SELL) * (px/entry_execution_price_usd) - 1 - 2*60/1e4. Two errors: (a) entry_execution_price_usd ALREADY contains the 4% buy slippage (measured mean ep/sig = 1.0398), so dividing by (1+SELL) charges it TWICE; (b) the deployed settings carry NO additional per-fill fee (kv chain-paper-execution:activation:20260912182645 -> additional_fee_usd_each_fill 0.0), so the 1.2% term is a fee that does not exist. The deployed kernel is econ = 0.96*R - 1 (store.py:25359-25363 errata, \"stake_usd*remaining_raw/initial_raw*current_price/entry_execution_price_usd*0.96\").",
@@ -117,7 +84,6 @@
     "REUSABLE_FIX": "data/research/diag_round120/econ_kernel.py now holds the correct kernel with the evidence for it and an explicit `legacy_wrong_economic_return` kept only so a diff against old recorded numbers is explainable. The file says DO NOT re-derive this, import it.",
     "STANDING_RULES_new": "22 - A replay of economic return / slippage / fees must be REVERSE-ENGINEERED FROM THE PRODUCTION KERNEL and validated against values the engine itself recorded, not reassembled from the intuition 'buy slippage + sell slippage + fees'. That entry_execution_price_usd already contains the buy slippage alone was enough to make a plausible formula 5% wrong and move a point estimate by two orders of magnitude (-5.0U -> +476.6U). VALIDATION CRITERION: exact equality against pre_trigger.economic_return, not 'close'. 23 - Adversarial review must run in an INDEPENDENT CONTEXT and must return INDEPENDENTLY CHECKABLE PRIMARY EVIDENCE, not just a conclusion. This round's reviewer earned its result by offering 'score both formulas against trigger_evidence_json and require exact equality' - a test I could rerun myself. A review that offers only a verdict is not adopted."
   },
-
   "ROUND_50_THE_LAST_BUDGET_FREE_LEVER_DOES_NOT_EXIST": {
     "why": "Rounds 47/48 proved the ~30-slot observation budget is saturated (all three chains at CHAIN_CAP simultaneously; 67% of admission attempts refused bucket-full). The budget is a user decision I must not touch, so the only remaining degree of freedom is WHICH candidates consume the slots. mover_watchlist.py's own basis says its union rule 'catches about a third of the tokens that double, so this is a density improvement on the watched set, NOT a detector.' A slot spent on a token that never moves is stolen from one that would. This tested whether a better ranking buys coverage for free.",
     "MY_FIRST_ATTEMPT_WAS_UNDER_POWERED_AND_I_DISCARDED_IT": "r50 simulated an hourly queue (top-C per hour) and reported buy_pressure x trades at 0.0694 vs the current rule at 0.0139. That was NOISE: only 6 hourly buckets existed, so precision@24 rested on 6x24 = 144 picks against a 3.6% base rate - every figure quantised to multiples of 1/24 and rule differences were 1-2 tokens. The threshold rule was also mis-simulated, because ranking by a boolean leaves all flagged tokens tied and sorted() then picks arbitrarily. Replaced with a pooled, capacity-matched design.",
@@ -133,7 +99,6 @@
     "PROPOSED": "(P1) use narrative/promotion signals (boosts_latest, community_takeovers, profile_updates - all already collected) as SLOT-ALLOCATION features only. The frozen contract forbids identity/promotion as ENTRY evidence but does not forbid using them to choose WHICH pool to observe, and the slot is the scarce resource. Acceptance gate is the same instrument as round 50: capacity-matched doubling rate vs the union rule under a PAIRED bootstrap, CI must EXCLUDE zero or it is not deployed. (P1) a rejection-outcome ledger: 61,684 of 61,862 evaluations were rejected and NEVER revisited, so the system records why it refused but never whether refusing was right - the fix records one outcome row per rejected (token, decision time) at a fixed later horizon, reusing already-collected frames so it adds NO observation requests and does not touch the budget. (P2) a per-token concentration cap as an ADDITIONAL arm, whose acceptance metric is VARIANCE not return - it cannot turn a losing quadrant profitable and must not be sold as if it could.",
     "REFUSED_with_reason": "Layered light-prefilter + full-feature architecture: NOT built - the system already HAS that layer (the 24-slot mover prefilter), round 50 shows it is near the feature frontier, and CPU is not the bottleneck (observed->decision p50 1.20s), so saved computation cannot become positions. Raising request frequency: NOT done - the slot count is the constraint (round 48 saturated) and round 29 measured the new-information rate already flat at 16.8-19.2% after 300s, which is what round 22's adaptive cadence exists for. Dynamic position sizing: NOT done - every quadrant loses in-sample so sizing up a losing book loses more, and Kish effective n ~= 30 means any sizing rule bets on ~30 observations."
   },
-
   "ROUND_49_CODE_CHANGE_console_rejection_labels_corrected": {
     "the_observed_failures_this_changes": "(1) reasonText()'s fallback had `value.includes('entry') -> '策略入场条件成立'` and `entry_snapshot_too_old` contains 'entry', so a REJECTION for staleness rendered as 'entry conditions MET' - the console displayed the opposite of what happened. (2) The four highest-frequency evaluation reasons were all absent from the lookup map (measured over 61,862 evaluations: cohort_observation 34.4%, pattern_observation 26.9%, entry_pool_liquidity_absent_curve_stage 7.1%, invalid_exact_asof_market_snapshot 4.7%), so they rendered as RAW ENGLISH IDENTIFIERS - and entry_pool_liquidity_absent_curve_stage matched `includes('liquidity')` and rendered as 'pool liquidity abnormal' when it is a bonding-curve pool with no measurable liquidity, i.e. a data-availability limit, not a fault. Two of the four are not rejections at all but the observer's own bookkeeping, so the console made 61% of the log read as strategy refusals.",
     "the_change": "src/memetrader/chain_web_static/app.js only (presentation layer). Added an `observed` table ahead of the existing `known` map, naming each reason for WHAT IT MEASURES (rule 16): cohort_observation/pattern_observation -> '观察者记账…（非策略拒绝）'; entry_pool_liquidity_absent_curve_stage -> '发射曲线阶段，原池流动性尚不可测'; invalid_exact_asof_market_snapshot -> '行情快照未通过时点有效性校验（多为该池暂无美元报价）'; entry_pool_liquidity_below_configured_floor -> '原池流动性低于已配置下限，禁止买入'; entry_snapshot_too_old -> '行情快照过旧，超过入场新鲜度上限'. Also added MY OWN four experiment arms' entry-floor reasons to `known` (they previously fell through the `not_met` branch to a raw identifier): activity_floor_trades_not_met, activity_floor_volume_not_met, runup_floor_exceeded, runup_floor_window_unknown. NO STORED reason string changed, so historical comparability and any string-matching code are unaffected.",
@@ -143,7 +108,6 @@
     "the_fifth_measurement_artifact_of_the_session": "I fetched /app.js and matched '观察者记账' -> False, while the byte count matched the working-tree file exactly. I nearly wrote 'the change is not live, a build is needed'. THE CAUSE WAS MY OWN MEASUREMENT: mimetypes reports text/javascript with no charset, so PowerShell decoded the UTF-8 bytes as Latin-1 and every Chinese character was mangled (the console shows ۲��߼��� style mojibake), making any substring match fail. A byte-for-byte comparison plus ASCII-only markers reversed the conclusion immediately.",
     "STANDING_RULE_new": "19 - Before substring-matching text returned over HTTP, confirm the decoding; compare BYTES or ASCII-only markers instead. An identical byte count with a failed match is almost always a decoding problem, not a deployment problem. (Fifth instance this session of an artifact masquerading as a finding: write-off rate, `closed` means, invalid-asof, exposed>returned, and this.)"
   },
-
   "ROUND_48_COVERAGE_QUESTION_CLOSED_THE_BUDGET_IS_SATURATED_NOT_FRAGMENTED": {
     "the_two_possibilities_had_opposite_remedies": "Round 47 measured from live counters: 110 admission attempts, 74 (67%) refused as skip_bucket_full, of which bucket_full_chain_full 73 and bucket_full_chain_spare 12. observation_leases145 sets BASE_CAPS={early:3, growth:4, mature:3} (sum 10) and CHAIN_CAP=10; three chains x 10 = 30 = round 29's '~30 slots'. (a) SATURATED - every chain at its cap, total 30 genuinely full, only a budget increase helps (user-decided). (b) FRAGMENTED - one chain at 10 while others idle, so rebalancing the SAME slots raises density at zero extra request budget. RediscoveryFunnel.quote() records `occupancy` with each admission_attempt, so production had already recorded which.",
     "MEASURED_ANSWER_SATURATED": "17 examples carry the occupancy snapshot (keys: chain, chain_total, held_count, occupied, base_caps, target_bucket). `occupied` equals BASE_CAPS exactly - {early:3, growth:4, mature:3} = 10 = CHAIN_CAP - at nearly every sample, ON ALL THREE CHAINS SIMULTANEOUSLY (solana held 10, bsc held 1, robinhood held 3 - the held_count is the pattern watch's own leases, not the accounting). `non_held_by_chain_bucket` is {3,4,3} for all three chains too. Independently confirmed by coverage145:status.membership at 23:17:30Z: bsc {early:5,growth:4,mature:2} total 11, robinhood {3,4,3} total 10, solana {3,4,3} total 10. Fragmentation is the MINORITY: bucket_full_chain_spare 12 of 85 = 14%, against chain_full 73 of 85 = 86%.",
@@ -152,7 +116,6 @@
     "recorded_not_acted_on": "chain-meme-pattern-watch this generation (1.25h): watched 44, mover_watching 22/24, sampled 21, projected 0, borrows 46, replacements 141, reservation_reclaims 41, pool_migrations 0, and other_pool_quote_skips_since_start 5,633 - the largest single UNEXPLAINED counter seen this round. I deliberately did NOT interpret it: explaining a metric before confirming its semantics is the error this session has made four times (rules 1/12/16). Left as an open item; read the code before concluding.",
     "STANDING_RULE_new": "18 - Before concluding 'not enough capacity', measure the OCCUPANCY AT THE MOMENT OF REFUSAL. Otherwise 'genuinely full' and 'fragmented by a cap' are indistinguishable, and their remedies differ by an order of magnitude in cost. This round's occupancy came from production's own refusal record; if that field did not exist, the correct move is to ADD IT FIRST rather than guess."
   },
-
   "ROUND_47_CONSTRAINT_NOW_MEASURED_NOT_INFERRED_and_the_reservation_FIX_IS_VERIFIED": {
     "why_this_round": "Round 44 INFERRED that the p50 97s discovery delay is queueing for an observation slot. rediscovery_funnel.py exists to answer exactly that, counting admission_attempt and the REASON for each failure plus basic_valid. It is in-memory per process generation, so it must be read from the live KV landing point, not the DB.",
     "the_bound_gate_measured_live": "kv `rediscovery-funnel94` at 23:16:41Z, scope=prospective_process_generation: episode 112, admission_attempt 109, **skip_bucket_full 73 (67%)**, bucket_full_chain_full 72 / chain_spare 12, skip_chain_full 6, skip_invalid_input 29, **basic_valid 82**, admit_base 4, admit_mover_reserved 3, hydration_hydrated 109, snapshot 109, cohort_observation 78, pattern_observation 10. STATED LIMIT: the funnel counts one per episode per stage/reason, so 82 vs (4+3) is NOT a same-denominator conversion - the claim '95% of valid frames are dropped' would be WRONG. What stands: the dominant refusal is BUCKET FULL (73/109 = 67%), not invalid data (29) and not the absence of a usable frame (82 episodes had one). So the constraint is BUCKET OCCUPANCY, not post-acquisition dropping - round 29's ~30 slots, round 44's 'the whole delay is before the first snapshot', and this 67% are three independent measurements of one constraint. Still the user-decided budget item; NOT touched.",
@@ -161,7 +124,6 @@
     "two_bookkeeping_items_not_trading_defects": "(1) pattern-admission-shadow: status DROPPED_AUDIT, audit_discontinuous true, receipts 47,474 / written 47,347 / dropped_audit 98, bytes ~104.8 MB PER PROCESS GENERATION. Marked affects='none', decision_eligible=0, so it does not affect trading - recorded only, not fixed (it changes no observed trading failure). (2) cohort-flow:v1 this generation: startup_30m BUY 68/REJECT 8, steady BUY 64/REJECT 10, TERMINAL_SELL 52+46, TERMINAL_WRITEOFF 16+15; activity_floor150_t30_v1 BUY 5/writeoff 1, v5k BUY 6/writeoff 1.",
     "STANDING_RULE_new": "17 - Wired plus unit-tested does NOT mean it fires in production. A mechanism must have a PRODUCTION COUNTER proving it happened; this round could only judge the fix because the runtime writes reach-vs-outcome counters (mover_reserved_injections vs mover_reserved_admissions). Stronger than rule 6: rule 6 says verify after shipping, rule 17 says BUILD THE COUNTER FIRST."
   },
-
   "ROUND_45_46_RISK_STAGE_FULLY_DECOMPOSED_over_strict_hypothesis_REFUTED": {
     "the_contradiction_I_had_to_resolve": "The objective requires the RISK stage reported with rejection reasons. My own records disagreed by 160x about it: the consolidated funnel said `invalid-asof` 4.78% of 57,290 evaluations; round 28's checkpoint said `entry_snapshot_too_old` 0.03% (limit 90s).",
     "BOTH_ARE_CORRECT_they_measure_different_checks": "0.03% is STALENESS and reproduces independently: snapshot age >30s at decision = 19 of 61,862 = 0.031%; >90s = 12 = 0.019% (the 12 `entry_snapshot_too_old` rows). 4.69% is `invalid_exact_asof_market_snapshot`, an IDENTITY/VALIDITY check with nothing to do with age. The funnel label `invalid-asof` was too terse and I created the confusion myself. FOURTH time this session two figures looked contradictory but were only under-labelled (write-off rate, `closed` means, status='written_off', now invalid-asof).",
@@ -172,7 +134,6 @@
     "the_largest_addressable_block_is_a_DATA_limit_not_a_filter_defect": "99.0% of invalid_exact_asof_market_snapshot and 100% of entry_pool_liquidity_absent_curve_stage are BONDING-CURVE pools (DexScreener gives no priceUsd): pumpfun 913+3,942, fourmeme 1,932+330, meteoradbc 13+128. Together ~11.8% of evaluations - the largest single addressable block after the observation-slot queue. The system ALREADY has a lane for it: pump_native_absorption_fast_v1 via later_observed_protocol_model_paper, now 14 positions over 14 DISTINCT TOKENS at exactly 1.00 positions/token, realised -14.05U (-1.00U/pos), exits 11 hard_stop (-15.59U) / 2 max_hold (-1.10U) / 1 trailing (+2.64U). Of the 6,948 distinct curve-pool base addresses seen in rejections, only 11 tokens have EVER been entered by any arm, at -13.65U. So the lane converts 0.20% of the block and has no edge at n=14. NOT building a derived-price lane: curve pools also have no measurable liquidity, so the configured 1000U pool floor cannot be satisfied and position pricing, the slippage model and the write-off logic would all lose their basis. NO CODE CHANGED.",
     "STANDING_RULE_new": "16 - When two figures in the record look contradictory, first check whether they are merely UNDER-LABELLED names for different quantities (four occurrences this session). Name a metric for WHAT IT MEASURES, not for the code section it lives in."
   },
-
   "ROUND_44_LATENCY_DECOMPOSED_THE_REAL_DEFECT_IS_A_QUEUE_NOT_CODE": {
     "re-measured_with_round_20s_exact_definition": "r44 first used min(token_snapshots.recorded_at) as discovery and got p50 122.6s against round 20's 8.05s - a 15x gap that was a DEFINITION difference, not a regression. Round 20 uses tokens.first_seen_at -> min(token_snapshots.observed_at) (r20_latency.py:30-40). Re-run verbatim: n=8,994, p50 96.94s, p90 1,767.94s, p99 8,549.44s, max 14,596s.",
     "THE_DECISIVE_MEASUREMENT": "Of the 8,994 observed tokens, ZERO have an observer frame as their first snapshot - all 8,994 got market data first. And every downstream stage is fast: observed->ingested p50 0.08s, ingested->recorded p50 0.02s, observed->recorded p50 0.77s (p90 8.44s), observed->decision p50 1.20s (p90 8.93s), observation->position opened p50 0.10s (p90 2.57s, max 8.01s). SO END-TO-END FOR A TOKEN THAT IS OBSERVED IS p50 ~1.30 SECONDS. The entire 97-second median sits BEFORE the first snapshot.",
@@ -186,7 +147,6 @@
     "methodology_rules_now_15": "rules 7-15 added (outcome-conditional != counterfactual; an interval disagreeing with its own point estimate is buggy; audit the anchor the mechanism uses; filter windows by identity key before taking extremes; verify a group-by key's canonicalisation; decompose a derived discriminator; prefer production's recorded verdict; SQL col or 0 is a boolean; a component table needs the component-removed row).",
     "priorities_revised": "P0 experiment clock (report DIVERGED cohorts first); P0 full15 unreadable at 2 diverged; P1 the 882-position residual with NO fat cut point left; P1 dense-observation coverage now supported by TWO independent lines (4.4% get a 3-frame episode AND the p50 97s discovery delay) - user-decided budget."
   },
-
   "ROUND_42_ENTRY_TIME_LIQUIDITY_FLOOR_LEAD_CLOSED_AT_ZERO": {
     "the_lead": "All 818 pool-death write-offs carry dex_pool_liquidity_below_configured_floor_writeoff - the pool's FRESH liquidity fell under the already-configured shared floor (1000 USD default). The system applies that floor only at EXIT. If the pool were ALREADY under it at the entry decision, the -20U was determined before the position opened. And unlike round 26's market-cap cut this is not a cut point searched over this data - it is the system's OWN pre-existing configured constant on a point-in-time field.",
     "REFUTED": "818 of 818 pool-death write-offs had a decision snapshot (0 missing) and ZERO of them were below the floor: 90.6% were >=10,000U, 9.4% in 3,000-10,000U, none below 3,000. Per token (21 tokens produced all 818) the LOWEST decision-time liquidity was 7,967U, p25 20,147U, p50 41,167U. And the whole entry universe sits far above the floor: min 1,840U, p01 5,953U, p10 10,862U, p50 41,969U; below 2x the floor only 7 positions (0.3%), below 5x only 19 (0.7%). THE OBSERVATION UNIVERSE NEVER PRESENTS A SUB-FLOOR DECISION SNAPSHOT - the floor is a POST-entry event, not a pre-entry screen. Lead CLOSED, no code changed. (Not searching a higher liquidity cut point - that is the round-26 selection trap.)",
@@ -197,7 +157,6 @@
   "ROUND_43_STANDING_RULE_new": {
     "15": "A component-attribution table MUST include the row with the evaluated component REMOVED. Without 'entry filters, no TP' the stack's +17,615U looked like a sum of its parts; that one row is what exposed the take-profit's incremental value as -5U."
   },
-
   "ROUND_41_DEPLOYED_ARMS_ARE_CONTRACT_COMPLIANT_ZERO_VIOLATIONS": {
     "what": "Round 33's discipline - verify a shipped mechanism in production - applied to all six arms shipped in rounds 17-20. Each makes a falsifiable promise; this checked every live position of each against it.",
     "result_zero_violations": "exit150_full15_v1 15/15 tier-1 exits closed via market_mark_take_profit_1 with remaining_quantity_tokens=0 (FULL capture confirmed, not assumed); exit150_full25_v1 10/10; activity_floor150_t30_v1 13/13 entries pass buys_5m+sells_5m>=30; activity_floor150_v5k_v1 12/12 pass volume_5m_usd>=5000; runup_floor150_r15_v1 15/15 pass run-up<=15% (max observed 13.29%); runup_floor150_r15a30_v1 10/10. Checkability is TOTAL for the exit arms: 24 = 15 tier-fired + 9 tier-never-fired (contract not applicable, NOT 'unknown').",
@@ -221,7 +180,6 @@
     "12": "Decompose a derived discriminator against the underlying quantity before citing it: ratio~1 is CORRECT for stablecoin-quoted pools, so the unconditioned version reported 99.9% false positives.",
     "13": "When production records its own verdict, use that instead of a recomputation; recomputation explains a divergence, it does not convict."
   },
-
   "ROUND_40_DEPLOYED_STACK_PROJECTION": {
     "what": "Rounds 17-39 measured each deployed mechanism separately. Round 20 priced a combination on 1,710 positions (-1,540U); the population has since grown 2.4x. This re-prices the stack once on the current population with a proper interval.",
     "the_projection": "2,397 positions with a usable mark series. Levels as deployed: TP 100% at +15% econ; activity floor buys_5m+sells_5m >= 30; run-up cap <=15% over the 20 min before entry. actual -18,803.3U (-7.84U/pos); +TP only -8,499.6U (+10,303.6); activity floor only -6,992.0U (+11,811.3); floor+TP -4,187.0U (+14,616.3); FULL STACK (floor+run-up+TP) 603 positions -1,434.1U (-2.38U/pos) = +17,369.2U. stack-actual reconciles exactly.",
@@ -235,7 +193,6 @@
     "the_numbers": "exit150_full15_v1 settled=20 (+0.07U/pos, win 80.0%, write-off 5.0%); control exit150_bank15_v1 settled=23 (-6.08U/pos, 26.1%, 47.8%).",
     "BUT": "The per-side gate is satisfied (20 >= 20) and round 35's rule applies: THE USABLE BASIS IS DIVERGED COHORTS, OF WHICH THERE ARE 2. So the correct statement is 'the unpaired contrast is +6.15U/pos in favour of full15; the paired basis is 2 diverged cohorts' - NOT A VERDICT. Exactly the situation rounds 34-35 were built to catch, and it was caught."
   },
-
   "ROUND_39_ROUND_36s_CEILING_IS_REFUTED": {
     "the_claim_tested": "Round 36 recorded as a STANDING CONCLUSION that '58.5% of exits are forced by the pool dying or a one-interval gap, and NO stop width, ladder level, trailing rule or time limit can act on those'. Round 38 had shown the pool-death population peaked at a MEDIAN +15.2% econ - and a take-profit at +15% closes the position BEFORE the pool dies. So at least some of the 'forced' share should be touchable.",
     "IT_IS_REFUTED": "Peak econ by the mechanism that ACTUALLY closed the position (2,393 replayed): POOL DEATH n=760 peak p25 +4.4% p50 +15.2% p75 +22.7%; HARD STOP n=583 peak p25 -12.4% p50 -7.9% p75 +2.7%; elective n=1050 peak p50 -0.7%. 52% OF THE POOL-DEATH POSITIONS REACHED +15% BEFORE DYING - they were not killed by the market, they were killed by the rules sitting below where the position had already been.",
@@ -246,7 +203,6 @@
     "honest_limits": "Replay, in-sample on this epoch; assumes execution at the first mark at or above the target (the system's own hard-stop semantics - internally consistent but not forward). DO NOT RE-OPTIMISE THE LEVEL on this sample: the +10% row (+12,044.6U) beats +15%, but choosing the target from the same data is the round-26 selection trap. The deployed arms use +15%/+25%, chosen in round 17 on a different sample - hold the level fixed. Gain is concentrated (top 10% of positions = 55.6%). It is a GROSS figure.",
     "what_it_means_for_deployed_work": "exit150_full15_v1 is ALREADY DEPLOYED and targets exactly this (sells 100% at +15%). Its observed behaviour is consistent - 5.3% write-off vs bank15's 47.8% - because it converts pool deaths into take-profits before the pool dies. Its forward verdict is still BLOCKED ON THE PAIRING CLOCK (19 settled, 2 diverged cohorts); this replay strengthens the case for the DESIGN without substituting for the forward test."
   },
-
   "ROUND_38_ENDGENEITY_HYPOTHESIS_TESTED_AND_REFUTED": {
     "the_hypothesis": "Round 36 concluded 'the exits work' from the forced/elective split (forced -20,332U, elective +1,348U). But that split is ENDOGENOUS - a position exits electively only if it SURVIVED long enough for a TP/trailing/time rule to fire. So the elective profit could be SELECTION (survivors) rather than exit skill, and the claim would be too strong.",
     "IT_WAS_WRONG": "FORCED positions peaked at median +7.3% econ; the ELECTIVE population at -0.8%. THE FORCED POPULATION PEAKED HIGHER. The typical elective-exit position never went meaningfully positive. So the elective side's +1,344U is NOT a selection effect on peak quality - the hypothesis is REFUTED and round 36's directional claim survives this challenge.",
@@ -255,7 +211,6 @@
     "THE_GIVE_BACK_IS_NOT_RECOVERABLE_HEADROOM": "Trailing exits hand back a median 14.8 percentage points (800U total), which LOOKS like the 'golden dog' leak. IT IS NOT RECOVERABLE: capturing the peak requires knowing the peak, a future function. Round 17 already measured that a full-capture take-profit at +15% earns LESS on the runner tail than trailing does while earning far more on the round-trippers. The 800U is the PRICE of the trailing rule, not a defect in it. The forced hard stops' 16.8pp median give-back (3,410U) is the r17/r35 gap-through and is likewise not recoverable.",
     "CORRECTED_STATEMENT_of_r36": "58.5% of exits are forced by mechanisms no exit contract can influence, and that is where the entire loss sits. The remaining 41.5% is net positive - and it is positive DESPITE having WORSE peak economics than the forced population, so it is NOT a survivor-selection artifact. But it is thin (top 10% of time-exits carry 87% of their profit) and its largest apparent leak (800U of trailing give-back) is the unavoidable price of not knowing the peak, not headroom. The ceiling conclusion is unchanged; what changes is that 'the exits work' is now a TESTED claim rather than an inference from an endogenous split."
   },
-
   "ROUND_36_THE_EXIT_SIDE_IS_WHERE_THE_PROFIT_IS": {
     "the_measurement": "2,463 settled positions classified by close_reason. FORCED pool died (write-off) 764 = 31.0%, -14,919.0U. FORCED hard stop 678 = 27.5%, -5,413.2U. FORCED TOTAL 1,442 = 58.5%, -20,332.2U. Elective time exit 644 = 26.1%, +611.1U. Elective trailing 167 = 6.8%, +930.8U. Elective signal-decay 145 = 5.9%, -243.8U. Elective take-profit 24 = 1.0%, +110.5U. Elective runner review + custom kinds 41 = 1.7%, -61.4U. ELECTIVE TOTAL 1,021 = 41.5%, +1,347.8U. Reconciles: -20,332.2 forced + 1,347.8 elective = -18,984.4U, the epoch's loss.",
     "FINDING_1_the_ceiling": "Only 41.5% of settled positions exit by a mechanism an exit contract actually decides. The other 58.5% are FORCED by the pool dying or by a one-interval gap crossing every configured level simultaneously. No stop width, ladder level, trailing rule or time limit can act on those. EXIT-SIDE RESEARCH HAS A HARD CEILING OF ROUGHLY THE ELECTIVE SHARE - and round 35 showed that even inside it most cohorts resolve identically because the two arms' rules coincide.",
@@ -266,7 +221,6 @@
     "RECONCILED_independently_in_SQL": "forced -20,332.2U (1,442) and elective +1,346.7U (1,025) with forced+elective==total exactly. The finding is not sensitive to the classification (the only difference is four 'other' custom-kind closes classified on slightly different keys).",
     "THE_CEILING_IS_MOVING_favourably": "whole epoch 2,467 positions: forced share 58.5%, forced -20,332.2U, elective +1,346.7U. LAST 2 HOURS, 1,847 positions: forced share 53.4%, forced -13,850.1U, elective +1,438.9U. So the elective share is rising (41.5% -> 46.6%), consistent with the EXIT150 arms accumulating elective take-profit and trailing exits, and THE RECENT WINDOW'S ELECTIVE PnL ALONE (+1,438.9U) EXCEEDS THE ENTIRE EPOCH'S (+1,346.7U). CAVEAT: the recent window is a SUBSET of the epoch - these are not independent samples. Worth watching, not banked."
   },
-
   "ROUND_35_FIRST_PAIRED_COMPARISON_IS_UNINFORMATIVE": {
     "finding_a_properly_paired_pair": "full15/full25 share only 3 cohorts with bank15/bank25 (different frontiers 32175 vs 15928), but bank15/bank25/widestop ALL joined at 15928 so they DO share cohorts. Running at per-side threshold 10 exposed the session's first properly paired comparison: widestop vs bank15, 10 shared settled cohorts across 10 tokens, within-cohort difference -0.138U, 90% token-clustered CI [-0.414, +0.000], does NOT exclude zero - against an UNPAIRED arm-level gap of 2.27U/pos.",
     "BUT_10_SHARED_IS_REALLY_1_THEN_0": "Breaking the 10 pairs down by whether the two arms' CLOSE REASONS differ: NINE have a difference of exactly 0.00 and ONE differs (-1.38U). Seven are dex_pool_liquidity_below_configured_floor (a write-off, forced by the pool dying regardless of any stop) and two are market_mark_hard_stop where BOTH arms realise the SAME PnL under a -0.35 and a -0.55 stop (solana:3wEecdaDc -19.99 both; solana:Dw4hxvotjTZ -18.19 both).",
@@ -280,7 +234,6 @@
     "lesson": "In each case the DIRECTION survived and the STRENGTH OF CLAIM did not.",
     "STANDING_RULE_new": "Before reading a paired experiment, COUNT THE UNITS WHERE THE THING BEING VARIED ACTUALLY CHANGED THE OUTCOME. Shared units are not usable units."
   },
-
   "ROUND_34_THE_EXIT150_HEADLINE_CONTRAST_IS_UNPAIRED": {
     "what_happened": "exit150_full15_v1 reached 19 settled, one short of the 20-per-side threshold. To exercise the analysis path before it produced a 'verdict', the readout was run with --min-settled 19. It produced a within-cohort difference of +5.866U with a token-clustered CI [+1.793,+9.939] that 'excludes zero' - RESTING ON THREE COHORTS, where dropping two tokens leaves a single observation with a difference of exactly 0.000U. Reported without that context it would have been meaningless.",
     "the_gate_was_counting_the_wrong_thing": "experiment_readout.py gated on EACH SIDE'S OWN settled count, but a paired test needs SHARED cohorts. Two exit carriers registered at DIFFERENT FRONTIERS can each clear 20 settled while sharing only a handful. That is exactly the case: exit150_full15_v1/full25_v1 joined at frontier 32175, while bank15/bank25/widestop joined at 15928. THEY SHARE ONLY 3 SETTLED COHORTS ACROSS 3 TOKENS.",
@@ -289,7 +242,6 @@
     "what_the_next_verdict_must_say": "When full15 clears 20 settled, the correct statement is 'the paired basis is still N cohorts; the unpaired contrast is X' - NOT a verdict. The paired test needs ~20 SHARED cohorts, a different and slower clock.",
     "instability_reminder": "full15's per-position figure moved +0.41U -> -0.00U on the addition of a SINGLE settled position. That is the appropriate confidence to have in a 19-position mean."
   },
-
   "ROUND_33_REFUSED_START_FIX_VERIFIED_END_TO_END": {
     "why_verify_instead_of_explore": "Round 32 shipped a cli.py change but the running trader predates it, so nothing had exercised the new code. Every diagnostic line is now closed by measurement, so the highest-value action was to confirm the one change I shipped actually works.",
     "the_verification_done_safely_in_production": "The single-instance lock means a second trader correctly refuses to start, so attempting one is a ZERO-RISK way to exercise the exact fixed path - the second process never gets past the lock and cannot write to the database. Lock file present (data/memetrader.lock, 1 byte). Crash log 22,020 -> 22,904 bytes. Second instance exited 3 with 'another memeTrader process is already running'.",
@@ -298,7 +250,6 @@
     "residual_limit": "WHY the lock was held in those two windows cannot be recovered retroactively. Windows byte-range locks are released when the holding handle closes, so a merely-killed process should not hold it - pointing at either an overlapping start or a process alive but not the trader. The next occurrence will be directly diagnosable from the log.",
     "deployment_note": "The verification exercised the CURRENT cli.py via a directly-invoked instance. The live trader started 06:01 and still carries the pre-r32 cli.py; the change takes effect on its next restart. No restart was performed - it is not needed and would clear the running process's in-memory observation state for no benefit."
   },
-
   "ROUND_32_PROVIDER_RELIABILITY_NOT_THE_BOTTLENECK": {
     "measured": "mark history (19,590 rows) 99.7% VISIBLE, 0.3% MISSING:NO_VISIBLE_POOL_OR_PRICE; live per-pool marks 99.2% VISIBLE; consecutive_misses ZERO for 1,397 of 1,398 pools; last_success_at IS NULL for 0 of 1,398; staleness p50/p90/p99 all 0s (max 4,350s, one pool); dexscreener 99.7% ok, geckoterminal 100%.",
     "only_anomalies": "failures concentrate in a SINGLE pool (68 consecutive misses); plus 9 pools with DATA_REJECTED:QUOTE_USD_UNKNOWN,quote_liquidity_unavailable and 1 with TimeoutError.",
@@ -315,7 +266,6 @@
     "why_it_is_justified": "It names a concrete OBSERVED failure: 447 unlogged startup failures, the dominant mode by 45x. Previously a supervisor restart loop showed an exit code and nothing else.",
     "tests": "tests/test_cli_crash_reporting.py, 6 tests: a refused start records its FRAME CHAIN (a bare message is not diagnosable), the log appends rather than truncates, and a logging failure is swallowed."
   },
-
   "ROUND_31_STABILITY_THE_LARGEST_HISTORICAL_DEFECT_EXPLAINED": {
     "why": "Stability is one of the five dimensions the objective names and it had not been audited this session.",
     "the_log": "data/logs/paper-supervisor.log holds 483 run records: exit=3 on 455, exit=1 on 15 (my own taskkill restarts), exit=-1 on 13. 457 of 483 runs lasted UNDER 5 SECONDS - startup failures restarted every 5s. Bursts at ~00:00 (382 runs) and ~04:48 (64 runs). Recent runs are healthy and long (463s -> 1249s); longest on record 2672s. So it is a HISTORICAL recurring crash-loop mode, not a current one.",
@@ -326,7 +276,6 @@
     "two_of_my_own_probes_were_wrong_first": "1) the entry-isolation probe used httpx.URLPattern, not exported at top level, so EVERY entry looked unparseable and the 'drop the bad ones' test silently cleared the whole NO_PROXY list instead of isolating one entry. 2) a regex scan for clients 'lacking trust_env' captured only the first line of multi-line calls, reporting two false positives plus one on my own scratch file. The per-entry AsyncClient() test - the behaviour that actually matters - settled it.",
     "watch_item": "the crash loops are ENVIRONMENT-DEPENDENT: a malformed NO_PROXY in whatever launches the process. If startup failures recur, check that variable first. The 04:48 burst is not fully explained (the crash log was last written at 00:00), low priority now the current code is immune."
   },
-
   "ROUND_30_DENSE_EPISODE_FREE_LEAD_CLOSED": {
     "the_lead": "Round 29 flagged the 11 entered tokens with no >=3-frame episode as the most promising remaining lead, BECAUSE widening it would need no observation budget.",
     "IT_DOES_NOT_SURVIVE_CONTACT": "All 11 are the native_protocol_model lane - 100%. 11 tokens, all solana:...pump, exactly 1 POSITION EACH, realised -10.8U over 11 positions (-0.98U/pos). Closes: 9 hard_stop (-12.83U), 1 trailing (+2.64U), 1 max_hold (-0.40U). By contrast the 37 dense-episode tokens are isolated_cohort_observer 2,485 (98.7%) + isolated_pattern_observer 33.",
@@ -343,7 +292,6 @@
     "THE_ANSWER_TO_THE_OBJECTIVES_CORE_QUESTION": "No threshold, logic rule, risk rule or processing limit is systematically blocking tradeable candidates. Dense observation converts at 7.02% (37 of 527) against 0.39% overall - an 18x difference - so the system is not failing to convert what it can see, it is failing to GIVE CANDIDATES ENOUGH OBSERVATION TO BE JUDGED. THE BINDING CONSTRAINT IS DENSE-OBSERVATION COVERAGE: 4.4% of observed tokens (527 of 11,991).",
     "what_remains_honestly": "The binding constraint is NOT mine to change - it is a user-decided budget item (increase declined round 79; partial increases approved rounds 83 and 88) and the completed evidence base is now the deliverable on that point. Six forward experiments are in flight and NONE is readable yet; exit150_full15_v1 is closest at 17 of 20 settled and positive per position. Their verdicts need WALL-CLOCK TIME, not more analysis. Everything else in my authority was either shipped or closed by measurement."
   },
-
   "ROUND_29_SLOT_TURNOVER_CLOSED_AS_A_LEVER": {
     "the_candidate": "replaceable_early evicts only bucket=='early' leases, so growth/mature leases squat their full PHASE_LEASE_SECONDS=300; with ~30 slots the ceiling is ~30 x 3600/300 = 360 dense pools/hour. The premise was that a 300s slot is mostly idle after the interesting frames arrive.",
     "THE_PREMISE_IS_FALSE_measured": "7,964 reconstructed observation episodes (observer snapshots, same token, gaps <=60s): only 863 (10.8%) reach >=3 frames; 6,184 (77.6%) are a SINGLE frame; median duration 0.0s. Time to the 3rd frame among those that reach it: p25 29.2s, P50 31.6s, p75 52.0s, p90 65.1s - a window forms by ~32s median and ~65s at p90, comfortably INSIDE the 120s early lease. So lease duration is NOT what prevents window formation.",
@@ -357,7 +305,6 @@
     "caveat_bounding_the_claim": "11 of the 48 entered tokens NEVER had a >=3-frame episode, so dense observation is the dominant route (77% of entries) but not the only one. A different lane reaches entries without it.",
     "ANSWER_TO_THE_OBJECTIVES_CORE_QUESTION": "The objective asks which link systematically blocks tradeable candidates through over-strict thresholds, logic or risk rules. The measured answer is NONE OF THEM. Over 28 rounds every threshold, risk rule, capital limit, concurrency cap, throttle, processing limit, arm-fleet property and token-selection rule has been tested and eliminated. The single binding constraint is DENSE-OBSERVATION COVERAGE - 4.4% of observed tokens. It remains a USER-DECIDED budget item (increase declined round 79; partial increases approved rounds 83 and 88) and was NOT changed."
   },
-
   "ROUND_28_CAPITAL_CONCURRENCY_HYPOTHESIS_CLOSED": {
     "the_last_unexamined_hypothesis": "That the account is out of usable capital, or concurrency / per-arm risk limits are saturated, so a fired signal cannot become a position. IT IS NOT - measured.",
     "measurements": "capital_eligibility = per_strategy_account_independent; starting_cash_usd_each_arm = 1000.0; 325 registered arms -> nominal capacity 325,000U; deployed in open positions 4,400.00U (220 positions) = 1.35% UTILISED; idle 320,600U; an arm at 1000U / 20U could hold 50 positions concurrently and the OBSERVED MAX is 8; max_open_positions = 0 (unlimited).",
@@ -369,7 +316,6 @@
     "every_link_measured": "discovery healthy (10,089 tokens); collection healthy (94.5% observed); feature/trajectory healthy (66.8% of accepted observations form a ready 30s window); processing speed NOT binding (observed snapshot -> position p50 0.18s); freshness rules NOT binding (entry_snapshot_too_old is 0.03% of evaluations, limit 90s); signal generation NOT binding; arm fleet not redundant and not prunable (r25); capital NOT binding (1.35% utilised); concurrency NOT binding (8 of 50); pending-intent throttle NOT binding (all queues empty).",
     "THE_SINGLE_BINDING_CONSTRAINT": "How many pools can be observed densely at once (~30 slots). Everything downstream - token breadth (46 tokens), effective sample size (~30), and therefore the ability to learn token selection at all - follows from that one number. It is a USER-DECIDED budget item (increase declined round 79; partial increases approved rounds 83 and 88) so it must NOT be changed silently. This round's contribution is that every alternative explanation is now eliminated by MEASUREMENT rather than assumed away."
   },
-
   "ROUND_27_METRIC_CORRECTION_writeoff_rate_is_not_a_loss_rate": {
     "the_claim_I_audited": "Since round 17 I have repeated 'exit150_full15_v1 has a 5.9% write-off rate against exit150_bank15_v1's 50.0%'. bank15 sells 50% at +15% and rides the rest, so a position can BANK PROFIT and still be marked written_off when the remainder's pool dies - which would conflate 'the pool died' with 'the pool died AFTER banking'.",
     "audit_result_safe_in_aggregate": "Across all 764 written-off positions: full loss (|pnl| >= 98% of stake) 97.4%; partial loss (banked something) 1.6%; positive PnL but marked written_off 1.0%. So in AGGREGATE written_off really does mean 'lost essentially everything' and the metric is safe for the fleet.",
@@ -380,7 +326,6 @@
     "corrections_owed": "The mis-framed contrast appears in the records for rounds 17, 23, 25 and 26 and in this checkpoint. The CONCLUSION in each is unaffected; the stated MECHANISM is. This entry carries the corrected form.",
     "pattern_third_self_correction_in_three_rounds": "round 25 an outcome-identity merge list confounded by write-offs; round 26 a vacuously-true leave-one-out check; round 27 this. COMMON CAUSE: metric semantics ASSUMED rather than checked. Discipline that would have caught all three: before using a derived metric as evidence, DECOMPOSE IT AGAINST THE UNDERLYING MONEY at least once."
   },
-
   "ROUND_26_TOKEN_SELECTION_CANNOT_BE_LEARNED_FROM_46_TOKENS": {
     "where_this_went": "Round 25 put 56.9% of PnL variance on TOKEN identity (vs 14.6% on arm), so token selection is the highest-leverage area. Epoch: 46 tokens (36 with a usable first-entry snapshot), 7 winners, 39 losers, total -18,753.1U.",
     "winner_vs_loser_at_first_entry": "mcap winners med 889,300 vs losers 28,540 (31.2x); trades 593 vs 59 (10.0x); vol 30,460 vs 3,599 (8.5x); liq 77,920 vs 43,100 (1.8x); bp 70.8 vs 82.7; age_min 4.06 vs 3.90. CHAIN: solana 6 winners/18 losers (-4,927.9U); bsc 1 winner/18 losers (-13,279.9U = 70.8% of the total loss); robinhood 0/3.",
@@ -392,7 +337,6 @@
     "SECOND_ERROR_OF_MINE_CAUGHT": "My leave-one-token-out check printed 'removals that still leave ZERO winners: 36 of 14' and I initially read it as strong evidence. It is TRIVIALLY TRUE - removing a loser from a set that already contains zero winners obviously leaves zero winners. The test was vacuous as written and the count exceeded the set size because I iterated over all tokens rather than the low-mcap set. Do not trust this check in this form.",
     "CONCLUSION_and_line_closed": "Token-level exclusion rules CANNOT be validated from this epoch. Any cut searched over 36-46 token outcomes will look good and there is no out-of-sample route with this few tokens. This is the SECOND line closed in two rounds: (a) prune/merge the arm fleet - CLOSED (311 distinct contracts; differences unexercised not duplicated); (b) token-level exclusion filters - CLOSED (unvalidatable at n=36-46). The binding constraint is the NUMBER OF INDEPENDENT TOKENS (effective n ~30). Learning token selection requires MORE TOKENS, not more analysis of the same 46."
   },
-
   "ROUND_25_EFFECTIVE_N_IS_30_NOT_2256": {
     "variance_decomposition": "token identity eta^2 = 56.9% (46 tokens); cohort (token x snapshot) = 77.9% (405); ARM identity only 14.6% (174 arms). Positions per token: median 57, max 118.",
     "Kish_effective_n": "2,245 settled positions over 46 tokens with median 57 positions/token gives Kish effective n = 30.0. A per-position statistic quoted at n=2,245 is really about 30 INDEPENDENT observations. Every interval computed this session was already token-clustered so those stand - this quantifies WHY they are wide and sets a hard ceiling on what this epoch can teach.",
@@ -409,11 +353,20 @@
     "SAFE_TEST_contract_identity": "325 registered arms -> 311 DISTINCT contracts. Only 8 contracts shared by >1 arm, covering 22 arms holding just 28 positions (1.2%); 5 of the 8 duplicate groups hold 0 positions. THE ARM FLEET IS NOT MADE OF DUPLICATES AND THERE IS ESSENTIALLY NOTHING TO MERGE."
   },
   "ROUND_25_WHAT_THE_TWO_RESULTS_MEAN_TOGETHER": "The arms are CONTRACTUALLY DISTINCT (311 contracts) but BEHAVIOURALLY INDISTINGUISHABLE IN OUTCOME (arm eta^2 14.6%, median within-cohort spread 0.00U). The reason is NOT duplication: ~80% of exits are resolved by rules the arms SHARE (common hard stop 48.7% + time exit 30.9%), so the fleet's contract diversity is largely UNEXERCISED. Consistent with round 17 (hard stop dominant, 289 of 885 closes, gap-through fires stops early). IMPLICATION: arm proliferation is not the defect, and pruning would be both unsafe (nothing is a true duplicate) and ineffective (the differences are untested, not absent). The binding common rules are what suppress expression of the fleet's diversity.",
-
   "ROUND_24_DERIVED_FEATURE_SCREEN": {
     "what": "Nine point-in-time derived features built from the 20-minute pre-entry window plus the entry snapshot, screened against the WRITE-OFF label (2,369 positions / 37 tokens, base rate 32.2%) with tertile separation + token-clustered bootstrap + drop-the-best-token. This is the objective's 'derived/approximate feature' direction. Round 18 had screened the WRONG label (+15% touch); write-off is the one rounds 19/20 actually move.",
-    "survivors": ["liq_trend +42.2pp CI [+0.249,+0.582]", "vol_trend +33.9pp CI [+0.139,+0.520]", "buy_pressure +42.7pp CI [+0.258,+0.589]", "mcap_liq -43.2pp CI [-0.626,-0.234] (the only MONOTONIC one: 76.2 -> 18.3 -> 2.4)"],
-    "rejected": ["turnover", "price_vol_pct", "frames_in_window", "holders and liq_per_holder (not populated, 0 usable)"],
+    "survivors": [
+      "liq_trend +42.2pp CI [+0.249,+0.582]",
+      "vol_trend +33.9pp CI [+0.139,+0.520]",
+      "buy_pressure +42.7pp CI [+0.258,+0.589]",
+      "mcap_liq -43.2pp CI [-0.626,-0.234] (the only MONOTONIC one: 76.2 -> 18.3 -> 2.4)"
+    ],
+    "rejected": [
+      "turnover",
+      "price_vol_pct",
+      "frames_in_window",
+      "holders and liq_per_holder (not populated, 0 usable)"
+    ],
     "CHAIN_CONFOUND_applied_to_all": "This device's write-offs are ~100% BSC, so a feature that merely separates chains looks powerful. Within-chain: liq_trend +42.2 -> +16.8pp (BSC) / +14.0pp (SOL) so ~60% was chain mix; vol_trend +34.1 -> -0.4pp on BSC (DEAD) but +17.2pp on SOL; buy_pressure +42.4 -> +53.9pp on BSC (STRONGER) / +3.2pp SOL; mcap_liq -43.2 -> -25.7pp BSC / -18.3pp SOL but non-monotonic on both (BSC 74.9/88.4/26.8)."
   },
   "ROUND_24_BUY_PRESSURE_strongest_marker_but_REDUNDANT": {
@@ -423,7 +376,6 @@
     "THE_REAL_VALUE": "It independently CORROBORATES the activity floor's mechanism from the other direction: the BSC death zone is ONE-SIDED BUYING WITH FEW TRADES - a pool being pumped with almost no two-sided flow. Two independent features converging on the same population is evidence the round-19 floor targets the right thing, not a new lever.",
     "residual_left_open": "Even after the activity floor, bp-low BSC positions still show 21.8% write-off. That residue is the next honest target; buy_pressure does not address it and nothing screened this round does."
   },
-
   "ROUND_23_READOUT_TOOL": {
     "commit": "682926c (pushed)",
     "tool": "scripts/experiment_readout.py (new, tracked). One command answers 'is any experiment readable yet, and what does it say' - previously done with ad-hoc SQL each round.",
@@ -445,11 +397,14 @@
     "why_they_differ": "A isolates rejections attributable to the FLOOR; B also includes cohorts the arm missed for unrelated reasons (concurrency, single_token_lifetime_entry, or the arm not existing yet at that frontier). B is an upper bound on scope, not the floor's effect.",
     "HONEST_CAVEAT": "A's avoided set is only 3 positions. The floor rejected 19 cohorts but only 3 were opportunities the control would actually have taken - the control has its own gates. The -20.00U/pos figure is SUGGESTIVE, NOT ESTABLISHED, and the readout correctly refuses a verdict for it."
   },
-
   "ROUND_22_LANDED_ADAPTIVE_CADENCE": {
     "commit": "7b40eb5 (pushed)",
     "what": "observation_leases145.record_frame gains an optional `content` param; cadence_seconds backs the next due time off on an information-free sample: 0-2 unchanged -> 15s, 3-5 -> 30s, >=6 -> 60s CAP, immediate reset on any change.",
-    "safety_constraints_implemented_and_tested": ["back off ONLY when price AND volume AND liquidity are ALL unchanged (a volume-only change is 3.2% of samples and resets the cadence)", "capped at 60s with immediate reset, so worst-case detection delay for a new move is one interval", "content=None reproduces the previous FIXED cadence exactly, so it is reversible per caller"],
+    "safety_constraints_implemented_and_tested": [
+      "back off ONLY when price AND volume AND liquidity are ALL unchanged (a volume-only change is 3.2% of samples and resets the cadence)",
+      "capped at 60s with immediate reset, so worst-case detection delay for a new move is one interval",
+      "content=None reproduces the previous FIXED cadence exactly, so it is reversible per caller"
+    ],
     "durability_and_observability": "unchanged_run persists through dump_state/restore_state so a restart does not silently reset every backoff; last_content is deliberately NOT persisted (run restarts at 0 = conservative). bounded_summary now reports unchanged_run, cadence_seconds, content_known.",
     "verified_live": "cadence values live [15,30,60]; 24 slots at 15s, 1 at 30s, 5 at 60s; content_known 30/30. Requests/min 187.2 -> 183.3 (essentially flat). Implied request cost across the 30 slots 120 -> 103-105/min = 12.5-14.2% FEWER REQUESTS for the same slots.",
     "coverage_quality_did_NOT_regress": "input_ready:window30 share 68.291% -> 70.190% -> 70.993% (improved slightly). trajectory accepted 47,226 -> 53,336; ready 32,251 -> 37,865. signal second_wave 16 -> 18.",
@@ -462,7 +417,6 @@
     "coverage_gain_UNPROVEN": "the distinct-pool-per-bucket series is strongly TRENDING (543 -> 939 -> 796 -> 612 -> 587 across the pre-change window), so a naive before/after comparison is confounded. With one partial post-change bucket there is NOT enough data to claim a coverage gain either way.",
     "narrower_criterion_declined": "backing off when PRICE alone is unchanged would engage far more often, but it would also back off across volume-only changes (3.2% of samples, real information). Not worth taking without its own evidence; the conservative criterion stands."
   },
-
   "ROUND_21_OBSERVATION_BUDGET_IS_3_4x_UNDERUTILISED": {
     "finding": "observation_leases145.record_frame sets next_due_at = observed_at + TARGET_SECONDS (15) regardless of whether the source has anything new. Measured over 13,651 consecutive same-token snapshot pairs (237 tokens with >=20 snapshots): price AND volume both changed 25.7%, volume-only 3.2%, price-only 0.3%, and NOTHING changed (price+volume+liquidity all identical) 70.8%. So 70.8% of polled requests return no new information. Matching cadence to the source's real update rate would cover ~3.42x MORE DISTINCT POOLS for the SAME request budget - no budget increase needed.",
     "worst_where_it_matters": "TRADED tokens have a HIGHER repeat rate than untraded: traded median 82.2% (p25 77.3, p75 85.0, 64.5% of tokens >80%) vs never-traded median 66.7%. 30 of 31 traded tokens exceed 50% repeats; 20 of 31 exceed 80%. Worst case bsc:0x64a6c4c1 took 1,085 snapshots at 89.7% repeats and produced 67 positions. 21 dense pools recorded ZERO information change across 668 polls and NONE of the 21 ever produced a position.",
@@ -474,10 +428,13 @@
   },
   "ROUND_21_ADAPTIVE_CADENCE_DESIGN_not_implemented": {
     "why_deferred": "the observation supply is the HIGHEST-BLAST-RADIUS surface in the system - it feeds every arm at once, and six forward experiments (exit150_*, activity_floor150_*, runup_floor150_*) are accumulating evidence a cadence regression would quietly corrupt. Design is specified and containment evidence is in hand; it should land as its own change with its own verification.",
-    "constraints": ["back off ONLY when price AND volume AND liquidity are ALL unchanged (volume-only changes are 3.2% of samples and are real information)", "modest capped backoff 15s -> 30s -> 60s cap, with IMMEDIATE reset on any change, so worst-case detection delay for a new move is one backoff interval", "must not thin the ACTIVE pools - the trajectory window needs >=3 frames within 30s, so an over-aggressive backoff would destroy it. Verify, do not assume."],
+    "constraints": [
+      "back off ONLY when price AND volume AND liquidity are ALL unchanged (volume-only changes are 3.2% of samples and are real information)",
+      "modest capped backoff 15s -> 30s -> 60s cap, with IMMEDIATE reset on any change, so worst-case detection delay for a new move is one backoff interval",
+      "must not thin the ACTIVE pools - the trajectory window needs >=3 frames within 30s, so an over-aggressive backoff would destroy it. Verify, do not assume."
+    ],
     "success_metric": "distinct pools covered per hour at unchanged request volume, with NO regression in input_ready:window30 share (currently 66.8%)."
   },
-
   "ROUND_20_DIAGNOSIS_latency_and_funnel": {
     "funnel": "10,089 discovered -> 9,531 observed (94.5%) -> ONLY 37 EVER ENTERED (0.4%). 37,774 evaluations -> 1,710 positions (4.53%). Settled 1,318 at -11,493.58U (-8.72U/pos). The bottleneck is observation capacity between observation and judgement, NOT a threshold defect.",
     "gate_distribution": "cohort_observation 34.38% + pattern_observation 22.77% = 57.15% is observer bookkeeping that can NEVER admit; no_active_matching_entry_policy 25.85%; entry_pool_liquidity_absent_curve_stage 7.66%; invalid_exact_asof_market_snapshot 5.17%; entry_pool_liquidity_below_configured_floor 3.04%; entry_pool_liquidity_unknown 1.10%; entry_snapshot_too_old 0.03%. So the gate distribution does NOT show an over-strict filter.",
@@ -488,7 +445,10 @@
   },
   "ROUND_20_SHIPPED_RUNUP_FLOOR150": {
     "commit": "bc4dabc (pushed)",
-    "arms": ["runup_floor150_r15_v1 (run-up <= 15%)", "runup_floor150_r15a30_v1 (run-up <= 15% AND trades >= 30)"],
+    "arms": [
+      "runup_floor150_r15_v1 (run-up <= 15%)",
+      "runup_floor150_r15a30_v1 (run-up <= 15% AND trades >= 30)"
+    ],
     "module": "src/memetrader/runup_floor150.py (new)",
     "marker": "runup = current price / earliest observed price in the 20 minutes before the decision - 1. The 20-minute window is deliberate: the acceptance loop's own `history` (store.py:27614, LIMIT 80) holds exactly that window, so the cap costs ZERO extra queries. Verified live: ZERO runup_floor_window_unknown rejections.",
     "measured_basis": "write-off rate jumps from 0.6% at a 15% cap to 6.0% at 20% and 24.8% uncapped (1,712 positions). Token-clustered significant BOTH ways: write-off +0.322pp CI [+0.082,+0.565]; PnL -4.851 U/pos CI [-9.491,-0.055]. Not the survival confound (r=-0.116 with entry delay).",
@@ -498,10 +458,12 @@
     "verified_live": "325 additions; both arms at OWN frontier 38633; control unchanged at 0; arms trading (6 positions each); floor BITES: 6x runup_floor_exceeded each alongside 6x accepted.",
     "discipline": "screen reuses the round-19 hook, returns None for every other arm, sits after signal validation, distinct auditable rejection reasons (runup_floor_exceeded / runup_floor_window_unknown / activity_floor_trades_not_met), missing evidence never admits. No existing strategy, stop, hold or exit contract changed. 120 tests pass."
   },
-
   "ROUND_19_LANDED_ACTIVITY_FLOOR150": {
     "commit": "024b0d6 (pushed)",
-    "arms": ["activity_floor150_t30_v1 (buys_5m+sells_5m >= 30)", "activity_floor150_v5k_v1 (volume_5m_usd >= 5000)"],
+    "arms": [
+      "activity_floor150_t30_v1 (buys_5m+sells_5m >= 30)",
+      "activity_floor150_v5k_v1 (volume_5m_usd >= 5000)"
+    ],
     "module": "src/memetrader/activity_floor150.py (new)",
     "why_entry_arms": "unlike EXIT150 these are ENTRY arms and DO go into alpha149.SPECS - they must, so the shared acceptance loop can screen them. Confirmed by round 18: alpha149.py:2283 iterates SPECS generically and an arm fires when flags.get(kind) is set.",
     "one_factor_design": "reuse the control's kind ('merged_multi_setup') so they fire on the same mechanism flags and get the same frozen signal, and clone the control's exit contract verbatim (stop -0.2, trail .30/.15, hold 15, tp [], 2U, isolated_cohort_observer). Control = alpha149_merged_multi_setup_fast_v1, chosen because merged_multi_setup is the highest-volume generic mechanism (6 arms x 123 emits/374 cohorts) and round 16 already characterised it. Verified on the BUILT policy: every exit-contract field equal, and on all shared keys only identity/label fields differ.",
@@ -512,7 +474,6 @@
     "correction_to_my_own_expectation": "I first expected the reason in chain_meme_trader_v6_entry_evaluations.reason, but store.py:28327 persists observation_reason ('cohort_observation'/'pattern_observation') there, NOT the per-arm reason. The per-arm reason lives in the cohort outcomes map. Verified empirically rather than assumed.",
     "tests": "108 pass (tests/test_activity_floor150.py is new, 11 cases)."
   },
-
   "workspace": "H:\\OpenTrader\\memeTrader_2",
   "runtime": {
     "db": "data/memetrader_forward.sqlite3",
@@ -550,7 +511,6 @@
   "ROUND_18_HOOK_LOCATED_not_landed": "store.py:27832-27850 is the cohort acceptance loop; each qualifying policy commits at accepted_cohort_signals[arm]=signal (27850). A new arm can be screened there by its own id (existing arms -> allow immediately), precedent being store.py:27951 which dispatches an arm to its own module via entry_filter['failed_impulse_cooling']. NOT LANDED because a new cohort arm only trades if the cohort evaluator emits a signal for it: cohort_signals is an INPUT parameter (store.py:27508) produced upstream, cohort_experiment_policies() enumerates its arms explicitly, and the alpha149 cohort arms emit via alpha149.signals_for from SPECS. So the additive path is: append a new arm to alpha149.SPECS (the established wave pattern) + the one-line screen + its own register_* frontier. NEEDS VERIFICATION that the new arm reaches cohort_signals before it is trusted.",
   "ROUND_18_FUNNEL_REASONS": "evaluations this epoch: cohort_observation 11,667 | no_active_matching_entry_policy 9,166 | pattern_observation 7,555 | entry_pool_liquidity_absent_curve_stage 2,714 | invalid_exact_asof_market_snapshot 1,807 | entry_pool_liquidity_below_configured_floor 1,055 | entry_pool_liquidity_unknown 396 | entry_snapshot_too_old 12.",
   "ROUND_18_JOIN_KEYS_measured": "shadow_cohort_id -> v6_cohorts.id 1098/1098; source_entry_fill_id -> v6_entry_fills.id 1091/1098; entry_snapshot_id -> token_snapshots.id 1091/1098; entry_fill_id -> v6_entry_fills.id 0/1098 (silently empty - the trap that bit a previous round). Rich per-arm feature vectors are NO LONGER usable historically because round 120-9 compacted them to 3 fields.",
-
   "ROUND_17_EXIT_SIDE_IS_CLOSED": {
     "status": "Four independent falsifications on real forward marks (906 closed positions, 24 tokens, actual -7,962.84U). No exit rule, level or cadence change can recover the loss. ALL remaining effort belongs on the ENTRY side.",
     "1_no_tighter_stop_helps": "Enforcing -0.15/-0.20/-0.25/-0.30/-0.40/-0.50/-0.65 econ on EVERY position gives -358/-149/-89/-113/-149/-152/-142 U versus doing nothing. Tightening also stops the positions that recover.",
@@ -573,7 +533,10 @@
   "ROUND_17_CHANGE": {
     "commit": "137bdfa (pushed)",
     "module": "src/memetrader/exits150.py v1 -> v2",
-    "added_arms": ["exit150_full15_v1 (+15%, 100% capture)", "exit150_full25_v1 (+25%, 100% capture)"],
+    "added_arms": [
+      "exit150_full15_v1 (+15%, 100% capture)",
+      "exit150_full25_v1 (+25%, 100% capture)"
+    ],
     "design": "Completes a 2x2 against the deployed partial arms, changing one factor at a time: {partial 50%, full 100%} x {+15%, +25%}.",
     "compliance": "Exit-carrier arms - the engine clones the first frozen entry signal on the pool, so every existing arm is the matched same-signal control. NO existing strategy modified, replaced or retuned.",
     "verified": "Entry side byte-identical across all five carriers; store.py:35717 confirms fraction>=1.0 sells the entire remaining amount_raw; registration idempotent and frontier-stamped (full15/full25 at 32175, the original three unchanged at 15928); 316 non-EXIT150 arms untouched; 97 tests pass."
@@ -593,7 +556,7 @@
     "A mark-supply fix - 1706 mark_history rows per 15 min here versus the old session's 46; 494 of 518 positions received more than one in-window mark.",
     "Loosening the engine's 30s freshness rule - only 1 of 6137 snapshots exceeds 30s and the engine refusal ratio is 12.2%."
   ],
-  "next_action": "P0-NEW exit150_full15_v1 has reached 20 settled BUT is NOT readable: the paired basis is 2 DIVERGED cohorts (round 35 rule). Keep running until >=20 diverged, then read it with the paired test. Do NOT report the unpaired +6.15U/pos contrast as a verdict. P0-1 KEEP THE EXPERIMENTS RUNNING - the pairing clock is the binding constraint and nothing analytical accelerates it. P1 the residual after the activity floor: bp-low BSC positions still show 21.8% write-off - effective sample ~19 BSC tokens, so any rule needs the round-26 permutation treatment. STACK PROJECTION (r40, in-sample): the deployed stack projects -1,434.1U against -18,803.3U actual = +17,369.2U, CI [+12,074,+22,695], surviving removal of the best FIVE tokens (+10,973U). A 92.4% loss reduction that STILL LOSES - not a profit - and every level was chosen on this same epoch. STANDING CONCLUSION (r39): the exit-side touchable share is ~64%, not 41.5% (r36 refuted); a +15% take-profit replays at +10,304U [CI +5,697,+15,068]. STANDING RULE (r40): when a point estimate and its own interval disagree by an order of magnitude, the INTERVAL IS BUGGY - reconcile before believing either. STANDING RULE (r39): an outcome-conditional statistic is NOT a counterfactual. WATCH ITEM (r31-r33): startup failure main mode is exit=3 = single-instance lock refusing to start. STANDING RULE (r35): for a PAIRED experiment the usable basis is the units where the arms DIVERGED. STANDING RULE (r34): gate on SHARED units, not each side's total. STANDING NOTE: for any entry-feature query STATE WHICH LANE IT COVERS - a join on entry_snapshot_id silently excludes the native_protocol_model lane. STANDING RULE: for any partial-exit arm NEVER quote a write-off rate as a loss rate. STANDING RULE: before using a derived metric as evidence, DECOMPOSE IT AGAINST THE UNDERLYING MONEY at least once. STANDING RULE: when two failure paths share a symptom, CHECK THE EXIT CODE before attributing a cause (r32). STANDING RULE: a defensive mechanism must name the OBSERVED failure it changes; and once shipped, VERIFY it in production (r33). DO NOT re-open: arm pruning (r25), token-level exclusion search (r26), the capital hypothesis (r28), slot turnover (r29), the dense-episode-free lane (r30), the httpx NO_PROXY defect (r31), provider reliability (r32), the refused-start fix (r33), the paired-basis questions (r34/r35). DO NOT quote per-position statistics at n>30 without clustering.",
+  "next_action": "P0-NEW exit_ladder150 dose-response: four arms REGISTERED AND DEPLOYED 2026-09-12T23:42:11 at ONE shared frontier, identical in every field except the first tier (10/15/20/25%), with trailing_activate_return PINNED at 0.30 - the field that confounded the deployed full15/full25 pair. Read them with SAME-FRONTIER pairing, NOT cross-frontier: round 57 measured same-frontier pairs accumulating DIVERGED cohorts about an order of magnitude faster (14 and 17 vs 4 and 3). Read with scripts/experiment_readout.py once >=20 DIVERGED cohorts exist between any two of the four; report the DIVERGED count first, never the unpaired per-side means. The declared purpose is the SHAPE of the curve, not promoting a level - picking a winner from round 53's same-epoch replay is the round-26 selection trap. P0 exit150_full15_v1 vs bank15: paired basis advanced 2 -> **4 DIVERGED** cohorts (8 shared) as of round 57; full25 vs bank25 1 -> 3 (9 shared). Still far below the 20-diverged gate. Do NOT report the unpaired +6.15U/pos contrast as a verdict. P0 full15 vs full25 (same frontier): 22 shared / **14 DIVERGED**, within-cohort difference -7.124U/pos, CI [-12.942,-1.661] - a STRONG MECHANISM SIGNAL that the +15% tier catches pool deaths the +25% tier misses (in all 14 diverged cohorts the peak econ never reached +25%), but FRAGILE: dropping the 5 largest cohorts flips the sign, and the pair is confounded. NOT a verdict. P0-1 KEEP THE EXPERIMENTS RUNNING - the pairing clock is the binding constraint and nothing analytical accelerates it. P1 the residual after the activity floor: bp-low BSC positions still show 21.8% write-off - effective sample ~19 BSC tokens, so any rule needs the round-26 permutation treatment. STACK (rounds 40/43, in-sample, CORRECTED kernel): stack delta +19,663.7U, CI [+14,398,+25,140], book still -2,461.7U on 894 kept - a reduction that STILL LOSES, and every level was chosen on this same epoch. The +17,620U belongs to the ENTRY FILTERS, not to exit-side take-profit. STANDING (round 53, corrected kernel): 67.4% of settled positions are TOUCHABLE (forced AND never reached +15% = 32.6% of all); a +15% TP converts 662 forced exits for +14,190.2U, CI [+8,987,+19,637]; pool-death peak econ p50 +18.2%. COVERAGE: the ~30 candidate observation slots are SATURATED (occupied == base_caps in 19/19 snapshots; 66% of admission attempts refused bucket-full) and the slot-allocation rule is already near the feature frontier - a USER-DECIDED budget item, NOT touched. DO NOT RE-OPEN (each closed by measurement): r42 entry-time liquidity floor, r46 risk gates over-strict, r48 budget fragmented, r50 slot allocation improvable, r54 a decision reason blocking movers, r55 narrative/promotion features, r25 arm pruning, r26 token exclusion, r28 capital, r29 slot turnover, r30 dense-free lane, r31 httpx NO_PROXY, r32 provider reliability, r35 stop width, r36/r39 the exit ceiling.",
   "MEASUREMENT_DISCIPLINE": "Four hypotheses have been killed by measurement across rounds 120-5/120-6 and ONE WAS A BUG IN MY OWN PROBE ('0 of 18 pools can form a window' - the query filtered provider LIKE 'dexscreener%', excluding the strategy-observer mirror rows). None produced a code change; all would have looked like reasonable fixes. ALWAYS take a second independent measure before publishing a '0 samples / stalled / defect' claim or changing code. Also: never LIKE wildcards on arm_id; use julianday() not datetime('now'); dedupe snapshots by (token_id, observed_at); separate windowed from all-time totals.",
   "authoritative_current_numbers_20260912T2027Z": {
     "source": "scripts/supervise_metrics.py --hours 2 AND scripts/trade_context_ledger.py --minutes 180",
@@ -650,7 +613,10 @@
     "Do not modify or replace existing strategies; improvements arrive as NEW additional strategy modules.",
     "Never loosen strict timing, identity, protocol-validity, account-truth or dead-surface rules to create trades.",
     "Every optimization must be gradual and reversible, and must not break stability, realtime behaviour or accuracy."
-  ]
+  ],
+  "ROUND_58_NEXT_ACTION_REWRITTEN": {
+    "why": "The next_action field still said the paired basis was 2 diverged cohorts and that the stack projects +17,369U - both stale after round 43 (corrected kernel), round 53 (corrected ceiling), round 57 (same-frontier pairing measured 4 and 14 diverged) and round 58 (the ladder arms deployed). It is the first field a future round reads, so it was rewritten to carry the current P0s, the corrected figures and the full do-not-reopen list."
+  }
 }
 ```
 
