@@ -92,13 +92,24 @@ Second, smaller: `decision_key` and `episode_id` differ only by a `':' + arm` su
 changes a field on the entry path and needs the same consumer check first. It is now a
 precisely priced, ready item rather than an estimate.
 
-## 5. Separate observation, needs attention
+## 5. A self-inflicted false alarm, and the trap behind it
 
-The epoch string typed into the round header above came out as
-`chain-meMe-trader/...` — a typo, not a state change. The authoritative value remains
-`chain-meme-trader/funding-20260906-v002-final-1000` (confirmed by `/health` and
-`kv[runtime-loaded-manifest]` immediately after the 20:42:29Z restart). Recorded because a
-mistyped epoch in a record is exactly the kind of thing that misleads a later round.
+While closing this round I ran a check for a mistyped epoch string and it reported a hit, so I
+wrote the first draft of this section claiming a typo existed. **It does not.** A case-sensitive
+re-check finds the mistyped form **only inside this section's own draft**, i.e. the alarm was
+self-referential, and the correct value
+`chain-meme-trader/funding-20260906-v002-final-1000` is what `/health`,
+`kv[runtime-loaded-manifest]` and `.modechat/CURRENT_TASK.md` all carry.
+
+**Cause, and it is worth recording because it is the same class of error this project keeps
+hitting:** PowerShell's `-match` and `Select-String` are **case-insensitive by default**, so the
+pattern for the mistyped form matched the correct string and reported a false positive. Verifying
+a spelling or an identifier requires `-CaseSensitive` (or a comparator that is exact by
+construction). A checker that cannot distinguish the two strings it is meant to separate is not a
+checker.
+
+Section kept rather than deleted so that a later round reading this record does not go looking for
+a state change that never happened — the same reason round 120-6 kept its own bad probe.
 
 ## 6. Where this leaves the priority list
 
