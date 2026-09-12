@@ -224,6 +224,11 @@ class Store:
     # affected policy carries its registered value plus the authorization basis. An arm without the
     # field is left untouched: absence means "no cap", which is not a value below the floor.
     CHAIN_MEME_TRADER_CONCURRENCY_CAP_FLOOR = 8
+    # USER-AUTHORIZED (2026-09-12): one uniform per-trade notional, applied to existing arms as well
+    # as future ones, so strategies can be compared like for like instead of being mixed across
+    # 1U/2U/5U/20U positions. Registered contracts stay frozen; the change is applied where the
+    # effective definition is assembled and each affected arm records its registered value.
+    CHAIN_MEME_TRADER_UNIFORM_NOTIONAL_USD = 20.0
     CHAIN_MEME_TRADER_STAGE4_EXEC_DECAY_VERSION = (
         "chain-meme-trader/stage4-executable-decay-challenger-v1"
     )
@@ -7361,15 +7366,24 @@ class Store:
                     "activated_at": str(row["activated_at"]),
                     "activation_snapshot_id": int(row["activation_snapshot_id"]),
                 })
-        # USER-AUTHORIZED CONCURRENCY CAP FLOOR (2026-09-12): raise every per-arm cap below the floor,
-        # for existing arms as well as future ones. The registered contracts remain frozen and
-        # append-only, so the raise happens here, where the effective definition is assembled; each
-        # affected policy keeps its registered value and the authorization basis, and its behavior
-        # fingerprint is recomputed (the same treatment `entry_chase_budget_fraction` already gets) so
-        # the runtime hash still describes what the policy actually does. An arm with no such field is
-        # deliberately untouched: absence means "no cap", which is not a value below the floor.
+        # USER-AUTHORIZED RUNTIME REVISIONS (2026-09-12). Two uniformizations are applied here, where
+        # the effective definition is assembled, because the registered contracts are frozen and
+        # append-only and `chain_meme_trader_policy_additions` forbids UPDATE/DELETE by trigger:
+        #   1. every per-arm `entry_filter.max_concurrent_positions` below the floor is raised to it;
+        #   2. every per-arm `notional_usd` is set to the one uniform per-trade size, so strategies can
+        #      be compared like for like.
+        # Both reach every consumer at once (entry gating, pending limits, UI) and cover existing arms
+        # as well as future ones. Each affected policy keeps its registered value, the authorization
+        # basis and its original fingerprint; the runtime fingerprint is recomputed once per arm (the
+        # same treatment `entry_chase_budget_fraction` already receives) so it still describes what the
+        # policy actually does. Fields that are ABSENT are never added: an absent cap means "no cap"
+        # (not a value below the floor) and an absent notional already resolves to the definition
+        # default, which is this same uniform size.
         floor = int(getattr(cls, "CHAIN_MEME_TRADER_CONCURRENCY_CAP_FLOOR", 0) or 0)
+        uniform_notional = float(getattr(cls, "CHAIN_MEME_TRADER_UNIFORM_NOTIONAL_USD", 0) or 0)
         raised: list[dict[str, Any]] = []
+        renotionalised: list[dict[str, Any]] = []
+        needs_fingerprint: list[dict[str, Any]] = []
         if floor > 0:
             for policy in policies:
                 entry_filter = policy.get("entry_filter")
@@ -7387,13 +7401,6 @@ class Store:
                 updated = dict(entry_filter)
                 updated["max_concurrent_positions"] = floor
                 policy["entry_filter"] = updated
-                registered_hash = str(policy.get("behavior_contract_hash") or "")
-                cache_key = (str(definition_version), str(policy.get("arm_id") or ""), cap_value)
-                corrected = _CONCURRENCY_CAP_HASH_CACHE.get(cache_key)
-                if corrected is None:
-                    corrected = cls.chain_meme_trader_behavior_hash(
-                        policy, definition_version=definition_version)
-                    _CONCURRENCY_CAP_HASH_CACHE[cache_key] = corrected
                 policy["concurrency_cap_revision"] = {
                     "field": "entry_filter.max_concurrent_positions",
                     "registered": cap_value,
@@ -7401,11 +7408,55 @@ class Store:
                     "authorized_at": "2026-09-12",
                     "basis": ("user instruction: raise every per-arm cap below 8 to 8, "
                               "existing strategies included"),
-                    "registered_behavior_contract_hash": registered_hash,
+                    "registered_behavior_contract_hash": str(policy.get("behavior_contract_hash") or ""),
                 }
-                if registered_hash:
-                    policy["behavior_contract_hash"] = corrected
                 raised.append({"arm_id": str(policy.get("arm_id") or ""), "registered": cap_value})
+                needs_fingerprint.append(policy)
+        if uniform_notional > 0:
+            for policy in policies:
+                current = policy.get("notional_usd")
+                if current is None:
+                    continue
+                try:
+                    value = float(current)
+                except (TypeError, ValueError):
+                    continue
+                if abs(value - uniform_notional) < 1e-9 and (
+                        policy.get("order_size_usd") is None
+                        or abs(float(policy["order_size_usd"]) - uniform_notional) < 1e-9):
+                    continue
+                marker = {
+                    "field": "notional_usd",
+                    "registered": value,
+                    "effective": uniform_notional,
+                    "authorized_at": "2026-09-12",
+                    "basis": ("user instruction: one uniform 20U per trade so strategies can be "
+                              "compared fairly"),
+                    "registered_behavior_contract_hash": str(policy.get("behavior_contract_hash") or ""),
+                }
+                policy["notional_usd"] = uniform_notional
+                if policy.get("order_size_usd") is not None:
+                    policy["order_size_usd"] = uniform_notional
+                    marker["also_set"] = "order_size_usd"
+                policy["notional_revision"] = marker
+                renotionalised.append({"arm_id": str(policy.get("arm_id") or ""), "registered": value})
+                if policy not in needs_fingerprint:
+                    needs_fingerprint.append(policy)
+        for policy in needs_fingerprint:
+            registered_hash = str(policy.get("behavior_contract_hash") or "")
+            if not registered_hash:
+                continue
+            cache_key = (
+                str(definition_version), str(policy.get("arm_id") or ""),
+                json.dumps([policy.get("concurrency_cap_revision", {}).get("registered"),
+                            policy.get("notional_revision", {}).get("registered")], sort_keys=True),
+            )
+            corrected = _CONCURRENCY_CAP_HASH_CACHE.get(cache_key)
+            if corrected is None:
+                corrected = cls.chain_meme_trader_behavior_hash(
+                    policy, definition_version=definition_version)
+                _CONCURRENCY_CAP_HASH_CACHE[cache_key] = corrected
+            policy["behavior_contract_hash"] = corrected
         if raised:
             definition["concurrency_cap_floor"] = {
                 "floor": floor,
@@ -7414,6 +7465,16 @@ class Store:
                 "basis": ("user instruction: raise every per-arm cap below 8 to 8, "
                           "existing strategies included"),
                 "detail": raised,
+            }
+        if renotionalised:
+            definition["uniform_notional_usd"] = {
+                "notional_usd": uniform_notional,
+                "changed_policies": len(renotionalised),
+                "authorized_at": "2026-09-12",
+                "basis": ("user instruction: one uniform 20U per trade so strategies can be compared "
+                          "fairly; policies without the field already resolve to the definition "
+                          "default, which is this same size"),
+                "detail": renotionalised,
             }
         definition["policies"] = policies
         definition["strategy_count"] = len(policies)

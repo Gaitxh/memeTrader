@@ -153,6 +153,35 @@ DUST_LIVE_VOLUME_USD = 200.0
 DUST_IMPOSSIBLE_LIQUIDITY_USD = 0.0
 
 
+# Physically impossible position outcomes. Measured on 2026-09-12 across all 260,326 recorded
+# positions: 161 closed positions booked a realized profit above 100x their own stake, totalling
+# +8,218,961U against a stake sum of about 3,220U, and every one of them belongs to two RETIRED
+# epochs (`v22-additive-first-mover-...`: 9 positions incl. one 20U stake booked at +2,162,979U from
+# `market_mark_zero_5m_activity`, and `v19-dexscreener-successors-...`: 152 positions). The current
+# funding epoch is clean (largest is 518.2U on a 20U stake = 25.9x, on a real token via
+# `market_mark_take_profit_1`). A meme runner can multiply a position many times over, so the
+# threshold is deliberately far outside anything a real path produces, and it exists to keep any
+# cross-strategy aggregate from being dominated by a broken mark instead of by strategy behaviour.
+IMPLAUSIBLE_PNL_MULTIPLE = 100.0
+
+
+def plausible_position_pnl(*, stake_usd: Any, realized_pnl_usd: Any) -> bool:
+    """False when a recorded profit is impossible against its own stake.
+
+    Comparison and review layers must exclude such rows instead of rewriting them: the recorded value
+    is the historical evidence of an old mark defect, and the append-only rule keeps it. Aggregates
+    that ignore this get ranked by the defect rather than by the strategies.
+    """
+    try:
+        stake = float(stake_usd or 0.0)
+        pnl = float(realized_pnl_usd or 0.0)
+    except (TypeError, ValueError):
+        return True
+    if stake <= 0:
+        return True
+    return pnl <= IMPLAUSIBLE_PNL_MULTIPLE * stake
+
+
 def dust_read_contradicted_by_live_trading(
     *, liquidity_usd: Any, price_usd: Any, entry_price_usd: Any,
     volume_5m_usd: Any, buys_5m: Any = None, sells_5m: Any = None,
