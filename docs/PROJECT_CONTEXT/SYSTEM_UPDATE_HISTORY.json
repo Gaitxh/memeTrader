@@ -1367,6 +1367,20 @@
       "loaded_at": "2026-09-12T06:40:00Z",
       "visible_entry": "docs/PROJECT_CONTEXT/OBSERVATION_SURFACE_FACTS_20260912.md",
       "report": "docs/PROJECT_CONTEXT/OBSERVATION_SURFACE_FACTS_20260912.md"
+    },
+    {
+      "id": "20260912-rounds74to77-coverage-ceiling-and-decorr-arms",
+      "recorded_at": "2026-09-12T07:10:00Z",
+      "title": "第74-77轮：覆盖率上限诊断（47机制共振于13-41币）+ 第37波去相关入场臂（304条）",
+      "problem": "用户首要问题是'发现多、进入策略判断少'。需判定成因是机制不足、阈值过严，还是别的。实测：家族47个机制在当前进程触发数千次（any_band 737、flow_entry/dense_flow 480、survivable_open_band 455 等），却只落在13-41个代币上（近60分钟13/2267、近180分钟41/7135，两窗口一致=0.57%）；近60分钟346笔开仓只落在12个代币（28.8笔/币）。→ 瓶颈是机制火力在同一批代币上共振，而非机制不足或阈值过严。结构性原因：本族所有带类入场都要求池龄30-180分钟，拥挤被该条件构造性限制在该年龄段。",
+      "change": "第37波新增2条'去相关'额外臂（纯新增，既有134条臂未改）：alpha149_decorr_young_v1（池龄<=15分钟、深度>=3000U、FDV/深度<=20、不下跌、深度不流失、买盘>=55%，1U/30分钟）与 alpha149_decorr_mature_v1（池龄>=6小时、深度>=10000U、不下跌、深度不流失、买盘>=55%，1U/60分钟）。两臂刻意取拥挤年龄段之外，保留全部实测保护条件，用于检验'把机制火力分散到更多代币'能否提高代币级覆盖率。实现为第六层包装（异常回落False）。",
+      "rationale": "在未获全局风控授权的前提下，提高覆盖率唯一可行的做法是让新臂去交易现有家族结构上够不到的代币（年轻池/老池），而不是继续在同一批30-180分钟池上叠加机制。主指标定为代币级覆盖率（0.57%基线），而非开仓笔数——后者已被证明会被同币拥挤虚增。",
+      "validation": "注册302->304且ledger_unchanged=true；test_alpha149与test_alpha149_wave2425全通过（136条臂）；运行进程已重载（PID 29948/22012）；冻结错误 #265=392/#266=398 未增长；paper 与 live.enabled=false 不变。",
+      "scope": "修改 src/memetrader/alpha149.py（第37波，文件末尾原子追加）；更新 docs/PROJECT_CONTEXT/SYSTEM_UPDATE_HISTORY.json。待办：decorr 两臂就绪与覆盖率对比、A/B样本累积、同币并发上限授权。",
+      "commit": "",
+      "loaded_at": "2026-09-12T07:05:00Z",
+      "visible_entry": "docs/PROJECT_CONTEXT/OBSERVATION_SURFACE_FACTS_20260912.md",
+      "report": "docs/PROJECT_CONTEXT/OBSERVATION_SURFACE_FACTS_20260912.md"
     }
   ]
 }

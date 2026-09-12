@@ -2747,3 +2747,74 @@ def mechanisms(f):  # noqa: F811 - wave 36 wrapper over the wave-35 wrapper
     except Exception:
         out.setdefault('dense_flow', False)
     return out
+
+
+# ---- wave 37: de-correlated entries outside the crowded pool-age band ----
+# 47 mechanisms fire thousands of times but land on 13-41 distinct tokens per hour, and 346
+# positions per hour sit on 12 tokens. Every band entry requires a 30-180 minute old pool, so
+# the crowding sits in that band by construction. These arms take the young band and the mature
+# band instead, keeping the measured protections (depth, FDV/depth, depth not leaving, buy
+# share), to reach tokens the rest of the family cannot trade.
+SPECS.update({
+    'alpha149_decorr_young_v1': ('decorr_young', '\u53bb\u76f8\u5173\u00b7\u5e74\u8f7b\u6c60(<=15\u5206\u949f)', 30),
+    'alpha149_decorr_mature_v1': ('decorr_mature', '\u53bb\u76f8\u5173\u00b7\u8001\u6c60(>=6\u5c0f\u65f6)', 60),
+})
+OVERRIDES.update({
+    'alpha149_decorr_young_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=4,
+        excess_return_vs_arm='alpha149_early_pool_snipe_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u53bb\u76f8\u5173\u00b7\u5e74\u8f7b\u6c60\uff081U\uff0c30\u5206\u949f\uff09\uff1a\u6c60\u9f84<=900\u79d2\u3001'
+                    '\u6df1\u5ea6>=3000U\u3001FDV/\u6df1\u5ea6<=20\u3001\u4e0d\u4e0b\u8dcc\u3001\u6df1\u5ea6\u4e0d\u6d41\u5931\u3001\u4e70\u76d8>=55%\u3002'
+                    '\u4f9d\u636e\uff1a\u672c\u65cf\u5165\u573a\u666e\u904d\u8981\u6c42\u6c60\u9f8430-180\u5206\u949f\uff0c'
+                    '\u800c\u5b9e\u6d4b 47 \u4e2a\u673a\u5236\u6bcf\u8fdb\u7a0b\u89e6\u53d1\u6570\u5343\u6b21\u5374\u53ea\u843d\u5728 13-41 \u4e2a\u4ee3\u5e01\u4e0a'
+                    '\uff08\u8986\u76d6\u7387 0.57%\uff09\uff0c\u5806\u79ef\u96c6\u4e2d\u5728\u8be5\u9f84\u6bb5\uff1b\u672c\u81c2\u6545\u610f\u53d6\u9f84\u6bb5\u4e4b\u5916\u3002'),
+    'alpha149_decorr_mature_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=4,
+        excess_return_vs_arm='alpha149_mature_revival_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u53bb\u76f8\u5173\u00b7\u8001\u6c60\uff081U\uff0c60\u5206\u949f\uff09\uff1a\u6c60\u9f84>=21600\u79d2\u3001\u6df1\u5ea6>=10000U\u3001'
+                    '\u4e70\u76d8>=55%\u3001\u4e0d\u4e0b\u8dcc\u3001\u6df1\u5ea6\u4e0d\u6d41\u5931\u3002'
+                    '\u4e0e\u5e74\u8f7b\u6c60\u81c2\u4e00\u8d77\uff0c\u7528\u4e8e\u68c0\u9a8c\u201c\u628a\u673a\u5236\u706b\u529b\u5206\u6563\u5230\u66f4\u591a\u4ee3\u5e01\u201d'
+                    '\u80fd\u5426\u63d0\u9ad8\u4ee3\u5e01\u7ea7\u8986\u76d6\u7387\u3002'),
+})
+ALL_ARMS = tuple(SPECS) + tuple(EXIT_ARMS)
+KINDS = tuple(kind for kind, _, _ in SPECS.values())
+
+_base_mechanisms_w36 = mechanisms
+
+
+def mechanisms(f):  # noqa: F811 - wave 37 wrapper over the wave-36 wrapper
+    """Add the two de-correlated age-band entries."""
+    out = _base_mechanisms_w36(f)
+    try:
+        if not isinstance(f, dict):
+            return out
+        frame = f.get('current') if isinstance(f.get('current'), dict) else {}
+        previous = f.get('prev') if isinstance(f.get('prev'), dict) else None
+
+        def _n(value):
+            try:
+                return None if value is None or isinstance(value, bool) else float(value)
+            except (TypeError, ValueError):
+                return None
+        age = _n(f.get('pool_age_seconds'))
+        depth = _n(frame.get('liquidity_usd'))
+        prior = _n(previous.get('liquidity_usd')) if previous else None
+        ratio = _n(f.get('fdv_liquidity'))
+        share = _n(f.get('buy_count_share'))
+        price_now = _n(frame.get('price_usd'))
+        price_prev = _n(previous.get('price_usd')) if previous else None
+        ok_price = bool(price_now and price_prev and price_now >= price_prev)
+        ok_depth = bool(depth is not None and prior is not None and depth >= prior * .98)
+        out['decorr_young'] = bool(
+            age is not None and age <= 900 and depth is not None and depth >= 3000
+            and ratio is not None and ratio <= 20.0 and ok_price and ok_depth
+            and share is not None and share >= .55)
+        out['decorr_mature'] = bool(
+            age is not None and age >= 21600 and depth is not None and depth >= 10000
+            and ok_price and ok_depth and share is not None and share >= .55)
+    except Exception:
+        out.setdefault('decorr_young', False)
+        out.setdefault('decorr_mature', False)
+    return out
