@@ -3182,3 +3182,88 @@ def mechanisms(f):  # noqa: F811 - wave 41 wrapper over the wave-40 wrapper
         out.setdefault('shallow_band_flow', False)
     return out
 
+
+# ---- wave 42: the first arms aimed at the LEFT TAIL (pool death), not at upside ----
+# Round 82 established where the money actually goes. A fixed-horizon counterfactual over 400
+# positions showed that holding to +5/15/30/60/120 minutes is WORSE than what the positions
+# actually realised (paired mean difference -0.065 at 30 minutes, -0.074 at 60; hold-to-horizon
+# better in only 43.5%/43.9%), so the loss is not premature exits. Over the same 24h the write-off
+# line was 360 positions and -794U in six hours. Two risk features replicate across two separate
+# measurements on this database:
+#
+#   pool-death (write-off) rate by chain, 24h, 3,239 positions with an entry snapshot:
+#       bsc        30.4%   (and 31.5% in an independent measurement a day earlier)
+#       solana      3.9%
+#       robinhood   0.0%
+#   by entry liquidity:
+#       1,000 - 5,000      0.0%      (70 positions)
+#       5,000 - 20,000    14.1%
+#       20,000 - 100,000  18.2%
+#       >= 100,000         0.5%      (5 of 1,088)
+#   and inside BSC 20k-100k, by entry buy share: < 0.50 -> 0.0%, >= 0.70 -> 41.3%.
+#
+# Turnover does NOT survive the controls (flat within chain and within band), so it is not used -
+# the same trap that falsified the round-80 turnover filter. The two arms below test the two
+# replicated gates on the wave-41 flow carrier with identical contracts.
+DEEP_POOL_DEPTH_MIN = 100000.0
+
+SPECS.update({
+    'alpha149_deep_pool_flow_v1': ('deep_pool_flow', '\u6df1\u6c60\u00b7\u4e0d\u8dcc\u6d41\u5165(1U)', 30),
+    'alpha149_nonbsc_flow_v1': ('nonbsc_flow', '\u975eBSC\u00b7\u4e0d\u8dcc\u6d41\u5165(1U)', 30),
+})
+OVERRIDES.update({
+    'alpha149_deep_pool_flow_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=4,
+        excess_return_vs_arm='alpha149_mid_band_flow_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u6df1\u6c60\u00b7\u4e0d\u8dcc\u6d41\u5165\uff081U\uff0c30\u5206\u949f\uff09\uff1a'
+                    '\u4e0e\u4e2d\u6df1\u6c60\u81c2\u9010\u5b57\u76f8\u540c\uff0c\u552f\u4e00\u5dee\u522b\u662f\u6c60\u6df1 >= 100,000 U\u3002'
+                    '\u4f9d\u636e\uff1a24 \u5c0f\u65f6\u5185\u5165\u573a\u6c60\u6df1 >=100k \u7684\u6301\u4ed3\u5199\u9500\u7387\u4ec5 0.5%\uff085/1088\uff09\uff0c'
+                    '\u800c 20k-100k \u4e3a 18.2%\u300110k \u4ee5\u4e0b\u66f4\u9ad8\uff1b\u8be5\u7ed3\u8bba\u5728\u524d\u4e00\u6b21\u72ec\u7acb\u6d4b\u91cf\u4e2d\u5df2\u51fa\u73b0\u8fc7\u3002'),
+    'alpha149_nonbsc_flow_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=4,
+        excess_return_vs_arm='alpha149_mid_band_flow_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u975eBSC\u00b7\u4e0d\u8dcc\u6d41\u5165\uff081U\uff0c30\u5206\u949f\uff09\uff1a'
+                    '\u540c\u4e00\u6d41\u5165\u8c13\u8bcd\uff0c\u4f46\u53ea\u63a5\u53d7 chain != bsc \u7684\u6c60\u3002'
+                    '\u4f9d\u636e\uff1a24 \u5c0f\u65f6\u5185 BSC \u5199\u9500\u7387 30.4%\uff08275/906\uff09\u3001'
+                    'Solana 3.9%\uff0885/2171\uff09\u3001Robinhood 0.0%\uff080/184\uff09\uff1b'
+                    '\u8be5\u5dee\u5f02\u5728\u524d\u4e00\u6b21\u72ec\u7acb\u6d4b\u91cf\u4e2d\u4e5f\u4e3a 31.5% vs 0%\u3002'),
+})
+ALL_ARMS = tuple(SPECS) + tuple(EXIT_ARMS)
+KINDS = tuple(kind for kind, _, _ in SPECS.values())
+
+_base_mechanisms_w41 = mechanisms
+
+
+def mechanisms(f):  # noqa: F811 - wave 42 wrapper over the wave-41 wrapper
+    """Two pool-death risk gates on the same flow carrier (the left tail, not the upside)."""
+    out = _base_mechanisms_w41(f)
+    try:
+        if not isinstance(f, dict):
+            return out
+        frame = f.get('current') if isinstance(f.get('current'), dict) else {}
+        previous = f.get('prev') if isinstance(f.get('prev'), dict) else None
+
+        def _n(value):
+            try:
+                return None if value is None or isinstance(value, bool) else float(value)
+            except (TypeError, ValueError):
+                return None
+        depth = _n(frame.get('liquidity_usd'))
+        prior = _n(previous.get('liquidity_usd')) if previous else None
+        share = _n(f.get('buy_count_share'))
+        price_now = _n(frame.get('price_usd'))
+        price_prev = _n(previous.get('price_usd')) if previous else None
+        common = bool(previous and depth is not None and prior is not None
+                      and share is not None and share >= .5
+                      and price_now and price_prev and price_now >= price_prev
+                      and depth >= prior * .98)
+        chain = str(f.get('chain') or '').lower()
+        out['deep_pool_flow'] = bool(common and depth >= DEEP_POOL_DEPTH_MIN)
+        out['nonbsc_flow'] = bool(common and chain and chain != 'bsc')
+    except Exception:
+        out.setdefault('deep_pool_flow', False)
+        out.setdefault('nonbsc_flow', False)
+    return out
+

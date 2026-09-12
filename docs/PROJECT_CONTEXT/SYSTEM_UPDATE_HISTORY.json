@@ -1459,6 +1459,19 @@
       "next": "1) 第41波按同契约配对评估，需每侧>=20 笔已结算，且用年龄受控 cohort 与代币匹配；在此之前只报 ready，不报业绩。2) 等待 mover predictor 子代理结论（data/research/mover_predictor_20260912.md）：若留出样本上的 lift 真实，下一步是带实测请求成本的\"观察白名单\"提案，作为预算决策提交用户，不擅自实施。3) 在没有\"同机会配对\"先验结果之前，不再新增任何退出变体。",
       "report": "docs/PROJECT_CONTEXT/ROUND81_LIQUIDITY_BAND_AND_THREE_NEGATIVE_RESULTS_20260912.md",
       "visible_entry": "docs/PROJECT_CONTEXT/ROUND81_LIQUIDITY_BAND_AND_THREE_NEGATIVE_RESULTS_20260912.md"
+    },
+    {
+      "id": "20260912-round82-left-tail-risk-gates-wave42",
+      "title": "第82轮：用固定持有期反事实彻底否掉\"拿不住\"假设；确认亏损来自左尾（矿池死亡），并新增第42波两条风险门臂（314条）",
+      "recorded_at": "2026-09-12T07:20:00Z",
+      "problem": "用户第二优先级要求重构退出机制以解决\"金狗拿不住\"。此前所有\"持有更久\"的检验都被质疑存在构造性混淆（观察到的时间桶本身由退出规则产生：止损把亏损单快速结束）。本轮改用**固定持有期反事实**：取近 12 小时 400 笔持仓，读取该代币在其入场时刻 +5/15/30/60/120 分钟的真实记录价格。结果：中位代币在所有持有期都是平的（p50 1.00-1.01），左尾随持有期加深（p25 在 60 分钟为 0.62、120 分钟为 0.015）；与这些持仓**实际实现**的结果配对比较，持有到固定期反而更差——30 分钟均值差 -0.065（持有更好仅 43.5%）、60 分钟 -0.074（43.9%）。因此\"拿不住\"假设被彻底否掉，亏损来自左尾。同一 6 小时窗口：1,678 笔已结算、保证金 4,717.8U、实现 -1,255.7U，其中往返摩擦（8.33%）约 393.2U（占 31%），平均持有 16.1 分钟。写销线 6 小时 288 笔 -794U、硬止损 518 笔 -502U 是全部亏损来源。",
+      "change": "第42波（纯新增，312->314，ledger_unchanged=true）：两条针对**左尾（矿池死亡）**而非上涨空间的臂，a alpha149_deep_pool_flow_v1（kind deep_pool_flow：第41波流量载体 + 池深 >= 100,000U）与 alpha149_nonbsc_flow_v1（kind nonbsc_flow：同一载体 + chain != bsc，且缺失 chain 时不视为非 BSC）。两者保留全部已测保护条件（买盘>=50%、价格不低于上一帧、深度>=上帧98%、必须有上一帧），契约与第41波完全一致（1U/30分钟/硬止损-20%/追踪30-15/并发4），因此第41+42波四条臂构成\"流动性档位 × 链\"的 2x2 同载体实验。",
+      "rationale": "既然亏损来自左尾而非退出，就应该针对左尾。两条风险特征在**两次独立测量**中复现：按链的写销率 BSC 30.4%（275/906）vs Solana 3.9%（85/2171）vs Robinhood 0.0%（0/184）；按入场池深 >=100k 仅 0.5%（5/1088）而 20k-100k 为 18.2%；BSC 20k-100k 内买盘<0.50 为 0.0% 而 >=0.70 为 41.3%。同时**按控制变量否掉换手率**：池化后死亡持仓的换手中位是存活者的 5.9 倍（0.542 vs 0.092），但在 BSC 内部各档持平（22.0/33.3/34.6/30.7/32.3%）、在 20k-100k 档内非单调（27.0/22.1/4.5/14.2/19.2%），池化差异只是链构成——这是本会话第二次\"池化入场效应在控制变量后消失\"，因此不予采用。",
+      "validation": "测量脚本：data/tmp/round82_chase.py（换手与摩擦）、round82_horizon.py（固定持有期反事实）、round82_rug.py、round82_rug2.py（风险特征与控制变量检验）、round82_verify.py（上线验证），全部只读。测试：tests/test_alpha149_wave42.py 新增 4 项，连同 test_alpha149、wave2425、wave38、wave39、wave41、test_dex_trajectory、test_participant_flow 共 97 项通过。登记 312->314；重载 2026-09-12T15:05:46+08:00。重载后约 7 分钟（1,323 帧）实测：deep_pool_flow ready=336、nonbsc_flow ready=502、mid_band_flow=142、shallow_band_flow=304；四条臂分别已开 2/4/2/4 笔并有对应决策——全部可达且在交易。另修正第79轮的一个结论：当时判为\"不可达\"的深池带，其实只是它测试的**组合**谓词（池龄带+FDV比+不跌+深度保持）过严；池深 >=100k 本身占帧数的 25.4%，用简化载体即可达。paper 模式、live.enabled=false、账本与资金周期均未变。",
+      "scope": "改动 src/memetrader/alpha149.py（第42波追加）、tests/test_alpha149_wave42.py（新增）、docs/PROJECT_CONTEXT/ROUND82_LEFT_TAIL_RISK_GATES_20260912.md（新增）、docs/PROJECT_CONTEXT/SYSTEM_UPDATE_HISTORY.json。",
+      "next": "1) 第41+42波按 2x2 一起评估，主指标是**写销率与每笔亏损额**而非收益率；证明左尾被削掉的同时必须同时报告上涨是否被削掉。2) 用 scripts/paired_arm_ab.py 判定（每侧>=20 笔已结算且>=20 配对 cohort），并看留一代币检验。3) 在没有同链/同代币控制的情况下不再新增任何入场标量——本会话已有两次（换手率、持有期）因此被否。4) Solana 内部换手率>=0.8 的 11.9% 写销率 vs 其余 0.0%（n=1,436）是唯一残留信号，下一轮在 Solana 子样本内单独验证。",
+      "report": "docs/PROJECT_CONTEXT/ROUND82_LEFT_TAIL_RISK_GATES_20260912.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/ROUND82_LEFT_TAIL_RISK_GATES_20260912.md"
     }
   ]
 }
