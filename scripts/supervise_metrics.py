@@ -56,55 +56,57 @@ def active_version(con):
 
 
 def funnel(con, version, minutes):
+    """Per-step rates with FORMAT-SAFE time windows.
+
+    Two traps this function avoids, both measured on 2026-09-12:
+    1. `col >= datetime('now','-60 minute')` compares a 'T'-separated ISO string with a
+       space-separated one, so when the cutoff lands on the same UTC date every row of
+       that date passes regardless of hour (measured inflation 2.1x-5.5x on 4-hour
+       windows). julianday() parses both forms and offsets correctly.
+    2. The append-only tables hold millions of rows with no usable time index, so a
+       time filter scans. Their rates are measured from a bounded id-frontier window
+       and divided by the exact span that window covers.
+    """
     window = f"-{int(minutes)} minute"
     out = {"window_minutes": int(minutes)}
-    out["discovered"] = [
-        dict(row) for row in con.execute(
-            "SELECT chain, COUNT(DISTINCT token_id) n FROM token_discovery_exposures "
-            "WHERE COALESCE(recorded_at,observed_at)>=datetime('now',?) AND first_local_discovery=1 "
-            "GROUP BY chain ORDER BY n DESC", (window,))]
-    out["discovered_total"] = sum(row["n"] for row in out["discovered"])
-    row = con.execute(
-        "WITH d AS (SELECT DISTINCT token_id, MIN(COALESCE(recorded_at,observed_at)) f0 "
-        "           FROM token_discovery_exposures WHERE COALESCE(recorded_at,observed_at)>=datetime('now',?) "
-        "           AND first_local_discovery=1 GROUP BY token_id) "
-        "SELECT COUNT(*) n, "
-        "SUM(EXISTS(SELECT 1 FROM token_snapshots s WHERE s.token_id=d.token_id AND s.observed_at>=d.f0)) got_snap, "
-        "SUM(EXISTS(SELECT 1 FROM token_snapshots s WHERE s.token_id=d.token_id AND s.observed_at>=d.f0 "
-        "           AND s.liquidity_usd>=1000)) got_tradable, "
-        "SUM(EXISTS(SELECT 1 FROM token_snapshots s WHERE s.token_id=d.token_id AND s.observed_at>=d.f0 "
-        "           AND s.liquidity_usd IS NULL)) liquidity_unknown "
-        "FROM d", (window,)).fetchone()
-    out["collection"] = dict(row)
-    latency = [row["dt"] for row in con.execute(
-        "WITH d AS (SELECT token_id, MIN(COALESCE(recorded_at,observed_at)) f0 "
-        "           FROM token_discovery_exposures WHERE COALESCE(recorded_at,observed_at)>=datetime('now',?) "
-        "           AND first_local_discovery=1 GROUP BY token_id), "
-        "     s AS (SELECT token_id, MIN(observed_at) f1 FROM token_snapshots "
-        "           WHERE observed_at>=datetime('now','-6 hour') GROUP BY token_id) "
-        "SELECT (julianday(s.f1)-julianday(d.f0))*86400 dt FROM d JOIN s USING(token_id) "
-        "WHERE dt IS NOT NULL AND dt>=0 AND dt<=7200", (f"-{max(int(minutes), 180)} minute",))]
-    out["discovery_to_first_snapshot_seconds"] = {
-        key: (round(quantile(latency, frac), 1) if latency else None)
-        for key, frac in (("n", .5), ("p25", .25), ("p50", .5), ("p75", .75), ("p90", .9))}
-    out["discovery_to_first_snapshot_seconds"]["n"] = len(latency)
-    top = con.execute("SELECT COALESCE(MAX(id),0) FROM chain_meme_trader_v6_entry_evaluations").fetchone()[0]
-    floor = top - EVAL_ID_WINDOW
+    for table, time_col, id_col, extra, label in (
+            ("token_discovery_exposures", "COALESCE(recorded_at,observed_at)", "id",
+             "AND first_local_discovery=1", "discovered"),
+            ("token_discovery_exposures", "COALESCE(recorded_at,observed_at)", "id", "", "discovery_rows"),
+            ("token_snapshots", "observed_at", "id", "", "snapshot_rows"),
+            ("token_snapshots", "observed_at", "id", "AND liquidity_usd>=1000", "tradable_rows"),
+    ):
+        top = con.execute(f"SELECT COALESCE(MAX({id_col}),0) FROM {table}").fetchone()[0]
+        floor = top - EVAL_ID_WINDOW
+        row = con.execute(
+            f"SELECT COUNT(DISTINCT token_id) tokens, COUNT(*) n, MIN({time_col}) lo, MAX({time_col}) hi "
+            f"FROM {table} WHERE {id_col}>? {extra}", (floor,)).fetchone()
+        span = con.execute("SELECT (julianday(?) - julianday(?)) * 86400.0 s",
+                           (row["hi"], row["lo"])).fetchone()[0] if row["lo"] and row["hi"] else None
+        out[label] = {
+            "tokens_per_hour": round(row["tokens"] * 3600.0 / span, 1) if span else None,
+            "rows_per_hour": round(row["n"] * 3600.0 / span, 1) if span else None,
+            "sampled_rows": row["n"], "sampled_tokens": row["tokens"],
+            "span_seconds": round(span, 1) if span else None, "id_floor": floor}
+    evaluation_floor = con.execute(
+        "SELECT COALESCE(MAX(id),0) FROM chain_meme_trader_v6_entry_evaluations").fetchone()[0] - EVAL_ID_WINDOW
     sample = con.execute(
-        "SELECT COUNT(*) FROM chain_meme_trader_v6_entry_evaluations WHERE id>?", (floor,)).fetchone()[0]
-    out["evaluation"] = {"sampled_rows": sample, "id_floor": floor, "reasons": [
+        "SELECT COUNT(*) FROM chain_meme_trader_v6_entry_evaluations WHERE id>?",
+        (evaluation_floor,)).fetchone()[0]
+    out["evaluation"] = {"sampled_rows": sample, "id_floor": evaluation_floor, "reasons": [
         dict(row) for row in con.execute(
             "SELECT reason, status, COUNT(*) n FROM chain_meme_trader_v6_entry_evaluations "
             "WHERE definition_version=? AND id>? GROUP BY reason, status ORDER BY n DESC LIMIT 20",
-            (version, floor))]}
+            (version, evaluation_floor))]}
     out["decisions"] = [
         dict(row) for row in con.execute(
             "SELECT status, COUNT(*) n, COUNT(DISTINCT arm_id) arms FROM chain_meme_trader_entry_decisions "
-            "WHERE definition_version=? AND decided_at>=datetime('now',?) GROUP BY status ORDER BY n DESC",
-            (version, window))]
+            "WHERE definition_version=? AND julianday(decided_at)>=julianday('now',?) "
+            "GROUP BY status ORDER BY n DESC", (version, window))]
     out["positions_opened"] = dict(con.execute(
         "SELECT COUNT(*) n, COUNT(DISTINCT arm_id) arms, COUNT(DISTINCT token_id) tokens "
-        "FROM chain_meme_trader_positions WHERE definition_version=? AND opened_at>=datetime('now',?)",
+        "FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND julianday(opened_at)>=julianday('now',?)",
         (version, window)).fetchone())
     return out
 
@@ -114,11 +116,12 @@ def economics(con, version, hours):
     closed = [dict(row) for row in con.execute(
         "SELECT close_reason, COUNT(*) n, ROUND(SUM(realized_pnl_usd),2) pnl, "
         "ROUND(AVG(realized_pnl_usd),3) mean_pnl FROM chain_meme_trader_positions "
-        "WHERE definition_version=? AND closed_at>=datetime('now',?) AND status='closed' "
+        "WHERE definition_version=? AND julianday(closed_at)>=julianday('now',?) AND status='closed' "
         "GROUP BY close_reason ORDER BY pnl ASC LIMIT 25", (version, window))]
     writeoffs = dict(con.execute(
         "SELECT COUNT(*) n, ROUND(SUM(realized_pnl_usd),2) pnl FROM chain_meme_trader_positions "
-        "WHERE definition_version=? AND status='written_off' AND COALESCE(closed_at,opened_at)>=datetime('now',?)",
+        "WHERE definition_version=? AND status='written_off' "
+        "AND julianday(COALESCE(closed_at,opened_at))>=julianday('now',?)",
         (version, window)).fetchone())
     open_rows = dict(con.execute(
         "SELECT COUNT(*) n, COUNT(DISTINCT arm_id) arms, COUNT(DISTINCT token_id) tokens, "
@@ -141,6 +144,51 @@ def capacity(con, version):
             "arms_below_2usd": sum(1 for value in cash if value < 2.0),
             "arms_below_20usd": sum(1 for value in cash if value < 20.0),
             "open_positions": sum(int(row["open_position_count"] or 0) for row in rows)}
+
+
+def coverage(con, version, minutes):
+    """Step 4-6 of the chain at TOKEN level: do discovered tokens reach judgement?
+
+    Round-3 diagnosis: 56,819 tokens were evaluated in an hour while only 311 ever
+    produced an arm decision, and the 1,849 positions that did open sat on just 162
+    tokens (11.4 per token). Position COUNT therefore looks healthy while the
+    opportunity set is tiny and the risk is concentrated, so both numbers are
+    measured here every round.
+    """
+    window = f"-{int(minutes)} minute"
+    row = dict(con.execute(
+        "WITH e AS (SELECT DISTINCT token_id FROM chain_meme_trader_v6_entry_evaluations "
+        "           WHERE definition_version=? AND id>(SELECT MAX(id)-? "
+        "           FROM chain_meme_trader_v6_entry_evaluations) AND julianday(evaluated_at)>=julianday('now',?)), "
+        "     s AS (SELECT DISTINCT token_id FROM chain_meme_trader_entry_decisions "
+        "           WHERE definition_version=? AND julianday(decided_at)>=julianday('now',?)) "
+        "SELECT (SELECT COUNT(*) FROM e) evaluated, (SELECT COUNT(*) FROM s) signalled",
+        (version, EVAL_ID_WINDOW, window, version, window)).fetchone())
+    opened = dict(con.execute(
+        "SELECT COUNT(*) n, COUNT(DISTINCT token_id) tokens, COUNT(DISTINCT arm_id) arms "
+        "FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND julianday(opened_at)>=julianday('now',?)",
+        (version, window)).fetchone())
+    crowding = [dict(r) for r in con.execute(
+        "SELECT token_id, COUNT(*) positions, COUNT(DISTINCT arm_id) arms, "
+        "ROUND(COALESCE(SUM(realized_pnl_usd),0),2) pnl FROM chain_meme_trader_positions "
+        "WHERE definition_version=? AND julianday(opened_at)>=julianday('now',?) "
+        "GROUP BY token_id ORDER BY arms DESC LIMIT 5", (version, window))]
+    concurrent = [dict(r) for r in con.execute(
+        "SELECT token_id, COUNT(DISTINCT arm_id) arms, ROUND(SUM(stake_usd),2) stake "
+        "FROM chain_meme_trader_positions WHERE definition_version=? AND status='open' "
+        "GROUP BY token_id ORDER BY arms DESC LIMIT 5", (version,))]
+    worst = [dict(r) for r in con.execute(
+        "SELECT token_id, COUNT(*) n, ROUND(COALESCE(SUM(realized_pnl_usd),0),2) pnl, "
+        "SUM(status='written_off') write_offs FROM chain_meme_trader_positions "
+        "WHERE definition_version=? AND julianday(COALESCE(closed_at,opened_at))>=julianday('now',?) "
+        "GROUP BY token_id ORDER BY pnl ASC LIMIT 5", (version, f"-{int(minutes)} minute"))]
+    result = {"evaluated_tokens": row["evaluated"], "signalled_tokens": row["signalled"],
+              "opened": opened,
+              "signal_rate_pct": round(100.0 * row["signalled"] / max(1, row["evaluated"]), 2),
+              "positions_per_token": round(opened["n"] / max(1, opened["tokens"]), 2),
+              "top_tokens": crowding, "concurrent_tokens": concurrent, "worst_tokens": worst}
+    return result
 
 
 def stability(con, hours):
@@ -169,22 +217,15 @@ def stability(con, hours):
 def reviews(metrics):
     """Deterministic review triggers; each one names the measurement behind it."""
     flags = []
-    collection = metrics["funnel"]["collection"]
-    discovered = max(1, collection["n"] or 0)
-    tradable = collection["got_tradable"] or 0
-    if tradable / discovered < 0.20:
-        flags.append(dict(level="warn", code="collection_coverage_low",
-                          detail=f"only {100.0*tradable/discovered:.1f}% of discovered tokens reached a "
-                                 f"tradable snapshot in the window"))
-    unknown = collection["liquidity_unknown"] or 0
-    if unknown / discovered > 0.30:
-        flags.append(dict(level="warn", code="liquidity_unknown_high",
-                          detail=f"{100.0*unknown/discovered:.1f}% of discovered tokens still have no "
-                                 f"liquidity reading"))
-    latency = metrics["funnel"]["discovery_to_first_snapshot_seconds"].get("p50")
-    if latency is not None and latency > 300:
-        flags.append(dict(level="warn", code="discovery_to_snapshot_slow",
-                          detail=f"median discovery -> first snapshot {latency:.0f}s"))
+    funnel = metrics["funnel"]
+    discovered = funnel.get("discovered") or {}
+    tradable = funnel.get("tradable_rows") or {}
+    if discovered.get("tokens_per_hour") and tradable.get("tokens_per_hour") is not None:
+        share = tradable["tokens_per_hour"] / max(1.0, discovered["tokens_per_hour"])
+        if share < 0.30:
+            flags.append(dict(level="warn", code="tradable_share_low",
+                              detail=f"only {100.0*share:.1f}% of newly discovered tokens per hour "
+                                     f"reach a tradable depth reading"))
     for row in metrics["funnel"]["evaluation"]["reasons"]:
         share = row["n"] / max(1, metrics["funnel"]["evaluation"]["sampled_rows"])
         if share > 0.20:
@@ -203,6 +244,21 @@ def reviews(metrics):
     if metrics["economics"]["open"]["n"] and not metrics["economics"]["closed_by_reason"]:
         flags.append(dict(level="warn", code="no_exits_in_window",
                           detail="positions are open but nothing closed inside the window"))
+    cover = metrics.get("coverage") or {}
+    if cover.get("signal_rate_pct") is not None and cover["signal_rate_pct"] < 1.0:
+        flags.append(dict(level="warn", code="token_signal_rate_low",
+                          detail=f"only {cover['signalled_tokens']} of {cover['evaluated_tokens']} "
+                                 f"evaluated tokens ({cover['signal_rate_pct']}%) reached any arm"))
+    if (cover.get("positions_per_token") or 0) > 8:
+        flags.append(dict(level="warn", code="token_crowding",
+                          detail=f"{cover['opened']['n']} positions on {cover['opened']['tokens']} tokens "
+                                 f"({cover['positions_per_token']} per token); most crowded token: "
+                                 f"{(cover['top_tokens'] or [{}])[0].get('arms')} arms"))
+    concurrent = (cover.get("concurrent_tokens") or [{}])[0]
+    if (concurrent.get("arms") or 0) >= 12:
+        flags.append(dict(level="warn", code="single_token_concurrent_exposure",
+                          detail=f"{concurrent.get('token_id')} holds {concurrent.get('arms')} arms "
+                                 f"({concurrent.get('stake')}U) at once"))
     if (metrics["capacity"]["cash_p10"] or 0) < 5.0:
         flags.append(dict(level="warn", code="capacity_floor",
                           detail=f"p10 arm cash {metrics['capacity']['cash_p10']}U"))
@@ -221,23 +277,27 @@ def reviews(metrics):
 
 def markdown(metrics):
     funnel = metrics["funnel"]
-    latency = funnel["discovery_to_first_snapshot_seconds"]
+    discovered = funnel.get("discovered") or {}
+    snapshot_rows = funnel.get("snapshot_rows") or {}
+    tradable_rows = funnel.get("tradable_rows") or {}
     lines = [
         f"## Supervision snapshot {metrics['generated_at']} "
         f"({funnel['window_minutes']} min window, epoch `{metrics['definition_version']}`)",
         "",
-        f"- discovered (first local): **{funnel['discovered_total']}** "
-        + " ".join(f"{row['chain']}={row['n']}" for row in funnel["discovered"]),
-        f"- reached a snapshot: {funnel['collection']['got_snap']} "
-        f"({100.0*(funnel['collection']['got_snap'] or 0)/max(1,funnel['collection']['n']):.1f}%) · "
-        f"tradable (liq>=1000U): {funnel['collection']['got_tradable']} · "
-        f"liquidity unknown: {funnel['collection']['liquidity_unknown']}",
-        f"- discovery -> first snapshot: p50 {latency.get('p50')}s "
-        f"p90 {latency.get('p90')}s (n={latency.get('n')})",
-        f"- evaluations sampled: {funnel['evaluation']['sampled_rows']} · "
+        f"- discovery: **{discovered.get('tokens_per_hour')} new tokens/hour** "
+        f"({discovered.get('rows_per_hour')} exposure rows/hour, measured over "
+        f"{discovered.get('span_seconds')}s of the newest {discovered.get('sampled_rows')} rows)",
+        f"- collection: {snapshot_rows.get('rows_per_hour')} snapshot rows/hour, of which "
+        f"{tradable_rows.get('rows_per_hour')} carry depth >= 1000U",
+        f"- evaluations sampled: {funnel['evaluation']['sampled_rows']} · decisions "
         + " ".join(f"{row['status']}={row['n']}" for row in funnel["decisions"]),
         f"- positions opened: {funnel['positions_opened']['n']} over "
         f"{funnel['positions_opened']['arms']} arms / {funnel['positions_opened']['tokens']} tokens",
+        f"- token chain (same window): {metrics['coverage']['evaluated_tokens']} evaluated -> "
+        f"**{metrics['coverage']['signalled_tokens']} signalled** "
+        f"({metrics['coverage']['signal_rate_pct']}% of evaluated) -> "
+        f"{metrics['coverage']['opened']['tokens']} traded "
+        f"({metrics['coverage']['positions_per_token']} positions/token)",
         "",
         "| exit reason (24h) | n | PnL U | mean U |",
         "|---|---|---|---|",
@@ -280,6 +340,7 @@ def main():
             "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "definition_version": version,
             "funnel": funnel(con, version, args.minutes),
+            "coverage": coverage(con, version, args.minutes),
             "economics": economics(con, version, args.hours),
             "capacity": capacity(con, version),
             "stability": stability(con, args.hours),
@@ -296,8 +357,11 @@ def main():
     with (out_dir / "history.jsonl").open("a", encoding="utf-8") as handle:
         handle.write(json.dumps({
             "at": metrics["generated_at"], "minutes": args.minutes,
-            "discovered": metrics["funnel"]["discovered_total"],
-            "tradable": metrics["funnel"]["collection"]["got_tradable"],
+            "discovered_per_hour": (metrics["funnel"].get("discovered") or {}).get("tokens_per_hour"),
+            "evaluated_tokens": metrics["coverage"]["evaluated_tokens"],
+            "signalled_tokens": metrics["coverage"]["signalled_tokens"],
+            "signal_rate_pct": metrics["coverage"]["signal_rate_pct"],
+            "positions_per_token": metrics["coverage"]["positions_per_token"],
             "opened": metrics["funnel"]["positions_opened"]["n"],
             "open_now": metrics["economics"]["open"]["n"],
             "write_offs": metrics["economics"]["write_offs"]["n"],

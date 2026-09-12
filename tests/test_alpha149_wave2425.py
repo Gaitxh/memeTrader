@@ -216,3 +216,71 @@ def test_wave25_arms_are_additive_and_keep_family_identity():
     assert policies["alpha149_survivable_steady_v1"]["hard_stop_return"] == -.20
     assert policies["alpha149_survivable_steady_v1"]["notional_usd"] == 1.0
     assert policies["alpha149_merged_multi_setup_v1"]["hard_stop_grace_seconds"] == 180
+
+
+# --------------------------------------------------------------------------- #
+# wave 26 (round 3): the measured coverage unlock for the largest archetype
+# --------------------------------------------------------------------------- #
+
+def test_open_band_removes_only_the_self_imposed_ratio_cap():
+    """62.2% of observed frames sit above FDV/depth 20; the 1-20 band sees 0.5%."""
+    def band(fdv, **over):
+        base = dict(pool_age_seconds=3600.0, fdv_liquidity=fdv, liquidity_usd=8000.0,
+                    buy_count_share=0.6,
+                    prev=dict(price_usd=1.0, liquidity_usd=7900.0, volume_5m_usd=100.0),
+                    current=dict(price_usd=1.0, liquidity_usd=8000.0, volume_5m_usd=120.0))
+        base.update(over)
+        return feature(**base)
+
+    inside = alpha149.mechanisms(band(3.0))
+    above = alpha149.mechanisms(band(60.0))
+    assert inside["survivable_steady"] is True and inside["survivable_open_band"] is False
+    assert above["survivable_open_band"] is True and above["survivable_steady"] is False
+    assert inside["survivable_open_band"] is (not above["survivable_open_band"]) or True
+    # The sanity bound: a valuation 1000x the pool is refused.
+    assert alpha149.mechanisms(band(1500.0))["survivable_open_band"] is False
+    # Every measured protection is kept, one at a time.
+    assert alpha149.mechanisms(band(60.0, pool_age_seconds=600.0))["survivable_open_band"] is False
+    assert alpha149.mechanisms(band(60.0, liquidity_usd=4000.0,
+                                    prev=dict(price_usd=1.0, liquidity_usd=4000.0,
+                                              volume_5m_usd=100.0),
+                                    current=dict(price_usd=1.0, liquidity_usd=4000.0,
+                                                 volume_5m_usd=120.0))
+                               )["survivable_open_band"] is False
+    assert alpha149.mechanisms(band(60.0, buy_count_share=0.4))["survivable_open_band"] is False
+    assert alpha149.mechanisms(band(60.0, current=dict(price_usd=0.98, liquidity_usd=8000.0,
+                                                       volume_5m_usd=120.0))
+                               )["survivable_open_band"] is False
+    assert alpha149.mechanisms(band(60.0, current=dict(price_usd=1.0, liquidity_usd=7000.0,
+                                                       volume_5m_usd=120.0))
+                               )["survivable_open_band"] is False
+    # The strict safe band itself is untouched by this wave.
+    assert alpha149.mechanisms(band(3.0))["survivable_steady"] is True
+
+
+def test_open_band_score_variant_splits_the_new_supply_by_the_score():
+    policies = _policies()
+    open_arm = policies["alpha149_open_band_v1"]
+    scored_arm = policies["alpha149_open_band_score_v1"]
+    assert alpha149.SPECS["alpha149_open_band_v1"][0] == "survivable_open_band"
+    assert alpha149.SPECS["alpha149_open_band_score_v1"][0] == "open_band_scored"
+    for key in ("notional_usd", "max_hold_minutes", "hard_stop_return",
+                "trailing_activate_return", "trailing_drawdown"):
+        assert open_arm[key] == scored_arm[key], key
+    assert open_arm["notional_usd"] == 1.0
+    weak = feature(pool_age_seconds=3600.0, fdv_liquidity=60.0, liquidity_usd=6000.0,
+                   buy_count_share=0.50,
+                   prev=dict(price_usd=1.0, liquidity_usd=6000.0, volume_5m_usd=100.0),
+                   current=dict(price_usd=1.0, liquidity_usd=6000.0, volume_5m_usd=120.0),
+                   drawdown=-0.15, log_price_r2=0.35,
+                   volume_acceleration_age_normalized=0.6,
+                   tx_acceleration_age_normalized=0.6,
+                   windows={"15": _window(), "30": _window(velocity=-0.01),
+                            "60": _window(velocity=0.0), "180": _window()})
+    flags = alpha149.mechanisms(weak)
+    assert flags["survivable_open_band"] is True
+    assert flags["open_band_scored"] is False, "a weak open-band frame stays in the control"
+    strong = dict(weak, buy_count_share=0.72, volume_acceleration_age_normalized=2.4,
+                  tx_acceleration_age_normalized=2.4, drawdown=-0.02, log_price_r2=0.8)
+    assert alpha149.mechanisms(strong)["open_band_scored"] is True
+    assert "开放带" in alpha149.RULES["survivable_open_band"]

@@ -1185,6 +1185,20 @@
       "loaded_at": "2026-09-12T00:38:00Z",
       "visible_entry": "docs/PROJECT_CONTEXT/ROUND02_SCORE_GATE_AND_NEW_FAMILIES_20260912.md",
       "report": "docs/PROJECT_CONTEXT/ROUND02_SCORE_GATE_AND_NEW_FAMILIES_20260912.md"
+    },
+    {
+      "id": "20260912-round03-coverage-unlock-and-measurement-fix",
+      "recorded_at": "2026-09-12T01:45:00Z",
+      "title": "第3轮：度量缺陷修正（时间窗文本比较）+ 代币级覆盖断点定位 + 开放带2条额外臂 + 月亮袋首次真实部分成交",
+      "problem": "用户指出上一阶段效果不理想：大量发现币未进入策略判断。本轮先复核度量，发现我自己的时间窗写法有缺陷：col>=datetime('now','-N minute') 是文本比较，datetime() 返回空格分隔而库内是'T'分隔，同日时 'T'>' ' 使当天所有行无条件通过；UTC 零点后执行的窗口被放大成'当天全天'。实测膨胀 4 小时窗口 2.1-5.5 倍，第1/2轮在 00:19Z/00:53Z 报告的'近60分钟'绝对值实为 09-11 全天（约24倍）。",
+      "change": "① 全部监督/分析查询改用 julianday(col)>=julianday('now','-N minute')，大表改用 id 前沿有界窗口+精确跨度换算每小时速率；scripts/supervise_metrics.py 整体改写并内置陷阱说明。② 修正后的真实链路：发现 2,558 新币/小时；快照 9,542 行/小时（7,243 行深度>=1000U）；评估 10,663 行/小时 2,579 币；决策 489 条/小时仅 24 币（代币级信号率 0.86%，24h 0.60%）；开仓 342 笔/小时仅落在 15 币（20.9 笔/币，24h 12.9 笔/币）。③ 断点根因：不是流动性/市值/集中度门槛过严，也不是风控否决（489 条决策全部 admitted；现金 p10 16.02U），而是我自己设的 FDV/深度<=20 上限——引擎计数器显示该上限把 62.2% 的帧排除，同时成立的 core_chain 仅 0.5%；实测写销率 >20 档 4.1% vs 5-20 档 1.9%。④ 修复：第26波新增 survivable_open_band 与 open_band_scored 两条额外臂（保留池龄/深度/深度不流失/买盘/不下跌全部保护，只去掉自设上限，并以 1000 倍为荒谬上界），配 band_step:open_chain 系列计数器；重载后 open_chain 250/512=48.8% 对 core_chain 55/512=10.7%，机制就绪 242 对 50，两臂数分钟内自然开仓 5+4 笔。⑤ 监督回路新增代币级链路段与 3 条触发（token_signal_rate_low、token_crowding、single_token_concurrent_exposure），本轮三条均已触发（0.86%、20.9 笔/币、单币并发 35 臂/118U）。⑥ 退出机制真实证据：alpha149_moonbag_merged_v1 在 solana:9tGPd2C... 上于 01:13:58Z 完成首档部分成交（6.007e12->2.703e12，剩45%），realized_proceeds 2.208U>=2.00U 本金 -> principal_recovered=1，该部分 +1.108U，next_tp_index=1，仓位继续持有作为月亮袋。",
+      "rationale": "先修度量再谈结论：如果窗口被放大24倍，任何'通过率/是否过严'的判断都不可信。断点定位后选择'只去掉我自己加的上限、保留全部实测保护'的最小改动，并配同条件对照臂，既提高代币级覆盖率又保持可证伪；所有改动仍是额外臂，未触碰现有臂与共享引擎。",
+      "validation": "tests/test_alpha149.py 48 + tests/test_alpha149_wave2425.py 10 + tests/test_score149.py 6 = 64 项全通过（新增开放带2项：只移除自设上限、逐条保护仍生效、评分门变体分列两臂）；注册 271->273 ledger_unchanged=true；重载后（PID 33036/16104）开放带机制就绪 242 次、两臂自然开仓 9 笔；月亮袋臂出现首笔真实部分成交与本金锁定；遥测组件 failures=0；冻结错误 #265/#266 未增长；live.enabled=false 与 paper 模式不变。",
+      "scope": "修改：src/memetrader/alpha149.py（仅新增机制/臂/计数器）、scripts/supervise_metrics.py（窗口与新增段落）、tests/test_alpha149_wave2425.py（新增2项）、docs/PROJECT_CONTEXT/ROUND01_...md（加入更正块）；新增报告：docs/PROJECT_CONTEXT/ROUND03_COVERAGE_UNLOCK_AND_MEASUREMENT_FIX_20260912.md。待用户决定：统一风控层是否可对现有臂施加同币并发上限（当前只度量未限制）。",
+      "commit": "",
+      "loaded_at": "2026-09-12T01:30:00Z",
+      "visible_entry": "docs/PROJECT_CONTEXT/ROUND03_COVERAGE_UNLOCK_AND_MEASUREMENT_FIX_20260912.md",
+      "report": "docs/PROJECT_CONTEXT/ROUND03_COVERAGE_UNLOCK_AND_MEASUREMENT_FIX_20260912.md"
     }
   ]
 }

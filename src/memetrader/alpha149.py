@@ -268,6 +268,13 @@ SPECS = {
     'alpha149_size_informed_flow_v1': ('size_informed_flow', '聪明钱代理·大单占比上升', 30),
     'alpha149_early_pool_snipe_v1': ('early_pool_snipe', '新池狙击·早段深池1U', 5),
     'alpha149_rotation_proxy_v1': ('rotation_proxy', '叙事轮动代理·链上轮换', 30),
+    # wave 26 (round 3): the measured coverage unlock. Live counters show 62.2% of the
+    # frames the engine sees sit ABOVE FDV/depth 20 while only 0.5% satisfy the
+    # 1-20 safe band, so the family's own upper cap - not any shared filter - is what
+    # keeps discovered tokens out of strategy judgement. The >20 tier's measured
+    # write-off rate is 4.1% against 1.9% for 5-20; both arms keep every protection.
+    'alpha149_open_band_v1': ('survivable_open_band', '开放带·FDV比>20(1U)', 30),
+    'alpha149_open_band_score_v1': ('open_band_scored', '开放带×评分门(1U)', 30),
 }
 EXIT_ARMS = {
     'alpha149_profit_decay_exit_v1': 'alpha149_profit_decay',
@@ -965,6 +972,31 @@ OVERRIDES = {
                     '短窗口速度/长窗口速度 ≥1.2 且短窗口速度≥0.15）同时该池自身处于实测最强入场机制'
                     '（池龄归一化活动加速 >3倍一小时基准）且 FDV/深度 ≤20（实测写销带）。'
                     '报告与命名都标注这是代理实现，社交维度仍为证据缺口。'),
+    # ---- wave 26 (round 3): coverage unlock for the largest observed archetype ---
+    # Live band counters (632 frames of the current process): age 30-180m 53.6%,
+    # FDV/depth 1-20 34.2%, >20 62.2%, depth>=5000 98.4%, flat-or-rising 89.9%,
+    # buy share>=50% 86.2% - yet core_chain only 0.5%. The binding constraint on
+    # "discovered tokens reaching strategy judgement" is the family's own 1-20 cap,
+    # not a shared filter. These two arms trade the measured 4.1% write-off tier at
+    # 1U with every protection kept, so the widening is measurable.
+    'alpha149_open_band_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_wide_band_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='开放带（1U，30分钟）：池龄30-180分钟、深度≥5000U且不流失、价格不下跌、买盘占比≥50%'
+                    '全部保留——只去掉我自己加的 FDV/深度 ≤20 上限，改为>20（并以1000倍为荒谬上界）。'
+                    '依据：实测该档写销率4.1%，而5-20档1.9%、<1档44.1%；'
+                    '但实时计数器显示本引擎看到的帧里62.2%落在>20档、只有0.5%同时满足1-20+池龄+深度，'
+                    '因此"很多币进不了策略判断"的直接原因就是这个上限，而不是共享过滤器。'
+                    '同入场对照：alpha149_open_band_score_v1（加评分门）与既有 alpha149_wide_band_v1（1-20带）。'),
+    'alpha149_open_band_score_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_open_band_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='开放带×评分门（1U，30分钟）：入场与 open_band 完全相同，额外要求多维评分'
+                    'score149 过门（≥55、覆盖率≥0.60、必需维度齐全）。'
+                    '两臂构成同池条件、同退出、阈值两侧的A/B，用于检验评分在"高FDV/深度档"里'
+                    '能否把质量分开——这是评分门在放量后的真正检验场。'),
 }
 
 
@@ -1192,8 +1224,25 @@ def mechanisms(f):
             and price_now and prev_price and price_now >= prev_price
             and liq_now is not None and prev_liq is not None and liq_now >= prev_liq * .98
             and buy_share is not None and buy_share >= .5)
-        # wave 22: apply the same measured fix to the mechanisms still starved by
-        # the strict-rise requirement. Additionally, per-condition counters showed
+        # wave 26 (round 3): the coverage unlock. Live counters over 632 frames of
+        # this process read: age 30-180m 53.6%, FDV/depth 1-20 34.2%, FDV/depth > 20
+        # 62.2%, depth >= 5000 98.4% - and therefore `core_chain` (age AND 1-20 AND
+        # depth) only 0.5%. The 1-20 cap that the earlier waves adopted excludes the
+        # single largest observed archetype, which is exactly why so few discovered
+        # tokens ever reach an entry: measured write-off rate for the >20 tier is
+        # 4.1% against 1.9% for 5-20 - a 2x difference, not the 44.1% of the <1
+        # tier. This mechanism keeps every measured PROTECTION (age band, depth,
+        # depth not leaving, buy share, not falling) and removes only MY upper cap,
+        # with a sanity bound where FDV is 1000x the pool. It is an extra arm at 1U
+        # with a same-contract control, so widening the net stays measurable.
+        out['survivable_open_band'] = bool(
+            survivable_age
+            and fdv_liq is not None and 20.0 < fdv_liq <= 1000.0
+            and liquidity is not None and liquidity >= 5000
+            and price_now and prev_price and price_now >= prev_price
+            and liq_now is not None and prev_liq is not None and liq_now >= prev_liq * .98
+            and buy_share is not None and buy_share >= .5)
+        # wave 22: apply the same measured fix to the mechanisms still starved by        # the strict-rise requirement. Additionally, per-condition counters showed
         # that the mid band's buy-share filter was itself the binding constraint:
         # of 481 frames, 86 were in the mid chain and exactly 0 of those had a buy
         # share above 55%, i.e. the engine's mature safe-band pools are
@@ -1571,6 +1620,13 @@ def mechanisms(f):
         out['regime_risk_on'] and out['age_rate_acceleration']
         and fdv_liq is not None and fdv_liq <= 20.0)
 
+    # 34. Wave 26: the open band's own score-gated variant, evaluated after the
+    #     score so the two arms form the same A/B as wave 24 but on the newly
+    #     reachable tier (62.2% of observed frames instead of 0.5%).
+    if out['survivable_open_band']:
+        score_ok_open, _open_result = score149.passes(f)
+        out['open_band_scored'] = bool(score_ok_open)
+
     # 33. Wave 24 score gate: the multi-dimension score (score149) must clear its
     #     score floor, its coverage floor AND have every required dimension
     #     present, on top of the measured safe band. A missing dimension lowers
@@ -1813,6 +1869,12 @@ RULES = {
     'rotation_proxy': '叙事轮动代理（社交采集有意暂停）：市场宽度改善 regime_risk_on 与实测最强入场机制'
                       ' age_rate_acceleration 同时成立，且 FDV/深度≤20（实测写销带）；'
                       '社交提及速度/KOL/情绪仍为证据缺口。',
+    # wave 26
+    'survivable_open_band': '开放带：池龄30-180分钟、FDV/深度>20（上界1000倍）、深度≥5000U且≥前帧98%、'
+                            '价格不下跌、买盘占比≥50%；去掉的只是本族自设的1-20上限。'
+                            '实测写销率该档4.1%（5-20档1.9%、<1档44.1%），'
+                            '而实时计数器显示62.2%的帧落在该档、仅0.5%落在1-20带。',
+    'open_band_scored': '开放带×评分门：开放带成立且 score149 过门（≥55、覆盖率≥0.60、必需维度齐全）。',
     # wave 23
     'alpha149_trend_break': '结构破坏退出：30秒速度为负 且 回撤≥12% 且 笔数不再扩张 且 价格趋势拟合R²<0.35'
                             '（四项必须真实存在，缺失不推断）同时成立才退出。',
@@ -2054,6 +2116,16 @@ class Engine(_BaseEngine):
                 # trade: how many reach the band at all. The two sides of the
                 # threshold are counted below, once the mechanisms have run.
                 self.counts['score_step:band_frames'] += 1
+            # wave 26: the open band's own supply, so the coverage unlock is visible
+            # immediately instead of after a slow arm-level count.
+            open_chain = bool(band_steps['age_30_180m'] and band_fdv is not None
+                              and 20.0 < band_fdv <= 1000.0
+                              and band_steps['depth_ge_5000'])
+            self.counts['band_step:open_chain'] += int(open_chain)
+            if open_chain:
+                self.counts['band_step:open_flat_or_rising'] += int(
+                    bool(band_steps['flat_or_rising']))
+                self.counts['band_step:open_share_ge_50'] += int(bool(band_steps['share_ge_50']))
         except Exception:  # instrumentation must never affect trading
             pass
         flags = mechanisms(f)
