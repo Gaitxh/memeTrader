@@ -34448,12 +34448,19 @@ class Store:
                                 definition: Mapping[str, Any]) -> bool:
         """Corroboration test in front of the dust-pool terminal fact.
 
-        Measured (2026-09-12): of the 24h written-off tokens, 19 were real rugs whose price
-        collapsed by 3-6 orders of magnitude, and one Solana pool reported `liquidity.usd`
-        exactly 0.0 while its price held at -3.9% and it kept printing 19k-63k USD of 5-minute
-        volume. That single contradicted read wrote off 48 positions across 48 arms (-120U).
-        A real rug is not subtle: it collapses the price. This vetoes only that case and
-        leaves every genuinely dying pool to the existing rule.
+        Two measured false positives (2026-09-12) shape this, and both were a provider
+        reporting `liquidity.usd` of exactly 0.0 for a pool that was demonstrably alive:
+
+        * `solana:5SwF9vAr...` reported 0.0 while the price held at -3.9% and 19k-63k USD of
+          5-minute volume kept printing; 48 positions across 48 arms were written off (-120U).
+        * `solana:HBxFUfqE...` was marked 0.00 by `geckoterminal` at 06:23:11, nineteen seconds
+          after the same pool's own dexscreener mark read 23,759 USD with the price unchanged at
+          -0.4%; 37 positions were written off (-97U). That payload carries no volume, so only
+          the pool's own mark history can contradict it.
+
+        Both tests below need POSITIVE evidence of a live pool. A genuinely dying pool fails
+        them (its price collapses, or its own recent marks are already below the floor), so the
+        frozen immediate-writeoff rule still applies to every real rug.
         """
         contradicted = dust_read_contradicted_by_live_trading(
             liquidity_usd=position["mark_liquidity_usd"],
@@ -34465,14 +34472,53 @@ class Store:
             definition=definition,
         )
         if contradicted:
-            vetos = getattr(self, "_dust_read_vetos", 0) + 1
-            self._dust_read_vetos = vetos
-            if vetos % 10 == 1:
-                try:
-                    self.set_kv("dust-read-vetos", str(vetos))
-                except Exception:  # telemetry must never affect evaluation
-                    pass
-        return contradicted
+            return self._count_dust_veto()
+        # A pool cannot lose every reserve between two consecutive observations without its
+        # price moving. If its OWN recent marks still show tradeable depth and the price is
+        # unchanged, this single zero read is failed evidence, not a dead pool. This second
+        # test is provider-independent, which matters because the payload that produced the
+        # second measured false positive carried no volume at all.
+        try:
+            liquidity = float(position["mark_liquidity_usd"])
+        except (TypeError, ValueError):
+            return False
+        if liquidity > 0.0:
+            return False
+        try:
+            floor = float(definition.get("min_pool_liquidity_usd", 1000.0))
+        except (TypeError, ValueError):
+            return False
+        reference = self.db.execute(
+            "SELECT price_usd, liquidity_usd FROM chain_meme_trader_market_mark_history "
+            "WHERE token_id=? AND pair_address=? AND status='VISIBLE' AND price_usd>0 "
+            "AND liquidity_usd IS NOT NULL AND observed_at<? "
+            "ORDER BY observed_at DESC LIMIT 5",
+            (position["token_id"], position["mark_pair_address"],
+             position["mark_observed_at"])).fetchall()
+        if len(reference) < 3:
+            return False  # too little history: the previous behaviour stands
+        liquids = sorted(float(row["liquidity_usd"]) for row in reference)
+        prices = sorted(float(row["price_usd"]) for row in reference)
+        median_liquidity = liquids[len(liquids) // 2]
+        median_price = prices[len(prices) // 2]
+        try:
+            price_now = float(position["mark_price_usd"])
+        except (TypeError, ValueError):
+            return False
+        if median_liquidity >= floor and median_price > 0 and price_now >= median_price * 0.5:
+            return self._count_dust_veto()
+        return False
+
+    def _count_dust_veto(self) -> bool:
+        """Record one contradicted dust read; always reports that the veto applied."""
+        vetos = getattr(self, "_dust_read_vetos", 0) + 1
+        self._dust_read_vetos = vetos
+        if vetos % 10 == 1:
+            try:
+                self.set_kv("dust-read-vetos", str(vetos))
+            except Exception:  # telemetry must never affect evaluation
+                pass
+        return True
 
     def _whipsaw_guard_allows_stop(
         self, policy: Mapping[str, Any], key: Any, *, elapsed_minutes: Any,

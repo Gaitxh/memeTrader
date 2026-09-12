@@ -112,8 +112,18 @@ def test_the_two_measured_populations_separate_exactly():
 
 
 def test_the_store_helper_reads_the_mark_row_and_counts_vetos():
+    class _Cursor:
+        def fetchall(self):
+            return []  # too little mark history: the previous behaviour must stand
+
+    class _Db:
+        def execute(self, *args, **kwargs):
+            return _Cursor()
+
     class Fake:
         _dust_read_contradicted = store_module.Store._dust_read_contradicted
+        _count_dust_veto = store_module.Store._count_dust_veto
+        db = _Db()
 
         def __init__(self):
             self.kv = {}
@@ -125,10 +135,12 @@ def test_the_store_helper_reads_the_mark_row_and_counts_vetos():
     definition = {"min_pool_liquidity_usd": 1000.0}
     glitch = {"mark_liquidity_usd": 0.0, "mark_price_usd": 3.002e-05,
               "entry_signal_price_usd": 2.7e-05, "mark_volume_5m_usd": 47429.3,
-              "mark_buys_5m": 60, "mark_sells_5m": 25}
+              "mark_buys_5m": 60, "mark_sells_5m": 25,
+              "token_id": "solana:T", "mark_pair_address": "P", "mark_observed_at": "2026-09-12T03:41:00Z"}
     rug = {"mark_liquidity_usd": 0.0, "mark_price_usd": 3.346e-10,
            "entry_signal_price_usd": 0.0003469, "mark_volume_5m_usd": 50000.0,
-           "mark_buys_5m": 40, "mark_sells_5m": 20}
+           "mark_buys_5m": 40, "mark_sells_5m": 20,
+           "token_id": "bsc:T", "mark_pair_address": "P", "mark_observed_at": "2026-09-12T03:41:00Z"}
     assert fake._dust_read_contradicted(glitch, definition) is True
     assert fake._dust_read_contradicted(rug, definition) is False
     assert getattr(fake, "_dust_read_vetos", 0) == 1

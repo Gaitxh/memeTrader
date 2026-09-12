@@ -422,3 +422,37 @@ the guard can only fire on a self-contradicting payload. Vetoes are counted into
 
 What this does **not** claim: the 19 real rugs still write off, so the daily write-off total
 remains dominated by genuine deaths. The fix removes the false-positive family, not the line.
+
+### 13.3 Second measured false positive, and why the guard needed a second test
+
+Thirty minutes after the first fix was deployed, the same pattern fired again on a different
+pool: `solana:HBxFUfqE…` was marked by **`geckoterminal`** at 06:23:11Z with
+`liquidity = 0.00` and `price = 1.55226e-05`, while nineteen seconds earlier the same pool's own
+`dexscreener` mark read **23,759 USD** of liquidity at `1.558e-05` (a -0.4% move). 37 positions
+were written off for -97U. That payload carries **no volume**, so the same-observation test
+cannot see it - the guard reported no veto at all.
+
+The provider-independent test is the pool's own mark history, which is the same evidence the
+price-outlier guard already uses:
+
+> a pool cannot lose every reserve between two consecutive observations without its price moving.
+
+The `_dust_read_contradicted` helper therefore applies two tests, both of which need positive
+evidence of a live pool:
+
+1. **same observation** - `liquidity_usd == 0` while that same observation reports >= 200 USD of
+   5-minute volume and the price has not collapsed against the entry price
+   (`paper_execution.dust_read_contradicted_by_live_trading`);
+2. **own mark history** - `liquidity_usd == 0` while the previous >= 3 VISIBLE marks of the same
+   token+pair have a median liquidity at or above the floor and the current price is within 50%
+   of their median price.
+
+A genuinely dying pool fails both: its price collapses (19 of 19 real rugs), or its own recent
+marks are already below the floor. And a pool that really has died stays below the floor, so the
+history test stops applying after a few observations and the frozen immediate-writeoff rule
+resumes - the guard delays a wrong write-off, it never blocks a correct one permanently.
+
+Verified: `tests/test_dust_read_guard_history.py` (4 tests) replays the measured values of the
+second case, anchors the code path, and shows the real rug fails both tests; the
+`tests/test_core.py` failure set is again byte-identical with and without the change (15
+pre-existing failures, difference set empty); reloaded 2026-09-12T14:29:13+08:00.
