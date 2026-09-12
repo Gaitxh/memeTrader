@@ -977,6 +977,14 @@ MOVER_FRAME_TARGET = 30
 # slots serve about 32 flagged tokens per hour (9.6% of the flags). Reserved admission may exceed a
 # per-(chain,bucket) cap but never the per-chain cap, and never displaces a held or protected slot.
 MOVER_RESERVED_SLOTS = 8
+# Round 101 measured a 0-of-24 overlap between the flagged set and the leases the observer holds:
+# reserved admission was reachable only from the rejection path, so it fired about 6 times an hour.
+# The reservation is therefore served from the token's own FIRST observation, which is the frame the
+# registry is built from and which is already paid for - no request is added. The cache keeps the
+# newest 64 flagged frames, and a cached frame older than this bound is dropped rather than admitted
+# as if it were current.
+MOVER_QUOTE_CACHE = 64
+MOVER_CACHED_QUOTE_SECONDS = 300.0
 
 
 def mover_reserved_admit(watch: Mapping[str, Any], token_id: str, registry: Any) -> bool:
@@ -7597,7 +7605,45 @@ class Runtime:
             error_detail=f"targets={len(targets)};refreshed={refreshed}",
         )
 
-    def _remember_pattern_quotes(self, quoted: dict, *, feature_only148: dict | None = None) -> None:
+    def _reserved_mover_quotes(self, current: datetime) -> dict:
+        """Cached first-observation quotes for mover-watch tokens that still want a reserved slot.
+
+        Round 101 measured a **0-of-24 overlap** between the flagged set and the leases the observer
+        held: the reservation was only reachable from the rejection path (`skip_bucket_full`), and a
+        flagged token almost never reached it, so reserved admission fired about 6 times an hour
+        against a design of 32. The registry is filled at a token's FIRST observation, which is
+        exactly where its quote is already in hand, so this replays that cached frame as an
+        admission candidate on the pattern-observer tick. No HTTP request is added, the per-chain
+        cap is untouched, and a token already in the watch or on the priority lane is skipped.
+        """
+        registry = getattr(self, '_mover_watchlist', None)
+        cache = getattr(self, '_mover_first_quote', None)
+        if registry is None or not cache:
+            return {}
+        watch = getattr(self, '_pattern_watch', {}) or {}
+        try:
+            from .mover_watchlist import reserved_candidates
+            wanted = reserved_candidates(registry, watch, current, MOVER_RESERVED_SLOTS)
+        except Exception:
+            return {}
+        if not wanted:
+            return {}
+        skip = set(watch) | set(getattr(self, '_market_priority_tokens', set()) or ())
+        out = {}
+        for token_id in wanted:
+            cached = cache.get(token_id)
+            if cached is None or token_id in skip:
+                continue
+            token, snapshot = cached
+            observed_at = getattr(snapshot, 'observed_at', None)
+            if observed_at is None or (current - observed_at).total_seconds() > MOVER_CACHED_QUOTE_SECONDS:
+                cache.pop(token_id, None)
+                continue
+            out[token_id] = (token, snapshot)
+        return out
+
+    def _remember_pattern_quotes(self, quoted: dict, *, feature_only148: dict | None = None,
+                                 reserved_movers: bool = False) -> None:
         """Bounded passive watch: reuse discovery/held/flat quotes, no I/O here."""
         current = utcnow()
         from .shared_batch148 import SharedBatchCoverage
@@ -7625,6 +7671,17 @@ class Runtime:
                     enqueued=True, dropped_quotes=dropped_quotes)
         # Transport-owned tags, never provider raw_json, delimit feature-only work.
         quoted = {k: value for k, value in quoted.items() if k not in feature_only148}
+        # MOVER RESERVED ADMISSION (round 108): put flagged tokens at the head of the candidate
+        # stream instead of waiting for them to be rejected. The injected frames are appended after
+        # the passive-cohort snapshot above, so they never become cohort evidence, and they are
+        # ordinary quotes from here on: the same admission loop, the same caps, the same funnel.
+        if reserved_movers:
+            injected = self._reserved_mover_quotes(current)
+            if injected:
+                for token_id, pair in injected.items():
+                    quoted.setdefault(token_id, pair)
+                self._mover_reserved_injections = getattr(
+                    self, '_mover_reserved_injections', 0) + len(injected)
         held = getattr(self, "_pattern_held_tokens", set())
         from .reactivation_watch import eligible as probe_eligible, victim as probe_victim, LEASE_SECONDS
         store = getattr(self, 'store', None)
@@ -8107,9 +8164,18 @@ class Runtime:
                 if watchlist is None:
                     from .mover_watchlist import Registry as _MoverRegistry
                     watchlist = self._mover_watchlist = _MoverRegistry()
-                watchlist.consider(token.token_id, liquidity_usd=snapshot.liquidity_usd,
+                _mover_rule = watchlist.consider(token.token_id, liquidity_usd=snapshot.liquidity_usd,
                     buys_5m=snapshot.buys_5m, sells_5m=snapshot.sells_5m,
                     volume_5m_usd=snapshot.volume_5m_usd, now=received)
+                if _mover_rule is not None:
+                    # Keep this first frame so the pattern observer can offer the token a reserved
+                    # slot on its next tick (round 108). Bounded, newest kept, no extra request.
+                    _mover_cache = getattr(self, '_mover_first_quote', None)
+                    if _mover_cache is None:
+                        _mover_cache = self._mover_first_quote = {}
+                    _mover_cache[token.token_id] = (token, snapshot)
+                    while len(_mover_cache) > MOVER_QUOTE_CACHE:
+                        _mover_cache.pop(next(iter(_mover_cache)))
                 # This is local first observation, not a claimed global creation time.
                 frames.append({"token_id": token.token_id, "pair_address": address, "chain": token.chain,
                     "lifecycle": "early" if age < 900 else "growth" if age < 21600 else "mature",
@@ -8293,7 +8359,7 @@ class Runtime:
 
     async def chain_meme_pattern_observer_once(self) -> None:
         """At most 30 non-held candidates; held quotes reuse the core lane."""
-        self._remember_pattern_quotes({})
+        self._remember_pattern_quotes({}, reserved_movers=True)
         watch = self._pattern_watch
         from .observation_leases145 import select_due,record_frame,expire_windows,bounded_summary,dump_state,account_windows
         self._rank_no_ca_events()
@@ -8406,7 +8472,8 @@ class Runtime:
         self.store.heartbeat("chain-meme-pattern-observer", item=sampled > 0,
             error_detail=f"watched={len(watch)};sampled={sampled};projected={projected};"
                          f"mover_watch={len(getattr(self, '_mover_watchlist', None).active(utcnow())) if getattr(self, '_mover_watchlist', None) is not None else 0};"
-                         f"mover_reserved_admissions={getattr(self, '_mover_reserved_admissions', 0)}")
+                         f"mover_reserved_admissions={getattr(self, '_mover_reserved_admissions', 0)};"
+                         f"mover_reserved_injections={getattr(self, '_mover_reserved_injections', 0)}")
         self.store.set_kv("chain-meme-pattern-watch", {
             "recorded_at": iso(utcnow()), "watched": len(self._pattern_watch),
             "sampled": sampled, "projected": projected,
@@ -8417,6 +8484,10 @@ class Runtime:
             # Reserved mover-watch admissions, so the approved +13-14% budget can be verified on
             # the reserved slots themselves instead of on every observation of a flagged token.
             "mover_reserved_admissions": getattr(self, "_mover_reserved_admissions", 0),
+            # Candidates the reservation actually put in front of the admission loop. Round 101
+            # showed the old path reached the loop ~never, so injection and admission are counted
+            # separately: injection is the reach, admission is the outcome.
+            "mover_reserved_injections": getattr(self, "_mover_reserved_injections", 0),
             "mover_watching": (len(getattr(self, '_mover_watchlist', None).active(utcnow()))
                                if getattr(self, '_mover_watchlist', None) is not None else 0),
             # Which tokens the reservation admitted, so their observation counts can be measured
