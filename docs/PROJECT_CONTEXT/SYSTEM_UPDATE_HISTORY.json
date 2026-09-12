@@ -1297,6 +1297,20 @@
       "loaded_at": "2026-09-12T04:30:00Z",
       "visible_entry": "docs/PROJECT_CONTEXT/ROUND28_DEEP_LIQ_ARMS_AND_TWO_SIDED_MARK_GUARD_20260912.md",
       "report": "docs/PROJECT_CONTEXT/ROUND28_DEEP_LIQ_ARMS_AND_TWO_SIDED_MARK_GUARD_20260912.md"
+    },
+    {
+      "id": "20260912-rounds30to41-covers-and-carriers",
+      "recorded_at": "2026-09-12T05:10:00Z",
+      "title": "第30-41轮合并记录：深池/中深池/BSC专项臂 + 双向报价守卫 + 实验载体四代演进（policy additions 286→300）",
+      "problem": "两份只读复盘给出两条强证据：24小时216笔写销100%为BSC（31.5%写销率、占净亏损74%），以及>=100k深度档零写销且PF>1；同时发现3.6%仓位含>3倍单次标记跳变的provider伪影（向上伪影会凭空制造盈利）。但把结论变成可判定证据时遇到真正的瓶颈：实验载体的帧供给。",
+      "change": "① 第30波：把长持有与死池前兆两对A/B镜像到 survivable_steady（4臂），实测该档就绪恒为0，属观测面不可达。② 第31波：新增 deep_liq_band（深度>=100k）与 non_bsc_deep_band（排除BSC）两臂；该档在实时引擎同样0就绪。③ 第32波：改为可达区间 mid_deep_band（20k-100k）+ 非BSC变体，检验同一命题。④ 缺陷修复：尘埃守卫由单向扩展为双向（新增 价格>=中位价10倍 且 深度<=中位深度1.5倍 的向上伪影拦截），并补 tests/test_mark_spike_guard.py 专用断言。⑤ 第33-35波：为解决A/B判定被样本速度卡住，同一问题并行四种载体——开放带并发8、多入口并集(any_band)、非带类高供给入口(flow_entry：mom_persistence ∨ open_band_scored ∨ score_gate_band ∨ size_informed_flow ∨ age_rate_acceleration)，单笔合同逐字不变，仅换载体。⑥ 关键实测：any_band 就绪与 survivable_open_band 完全相等（32=32），证明在当前市场本族除开放带外所有实测安全带都不供给；因此带类载体会退化为单入口，实验必须改用非带类高供给入口。",
+      "rationale": "策略结论只有在样本足够时才成立，而样本速度由入场帧供给决定。逐代实测排除并发度、合同差异与实现问题后，定位到'带类入场在当前市场几乎不供给'这一市场侧事实，据此把实验载体换成流量/动量类入口，既保持单笔合同不变（科学对照），又让判定在小时级而非天级可达。所有改动仍为额外臂或缺陷修复。",
+      "validation": "policy additions 286→300，ledger_unchanged=true，全部为 append-only 额外臂；每波均通过 test_alpha149 与 test_alpha149_wave2425（当前136条臂）；双向守卫另有 test_mark_spike_guard 与 test_mark_outlier_guard 覆盖（向下尘埃/向上伪影/真实崩塌/fail-open）；运行进程多次重载生效；冻结错误 #265=392/#266=398 未增长；paper 与 live.enabled=false 不变。观测到的写销窗口：60分钟由92笔降至30笔再降至0笔（1小时样本，尚不作因果结论）。",
+      "scope": "修改 src/memetrader/alpha149.py（第30-35波，均为文件末尾原子追加并重建ALL_ARMS/KINDS）、src/memetrader/store.py（尘埃守卫双向化）、新增 tests/test_mark_spike_guard.py。提交：659ba46 及此前若干提交已推送。待办：第35波流量载体出样判定、mid_deep/deep_liq/steady 归档为不可达、同币上限授权。",
+      "commit": "659ba46",
+      "loaded_at": "2026-09-12T05:00:00Z",
+      "visible_entry": "docs/PROJECT_CONTEXT/ROUND28_DEEP_LIQ_ARMS_AND_TWO_SIDED_MARK_GUARD_20260912.md",
+      "report": "docs/PROJECT_CONTEXT/ROUND28_DEEP_LIQ_ARMS_AND_TWO_SIDED_MARK_GUARD_20260912.md"
     }
   ]
 }
