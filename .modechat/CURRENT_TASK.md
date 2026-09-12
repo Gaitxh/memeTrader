@@ -1,265 +1,118 @@
 # Authoritative current checkpoint
 
+```json
 {
-  "cycle_id": "nonagent-delivery147",
-  "objective": "Complete feasible nonAgent strategy/runtime/UI delivery;146 corrections and independent causal learned selector, preserve Paper/history/parents/held priority.",
-  "next_action": "147 a00452a LOADED and short held guard passed;146A-G/320 already complete. Continue natural coverage/model/recipe/trend evidence only; no duplicate implementation or source-budget expansion. C3 conditional and Agent deferred.",
+  "cycle_id": "round-120-17-exit-closure-and-profit-capture",
+  "workspace": "H:\\OpenTrader\\memeTrader_2",
+  "runtime": {
+    "db": "data/memetrader_forward.sqlite3",
+    "epoch": "chain-meme-trader/funding-20260906-v002-final-1000",
+    "supervisor": "scheduled task 'memeTrader Paper Bot' -> scripts/run_paper.ps1 (auto-restarts the trader 5s after it exits)",
+    "web": "http://127.0.0.1:8790 (chain-web, separate process)",
+    "restarted": "2026-09-12T21:19:08Z (round 120-17; registers exit150_full15_v1 + exit150_full25_v1 at frontier 32175)",
+    "process_note": "each service shows TWO python processes - the .venv parent and a system-python RE-EXEC'd child. This is by design, NOT a duplicate-writer hazard."
+  },
+  "ROUND_17_EXIT_SIDE_IS_CLOSED": {
+    "status": "Four independent falsifications on real forward marks (906 closed positions, 24 tokens, actual -7,962.84U). No exit rule, level or cadence change can recover the loss. ALL remaining effort belongs on the ENTRY side.",
+    "1_no_tighter_stop_helps": "Enforcing -0.15/-0.20/-0.25/-0.30/-0.40/-0.50/-0.65 econ on EVERY position gives -358/-149/-89/-113/-149/-152/-142 U versus doing nothing. Tightening also stops the positions that recover.",
+    "2_stop_fires_correctly": "mark[-2] median econ -12.4% -> mark[-1] -36.0%, a median 23.6% single-step drop. Inter-mark gap 10.9s (config TARGET_SECONDS=15) and the last mark is 1-3s before close, so we were neither starved nor blind. The overshoot is a gap-through INSIDE one interval - there is no delay to remove.",
+    "3_no_liquidity_warning": "0s median warning at every liquidity threshold 1k..12k. NOTE: I suspected a 50,000 liquidity clamp and FALSIFIED it as my own aggregation artifact (11,750 marks, 2,969 distinct values, max 67.5M; liquidity+volume co-move 1,507 times vs liquidity-alone 29; 0 pools show price-moving-but-liquidity-frozen). Do not re-investigate.",
+    "4_lease_contention_not_the_cause": "observation_leases145.replaceable_early admits only bucket=='early' leases (growth/mature are not evictable - a real asymmetry) BUT marks already beat the 15s target, so it is not this round's bottleneck."
+  },
+  "ROUND_17_PROFIT_CAPTURE_FINDING": {
+    "headline": "The user's problem '金狗拿不住' is BACKWARDS. Only 5 of 906 positions ever reached +100% econ, but 241 touched +15% and 186 of those finished NEGATIVE (only 55 positive). Their realised total was -3,059.50U; banking the whole position at +15% would have returned +723.00U. The failure is NEVER TAKING PROFIT, not failing to hold.",
+    "priced_on_the_same_replay": {
+      "full15_100pct_at_15": "+4,178.36U",
+      "full25_100pct_at_25": "+2,796.84U",
+      "full10_100pct_at_10": "+4,107.39U",
+      "bank15_50_40_50_DEPLOYED": "+2,446.19U - captures only 58.5% of the effect",
+      "bank25_50_40_50_DEPLOYED": "+1,498.52U"
+    },
+    "the_50pct_left_riding_is_what_round_trips": "full15 is worth +1,732U more than the deployed bank15. The LEVEL is not knife-edge (+10% ~ +15%; +20% already gives back 1,160U); the CAPTURE FRACTION is the factor that matters.",
+    "honest_limits": "In-sample on one epoch; survives spike rejection (run=3 gives +4,272U) and survives dropping the best three tokens (+715U); token-clustered bootstrap 95% CI [+969U, +8,307U]. BUT only 7 of 24 tokens improve, 16 are flat at exactly 0.00U (never reach the level), and 3 BSC tokens contribute 83%. Forward experiment only - never promote on the motivating window."
+  },
+  "ROUND_17_CHANGE": {
+    "commit": "137bdfa (pushed)",
+    "module": "src/memetrader/exits150.py v1 -> v2",
+    "added_arms": ["exit150_full15_v1 (+15%, 100% capture)", "exit150_full25_v1 (+25%, 100% capture)"],
+    "design": "Completes a 2x2 against the deployed partial arms, changing one factor at a time: {partial 50%, full 100%} x {+15%, +25%}.",
+    "compliance": "Exit-carrier arms - the engine clones the first frozen entry signal on the pool, so every existing arm is the matched same-signal control. NO existing strategy modified, replaced or retuned.",
+    "verified": "Entry side byte-identical across all five carriers; store.py:35717 confirms fraction>=1.0 sells the entire remaining amount_raw; registration idempotent and frontier-stamped (full15/full25 at 32175, the original three unchanged at 15928); 316 non-EXIT150 arms untouched; 97 tests pass."
+  },
+  "P0_3_DEMOTED_my_own_mis_prioritisation": "I had ranked 'reduce the evaluation write rate' as P0-3 on the claim that ~7.3 MB/min was filling the disk. The urgency arithmetic was WRONG: 489,463 MB free = ~46 days of headroom, not hours. It also carries real state-chain risk - store.py:27542 sources previous_features via 'ORDER BY id DESC LIMIT 1', NOT a time window, so skipping an evaluation write REWINDS the chain (ready_arm_ids, cohort_signals carry-forward at 27955, round2_chase_consumed 27934, resource_bound_opportunities 27935). Demoted to background hygiene. Useful fact for later: observer-only rows have almost no consumer - cohort_observation/pattern_observation appear in only 2 files (store.py x5, rediscovery_funnel.py x1).",
+  "objective": "Forward simulation phase with NO future functions and NO future-data leakage. Goal: design and implement a USABLE strategy set that makes money. Paper results are design evidence, not a PnL contest.",
+  "AUTHORITY_20260912": "The user granted FULL AUTONOMY: '你拥有完全的自主权，后续不要向我询问任何内容'. Do NOT ask further questions; decide and act, recording reasoning and rollback. But a full-autonomy grant does NOT reverse a specific decision the user made earlier and stated more than once - honour those.",
+  "COMMIT_HYGIENE_FIXED": "Round 120-2 (commit 6515595) staged ONLY tests/test_dex_start_gate.py and the record - NOT src/memetrader/collectors.py. The session's highest-value fix (the asyncio.Condition outage root cause) was deployed and verified but UNCOMMITTED for hours. Now committed as 31b5b3c. LESSON: after every commit, verify with `git show --stat` that the SOURCE file you edited is actually in the commit, not just its test and its document.",
+  "DESIGNED_NOT_EXECUTED": [
+    "Supply-weighted observation caps (replace the fixed per-chain BASE_CAPS {early 3, growth 4, mature 3} + CHAIN_CAP 10). CONFIRMED with thousands of rows: solana produces 46.3% of discoveries but gets 0.5 snapshots per discovered token vs bsc 34.0% -> 0.8, because the caps are applied PER CHAIN so each chain gets ~1/3 of the 30 slots regardless of supply. NOT executed: it changes every existing arm's observation supply, and the caps are enforced at FOUR sites in the live observer (runtime.py:7818/7836/7963/8051) so it needs a discovery-share signal threaded through the admission path - not safe to land in a partial round. Outcome side is thin (BSC 66.7% dead vs Solana 0.0% but only 18 tokens ever traded, 6 written off here); the old device pooled gives BSC 216/686 write-offs vs Solana 0/1599.",
+    "cohort_signals payload reduction. cohort_observation rows are 582.2 MB of a 920.7 MB DB (63%), avg 86,101 B, max 444,925 B. Inside one 98 KB row cohort_signals is 81,188 B (83%) holding 16 entries at ~7,780 B each carrying the SAME decision_evidence.feature_vector (one vector copied 16x); outcomes has 185 entries with only 3 distinct blocker values (grouped: 135 B vs 13,381 B). A lossless redesign removes ~85-90% of 63% of the DB and the same share of write rate. NOT executed because cohort_signals is NOT telemetry: it is read live by store.py:28919 (entry projection), store.py:34208 (exit path), store.py:27887/27942/28046 (cohort episode continuity), cohort_enrollment.py:67, narrative_hold.py:258, mode_learning145.py:234. Needs a reader migration and its own round. DB growth measured at ~7 MB per 10 min = ~1 GB/day, so this is an active operational concern."
+  ],
+  "COVERAGE_BOTTLENECK_IS_LOCATED": "The token-level signal rate of 0.38% comes from WATCH CAPACITY - how many pools can be observed densely - NOT from a continuity, freshness or mechanism-threshold defect. The system observes the pools it selects extremely well (gap p50 1.4-2.7s, 96-99% of gaps under 30s, and 4 of 6 busiest pools PASS the 30s-window test with the two failures marginal) and everything else about once. 30 observation-lease slots (3 chains x {early 3, growth 4, mature 3}, TARGET_SECONDS=15) plus a 24-slot mover registry, currently at capacity (watched=34, mover_watching=24). Mechanisms fire amply: deep_pool_flow 370 ready, nonbsc_flow 250, mid_band_flow 227, righttail_lottery 538.",
+  "DO_NOT_BUILD": [
+    "A cadence-aware engine on a larger MAX_GAP_SECONDS - it would unlock nothing, and widening only the gap cannot help because the window's 40-SECOND SPAN is what binds. Changing the span changes what return_fraction / acceleration / volatility MEAN, so it would need NEW mechanism kinds calibrated on the new features, not new arms on the old ones.",
+    "An observation-depth-budget reallocation - already 54.2% of mover slots are in the good bands (20k-100k: 6, >=100k: 7) and 1k-5k holds only 12.5%.",
+    "A mark-supply fix - 1706 mark_history rows per 15 min here versus the old session's 46; 494 of 518 positions received more than one in-window mark.",
+    "Loosening the engine's 30s freshness rule - only 1 of 6137 snapshots exceeds 30s and the engine refusal ratio is 12.2%."
+  ],
+  "next_action": "P0-NEW settle exit150_full15_v1 / exit150_full25_v1 to >=20 per side and test the CAPTURE-FRACTION hypothesis forward - this is now the highest-value open question, because the replay says the deployed ladder leaves 41.5% of the effect on the table. P0-1 re-run scripts/paired_arm_ab.py as settled counts grow; when alpha149_merged_multi_setup_v1 reaches >=20 paired cohorts add it to the pause list (clean verdict, 90% CI [-7.4973, -0.6131] excludes zero). P0-2 entry-quality activity floor arm (m5_trades >= 30 and m5_volume_usd >= 5,000) - blocked until the dead group is >=30 TOKENS (currently 10). P1 push token-level evidence BREADTH: 906 positions sit on only 24 tokens; the entry side is the only remaining lever after round 120-17. P0-3 (write rate) is background only - see P0_3_DEMOTED.",
+  "MEASUREMENT_DISCIPLINE": "Four hypotheses have been killed by measurement across rounds 120-5/120-6 and ONE WAS A BUG IN MY OWN PROBE ('0 of 18 pools can form a window' - the query filtered provider LIKE 'dexscreener%', excluding the strategy-observer mirror rows). None produced a code change; all would have looked like reasonable fixes. ALWAYS take a second independent measure before publishing a '0 samples / stalled / defect' claim or changing code. Also: never LIKE wildcards on arm_id; use julianday() not datetime('now'); dedupe snapshots by (token_id, observed_at); separate windowed from all-time totals.",
+  "authoritative_current_numbers_20260912T2027Z": {
+    "source": "scripts/supervise_metrics.py --hours 2 AND scripts/trade_context_ledger.py --minutes 180",
+    "discovery_per_hour": 3523.7,
+    "evaluations_sampled": 17427,
+    "admitted": 592,
+    "positions": "450 total, 398 settled, 177 write-offs, WIN RATE 8.5%, total -4091.68U, PF 0.03",
+    "positions_per_token": 12.75,
+    "TOKEN_SIGNAL_RATE": "0.38% (10 of 2641 evaluated tokens reached any arm) - the user's core complaint, precisely located, long-standing (old session baseline 0.57%)",
+    "WASHED_OUT": "0 (0.0%) - no position ran >=+50% then closed at a loss, so 'cannot hold a winner' is NOT supported by this device's evidence; the money is lost on never selecting a winner plus friction",
+    "only_positive_exit_types": "market_mark_trailing_exit 9 closes +43.06U; alpha149_plateau_stall 5 closes +9.24U",
+    "hold_bucket_worst": "5-15m: 215 settled, 7.0% win, -3232.86U (almost all of it the 177 write-offs)",
+    "hard_stop_24h": "114 closes, -502.44U, mean -4.407U",
+    "unresolved_error_cases": 15
+  },
+  "cross_session_scripts_that_ALREADY_EXIST": [
+    "scripts/supervise_metrics.py - funnel/coverage/economics/capacity/stability + 9 review triggers, writes data/reports/supervise/",
+    "scripts/trade_context_ledger.py - per-trade context: discovery source, entry mechanism, MFE, exit reason, hold minutes, washed_out flag",
+    "scripts/paired_arm_ab.py - within-cohort paired A/B, token-clustered bootstrap CI, MIN_SETTLED_PER_SIDE=20, prints NOT READY below that",
+    "scripts/register_alpha149.py - idempotent append-only arm registration"
+  ],
+  "confirmed_facts": [
+    "Round 120-3 committed and pushed as c493589 (120-2 was 6515595, 120 was 74ea78e) on branch work/2026-09-04-c2c-115000-additive-strategy.",
+    "EXIT150 IS LIVE: three exit-carrier arms registered at a TRUE forward frontier (activation_snapshot_id 15928, not the legacy 0), 316 -> 319 policy additions, present in the running manifest (446 policies), and already holding positions.",
+    "The carrier contract already existed: alpha149's signal loop emits entries from SPECS only and then clones the first firing entry arm's signal into every EXIT_ARMS entry. So each new arm gets the SAME opportunity as whichever entry arm fired first and only its exit differs - every existing arm is the matched same-signal control. No existing strategy was modified.",
+    "THE MONEY DEFECT: per-position peak economic return was p50 +22.7% / p90 +34.8% / max +55.0% (+20% reached by 51.0%, +30% by 32.0%, +60% by 0.0%) while the configured first take-profit tier is +80%. next_tp_index and principal_recovered were 0 on ALL 350 positions - the ladder fired zero times and no profit was ever banked (give-back 4508.94 USD).",
+    "The stop sat inside the noise: hard_stop_return -0.20 = a -13.3% price move vs the pools' own p90 30-second move of 9.49%; 44 of 92 hard stops fired within one minute; hard_stop_liquidity_veto_usd was set on 0 of 92 arms.",
+    "The three arms vary exactly one thing each: bank15 vs bank25 isolates where to take the first profit; bank15 vs widestop isolates stop width. Each leaves a ~15% moonbag under the trailing stop.",
+    "Existing arms provably untouched: alpha149_vol_scaled_exit_v1 d7b2084ffe293867, alpha149_merged_multi_setup_v1 3029187564e9c2f1, alpha149_confirmed_stop_steady_v2 20460e412abb69a2, all take_profit=[] and the same stops as before.",
+    "OUTAGE ROOT CAUSE (round 120-2, fixed): collectors.py wrapped condition.wait() in asyncio.wait_for; the timeout cancels the inner wait(), leaving the asyncio.Condition lock released, after which notify_all() raises and the Condition is permanently unusable. Both per-host start gates now pace outside the condition.",
+    "THE CONCENTRATION CAP WORKS: fan-out per cohort fell from 35-42 arms to 0-4 and the worst burst from 40 positions in one second to 4; a live pool sits at exactly 8 arms (the cap). Distinct tokens rose 11 -> 13 -> 15 as arms spread to other instruments.",
+    "LOOK-AHEAD AUDIT CLEAN (round 120-2): 0 of 14,040 evaluations consume a snapshot observed/ingested/recorded after the decision; 0 of 4,468 rows have a feature timestamped after their own decision; all four ordering invariants hold. The 12 initial flags were a false positive - the running high is seeded with the entry price at open.",
+    "The 169 write-offs are 4 real data reads on 4 BSC pools that are genuinely dead (independently re-verified live). The write-off arithmetic books exactly -20.00 and is correct; do not re-open this.",
+    "Cash exhaustion is REFUTED: 443/443 arms can open a 20 USDC position (min arm cash 880). shared_available_cash_usd=0.0 is min() of an empty dict.",
+    "489718 arm-instances block at await_distinct_dex_trajectory_frame; only 321 of 954 accepted frames (33.6%) yield a usable 30s window because the real cadence is 60-120s.",
+    "tests/test_cohort_store.py fails, but it ALREADY fails at pristine HEAD (verified in a separate git worktree of 74ea78e): runtime.py:7763 assumes get_kv never returns None, and a kv value of JSON null breaks it. Pre-existing, not ours."
+  ],
+  "implemented_this_round": [
+    "src/memetrader/exits150.py - three exit-carrier arms with reachable staged ladders (bank15 / bank25 / widestop), paper_only, notional 1.0.",
+    "alpha149.py wave 42: additive import merging exits150 into OVERRIDES/EXIT_ARMS; deliberately NOT into SPECS.",
+    "store.py register_chain_meme_exit150_experiments() cloning this epoch's own registered exit carrier as the schema template; called from runtime.py's registration block.",
+    "tests/test_exit150.py (11 tests); 85 tests pass overall. test_alpha149's blanket 'every EXIT_ARMS entry has trajectory_exit' assertion replaced by the stronger real invariant: every exit arm declares exactly ONE exit mechanism."
+  ],
+  "open_risks": [
+    "src/memetrader/store.py, runtime.py, collectors.py and alpha149.py each carry this round's changes AND pre-existing uncommitted changes from earlier rounds; only new files and records were staged. Staging those four is still pending.",
+    "EXIT150's ladder CHOICE is in-sample on one 87-minute window. It must be judged only on data observed after frontier 15928 and must not be promoted on the strength of the window that motivated it.",
+    "max_concurrent_positions registered as 2 (inherited from the live carrier template), not the 4 declared in the module. The append-only ledger cannot be updated and 2 is the more conservative bound; recorded so it is not mistaken for a bug.",
+    "token_discovery_quote_attempts and source_poll_attempts are 0 rows, so the DexScreener failure mode is inference from a traceback, not proof.",
+    "pretrade_rug_safety_registrations covers Solana only and produced 0 assessments.",
+    "5 pump_native_absorption_fast_v1 positions bypass the cohort/decision/fill contract (entry_snapshot_id NULL, stake ~4.71) while landing in the same positions table."
+  ],
   "rules": [
-    "Sole existing Codex writer/session; no ownership transfer",
-    "Paper only / Live locked; no reset/backfill or immutable history/funding rewrite",
-    "Exact original pool, actual availability clocks, independent next-frame execution; missing stays UNKNOWN",
-    "Ordinary Paper4%/4%/1000USD floor; native protocol/rent/fees separate; synthetic1U/max1/300s/exact-pool simulation/no reentry",
-    "Held/SELL priority; unchanged bounded source/watch/request budgets; no forced trades",
-    "126/133 profitable/independent insufficient arms continue; no unsigned114 or15m-breakeven90A revival",
-    "145 authorizes bounded non-LLM incremental models/rollback and restricted existing-component recipe generation+Paper append. Max2 simultaneous new recipe slots including seeds; not lifetime2. No arbitrary code generation, Live or reset.",
-    "317 immutable v3; old145v4 preserved research history, new320 uses independent146v5. No historical labels/fake baseline; rollback requires full fresh target sample. Known model floor=-1, UNKNOWN censored."
-  ],
-  "completed": [
-    {
-      "id": "126",
-      "evidence": "8dda73b",
-      "fact": "226/254/255 restored; preserve mandatory pair",
-      "status": "COMPLETED",
-      "as_of": "2026-09-10"
-    },
-    {
-      "id": "133",
-      "evidence": "cb98c07",
-      "fact": "9 independent insufficient arms restored; total27 at cutoff",
-      "status": "COMPLETED",
-      "as_of": "2026-09-10"
-    },
-    {
-      "id": "131",
-      "evidence": "0b1e673",
-      "fact": "Flat global highwaters implemented and loaded",
-      "status": "COMPLETED",
-      "as_of": "2026-09-10"
-    },
-    {
-      "id": "narrative130",
-      "evidence": "cdda9eb",
-      "fact": "UNKNOWN persisted Scout leads can reach later Verifier",
-      "status": "COMPLETED",
-      "as_of": "2026-09-10"
-    },
-    {
-      "id": "120",
-      "evidence": "docs/PROJECT_CONTEXT/CURRENT_TASK_CONTEXT_20260909.md",
-      "fact": "Test-temp cleanup DONE; no repeat",
-      "status": "COMPLETED",
-      "as_of": "2026-09-10"
-    },
-    {
-      "id": "ModeChat132",
-      "evidence": "620a37b",
-      "fact": "Local backlog, exact receipts, ledger stop guard pushed",
-      "status": "COMPLETED",
-      "as_of": "2026-09-10"
-    },
-    {
-      "id": "136-supported-paper",
-      "status": "COMPLETED",
-      "as_of": "2026-09-10T00:30:19Z",
-      "evidence": "docs/PROJECT_CONTEXT/STRATEGY_DELIVERY_RESULT_136.md",
-      "fact": "Four new funded arms registered/loaded at snapshot2565133: organic early2U/max2, organic reawakening5U/max2, clone consensus5U/max4, event-clone5U/max4. Natural; completed details at evidence."
-    },
-    {
-      "id": "136-review",
-      "evidence": "bf058e1/8c8ce22; real event pipeline; organic early natural cohort94707; no alpha claim"
-    },
-    {
-      "id": "137-A-B",
-      "evidence": "42fcf7c; additions297/298/299 at2026-09-10T01:00:48.437500Z/snapshot2574566. Synthetic candidate->existing preflight->later BUY and genuine postbuy distribution worker; event/organic aliases->settled half recovery->verified narrative extension tested. Seven immutable prefixes unchanged."
-    },
-    {
-      "id": "137-E-local",
-      "evidence": "Missing-proof resume skips duplicate snapshot/projection work:20 waiting frames/0 new snapshots. Shared total Gecko<=1/min unchanged; no general speedup claim."
-    },
-    {
-      "id": "47-matching-verified",
-      "evidence": "LEAD_RUNNABILITY_FINDINGS_138.md; Lead saved47 validator",
-      "fact": "65 saved anchors verified;57 control uses/50 normalized controls;54 control outcomes UNKNOWN. Matching stage complete, no repeat scan."
-    },
-    {
-      "id": "139-dex-delivery",
-      "status": "COMPLETED",
-      "evidence": "4c7ca9f/ca358bc",
-      "fact": "Shared causal5/15/30/60/180/300s vector; five entry/three equal-entry exit arms5U/max2. Actual passive receipt clock fixed. All8 activated08:35:45Z/loaded; no a; completed details at evidence."
-    },
-    {
-      "id": "139-ui-funnel-agent",
-      "status": "COMPLETED",
-      "evidence": "4c7ca9f/916aec5",
-      "fact": "Unique common-cohort stage funnel/startup-steady, source-hash manifest/native diagnostics/Chinese rules; bounded first-party exact-CA event triggers existing Sc; completed details at evidence."
-    },
-    {
-      "id": "139-saved-case-receipts",
-      "status": "COMPLETED",
-      "evidence": "scripts/report_righttail_receipts139.py",
-      "fact": "Saved47 only,7468PKreads/5.3s.16cases+51control-anchorrows/50canonicalcontrols.8decision/4ready-no-decision/2no-eval/2no-anchor.Qualified5/15/30/60/360m endpoin; completed details at evidence."
-    },
-    {
-      "id": "141-opening-and-regime",
-      "status": "COMPLETED",
-      "evidence": "a9a33f4; docs/PROJECT_CONTEXT/OPENING_FUNNEL_AND_STRATEGY_141.md",
-      "fact": "28 distinct targeted tests; actual source load/new registration/natural BUY. Shared diagnostics explain unknown inputs/windows/consumed opportunities separately; completed details at evidence."
-    },
-    {
-      "id": "144-code",
-      "status": "COMPLETED",
-      "evidence": "0e82bc4+b3e9324; docs/PROJECT_CONTEXT/STRATEGY_DELIVERY_RESULT_144.md",
-      "fact": "6 independent2U/max2 arms and finite selector implemented;28 callback/learner/pipeline tests PASS. ae53fac passive learning callback now loaded naturally. No extra requests/backfill; NOT automatic strategy generation."
-    },
-    {
-      "id": "144-load-acceptance",
-      "status": "COMPLETED",
-      "evidence": "docs/PROJECT_CONTEXT/STRATEGY_DELIVERY_RESULT_144.md",
-      "fact": "ae53fac recovered17:28Z; prior recovery/hash/callback proof in SERVICE_RECOVERY_145.md. Later145 load supersedes PID/status."
-    },
-    {
-      "id": "145-engineering",
-      "status": "COMPLETED",
-      "evidence": "cecb7d4/008c1be; STRATEGY_DELIVERY_RESULT_145.md",
-      "fact": "145A-G source/tests/load complete except conditionalC3;318/319preserved,317v3immutable.146 supersedes research-only/new model economics and UI defects; see146report. Do not redo."
-    },
-    {
-      "id": "146-engineering",
-      "status": "COMPLETED",
-      "evidence": "c079df4/40ad14e;docs/PROJECT_CONTEXT/STRATEGY_DELIVERY_RESULT_146.md",
-      "fact": "A-G fixed/tested/loaded.320v5 independent2U/max2,37+10Python+NodePASS/13hash. Knownfloor=-1 proxy, UNKNOWN censored, NO_SIGNAL no publish, rollback full fresh target sample. Old319 policies/funding hashes match. Actual1BUY/terminal-.429994U, fixed-baseline delta0/N1; releases0. Recipe positive status implemented, not naturally reached."
-    },
-    {
-      "id": "143",
-      "status": "COMPLETED",
-      "evidence": "STRATEGY_DELIVERY_RESULT_138.md;RELIABILITY_AND_CAPACITY_EXIT_140.md;NATIVE_EXIT_RESOLVED_143.md",
-      "fact": "137-143 supported SOL fixed-state math, metadata controls, cash/fees assembler, dispatch, common position/BUY/SELL ledger, held/canonical migration/valuation and symmetric capacity accounting delivered.94747 CLOSED13:26Z; no repeated inputs/probes/native residual repair."
-    },
-    {
-      "id": "138",
-      "status": "COMPLETED",
-      "evidence": "STRATEGY_DELIVERY_RESULT_138.md;86f0f36/620cdc5/d9c7c0e/3ac22dd;ModeChat7a0c649",
-      "fact": "Microstructure clocks, immutable flow identity, true reawakening producer/short branch and local continuity delivered/tested; no repeat."
-    },
-    {
-      "id": "147",
-      "status": "COMPLETED",
-      "evidence": "a00452a;STRATEGY_DELIVERY_RESULT_147.md",
-      "fact": "Loaded19:35:48Z/PID34192. Frozen17->3/all3OPEN kept; deadline/terminal/originalpool, held/pending separation, no duplicate low fetch. Short same3held p95 1.856s,drops/pool/connect0;old policy/funding hashes equal."
-    }
-  ],
-  "open_tasks": [
-    {
-      "id": "137",
-      "owner": "codex",
-      "status": "FORWARD_OBSERVATION",
-      "next_action": "137-143 implemented/tested/loaded. Native94747 CLOSED; 141 regime natural BUY/outcomes continue. No duplicate delivery."
-    },
-    {
-      "id": "Pump127",
-      "owner": "codex",
-      "status": "FORWARD_OBSERVATION",
-      "next_action": "SOL lifecycle and symmetric Paper reserve accounting loaded;94747 CLOSED13:26:18Z. Continue natural supported-class evidence; other quote classes UNKNOWN."
-    },
-    {
-      "id": "Pons121",
-      "owner": "codex",
-      "status": "DATA_BLOCKED",
-      "next_action": "Provenance gap; do not repeat broad work"
-    },
-    {
-      "id": "righttail-active16",
-      "owner": "codex",
-      "status": "DATA_COVERAGE_BLOCKED",
-      "next_action": "47matching and139receipts finished. No qualified6h endpoints in saved frozen data; no repeat scan/rematch or UNKNOWN-as-loss. Only genuinely new causal evidence may advance discrimination."
-    },
-    {
-      "id": "137-forward",
-      "owner": "codex",
-      "status": "FORWARD_OBSERVATION",
-      "next_action": "297-299 and330be03 no-reentry loaded. Observe actual safety/BUY/SELL; organic loss94707 preserved; missing synthetic proof must not become fabricated fill."
-    },
-    {
-      "id": "135-browser",
-      "owner": "codex",
-      "status": "BLOCKED_EXTERNAL_TIMEOUT",
-      "next_action": "Exact existing Project tab opened; create/readAX both timed out30s on2026-09-10. No page content/readback; fresh Chat/model/memory/Lead UNVERIFIED. Local resume53tests/check previously passed; do not rebuild/rebind or block trading."
-    },
-    {
-      "id": "145",
-      "owner": "codex",
-      "status": "FORWARD_OBSERVATION",
-      "next_action": "145 seeds318/319 each1same-fill terminal negative/delta0; extension not exercised. Recipe2slots active, generator/economic advancement waits causal evidence.317v3preserved;new146v5receivesmodel effects. C3 disabled, no duplicate delivery."
-    },
-    {
-      "id": "146-forward",
-      "owner": "codex",
-      "status": "FORWARD_OBSERVATION",
-      "next_action": "v5baseline8episodes/7anchors/3signals at19:08Z,1actual2U hardstop-.429994U/fill94507. Natural model release/rollback/recipe append/trend continuation and longrun resource benefit remain unproven. No forced labels/trades or new API budget."
-    },
-    {
-      "id": "147-forward",
-      "owner": "codex",
-      "status": "FORWARD_OBSERVATION",
-      "next_action": "Short resource guard passed. Longrun coverage and profitability are unproven; existing low-priority learning continues, C3 stays disabled. No repeated fixed-input scan."
-    }
-  ],
-  "blockers": [
-    {
-      "id": "Pons-provenance",
-      "status": "DATA_BLOCKED",
-      "evidence": "121 provenance gap"
-    },
-    {
-      "id": "Project-memory",
-      "status": "UNVERIFIED",
-      "evidence": "doctor NEED_PROJECT_MEMORY/leadUNBOUND; Project tab AX timeout"
-    },
-    {
-      "id": "old-chat122",
-      "status": "UNREAD",
-      "evidence": "Historical access gap; no full inheritance claim"
-    },
-    "Synthetic exact-pool simulation/sellability/source failure remains WAIT; no natural profit proof.",
-    "Missing saved6h coverage is a data limit, not permission to backfill or weaken clocks."
-  ],
-  "lessons": [
-    "docs/PROJECT_CONTEXT/FAILURE_LESSONS_AND_STRATEGY_CHECKLIST_73.md",
-    "No15m break-even forced exit; no unsigned CapitalPulse114 revival",
-    "73 operational keep-S1-closed/parent-paused instructions are historical, superseded by126/133; retain statistical lessons only.",
-    "Preserve organic_early_flow94707 written_off -2U; flow breadth did not guarantee liquidity retention.297/298/299 registered frontier2574566 unchanged.",
-    "133 independent insufficient executable treatments continue; small N/mixed attribution is not failure.",
-    "Missing ingested_at uses actual existing passive receipt; never invent prior availability.",
-    "Paper pricing/capacity must carry both recorded BUY and SELL deltas; never repeatedly spend unchanged public reserves.",
-    "141 actual supported reload succeeded. Permission/load facts are current-stage specific; never reuse an old denial as present blocker.",
-    "141 quiet baseline must retain full120s observations; latest3 at15s is not120s. Old consumed signals and unavailable safety facts are not lost BUYs."
-  ],
-  "deferred": [
-    "Agent restoration/research expansion, browser acceptance and ModeChat expansion per144",
-    "Old-chat122 readback after trading priority"
-  ],
-  "evidence": [
-    "docs/PROJECT_CONTEXT/STRATEGY_DELIVERY_RESULT_147.md",
-    "docs/PROJECT_CONTEXT/STRATEGY_DELIVERY_RESULT_146.md",
-    "data/research/strategy_delivery146/final.json",
-    "data/research/strategy_delivery146/natural_first_cycle.json",
-    "docs/PROJECT_CONTEXT/STRATEGY_DELIVERY_RESULT_145.md",
-    "data/research/strategy_delivery145/accepted_readback.json",
-    "data/research/strategy_delivery145/immutable_readback.json",
-    "docs/PROJECT_CONTEXT/STRATEGY_DELIVERY_RESULT_144.md",
-    "data/research/strategy_delivery144/historical_training.json",
-    "docs/PROJECT_CONTEXT/NATIVE_EXIT_RESOLVED_143.md",
-    "docs/PROJECT_CONTEXT/OPENING_FUNNEL_AND_STRATEGY_141.md",
-    "data/research/opening141/acceptance.json"
-  ],
-  "cycle_status": "IN_PROGRESS",
-  "status": "LOCAL_CONTEXT_READY",
-  "revision": 25,
-  "digest": "58a1167c5d8728d369a149ad1d80bbb246dc554467e679b2760e5dd15d044777",
-  "workspace": "E:\\memeTrader",
-  "codex_session": "01a07b17-8f78-7cb1-bb4f-5d5d15607097",
-  "pairing_status": "REVALIDATION_REQUIRED",
-  "memory": "UNVERIFIED"
+    "Live stays locked; Paper only; no reset or re-initialization; new strategies join only at their own deployment frontier.",
+    "Do not modify or replace existing strategies; improvements arrive as NEW additional strategy modules.",
+    "Never loosen strict timing, identity, protocol-validity, account-truth or dead-surface rules to create trades.",
+    "Every optimization must be gradual and reversible, and must not break stability, realtime behaviour or accuracy."
+  ]
 }
+```
 
-Only this revision defines current work. Prior authored context is preserved in continuity-history; it is historical, not a task queue. Local readback does not verify Lead, Project memory or model.
+Only this revision defines current work. Historical rounds are audit evidence, not an active queue.
