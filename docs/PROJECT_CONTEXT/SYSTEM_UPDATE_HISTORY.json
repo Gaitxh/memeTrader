@@ -1353,6 +1353,20 @@
       "loaded_at": "2026-09-12T06:15:00Z",
       "visible_entry": "docs/PROJECT_CONTEXT/OBSERVATION_SURFACE_FACTS_20260912.md",
       "report": "docs/PROJECT_CONTEXT/OBSERVATION_SURFACE_FACTS_20260912.md"
+    },
+    {
+      "id": "20260912-rounds71to73-dc1-age-controlled-closure",
+      "recorded_at": "2026-09-12T06:45:00Z",
+      "title": "第71-73轮：DC-1终局结案（年龄受控对照证明为年龄假象）+ 第4条口径纪律",
+      "problem": "第71轮按机制类型比较结算转化率得出'普通机制99.6% vs 包装型多机制17%'的83点差距，指向'跨族并集机制导致持仓不结算'的工程缺陷假设。需要第二种独立口径复核。",
+      "change": "① 加入年龄受控：普通机制近60分钟同年龄段转化率 300/215=71.7%（而非全期99.6%），包装型多机制 46/3=6.5%，两者差距由'成熟度'解释——包装型臂持仓全部开于03:19-03:31，读取时为03:33，仅2-14分钟大，而持有上限30/60/90分钟。② 同年龄段普通机制对照臂表现相同（long_hold_control 3/2、deadpool_open_band 2/0、hold_hi_open_band 1/0、long_hold_steady_control 1/1、participant_breadth 1/1）。③ 结论：DC-1结案为非遗缺陷；新增第4条口径纪律——比较转化率/胜率/样本量必须固定年龄段。④ 汇总五轮误判清单：快照时点、LIKE通配过宽、窗口不覆盖、年龄未控制、单点观察外推。",
+      "rationale": "该现象消耗了十余轮预算，每轮都以新证据推翻前一解释；最终定案依赖'年龄受控+同龄对照'这一标准实验设计。把口径纪律与误判清单落盘，避免后续在新臂上重复同类错误。",
+      "validation": "只读查询：年龄受控分组统计（普通机制近60分钟300/215、包装型46/3）；同期新建普通机制臂的逐臂对照（1-3笔开仓、转化参差）；系统主体健康（普通臂全期28,545开仓/28,424结算）；policy additions 302；冻结错误 #265=392/#266=398 未增长；paper 与 live.enabled=false 不变。",
+      "scope": "更新 docs/PROJECT_CONTEXT/OBSERVATION_SURFACE_FACTS_20260912.md（新增4.4节：年龄受控对照表、第4条口径纪律、五轮误判清单）；未修改任何代码或策略。待办：A/B样本累积后判定；写销与拥挤度跟踪；同币并发上限授权。",
+      "commit": "",
+      "loaded_at": "2026-09-12T06:40:00Z",
+      "visible_entry": "docs/PROJECT_CONTEXT/OBSERVATION_SURFACE_FACTS_20260912.md",
+      "report": "docs/PROJECT_CONTEXT/OBSERVATION_SURFACE_FACTS_20260912.md"
     }
   ]
 }
