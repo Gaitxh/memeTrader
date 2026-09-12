@@ -1719,6 +1719,19 @@
       "next": "1) 把\"成交量是持续还是衰减\"作为写销真假的**标准判据**写入事实账本，供后续复用时不再犯同一错误：价格冻结 + 流动性为零 + **成交量单调衰减且买卖笔数相等** => 真死亡；价格冻结 + 流动性为零 + **成交量持续打印** => 疑似错误读数。2) 写销翻倍的结论维持第106轮：主要是拥挤（26 次池死亡被约 40 条臂放大），代币级死亡率 18.8% vs 15.3%。3) 既定待办不变：保留名额修复件（reserved_candidates）待接线；覆盖率取舍待用户决定。",
       "report": "docs/PROJECT_CONTEXT/ROUND82_LEFT_TAIL_RISK_GATES_20260912.md",
       "visible_entry": "docs/PROJECT_CONTEXT/ROUND82_LEFT_TAIL_RISK_GATES_20260912.md"
+    },
+    {
+      "id": "20260912-round108-reserved-slot-reach-and-revived-holder-lane",
+      "title": "第108-109轮：保留观察名额改为从**候选流**投放（第101轮 0/24 覆盖率的根因修复）；并发现唯一持有人数据源自 2026-09-03 起**静默停摆**，已在本部署中复活",
+      "recorded_at": "2026-09-12T13:30:00Z",
+      "problem": "第101轮已测出：mover 规则标记的集合与观察器实际持有的租约**重叠 0/24**。原因是保留名额只挂在**拒绝路径**（`skip_bucket_full`）上，而被标记的代币几乎从不作为候选进入准入循环，于是保留名额约 6 次/小时，设计值 32 次/小时。同时（本轮新发现）用户\"数据/特征层\"要求里的**持有人集中度/前十大持有人变化**在系统内**没有任何数据源**：`token_snapshots.holders` 全为 NULL。",
+      "change": "1) src/memetrader/runtime.py：新增 `_reserved_mover_quotes()`，把被标记代币**首次观测时**的那一帧（同一次已付费的抓取，不新增任何 HTTP 请求）缓存（有界，最新 64 条，超过 300 秒的帧直接丢弃而不当作现价使用），并在 pattern-observer 每 15 秒一次的准入步（`_remember_pattern_quotes(..., reserved_movers=True)`）里投放到候选流**头部**。注入发生在被动 cohort 快照之后，因此这些帧不会变成 cohort 证据；其余完全走原有准入循环：同样的上限、同样的资金门槛、同样的漏斗记录。2) 新增 `mover_reserved_injections` / `mover_injected_tokens` 计数与代币清单，使\"投放（reach）\"与\"录取（outcome）\"可以分开度量。3) src/memetrader/runtime.py：`solana_holder_shadow` 采集任务原本只存在于 **legacy 任务列表**，而当前 chain-meme-only 进程在该分支前就 return，因此该任务**从未被创建**——注册表、抽样、horizons 全部完好，只是不再被调度。现将同一任务（同一注册定义、同一 300 秒间隔、同一 3 次 RPC/观测、主机 api.mainnet-beta.solana.com 与 DEX 通道不同源）加入 chain-meme-only 分支。",
+      "rationale": "第101轮的因果结论是\"名额挂在拒绝路径\"，而不是\"名额不够\"。因此修复点是**候选流投放**，不是增加名额：若放宽上限，等于在未证明有效前扩大采集预算。持有人通道则是\"唯一数据源静默死亡\"：不清零、不报错、无 error case，只是游标停在 2026-09-03T14:58:25Z；用户的第 5 项要求（持有人集中度、前十大持有人变化、新增持有人增长）因此完全没有数据可依。",
+      "validation": "单元测试：tests/test_mover_reserved_wiring.py（8 项，用真实 runtime 方法 + stub 载体：投放判定、陈旧帧丢弃、已在 watch/优先通道则跳过、名额上限、注册表损坏时降级、以及 observer 调用点确实传 reserved_movers=True）；tests/test_holder_shadow_scheduling.py（4 项，**结构性**断言：任务必须出现在 chain-meme-only 分支的任务列表里、每个列表内最多调度一次、两个分支确实是两份不同的列表、且注册定义仍是 decision_eligible=False / affects=none / append_only / 无回填 / horizons 0-15-60-240）。回归：tests/test_mover_reserved_*.py 共 29 项全绿；pattern-watch 相关 8 个测试文件的失败集合与改动前**逐条一致**（各 18 项既有失败，Compare-Object 差异为空）。部署：18:59:55 重启（PID 42756/42100），`kv[runtime-loaded-manifest]` 的 runtime.py/store.py/observation_leases145.py 三个 SHA256 与磁盘**完全一致**，policy arms 441，definition_version 未变。上线后前 3.6 分钟实测：**注入 4 次**（修复前该路径的覆盖率为 0/24），被标记代币已有 3 个在 4 分钟内各自累计 **19 / 17 / 17 帧**（第101轮基线：保留名额内代币整段窗口只有 **1 帧**）；20 个被标记代币中 9 个 >=2 帧、3 个 >=10 帧；同时段 160 个未标记代币中仅 4 个 >=10 帧。保留名额分支计数为 0——这是**正确**行为：被标记代币在桶内尚有空位时以普通 base 候选被录取，名额留给真正需要越限的情形。",
+      "scope": "src/memetrader/runtime.py（新增 1 个方法、1 个 kwarg、1 个调度项、2 个计数器，默认行为不变）、tests/test_mover_reserved_wiring.py、tests/test_holder_shadow_scheduling.py、docs/PROJECT_CONTEXT/SYSTEM_UPDATE_HISTORY.json。未改动任何既有策略、参数或配置；paper 模式、live.enabled=false、资金周期与账本均未变。",
+      "next": "1) 观察 12-24 小时：注入/录取速率是否达到设计值（约 32 次/小时），被投放代币是否稳定拿到 ~30 帧，以及这些代币进入 entry 判断层的比例（同流动性分档下与被标记但未投放、以及未标记代币对比）。2) 持有人通道恢复后，先积累数据再评估其预测力（当前定义是研究用 shadow，decision_eligible=False，不进入交易决策）。3) 仍未决：观察面覆盖率取舍（dense ready pool 仅占 ready pool 约 10-15%），以及同代币并发上限是否从 shadow 转为强制。4) 结构/动量类新增臂的 A/B 样本仍不足（paired_arm_ab 阈值 20/边）。",
+      "report": "docs/PROJECT_CONTEXT/ROUND108_RESERVED_SLOT_REACH_AND_REVIVED_HOLDER_LANE_20260912.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/ROUND108_RESERVED_SLOT_REACH_AND_REVIVED_HOLDER_LANE_20260912.md"
     }
   ]
 }
