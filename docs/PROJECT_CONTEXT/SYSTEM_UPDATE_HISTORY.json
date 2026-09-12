@@ -1602,6 +1602,19 @@
       "next": "1) 以\"密集 vs 稀疏的间隔分布\"为长期验收口径，并按窗口滚动记录（密集侧目标 >=20 个间隔）。2) 仪表化仍待做：按纳管理由 admit_mover_reserved 统计保留名额自身的观测增量，把 +13% 预算验收收窄到保留槽位本身。3) 下一步的结构性问题是覆盖率而非可满足性：65 个 ready 池中只有 6 个密集，即当前 8 个保留槽位 + 既有密集通道合计只能覆盖约 9% 的 ready 池；要么提高覆盖（更多槽位/更长持有），要么承认在当前预算下这就是上限并据此调整预期。",
       "report": "docs/PROJECT_CONTEXT/ROUND89_RESERVED_ADMISSION_20260912.md",
       "visible_entry": "docs/PROJECT_CONTEXT/ROUND89_RESERVED_ADMISSION_20260912.md"
+    },
+    {
+      "id": "20260912-round94-reserved-admission-instrumented",
+      "title": "第94轮：保留槽位纳管仪表化（admit_mover_reserved 计数并入心跳）；并从观察集占用确认保留名额已越过每桶上限生效（bsc early 由上限 3 升到 6）",
+      "recorded_at": "2026-09-12T10:35:00Z",
+      "problem": "第89轮落地保留槽位纳管后，验收只能依赖\"新增采集量\"这一被天然热门币抬高的口径（读数 16.0%），无法把保留名额自身的开销与效果分离出来。第90-93轮三次记录该仪表化为待办。",
+      "change": "src/memetrader/runtime.py：在 admit_mover_reserved 分支累加 self._mover_reserved_admissions，并把 mover_reserved_admissions 与既有 mover_watch 一并写入 pattern-observer 心跳的 error_detail。纯仪表化，不改变任何纳管或交易行为。",
+      "rationale": "把 +13-14% 预算的验收从\"全部被标记代币\"收窄到\"保留槽位本身\"，需要按纳管理由计数；这是一个零风险、可复用的观测点，也是后续任何槽位份额调整的必要前置。",
+      "validation": "重载 2026-09-12T17:58:05+08:00。导入检查通过；test_mover_reserved_slots.py 6 项、test_mover_watchlist.py 7 项、test_mover_watchlist_retire.py 3 项全部通过。**独立佐证保留名额已生效**：观察集状态 kv[chain-meme-pattern-watch] 显示 non_held_by_chain_bucket 的 bsc early = **6**，而 BASE_CAPS 的每桶上限是 early=3 —— 即已有 3 个被标记代币越过桶上限被纳管，与保留 8 个名额的设计一致（其余链仍在 3/4/3 的上限内）。心跳明细的具体落库位置本轮未能定位（按表名匹配未找到 heartbeat 表），因此计数目前通过运行时属性持有；下轮可直接从进程内读取或改写入 kv。paper 模式、live.enabled=false、账本与资金周期均未变。",
+      "scope": "改动 src/memetrader/runtime.py（两处：计数器与心跳字段）、docs/PROJECT_CONTEXT/SYSTEM_UPDATE_HISTORY.json。",
+      "next": "1) 把 mover_reserved_admissions 落到可查询的位置（kv），以便跨窗口累计统计保留名额的纳管数与其观测增量。2) 用\"密集 vs 稀疏的 ready 行间隔分布\"（第92轮口径，密集侧目标 >=20 个间隔）继续滚动验收。3) 覆盖率问题仍待用户决定：65 个 ready 池中仅 6 个密集（约 9%），要么提高保留份额/延长租约（继续挤占既有策略观测供给），要么承认这是当前预算下的上限。",
+      "report": "docs/PROJECT_CONTEXT/ROUND89_RESERVED_ADMISSION_20260912.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/ROUND89_RESERVED_ADMISSION_20260912.md"
     }
   ]
 }
