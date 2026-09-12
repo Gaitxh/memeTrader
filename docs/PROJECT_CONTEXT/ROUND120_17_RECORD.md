@@ -195,7 +195,33 @@ deliberately sell out). **97 tests pass** across `test_exit150`, `test_alpha149`
 `test_pool_concentration`, `test_dex_start_gate`, `test_cohort_signal_payload`,
 `test_dust_read_guard`.
 
-## 4. What this round did NOT do
+## 4. Live confirmation (observed, not projected)
+
+Within two minutes of the restart the arms were registered at frontier **32175**
+(319 → 321 additions; the original three stayed at 15928, so append-only and
+per-arm frontiers held) and `exit150_full15_v1` produced its first full-capture exit:
+
+```
+21:20:08.556629Z  exit150_full15_v1  BUY   20.00   pattern_next_observation:preentry_obvious_scam_v1
+21:20:08.556629Z  exit150_full25_v1  BUY   20.00   pattern_next_observation:preentry_obvious_scam_v1
+...
+21:21:22.276815Z  exit150_full15_v1  TAKE_PROFIT_1  sell_raw=299032331375668
+21:21:24.622067Z  exit150_full15_v1  SELL  gross=23.7924  pnl=+3.7924476394387767
+```
+
+- `next_tp_index = 1`, `remaining_quantity_tokens = 0.0` — the tier sold the **entire**
+  position, which is precisely the full-capture semantics `store.py:35717` implements.
+- 20 U buy → 23.79 U sell = **+18.96%**, booking **+3.79 U** instead of round-tripping.
+- `exit150_full25_v1` took the **same** entry at the **same** timestamp and correctly did
+  **not** sell, because its tier is +25%. That is the 2×2 discriminating exactly as
+  designed, and it is an unplanned natural control on identical signal.
+
+Two properties are therefore confirmed in production rather than assumed: the
+carrier-clone contract delivers the same opportunity to every arm (identical fill
+timestamps), and the full-capture ladder behaves differently from the partial one at the
+same level.
+
+## 5. What this round did NOT do
 
 - Did not touch the evaluation write rate (P0-3, demoted — see §0).
 - Did not change the same-token concentration cap. It remains **OFF by default**; the
@@ -205,7 +231,7 @@ deliberately sell out). **97 tests pass** across `test_exit150`, `test_alpha149`
 - Did not claim the +4,178 U as realised. It is an in-sample replay whose benefit is
   83% concentrated in three tokens.
 
-## 5. Next actions
+## 6. Next actions
 
 1. **P0-1** — re-run `scripts/paired_arm_ab.py` as settled counts grow; when
    `alpha149_merged_multi_setup_v1` reaches ≥20 paired cohorts, add it to the pause list
@@ -220,7 +246,7 @@ deliberately sell out). **97 tests pass** across `test_exit150`, `test_alpha149`
 5. P0-3 (write rate) — background only; must first preserve the four `previous_features`
    carriers listed in §0.
 
-## 6. Probe artifacts
+## 7. Probe artifacts
 
 All under `data/research/diag_round120/` (gitignored), read-only:
 `r17_tightstop.py`, `r17_collapse_shape.py`, `r17_liquidity_warning.py`,
