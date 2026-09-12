@@ -1339,6 +1339,20 @@
       "loaded_at": "2026-09-12T05:50:00Z",
       "visible_entry": "docs/PROJECT_CONTEXT/OBSERVATION_SURFACE_FACTS_20260912.md",
       "report": "docs/PROJECT_CONTEXT/OBSERVATION_SURFACE_FACTS_20260912.md"
+    },
+    {
+      "id": "20260912-rounds68to70-dc1-correction",
+      "recorded_at": "2026-09-12T06:20:00Z",
+      "title": "第68-70轮：DC-1结案撤回（LIKE通配导致的口径错误）+ 五条操作约束 + 首次全量A/B判定（样本不足）",
+      "problem": "第68轮据 'arm_id LIKE alpha149_%flow%' 的统计宣称流量载体正常、DC-1结案；该模式同时匹配 flow_fade_steady / live_flow_revival / size_informed_flow 等更早的臂，数字失真。需按精确 arm_id 复核，并把反复出现的口径错误固化为操作约束。",
+      "change": "① 按精确 arm_id 全量重算：第35波四条臂各开仓7笔、已结算0笔 → DC-1未结案，撤回此前结论。② 登记同一现象的五次修正（评估未回写/配额/并发上限/标记稀疏与池身份/LIKE数字），共同根因是我使用过宽或过窄的查询口径，而非系统缺陷。③ 新增强制操作约束：涉及具体新臂一律用精确 arm_id 列表、禁用 LIKE 通配；判断样本用按臂全量或覆盖全部开仓批次的窗口并先看最新开仓时间；任何'0样本/停滞/缺陷'结论必须用第二种独立口径复核后才能发布。④ 首次全量 A/B 判定（6对）：每侧结算 0–2 笔，全部远低于门槛 → 不产出策略结论；唯一干净对照是开放带载体对照臂 2/3（两笔盈利）vs 流量载体 0/14，但样本不足以断言载体差异。",
+      "rationale": "连续五轮在同一现象上得出错误结论，代价是大量轮次预算；把'口径纪律'写成硬约束并落盘，比继续追查该现象更有价值——样本不足时任何进一步推断都不可靠。",
+      "validation": "只读查询：精确 arm_id 全量统计（四条臂各 7 开仓 / 0 结算）；6 对 A/B 全量汇总；系统整体正常（近180分钟各老臂结算 19–26 笔，最新结算 03:30:36）；policy additions 302；冻结错误 #265=392/#266=398 未增长；paper 与 live.enabled=false 不变。",
+      "scope": "更新 docs/PROJECT_CONTEXT/OBSERVATION_SURFACE_FACTS_20260912.md（新增 4.3 更正与操作约束）；未修改任何代码或策略。待办：样本累积后重做载体对照；写销与拥挤度跟踪；同币并发上限授权。",
+      "commit": "",
+      "loaded_at": "2026-09-12T06:15:00Z",
+      "visible_entry": "docs/PROJECT_CONTEXT/OBSERVATION_SURFACE_FACTS_20260912.md",
+      "report": "docs/PROJECT_CONTEXT/OBSERVATION_SURFACE_FACTS_20260912.md"
     }
   ]
 }
