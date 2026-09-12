@@ -191,6 +191,43 @@ def coverage(con, version, minutes):
     return result
 
 
+def shadow_cap(con, version, minutes, cap=10):
+    """Shadow same-token concurrency cap: what WOULD a cap have blocked?
+
+    Read-only by construction - it replays the window's own position openings in time
+    order and marks the ones that exceed the cap-th distinct arm on that token. It
+    never writes, never blocks and never changes an existing arm's behaviour; it only
+    measures the size of the blast radius the user asked about.
+    """
+    window = f"-{int(minutes)} minute"
+    rows = [dict(r) for r in con.execute(
+        "SELECT token_id, arm_id, opened_at, status, stake_usd, realized_pnl_usd "
+        "FROM chain_meme_trader_positions WHERE definition_version=? "
+        "AND julianday(opened_at)>=julianday('now',?) ORDER BY opened_at", (version, window))]
+    seen: dict[str, set] = {}
+    blocked, allowed = [], []
+    for row in rows:
+        arms = seen.setdefault(row["token_id"], set())
+        if row["arm_id"] not in arms and len(arms) >= cap:
+            blocked.append(row)
+        else:
+            arms.add(row["arm_id"])
+            allowed.append(row)
+    def total(items):
+        return round(sum(float(item["realized_pnl_usd"] or 0.0) for item in items), 2)
+    tokens = {}
+    for row in rows:
+        tokens[row["token_id"]] = tokens.get(row["token_id"], 0) + 1
+    worst = sorted(tokens.items(), key=lambda kv: -kv[1])[:5]
+    return {"cap": cap, "window_minutes": int(minutes), "positions": len(rows),
+            "blocked_positions": len(blocked),
+            "blocked_share_pct": round(100.0 * len(blocked) / max(1, len(rows)), 2),
+            "blocked_realized_pnl": total(blocked), "allowed_realized_pnl": total(allowed),
+            "total_realized_pnl": total(rows),
+            "blocked_tokens": len({row["token_id"] for row in blocked}),
+            "worst_tokens": [{"token_id": token, "positions": count} for token, count in worst]}
+
+
 def stability(con, hours):
     unresolved = [dict(row) for row in con.execute(
         "SELECT area, component, error_type, message_safe, occurrence_count, first_seen_at, last_seen_at "
@@ -259,6 +296,14 @@ def reviews(metrics):
         flags.append(dict(level="warn", code="single_token_concurrent_exposure",
                           detail=f"{concurrent.get('token_id')} holds {concurrent.get('arms')} arms "
                                  f"({concurrent.get('stake')}U) at once"))
+    shadow = metrics.get("shadow_cap") or {}
+    if (shadow.get("blocked_share_pct") or 0) > 20:
+        flags.append(dict(level="info", code="shadow_cap_would_block_large_share",
+                          detail=f"a {shadow.get('cap')}-arm same-token cap would have blocked "
+                                 f"{shadow.get('blocked_positions')} of {shadow.get('positions')} "
+                                 f"positions ({shadow.get('blocked_share_pct')}%) worth "
+                                 f"{shadow.get('blocked_realized_pnl')}U realized "
+                                 f"(observation only: nothing is blocked)"))
     if (metrics["capacity"]["cash_p10"] or 0) < 5.0:
         flags.append(dict(level="warn", code="capacity_floor",
                           detail=f"p10 arm cash {metrics['capacity']['cash_p10']}U"))
@@ -313,6 +358,11 @@ def markdown(metrics):
         f"- arm cash p10 {metrics['capacity']['cash_p10']}U p50 {metrics['capacity']['cash_p50']}U · "
         f"below 2U: {metrics['capacity']['arms_below_2usd']} · "
         f"below 20U: {metrics['capacity']['arms_below_20usd']}",
+        f"- shadow same-token cap ({metrics['shadow_cap']['cap']} arms, "
+        f"{metrics['shadow_cap']['window_minutes']} min, OBSERVATION ONLY): would block "
+        f"{metrics['shadow_cap']['blocked_positions']}/{metrics['shadow_cap']['positions']} "
+        f"positions ({metrics['shadow_cap']['blocked_share_pct']}%) whose realized result was "
+        f"{metrics['shadow_cap']['blocked_realized_pnl']}U",
         f"- unresolved error cases: {len(metrics['stability']['unresolved_errors'])} · "
         f"new in window: {len(metrics['stability']['new_error_cases'])}",
         "",
@@ -341,6 +391,7 @@ def main():
             "definition_version": version,
             "funnel": funnel(con, version, args.minutes),
             "coverage": coverage(con, version, args.minutes),
+            "shadow_cap": shadow_cap(con, version, max(args.minutes, 240)),
             "economics": economics(con, version, args.hours),
             "capacity": capacity(con, version),
             "stability": stability(con, args.hours),

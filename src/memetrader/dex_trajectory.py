@@ -93,11 +93,21 @@ def derive(rows):
     volume_rate=ratio(now.get('volume_5m_usd'),m5span)
     volume_hour_rate=ratio(now.get('volume_1h_usd'),h1span)
     tx_rate=ratio(tx,m5span);tx_hour_rate=ratio(hour_tx,h1span)
+    # Round 3: participant counts, now parsed from the provider payloads instead of
+    # being dropped. None whenever the provider does not publish them.
+    buyers_now=number(now.get('buyers_5m'))
+    buyers_prev=number(rows[-2].get('buyers_5m')) if len(rows)>=2 else None
+    buyers_growth=ratio(buyers_now,buyers_prev)
+    # Unique buyers per BUY (not per trade): near 1 means each buy came from its own
+    # wallet, a low value means few wallets bought repeatedly (bundling proxy).
+    participants_per_trade=ratio(buyers_now,number(now.get('buys_5m')))
     f=dict(version=VERSION,observed_at=now['observed_at'],ingested_at=now['ingested_at'],
         recorded_at=now['recorded_at'],token_id=now['token_id'],pair_address=now['pair_address'],
         chain=now['chain'],provider=now['provider'],pool_age_seconds=age,frames=len(rows),windows=wins,
         continuity_started_at=rows[0]['observed_at'],
-        current={key:now.get(key) for key in ('price_usd','liquidity_usd','volume_5m_usd','buys_5m','sells_5m','observed_at')},
+        current={key:now.get(key) for key in ('price_usd','liquidity_usd','volume_5m_usd','buys_5m','sells_5m','buyers_5m','observed_at')},
+        buyers_5m=buyers_now,buyers_growth_5m=buyers_growth,
+        participants_per_trade_5m=participants_per_trade,
         buy_count_share=ratio(now.get('buys_5m'),tx),reported_avg_notional_usd=ratio(now.get('volume_5m_usd'),tx),
         volume_acceleration_age_normalized=ratio(volume_rate,volume_hour_rate),
         tx_acceleration_age_normalized=ratio(tx_rate,tx_hour_rate),
@@ -164,7 +174,7 @@ class Engine:
 
     def accept(self,row,now):
         now=parse_time(now);row=dict(row)
-        for key in ('price_usd','liquidity_usd','volume_5m_usd','volume_1h_usd','buys_5m','sells_5m','buys_1h','sells_1h','pool_age_seconds','fdv_usd'):
+        for key in ('price_usd','liquidity_usd','volume_5m_usd','volume_1h_usd','buys_5m','sells_5m','buys_1h','sells_1h','pool_age_seconds','fdv_usd','buyers_5m'):
             row[key]=number(row.get(key))
         try:
             observed,ingested,recorded=(parse_time(row[k]) for k in ('observed_at','ingested_at','recorded_at'))

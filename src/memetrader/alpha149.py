@@ -275,6 +275,11 @@ SPECS = {
     # write-off rate is 4.1% against 1.9% for 5-20; both arms keep every protection.
     'alpha149_open_band_v1': ('survivable_open_band', '开放带·FDV比>20(1U)', 30),
     'alpha149_open_band_score_v1': ('open_band_scored', '开放带×评分门(1U)', 30),
+    # wave 27 (round 3b): participant facts, now parsed instead of dropped. Measured:
+    # 0 of the newest 20,000 snapshots had buyers_5m filled while the same rows'
+    # raw_json carried `buyers` 864 times. These arms are the first that read it.
+    'alpha149_participant_growth_v1': ('participant_growth', '新参与者增长(直观测)', 30),
+    'alpha149_participant_breadth_v1': ('participant_breadth', '参与广度·低捆绑代理', 30),
 }
 EXIT_ARMS = {
     'alpha149_profit_decay_exit_v1': 'alpha149_profit_decay',
@@ -997,6 +1002,24 @@ OVERRIDES = {
                     'score149 过门（≥55、覆盖率≥0.60、必需维度齐全）。'
                     '两臂构成同池条件、同退出、阈值两侧的A/B，用于检验评分在"高FDV/深度档"里'
                     '能否把质量分开——这是评分门在放量后的真正检验场。'),
+    # ---- wave 27 (round 3b): participant facts, parsed instead of dropped --------
+    'alpha149_participant_growth_v1': dict(
+        notional_usd=2.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_size_informed_flow_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='新参与者增长（2U，30分钟）：系统原先只能用"成交额增速÷笔数增速"代理新参与者，'
+                    '第3轮发现 provider 负载里一直带着 buyers/sellers 却从未解析入库，'
+                    '本条臂改用直观测：本帧5分钟买家数 ≥ 前帧×1.2、买盘占比≥55%、'
+                    '深度≥3000U且不流失。provider 不提供该字段时不触发（缺失不推断）。'
+                    '对照臂：alpha149_size_informed_flow_v1（同一意图的代理实现）。'),
+    'alpha149_participant_breadth_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_sf_extreme_buy_pressure_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='参与广度·低捆绑代理（1U，30分钟）：5分钟独立买家数÷买笔数 ≥0.6'
+                    '（买入来自不同钱包而非少数钱包反复买入）、买盘占比≥60%、深度≥3000U且不流失。'
+                    '这是"是否捆绑"的可实现代理，命名与规则文本都写明它不是钱包簇证据；'
+                    '系统当前仍无钱包簇/持有人数据，该缺口继续在报告中标注。'),
 }
 
 
@@ -1620,6 +1643,25 @@ def mechanisms(f):
         out['regime_risk_on'] and out['age_rate_acceleration']
         and fdv_liq is not None and fdv_liq <= 20.0)
 
+    # 35. Wave 27: direct participant observations (no longer a proxy).
+    #     `buyers_growth_5m` compares this frame's 5-minute buyer count with the
+    #     previous frame's - more wallets arriving than the frame before - and
+    #     `participants_per_trade_5m` is unique buyers per buy, i.e. a low value means
+    #     the same wallets are buying repeatedly (a bundling/recycling proxy).
+    #     Both are None unless the provider actually publishes them.
+    buyers_growth = _num(f.get('buyers_growth_5m'))
+    participants_per_trade = _num(f.get('participants_per_trade_5m'))
+    out['participant_growth'] = bool(
+        buyers_growth is not None and buyers_growth > 1.2
+        and buy_share is not None and buy_share >= .55
+        and liquidity is not None and liquidity >= 3000
+        and liq_now is not None and prev_depth is not None and liq_now >= prev_depth * .98)
+    out['participant_breadth'] = bool(
+        participants_per_trade is not None and participants_per_trade >= .6
+        and buy_share is not None and buy_share >= .6
+        and liquidity is not None and liquidity >= 3000
+        and liq_now is not None and prev_depth is not None and liq_now >= prev_depth)
+
     # 34. Wave 26: the open band's own score-gated variant, evaluated after the
     #     score so the two arms form the same A/B as wave 24 but on the newly
     #     reachable tier (62.2% of observed frames instead of 0.5%).
@@ -1875,6 +1917,13 @@ RULES = {
                             '实测写销率该档4.1%（5-20档1.9%、<1档44.1%），'
                             '而实时计数器显示62.2%的帧落在该档、仅0.5%落在1-20带。',
     'open_band_scored': '开放带×评分门：开放带成立且 score149 过门（≥55、覆盖率≥0.60、必需维度齐全）。',
+    # wave 27
+    'participant_growth': '新参与者增长（直观测，非代理）：本帧5分钟买家数 ≥ 前帧×1.2、买盘占比≥55%、'
+                          '深度≥3000U 且不流失。数据来自 provider 负载中的 buyers（第3轮起解析入库），'
+                          'provider 不提供该字段时机制为 False，不做任何替代推断。',
+    'participant_breadth': '参与广度/低捆绑代理：5分钟"独立买家数÷买笔数" ≥0.6（每笔买入来自不同钱包的比例），'
+                           '买盘占比≥60%、深度≥3000U 且不流失。该比值低意味着少数钱包反复买入'
+                           '（捆绑/自成交的代理信号），但它不是钱包簇证据。',
     # wave 23
     'alpha149_trend_break': '结构破坏退出：30秒速度为负 且 回撤≥12% 且 笔数不再扩张 且 价格趋势拟合R²<0.35'
                             '（四项必须真实存在，缺失不推断）同时成立才退出。',

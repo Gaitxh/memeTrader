@@ -12201,6 +12201,14 @@ class Store:
         token_id = f"{snap.chain.lower()}:{snap.address}"
         ingested_at = snap.ingested_at or utcnow()
         recorded_at = utcnow()
+        # Round 3: the participant counts the providers already send were never parsed
+        # into their column (measured: 0 of the newest 20,000 rows had buyers_5m while
+        # the same rows' raw_json carried `buyers` 864 times). Fill it from the stored
+        # payload when the collector did not supply it; a missing count stays NULL.
+        buyers_5m = snap.buyers_5m
+        if buyers_5m is None and snap.raw:
+            from . import participant_flow
+            buyers_5m = participant_flow.buyers_5m(snap.raw)
         cursor = self.db.execute(
                 """
                 INSERT INTO token_snapshots(
@@ -12212,7 +12220,7 @@ class Store:
                     token_id, iso(snap.observed_at), iso(ingested_at), iso(recorded_at), snap.provider,
                     snap.price_usd, snap.liquidity_usd,
                     snap.market_cap_usd, snap.volume_5m_usd, snap.buys_5m, snap.sells_5m,
-                    snap.buyers_5m, snap.holders, snap.buy_tax_pct, snap.sell_tax_pct,
+                    buyers_5m, snap.holders, snap.buy_tax_pct, snap.sell_tax_pct,
                     None if snap.honeypot is None else int(snap.honeypot),
                     None if snap.sellable is None else int(snap.sellable), self._json(snap.raw),
                 ),
