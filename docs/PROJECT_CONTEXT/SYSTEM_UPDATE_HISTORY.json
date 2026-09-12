@@ -1628,6 +1628,19 @@
       "next": "1) 覆盖率仍是唯一未解的结构取舍：密集 ready 池占比约 15%，即现有 8 个保留槽位 + 既有密集通道覆盖约六分之一的 ready 池；提高覆盖（更多槽位/更长租约）需继续挤占既有策略观测供给，属用户决策。2) 保留名额计数（mover_reserved_admissions）仍只存在于运行时属性，应落到 kv 以跨窗口累计。3) 等密度检验（flagged+dense vs unflagged+dense）待各自样本足够后补做，用于给动量规则本身定价，与它所触发的密度分开。",
       "report": "docs/PROJECT_CONTEXT/ROUND92_PER_EVALUATION_METRIC_20260912.md",
       "visible_entry": "docs/PROJECT_CONTEXT/ROUND92_PER_EVALUATION_METRIC_20260912.md"
+    },
+    {
+      "id": "20260912-round97-reserved-admission-counter-verified",
+      "title": "第97轮：保留名额计数已在 kv 中可查并读到非零（mover_reserved_admissions=3），第90/91/93/94 轮反复登记的仪表化待办结案",
+      "recorded_at": "2026-09-12T10:55:00Z",
+      "problem": "第90、91、93、94 轮连续登记同一件待办：把保留名额的纳管数落到可查询位置，以便把获批 +13-14% 采集预算的验收从\"全部被标记代币\"（读数 16.0%，被天然热门币抬高）收窄到保留槽位本身。第96轮把计数器写入 kv，本轮验证其确实可读且会增长。",
+      "change": "本轮不改动源码：仅验证第96轮落地的 kv 字段。",
+      "rationale": "仪表化只有在能读到非零值时才闭环；mover_reserved_admissions 从进程启动时的 0 增长到 3，说明保留纳管路径确实被走到了，而不是一个恒为 0 的死计数器。",
+      "validation": "读 kv[chain-meme-pattern-watch]：10:11:32Z 检查点为 mover_reserved_admissions=0、mover_watching=24、watched=37；10:21:36Z 检查点为 **mover_reserved_admissions=3**、mover_watching=14、watched=32、sampled=0。即计数器在一个 10 分钟窗口内由 0 增至 3，保留纳管路径确实在被使用（每个进程自启动累计，与既有 replacements_since_start / borrows_since_start 口径一致）。同期 non_held_by_chain_bucket 显示 solana early=4、bsc early=3，仍在各桶上限附近波动。paper 模式、live.enabled=false、账本与资金周期均未变。",
+      "scope": "仅文档：docs/PROJECT_CONTEXT/SYSTEM_UPDATE_HISTORY.json（本条目）。未改动源码或配置。",
+      "next": "1) 预算验收闭环的最后一步：把保留纳管代币的**观测增量**也按同一理由累计，即可直接核对 8 个保留槽位是否把 +13% 用在了目标代币上。2) 覆盖率取舍仍待用户决定（密集 ready 池占比约 15%）。3) 等密度检验（flagged+dense vs unflagged+dense）待样本足够。",
+      "report": "docs/PROJECT_CONTEXT/ROUND89_RESERVED_ADMISSION_20260912.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/ROUND89_RESERVED_ADMISSION_20260912.md"
     }
   ]
 }
