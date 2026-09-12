@@ -25959,6 +25959,12 @@ class Store:
                 from .alpha149 import Engine as _Alpha149Engine
                 self._alpha149 = _Alpha149Engine(utcnow())
             return self._alpha149
+        if name == "alpha149_broad":
+            # Wave 38/39 additive routing: the wide multi-provider namespace that only
+            # the alpha149 broad arms read. It is a separate pool set on the same
+            # engine object, so nothing here touches the dex-only routing above.
+            engine = getattr(self, "_alpha149", None)
+            return getattr(engine, "_broad", None) if engine is not None else None
         return getattr(self, "_dex_trajectory", None)
 
     def register_chain_meme_universe_outcomes(
@@ -27207,6 +27213,19 @@ class Store:
                     observed=trajectory.pools.get((token.token_id,pair_address),{}).get('features',{}) if trajectory else {}
                     if observed.get('observed_at')!=iso(snapshot.observed_at) or not observed.get('windows',{}).get('30'):
                         entry_blocked[p['arm_id']]='await_distinct_dex_trajectory_frame'
+                if p.get('requires_distinct_wide_frame'):
+                    # The same next-frame confirmation contract, on the wide multi-provider
+                    # surface: the pool must exist there, the frame must be THIS observation,
+                    # and the trajectory must already hold an earlier observation of the same
+                    # pool. A 30-second window is impossible on a surface that is observed at
+                    # a 60-120s cadence, and the wide-surface mechanisms read that two-frame
+                    # view, so the second row is exactly the evidence they were computed on.
+                    wide=self._trajectory_engine_for({'trajectory_engine':'alpha149_broad'})
+                    state=wide.pools.get((token.token_id,pair_address)) if wide is not None else None
+                    features=(state or {}).get('features') or {}
+                    if (features.get('observed_at')!=iso(snapshot.observed_at)
+                            or len((state or {}).get('rows') or ())<2):
+                        entry_blocked[p['arm_id']]='await_distinct_wide_frame'
                 if p["arm_id"] in limited and occupied.get(p["arm_id"], 0) >= limited[p["arm_id"]]:
                     entry_blocked[p["arm_id"]] = "strategy_open_slot_limit"
                 elif p.get("entry_filter", {}).get("single_token_lifetime_entry") and self.db.execute(

@@ -177,6 +177,9 @@ class Engine:
     # ADDITIVE subclass can observe a wider surface without changing this engine's
     # own rule: the default below is the exact string this gate always used.
     PROVIDER_PREFIX='dexscreener'
+    # A pool's accumulated rows are discarded when two observations are further
+    # apart than this. Also a class attribute, with the exact previous default.
+    MAX_GAP_SECONDS=30
 
     def __init__(self, started):
         self.started=parse_time(started);self.pools=OrderedDict();self.counts=Counter();self.recent=deque(maxlen=32)
@@ -204,7 +207,7 @@ class Engine:
             if len(self.pools)>=MAX_POOLS:self.pools.popitem(last=False);self.counts['evicted']+=1
             state={'rows':deque(maxlen=MAX_FRAMES),'signals':{},'first_at':row['recorded_at']};self.pools[identity]=state
         rows=state['rows']
-        if rows and row['t']-rows[-1]['t']>30:
+        if rows and row['t']-rows[-1]['t']>self.MAX_GAP_SECONDS:
             gap=row['t']-rows[-1]['t']
             self.counts['gap:30_60s' if gap<=60 else 'gap:60_120s' if gap<=120 else 'gap:over120s']+=1
             rows.clear();state['signals'].clear();self.counts['gap_reset']+=1

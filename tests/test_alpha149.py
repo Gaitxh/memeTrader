@@ -149,12 +149,19 @@ def test_new_arms_are_shaped_and_isolated_by_engine_field():
     assert set(policies) == set(alpha149.ALL_ARMS)
     for arm, policy in policies.items():
         assert policy["paired_opportunity_group"] == "alpha149_v1"
-        assert policy["requires_distinct_trajectory_frame"] is True
         assert policy["decision_eligible"] is True and policy["affects"] == "paper_only"
         assert policy["assessment_status"] == "INSUFFICIENT"
         assert policy["feature_contract"] == alpha149.VERSION
         assert policy["entry_filter"]["direction"] == arm
-        assert policy["trajectory_engine"] == "alpha149"
+        if alpha149._is_broad_arm(arm):
+            # Wave 38/39: the wide-surface arms keep the same contract on the wide
+            # namespace, with the next-frame confirmation moved to that surface.
+            assert policy["trajectory_engine"] == "alpha149_broad"
+            assert policy["requires_distinct_trajectory_frame"] is False
+            assert policy["requires_distinct_wide_frame"] is True
+        else:
+            assert policy["requires_distinct_trajectory_frame"] is True
+            assert policy["trajectory_engine"] == "alpha149"
     step = policies["alpha149_step_pump_fast_v1"]
     assert (step["notional_usd"], step["entry_filter"]["max_concurrent_positions"]) == (1.0, 1)
     assert step["absolute_max_hold_seconds"] == 300

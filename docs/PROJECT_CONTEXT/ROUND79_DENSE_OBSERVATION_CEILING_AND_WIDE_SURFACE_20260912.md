@@ -157,3 +157,124 @@ show when that starts to happen.
    the add-only strategy boundary and need an explicit decision about request budget.
 5. Existing pending A/B verdicts are unchanged: wave 28/29/33-37 pairs still need >=20 opens per
    side; `dense_flow_v1` / `dense_flow_hold_v1` are at 5 opens each.
+
+## 7. The break between the wide surface and the entry layer (found and fixed this round)
+
+The wide surface started producing real signals within ten minutes of the reload
+(`signal:alpha149_broad_decorr_young_v1` 19, `signal:alpha149_broad_goldendog_band_v1` 13), and the
+signals did reach the projection layer - 77 evaluation rows in a 12,000-row window carried them.
+But **not one entry decision was ever written** for either arm. Every one of those evaluations
+recorded
+
+```
+outcomes["alpha149_broad_decorr_young_v1"]  = "await_distinct_dex_trajectory_frame"
+outcomes["alpha149_broad_goldendog_band_v1"] = "await_distinct_dex_trajectory_frame"
+```
+
+The gate is `store.py`:
+
+```python
+if p.get('requires_distinct_trajectory_frame'):
+    trajectory = self._trajectory_engine_for(p)
+    observed = trajectory.pools.get((token.token_id, pair_address), {}).get('features', {})
+    if observed.get('observed_at') != iso(snapshot.observed_at) or not observed.get('windows', {}).get('30'):
+        entry_blocked[p['arm_id']] = 'await_distinct_dex_trajectory_frame'
+```
+
+Two independent reasons it can never pass for a wide-only pool:
+
+1. `_trajectory_engine_for` routed by the arm's registered `trajectory_engine` field, which was
+   `alpha149` for every ALPHA149 arm, so the lookup always used the **dex-only** namespace.
+2. Even with the right namespace, the gate demands `windows['30']`, and `dex_trajectory.window()`
+   returns `None` unless the window holds **>=3 frames spanning <=40s with no gap >30s**. A
+   surface observed at a 60-120s cadence can never satisfy that.
+
+### 7.1 What was changed
+
+- `store.py::_trajectory_engine_for` gains an additive `alpha149_broad` branch that returns the
+  wide namespace (`engine._broad`). `v144`, `alpha149` and the default are untouched.
+- `store.py` gains an additive `requires_distinct_wide_frame` gate, placed directly after the
+  existing one, which applies only to arms carrying that field and checks the **same
+  next-frame confirmation contract** on the wide surface: the pool must exist there, the frame
+  must be *this* observation, and the trajectory must already hold an earlier observation of the
+  same pool. The second row is exactly the evidence the wide-surface mechanisms were computed on
+  (they read the two-frame view), so the contract is preserved rather than disabled.
+- `alpha149.py` waves 39 and 40 route the wide arms at that namespace and record the contract.
+
+### 7.2 The append-only ledger forced a new arm id
+
+The four wave-38/39 wide arms had already been appended to
+`chain_meme_trader_policy_additions` **before** the contract change, and the entry gate reads the
+arm's **registered** `policy_json`. The ledger blocks UPDATE and DELETE by trigger, and
+re-registration skips arms that already exist, so the stored contract cannot be corrected in
+place. Verified in the ledger:
+
+| row | arm | trajectory_engine | requires_distinct_trajectory_frame | requires_distinct_wide_frame |
+| --- | --- | --- | --- | --- |
+| 463 | `alpha149_broad_band_v1` | `alpha149` | True | None |
+| 464 | `alpha149_broad_flow_v1` | `alpha149` | True | None |
+| 465 | `alpha149_broad_decorr_young_v1` | `alpha149` | True | None |
+| 466 | `alpha149_broad_goldendog_band_v1` | `alpha149` | True | None |
+| **467** | **`alpha149_wide_decorr_young_v1`** | **`alpha149_broad`** | **False** | **True** |
+| **468** | **`alpha149_wide_goldendog_band_v1`** | **`alpha149_broad`** | **False** | **True** |
+
+Rows 463-466 stay exactly as registered and remain blocked by their own contract. Wave 40
+therefore registers two **new** arms with the corrected contract (308 -> 310 additions) instead
+of rewriting anything.
+
+### 7.3 Result
+
+Four minutes after the wave-40 reload, the newest evaluations carrying those arms read:
+
+| arm | outcome | rows |
+| --- | --- | --- |
+| `alpha149_wide_decorr_young_v1` | `cohort_frozen_opportunity_ready` | 16 |
+| `alpha149_wide_decorr_young_v1` | `await_distinct_wide_frame` | 1 |
+| `alpha149_wide_goldendog_band_v1` | `await_distinct_wide_frame` | 13 |
+| `alpha149_wide_goldendog_band_v1` | `cohort_frozen_opportunity_ready` | 2 |
+
+`cohort_frozen_opportunity_ready` is the normal pre-entry state (the frozen opportunity is
+waiting for its later observed fill). The arms have left the dead state for the first time.
+
+## 8. Wave 39 measurement: the wide surface's own kind profile
+
+`broad_ready:*` counters, wide surface, first ~20 minutes (184 evaluations):
+
+| kind | hits |
+| --- | --- |
+| `sf_young_turnover` | 51 |
+| `righttail_lottery` | 31 |
+| `sf_quiet_absorption` | 26 |
+| `decorr_young` | 20 |
+| `merged_multi_setup` | 15 |
+| `goldendog_liquidity_band` | 14 |
+| `df_price_up_liquidity_up` | 10 |
+| `sf_goldendog_deep_base` | 8 |
+| `sf_deep_low_fdv` | 7 |
+| `sf_extreme_buy_pressure` | 5 |
+| `df_activity_jump` | 4 |
+| `survivable_open_band` (mirrored as `broad_band`) | **0** |
+| `flow_entry` (mirrored as `broad_flow`) | **0** |
+
+Two conclusions:
+
+1. **The wave-37 question is settled.** `decorr_young` was never a threshold problem: it fired 0
+   times in ~1,500 primary-surface frames and 20 times in the wide surface's first 184. Frame
+   supply was the whole story.
+2. The wide surface is a **young-pool** surface: `age_30_180m` is 0 across all wide frames, so
+   the `survivable_open_band` mirror can never fire there. Wave 39/40 therefore bind the wide
+   arms to the young-pool kinds the surface actually produces.
+
+## 9. Cost and stability after all four reloads
+
+| quantity | before wave 38 | after |
+| --- | --- | --- |
+| alpha149 `pools` | 67 | 27-64 (primary) + 87-158 (wide) |
+| `alpha149_features` duration p50 / p95 | 0.49 ms / 1.11 ms | 0.41 ms / 0.57 ms |
+| new `system_error_cases` after reloads | - | none (last case #279 at 03:36:45Z, before the first reload) |
+| `dex_trajectory.Engine` defaults | 30s gap, `dexscreener` prefix | identical (class attributes, same default values) |
+
+One methodology correction from this round: an apparent "new defect, `native-paper-held
+ValueError` +90 in 3 minutes" was an artifact of a top-12 error list truncation - the error's
+`last_seen_at` was 03:09:43Z, 45 minutes before the sample. No new defect. Recorded because the
+same trap (comparing two differently-truncated lists) is a fifth way to mis-read this database.

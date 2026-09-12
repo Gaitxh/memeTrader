@@ -60,6 +60,32 @@ def test_broad_engine_admits_every_provider_but_one_provider_per_pool():
     assert same is not None
 
 
+def test_broad_engine_keeps_a_coarse_second_frame():
+    """The wide surface is fed at 60-120s cadence, so it keeps the previous frame."""
+    engine = alpha149._BroadEngine('2026-09-11T00:00:00Z')
+    assert engine.MAX_GAP_SECONDS == 300
+    assert dex.Engine.MAX_GAP_SECONDS == 30
+    engine.accept(_frame('geckoterminal', '2026-09-11T00:00:01Z'), '2026-09-11T00:00:05Z')
+    second = engine.accept(_frame('geckoterminal', '2026-09-11T00:01:31Z', price=1.02),
+                           '2026-09-11T00:01:35Z')
+    assert second is not None
+    state = engine.pools[('solana:T', 'P')]
+    assert len(state['rows']) == 2
+    assert engine.counts['gap_reset'] == 0
+    payload = engine.signals_for('solana:T', 'P', '2026-09-11T00:01:35Z')
+    assert isinstance(payload, dict)
+
+
+def test_the_shared_engine_still_resets_on_a_coarse_gap():
+    """The default must stay exactly 30s for every existing user of the engine."""
+    engine = dex.Engine('2026-09-11T00:00:00Z')
+    engine.accept(_frame('dexscreener', '2026-09-11T00:00:01Z'), '2026-09-11T00:00:05Z')
+    engine.accept(_frame('dexscreener', '2026-09-11T00:01:31Z', price=1.02),
+                  '2026-09-11T00:01:35Z')
+    assert engine.counts['gap_reset'] == 1
+    assert len(engine.pools[('solana:T', 'P')]['rows']) == 1
+
+
 # --------------------------------------------------------------------------- #
 # the alpha149 engine routes the two surfaces without touching the old one
 # --------------------------------------------------------------------------- #
@@ -109,7 +135,7 @@ def test_snapshot_reports_the_wide_surface_separately():
     engine.accept(_frame('geckoterminal', '2026-09-11T00:00:01Z'), '2026-09-11T00:00:05Z')
     snap = engine.snapshot()
     assert snap['broad_surface']['pools'] == 1
-    assert list(snap['broad_surface']['arms']) == list(alpha149._BROAD_ARMS)
+    assert list(snap['broad_surface']['arms']) == list(alpha149.BROAD_SURFACE_ARMS)
     assert snap['broad_surface']['provider_prefix'] == ''
     assert snap['pools'] == 0
 
@@ -157,12 +183,13 @@ def test_wave38_arms_are_additive_and_keep_family_identity():
     from memetrader.cohort_experiments import cohort_experiment_policies
     policies = {p['arm_id']: p for p in alpha149.policies(cohort_experiment_policies()[2])}
     assert len(alpha149.ALL_ARMS) == len(set(alpha149.ALL_ARMS))
-    for arm in alpha149._BROAD_ARMS:
+    for arm in alpha149.BROAD_SURFACE_ARMS:
         policy = policies[arm]
         assert policy['feature_contract'] == alpha149.VERSION
-        assert policy['trajectory_engine'] == 'alpha149'
         assert policy['notional_usd'] == 1.0
-        assert policy['provider_prefix_family'] if 'provider_prefix_family' in policy else True
         assert policy['decision_eligible'] is True
         assert policy['affects'] == 'paper_only'
-        assert 'dexscreener' in policy['description'] or '\u5bbd\u89c2\u6d4b' in policy['description']
+        assert policy['trajectory_engine'] == 'alpha149_broad'
+        assert policy['requires_distinct_trajectory_frame'] is False
+        assert policy['requires_distinct_wide_frame'] is True
+        assert '\u5bbd\u89c2\u6d4b' in policy['description']

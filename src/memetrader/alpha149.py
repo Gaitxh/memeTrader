@@ -2275,11 +2275,15 @@ class Engine(_BaseEngine):
         for kind, hit in flags.items():
             if hit:
                 self.counts['alpha149_ready:' + kind] += 1
+                if surface == 'broad':
+                    # Which kinds the wide surface can actually satisfy, so a missing
+                    # wide signal is attributable to a flag or to the arm plumbing.
+                    self.counts['broad_ready:' + kind] += 1
         output = {}
         for arm, (kind, _name, _hold) in SPECS.items():
-            # Wave 38: the wide surface owns exactly the wave-38 arms and nothing
-            # else; the dex surface keeps every other arm unchanged.
-            if (arm in _BROAD_ARMS) != (surface == 'broad'):
+            # Wave 38/39: the wide surface owns exactly the wide-surface arms and
+            # nothing else; the dex surface keeps every other arm unchanged.
+            if _is_broad_arm(arm) != (surface == 'broad'):
                 continue
             if flags.get(kind) and arm not in state['signals']:
                 key = VERSION + ':' + token + ':' + pool + ':' + arm
@@ -2340,7 +2344,7 @@ class Engine(_BaseEngine):
                 version=_BROAD_VERSION, pools=len(broad.pools),
                 counts=dict(broad.counts),
                 provider_prefix=getattr(broad, 'PROVIDER_PREFIX', None),
-                arms=list(_BROAD_ARMS))
+                arms=list(BROAD_SURFACE_ARMS))
         return snap
 
 
@@ -2886,13 +2890,28 @@ def mechanisms(f):  # noqa: F811 - wave 37 wrapper over the wave-36 wrapper
 # engine, its pools, its signals and every earlier arm are untouched: the wide namespace owns
 # exactly these two arms, and the existing exit arms do not ride it.
 _BROAD_ARMS = ('alpha149_broad_band_v1', 'alpha149_broad_flow_v1')
+# Every arm the wide surface owns. Wave 39 extends it; the snapshot below reports it.
+BROAD_SURFACE_ARMS = _BROAD_ARMS
 _BROAD_VERSION = 'dex-trajectory/v1'  # the shared causal derivation the wide surface reuses
+
+
+def _is_broad_arm(arm):
+    """True for the arms emitted only from the wide multi-provider surface."""
+    return arm in BROAD_SURFACE_ARMS
 
 
 class _BroadEngine(_BaseEngine):
     """Wide-surface trajectory engine: same causal derivation, every provider admitted."""
 
     PROVIDER_PREFIX = ''
+    # Measured on the live wide surface: of 184 accepted frames in the first five
+    # minutes, 26 produced a second observation of their pool and every one of those
+    # arrived 60-120s after the first (`gap:60_120s` == `gap_reset` == 26), so the
+    # shared 30-second continuity rule discarded all of them and `has_prev` stayed 0.
+    # The hot dex pools are polled every ~8s and never see this. 300s matches the
+    # engine's 310s row-retention window, so a coarse wide pool keeps the previous
+    # frame the two-frame mechanisms read; the shared engine's default stays 30s.
+    MAX_GAP_SECONDS = 300
 
     def accept(self, row, now):
         # One price series per pool: a pool adopts the provider of its first frame and
@@ -2915,6 +2934,8 @@ SPECS.update({
 OVERRIDES.update({
     'alpha149_broad_band_v1': dict(
         notional_usd=1.0, max_concurrent_positions=4,
+        trajectory_engine='alpha149_broad',
+        requires_distinct_trajectory_frame=False, requires_distinct_wide_frame=True,
         excess_return_vs_arm='alpha149_open_band_v1',
         hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
         description='\u5bbd\u89c2\u6d4b\u00b7\u5f00\u653e\u5e26\uff081U\uff0c30\u5206\u949f\uff09\uff1a\u4e0e\u5df2\u9a8c\u8bc1\u53ef\u8fbe\u7684'
@@ -2926,6 +2947,8 @@ OVERRIDES.update({
                     '\u6c60\u5e95\uff0c\u4f46\u53ea\u6709 62 \u4e2a\uff085.9%\uff09\u62e5\u6709>=2 \u5e27 dexscreener \u5e27\u3002'),
     'alpha149_broad_flow_v1': dict(
         notional_usd=1.0, max_concurrent_positions=4,
+        trajectory_engine='alpha149_broad',
+        requires_distinct_trajectory_frame=False, requires_distinct_wide_frame=True,
         excess_return_vs_arm='alpha149_flow_fade_steady_v1',
         hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
         description='\u5bbd\u89c2\u6d4b\u00b7\u6d41\u91cf\u5165\u53e3\uff081U\uff0c30\u5206\u949f\uff09\uff1a\u4e0e\u5df2\u9a8c\u8bc1\u53ef\u8fbe\u7684'
@@ -2950,5 +2973,129 @@ def mechanisms(f):  # noqa: F811 - wave 38 wrapper over the wave-37 wrapper
     except Exception:
         out.setdefault('broad_band', False)
         out.setdefault('broad_flow', False)
+    return out
+
+
+# ---- wave 39: give the wide surface the kinds it measurably satisfies TODAY ----
+# Measured on the live wide surface (130 evaluations, first ~10 minutes, read from
+# broad_ready:* counters): the kinds that fire there are young-pool kinds -
+# goldendog_liquidity_band 10, decorr_young 7, merged_multi_setup 7, df_activity_jump 4,
+# df_price_up_liquidity_up 4 - while broad_band stays at 0 because every wide pool is
+# younger than the 30-minute floor of that band, and broad_flow stays at 0 because none
+# of its five components is satisfied on a coarse frame. Two arms bound to the kinds the
+# wide surface actually produces therefore give the coverage experiment a real chance,
+# and they also settle the wave-37 question: decorr_young is reachable in principle and
+# was starved purely by frame supply.
+_BROAD_ARMS_W39 = ('alpha149_broad_decorr_young_v1', 'alpha149_broad_goldendog_band_v1')
+BROAD_SURFACE_ARMS = _BROAD_ARMS + _BROAD_ARMS_W39
+
+SPECS.update({
+    'alpha149_broad_decorr_young_v1': ('broad_decorr_young', '\u5bbd\u89c2\u6d4b\u00b7\u53bb\u76f8\u5173\u5e74\u8f7b\u6c60(1U)', 30),
+    'alpha149_broad_goldendog_band_v1': ('broad_goldendog_band', '\u5bbd\u89c2\u6d4b\u00b7\u91d1\u72d7\u6d41\u52a8\u6027\u5e26(1U)', 30),
+})
+OVERRIDES.update({
+    'alpha149_broad_decorr_young_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=4,
+        trajectory_engine='alpha149_broad',
+        requires_distinct_trajectory_frame=False, requires_distinct_wide_frame=True,
+        excess_return_vs_arm='alpha149_decorr_young_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u5bbd\u89c2\u6d4b\u00b7\u53bb\u76f8\u5173\u5e74\u8f7b\u6c60\uff081U\uff0c30\u5206\u949f\uff09\uff1a'
+                    '\u8c13\u8bcd\u4e0e\u7b2c37\u6ce2 decorr_young \u5b8c\u5168\u4e00\u81f4\uff08\u6c60\u9f84<=900\u79d2\u3001'
+                    '\u6df1\u5ea6>=3000U\u3001FDV/\u6df1\u5ea6<=20\u3001\u4e0d\u4e0b\u8dcc\u3001\u6df1\u5ea6\u4e0d\u6d41\u5931\u3001'
+                    '\u4e70\u76d8>=55%\uff09\uff0c\u4f46\u53ea\u4ece\u5bbd\u89c2\u6d4b\u9762\u53d1\u51fa\u3002'
+                    '\u5b9e\u6d4b\uff1a\u8be5\u8c13\u8bcd\u5728\u4e3b\u9762 1,500 \u5e27\u5185 0 \u6b21\uff0c\u5728\u5bbd\u9762 10 \u5206\u949f\u5185 7 \u6b21'
+                    '\u2014\u2014\u8bc1\u5b9e\u7b2c37\u6ce2\u5931\u8d25\u7684\u539f\u56e0\u662f\u5e27\u4f9b\u7ed9\uff0c\u4e0d\u662f\u9608\u503c\u3002'),
+    'alpha149_broad_goldendog_band_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=4,
+        trajectory_engine='alpha149_broad',
+        requires_distinct_trajectory_frame=False, requires_distinct_wide_frame=True,
+        excess_return_vs_arm='alpha149_goldendog_liquidity_band_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u5bbd\u89c2\u6d4b\u00b7\u91d1\u72d7\u6d41\u52a8\u6027\u5e26\uff081U\uff0c30\u5206\u949f\uff09\uff1a'
+                    '\u8c13\u8bcd\u4e0e\u5df2\u5728\u4e3b\u9762\u53ef\u8fbe\u7684 goldendog_liquidity_band \u4e00\u81f4'
+                    '\uff08\u6df1\u5ea6 10k-100k\u3001\u6c60\u9f84<=7200\u79d2\u3001\u4e70\u76d8>=50%\u3001\u56de\u64a4>=0\uff09\uff0c'
+                    '\u4f46\u53ea\u4ece\u5bbd\u89c2\u6d4b\u9762\u53d1\u51fa\uff0c\u7528\u4e8e\u68c0\u9a8c\u540c\u4e00\u5957\u5df2\u9a8c\u8bc1\u8c13\u8bcd'
+                    '\u5728\u66f4\u5e7f\u7684\u6570\u636e\u6e90\u9762\u4e0a\u80fd\u5426\u63d0\u9ad8\u4ee3\u5e01\u7ea7\u8986\u76d6\u7387\u3002'),
+})
+ALL_ARMS = tuple(SPECS) + tuple(EXIT_ARMS)
+KINDS = tuple(kind for kind, _, _ in SPECS.values())
+
+_base_mechanisms_w38 = mechanisms
+
+
+def mechanisms(f):  # noqa: F811 - wave 39 wrapper over the wave-38 wrapper
+    """Mirror the two kinds the wide surface measurably satisfies today."""
+    out = _base_mechanisms_w38(f)
+    try:
+        if not isinstance(f, dict):
+            return out
+        out['broad_decorr_young'] = bool(out.get('decorr_young'))
+        out['broad_goldendog_band'] = bool(out.get('goldendog_liquidity_band'))
+    except Exception:
+        out.setdefault('broad_decorr_young', False)
+        out.setdefault('broad_goldendog_band', False)
+    return out
+
+
+# ---- wave 40: register the wide-surface contract correctly, as NEW arms ----
+# Observed after the wave-38/39 reload: the wide surface produced real signals
+# (`signal:alpha149_broad_decorr_young_v1` 19, `signal:alpha149_broad_goldendog_band_v1` 13),
+# they reached the evaluation layer (77 evaluation rows carried them), and every one of them was
+# recorded as blocked with `await_distinct_dex_trajectory_frame` - not a single entry decision was
+# written for either arm. Cause: the entry gate resolves the arm's trajectory engine from its
+# REGISTERED policy, and those rows were appended to the append-only ledger BEFORE the arms were
+# routed at the wide namespace. The ledger cannot be updated (UPDATE/DELETE are blocked by
+# triggers) and re-running the registration skips arms that are already present, so the corrected
+# contract is registered as two NEW arms. The four earlier wide arms stay exactly as registered.
+_W40_ARMS = ('alpha149_wide_decorr_young_v1', 'alpha149_wide_goldendog_band_v1')
+BROAD_SURFACE_ARMS = _BROAD_ARMS + _BROAD_ARMS_W39 + _W40_ARMS
+WIDE_SURFACE_ARMS = BROAD_SURFACE_ARMS
+
+SPECS.update({
+    'alpha149_wide_decorr_young_v1': ('wide_decorr_young', '\u5bbd\u9762\u00b7\u53bb\u76f8\u5173\u5e74\u8f7b\u6c60(1U)', 30),
+    'alpha149_wide_goldendog_band_v1': ('wide_goldendog_band', '\u5bbd\u9762\u00b7\u91d1\u72d7\u6d41\u52a8\u6027\u5e26(1U)', 30),
+})
+OVERRIDES.update({
+    'alpha149_wide_decorr_young_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=4,
+        trajectory_engine='alpha149_broad',
+        requires_distinct_trajectory_frame=False, requires_distinct_wide_frame=True,
+        excess_return_vs_arm='alpha149_decorr_young_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u5bbd\u9762\u00b7\u53bb\u76f8\u5173\u5e74\u8f7b\u6c60\uff081U\uff0c30\u5206\u949f\uff09\uff1a'
+                    '\u8c13\u8bcd\u4e0e decorr_young \u4e00\u81f4\uff08\u6c60\u9f84<=900\u79d2\u3001\u6df1\u5ea6>=3000U\u3001'
+                    'FDV/\u6df1\u5ea6<=20\u3001\u4e0d\u4e0b\u8dcc\u3001\u6df1\u5ea6\u4e0d\u6d41\u5931\u3001\u4e70\u76d8>=55%\uff09\uff0c'
+                    '\u53ea\u4ece\u5bbd\u89c2\u6d4b\u9762\u53d1\u51fa\uff0c\u5e76\u767b\u8bb0\u4e86\u5bbd\u9762\u7684\u540e\u5e27\u786e\u8ba4\u5951\u7ea6'
+                    '\uff08requires_distinct_wide_frame\uff09\u3002\u524d\u4e24\u6ce2\u540c\u540d\u81c2\u56e0\u767b\u8bb0\u5728\u6539\u5951\u7ea6\u4e4b\u524d'
+                    '\u800c\u6c38\u4e45\u505c\u5728 await_distinct_dex_trajectory_frame\uff0c\u6545\u4ee5\u65b0\u81c2\u53f7\u767b\u8bb0\u3002'),
+    'alpha149_wide_goldendog_band_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=4,
+        trajectory_engine='alpha149_broad',
+        requires_distinct_trajectory_frame=False, requires_distinct_wide_frame=True,
+        excess_return_vs_arm='alpha149_goldendog_liquidity_band_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u5bbd\u9762\u00b7\u91d1\u72d7\u6d41\u52a8\u6027\u5e26\uff081U\uff0c30\u5206\u949f\uff09\uff1a'
+                    '\u8c13\u8bcd\u4e0e goldendog_liquidity_band \u4e00\u81f4\uff08\u6df1\u5ea6 10k-100k\u3001\u6c60\u9f84<=7200\u79d2\u3001'
+                    '\u4e70\u76d8>=50%\u3001\u56de\u64a4>=0\uff09\uff0c\u53ea\u4ece\u5bbd\u89c2\u6d4b\u9762\u53d1\u51fa\uff0c'
+                    '\u5e76\u767b\u8bb0\u5bbd\u9762\u540e\u5e27\u786e\u8ba4\u5951\u7ea6\u3002'),
+})
+ALL_ARMS = tuple(SPECS) + tuple(EXIT_ARMS)
+KINDS = tuple(kind for kind, _, _ in SPECS.values())
+
+_base_mechanisms_w39 = mechanisms
+
+
+def mechanisms(f):  # noqa: F811 - wave 40 wrapper over the wave-39 wrapper
+    """Mirror the same two predicates under the wave-40 kind names."""
+    out = _base_mechanisms_w39(f)
+    try:
+        if not isinstance(f, dict):
+            return out
+        out['wide_decorr_young'] = bool(out.get('decorr_young'))
+        out['wide_goldendog_band'] = bool(out.get('goldendog_liquidity_band'))
+    except Exception:
+        out.setdefault('wide_decorr_young', False)
+        out.setdefault('wide_goldendog_band', False)
     return out
 
