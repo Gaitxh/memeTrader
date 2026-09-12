@@ -1407,6 +1407,19 @@
       "next": "1) 下一次监督窗口复查 alpha149_wide_decorr_young_v1 / alpha149_wide_goldendog_band_v1 的 entry_decisions 与 chain_meme_trader_positions；若 60 分钟后仍为 0 决策，则用\"ready->决策\"基准率（本窗口 15/133）作为对照，并把断点定位到 cohort 认领/后帧成交环节。2) 覆盖率对比仍需等宽面真正开仓后再做，且必须固定年龄段并使用精确 arm_id。3) 第38/39波四条死臂保留为\"契约固化\"证据，不再复用其臂号。",
       "report": "docs/PROJECT_CONTEXT/ROUND79_DENSE_OBSERVATION_CEILING_AND_WIDE_SURFACE_20260912.md",
       "visible_entry": "docs/PROJECT_CONTEXT/ROUND79_DENSE_OBSERVATION_CEILING_AND_WIDE_SURFACE_20260912.md"
+    },
+    {
+      "id": "20260912-round79c-dc4-entry-layer-dense-requirement",
+      "recorded_at": "2026-09-12T04:45:00Z",
+      "title": "第79轮续二：DC-4——密集观测天花板一路传导到成交层；宽面臂卡在\"同池 60 秒内两次评估\"（实测 p50=87.3 秒，15.4% 达标）",
+      "problem": "第40波之后宽面臂已从永久阻塞状态 await_distinct_dex_trajectory_frame 转为 cohort_frozen_opportunity_ready（16->45 行且持续增长），与其余 133 个臂的入场前状态一致，但仍无一条开仓决策。逐行读 store.py::observe_chain_meme_pattern 的准入条件：同一 token **且同一 pair** 需要(1) 上一轮 cohort 评估的 ready_arm_ids 含该臂且 event_keys 相同、(2) 信号仍在 60 秒新鲜窗口内、(3) post_valid 即 0 < 本次 observed_at - 上次 observed_at <= 60。(1)+(3) 合起来等于\"同一池在 60 秒内被 cohort 评估两次\"。实测（近 35 分钟，49 个曾让宽面臂达到 ready 的池）：同池相邻评估对共 13 个，间隔 p10 37.9 秒、p50 87.3 秒、p90 104.2 秒，<=60 秒仅 15.4%，同时满足\"<=60 秒且信号仍被接受\"的只有 2 个。",
+      "change": "本轮不修改任何代码：两条出路都超出本轮授权边界——(a) 为发出信号的宽面池补帧，需要请求预算决策，且现有 spare-capacity 通道只遍历主命名空间、全进程累计 eligible_batch 52 / no_spare 51 / selected_extra 1，本身已饿死；(b) 为宽面臂单独放宽 60 秒确认窗口，属于\"为创造交易而放宽严格时序规则\"，明确越界。因此把 DC-4 写成可复核的诊断结论，并把宽面保留为**测量面**继续运行：它已结清第37波的疑问（decorr_young 在主面 1,500 帧 0 次、宽面 184 帧 20 次，纯属帧供给问题），持有 87-158 个池（主面 27-64），且任何恰好被两次 60 秒内观测到的宽面池都会走正常路径成交。",
+      "rationale": "用户要求\"确认存在逻辑断点或缺陷，立即修复\"，同时也要求不得为制造交易而放宽安全检查。本轮把断点精确定位到入场层的确认窗口与宽面节奏之间的量化错配，并明确列出两条需要授权的出路，而不是用放宽时序的方式伪造成交；这符合\"缺失证据不得当作安全/可用证据\"与\"严格时序规则不得为交易量放宽\"两条既有约束。",
+      "validation": "测量脚本 data/tmp/round79_window.py（只读，julianday 安全，精确 arm_id 列表，禁止 LIKE）；同口径第二来源 data/tmp/round79_baserate.py（12,000 条评估窗口内 133 个臂达到 ready、其中 15 个转为决策）与 data/tmp/round79_lanes.py（近 60 分钟 438 条准入中 413 条来自 isolated_cohorts/v1 车道，证明 cohort 车道本身正常工作，宽面臂不是车道问题）。第40波重载后无新增 system_error_cases；paper 模式、live.enabled=false、账本与资金周期均未变。",
+      "scope": "仅文档：docs/PROJECT_CONTEXT/ROUND79_DENSE_OBSERVATION_CEILING_AND_WIDE_SURFACE_20260912.md 第10节、docs/PROJECT_CONTEXT/OBSERVATION_SURFACE_FACTS_20260912.md 第5.6/5.7节、本历史条目。未改动任何源码或运行参数。",
+      "next": "1) 下一轮先复查宽面臂是否出现首个决策/持仓；若仍为 0，则请示\"是否允许把 spare-capacity 补帧通道的候选集扩展到宽面池（不增加请求总量，只改变候选）\"或\"是否为宽面臂接受更长的确认窗口\"。2) 覆盖率对比继续等待宽面真正成交后再做，固定年龄段、精确 arm_id。3) DC-3c（补帧通道饿死）与 DC-4 是同一条请求预算问题的两面，应一并决策。",
+      "report": "docs/PROJECT_CONTEXT/ROUND79_DENSE_OBSERVATION_CEILING_AND_WIDE_SURFACE_20260912.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/ROUND79_DENSE_OBSERVATION_CEILING_AND_WIDE_SURFACE_20260912.md"
     }
   ]
 }

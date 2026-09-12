@@ -278,3 +278,55 @@ One methodology correction from this round: an apparent "new defect, `native-pap
 ValueError` +90 in 3 minutes" was an artifact of a top-12 error list truncation - the error's
 `last_seen_at` was 03:09:43Z, 45 minutes before the sample. No new defect. Recorded because the
 same trap (comparing two differently-truncated lists) is a fifth way to mis-read this database.
+
+## 10. DC-4: the entry layer has its own dense-observation requirement
+
+After the wave-40 fix the wide arms reach `cohort_frozen_opportunity_ready` - the same pre-entry
+state 133 other arms share - but still produce no entry decision. The admission rule in
+`store.py::observe_chain_meme_pattern` requires, for the same token **and pair**:
+
+1. the arm in the PREVIOUS cohort evaluation's `ready_arm_ids` (`pending`), with the same
+   `event_keys[arm]`, and
+2. the signal still inside its 60-second freshness window, and
+3. `post_valid`: `0 < current.observed_at - previous.observed_at <= 60` and the pool above the
+   liquidity floor.
+
+Conditions 1 and 3 together mean **two cohort evaluations of the same pool within 60 seconds**.
+Measured over the last ~35 minutes, for the 49 pools where a wide arm reached `ready_arm_ids`:
+
+| quantity | value |
+| --- | --- |
+| consecutive same-pool evaluation pairs where the first had the wide arm ready | 13 |
+| gap distribution of those pairs | p10 37.9s, **p50 87.3s**, p90 104.2s |
+| share of those gaps `<= 60s` | **15.4%** |
+| pairs satisfying both `<=60s` and still-accepted | **2** |
+
+So the wide surface's own cadence for exactly the pools it signals (p50 ~87s) is slower than the
+confirmation window the entry layer requires. **The dense-observation ceiling is not only a
+mechanism-supply problem; it propagates into execution.**
+
+Two ways forward, both outside what this round may do unilaterally:
+
+- **Densify the wide pools that signal** (feed them extra observations). The spare-capacity offer
+  lane currently iterates only the primary namespace and is starved anyway: over the process
+  lifetime `eligible_batch` 52, `no_spare` 51, `selected_extra` 1. This needs a request-budget
+  decision.
+- **A different confirmation window for the wide arms.** The 60-second rule is a strict timing
+  rule shared by every cohort arm; loosening it to create trades is explicitly out of bounds here.
+
+The wide surface is therefore kept running as a **measurement surface**: it has already settled
+the wave-37 question, it holds 87-158 pools against the primary's 27-64, and any wide pool that
+happens to be observed twice inside 60 seconds will convert through the normal path.
+
+### 10.1 What is verified about the wide surface so far
+
+| claim | evidence |
+| --- | --- |
+| admission widened | `broad_frame_accepted` 95 -> 184; wide pools 87-158 vs primary 27-64 |
+| no cost regression | `alpha149_features` p50/p95 0.41/0.57ms vs 0.49/1.11ms before |
+| signals are produced | `signal:alpha149_broad_decorr_young_v1` 19, `..._goldendog_band_v1` 13 |
+| signals reach projection | 77 evaluation rows carried them in a 12,000-row window |
+| the old dead state is gone | outcomes moved from `await_distinct_dex_trajectory_frame` (permanent) to `cohort_frozen_opportunity_ready` (16 -> 45 rows and growing) |
+| conversion is now cadence-bound, not contract-bound | 13 candidate windows, 2 inside 60s, 0 admitted |
+
+No threshold, no strict timing rule and no existing arm was changed to obtain any of this.
