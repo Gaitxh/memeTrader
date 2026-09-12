@@ -8405,6 +8405,11 @@ class Runtime:
             "borrows_since_start": getattr(self, "_pattern_watch_borrows", 0),
             "reservation_reclaims_since_start": getattr(self, "_pattern_watch_reservation_reclaims", 0),
             "other_pool_quote_skips_since_start": getattr(self, "_pattern_watch_other_pool_skips", 0),
+            # Reserved mover-watch admissions, so the approved +13-14% budget can be verified on
+            # the reserved slots themselves instead of on every observation of a flagged token.
+            "mover_reserved_admissions": getattr(self, "_mover_reserved_admissions", 0),
+            "mover_watching": (len(getattr(self, '_mover_watchlist', None).active(utcnow()))
+                               if getattr(self, '_mover_watchlist', None) is not None else 0),
             "non_held_by_chain_bucket": getattr(self, "_pattern_watch_nonheld_by_chain_bucket", {}),
         })
         counts=getattr(self,'_coverage145_counts',{});self._coverage145_counts=counts
