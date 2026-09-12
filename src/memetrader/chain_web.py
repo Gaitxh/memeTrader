@@ -3451,6 +3451,25 @@ class ChainWebData:
                            if isinstance(m.get("frozen_policy"), dict)), {})
             family["strategy_logic"] = strategy_logic(policy or frozen, family,
                 lifecycle_controls.get(policy.get("arm_id"), {}), current=bool(policy))
+            # Per-strategy parameter statement (2026-09-12 uniformization): the rule explanation must
+            # state the parameters the arm actually runs with, and what it was registered as.
+            note = (policy or {}).get("parameter_note") or {}
+            entry_filter = (policy or {}).get("entry_filter") or {}
+            if note or policy:
+                family["effective_parameters"] = {
+                    # An arm with no explicit notional trades at the definition default, which is the
+                    # same uniform size, so state the size it actually runs with.
+                    "notional_usd": (policy or {}).get("notional_usd")
+                    or note.get("effective_notional_usd"),
+                    "max_concurrent_positions": entry_filter.get("max_concurrent_positions"),
+                    "order_size_usd": (policy or {}).get("order_size_usd"),
+                    "registered_notional_usd": note.get("registered_notional_usd"),
+                    "registered_max_concurrent_positions": note.get(
+                        "registered_max_concurrent_positions"),
+                    "basis": ("2026-09-12 用户指令：全部策略单笔统一 20U、同时持仓上限 8；"
+                              "上方 description 前置注记为同一口径"),
+                    "applies_to": "paper_only",
+                }
             family["assessment_status"] = family["strategy_logic"]["lifecycle_explanation"]["assessment"]
         payload = {
             "status": "ok",

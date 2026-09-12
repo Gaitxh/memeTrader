@@ -98,7 +98,22 @@ def strategy_logic(policy, family, control=None, *, current=False):
     if current:requirements.append('原生曲线按协议储备、Token 控制、费用与卖回容量验证；不套用毕业前 DEX 流动性底线。' if p.get('native_execution') else '当前 Paper 原池价格/流动性及严格时序有效；明确低于执行流动性底线按现有退出规则处理。')
     execution=p.get('_execution') or {}
     requirements += [f'成交配置 {k}：{value(v)}' for k,v in execution.items()]
-    risks=[f"单笔名义金额（美元）：{value(p.get('notional_usd'))}",f"同时持仓上限：{value(f.get('max_concurrent_positions'))}",'样本、PF、期望和回撤为事实指标；正收益或绿色不等于 Alpha，同币/同成交账户不是独立样本。']
+    param_note=p.get('parameter_note') or {}
+    # An arm that registered no notional still trades at the definition default (20U since the
+    # 2026-09-12 uniformization), so the explanation must state that size, not "UNKNOWN".
+    effective_notional=p.get('notional_usd')
+    if effective_notional is None:
+        effective_notional=param_note.get('effective_notional_usd')
+    def with_registered(effective,registered):
+        if effective is None:return value(effective)
+        if registered is None:return value(effective)
+        try:
+            if abs(float(registered)-float(effective))<1e-9:return value(effective)
+        except (TypeError,ValueError):return value(effective)
+        return f"{value(effective)}（注册时 {value(registered)}，2026-09-12 统一口径）"
+    risks=[f"单笔名义金额（美元）：{with_registered(effective_notional,param_note.get('registered_notional_usd'))}",
+           f"同时持仓上限：{with_registered(f.get('max_concurrent_positions'),param_note.get('registered_max_concurrent_positions'))}",
+           '样本、PF、期望和回撤为事实指标；正收益或绿色不等于 Alpha，同币/同成交账户不是独立样本。']
     return dict(purpose=p.get('description') or family.get('description') or 'UNKNOWN：未提供策略目的。',entry_rules=entry,entry_sequence=sequence,exit_rules=exits,data_requirements=requirements,risk_controls=risks,
         lineage=dict(source_arm_ids=p.get('source_arm_ids') or [],revision=p.get('strategy_revision') or family.get('strategy_revision'),paired_entry_group=p.get('paired_entry_group'),paired_entry_size=p.get('paired_entry_size'),policy_source='effective_policy' if current else 'frozen_policy' if p else 'UNKNOWN'),
         lifecycle_explanation=dict(assessment=assessment,operation=operation,note=LABELS[assessment]+' '+str(note),evidence=evidence,pause_basis=pause if operation!='ACTIVE_FORWARD' else '仍按当前有效配置参加前向；不自动代表已验证有效。',lesson=p.get('failure_lesson') or c.get('lesson') or '仅以以上评估记录为依据；未记录独立因果教训，不自动推断。',benchmark=p.get('benchmark_note') or c.get('benchmark_note') or (str(note) if 'benchmark' in str(note).lower() or '基准' in str(note) else 'UNKNOWN：元数据未明确是否保留为 benchmark。')))

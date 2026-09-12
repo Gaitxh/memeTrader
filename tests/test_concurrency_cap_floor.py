@@ -78,14 +78,21 @@ def test_a_cap_at_or_above_the_floor_is_left_alone(tmp_path, monkeypatch):
     store.close()
 
 
-def test_a_policy_without_the_field_is_left_without_one(tmp_path, monkeypatch):
-    """Absence is 'no cap', which is not below the floor; adding one would tighten the arm."""
+def test_a_policy_without_the_field_gets_the_uniform_cap(tmp_path, monkeypatch):
+    """User instruction (2026-09-12): every strategy gets a cap of 8.
+
+    This supersedes the earlier choice to leave the uncapped arms unlimited: an arm that registered no
+    cap previously had none, and is now filled in with the uniform cap. The marker records that the
+    registered value was absent, so the change stays auditable.
+    """
     store, _ = setup_store(tmp_path, monkeypatch)
     arm = 'cap-floor-probe-uncapped-v1'
     _register_arm(store, arm, {'direction': 'probe'}, canonical='probe-cap-none')
     policy = _policy(_effective(store), arm)
-    assert 'max_concurrent_positions' not in policy['entry_filter']
-    assert not policy.get('concurrency_cap_revision')
+    assert policy['entry_filter']['max_concurrent_positions'] == FLOOR
+    marker = policy['concurrency_cap_revision']
+    assert marker['registered'] is None and marker['effective'] == FLOOR
+    assert 'unlimited' in marker['basis'] or 'no cap' in marker['basis']
     store.close()
 
 
@@ -130,7 +137,11 @@ def test_the_top_level_marker_reports_what_was_raised(tmp_path, monkeypatch):
     definition = _effective(store)
     top = definition['concurrency_cap_floor']
     assert top['floor'] == FLOOR
-    assert top['raised_policies'] == len(top['detail']) == 2
-    assert {d['arm_id'] for d in top['detail']} == {'cap-floor-probe-a-v1', 'cap-floor-probe-b-v1'}
-    assert {d['registered'] for d in top['detail']} == {1, 2}
+    # `detail` covers both the raised arms and the arms that registered no cap and were filled in.
+    assert top['raised_policies'] == 2
+    assert 'filled_uncapped_policies' in top
+    assert len(top['detail']) == top['raised_policies'] + top['filled_uncapped_policies']
+    raised_detail = [d for d in top['detail'] if d['registered'] is not None]
+    assert {d['arm_id'] for d in raised_detail} == {'cap-floor-probe-a-v1', 'cap-floor-probe-b-v1'}
+    assert {d['registered'] for d in raised_detail} == {1, 2}
     store.close()

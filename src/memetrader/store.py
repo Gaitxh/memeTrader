@@ -7369,28 +7369,69 @@ class Store:
         # USER-AUTHORIZED RUNTIME REVISIONS (2026-09-12). Two uniformizations are applied here, where
         # the effective definition is assembled, because the registered contracts are frozen and
         # append-only and `chain_meme_trader_policy_additions` forbids UPDATE/DELETE by trigger:
-        #   1. every per-arm `entry_filter.max_concurrent_positions` below the floor is raised to it;
+        #   1. every per-arm `entry_filter.max_concurrent_positions` is set to the uniform cap - an
+        #      explicit value below it is raised, an absent field is filled in, because the user's
+        #      instruction is "every strategy: cap 8" (this supersedes the earlier choice to leave the
+        #      uncapped arms unlimited);
         #   2. every per-arm `notional_usd` is set to the one uniform per-trade size, so strategies can
-        #      be compared like for like.
-        # Both reach every consumer at once (entry gating, pending limits, UI) and cover existing arms
-        # as well as future ones. Each affected policy keeps its registered value, the authorization
-        # basis and its original fingerprint; the runtime fingerprint is recomputed once per arm (the
-        # same treatment `entry_chase_budget_fraction` already receives) so it still describes what the
-        # policy actually does. Fields that are ABSENT are never added: an absent cap means "no cap"
-        # (not a value below the floor) and an absent notional already resolves to the definition
-        # default, which is this same uniform size.
+        #      be compared like for like;
+        #   3. descriptions that were written when a different size applied get an authoritative
+        #      parameter note in front, so the operator-facing text cannot contradict the parameters
+        #      the arm actually runs with (the original text is preserved after the note).
+        # All three reach every consumer at once (entry gating, pending limits, UI, explainability)
+        # and cover existing arms as well as future ones. Each affected policy keeps its registered
+        # value, the authorization basis and its original fingerprint; the runtime fingerprint is
+        # recomputed once per arm (the same treatment `entry_chase_budget_fraction` already receives)
+        # so it still describes what the policy actually does.
         floor = int(getattr(cls, "CHAIN_MEME_TRADER_CONCURRENCY_CAP_FLOOR", 0) or 0)
         uniform_notional = float(getattr(cls, "CHAIN_MEME_TRADER_UNIFORM_NOTIONAL_USD", 0) or 0)
         raised: list[dict[str, Any]] = []
+        filled: list[dict[str, Any]] = []
         renotionalised: list[dict[str, Any]] = []
         needs_fingerprint: list[dict[str, Any]] = []
         if floor > 0:
             for policy in policies:
                 entry_filter = policy.get("entry_filter")
                 if not isinstance(entry_filter, Mapping):
+                    # Some arms registered no `entry_filter` at all. They previously had no cap either,
+                    # so "every strategy: cap 8" has to create the filter here. Adding only this key
+                    # leaves every other gate untouched: `chain_meme_trader_entry_filter_matches`
+                    # returns True for a missing filter and only inspects the keys it knows.
+                    policy["entry_filter"] = {"max_concurrent_positions": floor}
+                    policy["concurrency_cap_revision"] = {
+                        "field": "entry_filter.max_concurrent_positions",
+                        "registered": None,
+                        "effective": floor,
+                        "authorized_at": "2026-09-12",
+                        "basis": ("user instruction: every strategy gets a cap of 8; the arm "
+                                  "registered no entry_filter and therefore no cap"),
+                        "registered_behavior_contract_hash": str(
+                            policy.get("behavior_contract_hash") or ""),
+                    }
+                    filled.append({"arm_id": str(policy.get("arm_id") or ""), "registered": None,
+                                   "created_entry_filter": True})
+                    needs_fingerprint.append(policy)
                     continue
                 cap = entry_filter.get("max_concurrent_positions")
                 if cap is None:
+                    # "Every strategy: cap 8" also covers the arms that registered no cap at all
+                    # (previously unlimited). Filling the field is what makes the rule uniform and
+                    # the cross-strategy comparison like for like.
+                    updated = dict(entry_filter)
+                    updated["max_concurrent_positions"] = floor
+                    policy["entry_filter"] = updated
+                    policy["concurrency_cap_revision"] = {
+                        "field": "entry_filter.max_concurrent_positions",
+                        "registered": None,
+                        "effective": floor,
+                        "authorized_at": "2026-09-12",
+                        "basis": ("user instruction: every strategy gets a cap of 8; the arm had "
+                                  "registered no cap, which previously meant unlimited"),
+                        "registered_behavior_contract_hash": str(
+                            policy.get("behavior_contract_hash") or ""),
+                    }
+                    filled.append({"arm_id": str(policy.get("arm_id") or ""), "registered": None})
+                    needs_fingerprint.append(policy)
                     continue
                 try:
                     cap_value = int(cap)
@@ -7442,6 +7483,38 @@ class Store:
                 renotionalised.append({"arm_id": str(policy.get("arm_id") or ""), "registered": value})
                 if policy not in needs_fingerprint:
                     needs_fingerprint.append(policy)
+        # 3. Descriptions must not contradict the parameters the arm actually runs with. Every policy
+        # whose size was changed, or whose cap was raised or filled in, gets one authoritative note in
+        # front of its own text; the original wording is preserved after it, so the operator still sees
+        # what the arm was registered as. Untouched arms are left exactly as registered.
+        notes = 0
+        note_prefix = f"【现行参数 2026-09-12】单笔名义 {uniform_notional:g}U、同时持仓上限 {floor}；"
+        if floor > 0 and uniform_notional > 0:
+            for policy in policies:
+                cap_marker = policy.get("concurrency_cap_revision")
+                size_marker = policy.get("notional_revision")
+                if not cap_marker and not size_marker:
+                    continue
+                registered_cap = cap_marker.get("registered") if cap_marker else None
+                registered_size = size_marker.get("registered") if size_marker else None
+                detail = []
+                if registered_size is not None and abs(float(registered_size) - uniform_notional) > 1e-9:
+                    detail.append(f"注册时单笔 {float(registered_size):g}U")
+                if cap_marker is not None:
+                    detail.append("注册时无持仓上限" if registered_cap is None
+                                  else f"注册时上限 {int(registered_cap)} 仓")
+                suffix = ("（" + "；".join(detail) + "；下文为该口径下的原始描述）") if detail else ""
+                policy["parameter_note"] = {
+                    "effective_notional_usd": uniform_notional,
+                    "effective_max_concurrent_positions": floor,
+                    "registered_notional_usd": registered_size,
+                    "registered_max_concurrent_positions": registered_cap,
+                    "authorized_at": "2026-09-12",
+                }
+                original = policy.get("description")
+                if isinstance(original, str) and original.strip() and not original.startswith(note_prefix):
+                    policy["description"] = f"{note_prefix}{suffix}{original}"
+                    notes += 1
         for policy in needs_fingerprint:
             registered_hash = str(policy.get("behavior_contract_hash") or "")
             if not registered_hash:
@@ -7457,14 +7530,16 @@ class Store:
                     policy, definition_version=definition_version)
                 _CONCURRENCY_CAP_HASH_CACHE[cache_key] = corrected
             policy["behavior_contract_hash"] = corrected
-        if raised:
+        if raised or filled:
             definition["concurrency_cap_floor"] = {
                 "floor": floor,
                 "raised_policies": len(raised),
+                "filled_uncapped_policies": len(filled),
                 "authorized_at": "2026-09-12",
-                "basis": ("user instruction: raise every per-arm cap below 8 to 8, "
-                          "existing strategies included"),
-                "detail": raised,
+                "basis": ("user instruction: every strategy gets a cap of 8 - values below it are "
+                          "raised and arms that registered no cap are given one"),
+                "detail": raised + filled,
+                "description_notes": notes,
             }
         if renotionalised:
             definition["uniform_notional_usd"] = {
