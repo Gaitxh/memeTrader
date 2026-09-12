@@ -3099,3 +3099,86 @@ def mechanisms(f):  # noqa: F811 - wave 40 wrapper over the wave-39 wrapper
         out.setdefault('wide_goldendog_band', False)
     return out
 
+
+# ---- wave 41: the one entry variable that survived a point-in-time test ----
+# Measured 2026-09-12 over 1,262 tokens whose first observation carried a liquidity value
+# (first snapshot in a 4h window, >=5 observations, peak measured over the following hour):
+#
+#   first-observation liquidity   n     >=1.5x   >=2x    >=3x
+#   0 - 1,000                     33    36.4%    30.3%   27.3%   (tiny sample, brand-new pools)
+#   1,000 - 5,000                482     5.0%     3.1%    1.9%
+#   5,000 - 20,000               406    27.3%    15.0%    7.4%
+#   20,000 - 100,000             245    31.0%    19.2%   10.2%
+#   >= 100,000                    96     6.2%     3.1%    2.1%
+#
+# So the 20k-100k band doubles 1.75x more often than the 11.0% population base rate, and the
+# 1k-5k band - where 2,881 evaluations per hour are currently spent - doubles 3.6x LESS often.
+# This is a point-in-time stratification (the band is read from the first observation, not from
+# the token's later maximum), which is why it is the first entry scalar this session that
+# survived its own falsification attempt. The two arms below are the band and its adjacent
+# control, with identical exit contracts, so the band effect is measurable inside one wave.
+# No existing mechanism is touched.
+MID_BAND_DEPTH_LOW = 20000.0
+MID_BAND_DEPTH_HIGH = 100000.0
+SHALLOW_BAND_DEPTH_LOW = 1000.0
+
+SPECS.update({
+    'alpha149_mid_band_flow_v1': ('mid_band_flow', '\u4e2d\u6df1\u6c60\u00b7\u4e0d\u8dcc\u6d41\u5165(1U)', 30),
+    'alpha149_shallow_band_flow_v1': ('shallow_band_flow', '\u6d45\u6c60\u00b7\u4e0d\u8dcc\u6d41\u5165\u5bf9\u7167(1U)', 30),
+})
+OVERRIDES.update({
+    'alpha149_mid_band_flow_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=4,
+        excess_return_vs_arm='alpha149_open_band_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u4e2d\u6df1\u6c60\u00b7\u4e0d\u8dcc\u6d41\u5165\uff081U\uff0c30\u5206\u949f\uff09\uff1a'
+                    '\u5f53\u524d\u6c60\u6df1 20k-100k U\u3001\u4e70\u76d8>=50%\u3001\u4ef7\u683c\u76f8\u5bf9\u4e0a\u4e00\u5e27\u4e0d\u8dcc\u3001'
+                    '\u6df1\u5ea6\u4e0d\u6d41\u5931\uff08>=98%\uff09\u3002\u4f9d\u636e\uff1a\u6309\u9996\u6b21\u89c2\u6d4b\u6d41\u52a8\u6027\u5206\u5c42\uff0c'
+                    '20k-100k \u6863\u5728\u4e00\u5c0f\u65f6\u5185\u7ffb\u500d\u6bd4\u4f8b 19.2%\uff08n=245\uff09\uff0c'
+                    '\u800c 1k-5k \u6863\u4ec5 3.1%\uff08n=482\uff09\u3001\u5168\u4f53\u57fa\u7840\u7387 11.0%\u3002'),
+    'alpha149_shallow_band_flow_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=4,
+        excess_return_vs_arm='alpha149_mid_band_flow_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u6d45\u6c60\u00b7\u4e0d\u8dcc\u6d41\u5165\u5bf9\u7167\uff081U\uff0c30\u5206\u949f\uff09\uff1a'
+                    '\u4e0e\u4e2d\u6df1\u6c60\u81c2\u9010\u5b57\u76f8\u540c\uff0c\u552f\u4e00\u5dee\u522b\u662f\u6c60\u6df1\u4e3a 1k-20k U\u3002'
+                    '\u7528\u4e8e\u5728\u540c\u4e00\u6ce2\u6b21\u5185\u76f4\u63a5\u6d4b\u91cf\u201c\u6c60\u6df1\u6863\u4f4d\u201d\u8fd9\u4e00\u53d8\u91cf\u3002'),
+})
+ALL_ARMS = tuple(SPECS) + tuple(EXIT_ARMS)
+KINDS = tuple(kind for kind, _, _ in SPECS.values())
+
+_base_mechanisms_w40 = mechanisms
+
+
+def mechanisms(f):  # noqa: F811 - wave 41 wrapper over the wave-40 wrapper
+    """Two liquidity-band entries with identical protecting conditions."""
+    out = _base_mechanisms_w40(f)
+    try:
+        if not isinstance(f, dict):
+            return out
+        frame = f.get('current') if isinstance(f.get('current'), dict) else {}
+        previous = f.get('prev') if isinstance(f.get('prev'), dict) else None
+
+        def _n(value):
+            try:
+                return None if value is None or isinstance(value, bool) else float(value)
+            except (TypeError, ValueError):
+                return None
+        depth = _n(frame.get('liquidity_usd'))
+        prior = _n(previous.get('liquidity_usd')) if previous else None
+        share = _n(f.get('buy_count_share'))
+        price_now = _n(frame.get('price_usd'))
+        price_prev = _n(previous.get('price_usd')) if previous else None
+        common = bool(previous and depth is not None and prior is not None
+                      and share is not None and share >= .5
+                      and price_now and price_prev and price_now >= price_prev
+                      and depth >= prior * .98)
+        out['mid_band_flow'] = bool(
+            common and MID_BAND_DEPTH_LOW <= depth <= MID_BAND_DEPTH_HIGH)
+        out['shallow_band_flow'] = bool(
+            common and SHALLOW_BAND_DEPTH_LOW <= depth < MID_BAND_DEPTH_LOW)
+    except Exception:
+        out.setdefault('mid_band_flow', False)
+        out.setdefault('shallow_band_flow', False)
+    return out
+

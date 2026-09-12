@@ -1446,6 +1446,19 @@
       "next": "1) 任何新的入场筛选提案，必须先给出同代币配对结果，否则不予采信（本轮 turnover 即反例）。2) ready→准入 5.1% 的断点已定位为观测节奏（p50 89.8 秒）与 60 秒确认窗口的错配，两条出路（加请求预算 / 放宽共享时序）均需用户授权，用户已选择暂不增加预算。3) 摩擦占亏损 58%，4%/4% 的买卖滑点是用户可编辑的冻结契约，不在本 Agent 授权内；若用户希望评估其影响，可用同一分解口径给出敏感性表。4) 退出层证据不支持\"拿不住\"假设，后续退出实验应优先复现 plateau_stall 的右尾属性而不是加长持有。",
       "report": "docs/PROJECT_CONTEXT/ROUND80_FUNNEL_LOSS_AND_FALSIFIED_FILTERS_20260912.md",
       "visible_entry": "docs/PROJECT_CONTEXT/ROUND80_FUNNEL_LOSS_AND_FALSIFIED_FILTERS_20260912.md"
+    },
+    {
+      "id": "20260912-round81-liquidity-band-wave41-and-three-negatives",
+      "recorded_at": "2026-09-12T07:10:00Z",
+      "title": "第81轮：找到首个通过时点检验的入场变量（池深 20k-100k，翻倍率 19.2% vs 基础 11.0%）并新增第41波配对臂（312条）；同时否掉三个方向（提前止盈阶梯、防抖止损、免费补帧容量）",
+      "problem": "用户第二优先级要求重构退出机制（1.5-2x 回收本金 + 分批 + Moonbag），并问流动性门槛是否过严。本轮先量化\"退出到底值不值得改\"：48小时内达到峰值>=1.5x 的持仓 461 笔共实现 +771.3U（占保证金 +55.8%），>=1.3x 的 763 笔捕获了峰值的 68.1%；对\"在 1.5x 卖出比例 f\"的阶梯，期望变化恰为 stake*f*(0.44-r)，而 r=0.558，因此任何 f>0 都是负的——卖出 70%（1.5x 真正收回本金所需比例）在该人群上约损失 8.3% 保证金期望。同时审计了现有 5 条声明了防抖止损字段的臂：72 小时 96 笔合计 -37.6% 保证金，而同机制未加防抖的对照 148 笔为 -21.6%，且防抖臂峰值中位更高（1.27x vs 0.96x）、结果更差、持有更久（102 vs 15 分钟）。再查容量：补帧通道全进程 eligible_batch=402、no_spare=402、selected_extra=0（从未成功过一次），同时 dex_http_capacity 出现 low_priority_deferred=43、low_budget_cancellations_no_rotation=31 而 max_inflight=8 只用了 3——系统是速率预算受限而非并发受限，不存在\"免费余量\"可供观察白名单使用。",
+      "change": "新增第41波两条配对臂（纯新增，310->312，ledger_unchanged=true）：alpha149_mid_band_flow_v1（kind mid_band_flow：当前池深 20,000-100,000 U 且 买盘>=50% 且 价格不低于上一帧 且 深度>=上一帧98% 且 必须存在上一帧）与 alpha149_shallow_band_flow_v1（逐字相同，池深改为 1,000-20,000 U 作对照）。两者 1U、30 分钟、硬止损 -20%、追踪 30/15、并发 4，契约完全相同，波次内唯一差异就是池深档位。依据：按\"首次观测时的流动性\"分层 1,262 个代币（>=5 次观测、峰值取其后 1 小时，严格时点），20k-100k 档一小时内翻倍比例 19.2%（n=245），1k-5k 档仅 3.1%（n=482），>=100k 档 3.1%，全体基础率 11.0%。这是本会话第一个通过自身证伪检验的入场标量（此前的换手率筛选在按代币配对后失效）。",
+      "rationale": "用户要求\"如确认存在逻辑断点或缺陷，立即修复\"与\"重点重构退出机制\"。本轮把退出侧的三个具体方案用可复算的算式与配对对照否掉，把唯一有正向时点证据的变量（池深档位）落成一对同契约的配对臂，既响应用户的\"过滤器是否过严\"之问（答案：1000U 下限并不严，真正错配的是算力/观测注意力集中在翻倍率最低的 1k-5k 档），又不违反\"不得为制造交易放宽规则\"与\"新增必须是独立模块\"两条约束。",
+      "validation": "测量与脚本：data/tmp/round81_peaks.py、round81_giveback.py、round81_guarded.py、round81_capacity.py、round81_floor.py、round81_band.py、round81_band2.py、round81_verify.py（全部只读）。测试：tests/test_alpha149_wave41.py 新增 4 项，连同 test_alpha149、wave38、wave39、wave2425、test_dex_trajectory 共 95 项通过。登记 310->312；重载 2026-09-12T14:54:06+08:00（PID 对 35348/40516）。重载后约 6 分钟实测：band_step:evaluated 1001，mid_band_flow ready=128、shallow_band_flow ready=192，alpha149_mid_band_flow_v1 已开 1 笔、alpha149_shallow_band_flow_v1 已开 2 笔——两条臂首次即达可达，非空转。paper 模式、live.enabled=false、账本与资金周期均未变。",
+      "scope": "改动 src/memetrader/alpha149.py（第41波追加）、tests/test_alpha149_wave41.py（新增）、docs/PROJECT_CONTEXT/ROUND81_LIQUIDITY_BAND_AND_THREE_NEGATIVE_RESULTS_20260912.md（新增）、docs/PROJECT_CONTEXT/SYSTEM_UPDATE_HISTORY.json。",
+      "next": "1) 第41波按同契约配对评估，需每侧>=20 笔已结算，且用年龄受控 cohort 与代币匹配；在此之前只报 ready，不报业绩。2) 等待 mover predictor 子代理结论（data/research/mover_predictor_20260912.md）：若留出样本上的 lift 真实，下一步是带实测请求成本的\"观察白名单\"提案，作为预算决策提交用户，不擅自实施。3) 在没有\"同机会配对\"先验结果之前，不再新增任何退出变体。",
+      "report": "docs/PROJECT_CONTEXT/ROUND81_LIQUIDITY_BAND_AND_THREE_NEGATIVE_RESULTS_20260912.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/ROUND81_LIQUIDITY_BAND_AND_THREE_NEGATIVE_RESULTS_20260912.md"
     }
   ]
 }
