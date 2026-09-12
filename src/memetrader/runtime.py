@@ -8422,6 +8422,12 @@ class Runtime:
             # Which tokens the reservation admitted, so their observation counts can be measured
             # offline without adding work to the observation loop.
             "mover_reserved_tokens": dict(getattr(self, '_mover_reserved_tokens', {}) or {}),
+            # The registry's active token ids, so the overlap between what the mover rule flags
+            # and what the admission loop actually sees as a candidate can be measured offline.
+            # This is how round 100's hypothesis (the reservation sits on the rejection path
+            # rather than the candidate path) can be tested without touching the hot loop.
+            "mover_watching_tokens": (sorted(getattr(self, '_mover_watchlist', None).active(utcnow()))
+                                      if getattr(self, '_mover_watchlist', None) is not None else []),
             "non_held_by_chain_bucket": getattr(self, "_pattern_watch_nonheld_by_chain_bucket", {}),
         })
         counts=getattr(self,'_coverage145_counts',{});self._coverage145_counts=counts

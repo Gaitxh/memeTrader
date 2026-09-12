@@ -1667,6 +1667,19 @@
       "next": "1) 核对主要假设：统计\"被标记代币进入纳管循环候选\"的次数 vs \"走到 skip_bucket_full 分支\"的次数；若前者远大于后者，说明保留逻辑的位置不对，应改为**在候选流中直接为被标记代币插入候选**，而不是等它被拒绝时再放行。2) 修正后复测三项：mover_reserved_admissions 的增速（目标约 32/小时）、被纳管代币的观测数（目标约 30 帧）、以及密集 vs 稀疏的间隔分布（第98轮口径）。3) 覆盖率取舍仍待用户决定（密集 ready 池占比约 10-15%）。",
       "report": "docs/PROJECT_CONTEXT/ROUND89_RESERVED_ADMISSION_20260912.md",
       "visible_entry": "docs/PROJECT_CONTEXT/ROUND89_RESERVED_ADMISSION_20260912.md"
+    },
+    {
+      "id": "20260912-round101-reservation-reach-confirmed-zero-overlap",
+      "title": "第101轮：第100轮假设得到确证——被标记代币与观察器持有的租约**重叠为 0/24**，保留名额因此几乎永不触发；修复方向是把被标记代币注入候选流，而不是等它被拒绝",
+      "recorded_at": "2026-09-12T11:20:00Z",
+      "problem": "第100轮发现保留槽位严重未填满（10 分钟 1 次 vs 设计约 5 次），并提出主要假设：保留纳管挂在纳管循环的 skip_bucket_full 分支（**拒绝路径**）上，只有当一个被标记代币已经作为候选走到该分支时才会触发。本轮检验该假设。",
+      "change": "src/memetrader/runtime.py：把白名单注册表的活跃代币 id 列表一并写入 pattern-watch kv 检查点（有界，至多 24 个），使\"被标记集合\"与\"观察器实际持有集合\"的重叠可以离线测量，无需向观测热路径添加任何计算。",
+      "rationale": "要在不改动纳管路径的前提下检验\"位置错了\"这一假设，只需要两个集合的 id：被标记的（注册表活跃集）与观察器实际持有的（leases145 检查点）。两者都已在进程内，落盘即可以只读方式比较。",
+      "validation": "重载 2026-09-12T18:35:16+08:00；runtime 导入正常。10:43:17Z 检查点实测：mover_watching=24、mover_watching_tokens=24 个 id、**观察器当前持有租约 8 个**、**被标记集合与持有集合的重叠 = 0/24**（24 个被标记代币全部不在观察器持有的租约中）；同进程 mover_reserved_admissions=0、tracked reserved tokens=0。**结论（第100轮假设确证）**：被标记代币几乎从不出现在观察器的持有集合里，而保留纳管只在\"被标记代币作为候选被拒绝\"时触发——两者相遇的概率因此接近零，这解释了第100轮测到的约 6 个/小时（设计 32 个/小时）以及被纳管代币只拿到 1 次观测。修复方向随之明确：应在**候选流**中直接为被标记代币插入候选，而不是等它走到拒绝分支。paper 模式、live.enabled=false、账本与资金周期均未变。",
+      "scope": "改动 src/memetrader/runtime.py（kv 载荷增加一个字段）、docs/PROJECT_CONTEXT/SYSTEM_UPDATE_HISTORY.json。",
+      "next": "1) 在候选流中为被标记代币插入候选（例如在纳管循环开始处，把注册表活跃集里尚未在观察集中的代币作为候选加入，并只允许占用 8 个保留名额），而不是依赖它们走到 skip_bucket_full。2) 修正后复测四项：重叠率（目标显著大于 0）、mover_reserved_admissions 增速（目标约 32/小时）、被纳管代币观测数（目标约 30 帧）、密集 vs 稀疏的间隔分布（第98轮口径）。3) 覆盖率取舍仍待用户决定（密集 ready 池占比约 10-15%）。",
+      "report": "docs/PROJECT_CONTEXT/ROUND89_RESERVED_ADMISSION_20260912.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/ROUND89_RESERVED_ADMISSION_20260912.md"
     }
   ]
 }
