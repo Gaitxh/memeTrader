@@ -1070,6 +1070,23 @@ def normalize_public_http_url(value: str) -> str:
     )
 
 
+def resolve_http_proxy_url(source_config: Any) -> str:
+    """Return the one configured egress proxy for every outbound HTTP client.
+
+    `sources.http_proxy_url` wins when present, so an operator can point the JSON
+    APIs somewhere else than the RSS feeds; an empty string there is an explicit
+    instruction to connect directly. When the key is absent the RSS feed proxy is
+    reused, which keeps existing configurations working unchanged. The value is
+    validated by `normalize_loopback_socks5_proxy_url` at client construction.
+    """
+    if not isinstance(source_config, dict):
+        return ""
+    configured = source_config.get("http_proxy_url")
+    if configured is None:
+        return str(source_config.get("rss_proxy_url") or "")
+    return str(configured)
+
+
 def normalize_loopback_socks5_proxy_url(value: str) -> str:
     """Accept only an unauthenticated SOCKS5 proxy at a literal loopback IP."""
     raw = str(value or "").strip()
@@ -1100,6 +1117,46 @@ def normalize_loopback_socks5_proxy_url(value: str) -> str:
         raise ValueError("RSS proxy host must be loopback")
     host = f"[{address}]" if isinstance(address, ipaddress.IPv6Address) else str(address)
     return f"socks5://{host}:{port}"
+
+
+def normalize_loopback_proxy_url(value: str) -> str:
+    """Accept an unauthenticated loopback proxy that speaks SOCKS5 or HTTP.
+
+    The general clients (`HttpClient` beyond the feed path) accept both schemes,
+    because the local proxy an operator runs is commonly a mixed port. The RSS
+    feed client keeps the stricter SOCKS5-only gate above, unchanged.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    scheme = urllib.parse.urlsplit(raw).scheme.lower()
+    if scheme == "socks5":
+        return normalize_loopback_socks5_proxy_url(raw)
+    if scheme != "http":
+        raise ValueError("proxy must use socks5 or http")
+    if any(ord(char) <= 32 or ord(char) == 127 for char in raw):
+        raise ValueError("proxy URL contains whitespace or control characters")
+    try:
+        parsed = urllib.parse.urlsplit(raw)
+        port = parsed.port
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid proxy URL") from exc
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("proxy credentials are forbidden")
+    if parsed.path or parsed.query or parsed.fragment or "?" in raw or "#" in raw:
+        raise ValueError("proxy URL cannot contain a path, query, or fragment")
+    if not parsed.hostname or port is None or not 1 <= port <= 65_535:
+        raise ValueError("proxy requires a literal loopback IP and valid port")
+    if "%" in parsed.hostname:
+        raise ValueError("proxy requires an unscoped literal loopback IP")
+    try:
+        address = ipaddress.ip_address(parsed.hostname)
+    except ValueError as exc:
+        raise ValueError("proxy host must be a literal loopback IP") from exc
+    if not address.is_loopback:
+        raise ValueError("proxy host must be loopback")
+    host = f"[{address}]" if isinstance(address, ipaddress.IPv6Address) else str(address)
+    return f"http://{host}:{port}"
 
 
 async def public_destination_addresses(url: str) -> set[str]:
@@ -1192,18 +1249,37 @@ class HttpClient:
         feed_max_response_bytes: int = 1_048_576,
         feed_max_redirects: int = 5,
         feed_proxy_url: str = "",
+        proxy_url: str | None = None,
         conditional_store: Any | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         client_limits: httpx.Limits | None = None,
         client_factory: Callable[[], httpx.AsyncClient] | None = None,
         dex_low_priority_wait: float = 0.25,
     ):
+        # Routing is explicit, never inherited from the host: `trust_env=False` plus an
+        # optional configured proxy. A host whose NO_PROXY contains the bare/bracketed
+        # IPv6 loopback forms (`::1`, `[::1]`) otherwise breaks httpx 0.28, which parses
+        # every NO_PROXY entry as a URL and raises `InvalidURL: Invalid port: ':1]'` while
+        # building the environment mounts - the runtime then cannot start at all. Relying
+        # on the environment would also silently reroute or bypass the operator's chosen
+        # egress. `proxy_url` defaults to `feed_proxy_url` for backward compatibility;
+        # pass an explicit "" to opt a client out of proxying.
         self._client_factory = client_factory
+        normalized_feed_proxy = normalize_loopback_socks5_proxy_url(feed_proxy_url)
+        if proxy_url is None:
+            normalized_proxy = normalized_feed_proxy
+        elif str(proxy_url).strip():
+            normalized_proxy = normalize_loopback_proxy_url(proxy_url)
+        else:
+            normalized_proxy = ""
+        self.proxy_url = normalized_proxy
         self._client_options: dict[str, Any] = {
             "timeout": httpx.Timeout(timeout),
             "follow_redirects": True,
             "headers": {"User-Agent": user_agent, "Accept": "application/json,text/xml,application/xml,text/html,*/*"},
             "transport": transport,
+            "trust_env": False,
+            "proxy": (normalized_proxy or None) if transport is None else None,
         }
         if client_limits is not None:
             self._client_options["limits"] = client_limits
@@ -1220,7 +1296,7 @@ class HttpClient:
         self._client_retire_reasons = {"connect": 0, "pool": 0, "cancel": 0}
         self._client_cancellations = 0
         self._client_budget_cancellations = 0
-        self.feed_proxy_url = normalize_loopback_socks5_proxy_url(feed_proxy_url)
+        self.feed_proxy_url = normalized_feed_proxy
         proxy_host = urllib.parse.urlsplit(self.feed_proxy_url).hostname if self.feed_proxy_url else None
         self.feed_proxy_ip = _canonical_ip(proxy_host) if proxy_host else None
         self._require_feed_peer = transport is None
@@ -3280,7 +3356,7 @@ class SolanaHeldAccountCollector:
 
     MAX_MULTIPLE_ACCOUNTS = 100
 
-    def __init__(self, rpc_url: str, *, refresh_seconds: float = 5.0):
+    def __init__(self, rpc_url: str, *, refresh_seconds: float = 5.0, proxy_url: str = ""):
         self.rpc_url = str(rpc_url)
         parsed = urllib.parse.urlparse(str(rpc_url))
         scheme = "wss" if parsed.scheme == "https" else "ws"
@@ -3294,7 +3370,15 @@ class SolanaHeldAccountCollector:
             else self.MAX_MULTIPLE_ACCOUNTS
         )
         self.refresh_seconds = max(1.0, float(refresh_seconds))
-        self.http = httpx.AsyncClient(timeout=15.0)
+        # Same explicit-egress rule as HttpClient: never inherit HTTP_PROXY/NO_PROXY.
+        self.proxy_url = (
+            normalize_loopback_proxy_url(proxy_url) if str(proxy_url or "").strip() else ""
+        )
+        self.http = httpx.AsyncClient(
+            timeout=15.0,
+            trust_env=False,
+            proxy=self.proxy_url or None,
+        )
 
     @staticmethod
     def _rpc_error_reason(exc: Exception) -> str:

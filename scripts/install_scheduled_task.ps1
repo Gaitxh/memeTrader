@@ -1,7 +1,10 @@
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $taskName = "memeTrader Paper Bot"
-$runner = Join-Path $PSScriptRoot "run_paper.ps1"
+# `run_all.ps1` sanitizes the proxy environment once (this host's NO_PROXY breaks
+# httpx 0.28 and its HTTPS_PROXY breaks websocket handshakes) and then owns both
+# the Web console and the Paper runtime supervisor.
+$runner = Join-Path $PSScriptRoot "run_all.ps1"
 $userId = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $legacyRunKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 $legacyRunName = "memeTraderPaperBot"

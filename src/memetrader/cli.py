@@ -15,6 +15,7 @@ from pathlib import Path
 import httpx
 
 from .autonomous_search import CONTEXT_RESULT_KEY, REGISTRY_KEY, SOURCE_RESULT_KEY, TREND_RESULT_KEY
+from .collectors import resolve_http_proxy_url
 from .models import Observation, parse_time
 from .runtime import Runtime, SingleInstance, configure_project_temp, initial_config, load_config
 from .store import Store
@@ -254,7 +255,28 @@ def cmd_doctor(config_path: str, online: bool) -> int:
                 if item.get("enabled", True) and item.get("url"):
                     targets[f"rss:{item.get('name') or item['url']}"] = (str(item["url"]), True)
             online_reachable: dict[str, bool] = {}
-            with httpx.Client(timeout=15, follow_redirects=True, headers={"User-Agent": "memeTrader-doctor/0.6.1"}) as client:
+            # The doctor must leave the loopback host the same way the runtime does,
+            # otherwise a reachability report is about a different network path than
+            # the one collectors use. An unusable proxy is reported, not raised.
+            try:
+                doctor_proxy = resolve_http_proxy_url(config["sources"]) or None
+            except Exception as exc:
+                doctor_proxy = None
+                checks.append(
+                    {
+                        "name": "http_proxy",
+                        "ok": False,
+                        "error": type(exc).__name__,
+                        "detail": str(exc)[:160],
+                    }
+                )
+            with httpx.Client(
+                timeout=15,
+                follow_redirects=True,
+                headers={"User-Agent": "memeTrader-doctor/0.6.1"},
+                trust_env=False,
+                proxy=doctor_proxy,
+            ) as client:
                 for name, (url, required) in targets.items():
                     try:
                         response = client.get(url)

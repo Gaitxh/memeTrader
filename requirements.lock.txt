@@ -1,0 +1,22 @@
+-e git+https://github.com/Gaitxh/memeTrader.git@31089ab466853dd2311fbabdf50f5348685c7d0e#egg=memetrader
+Pygments==2.21.0
+anyio==4.14.2
+build==1.6.0
+certifi==2026.7.22
+colorama==0.4.6
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.19
+iniconfig==2.3.0
+jsonalias==0.1.1
+packaging==26.3
+pluggy==1.6.0
+py-spy==0.4.2
+pyproject_hooks==1.2.0
+pytest==8.4.2
+python-socks==3.1.1
+socksio==1.0.0
+solders==0.29.0
+typing_extensions==4.16.0
+websockets==15.0.1

@@ -422,13 +422,15 @@ def test_dex_proxy_connect_tls_failures_do_not_exhaust_a_small_connection_pool(m
 
         server = await asyncio.start_server(proxy, "127.0.0.1", 0)
         port = server.sockets[0].getsockname()[1]
-        monkeypatch.setenv("HTTPS_PROXY", f"http://127.0.0.1:{port}")
-        monkeypatch.setenv("https_proxy", f"http://127.0.0.1:{port}")
-        monkeypatch.delenv("NO_PROXY", raising=False)
-        monkeypatch.delenv("no_proxy", raising=False)
+        # The proxy is passed explicitly: HttpClient no longer reads HTTP_PROXY or
+        # NO_PROXY from the environment, because a host NO_PROXY entry such as
+        # `[::1]` makes httpx 0.28 raise InvalidURL while building its mounts, and
+        # because inheriting egress from the environment hides which path the bot
+        # actually used. The recovery behaviour under test is unchanged.
         client = HttpClient(
             timeout=0.5,
             min_host_interval=0,
+            proxy_url=f"http://127.0.0.1:{port}",
             client_limits=httpx.Limits(max_connections=3, max_keepalive_connections=3),
         )
         try:
