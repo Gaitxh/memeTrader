@@ -2,7 +2,7 @@
 
 ```json
 {
-  "cycle_id": "round-120-17-exit-closure-and-profit-capture",
+  "cycle_id": "round-120-18-activity-floor-and-artifact-disproof",
   "workspace": "H:\\OpenTrader\\memeTrader_2",
   "runtime": {
     "db": "data/memetrader_forward.sqlite3",
@@ -12,6 +12,35 @@
     "restarted": "2026-09-12T21:19:08Z (round 120-17; registers exit150_full15_v1 + exit150_full25_v1 at frontier 32175)",
     "process_note": "each service shows TWO python processes - the .venv parent and a system-python RE-EXEC'd child. This is by design, NOT a duplicate-writer hazard."
   },
+  "ROUND_18_FALSIFIED_entry_features_cannot_predict_the_15pct_touch": {
+    "status": "FALSIFIED before building. Do NOT build a '+15%-touch predictor' / 'quiet pool' entry filter.",
+    "why": "Position level looked strong (mcap ratio 0.18, sells 0.00, both 'separated'), but every check kills it: (1) positions are projected from a cohort=(token,snapshot) x many arms, so they SHARE one feature vector and per-token medians are literally identical (bsc:0x1853979987 mcap 27,377/27,377, trades 11/11) - the within-token test had no variance by construction; (2) at the correct unit (167 cohorts, 7.3/token) the within-token rank correlation is 0.000 for EVERY feature (liq and mcap: 10 tokens negative, 0 positive); (3) the direction INVERTS when the 5 luckiest tokens are removed (trades 0.12 -> 1.22, sells 0.09 -> 2.04, mcap ratio -> 1.00); (4) token-clustered bootstrap CI [-0.127, +0.297] spans zero; (5) economically backwards - quiet pools -12.57U/pos vs busy -4.25U/pos."
+  },
+  "ROUND_18_FOUND_one_filterable_population_is_69pct_of_the_loss": {
+    "headline": "An activity floor on the entry snapshot's OWN fields collapses the death rate. Write-off rate 34.8% -> 6.0% at trades>=30 (vol5>=10000 -> 8.4%). Token-clustered bootstrap on the per-position gain: +9.73 U/pos, 95% CI [+3.93, +14.17], EXCLUDES ZERO.",
+    "chain_stratified_mechanism": {
+      "bsc_lt30_trades": "404 positions, 78.6% write-off, -15.39 U/pos  <- -6,218U = 69.2% of the entire -8,990U epoch loss",
+      "bsc_ge30_trades": "132 positions, 7.6% write-off, -4.75 U/pos",
+      "solana_lt30_trades": "55 positions, 0.0% write-off, -2.67 U/pos",
+      "solana_ge30_trades": "352 positions, 6.8% write-off, -4.43 U/pos",
+      "baselines": "bsc 547 pos / 61.4% wo / -12.82 U/pos; solana 407 / 5.9% / -4.19; robinhood 93 / 0.0% / -2.97"
+    },
+    "near_miss_correction": "It is tempting to read 'the floor hurts Solana because kept -4.43 is worse than dropped -2.67'. That is the WRONG comparison. Removing a set that loses -2.67U/pos IMPROVES the book by +147U. The floor helps BOTH chains: +6,394U on BSC, +148U on Solana.",
+    "units": "the gate's own quantity is `trades = last['buys'] + last['sells']` and `last['volume']` - the SAME 5m fields measured here."
+  },
+  "ROUND_18_COMBINED_levers": {
+    "actual": "-8,990.05U over 1,041 positions (-8.64 U/pos)",
+    "tp_only": "-3,743.41U",
+    "floor_only_trades30": "-2,462.54U over 575",
+    "floor_plus_tp": "-2,162.84U over 575",
+    "best_vol5_50k_plus_tp": "-506.00U over 275 (-1.84 U/pos)",
+    "verdict": "The two levers PARTIALLY OVERLAP rather than add (5,247 + 6,528 != 6,827) because the floor removes positions the take-profit would have rescued. Best case is a 94.4% loss reduction but token-clustered bootstrap gives 95% CI [-1,429, +141] and P(profitable)=12.9%. IT STILL LOSES, and the residue is concentrated (1 of 7 traded tokens is -250U)."
+  },
+  "ROUND_18_ROOT_CAUSE_why_the_existing_defence_never_bites": "The system ALREADY has 296 numeric entry gates, consumed at revision_evidence_extensions.py:279, with min_trades 4-12 and min_volume 300-1200. The transition is between 10->20 trades and 1,000->3,000 volume, so THE EXISTING FLOORS ARE CALIBRATED EXACTLY WHERE THEY DO NOTHING (trades>=10 is worth +552U of a possible +6,528U). Structurally: those floors live on evidence_extension_l0 arms that hold 1-2 positions each, while the 1,409 positions actually held come from 154 isolated_cohort_observer arms whose ENTIRE entry_filter is {direction, max_concurrent_positions: 2, single_token_lifetime_entry: True} - no activity gate at all.",
+  "ROUND_18_HOOK_LOCATED_not_landed": "store.py:27832-27850 is the cohort acceptance loop; each qualifying policy commits at accepted_cohort_signals[arm]=signal (27850). A new arm can be screened there by its own id (existing arms -> allow immediately), precedent being store.py:27951 which dispatches an arm to its own module via entry_filter['failed_impulse_cooling']. NOT LANDED because a new cohort arm only trades if the cohort evaluator emits a signal for it: cohort_signals is an INPUT parameter (store.py:27508) produced upstream, cohort_experiment_policies() enumerates its arms explicitly, and the alpha149 cohort arms emit via alpha149.signals_for from SPECS. So the additive path is: append a new arm to alpha149.SPECS (the established wave pattern) + the one-line screen + its own register_* frontier. NEEDS VERIFICATION that the new arm reaches cohort_signals before it is trusted.",
+  "ROUND_18_FUNNEL_REASONS": "evaluations this epoch: cohort_observation 11,667 | no_active_matching_entry_policy 9,166 | pattern_observation 7,555 | entry_pool_liquidity_absent_curve_stage 2,714 | invalid_exact_asof_market_snapshot 1,807 | entry_pool_liquidity_below_configured_floor 1,055 | entry_pool_liquidity_unknown 396 | entry_snapshot_too_old 12.",
+  "ROUND_18_JOIN_KEYS_measured": "shadow_cohort_id -> v6_cohorts.id 1098/1098; source_entry_fill_id -> v6_entry_fills.id 1091/1098; entry_snapshot_id -> token_snapshots.id 1091/1098; entry_fill_id -> v6_entry_fills.id 0/1098 (silently empty - the trap that bit a previous round). Rich per-arm feature vectors are NO LONGER usable historically because round 120-9 compacted them to 3 fields.",
+
   "ROUND_17_EXIT_SIDE_IS_CLOSED": {
     "status": "Four independent falsifications on real forward marks (906 closed positions, 24 tokens, actual -7,962.84U). No exit rule, level or cadence change can recover the loss. ALL remaining effort belongs on the ENTRY side.",
     "1_no_tighter_stop_helps": "Enforcing -0.15/-0.20/-0.25/-0.30/-0.40/-0.50/-0.65 econ on EVERY position gives -358/-149/-89/-113/-149/-152/-142 U versus doing nothing. Tightening also stops the positions that recover.",
@@ -54,7 +83,7 @@
     "A mark-supply fix - 1706 mark_history rows per 15 min here versus the old session's 46; 494 of 518 positions received more than one in-window mark.",
     "Loosening the engine's 30s freshness rule - only 1 of 6137 snapshots exceeds 30s and the engine refusal ratio is 12.2%."
   ],
-  "next_action": "P0-NEW settle exit150_full15_v1 / exit150_full25_v1 to >=20 per side and test the CAPTURE-FRACTION hypothesis forward - this is now the highest-value open question, because the replay says the deployed ladder leaves 41.5% of the effect on the table. P0-1 re-run scripts/paired_arm_ab.py as settled counts grow; when alpha149_merged_multi_setup_v1 reaches >=20 paired cohorts add it to the pause list (clean verdict, 90% CI [-7.4973, -0.6131] excludes zero). P0-2 entry-quality activity floor arm (m5_trades >= 30 and m5_volume_usd >= 5,000) - blocked until the dead group is >=30 TOKENS (currently 10). P1 push token-level evidence BREADTH: 906 positions sit on only 24 tokens; the entry side is the only remaining lever after round 120-17. P0-3 (write rate) is background only - see P0_3_DEMOTED.",
+  "next_action": "P0-NEW land the ACTIVITY-FLOOR entry arm - it is the single biggest lever found (404 low-activity BSC positions = 69.2% of the epoch loss; write-off 34.8%->6.0%; +9.73U/pos with token-clustered CI [+3.93,+14.17]). Path: append a new arm to alpha149.SPECS (the established additive wave pattern) + a one-line screen at store.py:27850 keyed on its own id + its own register_* frontier. FIRST verify the new arm actually reaches cohort_signals (store.py:27508 is an INPUT parameter; cohort_experiment_policies() enumerates arms explicitly; alpha149 cohort arms emit via alpha149.signals_for from SPECS) - do NOT trust an entry arm that silently never fires. Levels from the write-off collapse, not the in-sample PnL sweep: trades >= 30 and/or vol5 >= 5000, applied globally (it helps BSC +6,394U and Solana +148U). See ROUND_18_HOOK_LOCATED_not_landed and ROUND_18_ROOT_CAUSE_why_the_existing_defence_never_bites. P0-1 settle exit150_full15_v1 / exit150_full25_v1 to >=20 per side and test the CAPTURE-FRACTION hypothesis forward. P0-2 re-run scripts/paired_arm_ab.py as settled counts grow; when alpha149_merged_multi_setup_v1 reaches >=20 paired cohorts add it to the pause list. P1 explain the -506U residue (1 of 7 traded tokens is -250U). DO NOT build a '+15%-touch predictor' or 'quiet pool' filter - falsified in ROUND_18_FALSIFIED. P0-3 (write rate) stays background - 46 days headroom, carries state-chain risk.",
   "MEASUREMENT_DISCIPLINE": "Four hypotheses have been killed by measurement across rounds 120-5/120-6 and ONE WAS A BUG IN MY OWN PROBE ('0 of 18 pools can form a window' - the query filtered provider LIKE 'dexscreener%', excluding the strategy-observer mirror rows). None produced a code change; all would have looked like reasonable fixes. ALWAYS take a second independent measure before publishing a '0 samples / stalled / defect' claim or changing code. Also: never LIKE wildcards on arm_id; use julianday() not datetime('now'); dedupe snapshots by (token_id, observed_at); separate windowed from all-time totals.",
   "authoritative_current_numbers_20260912T2027Z": {
     "source": "scripts/supervise_metrics.py --hours 2 AND scripts/trade_context_ledger.py --minutes 180",
