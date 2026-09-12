@@ -28203,7 +28203,7 @@ class Store:
                     episode = self.db.execute("SELECT COALESCE(MAX(episode_no),0)+1 FROM chain_meme_trader_v6_cohorts WHERE definition_version=? AND token_id=?", (version, token.token_id)).fetchone()[0]
                     cursor = self.db.execute(
                         "INSERT INTO chain_meme_trader_v6_cohorts(definition_version,token_id,entry_family,source_snapshot_id,pair_address,decided_at,episode_no,feature_json) VALUES(?,?,'broad_launch',?,?,?,?,?)",
-                        (version, token.token_id, allocation_snapshot_id, pair_address, iso(allocation_at), episode, self._json(features)))
+                        (version, token.token_id, allocation_snapshot_id, pair_address, iso(allocation_at), episode, self._json(self._compact_cohort_signals_for_storage(features))))
                     cohort = int(cursor.lastrowid)
                     flow=getattr(self,'_cohort_flow',None)
                     admitted_for_flow=[]
@@ -29690,7 +29690,7 @@ class Store:
                             snapshot_id,
                             str(features["pair_address"]),
                             iso(decision_at), int(previous_episode or 0) + 1,
-                            self._json(features),
+                            self._json(self._compact_cohort_signals_for_storage(features)),
                         ),
                     )
                     cohort_id = int(self.db.execute("SELECT last_insert_rowid()").fetchone()[0])
