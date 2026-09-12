@@ -1311,6 +1311,20 @@
       "loaded_at": "2026-09-12T05:00:00Z",
       "visible_entry": "docs/PROJECT_CONTEXT/ROUND28_DEEP_LIQ_ARMS_AND_TWO_SIDED_MARK_GUARD_20260912.md",
       "report": "docs/PROJECT_CONTEXT/ROUND28_DEEP_LIQ_ARMS_AND_TWO_SIDED_MARK_GUARD_20260912.md"
+    },
+    {
+      "id": "20260912-observation-surface-facts",
+      "recorded_at": "2026-09-12T05:30:00Z",
+      "title": "观测面事实账：哪些入场档位真的可达（含不可达档位归档与实验载体四代结论）",
+      "problem": "本目标期间多次出现新臂注册成功、参数正确、测试通过但永不出样的情况。需要把'入场档位是否可达'从印象变成可复核事实，避免继续在不可达档位上等待或误调阈值。",
+      "change": "新增 docs/PROJECT_CONTEXT/OBSERVATION_SURFACE_FACTS_20260912.md，逐档记录引擎机制就绪计数与判定：survivable_open_band 可达（3–140，唯一稳定供给的带类入场）；any_band 与它完全相等（并集退化）；survivable_steady、survivable_band_mid、mid_deep_band(20k-100k)、deep_liq_band(>=100k)、thin_depth_tier(1k-5k) 均为 0（不可达）；flow_entry 43（可达且供给充足，最终选定为实验载体）。据此说明复盘给出的'深度越深写销越低'结论无法在实时观测面直接检验，只能在可达档位间接检验；并把'入场供给'列为每轮核查的运行时指标。",
+      "rationale": "把不可达档位明确归档，可以停止无效等待、避免把'分布不匹配'误判为'阈值太严'而乱调参数；同时保留该事实作为后续市场结构变化时的对照基线。",
+      "validation": "所有数字来自 runtime_timing_latest 的机制就绪计数与 policy additions 注册记录，并在多轮核查中重复观测（如 any_band 32 与 survivable_open_band 32 完全相等）。回归：policy additions 300，全部为 append-only 额外臂；冻结错误 #265=392/#266=398 未增长。",
+      "scope": "新增文档 docs/PROJECT_CONTEXT/OBSERVATION_SURFACE_FACTS_20260912.md；未修改任何代码或策略。待办：两对 A/B 样本判定、写销 6 小时窗口复核、同币并发上限授权。",
+      "commit": "",
+      "loaded_at": "2026-09-12T05:25:00Z",
+      "visible_entry": "docs/PROJECT_CONTEXT/OBSERVATION_SURFACE_FACTS_20260912.md",
+      "report": "docs/PROJECT_CONTEXT/OBSERVATION_SURFACE_FACTS_20260912.md"
     }
   ]
 }
