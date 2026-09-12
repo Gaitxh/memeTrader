@@ -1759,6 +1759,19 @@
       "next": "1) **决策含义（重要）**：当前 epoch 在统一 20U 口径下的亏损比实际口径**大 1.5 倍**（−192,668U vs −129,258U）——1U/2U 的探针臂一直在**低报自身损害 10-20 倍**；统一之后，\"哪些策略值得留下\"的判断才建立在同一赌注规模上，预计会有一批此前\"看起来温和\"的臂被重新划入亏损队列。2) 建议下一轮：用统一口径重排全部 441 条臂并给出留/停建议清单（含平仓 ≥30 笔的置信区间），供用户做策略挑选。3) 记录缺陷本身不修引擎：v19/v22 已停用、其标记路径（`market_mark_zero_5m_activity` 等）在当前版本不再产生此类值；排除规则已固化，若未来复现同一形态将立即暴露出统计异常。4) 仍未决：代币级并发上限（影子证据：会拦下的那批合计 −603.35U）。",
       "report": "data/research/notional_normalized_comparison_20260912.md",
       "visible_entry": "data/research/notional_normalized_comparison_20260912.md"
+    },
+    {
+      "id": "20260912-round112-disk-audit-and-backup-cleanup",
+      "title": "第112轮：磁盘审计——\"100GB\"是 memeTrader 目录本身（105.9GB：44.5GB 在用主库 + 53.7GB 旧整库快照）；经用户授权按方案 A 清理，**释放 53.86GB，E 盘剩余 23.83GB → 77.68GB**",
+      "recorded_at": "2026-09-12T16:00:00Z",
+      "problem": "用户提问：本地数据 43.6GB、E 盘剩余 23.9GB，为什么整个系统文件却有 100GB。实测（只读枚举）：E 盘总 200GB / 已用 176.1GB / 剩余 23.9GB；**E:\\memeTrader 目录 105.88GB** 是\"100GB\"的来源，其中 data\\backups **53.69GB**（5 个手工\"操作前\"整库快照 + 11 个残留 -wal/-shm）、主库 r6 43.58GB + WAL 0.90GB、data\\research 5.11GB、.pytest-tmp 等测试临时目录 1.42GB、data\\tmp 0.69GB。E 盘其余约 74GB 属于其他项目（P5_completeSystem 35.17、360MoveData 31.78、QMT 4.88、GXH_RO_REVIEW_TMP 2.52）。",
+      "change": "**经用户明确授权**按方案 A 清理：删除 data\\backups 下 5 个 before-* 整库快照及其残留 sidecar 文件，以及项目根目录下 28 个 .pytest* 测试临时目录。执行前对每个目标做了白名单校验（只允许 data\\backups\\before-* 与根目录 .pytest*，显式拒绝删除主库），删除后逐项复核并确认主库、WAL、data\\research、data\\tmp、src、tests、docs、.git 均未触碰。",
+      "rationale": "删除的安全性不是\"觉得没用\"，而是**用行数证明主库是这些快照的严格超集**（四张关键表全部多于快照，且都是 append-only）：token_snapshots 主库 3,222,808 vs 快照 829,428~1,130,786；positions 260,420 vs 188,053~214,893；token_discovery_exposures 4,632,363 vs 1,555,230~1,959,249；entry_evaluations 2,417,362 vs 29,165~330,319。573 笔作废仓位也仍在（status=ineligible），没有被删除。另外确认 src 与 scripts 中**没有任何写入 data/backups 的代码**，也没有相关计划任务，即这些快照是当时手工做的操作前副本，不会自动再生。",
+      "validation": "清理结果：free 23.83GB → **77.68GB**，实际释放 **53.86GB**；34 个目标中 33 个删除成功；唯一未删除的是 `.pytest-tmp`（1.42GB）及其两个空子目录 `before-alpha149-*`——它们的 ACL 连 icacls 读取都被拒绝（父目录 ACL 正常，子目录被单独设了拒绝项），takeown/icacls 未能生效，需要提权才能动；因体量很小（1.42GB / 77.68GB）**选择保留并如实记录**，它们不影响运行（pytest 会另建新目录）。清理后主库 r6 43.60GB + WAL 0.90GB 完好、运行中进程 49804/34096 未受影响。**新增的紧急事实**：主库增长约 **5.4GB/天**（09-06 的 11.86GB → 现在 43.58GB；另一种算法：近 24h 新增 231,049 条快照行 ≈ 6.7GB/天）。",
+      "scope": "仅删除 E:\\memeTrader\\data\\backups\\before-* 与项目根目录 .pytest* 测试临时目录；未改动任何源码、配置、主库、研究档案或历史记录；本轮无代码提交（按项目规则 data/ 不入库）。",
+      "next": "1) **增长仍是硬约束**：按 5.4GB/天，77.68GB ≈ **14 天**后再次写满。用户本轮选择了\"只清理\"而暂不设计长期策略；建议下一轮设计并落地存储保留策略（快照只在异盘保留 1 份、研究归档定期压缩/裁剪、必要时对主库做分批归档或分区），否则 E 盘会周期性再次吃满并导致单写进程报错。2) 残留 `.pytest-tmp`（1.42GB，ACL 拒绝）可在用户同意提权时清除。3) 既定待办不变：统一口径下的 441 条臂留/停清单；代币级并发上限（影子 −603.35U）；保留观察名额修复后的观察期结论。",
+      "report": "docs/PROJECT_CONTEXT/ROUND108_RESERVED_SLOT_REACH_AND_REVIVED_HOLDER_LANE_20260912.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/ROUND108_RESERVED_SLOT_REACH_AND_REVIVED_HOLDER_LANE_20260912.md"
     }
   ]
 }
