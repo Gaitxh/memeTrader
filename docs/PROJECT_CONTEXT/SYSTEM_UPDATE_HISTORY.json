@@ -1227,6 +1227,20 @@
       "loaded_at": "2026-09-12T02:35:00Z",
       "visible_entry": "docs/PROJECT_CONTEXT/ROUND05_TRADE_CONTEXT_AND_MARK_DEFECT_20260912.md",
       "report": "docs/PROJECT_CONTEXT/ROUND05_TRADE_CONTEXT_AND_MARK_DEFECT_20260912.md"
+    },
+    {
+      "id": "20260912-round06-hold-and-thin-depth-arms",
+      "recorded_at": "2026-09-12T03:10:00Z",
+      "title": "第6轮：把复盘强信号变成额外臂（长持有A/B、薄深池档）+ 尘埃报价守卫部署确认",
+      "problem": "周期性复盘（只读子代理）给出两条最强信号：持仓≥30分钟 n=385、0写销、+223.37U，而<30分钟 n=2008、-853.71U；入场深度1-5k档 n=81、0写销、+118.64U，而5k以上各档216笔写销、-739.67U。需要在不修改任何现有策略的前提下把它们变成可前向验证的额外臂。",
+      "change": "第28波新增3条额外臂：alpha149_long_hold_open_band_v1（同开放带入场、1U、90分钟、追踪+50%激活/回撤35%、-35%灾难兜底、流动性与写销规则不变）、alpha149_long_hold_control_v1（逐字同一入场的默认合同对照）、alpha149_thin_depth_tier_v1（新机制 thin_depth_tier：池龄30-180分钟、深度1000-5000U、FDV/深度1-20、不下跌、深度不流失、买盘≥50%，1U）。机制内局部重算 pool_age，避免依赖 prev 分支的局部量（首版 UnboundLocalError 已被既有测试捕获并修复）。",
+      "rationale": "零改动现有策略是硬约束，因此两条最强信号都以'同入场 + 不同合同'的额外臂对实现：长持有臂保留全部实测保护（-35%兜底、流动性退出、写销路径），只放宽追踪与时限，使'让赢家跑'的效应可与入场质量分离；薄深池档与既有'越深越安全'的假设相反，故以1U独立臂验证，既有臂的深度下限不动。",
+      "validation": "注册 275->278（ledger_unchanged=true）；测试71项全通过（alpha149、wave2425、score149、participant_flow、mark_outlier_guard，含本波3条臂的策略形状与合同断言）；重载后 survivable_open_band 就绪152次、open_band_scored 52次、mom_persistence 19次；冻结错误 #265=392/#266=398 未增长；paper 与 live.enabled=false 不变。近60分钟实测仍有6条尘埃离群报价（2093条标记中），守卫已生效但节流计数尚未写入。",
+      "scope": "修改：src/memetrader/alpha149.py（仅新增机制/臂/规则文本）；新增报告：docs/PROJECT_CONTEXT/ROUND06_HOLD_AND_THIN_DEPTH_ARMS_20260912.md。未改动任何现有臂，未改共享引擎语义。",
+      "commit": "01527a9",
+      "loaded_at": "2026-09-12T03:00:00Z",
+      "visible_entry": "docs/PROJECT_CONTEXT/ROUND06_HOLD_AND_THIN_DEPTH_ARMS_20260912.md",
+      "report": "docs/PROJECT_CONTEXT/ROUND06_HOLD_AND_THIN_DEPTH_ARMS_20260912.md"
     }
   ]
 }
