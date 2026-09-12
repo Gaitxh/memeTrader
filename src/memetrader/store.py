@@ -26688,6 +26688,57 @@ class Store:
                 added += 1
             return added
 
+    def register_chain_meme_activity_floor_experiments(self) -> int:
+        """Append the ACTIVITY-FLOOR150 entry arms at their own frontier.
+
+        These are ENTRY arms, not exit carriers, so unlike EXIT150 they are added to
+        `alpha149.SPECS` and emit their own entry signal. They reuse the control's `kind`
+        (`merged_multi_setup`) so they fire on the same mechanism flags and receive the same
+        frozen signal, and their policy body is cloned from the control so the ONLY difference
+        is the entry activity floor enforced in the shared cohort-acceptance loop.
+
+        The policy body is cloned from this epoch's own registered control rather than rebuilt,
+        so the appended arm carries exactly the live schema instead of a re-invented one.
+        """
+        from . import activity_floor150
+        version = self.CHAIN_MEME_TRADER_ACTIVE_VERSION
+        with self._lock, self.db:
+            template = self.db.execute(
+                "SELECT policy_json FROM chain_meme_trader_policy_additions "
+                "WHERE definition_version=? AND arm_id=?",
+                (version, activity_floor150.PARENT_ARM),
+            ).fetchone()
+            if template is None:
+                return 0
+            base = self._json_object(template["policy_json"])
+            at = utcnow()
+            added = 0
+            for arm in sorted(activity_floor150.ARMS):
+                if self.db.execute(
+                    "SELECT 1 FROM chain_meme_trader_policy_additions "
+                    "WHERE definition_version=? AND arm_id=?", (version, arm),
+                ).fetchone() is not None:
+                    continue
+                policy = deepcopy(base)
+                policy.update({
+                    "arm_id": arm,
+                    "canonical_id": arm,
+                    "entry_family": arm,
+                    "entry_filter": {
+                        **(base.get("entry_filter") or {}), "direction": arm,
+                    },
+                    "source_arm_ids": [],
+                })
+                # The frontier and the behavior hash are owned by the append API, which stamps
+                # them for the current snapshot/evaluation frontier.
+                policy.pop("behavior_contract_hash", None)
+                policy.pop("forward_activation_snapshot_id", None)
+                policy.pop("forward_started_at", None)
+                activity_floor150.apply([policy])
+                self.append_chain_meme_trader_policy(policy, activated_at=at)
+                added += 1
+            return added
+
     def register_chain_meme_research_round2(self) -> int:
         from .research_round2 import round2_policies
         added = 0
@@ -27794,9 +27845,11 @@ class Store:
                     wallet_entry_results[arm] = result
             event_keys = {}
             accepted_cohort_signals = {}
+            activity_floor_rejections: dict[str, str] = {}
             if cohort_mode:
                 # The separate namespace cannot consume or overwrite old pattern intents.
                 from .cohort_experiments import ROUTER_ARM, REGIME_ARM, routed_cohort_signals
+                from . import activity_floor150
                 candidates = {**previous_features.get("cohort_signals", {}), **dict(cohort_signals)}
                 by_arm = {policy['arm_id']: policy for policy in active}
 
@@ -27845,6 +27898,15 @@ class Store:
                             or not parse_time(policy["forward_started_at"]) <= parse_time(signal_at)
                             <= parse_time(captured_at) <= decision_at
                             or not 0 <= (decision_at - parse_time(signal_at)).total_seconds() <= 60):
+                        continue
+                    # ACTIVITY-FLOOR150: an opt-in per-arm entry activity floor, checked only
+                    # after a signal has been validated, so a recorded floor rejection means
+                    # exactly "a valid signal existed but the pool was too quiet" rather than
+                    # merely "this arm had no signal". Returns None for every other arm, so no
+                    # existing arm's behaviour changes. Missing activity evidence never admits.
+                    floor_rejection = activity_floor150.reject_reason(arm, snapshot)
+                    if floor_rejection is not None:
+                        activity_floor_rejections[arm] = floor_rejection
                         continue
                     event_keys[arm] = str(signal["decision_key"])
                     accepted_cohort_signals[arm] = signal
@@ -27941,7 +28003,14 @@ class Store:
             for policy in active:
                 if cohort_mode:
                     passed = policy["arm_id"] in accepted_cohort_signals
-                    reason = "cohort_frozen_opportunity_ready" if passed else "wait_passive_cohort_opportunity"
+                    # ACTIVITY-FLOOR150: make the floor observable. Without this the screened arm
+                    # would be indistinguishable from an arm that simply had no signal, and the
+                    # experiment could not be audited from the evaluation log.
+                    blocked = activity_floor_rejections.get(policy["arm_id"])
+                    if not passed and blocked:
+                        reason = blocked
+                    else:
+                        reason = "cohort_frozen_opportunity_ready" if passed else "wait_passive_cohort_opportunity"
                 elif policy["arm_id"] in wallet_entry_results:
                     passed = wallet_entry_results[policy["arm_id"]][0] == "READY"
                     reason = wallet_entry_results[policy["arm_id"]][1]

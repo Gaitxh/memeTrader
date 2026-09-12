@@ -3267,3 +3267,92 @@ def mechanisms(f):  # noqa: F811 - wave 42 wrapper over the wave-41 wrapper
         out.setdefault('nonbsc_flow', False)
     return out
 
+
+# ---- round 3 (2026-09-13): paired confirmation test for the steady carrier ----
+# Additive only.  The entry predicate is byte-for-byte the existing
+# survivable_steady carrier; this arm changes only hard-stop timing so future
+# receipts can compare one isolated exit variable without rewriting any
+# existing policy or position.
+CONFIRMED_STOP_STEADY_V2 = 'alpha149_confirmed_stop_steady_v2'
+SPECS.update({
+    CONFIRMED_STOP_STEADY_V2: (
+        'survivable_steady', '确认止损V2·安全带同入口', 30,
+    ),
+})
+OVERRIDES.update({
+    CONFIRMED_STOP_STEADY_V2: dict(
+        notional_usd=1.0,
+        max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_survivable_steady_v1',
+        hard_stop_return=-.20,
+        hard_stop_grace_seconds=60,
+        hard_stop_confirm_marks=2,
+        trailing_activate_return=.30,
+        trailing_drawdown=.15,
+        take_profit=[],
+        description=(
+            '确认止损V2：与 survivable_steady 使用完全相同的前向入场信号；'
+            '唯一实验变量是硬止损需持仓满60秒后，由同一原池、可置信且可见的'
+            '连续两帧确认低于-20%。任一恢复帧重置计数；流动性消失/池死亡仍由'
+            '既有即时写销保护处理。独立Paper对照，非已证Alpha。'
+        ),
+    ),
+})
+GUARD_ARMS = GUARD_ARMS | frozenset({CONFIRMED_STOP_STEADY_V2})
+ALL_ARMS = tuple(SPECS) + tuple(EXIT_ARMS)
+KINDS = tuple(kind for kind, _, _ in SPECS.values())
+
+
+# ---- wave 42: EXIT150 reachable staged ladders, as NEW exit-carrier arms ----
+# Measured on this epoch: every position's own peak economic return was p50 +22.7% / p90
+# +34.8% / max +55.0%, while the configured first take-profit tier is +80%. `next_tp_index`
+# and `principal_recovered` were 0 on all 350 positions, so the ladder fired exactly zero
+# times and no profit was ever banked (give-back 4,508.94U). A stop at -0.20 economic is a
+# -13.3% price move against a p90 30-second move of 9.49%, so 44 of 92 hard stops fired
+# inside one minute of ordinary noise.
+#
+# These are exit-carrier arms in the existing sense: the engine clones the first frozen entry
+# signal that fires on a pool, so each new arm gets exactly the same opportunity as whichever
+# entry arm fired first and only its EXIT contract differs. Every existing arm is therefore
+# the matched same-signal control. No existing arm is modified, retuned or replaced; the
+# three new arms differ from each other in exactly one respect (first-tier level, and stop
+# width) so the comparison is interpretable.
+# See `exits150.py` for the full rationale and the explicit in-sample caveat.
+from . import exits150 as _exits150  # noqa: E402  (additive wave import, after ALL_ARMS)
+
+# Deliberately NOT added to SPECS. Every existing exit-carrier arm
+# (`alpha149_vol_scaled_exit_v1` and the rest) lives in EXIT_ARMS only, because the signal
+# loop above emits entry signals exclusively from SPECS and the clone loop then hands each
+# EXIT_ARMS entry the carrier's frozen signal. Adding an exit arm to SPECS would instead give
+# it its own entry gate, which is a different strategy - not an exit-only comparison.
+OVERRIDES.update(_exits150.OVERRIDES)
+EXIT_ARMS.update(_exits150.EXIT_ARMS)
+EXIT_KINDS = frozenset(EXIT_ARMS.values())
+ALL_ARMS = tuple(SPECS) + tuple(EXIT_ARMS)
+KINDS = tuple(kind for kind, _, _ in SPECS.values())
+EXIT150_ARMS = tuple(sorted(_exits150.EXIT_ARMS))
+
+
+# ---- wave 43: ACTIVITY-FLOOR150 entry activity floors, as NEW entry arms ----
+# Unlike EXIT150 these ARE entry arms and therefore DO go into SPECS: they must emit their own
+# entry signal so the shared acceptance loop can screen them. They reuse an existing `kind`
+# (`merged_multi_setup`) so they fire on exactly the same mechanism flags as their control and
+# receive the same frozen signal; they clone that control's exit contract verbatim, so the
+# entry activity floor is the ONLY difference. The control `alpha149_merged_multi_setup_fast_v1`
+# is therefore the matched same-signal comparison.
+#
+# Measured basis (round 120-18, 1,035 closed positions, actual -8,990.05U): the write-off rate
+# falls from 34.8% to 6.0% at `trades >= 30` on the entry snapshot's own 5-minute activity, and
+# the 404 BSC positions below that floor carry a 78.6% write-off rate at -15.39 U/pos, i.e.
+# roughly 69.2% of the whole epoch loss in one filterable population. Token-clustered bootstrap
+# on the per-position gain: +9.73 U/pos, 95% CI [+3.93, +14.17].
+#
+# See `activity_floor150.py` for the full rationale and the explicit in-sample caveat.
+from . import activity_floor150 as _af150  # noqa: E402  (additive wave import, after ALL_ARMS)
+
+SPECS.update(_af150.ARMS)
+OVERRIDES.update(_af150.OVERRIDES)
+ALL_ARMS = tuple(SPECS) + tuple(EXIT_ARMS)
+KINDS = tuple(kind for kind, _, _ in SPECS.values())
+ACTIVITY_FLOOR150_ARMS = tuple(sorted(_af150.ARMS))
+

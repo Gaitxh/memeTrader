@@ -72,6 +72,7 @@ from .collectors import (
     UnsupportedFeedContentEncoding,
     normalize_loopback_socks5_proxy_url,
     normalize_public_http_url,
+    resolve_http_proxy_url,
 )
 from .models import (
     CandidateDecision,
@@ -1406,6 +1407,15 @@ class Runtime:
                     self.store.register_chain_meme_quiet_renewal()
                     self.store.register_chain_meme_early_impulse()
                     self.store.register_chain_meme_impulse_profit_lock()
+                    # EXIT150: reachable staged take-profit ladders, as NEW exit-carrier arms.
+                    # Same frozen entry signal as whichever entry arm fires first on the pool,
+                    # so every existing arm is the matched control and only the exit differs.
+                    self.store.register_chain_meme_exit150_experiments()
+                    # ACTIVITY-FLOOR150: entry-time pool-activity floors, as NEW ENTRY arms.
+                    # Same kind and same cloned exit contract as the control
+                    # `alpha149_merged_multi_setup_fast_v1`, so the entry activity floor is the
+                    # only difference and the control is the matched same-signal comparison.
+                    self.store.register_chain_meme_activity_floor_experiments()
                     from .admission_audit import AdmissionAudit
                     self._admission_audit = AdmissionAudit(self.root / "data" / "research" / "admission84",
                         self.store.get_kv("pattern-admission-shadow", None))
@@ -1482,25 +1492,34 @@ class Runtime:
             with self.store.db:
                 self.store.db.execute("UPDATE paper_account SET cash_usd=?,updated_at=? WHERE singleton=1", (starting_cash, iso()))
         source_config = config.get("sources") or {}
+        outbound_proxy_url = resolve_http_proxy_url(source_config)
         self.http = HttpClient(
             feed_max_response_bytes=int(source_config.get("rss_max_response_bytes", 1_048_576)),
             feed_max_redirects=int(source_config.get("rss_max_redirects", 5)),
             feed_proxy_url=str(source_config.get("rss_proxy_url") or ""),
+            proxy_url=outbound_proxy_url,
             conditional_store=self.store,
         )
         # DexScreener documents 300 requests/minute for token batches.  A
         # 250ms start interval caps this process at 240/minute while allowing
         # held-token marks to refresh materially faster than the generic
         # 600ms public-endpoint default.
-        self.market_http = HttpClient(min_host_interval=0.25)
+        self.market_http = HttpClient(
+            min_host_interval=0.25, proxy_url=outbound_proxy_url,
+        )
         self.market_http.on_dex_rate_limit = self._note_dex_rate_limit
         self.jupiter_http = HttpClient(
-            min_host_interval=1.05 if jupiter_api_key else 2.1
+            min_host_interval=1.05 if jupiter_api_key else 2.1,
+            proxy_url=outbound_proxy_url,
         )
-        self.evm_route_http = HttpClient(min_host_interval=0.15)
+        self.evm_route_http = HttpClient(
+            min_host_interval=0.15, proxy_url=outbound_proxy_url,
+        )
         self.dex = DexScreenerClient(self.market_http)
         self.jupiter = JupiterQuoteClient(self.jupiter_http, jupiter_api_key)
-        self.coingecko_http = HttpClient(timeout=6, min_host_interval=1.05)
+        self.coingecko_http = HttpClient(
+            timeout=6, min_host_interval=1.05, proxy_url=outbound_proxy_url,
+        )
         self.coingecko = CoinGeckoDemoPoolClient(self.coingecko_http, coingecko_api_key, store=self.store)
         self.gecko_pools = GeckoTerminalPoolClient(self.http)
         self._gecko_pool_backoff_until = 0.0
@@ -1666,6 +1685,14 @@ class Runtime:
             yield False
             return
         async with nullcontext() if high_priority else low_slots:
+            # A lock wait must be bounded. Measured 2026-09-12: the DexScreener REST lane
+            # wedged at 19:24:40Z, three discovery rounds stayed status='running' with a
+            # hydration backlog of 1,537, and nothing recovered the lane until the process was
+            # restarted at 20:04:02Z. An unbounded `acquire()` is what turns a single stuck
+            # holder into an invisible, permanent outage: the waiter never returns, so no
+            # deadline, retry or health check ever runs. Deferring is always better than
+            # hanging, because the caller retries on its own cadence.
+            lock_deadline = loop.time() + 8.0
             while True:
                 if not high_priority:
                     await idle.wait()
@@ -1676,13 +1703,24 @@ class Runtime:
                         return
                     await asyncio.sleep(delay)
                     continue
-                await self._dex_quote_lock.acquire()
+                remaining = lock_deadline - loop.time()
+                if remaining <= 0:
+                    yield False
+                    return
+                try:
+                    await asyncio.wait_for(self._dex_quote_lock.acquire(), timeout=remaining)
+                except TimeoutError:
+                    yield False
+                    return
                 if self._dex_quote_backoff_until <= loop.time() and (high_priority or idle.is_set()):
                     break
                 self._dex_quote_lock.release()
                 if high_priority or not wait:
                     yield False
                     return
+                # Re-armed only while the loop keeps making progress, so a persistent
+                # contention cannot extend the wait without bound.
+                lock_deadline = min(lock_deadline, loop.time() + 8.0)
             priority_token = DEX_REQUEST_HIGH_PRIORITY.set(high_priority)
             try:
                 yield True
@@ -1720,9 +1758,36 @@ class Runtime:
                 )
             try:
                 if fresh and hasattr(self.dex, "batch_quote_fresh"):
-                    quoted = await self.dex.batch_quote_fresh(chain, addresses)
+                    # httpx phase timeouts are not a wall-clock deadline: a
+                    # slowly progressing response can otherwise keep a held
+                    # batch alive indefinitely.  Bound the complete high-
+                    # priority operation so the next exit cycle always runs.
+                    #
+                    # The low-priority branch needs the same bound. Leaving it unbounded is
+                    # what let one wedged discovery request hold the lane: the batch never
+                    # returned, so its round never completed and 1,702 discovered tokens got
+                    # no market frame until the 20:04:02Z restart. A low-priority batch is
+                    # always safe to defer - `None` is the existing contract for that.
+                    quoted = await (
+                        asyncio.wait_for(
+                            self.dex.batch_quote_fresh(chain, addresses), timeout=3.5,
+                        ) if high_priority else asyncio.wait_for(
+                            self.dex.batch_quote_fresh(chain, addresses),
+                            timeout=float(getattr(self, "dex_low_priority_request_deadline", 20.0)),
+                        )
+                    )
                 else:
-                    quoted = await self.dex.batch_quote(chain, addresses)
+                    quoted = await asyncio.wait_for(
+                        self.dex.batch_quote(chain, addresses),
+                        timeout=float(getattr(self, "dex_low_priority_request_deadline", 20.0)),
+                    ) if not high_priority else await self.dex.batch_quote(chain, addresses)
+            except TimeoutError:
+                if selected_alpha149 and manager_alpha149 is not None:
+                    manager_alpha149.release(selected_alpha149, utcnow(), reason='request_deadline')
+                if high_priority:
+                    raise
+                # Deferring is the contract a low-priority caller already understands.
+                return None
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code == 429:
                     delay = CoinGeckoDemoPoolClient._retry_after_seconds(
@@ -2639,7 +2704,14 @@ class Runtime:
                     item["next_public_attempt"] = retry_at
                 if not isinstance(exc, httpx.HTTPStatusError) or exc.response.status_code == 429:
                     self._gecko_pool_backoff_until = retry_at
-                self._notify_source_error("geckoterminal:original_pool", exc)
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 404:
+                    # An exact pool lookup can legitimately return 404 while the
+                    # provider is healthy. Keep the identity queued for the
+                    # primary/fallback lanes, but do not report absence as a
+                    # system failure.
+                    self.store.heartbeat("geckoterminal:original_pool", item=False)
+                else:
+                    self._notify_source_error("geckoterminal:original_pool", exc)
         apply_available_pairs()
         # A primary refresh may finish during the public fallback; do not
         # consume Demo quota for an identity that has already recovered.
@@ -6619,13 +6691,26 @@ class Runtime:
         observers = self._native_launch_observers
         observer = observers[self._native_launch_cursor % len(observers)]
         self._native_launch_cursor += 1
+        rpc_lock = getattr(getattr(observer, "rpc", None), "_lock", None)
+        if rpc_lock is not None and rpc_lock.locked():
+            # Discovery is lower priority than held-position route work. A
+            # locally occupied shared EVM client is a deferral, not a provider
+            # outage, so do not manufacture an error case while waiting in its
+            # queue.
+            return
         retry = getattr(self, "_native_launch_retry", {})
         self._native_launch_retry = retry
         if retry.get(observer.ERROR_PREFIX, utcnow()) > utcnow():
             return
         source = f"native-launch:{observer.CHAIN}:{observer.ERROR_PREFIX}"
         try:
-            result = await asyncio.wait_for(observer.observe(), timeout=4)
+            # Robinhood's direct RPC fallback needs three sequential reads
+            # (chain id, head and logs). On this host a healthy first read alone
+            # is commonly 2-3 s, so the former 4 s envelope manufactured a
+            # timeout and then suppressed discovery for five minutes. This lane
+            # is low priority and already yields to exits; allow one complete
+            # bounded window instead of repeatedly aborting healthy work.
+            result = await asyncio.wait_for(observer.observe(), timeout=20)
         except asyncio.TimeoutError:
             retry[observer.ERROR_PREFIX] = utcnow() + timedelta(minutes=5)
             self.store.heartbeat(source, error="native_source_timeout")
@@ -6899,6 +6984,23 @@ class Runtime:
         target=ensure_curve_accounting(self.store,target)
         await self.chain_meme_wsol_reference_once(observed_pool=True)
         state=target['state'];plan=state['plan']
+        reference = getattr(self, "_wsol_usdc_conversion", None)
+        reference_fresh = False
+        if isinstance(reference, dict) and reference.get("completed_at"):
+            try:
+                reference_age = (utcnow() - parse_time(reference["completed_at"])).total_seconds()
+                reference_fresh = 0.0 <= reference_age <= 30.0
+            except (TypeError, ValueError):
+                reference_fresh = False
+        # A failed refresh may retain diagnostics for 60 seconds, but native
+        # USD settlement accepts only a 30-second reference.
+        if state['surface'] == 'CURVE' and not reference_fresh:
+            self.store.set_kv('native-paper:last-held', dict(
+                status='WAIT_REFERENCE_CLOCK', recorded_at=iso(),
+                token_id=target['token_id'], cohort_id=target['cohort_id'],
+                surface=state['surface'],
+            ))
+            return
         if state['surface']=='MIGRATION_PENDING':
             pool,_=canonical_pool(plan['execution_frame']['base_mint'])
             results=await self.held_accounts.resolve_pumpswap_shadow_pools([dict(token_id=target['token_id'],
@@ -8145,18 +8247,38 @@ class Runtime:
         dispatched = set()
         compute_seconds = 0.0
         sampled = projected = 0
+        deadline_dispatches_while_active = 0
 
         async def project_pending():
-            nonlocal sampled, projected, compute_seconds
-            for identity in list(pending):
+            nonlocal sampled, projected, compute_seconds, deadline_dispatches_while_active
+            def earliest_expiry(item):
+                signals = item.get("signals", {})
+                return min(
+                    (parse_time(signal["recorded_at"]) for signal in signals.values()),
+                    default=utcnow(),
+                )
+
+            # Equal-TTL signals are safest under earliest-deadline-first. This
+            # changes no as-of window and cannot revive an expired signal.
+            for identity in sorted(list(pending), key=lambda key: earliest_expiry(pending[key])):
                 item = pending[identity]
                 now = utcnow()
                 # A newer batch must neither erase another arm's frozen signal
                 # nor renew its original 60-second admission window.
+                expired = {arm: signal for arm, signal in item['signals'].items()
+                    if not 0 <= (now-parse_time(signal['recorded_at'])).total_seconds() <= 60}
+                dispatch_counts = item.setdefault("dispatch_counts", {})
+                trajectory.counts['pending_signal_expired_never_dispatched'] += sum(
+                    int(dispatch_counts.get(arm, 0)) == 0 for arm in expired)
+                trajectory.counts['pending_signal_expired_after_dispatch'] += sum(
+                    int(dispatch_counts.get(arm, 0)) > 0 for arm in expired)
                 retained = {arm: signal for arm, signal in item['signals'].items()
                     if 0 <= (now-parse_time(signal['recorded_at'])).total_seconds() <= 60}
                 trajectory.counts['pending_signal_expired'] += len(item['signals'])-len(retained)
                 item['signals'] = retained
+                item['dispatch_counts'] = {
+                    arm: int(dispatch_counts.get(arm, 0)) for arm in retained
+                }
                 if not retained:
                     pending.pop(identity, None)
                     continue
@@ -8171,10 +8293,29 @@ class Runtime:
                 if identity in dispatched or sampled >= 8 or compute_seconds >= .25:
                     continue
                 if not self._chain_meme_active_idle().is_set():
-                    continue  # Drain local batches without waiting on projection admission.
+                    oldest_age = max(
+                        (now - parse_time(signal["recorded_at"])).total_seconds()
+                        for signal in retained.values()
+                    )
+                    # Preserve the primary entry lane, but do not let continuous
+                    # activity starve every nearly-expired observer signal. One
+                    # local projection per observer pass is a bounded emergency
+                    # lane; all as-of, quote-age and Store admission gates remain.
+                    if deadline_dispatches_while_active >= 1 or oldest_age < 50:
+                        continue
+                    deadline_dispatches_while_active += 1
+                    trajectory.counts['pending_deadline_dispatches_while_active'] += 1
                 compute_started = asyncio.get_running_loop().time()
-                projected += self.store.observe_chain_meme_pattern(
+                projected_now = self.store.observe_chain_meme_pattern(
                     token, snapshot, recorded_at=now, cohort_signals=item["signals"])
+                projected += projected_now
+                trajectory.counts['pending_signal_dispatches'] += len(retained)
+                trajectory.counts['pending_signal_projected_positions'] += projected_now
+                for arm in retained:
+                    item["dispatch_counts"][arm] = int(
+                        item["dispatch_counts"].get(arm, 0)
+                    ) + 1
+                item["last_dispatch_at"] = iso(now)
                 item.pop("quote", None)
                 compute_seconds += asyncio.get_running_loop().time() - compute_started
                 dispatched.add(identity)
@@ -8404,15 +8545,35 @@ class Runtime:
                 token, snapshot = quotes[identity]
                 if not arm_signals:
                     continue
-                previous = pending.get(identity, {}).get('signals', {})
-                incoming = {
-                    arm: {"observed_at": iso(snapshot.observed_at), "recorded_at": iso(received), **signal}
-                    for arm, signal in arm_signals.items()}
+                previous_item = pending.get(identity, {})
+                previous = previous_item.get('signals', {})
+                previous_dispatch_counts = previous_item.get('dispatch_counts', {})
+                incoming = {}
+                for arm, signal in arm_signals.items():
+                    prior = previous.get(arm)
+                    if prior and prior.get("decision_key") == signal.get("decision_key"):
+                        # A repeated observation of the same immutable decision
+                        # may refresh its quote, never its evidence or TTL.
+                        incoming[arm] = prior
+                    else:
+                        incoming[arm] = {
+                            "observed_at": iso(snapshot.observed_at),
+                            "recorded_at": iso(received),
+                            **signal,
+                        }
                 preserved = {arm: signal for arm, signal in previous.items()
                     if arm not in incoming and 0 <= (now-parse_time(signal['recorded_at'])).total_seconds() <= 60}
                 trajectory.counts['pending_signal_preserved'] += len(preserved)
                 pending[identity] = {"quote": (token, snapshot, received),
-                    "signals": {**preserved, **incoming}}
+                    "signals": {**preserved, **incoming},
+                    "dispatch_counts": {
+                        **{arm: int(previous_dispatch_counts.get(arm, 0)) for arm in preserved},
+                        **{arm: (
+                            int(previous_dispatch_counts.get(arm, 0))
+                            if arm in previous and previous[arm].get("decision_key") == signal.get("decision_key")
+                            else 0
+                        ) for arm, signal in incoming.items()},
+                    }}
             for identity, (token, snapshot) in quotes.items():
                 if identity in pending and "quote" not in pending[identity]:
                     pending[identity]["quote"] = (token, snapshot, received)
@@ -9494,6 +9655,49 @@ class Runtime:
         await self.monitor_positions_once()
         await self.check_source_health_once(include_streams=False)
 
+    # How many distinct loops may keep a traceback file, and how many failures per
+    # loop are retained before the oldest is dropped.
+    PERIODIC_TRACEBACK_LOOPS = 16
+    PERIODIC_TRACEBACK_LINES = 3
+
+    def _record_periodic_traceback(self, name: str, exc: BaseException) -> None:
+        """Persist the frame chain of a swallowed periodic failure, bounded.
+
+        `heartbeat(..., error_detail=str(exc))` and the runtime_error notification
+        keep only the exception class and message, so a recurring failure such as
+        `AttributeError: 'NoneType' object has no attribute 'price_usd'` cannot be
+        located after the fact. This writes one file per failing loop under
+        `data/logs/periodic-tracebacks/`, keeping the newest
+        `PERIODIC_TRACEBACK_LINES` failures and never raising into the loop.
+        """
+        try:
+            import traceback as _traceback
+
+            directory = self.root / "data" / "logs" / "periodic-tracebacks"
+            directory.mkdir(parents=True, exist_ok=True)
+            safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(name))[:80] or "unknown"
+            history = getattr(self, "_periodic_traceback_history", None)
+            if history is None:
+                history = {}
+                self._periodic_traceback_history = history
+            stamp = iso()
+            record = (
+                f"\n===== {stamp} loop={name} error={type(exc).__name__}: {str(exc)[:300]} =====\n"
+                + "".join(_traceback.format_exception(type(exc), exc, exc.__traceback__))
+            )
+            kept = history.setdefault(safe_name, [])
+            kept.append(record)
+            del kept[: max(0, len(kept) - self.PERIODIC_TRACEBACK_LINES)]
+            if len(history) > self.PERIODIC_TRACEBACK_LOOPS:
+                for stale in [key for key in history if key != safe_name][
+                    : len(history) - self.PERIODIC_TRACEBACK_LOOPS
+                ]:
+                    history.pop(stale, None)
+            (directory / f"{safe_name}.txt").write_text("\n".join(kept), encoding="utf-8")
+        except Exception:
+            # Diagnostics must never take down the loop they are observing.
+            pass
+
     async def _periodic(
         self,
         name: str,
@@ -9524,14 +9728,21 @@ class Runtime:
                 raise
             except Exception as exc:
                 failed = 1
+                component = name.replace("_", "-")
                 self.store.heartbeat(
-                    name, error=type(exc).__name__, error_detail=str(exc),
+                    component, error=type(exc).__name__, error_detail=str(exc),
                 )
                 self.notifier.send(
                     "runtime_error",
-                    name,
+                    component,
                     {"error": type(exc).__name__, "detail": str(exc)[:500]},
                 )
+                # The notification and the heartbeat row both carry only the class
+                # name and message, which is not enough to locate a recurring
+                # failure that raises from deep inside a collector or policy. Keep
+                # the frame chain for the most recent failures per loop, bounded,
+                # so a swallowed exception stays diagnosable after the fact.
+                self._record_periodic_traceback(name, exc)
             elapsed = asyncio.get_running_loop().time() - started
             self.runtime_timing.observe(
                 name, elapsed,
