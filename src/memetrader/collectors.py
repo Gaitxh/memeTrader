@@ -1455,67 +1455,94 @@ class HttpClient:
             )
 
     async def _reserve_gecko_request_start(self, *, not_before: float = 0.0) -> None:
+        """Same contract as the dex lane: pace OUTSIDE the condition.
+
+        See ``_reserve_dex_request_start`` for the measured failure this avoids. Wrapping
+        ``condition.wait()`` in ``asyncio.wait_for`` can leave the Condition's lock released,
+        after which ``notify_all()`` raises and the condition is permanently unusable. When
+        the DexScreener lane is down GeckoTerminal is the only remaining provider, so the
+        same latent defect here would remove the last source of market frames.
+        """
         host = "api.geckoterminal.com"
         high = GECKO_REQUEST_HIGH_PRIORITY.get()
         queue = self._gecko_start_waiters[high]
         ticket = object()
         condition = self._gecko_start_condition
-        async with condition:
-            queue.append(ticket)
-            condition.notify_all()
-            try:
-                while True:
-                    if queue[0] is not ticket or (not high and self._gecko_start_waiters[True]):
-                        await condition.wait()
-                        continue
-                    now = time.monotonic()
-                    wait = max(self._last[host] + max(2.1, self.min_host_interval),
-                               not_before, self._host_backoff_until.get(host, 0.0)) - now
-                    if wait <= 0:
-                        allowed = GECKO_LOW_START_ALLOWED.get()
-                        if not high and allowed is not None and not allowed():
-                            raise GeckoLowPriorityDeferred()
-                        self._last[host] = now
-                        self._gecko_starts.append(now)
-                        return
-                    try:
-                        await asyncio.wait_for(condition.wait(), timeout=wait)
-                    except TimeoutError:
-                        pass
-            finally:
-                queue.remove(ticket)
+        while True:
+            wait = 0.0
+            async with condition:
+                queue.append(ticket)
                 condition.notify_all()
+                try:
+                    while True:
+                        if queue[0] is not ticket or (not high and self._gecko_start_waiters[True]):
+                            # Only `notify_all` wakes this, so the lock is held on return.
+                            await condition.wait()
+                            continue
+                        now = time.monotonic()
+                        wait = max(self._last[host] + max(2.1, self.min_host_interval),
+                                   not_before, self._host_backoff_until.get(host, 0.0)) - now
+                        if wait <= 0:
+                            allowed = GECKO_LOW_START_ALLOWED.get()
+                            if not high and allowed is not None and not allowed():
+                                raise GeckoLowPriorityDeferred()
+                            self._last[host] = now
+                            self._gecko_starts.append(now)
+                            return
+                        break
+                finally:
+                    queue.remove(ticket)
+                    condition.notify_all()
+            await asyncio.sleep(max(wait, 0.0))
 
     async def _reserve_dex_request_start(self, *, not_before: float = 0.0) -> None:
-        """Prioritize pending held starts, never hold a turn through network I/O."""
+        """Prioritize pending held starts, never hold a turn through network I/O.
+
+        The pacing wait happens OUTSIDE the condition on purpose. Wrapping
+        ``condition.wait()`` in ``asyncio.wait_for`` is not safe: the timeout cancels the
+        inner ``wait()``, which can leave the Condition's lock released, so the ``finally``
+        below raises ``RuntimeError: cannot notify on un-acquired lock`` and the enclosing
+        ``async with`` raises ``RuntimeError: Lock is not acquired``. The condition is then
+        permanently unusable and every later reservation in the process fails, which wedges
+        the whole DexScreener REST lane with no self-recovery.
+
+        Measured 2026-09-12: the lane went silent at 19:24:40Z and stayed dead for 39
+        minutes (`periodic-tracebacks/chain_meme_pattern_observer.txt` @ 19:25:18Z carries
+        exactly that traceback), the hydration backlog grew 0 -> 1,537, 1,702 discovered
+        tokens never got a market frame, and only a process restart at 20:04:02Z cleared it.
+        Re-queueing after a bounded sleep keeps the original intent - a newly arrived
+        high-priority start can take the turn - without ever cancelling ``wait()``.
+        """
         host = "api.dexscreener.com"
         high = DEX_REQUEST_HIGH_PRIORITY.get()
         queue = self._dex_start_waiters[high]
         ticket = object()
         condition = self._dex_start_condition
-        async with condition:
-            queue.append(ticket)
-            condition.notify_all()
-            try:
-                while True:
-                    if queue[0] is not ticket or (not high and self._dex_start_waiters[True]):
-                        await condition.wait()
-                        continue
-                    now = time.monotonic()
-                    wait = max(self._last[host] + self.min_host_interval,
-                               not_before, self._host_backoff_until.get(host, 0.0)) - now
-                    if wait <= 0:
-                        self._last[host] = now
-                        return
-                    # Release the condition while pacing, so newly arrived held
-                    # demand can take this start. Recheck cooldown after waking.
-                    try:
-                        await asyncio.wait_for(condition.wait(), timeout=wait)
-                    except TimeoutError:
-                        pass
-            finally:
-                queue.remove(ticket)
+        while True:
+            wait = 0.0
+            async with condition:
+                queue.append(ticket)
                 condition.notify_all()
+                try:
+                    while True:
+                        if queue[0] is not ticket or (not high and self._dex_start_waiters[True]):
+                            # Only `notify_all` wakes this, so the lock is always held on
+                            # return and the `finally` below can notify safely.
+                            await condition.wait()
+                            continue
+                        now = time.monotonic()
+                        wait = max(self._last[host] + self.min_host_interval,
+                                   not_before, self._host_backoff_until.get(host, 0.0)) - now
+                        if wait <= 0:
+                            self._last[host] = now
+                            return
+                        break
+                finally:
+                    queue.remove(ticket)
+                    condition.notify_all()
+            # Bounded by the host interval, so the lane stays responsive; the loop re-checks
+            # priority and the cooldown after waking.
+            await asyncio.sleep(max(wait, 0.0))
 
     @asynccontextmanager
     async def _dex_inflight_slot(self) -> AsyncIterator[None]:
@@ -1589,7 +1616,7 @@ class HttpClient:
         self._last[host] = time.monotonic()
 
     def _record_dex_rate_limit(self, host: str, response: httpx.Response) -> None:
-        if host not in {"api.dexscreener.com", "api.geckoterminal.com"} or response.status_code != 429:
+        if response.status_code != 429:
             return
         value = response.headers.get("Retry-After", "2")
         try:
@@ -1604,13 +1631,16 @@ class HttpClient:
         self._host_backoff_until[host] = max(
             self._host_backoff_until.get(host, 0.0), time.monotonic() + max(0.0, delay),
         )
+        # Public metadata gateways are independently rate-limited too.  Keep
+        # their Retry-After across subsequent documents rather than making
+        # every queued token repeat a known-rejected request.
         if host == "api.dexscreener.com" and self.on_dex_rate_limit is not None:
             self.on_dex_rate_limit(self._host_backoff_until[host])
 
     async def get(
         self, url: str, *, params: dict[str, Any] | None = None,
         ttl: float = 0, headers: dict[str, str] | None = None,
-        retry_429: bool = True,
+        retry_429: bool = True, request_timeout: float | None = None,
     ) -> httpx.Response:
         key = url + "?" + urllib.parse.urlencode(sorted((params or {}).items()), doseq=True)
         now = time.monotonic()
@@ -1628,7 +1658,10 @@ class HttpClient:
             async with self._dex_inflight_slot():
                 await self._reserve_host_request_start(host)
                 async with self._request_client(host) as request_client:
-                    response = await request_client.get(url, params=params, headers=headers)
+                    request_kwargs = {"params": params, "headers": headers}
+                    if request_timeout is not None:
+                        request_kwargs["timeout"] = max(0.1, float(request_timeout))
+                    response = await request_client.get(url, **request_kwargs)
         else:
             await self._reserve_host_request_start(host)
             async with self._request_client(host) as request_client:
@@ -1641,7 +1674,10 @@ class HttpClient:
                 async with self._dex_inflight_slot():
                     await self._reserve_host_request_start(host)
                     async with self._request_client(host) as request_client:
-                        response = await request_client.get(url, params=params, headers=headers)
+                        request_kwargs = {"params": params, "headers": headers}
+                        if request_timeout is not None:
+                            request_kwargs["timeout"] = max(0.1, float(request_timeout))
+                        response = await request_client.get(url, **request_kwargs)
                 self._record_dex_rate_limit(host, response)
             elif host == "api.geckoterminal.com":
                 await self._reserve_host_request_start(host, not_before=time.monotonic() + retry)
@@ -2503,6 +2539,7 @@ class DexScreenerClient:
         *,
         ttl: float = 8,
         retry_429: bool = True,
+        request_timeout: float | None = None,
     ) -> dict[str, tuple[TokenCandidate, TokenSnapshot]]:
         """Hydrate up to many token details through DexScreener's documented 30-address endpoint."""
         normalized_chain = self._chain(str(chain)).lower()
@@ -2516,10 +2553,12 @@ class DexScreenerClient:
                 for value in chunk
             }
             joined = urllib.parse.quote(",".join(chunk), safe=",")
+            request_options = {"ttl": ttl, "retry_429": retry_429}
+            if request_timeout is not None:
+                request_options["request_timeout"] = request_timeout
             response = await self.http.get(
                 f"{self.BASE}/tokens/v1/{normalized_chain}/{joined}",
-                ttl=ttl,
-                retry_429=retry_429,
+                **request_options,
             )
             payload = response.json()
             if isinstance(payload, dict):
@@ -2552,7 +2591,14 @@ class DexScreenerClient:
         addresses: list[str] | tuple[str, ...],
     ) -> dict[str, tuple[TokenCandidate, TokenSnapshot]]:
         """Fetch current held-token marks without reusing the hydration cache."""
-        return await self.batch_quote(chain, addresses, ttl=0, retry_429=False)
+        # Held exits are scheduled every second. A generic 12-second network
+        # timeout lets one unavailable upstream consume many mark cycles and
+        # turns otherwise valid exit evidence stale. Keep transport failures as
+        # UNKNOWN (the runtime's existing failure outcome), but release the
+        # high-priority lane quickly enough for the next cycle and fallbacks.
+        return await self.batch_quote(
+            chain, addresses, ttl=0, retry_429=False, request_timeout=3.0,
+        )
 
     async def exact_pools_fresh(self, chain: str, addresses: list[str]) -> dict[str, dict[str, Any]]:
         """Recover known held pools omitted from the token-address endpoint."""
