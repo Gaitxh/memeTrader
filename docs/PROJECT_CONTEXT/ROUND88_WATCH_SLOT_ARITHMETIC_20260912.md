@@ -67,3 +67,38 @@ the mechanism is proven, and the allocation cannot be changed additively because
    +13%), flagged tokens reaching >=10 observations, and the round-80 conversion table split by
    dense/sparse.
 3. Keep "102 sparse ready pools, 0 conversions" as the fixed baseline for any coverage work.
+
+## 6. Decision (user, 2026-09-12) and the implementation spec
+
+**The user approved reserving 25% of the pattern watch - 8 slots - for mover-watch tokens**, about
+32 flagged tokens per hour, against the measured cost of displacing that share from the young-pool
+observation that feeds the existing strategies. 50% and no-change were the alternatives.
+
+### 6.1 Implementation spec (for the next round, with full context)
+
+The change belongs in the pattern-watch admission loop in `runtime.py`, where capacity is tested as
+`occupied.get(slot, 0) >= capacity` with `slot = (chain, bucket)`:
+
+1. Add a module constant `MOVER_RESERVED_SLOTS = 8` next to `MOVER_FRAME_TARGET`.
+2. Count how many tokens currently in `watch` are in the mover registry active set. Call it
+   `mover_held`.
+3. When a candidate token is in the mover registry active set and `mover_held < MOVER_RESERVED_SLOTS`,
+   admit it even if its `(chain, bucket)` is at capacity - but **only** by taking a slot no
+   non-mover candidate is waiting for in the same pass, so the reservation is a ceiling on mover
+   occupancy rather than a claim on a specific victim.
+4. Never displace `strong_protected` or held tokens; the existing replacement rules stay untouched.
+5. Replace **threshold admission with ranked admission** at the same time: the registry already
+   returns its active set, and the mover rule returns which rule fired (`mid_pool_buy_share` scores
+   higher precision than `small_pool_turnover` in every measured window), so order candidates by
+   rule and by how recent the flag is, and fill the 8 reserved slots from the top.
+6. Instrument it: add `mover_held` and `mover_admitted` to the pattern-observer heartbeat so the
+   reservation can be seen working, and keep the three probes from section 5 as the acceptance test.
+
+### 6.2 Why this is not being rushed into the live process
+
+The pattern watch feeds the observation surface of the existing strategies, and the admission loop
+also handles temporary slots, borrows, replacements and reservation reclaims that were built to
+protect them. Editing it at the end of a long session, with the tail of the context budget, is the
+kind of change that has a real chance of starving those lanes for reasons that would take another
+round to diagnose. The decision, the arithmetic and the spec are recorded here so the change is
+mechanical when it is made.
