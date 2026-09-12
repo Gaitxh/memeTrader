@@ -330,3 +330,47 @@ happens to be observed twice inside 60 seconds will convert through the normal p
 | conversion is now cadence-bound, not contract-bound | 13 candidate windows, 2 inside 60s, 0 admitted |
 
 No threshold, no strict timing rule and no existing arm was changed to obtain any of this.
+
+## 11. DC-5: the write-off line is crowding, not a mark defect
+
+The 24h write-off figure rose again this round (220 / -706U earlier, 266 / -816U now), so the
+line was re-checked against the dust-print defect that was fixed earlier in the session. It is
+**not** that defect:
+
+| window | write-offs | distinct tokens | distinct arms | PnL |
+| --- | --- | --- | --- | --- |
+| last 60 min | 48 | **1** | **48** | -120.0U |
+| last 180 min | 145 | 5 | 71 | -434.0U |
+| last 24h | 266 | **26** | 84 | -816.0U |
+
+The dominant close reason in the last hour is
+`dex_pool_liquidity_below_configured_floor_writeoff` (48 of 272 closed exits), all of them on
+**one** Solana pool (`solana:5SwF9vArvvbDE1EVd…`), one write-off per arm that held it, with hold
+times clustered at p50 = 9.5 minutes. The 24h top tokens follow the same shape: 48, 37, 32, 30,
+25, 22 write-offs on single tokens - i.e. **10.2 arms per write-off token on average**.
+
+So the write-off loss is not 266 independent failures; it is 26 pool-liquidity collapses
+multiplied by the number of arms crowded into each pool. Counting only the arms beyond the tenth
+on the same token in the eight worst tokens removes 139 of the 266 write-offs (52%).
+
+This is the same-token concurrency question that has been measured as a shadow since an earlier
+round (a 10-arm cap would have blocked 944/1258 positions = 75.0%, whose realized result was
+-416.3U). The evidence is now stronger and comes from two independent angles; **enforcement still
+requires explicit authorisation**, because it would change how existing arms behave.
+
+## 12. Round 79 summary
+
+| id | finding | status |
+| --- | --- | --- |
+| DC-3a | the dex-only frame admission cut the family off from 43.5% of tokens and 82% of the densely observed ones | **fixed** (wave 38 wide surface) |
+| break | wide-surface signals could never enter: `await_distinct_dex_trajectory_frame` (engine routing + an impossible `windows['30']` requirement) | **fixed** (waves 39/40, additive routing + `requires_distinct_wide_frame`) |
+| DC-3b | only ~33 tokens/hour are observed densely enough for any mechanism; the wave-37 age band was never the constraint | measured; `decorr_young` proven reachable on the wide surface (0 in ~1,500 primary frames, 20 in 184 wide frames) |
+| DC-4 | the entry layer has its own dense requirement: two cohort evaluations of the same pool within 60s, while wide pools are re-evaluated at p50 87.3s | measured; needs a decision on request budget |
+| DC-3c | the spare-capacity densification lane is starved (52 eligible batches, 51 with no spare, 1 selected) | measured |
+| DC-5 | the write-off line is single-token crowding (48 write-offs on 1 token in an hour; 10.2 arms per write-off token in 24h), not a mark defect | measured; cap enforcement needs authorisation |
+
+Delivered this round: 4 additive arms in 3 waves (306 -> 310 `policy_additions`), 2 additive
+shared-code hooks (`PROVIDER_PREFIX` / `MAX_GAP_SECONDS` class attributes with unchanged
+defaults; the `alpha149_broad` engine routing and the `requires_distinct_wide_frame` gate), 15
+new tests, 3 commits pushed, and no change to any existing arm's behaviour, thresholds, or the
+frozen timing rules.
