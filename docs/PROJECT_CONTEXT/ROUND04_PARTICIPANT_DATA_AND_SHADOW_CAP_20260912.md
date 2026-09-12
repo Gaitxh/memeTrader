@@ -100,7 +100,40 @@ geckoterminal 的 ~50–65% 说明部分行没有 5 分钟窗口的买家数（�
 
 ---
 
-## 5. 状态分离
+## 5. 参与者臂可达性排查（本轮最重要的工程发现）
+
+第一版实现后 `participant_growth` / `participant_breadth` 连续两个进程 1,500+ 帧 **ready=0**。
+逐层排查后定位到**因果接线断点**，而不是阈值问题：
+
+1. **共享引擎只接受 dexscreener 帧**：`dex_trajectory.Engine.accept` 对
+   `provider.startswith('dexscreener')` 以外的观测一律 `invalid_or_unknown`；
+2. **买家数只存在于 geckoterminal 负载**：实测 240/240 条 geckoterminal 行含 `buyers`，
+   而 dexscreener 与 strategy-observer:dexscreener **0/613** 行含该字段；
+3. 两者叠加 → 买家数**永远进不了**轨迹引擎的特征向量（第一版我只在帧里解析，等于白做）。
+
+**修复（保持因果与可审计）**：在被动队列循环的最前面（早于 dexscreener 过滤器）把
+geckoterminal 观测登记为**按代币的参与者回执** `(observed_at, buyers_5m, provider)`，
+在构建 dexscreener 帧时仅当
+`receipt.observed_at <= frame.observed_at` 且新鲜度 ≤180 秒时附加该读数，
+并在帧上写入 `buyers_provenance`（`same_provider` / `cross_provider_receipt:<provider>`）。
+缺失回执一律 None。另把 `buyers_growth_5m` 的基线从"上一帧"改为"最近一次真正带买家数的更早帧"
+（跨提供方读数稀疏，用相邻帧比较不可用）。
+
+**实测结果（诚实记录）**：
+- `participant_breadth` 已**可达**：产生 1 条决策 / 1 笔准入 / 1 笔开仓（已平 −1.0U）；
+- `participant_growth` 在三个进程、约 4,500 帧内**仍然 ready=0**：需要同一代币在窗口内
+  先有一次 geckoterminal 买家读数、再有一次更晚且增长 >1.10 的读数，而两个提供方覆盖的
+  代币/池集合重叠度低（geckoterminal 行仅占快照行约 30%）。我按项目规则停止了继续调参
+  （同一失败已做两轮修正），改为把结论写入报告并提出因果层面的选项。
+
+**因果层面的选项（需用户授权，因为会改变共享帧总体）**：
+让轨迹引擎接受 geckoterminal 帧（`provider` 白名单扩展），这样买家数将在**同帧**到达，
+两条臂的供应会从"稀疏"变为"每帧可用"。该改动会增加所有臂（100+ 条）看到的帧总体，
+属于会改变现有策略输入分布的共享改动，因此**本轮未做**。
+
+---
+
+## 6. 状态分离
 
 - **implemented**：新增 `src/memetrader/participant_flow.py`；`store._add_snapshot_locked` 解析落库；
   `dex_trajectory.derive` 三个新键 + `current`/`accept` 携带 `buyers_5m`；`alpha149.py` 第 27 波

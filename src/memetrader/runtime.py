@@ -27,6 +27,7 @@ import httpx
 from solders.pubkey import Pubkey
 
 from .runtime_timing import RuntimeTiming
+from . import participant_flow
 from .narrative_hold import NarrativeHold
 from .event_clone_shadow import EventCloneShadow
 from .market_api import CoinGeckoDemoPoolClient, GeckoTerminalPoolClient
@@ -7977,6 +7978,21 @@ class Runtime:
             frames, quotes = [], {}
             for token, snapshot in values:
                 raw = snapshot.raw or {}
+                # Round 3b: record the participant count BEFORE the dexscreener-only
+                # filters below, because buyer counts exist only in geckoterminal
+                # payloads and those are exactly the ones filtered out here. The
+                # receipt is keyed by token (a 5-minute participant count is a
+                # token-level fact) and carries its own observed_at, provider and pool.
+                receipts = getattr(self, "_participant_receipts", None)
+                if receipts is None:
+                    receipts = self._participant_receipts = {}
+                if len(receipts) > 50_000:
+                    receipts.clear()
+                buyers_receipt = (snapshot.buyers_5m if snapshot.buyers_5m is not None
+                                  else participant_flow.buyers_5m(raw))
+                if buyers_receipt is not None:
+                    receipts[token.token_id] = (snapshot.observed_at, buyers_receipt,
+                                                str(snapshot.provider or ""))
                 pair = raw.get("pair", raw)
                 address = canonical_token_address(token.chain, str(pair.get("pairAddress") or ""))
                 if token.token_id in extra148 and address != extra148[token.token_id]:
@@ -7997,6 +8013,19 @@ class Runtime:
                 if age < 0:
                     continue
                 identity = (token.token_id, address)
+                # Attach the freshest participant receipt for this TOKEN only when it
+                # was observed no later than this frame and is still fresh (<=90s).
+                # Provenance travels with the value; a missing receipt stays None.
+                buyers_value, buyers_provenance = None, None
+                receipt = receipts.get(token.token_id)
+                if receipt is not None and receipt[0] <= snapshot.observed_at:
+                    # A 5-minute participant count stays informative for a few
+                    # minutes; 180s keeps the cross-provider join usable while the
+                    # value is still about the current window.
+                    if (snapshot.observed_at - receipt[0]).total_seconds() <= 180:
+                        buyers_value = receipt[1]
+                        buyers_provenance = ("same_provider" if receipt[2] == snapshot.provider
+                                             else "cross_provider_receipt:" + receipt[2])
                 histories = state.get("token_frames", {}).get(f"{identity[0]}|{identity[1]}", [])
                 first_seen = (histories[0].get("discovered_at") if histories else None) or iso(received)
                 # This is local first observation, not a claimed global creation time.
@@ -8016,6 +8045,9 @@ class Runtime:
                     "ingested_at": iso(snapshot.ingested_at or received),
                     "ingestion_basis": "snapshot" if snapshot.ingested_at is not None else "passive_queue_receipt",
                     "pool_age_seconds": age, "buys_5m": snapshot.buys_5m, "sells_5m": snapshot.sells_5m,
+                    # The participant count with its provenance (same frame or a fresh
+                    # receipt from another provider); None when neither exists.
+                    "buyers_5m": buyers_value, "buyers_provenance": buyers_provenance,
                     "is_held": token.token_id in getattr(self, "_pattern_held_tokens", set())})
                 quotes[identity] = (token, snapshot)
             now = utcnow()

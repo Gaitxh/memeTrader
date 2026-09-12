@@ -96,7 +96,11 @@ def derive(rows):
     # Round 3: participant counts, now parsed from the provider payloads instead of
     # being dropped. None whenever the provider does not publish them.
     buyers_now=number(now.get('buyers_5m'))
-    buyers_prev=number(rows[-2].get('buyers_5m')) if len(rows)>=2 else None
+    # The baseline is the most recent EARLIER frame that actually carried a buyer
+    # count (buyer counts arrive from a different provider than the frame itself, so
+    # requiring the immediately previous frame would make the comparison unusable).
+    buyers_prior=[number(r.get('buyers_5m')) for r in rows[:-1] if number(r.get('buyers_5m')) is not None]
+    buyers_prev=buyers_prior[-1] if buyers_prior else None
     buyers_growth=ratio(buyers_now,buyers_prev)
     # Unique buyers per BUY (not per trade): near 1 means each buy came from its own
     # wallet, a low value means few wallets bought repeatedly (bundling proxy).

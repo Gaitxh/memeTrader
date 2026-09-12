@@ -1009,7 +1009,7 @@ OVERRIDES = {
         hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
         description='新参与者增长（2U，30分钟）：系统原先只能用"成交额增速÷笔数增速"代理新参与者，'
                     '第3轮发现 provider 负载里一直带着 buyers/sellers 却从未解析入库，'
-                    '本条臂改用直观测：本帧5分钟买家数 ≥ 前帧×1.2、买盘占比≥55%、'
+                    '本条臂改用直观测：本帧5分钟买家数 ≥ 最近一次已观测读数×1.10（跨提供方回执，≤180秒新鲜度）、买盘占比≥55%、'
                     '深度≥3000U且不流失。provider 不提供该字段时不触发（缺失不推断）。'
                     '对照臂：alpha149_size_informed_flow_v1（同一意图的代理实现）。'),
     'alpha149_participant_breadth_v1': dict(
@@ -1652,7 +1652,7 @@ def mechanisms(f):
     buyers_growth = _num(f.get('buyers_growth_5m'))
     participants_per_trade = _num(f.get('participants_per_trade_5m'))
     out['participant_growth'] = bool(
-        buyers_growth is not None and buyers_growth > 1.2
+        buyers_growth is not None and buyers_growth > 1.10
         and buy_share is not None and buy_share >= .55
         and liquidity is not None and liquidity >= 3000
         and liq_now is not None and prev_depth is not None and liq_now >= prev_depth * .98)
@@ -1918,7 +1918,7 @@ RULES = {
                             '而实时计数器显示62.2%的帧落在该档、仅0.5%落在1-20带。',
     'open_band_scored': '开放带×评分门：开放带成立且 score149 过门（≥55、覆盖率≥0.60、必需维度齐全）。',
     # wave 27
-    'participant_growth': '新参与者增长（直观测，非代理）：本帧5分钟买家数 ≥ 前帧×1.2、买盘占比≥55%、'
+    'participant_growth': '新参与者增长（直观测，非代理）：本帧5分钟买家数 ≥ 最近一次已观测买家数×1.10、买盘占比≥55%、'
                           '深度≥3000U 且不流失。数据来自 provider 负载中的 buyers（第3轮起解析入库），'
                           'provider 不提供该字段时机制为 False，不做任何替代推断。',
     'participant_breadth': '参与广度/低捆绑代理：5分钟"独立买家数÷买笔数" ≥0.6（每笔买入来自不同钱包的比例），'
