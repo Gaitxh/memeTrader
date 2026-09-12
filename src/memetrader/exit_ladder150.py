@@ -96,6 +96,17 @@ EXIT_ARMS: dict[str, str] = {arm: arm for arm in LEVELS}
 
 # Everything except the tier level is held fixed at the deployed full-capture contract, and the
 # trailing activation is pinned at the 0.30 base - the field that confounded full15 vs full25.
+#
+# `notional_usd` IS INERT FOR POSITION SIZING. Measured 2026-09-13 (round 120-61): every position in
+# this epoch books `stake_usd = 20.0` across 3,389 positions over 180 arms, and the only exception is
+# the native protocol lane (`pump_native_absorption_fast_v1`, ~4.709U, derived). The stake comes from
+# the GLOBAL `config.json paper.max_position_usd = 20`, passed as `paper_stake_usd` on the shared
+# entry paths (runtime.py:1292/1304/1323/1331 -> store.py:20606/20930), NOT from a policy's
+# `notional_usd`. `exits150.py` declares 1.0 and `cohort_experiments.py` / `market_microstructure.py`
+# declare 2/5 for the same reason; all are ignored. So the "1U x 4 slots" phrasing in the registered
+# descriptions is NOT the booked size - each position risks 20U. This comment exists so the dead field
+# is not mistaken for a live risk limit; the registered description strings are deliberately NOT
+# edited, because they are contract text for already-registered arms.
 _COMMON = dict(
     notional_usd=1.0,
     max_concurrent_positions=4,

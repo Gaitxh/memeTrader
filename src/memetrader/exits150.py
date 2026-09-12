@@ -124,6 +124,15 @@ KINDS: dict[str, str] = {
 }
 
 _COMMON = dict(
+    # INERT FOR POSITION SIZING - measured 2026-09-13 (round 120-61): every position in this epoch
+    # books `stake_usd = 20.0` over 3,389 positions and 180 arms, the sole exception being the
+    # native protocol lane (~4.709U, derived). The stake is the GLOBAL `config.json
+    # paper.max_position_usd = 20`, passed as `paper_stake_usd` on the shared entry paths
+    # (runtime.py:1292/1304/1323/1331 -> store.py:20606/20930); a policy's `notional_usd` is never
+    # read for it. So the "1U x 4 slots" wording in this module's descriptions and docstring is NOT
+    # the booked size - each position risks 20U, i.e. 20x what the text claims. Recorded rather than
+    # silently corrected: rewriting registered descriptions would churn the contract text of live
+    # arms, the same reason round 120-57 left `exit150_full25_v1`'s inaccurate description alone.
     notional_usd=1.0,
     max_concurrent_positions=4,
     trailing_activate_return=0.30,
