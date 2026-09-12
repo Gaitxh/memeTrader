@@ -1563,6 +1563,19 @@
       "next": "1) 仪表化：按 admit_mover_reserved 统计纳管数与保留名额自身的观测增量，以便把 +13% 预算的验收从\"全部被标记代币\"收窄到\"保留槽位\"。2) 待密集 ready 池样本足够后重跑转化表，并补上第87轮无法回答的等密度检验（flagged+dense vs unflagged+dense）。3) 若保留槽位确实密集且能转化，可再议份额；若仍停在 3 次观测，则说明纳管改动没有落到关键位置，下一步应检查分支插入点。",
       "report": "docs/PROJECT_CONTEXT/ROUND89_RESERVED_ADMISSION_20260912.md",
       "visible_entry": "docs/PROJECT_CONTEXT/ROUND89_RESERVED_ADMISSION_20260912.md"
+    },
+    {
+      "id": "20260912-round90-reserved-admission-acceptance-open",
+      "title": "第90轮：保留槽位纳管的验收测量——稀疏 ready 池累计 160 个仍为 0 次转化，密集侧样本仍不足；flagged+dense 首次超过 1 个池",
+      "recorded_at": "2026-09-12T10:05:00Z",
+      "problem": "第89轮落地保留槽位纳管后，被标记代币达到 >=10 次观测的数量由 1 个升到 15 个，但当时明确标注\"尚未测量转化\"。本轮按验收标准（第80轮口径：ready 行到同池下一次评估的间隔，0<gap<=60 秒）测量第89轮改动之后的转化，并继续用\"稀疏 ready 池 0 次转化\"作固定基线。",
+      "change": "本轮不改动任何源码或配置：仅做验收测量。",
+      "rationale": "第89轮的报告把验收标准写死为\"密集/稀疏转化表 + 固定基线\"，本轮就是执行该验收；在样本不足时如实报告不足，而不是用 11 分钟窗口的数字去宣称结论。",
+      "validation": "窗口 2026-09-12T09:44:31Z（第89轮重载起）至测量时点，约 11 分钟：442 个代币、1,688 条去重观测、1,795 次评估/541 个池；obs>=10 的 21 个、obs>=25 的 7 个、被标记 50 个。转化表（第80轮口径）：flagged+dense 2 池/间隔<=60 秒 66.7%/转化 1（50.0%，观测中位 77）；flagged+sparse 6 池/0.0%/转化 0（观测中位 2）；unflagged+dense 1 池/100.0%/转化 0（观测中位 74）；unflagged+sparse 52 池/0.0%/转化 0（观测中位 2）。**稀疏 ready 池本轮 58 个、0 次转化**；连同第87轮的 102 个，累计 **160 个稀疏 ready 池、0 次转化**，是全系列最稳健的对照。两项进展与两项不足：进展是 flagged+dense 首次超过 1 个池（2 个），且 sparse 的 0.0% 在每一个窗口都成立；不足是密集侧样本仍只有 3 个池，等密度检验（flagged+dense vs unflagged+dense）依然不可答，11 分钟窗口不足以给出保留槽位的转化率。paper 模式、live.enabled=false、账本与资金周期均未变。",
+      "scope": "仅文档：docs/PROJECT_CONTEXT/SYSTEM_UPDATE_HISTORY.json（本条目）。未改动源码或配置。",
+      "next": "1) 继续积累密集 ready 池样本（目标每侧 >=20），再给出保留槽位的转化率与等密度检验；在此之前不基于密集侧的 50%/0% 做任何结论。2) 仪表化仍未做：按纳管理由 admit_mover_reserved 统计保留名额自身的观测增量，把 +13% 预算的验收从\"全部被标记代币\"（当前读数 16.0%、被天然热门币抬高）收窄到保留槽位本身。3) 若长时间后保留槽位仍停在个位数观测，需检查分支插入点是否真的命中被标记代币的纳管路径。",
+      "report": "docs/PROJECT_CONTEXT/ROUND89_RESERVED_ADMISSION_20260912.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/ROUND89_RESERVED_ADMISSION_20260912.md"
     }
   ]
 }
