@@ -1772,6 +1772,19 @@
       "next": "1) **增长仍是硬约束**：按 5.4GB/天，77.68GB ≈ **14 天**后再次写满。用户本轮选择了\"只清理\"而暂不设计长期策略；建议下一轮设计并落地存储保留策略（快照只在异盘保留 1 份、研究归档定期压缩/裁剪、必要时对主库做分批归档或分区），否则 E 盘会周期性再次吃满并导致单写进程报错。2) 残留 `.pytest-tmp`（1.42GB，ACL 拒绝）可在用户同意提权时清除。3) 既定待办不变：统一口径下的 441 条臂留/停清单；代币级并发上限（影子 −603.35U）；保留观察名额修复后的观察期结论。",
       "report": "docs/PROJECT_CONTEXT/ROUND108_RESERVED_SLOT_REACH_AND_REVIVED_HOLDER_LANE_20260912.md",
       "visible_entry": "docs/PROJECT_CONTEXT/ROUND108_RESERVED_SLOT_REACH_AND_REVIVED_HOLDER_LANE_20260912.md"
+    },
+    {
+      "id": "20260912-round113-parameters-landed-and-rules-explained",
+      "title": "第113轮：用户指令\"修改必须在策略交易中落实、并更新各策略规则解释\"——**用真实成交证明 20U 已落地**（改后 191 笔中 188 笔 stake 正好 20.0U）；补齐此前漏掉的 64 条无 entry_filter 臂使 **441/441 全部上限=8**；441 条策略的规则解释与 Web 接口全部更新（UNKNOWN 归零）",
+      "recorded_at": "2026-09-12T17:30:00Z",
+      "problem": "用户要求两件事：① 单笔 20U 与持仓上限 8 必须在**实际交易**中生效，而不是只改元数据；② 各个策略的**规则解释**也要同步更新。上一轮的实现范围存在两个缺口：a) 上限归一化只处理\"已经有 `entry_filter`\"的策略——141 条被补齐，但**另有 64 条根本没有 `entry_filter` 字段的臂仍未受任何上限约束**（441 条中只有 377 条有该字段）；b) 规则解释里\"单笔名义金额\"对未显式登记名义的臂显示 **UNKNOWN**，而它们实际按定义默认 20U 交易——解释与交易不一致，正是用户要修的那类问题。",
+      "change": "1) src/memetrader/store.py：上限归一化不再跳过缺 `entry_filter` 的策略，而是为这 64 条创建 `{\"max_concurrent_positions\": 8}`（只加这一个键，其它闸门不变：`chain_meme_trader_entry_filter_matches` 对缺失过滤器返回 True 且只检查它认识的键），并记录 `created_entry_filter` 标记；顶层标记新增 `filled_uncapped_policies`。2) 同一处为每条被修订的策略写入**权威参数前置注记**：\"【现行参数 2026-09-12】单笔名义 20U、同时持仓上限 8（注册时单笔 X U；注册时上限 Y 仓；下文为该口径下的原始描述）\"，原始描述完整保留在后，并写入结构化 `parameter_note`。3) src/memetrader/strategy_explainability.py：风险说明改为显示\"20.0（注册时 5.0，2026-09-12 统一口径）\"；未登记名义的臂显示 20.0 而不再是 UNKNOWN。4) src/memetrader/chain_web.py：每个策略族新增结构化 `effective_parameters`（现行名义/上限、注册值、依据、applies_to=paper_only）。",
+      "rationale": "为什么\"落实\"必须用成交证明：这是项目的核心要求（Paper 必须按实际证据记账），而参数改动最容易出现的失败模式就是\"元数据改了、执行路径读的是另一份值\"。为什么描述要前置注记而不是改写原文：注册文本是历史证据，改写会破坏可追溯性；前置注记让操作者先看到现行口径，同时仍能读到注册时的原始表述。",
+      "validation": "**交易路径（用改后真实成交验证，非代码阅读）**：统一名义重载（12:05:36Z）之后新开 191 笔仓位，其中 **188 笔 stake 恰好 20.0U**，仅 3 笔为 4.71U（`pump_native_absorption_fast_v1`，原生协议通道按代币数量下单，结构上无法等于固定美元）；注册为 1U/2U/5U 的臂确实已按 20U 开仓——例如 `alpha149_moonbag_steady_v1`(1U)、`alpha149_vol_scaled_exit_v1`(2U)、`alpha149_profit_decay_exit_v1`(5U)、`trajectory144_adaptive_selector_v1`(2U)。**上限**：生效定义 441 条策略 **全部 = 8**（此前 377 条有值、64 条无字段）；当前单臂最大并发为 3（65 条臂持有仓位），因此尚未出现 `strategy_open_slot_limit` 拦截——上限目前不是瓶颈，这一点与部署时的实测一致。**规则解释**：441 条全部带参数注记；`/api/strategy-universe` 返回 441 个族，全部含 `effective_parameters`，`risk_controls` 显示 20.0 / 8，**UNKNOWN 计数 = 0**。测试：cap floor + uniform notional + explainability 共 20 项全绿。部署：运行进程 20:51:30 重载（PID 2112/43152，store.py 哈希 83dcb18ed6adcd83 与磁盘一致）；Web 控制台 20:53 重启（/health 200，新增字段已可读取）。",
+      "scope": "src/memetrader/store.py、src/memetrader/strategy_explainability.py、src/memetrader/chain_web.py、tests/test_concurrency_cap_floor.py、docs/PROJECT_CONTEXT/SYSTEM_UPDATE_HISTORY.json（本条目）。未改动任何策略源码、注册台账、资金周期或既有成交；paper 模式与 live.enabled=false 未变。",
+      "next": "1) 观察期：上限放开与名义统一后，需跟踪每臂并发是否真的上升（当前最大 3/8）、以及统一 20U 后各策略的美元盈亏是否如预测那样放大约 1.5 倍。2) 用户已确认口径：全部策略单笔 20U、同时持仓上限 8（含此前无上限的 205 条）。3) 待办不变：统一口径下的 441 条臂留/停清单；代币级并发上限（影子证据 −603.35U）；保留观察名额修复后的观察期结论；E 盘按 5.4GB/天增长约 3 周余量。",
+      "report": "docs/PROJECT_CONTEXT/SYSTEM_UPDATE_HISTORY.json",
+      "visible_entry": "docs/PROJECT_CONTEXT/SYSTEM_UPDATE_HISTORY.json"
     }
   ]
 }
