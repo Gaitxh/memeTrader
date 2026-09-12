@@ -97,16 +97,20 @@ EXIT_ARMS: dict[str, str] = {arm: arm for arm in LEVELS}
 # Everything except the tier level is held fixed at the deployed full-capture contract, and the
 # trailing activation is pinned at the 0.30 base - the field that confounded full15 vs full25.
 #
-# `notional_usd` IS INERT FOR POSITION SIZING. Measured 2026-09-13 (round 120-61): every position in
-# this epoch books `stake_usd = 20.0` across 3,389 positions over 180 arms, and the only exception is
-# the native protocol lane (`pump_native_absorption_fast_v1`, ~4.709U, derived). The stake comes from
-# the GLOBAL `config.json paper.max_position_usd = 20`, passed as `paper_stake_usd` on the shared
-# entry paths (runtime.py:1292/1304/1323/1331 -> store.py:20606/20930), NOT from a policy's
-# `notional_usd`. `exits150.py` declares 1.0 and `cohort_experiments.py` / `market_microstructure.py`
-# declare 2/5 for the same reason; all are ignored. So the "1U x 4 slots" phrasing in the registered
-# descriptions is NOT the booked size - each position risks 20U. This comment exists so the dead field
-# is not mistaken for a live risk limit; the registered description strings are deliberately NOT
-# edited, because they are contract text for already-registered arms.
+# `notional_usd` IS THE ARM'S REGISTERED VALUE, NOT WHAT A POSITION BOOKS. Measured 2026-09-13
+# (rounds 120-61/62): every position in this epoch books `stake_usd = 20.0`, and the reason is not an
+# unread field - the EFFECTIVE definition rewrites it. `definition["uniform_notional_usd"]` records a
+# user instruction "one uniform 20U per trade so strategies can be compared fairly" and changed 280
+# policies to 20.0; each arm carries `notional_revision {registered: 1.0, effective: 20.0}`. Likewise
+# `definition["concurrency_cap_floor"]` raises the REGISTERED cap of 2 to an effective 8
+# (CHAIN_MEME_TRADER_CONCURRENCY_CAP_FLOOR) for every policy. So the "1U x 4 slots" wording in this
+# module's description is stale relative to the effective contract: each position risks 20U and each
+# arm may hold up to 8 concurrently, i.e. up to 160U per arm against its 1,000U starting cash.
+#
+# THE GENERAL LESSON: `policy_additions.policy_json` is a DRAFT. The contract that runs is the
+# EFFECTIVE definition built at load, which applies recorded revisions - read
+# `Store._chain_meme_trader_effective_definition(...)` before reasoning about any limit or size. The
+# registered description string is deliberately NOT edited, because it is registered-arm text.
 _COMMON = dict(
     notional_usd=1.0,
     max_concurrent_positions=4,

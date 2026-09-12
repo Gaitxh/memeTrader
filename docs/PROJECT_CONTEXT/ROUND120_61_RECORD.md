@@ -1,5 +1,37 @@
 # ROUND 120-61 — 我先查了自己是否在比较相差 20 倍的仓位；结论是"没有"，但顺带查出**每臂仓位字段是死字段**
 
+> ## ⚠️ 更正（第 120-62 轮，同日）：§3 与 §5 的结论**错了**
+>
+> 本记录断言"每臂 `notional_usd` 是**死字段**、运行时**从不读取**"。**这是错的。**
+> 第 62 轮读了**生效定义**（`Store._chain_meme_trader_effective_definition`）后发现：
+> 定义里有一块 **`uniform_notional_usd`**：
+>
+> ```json
+> {"notional_usd": 20.0, "changed_policies": 280, "authorized_at": "2026-09-12",
+>  "basis": "user instruction: one uniform 20U per trade so strategies can be compared fairly;
+>            policies without the field already resolve to the definition default, which is this
+>            same size"}
+> ```
+>
+> 且每个臂都带 **`notional_revision {registered: 1.0, effective: 20.0}`**。
+> **所以字段不是"没被读"，而是被一条有记录、有授权依据的规则**统一改写为 20U**——
+> 目的是"让各策略可以公平比较"。**
+>
+> **正确的结论**：
+> - 每仓 20U 是**刻意统一**的结果，不是字段失效；
+> - 各臂**注册的** 1.0/2.0/5.0 是**草稿值**，生效值是 20.0（311 个策略显式为 20.0，146 个为 None 并落到定义默认 `policy_notional_usd=20.0`）；
+> - 同理，注册的 `max_concurrent_positions=2` 也被 **`concurrency_cap_floor`** 抬到生效值 **8**；
+> - **因此每臂并发暴露 = 8 × 20U = 160U**（对 1,000U 起始资金 = 16%），这是一个**刻意统一、可解释的设计**，不是缺陷；
+> - 描述里的 "1U×4仓" **相对生效契约是过时的**（这一点仍然成立），但原因与"死字段"完全不同。
+>
+> **§2（我的比较同规模、无需更正）不受影响，仍然成立。**
+> 我在 §5 加进 `exits150.py` / `exit_ladder150.py` 的注释**也断言了"字段从不被读取"**，
+> 已在第 62 轮**改写为正确表述**。
+>
+> **方法论教训（两轮内三次同一个错误）**：`policy_additions.policy_json` 是**草稿**；
+> 真正生效的是**加载时重建的生效定义**，它会应用有记录的修订。
+> **在依据任何限额或规模推理之前，必须先读 `_chain_meme_trader_effective_definition`。**
+
 日期：2026-09-13
 探针：`data/research/diag_round120/r61_notional.py`、`r61b_stake_source.py`
 改动：`exits150.py`、`exit_ladder150.py` **仅加注释**（20 行新增、0 行删除）
