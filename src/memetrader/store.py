@@ -18525,7 +18525,8 @@ class Store:
                             and bool(re.search(r"\b(?:429|5\d\d)\b", error_type + " " + message)))
                     )
                     confirmed_recovery = (
-                        item and retryable and not source.endswith(":original_pool")
+                        (item or source.startswith("native-launch:"))
+                        and retryable and not source.endswith(":original_pool")
                         and (now_dt - parse_time(case["last_seen_at"])).total_seconds() >= 600
                     )
                     if is_transient or confirmed_recovery:
@@ -30912,20 +30913,35 @@ class Store:
     def _compact_cohort_signals_for_storage(
         self, features: Mapping[str, Any] | None,
     ) -> dict[str, Any]:
-        """Shrink the per-arm `feature_vector` copy that dominated the whole database.
+        """Shrink the per-arm copies inside `cohort_signals`, the object that dominated the DB.
 
-        Measured 2026-09-13: `cohort_observation` rows were 582.2 MB of a 920.7 MB database
-        (63%), averaging 86,101 bytes and peaking at 444,925. Inside one 98 KB row
-        `cohort_signals` was 81,188 bytes (83%) because it held ~16 entries of ~7,780 bytes
-        each carrying the SAME `decision_evidence.feature_vector` - one feature vector copied
-        once per signalling arm. The database was growing ~7 MB per 10 minutes (~1 GB/day).
+        Two separate reductions, both driven by measurement.
 
-        This returns a copy whose per-arm `feature_vector` keeps ONLY the fields the two
-        readers above use. It never mutates the caller's mapping, so every in-memory consumer
-        (the engines, mode_learning144, cohort_experiments, the exit path) sees exactly the
-        object it saw before. Only what reaches `feature_json` changes.
+        **1. `decision_evidence.feature_vector` (round 120-8).** Measured 2026-09-13:
+        `cohort_observation` rows were 582.2 MB of a 920.7 MB database (63%), averaging
+        86,101 bytes. Inside one 98 KB row `cohort_signals` was 81,188 bytes because it held a
+        ~7.5 KB `feature_vector` per signalling arm. Exactly TWO readers in the whole codebase
+        consume it and they touch only `_COHORT_VECTOR_KEEP`, so the rest is dropped:
+        7,780 -> 154 bytes per arm.
 
-        Fully reversible: stop calling it and the previous payloads resume.
+        **2. `decision_evidence.mechanism_flags` (round 120-9).** The residual dominant cost:
+        2,520 bytes per arm over 88 entries. A first hypothesis - that it is one per-frame
+        object repeated for every arm, so it could simply be hoisted once per row - was
+        **refuted by measurement**: within one row, 36 arms carried **4 distinct** flag sets,
+        because the accumulated `cohort_signals` mixes arms signalled on different frames, so
+        hoisting would have been lossy. The values are therefore **interned**: each distinct
+        set is stored once in `cohort_mechanism_flags` and each arm keeps
+        `mechanism_flags_ref`, an index into it. Lossless by construction, and it cuts the
+        field by roughly the arm-to-distinct ratio.
+
+        `mechanism_flags` has **no reader anywhere** (verified by searching every `.py`, `.js`
+        and `.html` outside `.venv`), so replacing it with an index breaks nothing and the
+        information stays recoverable through the table.
+
+        Never mutates the caller's mapping, so every in-memory consumer (the engines,
+        mode_learning144, cohort_experiments, the exit path) sees exactly what it saw before.
+        Only what reaches `feature_json` changes. Fully reversible: stop calling it and the
+        previous payloads resume.
         """
         if not isinstance(features, Mapping):
             return dict(features or {})
@@ -30934,6 +30950,8 @@ class Store:
             return dict(features)
         compact: dict[str, Any] = {}
         changed = False
+        flag_table: list[Any] = []
+        flag_index: dict[str, int] = {}
         for arm, signal in signals.items():
             if not isinstance(signal, Mapping):
                 compact[arm] = signal
@@ -30942,28 +30960,45 @@ class Store:
             if not isinstance(evidence, Mapping):
                 compact[arm] = signal
                 continue
-            vector = evidence.get("feature_vector")
-            if not isinstance(vector, Mapping):
-                compact[arm] = signal
-                continue
-            keep = {k: vector[k] for k in self._COHORT_VECTOR_KEEP if k in vector}
-            if len(keep) == len(vector):
-                compact[arm] = signal
-                continue
-            changed = True
-            new_signal = dict(signal)
             new_evidence = dict(evidence)
-            new_evidence["feature_vector"] = keep
-            new_evidence["feature_vector_compacted"] = (
-                "only the fields read by the store/learning readers are retained; "
-                "the full vector was written per arm and is recoverable from token_snapshots"
-            )
-            new_signal["decision_evidence"] = new_evidence
-            compact[arm] = new_signal
+            arm_changed = False
+
+            vector = evidence.get("feature_vector")
+            if isinstance(vector, Mapping):
+                keep = {k: vector[k] for k in self._COHORT_VECTOR_KEEP if k in vector}
+                if len(keep) != len(vector):
+                    new_evidence["feature_vector"] = keep
+                    new_evidence["feature_vector_compacted"] = (
+                        "only the fields read by the store/learning readers are retained; the "
+                        "full vector was written per arm and is recoverable from token_snapshots"
+                    )
+                    arm_changed = True
+
+            flags = evidence.get("mechanism_flags")
+            if isinstance(flags, Mapping):
+                key = self._json(flags)
+                index = flag_index.get(key)
+                if index is None:
+                    index = len(flag_table)
+                    flag_index[key] = index
+                    flag_table.append(dict(flags))
+                new_evidence.pop("mechanism_flags", None)
+                new_evidence["mechanism_flags_ref"] = index
+                arm_changed = True
+
+            if arm_changed:
+                changed = True
+                new_signal = dict(signal)
+                new_signal["decision_evidence"] = new_evidence
+                compact[arm] = new_signal
+            else:
+                compact[arm] = signal
         if not changed:
             return dict(features)
         stored = dict(features)
         stored["cohort_signals"] = compact
+        if flag_table:
+            stored["cohort_mechanism_flags"] = flag_table
         return stored
 
     def settle_chain_meme_trader_execution_result(self, result_id: int) -> int:

@@ -22,6 +22,8 @@ class _Fake:
     _COHORT_VECTOR_KEEP = store_module.Store._COHORT_VECTOR_KEEP
     _compact_cohort_signals_for_storage = (
         store_module.Store._compact_cohort_signals_for_storage)
+    # `Store._json` is a staticmethod on the real class; bind it the same way.
+    _json = staticmethod(store_module.Store._json)
 
 
 def _features(n_arms: int = 3, bulk: int = 2000) -> dict:
@@ -66,8 +68,39 @@ def test_the_three_consumed_fields_survive_untouched():
         assert evidence["feature_vector"]["ingested_at"] == "2026-09-12T20:00:01Z"
         assert evidence["signal_at"] == "2026-09-12T20:00:02Z"
         assert evidence["mode"].startswith("kind_")
-        assert evidence["mechanism_flags"] == {"hot": True}
+        assert "mechanism_flags" not in evidence
+        assert isinstance(evidence["mechanism_flags_ref"], int)
         assert signal["decision_key"]
+
+
+def test_mechanism_flags_are_interned_losslessly():
+    """Round 120-9: hoisting to row level was refuted; interning is the lossless alternative.
+
+    Measured: within one real row, 36 arms carried FOUR distinct flag sets, because the
+    accumulated cohort_signals mixes arms signalled on different frames. So each distinct set
+    is stored once and every arm keeps an index into it.
+    """
+    import json
+
+    fake = _Fake()
+    features = _features(4)
+    # Give two arms one flag set and two arms another, as the live data does.
+    for i, arm in enumerate(sorted(features["cohort_signals"])):
+        ev = features["cohort_signals"][arm]["decision_evidence"]
+        ev["mechanism_flags"] = {"hot": True, "bucket": i // 2}
+    stored = fake._compact_cohort_signals_for_storage(features)
+    table = stored["cohort_mechanism_flags"]
+    assert len(table) == 2, table
+    # Every arm's original flags must be recoverable exactly.
+    for arm, signal in stored["cohort_signals"].items():
+        original = features["cohort_signals"][arm]["decision_evidence"]["mechanism_flags"]
+        recovered = table[signal["decision_evidence"]["mechanism_flags_ref"]]
+        assert recovered == original, arm
+    # And the table itself is much smaller than the per-arm copies it replaces.
+    before = sum(len(json.dumps(features["cohort_signals"][a]["decision_evidence"]
+                               ["mechanism_flags"])) for a in features["cohort_signals"])
+    after = len(json.dumps(stored["cohort_mechanism_flags"]))
+    assert after < before * 0.6, (before, after)
 
 
 def test_the_bulk_is_actually_removed():
