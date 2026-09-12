@@ -137,3 +137,53 @@ def pool_has_trade_liquidity(liquidity_usd: Any, definition: Mapping[str, Any]) 
     except ValueError:
         return False
     return liquidity >= max(0.0, float(definition.get("min_pool_liquidity_usd", 1000.0)))
+
+
+# A dust read is only terminal when nothing contradicts it. Measured on 2026-09-12: of the 24h
+# written-off tokens, 19 were real rugs whose price had collapsed by 3-6 orders of magnitude,
+# and one was a Solana pool whose reported `liquidity.usd` fell to exactly 0.0 while its price
+# held at -3.9% of the pre-read value and it kept printing 19k-63k USD of 5-minute volume.
+# That single contradicted read wrote off 48 positions across 48 arms (-120U).
+DUST_PRICE_HELD_FRACTION = 0.5
+DUST_LIVE_VOLUME_USD = 200.0
+# Only a reported liquidity of exactly zero (or negative, which is equally impossible) is
+# contradictory for a pool that is still trading. Anything above zero - including 0.05 and
+# 999.99 - is a genuinely drained pool and keeps the frozen immediate-writeoff rule untouched,
+# which is what the existing execution tests pin.
+DUST_IMPOSSIBLE_LIQUIDITY_USD = 0.0
+
+
+def dust_read_contradicted_by_live_trading(
+    *, liquidity_usd: Any, price_usd: Any, entry_price_usd: Any,
+    volume_5m_usd: Any, buys_5m: Any = None, sells_5m: Any = None,
+    definition: Mapping[str, Any] | None = None,
+) -> bool:
+    """True when a sub-floor liquidity read is contradicted by live trading at a held price.
+
+    Paper must not turn a single failed observation into a total write-off, so this is the
+    corroboration test in front of the dust-pool terminal fact. It returns True only on
+    positive evidence of a live pool: the reported liquidity is exactly zero (impossible for a
+    trading pool), the observed price has NOT collapsed against the entry price (a real rug
+    loses orders of magnitude), and the SAME observation still reports material trading volume.
+    Any missing field, or any positive liquidity value, leaves the existing rule untouched.
+    """
+    definition = definition or {}
+    if not pool_is_below_floor(liquidity_usd, definition):
+        return False
+    try:
+        liquidity = _number(liquidity_usd, "liquidity_usd")
+    except ValueError:
+        return False
+    if liquidity > DUST_IMPOSSIBLE_LIQUIDITY_USD:
+        return False  # a genuinely drained pool keeps the existing immediate-writeoff rule
+    try:
+        price = _number(price_usd, "price_usd")
+        entry = _number(entry_price_usd, "entry_price_usd")
+        volume = _number(volume_5m_usd, "volume_5m_usd") if volume_5m_usd is not None else None
+    except ValueError:
+        return False
+    if price <= 0.0 or entry <= 0.0:
+        return False
+    if price < entry * DUST_PRICE_HELD_FRACTION:
+        return False  # a collapsed price corroborates the dead pool; do not interfere
+    return bool(volume is not None and volume >= DUST_LIVE_VOLUME_USD)

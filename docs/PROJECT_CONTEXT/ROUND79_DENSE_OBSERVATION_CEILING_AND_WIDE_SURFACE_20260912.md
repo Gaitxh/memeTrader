@@ -374,3 +374,51 @@ shared-code hooks (`PROVIDER_PREFIX` / `MAX_GAP_SECONDS` class attributes with u
 defaults; the `alpha149_broad` engine routing and the `requires_distinct_wide_frame` gate), 15
 new tests, 3 commits pushed, and no change to any existing arm's behaviour, thresholds, or the
 frozen timing rules.
+
+## 13. DC-5 fix: the dust read must be corroborated
+
+The write-off rule itself was checked against the whole population before any change. For each
+written-off token the snapshots around the write-off were compared:
+
+| verdict | tokens | evidence |
+| --- | --- | --- |
+| **real rug** | 19 | price collapsed 3-6 orders of magnitude (e.g. 0.0003469 -> 3.346e-10) with liquidity -> 0 |
+| **contradicted read** | 1 | `solana:5SwF9vAr…`: liquidity 31.1k -> 33.5k -> **0.0** while the price held at 3.002e-05 (-3.9%) and volume kept printing 62.9k -> 47.4k -> 32.5k -> 19.3k USD per 5 minutes across the whole sub-floor window |
+| unknown | 5 | no snapshot coverage in the window |
+
+That one contradicted read wrote off **48 positions across 48 arms (-120U, 14% of the daily
+write-off loss)**, because `fresh_visible_dust` fired on a single VISIBLE mark whose liquidity
+was below the floor and then booked the full remainder as lost.
+
+A pool with zero reserves cannot be printing 19k-63k USD of five-minute volume at an unchanged
+price; the payload contradicts itself. The frozen contract already covers this case: *"Missing/
+failed/stale evidence never establishes a writeoff."*
+
+### 13.1 Change
+
+`paper_execution.dust_read_contradicted_by_live_trading(...)` is the corroboration test, added in
+front of the dust-pool terminal fact in `store.py::_advance…`:
+
+- the reported liquidity must be **exactly zero** (or the pool must be below the floor with a
+  zero read) - anything above zero, including 0.05 and 999.99, is a genuinely drained pool and
+  keeps the frozen immediate-writeoff rule untouched;
+- the observed price must NOT have collapsed against the entry price (a real rug loses orders of
+  magnitude), which is what separates all 19 real rugs;
+- the **same** observation must still report material trading volume (`>= 200 USD` per 5 minutes).
+
+Every missing field falls back to the previous behaviour, so no new universal gate is introduced:
+the guard can only fire on a self-contradicting payload. Vetoes are counted into
+`kv['dust-read-vetos']` (every tenth) for observability.
+
+### 13.2 Verification
+
+- `tests/test_dust_read_guard.py` (8 tests) pins both directions, including the two measured
+  populations: the 8 largest real rugs are NOT contradicted and the one glitch IS.
+- `tests/test_paper_execution.py`, `tests/test_core.py` and the other write-off-touching suites
+  produce **exactly the same pass/fail sets with and without the change** (verified by stashing
+  the change and diffing the failure lists; `tests/test_core.py` has 15 pre-existing failures
+  from environment/legacy fixtures and the difference set is empty).
+- Reloaded 2026-09-12T14:19:31+08:00 (PID pair 38856/6308).
+
+What this does **not** claim: the 19 real rugs still write off, so the daily write-off total
+remains dominated by genuine deaths. The fix removes the false-positive family, not the line.

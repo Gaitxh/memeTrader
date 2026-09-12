@@ -29,6 +29,7 @@ from .paper_execution import (
     CURRENT_EXECUTION_SETTINGS_KEY,
     EXECUTION_SETTINGS_KEY_PREFIX,
     buy_terms,
+    dust_read_contradicted_by_live_trading,
     effective_execution_settings,
     execution_definition_fields,
     normalize_execution_settings,
@@ -34443,6 +34444,36 @@ class Store:
             return False
         return True
 
+    def _dust_read_contradicted(self, position: Mapping[str, Any],
+                                definition: Mapping[str, Any]) -> bool:
+        """Corroboration test in front of the dust-pool terminal fact.
+
+        Measured (2026-09-12): of the 24h written-off tokens, 19 were real rugs whose price
+        collapsed by 3-6 orders of magnitude, and one Solana pool reported `liquidity.usd`
+        exactly 0.0 while its price held at -3.9% and it kept printing 19k-63k USD of 5-minute
+        volume. That single contradicted read wrote off 48 positions across 48 arms (-120U).
+        A real rug is not subtle: it collapses the price. This vetoes only that case and
+        leaves every genuinely dying pool to the existing rule.
+        """
+        contradicted = dust_read_contradicted_by_live_trading(
+            liquidity_usd=position["mark_liquidity_usd"],
+            price_usd=position["mark_price_usd"],
+            entry_price_usd=position["entry_signal_price_usd"],
+            volume_5m_usd=position["mark_volume_5m_usd"],
+            buys_5m=position["mark_buys_5m"],
+            sells_5m=position["mark_sells_5m"],
+            definition=definition,
+        )
+        if contradicted:
+            vetos = getattr(self, "_dust_read_vetos", 0) + 1
+            self._dust_read_vetos = vetos
+            if vetos % 10 == 1:
+                try:
+                    self.set_kv("dust-read-vetos", str(vetos))
+                except Exception:  # telemetry must never affect evaluation
+                    pass
+        return contradicted
+
     def _whipsaw_guard_allows_stop(
         self, policy: Mapping[str, Any], key: Any, *, elapsed_minutes: Any,
         liquidity: Any, buys: Any, sells: Any,
@@ -34602,6 +34633,11 @@ class Store:
                     <= dust_observed_at <= dust_mark_at <= current
                     and 0.0 <= (current - dust_mark_at).total_seconds() <= 15.0
                     and 0.0 <= (current - dust_observed_at).total_seconds() <= 15.0
+                    # A dust read is terminal only when nothing contradicts it. A sub-floor
+                    # liquidity print that coexists with live trading at a held price is
+                    # failed evidence, not proof of a dead pool, and the frozen contract
+                    # already says failed evidence must never establish a writeoff.
+                    and not self._dust_read_contradicted(position, definition)
                 )
                 market_only_exit = str(definition.get("sell_execution") or "") == (
                     "dexscreener_market_mark_only"
