@@ -150,7 +150,7 @@ Funnel reasons confirm where judgement sits (evaluations, this epoch):
 `invalid_exact_asof_market_snapshot` 1,807 · `entry_pool_liquidity_below_configured_floor`
 1,055 · `entry_pool_liquidity_unknown` 396 · `entry_snapshot_too_old` 12.
 
-## 6. The additive hook (located, not yet used)
+## 6. The additive hook (located AND de-risked)
 
 `store.py:27832-27850` is the cohort acceptance loop; each qualifying policy's signal is
 committed at `accepted_cohort_signals[arm] = signal`. A new arm can be screened there by
@@ -163,19 +163,45 @@ if not activity_floor150.allows(arm, snapshot):   # existing arms -> True immedi
 
 The consistent precedent is `store.py:27951`
 (`elif policy.get('entry_filter', {}).get('failed_impulse_cooling')`), which dispatches an
-arm to its own module. **Not landed this round**: a new cohort arm only trades if the
-cohort evaluator emits a signal for it (`store.py:27817` filters `cohort_signals` by
-`by_arm`), which has not yet been verified, and landing an entry arm that silently never
-fires — or fires wrongly — in a live paper system at the end of a round would violate the
-incremental/reversible requirement.
+arm to its own module.
+
+**The blocker is now resolved.** `cohort_signals` is an *input* to the evaluator
+(`store.py:27508`), produced upstream, so a new arm is worthless unless it reaches that
+set. Verified in `alpha149.signals_for`:
+
+```python
+for arm, (kind, _name, _hold) in SPECS.items():     # alpha149.py:2283 - GENERIC loop
+    if _is_broad_arm(arm) != (surface == 'broad'):
+        continue
+    if flags.get(kind) and arm not in state['signals']:   # alpha149.py:2288
+        ...  state['signals'][arm] = {...}
+```
+
+`SPECS` is iterated **generically**, and an arm fires whenever its mechanism `kind` sets a
+flag. Therefore a new arm sharing an **existing** `kind` emits exactly the same signals as
+the existing arm of that kind, and differs **only** by the activity-floor screen. That is
+precisely the design the constraints call for: a parameter-only variant against a matched
+control on identical signals, added as a new arm, modifying nothing.
+
+So the implementation is fully specified for next round:
+
+1. new module exposing `(arm -> (kind, name, hold))` for its own arms, `kind` reused;
+2. append it to `SPECS` through the existing additive wave block at `alpha149.py:3321`;
+3. the one-line screen at `store.py:27850`, keyed on the module's own arm ids;
+4. its own `register_*` frontier via the append-only API (the `register_chain_meme_exit150_experiments`
+   pattern);
+5. levels from the **write-off collapse**, not the in-sample PnL sweep: `trades >= 30`
+   and/or `vol5 >= 5,000`, applied globally since it helps both chains.
+
+Still not landed, deliberately: this round's remaining budget does not cover verifying
+that a fresh entry arm fires correctly and settles in a live paper system, and shipping
+one that silently never fires — or fires wrongly — would be worse than shipping nothing.
 
 ## 7. Next actions
 
-1. **P0 — land the activity-floor entry arm.** Verify the cohort evaluator emits signals
-   for a newly registered `isolated_cohort_observer` arm, then add the module + the
-   one-line screen. Levels from the measured write-off collapse, not from the PnL sweep
-   (which is in-sample): `trades ≥ 30` and/or `vol5 ≥ 5,000`. Globally, since it helps
-   both chains.
+1. **P0 — land the activity-floor entry arm.** Fully specified in §6 including the
+   verified generic `SPECS` loop. Levels from the measured write-off collapse, not from
+   the PnL sweep (which is in-sample): `trades ≥ 30` and/or `vol5 ≥ 5,000`, globally.
 2. **P0-new — settle `exit150_full15_v1` / `exit150_full25_v1`** to ≥20 per side.
 3. **P0-1** — re-run `paired_arm_ab.py` as settled counts grow.
 4. **P1** — explain the residue: best combo still −506U with 1 token at −250U.
