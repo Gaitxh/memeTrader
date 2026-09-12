@@ -158,6 +158,9 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--hours", type=int, default=48)
     ap.add_argument("--min-settled", type=int, default=20)
+    ap.add_argument("--min-paired", type=int, default=20,
+                    help="minimum SHARED settled cohorts for a paired exit verdict; the paired "
+                         "test needs shared cohorts, not each side's own total")
     args = ap.parse_args(argv)
 
     db = resolve_db()
@@ -241,25 +244,35 @@ def main(argv=None):
                 diffs.append({"token_id": ra["token_id"],
                               "value": float(ra["realized_pnl_usd"] or 0)
                                        - float(rc["realized_pnl_usd"] or 0)})
-            print(f"    paired on {len(diffs)} shared settled cohort(s)")
-            if diffs:
-                mean = sum(d["value"] for d in diffs) / len(diffs)
-                ci = clustered_interval(diffs)
-                print(f"    within-cohort difference: {mean:+.3f}U"
-                      + (f"   90% token-clustered CI [{ci[0]:+.3f}, {ci[1]:+.3f}]"
-                         f"  excludes zero: {ci[0] > 0 or ci[1] < 0}" if ci else ""))
-                # the check that catches one trade driving the result
-                by_tok = defaultdict(float)
-                for d in diffs:
-                    by_tok[d["token_id"]] += d["value"]
-                for k in (1, 2):
-                    worst = sorted(by_tok, key=lambda t: -by_tok[t])[:k]
-                    rem = [d for d in diffs if d["token_id"] not in worst]
-                    if rem:
-                        print(f"    drop top {k} token(s): "
-                              f"{sum(d['value'] for d in rem)/len(rem):+.3f}U over {len(rem)}")
-            else:
-                print("    no shared settled cohorts yet")
+            # The gate above counts each side's OWN settled positions, but the paired test needs
+            # SHARED cohorts. Two exit carriers registered at different frontiers can each clear
+            # the per-side threshold while sharing only a handful of cohorts - and a token-clustered
+            # interval over three cohorts would "exclude zero" while meaning nothing.
+            paired_tokens = len({d["token_id"] for d in diffs})
+            print(f"    paired basis: {len(diffs)} shared settled cohort(s) across "
+                  f"{paired_tokens} token(s)")
+            if len(diffs) < args.min_paired:
+                print(f"    NOT READY FOR THE PAIRED TEST - needs >={args.min_paired} shared "
+                      f"settled cohorts (have {len(diffs)}).")
+                print("    The per-position figures above are UNPAIRED: they cover different "
+                      "cohorts, so they are not a like-for-like comparison.")
+                print()
+                continue
+            mean = sum(d["value"] for d in diffs) / len(diffs)
+            ci = clustered_interval(diffs)
+            print(f"    within-cohort difference: {mean:+.3f}U"
+                  + (f"   90% token-clustered CI [{ci[0]:+.3f}, {ci[1]:+.3f}]"
+                     f"  excludes zero: {ci[0] > 0 or ci[1] < 0}" if ci else ""))
+            # the check that catches one trade driving the result
+            by_tok = defaultdict(float)
+            for d in diffs:
+                by_tok[d["token_id"]] += d["value"]
+            for k in (1, 2):
+                worst = sorted(by_tok, key=lambda t: -by_tok[t])[:k]
+                rem = [d for d in diffs if d["token_id"] not in worst]
+                if rem:
+                    print(f"    drop top {k} token(s): "
+                          f"{sum(d['value'] for d in rem)/len(rem):+.3f}U over {len(rem)}")
         else:
             diffs = [{"token_id": r["token_id"],
                       "value": float(r["realized_pnl_usd"] or 0) - sc["pnl_per_pos"]}
