@@ -53,6 +53,12 @@ from .models import (
     utcnow,
 )
 
+# Memo for the recomputed behavior fingerprints of policies whose concurrency cap was raised by
+# `Store.CHAIN_MEME_TRADER_CONCURRENCY_CAP_FLOOR`. The effective definition is rebuilt on the entry
+# hot path, and the correction is a pure function of (version, arm_id, registered cap), so the hash
+# is computed once per arm instead of once per observation. Bounded by the number of arms.
+_CONCURRENCY_CAP_HASH_CACHE: dict[tuple[str, str, int], str] = {}
+
 
 class Store:
     CANDIDATE_RANKING_KEY_PREFIX = "candidate_ranking:"
@@ -211,6 +217,13 @@ class Store:
     CHAIN_MEME_TRADER_REVIEWED_PERIOD_VERSION = "chain-meme-trader/funding-20260906-reviewed-1000"
     CHAIN_MEME_TRADER_FINAL_V002_PERIOD_VERSION = "chain-meme-trader/funding-20260906-v002-final-1000"
     CHAIN_MEME_TRADER_ACTIVE_VERSION = CHAIN_MEME_TRADER_FINAL_V002_PERIOD_VERSION
+    # USER-AUTHORIZED (2026-09-12): every arm whose own `entry_filter.max_concurrent_positions` is
+    # below this floor is raised to it - existing arms included, not only new ones. The registered,
+    # append-only contracts stay frozen; the raise is applied where the effective definition is
+    # assembled, so it reaches every consumer (entry gating, pending limits, UI) at once, and each
+    # affected policy carries its registered value plus the authorization basis. An arm without the
+    # field is left untouched: absence means "no cap", which is not a value below the floor.
+    CHAIN_MEME_TRADER_CONCURRENCY_CAP_FLOOR = 8
     CHAIN_MEME_TRADER_STAGE4_EXEC_DECAY_VERSION = (
         "chain-meme-trader/stage4-executable-decay-challenger-v1"
     )
@@ -7348,6 +7361,60 @@ class Store:
                     "activated_at": str(row["activated_at"]),
                     "activation_snapshot_id": int(row["activation_snapshot_id"]),
                 })
+        # USER-AUTHORIZED CONCURRENCY CAP FLOOR (2026-09-12): raise every per-arm cap below the floor,
+        # for existing arms as well as future ones. The registered contracts remain frozen and
+        # append-only, so the raise happens here, where the effective definition is assembled; each
+        # affected policy keeps its registered value and the authorization basis, and its behavior
+        # fingerprint is recomputed (the same treatment `entry_chase_budget_fraction` already gets) so
+        # the runtime hash still describes what the policy actually does. An arm with no such field is
+        # deliberately untouched: absence means "no cap", which is not a value below the floor.
+        floor = int(getattr(cls, "CHAIN_MEME_TRADER_CONCURRENCY_CAP_FLOOR", 0) or 0)
+        raised: list[dict[str, Any]] = []
+        if floor > 0:
+            for policy in policies:
+                entry_filter = policy.get("entry_filter")
+                if not isinstance(entry_filter, Mapping):
+                    continue
+                cap = entry_filter.get("max_concurrent_positions")
+                if cap is None:
+                    continue
+                try:
+                    cap_value = int(cap)
+                except (TypeError, ValueError):
+                    continue
+                if cap_value >= floor:
+                    continue
+                updated = dict(entry_filter)
+                updated["max_concurrent_positions"] = floor
+                policy["entry_filter"] = updated
+                registered_hash = str(policy.get("behavior_contract_hash") or "")
+                cache_key = (str(definition_version), str(policy.get("arm_id") or ""), cap_value)
+                corrected = _CONCURRENCY_CAP_HASH_CACHE.get(cache_key)
+                if corrected is None:
+                    corrected = cls.chain_meme_trader_behavior_hash(
+                        policy, definition_version=definition_version)
+                    _CONCURRENCY_CAP_HASH_CACHE[cache_key] = corrected
+                policy["concurrency_cap_revision"] = {
+                    "field": "entry_filter.max_concurrent_positions",
+                    "registered": cap_value,
+                    "effective": floor,
+                    "authorized_at": "2026-09-12",
+                    "basis": ("user instruction: raise every per-arm cap below 8 to 8, "
+                              "existing strategies included"),
+                    "registered_behavior_contract_hash": registered_hash,
+                }
+                if registered_hash:
+                    policy["behavior_contract_hash"] = corrected
+                raised.append({"arm_id": str(policy.get("arm_id") or ""), "registered": cap_value})
+        if raised:
+            definition["concurrency_cap_floor"] = {
+                "floor": floor,
+                "raised_policies": len(raised),
+                "authorized_at": "2026-09-12",
+                "basis": ("user instruction: raise every per-arm cap below 8 to 8, "
+                          "existing strategies included"),
+                "detail": raised,
+            }
         definition["policies"] = policies
         definition["strategy_count"] = len(policies)
         definition["runtime_policy_additions"] = additions
