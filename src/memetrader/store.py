@@ -34404,7 +34404,16 @@ class Store:
         median_liquidity = liquids[len(liquids) // 2]
         if median_price <= 0:
             return True
-        if price <= 0.10 * median_price and liquidity <= 0.25 * median_liquidity:
+        dust = price <= 0.10 * median_price and liquidity <= 0.25 * median_liquidity
+        # The same provider/scale defect exists UPWARD, and it is the more dangerous
+        # direction because it manufactures profit instead of loss. The independent
+        # washout review measured 913 of 25,408 positions carrying a single
+        # mark-to-market jump above 3x (max 1.3e7x), one token printing
+        # 0.000403 -> 0.402 in fifteen seconds; without a guard the delayed-exit total
+        # read $21.7k instead of $2.57k. A price an order of magnitude above the pool's
+        # own track, without a matching depth increase, must not price a take-profit.
+        spike = price >= 10.0 * median_price and liquidity <= 1.5 * median_liquidity
+        if dust or spike:
             vetos = getattr(self, "_mark_outlier_vetos", 0) + 1
             self._mark_outlier_vetos = vetos
             if vetos % 25 == 1:

@@ -2341,3 +2341,120 @@ RULES.update({
 })
 ALL_ARMS = tuple(SPECS) + tuple(EXIT_ARMS)
 KINDS = tuple(kind for kind, _, _ in SPECS.values())
+
+
+# ---- wave 30: the same two A/B experiments on a higher-supply entry ----
+# The wave-28/29 pairs ride `survivable_open_band`, whose frame supply is thin in the
+# current market, so after ~40 minutes each arm still holds 2 positions and has no close.
+# These mirrors keep the contracts byte-identical and only change the entry to
+# `survivable_steady` (measured readiness several times larger), so the hold-time and
+# dead-pool questions can be answered on a sample of usable size. Four new ids; nothing
+# existing is modified.
+SPECS.update({
+    'alpha149_long_hold_steady_v1': ('survivable_steady', '\u957f\u6301\u6709\u00b7\u5b89\u5168\u5e26(\u955c\u50cf)', 90),
+    'alpha149_long_hold_steady_control_v1': ('survivable_steady', '\u957f\u6301\u6709\u5bf9\u7167\u00b7\u5b89\u5168\u5e26', 30),
+    'alpha149_deadpool_steady_v1': ('survivable_steady', '\u6b7b\u6c60\u524d\u5146\u00b7\u5b89\u5168\u5e26(\u955c\u50cf)', 60),
+    'alpha149_deadpool_steady_control_v1': ('survivable_steady', '\u6b7b\u6c60\u5bf9\u7167\u00b7\u5b89\u5168\u5e26', 60),
+})
+OVERRIDES.update({
+    'alpha149_long_hold_steady_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_long_hold_steady_control_v1',
+        hard_stop_return=-.35, trailing_activate_return=.50, trailing_drawdown=.35,
+        description='\u957f\u6301\u6709\u00b7\u5b89\u5168\u5e26\uff08\u955c\u50cf\u81c2\uff0c1U\uff0c90\u5206\u949f\uff09\uff1a'
+                    '\u5408\u540c\u4e0e alpha149_long_hold_open_band_v1 \u5b8c\u5168\u76f8\u540c\uff08\u8ffd\u8e2a+50%\u6fc0\u6d3b/\u56de\u64a435%\u3001-35%\u707e\u96be\u515c\u5e95\uff09\uff0c'
+                    '\u4ec5\u628a\u5165\u573a\u6362\u6210\u4f9b\u7ed9\u66f4\u5927\u7684 survivable_steady\uff0c\u7528\u4e8e\u5728\u53ef\u7528\u6837\u672c\u89c4\u6a21\u4e0a\u56de\u7b54'
+                    '\u201c\u653e\u5bbd\u8ffd\u8e2a + \u5ef6\u957f\u65f6\u9650\u662f\u5426\u6709\u76ca\u201d\u3002'),
+    'alpha149_long_hold_steady_control_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_long_hold_steady_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u957f\u6301\u6709\u5bf9\u7167\u00b7\u5b89\u5168\u5e26\uff081U\uff0c30\u5206\u949f\uff09\uff1a\u4e0e\u955c\u50cf\u81c2\u540c\u4e00\u5165\u573a\uff0c'
+                    '\u4fdd\u7559\u7cfb\u7edf\u9ed8\u8ba4 -20% \u6b62\u635f\u4e0e +30%\u219215% \u8ffd\u8e2a\u3002'),
+    'alpha149_deadpool_steady_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_deadpool_steady_control_v1',
+        trajectory_exit='alpha149_depth_decay',
+        hard_stop_return=-.90, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u6b7b\u6c60\u524d\u5146\u00b7\u5b89\u5168\u5e26\uff08\u955c\u50cf\u81c2\uff0c1U\uff0c60\u5206\u949f\uff09\uff1a'
+                    '\u4e0e alpha149_deadpool_open_band_v1 \u540c\u5408\u540c\uff08\u53bb\u4ef7\u683c\u6b62\u635f\u3001\u6539\u7528\u6df1\u5ea6\u8870\u51cf\u63d0\u524d\u9000\u51fa\uff09\uff0c'
+                    '\u5165\u573a\u6362\u4e3a survivable_steady\u3002'),
+    'alpha149_deadpool_steady_control_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_deadpool_steady_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u6b7b\u6c60\u5bf9\u7167\u00b7\u5b89\u5168\u5e26\uff081U\uff0c60\u5206\u949f\uff09\uff1a\u540c\u4e00\u5165\u573a\uff0c\u4e0d\u58f0\u660e\u6df1\u5ea6\u8870\u51cf\u9000\u51fa\u3002'),
+})
+ALL_ARMS = tuple(SPECS) + tuple(EXIT_ARMS)
+KINDS = tuple(kind for kind, _, _ in SPECS.values())
+
+
+# ---- wave 31: deep-liquidity entry and its non-BSC variant ----
+# The periodic review found the write-off bleed is chain-specific: all 216 write-offs in
+# the 24h window are BSC (31.5% of BSC positions, -$463 = 74% of the net loss) while
+# Solana and Robinhood had none, and that entry liquidity >= 100k is the only bucket with
+# zero write-offs and PF > 1. These two new arms test exactly that, as extra ids.
+SPECS.update({
+    'alpha149_deep_liq_band_v1': ('deep_liq_band', '\u6df1\u6c60\u5165\u53e3\u00b7\u6d41\u52a8\u6027>=100k(1U)', 30),
+    'alpha149_deep_liq_band_nonbsc_v1': ('non_bsc_deep_band', '\u6df1\u6c60\u5165\u53e3\u00b7\u975eBSC(1U)', 30),
+})
+OVERRIDES.update({
+    'alpha149_deep_liq_band_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_open_band_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u6df1\u6c60\u5165\u53e3\uff081U\uff0c30\u5206\u949f\uff09\uff1a\u6c60\u9f8430-180\u5206\u949f\u3001'
+                    '\u539f\u6c60\u6df1\u5ea6 >=100,000U\u3001FDV/\u6df1\u5ea6 1-20\u3001\u4ef7\u683c\u4e0d\u4e0b\u8dcc\u3001\u6df1\u5ea6\u4e0d\u6d41\u5931\u3001'
+                    '\u4e70\u76d8\u5360\u6bd4 >=50%\u3002\u4f9d\u636e\uff1a24\u5c0f\u65f6\u590d\u76d8\u4e2d\u5165\u573a\u6df1\u5ea6 >=100k \u662f\u552f\u4e00'
+                    '\u96f6\u5199\u9500\u4e14 PF>1 \u7684\u6863\uff08n=729\u3001+$47\uff0c48\u5c0f\u65f6\u4e0e alpha149 \u5185\u90e8\u540c\u5411\uff09\uff0c'
+                    '\u800c 5-20k \u5199\u9500\u7387 25.1%\u300120-100k \u4e3a 9.6%\u3002'),
+    'alpha149_deep_liq_band_nonbsc_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=2,
+        excess_return_vs_arm='alpha149_deep_liq_band_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u6df1\u6c60\u5165\u53e3\u00b7\u975eBSC\uff081U\uff0c30\u5206\u949f\uff09\uff1a\u4e0e\u4e0a\u4e00\u6761\u540c\u6761\u4ef6\uff0c'
+                    '\u4f46\u989d\u5916\u6392\u9664 BSC\u3002\u4f9d\u636e\uff1a24\u5c0f\u65f6\u5185\u5168\u90e8 216 \u7b14\u5199\u9500\u5747\u4e3a BSC'
+                    '\uff0831.5% \u5199\u9500\u7387\u3001-$463\uff0c\u5360\u51c0\u4e8f\u635f 74%\uff09\uff0c\u800c Solana 0/1,599\u3001Robinhood 0/184\u3002'),
+})
+ALL_ARMS = tuple(SPECS) + tuple(EXIT_ARMS)
+KINDS = tuple(kind for kind, _, _ in SPECS.values())
+
+_base_mechanisms = mechanisms
+
+
+def mechanisms(f):  # noqa: F811 - additive wrapper over the frozen mechanism set
+    """Wave 31: add the deep-liquidity flags without touching the base rules."""
+    out = _base_mechanisms(f)
+    try:
+        if not isinstance(f, dict):
+            return out
+        frame = f.get('current') if isinstance(f.get('current'), dict) else {}
+        previous = f.get('prev') if isinstance(f.get('prev'), dict) else None
+        def _n(value):
+            try:
+                return None if value is None or isinstance(value, bool) else float(value)
+            except (TypeError, ValueError):
+                return None
+        chain = str(f.get('chain') or '').lower()
+        depth = _n(frame.get('liquidity_usd'))
+        if depth is None:
+            depth = _n(f.get('liquidity_usd'))
+        prior_depth = _n(previous.get('liquidity_usd')) if previous else None
+        age = _n(f.get('pool_age_seconds'))
+        ratio = _n(f.get('fdv_liquidity'))
+        share = _n(f.get('buy_count_share'))
+        price_now = _n(frame.get('price_usd'))
+        price_prev = _n(previous.get('price_usd')) if previous else None
+        deep = bool(
+            age is not None and 1800 <= age <= 10800
+            and depth is not None and depth >= 100000
+            and ratio is not None and 1.0 <= ratio <= 20.0
+            and price_now and price_prev and price_now >= price_prev
+            and prior_depth is not None and depth >= prior_depth * .98
+            and share is not None and share >= .5)
+        out['deep_liq_band'] = deep
+        out['non_bsc_deep_band'] = bool(deep and chain != 'bsc')
+    except Exception:  # a new flag must never break the frozen mechanisms
+        out.setdefault('deep_liq_band', False)
+        out.setdefault('non_bsc_deep_band', False)
+    return out

@@ -1283,6 +1283,20 @@
       "loaded_at": "2026-09-12T04:05:00Z",
       "visible_entry": "docs/PROJECT_CONTEXT/ROUND09_DEADPOOL_EXIT_ARMS_20260912.md",
       "report": "docs/PROJECT_CONTEXT/ROUND09_DEADPOOL_EXIT_ARMS_20260912.md"
+    },
+    {
+      "id": "20260912-round28-deep-liq-arms-and-two-sided-mark-guard",
+      "recorded_at": "2026-09-12T04:40:00Z",
+      "title": "第28轮：BSC写销专项与深池额外臂（286条）+ 尘埃守卫扩展为双向 + 两份只读复盘收口",
+      "problem": "两份只读子代理复盘给出决定性发现：24小时216笔写销100%为BSC（31.5%写销率、-$463、占净亏损74%），Solana 0/1599、Robinhood 0/184；仅>=100k深度档零写销且PF>1。洗出反事实另发现3.6%仓位含>3倍单次标记跳变（最大1.3e7倍）的provider/scale伪影，而既有尘埃守卫只拦截向下的报价。",
+      "change": "① 第31波新增2条额外臂：alpha149_deep_liq_band_v1（深度>=100k、池龄30-180分钟、FDV/深度1-20、不下跌、深度不流失、买盘>=50%）与 alpha149_deep_liq_band_nonbsc_v1（同条件并排除BSC）；以包装既有 mechanisms 函数的方式加入新标志，异常回落False，既有臂判定逻辑未改。② 第30波新增4条镜像臂，把长持有与死池前兆两组A/B移到供给更大的 survivable_steady 入场，以在可用样本规模上完成判定（原入场40分钟仅2笔持仓、0平仓）。③ 缺陷修复：尘埃守卫扩展为双向——除原有的'价格<=中位价10%且深度<=中位深度25%'外，新增'价格>=中位价10倍且深度<=中位深度1.5倍'的向上伪影拦截（不得定价止盈），共用节流计数、不影响流动性退出/写销、参照不足仍fail-open。",
+      "rationale": "写销不是普适死池现象而是BSC特有，这是此前找不到统一前兆的原因，必须以链维度做新臂验证；向上伪影会凭空制造盈利并被止盈层消费，与向下尘埃同属报价污染，故守卫应双向对称。所有改动仍是额外臂或缺陷修复，未修改任何现有策略规则。",
+      "validation": "注册284->286且ledger_unchanged=true；test_mark_outlier_guard/test_whipsaw_guard/test_dex_trajectory 共12项全通过；双向守卫通过语法与导入校验；运行进程已重载（PID 41028/41016）使守卫生效；新臂样本为0（刚上线），机制就绪 survivable_open_band 98、survivable_steady 2、deep_liq_band 0；paper 与 live.enabled=false 不变。",
+      "scope": "修改：src/memetrader/alpha149.py（第30/31波，均为文件末尾原子追加）、src/memetrader/store.py（尘埃守卫扩展为双向）；新增报告 docs/PROJECT_CONTEXT/ROUND28_DEEP_LIQ_ARMS_AND_TWO_SIDED_MARK_GUARD_20260912.md。待办：向上伪影专用测试、容忍入场噪声额外臂、深池臂可达性跟踪、同币上限授权。",
+      "commit": "",
+      "loaded_at": "2026-09-12T04:30:00Z",
+      "visible_entry": "docs/PROJECT_CONTEXT/ROUND28_DEEP_LIQ_ARMS_AND_TWO_SIDED_MARK_GUARD_20260912.md",
+      "report": "docs/PROJECT_CONTEXT/ROUND28_DEEP_LIQ_ARMS_AND_TWO_SIDED_MARK_GUARD_20260912.md"
     }
   ]
 }
