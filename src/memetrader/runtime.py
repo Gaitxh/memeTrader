@@ -7822,6 +7822,15 @@ class Runtime:
                         reason = "admit_mover_reserved"
                         self._mover_reserved_admissions = getattr(
                             self, '_mover_reserved_admissions', 0) + 1
+                        # Remember which tokens the reservation admitted, so their observation
+                        # counts can be measured offline (bounded, newest kept).
+                        _reserved = getattr(self, '_mover_reserved_tokens', None)
+                        if _reserved is None:
+                            _reserved = self._mover_reserved_tokens = {}
+                        _reserved[token_id] = iso(current)
+                        if len(_reserved) > 60:
+                            for _old in sorted(_reserved, key=_reserved.get)[:len(_reserved) - 60]:
+                                _reserved.pop(_old, None)
                 elif token_id not in held and (chain_used.get(chain, 0) >= 10
                         or bucket != 'early'
                         and any(v['token'].chain == chain and v.get('reactivation_probe') for v in watch.values())
@@ -8410,6 +8419,9 @@ class Runtime:
             "mover_reserved_admissions": getattr(self, "_mover_reserved_admissions", 0),
             "mover_watching": (len(getattr(self, '_mover_watchlist', None).active(utcnow()))
                                if getattr(self, '_mover_watchlist', None) is not None else 0),
+            # Which tokens the reservation admitted, so their observation counts can be measured
+            # offline without adding work to the observation loop.
+            "mover_reserved_tokens": dict(getattr(self, '_mover_reserved_tokens', {}) or {}),
             "non_held_by_chain_bucket": getattr(self, "_pattern_watch_nonheld_by_chain_bucket", {}),
         })
         counts=getattr(self,'_coverage145_counts',{});self._coverage145_counts=counts
