@@ -125,7 +125,8 @@ def book_stats(rows):
 
 def load_rows(cur, version, arm, hours):
     return cur.execute(
-        """SELECT arm_id, shadow_cohort_id, token_id, status, realized_pnl_usd, opened_at
+        """SELECT arm_id, shadow_cohort_id, token_id, status, realized_pnl_usd, opened_at,
+                  close_reason
            FROM chain_meme_trader_positions
            WHERE definition_version=? AND arm_id=? AND julianday(opened_at)>=julianday('now',?)""",
         (version, arm, "-%d hour" % hours)).fetchall()
@@ -243,33 +244,37 @@ def main(argv=None):
                     continue
                 diffs.append({"token_id": ra["token_id"],
                               "value": float(ra["realized_pnl_usd"] or 0)
-                                       - float(rc["realized_pnl_usd"] or 0)})
-            # The gate above counts each side's OWN settled positions, but the paired test needs
-            # SHARED cohorts. Two exit carriers registered at different frontiers can each clear
-            # the per-side threshold while sharing only a handful of cohorts - and a token-clustered
-            # interval over three cohorts would "exclude zero" while meaning nothing.
+                                       - float(rc["realized_pnl_usd"] or 0),
+                              "diverged": ra["close_reason"] != rc["close_reason"]})
+            # Counting shared cohorts is NOT enough. Measured on widestop-vs-bank15: of 10 shared
+            # settled cohorts, NINE resolved identically - a pool that collapses gaps past BOTH
+            # stop levels, so the stop width never gets to matter - and only ONE diverged. The
+            # effective basis for an exit-contract question is therefore the cohorts where the two
+            # arms' CLOSE REASONS differ, not the cohorts they merely share.
             paired_tokens = len({d["token_id"] for d in diffs})
+            informative = [d for d in diffs if d["diverged"]]
             print(f"    paired basis: {len(diffs)} shared settled cohort(s) across "
-                  f"{paired_tokens} token(s)")
-            if len(diffs) < args.min_paired:
-                print(f"    NOT READY FOR THE PAIRED TEST - needs >={args.min_paired} shared "
-                      f"settled cohorts (have {len(diffs)}).")
+                  f"{paired_tokens} token(s), of which "
+                  f"**{len(informative)} diverged** (different close reason)")
+            if len(informative) < args.min_paired:
+                print(f"    NOT READY FOR THE PAIRED TEST - needs >={args.min_paired} DIVERGED "
+                      f"cohorts (have {len(informative)}); shared-but-identical cohorts carry no "
+                      f"information about the contract being varied.")
                 print("    The per-position figures above are UNPAIRED: they cover different "
                       "cohorts, so they are not a like-for-like comparison.")
                 print()
                 continue
-            mean = sum(d["value"] for d in diffs) / len(diffs)
-            ci = clustered_interval(diffs)
+            mean = sum(d["value"] for d in informative) / len(informative)
+            ci = clustered_interval(informative)
             print(f"    within-cohort difference: {mean:+.3f}U"
                   + (f"   90% token-clustered CI [{ci[0]:+.3f}, {ci[1]:+.3f}]"
                      f"  excludes zero: {ci[0] > 0 or ci[1] < 0}" if ci else ""))
-            # the check that catches one trade driving the result
             by_tok = defaultdict(float)
-            for d in diffs:
+            for d in informative:
                 by_tok[d["token_id"]] += d["value"]
             for k in (1, 2):
                 worst = sorted(by_tok, key=lambda t: -by_tok[t])[:k]
-                rem = [d for d in diffs if d["token_id"] not in worst]
+                rem = [d for d in informative if d["token_id"] not in worst]
                 if rem:
                     print(f"    drop top {k} token(s): "
                           f"{sum(d['value'] for d in rem)/len(rem):+.3f}U over {len(rem)}")
