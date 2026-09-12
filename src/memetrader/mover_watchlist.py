@@ -122,6 +122,18 @@ class Registry:
         self._expire(now)
         return set(self.entries)
 
+    def retire(self, token_id: str) -> None:
+        """Drop a token once it has collected its frames, so it stops being prioritised.
+
+        Measured 2026-09-12: capping only the lease PROTECTION was not enough - a token that had
+        reached the frame target stayed in the registry, kept its due-work priority, and went on to
+        89 observations in eleven minutes (about 4x the 30-frame design target) while the added
+        volume reached +15.6% against an approved +13-14%. Retiring it makes the watch-list
+        self-limiting.
+        """
+        if self.entries.pop(token_id, None) is not None:
+            self.counts['retired'] += 1
+
     def snapshot(self, now: datetime) -> dict[str, Any]:
         self._expire(now)
         return {

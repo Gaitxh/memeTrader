@@ -7627,8 +7627,11 @@ class Runtime:
                     _item = _watch_now.get(_token)
                     if _item is None:
                         continue
-                    if int(_item.get('frame_count') or 0) < MOVER_FRAME_TARGET:
-                        protected.add(_token)
+                    if int(_item.get('frame_count') or 0) >= MOVER_FRAME_TARGET:
+                        # Collected its frames: leave the watch so it stops competing for due work.
+                        _mover_registry.retire(_token)
+                        continue
+                    protected.add(_token)
             except Exception:
                 pass
         self._lease145_protected=set(protected)
