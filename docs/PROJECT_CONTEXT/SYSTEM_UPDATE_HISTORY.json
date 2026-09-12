@@ -1241,6 +1241,20 @@
       "loaded_at": "2026-09-12T03:00:00Z",
       "visible_entry": "docs/PROJECT_CONTEXT/ROUND06_HOLD_AND_THIN_DEPTH_ARMS_20260912.md",
       "report": "docs/PROJECT_CONTEXT/ROUND06_HOLD_AND_THIN_DEPTH_ARMS_20260912.md"
+    },
+    {
+      "id": "20260912-round07-washout-verdict-and-writeoff-spike",
+      "recorded_at": "2026-09-12T03:30:00Z",
+      "title": "第7轮：洗出反事实的诚实结论（延后退出几乎无收益）+ 写销尖峰定位（92笔-304U/60min）",
+      "problem": "用户判断'金狗拿不住=止损过早'。本轮用只读子代理的路径反事实检验该假设，并定位当前真正的失血点。",
+      "change": "① 洗出反事实（24h/7d，路径型估计）：alpha149 延迟60分钟退出的估计收益仅 +0.69$ / 21 笔（均值+0.033$）；硬止损中'跌破成本20%后又回到盈亏平衡之上'仅 4/241 = 1.7%（全臂7d为 0/7）。说明止损并非系统性过早；此前'81.8%随后高于退出价'未计入 4%+4% 往返摩擦（需+8.34%回本）。② 写销尖峰：近60分钟写销 92 笔 -304.0U，而普通平仓 296 笔仅 -64.98U（其中价格类全额亏损：硬止损12笔-20.98U、追踪4笔-8.0U）。即写销以不到1/4的笔数贡献近5倍亏损，主导矛盾是'入场选到会死的池子'而非退出不够宽容。③ 守卫初查：尘埃守卫已部署（第5轮），kv 计数尚未达到节流写入点；价格类全额亏损明显低于写销路径。④ 结论写入报告，并给出下一轮三个可执行的额外臂方向（死池前兆提前离场、入场流动性缓冲/净增、影子上限升级决策）。",
+      "rationale": "同一目标下'放宽止损'与'提前离开死池'是两个相反方向，必须先判定哪一个被证据支持，否则会朝错误方向继续加臂。路径反事实给出的答案是：正常振幅中的止损不是主要失血点，死池写销才是；因此下一轮把资源放在入场流动性与死池前兆上，而不放宽任何现有止损。",
+      "validation": "全部为只读测量：子代理报告 data/tmp/washout_counterfactual_20260912.md（30.8KB）与 data/tmp/periodic_review_20260912.md（40.6KB）；本地查询确认近60分钟写销92笔-304.0U、普通平仓296笔-64.98U；冻结错误 #265=392/#266=398 未增长，最新错误id 276（待查）；policy additions 278；paper 与 live.enabled=false 不变。",
+      "scope": "本轮为诊断与决策，未修改任何代码或策略；新增报告 docs/PROJECT_CONTEXT/ROUND07_WASHOUT_VERDICT_AND_WRITEOFF_SPIKE_20260912.md。待办：错误个案 #276 复核、死池前兆额外臂、入场流动性缓冲额外臂、同币上限升级决策。",
+      "commit": "",
+      "loaded_at": "2026-09-12T03:20:00Z",
+      "visible_entry": "docs/PROJECT_CONTEXT/ROUND07_WASHOUT_VERDICT_AND_WRITEOFF_SPIKE_20260912.md",
+      "report": "docs/PROJECT_CONTEXT/ROUND07_WASHOUT_VERDICT_AND_WRITEOFF_SPIKE_20260912.md"
     }
   ]
 }
