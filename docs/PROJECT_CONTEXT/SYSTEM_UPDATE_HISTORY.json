@@ -1209,7 +1209,7 @@
       "rationale": "'新参与者增长'此前只能代理（成交额增速÷笔数增速），而数据其实已经抓到并付费，只是从未解析；用最小改动把它变成直观测，并保留代理臂作为同场对照，才能判定直观测是否真有信息量。同币拥挤是当前最大尾部风险（单币最高95笔/91臂、历史最坏单币30笔中28笔写销-79U），但限制现有臂会违反'不得修改现有策略'约束，故按用户选择先做影子记录，用真实前向数据量化其影响。",
       "validation": "test_participant_flow.py 5项（三种负载形状、缺失不推断、净新增参与者、derive 新键且既有键数值不变、两臂条件）+ 既有64项 = 69项全通过；另跑 test_dex_trajectory.py 与 test_shared_batch148.py 全通过（共享文件改动后）。注册 273->275 ledger_unchanged=true；重载后（PID 36160/20424）6分钟内 geckoterminal 行 buyers_5m 填充率 50%/65%（此前0%），dexscreener 形状本身无该字段（0%为正确语义）。影子上限近4小时：1,053笔中778笔(73.9%)会被拦下、其已实现 -135.09U；允许组275笔 +76.16U；合计 -58.93U。",
       "scope": "修改：src/memetrader/participant_flow.py（新）、src/memetrader/store.py（仅快照写入填充既有列）、src/memetrader/dex_trajectory.py（仅新增特征键与携带）、src/memetrader/alpha149.py（仅新增2条臂与规则）、scripts/supervise_metrics.py（新增只读影子上限）、tests/test_participant_flow.py（新）。报告：docs/PROJECT_CONTEXT/ROUND04_PARTICIPANT_DATA_AND_SHADOW_CAP_20260912.md。未做：真实同币上限（等用户据影子证据决定是否升级为新风险层，且需明确是否作用于现有臂）。",
-      "commit": "",
+      "commit": "6c5851d",
       "loaded_at": "2026-09-12T01:38:00Z",
       "visible_entry": "docs/PROJECT_CONTEXT/ROUND04_PARTICIPANT_DATA_AND_SHADOW_CAP_20260912.md",
       "report": "docs/PROJECT_CONTEXT/ROUND04_PARTICIPANT_DATA_AND_SHADOW_CAP_20260912.md"
