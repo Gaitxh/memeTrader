@@ -19,6 +19,56 @@ WINDOW_SECONDS = (30, 120, 300)
 BASE_CAPS = {"early": 3, "growth": 4, "mature": 3}
 CHAIN_CAP = 10
 
+# --- adaptive cadence -----------------------------------------------------------------------
+# Measured in round 120-21 over 13,651 consecutive same-token snapshot pairs (237 tokens):
+# 70.8% of polls returned NO change in price, volume OR liquidity, and 74.1% returned an
+# unchanged price. Matching the cadence to the source's real update rate would cover about
+# 3.42x more DISTINCT pools for the SAME request budget - the request volume is unchanged, so
+# this raises coverage rather than consumption.
+#
+# It backs off ONLY on a sample where price AND volume AND liquidity are all unchanged: a
+# volume-only change (3.2% of samples) is still information, so it must reset the cadence. The
+# backoff is capped and resets immediately on any change, so the worst-case detection delay for
+# a genuinely new move is one interval (60s), not the whole lease.
+#
+# Pass `content=None` (the default) to disable the backoff for a caller; the behaviour is then
+# exactly the previous fixed TARGET_SECONDS cadence, which keeps this reversible.
+CADENCE_STEPS = (TARGET_SECONDS, 30, 60)
+UNCHANGED_RUN_THRESHOLDS = (0, 3, 6)
+
+
+def cadence_for_run(run: int) -> int:
+    """The interval implied by a given count of consecutive information-free samples."""
+    seconds = TARGET_SECONDS
+    for threshold, step in zip(UNCHANGED_RUN_THRESHOLDS, CADENCE_STEPS):
+        if run >= threshold:
+            seconds = step
+    return seconds
+
+
+def cadence_seconds(item: dict[str, Any], content: Any = None) -> int:
+    """Seconds until this opportunity is next due, backing off on information-free samples.
+
+    `content` is the tuple of fields whose change would be information (price, volume,
+    liquidity). Callers that pass None keep the fixed cadence.
+    """
+    if content is None:
+        return TARGET_SECONDS
+    try:
+        current = list(content)
+    except TypeError:
+        return TARGET_SECONDS
+    prior = item.get("last_content")
+    run = int(item.get("unchanged_run", 0))
+    if prior is not None and current == list(prior):
+        run += 1
+    else:
+        run = 0
+    item["unchanged_run"] = run
+    item["last_content"] = current
+    return cadence_for_run(run)
+
+
 
 def _time(value: Any) -> datetime | None:
     if isinstance(value, datetime):
@@ -58,8 +108,13 @@ def admit(item: dict[str, Any], now: datetime) -> dict[str, Any]:
 def record_frame(
     item: dict[str, Any], observed_at: datetime, now: datetime, *,
     phase: str | None = None, phase_started_at: datetime | None = None,
+    content: Any = None,
 ) -> bool:
-    """Record one new exact-pool frame and extend only on a phase transition."""
+    """Record one new exact-pool frame and extend only on a phase transition.
+
+    `content` is the (price, volume, liquidity) triple for this frame. Passing it enables the
+    adaptive cadence; omitting it keeps the fixed TARGET_SECONDS cadence.
+    """
     admit(item, now)
     prior = _time(item.get("last_useful_at"))
     if observed_at>now or prior is not None and observed_at <= prior:
@@ -67,7 +122,7 @@ def record_frame(
     item.setdefault('coverage_start_at',observed_at)
     if prior is not None and (observed_at-prior).total_seconds()>60:item['coverage_gap']=True
     item["last_useful_at"] = observed_at
-    item["next_due_at"] = observed_at + timedelta(seconds=TARGET_SECONDS)
+    item["next_due_at"] = observed_at + timedelta(seconds=cadence_seconds(item, content))
     item["frame_count"] = int(item.get("frame_count", 0)) + 1
     count = item["frame_count"]
     delay = max(0.0, (observed_at - _time(item["admitted_at"])).total_seconds())
@@ -228,6 +283,11 @@ def bounded_summary(
             "first_block": item.get("first_block"), "reason": item.get("reason"),
             "expired_windows": list(item.get("window_expired", [])),
             "windows":dict(item.get('window_results',{})),
+            # Observability for the adaptive cadence: how many consecutive information-free
+            # samples this opportunity has seen, and the resulting interval.
+            "unchanged_run": int(item.get("unchanged_run", 0)),
+            "cadence_seconds": cadence_for_run(int(item.get("unchanged_run", 0))),
+            "content_known": item.get("last_content") is not None,
         })
     rows.sort(key=lambda row: (row["next_due_at"], row["admitted_at"], row["chain"], row["token_id"], row["pair_address"]))
     return {"as_of": now.isoformat(), "membership": membership(watch, held=held),
@@ -253,6 +313,11 @@ def dump_state(watch: dict[str, dict[str, Any]], now: datetime, *, limit: int = 
             "coverage_start_at":_iso(item.get('coverage_start_at')),
             "coverage_gap":bool(item.get('coverage_gap')), "window_results":dict(item.get('window_results',{})),
             "window_counted":list(item.get('window_counted',[])),
+            # Persist the adaptive-cadence counter so a restart does not silently reset every
+            # backoff to the fastest step. `last_content` is deliberately NOT persisted: after a
+            # restore the next frame re-establishes it and the run restarts at 0, which is the
+            # conservative direction (poll faster until the source proves it is quiet again).
+            "unchanged_run": int(item.get("unchanged_run", 0)),
         }.items() if value is not None})
     rows.sort(key=lambda row: (row["chain"], row["token_id"], row["pair_address"]))
     return {"version": 1, "saved_at": now.isoformat(), "leases": rows[:max(0, limit)]}

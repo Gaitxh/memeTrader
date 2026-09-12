@@ -8701,7 +8701,12 @@ class Runtime:
                 engine=getattr(self.store,'_trajectory144',None)
                 stage=engine.pools.get((token.token_id,item['pair_address']),{}) if engine else {}
                 phase=stage.get('phase');phase_at=stage.get({'impulse':'impulse_at','cool':'cool_at','base':'base_at'}.get(phase,''))
-                record_frame(item,observation.observed_at,received,phase=phase,phase_started_at=parse_time(phase_at) if phase_at else None)
+                # Adaptive cadence (round 120-21): 70.8% of polls returned no change in price,
+                # volume or liquidity, so the fixed 15s cadence spends ~3.4x the requests it
+                # needs. Passing the informative triple lets an information-free sample back the
+                # next poll off (15 -> 30 -> 60s, capped) and any change reset it immediately.
+                record_frame(item,observation.observed_at,received,phase=phase,phase_started_at=parse_time(phase_at) if phase_at else None,
+                    content=(observation.price_usd, observation.volume_5m_usd, observation.liquidity_usd))
                 expire_windows(item,received)
                 self._leases145_dirty=True
                 if hasattr(self, "runtime_timing"):
