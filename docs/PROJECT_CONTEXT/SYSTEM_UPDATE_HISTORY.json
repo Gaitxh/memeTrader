@@ -1255,6 +1255,20 @@
       "loaded_at": "2026-09-12T03:20:00Z",
       "visible_entry": "docs/PROJECT_CONTEXT/ROUND07_WASHOUT_VERDICT_AND_WRITEOFF_SPIKE_20260912.md",
       "report": "docs/PROJECT_CONTEXT/ROUND07_WASHOUT_VERDICT_AND_WRITEOFF_SPIKE_20260912.md"
+    },
+    {
+      "id": "20260912-round08-error-triage-and-analysis-load",
+      "recorded_at": "2026-09-12T03:50:00Z",
+      "title": "第8轮：错误分诊（#267-#276 无本目标回归）+ 发现 database is locked 与重分析查询时段重合",
+      "problem": "上一轮发现最新错误个案 #276，需确认是否为本目标引入的回归；同时 #268/#269/#270/#272 出现多起 database is locked，需判定成因。",
+      "change": "① 分诊 #267-#276：全部为外部网络超时/ReadError 或 database is locked，无一条来自本目标新增路径（机制、尘埃守卫、账本、评分模块）；冻结的 #265/#266 未增长。② 定位 database is locked 的时间相关性：9 次锁定与本轮密集运行只读重分析脚本（监督快照、交易上下文账本、周期复盘、尘埃窗口统计）的时段重合；机理是 WAL 下长事务读者阻止检查点回收，使写者在检查点/文件增长时短暂拿不到锁；本目标诊断脚本大量使用 julianday 窗口与窗口函数，无法走索引。③ 给出诊断侧缓解措施（id 前沿+LIMIT 为主、避免背靠背重扫描、长窗口用前沿采样换算速率、必要时改在数据库副本上做重统计），不改运行时代码。④ 记录第28波臂已开始配对产生自然样本（长持有A/B各2笔）、thin_depth_tier 仍0就绪待观察。",
+      "rationale": "先排除回归再谈优化：如果错误来自本目标引入的代码，任何后续策略结论都不可信。分诊结果是干净的；同时把'我们自己的诊断负载可能影响写入'这一运维风险显式记录并约束，符合'稳定性/实时性同步优化'的要求，且无需改动运行时代码。",
+      "validation": "只读查询：system_error_cases 中 id>=267 的 10 条个案逐条列出（类型/次数/状态/最后时间）；尘埃报价窗口统计显示近60分钟2004条标记中4条离群；kv 计数未达节流点；第28波长持有A/B各2笔开仓、thin_depth_tier 就绪0；机制就绪 survivable_open_band 197 / open_band_scored 61 / mom_persistence 19；paper 与 live.enabled=false 不变。",
+      "scope": "本轮为诊断与运维约束，未修改任何代码或策略；新增报告 docs/PROJECT_CONTEXT/ROUND08_ERROR_TRIAGE_AND_ANALYSIS_LOAD_20260912.md。待办：第28波样本累积、死池前兆额外臂、thin_depth_tier 可达性诊断、重统计改副本。",
+      "commit": "",
+      "loaded_at": "2026-09-12T03:40:00Z",
+      "visible_entry": "docs/PROJECT_CONTEXT/ROUND08_ERROR_TRIAGE_AND_ANALYSIS_LOAD_20260912.md",
+      "report": "docs/PROJECT_CONTEXT/ROUND08_ERROR_TRIAGE_AND_ANALYSIS_LOAD_20260912.md"
     }
   ]
 }
