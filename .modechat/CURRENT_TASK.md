@@ -2,7 +2,28 @@
 
 ```json
 {
-  "cycle_id": "round-120-19-activity-floor-landed",
+  "cycle_id": "round-120-20-latency-diagnosis-and-runup-floor",
+  "ROUND_20_DIAGNOSIS_latency_and_funnel": {
+    "funnel": "10,089 discovered -> 9,531 observed (94.5%) -> ONLY 37 EVER ENTERED (0.4%). 37,774 evaluations -> 1,710 positions (4.53%). Settled 1,318 at -11,493.58U (-8.72U/pos). The bottleneck is observation capacity between observation and judgement, NOT a threshold defect.",
+    "gate_distribution": "cohort_observation 34.38% + pattern_observation 22.77% = 57.15% is observer bookkeeping that can NEVER admit; no_active_matching_entry_policy 25.85%; entry_pool_liquidity_absent_curve_stage 7.66%; invalid_exact_asof_market_snapshot 5.17%; entry_pool_liquidity_below_configured_floor 3.04%; entry_pool_liquidity_unknown 1.10%; entry_snapshot_too_old 0.03%. So the gate distribution does NOT show an over-strict filter.",
+    "latency": "observed->ingested p50 0.03s; observed->recorded p50 0.63s; observed->evaluated p50 1.21s (p90 11.33s); entry snapshot observed->opened p50 0.18s / p90 2.57s. THE PROCESSING PATH IS NOT THE BOTTLENECK.",
+    "real_speed_defect": "discovery->first-observation TAIL: p50 8.05s but p90 1,500.95s (25 min) and p99 8,517s (2.4h). Same observation-capacity limit expressed as latency.",
+    "self_correction": "I first read entry_execution/entry_signal - 1 as a 'latency premium' at 99.5% of positions. It is EXACTLY 4.0000% at every percentile (p10=p50=p99=max) - the frozen BUY_SLIP=0.04 cost model, not latency. Do not re-report it as an execution-quality defect.",
+    "delay_confound_stated": "Entering LATER does better (after 1h: -1.31U/pos, 0.0% write-off) BUT that group is conditioned on surviving an hour, so it is NOT evidence that faster entry would help. Recorded so it is not misread as a speed recommendation."
+  },
+  "ROUND_20_SHIPPED_RUNUP_FLOOR150": {
+    "commit": "bc4dabc (pushed)",
+    "arms": ["runup_floor150_r15_v1 (run-up <= 15%)", "runup_floor150_r15a30_v1 (run-up <= 15% AND trades >= 30)"],
+    "module": "src/memetrader/runup_floor150.py (new)",
+    "marker": "runup = current price / earliest observed price in the 20 minutes before the decision - 1. The 20-minute window is deliberate: the acceptance loop's own `history` (store.py:27614, LIMIT 80) holds exactly that window, so the cap costs ZERO extra queries. Verified live: ZERO runup_floor_window_unknown rejections.",
+    "measured_basis": "write-off rate jumps from 0.6% at a 15% cap to 6.0% at 20% and 24.8% uncapped (1,712 positions). Token-clustered significant BOTH ways: write-off +0.322pp CI [+0.082,+0.565]; PnL -4.851 U/pos CI [-9.491,-0.055]. Not the survival confound (r=-0.116 with entry delay).",
+    "second_pass_correction": "The money effect ONLY clears the bar as a low-vs-high contrast. A cap contrast gives +3.96 U/pos CI [-0.59,+8.42] because it dilutes by putting the ambiguous middle in the dropped group. I nearly recorded the finding as failing; the tertile contrast is significant.",
+    "complementarity_with_activity_floor": "quadrants: runup ok & trades>=30 -> 0.3% write-off at -3.36U/pos; runup high & trades<30 -> 64.1% write-off at -12.48U/pos. Combined book -11,434U -> -1,860U with win rate 13.9% -> 23.6%.",
+    "honest_limits": "It is TOKEN SELECTION, not entry timing (within tokens: median diff exactly 0.000, positive in only 6 of 15; acts on 12 of 37 tokens). Level chosen in-sample. The kept book STILL LOSES -2.88U/pos. Forward experiment only, NOT a validated fix.",
+    "verified_live": "325 additions; both arms at OWN frontier 38633; control unchanged at 0; arms trading (6 positions each); floor BITES: 6x runup_floor_exceeded each alongside 6x accepted.",
+    "discipline": "screen reuses the round-19 hook, returns None for every other arm, sits after signal validation, distinct auditable rejection reasons (runup_floor_exceeded / runup_floor_window_unknown / activity_floor_trades_not_met), missing evidence never admits. No existing strategy, stop, hold or exit contract changed. 120 tests pass."
+  },
+
   "ROUND_19_LANDED_ACTIVITY_FLOOR150": {
     "commit": "024b0d6 (pushed)",
     "arms": ["activity_floor150_t30_v1 (buys_5m+sells_5m >= 30)", "activity_floor150_v5k_v1 (volume_5m_usd >= 5000)"],
@@ -97,7 +118,7 @@
     "A mark-supply fix - 1706 mark_history rows per 15 min here versus the old session's 46; 494 of 518 positions received more than one in-window mark.",
     "Loosening the engine's 30s freshness rule - only 1 of 6137 snapshots exceeds 30s and the engine refusal ratio is 12.2%."
   ],
-  "next_action": "P0-NEW let ACTIVITY-FLOOR150 accumulate and then read it: activity_floor150_*_v1 vs alpha149_merged_multi_setup_fast_v1 on the SAME signals. Watch the WRITE-OFF RATE specifically - the whole hypothesis is 34.8% -> 6.0%. Use scripts/paired_arm_ab.py once each side has >=20 settled. P0-1 settle exit150_full15_v1 / exit150_full25_v1 to >=20 per side (currently positive +11.22U/+11.24U vs the older arms' -60 to -76U). P0-2 re-run scripts/paired_arm_ab.py as counts grow; add alpha149_merged_multi_setup_v1 to the pause list once it reaches >=20 paired cohorts. P1 if the floor works, hunt the next filterable population; if it does NOT, the chain-stratified BSC-death story needs revising. DO NOT build a '+15%-touch predictor' or 'quiet pool' filter - falsified in ROUND_18_FALSIFIED_entry_features_cannot_predict_the_15pct_touch. P0-3 (write rate) stays background - 46 days headroom, carries state-chain risk.",
+  "next_action": "P0-NEW read BOTH floor families against the shared control alpha149_merged_multi_setup_fast_v1: activity_floor150_t30_v1 / activity_floor150_v5k_v1 (frontier 36360) and runup_floor150_r15_v1 / runup_floor150_r15a30_v1 (frontier 38633). Hypotheses under test are specific: write-off rate 34.8% -> 6.0% for the activity floor, and the run-up cap's 0.6%-vs-24.8% separation. The quadrant analysis says the conjunction (r15a30) is the best configuration measured; forward data decides whether that survives. Use scripts/paired_arm_ab.py at >=20 settled per side. P0-2 settle exit150_full15_v1 / exit150_full25_v1 to >=20 per side. P1 the real coverage bottleneck is observation capacity (only 0.4% of observed tokens are ever entered; ~30 dense watch slots + 24 mover slots) - widening is a user-decided budget item (declined round 79, partly approved 83/88) so act on SELECTION QUALITY within existing slots. DO NOT build a '+15%-touch predictor' or 'quiet pool' filter (falsified round 18); do NOT re-report the 4% 'latency premium' (it is the cost model). P0-3 (write rate) stays background - 46 days headroom, state-chain risk.",
   "MEASUREMENT_DISCIPLINE": "Four hypotheses have been killed by measurement across rounds 120-5/120-6 and ONE WAS A BUG IN MY OWN PROBE ('0 of 18 pools can form a window' - the query filtered provider LIKE 'dexscreener%', excluding the strategy-observer mirror rows). None produced a code change; all would have looked like reasonable fixes. ALWAYS take a second independent measure before publishing a '0 samples / stalled / defect' claim or changing code. Also: never LIKE wildcards on arm_id; use julianday() not datetime('now'); dedupe snapshots by (token_id, observed_at); separate windowed from all-time totals.",
   "authoritative_current_numbers_20260912T2027Z": {
     "source": "scripts/supervise_metrics.py --hours 2 AND scripts/trade_context_ledger.py --minutes 180",
