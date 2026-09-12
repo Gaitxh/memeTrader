@@ -59,6 +59,76 @@ from .models import (
 # is computed once per arm instead of once per observation. Bounded by the number of arms.
 _CONCURRENCY_CAP_HASH_CACHE: dict[tuple[str, str, int], str] = {}
 
+# Entry liquidity recovery (measured 2026-09-12). DexScreener publishes no `liquidity` object for
+# instruments that have no pool yet, so the entry contract's "pool liquidity >= floor" test cannot be
+# applied to them at all; measured over 600 such rejections, 87% are curve/launchpad dexIds
+# (pumpfun, fourmeme, meteoradbc, ...) where the rejection is correct, and ~11% are real AMM pools
+# (uniswap-v4, pancakeswap-infinity-clmm, ...) where the number was merely missing from that frame.
+# Those real pools can be judged on their own earlier frame, but only within a bound short enough that
+# the value still describes the pool: the median age of the last known liquidity for these tokens is
+# ~5.9 hours, so a 60-second bound keeps the honest cases and refuses the stale ones.
+CARRIED_LIQUIDITY_MAX_AGE_SECONDS = 60.0
+CURVE_STAGE_DEX_IDS = frozenset({
+    "pumpfun", "pump-fun", "pumpswap-curve", "fourmeme", "meteoradbc", "bonk", "moonshot",
+    "boopfun", "heaven", "bags", "virtuals",
+})
+KNOWN_AMM_DEX_IDS = frozenset({
+    "uniswap-v4-bsc", "uniswap-v4-robinhood", "uniswap", "uniswap-v3", "pancakeswap",
+    "pancakeswap-infinity-clmm", "pancakeswap-v3", "pumpswap", "raydium", "raydium-clmm",
+    "meteora", "meteora-dlmm", "pons-v2", "aerodrome", "aerodrome-slipstream", "sushiswap",
+    "biswap", "thena", "baby-swap",
+})
+
+# Mirror rows (`strategy-observer:*`) duplicate the pair payload on every observation, and an audit on
+# 2026-09-12 enumerated every field any consumer actually reads from them (SQL-level `json_extract`
+# paths, the entry history reconstruction, the generic participant-flow walker, the token detail page,
+# and the offline research scripts). Only those fields are kept; vendor bloat that nothing reads
+# (`boosts`, `header`, `marketCap`, `fdv`, `priceUsd`, extra windows) is dropped at write time. The
+# wrapper shape `{"pair": {...}}` must stay, because readers fall back to `raw.get("pair", raw)`.
+_MIRROR_PAIR_KEYS = (
+    "pairAddress", "chainId", "dexId", "labels", "pairCreatedAt", "priceNative", "url", "description",
+    "baseToken", "quoteToken", "liquidity", "volume", "txns", "priceChange", "info",
+)
+_MIRROR_TXN_WINDOWS = ("m5", "h1", "h6", "h24")
+_MIRROR_TXN_FIELDS = ("buys", "sells", "buyers", "sellers")
+_MIRROR_VOLUME_WINDOWS = ("m5", "h1", "h6", "h24")
+_MIRROR_PRICE_CHANGE_WINDOWS = ("m5", "h1", "h6", "h24")
+
+
+def _compact_mirror_pair(pair: Any) -> dict[str, Any]:
+    """Keep only the pair fields that stored mirror rows are read for.
+
+    Never raises and never invents data: anything unexpected is passed through unchanged, because a
+    payload shape this function does not recognise is exactly the case where trimming would be unsafe.
+    """
+    if not isinstance(pair, Mapping):
+        return pair
+    if not any(key in pair for key in ("pairAddress", "txns", "volume")):
+        return dict(pair)
+    out: dict[str, Any] = {}
+    for key in _MIRROR_PAIR_KEYS:
+        if key not in pair:
+            continue
+        value = pair[key]
+        if key == "txns" and isinstance(value, Mapping):
+            windows = {}
+            for window in _MIRROR_TXN_WINDOWS:
+                item = value.get(window)
+                if isinstance(item, Mapping):
+                    windows[window] = {field: item[field] for field in _MIRROR_TXN_FIELDS if field in item}
+            out[key] = windows or dict(value)
+        elif key == "volume" and isinstance(value, Mapping):
+            out[key] = {window: value[window] for window in _MIRROR_VOLUME_WINDOWS if window in value} or dict(value)
+        elif key == "priceChange" and isinstance(value, Mapping):
+            out[key] = {window: value[window] for window in _MIRROR_PRICE_CHANGE_WINDOWS if window in value} or dict(value)
+        elif key in ("baseToken", "quoteToken") and isinstance(value, Mapping):
+            out[key] = {k: value[k] for k in ("address", "name", "symbol") if k in value} or dict(value)
+        elif key == "liquidity" and isinstance(value, Mapping):
+            out[key] = {k: value[k] for k in ("usd", "base", "quote") if k in value} or dict(value)
+        else:
+            out[key] = value
+    return out
+
 
 class Store:
     CANDIDATE_RANKING_KEY_PREFIX = "candidate_ranking:"
@@ -25812,6 +25882,42 @@ class Store:
                 "WHERE definition_version=?", (version,),
             ).fetchone()
 
+    def _latest_known_pool_liquidity(
+        self, token_id: str, pair_address: str, chain: str, *,
+        before: Any, max_age_seconds: float,
+    ) -> tuple[float, str] | None:
+        """Liquidity actually observed for this exact pool BEFORE this decision, within a bound.
+
+        Point-in-time only: the value is strictly earlier than the decision, it comes from a stored
+        observation of the same token AND the same pool address, and it is refused when it is older
+        than `max_age_seconds`. The returned basis string carries the observation time and its age so
+        every decision made on a carried value stays auditable.
+        """
+        try:
+            cutoff = parse_time(before)
+            floor = cutoff - timedelta(seconds=float(max_age_seconds))
+            row = self.db.execute(
+                "SELECT observed_at, liquidity_usd FROM token_snapshots "
+                "WHERE token_id=? AND observed_at BETWEEN ? AND ? AND liquidity_usd IS NOT NULL "
+                "AND canonical_token_address(?, COALESCE(json_extract(raw_json,'$.pair.pairAddress'),"
+                "json_extract(raw_json,'$.pairAddress'))) = ? "
+                "ORDER BY observed_at DESC LIMIT 1",
+                (str(token_id), iso(floor), iso(cutoff), str(chain), str(pair_address)),
+            ).fetchone()
+        except (sqlite3.Error, TypeError, ValueError):
+            return None
+        if row is None or row["liquidity_usd"] is None:
+            return None
+        try:
+            observed_at = parse_time(row["observed_at"])
+            age = (parse_time(before) - observed_at).total_seconds()
+            value = float(row["liquidity_usd"])
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(value) or value < 0 or age < 0 or age > float(max_age_seconds):
+            return None
+        return value, f"carried_forward:{iso(observed_at)}@{age:.1f}s"
+
     def _chain_meme_trader_effective_net_flows(self, version: str) -> dict[str, float]:
         """Cash gates use the same corrected, unpolluted ledger as account PNL."""
         return self._chain_meme_trader_effective_net_flows_from_connection(
@@ -27311,7 +27417,7 @@ class Store:
                 or float(snapshot.price_usd or 0) <= 0):
             return 0
         isolated = replace(snapshot, provider="strategy-observer:" + snapshot.provider,
-                           raw={"pair": pair, "upstream_provider": snapshot.provider,
+                           raw={"pair": _compact_mirror_pair(pair), "upstream_provider": snapshot.provider,
                                 **({"cohort_observer": True} if cohort_mode else {})})
         if isolated.liquidity_usd is None and isinstance(pair.get("liquidity"), Mapping):
             isolated = replace(isolated, liquidity_usd=pair["liquidity"].get("usd"))
@@ -29045,6 +29151,7 @@ class Store:
                     m5 = txns.get("m5") if isinstance(txns.get("m5"), Mapping) else {}
                     h1 = txns.get("h1") if isinstance(txns.get("h1"), Mapping) else {}
                     base = pair.get("baseToken") if isinstance(pair.get("baseToken"), Mapping) else {}
+                    dex_id = str(pair.get("dexId") or "").lower()
                     pair_created_ms = int(pair.get("pairCreatedAt") or 0)
                     pair_created = datetime.fromtimestamp(pair_created_ms / 1000.0, tz=timezone.utc)
                     token_chain = token_id.split(":", 1)[0].lower()
@@ -29114,13 +29221,39 @@ class Store:
                     if not pair_address:
                         raise ValueError("missing_pair_address")
                     liquidity = row["liquidity_usd"]
+                    liquidity_basis = "snapshot"
                     if liquidity is None and isinstance(pair.get("liquidity"), Mapping):
                         liquidity = pair["liquidity"].get("usd")
+                        liquidity_basis = "payload"
+                    if liquidity is None or not math.isfinite(float(liquidity or 0)) or float(liquidity or 0) < 0:
+                        # Point-in-time carry-forward ONLY: the same pool, observed earlier, within a
+                        # bound short enough that the value still describes it. Audit (2026-09-12)
+                        # measured the value of this: of 400 decisions rejected for unknown liquidity,
+                        # 141 had any earlier liquidity at all and their median age was ~5.9 hours, so
+                        # a 60-second bound recovers the genuinely-recent cases (6% of decisions) and
+                        # refuses the stale ones instead of judging a pool on an hours-old number.
+                        carried = self._latest_known_pool_liquidity(
+                            token_id, pair_address, token_chain, before=snapshot_observed,
+                            max_age_seconds=CARRIED_LIQUIDITY_MAX_AGE_SECONDS)
+                        if carried is not None:
+                            liquidity, liquidity_basis = carried
                     features.update({
                         "pair_address": pair_address,
                         "entry_liquidity_usd": liquidity,
+                        "entry_liquidity_basis": liquidity_basis,
                     })
                     if liquidity is None or not math.isfinite(float(liquidity)) or float(liquidity) < 0:
+                        # Distinguish "this instrument has no pool liquidity by design" (a bonding
+                        # curve / launchpad: DexScreener publishes no liquidity object for it) from
+                        # "a real pool whose provider frame omitted the number". Measured 2026-09-12:
+                        # 87% of these rejections are curve-stage tokens (pumpfun, fourmeme, meteoradbc)
+                        # where the rejection is CORRECT, and ~11% are real AMM pools (uniswap-v4,
+                        # pancakeswap-infinity-clmm) where the number was merely missing from the frame.
+                        if not isinstance(pair.get("liquidity"), Mapping) and (
+                                dex_id in CURVE_STAGE_DEX_IDS
+                                or not pair.get("liquidity")
+                                and dex_id not in KNOWN_AMM_DEX_IDS):
+                            raise ValueError("entry_pool_liquidity_absent_curve_stage")
                         raise ValueError("entry_pool_liquidity_unknown")
                     if pool_is_below_floor(liquidity, definition):
                         raise ValueError("entry_pool_liquidity_below_configured_floor")
