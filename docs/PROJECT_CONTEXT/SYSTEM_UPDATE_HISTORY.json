@@ -1381,6 +1381,19 @@
       "loaded_at": "2026-09-12T07:05:00Z",
       "visible_entry": "docs/PROJECT_CONTEXT/OBSERVATION_SURFACE_FACTS_20260912.md",
       "report": "docs/PROJECT_CONTEXT/OBSERVATION_SURFACE_FACTS_20260912.md"
+    },
+    {
+      "id": "20260912-round79-dense-observation-ceiling-and-wide-surface",
+      "recorded_at": "2026-09-12T03:55:00Z",
+      "title": "第79轮：找到覆盖率真正的天花板——密集观测供给（而非阈值），并新增第38波「宽观测面」两个只读第二个命名空间的策略臂（306条）",
+      "problem": "第37波把「池龄带」当作覆盖率约束，结果 776 帧后 decorr_young/decorr_mature 仍为 0，证伪了该假设。本轮重新测量：alpha149 引擎只持有 67 个活跃池（上限 512，非容量所限），而同一小时有 2,311 个代币被评估、1,052 个有>=2 次观测、994 个有>=2 次观测且至少一行过 1000U 池底；其中只有 62 个（5.9%）拥有>=2 帧 provider 以 dexscreener 开头的帧，43.5% 的代币根本没有 dexscreener 行；前 10 个交易对吃掉了 32.3% 的评估帧。根因是帧准入规则 dex_trajectory.Engine.accept 的 provider.startswith('dexscreener')，而 alpha149.Engine.accept 通过 super() 继承它，因此全部既有臂都看不见约 94% 的已观测代币。更深一层：引擎在两次观测间隔>30 秒时清空轨迹，机制窗口最长 310 秒，所以真正可达的天花板是「密集观测」代币数：任一数据源每小时只有 33 个（>=3 帧且间隔<=30 秒），其中 dexscreener 前缀只有 6 个，strategy-observer:dexscreener 有 28 个（今天被准入规则挡在门外），geckoterminal 系 0 个。用于加密年轻池的 spare-capacity 通道也已饿死：52 个可 eligible 批次中 51 个没有空位。",
+      "change": "第38波，纯新增，不改动任何既有策略、既有引擎池/信号/臂集合：(1) dex_trajectory.Engine 的 provider 前缀改为类属性 PROVIDER_PREFIX=\"dexscreener\"，默认值与旧门完全相同；(2) alpha149 新增 _BroadEngine(PROVIDER_PREFIX=\"\") —— 第二个独立池命名空间，接受全部数据源，但同池只采用首帧的数据源（provider_mismatch 计数），绝不允许两个数据源混进同一条轨迹；(3) alpha149.Engine 懒建 self._broad：先走完全不变的旧准入，只有在旧引擎拒绝且旧引擎并不拥有该池时才允许进入宽面 (broad_frame_accepted 计数)，整段宽面逻辑异常保护；(4) signals_for 先查旧命名空间再查宽命名空间，两个新臂只从宽面发出，既有全部臂只从旧面发出，既有退出臂不搭乘宽面；(5) 指标计数按面加前缀（broad_band_step:*/broad_score_step:*），旧键完全不变；(6) 两个新 kind 直接复用已被证明可达的谓词：broad_band=survivable_open_band、broad_flow=flow_entry；(7) snapshot() 单独报告 broad_surface。新增 alpha149_broad_band_v1、alpha149_broad_flow_v1（各 1U、30分钟、并发 4）。",
+      "rationale": "用户第一优先级要求找出「数据发现→采集→特征→信号→开仓」的真实断点并修复，使有效发现能高比例进入策略判断。本轮用三组独立测量（引擎池占用、数据源构成、密集度分布）定位到断点是帧准入与观测密集度，而不是任何阈值；因此修准入（可修、且纯粹是扩容观测面）而不动阈值（2.3 已证明调阈值无效，第37波就是反例）。采用「第二个独立命名空间 + 两个新臂」而不是放宽共享门，是为了严格满足「严禁修改、替换或覆盖任何现有策略」：旧引擎的准入、池、信号、臂集合与新波次之前逐字节相同，宽面只服务两个新臂。",
+      "validation": "tests/test_alpha149_wave38.py 8 项 + test_alpha149 + test_alpha149_wave2425 + test_dex_trajectory + test_shared_batch149 + test_participant_flow = 92 项全部通过；注册 304->306，ledger_unchanged=true；重载于 2026-09-12T11:44:09+08:00（PID 对 12496/37852，supervisor scripts/run_paper.ps1）。重载后 2.5 分钟实测：primary pools=31、broad_frame_accepted=95、broad_surface.pools=95、provider_prefix=\"\"、provider_mismatch=5、broad_band_step:evaluated=95、broad_score_step:coverage_ok=95/95、ge_min=62；alpha149_features 耗时 p50/p95 0.41/0.57ms（此前 0.49/1.11）；两个新臂信号均为 0（预期：宽面池目前只有 1 帧，has_prev=0）；重载后无新增 system_error_cases（最后一条 #279 在 03:36:45Z，早于重载）。paper 模式、live.enabled=false 未变。",
+      "scope": "改动 src/memetrader/dex_trajectory.py（准入前缀改为类属性，默认值不变）、src/memetrader/alpha149.py（第38波追加 + Engine 三处外科式新增）、tests/test_alpha149_wave38.py（新增）、docs/PROJECT_CONTEXT/ROUND79_DENSE_OBSERVATION_CEILING_AND_WIDE_SURFACE_20260912.md（新增）、docs/PROJECT_CONTEXT/SYSTEM_UPDATE_HISTORY.json。",
+      "next": "1) 重载后 60 分钟内复查 broad_surface: pools / broad_band_step:has_prev / signal:alpha149_broad_* / provider_mismatch；反证条件：pools 超过 512 而 has_prev 始终为 0，则宽面只增加广度不增加可交易深度。2) 只有在宽面信号>=20 后，才用同一 60 分钟窗口与冻结的 0.57% 覆盖率基线做代币级对比。3) 不再调 decorr_young/decorr_mature 或任何阈值；若宽面运行 1 小时后仍为 0 则归档为不可达。4) 下一结构目标 DC-3b/DC-3c（密集观测天花板与饿死的 spare-capacity 通道）需要更多请求预算，属于策略边界之外，需先明确请求预算决策。",
+      "report": "docs/PROJECT_CONTEXT/ROUND79_DENSE_OBSERVATION_CEILING_AND_WIDE_SURFACE_20260912.md",
+      "visible_entry": "docs/PROJECT_CONTEXT/ROUND79_DENSE_OBSERVATION_CEILING_AND_WIDE_SURFACE_20260912.md"
     }
   ]
 }

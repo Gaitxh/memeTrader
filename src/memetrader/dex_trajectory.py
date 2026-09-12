@@ -173,6 +173,11 @@ def mechanisms(f):
 
 
 class Engine:
+    # Frame admission is provider-scoped. The prefix is a class attribute so an
+    # ADDITIVE subclass can observe a wider surface without changing this engine's
+    # own rule: the default below is the exact string this gate always used.
+    PROVIDER_PREFIX='dexscreener'
+
     def __init__(self, started):
         self.started=parse_time(started);self.pools=OrderedDict();self.counts=Counter();self.recent=deque(maxlen=32)
 
@@ -184,7 +189,7 @@ class Engine:
             observed,ingested,recorded=(parse_time(row[k]) for k in ('observed_at','ingested_at','recorded_at'))
             valid=self.started<=observed<=ingested<=recorded<=now and (now-observed).total_seconds()<=30
         except (ValueError,TypeError,KeyError):valid=False
-        if not valid or not str(row.get('provider','')).startswith('dexscreener') or not row.get('pair_address') or not row.get('token_id') or not (row['price_usd'] and row['price_usd']>0) or row['liquidity_usd'] is None or row['liquidity_usd']<1000:
+        if not valid or not str(row.get('provider','')).startswith(self.PROVIDER_PREFIX) or not row.get('pair_address') or not row.get('token_id') or not (row['price_usd'] and row['price_usd']>0) or row['liquidity_usd'] is None or row['liquidity_usd']<1000:
             self.counts['invalid_or_unknown']+=1;return None
         identity=(row['token_id'],row['pair_address']);row['t']=observed.timestamp()
         # Observation identity includes its acquisition time. Equal values from a

@@ -2072,6 +2072,17 @@ class Engine(_BaseEngine):
         # Bounded, causal breadth record: one 0/1 per accepted frame whose 30s
         # window exists. Nothing is fetched for it and no look-ahead is possible.
         self._breadth = deque(maxlen=REGIME_MAX_SAMPLES)
+        # Wave 38: a second, independent pool namespace fed by EVERY provider, so the
+        # wave-38 arms can reach tokens the dex-only admission rule drops. Built
+        # lazily and only ever read by those arms; the primary engine above keeps its
+        # exact previous admission rule, pools, signals and arm set.
+        self._broad = None
+
+    def _broad_engine(self):
+        """Lazily create the wide-surface engine used only by the wave-38 arms."""
+        if self._broad is None:
+            self._broad = _BroadEngine(self.started)
+        return self._broad
 
     def accept(self, row, now):
         feature = super().accept(row, now)
@@ -2107,11 +2118,32 @@ class Engine(_BaseEngine):
                 number = _num(value)
                 if number is not None:
                     self._samples[key].append(number)
+        if feature is not None:
+            return feature
+        # Wave 38 wide surface: the frame was refused by the primary rule. If the
+        # primary engine already owns this pool, the refusal is a duplicate or a
+        # non-causal repeat and the wide surface must not see it either. Otherwise
+        # the wide engine may admit it, which is the only thing the wave-38 arms read.
+        try:
+            identity = (row.get('token_id'), row.get('pair_address'))
+            if identity not in self.pools:
+                feature = self._broad_engine().accept(row, now)
+                if feature is not None:
+                    self.counts['broad_frame_accepted'] += 1
+        except Exception:  # the wide surface may never affect the existing engine
+            feature = None
         return feature
 
     def signals_for(self, token, pool, now):
         now = _parse_time(now)
         state = self.pools.get((token, pool))
+        # Wave 38: a pool the dex-only rule dropped lives in the wide namespace, and
+        # only the wave-38 arms may read it. Nothing else about this method changes.
+        surface = 'primary'
+        if state is None:
+            broad = self._broad
+            state = broad.pools.get((token, pool)) if broad is not None else None
+            surface = 'broad'
         if not state:
             return {}
         f = state['features']
@@ -2153,6 +2185,8 @@ class Engine(_BaseEngine):
         # The instrumentation below runs AFTER the two-frame view is attached, so
         # it measures exactly what the mechanisms see.
         try:
+            band_key = 'band_step:' if surface == 'primary' else 'broad_band_step:'
+            score_key = 'score_step:' if surface == 'primary' else 'broad_score_step:'
             frame = f.get('current') if isinstance(f.get('current'), dict) else {}
             previous = f.get('prev') if isinstance(f.get('prev'), dict) else {}
             band_age = _num(f.get('pool_age_seconds'))
@@ -2195,8 +2229,9 @@ class Engine(_BaseEngine):
                                            and band_depth is not None and band_depth >= 10000),
             }
             for name, ok in band_steps.items():
-                self.counts['band_step:' + name] += int(bool(ok))
-            self.counts['band_step:evaluated'] += 1
+                self.counts[band_key + name] += int(bool(ok))
+            self.counts[band_key + 'evaluated'] += 1
+            self.counts[band_key + 'surface_' + surface] += 1
             # wave 24: the score is recorded for EVERY candidate the engine sees,
             # whether or not an arm fires, so its threshold can be calibrated from
             # live data later instead of guessed now. Buckets are counted on the
@@ -2205,31 +2240,31 @@ class Engine(_BaseEngine):
             score_result = score149.score(f)
             score_value = score_result.get('score')
             if score_value is None:
-                self.counts['score_step:no_score'] += 1
+                self.counts[score_key + 'no_score'] += 1
             else:
                 bucket = min(4, max(0, int(score_value // 20)))
-                self.counts['score_step:bucket_%d' % (bucket * 20)] += 1
-                self.counts['score_step:ge_min'] += int(score_value >= score149.SCORE_MIN)
-            self.counts['score_step:coverage_ok'] += int(
+                self.counts[score_key + 'bucket_%d' % (bucket * 20)] += 1
+                self.counts[score_key + 'ge_min'] += int(score_value >= score149.SCORE_MIN)
+            self.counts[score_key + 'coverage_ok'] += int(
                 (score_result.get('coverage') or 0.0) >= score149.COVERAGE_MIN)
             for name in score_result.get('missing_dimensions') or ():
-                self.counts['score_step:missing:' + name] += 1
-            self.counts['score_step:evaluated'] += 1
+                self.counts[score_key + 'missing:' + name] += 1
+            self.counts[score_key + 'evaluated'] += 1
             if band_steps['flat_or_rising'] and band_steps['core_chain']:
                 # The gate question, measured on exactly the frames the band arms can
                 # trade: how many reach the band at all. The two sides of the
                 # threshold are counted below, once the mechanisms have run.
-                self.counts['score_step:band_frames'] += 1
+                self.counts[score_key + 'band_frames'] += 1
             # wave 26: the open band's own supply, so the coverage unlock is visible
             # immediately instead of after a slow arm-level count.
             open_chain = bool(band_steps['age_30_180m'] and band_fdv is not None
                               and 20.0 < band_fdv <= 1000.0
                               and band_steps['depth_ge_5000'])
-            self.counts['band_step:open_chain'] += int(open_chain)
+            self.counts[band_key + 'open_chain'] += int(open_chain)
             if open_chain:
-                self.counts['band_step:open_flat_or_rising'] += int(
+                self.counts[band_key + 'open_flat_or_rising'] += int(
                     bool(band_steps['flat_or_rising']))
-                self.counts['band_step:open_share_ge_50'] += int(bool(band_steps['share_ge_50']))
+                self.counts[band_key + 'open_share_ge_50'] += int(bool(band_steps['share_ge_50']))
         except Exception:  # instrumentation must never affect trading
             pass
         flags = mechanisms(f)
@@ -2242,6 +2277,10 @@ class Engine(_BaseEngine):
                 self.counts['alpha149_ready:' + kind] += 1
         output = {}
         for arm, (kind, _name, _hold) in SPECS.items():
+            # Wave 38: the wide surface owns exactly the wave-38 arms and nothing
+            # else; the dex surface keeps every other arm unchanged.
+            if (arm in _BROAD_ARMS) != (surface == 'broad'):
+                continue
             if flags.get(kind) and arm not in state['signals']:
                 key = VERSION + ':' + token + ':' + pool + ':' + arm
                 state['signals'][arm] = dict(
@@ -2259,8 +2298,10 @@ class Engine(_BaseEngine):
                 output[arm] = signal
         # Exit arms ride the first frozen ALPHA149 entry signal on this pool:
         # same opportunity, independent exit contract, no extra control arm.
+        # Restored to the dex surface only: an existing exit arm must not gain a
+        # new opportunity set from the wave-38 wide surface.
         carrier = next((arm for arm in SPECS if arm in output), None)
-        if carrier:
+        if carrier and surface == 'primary':
             for arm in EXIT_ARMS:
                 signal = deepcopy(output[carrier])
                 signal['decision_key'] = signal['decision_key'] + ':' + arm
@@ -2291,6 +2332,15 @@ class Engine(_BaseEngine):
             'slow': (sum(breadth) / len(breadth)) if breadth else None,
             'ready': len(breadth) >= REGIME_MIN_SAMPLES,
         }
+        # Wave 38: the wide surface is reported separately, never merged into the
+        # primary engine's own counters.
+        broad = self._broad
+        if broad is not None:
+            snap['broad_surface'] = dict(
+                version=_BROAD_VERSION, pools=len(broad.pools),
+                counts=dict(broad.counts),
+                provider_prefix=getattr(broad, 'PROVIDER_PREFIX', None),
+                arms=list(_BROAD_ARMS))
         return snap
 
 
@@ -2818,3 +2868,87 @@ def mechanisms(f):  # noqa: F811 - wave 37 wrapper over the wave-36 wrapper
         out.setdefault('decorr_young', False)
         out.setdefault('decorr_mature', False)
     return out
+
+
+# ---- wave 38: a second, wider observation surface for the tokens that never reach a frame ----
+# Measured before this wave (one wall-clock hour, read-only):
+#   * the alpha149 engine held 67 live pools out of 512 slots, i.e. NOT capacity bound;
+#   * 2,314 distinct tokens were evaluated in that hour, 1,052 of them with >=2 observations
+#     and 994 with >=2 observations plus at least one row above the 1000U pool floor;
+#   * only 62 of them (5.9%) had >=2 rows whose provider starts with "dexscreener";
+#   * 32.3% of all evaluation frames came from just 10 pairs.
+# The binding constraint is therefore frame ADMISSION (dex_trajectory.Engine admits only
+# provider.startswith("dexscreener")), not the mechanism thresholds: the family is structurally
+# blind to roughly 94% of the tokens the rest of the system already observes. Wave 37 tried to
+# fix coverage by changing the age band inside the same narrow surface and stayed at 0 ready
+# frames. These two arms instead read a SECOND, independent pool namespace that admits every
+# provider, so the family can reach tokens it previously could not see at all. The dex-only
+# engine, its pools, its signals and every earlier arm are untouched: the wide namespace owns
+# exactly these two arms, and the existing exit arms do not ride it.
+_BROAD_ARMS = ('alpha149_broad_band_v1', 'alpha149_broad_flow_v1')
+_BROAD_VERSION = 'dex-trajectory/v1'  # the shared causal derivation the wide surface reuses
+
+
+class _BroadEngine(_BaseEngine):
+    """Wide-surface trajectory engine: same causal derivation, every provider admitted."""
+
+    PROVIDER_PREFIX = ''
+
+    def accept(self, row, now):
+        # One price series per pool: a pool adopts the provider of its first frame and
+        # refuses frames from any other provider, so two venders can never be mixed into
+        # one trajectory and no cross-provider jump can be read as a price move.
+        identity = (row.get('token_id'), row.get('pair_address'))
+        state = self.pools.get(identity)
+        if state is not None and state.get('rows'):
+            seen = state['rows'][-1].get('provider')
+            if seen and row.get('provider') != seen:
+                self.counts['provider_mismatch'] += 1
+                return None
+        return super().accept(row, now)
+
+
+SPECS.update({
+    'alpha149_broad_band_v1': ('broad_band', '\u5bbd\u89c2\u6d4b\u00b7\u5f00\u653e\u5e26\u5165\u53e3(1U)', 30),
+    'alpha149_broad_flow_v1': ('broad_flow', '\u5bbd\u89c2\u6d4b\u00b7\u6d41\u91cf\u5165\u53e3(1U)', 30),
+})
+OVERRIDES.update({
+    'alpha149_broad_band_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=4,
+        excess_return_vs_arm='alpha149_open_band_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u5bbd\u89c2\u6d4b\u00b7\u5f00\u653e\u5e26\uff081U\uff0c30\u5206\u949f\uff09\uff1a\u4e0e\u5df2\u9a8c\u8bc1\u53ef\u8fbe\u7684'
+                    '\u5f00\u653e\u5e26\u5165\u53e3\u540c\u4e00\u5957\u5224\u5b9a\uff08\u6c60\u9f8430-180\u5206\u949f\u3001FDV/\u6df1\u5ea6>20'
+                    '\u4e14<=1000\u3001\u6df1\u5ea6>=5000U\u3001\u4e0d\u4e0b\u8dcc\u3001\u6df1\u5ea6\u4e0d\u6d41\u5931\u3001\u4e70\u76d8>=50%\uff09\uff0c'
+                    '\u4f46\u8bfb\u53d6\u7b2c\u4e8c\u4e2a\u3001\u63a5\u6536\u5168\u90e8\u6570\u636e\u6e90\u7684\u72ec\u7acb\u8f68\u8ff9\u547d\u540d\u7a7a\u95f4\u3002'
+                    '\u4f9d\u636e\uff1a\u539f\u5f15\u64ce\u6bcf\u5c0f\u65f6\u53ea\u6301\u6709 67 \u4e2a\u6d3b\u8dc3\u6c60\u4f4d\uff08\u4e0a\u9650 512\uff09\uff0c'
+                    '\u800c\u540c\u4e00\u5c0f\u65f6\u5185 2,314 \u4e2a\u4ee3\u5e01\u88ab\u8bc4\u4f30\u3001994 \u4e2a\u6709>=2 \u6b21\u89c2\u6d4b\u4e14\u8fc7 1000U '
+                    '\u6c60\u5e95\uff0c\u4f46\u53ea\u6709 62 \u4e2a\uff085.9%\uff09\u62e5\u6709>=2 \u5e27 dexscreener \u5e27\u3002'),
+    'alpha149_broad_flow_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=4,
+        excess_return_vs_arm='alpha149_flow_fade_steady_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u5bbd\u89c2\u6d4b\u00b7\u6d41\u91cf\u5165\u53e3\uff081U\uff0c30\u5206\u949f\uff09\uff1a\u4e0e\u5df2\u9a8c\u8bc1\u53ef\u8fbe\u7684'
+                    'flow_entry \u5408\u96c6\u5165\u53e3\u540c\u4e00\u5957\u5224\u5b9a\uff0c\u4f46\u8bfb\u53d6\u63a5\u6536\u5168\u90e8\u6570\u636e\u6e90\u7684\u7b2c\u4e8c\u4e2a'
+                    '\u72ec\u7acb\u8f68\u8ff9\u547d\u540d\u7a7a\u95f4\uff0c\u7528\u4e8e\u68c0\u9a8c\u201c\u628a\u5e27\u5165\u53e3\u4ece\u5355\u4e00\u6570\u636e\u6e90'
+                    '\u6269\u5230\u5168\u90e8\u6570\u636e\u6e90\u80fd\u5426\u63d0\u9ad8\u4ee3\u5e01\u7ea7\u8986\u76d6\u7387\u201d\u3002'),
+})
+ALL_ARMS = tuple(SPECS) + tuple(EXIT_ARMS)
+KINDS = tuple(kind for kind, _, _ in SPECS.values())
+
+_base_mechanisms_w37 = mechanisms
+
+
+def mechanisms(f):  # noqa: F811 - wave 38 wrapper over the wave-37 wrapper
+    """Add the two wide-surface kinds; both reuse an already reachable predicate."""
+    out = _base_mechanisms_w37(f)
+    try:
+        if not isinstance(f, dict):
+            return out
+        out['broad_band'] = bool(out.get('survivable_open_band'))
+        out['broad_flow'] = bool(out.get('flow_entry'))
+    except Exception:
+        out.setdefault('broad_band', False)
+        out.setdefault('broad_flow', False)
+    return out
+
