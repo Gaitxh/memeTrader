@@ -1786,6 +1786,19 @@
       "report": "docs/PROJECT_CONTEXT/SYSTEM_UPDATE_HISTORY.json",
       "visible_entry": "docs/PROJECT_CONTEXT/SYSTEM_UPDATE_HISTORY.json",
       "buy_decision_impact": "用户追问\"这种修改会不会影响策略对单个币的买入判断（尤其该币当前空仓）\"。三条通道逐一实测：①**信号判断完全没变**——入场条件字段一个未动，64 条新增 entry_filter 的臂只多了上限一个键，`chain_meme_trader_entry_filter_matches` 只检查它认识的键；②**持仓上限按\"臂\"而非按\"币\"统计**（`occupied` 按 arm_id 计数、无 token 过滤，store.py:27402-27408 统计、27433 拦截），因此\"该币空仓\"本身既不放行也不拦截，决定因素是**该臂自己**的跨币总持仓；实测 441 条臂中 0 条达到 8（37 条持 1 笔、20 条持 2 笔、4 条持 3 笔），自改动以来 `strategy_open_slot_limit` 拦截 0 次，故**今天没有任何币（含空仓币）因这次改动买不进去**；③**现金通道实测变化为 0**：入场要求 `现金 ≥ 名义+费用`，现金不足 20U 的臂有 68 条，但这 68 条在旧口径下同样买不起（各自注册名义为 5U 或 20U，现金仅 0.88–19.x U），即\"因统一 20U 而新买不进\"的臂 = 0。**两条由此明确的推论**：a) 同一币被数十条臂同时持有（单币堆叠）**不会**因本次改动缓解，因为上限按臂算、每条臂持 1 笔即合规——要治堆叠必须上代币级上限（影子证据 −603.35U，未获批）；b) **68 条臂已资金枯竭**（相对 1000U 起始损耗 98%+），实际上已退出竞争、不再产生新样本，这与参数改动无关，但直接影响\"哪些策略该停\"的判断。"
+    },
+    {
+      "id": "20260912-round114-fullchain-audit-snapshot",
+      "title": "第114轮：全链路审计快照——发现层健康（1,991/时、延迟 1 秒）、判断层两处真实缺口（36% 代币判断时拿不到流动性；spare 通道 96% 无余量）、采集层 29% 写入是镜像重复（约 1.6GB/天浪费）；并纠正一处监控误报",
+      "recorded_at": "2026-09-12T18:30:00Z",
+      "problem": "用户要求检查\"发现→采集→特征→分析→判断\"全链路逻辑是否存在问题，以及后台速度/实时性/可靠性/鲁棒性/准确性/稳定性是否可进一步优化。此前多轮只针对单点（覆盖率、名额、参数），缺少一次覆盖全链路的同期快照。",
+      "change": "只读审计：新增 data/tmp/audit.py（全链路快照，含发现量/采集量/来源健康/组件延迟/判断原因分布/错误/检查点）与 data/tmp/audit_dig.py、audit_dig2.py（四处深挖）。**未改动任何源码或配置**——本轮只产出诊断与优先级。所有时间窗用 rowid 二分定位（大表只按 (token_id, ...) 建索引，纯时间过滤会全表扫描）。",
+      "rationale": "按项目规则，审查必须指向\"当前观测到的故障\"而不是泛泛检查，因此每一项都以同期实测数值表述，并区分\"真实缺口/可清理噪音/我的解析问题\"三类，避免把监控格式问题当成系统故障。",
+      "validation": "**发现层（健康）**：universe 累计 537,852；过去 1 小时 1,991（solana 1,113 / robinhood 482 / bsc 396），最新发现距报告时刻仅 1 秒。**采集层**：过去 1 小时 token_snapshots 8,982 行，其中 **2,602 行（29%）为镜像重复**（同一 token+observed_at 写 2–3 行）＝约 1.6GB/天的存储与扫描浪费；DB 43.81GiB、WAL 0.90GiB、增长约 5.4GB/天（E 盘余量约 3 周）。**来源健康**：过去 1 小时 46 个来源成功、**1,110 个无成功**——其中绝大多数是 08-30/09-01 起停用的新闻/X/agent-search 通道（社交采集按用户决定暂停），另有一个**遗留别名行 `capital_quote`（下划线）**永远显示\"从未成功\"；真正在运行的 `capital-quote`（连字符）健康（最近成功 13:11、13:06 有一次 QUOTE_TIMEOUT）。**此处纠正我自己的初判**：`capital_quote` 并非死通道，是历史别名残留。**持仓取价**：990 秒窗口内 3 个桶出现失败（solana 3 次尝试/0 成功、bsc 1/0），其后恢复；影响是退出判断延迟而非错误价格（双向标记守卫在跑）。**判断层**：过去 1 小时 8,386 次评估覆盖 2,304 个代币（3.6 次/币）；`cohort_observation` 2,945 行/908 币、`pattern_observation` 1,984/247、`no_active_matching_entry_policy` 1,859/1,142（代码路径 store.py:29359-29365：legacy 现金模式下无任何可参与账户/策略族）、**`entry_pool_liquidity_unknown` 905 行/821 币＝36% 的代币在判断时拿不到流动性**、`entry_pool_liquidity_below_configured_floor` 438/252、`invalid_exact_asof_market_snapshot` 258；status 统计 admitted=7 / rejected=8,379，但同期**实际开仓 261 笔**（说明 status 字段与开仓路径不是同一口径，统计时不能混用）。**实时性**：passive 计算队列等待 p50 1.91s / p95 3.16s、dropped=0、enqueued 797 vs processed 796；dex 通道 active 4、connect_errors 2、low_budget_cancellations_no_rotation 17。**覆盖率天花板再次确认**：shared_batch148 的 alpha149 spare 通道 `no_spare 261/271（96%）`、`selected_extra 11`——波次 38-42 的\"额外帧\"几乎拿不到，这些臂的 A/B 样本积累极慢。**组件延迟表**：runtime_timing_latest 的 components 结构与我解析假设不符（count/p50/p95 全为 None，failures 可读），这是解析问题不是系统缺陷，但说明该字段结构缺少文档。",
+      "scope": "仅新增只读审计脚本（data/tmp/，不入库）；未改动 src、配置、账本或运行进程。",
+      "next": "按\"收益/风险\"排序的优化候选：1) **`entry_pool_liquidity_unknown` 占 36% 代币**——判断时补一次原池流动性（或复用最近快照），直接提升\"有效发现进入判断\"的比例；2) **镜像重复行瘦身**（只瘦身 raw_json 负载、不删行，因镜像行参与判断历史查询）——省约 1.6GB/天、DB 增长降约 30%；3) 清理 1,110 个失效来源与遗留别名行，使监控界面真实；4) spare 通道扩容（需请求预算，用户此前未批）；5) 组件延迟表结构文档化并修正解析；6) 持仓取价失败的快速重试与阈值告警。未决不变：代币级并发上限（影子 −603.35U）；统一口径下 441 条臂留/停清单。",
+      "report": "data/tmp/audit_report.txt",
+      "visible_entry": "data/tmp/audit_report.txt"
     }
   ]
 }
