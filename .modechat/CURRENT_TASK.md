@@ -2,7 +2,29 @@
 
 ```json
 {
-  "cycle_id": "round-120-22-adaptive-cadence-landed",
+  "cycle_id": "round-120-23-experiment-readout",
+  "ROUND_23_READOUT_TOOL": {
+    "commit": "682926c (pushed)",
+    "tool": "scripts/experiment_readout.py (new, tracked). One command answers 'is any experiment readable yet, and what does it say' - previously done with ad-hoc SQL each round.",
+    "DESIGN_POINT_that_matters": "paired_arm_ab.py pairs two EXIT carriers within a cohort, which is right because they share the entry opportunity. That design is WRONG for the ENTRY floors: a floor arm enters a SUBSET of the control's cohorts, so within-cohort pairing silently drops exactly the cohorts the floor rejected - the ones the hypothesis is about. Pairing would have hidden the effect it was meant to measure. So the readout applies a different design per kind: exit -> paired within-cohort diff + drop-the-top-token stress; floor -> SET-DIFFERENCE using the cohorts the arm refused BY ITS OWN FLOOR (from recorded outcomes), then measuring the control's own settled positions on those cohorts. It prints NOT READY and no verdict below the settled threshold (default 20 per side)."
+  },
+  "ROUND_23_INTERIM_READINGS_all_sub_threshold_NOT_verdicts": {
+    "exit150_full15_v1_vs_bank15_plus15": "full15 settled=16, -0.00U/pos, win 81.2%, write-off 6.2% | bank15 settled=22, -6.01U/pos, win 27.3%, write-off 50.0%  <- THE STANDOUT, matches round 17's prediction that full capture at +15% beats leaving 50% riding",
+    "exit150_full25_v1_vs_bank25_plus25": "full25 settled=14, -6.89U/pos, win 50.0%, write-off 42.9% | bank25 settled=22, -7.01, win 36.4%, write-off 50.0%  <- almost NO separation, which round 17's replay did NOT predict; the capture-fraction effect may be concentrated at the +15% level rather than being general. WATCH THIS.",
+    "exit150_widestop_v1_vs_bank15": "widestop settled=10, -8.35U/pos, write-off 70.0% | bank15 22, -6.01, 50.0%  <- WORSE, consistent with rounds 120-16/120-17 having twice weakened the wide-stop argument",
+    "activity_floor150_t30_v1": "settled=10, -4.72U/pos, win 20.0%, write-off 10.0% | control 26, -9.71, 19.2%, 42.3%",
+    "activity_floor150_v5k_v1": "settled=8, -5.71U/pos, win 25.0%, write-off 12.5% | control 42.3%",
+    "runup_floor150_r15_v1": "settled=9, -3.87U/pos, win 22.2%, write-off 22.2% | control 42.3%",
+    "runup_floor150_r15a30_v1": "settled=7, -1.90U/pos, win 28.6%, write-off 14.3% | control 42.3%",
+    "observation": "EVERY floor shows a much lower write-off rate than the control (10.0-22.2% vs 42.3%) - the specific mechanism each was built for. But every number here is sub-threshold and NOT a verdict."
+  },
+  "ROUND_23_COUNTERFACTUAL_verified_two_ways_but_rests_on_n3": {
+    "claim": "For activity_floor150_t30_v1 the floor rejected 19 cohorts and the control itself traded 3 of them at -20.00U/pos with 100% write-off.",
+    "verification": "method A (recorded outcomes = floor reason): 19 cohorts, 3 settled, -20.00U/pos, 100% wo. method B (independent: cohorts the control traded but the arm never did): 22 cohorts, 22 settled, -10.84U/pos, 45% wo. Both agree the avoided set is deeply negative.",
+    "why_they_differ": "A isolates rejections attributable to the FLOOR; B also includes cohorts the arm missed for unrelated reasons (concurrency, single_token_lifetime_entry, or the arm not existing yet at that frontier). B is an upper bound on scope, not the floor's effect.",
+    "HONEST_CAVEAT": "A's avoided set is only 3 positions. The floor rejected 19 cohorts but only 3 were opportunities the control would actually have taken - the control has its own gates. The -20.00U/pos figure is SUGGESTIVE, NOT ESTABLISHED, and the readout correctly refuses a verdict for it."
+  },
+
   "ROUND_22_LANDED_ADAPTIVE_CADENCE": {
     "commit": "7b40eb5 (pushed)",
     "what": "observation_leases145.record_frame gains an optional `content` param; cadence_seconds backs the next due time off on an information-free sample: 0-2 unchanged -> 15s, 3-5 -> 30s, >=6 -> 60s CAP, immediate reset on any change.",
@@ -150,7 +172,7 @@
     "A mark-supply fix - 1706 mark_history rows per 15 min here versus the old session's 46; 494 of 518 positions received more than one in-window mark.",
     "Loosening the engine's 30s freshness rule - only 1 of 6137 snapshots exceeds 30s and the engine refusal ratio is 12.2%."
   ],
-  "next_action": "P0-NEW re-measure DISTINCT-POOL COVERAGE once >=6 post-change 10-minute buckets exist, comparing against the TREND (the series 543 -> 939 -> 796 -> 612 -> 587 is strongly trending, so a flat before/after average is confounded). Success = more distinct pools per hour at unchanged request volume. Do NOT assume the 3.42x figure - see ROUND_22_CORRECTION_my_3_42x_estimate_was_TOO_HIGH; the realised effect is 12.5-14.2% fewer requests for the same slots and the coverage gain is UNPROVEN. P0-1 read the four floor families against the shared control alpha149_merged_multi_setup_fast_v1 at >=20 settled per side: activity_floor150_t30_v1 / activity_floor150_v5k_v1 (frontier 36360) and runup_floor150_r15_v1 / runup_floor150_r15a30_v1 (frontier 38633). P0-2 settle exit150_full15_v1 / exit150_full25_v1 to >=20 per side. DO NOT build a '+15%-touch predictor' or 'quiet pool' filter (falsified round 18); do NOT re-report the 4% 'latency premium' (it is the cost model); do NOT widen the watch budget silently (user decision, declined round 79). P0-3 (write rate) stays background - 46 days headroom.",
+  "next_action": "P0-NEW re-run scripts/experiment_readout.py until experiments clear 20 settled per side. exit150_full15_v1 is closest (16) and is the one to read FIRST - it is the standout interim reading (-0.00U/pos, win 81.2%, write-off 6.2% vs bank15's -6.01/27.3%/50.0%) and it matches round 17's prediction. WATCH the +25% capture pair: it shows almost no separation, which round 17's replay did NOT predict, so the capture-fraction effect may be concentrated at the +15% level. Do NOT treat any interim number as a verdict. P0-1 re-measure DISTINCT-POOL COVERAGE once >=6 post-change 10-minute buckets exist (adaptive cadence, round 22), against the TREND (the series 543 -> 939 -> 796 -> 612 -> 587 is strongly trending so a flat before/after average is confounded); do NOT assume the 3.42x figure. DO NOT build a '+15%-touch predictor' or 'quiet pool' filter (falsified round 18); do NOT re-report the 4% 'latency premium' (it is the cost model); do NOT widen the watch budget silently (user decision, declined round 79). P0-3 (write rate) stays background - 46 days headroom.",
   "MEASUREMENT_DISCIPLINE": "Four hypotheses have been killed by measurement across rounds 120-5/120-6 and ONE WAS A BUG IN MY OWN PROBE ('0 of 18 pools can form a window' - the query filtered provider LIKE 'dexscreener%', excluding the strategy-observer mirror rows). None produced a code change; all would have looked like reasonable fixes. ALWAYS take a second independent measure before publishing a '0 samples / stalled / defect' claim or changing code. Also: never LIKE wildcards on arm_id; use julianday() not datetime('now'); dedupe snapshots by (token_id, observed_at); separate windowed from all-time totals.",
   "authoritative_current_numbers_20260912T2027Z": {
     "source": "scripts/supervise_metrics.py --hours 2 AND scripts/trade_context_ledger.py --minutes 180",
