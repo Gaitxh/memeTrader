@@ -7820,6 +7820,8 @@ class Runtime:
                             reason = "skip_bucket_full"
                             continue
                         reason = "admit_mover_reserved"
+                        self._mover_reserved_admissions = getattr(
+                            self, '_mover_reserved_admissions', 0) + 1
                 elif token_id not in held and (chain_used.get(chain, 0) >= 10
                         or bucket != 'early'
                         and any(v['token'].chain == chain and v.get('reactivation_probe') for v in watch.values())
@@ -8394,7 +8396,8 @@ class Runtime:
                 await observe_chain(chain, targets)
         self.store.heartbeat("chain-meme-pattern-observer", item=sampled > 0,
             error_detail=f"watched={len(watch)};sampled={sampled};projected={projected};"
-                         f"mover_watch={len(getattr(self, '_mover_watchlist', None).active(utcnow())) if getattr(self, '_mover_watchlist', None) is not None else 0}")
+                         f"mover_watch={len(getattr(self, '_mover_watchlist', None).active(utcnow())) if getattr(self, '_mover_watchlist', None) is not None else 0};"
+                         f"mover_reserved_admissions={getattr(self, '_mover_reserved_admissions', 0)}")
         self.store.set_kv("chain-meme-pattern-watch", {
             "recorded_at": iso(utcnow()), "watched": len(self._pattern_watch),
             "sampled": sampled, "projected": projected,
