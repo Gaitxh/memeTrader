@@ -2694,3 +2694,56 @@ def mechanisms(f):  # noqa: F811 - wave 35 wrapper over the wave-34 wrapper
     except Exception:
         out.setdefault('flow_entry', False)
     return out
+
+
+# ---- wave 36: require a densely observed pool so exits can actually resolve ----
+# The system wrote only 46 marks in 15 minutes against ~90 open positions, so many positions
+# get a single evaluation in their first minutes; exits that need repeated evaluation
+# (trailing, depth decay, signal decay) therefore rarely resolve, which matches the historical
+# finding that time-based exits carry the positive record. `pair_frames` is the engine's own
+# observation count for the pool, so denseness can be required at entry with no new data.
+SPECS.update({
+    'alpha149_dense_flow_v1': ('dense_flow', '\u5bc6\u96c6\u89c2\u6d4b\u00b7\u6d41\u91cf\u5165\u53e3(1U)', 30),
+    'alpha149_dense_flow_hold_v1': ('dense_flow', '\u5bc6\u96c6\u89c2\u6d4b\u00b7\u5bbd\u8ffd\u8e2a60\u5206\u949f(1U)', 60),
+})
+OVERRIDES.update({
+    'alpha149_dense_flow_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=4,
+        excess_return_vs_arm='alpha149_hold_flow_control_v1',
+        hard_stop_return=-.20, trailing_activate_return=.30, trailing_drawdown=.15,
+        description='\u5bc6\u96c6\u89c2\u6d4b\u00b7\u6d41\u91cf\u5165\u53e3\uff081U\uff0c30\u5206\u949f\uff09\uff1a'
+                    '\u5165\u573a\u4e3a flow_entry \u4e14\u672c\u6c60\u5df2\u88ab\u5f15\u64ce\u89c2\u6d4b\u5230 >=12 \u5e27'
+                    '\uff08\u5373 pair_frames\uff09\uff0c\u9000\u51fa\u7528\u7cfb\u7edf\u9ed8\u8ba4\u5408\u540c\u3002'
+                    '\u4f9d\u636e\uff1a\u5b9e\u6d4b\u8fd115\u5206\u949f\u5168\u7cfb\u7edf\u4ec5\u5199\u5165 46 \u6761\u6807\u8bb0\u800c\u6301\u4ed3\u7ea690\u7b14\uff0c'
+                    '\u5355\u7b14\u5728\u524d\u51e0\u5206\u949f\u53ea\u6709\u4e00\u6b21\u8bc4\u4f30\u673a\u4f1a\uff0c\u5bfc\u81f4\u9700\u8981\u53cd\u590d\u8bc4\u4f30\u7684'
+                    '\u8ffd\u8e2a/\u8870\u51cf\u9000\u51fa\u51e0\u4e4e\u65e0\u6cd5\u89e6\u53d1\u3002'),
+    'alpha149_dense_flow_hold_v1': dict(
+        notional_usd=1.0, max_concurrent_positions=4,
+        excess_return_vs_arm='alpha149_dense_flow_v1',
+        hard_stop_return=-.35, trailing_activate_return=.50, trailing_drawdown=.35,
+        description='\u5bc6\u96c6\u89c2\u6d4b\u00b7\u5bbd\u8ffd\u8e2a\uff081U\uff0c60\u5206\u949f\uff09\uff1a\u540c\u4e00\u5165\u573a\uff08flow_entry \u4e14 '
+                    'pair_frames>=12\uff09\uff0c\u9000\u51fa\u6539\u7528\u5bbd\u8ffd\u8e2a\uff08+50%\u6fc0\u6d3b/\u56de\u64a435%\uff09\u4e0e-35%\u515c\u5e95\u3002'
+                    '\u5047\u8bbe\uff1a\u5728\u53ef\u88ab\u53cd\u590d\u8bc4\u4f30\u7684\u6c60\u5b50\u4e0a\uff0c\u5bbd\u8ffd\u8e2a\u624d\u6709\u673a\u4f1a\u53d1\u6325\u4f5c\u7528\u3002'),
+})
+ALL_ARMS = tuple(SPECS) + tuple(EXIT_ARMS)
+KINDS = tuple(kind for kind, _, _ in SPECS.values())
+
+_base_mechanisms_w35 = mechanisms
+
+
+def mechanisms(f):  # noqa: F811 - wave 36 wrapper over the wave-35 wrapper
+    """Add the densely-observed flow entry flag."""
+    out = _base_mechanisms_w35(f)
+    try:
+        if not isinstance(f, dict):
+            return out
+        frames = f.get('pair_frames')
+        try:
+            frames = None if frames is None else float(frames)
+        except (TypeError, ValueError):
+            frames = None
+        out['dense_flow'] = bool(
+            out.get('flow_entry') and frames is not None and frames >= 12)
+    except Exception:
+        out.setdefault('dense_flow', False)
+    return out

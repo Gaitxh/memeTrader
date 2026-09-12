@@ -1325,6 +1325,20 @@
       "loaded_at": "2026-09-12T05:25:00Z",
       "visible_entry": "docs/PROJECT_CONTEXT/OBSERVATION_SURFACE_FACTS_20260912.md",
       "report": "docs/PROJECT_CONTEXT/OBSERVATION_SURFACE_FACTS_20260912.md"
+    },
+    {
+      "id": "20260912-rounds60to65-mark-sparsity-and-dc1",
+      "recorded_at": "2026-09-12T05:55:00Z",
+      "title": "第60-65轮：DC-1伪异常排查链（五假设逐条否定）+ 标记覆盖率约束 → 第36波密集观测臂",
+      "problem": "第33-35波12条额外臂能开仓但全期0退出意图、0平仓，而结构相同的老臂正常退出。需要定性；若为缺陷必须修复，若为正常则须给出可复核的解释。",
+      "change": "① 依次提出并否定五个假设：评估未回写（两列是活跃字段）、生命周期配额（新token持续进入）、max_concurrent_positions排除退出（代码检索显示仅用于入场准入，行27193/27194/28469）、标记稀疏（两组密度相同）、池身份不匹配（27/27与65/65全部配对）。② 时间序定案：持仓opened_at=03:21:25、开仓后首条标记03:29:38、持仓年龄仅8.3分钟，而持有上限为30/60/60/90分钟——尚未到期且期间仅一次评估机会，故为正常结果（伪异常）。③ 由此暴露真实约束：近15分钟全系统仅46条标记而持有约90笔仓位，需要反复评估的追踪/衰减类退出分辨率极低，而只需一次评估的到期退出成为历史最大正贡献族。④ 新增第36波两条额外臂：alpha149_dense_flow_v1（flow_entry 且 pair_frames>=12，1U/30分钟）与 alpha149_dense_flow_hold_v1（同入场，1U/60分钟，追踪+50%/回撤35%、-35%兜底），以既有 pair_frames 特征实现，无需新数据源；既有132条臂逻辑未改。⑤ 把完整排查链与标记覆盖率事实写入观测面事实账（含方法论教训：先验证窗口推进、再核对时间序与持仓年龄，最后解释状态）。",
+      "rationale": "同一现象被连续误读三次（评估未回写→意图已产生→工程缺陷），每次都靠新证据推翻；把这条链和'读取时机'的教训固化下来，可避免后续重复投入。标记覆盖率是比'再加退出规则'更根本的约束，因此下一步用额外臂验证'可评估性'对结局的影响。",
+      "validation": "全部为只读查询与代码检索；注册 300->302 且 ledger_unchanged=true；test_alpha149 与 test_alpha149_wave2425 全通过（当前134条臂）；运行进程已重载（PID 36060/30652）；冻结错误 #265=392/#266=398 未增长；paper 与 live.enabled=false 不变。",
+      "scope": "修改 src/memetrader/alpha149.py（第36波，文件末尾原子追加）；更新 docs/PROJECT_CONTEXT/OBSERVATION_SURFACE_FACTS_20260912.md（追加第4节：DC-1排查链+标记覆盖率）。待办：dense_flow 可达性观察、写销与拥挤度跟踪、同币并发上限授权。",
+      "commit": "",
+      "loaded_at": "2026-09-12T05:50:00Z",
+      "visible_entry": "docs/PROJECT_CONTEXT/OBSERVATION_SURFACE_FACTS_20260912.md",
+      "report": "docs/PROJECT_CONTEXT/OBSERVATION_SURFACE_FACTS_20260912.md"
     }
   ]
 }
