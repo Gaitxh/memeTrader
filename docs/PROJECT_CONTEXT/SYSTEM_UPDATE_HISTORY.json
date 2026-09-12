@@ -1746,6 +1746,19 @@
       "report": "docs/PROJECT_CONTEXT/ROUND108_RESERVED_SLOT_REACH_AND_REVIVED_HOLDER_LANE_20260912.md",
       "visible_entry": "docs/PROJECT_CONTEXT/ROUND108_RESERVED_SLOT_REACH_AND_REVIVED_HOLDER_LANE_20260912.md",
       "decision": "用户于 2026-09-12 明确选择：**那 205 条没有 max_concurrent_positions 字段的臂保持无上限**，不钉成 8。理由与该轮实现一致——缺字段等于\"无上限\"，不属于\"上限小于 8\"的情形，钉成 8 属于收紧而非提升，与\"开仓过少\"的目标相反。因此本轮实现即为最终状态：低于 8 的 224 条已提升为 8，205 条无上限臂不做任何改动。"
+    },
+    {
+      "id": "20260912-round111-uniform-20u-and-fair-comparison",
+      "title": "第111轮：**用户授权**——单笔名义统一为 20U（441 条臂全部生效，264 条被提升）；历史不改写而是建立统一 20U 比较口径；该口径**暴露出一处真实账本缺陷**（161 笔物理不可能盈亏、合计 +822 万 U，全部在两个已停用 epoch）",
+      "recorded_at": "2026-09-12T15:00:00Z",
+      "problem": "用户指令：\"单笔名义金额统一设置为20U，同时，已完成或正在进行的交易历史和操作记录也要进行全面的同步、更新和修正。这样才能实现跨策略的公平对比，有助于策略的挑选。\"改动前实测（当前 epoch 生效定义 441 条臂）：notional 1U 共 66 条、2U 共 77 条、5U 共 121 条、20U 共 31 条、无字段 146 条（执行时回落到定义默认 `policy_notional_usd=20`）→ **需改 264 条**。直接比较各策略历史总额，等于比较下注规模而不是策略能力。",
+      "change": "1) src/memetrader/store.py：新增类常量 `CHAIN_MEME_TRADER_UNIFORM_NOTIONAL_USD = 20.0`，与并发上限地板同一层实现——在 `chain_meme_trader_effective_definition_from_connection()` 组装生效定义时，把每条 policy 的 `notional_usd` 统一为 20U（存在 `order_size_usd` 的一并统一，原生协议臂按它下单），写入 `notional_revision` 标记（registered / effective / basis / 原指纹），并**只重算一次**行为指纹；缺字段的臂不补字段（它们本来就回落到同一默认值）。两个统一化共用一次指纹重算，按 (version, arm, 两个注册值) 记忆化。2) src/memetrader/paper_execution.py：新增常量 `IMPLAUSIBLE_PNL_MULTIPLE = 100.0` 与纯断言 `plausible_position_pnl()`，把\"记录缺陷必须从对比聚合中排除、而不是改写账本\"固化为可复用规则。3) 新增对比报告 data/research/notional_normalized_comparison_20260912.md（只读生成，data/ 不入库）。",
+      "rationale": "**为什么不改写历史**：260,326 笔仓位中 259,318 笔的 `stake_usd` 与所属臂注册名义**完全一致**；仅 288 笔不一致且已逐类查清、**都不是损坏**——① 216 笔（`staged_probe_5u_*`、`watched_wallet_distribution_*` 四条臂）是注册名义后来被改为 5U，早先开的 20U 仓位保留原值，这正是\"历史不被重写\"的应有表现；② 283 笔（`pump_native_absorption_fast_v1`）stake = 数量 × 成交价（4.63–4.71U），原生协议通道按代币数量下单、不按固定美元，因此该臂无法精确等于 20U。记录的 stake 是 paper 账户真实占用、并与成交/现金/账户快照对账的历史，覆盖它会破坏对账与 append-only 记录。因此\"同步、更新、修正\"落在**统一的比较口径**上：每笔按 `pnl × (20 / 自身 stake)` 折算，口径在每张表上明示。",
+      "validation": "改动后实测：显式 20U 共 295 条、无字段 146 条，**生效单笔名义 441 条全部 = 20.0U**；264 条带 `notional_revision` 标记；顶层标记 `uniform_notional_usd`（changed_policies=264）。新增 8 项测试（低于/高于 20U 均归一、恰好 20U 不动、`order_size_usd` 同步、缺字段不补、注册行与冻结定义零改动且重复重建不累积、指纹随名义重算、与并发上限地板共存）全绿；cap floor 6 项与 dust 守卫 12 项回归全绿。部署：20:05:26 重启（PID 49804/34096，12:05:36Z），manifest 中 store.py 哈希 3944ec703f2245ad 与磁盘一致。**对比口径暴露的真实缺陷**：161 笔已平仓仓位记出超过自身 stake 100 倍的盈利，合计 **+8,218,961U**（对应 stake 仅约 3,220U），全部落在两个**已停用**的 epoch——`v22-additive-first-mover-...` 9 笔 / +7,844,846U（其中一笔 20U 仓位被记为 **+2,162,979U**，路径 `market_mark_zero_5m_activity`、`amount_raw=0`）、`v19-dexscreener-successors-...` 152 笔 / +374,115U；**当前 epoch 干净**：最大单笔 +518.2U（20U 仓位 = 25.9 倍，真实 BSC 代币 take_profit 路径）。排除这 161 笔后，全历史 = 260,165 笔 / stake 4,844,781U / **−826,417U（−17.06%）**，统一 20U 口径 **−890,857U（−17.12%）**；当前 epoch 单独看：45,433 笔 / 554,776U / **−129,258U**，而 20U 口径为 **−192,668U**。",
+      "scope": "src/memetrader/store.py（1 个类常量 + 生效定义统一化段重构）、src/memetrader/paper_execution.py（1 个常量 + 1 个纯断言）、tests/test_uniform_notional.py（新增 8 项）、data/research/notional_normalized_comparison_20260912.md（只读报告，data/ 不入库）、docs/PROJECT_CONTEXT/SYSTEM_UPDATE_HISTORY.json（本条目）。未改动任何策略源码、注册台账、资金周期或既有成交记录；paper 模式与 live.enabled=false 未变。",
+      "next": "1) **决策含义（重要）**：当前 epoch 在统一 20U 口径下的亏损比实际口径**大 1.5 倍**（−192,668U vs −129,258U）——1U/2U 的探针臂一直在**低报自身损害 10-20 倍**；统一之后，\"哪些策略值得留下\"的判断才建立在同一赌注规模上，预计会有一批此前\"看起来温和\"的臂被重新划入亏损队列。2) 建议下一轮：用统一口径重排全部 441 条臂并给出留/停建议清单（含平仓 ≥30 笔的置信区间），供用户做策略挑选。3) 记录缺陷本身不修引擎：v19/v22 已停用、其标记路径（`market_mark_zero_5m_activity` 等）在当前版本不再产生此类值；排除规则已固化，若未来复现同一形态将立即暴露出统计异常。4) 仍未决：代币级并发上限（影子证据：会拦下的那批合计 −603.35U）。",
+      "report": "data/research/notional_normalized_comparison_20260912.md",
+      "visible_entry": "data/research/notional_normalized_comparison_20260912.md"
     }
   ]
 }
